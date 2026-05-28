@@ -312,6 +312,38 @@ export const camera_plans = pgTable(
   }),
 );
 
+// ── Video Editor ──────────────────────────────────────────────────────────────
+
+export const videoFileStatusEnum = pgEnum('video_file_status', [
+  'uploading',
+  'ready',
+  'failed',
+]);
+
+export const video_files = pgTable('video_files', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  project_id: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  filename: text('filename').notNull(),
+  file_size: bigint('file_size', { mode: 'number' }),
+  storage_key: text('storage_key'),
+  status: videoFileStatusEnum('status').notNull().default('uploading'),
+  duration_sec: real('duration_sec'),
+  created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const timeline_sections = pgTable('timeline_sections', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  project_id: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  video_file_id: uuid('video_file_id').notNull().references(() => video_files.id, { onDelete: 'cascade' }),
+  start_sec: real('start_sec').notNull(),
+  end_sec: real('end_sec').notNull(),
+  type: text('type').notNull(),
+  label: text('label'),
+  notes: text('notes'),
+  sort_order: integer('sort_order'),
+  created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 // ── Type exports ──────────────────────────────────────────────────────────────
 
 export type Org = typeof orgs.$inferSelect;
@@ -327,4 +359,6 @@ export type TokenUsage = typeof token_usage.$inferSelect;
 export type Job = typeof jobs.$inferSelect;
 export type AudioRender = typeof audio_renders.$inferSelect;
 export type Scene = typeof scenes.$inferSelect;
+export type VideoFile = typeof video_files.$inferSelect;
+export type TimelineSection = typeof timeline_sections.$inferSelect;
 export type CameraPlan = typeof camera_plans.$inferSelect;

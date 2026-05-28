@@ -5,18 +5,18 @@ import * as Dialog from '@radix-ui/react-dialog';
 const STEPS = [
   {
     n: '01',
-    title: 'Describe your topic',
-    body: 'Upload a PDF, paste a URL, or write a brief. The AI reads and structures your material automatically.',
+    title: 'Upload your videos',
+    body: 'Drag and drop video files up to several GB each. Multiple videos are supported — they appear as separate tracks on the timeline.',
   },
   {
     n: '02',
-    title: 'Watch the script form',
-    body: 'Three-pass AI generation in real time — structural analysis, full draft, then broadcast-quality rewrite.',
+    title: 'Mark sections on the timeline',
+    body: 'Click and drag on any track to select a time range. Flag each section as Video, Simulation, Intro, Outro, Cut, or a custom type.',
   },
   {
     n: '03',
-    title: 'Edit and approve',
-    body: "Refine any dialogue turn, swap speakers, or regenerate a line. Approve the script when you're ready.",
+    title: 'Build your interactive structure',
+    body: 'Sections define the skeleton of your interactive experience. Export or hand off the structure to power branching, overlays, and more.',
   },
 ];
 
@@ -37,7 +37,7 @@ export function HowItWorksDialog({ open, onOpenChange }: Props) {
                 How it works
               </p>
               <Dialog.Title className="text-2xl font-bold text-foreground">
-                Three steps to your podcast
+                Three steps to your interactive video
               </Dialog.Title>
             </div>
             <Dialog.Close className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">
@@ -49,10 +49,7 @@ export function HowItWorksDialog({ open, onOpenChange }: Props) {
 
           <div className="grid md:grid-cols-3 gap-4">
             {STEPS.map((s) => (
-              <div
-                key={s.n}
-                className="rounded-xl border border-border bg-card p-5 shadow-sm"
-              >
+              <div key={s.n} className="rounded-xl border border-border bg-card p-5 shadow-sm">
                 <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center mb-3">
                   <span className="font-mono text-xs font-bold text-primary">{s.n}</span>
                 </div>

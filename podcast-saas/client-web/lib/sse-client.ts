@@ -1,11 +1,11 @@
 'use client';
 
-import type { StreamEvent } from 'shared';
+export type SSEEvent = Record<string, unknown> & { type: string };
 
 export async function connectSSEStream(
   projectId: string,
   getToken: () => Promise<string | null>,
-  onEvent: (event: StreamEvent) => void,
+  onEvent: (event: SSEEvent) => void,
   onClose?: () => void,
   streamPath?: string,
 ): Promise<() => void> {
@@ -59,7 +59,7 @@ export async function connectSSEStream(
 
           if (dataLine) {
             try {
-              const parsed = JSON.parse(dataLine) as StreamEvent;
+              const parsed = JSON.parse(dataLine) as SSEEvent;
               onEvent(parsed);
             } catch {
               // ignore malformed events
@@ -71,7 +71,7 @@ export async function connectSSEStream(
       if (!aborted) {
         onEvent({
           type: 'error',
-          error_type: 'connection_error' as never,
+          error_type: 'connection_error',
           message: err instanceof Error ? err.message : 'Stream connection lost',
         });
       }

@@ -4,6 +4,7 @@ import {
   DeleteObjectCommand,
   GetObjectCommand,
 } from '@aws-sdk/client-s3';
+
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import type { StorageService } from './StorageService.js';
 import { logger } from '../../lib/logger.js';
@@ -62,6 +63,14 @@ export class R2StorageAdapter implements StorageService {
     return getSignedUrl(
       this.client,
       new GetObjectCommand({ Bucket: this.bucket, Key: path }),
+      { expiresIn: ttlSeconds },
+    );
+  }
+
+  async getPresignedUploadUrl(path: string, contentType: string, ttlSeconds: number): Promise<string> {
+    return getSignedUrl(
+      this.client,
+      new PutObjectCommand({ Bucket: this.bucket, Key: path, ContentType: contentType }),
       { expiresIn: ttlSeconds },
     );
   }

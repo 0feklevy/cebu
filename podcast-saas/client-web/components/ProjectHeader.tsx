@@ -8,20 +8,14 @@ import type { Project } from 'shared/src/generated/client-v1';
 
 const STATUS_STYLES: Record<string, string> = {
   draft: 'bg-muted text-muted-foreground',
-  scripting: 'bg-blue-500/10 text-blue-600',
-  script_ready: 'bg-violet-500/10 text-violet-600',
-  approved: 'bg-amber-500/10 text-amber-600',
-  generating: 'bg-blue-500/10 text-blue-600',
+  has_videos: 'bg-blue-500/10 text-blue-600',
   ready: 'bg-emerald-500/10 text-emerald-600',
   failed: 'bg-destructive/10 text-destructive',
 };
 
 const STATUS_LABELS: Record<string, string> = {
   draft: 'Draft',
-  scripting: 'Scripting…',
-  script_ready: 'Script ready',
-  approved: 'Approved',
-  generating: 'Generating…',
+  has_videos: 'Has videos',
   ready: 'Ready',
   failed: 'Failed',
 };
@@ -39,9 +33,8 @@ export function ProjectHeader({ projectId }: Props) {
 
   const statusStyle = project ? (STATUS_STYLES[project.status] ?? 'bg-muted text-muted-foreground') : '';
   const statusLabel = project ? (STATUS_LABELS[project.status] ?? project.status) : '';
-  const title = project?.topic
-    ? project.topic.length > 60 ? project.topic.slice(0, 60) + '…' : project.topic
-    : '';
+  const rawTitle = project?.title ?? project?.topic ?? '';
+  const title = rawTitle.length > 60 ? rawTitle.slice(0, 60) + '…' : rawTitle;
 
   return (
     <header className="shrink-0 h-12 border-b border-border bg-background/95 backdrop-blur flex items-center px-4 gap-3 z-20">

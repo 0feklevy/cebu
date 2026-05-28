@@ -1,7 +1,6 @@
 /// <reference lib="dom" />
 import type { CreateProject, PlatformSettings } from '../types/project.js';
 import type { Host, CreateHost } from '../types/host.js';
-import type { ScriptVersion, DialogueTurn } from '../types/script.js';
 import type { Corpus } from '../types/corpus.js';
 
 export interface ApiConfig {
@@ -9,22 +8,37 @@ export interface ApiConfig {
   getToken: () => Promise<string | null>;
 }
 
-
 export interface Project {
   id: string;
   org_id: string;
+  title: string | null;
   topic: string | null;
-  style_preset: string | null;
-  host_a_id: string | null;
-  host_b_id: string | null;
-  host_a?: Host | null;
-  host_b?: Host | null;
-  format: string;
-  target_duration_min: number | null;
-  pacing: string | null;
-  emotional_style: string | null;
   status: string;
   created_by: string | null;
+  created_at: string;
+}
+
+export interface VideoFile {
+  id: string;
+  project_id: string;
+  filename: string;
+  file_size: number | null;
+  storage_key: string | null;
+  status: string;
+  duration_sec: number | null;
+  created_at: string;
+}
+
+export interface TimelineSection {
+  id: string;
+  project_id: string;
+  video_file_id: string;
+  start_sec: number;
+  end_sec: number;
+  type: string;
+  label: string | null;
+  notes: string | null;
+  sort_order: number | null;
   created_at: string;
 }
 
@@ -74,9 +88,13 @@ export class ClientV1Api {
     return res.json() as Promise<T>;
   }
 
+  // ── Platform ──────────────────────────────────────────────────────────────
+
   getPlatformSettings(): Promise<PlatformSettings> {
     return this.request('/api/v1/platform/settings');
   }
+
+  // ── Projects ──────────────────────────────────────────────────────────────
 
   createProject(body: CreateProject): Promise<{ id: string; status: string }> {
     return this.request('/api/v1/projects', { method: 'POST', body });
@@ -90,6 +108,8 @@ export class ClientV1Api {
     return this.request('/api/v1/projects');
   }
 
+  // ── Hosts ─────────────────────────────────────────────────────────────────
+
   listHosts(): Promise<Host[]> {
     return this.request('/api/v1/hosts');
   }
@@ -97,6 +117,8 @@ export class ClientV1Api {
   createHost(body: CreateHost): Promise<Host> {
     return this.request('/api/v1/hosts', { method: 'POST', body });
   }
+
+  // ── Corpus ────────────────────────────────────────────────────────────────
 
   addCorpus(
     projectId: string,
@@ -114,92 +136,52 @@ export class ClientV1Api {
     return this.request(`/api/v1/projects/${projectId}/corpus/${corpusId}`);
   }
 
-  generateScript(projectId: string): Promise<{ job_id: string }> {
-    return this.request(`/api/v1/projects/${projectId}/script/generate`, { method: 'POST' });
-  }
+  // ── Videos ────────────────────────────────────────────────────────────────
 
-  getScript(projectId: string): Promise<ScriptVersion> {
-    return this.request(`/api/v1/projects/${projectId}/script`);
-  }
-
-  getScriptVersion(projectId: string, version: number): Promise<ScriptVersion> {
-    return this.request(`/api/v1/projects/${projectId}/script/${version}`);
-  }
-
-  listScriptVersions(projectId: string): Promise<ScriptVersion[]> {
-    return this.request(`/api/v1/projects/${projectId}/script/versions`);
-  }
-
-  updateTurn(
+  getVideoUploadUrl(
     projectId: string,
-    version: number,
-    turnIndex: number,
-    patch: Partial<Pick<DialogueTurn, 'text' | 'emotion' | 'audio_tags' | 'speaker'>>,
-  ): Promise<{ new_version: number }> {
-    return this.request(`/api/v1/projects/${projectId}/script/${version}/turns/${turnIndex}`, {
-      method: 'PATCH',
-      body: patch,
-    });
+    body: { filename: string; file_size: number; content_type: string },
+  ): Promise<{ upload_url: string; storage_key: string }> {
+    return this.request(`/api/v1/projects/${projectId}/videos/upload-url`, { method: 'POST', body });
   }
 
-  replaceTurns(projectId: string, version: number, turns: DialogueTurn[]): Promise<{ new_version: number }> {
-    return this.request(`/api/v1/projects/${projectId}/script/${version}/turns`, {
-      method: 'PUT',
-      body: { turns },
-    });
-  }
-
-  regenerateTurn(
+  confirmVideoUpload(
     projectId: string,
-    version: number,
-    turnIndex: number,
-    opts: { hint?: string },
-  ): Promise<{ new_version: number; turn: DialogueTurn }> {
-    return this.request(
-      `/api/v1/projects/${projectId}/script/${version}/turns/${turnIndex}/regenerate`,
-      { method: 'POST', body: opts },
-    );
+    body: { storage_key: string; filename: string; file_size: number },
+  ): Promise<VideoFile> {
+    return this.request(`/api/v1/projects/${projectId}/videos/confirm`, { method: 'POST', body });
   }
 
-  approveScript(projectId: string, version: number): Promise<void> {
-    return this.request(`/api/v1/projects/${projectId}/script/${version}/approve`, {
-      method: 'POST',
-    });
+  listVideos(projectId: string): Promise<VideoFile[]> {
+    return this.request(`/api/v1/projects/${projectId}/videos`);
   }
 
-  triggerAudio(projectId: string): Promise<{ message: string; project_id: string }> {
-    return this.request(`/api/v1/projects/${projectId}/audio`, { method: 'POST' });
+  deleteVideo(projectId: string, videoId: string): Promise<void> {
+    return this.request(`/api/v1/projects/${projectId}/videos/${videoId}`, { method: 'DELETE' });
   }
 
-  getAudioRender(projectId: string): Promise<{
-    id: string;
-    project_id: string;
-    script_version: number;
-    status: string;
-    master_audio_url: string | null;
-    duration_ms: number | null;
-    provider: string;
-    cost_cents: number | null;
-    error: string | null;
-    finished_at: string | null;
-    created_at: string;
-  }> {
-    return this.request(`/api/v1/projects/${projectId}/audio`);
+  // ── Timeline Sections ─────────────────────────────────────────────────────
+
+  listSections(projectId: string): Promise<TimelineSection[]> {
+    return this.request(`/api/v1/projects/${projectId}/sections`);
   }
 
-  getScenes(projectId: string): Promise<{
-    id: string;
-    idx: number;
-    speaker: 'host_a' | 'host_b';
-    start_ms: number;
-    end_ms: number;
-    transcript: string;
-    emotion: string;
-    audio_tags: string[];
-    is_hook: boolean;
-    audio_chunk_url: string | null;
-    shot: string | null;
-  }[]> {
-    return this.request(`/api/v1/projects/${projectId}/scenes`);
+  createSection(
+    projectId: string,
+    body: { video_file_id: string; start_sec: number; end_sec: number; type: string; label?: string; notes?: string },
+  ): Promise<TimelineSection> {
+    return this.request(`/api/v1/projects/${projectId}/sections`, { method: 'POST', body });
+  }
+
+  updateSection(
+    projectId: string,
+    sectionId: string,
+    body: Partial<{ start_sec: number; end_sec: number; type: string; label: string; notes: string; sort_order: number }>,
+  ): Promise<TimelineSection> {
+    return this.request(`/api/v1/projects/${projectId}/sections/${sectionId}`, { method: 'PATCH', body });
+  }
+
+  deleteSection(projectId: string, sectionId: string): Promise<void> {
+    return this.request(`/api/v1/projects/${projectId}/sections/${sectionId}`, { method: 'DELETE' });
   }
 }

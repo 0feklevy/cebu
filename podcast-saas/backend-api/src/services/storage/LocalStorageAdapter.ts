@@ -35,6 +35,11 @@ export class LocalStorageAdapter implements StorageService {
     return `${SERVE_BASE}/local-storage/${path}`;
   }
 
+  async getPresignedUploadUrl(path: string, _contentType: string, _ttlSeconds: number): Promise<string> {
+    // In local dev the "presigned" URL is just a backend PUT endpoint
+    return `${SERVE_BASE}/local-storage/upload/${path}`;
+  }
+
   async deleteFile(path: string): Promise<void> {
     const { unlink } = await import('fs/promises');
     await unlink(join(BASE_DIR, path)).catch(() => null);

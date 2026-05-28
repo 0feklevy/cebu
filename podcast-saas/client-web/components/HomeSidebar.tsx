@@ -6,34 +6,22 @@ import { api } from '../lib/api';
 import { useAuth } from '../lib/firebase';
 import { UserProfileButton } from './UserProfileButton';
 import { HowItWorksDialog } from './HowItWorksDialog';
-import { CreatePodcastDialog } from './CreatePodcastDialog';
+import { CreateProjectDialog } from './CreateProjectDialog';
 import type { Project } from 'shared/src/generated/client-v1';
 
 const STATUS_STYLES: Record<string, string> = {
   draft: 'bg-muted text-muted-foreground',
-  scripting: 'bg-blue-500/10 text-blue-600',
-  script_ready: 'bg-violet-500/10 text-violet-600',
-  approved: 'bg-amber-500/10 text-amber-600',
-  generating: 'bg-blue-500/10 text-blue-600',
+  has_videos: 'bg-blue-500/10 text-blue-600',
   ready: 'bg-emerald-500/10 text-emerald-600',
   failed: 'bg-destructive/10 text-destructive',
 };
 
 const STATUS_LABELS: Record<string, string> = {
   draft: 'Draft',
-  scripting: 'Scripting',
-  script_ready: 'Script ready',
-  approved: 'Approved',
-  generating: 'Generating',
+  has_videos: 'Has videos',
   ready: 'Ready',
   failed: 'Failed',
 };
-
-function projectRoute(p: Project): string {
-  if (p.status === 'script_ready' || p.status === 'approved') return `/projects/${p.id}/script`;
-  if (p.status === 'generating' || p.status === 'ready') return `/projects/${p.id}/studio`;
-  return `/projects/${p.id}/stream`;
-}
 
 function timeAgo(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
@@ -43,6 +31,11 @@ function timeAgo(dateStr: string): string {
   const hrs = Math.floor(mins / 60);
   if (hrs < 24) return `${hrs}h ago`;
   return `${Math.floor(hrs / 24)}d ago`;
+}
+
+function projectTitle(p: Project): string {
+  const t = p.title ?? p.topic ?? '';
+  return t.length > 50 ? t.slice(0, 50) + '…' : t || 'Untitled';
 }
 
 export function HomeSidebar() {
@@ -68,12 +61,12 @@ export function HomeSidebar() {
                 <ellipse cx="11" cy="5" rx="2.5" ry="2.5" fill="white" fillOpacity="0.5" />
               </svg>
             </div>
-            <span className="font-semibold tracking-tight text-sm text-foreground">PodcastAI</span>
+            <span className="font-semibold tracking-tight text-sm text-foreground">VideoEditor</span>
           </Link>
           <button
             onClick={() => setCreateOpen(true)}
             className="h-7 w-7 rounded-lg bg-primary text-primary-foreground flex items-center justify-center hover:bg-primary/90 transition-colors shadow-sm"
-            title="New podcast"
+            title="New project"
           >
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden>
               <path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
@@ -95,7 +88,7 @@ export function HomeSidebar() {
             </div>
           ) : projects.length === 0 ? (
             <div className="text-center py-8 px-2">
-              <p className="text-xs text-muted-foreground mb-3">No podcasts yet</p>
+              <p className="text-xs text-muted-foreground mb-3">No projects yet</p>
               <button
                 onClick={() => setCreateOpen(true)}
                 className="text-xs text-primary hover:underline"
@@ -108,12 +101,12 @@ export function HomeSidebar() {
               {projects.map((p) => (
                 <a
                   key={p.id}
-                  href={projectRoute(p)}
-                  className="block px-2 py-2.5 rounded-lg hover:bg-muted/60 transition-colors group"
+                  href={`/projects/${p.id}/editor`}
+                  className="block px-2 py-2.5 rounded-lg hover:bg-muted/60 transition-colors"
                 >
                   <div className="flex items-start justify-between gap-1 mb-1">
                     <span className="text-xs font-medium text-foreground line-clamp-1 flex-1">
-                      {p.topic ? (p.topic.length > 50 ? p.topic.slice(0, 50) + '…' : p.topic) : 'Untitled'}
+                      {projectTitle(p)}
                     </span>
                     <span className={`shrink-0 text-[9px] font-semibold px-1.5 py-0.5 rounded-full ${STATUS_STYLES[p.status] ?? 'bg-muted text-muted-foreground'}`}>
                       {STATUS_LABELS[p.status] ?? p.status}
@@ -145,7 +138,7 @@ export function HomeSidebar() {
       </aside>
 
       <HowItWorksDialog open={howItWorksOpen} onOpenChange={setHowItWorksOpen} />
-      <CreatePodcastDialog open={createOpen} onOpenChange={setCreateOpen} />
+      <CreateProjectDialog open={createOpen} onOpenChange={setCreateOpen} />
     </>
   );
 }

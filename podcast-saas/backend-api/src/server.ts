@@ -13,9 +13,8 @@ import { getFirebaseAdmin } from './services/firebase.js';
 import { registerPlatformRoutes } from './controllers/v1/platform.controller.js';
 import { registerProjectRoutes } from './controllers/v1/projects.controller.js';
 import { registerCorpusRoutes } from './controllers/v1/corpus.controller.js';
-import { registerScriptRoutes } from './controllers/v1/scripts.controller.js';
-import { registerStreamRoutes } from './controllers/v1/stream.controller.js';
-import { registerAudioRoutes } from './controllers/v1/audio.controller.js';
+import { registerVideoRoutes } from './controllers/v1/video.controller.js';
+import { registerSectionsRoutes } from './controllers/v1/sections.controller.js';
 import { registerAdminSettingsRoutes } from './controllers/admin/v1/settings.controller.js';
 import { registerAdminSystemPromptRoutes } from './controllers/admin/v1/system-prompts.controller.js';
 import { registerAdminLlmConfigRoutes } from './controllers/admin/v1/llm-config.controller.js';
@@ -71,13 +70,26 @@ async function build() {
     },
   );
 
+  // Local upload endpoint — receives PUT from client for large video files in dev
+  app.put<{ Params: { '*': string } }>(
+    '/local-storage/upload/*',
+    async (request, reply) => {
+      const { writeFile, mkdir } = await import('fs/promises');
+      const key = request.params['*'];
+      const dest = join(tmpdir(), 'podcast-saas-local-storage', key);
+      const dir = dest.substring(0, dest.lastIndexOf('/'));
+      await mkdir(dir, { recursive: true });
+      await writeFile(dest, request.body as Buffer);
+      return reply.code(200).send({ ok: true });
+    },
+  );
+
   // Register all routes
   await registerPlatformRoutes(app);
   await registerProjectRoutes(app);
   await registerCorpusRoutes(app);
-  await registerScriptRoutes(app);
-  await registerStreamRoutes(app);
-  await registerAudioRoutes(app);
+  await registerVideoRoutes(app);
+  await registerSectionsRoutes(app);
 
   // Admin routes
   await registerAdminSettingsRoutes(app);

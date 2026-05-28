@@ -1,12 +1,11 @@
 import type { FastifyReply } from 'fastify';
-import type { StreamEvent } from 'shared';
 
 export class SSEEmitter {
   private closed = false;
 
   constructor(private readonly reply: FastifyReply) {}
 
-  emit(event: StreamEvent): void {
+  emit(event: Record<string, unknown> & { type: string }): void {
     if (this.closed) return;
     const type = event.type;
     const data = JSON.stringify(event);
