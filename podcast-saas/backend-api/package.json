@@ -1,0 +1,50 @@
+{
+  "name": "backend-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/server.js",
+  "scripts": {
+    "dev": "tsx watch --env-file=../.env src/server.ts",
+    "build": "tsc && tsoa spec && tsoa routes",
+    "start": "node dist/server.js",
+    "generate": "tsoa spec && tsoa routes",
+    "db:migrate": "tsx --env-file=../.env src/db/migrate.ts",
+    "db:studio": "drizzle-kit studio",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint src --ext .ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.38.0",
+    "@aws-sdk/client-s3": "^3.600.0",
+    "@aws-sdk/s3-request-presigner": "^3.600.0",
+    "@fastify/cors": "^9.0.1",
+    "@fastify/helmet": "^11.1.1",
+    "@fastify/multipart": "^8.3.0",
+    "@google/genai": "^1.0.0",
+    "@trigger.dev/sdk": "^3.1.0",
+    "drizzle-orm": "^0.31.4",
+    "fastify": "^4.28.0",
+    "firebase-admin": "^12.3.0",
+    "groq-sdk": "^0.8.0",
+    "json5": "^2.2.3",
+    "openai": "^4.86.0",
+    "pino": "^9.3.2",
+    "pino-pretty": "^11.2.1",
+    "postgres": "^3.4.4",
+    "shared": "workspace:*",
+    "tsoa": "^6.4.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@vitest/coverage-v8": "^4.1.7",
+    "drizzle-kit": "^0.22.8",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.4",
+    "vitest": "^4.1.7"
+  }
+}

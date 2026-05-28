@@ -1,0 +1,115 @@
+You are writing a REAL CONVERSATION — not a presentation, not a lecture, not an explainer video with two mouths. Two people who genuinely find this subject interesting are talking through it together. One knows more. The other is curious and smart. Neither is performing for a camera.
+
+Topic: {{TOPIC}}
+Style: {{STYLE_PRESET}}
+Host A: {{HOST_A_NAME}} — {{HOST_A_ROLE}}
+Host B: {{HOST_B_NAME}} — {{HOST_B_ROLE}}
+Target duration: {{TARGET_MIN}} min (~{{APPROX_TURNS}} total turns)
+Pacing: {{PACING}} | Tone: {{EMOTIONAL_STYLE}} | Audience: {{AUDIENCE_PERSONA}}
+
+Valid audio_tags: {{VALID_AUDIO_TAGS}}
+Valid emotions: {{VALID_EMOTIONS}}
+
+━━━ HOST ROLES ━━━
+
+These are flexible functions, not rigid personas:
+
+Host A — listener proxy: asks the question the listener is thinking. Notices contradictions. Translates abstract ideas into everyday language. Creates cognitive checkpoints ("Okay, let me see if I have this."). Starts skeptical or confused, arrives at genuine understanding. Occasionally pushes back when something sounds too neat.
+
+Host B — guide: explains with precision. Uses knowledge anchors naturally in conversation. Avoids dumping more than one hard idea at once. Connects each answer to the next curiosity handoff. Admits uncertainty when relevant ("Honestly, we still don't know exactly why...").
+
+Both: occasionally surprise each other. Neither is a passive student. Neither sounds like a formal lecturer. The conversation should feel like two smart people thinking together.
+
+━━━ WHAT MAKES IT SOUND REAL ━━━
+
+These things happen in genuine conversations. Use them:
+
+• The episode opens with the hook_scenario from the structural blueprint — a relatable everyday moment that bridges into the topic. Host A does NOT start with the topic name. They start in the listener's world.
+• One host starts skeptical: "Wait, that can't be right…" or "That sounds like it should be impossible." They ask the question the listener is thinking. By the end, they've genuinely changed their mind — don't skip the payoff.
+• A great analogy lands and the other person goes "oh — that's actually perfect"
+• The primary metaphor from metaphor_spine returns and deepens at each major beat, not just in the opening
+• Every major section earns its weight with at least one knowledge anchor — a concrete name, date, experiment, limitation, or surprising fact from the knowledge_anchors list
+• Curiosity handoffs: the end of each section creates the natural next question. "If every spin copies its neighbor, why does anything stay random?" Avoid: "Now let's talk about applications."
+• Every 4–6 turns, include a short cognitive checkpoint where Host A translates what just happened into plain language: "Okay so the weird part isn't the magnet. The weird part is the same logic shows up in neural networks, right?"
+• A host reacts to what was JUST said, not what they planned to say
+• Someone gets confused and asks a dumb-sounding question that's actually smart
+• Laughter happens from genuine surprise, not from a joke setup
+• Someone starts a sentence and gets interrupted ("wait, but—") with excitement
+• A pause after something heavy: "...I hadn't thought about it that way"
+• One host says something the other finds slightly wrong and gently pushes back
+• Someone admits "I have to be honest, I always assumed the opposite"
+• The energy drops for a moment (something genuinely unsettling) then picks back up
+
+━━━ NATURAL SPEECH — CONTROLLED, NOT SCATTERED ━━━
+
+Real speech has imperfections, but overuse is worse than none. For a {{TARGET_MIN}}-minute episode, use only 4–8 total speech imperfections. Prefer thinking rhythm over literal filler:
+
+• "Wait, no, that's not quite right."
+• "I mean, that's the strange part."
+• "Okay, let me back up for a second."
+• "So… the model is basically a crowd making a decision."
+• "Right, right. That tracks."
+• Occasional: "uh", "I mean", "kind of"
+
+Avoid: stuffing every turn with "umm", fake laughter after joke setups, hesitation as decoration. Naturalness comes from thought development and reaction, not filler density.
+
+━━━ NO GENERIC AWE ━━━
+
+Do NOT use ungrounded excitement. These lines are forbidden unless immediately followed by a concrete fact:
+• "This is mind-blowing."
+• "This changed everything."
+• "This is profound."
+• "This reveals the hidden structure of the universe."
+
+Every sentence expressing awe must answer: why is this surprising, specifically? Ground it.
+
+BAD: "This model changed everything."
+GOOD: "Ising thought the whole project had failed — the one-dimensional version showed no phase transition at all. Then Onsager cracked the two-dimensional version in 1944, and suddenly that failure became one of the cleanest windows into how order emerges from chaos."
+
+━━━ TURN GUIDANCE ━━━
+
+- Total turns: aim for ~{{APPROX_TURNS}} (about 2.5 turns per minute)
+- Vary length: some turns are a single punchy sentence. Some are a 4–6 sentence explanation with an analogy. Mix them.
+- First turn MUST be is_hook: true — open with the hook_scenario from the blueprint. The line stops someone mid-scroll. Specific, unexpected, personally relatable. NOT "Today we're talking about..." — start IN the listener's world.
+- Only ONE turn has is_hook: true
+- Final 2–3 turns: return to the primary metaphor or central question. Land on a philosophical wonder that the listener carries out the door: "So the real question is whether [X] is just physics, or something we should be making choices about." No "thanks for listening," no "to summarize."
+
+━━━ AUDIO TAGS — use organically, never mechanically ━━━
+
+- [laughs]: only when something is genuinely funny or surprising, not as punctuation
+- [pauses]: at moments of weight — let something land before moving on
+- [hesitates]: searching for the right word, genuine uncertainty
+- [interrupting]: excitement, finishing each other's thought, "wait I know where you're going"
+- [sighs]: acknowledging complexity, "yeah, it's a lot"
+- [whispers]: an aside, something intimate
+- [excited]: can't hold it in
+
+━━━ B-ROLL ━━━
+
+Assign b_roll to approximately 20–25% of turns where a visual would genuinely enhance understanding or mood. Not every turn needs it. Types: stat, quote, illustration, cinematic, diagram, user_image.
+
+━━━ TIME NOTE ━━━
+
+duration_hint_sec is a rough estimate per turn based on speaking pace. total_estimated_seconds ≈ {{TARGET_MIN}} × 60. Exact timing is determined by TTS rendering — don't stress the math, just write natural dialogue.
+
+━━━ OUTPUT SCHEMA ━━━
+
+{
+  "title": "string",
+  "intro_runtime_sec": number,
+  "turns": [
+    {
+      "speaker": "host_a" | "host_b",
+      "text": "string — the spoken words, natural and conversational",
+      "audio_tags": ["string"],
+      "emotion": "string",
+      "duration_hint_sec": number,
+      "is_hook": boolean,
+      "b_roll": null | { "type": "stat"|"quote"|"illustration"|"cinematic"|"diagram"|"user_image", "prompt": "string" }
+    }
+  ],
+  "outro_runtime_sec": number,
+  "total_estimated_seconds": number
+}
+
+CRITICAL: Output ONLY the raw JSON object — no preamble, no explanation, no markdown code fences. Start your response with { and end with }

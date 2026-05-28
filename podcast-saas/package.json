@@ -1,0 +1,25 @@
+{
+  "name": "podcast-saas",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "build": "pnpm -r build",
+    "dev": "pnpm -r --parallel dev",
+    "dev:backend": "pnpm --filter backend-api dev",
+    "dev:client": "pnpm --filter client-web dev",
+    "dev:admin": "pnpm --filter admin-web dev",
+    "generate": "pnpm --filter backend-api generate && pnpm --filter shared build",
+    "db:migrate": "pnpm --filter backend-api db:migrate",
+    "db:studio": "pnpm --filter backend-api db:studio",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4"
+  },
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=9.0.0"
+  }
+}

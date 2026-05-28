@@ -1,0 +1,107 @@
+-- PHASE 2+ tables — DO NOT create in Phase 1 migrations.
+-- Documented here so Phase 2 can add them without schema conflicts.
+
+-- assets: host character refs, studio plate, angle stills, motion loops
+-- CREATE TABLE assets (
+--   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+--   project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+--   type TEXT NOT NULL CHECK (type IN ('host_ref','studio','angle_still','motion_loop','listener_loop','wide_loop','b_roll')),
+--   speaker TEXT CHECK (speaker IN ('host_a','host_b')),
+--   shot TEXT CHECK (shot IN ('wide','closeup_a','closeup_b','reaction_a','reaction_b')),
+--   emotion TEXT,
+--   length_bucket TEXT CHECK (length_bucket IN ('short','medium','long')),
+--   url TEXT NOT NULL,
+--   hash TEXT,
+--   metadata JSONB,
+--   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+-- );
+
+-- audio_renders: ElevenLabs / Gemini TTS per turn
+-- CREATE TABLE audio_renders (
+--   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+--   project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+--   script_version INTEGER NOT NULL,
+--   master_audio_url TEXT,
+--   duration_ms INTEGER,
+--   alignment_json_url TEXT,
+--   provider TEXT CHECK (provider IN ('elevenlabs','gemini')),
+--   cost_cents INTEGER,
+--   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+-- );
+
+-- scenes: forced-alignment segmented scenes
+-- CREATE TABLE scenes (
+--   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+--   project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+--   script_version INTEGER NOT NULL,
+--   idx INTEGER NOT NULL,
+--   speaker TEXT CHECK (speaker IN ('host_a','host_b')),
+--   start_ms INTEGER,
+--   end_ms INTEGER,
+--   transcript TEXT,
+--   emotion TEXT,
+--   audio_chunk_url TEXT,
+--   audio_tags TEXT[],
+--   shot TEXT CHECK (shot IN ('wide','closeup_a','closeup_b','reaction_a','reaction_b')),
+--   is_hook BOOLEAN NOT NULL DEFAULT false,
+--   active_version INTEGER NOT NULL DEFAULT 1
+-- );
+
+-- scene_versions: per-scene video render versions
+-- CREATE TABLE scene_versions (
+--   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+--   scene_id UUID NOT NULL REFERENCES scenes(id) ON DELETE CASCADE,
+--   version INTEGER NOT NULL,
+--   track TEXT CHECK (track IN ('A','B')),
+--   video_url TEXT,
+--   lipsync_url TEXT,
+--   source_loop_id UUID,
+--   model TEXT,
+--   model_version TEXT,
+--   seed BIGINT,
+--   prompt_hash TEXT,
+--   provider TEXT CHECK (provider IN ('kling','seedance','veo','sync')),
+--   clip_similarity REAL,
+--   cost_cents INTEGER,
+--   status TEXT,
+--   error TEXT,
+--   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+--   created_by UUID REFERENCES users(id),
+--   reason TEXT
+-- );
+
+-- camera_plans: FSM output for each script version
+-- CREATE TABLE camera_plans (
+--   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+--   project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+--   script_version INTEGER NOT NULL,
+--   cuts_json JSONB NOT NULL,
+--   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+-- );
+
+-- renders: final Remotion composition renders
+-- CREATE TABLE renders (
+--   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+--   project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+--   script_version INTEGER NOT NULL,
+--   scene_version_set JSONB,
+--   output_url TEXT,
+--   format TEXT CHECK (format IN ('mp4_1080p','mp4_9_16','mp3')),
+--   duration_ms INTEGER,
+--   cost_cents_total INTEGER,
+--   render_time_s INTEGER,
+--   status TEXT,
+--   started_at TIMESTAMPTZ,
+--   finished_at TIMESTAMPTZ
+-- );
+
+-- billing_events: usage billing ledger
+-- CREATE TABLE billing_events (
+--   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+--   org_id UUID REFERENCES orgs(id),
+--   project_id UUID REFERENCES projects(id),
+--   provider TEXT,
+--   units INTEGER,
+--   cents INTEGER,
+--   occurred_at TIMESTAMPTZ NOT NULL DEFAULT now()
+-- );

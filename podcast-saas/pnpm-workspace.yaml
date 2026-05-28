@@ -1,0 +1,10 @@
+packages:
+  - 'backend-api'
+  - 'client-web'
+  - 'admin-web'
+  - 'shared'
+allowBuilds:
+  '@google/genai': true
+  esbuild: true
+  protobufjs: true
+  sharp: true
