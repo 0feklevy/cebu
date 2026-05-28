@@ -1,6 +1,6 @@
 import { db } from '../../db/index.js';
 import { projects, corpora, scripts, hosts } from '../../db/schema.js';
-import { eq, and, ne } from 'drizzle-orm';
+import { eq, and, ne, sql } from 'drizzle-orm';
 import { LLMService } from '../llm/LLMService.js';
 import { ContentModerationService } from '../llm/ContentModerationService.js';
 import { StructuralAnalysisService } from './StructuralAnalysisService.js';
@@ -51,7 +51,7 @@ export class ScriptPipeline {
       where: and(eq(corpora.project_id, projectId), eq(corpora.ingestion_status, 'ready')),
     });
 
-    const corpusText = allCorpora.map((c) => c.extracted_md ?? '').join('\n\n---\n\n');
+    const corpusText = allCorpora.filter((c) => c.extracted_md).map((c) => c.extracted_md!).join('\n\n---\n\n');
 
     const hostA = project.host_a_id
       ? await db.query.hosts.findFirst({ where: eq(hosts.id, project.host_a_id) })
@@ -87,13 +87,13 @@ export class ScriptPipeline {
     );
     sse.emit({ type: 'structural_ready', structural_json: structuralResult.data });
 
-    // ── Create scripts row at version 1 ───────────────────────────────────
-    const nextVersion = await this.getNextVersion(projectId);
+    // ── Create scripts row ────────────────────────────────────────────────
+    // Atomic subquery avoids race condition when two pipelines run concurrently.
     const [scriptRow] = await db
       .insert(scripts)
       .values({
         project_id: projectId,
-        version: nextVersion,
+        version: sql`COALESCE((SELECT MAX(version) FROM scripts WHERE project_id = ${projectId}), 0) + 1`,
         structural_json: structuralResult.data as unknown as Record<string, unknown>,
         pass0_model: structuralResult.model,
         pass0_input_tokens: structuralResult.inputTokens,
@@ -129,7 +129,7 @@ export class ScriptPipeline {
       status: 'rewriting',
     }).where(eq(scripts.id, scriptRow.id));
 
-    sse.emit({ type: 'script_draft_ready', script_version: nextVersion });
+    sse.emit({ type: 'script_draft_ready', script_version: scriptRow.version });
 
     // ── Pass 2: Dramatic Rewriter (best-effort — fall back to draft on parse failure) ──
     sse.emit({
@@ -166,7 +166,7 @@ export class ScriptPipeline {
       status: 'validating',
     }).where(eq(scripts.id, scriptRow.id));
 
-    sse.emit({ type: 'script_rewrite_ready', script_version: nextVersion });
+    sse.emit({ type: 'script_rewrite_ready', script_version: scriptRow.version });
 
     // ── Pass 3: Deterministic Validator ──────────────────────────────────
     sse.emit({
@@ -198,18 +198,12 @@ export class ScriptPipeline {
 
     sse.emit({
       type: 'script_ready',
-      script_version: nextVersion,
+      script_version: scriptRow.version,
       script: validation.script,
     });
     sse.emit({ type: 'done', project_id: projectId });
 
-    logger.info({ projectId, version: nextVersion }, 'Script pipeline complete');
+    logger.info({ projectId, version: scriptRow.version }, 'Script pipeline complete');
   }
 
-  private async getNextVersion(projectId: string): Promise<number> {
-    const existing = await db.query.scripts.findMany({
-      where: eq(scripts.project_id, projectId),
-    });
-    return (existing.length > 0 ? Math.max(...existing.map((s) => s.version)) : 0) + 1;
-  }
 }

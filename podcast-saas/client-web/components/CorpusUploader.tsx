@@ -28,12 +28,18 @@ export function CorpusUploader({ files, urls, onFilesChange, onUrlsChange }: Pro
   const removeUrl = (i: number) => onUrlsChange(urls.filter((_, idx) => idx !== i));
   const removeFile = (i: number) => onFilesChange(files.filter((_, idx) => idx !== i));
 
+  const mergeFiles = (incoming: File[]) => {
+    const existing = new Set(files.map((f) => `${f.name}:${f.size}`));
+    const deduped = incoming.filter((f) => !existing.has(`${f.name}:${f.size}`));
+    onFilesChange([...files, ...deduped]);
+  };
+
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     const dropped = Array.from(e.dataTransfer.files).filter((f) =>
       /\.(pdf|mp3|m4a|wav|ogg|jpg|jpeg|png|webp)$/i.test(f.name),
     );
-    onFilesChange([...files, ...dropped]);
+    mergeFiles(dropped);
   };
 
   return (
@@ -55,8 +61,8 @@ export function CorpusUploader({ files, urls, onFilesChange, onUrlsChange }: Pro
           accept=".pdf,.mp3,.m4a,.wav,.ogg,.jpg,.jpeg,.png,.webp"
           className="hidden"
           onChange={(e) => {
-            const selected = Array.from(e.target.files ?? []);
-            onFilesChange([...files, ...selected]);
+            mergeFiles(Array.from(e.target.files ?? []));
+            e.target.value = '';
           }}
         />
       </div>

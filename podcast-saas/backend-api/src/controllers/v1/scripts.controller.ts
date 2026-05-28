@@ -226,6 +226,12 @@ Rewrite this turn to be more engaging. Output only the JSON object.`,
         ),
       });
       if (!script) return reply.code(404).send({ message: 'Script not found' });
+
+      // Idempotent: already approved → return the existing timestamp
+      if (script.status === 'approved' && script.approved_at) {
+        return reply.send({ approved_at: script.approved_at.toISOString() });
+      }
+
       if (script.status !== 'ready') {
         return reply.code(400).send({ message: `Script is not ready (status: ${script.status})` });
       }

@@ -40,13 +40,14 @@ export class ClientV1Api {
     opts: { method?: string; body?: unknown } = {},
   ): Promise<T> {
     const token = await this.config.getToken();
+    const hasBody = opts.body !== undefined;
     const res = await fetch(this.config.baseURL + path, {
       method: opts.method ?? 'GET',
       headers: {
-        'Content-Type': 'application/json',
+        ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+      body: hasBody ? JSON.stringify(opts.body) : undefined,
     });
 
     if (!res.ok) {
@@ -164,5 +165,41 @@ export class ClientV1Api {
     return this.request(`/api/v1/projects/${projectId}/script/${version}/approve`, {
       method: 'POST',
     });
+  }
+
+  triggerAudio(projectId: string): Promise<{ message: string; project_id: string }> {
+    return this.request(`/api/v1/projects/${projectId}/audio`, { method: 'POST' });
+  }
+
+  getAudioRender(projectId: string): Promise<{
+    id: string;
+    project_id: string;
+    script_version: number;
+    status: string;
+    master_audio_url: string | null;
+    duration_ms: number | null;
+    provider: string;
+    cost_cents: number | null;
+    error: string | null;
+    finished_at: string | null;
+    created_at: string;
+  }> {
+    return this.request(`/api/v1/projects/${projectId}/audio`);
+  }
+
+  getScenes(projectId: string): Promise<{
+    id: string;
+    idx: number;
+    speaker: 'host_a' | 'host_b';
+    start_ms: number;
+    end_ms: number;
+    transcript: string;
+    emotion: string;
+    audio_tags: string[];
+    is_hook: boolean;
+    audio_chunk_url: string | null;
+    shot: string | null;
+  }[]> {
+    return this.request(`/api/v1/projects/${projectId}/scenes`);
   }
 }

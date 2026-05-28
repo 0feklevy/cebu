@@ -2,6 +2,9 @@ import Fastify from 'fastify';
 import multipart from '@fastify/multipart';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
+import { readFile } from 'fs/promises';
+import { join } from 'path';
+import { tmpdir } from 'os';
 import { logger } from './lib/logger.js';
 import { checkDatabaseConnection } from './db/index.js';
 import { getFirebaseAdmin } from './services/firebase.js';
@@ -17,6 +20,7 @@ import { registerAdminSettingsRoutes } from './controllers/admin/v1/settings.con
 import { registerAdminSystemPromptRoutes } from './controllers/admin/v1/system-prompts.controller.js';
 import { registerAdminLlmConfigRoutes } from './controllers/admin/v1/llm-config.controller.js';
 import { registerAdminUsersRoutes } from './controllers/admin/v1/users.controller.js';
+import { firebaseAuthMiddleware } from './middleware/firebase-auth.js';
 
 // Phase 2+ stub routes
 import { registerPhase2StubRoutes } from './controllers/stubs.js';
@@ -51,6 +55,21 @@ async function build() {
     timestamp: new Date().toISOString(),
     version: process.env.npm_package_version ?? '0.1.0',
   }));
+
+  // Local file storage (dev only — active when R2 is not configured)
+  app.get<{ Params: { '*': string } }>(
+    '/local-storage/*',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply) => {
+      const filePath = join(tmpdir(), 'podcast-saas-local-storage', request.params['*']);
+      try {
+        const data = await readFile(filePath);
+        return reply.send(data);
+      } catch {
+        return reply.code(404).send({ message: 'File not found' });
+      }
+    },
+  );
 
   // Register all routes
   await registerPlatformRoutes(app);

@@ -7,12 +7,14 @@ export async function connectSSEStream(
   getToken: () => Promise<string | null>,
   onEvent: (event: StreamEvent) => void,
   onClose?: () => void,
+  streamPath?: string,
 ): Promise<() => void> {
   const token = await getToken();
   const baseURL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
+  const path = streamPath ?? `/api/v1/projects/${projectId}/stream`;
 
   const response = await fetch(
-    `${baseURL}/api/v1/projects/${projectId}/stream`,
+    `${baseURL}${path}`,
     {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     },

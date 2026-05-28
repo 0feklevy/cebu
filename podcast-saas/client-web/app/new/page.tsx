@@ -1,9 +1,5 @@
-import { IntakeForm } from '../../components/IntakeForm';
+import { redirect } from 'next/navigation';
 
 export default function NewPodcastPage() {
-  return (
-    <div className="h-full overflow-hidden bg-background">
-      <IntakeForm />
-    </div>
-  );
+  redirect('/');
 }

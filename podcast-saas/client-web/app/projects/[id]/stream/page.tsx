@@ -1,9 +1,10 @@
 import { SSEProgressView } from '../../../../components/SSEProgressView';
 
-export default function StreamPage({ params }: { params: { id: string } }) {
+export default async function StreamPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   return (
     <div className="h-full overflow-hidden bg-background">
-      <SSEProgressView projectId={params.id} />
+      <SSEProgressView projectId={id} />
     </div>
   );
 }

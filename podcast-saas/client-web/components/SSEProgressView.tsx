@@ -33,6 +33,11 @@ const STAGE_LABELS: Record<SSEStage, string> = {
   script_draft: 'Writing first draft (Pass 1)',
   script_rewrite: 'Dramatic rewrite (Pass 2)',
   script_validate: 'Validating schema (Pass 3)',
+  audio_tts: 'Generating voice lines',
+  audio_assemble: 'Assembling audio',
+  audio_align: 'Aligning transcript',
+  scene_segment: 'Segmenting scenes',
+  camera_plan: 'Planning camera cuts',
 };
 
 export function SSEProgressView({ projectId }: Props) {
@@ -108,6 +113,7 @@ export function SSEProgressView({ projectId }: Props) {
 
           if (event.type === 'done') {
             setDone(true);
+            abortRef.current?.();
             setTimeout(() => router.push(`/projects/${projectId}/script`), 1500);
           }
 

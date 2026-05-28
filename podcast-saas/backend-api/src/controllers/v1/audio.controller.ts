@@ -3,7 +3,7 @@ import { db } from '../../db/index.js';
 import { projects, audio_renders, scenes, camera_plans } from '../../db/schema.js';
 import { eq, and, desc } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
-import { SSEEmitter } from '../../lib/sse.js';
+import { initSSE } from '../../lib/sse.js';
 import { AudioPipeline } from '../../services/audio/AudioPipeline.js';
 import { logger } from '../../lib/logger.js';
 
@@ -39,14 +39,7 @@ export async function registerAudioRoutes(app: FastifyInstance): Promise<void> {
       });
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
-      reply.raw.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no',
-      });
-
-      const sse = new SSEEmitter(reply);
+      const sse = initSSE(reply);
       sse.emit({ type: 'connected', project_id: project.id });
 
       const abortController = new AbortController();
@@ -59,7 +52,7 @@ export async function registerAudioRoutes(app: FastifyInstance): Promise<void> {
         logger.error({ err, projectId: project.id }, 'Audio pipeline error');
         sse.emit({ type: 'error', error_type: 'audio_error', message: msg });
       } finally {
-        reply.raw.end();
+        sse.close();
       }
     },
   );

@@ -5,7 +5,8 @@ import { YouTubeIngester } from './YouTubeIngester.js';
 import { AudioIngester } from './AudioIngester.js';
 import { ImageIngester } from './ImageIngester.js';
 import { DocumentIngester } from './DocumentIngester.js';
-import { R2StorageAdapter } from '../storage/R2StorageAdapter.js';
+import { getStorageAdapter } from '../storage/getStorageAdapter.js';
+import type { StorageService } from '../storage/StorageService.js';
 import { db } from '../../db/index.js';
 import { corpora } from '../../db/schema.js';
 import { eq } from 'drizzle-orm';
@@ -19,7 +20,9 @@ export class CorpusBuilder {
   private audio = new AudioIngester();
   private image = new ImageIngester();
   private document = new DocumentIngester();
-  private storage = new R2StorageAdapter();
+  private get storage(): StorageService {
+    return getStorageAdapter();
+  }
 
   async ingest(
     corpusId: string,
@@ -67,6 +70,7 @@ export class CorpusBuilder {
             600,
           );
           const resp = await fetch(url);
+          if (!resp.ok) throw new Error(`Storage download failed: ${resp.status} ${resp.statusText}`);
           const buf = Buffer.from(await resp.arrayBuffer());
           const filename = corpus.source_url ?? 'file';
           const fileSize = buf.length;

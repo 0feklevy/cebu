@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { Script, DialogueTurn, AudioTag, Emotion } from 'shared';
 import { AudioTagSchema, EmotionSchema } from 'shared';
@@ -34,11 +34,15 @@ export function ScriptEditor({
   versions = [],
 }: Props) {
   const router = useRouter();
+  const savingRef = useRef(false);
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [editText, setEditText] = useState('');
   const [regenHint, setRegenHint] = useState('');
   const [saving, setSaving] = useState(false);
   const [approving, setApproving] = useState(false);
+  const [draftSaving, setDraftSaving] = useState(false);
+  const [draftSaved, setDraftSaved] = useState(false);
+  const [approved, setApproved] = useState(isApproved);
   const [currentVersion, setCurrentVersion] = useState(version);
   const [currentScript, setCurrentScript] = useState(script);
   const [currentTurn, setCurrentTurn] = useState<DialogueTurn | null>(null);
@@ -58,6 +62,8 @@ export function ScriptEditor({
 
   const handleSaveTurn = async () => {
     if (selectedIndex === null || !currentTurn) return;
+    if (savingRef.current) return;
+    savingRef.current = true;
     setSaving(true);
     try {
       const res = await api.updateTurn(projectId, currentVersion, selectedIndex, {
@@ -70,12 +76,15 @@ export function ScriptEditor({
       applyNewVersion(res.new_version, turns);
       setCurrentTurn(turns[selectedIndex]);
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
 
   const handleRegenTurn = async () => {
     if (selectedIndex === null) return;
+    if (savingRef.current) return;
+    savingRef.current = true;
     setSaving(true);
     try {
       const res = await api.regenerateTurn(projectId, currentVersion, selectedIndex, {
@@ -87,12 +96,15 @@ export function ScriptEditor({
       setCurrentTurn(res.turn);
       setEditText(res.turn.text);
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
 
   const handleSwapSpeaker = async () => {
     if (selectedIndex === null || !currentTurn) return;
+    if (savingRef.current) return;
+    savingRef.current = true;
     setSaving(true);
     try {
       const newSpeaker: 'host_a' | 'host_b' = currentTurn.speaker === 'host_a' ? 'host_b' : 'host_a';
@@ -104,6 +116,7 @@ export function ScriptEditor({
       applyNewVersion(res.new_version, turns);
       setCurrentTurn(turns[selectedIndex]);
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -115,7 +128,8 @@ export function ScriptEditor({
     const partA = words.slice(0, mid).join(' ');
     const partB = words.slice(mid).join(' ');
     if (!partA || !partB) return;
-
+    if (savingRef.current) return;
+    savingRef.current = true;
     setSaving(true);
     try {
       const turns = [...currentScript.turns];
@@ -133,6 +147,7 @@ export function ScriptEditor({
       setCurrentTurn(turns[selectedIndex]);
       setEditText(partA);
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -141,7 +156,8 @@ export function ScriptEditor({
     if (selectedIndex === null || !currentTurn) return;
     const nextTurn = currentScript.turns[selectedIndex + 1];
     if (!nextTurn) return;
-
+    if (savingRef.current) return;
+    savingRef.current = true;
     setSaving(true);
     try {
       const merged: DialogueTurn = {
@@ -156,6 +172,7 @@ export function ScriptEditor({
       setCurrentTurn(merged);
       setEditText(merged.text);
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -163,10 +180,41 @@ export function ScriptEditor({
   const handleApprove = async () => {
     setApproving(true);
     try {
-      await api.approveScript(projectId, currentVersion);
-      router.refresh();
+      // Flush any pending turn edit before approving so it isn't lost
+      let versionToApprove = currentVersion;
+      if (selectedIndex !== null && currentTurn && editText !== currentTurn.text) {
+        const turns = [...currentScript.turns];
+        turns[selectedIndex] = { ...currentTurn, text: editText };
+        const res = await api.replaceTurns(projectId, currentVersion, turns);
+        applyNewVersion(res.new_version, turns);
+        setCurrentTurn(turns[selectedIndex]);
+        versionToApprove = res.new_version;
+      }
+      await api.approveScript(projectId, versionToApprove);
+      setApproved(true);
+      router.push(`/projects/${projectId}/studio`);
     } finally {
       setApproving(false);
+    }
+  };
+
+  const handleSaveDraft = async () => {
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setDraftSaving(true);
+    try {
+      // Flush any pending turn edit into the turns array before saving
+      const turns = [...currentScript.turns];
+      if (selectedIndex !== null && currentTurn && editText !== currentTurn.text) {
+        turns[selectedIndex] = { ...currentTurn, text: editText };
+      }
+      const res = await api.replaceTurns(projectId, currentVersion, turns);
+      applyNewVersion(res.new_version, turns);
+      setDraftSaved(true);
+      setTimeout(() => setDraftSaved(false), 2000);
+    } finally {
+      savingRef.current = false;
+      setDraftSaving(false);
     }
   };
 
@@ -191,7 +239,7 @@ export function ScriptEditor({
   const isLastTurn = selectedIndex !== null && selectedIndex === totalTurns - 1;
 
   return (
-    <div className="flex flex-col h-screen bg-background">
+    <div className="flex flex-col h-full bg-background">
       {/* Top bar */}
       <div className="flex items-center justify-between px-6 py-4 border-b border-border gap-4">
         <div className="min-w-0">
@@ -203,7 +251,7 @@ export function ScriptEditor({
 
         <div className="flex items-center gap-3 shrink-0">
           {/* Version history dropdown */}
-          {versions.length > 1 && (
+          {versions.length > 0 && (
             <select
               value={currentVersion}
               onChange={(e) => handleVersionSwitch(parseInt(e.target.value, 10))}
@@ -217,7 +265,17 @@ export function ScriptEditor({
             </select>
           )}
 
-          {isApproved ? (
+          {/* Save Draft */}
+          <button
+            onClick={handleSaveDraft}
+            disabled={draftSaving || approved}
+            title="Save current script state as a new version you can return to"
+            className="px-3 py-1.5 text-sm rounded-lg border border-border text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {draftSaving ? 'Saving…' : draftSaved ? '✓ Saved' : 'Save Draft'}
+          </button>
+
+          {approved ? (
             <span className="text-sm text-green-400 bg-green-400/10 px-3 py-1.5 rounded-lg border border-green-400/20">
               ✓ Approved
             </span>

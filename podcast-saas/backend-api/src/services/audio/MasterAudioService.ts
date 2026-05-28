@@ -1,5 +1,5 @@
 import { spawn } from 'child_process';
-import { writeFile, readFile, unlink, mkdir } from 'fs/promises';
+import { writeFile, readFile, unlink, mkdir, rm } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { randomBytes } from 'crypto';
@@ -48,76 +48,74 @@ export class MasterAudioService {
     const workDir = join(tmpdir(), `audio_${randomBytes(8).toString('hex')}`);
     await mkdir(workDir, { recursive: true });
 
-    // Compute turn offsets accounting for crossfades
-    const turnOffsetMs: number[] = [];
-    let accumulated = 0;
-    for (let i = 0; i < segments.length; i++) {
-      turnOffsetMs.push(accumulated);
-      const overlap = i < segments.length - 1 ? CROSSFADE_MS : 0;
-      accumulated += segments[i].durationMs - overlap;
-    }
-    const totalDurationMs = Math.max(0, accumulated);
+    try {
+      // Compute turn offsets accounting for crossfades
+      const turnOffsetMs: number[] = [];
+      let accumulated = 0;
+      for (let i = 0; i < segments.length; i++) {
+        turnOffsetMs.push(accumulated);
+        const overlap = i < segments.length - 1 ? CROSSFADE_MS : 0;
+        accumulated += segments[i].durationMs - overlap;
+      }
+      const totalDurationMs = Math.max(0, accumulated);
 
-    // Write each turn to a temp file using the correct extension for its format
-    const turnPaths: string[] = [];
-    for (let i = 0; i < segments.length; i++) {
-      const ext = segments[i].audioFormat === 'wav' ? 'wav' : 'mp3';
-      const p = join(workDir, `turn_${i}.${ext}`);
-      await writeFile(p, segments[i].audioBuffer);
-      turnPaths.push(p);
-    }
-
-    const outputPath = join(workDir, 'master.wav');
-
-    if (turnPaths.length === 1) {
-      // Single turn: just normalize
-      await runFfmpeg([
-        '-y', '-i', turnPaths[0],
-        '-af', 'loudnorm=I=-16:TP=-1.5:LRA=11',
-        '-ar', '44100',
-        outputPath,
-      ]);
-    } else {
-      // Build filter_complex for N-way crossfade chain
-      const inputArgs = turnPaths.flatMap((p) => ['-i', p]);
-      const filterParts: string[] = [];
-      let prevLabel = '[0]';
-
-      for (let i = 1; i < turnPaths.length; i++) {
-        const outLabel = i === turnPaths.length - 1 ? '[xout]' : `[x${i}]`;
-        filterParts.push(
-          `${prevLabel}[${i}]acrossfade=d=${CROSSFADE_S}:c1=exp:c2=exp${outLabel}`,
-        );
-        prevLabel = outLabel;
+      // Write each turn to a temp file using the correct extension for its format
+      const turnPaths: string[] = [];
+      for (let i = 0; i < segments.length; i++) {
+        const ext = segments[i].audioFormat === 'wav' ? 'wav' : 'mp3';
+        const p = join(workDir, `turn_${i}.${ext}`);
+        await writeFile(p, segments[i].audioBuffer);
+        turnPaths.push(p);
       }
 
-      const filterComplex = filterParts.join('; ');
-      const loudnormFilter = `[xout]loudnorm=I=-16:TP=-1.5:LRA=11[out]`;
+      const outputPath = join(workDir, 'master.wav');
 
-      await runFfmpeg([
-        '-y',
-        ...inputArgs,
-        '-filter_complex', `${filterComplex}; ${loudnormFilter}`,
-        '-map', '[out]',
-        '-ar', '44100',
-        outputPath,
-      ]);
+      if (turnPaths.length === 1) {
+        // Single turn: just normalize
+        await runFfmpeg([
+          '-y', '-i', turnPaths[0],
+          '-af', 'loudnorm=I=-16:TP=-1.5:LRA=11',
+          '-ar', '44100',
+          outputPath,
+        ]);
+      } else {
+        // Build filter_complex for N-way crossfade chain
+        const inputArgs = turnPaths.flatMap((p) => ['-i', p]);
+        const filterParts: string[] = [];
+        let prevLabel = '[0]';
+
+        for (let i = 1; i < turnPaths.length; i++) {
+          const outLabel = i === turnPaths.length - 1 ? '[xout]' : `[x${i}]`;
+          filterParts.push(
+            `${prevLabel}[${i}]acrossfade=d=${CROSSFADE_S}:c1=exp:c2=exp${outLabel}`,
+          );
+          prevLabel = outLabel;
+        }
+
+        const filterComplex = filterParts.join('; ');
+        const loudnormFilter = `[xout]loudnorm=I=-16:TP=-1.5:LRA=11[out]`;
+
+        await runFfmpeg([
+          '-y',
+          ...inputArgs,
+          '-filter_complex', `${filterComplex}; ${loudnormFilter}`,
+          '-map', '[out]',
+          '-ar', '44100',
+          outputPath,
+        ]);
+      }
+
+      const masterBuffer = await readFile(outputPath);
+
+      logger.info(
+        { turns: segments.length, totalDurationMs, workDir },
+        'Master audio assembled',
+      );
+
+      return { masterBuffer, totalDurationMs, turnOffsetMs };
+    } finally {
+      rm(workDir, { recursive: true, force: true }).catch(() => null);
     }
-
-    const masterBuffer = await readFile(outputPath);
-
-    // Cleanup temp files (non-blocking)
-    void Promise.all([
-      ...turnPaths.map((p) => unlink(p).catch(() => null)),
-      unlink(outputPath).catch(() => null),
-    ]);
-
-    logger.info(
-      { turns: segments.length, totalDurationMs, workDir },
-      'Master audio assembled',
-    );
-
-    return { masterBuffer, totalDurationMs, turnOffsetMs };
   }
 
   // Extract a time-range sub-clip from the master buffer
@@ -132,20 +130,21 @@ export class MasterAudioService {
     const masterPath = join(workDir, 'master.wav');
     const chunkPath = join(workDir, 'chunk.wav');
 
-    await writeFile(masterPath, masterBuffer);
+    try {
+      await writeFile(masterPath, masterBuffer);
 
-    await runFfmpeg([
-      '-y',
-      '-i', masterPath,
-      '-ss', (startMs / 1000).toFixed(3),
-      '-to', (endMs / 1000).toFixed(3),
-      '-c', 'copy',
-      chunkPath,
-    ]);
+      await runFfmpeg([
+        '-y',
+        '-i', masterPath,
+        '-ss', (startMs / 1000).toFixed(3),
+        '-to', (endMs / 1000).toFixed(3),
+        '-c', 'copy',
+        chunkPath,
+      ]);
 
-    const chunk = await readFile(chunkPath);
-    void Promise.all([unlink(masterPath), unlink(chunkPath)]).catch(() => null);
-
-    return chunk;
+      return await readFile(chunkPath);
+    } finally {
+      rm(workDir, { recursive: true, force: true }).catch(() => null);
+    }
   }
 }

@@ -4,11 +4,10 @@ import { db } from '../../db/index.js';
 import { corpora, projects } from '../../db/schema.js';
 import { eq, and } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
-import { R2StorageAdapter } from '../../services/storage/R2StorageAdapter.js';
+import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { CorpusBuilder } from '../../services/ingestion/CorpusBuilder.js';
 import { MARKITDOWN_EXTENSIONS } from '../../services/ingestion/DocumentIngester.js';
-
-const storage = new R2StorageAdapter();
+import { logger } from '../../lib/logger.js';
 
 type FileSourceType = 'pdf' | 'audio' | 'image' | 'document';
 
@@ -47,7 +46,13 @@ export async function registerCorpusRoutes(app: FastifyInstance): Promise<void> 
 
         const sourceType = detectSourceType(filename, mime);
         const storagePath = `projects/${project.id}/corpus/${Date.now()}_${filename}`;
-        const storageUrl = await storage.uploadFile(storagePath, buffer, mime);
+
+        let storageUrl: string;
+        try {
+          storageUrl = await getStorageAdapter().uploadFile(storagePath, buffer, mime);
+        } catch (err) {
+          return reply.code(500).send({ message: `Failed to upload file: ${(err as Error).message}` });
+        }
 
         const [corpus] = await db
           .insert(corpora)
@@ -64,7 +69,7 @@ export async function registerCorpusRoutes(app: FastifyInstance): Promise<void> 
         // Async ingest — don't await
         const builder = new CorpusBuilder();
         builder.ingest(corpus.id).catch((err) => {
-          console.error('Corpus ingest error:', err);
+          logger.error({ err }, 'Corpus ingest failed');
         });
 
         return reply.code(202).send({
@@ -96,7 +101,7 @@ export async function registerCorpusRoutes(app: FastifyInstance): Promise<void> 
         // Async ingest
         const builder = new CorpusBuilder();
         builder.ingest(corpus.id).catch((err) => {
-          console.error('Corpus ingest error:', err);
+          logger.error({ err }, 'Corpus ingest failed');
         });
 
         return reply.code(202).send({

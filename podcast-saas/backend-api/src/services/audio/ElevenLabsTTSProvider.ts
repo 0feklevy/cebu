@@ -46,7 +46,9 @@ export class ElevenLabsTTSProvider implements TTSProvider {
   constructor(
     private readonly apiKey: string,
     private readonly modelId: string = 'eleven_v3',
-  ) {}
+  ) {
+    if (!apiKey) throw new Error('ElevenLabs API key is required');
+  }
 
   async synthesizeTurn(
     turn: DialogueTurn,
