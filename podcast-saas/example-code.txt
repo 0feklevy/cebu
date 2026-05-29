@@ -1,0 +1,1270 @@
+html:
+
+    <div class="legend">
+      <div class="legend-item">
+        <div class="legend-color" style="background: var(--good)"></div>
+        <span>Ballistic path from v0y</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-color" style="background: var(--bad)"></div>
+        <span>Your path</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-color" style="background: var(--warn)"></div>
+        <span>Comparison paths</span>
+      </div>
+    </div>
+
+    <div class="sim-info">
+      <div class="explanation">
+        <strong>What you are seeing</strong>
+        <br>
+        Gravity is constant, g = 9.81 m/s².
+        You control the initial vertical speed v0y.
+        The green curve is the exact projectile trajectory that starts at START with that v0y and lands at END.
+        Time of flight and horizontal speed are derived from the boundary conditions.
+      </div>
+
+      <div class="formula" aria-label="Action formula">
+        <span class="integral">S</span> = <span class="integral">∫</span> L dt = <span class="integral">∫</span> (T - V) dt
+      </div>
+    </div>
+  </section>
+
+  <aside class="controls-panel">
+    <div class="tabs" role="tablist" aria-label="Modes">
+      <button class="tab active" data-mode="draw" type="button">Draw mode</button>
+      <button class="tab" data-mode="compare" type="button">Compare mode</button>
+    </div>
+
+    <div id="draw-mode">
+      <p class="instructions">
+        Drag from START to END. Action is computed using the derived travel time.
+      </p>
+
+      <div class="control-group">
+        <label for="v0y" class="control-label">Vy0</label>
+        <input type="range" id="v0y" min="0" max="20" step="0.1" value="8">
+        <span class="value-unit-group">
+          <span class="value-display" id="v0y-value">8.0</span><span class="unit"> m/s</span>
+        </span>
+      </div>
+
+      <div class="control-group">
+        <label for="mass" class="control-label">Mass</label>
+        <input type="range" id="mass" min="0.1" max="5" step="0.1" value="1">
+        <span class="value-unit-group">
+          <span class="value-display" id="mass-value">1.0</span><span class="unit"> kg</span>
+        </span>
+      </div>
+
+      <div class="control-group">
+        <label for="speed" class="control-label">Simulation speed</label>
+        <input type="range" id="speed" min="0.5" max="1.2" step="0.1" value="1">
+        <span class="value-unit-group">
+          <span class="value-display" id="speed-value">1.0</span><span class="unit">x</span>
+        </span>
+      </div>
+
+      <div class="control-group">
+        <label>Time of flight, derived
+          <span class="value-display" id="time-value">-</span> s
+        </label>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn-primary" id="animate-btn" type="button">Animate</button>
+        <button class="btn-secondary" id="clear-btn" type="button">Clear</button>
+        <button class="btn-success" id="show-optimal-btn" type="button">Show ballistic</button>
+      </div>
+
+      <div class="action-display">
+        <div class="action-grid">
+          <div class="action-card">
+            <div class="action-label">Your action</div>
+            <div class="action-value" id="user-action">Draw a path...</div>
+          </div>
+
+          <div class="action-card">
+            <div class="action-label">Ballistic action</div>
+            <div class="action-value" id="optimal-action">-</div>
+          </div>
+        </div>
+
+        <div class="energy-block">
+          <h3 class="section-title">Energy split along your path</h3>
+          <div class="energy-labels">
+            <span style="color: var(--bad)">Kinetic T</span>
+            <span style="color: var(--accent)">Potential V</span>
+          </div>
+          <div class="energy-bar" aria-label="Energy bar">
+            <div class="ke-bar" id="ke-bar" style="width: 50%"></div>
+            <div class="pe-bar" id="pe-bar" style="width: 50%"></div>
+          </div>
+
+          <div class="lagrangian-row">
+            <span class="muted">Mean Lagrangian, T minus V</span>
+            <span class="value-display" id="lagrangian-value">0.00</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="compare-mode" style="display: none">
+      <p class="instructions">
+        Compare a few fixed families of paths.
+        All are clamped to stay inside the canvas so nothing is cut off.
+      </p>
+
+      <div class="btn-row">
+        <button class="btn-primary" id="compare-paths-btn" type="button">Compute table</button>
+        <button class="btn-secondary" id="animate-comparison-btn" type="button">Animate compare</button>
+      </div>
+
+      <table id="comparison-table" class="comparison-table">
+        <thead>
+          <tr>
+            <th>Path</th>
+            <th>Action</th>
+            <th>Delta</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Straight line</td>
+            <td id="straight-action">-</td>
+            <td>-</td>
+          </tr>
+          <tr>
+            <td>Parabola up</td>
+            <td id="parabola-up-action">-</td>
+            <td>-</td>
+          </tr>
+          <tr>
+            <td>Parabola down</td>
+            <td id="parabola-down-action">-</td>
+            <td>-</td>
+          </tr>
+          <tr>
+            <td>Sine bump</td>
+            <td id="sine-action">-</td>
+            <td>-</td>
+          </tr>
+          <tr class="highlight-row">
+            <td>Ballistic from v0y</td>
+            <td id="true-optimal-action">-</td>
+            <td class="action-current">Reference</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="key-insight">
+        <h3 class="section-title">Key Insight</h3>
+        <p class="insight-text">
+          Nature chooses the path of least action. The green ballistic trajectory minimizes S = ∫(T - V)dt, while all other paths have higher action values.
+        </p>
+      </div>
+    </div>
+  </aside>
+</div>
+
+script.js:const canvas = document.getElementById('canvas')const ctx = canvas.getContext('2d')
+
+let width = 800let height = 500
+
+function setupCanvas() {const dpr = window.devicePixelRatio || 1const rect = canvas.getBoundingClientRect()const canvasWidth = rect.width || 800const canvasHeight = rect.height || 500
+
+canvas.width = Math.round(canvasWidth * dpr)canvas.height = Math.round(canvasHeight * dpr)
+
+ctx.setTransform(1, 0, 0, 1, 0, 0)ctx.scale(dpr, dpr)
+
+canvas.style.width = canvasWidth + 'px'canvas.style.height = canvasHeight + 'px'
+
+width = canvasWidthheight = canvasHeight}
+
+let startPoint = { x: 80, y: 400 }let endPoint = { x: 720, y: 400 }
+
+function initializePoints() {if (!width || !height) return
+
+const padX = Math.min(80, width * 0.1)const padY = Math.min(70, height * 0.12)
+
+startPoint.x = padXstartPoint.y = height - padY
+
+endPoint.x = width - padXendPoint.y = height - padY}
+
+const gravity = 9.81let mass = 1.0let v0y = 8.0
+
+const V0Y_MAX = 20.0
+
+let metersPerPixel = 0.03let totalTime = 0let v0x = 0let hasSolution = true
+
+function computeScale() {const pad = Math.max(18, Math.min(30, height * 0.05))const availableUpPx = Math.max(60, startPoint.y - pad)
+
+const maxHeightMeters = (V0Y_MAX * V0Y_MAX) / (2 * gravity)const scaleFromHeight = maxHeightMeters / availableUpPx
+
+const dxPx = Math.max(200, endPoint.x - startPoint.x)const desiredWidthMeters = 30const scaleFromWidth = desiredWidthMeters / dxPx
+
+return Math.max(scaleFromHeight, scaleFromWidth, 0.02)}
+
+function solveFlightTime(vy0, dy) {const D = vy0 * vy0 - 2 * gravity * dyif (D < 0) return NaN
+
+const s = Math.sqrt(D)const t1 = (vy0 - s) / gravityconst t2 = (vy0 + s) / gravity
+
+const candidates = [t1, t2].filter(t => t > 1e-3 && Number.isFinite(t))if (!candidates.length) return NaN
+
+return Math.max(...candidates)}
+
+function updateDerivedPhysics() {metersPerPixel = computeScale()
+
+const x0 = startPoint.x * metersPerPixelconst y0 = (height - startPoint.y) * metersPerPixelconst x1 = endPoint.x * metersPerPixelconst y1 = (height - endPoint.y) * metersPerPixel
+
+const dx = x1 - x0const dy = y1 - y0
+
+const T = solveFlightTime(v0y, dy)hasSolution = Number.isFinite(T)
+
+if (!hasSolution) {totalTime = 0v0x = 0} else {totalTime = Tv0x = dx / T}
+
+const timeEl = document.getElementById('time-value')if (timeEl) timeEl.textContent = hasSolution ? totalTime.toFixed(2) : 'No solution'}
+
+let userPath = []let isDrawing = falselet showOptimal = falselet showComparison = falselet animationProgress = 0let isAnimating = falselet animationSpeed = 1.0
+
+function clamp(val, lo, hi) {return Math.max(lo, Math.min(hi, val))}
+
+function canvasPointFromEvent(e) {const rect = canvas.getBoundingClientRect()return {x: e.clientX - rect.left,y: e.clientY - rect.top}}
+
+function calculateAction(path) {if (!hasSolution) return Infinityif (path.length < 2) return Infinity
+
+const dt = totalTime / (path.length - 1)const scale = metersPerPixel
+
+let action = 0
+
+for (let i = 0; i < path.length - 1; i++) {const p1 = path[i]const p2 = path[i + 1]
+
+const vx = (p2.x - p1.x) * scale / dt
+const vy = -(p2.y - p1.y) * scale / dt
+
+const v2 = vx * vx + vy * vy
+
+const h = (height - (p1.y + p2.y) / 2) * scale
+
+const T = 0.5 * mass * v2
+const V = mass * gravity * h
+
+action += (T - V) * dt
+
+}
+
+return action}
+
+function generateOptimalPath() {const path = []if (!hasSolution) return path
+
+const n = 120const scale = metersPerPixelconst pad = Math.max(12, Math.min(24, height * 0.04))
+
+const x0 = startPoint.x * scaleconst y0 = (height - startPoint.y) * scale
+
+for (let i = 0; i <= n; i++) {const t = (i / n) * totalTimeconst x = x0 + v0x * tconst y = y0 + v0y * t - 0.5 * gravity * t * t
+
+const py = height - y / scale
+path.push({
+  x: x / scale,
+  y: clamp(py, pad, height - pad)
+})
+
+}
+
+return path}
+
+function calculateOptimalAction() {return calculateAction(generateOptimalPath())}
+
+function updateOptimalActionDisplay() {if (!showOptimal) return
+
+const optimalActionEl = document.getElementById('optimal-action')if (!hasSolution) {optimalActionEl.textContent = '-'optimalActionEl.style.color = ''return}
+
+const optimalAction = calculateOptimalAction()optimalActionEl.textContent = Number.isFinite(optimalAction) ? optimalAction.toFixed(2) + ' J·s' : '-'optimalActionEl.style.color = Number.isFinite(optimalAction) ? 'rgba(22,163,74,0.95)' : '' // Green to match ballistic path}
+
+function updateActionDisplay() {const userActionEl = document.getElementById('user-action')
+
+if (!hasSolution) {userActionEl.textContent = 'No solution'userActionEl.style.color = ''// Update optimal action if ballistic is shownif (showOptimal) {updateOptimalActionDisplay()}return}
+
+if (userPath.length > 10) {const userAction = calculateAction(userPath)userActionEl.textContent = userAction.toFixed(2) + ' J·s'userActionEl.style.color = 'rgba(239,68,68,0.95)' // Red to match user pathupdateEnergyBars()} else {userActionEl.style.color = ''}
+
+// Auto-update optimal action if ballistic is shownupdateOptimalActionDisplay()}
+
+function updateEnergyBars() {if (!hasSolution) returnif (userPath.length < 2) return
+
+const dt = totalTime / (userPath.length - 1)const scale = metersPerPixel
+
+let totalKE = 0let totalPE = 0let sumL = 0
+
+for (let i = 0; i < userPath.length - 1; i++) {const p1 = userPath[i]const p2 = userPath[i + 1]
+
+const vx = (p2.x - p1.x) * scale / dt
+const vy = -(p2.y - p1.y) * scale / dt
+const v2 = vx * vx + vy * vy
+
+const h = (height - (p1.y + p2.y) / 2) * scale
+
+const T = 0.5 * mass * v2
+const V = mass * gravity * h
+
+totalKE += T
+totalPE += V
+sumL += T - V
+
+}
+
+const total = totalKE + totalPEconst kePercent = total > 0 ? (totalKE / total) * 100 : 50const pePercent = total > 0 ? (totalPE / total) * 100 : 50
+
+document.getElementById('ke-bar').style.width = kePercent.toFixed(1) + '%'document.getElementById('pe-bar').style.width = pePercent.toFixed(1) + '%'
+
+const meanL = sumL / (userPath.length - 1)document.getElementById('lagrangian-value').textContent = meanL.toFixed(2)}
+
+function generateStraightPath() {const path = []for (let i = 0; i <= 120; i++) {const t = i / 120path.push({x: startPoint.x + (endPoint.x - startPoint.x) * t,y: startPoint.y + (endPoint.y - startPoint.y) * t})}return path}
+
+function generateParabolaPath(strengthPx) {const path = []const pad = Math.max(12, Math.min(24, height * 0.04))
+
+// For downward parabolas, calculate max allowed amplitude to preserve shapelet actualStrength = strengthPxif (strengthPx < 0) {// Find the midpoint of the baselineconst midBaseY = (startPoint.y + endPoint.y) / 2const maxDownward = height - pad - midBaseY// If the requested downward movement exceeds available space, scale itif (Math.abs(strengthPx) > maxDownward * 0.8) {actualStrength = -maxDownward * 0.8}}
+
+for (let i = 0; i <= 120; i++) {const t = i / 120const x = startPoint.x + (endPoint.x - startPoint.x) * tconst baseY = startPoint.y + (endPoint.y - startPoint.y) * t// Parabola shape: peaks at t=0.5, zero at t=0 and t=1const parabola = actualStrength * 4 * t * (1 - t)const y = clamp(baseY - parabola, pad, height - pad)path.push({ x, y })}return path}
+
+function generateSinePath() {const path = []const pad = Math.max(12, Math.min(24, height * 0.04))const amp = Math.min(height * 0.12, 60)
+
+for (let i = 0; i <= 120; i++) {const t = i / 120const x = startPoint.x + (endPoint.x - startPoint.x) * tconst baseY = startPoint.y + (endPoint.y - startPoint.y) * tconst sine = amp * Math.sin(t * Math.PI)const y = clamp(baseY - sine, pad, height - pad)path.push({ x, y })}return path}
+
+function drawPath(path, color, lineWidth = 2) {if (path.length < 2) return
+
+ctx.beginPath()ctx.moveTo(path[0].x, path[0].y)
+
+for (let i = 1; i < path.length; i++) ctx.lineTo(path[i].x, path[i].y)
+
+ctx.strokeStyle = colorctx.lineWidth = lineWidthctx.stroke()}
+
+function comparePaths() {updateDerivedPhysics()
+
+const bump = Math.min(height * 0.18, 90)
+
+const paths = {straight: generateStraightPath(),parabolaUp: generateParabolaPath(bump),parabolaDown: generateParabolaPath(-bump),sine: generateSinePath()}
+
+const actions = {straight: calculateAction(paths.straight),parabolaUp: calculateAction(paths.parabolaUp),parabolaDown: calculateAction(paths.parabolaDown),sine: calculateAction(paths.sine),optimal: calculateOptimalAction()}
+
+document.getElementById('straight-action').textContent = Number.isFinite(actions.straight) ? actions.straight.toFixed(2) : '-'document.getElementById('parabola-up-action').textContent = Number.isFinite(actions.parabolaUp) ? actions.parabolaUp.toFixed(2) : '-'document.getElementById('parabola-down-action').textContent = Number.isFinite(actions.parabolaDown) ? actions.parabolaDown.toFixed(2) : '-'document.getElementById('sine-action').textContent = Number.isFinite(actions.sine) ? actions.sine.toFixed(2) : '-'document.getElementById('true-optimal-action').textContent = Number.isFinite(actions.optimal) ? actions.optimal.toFixed(2) : '-'
+
+// Color the path names to match their line colorsconst pathNameColors = {'Straight line': 'rgba(100,116,139,0.9)', // Gray'Parabola up': 'rgba(245,158,11,0.9)', // Orange'Parabola down': 'rgba(239,68,68,0.9)', // Red'Sine bump': 'rgba(170,120,255,0.9)', // Purple'Ballistic from v0y': 'rgba(22,163,74,0.95)' // Green}
+
+document.querySelectorAll('.comparison-table tbody tr').forEach(row => {const pathNameCell = row.cells[0]const pathName = pathNameCell.textContent.trim()if (pathNameColors[pathName]) {pathNameCell.style.color = pathNameColors[pathName]pathNameCell.style.fontWeight = '600'}})
+
+const candidates = [actions.straight, actions.parabolaUp, actions.parabolaDown, actions.sine].filter(Number.isFinite)const minAction = candidates.length ? Math.min(...candidates) : Infinity
+
+document.querySelectorAll('.comparison-table tbody tr(.highlight-row)').forEach(row => {const actionCell = row.cells[1]const statusCell = row.cells[2]const actionValue = parseFloat(actionCell.textContent)
+
+if (!Number.isFinite(actionValue) || !Number.isFinite(minAction)) {
+  statusCell.textContent = '-'
+  statusCell.style.color = ''
+  return
+}
+
+if (Math.abs(actionValue - minAction) < 0.1) {
+  statusCell.textContent = 'Lowest'
+  statusCell.style.color = 'var(--good)'
+} else {
+  statusCell.textContent = '+' + (actionValue - minAction).toFixed(1)
+  statusCell.style.color = 'var(--bad)'
+}
+
+})
+
+showOptimal = trueshowComparison = trueredraw()
+
+drawPath(paths.straight, 'rgba(100,116,139,0.9)', 3)drawPath(paths.parabolaUp, 'rgba(245,158,11,0.9)', 3)drawPath(paths.parabolaDown, 'rgba(239,68,68,0.9)', 3)drawPath(paths.sine, 'rgba(170,120,255,0.9)', 3)}
+
+function animatePaths() {animationProgress += 0.02 * animationSpeedif (animationProgress >= 1) {isAnimating = falseanimationProgress = 1}
+
+redraw()if (isAnimating) requestAnimationFrame(animatePaths)}
+
+function animateComparison() {comparePaths()showComparison = trueisAnimating = trueanimationProgress = 0
+
+function tick() {animationProgress += 0.01 * animationSpeedif (animationProgress >= 1) {isAnimating = falseanimationProgress = 1// redraw() will keep paths visible after animation completesredraw()return}
+
+redraw()
+
+const bump = Math.min(height * 0.18, 90)
+
+const paths = {
+  straight: generateStraightPath(),
+  parabolaUp: generateParabolaPath(bump),
+  parabolaDown: generateParabolaPath(-bump),
+  sine: generateSinePath(),
+  optimal: generateOptimalPath()
+}
+
+drawPath(paths.straight, 'rgba(100,116,139,0.9)', 3)
+drawPath(paths.parabolaUp, 'rgba(245,158,11,0.9)', 3)
+drawPath(paths.parabolaDown, 'rgba(239,68,68,0.9)', 3)
+drawPath(paths.sine, 'rgba(170,120,255,0.9)', 3)
+drawPath(paths.optimal, 'rgba(22,163,74,0.95)', 3)
+
+const particleIndex = Math.floor(animationProgress * 120)
+
+const colors = {
+  straight: 'rgba(100,116,139,0.95)',
+  parabolaUp: 'rgba(245,158,11,0.95)',
+  parabolaDown: 'rgba(239,68,68,0.95)',
+  sine: 'rgba(170,120,255,0.95)',
+  optimal: 'rgba(22,163,74,0.95)'
+}
+
+Object.entries(paths).forEach(([name, path]) => {
+  const idx = clamp(particleIndex, 0, path.length - 1)
+  const p = path[idx]
+  ctx.beginPath()
+  ctx.arc(p.x, p.y, 7, 0, Math.PI * 2)
+  ctx.fillStyle = colors[name]
+  ctx.fill()
+  ctx.strokeStyle = 'rgba(0,0,0,0.35)'
+  ctx.lineWidth = 2
+  ctx.stroke()
+})
+
+requestAnimationFrame(tick)
+
+}
+
+tick()}
+
+function redraw() {updateDerivedPhysics()
+
+ctx.clearRect(0, 0, width, height)
+
+ctx.fillStyle = '#f1f5f9'ctx.fillRect(0, 0, width, height)
+
+const arrowAlpha = 0.12ctx.strokeStyle = rgba(0,0,0,${arrowAlpha})ctx.lineWidth = 1
+
+for (let x = 40; x < width; x += 70) {for (let y = 25; y < height - 25; y += 60) {ctx.beginPath()ctx.moveTo(x, y)ctx.lineTo(x, y + 18)ctx.stroke()
+
+  ctx.beginPath()
+  ctx.moveTo(x - 4, y + 13)
+  ctx.lineTo(x, y + 18)
+  ctx.lineTo(x + 4, y + 13)
+  ctx.stroke()
+}
+
+}
+
+ctx.fillStyle = 'rgba(0,0,0,0.55)'ctx.font = '12px system-ui, -apple-system, Segoe UI, sans-serif'const label = hasSolution? g = ${gravity.toFixed(2)} m/s²   v₀y = ${v0y.toFixed(1)} m/s   T = ${totalTime.toFixed(2)} s: g = ${gravity.toFixed(2)} m/s²   v₀y = ${v0y.toFixed(1)} m/s   T = no solutionctx.fillText(label, 12, 18)
+
+ctx.beginPath()ctx.arc(startPoint.x, startPoint.y, 14, 0, Math.PI * 2)ctx.fillStyle = 'rgba(22,163,74,0.95)'ctx.fill()ctx.strokeStyle = 'rgba(0,0,0,0.25)'ctx.lineWidth = 3ctx.stroke()
+
+ctx.beginPath()ctx.arc(endPoint.x, endPoint.y, 14, 0, Math.PI * 2)ctx.fillStyle = 'rgba(239,68,68,0.95)'ctx.fill()ctx.strokeStyle = 'rgba(0,0,0,0.25)'ctx.lineWidth = 3ctx.stroke()
+
+ctx.fillStyle = 'rgba(0,0,0,0.65)'ctx.font = '700 12px system-ui, -apple-system, Segoe UI, sans-serif'ctx.fillText('START', startPoint.x - 22, startPoint.y + 32)ctx.fillText('END', endPoint.x - 12, endPoint.y + 32)
+
+if (showOptimal && hasSolution) {const optimalPath = generateOptimalPath()drawPath(optimalPath, 'rgba(22,163,74,0.95)', 3)
+
+if (isAnimating) {
+  const idx = clamp(Math.floor(animationProgress * (optimalPath.length - 1)), 0, optimalPath.length - 1)
+  const p = optimalPath[idx]
+  ctx.beginPath()
+  ctx.arc(p.x, p.y, 9, 0, Math.PI * 2)
+  ctx.fillStyle = 'rgba(22,163,74,1)'
+  ctx.fill()
+  ctx.strokeStyle = 'rgba(0,0,0,0.35)'
+  ctx.lineWidth = 2
+  ctx.stroke()
+}
+
+}
+
+if (userPath.length > 1) {drawPath(userPath, 'rgba(239,68,68,0.95)', 3)
+
+if (isAnimating) {
+  const idx = clamp(Math.floor(animationProgress * (userPath.length - 1)), 0, userPath.length - 1)
+  const p = userPath[idx]
+  ctx.beginPath()
+  ctx.arc(p.x, p.y, 9, 0, Math.PI * 2)
+  ctx.fillStyle = 'rgba(239,68,68,1)'
+  ctx.fill()
+  ctx.strokeStyle = 'rgba(0,0,0,0.35)'
+  ctx.lineWidth = 2
+  ctx.stroke()
+}
+
+}
+
+// Draw comparison paths if comparison mode is activeif (showComparison && !isAnimating) {const bump = Math.min(height * 0.18, 90)const paths = {straight: generateStraightPath(),parabolaUp: generateParabolaPath(bump),parabolaDown: generateParabolaPath(-bump),sine: generateSinePath()}drawPath(paths.straight, 'rgba(100,116,139,0.9)', 3)drawPath(paths.parabolaUp, 'rgba(245,158,11,0.9)', 3)drawPath(paths.parabolaDown, 'rgba(239,68,68,0.9)', 3)drawPath(paths.sine, 'rgba(170,120,255,0.9)', 3)}
+
+if (userPath.length === 0 && !showOptimal) {ctx.fillStyle = 'rgba(0,0,0,0.5)'ctx.font = '14px system-ui, -apple-system, Segoe UI, sans-serif'ctx.textAlign = 'center'ctx.fillText('Drag from START to draw your path', width / 2, height / 2)ctx.textAlign = 'left'}}
+
+function applyResponsiveTableLabels() {const table = document.getElementById('comparison-table')if (!table) return
+
+const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim())const rows = table.querySelectorAll('tbody tr')
+
+rows.forEach(row => {Array.from(row.children).forEach((cell, i) => {cell.setAttribute('data-label', headers[i] || '')})})}
+
+function wireUI() {const v0ySlider = document.getElementById('v0y')if (v0ySlider) {v0ySlider.addEventListener('input', e => {v0y = parseFloat(e.target.value)document.getElementById('v0y-value').textContent = v0y.toFixed(1)updateDerivedPhysics()updateActionDisplay()updateOptimalActionDisplay() // Auto-update ballistic if shownredraw()})}
+
+document.getElementById('mass').addEventListener('input', e => {mass = parseFloat(e.target.value)document.getElementById('mass-value').textContent = mass.toFixed(1)updateActionDisplay()updateOptimalActionDisplay() // Auto-update ballistic if shownredraw()})
+
+const speedSlider = document.getElementById('speed')if (speedSlider) {speedSlider.addEventListener('input', e => {animationSpeed = parseFloat(e.target.value)document.getElementById('speed-value').textContent = animationSpeed.toFixed(1)})}
+
+document.querySelectorAll('.tab').forEach(tab => {tab.addEventListener('click', () => {document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'))tab.classList.add('active')const mode = tab.dataset.modedocument.getElementById('draw-mode').style.display = mode === 'draw' ? 'block' : 'none'document.getElementById('compare-mode').style.display = mode === 'compare' ? 'block' : 'none'redraw()})})
+
+canvas.addEventListener('mousedown', e => {const p = canvasPointFromEvent(e)if (Math.hypot(p.x - startPoint.x, p.y - startPoint.y) < 30) {isDrawing = trueuserPath = [{ x: startPoint.x, y: startPoint.y }]}})
+
+canvas.addEventListener('mousemove', e => {if (!isDrawing) returnconst p = canvasPointFromEvent(e)const pad = Math.max(12, Math.min(24, height * 0.04))const x = clamp(p.x, pad, width - pad)const y = clamp(p.y, pad, height - pad)userPath.push({ x, y })redraw()})
+
+canvas.addEventListener('mouseup', e => {if (!isDrawing) return
+
+const p = canvasPointFromEvent(e)
+const pad = Math.max(12, Math.min(24, height * 0.04))
+const x = clamp(p.x, pad, width - pad)
+const y = clamp(p.y, pad, height - pad)
+
+userPath.push({ x, y })
+
+if (Math.hypot(x - endPoint.x, y - endPoint.y) < 50) userPath.push({ x: endPoint.x, y: endPoint.y })
+
+isDrawing = false
+updateActionDisplay()
+redraw()
+
+})
+
+canvas.addEventListener('mouseleave', () => {isDrawing = false})
+
+document.getElementById('clear-btn').addEventListener('click', () => {userPath = []showOptimal = falseconst userActionEl = document.getElementById('user-action')const optimalActionEl = document.getElementById('optimal-action')userActionEl.textContent = 'Draw a path...'userActionEl.style.color = ''optimalActionEl.textContent = '-'optimalActionEl.style.color = ''redraw()})
+
+document.getElementById('show-optimal-btn').addEventListener('click', () => {showOptimal = trueupdateOptimalActionDisplay()redraw()})
+
+document.getElementById('animate-btn').addEventListener('click', () => {if (isAnimating) returnisAnimating = trueanimationProgress = 0animatePaths()})
+
+document.getElementById('compare-paths-btn').addEventListener('click', comparePaths)document.getElementById('animate-comparison-btn').addEventListener('click', animateComparison)}
+
+section_5446b5ea-f82c-492b-939f-07d9ef99dd30.htmlAI:
+
+    <div class="legend">
+      <div class="legend-item">
+        <div class="legend-color" style="background: var(--good)"></div>
+        <span>Ballistic path from v0y</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-color" style="background: var(--bad)"></div>
+        <span>Your path</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-color" style="background: var(--warn)"></div>
+        <span>Comparison paths</span>
+      </div>
+    </div>
+
+    <div class="sim-info">
+      <div class="explanation">
+        <strong>What you are seeing</strong>
+        <br>
+        Gravity is constant, g = 9.81 m/s².
+        You control the initial vertical speed v0y.
+        The green curve is the exact projectile trajectory that starts at START with that v0y and lands at END.
+        Time of flight and horizontal speed are derived from the boundary conditions.
+      </div>
+
+      <div class="formula" aria-label="Action formula">
+        <span class="integral">S</span> = <span class="integral">∫</span> L dt = <span class="integral">∫</span> (T - V) dt
+      </div>
+    </div>
+  </section>
+
+  <aside class="controls-panel">
+    <div class="tabs" role="tablist" aria-label="Modes">
+      <button class="tab active" data-mode="draw" type="button">Draw mode</button>
+      <button class="tab" data-mode="compare" type="button">Compare mode</button>
+    </div>
+
+    <div id="draw-mode">
+      <p class="instructions">
+        Drag from START to END. Action is computed using the derived travel time.
+      </p>
+
+      <div class="control-group">
+        <label for="v0y" class="control-label">Vy0</label>
+        <input type="range" id="v0y" min="0" max="20" step="0.1" value="8">
+        <span class="value-unit-group">
+          <span class="value-display" id="v0y-value">8.0</span><span class="unit"> m/s</span>
+        </span>
+      </div>
+
+      <div class="control-group">
+        <label for="mass" class="control-label">Mass</label>
+        <input type="range" id="mass" min="0.1" max="5" step="0.1" value="1">
+        <span class="value-unit-group">
+          <span class="value-display" id="mass-value">1.0</span><span class="unit"> kg</span>
+        </span>
+      </div>
+
+      <div class="control-group">
+        <label for="speed" class="control-label">Simulation speed</label>
+        <input type="range" id="speed" min="0.5" max="1.2" step="0.1" value="1">
+        <span class="value-unit-group">
+          <span class="value-display" id="speed-value">1.0</span><span class="unit">x</span>
+        </span>
+      </div>
+
+      <div class="control-group">
+        <label>Time of flight, derived
+          <span class="value-display" id="time-value">-</span> s
+        </label>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn-primary" id="animate-btn" type="button">Animate</button>
+        <button class="btn-secondary" id="clear-btn" type="button">Clear</button>
+        <button class="btn-success" id="show-optimal-btn" type="button">Show ballistic</button>
+      </div>
+
+      <div class="action-display">
+        <div class="action-grid">
+          <div class="action-card">
+            <div class="action-label">Your action</div>
+            <div class="action-value" id="user-action">Draw a path...</div>
+          </div>
+
+          <div class="action-card">
+            <div class="action-label">Ballistic action</div>
+            <div class="action-value" id="optimal-action">-</div>
+          </div>
+        </div>
+
+        <div class="energy-block">
+          <h3 class="section-title">Energy split along your path</h3>
+          <div class="energy-labels">
+            <span style="color: var(--bad)">Kinetic T</span>
+            <span style="color: var(--accent)">Potential V</span>
+          </div>
+          <div class="energy-bar" aria-label="Energy bar">
+            <div class="ke-bar" id="ke-bar" style="width: 50%"></div>
+            <div class="pe-bar" id="pe-bar" style="width: 50%"></div>
+          </div>
+
+          <div class="lagrangian-row">
+            <span class="muted">Mean Lagrangian, T minus V</span>
+            <span class="value-display" id="lagrangian-value">0.00</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="compare-mode" style="display: none">
+      <p class="instructions">
+        Compare a few fixed families of paths.
+        All are clamped to stay inside the canvas so nothing is cut off.
+      </p>
+
+      <div class="btn-row">
+        <button class="btn-primary" id="compare-paths-btn" type="button">Compute table</button>
+        <button class="btn-secondary" id="animate-comparison-btn" type="button">Animate compare</button>
+      </div>
+
+      <table id="comparison-table" class="comparison-table">
+        <thead>
+          <tr>
+            <th>Path</th>
+            <th>Action</th>
+            <th>Delta</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Straight line</td>
+            <td id="straight-action">-</td>
+            <td>-</td>
+          </tr>
+          <tr>
+            <td>Parabola up</td>
+            <td id="parabola-up-action">-</td>
+            <td>-</td>
+          </tr>
+          <tr>
+            <td>Parabola down</td>
+            <td id="parabola-down-action">-</td>
+            <td>-</td>
+          </tr>
+          <tr>
+            <td>Sine bump</td>
+            <td id="sine-action">-</td>
+            <td>-</td>
+          </tr>
+          <tr class="highlight-row">
+            <td>Ballistic from v0y</td>
+            <td id="true-optimal-action">-</td>
+            <td class="action-current">Reference</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="key-insight">
+        <h3 class="section-title">Key Insight</h3>
+        <p class="insight-text">
+          Nature chooses the path of least action. The green ballistic trajectory minimizes S = ∫(T - V)dt, while all other paths have higher action values.
+        </p>
+      </div>
+    </div>
+  </aside>
+</div>
+
+section_87e2a7ef-80cb-40f5-bc50-6a25d45039a5.htmlAI
+
+    <div class="legend">
+      <div class="legend-item">
+        <div class="legend-color" style="background: var(--good)"></div>
+        <span>Ballistic path from v0y</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-color" style="background: var(--bad)"></div>
+        <span>Your path</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-color" style="background: var(--warn)"></div>
+        <span>Comparison paths</span>
+      </div>
+    </div>
+
+    <div class="sim-info">
+      <div class="explanation">
+        <strong>What you are seeing</strong>
+        <br>
+        Gravity is constant, g = 9.81 m/s².
+        You control the initial vertical speed v0y.
+        The green curve is the exact projectile trajectory that starts at START with that v0y and lands at END.
+        Time of flight and horizontal speed are derived from the boundary conditions.
+      </div>
+
+      <div class="formula" aria-label="Action formula">
+        <span class="integral">S</span> = <span class="integral">∫</span> L dt = <span class="integral">∫</span> (T - V) dt
+      </div>
+    </div>
+  </section>
+
+  <aside class="controls-panel">
+    <div class="tabs" role="tablist" aria-label="Modes">
+      <button class="tab active" data-mode="draw" type="button">Draw mode</button>
+      <button class="tab" data-mode="compare" type="button">Compare mode</button>
+    </div>
+
+    <div id="draw-mode">
+      <p class="instructions">
+        Drag from START to END. Action is computed using the derived travel time.
+      </p>
+
+      <div class="control-group">
+        <label for="v0y" class="control-label">Vy0</label>
+        <input type="range" id="v0y" min="0" max="20" step="0.1" value="8">
+        <span class="value-unit-group">
+          <span class="value-display" id="v0y-value">8.0</span><span class="unit"> m/s</span>
+        </span>
+      </div>
+
+      <div class="control-group">
+        <label for="mass" class="control-label">Mass</label>
+        <input type="range" id="mass" min="0.1" max="5" step="0.1" value="1">
+        <span class="value-unit-group">
+          <span class="value-display" id="mass-value">1.0</span><span class="unit"> kg</span>
+        </span>
+      </div>
+
+      <div class="control-group">
+        <label for="speed" class="control-label">Simulation speed</label>
+        <input type="range" id="speed" min="0.5" max="1.2" step="0.1" value="1">
+        <span class="value-unit-group">
+          <span class="value-display" id="speed-value">1.0</span><span class="unit">x</span>
+        </span>
+      </div>
+
+      <div class="control-group">
+        <label>Time of flight, derived
+          <span class="value-display" id="time-value">-</span> s
+        </label>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn-primary" id="animate-btn" type="button">Animate</button>
+        <button class="btn-secondary" id="clear-btn" type="button">Clear</button>
+        <button class="btn-success" id="show-optimal-btn" type="button">Show ballistic</button>
+      </div>
+
+      <div class="action-display">
+        <div class="action-grid">
+          <div class="action-card">
+            <div class="action-label">Your action</div>
+            <div class="action-value" id="user-action">Draw a path...</div>
+          </div>
+
+          <div class="action-card">
+            <div class="action-label">Ballistic action</div>
+            <div class="action-value" id="optimal-action">-</div>
+          </div>
+        </div>
+
+        <div class="energy-block">
+          <h3 class="section-title">Energy split along your path</h3>
+          <div class="energy-labels">
+            <span style="color: var(--bad)">Kinetic T</span>
+            <span style="color: var(--accent)">Potential V</span>
+          </div>
+          <div class="energy-bar" aria-label="Energy bar">
+            <div class="ke-bar" id="ke-bar" style="width: 50%"></div>
+            <div class="pe-bar" id="pe-bar" style="width: 50%"></div>
+          </div>
+
+          <div class="lagrangian-row">
+            <span class="muted">Mean Lagrangian, T minus V</span>
+            <span class="value-display" id="lagrangian-value">0.00</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="compare-mode" style="display: none">
+      <p class="instructions">
+        Compare a few fixed families of paths.
+        All are clamped to stay inside the canvas so nothing is cut off.
+      </p>
+
+      <div class="btn-row">
+        <button class="btn-primary" id="compare-paths-btn" type="button">Compute table</button>
+        <button class="btn-secondary" id="animate-comparison-btn" type="button">Animate compare</button>
+      </div>
+
+      <table id="comparison-table" class="comparison-table">
+        <thead>
+          <tr>
+            <th>Path</th>
+            <th>Action</th>
+            <th>Delta</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Straight line</td>
+            <td id="straight-action">-</td>
+            <td>-</td>
+          </tr>
+          <tr>
+            <td>Parabola up</td>
+            <td id="parabola-up-action">-</td>
+            <td>-</td>
+          </tr>
+          <tr>
+            <td>Parabola down</td>
+            <td id="parabola-down-action">-</td>
+            <td>-</td>
+          </tr>
+          <tr>
+            <td>Sine bump</td>
+            <td id="sine-action">-</td>
+            <td>-</td>
+          </tr>
+          <tr class="highlight-row">
+            <td>Ballistic from v0y</td>
+            <td id="true-optimal-action">-</td>
+            <td class="action-current">Reference</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="key-insight">
+        <h3 class="section-title">Key Insight</h3>
+        <p class="insight-text">
+          Nature chooses the path of least action. The green ballistic trajectory minimizes S = ∫(T - V)dt, while all other paths have higher action values.
+        </p>
+      </div>
+    </div>
+  </aside>
+</div>
+
+style.css {--bg: #f6f7fb;--panel: #ffffff;--panel-2: #fbfcff;--border: #e6e8f0;--text: #121420;--muted: #596179;--accent: #2563eb;--accent-2: #1d4ed8;--good: #16a34a;--bad: #ef4444;--warn: #f59e0b;--canvas-bg: #f1f5f9;--shadow: 0 14px 40px rgba(10, 20, 40, 0.08);--radius: 14px;}
+
+{margin: 0;padding: 0;box-sizing: border-box;}
+
+html,body {height: 100%;overflow-x: hidden;}
+
+body {font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;background: var(--bg);color: var(--text);padding: clamp(10px, 2vw, 24px);display: flex;flex-direction: column;min-height: 100vh;}
+
+.container {width: 100%;max-width: 1400px;margin: 0 auto;flex: 1;display: flex;flex-direction: column;}
+
+.main-content {display: grid;grid-template-columns: 1fr minmax(280px, 320px);gap: clamp(10px, 2vw, 20px);align-items: stretch;height: 100%;}
+
+@media (min-width: 1400px) {.container {max-width: 1600px;}
+
+.main-content {grid-template-columns: 1fr minmax(320px, 360px);}}
+
+@media (max-width: 900px) {.main-content {grid-template-columns: 1fr;}}
+
+.simulation-panel,.controls-panel {background: var(--panel);border: 1px solid var(--border);border-radius: var(--radius);box-shadow: var(--shadow);padding: clamp(12px, 2vw, 20px);margin: 0;}
+
+canvas {width: 100%;height: auto;display: block;aspect-ratio: 16 / 10;border-radius: 12px;background: var(--canvas-bg);border: 1px solid var(--border);cursor: crosshair;}
+
+.legend {display: flex;flex-wrap: wrap;gap: 10px;margin-top: 14px;}
+
+.legend-item {display: flex;align-items: center;gap: 8px;font-size: clamp(12px, 1.2vw, 13px);color: var(--muted);}
+
+.legend-color {width: 18px;height: 4px;border-radius: 999px;background: var(--muted);opacity: 0.7;}
+
+.explanation {margin-top: 16px;padding: 14px;background: var(--panel-2);border: 1px solid var(--border);border-left: 4px solid var(--accent);border-radius: 12px;color: var(--muted);line-height: 1.55;font-size: clamp(13px, 1.25vw, 14px);}
+
+.formula {margin-top: 14px;padding: 12px;border-radius: 12px;border: 1px solid var(--border);background: var(--panel-2);font-family: ui-serif, Georgia, "Times New Roman", serif;font-size: clamp(16px, 2vw, 18px);text-align: center;overflow-x: auto;}
+
+.formula .integral {font-size: 1.2em;}
+
+.tabs {display: flex;gap: 8px;margin-bottom: 8px;}
+
+.tab {flex: 1;border: 1px solid var(--border);background: var(--panel-2);color: var(--muted);border-radius: 12px;padding: 10px;min-height: 44px;display: flex;align-items: center;justify-content: center;cursor: pointer;user-select: none;transition: background 0.15s, border-color 0.15s, color 0.15s;}
+
+.tab.active {background: rgba(37, 99, 235, 0.08);border-color: rgba(37, 99, 235, 0.35);color: var(--accent);}
+
+.tab:hover(.active) {background: #f3f6ff;}
+
+.instructions {color: var(--muted);font-size: clamp(13px, 1.2vw, 14px);line-height: 1.5;margin-bottom: 12px;margin-top: 0;}
+
+.section-title {font-size: clamp(14px, 1.6vw, 16px);margin-bottom: 12px;color: var(--text);}
+
+.control-group {margin-bottom: 12px;display: flex;align-items: center;gap: clamp(8px, 1.5vw, 12px);flex-wrap: wrap;}
+
+.control-label {display: block;color: var(--muted);font-size: clamp(12px, 1.2vw, 14px);min-width: fit-content;white-space: nowrap;flex-shrink: 0;}
+
+label {display: block;margin-bottom: 8px;color: var(--muted);font-size: clamp(13px, 1.2vw, 14px);}
+
+.value-unit-group {display: inline-flex;align-items: baseline;gap: 0;flex-shrink: 0;white-space: nowrap;}
+
+.value-display {color: var(--text);font-weight: 600;font-variant-numeric: tabular-nums;min-width: fit-content;white-space: nowrap;font-size: clamp(13px, 1.3vw, 15px);}
+
+.unit {color: var(--muted);font-size: clamp(12px, 1.2vw, 14px);white-space: nowrap;}
+
+input[type="range"] {flex: 1;height: 8px;background: #e9edf7;border-radius: 999px;outline: none;appearance: none;}
+
+input[type="range"]::-webkit-slider-thumb {appearance: none;width: 18px;height: 18px;border-radius: 999px;background: var(--accent);border: 2px solid #ffffff;box-shadow: 0 6px 14px rgba(37, 99, 235, 0.25);cursor: pointer;}
+
+button {width: 100%;border: 1px solid transparent;border-radius: 12px;padding: 12px 14px;margin: 6px 0;font-size: 14px;font-weight: 600;cursor: pointer;min-height: 44px;transition: filter 0.15s, transform 0.15s, border-color 0.15s;background: var(--panel-2);color: var(--text);}
+
+button {filter: brightness(0.98);transform: translateY(-1px);}
+
+.btn-primary {background: var(--accent);color: #ffffff;}
+
+.btn-primary {filter: brightness(0.95);}
+
+.btn-secondary {background: var(--panel);border-color: var(--border);}
+
+.btn-success {background: #0ea5e9;color: #ffffff;}
+
+.action-display {background: var(--panel-2);border: 1px solid var(--border);border-radius: 12px;padding: 14px;margin-top: 14px;}
+
+.action-value {font-size: clamp(14px, 1.8vw, 22px);font-weight: 800;text-align: center;margin: clamp(8px, 1.5vw, 10px) 0;line-height: 1.3;word-break: break-word;overflow-wrap: break-word;}
+
+.action-optimal {color: var(--good);}
+
+.action-current {color: var(--warn);}
+
+.energy-labels {display: flex;justify-content: space-between;color: var(--muted);font-size: 12px;}
+
+.energy-bar {height: 18px;border-radius: 10px;overflow: hidden;border: 1px solid var(--border);display: flex;margin-top: 6px;background: #ffffff;}
+
+.ke-bar {background: rgba(239, 68, 68, 0.85);transition: width 0.2s;}
+
+.pe-bar {background: rgba(37, 99, 235, 0.85);transition: width 0.2s;}
+
+.comparison-table {width: 100%;border-collapse: collapse;margin-top: 10px;font-size: 13px;}
+
+.key-insight {margin-top: 20px;padding: 16px;background: var(--panel-2);border: 1px solid var(--border);border-left: 4px solid var(--good);border-radius: 12px;}
+
+.insight-text {color: var(--muted);line-height: 1.6;font-size: clamp(13px, 1.25vw, 14px);margin-bottom: 12px;}
+
+.insight-text {margin-bottom: 0;}
+
+.comparison-table th,.comparison-table td {padding: 10px 8px;border-bottom: 1px solid var(--border);text-align: center;}
+
+.comparison-table th {color: var(--muted);font-weight: 700;}
+
+.highlight-row {background: rgba(22, 163, 74, 0.07);}
+
+@media (max-width: 700px) {.comparison-table thead {display: none;}
+
+.comparison-table,.comparison-table tbody,.comparison-table tr,.comparison-table td {display: block;width: 100%;}
+
+.comparison-table tr {border: 1px solid var(--border);border-radius: 12px;padding: 10px 12px;margin: 10px 0;background: var(--panel);}
+
+.comparison-table td {border: none;padding: 6px 0;display: flex;justify-content: space-between;gap: 12px;text-align: left;}
+
+.comparison-table td::before {content: attr(data-label);color: var(--muted);font-weight: 700;}}
+
+.page {flex: 1;display: flex;flex-direction: column;gap: clamp(10px, 2vw, 18px);min-height: 0;}
+
+body {overflow: hidden;}
+
+.page-header {flex: 0 0 auto;padding: 2px 2px 0 2px;}
+
+.page-title {font-size: clamp(18px, 2.6vw, 28px);letter-spacing: -0.02em;}
+
+.page-subtitle {margin-top: 6px;color: var(--muted);font-size: clamp(13px, 1.4vw, 15px);line-height: 1.45;}
+
+.main-content {flex: 1 1 auto;min-height: 0;}
+
+.simulation-panel,.controls-panel {min-height: 0;overflow: hidden;display: flex;flex-direction: column;gap: 12px;height: 100%;}
+
+.btn-row {display: grid;grid-template-columns: 1fr 1fr 1fr;gap: 10px;margin-top: 4px;}
+
+@media (max-width: 520px) {.btn-row {grid-template-columns: 1fr;}}
+
+.action-grid {display: grid;grid-template-columns: 1fr 1fr;gap: 10px;}
+
+@media (max-width: 520px) {.action-grid {grid-template-columns: 1fr;}}
+
+.action-card {border: 1px solid var(--border);background: #ffffff;border-radius: 12px;padding: 12px;}
+
+.action-label {color: var(--muted);font-size: clamp(11px, 1.1vw, 13px);font-weight: 700;}
+
+.energy-block {margin-top: 10px;}
+
+.lagrangian-row {display: flex;justify-content: space-between;align-items: baseline;gap: 12px;margin-top: 10px;}
+
+.muted {color: var(--muted);font-size: 12px;}
+
+.highlight-row {background: rgba(22, 163, 74, 0.06);}
+
+@media (max-width: 620px) {.comparison-table {border-collapse: separate;border-spacing: 0 10px;}
+
+.comparison-table thead {display: none;}
+
+.comparison-table tbody,.comparison-table tr,.comparison-table td {display: block;width: 100%;}
+
+.comparison-table tr {background: var(--panel-2);border: 1px solid var(--border);border-radius: 12px;padding: 10px 12px;}
+
+.comparison-table td {border: none;padding: 6px 0;text-align: left;display: flex;justify-content: space-between;gap: 12px;}
+
+.comparison-table td::before {content: attr(data-label);color: var(--muted);font-weight: 700;}
+
+.highlight-row td {justify-content: flex-start;}}
+
+@media (max-width: 480px) {.control-group {flex-direction: column;align-items: stretch;gap: 8px;}
+
+.control-label {margin-bottom: 4px;}
+
+input[type="range"] {width: 100%;height: 10px;}
+
+input[type="range"]::-webkit-slider-thumb {width: 22px;height: 22px;}
+
+.value-unit-group {align-self: flex-end;}
+
+.action-value {font-size: clamp(13px, 4vw, 18px);}}
+
+@media (max-width: 360px) {.action-value {font-size: clamp(12px, 4.5vw, 16px);}}
+
+section_5446b5ea-f82c-492b-939f-07d9ef99dd30.jsAI:(function () {'use strict';
+
+// ── SIM_READY: always include exactly this block ──────────────────────────let _ready = false;function _fireReady() {if (_ready) return; _ready = true; window._simReadyFired = true;window.parent?.postMessage({ type: 'SIM_READY' }, '*');}if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _fireReady);else _fireReady();setTimeout(_fireReady, 3000);
+
+// ── Script state ──────────────────────────────────────────────────────────let _cancelFn = null;
+
+function stopScript() {if (_cancelFn) { _cancelFn(); _cancelFn = null; }window._setScriptedMode?.(false);window.setSimSection?.('default');}
+
+function pauseScript() {if (_cancelFn) { _cancelFn(); _cancelFn = null; }window._setScriptedMode?.(false);}
+
+function startScript(name) {stopScript();window._setScriptedMode?.(true);const fn = SCRIPTS[name] ?? SCRIPTS['main'];if (fn) _cancelFn = fn();}
+
+const SCRIPTS = {main: function () {// ── UI simplification ──────────────────────────────────────────────// Hide the "What you are seeing" explanation panel and formuladocument.querySelector('.explanation')?.style.setProperty('display', 'none');document.querySelector('.formula')?.style.setProperty('display', 'none');
+
+  // Hide the tabs row (Draw mode / Compare mode)
+  document.querySelector('.tabs')?.style.setProperty('display', 'none');
+
+  // Make sure draw-mode panel is visible, hide compare-mode
+  const drawMode = document.getElementById('draw-mode');
+  const compareMode = document.getElementById('compare-mode');
+  if (drawMode) drawMode.style.setProperty('display', 'block');
+  if (compareMode) compareMode.style.setProperty('display', 'none');
+
+  // Hide mass control group
+  const massEl = document.getElementById('mass');
+  massEl?.closest('.control-group')?.style.setProperty('display', 'none');
+
+  // Hide speed control group
+  const speedEl = document.getElementById('speed');
+  speedEl?.closest('.control-group')?.style.setProperty('display', 'none');
+
+  // Hide time-of-flight control group
+  const timeEl = document.getElementById('time-value');
+  timeEl?.closest('.control-group')?.style.setProperty('display', 'none');
+  // Also try parent label
+  timeEl?.closest('label')?.style.setProperty('display', 'none');
+
+  // Hide btn-row but keep only clear button visible — rebuild layout
+  const btnRow = document.querySelector('.btn-row');
+  if (btnRow) {
+    const animateBtn = document.getElementById('animate-btn');
+    const showOptimalBtn = document.getElementById('show-optimal-btn');
+    const clearBtn = document.getElementById('clear-btn');
+    animateBtn?.style.setProperty('display', 'none');
+    showOptimalBtn?.style.setProperty('display', 'none');
+    // Keep clear button visible
+    if (clearBtn) {
+      btnRow.style.setProperty('grid-template-columns', '1fr');
+      clearBtn.style.setProperty('display', 'block');
+    }
+  }
+
+  // Hide action display and energy block
+  document.querySelector('.action-display')?.style.setProperty('display', 'none');
+
+  // Hide instructions text
+  document.querySelector('#draw-mode .instructions')?.style.setProperty('display', 'none');
+
+  // Hide legend
+  document.querySelector('.legend')?.style.setProperty('display', 'none');
+
+  // Show the ballistic path
+  window.showOptimal = true;
+
+  // ── Animate v0y slider ─────────────────────────────────────────────
+  const v0yEl = document.getElementById('v0y');
+  const v0yDisplay = document.getElementById('v0y-value');
+
+  if (!v0yEl) return () => {};
+
+  const MIN = 0;
+  const MAX = 20;
+  let current = parseFloat(v0yEl.value) || 8.0;
+  let direction = 1;
+  const STEP = 0.15;
+
+  const intervalId = setInterval(() => {
+    current += direction * STEP;
+
+    if (current >= MAX) {
+      current = MAX;
+      direction = -1;
+    } else if (current <= MIN) {
+      current = MIN;
+      direction = 1;
+    }
+
+    const val = parseFloat(current.toFixed(1));
+    v0yEl.value = String(val);
+    if (v0yDisplay) v0yDisplay.textContent = val.toFixed(1);
+
+    v0yEl.dispatchEvent(new Event('input', { bubbles: true }));
+
+    window.updateDerivedPhysics?.();
+    window.showOptimal = true;
+    window.redraw?.();
+    window.draw?.();
+    window.render?.();
+  }, 60);
+
+  return () => {
+    clearInterval(intervalId);
+  };
+},
+
+};
+
+// ── Public API ────────────────────────────────────────────────────────────window.SimAPI = { start: startScript, stop: stopScript };
+
+// ── postMessage from player ───────────────────────────────────────────────window.addEventListener('message', e => {const { type, script } = e.data || {};if (type === 'startScript')  startScript(script || 'main');if (type === 'stopScript')   stopScript();if (type === 'pauseScript')  pauseScript();if (type === 'PING_SIM_READY' && window._simReadyFired) {window.parent?.postMessage({ type: 'SIM_READY' }, '*');}});
+
+// ── Real user interaction → notify parent ─────────────────────────────────document.addEventListener('pointerdown', () => {window.parent?.postMessage({ type: 'userInteraction' }, '*');}, { capture: true });
+
+})();
+
+section_87e2a7ef-80cb-40f5-bc50-6a25d45039a5.jsAI:(function () {'use strict';
+
+// ── SIM_READY: always include exactly this block ──────────────────────────let _ready = false;function _fireReady() {if (_ready) return; _ready = true; window._simReadyFired = true;window.parent?.postMessage({ type: 'SIM_READY' }, '*');}if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _fireReady);else _fireReady();setTimeout(_fireReady, 3000);
+
+// ── Script state ──────────────────────────────────────────────────────────let _cancelFn = null;
+
+function stopScript() {if (_cancelFn) { _cancelFn(); _cancelFn = null; }window._setScriptedMode?.(false);window.setSimSection?.('default');}
+
+function pauseScript() {if (_cancelFn) { _cancelFn(); _cancelFn = null; }window._setScriptedMode?.(false);}
+
+function startScript(name) {stopScript();window._setScriptedMode?.(true);const fn = SCRIPTS[name] ?? SCRIPTS['main'];if (fn) _cancelFn = fn();}
+
+const SCRIPTS = {main: function () {// ── SimpleUI: hide irrelevant controls ──────────────────────────────// Hide the tabs row entirely (Draw mode / Compare mode)document.querySelector('.tabs')?.style.setProperty('display', 'none');
+
+  // Hide compare-mode panel entirely
+  document.getElementById('compare-mode')?.style.setProperty('display', 'none');
+
+  // Make sure draw-mode is visible
+  document.getElementById('draw-mode')?.style.setProperty('display', 'block');
+
+  // Hide v0y control group
+  const v0yEl = document.getElementById('v0y');
+  v0yEl?.closest('.control-group')?.style.setProperty('display', 'none');
+
+  // Hide speed control group
+  const speedEl = document.getElementById('speed');
+  speedEl?.closest('.control-group')?.style.setProperty('display', 'none');
+
+  // Hide time-of-flight control group
+  const timeValueEl = document.getElementById('time-value');
+  timeValueEl?.closest('.control-group')?.style.setProperty('display', 'none');
+  // Also try the label wrapper (it uses a <label> not a .control-group)
+  if (timeValueEl) {
+    let node = timeValueEl.parentElement;
+    while (node && node.tagName !== 'DIV') node = node.parentElement;
+    if (node && node.classList.contains('control-group')) {
+      node.style.setProperty('display', 'none');
+    }
+  }
+
+  // Hide show-optimal button (not mentioned in prompt)
+  document.getElementById('show-optimal-btn')?.style.setProperty('display', 'none');
+
+  // Hide action display / energy block (not mentioned in prompt)
+  document.querySelector('.action-display')?.style.setProperty('display', 'none');
+
+  // Hide instructions paragraph
+  document.querySelector('#draw-mode .instructions')?.style.setProperty('display', 'none');
+
+  // Keep: mass control group, animate button, clear button
+  // Ensure btn-row still shows only animate and clear (show-optimal already hidden above)
+
+  // ── AutoScript: animate mass slider ──────────────────────────────────
+  const massEl = document.getElementById('mass');
+  if (!massEl) return () => {};
+
+  const minVal = 0.1;
+  const maxVal = 5.0;
+  const step = 0.05;
+  let current = parseFloat(massEl.value) || 1.0;
+  let direction = 1;
+
+  const intervalId = setInterval(() => {
+    current += direction * step;
+    if (current >= maxVal) {
+      current = maxVal;
+      direction = -1;
+    } else if (current <= minVal) {
+      current = minVal;
+      direction = 1;
+    }
+
+    const rounded = Math.round(current * 10) / 10;
+    massEl.value = String(rounded);
+    massEl.dispatchEvent(new Event('input', { bubbles: true }));
+
+    window.updateDerivedPhysics?.();
+    window.redraw?.();
+    window.draw?.();
+    window.render?.();
+  }, 60);
+
+  return () => {
+    clearInterval(intervalId);
+  };
+},
+
+};
+
+// ── Public API ────────────────────────────────────────────────────────────window.SimAPI = { start: startScript, stop: stopScript };
+
+// ── postMessage from player ───────────────────────────────────────────────window.addEventListener('message', e => {const { type, script } = e.data || {};if (type === 'startScript')  startScript(script || 'main');if (type === 'stopScript')   stopScript();if (type === 'pauseScript')  pauseScript();if (type === 'PING_SIM_READY' && window._simReadyFired) {window.parent?.postMessage({ type: 'SIM_READY' }, '*');}});
+
+// ── Real user interaction → notify parent ─────────────────────────────────document.addEventListener('pointerdown', () => {window.parent?.postMessage({ type: 'userInteraction' }, '*');}, { capture: true });
+
+})();
+
+all the ai are the new files

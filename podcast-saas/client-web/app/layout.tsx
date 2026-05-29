@@ -7,14 +7,14 @@ import { PlatformGate } from '../components/PlatformGate';
 const inter = Inter({ subsets: ['latin'] });
 
 export const metadata: Metadata = {
-  title: 'PodcastAI — Generate Two-Host Podcasts',
-  description: 'Turn any idea or document into a broadcast-quality two-host video podcast.',
+  title: 'VideoEditor',
+  description: 'Upload videos, mark sections, build interactive structures.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className="h-full">
-      <body className={`${inter.className} h-full antialiased`}>
+      <body className={`${inter.className} h-full antialiased`} suppressHydrationWarning>
         <FirebaseAuthProvider>
           <PlatformGate>{children}</PlatformGate>
         </FirebaseAuthProvider>

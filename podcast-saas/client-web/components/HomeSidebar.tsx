@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import Link from 'next/link';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/firebase';
@@ -9,18 +9,11 @@ import { HowItWorksDialog } from './HowItWorksDialog';
 import { CreateProjectDialog } from './CreateProjectDialog';
 import type { Project } from 'shared/src/generated/client-v1';
 
-const STATUS_STYLES: Record<string, string> = {
-  draft: 'bg-muted text-muted-foreground',
-  has_videos: 'bg-blue-500/10 text-blue-600',
-  ready: 'bg-emerald-500/10 text-emerald-600',
-  failed: 'bg-destructive/10 text-destructive',
-};
-
-const STATUS_LABELS: Record<string, string> = {
-  draft: 'Draft',
-  has_videos: 'Has videos',
-  ready: 'Ready',
-  failed: 'Failed',
+const STATUS_STYLES: Record<string, { dot: string; label: string }> = {
+  draft:      { dot: '#94a3b8', label: 'Draft' },
+  has_videos: { dot: '#3b82f6', label: 'Has videos' },
+  ready:      { dot: '#10b981', label: 'Ready' },
+  failed:     { dot: '#ef4444', label: 'Failed' },
 };
 
 function timeAgo(dateStr: string): string {
@@ -38,6 +31,134 @@ function projectTitle(p: Project): string {
   return t.length > 50 ? t.slice(0, 50) + '…' : t || 'Untitled';
 }
 
+interface ProjectCardProps {
+  project: Project;
+  onRename: (id: string, newTitle: string) => void;
+  onDelete: (id: string) => void;
+}
+
+function ProjectCard({ project, onRename, onDelete }: ProjectCardProps) {
+  const [isEditing, setIsEditing] = useState(false);
+  const [editValue, setEditValue] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const startEdit = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setEditValue(projectTitle(project));
+    setIsEditing(true);
+    setTimeout(() => { inputRef.current?.focus(); inputRef.current?.select(); }, 50);
+  };
+
+  const commitEdit = useCallback(async () => {
+    if (!isEditing) return;
+    const trimmed = editValue.trim();
+    setIsEditing(false);
+    if (!trimmed || trimmed === projectTitle(project)) return;
+    setSaving(true);
+    try {
+      await api.renameProject(project.id, trimmed);
+      onRename(project.id, trimmed);
+    } catch { /* ignore */ } finally {
+      setSaving(false);
+    }
+  }, [isEditing, editValue, project, onRename]);
+
+  const handleDelete = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!confirmDelete) { setConfirmDelete(true); return; }
+    setDeleting(true);
+    try {
+      await api.deleteProject(project.id);
+      onDelete(project.id);
+    } catch { setDeleting(false); setConfirmDelete(false); }
+  };
+
+  const status = STATUS_STYLES[project.status];
+
+  return (
+    <div
+      className="group relative rounded-lg transition-colors"
+      style={{ backgroundColor: 'transparent' }}
+      onMouseLeave={() => setConfirmDelete(false)}
+    >
+      <a
+        href={`/projects/${project.id}/editor`}
+        className="block px-2 py-2.5 rounded-lg hover:bg-muted/60 transition-colors"
+        style={{ textDecoration: 'none' }}
+      >
+        <div className="flex items-start gap-1.5 mb-1 pr-14">
+          {/* Status dot */}
+          <span
+            className="mt-0.5 shrink-0 inline-block rounded-full"
+            style={{ width: 6, height: 6, backgroundColor: status?.dot ?? '#94a3b8', marginTop: 5 }}
+          />
+          {isEditing ? (
+            <input
+              ref={inputRef}
+              value={editValue}
+              onChange={e => setEditValue(e.target.value)}
+              onBlur={commitEdit}
+              onKeyDown={e => {
+                if (e.key === 'Enter') { e.preventDefault(); commitEdit(); }
+                if (e.key === 'Escape') { setIsEditing(false); }
+              }}
+              onClick={e => e.preventDefault()}
+              className="flex-1 text-xs font-medium bg-background border border-primary/40 rounded px-1.5 py-0.5 outline-none focus:border-primary"
+              style={{ minWidth: 0 }}
+            />
+          ) : (
+            <span className="flex-1 text-xs font-medium text-foreground line-clamp-1" style={{ opacity: saving ? 0.5 : 1 }}>
+              {saving ? editValue : projectTitle(project)}
+            </span>
+          )}
+        </div>
+        <p className="text-[10px] text-muted-foreground pl-[14px]">{timeAgo(project.created_at)}</p>
+      </a>
+
+      {/* Action buttons — visible on hover */}
+      <div
+        className="absolute top-1.5 right-1.5 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+        style={{ pointerEvents: 'auto' }}
+      >
+        {/* Edit / rename */}
+        <button
+          onClick={startEdit}
+          title="Rename"
+          className="w-5 h-5 rounded flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+        >
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+            <path d="M7 1.5l1.5 1.5M1 9h1.5L7.5 3.5 6 2 1 7.5V9z" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+        {/* Delete */}
+        <button
+          onClick={handleDelete}
+          disabled={deleting}
+          title={confirmDelete ? 'Click again to confirm delete' : 'Delete project'}
+          className={`w-5 h-5 rounded flex items-center justify-center transition-colors ${
+            confirmDelete
+              ? 'bg-red-500 text-white'
+              : 'text-muted-foreground hover:text-destructive hover:bg-destructive/10'
+          } disabled:opacity-40`}
+        >
+          {deleting ? (
+            <span style={{ fontSize: 8 }}>…</span>
+          ) : (
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+              <path d="M1.5 3h7M4 3V1.5h2V3M3 3l.5 5.5h3L7 3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          )}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function HomeSidebar() {
   const { loading: authLoading } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
@@ -48,6 +169,14 @@ export function HomeSidebar() {
     if (authLoading) return;
     api.listProjects().then(setProjects).catch(() => null);
   }, [authLoading]);
+
+  const handleRename = useCallback((id: string, newTitle: string) => {
+    setProjects(prev => prev.map(p => p.id === id ? { ...p, title: newTitle } : p));
+  }, []);
+
+  const handleDelete = useCallback((id: string) => {
+    setProjects(prev => prev.filter(p => p.id !== id));
+  }, []);
 
   return (
     <>
@@ -76,18 +205,29 @@ export function HomeSidebar() {
 
         {/* My Projects */}
         <div className="flex-1 overflow-y-auto px-3 pb-3">
-          <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground px-1 mb-2">
-            My Projects
-          </p>
+          <div className="flex items-center justify-between px-1 mb-2">
+            <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+              My Projects
+            </p>
+            {projects.length > 0 && (
+              <span className="text-[10px] text-muted-foreground/60">{projects.length}</span>
+            )}
+          </div>
 
           {authLoading ? (
             <div className="space-y-2">
-              {[1, 2, 3].map((i) => (
+              {[1, 2, 3].map(i => (
                 <div key={i} className="h-14 rounded-lg bg-muted/50 animate-pulse" />
               ))}
             </div>
           ) : projects.length === 0 ? (
-            <div className="text-center py-8 px-2">
+            <div className="text-center py-10 px-2">
+              <div className="w-10 h-10 rounded-xl bg-muted/50 flex items-center justify-center mx-auto mb-3">
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none" className="text-muted-foreground/40">
+                  <rect x="2" y="4" width="14" height="10" rx="2" stroke="currentColor" strokeWidth="1.3" />
+                  <path d="M7 7l4 2-4 2V7z" fill="currentColor" />
+                </svg>
+              </div>
               <p className="text-xs text-muted-foreground mb-3">No projects yet</p>
               <button
                 onClick={() => setCreateOpen(true)}
@@ -97,23 +237,14 @@ export function HomeSidebar() {
               </button>
             </div>
           ) : (
-            <div className="space-y-1">
-              {projects.map((p) => (
-                <a
+            <div className="space-y-0.5">
+              {projects.map(p => (
+                <ProjectCard
                   key={p.id}
-                  href={`/projects/${p.id}/editor`}
-                  className="block px-2 py-2.5 rounded-lg hover:bg-muted/60 transition-colors"
-                >
-                  <div className="flex items-start justify-between gap-1 mb-1">
-                    <span className="text-xs font-medium text-foreground line-clamp-1 flex-1">
-                      {projectTitle(p)}
-                    </span>
-                    <span className={`shrink-0 text-[9px] font-semibold px-1.5 py-0.5 rounded-full ${STATUS_STYLES[p.status] ?? 'bg-muted text-muted-foreground'}`}>
-                      {STATUS_LABELS[p.status] ?? p.status}
-                    </span>
-                  </div>
-                  <p className="text-[10px] text-muted-foreground">{timeAgo(p.created_at)}</p>
-                </a>
+                  project={p}
+                  onRename={handleRename}
+                  onDelete={handleDelete}
+                />
               ))}
             </div>
           )}

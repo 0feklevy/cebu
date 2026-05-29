@@ -1,4 +1,5 @@
-import { writeFile, mkdir, readFile } from 'fs/promises';
+import { writeFile, mkdir, readFile, rm, readdir, stat } from 'fs/promises';
+import { createWriteStream } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import type { StorageService } from './StorageService.js';
@@ -23,16 +24,23 @@ export class LocalStorageAdapter implements StorageService {
     return `${SERVE_BASE}/local-storage/${path}`;
   }
 
-  async uploadStream(path: string, stream: NodeJS.ReadableStream, contentType: string): Promise<string> {
-    const chunks: Buffer[] = [];
-    for await (const chunk of stream) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    }
-    return this.uploadFile(path, Buffer.concat(chunks), contentType);
+  async uploadStream(path: string, stream: NodeJS.ReadableStream, _contentType: string, _contentLength?: number): Promise<string> {
+    const dest = join(BASE_DIR, path);
+    await mkdir(dest.substring(0, dest.lastIndexOf('/')), { recursive: true });
+    await new Promise<void>((resolve, reject) => {
+      const ws = createWriteStream(dest);
+      stream.pipe(ws);
+      ws.on('finish', resolve);
+      ws.on('error', reject);
+      stream.on('error', reject);
+    });
+    return `${SERVE_BASE}/local-storage/${path}`;
   }
 
   async getPresignedDownloadUrl(path: string, _ttlSeconds: number): Promise<string> {
-    return `${SERVE_BASE}/local-storage/${path}`;
+    // /video-raw/* serves with range-request support and no auth requirement,
+    // so the browser's <video> element can stream it directly.
+    return `${SERVE_BASE}/video-raw/${path}`;
   }
 
   async getPresignedUploadUrl(path: string, _contentType: string, _ttlSeconds: number): Promise<string> {
@@ -43,5 +51,49 @@ export class LocalStorageAdapter implements StorageService {
   async deleteFile(path: string): Promise<void> {
     const { unlink } = await import('fs/promises');
     await unlink(join(BASE_DIR, path)).catch(() => null);
+  }
+
+  async deleteWithPrefix(prefix: string): Promise<void> {
+    await rm(join(BASE_DIR, prefix), { recursive: true, force: true });
+  }
+
+  getPublicUrl(path: string): string {
+    // HLS segments are served via the unauthenticated /hls-public/* route
+    return `${SERVE_BASE}/hls-public/${path}`;
+  }
+
+  getSimPublicUrl(path: string): string {
+    // Simulation files served via the unauthenticated /sim-public/* route
+    return `${SERVE_BASE}/sim-public/${path}`;
+  }
+
+  async readObject(key: string): Promise<Buffer> {
+    return readFile(join(BASE_DIR, key));
+  }
+
+  async listObjects(prefix: string): Promise<string[]> {
+    const dir = join(BASE_DIR, prefix);
+    const keys: string[] = [];
+    async function walk(current: string) {
+      let entries: string[];
+      try {
+        entries = await readdir(current);
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        const full = join(current, entry);
+        const s = await stat(full).catch(() => null);
+        if (!s) continue;
+        if (s.isDirectory()) {
+          await walk(full);
+        } else {
+          // Return key relative to BASE_DIR
+          keys.push(full.slice(BASE_DIR.length + 1));
+        }
+      }
+    }
+    await walk(dir);
+    return keys;
   }
 }

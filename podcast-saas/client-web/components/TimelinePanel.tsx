@@ -1,260 +1,1053 @@
 'use client';
 
-import { useRef, useState, useCallback } from 'react';
-import type { VideoFile, TimelineSection } from 'shared/src/generated/client-v1';
+import { useRef, useState, useCallback, useEffect, useLayoutEffect } from 'react';
+import type { VideoFile, TimelineSection, Simulation } from 'shared/src/generated/client-v1';
 import { SectionEditor } from './SectionEditor';
 import { api } from '../lib/api';
 
-const TYPE_COLORS: Record<string, string> = {
-  video: 'bg-blue-500/70 border-blue-500',
-  simulation: 'bg-amber-500/70 border-amber-500',
-  intro: 'bg-emerald-500/70 border-emerald-500',
-  outro: 'bg-violet-500/70 border-violet-500',
-  cut: 'bg-red-500/70 border-red-500',
-  custom: 'bg-gray-400/70 border-gray-400',
+// ─── constants ────────────────────────────────────────────────────────────────
+
+const BROLL_TRACK_H  = 44;
+const VIDEO_TRACK_H  = 52;
+const AUDIO_TRACK_H  = 22;
+const RULER_H        = 20;
+const LABEL_W        = 110;
+const FRAME_W        = 80;
+const FRAME_H        = 45;
+const FRAMES_COUNT   = 20;
+const WAVEFORM_PEAKS = 200;
+const VISUAL_MAX_SEC = 15;
+const MIN_DRAG_PX    = 4;
+const MIN_BROLL_SEC  = 4;   // minimum marked duration for B-roll creation
+const TRIM_ZONE_PX   = 10;
+const MIN_ZOOM       = 2;
+const MAX_ZOOM       = 400;
+
+// ─── section colors ───────────────────────────────────────────────────────────
+
+const TYPE_STYLE: Record<string, { fill: string; border: string; text: string; handle: string }> = {
+  video:      { fill: 'rgba(59,130,246,0.18)',  border: '#3b82f6', text: '#1d4ed8', handle: '#2563eb' },
+  simulation: { fill: 'rgba(245,158,11,0.18)',  border: '#f59e0b', text: '#92400e', handle: '#d97706' },
+  broll:      { fill: 'rgba(6,182,212,0.22)',   border: '#06b6d4', text: '#0e7490', handle: '#0891b2' },
+  intro:      { fill: 'rgba(16,185,129,0.18)',  border: '#10b981', text: '#065f46', handle: '#059669' },
+  outro:      { fill: 'rgba(139,92,246,0.18)',  border: '#8b5cf6', text: '#4c1d95', handle: '#7c3aed' },
+  cut:        { fill: 'rgba(239,68,68,0.18)',   border: '#ef4444', text: '#991b1b', handle: '#dc2626' },
+  custom:     { fill: 'rgba(107,114,128,0.18)', border: '#6b7280', text: '#374151', handle: '#4b5563' },
 };
+const fallbackStyle = TYPE_STYLE.custom;
 
-const TRACK_HEIGHT = 52;
-const MIN_PIXELS_PX = 4;
+// ─── types ────────────────────────────────────────────────────────────────────
 
-interface DragState {
-  videoId: string;
-  startSec: number;
-  curSec: number;
-  trackWidth: number;
-  duration: number;
+type ToolMode = 'video' | 'simulation' | 'broll';
+
+type Interaction =
+  // V1 track
+  | { kind: 'creating'; videoId: string; clipOffset: number; startSec: number; curSec: number; duration: number }
+  | { kind: 'moving';   section: TimelineSection; clipOffset: number; offsetSec: number; duration: number; previewStart: number; previewEnd: number }
+  | { kind: 'trimming'; section: TimelineSection; clipOffset: number; edge: 'start' | 'end'; duration: number; previewStart: number; previewEnd: number }
+  // V2 broll track
+  | { kind: 'broll-creating'; startSec: number; curSec: number }
+  | { kind: 'broll-moving';   section: TimelineSection; dragOffsetSec: number; previewOffset: number }
+  | { kind: 'broll-trimming'; section: TimelineSection; edge: 'start' | 'end'; sourceDuration: number; previewStart: number; previewEnd: number };
+
+// ─── clip model ───────────────────────────────────────────────────────────────
+
+interface ClipWithOffset {
+  video: VideoFile;
+  offset: number;
 }
+
+function buildClips(videos: VideoFile[]): ClipWithOffset[] {
+  const sorted = [...videos].sort(
+    (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+  );
+  let off = 0;
+  return sorted.map(v => {
+    const clip = { video: v, offset: off };
+    off += v.duration_sec ?? 0;
+    return clip;
+  });
+}
+
+function findClipAtGlobalSec(clips: ClipWithOffset[], globalSec: number): ClipWithOffset | null {
+  for (const c of clips) {
+    const end = c.offset + (c.video.duration_sec ?? 0);
+    if (globalSec >= c.offset && globalSec < end) return c;
+  }
+  return clips.length > 0 ? clips[clips.length - 1] : null;
+}
+
+// ─── overlap helpers ──────────────────────────────────────────────────────────
+
+function sortedSections(sections: TimelineSection[], videoId: string) {
+  return sections
+    .filter(s => s.track !== 'broll' && s.video_file_id === videoId)
+    .sort((a, b) => a.start_sec - b.start_sec);
+}
+
+function findGap(sections: TimelineSection[], videoId: string, atSec: number, duration: number): [number, number] | null {
+  const sorted = sortedSections(sections, videoId);
+  if (sorted.some(s => atSec >= s.start_sec && atSec <= s.end_sec)) return null;
+  let gapStart = 0;
+  for (const s of sorted) {
+    if (s.start_sec > atSec) return [gapStart, s.start_sec];
+    gapStart = s.end_sec;
+  }
+  return [gapStart, duration];
+}
+
+function clampMove(sections: TimelineSection[], moved: TimelineSection, newStart: number, duration: number): [number, number] {
+  const dur = moved.end_sec - moved.start_sec;
+  let s = Math.max(0, Math.min(duration - dur, newStart));
+  const e = s + dur;
+  const others = sortedSections(sections, moved.video_file_id).filter(x => x.id !== moved.id);
+  for (const o of others) {
+    if (s < o.end_sec && e > o.start_sec) {
+      const pushRight = o.end_sec;
+      const pushLeft  = o.start_sec - dur;
+      s = Math.abs(newStart - pushRight) < Math.abs(newStart - pushLeft) ? pushRight : pushLeft;
+      s = Math.max(0, Math.min(duration - dur, s));
+    }
+  }
+  return [s, s + dur];
+}
+
+function clampTrim(sections: TimelineSection[], trimmed: TimelineSection, edge: 'start' | 'end', value: number, duration: number): number {
+  const others = sortedSections(sections, trimmed.video_file_id).filter(x => x.id !== trimmed.id);
+  if (edge === 'start') {
+    let min = 0;
+    for (const o of others) if (o.end_sec <= trimmed.start_sec + 0.001) min = Math.max(min, o.end_sec);
+    return Math.max(min, Math.min(trimmed.end_sec - 0.5, value));
+  } else {
+    let max = duration;
+    for (const o of others) if (o.start_sec >= trimmed.end_sec - 0.001) max = Math.min(max, o.start_sec);
+    return Math.min(max, Math.max(trimmed.start_sec + 0.5, value));
+  }
+}
+
+// ─── frame extraction ────────────────────────────────────────────────────────
+
+function useVideoFrames(url: string | null, duration: number) {
+  const [frames, setFrames] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  useEffect(() => {
+    if (!url || duration <= 0) { setFrames([]); setLoading(false); return; }
+    setLoading(true);
+    let aborted = false;
+    const vid = document.createElement('video');
+    vid.crossOrigin = 'anonymous';
+    vid.preload = 'metadata';
+    vid.muted = true;
+    vid.playsInline = true;
+    const canvas = document.createElement('canvas');
+    canvas.width = FRAME_W; canvas.height = FRAME_H;
+    const ctx = canvas.getContext('2d')!;
+    const captured: string[] = [];
+    let i = 0;
+    const captureNext = () => {
+      if (aborted) return;
+      if (i >= FRAMES_COUNT) { setFrames([...captured]); setLoading(false); return; }
+      vid.currentTime = Math.min(((i + 0.5) / FRAMES_COUNT) * duration, duration - 0.01);
+    };
+    vid.addEventListener('loadedmetadata', captureNext);
+    vid.addEventListener('seeked', () => {
+      if (aborted) return;
+      try { ctx.drawImage(vid, 0, 0, FRAME_W, FRAME_H); captured.push(canvas.toDataURL('image/jpeg', 0.6)); }
+      catch { captured.push(''); }
+      i++; captureNext();
+    });
+    vid.addEventListener('error', () => { aborted = true; setLoading(false); });
+    vid.src = url;
+    return () => { aborted = true; vid.src = ''; setLoading(false); };
+  }, [url, duration]);
+  return { frames, loading };
+}
+
+// ─── waveform ────────────────────────────────────────────────────────────────
+
+function parseWaveformPeaks(raw: string | null | undefined): number[] | null {
+  if (!raw) return null;
+  try {
+    const arr = JSON.parse(raw) as number[];
+    return Array.isArray(arr) && arr.length > 0 ? arr : null;
+  } catch { return null; }
+}
+
+function Waveform({ peaks }: { peaks: number[] | null }) {
+  const midY = AUDIO_TRACK_H / 2;
+  if (!peaks || peaks.length === 0) {
+    // Placeholder: deterministic sine-wave bar pattern at low opacity
+    return (
+      <div className="absolute inset-0 overflow-hidden">
+        <svg className="w-full h-full" viewBox={`0 0 200 ${AUDIO_TRACK_H}`} preserveAspectRatio="none">
+          {Array.from({ length: 50 }, (_, i) => {
+            const h = Math.max(1, (Math.abs(Math.sin(i * 0.55)) * 0.6 + 0.15) * (midY - 1));
+            return (
+              <rect key={i} x={i * 4} y={midY - h} width={2.5} height={h * 2}
+                fill="#10b981" fillOpacity="0.25" rx="0.5" />
+            );
+          })}
+        </svg>
+      </div>
+    );
+  }
+  return (
+    <div className="absolute inset-0 overflow-hidden">
+      <svg className="w-full h-full" viewBox={`0 0 ${WAVEFORM_PEAKS} ${AUDIO_TRACK_H}`} preserveAspectRatio="none">
+        <line x1={0} y1={midY} x2={WAVEFORM_PEAKS} y2={midY} stroke="#d1fae5" strokeWidth="0.5" />
+        {peaks.map((p, i) => {
+          const h = Math.max(0.5, p * (midY - 3));
+          return (
+            <line key={i} x1={i + 0.5} y1={midY - h} x2={i + 0.5} y2={midY + h}
+              stroke="#10b981" strokeWidth="0.9" strokeOpacity={0.7} />
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
+function ClipFilmstrip({ videoUrl, duration }: { videoUrl: string | null; duration: number }) {
+  const { frames, loading } = useVideoFrames(videoUrl, duration);
+  if (frames.length === 0) {
+    // Placeholder bars while frames are loading or URL unavailable
+    return (
+      <div className="absolute inset-0 pointer-events-none overflow-hidden" style={{ opacity: 0.45 }}>
+        <div style={{
+          width: '100%', height: '100%',
+          backgroundImage: 'repeating-linear-gradient(90deg, rgba(59,130,246,0.22) 0px, rgba(59,130,246,0.22) 1px, rgba(59,130,246,0.08) 1px, rgba(59,130,246,0.08) 22px)',
+        }} />
+        {loading && (
+          <div style={{ position: 'absolute', top: '50%', left: 6, transform: 'translateY(-50%)', fontSize: 8, color: 'rgba(59,130,246,0.5)', fontWeight: 700, letterSpacing: 2, userSelect: 'none' }}>
+            ···
+          </div>
+        )}
+      </div>
+    );
+  }
+  return (
+    <div className="absolute inset-0 flex pointer-events-none" style={{ opacity: 0.55 }}>
+      {frames.map((src: string, idx: number) => (
+        <div key={idx} className="flex-1 overflow-hidden" style={{ borderRight: '1px solid rgba(0,0,0,0.08)' }}>
+          {src
+            ? <img src={src} className="w-full h-full object-cover" alt="" draggable={false} />
+            : <div className="w-full h-full bg-gray-200" />}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── props ────────────────────────────────────────────────────────────────────
 
 interface Props {
   projectId: string;
   videos: VideoFile[];
   sections: TimelineSection[];
+  simulations: Simulation[];
   playheadSec: number;
   activeVideoId: string | null;
-  onSeek: (sec: number, videoId: string) => void;
-  onSelectVideo: (v: VideoFile) => void;
+  videoUrls: Record<string, string>;
+  onSeek: (globalSec: number) => void;
   onSectionsChange: (sections: TimelineSection[]) => void;
+  onBrollMarkComplete?: (mark: { start: number; end: number }) => void;
+  toolMode: ToolMode;
+  onToolModeChange: (mode: ToolMode) => void;
+  onAddVideo?: () => void;
 }
 
+// ─── main component ───────────────────────────────────────────────────────────
+
 export function TimelinePanel({
-  projectId,
-  videos,
-  sections,
-  playheadSec,
-  activeVideoId,
-  onSeek,
-  onSelectVideo,
-  onSectionsChange,
+  projectId, videos, sections, simulations, playheadSec, activeVideoId, videoUrls,
+  onSeek, onSectionsChange, onBrollMarkComplete,
+  toolMode, onToolModeChange, onAddVideo,
 }: Props) {
-  const trackRefs = useRef<Map<string, HTMLDivElement>>(new Map());
-  const [drag, setDrag] = useState<DragState | null>(null);
+  const scrollRef    = useRef<HTMLDivElement>(null);
+  const interRef     = useRef<Interaction | null>(null);
+  const didMoveRef   = useRef(false);
+  const zoomRef      = useRef(10);
+  const scrollAdjRef = useRef<{ sec: number; mouseX: number } | null>(null);
+
+  const [zoom, setZoom]                   = useState(10);
+  const [interaction, setInteraction]     = useState<Interaction | null>(null);
   const [selectedSection, setSelectedSection] = useState<TimelineSection | null>(null);
-  const [popoverPos, setPopoverPos] = useState<{ x: number; y: number } | null>(null);
 
-  const maxDuration = Math.max(...videos.map((v) => v.duration_sec ?? 60), 60);
+  const mainSections  = sections.filter(s => s.track !== 'broll');
+  const brollSections = sections.filter(s => s.track === 'broll');
+  const hasBroll = brollSections.length > 0 || toolMode === 'broll';
 
-  const secToPercent = (sec: number, duration: number) => (sec / duration) * 100;
+  const clipsWithOffset = buildClips(videos);
+  const totalDuration = Math.max(
+    clipsWithOffset.reduce((s, c) => s + (c.video.duration_sec ?? 0), 0),
+    50,
+  );
 
-  const pixelsToSec = useCallback((pixels: number, trackWidth: number, duration: number) => {
-    return (pixels / trackWidth) * duration;
+  useEffect(() => { zoomRef.current = zoom; }, [zoom]);
+
+  const setInter = useCallback((v: Interaction | null) => { interRef.current = v; setInteraction(v); }, []);
+
+  // ── Fit-to-view on mount ─────────────────────────────────────────────────
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const w = el.clientWidth;
+    if (w > 0 && totalDuration > 0) {
+      const fit = Math.max(MIN_ZOOM, w / totalDuration);
+      zoomRef.current = fit;
+      setZoom(fit);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleTrackMouseDown = (e: React.MouseEvent, video: VideoFile) => {
+  // ── Adjust scroll after zoom ─────────────────────────────────────────────
+  useLayoutEffect(() => {
+    const adj = scrollAdjRef.current;
+    if (adj && scrollRef.current) {
+      scrollRef.current.scrollLeft = adj.sec * zoom - adj.mouseX;
+      scrollAdjRef.current = null;
+    }
+  }, [zoom]);
+
+  // ── Wheel zoom / pan ─────────────────────────────────────────────────────
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const handler = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const factor = e.deltaY < 0 ? 1.18 : 1 / 1.18;
+        const cur = zoomRef.current;
+        const next = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, cur * factor));
+        if (next === cur) return;
+        const rect = el.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const secAtMouse = (mouseX + el.scrollLeft) / cur;
+        scrollAdjRef.current = { sec: secAtMouse, mouseX };
+        zoomRef.current = next;
+        setZoom(next);
+      } else if (e.deltaX === 0 && e.deltaY !== 0) {
+        e.preventDefault();
+        el.scrollLeft += e.deltaY;
+      }
+    };
+    el.addEventListener('wheel', handler, { passive: false });
+    return () => el.removeEventListener('wheel', handler);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── px → global seconds ──────────────────────────────────────────────────
+  const pixelsToGlobalSec = useCallback((clientX: number): number => {
+    const el = scrollRef.current;
+    if (!el) return 0;
+    const rect = el.getBoundingClientRect();
+    const px = clientX - rect.left + el.scrollLeft;
+    return Math.max(0, Math.min(totalDuration, px / zoom));
+  }, [totalDuration, zoom]);
+
+  // ── V1 track mouse down ──────────────────────────────────────────────────
+  const handleTrackMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return;
-    const track = trackRefs.current.get(video.id);
-    if (!track) return;
-    const rect = track.getBoundingClientRect();
-    const startSec = pixelsToSec(e.clientX - rect.left, rect.width, video.duration_sec ?? maxDuration);
-    setDrag({ videoId: video.id, startSec, curSec: startSec, trackWidth: rect.width, duration: video.duration_sec ?? maxDuration });
+    if (toolMode === 'broll') return; // handled by V2 track
+    const globalSec = pixelsToGlobalSec(e.clientX);
+    const clip = findClipAtGlobalSec(clipsWithOffset, globalSec);
+    if (!clip) return;
+    const localSec = Math.max(0, globalSec - clip.offset);
+    const dur = clip.video.duration_sec ?? totalDuration;
+    const gap = findGap(mainSections, clip.video.id, localSec, dur);
+    if (!gap) return;
+    setInter({
+      kind: 'creating',
+      videoId: clip.video.id,
+      clipOffset: clip.offset,
+      startSec: localSec,
+      curSec: localSec,
+      duration: dur,
+    });
     setSelectedSection(null);
     e.preventDefault();
-  };
+  }, [mainSections, clipsWithOffset, totalDuration, pixelsToGlobalSec, setInter, toolMode]);
 
-  const handleMouseMove = useCallback((e: MouseEvent) => {
-    if (!drag) return;
-    const track = trackRefs.current.get(drag.videoId);
-    if (!track) return;
-    const rect = track.getBoundingClientRect();
-    const curSec = Math.max(0, Math.min(drag.duration, pixelsToSec(e.clientX - rect.left, rect.width, drag.duration)));
-    setDrag((d) => d ? { ...d, curSec } : d);
-  }, [drag, pixelsToSec]);
+  // ── V2 broll track mouse down ────────────────────────────────────────────
+  const handleBrollTrackMouseDown = useCallback((e: React.MouseEvent) => {
+    if (e.button !== 0 || toolMode !== 'broll') return;
+    const globalSec = pixelsToGlobalSec(e.clientX);
+    setInter({ kind: 'broll-creating', startSec: globalSec, curSec: globalSec });
+    setSelectedSection(null);
+    e.preventDefault();
+  }, [toolMode, pixelsToGlobalSec, setInter]);
 
-  const handleMouseUp = useCallback(async () => {
-    if (!drag) return;
-    const start_sec = Math.min(drag.startSec, drag.curSec);
-    const end_sec = Math.max(drag.startSec, drag.curSec);
-    const minDuration = pixelsToSec(MIN_PIXELS_PX, drag.trackWidth, drag.duration);
-    if (end_sec - start_sec < minDuration) {
-      setDrag(null);
-      return;
+  // ── V1 section mouse down ────────────────────────────────────────────────
+  const handleSectionMouseDown = useCallback((
+    e: React.MouseEvent,
+    s: TimelineSection,
+    clipOffset: number,
+    mode: 'move' | 'trim-start' | 'trim-end',
+  ) => {
+    if (e.button !== 0) return;
+    const globalSec = pixelsToGlobalSec(e.clientX);
+    const localSec  = globalSec - clipOffset;
+    const dur = videos.find(v => v.id === s.video_file_id)?.duration_sec ?? totalDuration;
+    didMoveRef.current = false;
+    if (mode === 'move') {
+      const offsetSec = localSec - s.start_sec;
+      setInter({ kind: 'moving', section: s, clipOffset, offsetSec, duration: dur, previewStart: s.start_sec, previewEnd: s.end_sec });
+    } else {
+      setInter({ kind: 'trimming', section: s, clipOffset, edge: mode === 'trim-start' ? 'start' : 'end', duration: dur, previewStart: s.start_sec, previewEnd: s.end_sec });
     }
-    try {
-      const section = await api.createSection(projectId, {
-        video_file_id: drag.videoId,
-        start_sec,
-        end_sec,
-        type: 'video',
-      });
-      onSectionsChange([...sections, section]);
-      setSelectedSection(section);
-    } catch { /* ignore */ }
-    setDrag(null);
-  }, [drag, projectId, sections, onSectionsChange, pixelsToSec]);
+    e.preventDefault();
+  }, [videos, totalDuration, pixelsToGlobalSec, setInter]);
 
-  // Attach global mouse events for drag
-  const isDragging = useRef(false);
-  if (drag && !isDragging.current) {
-    isDragging.current = true;
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', () => {
-      isDragging.current = false;
-      window.removeEventListener('mousemove', handleMouseMove);
-      handleMouseUp();
-    }, { once: true });
-  }
+  // ── V2 broll section mouse down ──────────────────────────────────────────
+  const handleBrollSectionMouseDown = useCallback((
+    e: React.MouseEvent,
+    s: TimelineSection,
+    mode: 'move' | 'trim-start' | 'trim-end',
+  ) => {
+    if (e.button !== 0) return;
+    const globalSec = pixelsToGlobalSec(e.clientX);
+    const offset = s.global_offset_sec ?? 0;
+    const sourceDuration = videos.find(v => v.id === s.video_file_id)?.duration_sec ?? (s.end_sec - s.start_sec);
+    didMoveRef.current = false;
+    if (mode === 'move') {
+      setInter({ kind: 'broll-moving', section: s, dragOffsetSec: globalSec - offset, previewOffset: offset });
+    } else {
+      setInter({ kind: 'broll-trimming', section: s, edge: mode === 'trim-start' ? 'start' : 'end', sourceDuration, previewStart: s.start_sec, previewEnd: s.end_sec });
+    }
+    e.preventDefault();
+  }, [pixelsToGlobalSec, setInter, videos]);
 
-  const handleSectionClick = (e: React.MouseEvent, section: TimelineSection) => {
+  // ── Global mouse move / up ───────────────────────────────────────────────
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      const inter = interRef.current;
+      if (!inter) return;
+      const globalSec = pixelsToGlobalSec(e.clientX);
+
+      if (inter.kind === 'creating') {
+        const localSec = Math.max(0, Math.min(inter.duration, globalSec - inter.clipOffset));
+        const cur = toolMode === 'video'
+          ? Math.min(localSec, inter.startSec + VISUAL_MAX_SEC)
+          : localSec;
+        setInter({ ...inter, curSec: cur });
+
+      } else if (inter.kind === 'moving') {
+        const localSec = Math.max(0, Math.min(inter.duration, globalSec - inter.clipOffset));
+        const newStart = localSec - inter.offsetSec;
+        const [ps, pe] = clampMove(mainSections, inter.section, newStart, inter.duration);
+        if (Math.abs(ps - inter.section.start_sec) > 0.05) didMoveRef.current = true;
+        setInter({ ...inter, previewStart: ps, previewEnd: pe });
+
+      } else if (inter.kind === 'trimming') {
+        const localSec = Math.max(0, Math.min(inter.duration, globalSec - inter.clipOffset));
+        const clamped = clampTrim(mainSections, inter.section, inter.edge, localSec, inter.duration);
+        if (inter.edge === 'start' && Math.abs(clamped - inter.section.start_sec) > 0.05) didMoveRef.current = true;
+        if (inter.edge === 'end'   && Math.abs(clamped - inter.section.end_sec)   > 0.05) didMoveRef.current = true;
+        setInter({
+          ...inter,
+          previewStart: inter.edge === 'start' ? clamped : inter.section.start_sec,
+          previewEnd:   inter.edge === 'end'   ? clamped : inter.section.end_sec,
+        });
+
+      } else if (inter.kind === 'broll-creating') {
+        setInter({ ...inter, curSec: Math.max(0, Math.min(totalDuration, globalSec)) });
+
+      } else if (inter.kind === 'broll-moving') {
+        const newOffset = Math.max(0, Math.min(totalDuration - (inter.section.end_sec - inter.section.start_sec), globalSec - inter.dragOffsetSec));
+        if (Math.abs(newOffset - (inter.section.global_offset_sec ?? 0)) > 0.05) didMoveRef.current = true;
+        setInter({ ...inter, previewOffset: newOffset });
+
+      } else if (inter.kind === 'broll-trimming') {
+        const localSec = globalSec - (inter.section.global_offset_sec ?? 0);
+        if (inter.edge === 'start') {
+          const clamped = Math.max(0, Math.min(inter.previewEnd - 1, localSec + (inter.section.global_offset_sec ?? 0) - (inter.section.global_offset_sec ?? 0)));
+          // trim start: clamp between 0 and end_sec - 1
+          const val = Math.max(0, Math.min(inter.section.end_sec - 1, globalSec - (inter.section.global_offset_sec ?? 0) + inter.section.start_sec));
+          const newStart = Math.max(0, Math.min(inter.section.end_sec - 1, val));
+          if (Math.abs(newStart - inter.section.start_sec) > 0.05) didMoveRef.current = true;
+          setInter({ ...inter, previewStart: newStart });
+          void clamped; // suppress unused warning
+        } else {
+          const clipDur = inter.sourceDuration;
+          const val = Math.min(clipDur, Math.max(inter.section.start_sec + 1, globalSec - (inter.section.global_offset_sec ?? 0) + inter.section.start_sec));
+          // simpler: end_sec moves based on delta from mouse
+          const delta = globalSec - ((inter.section.global_offset_sec ?? 0) + (inter.section.end_sec - inter.section.start_sec));
+          const newEnd = Math.min(clipDur, Math.max(inter.section.start_sec + 1, inter.section.end_sec + delta));
+          if (Math.abs(newEnd - inter.section.end_sec) > 0.05) didMoveRef.current = true;
+          setInter({ ...inter, previewEnd: newEnd });
+          void val;
+        }
+      }
+    };
+
+    const onUp = async () => {
+      const inter = interRef.current;
+      if (!inter) return;
+      setInter(null);
+
+      if (inter.kind === 'creating') {
+        const s  = Math.min(inter.startSec, inter.curSec);
+        const en = toolMode === 'video'
+          ? Math.min(Math.max(inter.startSec, inter.curSec), s + VISUAL_MAX_SEC)
+          : Math.max(inter.startSec, inter.curSec);
+        const minSec = MIN_DRAG_PX / zoomRef.current;
+        if (en - s < minSec) return;
+        const gap = findGap(mainSections, inter.videoId, inter.startSec, inter.duration);
+        if (!gap) return;
+        const finalS = Math.max(s, gap[0]);
+        const finalE = Math.min(en, gap[1]);
+        if (finalE - finalS < minSec) return;
+        try {
+          const section = await api.createSection(projectId, {
+            video_file_id: inter.videoId, start_sec: finalS, end_sec: finalE, type: toolMode,
+          });
+          onSectionsChange([...sections, section]);
+          setSelectedSection(section);
+        } catch { /* ignore */ }
+
+      } else if (inter.kind === 'moving') {
+        const { previewStart, previewEnd, section } = inter;
+        if (Math.abs(previewStart - section.start_sec) < 0.01) return;
+        try {
+          const updated = await api.updateSection(projectId, section.id, { start_sec: previewStart, end_sec: previewEnd });
+          onSectionsChange(sections.map(s => s.id === updated.id ? updated : s));
+        } catch { /* ignore */ }
+
+      } else if (inter.kind === 'trimming') {
+        const { previewStart, previewEnd, section } = inter;
+        if (Math.abs(previewStart - section.start_sec) < 0.01 && Math.abs(previewEnd - section.end_sec) < 0.01) return;
+        try {
+          const updated = await api.updateSection(projectId, section.id, { start_sec: previewStart, end_sec: previewEnd });
+          onSectionsChange(sections.map(s => s.id === updated.id ? updated : s));
+        } catch { /* ignore */ }
+
+      } else if (inter.kind === 'broll-creating') {
+        const s  = Math.min(inter.startSec, inter.curSec);
+        const en = Math.max(inter.startSec, inter.curSec);
+        if (en - s < MIN_BROLL_SEC) return; // enforce 4 s minimum
+        onBrollMarkComplete?.({ start: s, end: en });
+
+      } else if (inter.kind === 'broll-moving') {
+        const { previewOffset, section } = inter;
+        if (Math.abs(previewOffset - (section.global_offset_sec ?? 0)) < 0.01) return;
+        try {
+          const updated = await api.updateSection(projectId, section.id, { global_offset_sec: previewOffset });
+          onSectionsChange(sections.map(s => s.id === updated.id ? updated : s));
+        } catch { /* ignore */ }
+
+      } else if (inter.kind === 'broll-trimming') {
+        const { previewStart, previewEnd, section } = inter;
+        if (Math.abs(previewStart - section.start_sec) < 0.01 && Math.abs(previewEnd - section.end_sec) < 0.01) return;
+        try {
+          const updated = await api.updateSection(projectId, section.id, { start_sec: previewStart, end_sec: previewEnd });
+          onSectionsChange(sections.map(s => s.id === updated.id ? updated : s));
+        } catch { /* ignore */ }
+      }
+    };
+
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+  }, [sections, mainSections, toolMode, pixelsToGlobalSec, projectId, onSectionsChange, setInter, onBrollMarkComplete, totalDuration]);
+
+  const handleSectionClick = useCallback((e: React.MouseEvent, s: TimelineSection) => {
     e.stopPropagation();
-    setSelectedSection(section);
-    setPopoverPos({ x: e.clientX, y: e.clientY });
+    if (didMoveRef.current) return;
+    setSelectedSection(s);
+  }, []);
+
+  const handleTrackClick = useCallback((e: React.MouseEvent) => {
+    onSeek(pixelsToGlobalSec(e.clientX));
+  }, [pixelsToGlobalSec, onSeek]);
+
+  // ── Ruler ticks ──────────────────────────────────────────────────────────
+
+  const tickSec  = totalDuration <= 30 ? 1  : totalDuration <= 120 ? 5  : totalDuration <= 600 ? 15  : 60;
+  const majorSec = totalDuration <= 30 ? 5  : totalDuration <= 120 ? 10 : totalDuration <= 600 ? 30  : 120;
+  const fmt = (s: number) => s < 60 ? `${s}s` : `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`;
+  const fmtDur = (s: number) => `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`;
+
+  // ── Section display helper (V1) ──────────────────────────────────────────
+
+  const sectionPos = (s: TimelineSection, clip: ClipWithOffset): { left: string; width: string } | null => {
+    const disp = interaction?.kind === 'moving' && interaction.section.id === s.id
+      ? { start: interaction.previewStart, end: interaction.previewEnd }
+      : interaction?.kind === 'trimming' && interaction.section.id === s.id
+        ? {
+            start: interaction.edge === 'start' ? interaction.previewStart : s.start_sec,
+            end:   interaction.edge === 'end'   ? interaction.previewEnd   : s.end_sec,
+          }
+        : { start: s.start_sec, end: s.end_sec };
+    const leftPx  = (clip.offset + disp.start) * zoom;
+    const widthPx = (disp.end - disp.start) * zoom;
+    if (widthPx <= 0) return null;
+    return { left: `${leftPx}px`, width: `${widthPx}px` };
   };
 
-  const handleTrackClick = (e: React.MouseEvent, video: VideoFile) => {
-    const track = trackRefs.current.get(video.id);
-    if (!track) return;
-    const rect = track.getBoundingClientRect();
-    const sec = pixelsToSec(e.clientX - rect.left, rect.width, video.duration_sec ?? maxDuration);
-    onSeek(sec, video.id);
-    onSelectVideo(video);
+  // ── Broll section display helper (V2) ───────────────────────────────────
+
+  const brollSectionPos = (s: TimelineSection): { left: string; width: string } | null => {
+    let offset = s.global_offset_sec ?? 0;
+    let start  = s.start_sec;
+    let end    = s.end_sec;
+
+    if (interaction?.kind === 'broll-moving' && interaction.section.id === s.id) {
+      offset = interaction.previewOffset;
+    } else if (interaction?.kind === 'broll-trimming' && interaction.section.id === s.id) {
+      start = interaction.previewStart;
+      end   = interaction.previewEnd;
+    }
+
+    const leftPx  = offset * zoom;
+    const widthPx = (end - start) * zoom;
+    if (widthPx <= 0) return null;
+    return { left: `${leftPx}px`, width: `${widthPx}px` };
   };
 
-  const fmt = (s: number) => {
-    const m = Math.floor(s / 60);
-    const sec = Math.floor(s % 60);
-    return `${m}:${sec.toString().padStart(2, '0')}`;
+  const contentWidth = zoom * totalDuration;
+
+  // ── section render helper ────────────────────────────────────────────────
+
+  const renderSectionEl = (
+    s: TimelineSection,
+    pos: { left: string; width: string },
+    clipOffset: number,
+    isBroll: boolean,
+  ) => {
+    const style = TYPE_STYLE[s.type] ?? fallbackStyle;
+    const isSelected = selectedSection?.id === s.id;
+    const getSectionMode = (e: React.MouseEvent, el: HTMLElement): 'move' | 'trim-start' | 'trim-end' => {
+      const r = el.getBoundingClientRect();
+      const x = e.clientX - r.left;
+      if (x <= TRIM_ZONE_PX) return 'trim-start';
+      if (x >= r.width - TRIM_ZONE_PX) return 'trim-end';
+      return 'move';
+    };
+    return (
+      <div
+        key={s.id}
+        className="absolute flex items-center overflow-hidden"
+        style={{
+          top: 5, bottom: 5,
+          left: pos.left,
+          width: pos.width,
+          backgroundColor: style.fill,
+          border: `1.5px solid ${style.border}`,
+          borderRadius: 4,
+          boxShadow: isSelected ? `0 0 0 2px ${style.border}` : '0 1px 3px rgba(0,0,0,0.1)',
+          cursor: 'grab',
+          zIndex: 10,
+          userSelect: 'none',
+          minWidth: 4,
+        }}
+        onMouseDown={e => {
+          e.stopPropagation();
+          const mode = getSectionMode(e, e.currentTarget);
+          if (isBroll) handleBrollSectionMouseDown(e, s, mode);
+          else handleSectionMouseDown(e, s, clipOffset, mode);
+        }}
+        onClick={e => { e.stopPropagation(); handleSectionClick(e, s); }}
+      >
+        <div
+          className="absolute top-0 bottom-0 flex items-center justify-center"
+          style={{ left: 0, width: TRIM_ZONE_PX, cursor: 'ew-resize', zIndex: 2 }}
+          onMouseDown={e => {
+            e.stopPropagation();
+            if (isBroll) handleBrollSectionMouseDown(e, s, 'trim-start');
+            else handleSectionMouseDown(e, s, clipOffset, 'trim-start');
+          }}
+        >
+          <div style={{ width: 2, height: '60%', borderRadius: 1, backgroundColor: style.handle, opacity: 0.7 }} />
+        </div>
+        {s.label && (
+          <span style={{ fontSize: 9, color: style.text, fontWeight: 600, paddingLeft: 14, paddingRight: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {s.label}
+          </span>
+        )}
+        <div
+          className="absolute top-0 bottom-0 flex items-center justify-center"
+          style={{ right: 0, width: TRIM_ZONE_PX, cursor: 'ew-resize', zIndex: 2 }}
+          onMouseDown={e => {
+            e.stopPropagation();
+            if (isBroll) handleBrollSectionMouseDown(e, s, 'trim-end');
+            else handleSectionMouseDown(e, s, clipOffset, 'trim-end');
+          }}
+        >
+          <div style={{ width: 2, height: '60%', borderRadius: 1, backgroundColor: style.handle, opacity: 0.7 }} />
+        </div>
+      </div>
+    );
   };
 
   return (
-    <div className="flex flex-col h-full bg-card border-t border-border overflow-hidden">
-      {/* Time ruler */}
-      <div className="shrink-0 h-6 border-b border-border bg-muted/30 relative overflow-hidden">
-        <div className="absolute inset-0 flex items-center">
-          {Array.from({ length: Math.ceil(maxDuration / 10) + 1 }).map((_, i) => (
-            <div
-              key={i}
-              className="absolute top-0 bottom-0 border-l border-border/50 flex items-end pb-0.5 pl-1"
-              style={{ left: `${(i * 10 / maxDuration) * 100}%` }}
-            >
-              <span className="text-[9px] text-muted-foreground font-mono">{fmt(i * 10)}</span>
-            </div>
-          ))}
+    <div className="flex h-full overflow-hidden bg-white" style={{ fontFamily: 'system-ui, -apple-system, sans-serif' }}>
+
+      {/* ── Tool sidebar ─────────────────────────────────────────────────── */}
+      <div className="shrink-0 w-11 flex flex-col items-center gap-1.5 pt-2 pb-2" style={{ borderRight: '1px solid #e5e7eb', backgroundColor: '#f9fafb' }}>
+        <button
+          onClick={() => onToolModeChange('video')}
+          title="Video section (max 15s)"
+          className="w-8 h-8 rounded-lg flex items-center justify-center transition-all"
+          style={toolMode === 'video'
+            ? { backgroundColor: '#3b82f6', color: '#fff', boxShadow: '0 1px 3px rgba(59,130,246,0.4)' }
+            : { color: '#9ca3af', backgroundColor: 'transparent' }}
+        >
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
+            <rect x="1" y="3" width="13" height="9" rx="2" stroke="currentColor" strokeWidth="1.3" />
+            <path d="M5.5 5.8l4 1.7-4 1.7V5.8z" fill="currentColor" />
+          </svg>
+        </button>
+        <button
+          onClick={() => onToolModeChange('simulation')}
+          title="Simulation section"
+          className="w-8 h-8 rounded-lg flex items-center justify-center transition-all"
+          style={toolMode === 'simulation'
+            ? { backgroundColor: '#f59e0b', color: '#fff', boxShadow: '0 1px 3px rgba(245,158,11,0.4)' }
+            : { color: '#9ca3af', backgroundColor: 'transparent' }}
+        >
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
+            <circle cx="7.5" cy="7.5" r="5.5" stroke="currentColor" strokeWidth="1.3" />
+            <path d="M7.5 4.5v3l2 1.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+          </svg>
+        </button>
+        <button
+          onClick={() => onToolModeChange('broll')}
+          title="B-roll — generate or insert above main track (min 4s)"
+          className="w-8 h-8 rounded-lg flex items-center justify-center transition-all"
+          style={toolMode === 'broll'
+            ? { backgroundColor: '#06b6d4', color: '#fff', boxShadow: '0 1px 3px rgba(6,182,212,0.4)' }
+            : { color: '#9ca3af', backgroundColor: 'transparent' }}
+        >
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
+            <rect x="1" y="1" width="13" height="5" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
+            <rect x="1" y="9" width="13" height="5" rx="1.5" stroke="currentColor" strokeWidth="1.3" opacity="0.4" />
+            <path d="M7.5 7.5v0" stroke="currentColor" strokeWidth="1.3" />
+          </svg>
+        </button>
+        <div style={{ flex: 1 }} />
+        <div
+          title="Ctrl+scroll or pinch to zoom"
+          style={{ fontSize: 7, color: '#9ca3af', fontWeight: 600, letterSpacing: '0.04em', textAlign: 'center', lineHeight: 1.4 }}
+        >
+          {zoom < 10 ? zoom.toFixed(1) : Math.round(zoom)}
+          <br />px/s
         </div>
       </div>
 
-      {/* Tracks */}
-      <div className="flex-1 overflow-y-auto overflow-x-hidden">
-        {videos.length === 0 ? (
-          <div className="flex items-center justify-center h-full text-xs text-muted-foreground">
-            Upload videos to see them here
-          </div>
-        ) : (
-          videos.map((video) => {
-            const duration = video.duration_sec ?? maxDuration;
-            const videoSections = sections.filter((s) => s.video_file_id === video.id);
-            const isActive = activeVideoId === video.id;
-            const playheadLeft = isActive ? `${(playheadSec / duration) * 100}%` : null;
+      {/* ── Fixed label column ───────────────────────────────────────────── */}
+      <div className="shrink-0 flex flex-col" style={{ width: LABEL_W, borderRight: '1px solid #e5e7eb' }}>
+        <div style={{ height: RULER_H, backgroundColor: '#f3f4f6', borderBottom: '1px solid #e5e7eb', flexShrink: 0 }} />
 
-            const dragLeft = drag?.videoId === video.id
-              ? `${secToPercent(Math.min(drag.startSec, drag.curSec), duration)}%`
-              : null;
-            const dragWidth = drag?.videoId === video.id
-              ? `${secToPercent(Math.abs(drag.curSec - drag.startSec), duration)}%`
-              : null;
-
-            return (
+        {videos.length > 0 && (
+          <>
+            {/* V2 label (broll track) */}
+            {hasBroll && (
               <div
-                key={video.id}
-                className={`flex border-b border-border ${isActive ? 'bg-primary/3' : 'bg-background'}`}
-                style={{ height: TRACK_HEIGHT }}
+                className="shrink-0 flex flex-col justify-center px-3 select-none"
+                style={{ height: BROLL_TRACK_H, borderBottom: '1px solid #e5e7eb', backgroundColor: '#ecfeff' }}
               >
-                {/* Label */}
-                <div
-                  className="shrink-0 w-32 px-2 flex flex-col justify-center border-r border-border cursor-pointer hover:bg-muted/40 transition-colors"
-                  onClick={() => onSelectVideo(video)}
-                >
-                  <p className="text-[10px] font-medium text-foreground truncate">{video.filename}</p>
-                  {video.duration_sec && (
-                    <p className="text-[9px] text-muted-foreground">{fmt(video.duration_sec)}</p>
-                  )}
-                </div>
-
-                {/* Track area */}
-                <div
-                  ref={(el) => { if (el) trackRefs.current.set(video.id, el); }}
-                  className="flex-1 relative cursor-crosshair select-none"
-                  onMouseDown={(e) => handleTrackMouseDown(e, video)}
-                  onClick={(e) => handleTrackClick(e, video)}
-                >
-                  {/* Sections */}
-                  {videoSections.map((s) => (
-                    <div
-                      key={s.id}
-                      className={`absolute top-2 bottom-2 rounded border opacity-80 hover:opacity-100 cursor-pointer transition-opacity flex items-center px-1 overflow-hidden ${TYPE_COLORS[s.type] ?? 'bg-gray-400/70 border-gray-400'} ${selectedSection?.id === s.id ? 'ring-2 ring-white' : ''}`}
-                      style={{
-                        left: `${secToPercent(s.start_sec, duration)}%`,
-                        width: `${secToPercent(s.end_sec - s.start_sec, duration)}%`,
-                      }}
-                      onClick={(e) => handleSectionClick(e, s)}
-                    >
-                      {s.label && (
-                        <span className="text-[9px] text-white font-medium truncate">{s.label}</span>
-                      )}
-                    </div>
-                  ))}
-
-                  {/* Drag preview */}
-                  {dragLeft && dragWidth && (
-                    <div
-                      className="absolute top-2 bottom-2 rounded border bg-primary/40 border-primary pointer-events-none"
-                      style={{ left: dragLeft, width: dragWidth }}
-                    />
-                  )}
-
-                  {/* Playhead */}
-                  {playheadLeft && (
-                    <div
-                      className="absolute top-0 bottom-0 w-px bg-red-500 pointer-events-none z-10"
-                      style={{ left: playheadLeft }}
-                    />
-                  )}
-                </div>
+                <span style={{ fontSize: 9, fontWeight: 700, color: '#0891b2', letterSpacing: '0.08em', textTransform: 'uppercase' }}>V2</span>
+                <span style={{ fontSize: 8, color: '#06b6d4', marginTop: 2 }}>B-Roll</span>
               </div>
-            );
-          })
+            )}
+
+            {/* V1 label */}
+            <div
+              className="shrink-0 flex flex-col justify-center px-3 select-none"
+              style={{ height: VIDEO_TRACK_H, borderBottom: '1px solid #e5e7eb', backgroundColor: '#fafafa' }}
+            >
+              <div className="flex items-center gap-1.5 mb-0.5">
+                <span style={{ fontSize: 9, fontWeight: 700, color: '#9ca3af', letterSpacing: '0.08em', textTransform: 'uppercase' }}>V1</span>
+                {videos.length > 1 && (
+                  <span style={{ fontSize: 8, color: '#6366f1', fontWeight: 600 }}>{videos.length} clips</span>
+                )}
+              </div>
+              <p style={{ fontSize: 9, color: '#9ca3af', fontFamily: 'monospace' }}>{fmtDur(totalDuration)}</p>
+            </div>
+
+            {/* A1 label */}
+            <div
+              className="shrink-0 flex items-center px-3"
+              style={{ height: AUDIO_TRACK_H, backgroundColor: '#f0fdf4' }}
+            >
+              <span style={{ fontSize: 9, fontWeight: 700, color: '#6ee7b7', letterSpacing: '0.08em', textTransform: 'uppercase' }}>A1</span>
+            </div>
+          </>
         )}
       </div>
 
-      {/* Section editor popover */}
-      {selectedSection && popoverPos && (
-        <div
-          className="fixed z-50"
-          style={{ left: Math.min(popoverPos.x, window.innerWidth - 310), top: Math.min(popoverPos.y - 20, window.innerHeight - 420) }}
-        >
-          <SectionEditor
-            section={selectedSection}
-            projectId={projectId}
-            onUpdate={(updated) => {
-              onSectionsChange(sections.map((s) => (s.id === updated.id ? updated : s)));
-              setSelectedSection(updated);
-            }}
-            onDelete={(id) => {
-              onSectionsChange(sections.filter((s) => s.id !== id));
-              setSelectedSection(null);
-              setPopoverPos(null);
-            }}
-            onClose={() => { setSelectedSection(null); setPopoverPos(null); }}
-          />
+      {/* ── Scrollable track area ────────────────────────────────────────── */}
+      <div
+        ref={scrollRef}
+        className="flex-1"
+        style={{ overflowX: 'auto', overflowY: 'hidden' }}
+      >
+        <div style={{ width: `${contentWidth}px`, minWidth: '100%', position: 'relative' }}>
+
+          {/* ── Ruler ─────────────────────────────────────────────────────── */}
+          <div
+            className="select-none"
+            style={{ height: RULER_H, position: 'relative', backgroundColor: '#f3f4f6', borderBottom: '1px solid #e5e7eb' }}
+          >
+            {Array.from({ length: Math.ceil(totalDuration / tickSec) + 1 }, (_, i) => {
+              const sec = i * tickSec;
+              const isMajor = sec % majorSec === 0;
+              return (
+                <div key={i} className="absolute bottom-0" style={{ left: `${sec * zoom}px` }}>
+                  <div style={{ width: 1, height: isMajor ? 10 : 5, backgroundColor: isMajor ? '#9ca3af' : '#d1d5db' }} />
+                  {isMajor && (
+                    <span style={{ position: 'absolute', bottom: 11, left: 3, fontSize: 9, color: '#6b7280', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                      {fmt(sec)}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* ── Tracks ────────────────────────────────────────────────────── */}
+          {videos.length === 0 ? (
+            <div className="flex flex-col items-center justify-center gap-2" style={{ height: VIDEO_TRACK_H + AUDIO_TRACK_H, color: '#9ca3af' }}>
+              <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+                <rect x="2" y="6" width="28" height="20" rx="3" stroke="#d1d5db" strokeWidth="1.5" />
+                <path d="M12 12l8 4-8 4V12z" fill="#d1d5db" />
+              </svg>
+              <span className="text-xs font-medium">Upload a video to get started</span>
+            </div>
+          ) : (
+            <>
+              {/* ── V2 BROLL TRACK ─────────────────────────────────────── */}
+              {hasBroll && (
+                <div
+                  style={{
+                    height: BROLL_TRACK_H,
+                    position: 'relative',
+                    backgroundColor: toolMode === 'broll' ? '#ecfeff' : '#f7feff',
+                    borderBottom: '1px solid #cffafe',
+                    cursor: toolMode === 'broll' ? 'crosshair' : 'default',
+                  }}
+                  onMouseDown={handleBrollTrackMouseDown}
+                  onClick={handleTrackClick}
+                >
+                  {/* Broll clip backgrounds */}
+                  {brollSections.map(s => {
+                    const pos = brollSectionPos(s);
+                    if (!pos) return null;
+                    const vidUrl = videoUrls[s.video_file_id] ?? null;
+                    const dur = s.end_sec - s.start_sec;
+                    return (
+                      <div key={`bg-${s.id}`} className="absolute top-0 bottom-0 pointer-events-none"
+                        style={{ left: pos.left, width: pos.width, backgroundColor: 'rgba(6,182,212,0.08)' }}>
+                        <ClipFilmstrip videoUrl={vidUrl} duration={dur} />
+                      </div>
+                    );
+                  })}
+
+                  {/* Broll section elements */}
+                  {brollSections.map(s => {
+                    const pos = brollSectionPos(s);
+                    if (!pos) return null;
+                    return renderSectionEl(s, pos, 0, true);
+                  })}
+
+                  {/* Broll creation preview */}
+                  {interaction?.kind === 'broll-creating' && (() => {
+                    const cs = Math.min(interaction.startSec, interaction.curSec);
+                    const ce = Math.max(interaction.startSec, interaction.curSec);
+                    const dur = ce - cs;
+                    const isEnough = dur >= MIN_BROLL_SEC;
+                    return (
+                      <>
+                        <div
+                          className="absolute pointer-events-none"
+                          style={{
+                            top: 5, bottom: 5,
+                            left: `${cs * zoom}px`,
+                            width: `${(ce - cs) * zoom}px`,
+                            backgroundColor: isEnough ? 'rgba(6,182,212,0.25)' : 'rgba(239,68,68,0.15)',
+                            border: `1.5px dashed ${isEnough ? '#06b6d4' : '#ef4444'}`,
+                            borderRadius: 4,
+                            zIndex: 11,
+                          }}
+                        />
+                        {/* Duration label */}
+                        <div
+                          className="absolute pointer-events-none"
+                          style={{
+                            top: 6, left: `${cs * zoom + 4}px`,
+                            fontSize: 9, fontWeight: 700,
+                            color: isEnough ? '#0891b2' : '#ef4444',
+                            background: 'rgba(255,255,255,0.8)',
+                            padding: '1px 4px', borderRadius: 3, zIndex: 12,
+                          }}
+                        >
+                          {dur.toFixed(1)}s{!isEnough && ' (min 4s)'}
+                        </div>
+                      </>
+                    );
+                  })()}
+
+                  {/* Playhead */}
+                  <div
+                    className="absolute top-0 bottom-0 pointer-events-none"
+                    style={{ left: `${playheadSec * zoom}px`, width: 2, backgroundColor: '#ef4444', opacity: 0.6, zIndex: 20 }}
+                  />
+                </div>
+              )}
+
+              {/* ── V1 VIDEO TRACK ─────────────────────────────────────── */}
+              <div
+                style={{ height: VIDEO_TRACK_H, position: 'relative', backgroundColor: '#f9fafb', borderBottom: '1px solid #e5e7eb', cursor: 'crosshair' }}
+                onMouseDown={handleTrackMouseDown}
+                onClick={handleTrackClick}
+              >
+                <div className="absolute inset-0 pointer-events-none" style={{ backgroundImage: 'repeating-linear-gradient(90deg, rgba(0,0,0,0.04) 0px, rgba(0,0,0,0.04) 1px, transparent 1px, transparent 60px)' }} />
+
+                {clipsWithOffset.map(c => {
+                  const wPx = (c.video.duration_sec ?? 0) * zoom;
+                  const lPx = c.offset * zoom;
+                  return (
+                    <div
+                      key={c.video.id}
+                      className="absolute top-0 bottom-0"
+                      style={{ left: `${lPx}px`, width: `${wPx}px`, backgroundColor: activeVideoId === c.video.id ? '#e0f2fe' : '#f0f7ff' }}
+                    >
+                      <ClipFilmstrip videoUrl={videoUrls[c.video.id] ?? null} duration={c.video.duration_sec ?? 0} />
+                    </div>
+                  );
+                })}
+
+                {clipsWithOffset.slice(1).map((c, i) => (
+                  <div
+                    key={c.video.id}
+                    className="absolute top-0 bottom-0 pointer-events-none"
+                    style={{ left: `${c.offset * zoom}px`, width: 2, backgroundColor: '#6366f1', zIndex: 15 }}
+                  >
+                    <div style={{
+                      position: 'absolute', top: 4, left: 3,
+                      fontSize: 8, fontWeight: 700, color: '#6366f1',
+                      backgroundColor: '#eef2ff', border: '1px solid #c7d2fe',
+                      borderRadius: 3, padding: '0 3px', lineHeight: '14px',
+                      whiteSpace: 'nowrap',
+                    }}>
+                      {i + 2}
+                    </div>
+                  </div>
+                ))}
+
+                {mainSections.map(s => {
+                  const clip = clipsWithOffset.find(c => c.video.id === s.video_file_id);
+                  if (!clip) return null;
+                  const pos = sectionPos(s, clip);
+                  if (!pos) return null;
+                  return renderSectionEl(s, pos, clip.offset, false);
+                })}
+
+                {interaction?.kind === 'creating' && (() => {
+                  const cs = Math.min(interaction.startSec, interaction.curSec);
+                  const ce = Math.max(interaction.startSec, interaction.curSec);
+                  const gs = interaction.clipOffset + cs;
+                  const ge = interaction.clipOffset + ce;
+                  return (
+                    <div
+                      className="absolute pointer-events-none"
+                      style={{
+                        top: 5, bottom: 5,
+                        left: `${gs * zoom}px`,
+                        width: `${(ge - gs) * zoom}px`,
+                        backgroundColor: toolMode === 'simulation' ? 'rgba(245,158,11,0.25)' : 'rgba(59,130,246,0.25)',
+                        border: `1.5px dashed ${toolMode === 'simulation' ? '#f59e0b' : '#3b82f6'}`,
+                        borderRadius: 4,
+                        zIndex: 11,
+                      }}
+                    />
+                  );
+                })()}
+
+                {interaction?.kind === 'creating' && toolMode === 'video'
+                  && (interaction.curSec - interaction.startSec) >= VISUAL_MAX_SEC - 0.5 && (
+                  <div
+                    className="absolute top-0 bottom-0 pointer-events-none"
+                    style={{
+                      left: `${(interaction.clipOffset + interaction.startSec + VISUAL_MAX_SEC) * zoom}px`,
+                      width: 1, backgroundColor: '#ef4444', opacity: 0.7, zIndex: 12,
+                    }}
+                  />
+                )}
+
+                <div
+                  className="absolute top-0 bottom-0 pointer-events-none"
+                  style={{ left: `${playheadSec * zoom}px`, width: 2, backgroundColor: '#ef4444', boxShadow: '0 0 4px rgba(239,68,68,0.4)', zIndex: 20 }}
+                />
+              </div>
+
+              {/* ── A1 AUDIO TRACK ─────────────────────────────────────── */}
+              <div style={{ height: AUDIO_TRACK_H, position: 'relative', backgroundColor: '#f0fdf4' }}>
+                {clipsWithOffset.map(c => {
+                  const wPx = (c.video.duration_sec ?? 0) * zoom;
+                  const lPx = c.offset * zoom;
+                  const peaks = parseWaveformPeaks(c.video.waveform_peaks);
+                  return (
+                    <div key={c.video.id} className="absolute top-0 bottom-0" style={{ left: `${lPx}px`, width: `${wPx}px` }}>
+                      <Waveform peaks={peaks} />
+                    </div>
+                  );
+                })}
+                {clipsWithOffset.slice(1).map(c => (
+                  <div
+                    key={c.video.id}
+                    className="absolute top-0 bottom-0 pointer-events-none"
+                    style={{ left: `${c.offset * zoom}px`, width: 2, backgroundColor: '#6366f1', opacity: 0.4, zIndex: 5 }}
+                  />
+                ))}
+                <div
+                  className="absolute top-0 bottom-0 pointer-events-none"
+                  style={{ left: `${playheadSec * zoom}px`, width: 2, backgroundColor: '#ef4444', opacity: 0.5, zIndex: 10 }}
+                />
+              </div>
+            </>
+          )}
         </div>
+      </div>
+
+      {/* ── Add video button ─────────────────────────────────────────────── */}
+      {onAddVideo && (
+        <div
+          className="shrink-0 flex items-center justify-center"
+          style={{ width: 43, borderLeft: '1px solid #e5e7eb', backgroundColor: '#fafafa' }}
+        >
+          <button
+            onClick={onAddVideo}
+            title="Add clip"
+            className="w-7 h-7 flex items-center justify-center rounded-md transition-colors hover:bg-gray-100"
+            style={{ border: '1.5px dashed #d1d5db', color: '#9ca3af' }}
+          >
+            <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
+              <path d="M5.5 1v9M1 5.5h9" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+            </svg>
+          </button>
+        </div>
+      )}
+
+      {/* ── Section editor modal ─────────────────────────────────────────── */}
+      {selectedSection && (
+        <SectionEditor
+          section={selectedSection}
+          projectId={projectId}
+          simulations={simulations}
+          videos={videos}
+          videoUrls={videoUrls}
+          onUpdate={updated => {
+            onSectionsChange(sections.map(s => s.id === updated.id ? updated : s));
+            setSelectedSection(updated);
+          }}
+          onDelete={id => {
+            onSectionsChange(sections.filter(s => s.id !== id));
+            setSelectedSection(null);
+          }}
+          onClose={() => setSelectedSection(null)}
+        />
       )}
     </div>
   );

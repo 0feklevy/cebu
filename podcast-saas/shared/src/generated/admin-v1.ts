@@ -79,6 +79,36 @@ export interface TestKeyResult {
   error?: string;
 }
 
+export interface PipelineStats {
+  projects: {
+    total: number;
+    recent_30d: number;
+  };
+  videos: {
+    total: number;
+    by_hls_status: {
+      pending: number;
+      processing: number;
+      ready: number;
+      failed: number;
+    };
+  };
+  simulations: {
+    total: number;
+    by_status: {
+      processing: number;
+      ready: number;
+      failed: number;
+    };
+  };
+  ai_extraction: {
+    total_input_tokens: number;
+    total_output_tokens: number;
+    total_cost_cents: number;
+    count: number;
+  };
+}
+
 export class AdminV1Api {
   private config: ApiConfig;
 
@@ -144,15 +174,15 @@ export class AdminV1Api {
     return this.request('/api/admin/v1/api-keys');
   }
 
-  setApiKey(provider: 'claude' | 'openai' | 'gemini', api_key: string): Promise<{ success: boolean }> {
+  setApiKey(provider: 'claude' | 'openai' | 'gemini' | 'elevenlabs', api_key: string): Promise<{ success: boolean }> {
     return this.request('/api/admin/v1/api-keys', { method: 'POST', body: { provider, api_key } });
   }
 
-  testApiKey(provider: 'claude' | 'openai' | 'gemini', api_key: string): Promise<TestKeyResult> {
+  testApiKey(provider: 'claude' | 'openai' | 'gemini' | 'elevenlabs', api_key: string): Promise<TestKeyResult> {
     return this.request('/api/admin/v1/api-keys/test', { method: 'POST', body: { provider, api_key } });
   }
 
-  deleteApiKey(provider: 'claude' | 'openai' | 'gemini'): Promise<{ success: boolean }> {
+  deleteApiKey(provider: 'claude' | 'openai' | 'gemini' | 'elevenlabs'): Promise<{ success: boolean }> {
     return this.request(`/api/admin/v1/api-keys/${provider}`, { method: 'DELETE' });
   }
 
@@ -169,5 +199,9 @@ export class AdminV1Api {
 
   getUsageRollup(from?: string, to?: string): Promise<UsageRollup> {
     return this.request('/api/admin/v1/usage', { params: { from, to } });
+  }
+
+  getPipelineStats(): Promise<PipelineStats> {
+    return this.request('/api/admin/v1/pipeline-stats');
   }
 }

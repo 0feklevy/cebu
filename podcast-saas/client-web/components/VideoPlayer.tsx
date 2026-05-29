@@ -1,20 +1,507 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback, forwardRef, useImperativeHandle } from 'react';
+import { useClipSequence } from '../hooks/useClipSequence';
+import type { Clip } from '../hooks/useClipSequence';
+import type { TimelineSection } from 'shared/src/generated/client-v1';
 
-interface Props {
-  src: string | null;
+export type { Clip };
+
+const HLS_OPTS = {
+  enableWorker: true,
+  startLevel: -1,
+  capLevelToPlayerSize: true,
+  startFragPrefetch: false,
+  maxBufferLength: 15,
+  maxMaxBufferLength: 30,
+  backBufferLength: 5,
+  abrEwmaDefaultEstimate: 500_000,
+  fragLoadingTimeOut: 20_000,
+  manifestLoadingTimeOut: 10_000,
+  maxBufferHole: 0.5,
+  nudgeMaxRetry: 5,
+};
+
+const IS_DEV = process.env.NODE_ENV === 'development';
+
+export interface VideoPlayerHandle {
+  seek(globalSec: number): void;
+}
+
+interface SingleClipProps {
+  src?: string | null;
+  hlsUrl?: string | null;
+  hlsStatus?: string;
+  clips?: undefined;
   currentTime: number;
   onTimeUpdate: (t: number) => void;
   sectionLabel?: string | null;
 }
 
-export function VideoPlayer({ src, currentTime, onTimeUpdate, sectionLabel }: Props) {
+interface MultiClipProps {
+  clips: Clip[];
+  src?: undefined;
+  hlsUrl?: undefined;
+  hlsStatus?: undefined;
+  currentTime: number;
+  onTimeUpdate: (t: number) => void;
+  sectionLabel?: string | null;
+  activeSimSection?: TimelineSection | null;
+  activeBrollSection?: TimelineSection | null;
+  brollHlsUrl?: string | null;
+}
+
+type Props = SingleClipProps | MultiClipProps;
+
+// ── Multi-clip player (dual-buffer) ──────────────────────────────────────────
+
+interface MultiClipPlayerProps {
+  clips: Clip[];
+  onTimeUpdate: (t: number) => void;
+  sectionLabel?: string | null;
+  activeSimSection?: TimelineSection | null;
+  activeBrollSection?: TimelineSection | null;
+  brollHlsUrl?: string | null;
+  imperativeRef: React.RefObject<VideoPlayerHandle | null>;
+}
+
+function MultiClipPlayer({ clips, onTimeUpdate, sectionLabel, activeSimSection, activeBrollSection, brollHlsUrl, imperativeRef }: MultiClipPlayerProps) {
+  const [speed, setSpeed] = useState(1);
+  const [localGlobalTime, setLocalGlobalTime] = useState(0);
+
+  // ── broll overlay state ───────────────────────────────────────────────────
+  const brollVideoRef = useRef<HTMLVideoElement>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const brollHlsRef   = useRef<any>(null);
+
+  // ── sim overlay state ─────────────────────────────────────────────────────
+  const simFrameRef     = useRef<HTMLIFrameElement>(null);
+  const simReadyRef     = useRef(false);
+  const simPollRef      = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pendingSimRef   = useRef<{ script: string } | null>(null);
+  const activeSimUrlRef = useRef<string | null>(null);
+  const [simUrl, setSimUrl]          = useState<string | null>(null);
+  const [showSimOverlay, setShowSim] = useState(false);
+
+  const sendToSim = (msg: object) => {
+    try { simFrameRef.current?.contentWindow?.postMessage(msg, '*'); } catch (_) {}
+  };
+
+  const startSimPoll = useCallback(() => {
+    if (simPollRef.current) clearInterval(simPollRef.current);
+    let attempts = 0;
+    simPollRef.current = setInterval(() => {
+      if (simReadyRef.current || ++attempts > 40) {
+        if (simPollRef.current) clearInterval(simPollRef.current);
+        return;
+      }
+      sendToSim({ type: 'PING_SIM_READY' });
+    }, 300);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // postMessage listener
+  useEffect(() => {
+    const handler = (e: MessageEvent) => {
+      if (e.source !== simFrameRef.current?.contentWindow) return;
+      const { type } = (e.data as { type?: string }) ?? {};
+      if (type === 'SIM_READY') {
+        simReadyRef.current = true;
+        if (simPollRef.current) clearInterval(simPollRef.current);
+        const pending = pendingSimRef.current;
+        pendingSimRef.current = null;
+        if (pending) {
+          setShowSim(true);
+          sendToSim({ type: 'startScript', script: pending.script });
+        }
+      }
+      if (type === 'userInteraction') hook.pause();
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // iframe load → reset ready + re-poll
+  useEffect(() => {
+    const frame = simFrameRef.current;
+    if (!frame) return;
+    const onLoad = () => { simReadyRef.current = false; startSimPoll(); };
+    frame.addEventListener('load', onLoad);
+    return () => frame.removeEventListener('load', onLoad);
+  }, [startSimPoll]);
+
+  // poll cleanup on unmount
+  useEffect(() => () => { if (simPollRef.current) clearInterval(simPollRef.current); }, []);
+
+  // ── broll video: load / unload HLS ───────────────────────────────────────
+  useEffect(() => {
+    const v = brollVideoRef.current;
+    if (!v) return;
+    brollHlsRef.current?.destroy();
+    brollHlsRef.current = null;
+    if (!brollHlsUrl) { v.src = ''; return; }
+    let destroyed = false;
+    const setup = async () => {
+      const HlsLib = (await import('hls.js')).default;
+      if (destroyed) return;
+      if (HlsLib.isSupported()) {
+        const hls = new HlsLib(HLS_OPTS);
+        hls.loadSource(brollHlsUrl);
+        hls.attachMedia(v);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        hls.on(HlsLib.Events.ERROR, (_: string, d: any) => {
+          if (!d.fatal) return;
+          if (d.type === 'networkError') setTimeout(() => hls.startLoad(), 1000);
+          else if (d.type === 'mediaError') hls.recoverMediaError();
+        });
+        brollHlsRef.current = hls;
+      } else if (v.canPlayType('application/vnd.apple.mpegurl')) {
+        v.src = brollHlsUrl;
+      }
+    };
+    setup();
+    return () => { destroyed = true; brollHlsRef.current?.destroy(); brollHlsRef.current = null; };
+  }, [brollHlsUrl]);
+
+  // broll cleanup on unmount
+  useEffect(() => () => { brollHlsRef.current?.destroy(); brollHlsRef.current = null; }, []);
+
+  // ── broll video: resync on large manual seeks ────────────────────────────
+  useEffect(() => {
+    const v = brollVideoRef.current;
+    if (!v || !activeBrollSection) return;
+    const expected = localGlobalTime - (activeBrollSection.global_offset_sec ?? 0) + activeBrollSection.start_sec;
+    if (Math.abs(v.currentTime - expected) > 1.0) {
+      v.currentTime = Math.max(0, expected);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [localGlobalTime]);
+
+  // react to sim section boundary crossings
+  useEffect(() => {
+    const newUrl = activeSimSection?.simulation_url ?? null;
+    const script  = activeSimSection?.sim_script ?? 'auto';
+
+    if (!newUrl) {
+      if (activeSimUrlRef.current) {
+        sendToSim({ type: 'stopScript' });
+        setTimeout(() => setShowSim(false), 350);
+      }
+      return;
+    }
+
+    const sameUrl = newUrl === activeSimUrlRef.current;
+    activeSimUrlRef.current = newUrl;
+    setSimUrl(newUrl);
+
+    if (sameUrl && simReadyRef.current) {
+      setShowSim(true);
+      sendToSim({ type: 'startScript', script });
+    } else {
+      simReadyRef.current   = false;
+      pendingSimRef.current = { script };
+      if (!sameUrl) startSimPoll();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSimSection?.id, activeSimSection?.simulation_url]);
+
+  const handleTimeUpdate = useCallback((t: number) => {
+    setLocalGlobalTime(t);
+    onTimeUpdate(t);
+  }, [onTimeUpdate]);
+
+  const hook = useClipSequence(clips, handleTimeUpdate);
+
+  useImperativeHandle(imperativeRef, () => ({
+    seek: hook.seek,
+  }));
+
+  // ── broll video: seek on section entry / exit ────────────────────────────
+  useEffect(() => {
+    const v = brollVideoRef.current;
+    if (!v) return;
+    if (!activeBrollSection) {
+      v.pause();
+      return;
+    }
+    const brollTime = localGlobalTime - (activeBrollSection.global_offset_sec ?? 0) + activeBrollSection.start_sec;
+    v.currentTime = Math.max(0, brollTime);
+    if (hook.isPlaying) v.play().catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeBrollSection?.id]);
+
+  // ── broll video: play / pause in sync with main ──────────────────────────
+  useEffect(() => {
+    const v = brollVideoRef.current;
+    if (!v || !activeBrollSection) return;
+    if (hook.isPlaying && v.paused) v.play().catch(() => {});
+    else if (!hook.isPlaying && !v.paused) v.pause();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hook.isPlaying, activeBrollSection?.id]);
+
+  // Apply speed to the current main video element
+  useEffect(() => {
+    const vA = hook.videoARef.current;
+    const vB = hook.videoBRef.current;
+    if (vA) vA.playbackRate = speed;
+    if (vB) vB.playbackRate = speed;
+  }, [speed, hook.videoARef, hook.videoBRef]);
+
+  const fmt = (s: number) => {
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${m}:${sec.toString().padStart(2, '0')}`;
+  };
+
+  const totalDuration = hook.totalDuration;
+  const seekPct = totalDuration > 0 ? (localGlobalTime / totalDuration) * 100 : 0;
+
+  const handleSeekBar = (e: React.ChangeEvent<HTMLInputElement>) => {
+    hook.seek(parseFloat(e.target.value));
+  };
+
+  return (
+    <div className="flex-1 relative bg-black rounded-xl overflow-hidden">
+      {/* Video A — initial z=2 (main), swapped by hook */}
+      <video
+        ref={hook.videoARef}
+        className="absolute inset-0 w-full h-full object-contain"
+        style={{ zIndex: 2 }}
+        playsInline
+        preload="auto"
+      />
+      {/* Video B — initial z=1 (standby) */}
+      <video
+        ref={hook.videoBRef}
+        className="absolute inset-0 w-full h-full object-contain"
+        style={{ zIndex: 1 }}
+        playsInline
+        preload="auto"
+      />
+
+      {/* B-roll overlay — sits above main video, below sim overlay */}
+      <video
+        ref={brollVideoRef}
+        className="absolute inset-0 w-full h-full"
+        style={{
+          zIndex: 3,
+          objectFit: 'cover',
+          opacity: activeBrollSection && !showSimOverlay ? 1 : 0,
+          transition: 'opacity 150ms ease',
+          pointerEvents: 'none',
+        }}
+        playsInline
+        preload="auto"
+      />
+
+      {/* No source yet */}
+      {clips.length === 0 && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none" style={{ zIndex: 5 }}>
+          <div className="w-6 h-6 border-2 border-white/20 border-t-white/60 rounded-full animate-spin mb-3" />
+          <p className="text-xs text-white/40">Preparing video…</p>
+        </div>
+      )}
+
+      {/* Simulation overlay — stays mounted once loaded; fade driven by opacity */}
+      {simUrl && (
+        <div
+          className="absolute inset-0"
+          style={{
+            zIndex: 5,
+            background: '#0e0e0e',
+            opacity: showSimOverlay ? 1 : 0,
+            pointerEvents: showSimOverlay ? 'auto' : 'none',
+            transition: 'opacity 350ms ease',
+          }}
+        >
+          <iframe
+            ref={simFrameRef}
+            src={simUrl}
+            className="w-full h-full border-0"
+            sandbox="allow-scripts allow-same-origin allow-forms"
+            title="Interactive simulation"
+          />
+        </div>
+      )}
+
+      {/* Section label overlay */}
+      {sectionLabel && !showSimOverlay && (
+        <div className="absolute top-3 left-3 bg-black/70 text-white text-xs font-medium px-2 py-1 rounded-md backdrop-blur-sm" style={{ zIndex: 10 }}>
+          {sectionLabel}
+        </div>
+      )}
+
+      {/* Clip indicator badge */}
+      {clips.length > 1 && (
+        <div className="absolute top-3 right-3 bg-black/60 text-white/70 text-[10px] font-semibold px-2 py-0.5 rounded-md" style={{ zIndex: 10 }}>
+          {hook.currentClipIdx + 1}/{clips.length}
+        </div>
+      )}
+
+      {/* Controls */}
+      <div className="absolute bottom-0 left-0 right-0 bg-black/80 backdrop-blur-sm px-4 py-2.5 space-y-2" style={{ zIndex: 10 }}>
+        <input
+          type="range"
+          min={0}
+          max={totalDuration || 1}
+          step={0.1}
+          value={localGlobalTime}
+          onChange={handleSeekBar}
+          className="w-full h-1 accent-primary cursor-pointer"
+        />
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => hook.isPlaying ? hook.pause() : hook.play()}
+              className="text-white hover:text-primary transition-colors"
+            >
+              {hook.isPlaying ? (
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden>
+                  <rect x="4" y="3" width="3.5" height="12" rx="1" fill="currentColor" />
+                  <rect x="10.5" y="3" width="3.5" height="12" rx="1" fill="currentColor" />
+                </svg>
+              ) : (
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden>
+                  <path d="M5 3l11 6-11 6V3z" fill="currentColor" />
+                </svg>
+              )}
+            </button>
+            <span className="text-xs text-white/70 font-mono">
+              {fmt(localGlobalTime)} / {fmt(totalDuration)}
+            </span>
+          </div>
+          <div className="flex gap-1">
+            {([0.5, 1, 1.5, 2] as const).map((s) => (
+              <button
+                key={s}
+                onClick={() => setSpeed(s)}
+                className={`text-[10px] font-semibold px-1.5 py-0.5 rounded transition-colors ${speed === s ? 'bg-primary text-white' : 'text-white/50 hover:text-white'}`}
+              >
+                {s}x
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Invisible progress overlay so seekPct is available to any future use */}
+      <div style={{ display: 'none' }}>{seekPct}</div>
+    </div>
+  );
+}
+
+// ── Single-clip player (existing code path, unchanged) ───────────────────────
+
+interface SingleClipPlayerProps {
+  src?: string | null;
+  hlsUrl?: string | null;
+  hlsStatus?: string;
+  currentTime: number;
+  onTimeUpdate: (t: number) => void;
+  sectionLabel?: string | null;
+  imperativeRef: React.RefObject<VideoPlayerHandle | null>;
+}
+
+function SingleClipPlayer({ src, hlsUrl, hlsStatus, currentTime, onTimeUpdate, sectionLabel, imperativeRef }: SingleClipPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [playing, setPlaying] = useState(false);
   const [duration, setDuration] = useState(0);
   const [speed, setSpeed] = useState(1);
+  const [isLoading, setIsLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const seekingRef = useRef(false);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const hlsRef = useRef<any>(null);
+
+  const prevSrcRef = useRef<string | null>(null);
+  const prevHlsRef = useRef<string | null>(null);
+
+  const transcoding = hlsStatus === 'pending' || hlsStatus === 'processing';
+  const effectiveSrc = hlsUrl ?? src;
+
+  // Expose seek imperatively
+  useImperativeHandle(imperativeRef, () => ({
+    seek(globalSec: number) {
+      const v = videoRef.current;
+      if (!v) return;
+      seekingRef.current = true;
+      v.currentTime = globalSec;
+    },
+  }));
+
+  const logMedia = useCallback((evt: string) => {
+    if (!IS_DEV) return;
+    const v = videoRef.current;
+    if (!v) return;
+    const safeSrc = v.currentSrc ? v.currentSrc.split('?')[0] : null;
+    console.log(`[VideoPlayer:media] ${evt}`, {
+      readyState: v.readyState,
+      networkState: v.networkState,
+      currentTime: v.currentTime,
+      duration: v.duration,
+      currentSrc: safeSrc,
+      errorCode: v.error?.code,
+    });
+  }, []);
+
+  useEffect(() => {
+    setLoadError(null);
+    setIsLoading(!!effectiveSrc);
+    setDuration(0);
+    if (IS_DEV) {
+      console.log('[VideoPlayer] source transition', {
+        rawSrc: src,
+        hlsUrl,
+        effectiveSrc,
+        srcChanged: src !== prevSrcRef.current,
+        hlsChanged: hlsUrl !== prevHlsRef.current,
+      });
+      prevSrcRef.current = src ?? null;
+      prevHlsRef.current = hlsUrl ?? null;
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveSrc]);
+
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    hlsRef.current?.destroy();
+    hlsRef.current = null;
+    if (!hlsUrl) {
+      if (src) { v.src = src; v.load(); }
+      else v.removeAttribute('src');
+      return;
+    }
+    let destroyed = false;
+    const setup = async () => {
+      const HlsLib = (await import('hls.js')).default;
+      if (destroyed) return;
+      hlsRef.current?.destroy();
+      hlsRef.current = null;
+      if (HlsLib.isSupported()) {
+        const hls = new HlsLib(HLS_OPTS);
+        hls.loadSource(hlsUrl);
+        hls.attachMedia(v);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        hls.on(HlsLib.Events.ERROR, (_: string, d: any) => {
+          if (!d.fatal) return;
+          if (d.type === 'networkError') setTimeout(() => hls.startLoad(), 1000);
+          else if (d.type === 'mediaError') hls.recoverMediaError();
+          else { if (src) v.src = src; else setLoadError('HLS playback failed.'); }
+        });
+        hlsRef.current = hls;
+      } else if (v.canPlayType('application/vnd.apple.mpegurl')) {
+        v.src = hlsUrl;
+      } else if (src) {
+        v.src = src;
+      } else {
+        setLoadError('HLS is not supported in this browser.');
+      }
+    };
+    setup();
+    return () => { destroyed = true; hlsRef.current?.destroy(); hlsRef.current = null; };
+  }, [hlsUrl, src]);
 
   useEffect(() => {
     const v = videoRef.current;
@@ -29,81 +516,114 @@ export function VideoPlayer({ src, currentTime, onTimeUpdate, sectionLabel }: Pr
     if (videoRef.current) videoRef.current.playbackRate = speed;
   }, [speed]);
 
-  const handleTimeUpdate = () => {
-    if (!videoRef.current || seekingRef.current) return;
-    onTimeUpdate(videoRef.current.currentTime);
-  };
-
-  const handleSeeked = () => {
-    seekingRef.current = false;
-    if (videoRef.current) onTimeUpdate(videoRef.current.currentTime);
-  };
-
-  const togglePlay = () => {
-    const v = videoRef.current;
-    if (!v) return;
-    if (v.paused) { v.play(); setPlaying(true); }
-    else { v.pause(); setPlaying(false); }
-  };
-
-  const handleSeekBar = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const t = parseFloat(e.target.value);
-    if (videoRef.current) videoRef.current.currentTime = t;
-    onTimeUpdate(t);
-  };
-
   const fmt = (s: number) => {
     const m = Math.floor(s / 60);
-    const sec = Math.floor(s % 60);
-    return `${m}:${sec.toString().padStart(2, '0')}`;
+    return `${m}:${Math.floor(s % 60).toString().padStart(2, '0')}`;
   };
 
-  if (!src) {
-    return (
-      <div className="flex-1 flex flex-col items-center justify-center bg-black/5 rounded-xl border border-dashed border-border text-center px-8">
-        <svg width="40" height="40" viewBox="0 0 40 40" fill="none" className="text-muted-foreground/30 mb-3" aria-hidden>
-          <rect x="4" y="8" width="32" height="24" rx="3" stroke="currentColor" strokeWidth="1.5" />
-          <path d="M16 14l10 6-10 6V14z" fill="currentColor" />
-        </svg>
-        <p className="text-sm text-muted-foreground">Select a video to preview</p>
-      </div>
-    );
-  }
-
   return (
-    <div className="flex-1 flex flex-col bg-black rounded-xl overflow-hidden relative">
-      <video
-        ref={videoRef}
-        src={src}
-        className="w-full flex-1 object-contain"
-        onTimeUpdate={handleTimeUpdate}
-        onSeeked={handleSeeked}
-        onLoadedMetadata={() => setDuration(videoRef.current?.duration ?? 0)}
-        onPlay={() => setPlaying(true)}
-        onPause={() => setPlaying(false)}
-        onEnded={() => setPlaying(false)}
-      />
+    <div className="flex-1 relative bg-black rounded-xl overflow-hidden">
+      {effectiveSrc ? (
+        <video
+          ref={videoRef}
+          className="absolute inset-0 w-full h-full object-contain"
+          onTimeUpdate={() => {
+            if (!videoRef.current || seekingRef.current) return;
+            onTimeUpdate(videoRef.current.currentTime);
+          }}
+          onSeeked={() => { seekingRef.current = false; if (videoRef.current) onTimeUpdate(videoRef.current.currentTime); }}
+          onLoadedMetadata={() => { logMedia('loadedmetadata'); setDuration(videoRef.current?.duration ?? 0); }}
+          onLoadedData={() => { logMedia('loadeddata'); setIsLoading(false); setLoadError(null); }}
+          onCanPlay={() => { logMedia('canplay'); setIsLoading(false); }}
+          onCanPlayThrough={() => logMedia('canplaythrough')}
+          onPlay={() => { logMedia('play'); setPlaying(true); }}
+          onPause={() => { logMedia('pause'); setPlaying(false); }}
+          onEnded={() => { logMedia('ended'); setPlaying(false); }}
+          onError={() => {
+            logMedia('error');
+            setPlaying(false); setIsLoading(false);
+            const code = videoRef.current?.error?.code;
+            if (code === 4) setLoadError('This video format is not supported.');
+            else if (code === 2) setLoadError('Network error — could not load video.');
+            else setLoadError('Video could not be loaded.');
+          }}
+          onWaiting={() => { logMedia('waiting'); setIsLoading(true); }}
+          onPlaying={() => { logMedia('playing'); setIsLoading(false); }}
+          onStalled={() => logMedia('stalled')}
+          playsInline
+        />
+      ) : (
+        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+          <div className="w-6 h-6 border-2 border-white/20 border-t-white/60 rounded-full animate-spin mb-3" />
+          <p className="text-xs text-white/40">Preparing video…</p>
+        </div>
+      )}
 
-      {sectionLabel && (
+      {isLoading && !loadError && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 pointer-events-none">
+          <div className="w-8 h-8 border-2 border-white/20 border-t-white rounded-full animate-spin mb-3" />
+          <p className="text-white/60 text-xs">{transcoding ? 'Preparing preview…' : 'Loading…'}</p>
+        </div>
+      )}
+
+      {loadError && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 px-6 text-center pb-16">
+          <svg width="32" height="32" viewBox="0 0 32 32" fill="none" className="text-red-400 mb-3" aria-hidden>
+            <circle cx="16" cy="16" r="13" stroke="currentColor" strokeWidth="1.5" />
+            <path d="M16 9v8M16 21v1.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+          </svg>
+          <p className="text-white/90 text-sm font-medium mb-1">Playback error</p>
+          <p className="text-white/50 text-xs mb-4">{loadError}</p>
+          {src && (
+            <button
+              onClick={() => { const v = videoRef.current; if (!v) return; setLoadError(null); setIsLoading(true); v.src = src; v.load(); }}
+              className="h-7 px-4 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs font-medium transition-colors"
+            >
+              Retry
+            </button>
+          )}
+          {transcoding && (
+            <p className="text-amber-400/80 text-xs mt-3">
+              HD version is still processing — raw preview will be available shortly.
+            </p>
+          )}
+        </div>
+      )}
+
+      {sectionLabel && !loadError && (
         <div className="absolute top-3 left-3 bg-black/70 text-white text-xs font-medium px-2 py-1 rounded-md backdrop-blur-sm">
           {sectionLabel}
         </div>
       )}
 
-      {/* Controls */}
-      <div className="shrink-0 bg-black/80 backdrop-blur px-4 py-2.5 space-y-2">
+      {transcoding && !loadError && (
+        <div className="absolute top-3 right-3 flex items-center gap-1.5 bg-amber-500/90 text-black text-xs font-semibold px-2 py-1 rounded-md">
+          <span className="w-1.5 h-1.5 bg-black rounded-full animate-pulse" />
+          {hlsStatus === 'processing' ? 'Transcoding…' : 'Queued'}
+        </div>
+      )}
+
+      <div className="absolute bottom-0 left-0 right-0 bg-black/80 backdrop-blur-sm px-4 py-2.5 space-y-2">
         <input
-          type="range"
-          min={0}
-          max={duration || 1}
-          step={0.1}
-          value={currentTime}
-          onChange={handleSeekBar}
+          type="range" min={0} max={duration || 1} step={0.1} value={currentTime}
+          onChange={(e) => {
+            const t = parseFloat(e.target.value);
+            if (videoRef.current) videoRef.current.currentTime = t;
+            onTimeUpdate(t);
+          }}
           className="w-full h-1 accent-primary cursor-pointer"
         />
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <button onClick={togglePlay} className="text-white hover:text-primary transition-colors">
+            <button
+              onClick={() => {
+                const v = videoRef.current;
+                if (!v) return;
+                if (v.paused) { v.play().catch(() => setPlaying(false)); setPlaying(true); }
+                else { v.pause(); setPlaying(false); }
+              }}
+              className="text-white hover:text-primary transition-colors"
+            >
               {playing ? (
                 <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden>
                   <rect x="4" y="3" width="3.5" height="12" rx="1" fill="currentColor" />
@@ -133,3 +653,43 @@ export function VideoPlayer({ src, currentTime, onTimeUpdate, sectionLabel }: Pr
     </div>
   );
 }
+
+// ── Public component ─────────────────────────────────────────────────────────
+
+export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(function VideoPlayer(props, ref) {
+  // Internal ref that both sub-components share for imperative handle
+  const imperativeRef = useRef<VideoPlayerHandle>(null);
+
+  // Forward the internal ref out to the parent via forwardRef
+  useImperativeHandle(ref, () => ({
+    seek(globalSec: number) {
+      imperativeRef.current?.seek(globalSec);
+    },
+  }));
+
+  if (props.clips !== undefined) {
+    return (
+      <MultiClipPlayer
+        clips={props.clips}
+        onTimeUpdate={props.onTimeUpdate}
+        sectionLabel={props.sectionLabel}
+        activeSimSection={props.activeSimSection}
+        activeBrollSection={props.activeBrollSection}
+        brollHlsUrl={props.brollHlsUrl}
+        imperativeRef={imperativeRef}
+      />
+    );
+  }
+
+  return (
+    <SingleClipPlayer
+      src={props.src}
+      hlsUrl={props.hlsUrl}
+      hlsStatus={props.hlsStatus}
+      currentTime={props.currentTime}
+      onTimeUpdate={props.onTimeUpdate}
+      sectionLabel={props.sectionLabel}
+      imperativeRef={imperativeRef}
+    />
+  );
+});

@@ -6,10 +6,9 @@ import { useAdminAuth } from '../lib/firebase';
 
 const NAV = [
   { href: '/dashboard', label: 'Dashboard' },
-  { href: '/system-prompts', label: 'System Prompts' },
-  { href: '/llm-config', label: 'LLM Config' },
+  { href: '/llm-config', label: 'AI Config' },
   { href: '/api-keys', label: 'API Keys' },
-  { href: '/feature-flags', label: 'Feature Flags' },
+  { href: '/feature-flags', label: 'Controls' },
   { href: '/users', label: 'Users' },
 ];
 
@@ -22,13 +21,13 @@ export function AdminNav() {
       {/* Logo */}
       <div className="h-14 px-5 border-b border-border flex items-center gap-2.5">
         <div className="w-7 h-7 rounded-lg bg-primary flex items-center justify-center shadow-sm shrink-0">
-          <svg width="13" height="9" viewBox="0 0 13 9" fill="none" aria-hidden>
-            <ellipse cx="5" cy="4.5" rx="4" ry="4" fill="white" fillOpacity="0.9" />
-            <ellipse cx="10.5" cy="4.5" rx="2.25" ry="2.25" fill="white" fillOpacity="0.5" />
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
+            <rect x="1" y="4" width="8" height="6" rx="1" fill="white" fillOpacity="0.9" />
+            <polygon points="9,4 13,7 9,10" fill="white" fillOpacity="0.5" />
           </svg>
         </div>
         <div>
-          <p className="text-xs font-semibold text-foreground leading-none">PodcastAI</p>
+          <p className="text-xs font-semibold text-foreground leading-none">VideoAI</p>
           <p className="text-[10px] text-muted-foreground leading-none mt-0.5">Admin</p>
         </div>
       </div>

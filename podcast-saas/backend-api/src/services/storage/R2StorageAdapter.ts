@@ -2,7 +2,10 @@ import {
   S3Client,
   PutObjectCommand,
   DeleteObjectCommand,
+  DeleteObjectsCommand,
+  ListObjectsV2Command,
   GetObjectCommand,
+  PutBucketCorsCommand,
 } from '@aws-sdk/client-s3';
 
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
@@ -32,6 +35,9 @@ export class R2StorageAdapter implements StorageService {
       region: 'auto',
       endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
       credentials: { accessKeyId, secretAccessKey },
+      // Disable automatic CRC32 checksums — R2 rejects presigned URLs that include them
+      requestChecksumCalculation: 'WHEN_REQUIRED',
+      responseChecksumValidation: 'WHEN_REQUIRED',
     });
   }
 
@@ -51,20 +57,55 @@ export class R2StorageAdapter implements StorageService {
     path: string,
     stream: NodeJS.ReadableStream,
     contentType: string,
+    contentLength?: number,
   ): Promise<string> {
-    const chunks: Buffer[] = [];
-    for await (const chunk of stream) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    }
-    return this.uploadFile(path, Buffer.concat(chunks), contentType);
+    await this.client.send(
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: path,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        Body: stream as any,
+        ContentType: contentType,
+        ContentLength: contentLength,
+      }),
+    );
+    return `${this.publicUrl}/${path}`;
   }
 
-  async getPresignedDownloadUrl(path: string, ttlSeconds: number): Promise<string> {
-    return getSignedUrl(
-      this.client,
-      new GetObjectCommand({ Bucket: this.bucket, Key: path }),
-      { expiresIn: ttlSeconds },
-    );
+  async getPresignedDownloadUrl(path: string, _ttlSeconds: number): Promise<string> {
+    // Route through backend proxy so CORS headers are guaranteed for browser playback.
+    // Server-side callers (ffmpeg, ingestion) also work fine against localhost.
+    const backendUrl = process.env.BACKEND_API_URL ?? 'http://localhost:8080';
+    return `${backendUrl}/video-proxy/${path}`;
+  }
+
+  async streamObject(key: string, rangeHeader?: string): Promise<{
+    body: NodeJS.ReadableStream;
+    contentType: string;
+    contentLength?: number;
+    statusCode: number;
+    contentRange?: string;
+    acceptRanges: string;
+  }> {
+    const cmd = new GetObjectCommand({
+      Bucket: this.bucket,
+      Key: key,
+      ...(rangeHeader ? { Range: rangeHeader } : {}),
+    });
+    const resp = await this.client.send(cmd);
+    const ext = key.split('.').pop()?.toLowerCase() ?? 'mp4';
+    const contentType =
+      ext === 'webm' ? 'video/webm' :
+      ext === 'mov'  ? 'video/quicktime' :
+      ext === 'm4v'  ? 'video/mp4' : 'video/mp4';
+    return {
+      body: resp.Body as NodeJS.ReadableStream,
+      contentType,
+      contentLength: resp.ContentLength,
+      statusCode: rangeHeader ? 206 : 200,
+      contentRange: resp.ContentRange,
+      acceptRanges: resp.AcceptRanges ?? 'bytes',
+    };
   }
 
   async getPresignedUploadUrl(path: string, contentType: string, ttlSeconds: number): Promise<string> {
@@ -79,5 +120,106 @@ export class R2StorageAdapter implements StorageService {
     await this.client.send(
       new DeleteObjectCommand({ Bucket: this.bucket, Key: path }),
     );
+  }
+
+  async deleteWithPrefix(prefix: string): Promise<void> {
+    let continuationToken: string | undefined;
+    do {
+      const list = await this.client.send(
+        new ListObjectsV2Command({
+          Bucket: this.bucket,
+          Prefix: prefix,
+          ContinuationToken: continuationToken,
+        }),
+      );
+      if (list.Contents && list.Contents.length > 0) {
+        await this.client.send(
+          new DeleteObjectsCommand({
+            Bucket: this.bucket,
+            Delete: { Objects: list.Contents.map((o) => ({ Key: o.Key! })) },
+          }),
+        );
+      }
+      continuationToken = list.NextContinuationToken;
+    } while (continuationToken);
+  }
+
+  getPublicUrl(path: string): string {
+    // Route HLS through the backend proxy so CORS headers are guaranteed regardless
+    // of whether Cloudflare's pub-*.r2.dev CDN respects PutBucketCorsCommand rules.
+    const backendUrl = process.env.BACKEND_API_URL ?? 'http://localhost:8080';
+    return `${backendUrl}/hls-proxy/${path}`;
+  }
+
+  getSimPublicUrl(path: string): string {
+    // Simulation static files are served directly from R2 public URL (no proxy needed —
+    // they load via iframe which uses allow-same-origin, and postMessage works cross-origin).
+    return `${this.publicUrl}/${path}`;
+  }
+
+  async readObject(key: string): Promise<Buffer> {
+    const resp = await this.client.send(
+      new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+    );
+    const stream = resp.Body as NodeJS.ReadableStream;
+    return new Promise<Buffer>((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+      stream.on('end', () => resolve(Buffer.concat(chunks)));
+      stream.on('error', reject);
+    });
+  }
+
+  async listObjects(prefix: string): Promise<string[]> {
+    const keys: string[] = [];
+    let continuationToken: string | undefined;
+    do {
+      const list = await this.client.send(
+        new ListObjectsV2Command({
+          Bucket: this.bucket,
+          Prefix: prefix,
+          ContinuationToken: continuationToken,
+        }),
+      );
+      for (const obj of list.Contents ?? []) {
+        if (obj.Key) keys.push(obj.Key);
+      }
+      continuationToken = list.NextContinuationToken;
+    } while (continuationToken);
+    return keys;
+  }
+
+  async ensureBucketCors(allowedOrigins: string[]): Promise<void> {
+    try {
+      await this.client.send(
+        new PutBucketCorsCommand({
+          Bucket: this.bucket,
+          CORSConfiguration: {
+            CORSRules: [
+              {
+                // PUT uploads — locked to known app origins
+                AllowedOrigins: allowedOrigins,
+                AllowedMethods: ['PUT'],
+                AllowedHeaders: ['*'],
+                MaxAgeSeconds: 3600,
+              },
+              {
+                // GET/HEAD for HLS segments & manifests — must be '*' so any viewer
+                // domain (including localhost during dev) can load them without auth.
+                AllowedOrigins: ['*'],
+                AllowedMethods: ['GET', 'HEAD'],
+                AllowedHeaders: ['*'],
+                MaxAgeSeconds: 86400,
+              },
+            ],
+          },
+        }),
+      );
+      console.log(`[R2] CORS configured — PUT: ${allowedOrigins.join(', ')} | GET/HEAD: *`);
+      logger.info('R2 bucket CORS configured');
+    } catch (err) {
+      console.error('[R2] CORS setup failed:', err);
+      logger.warn({ err }, 'R2 CORS setup failed — configure manually in Cloudflare dashboard');
+    }
   }
 }

@@ -22,7 +22,7 @@ async function migrate() {
       )
     `;
 
-    const migrations = ['001_initial.sql', '002_audio_scenes.sql', '003_document_type.sql'];
+    const migrations = ['001_initial.sql', '002_audio_scenes.sql', '003_document_type.sql', '004_video_editor.sql', '005_hls_transcoding.sql', '006_hls_tier_progress.sql', '007_waveform_peaks.sql', '008_simulations.sql', '009_section_sim_ref.sql', '010_broll_generation.sql', '011_sim_prompt.sql', '012_broll_source_flag.sql', '013_sim_meta.sql'];
 
     for (const file of migrations) {
       const [row] = await sql`

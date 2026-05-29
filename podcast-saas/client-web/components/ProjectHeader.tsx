@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { api } from '../lib/api';
+import { useAuth } from '../lib/firebase';
 import { UserProfileButton } from './UserProfileButton';
 import type { Project } from 'shared/src/generated/client-v1';
 
@@ -25,11 +26,14 @@ interface Props {
 }
 
 export function ProjectHeader({ projectId }: Props) {
+  const { loading: authLoading } = useAuth();
   const [project, setProject] = useState<Project | null>(null);
 
   useEffect(() => {
-    api.getProject(projectId).then(setProject).catch(() => null);
-  }, [projectId]);
+    if (!authLoading) {
+      api.getProject(projectId).then(setProject).catch(() => null);
+    }
+  }, [projectId, authLoading]);
 
   const statusStyle = project ? (STATUS_STYLES[project.status] ?? 'bg-muted text-muted-foreground') : '';
   const statusLabel = project ? (STATUS_LABELS[project.status] ?? project.status) : '';
@@ -60,6 +64,19 @@ export function ProjectHeader({ projectId }: Props) {
           </span>
         )}
       </div>
+
+      <a
+        href={`/projects/${projectId}/view`}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="shrink-0 h-7 px-3 rounded-lg border border-border text-xs font-medium text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors inline-flex items-center gap-1.5"
+      >
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden>
+          <path d="M4 2H2a1 1 0 00-1 1v5a1 1 0 001 1h5a1 1 0 001-1V6" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+          <path d="M6 1h3m0 0v3m0-3L5 5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+        Show final video
+      </a>
 
       <UserProfileButton />
     </header>

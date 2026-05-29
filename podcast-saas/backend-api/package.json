@@ -10,6 +10,7 @@
     "start": "node dist/server.js",
     "generate": "tsoa spec && tsoa routes",
     "db:migrate": "tsx --env-file=../.env src/db/migrate.ts",
+    "db:check": "tsx --env-file=../.env src/scripts/check-db.ts",
     "db:studio": "drizzle-kit studio",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -37,9 +38,11 @@
     "postgres": "^3.4.4",
     "shared": "workspace:*",
     "tsoa": "^6.4.0",
+    "adm-zip": "^0.5.10",
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/adm-zip": "^0.5.5",
     "@types/node": "^22.0.0",
     "@vitest/coverage-v8": "^4.1.7",
     "drizzle-kit": "^0.22.8",

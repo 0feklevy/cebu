@@ -1,9 +1,11 @@
 'use client';
 
 import { useRef, useState } from 'react';
-import { api } from '../lib/api';
+import { getAuth } from 'firebase/auth';
+import type { VideoFile } from 'shared/src/generated/client-v1';
 
 const ACCEPTED = '.mp4,.mov,.webm,.mkv,.avi,.m4v';
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
 
 interface UploadProgress {
   filename: string;
@@ -15,7 +17,9 @@ interface UploadProgress {
 
 interface Props {
   projectId: string;
-  onUploaded: () => void;
+  // Receives the uploaded VideoFile (including raw_url) so the editor can play
+  // the video immediately without waiting for a polling cycle.
+  onUploaded: (video: VideoFile) => void;
 }
 
 export function VideoUploader({ projectId, onUploaded }: Props) {
@@ -29,13 +33,15 @@ export function VideoUploader({ projectId, onUploaded }: Props) {
 
   const uploadFile = async (file: File, idx: number) => {
     try {
-      const { upload_url, storage_key } = await api.getVideoUploadUrl(projectId, {
-        filename: file.name,
-        file_size: file.size,
-        content_type: file.type || 'video/mp4',
-      });
+      const token = await getAuth().currentUser?.getIdToken();
+      if (!token) throw new Error('Not authenticated');
 
-      await new Promise<void>((resolve, reject) => {
+      const formData = new FormData();
+      formData.append('file_size', String(file.size));
+      formData.append('file', file, file.name);
+
+      // Resolve with the parsed server response so the editor gets raw_url instantly.
+      const videoData = await new Promise<VideoFile>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         const startTime = Date.now();
 
@@ -51,24 +57,25 @@ export function VideoUploader({ projectId, onUploaded }: Props) {
         });
 
         xhr.addEventListener('load', () => {
-          if (xhr.status >= 200 && xhr.status < 300) resolve();
-          else reject(new Error(`Upload failed: ${xhr.status}`));
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              resolve(JSON.parse(xhr.responseText) as VideoFile);
+            } catch {
+              reject(new Error('Upload succeeded but response could not be parsed'));
+            }
+          } else {
+            reject(new Error(`Upload failed: ${xhr.status} ${xhr.responseText}`));
+          }
         });
         xhr.addEventListener('error', () => reject(new Error('Network error')));
 
-        xhr.open('PUT', upload_url);
-        xhr.setRequestHeader('Content-Type', file.type || 'video/mp4');
-        xhr.send(file);
-      });
-
-      await api.confirmVideoUpload(projectId, {
-        storage_key,
-        filename: file.name,
-        file_size: file.size,
+        xhr.open('POST', `${API_URL}/api/v1/projects/${projectId}/videos/upload`);
+        xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+        xhr.send(formData);
       });
 
       updateUpload(idx, { percent: 100, done: true });
-      onUploaded();
+      onUploaded(videoData);
     } catch (err) {
       updateUpload(idx, { error: (err as Error).message });
     }
@@ -101,7 +108,7 @@ export function VideoUploader({ projectId, onUploaded }: Props) {
           <path d="M13 11l7 5-7 5V11z" fill="currentColor" />
         </svg>
         <p className="text-sm font-medium text-foreground">Drop video files here</p>
-        <p className="text-xs text-muted-foreground mt-1">MP4, MOV, WebM, MKV · up to 4 GB each</p>
+        <p className="text-xs text-muted-foreground mt-1">MP4, MOV, WebM, MKV · up to 10 GB each</p>
       </div>
       <input
         ref={inputRef}

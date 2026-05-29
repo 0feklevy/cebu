@@ -7,11 +7,11 @@ import type { ApiKeyStatus } from 'shared/src/generated/admin-v1';
 
 type Provider = 'claude' | 'openai' | 'gemini' | 'elevenlabs';
 
-const PROVIDERS: { id: Provider; label: string; placeholder: string; description: string }[] = [
-  { id: 'elevenlabs', label: 'ElevenLabs', placeholder: 'sk_…', description: 'Voice synthesis (TTS)' },
-  { id: 'claude', label: 'Anthropic (Claude)', placeholder: 'sk-ant-…', description: 'Script generation' },
-  { id: 'gemini', label: 'Google (Gemini)', placeholder: 'AIza…', description: 'Script generation / TTS fallback' },
-  { id: 'openai', label: 'OpenAI', placeholder: 'sk-…', description: 'Script generation fallback' },
+const PROVIDERS: { id: Provider; label: string; placeholder: string; description: string; primary?: boolean }[] = [
+  { id: 'claude', label: 'Anthropic (Claude)', placeholder: 'sk-ant-…', description: 'AI bridge function extraction — required for simulations', primary: true },
+  { id: 'gemini', label: 'Google (Gemini)', placeholder: 'AIza…', description: 'Not used in current pipeline' },
+  { id: 'openai', label: 'OpenAI', placeholder: 'sk-…', description: 'Not used in current pipeline' },
+  { id: 'elevenlabs', label: 'ElevenLabs', placeholder: 'sk_…', description: 'Not used in current pipeline' },
 ];
 
 interface KeyEntry {
@@ -102,13 +102,20 @@ export default function ApiKeysPage() {
       )}
 
       <div className="max-w-2xl space-y-6">
-        {PROVIDERS.map(({ id, label, placeholder, description }) => {
+        {PROVIDERS.map(({ id, label, placeholder, description, primary }) => {
           const entry = keys[id];
           return (
-            <div key={id} className="rounded-lg border border-border bg-card p-5">
+            <div key={id} className={`rounded-lg border bg-card p-5 ${primary ? 'border-primary/40' : 'border-border'}`}>
               <div className="flex items-center justify-between mb-4">
                 <div>
-                  <div className="text-sm font-semibold">{label}</div>
+                  <div className="flex items-center gap-2">
+                    <div className="text-sm font-semibold">{label}</div>
+                    {primary && (
+                      <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-primary/10 text-primary">
+                        Required
+                      </span>
+                    )}
+                  </div>
                   <div className="text-xs text-muted-foreground">{description}</div>
                   {entry.status?.set ? (
                     <div className="text-xs text-primary mt-0.5">

@@ -5,18 +5,10 @@ import { adminApi } from '../../lib/api';
 import { AdminShell } from '../../components/AdminShell';
 import type { AdminSettings } from 'shared/src/generated/admin-v1';
 
-type Flags = Pick<
-  AdminSettings,
-  | 'generation_paused'
-  | 'generation_paused_message'
-  | 'maintenance_mode'
-  | 'maintenance_message'
-  | 'anonymous_user_limit'
-  | 'billing_enabled'
->;
+type Controls = Pick<AdminSettings, 'maintenance_mode' | 'maintenance_message' | 'anonymous_user_limit'>;
 
-export default function FeatureFlagsPage() {
-  const [form, setForm] = useState<Flags | null>(null);
+export default function ControlsPage() {
+  const [form, setForm] = useState<Controls | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -26,18 +18,15 @@ export default function FeatureFlagsPage() {
       .getSettings()
       .then((s) =>
         setForm({
-          generation_paused: s.generation_paused,
-          generation_paused_message: s.generation_paused_message,
           maintenance_mode: s.maintenance_mode,
           maintenance_message: s.maintenance_message,
           anonymous_user_limit: s.anonymous_user_limit,
-          billing_enabled: s.billing_enabled,
         }),
       )
       .catch((e) => setError(e.message));
   }, []);
 
-  const set = <K extends keyof Flags>(key: K, value: Flags[K]) =>
+  const set = <K extends keyof Controls>(key: K, value: Controls[K]) =>
     setForm((prev) => (prev ? { ...prev, [key]: value } : prev));
 
   const save = async () => {
@@ -66,7 +55,7 @@ export default function FeatureFlagsPage() {
   return (
     <AdminShell>
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold">Feature Flags</h1>
+        <h1 className="text-2xl font-bold">Controls</h1>
         <button
           onClick={save}
           disabled={saving}
@@ -82,29 +71,6 @@ export default function FeatureFlagsPage() {
 
       <div className="max-w-2xl space-y-6">
         <FlagCard
-          title="Generation Paused"
-          description="Prevent all new script generation requests. Existing jobs continue."
-          enabled={form.generation_paused}
-          onToggle={(v) => set('generation_paused', v)}
-          danger
-        >
-          {form.generation_paused && (
-            <div className="mt-3">
-              <label className="text-xs text-muted-foreground mb-1 block">
-                Message shown to users (optional)
-              </label>
-              <input
-                type="text"
-                value={form.generation_paused_message ?? ''}
-                onChange={(e) => set('generation_paused_message', e.target.value || null)}
-                placeholder="e.g. Generation is temporarily paused for maintenance."
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              />
-            </div>
-          )}
-        </FlagCard>
-
-        <FlagCard
           title="Maintenance Mode"
           description="Show a maintenance screen to all users on the client app."
           enabled={form.maintenance_mode}
@@ -114,7 +80,7 @@ export default function FeatureFlagsPage() {
           {form.maintenance_mode && (
             <div className="mt-3">
               <label className="text-xs text-muted-foreground mb-1 block">
-                Maintenance message (optional)
+                Message shown to users (optional)
               </label>
               <input
                 type="text"
@@ -127,15 +93,8 @@ export default function FeatureFlagsPage() {
           )}
         </FlagCard>
 
-        <FlagCard
-          title="Billing Enabled"
-          description="Enable billing enforcement (Phase 2). Currently a scaffold — has no effect in Phase 1."
-          enabled={form.billing_enabled}
-          onToggle={(v) => set('billing_enabled', v)}
-        />
-
         <div className="rounded-lg border border-border bg-card p-5">
-          <div className="flex items-center justify-between mb-1">
+          <div className="flex items-center justify-between">
             <div>
               <div className="text-sm font-medium">Anonymous User Limit</div>
               <div className="text-xs text-muted-foreground mt-0.5">

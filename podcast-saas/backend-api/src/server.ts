@@ -8,6 +8,8 @@ import { tmpdir } from 'os';
 import { logger } from './lib/logger.js';
 import { checkDatabaseConnection } from './db/index.js';
 import { getFirebaseAdmin } from './services/firebase.js';
+import { getStorageAdapter } from './services/storage/getStorageAdapter.js';
+import { R2StorageAdapter } from './services/storage/R2StorageAdapter.js';
 
 // Controllers
 import { registerPlatformRoutes } from './controllers/v1/platform.controller.js';
@@ -19,10 +21,14 @@ import { registerAdminSettingsRoutes } from './controllers/admin/v1/settings.con
 import { registerAdminSystemPromptRoutes } from './controllers/admin/v1/system-prompts.controller.js';
 import { registerAdminLlmConfigRoutes } from './controllers/admin/v1/llm-config.controller.js';
 import { registerAdminUsersRoutes } from './controllers/admin/v1/users.controller.js';
+import { registerAdminPipelineStatsRoutes } from './controllers/admin/v1/pipeline-stats.controller.js';
 import { firebaseAuthMiddleware } from './middleware/firebase-auth.js';
 
 // Phase 2+ stub routes
 import { registerPhase2StubRoutes } from './controllers/stubs.js';
+import { registerPlayerRoutes } from './controllers/v1/player.controller.js';
+import { registerSimulationsRoutes } from './controllers/v1/simulations.controller.js';
+import { registerBrollRoutes } from './controllers/v1/broll.controller.js';
 
 const PORT = parseInt(process.env.PORT ?? '8080', 10);
 
@@ -42,10 +48,11 @@ async function build() {
 
   await app.register(helmet, {
     contentSecurityPolicy: false, // handled by frontends
+    crossOriginResourcePolicy: { policy: 'cross-origin' }, // allow video/HLS segments cross-origin
   });
 
   await app.register(multipart, {
-    limits: { fileSize: 100 * 1024 * 1024 }, // 100MB
+    limits: { fileSize: 10 * 1024 * 1024 * 1024 }, // 10 GB (overridden per-route where needed)
   });
 
   // Health check
@@ -64,6 +71,221 @@ async function build() {
       try {
         const data = await readFile(filePath);
         return reply.send(data);
+      } catch {
+        return reply.code(404).send({ message: 'File not found' });
+      }
+    },
+  );
+
+  // Public HLS segment serving for local storage (dev only, no auth).
+  app.get<{ Params: { '*': string } }>(
+    '/hls-public/*',
+    async (request, reply) => {
+      const key = request.params['*'];
+      if (!key.startsWith('hls/')) {
+        return reply.code(403).send({ message: 'Forbidden' });
+      }
+      const filePath = join(tmpdir(), 'podcast-saas-local-storage', key);
+      try {
+        const data = await readFile(filePath);
+        const contentType = key.endsWith('.m3u8')
+          ? 'application/vnd.apple.mpegurl'
+          : 'video/mp2t';
+        return reply.header('Content-Type', contentType).send(data);
+      } catch {
+        return reply.code(404).send({ message: 'File not found' });
+      }
+    },
+  );
+
+  // HLS proxy for R2 storage — fetches from the R2 public URL and adds CORS headers.
+  // Necessary because pub-*.r2.dev ignores PutBucketCorsCommand CORS rules.
+  app.get<{ Params: { '*': string } }>(
+    '/hls-proxy/*',
+    async (request, reply) => {
+      const key = request.params['*'];
+      if (!key.startsWith('hls/')) {
+        return reply.code(403).send({ message: 'Forbidden' });
+      }
+      const r2PublicUrl = process.env.R2_PUBLIC_URL;
+      if (!r2PublicUrl) {
+        return reply.code(500).send({ message: 'R2_PUBLIC_URL not set' });
+      }
+      try {
+        const upstream = await fetch(`${r2PublicUrl}/${key}`);
+        if (!upstream.ok) {
+          return reply.code(upstream.status).send({ message: 'Upstream error' });
+        }
+        const contentType = key.endsWith('.m3u8')
+          ? 'application/vnd.apple.mpegurl'
+          : 'video/mp2t';
+        const data = Buffer.from(await upstream.arrayBuffer());
+        return reply
+          .header('Content-Type', contentType)
+          .header('Access-Control-Allow-Origin', '*')
+          .header('Cache-Control', 'public, max-age=3600')
+          .send(data);
+      } catch (err) {
+        logger.warn({ key, err }, 'hls-proxy: fetch failed');
+        return reply.code(502).send({ message: 'Failed to fetch from storage' });
+      }
+    },
+  );
+
+  // Public raw video streaming (dev only, no auth) — only serves files under videos/ prefix.
+  // Enables immediate playback in the editor while HLS transcoding runs in the background.
+  // Range requests are supported so browser seeking works without buffering the whole file.
+  app.get<{ Params: { '*': string } }>(
+    '/video-raw/*',
+    async (request, reply) => {
+      const key = request.params['*'];
+      if (!key.startsWith('videos/')) {
+        return reply.code(403).send({ message: 'Forbidden' });
+      }
+      const filePath = join(tmpdir(), 'podcast-saas-local-storage', key);
+      try {
+        const { stat, createReadStream } = await import('fs');
+        const { promisify } = await import('util');
+        const fileStats = await promisify(stat)(filePath);
+        const fileSize = fileStats.size;
+        const ext = key.split('.').pop()?.toLowerCase() ?? 'mp4';
+        const contentType = ext === 'webm' ? 'video/webm' : ext === 'mov' ? 'video/quicktime' : 'video/mp4';
+
+        const rangeHeader = request.headers['range'];
+        if (rangeHeader) {
+          // Parse "bytes=START-END" — also handles suffix form "bytes=-N" and open-end "bytes=N-"
+          const rangeValue = rangeHeader.replace(/^bytes=/, '');
+          const dashIdx = rangeValue.indexOf('-');
+          const startStr = rangeValue.slice(0, dashIdx);
+          const endStr = rangeValue.slice(dashIdx + 1);
+
+          let start: number;
+          let end: number;
+
+          if (startStr === '') {
+            // Suffix form: bytes=-N  → last N bytes
+            const suffixLen = parseInt(endStr, 10);
+            start = Math.max(0, fileSize - suffixLen);
+            end = fileSize - 1;
+          } else {
+            start = parseInt(startStr, 10);
+            end = endStr ? parseInt(endStr, 10) : fileSize - 1;
+          }
+
+          // Clamp to valid range
+          end = Math.min(end, fileSize - 1);
+
+          if (isNaN(start) || isNaN(end) || start > end) {
+            logger.warn({ key, rangeHeader, start, end }, 'video-raw: invalid Range header');
+            return reply
+              .code(416)
+              .header('Content-Range', `bytes */${fileSize}`)
+              .send({ message: 'Range Not Satisfiable' });
+          }
+
+          logger.debug({
+            key,
+            range: rangeHeader,
+            start,
+            end,
+            fileSize,
+            status: 206,
+            contentType,
+          }, 'video-raw range response');
+
+          return reply
+            .code(206)
+            .header('Content-Range', `bytes ${start}-${end}/${fileSize}`)
+            .header('Accept-Ranges', 'bytes')
+            .header('Content-Length', end - start + 1)
+            .header('Content-Type', contentType)
+            .header('Access-Control-Allow-Origin', '*')
+            .send(createReadStream(filePath, { start, end }));
+        }
+
+        logger.debug({ key, fileSize, status: 200, contentType }, 'video-raw full response');
+
+        return reply
+          .header('Accept-Ranges', 'bytes')
+          .header('Content-Length', fileSize)
+          .header('Content-Type', contentType)
+          .header('Access-Control-Allow-Origin', '*')
+          .send(createReadStream(filePath));
+      } catch (err) {
+        logger.warn({ key, err }, 'video-raw: file not found');
+        return reply.code(404).send({ message: 'File not found' });
+      }
+    },
+  );
+
+  // R2 video proxy — streams raw videos from R2 with CORS + range-request support.
+  // Replaces direct presigned URLs which lack CORS headers on the private R2 endpoint.
+  app.get<{ Params: { '*': string } }>(
+    '/video-proxy/*',
+    async (request, reply) => {
+      const key = request.params['*'];
+      if (!key.startsWith('videos/')) {
+        return reply.code(403).send({ message: 'Forbidden' });
+      }
+      const storage = getStorageAdapter();
+      if (!(storage instanceof R2StorageAdapter)) {
+        // Local dev: redirect to the existing /video-raw/ handler
+        return reply.redirect(`/video-raw/${key}`);
+      }
+      try {
+        const rangeHeader = request.headers['range'] as string | undefined;
+        const { body, contentType, contentLength, statusCode, contentRange, acceptRanges } =
+          await storage.streamObject(key, rangeHeader);
+
+        reply
+          .code(statusCode)
+          .header('Content-Type', contentType)
+          .header('Accept-Ranges', acceptRanges)
+          .header('Access-Control-Allow-Origin', '*')
+          .header('Access-Control-Allow-Headers', 'Range')
+          .header('Access-Control-Expose-Headers', 'Content-Range, Content-Length');
+
+        if (contentLength != null) reply.header('Content-Length', contentLength);
+        if (contentRange)          reply.header('Content-Range', contentRange);
+
+        return reply.send(body);
+      } catch (err: unknown) {
+        const code = (err as { $metadata?: { httpStatusCode?: number } })?.$metadata?.httpStatusCode;
+        if (code === 404 || code === 403) return reply.code(404).send({ message: 'Not found' });
+        logger.warn({ key, err }, 'video-proxy: R2 fetch failed');
+        return reply.code(502).send({ message: 'Failed to fetch from storage' });
+      }
+    },
+  );
+
+  // Public simulation file serving (dev only, no auth) — serves simulations/ prefix with correct content-types.
+  // In production, simulation files are served directly from R2 public URL.
+  app.get<{ Params: { '*': string } }>(
+    '/sim-public/*',
+    async (request, reply) => {
+      const key = request.params['*'];
+      if (!key.startsWith('simulations/')) {
+        return reply.code(403).send({ message: 'Forbidden' });
+      }
+      const filePath = join(tmpdir(), 'podcast-saas-local-storage', key);
+      try {
+        const data = await readFile(filePath);
+        const ext = key.split('.').pop()?.toLowerCase() ?? '';
+        const ct: Record<string, string> = {
+          html: 'text/html; charset=utf-8', htm: 'text/html; charset=utf-8',
+          js: 'application/javascript', mjs: 'application/javascript',
+          css: 'text/css', json: 'application/json',
+          png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+          gif: 'image/gif', svg: 'image/svg+xml', ico: 'image/x-icon',
+          woff: 'font/woff', woff2: 'font/woff2', ttf: 'font/ttf',
+          mp3: 'audio/mpeg', mp4: 'video/mp4', webm: 'video/webm', wav: 'audio/wav',
+          txt: 'text/plain',
+        };
+        return reply
+          .header('Content-Type', ct[ext] ?? 'application/octet-stream')
+          .header('Cross-Origin-Resource-Policy', 'cross-origin')
+          .header('Access-Control-Allow-Origin', '*')
+          .send(data);
       } catch {
         return reply.code(404).send({ message: 'File not found' });
       }
@@ -90,12 +312,17 @@ async function build() {
   await registerCorpusRoutes(app);
   await registerVideoRoutes(app);
   await registerSectionsRoutes(app);
+  await registerSimulationsRoutes(app);
+  await registerBrollRoutes(app);
 
   // Admin routes
   await registerAdminSettingsRoutes(app);
   await registerAdminSystemPromptRoutes(app);
   await registerAdminLlmConfigRoutes(app);
   await registerAdminUsersRoutes(app);
+  await registerAdminPipelineStatsRoutes(app);
+
+  await registerPlayerRoutes(app);
 
   // Phase 2+ stubs (return 501 Not Implemented)
   await registerPhase2StubRoutes(app);
@@ -125,6 +352,13 @@ async function start() {
     // Verify dependencies
     await checkDatabaseConnection();
     getFirebaseAdmin(); // validates env vars early
+
+    // Configure R2 CORS so browsers can PUT directly to presigned URLs
+    const storage = getStorageAdapter();
+    if (storage instanceof R2StorageAdapter) {
+      const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
+      await storage.ensureBucketCors([appUrl, 'http://localhost:3000', 'http://localhost:3001']);
+    }
 
     const app = await build();
     await app.listen({ port: PORT, host: '0.0.0.0' });

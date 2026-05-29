@@ -320,6 +320,13 @@ export const videoFileStatusEnum = pgEnum('video_file_status', [
   'failed',
 ]);
 
+export const hlsTranscodeStatusEnum = pgEnum('hls_transcode_status', [
+  'pending',
+  'processing',
+  'ready',
+  'failed',
+]);
+
 export const video_files = pgTable('video_files', {
   id: uuid('id').primaryKey().defaultRandom(),
   project_id: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
@@ -328,7 +335,28 @@ export const video_files = pgTable('video_files', {
   storage_key: text('storage_key'),
   status: videoFileStatusEnum('status').notNull().default('uploading'),
   duration_sec: real('duration_sec'),
+  hls_status: hlsTranscodeStatusEnum('hls_status').notNull().default('pending'),
+  hls_master_key: text('hls_master_key'),
+  hls_current_tier: text('hls_current_tier'),
+  hls_360p_key: text('hls_360p_key'),
+  hls_started_at: timestamp('hls_started_at', { withTimezone: true }),
+  hls_finished_at: timestamp('hls_finished_at', { withTimezone: true }),
+  hls_error: text('hls_error'),
+  waveform_peaks: text('waveform_peaks'),  // JSON array of 200 floats 0–1, set after transcode
+  is_broll: boolean('is_broll').notNull().default(false),  // true for AI-generated broll source files
   created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const simulations = pgTable('simulations', {
+  id:               uuid('id').primaryKey().defaultRandom(),
+  project_id:       uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  name:             text('name').notNull(),
+  storage_prefix:   text('storage_prefix').notNull(),
+  entry_file:       text('entry_file').notNull(),  // full public URL of injected entry HTML
+  bridge_functions: jsonb('bridge_functions'),
+  status:           text('status').notNull().default('processing'),
+  error:            text('error'),
+  created_at:       timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const timeline_sections = pgTable('timeline_sections', {
@@ -341,7 +369,36 @@ export const timeline_sections = pgTable('timeline_sections', {
   label: text('label'),
   notes: text('notes'),
   sort_order: integer('sort_order'),
+  simulation_url: text('simulation_url'),
+  simulation_id: uuid('simulation_id').references(() => simulations.id, { onDelete: 'set null' }),
+  sim_script:  text('sim_script'),
+  sim_prompt:  text('sim_prompt'),
+  simple_ui:   boolean('simple_ui').notNull().default(false),
+  auto_script: boolean('auto_script').notNull().default(true),
+  // B-roll multi-track support (migration 010)
+  track: text('track').notNull().default('main'),           // 'main' | 'broll'
+  global_offset_sec: real('global_offset_sec'),             // broll only: absolute start on main timeline
+  sim_meta: jsonb('sim_meta'),                              // bridge generation plan metadata (migration 013)
   created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const video_generation_jobs = pgTable('video_generation_jobs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  project_id: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  section_id: uuid('section_id').references(() => timeline_sections.id, { onDelete: 'set null' }),
+  video_file_id: uuid('video_file_id').references(() => video_files.id, { onDelete: 'set null' }),
+  model: text('model').notNull(),                           // 'kling' | 'seedance' | 'veo'
+  original_prompt: text('original_prompt').notNull(),
+  enhanced_prompt: text('enhanced_prompt'),
+  enhance_enabled: boolean('enhance_enabled').notNull().default(true),
+  target_duration_sec: real('target_duration_sec').notNull(),
+  target_global_offset_sec: real('target_global_offset_sec').notNull(),
+  external_task_id: text('external_task_id'),
+  status: text('status').notNull().default('queued'),
+  // queued | enhancing | submitting | generating | downloading | transcoding | ready | failed
+  error: text('error'),
+  created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  finished_at: timestamp('finished_at', { withTimezone: true }),
 });
 
 // ── Type exports ──────────────────────────────────────────────────────────────
@@ -361,4 +418,6 @@ export type AudioRender = typeof audio_renders.$inferSelect;
 export type Scene = typeof scenes.$inferSelect;
 export type VideoFile = typeof video_files.$inferSelect;
 export type TimelineSection = typeof timeline_sections.$inferSelect;
+export type VideoGenerationJob = typeof video_generation_jobs.$inferSelect;
 export type CameraPlan = typeof camera_plans.$inferSelect;
+export type SimulationRow = typeof simulations.$inferSelect;

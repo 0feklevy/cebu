@@ -1,9 +1,11 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
-import { projects, hosts, orgs } from '../../db/schema.js';
+import { projects, hosts, video_files } from '../../db/schema.js';
 import { eq, and } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
+import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
+import { logger } from '../../lib/logger.js';
 import { CreateProjectSchema } from 'shared';
 
 export async function registerProjectRoutes(app: FastifyInstance): Promise<void> {
@@ -105,6 +107,58 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
       ]);
 
       return reply.send({ ...project, corpora: allCorpora, latest_script: latestScript ?? null, host_a: hostA, host_b: hostB });
+    },
+  );
+
+  // PATCH /api/v1/projects/:id — rename (update title)
+  app.patch<{ Params: { id: string } }>(
+    '/api/v1/projects/:id',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const body = z.object({ title: z.string().min(1).max(200) }).safeParse(request.body);
+      if (!body.success) return reply.code(400).send({ message: body.error.message });
+
+      const project = await db.query.projects.findFirst({
+        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
+      });
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+
+      const [updated] = await db
+        .update(projects)
+        .set({ title: body.data.title })
+        .where(eq(projects.id, project.id))
+        .returning();
+      return reply.send(updated);
+    },
+  );
+
+  // DELETE /api/v1/projects/:id
+  app.delete<{ Params: { id: string } }>(
+    '/api/v1/projects/:id',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const project = await db.query.projects.findFirst({
+        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
+      });
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+
+      // Best-effort storage cleanup before DB delete
+      const storage = getStorageAdapter();
+      const videos = await db.query.video_files.findMany({
+        where: eq(video_files.project_id, project.id),
+      });
+      await Promise.all(
+        videos.flatMap(v => [
+          v.storage_key ? storage.deleteFile(v.storage_key).catch(err => logger.warn({ err }, 'delete raw')) : null,
+          storage.deleteWithPrefix(`hls/${v.id}`).catch(err => logger.warn({ err }, 'delete hls')),
+        ].filter(Boolean)),
+      );
+
+      // DB delete — cascades to video_files and timeline_sections
+      await db.delete(projects).where(eq(projects.id, project.id));
+      return reply.code(204).send();
     },
   );
 
