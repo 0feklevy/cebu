@@ -1,5 +1,5 @@
-import { HomeSidebar } from '../../components/HomeSidebar';
-import { HomeHero } from '../../components/HomeHero';
+import { HomeSidebar } from '@/components/HomeSidebar';
+import { HomeHero } from '@/components/HomeHero';
 
 export default function LandingPage() {
   return (

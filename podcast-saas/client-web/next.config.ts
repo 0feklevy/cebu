@@ -10,15 +10,17 @@ const nextConfig: NextConfig = {
   },
   webpack: (config, { dev }) => {
     if (dev) {
-      // pnpm symlinks into .pnpm virtual store cause watchpack to open file
-      // descriptors for every transitive dependency file, hitting EMFILE and
-      // breaking route registration (causing 404s). Stop watchpack from
-      // following symlinks — module resolution (resolve.symlinks) is unaffected
-      // so transpilePackages: ['shared'] still works.
       config.watchOptions = {
         ...config.watchOptions,
-        followSymlinks: false,
-        ignored: ['**/node_modules/**', '**/.git/**'],
+        poll: 1000,
+        aggregateTimeout: 300,
+        ignored: [
+          '**/.git/**',
+          '**/.next/**',
+          '**/node_modules/**',
+          '../node_modules/**',
+          '../../node_modules/**',
+        ],
       };
     }
     // TypeScript files in the shared workspace use .js extensions for ESM compat.
