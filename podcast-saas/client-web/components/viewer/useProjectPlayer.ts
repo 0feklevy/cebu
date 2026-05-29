@@ -623,6 +623,7 @@ export function useProjectPlayer(
       }
       if (type === 'userInteraction') {
         videoRef.current?.pause();
+        sendToSim({ type: 'pauseScript' });   // stop animation, keep sim panel visible
         userPausedRef.current = true;
         merge({ showResumeBtn: true, badgeMode: 'free' });
       }
@@ -839,6 +840,10 @@ export function useProjectPlayer(
   const resumeFromSim = useCallback(() => {
     userPausedRef.current = false;
     merge({ showResumeBtn: false });
+    // Restart the animation script that was paused on userInteraction
+    if (activeSimRef.current) {
+      sendToSim({ type: 'startScript', script: activeSimRef.current.sim_script ?? 'main' });
+    }
     safePlay(videoRef.current!);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
