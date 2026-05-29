@@ -758,24 +758,10 @@ export function useProjectPlayer(
     const onTouchStart = (e: TouchEvent) => { e.preventDefault(); startScrub(e.touches[0].clientX); };
     const onTouchMove  = (e: TouchEvent) => { e.preventDefault(); moveScrub(e.touches[0].clientX); };
     const onTouchEnd   = (e: TouchEvent) => endScrub(e.changedTouches[0].clientX);
-    const onKeyDown    = (e: KeyboardEvent) => {
-      if (!startedRef.current) return;
-      const step = e.key === 'ArrowLeft' ? -5 : e.key === 'ArrowRight' ? 5 : 0;
-      if (!step) return;
-      const newGlobal = Math.max(0, Math.min(totalDurRef.current, globalTime() + step));
-      scrubbingRef.current  = true;
-      wasPlayingRef.current = !videoRef.current?.paused;
-      videoRef.current?.pause();
-      const r = track.getBoundingClientRect();
-      endScrub(r.left + (newGlobal / totalDurRef.current) * r.width);
-    };
-
     wrap.addEventListener('mousedown',   onMouseDown);
     wrap.addEventListener('touchstart',  onTouchStart, { passive: false });
     wrap.addEventListener('touchmove',   onTouchMove,  { passive: false });
     wrap.addEventListener('touchend',    onTouchEnd);
-    wrap.setAttribute('tabindex', '0');
-    wrap.addEventListener('keydown',     onKeyDown);
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup',   onMouseUp);
 
@@ -784,7 +770,6 @@ export function useProjectPlayer(
       wrap.removeEventListener('touchstart', onTouchStart);
       wrap.removeEventListener('touchmove',  onTouchMove);
       wrap.removeEventListener('touchend',   onTouchEnd);
-      wrap.removeEventListener('keydown',    onKeyDown);
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup',   onMouseUp);
     };
@@ -814,6 +799,7 @@ export function useProjectPlayer(
     merge({ started: true });
     safePlay(videoRef.current!);
     scheduleHide();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scheduleHide]);
 
   const togglePlay = useCallback(() => {
@@ -822,6 +808,53 @@ export function useProjectPlayer(
     if (!v) return;
     if (v.paused) safePlay(v); else v.pause();
   }, [startPlayback]);
+
+  // ── keyboard shortcuts (Space, ←, →) — global, like YouTube ──────────────
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if ((e.target as HTMLElement).isContentEditable) return;
+
+      if (e.key === ' ') {
+        e.preventDefault();
+        if (!startedRef.current) { startPlayback(); return; }
+        togglePlay();
+        showControls();
+        return;
+      }
+
+      if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && startedRef.current) {
+        e.preventDefault();
+        const delta = e.key === 'ArrowLeft' ? -5 : 5;
+        const newGlobal = Math.max(0, Math.min(totalDurRef.current, globalTime() + delta));
+        const tl = timelineRef.current;
+
+        let targetIdx = 0;
+        for (let i = tl.length - 1; i >= 0; i--) {
+          if (tl[i].offset <= newGlobal) { targetIdx = i; break; }
+        }
+        const localTime = Math.max(0, newGlobal - tl[targetIdx].offset);
+        const wasPlaying = !videoRef.current?.paused;
+
+        setProgress(newGlobal);
+        showControls();
+
+        if (targetIdx === curIdxRef.current) {
+          videoRef.current!.currentTime = localTime;
+          updateSimOverlay(targetIdx, localTime);
+          updateBrollOverlay(newGlobal);
+          if (wasPlaying) safePlay(videoRef.current!);
+        } else {
+          loadSegment(targetIdx, localTime, wasPlaying);
+        }
+      }
+    };
+
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startPlayback, togglePlay, showControls, loadSegment]);
 
   const handleVideoClick = useCallback(() => {
     if (!startedRef.current) { startPlayback(); return; }
