@@ -32,6 +32,7 @@ const TYPE_STYLE: Record<string, { fill: string; border: string; text: string; h
   intro:      { fill: 'rgba(16,185,129,0.18)',  border: '#10b981', text: '#065f46', handle: '#059669' },
   outro:      { fill: 'rgba(139,92,246,0.18)',  border: '#8b5cf6', text: '#4c1d95', handle: '#7c3aed' },
   cut:        { fill: 'rgba(239,68,68,0.18)',   border: '#ef4444', text: '#991b1b', handle: '#dc2626' },
+  clip:       { fill: 'rgba(34,197,94,0.18)',   border: '#22c55e', text: '#14532d', handle: '#16a34a' },
   custom:     { fill: 'rgba(107,114,128,0.18)', border: '#6b7280', text: '#374151', handle: '#4b5563' },
 };
 const fallbackStyle = TYPE_STYLE.custom;

@@ -32,7 +32,7 @@ interface SimControl {
 }
 
 interface SimButton  { id: string; label: string; }
-interface SimSection { id: string; defaultHidden: boolean; }
+interface SimSection { id: string; defaultHidden: boolean; childControlIds: string[]; childButtonIds: string[]; }
 
 // JSON plan that Claude returns — describes WHAT to do, not HOW to code it
 export interface BridgePlan {
@@ -163,7 +163,13 @@ Output schema (all fields required):
 7. animation.step: choose 0.1–0.3 for smooth motion. Never 0.
 8. If simpleUi=false: showControlIds = all control ids, hideControlIds = [], hideSelectorStrings = [].
 9. If autoScript=false: animation = { enabled:false, controllerId:targetControlId, ...rest from manifest }.
-10. renderCalls: include only functions that appear in manifest.renderFunctions or manifest.updateFunctions.
+10. renderCalls: include only functions from manifest.renderFunctions or manifest.updateFunctions.
+11. ANCESTOR CONTAINERS: Each manifest section has childControlIds and childButtonIds. NEVER put
+    "#sectionId" in hideSelectorStrings when that section's childControlIds intersects showControlIds
+    or childButtonIds intersects keepButtonIds. Hide the individual children (via hideControlIds /
+    hideButtonIds / hideSelectorStrings with .control-group selectors) instead.
+12. updateDerivedPhysics: if manifest.updateFunctions contains "updateDerivedPhysics", ALWAYS include
+    it in renderCalls and place it BEFORE any renderFunctions entries (e.g. before "redraw").
 
 ═══ ALIAS RESOLUTION ═══
 Map user prompt terms to canonical manifest IDs:
@@ -173,11 +179,12 @@ Map user prompt terms to canonical manifest IDs:
 
 ═══ hideSelectorStrings guidelines ═══
 Common safe patterns (include a warning if you're guessing):
-  ".tabs"            — mode-switching tab bar
-  ".sim-info"        — explanation/formula block
-  ".legend"          — path legend
-  ".action-display"  — action/energy display block
-  ".instructions"    — instruction text
+  ".tabs"                           — mode-switching tab bar
+  ".sim-info"                       — explanation/formula block
+  ".legend"                         — path legend
+  ".action-display"                 — action/energy display block
+  ".instructions"                   — instruction text
+  ".control-group:has(#time-value)" — time-of-flight display row only (safe: scoped to one row)
 
 Output only the JSON object.`;
 
@@ -213,9 +220,34 @@ export function buildManifest(sourceMap: Map<string, string>): SimManifest {
     const isJs   = /\.(js|mjs|ts)$/.test(key);
 
     if (isHtml) {
-      // Extract <input> elements
-      const inputRe = /<input([^>]*)>/gi;
       let m: RegExpExecArray | null;
+
+      // First pass: extract section divs WITH source positions (needed for containment tracking)
+      const localSectionPos: Array<{ id: string; pos: number }> = [];
+      const divRe = /<div([^>]*)id="([^"]+)"([^>]*)>/gi;
+      while ((m = divRe.exec(content)) !== null) {
+        const id = m[2];
+        if (manifest.sections.some(s => s.id === id)) continue;
+        const allAttrs = m[1] + m[3];
+        const styleStr = /\bstyle="([^"]*)"/.exec(allAttrs)?.[1] ?? '';
+        const defaultHidden = /display\s*:\s*none/.test(styleStr);
+        manifest.sections.push({ id, defaultHidden, childControlIds: [], childButtonIds: [] });
+        localSectionPos.push({ id, pos: m.index });
+      }
+
+      // Find the nearest section whose opening tag appears before a given source position.
+      // "Nearest" = largest pos that is still less than the control/button's pos — i.e. the
+      // innermost section that opened most recently before this element.
+      const nearestSection = (pos: number): SimSection | null => {
+        let best: { id: string; pos: number } | null = null;
+        for (const sp of localSectionPos) {
+          if (sp.pos < pos && (!best || sp.pos > best.pos)) best = sp;
+        }
+        return best ? (manifest.sections.find(s => s.id === best!.id) ?? null) : null;
+      };
+
+      // Second pass: extract <input> controls WITH positions
+      const inputRe = /<input([^>]*)>/gi;
       while ((m = inputRe.exec(content)) !== null) {
         const attrs = m[1];
         const id   = /\bid="([^"]+)"/.exec(attrs)?.[1];
@@ -231,25 +263,20 @@ export function buildManifest(sourceMap: Map<string, string>): SimManifest {
         const label = labelRe.exec(content)?.[1]?.trim() ?? id;
 
         manifest.controls.push({ id, type, label, min, max, step, aliases: buildControlAliases(id, label) });
+
+        const sec = nearestSection(m.index);
+        if (sec && !sec.childControlIds.includes(id)) sec.childControlIds.push(id);
       }
 
-      // Extract <button> elements
+      // Third pass: extract <button> elements WITH positions
       const btnRe = /<button[^>]+id="([^"]+)"[^>]*>([^<]*)</gi;
       while ((m = btnRe.exec(content)) !== null) {
         const id = m[1];
         if (manifest.buttons.some(b => b.id === id)) continue;
         manifest.buttons.push({ id, label: m[2].trim() });
-      }
 
-      // Extract <div id="..."> sections
-      const divRe = /<div([^>]*)id="([^"]+)"([^>]*)>/gi;
-      while ((m = divRe.exec(content)) !== null) {
-        const id = m[2];
-        if (manifest.sections.some(s => s.id === id)) continue;
-        const allAttrs = m[1] + m[3];
-        const styleStr = /\bstyle="([^"]*)"/.exec(allAttrs)?.[1] ?? '';
-        const defaultHidden = /display\s*:\s*none/.test(styleStr);
-        manifest.sections.push({ id, defaultHidden });
+        const sec = nearestSection(m.index);
+        if (sec && !sec.childButtonIds.includes(id)) sec.childButtonIds.push(id);
       }
     }
 
@@ -326,6 +353,39 @@ function validateAndRepairPlan(plan: BridgePlan, manifest: SimManifest): BridgeP
     ...p.renderCalls.filter(fn => manifest.renderFunctions.includes(fn)),
   ];
 
+  // Ancestor-container protection: never hide a section div that contains a shown control or
+  // a kept button — the bridge would immediately restore it anyway, and the flicker breaks UX.
+  // Works on ID selectors only (#foo); class selectors (.tabs) are not section containers.
+  {
+    const shownControls = new Set([...p.showControlIds, ...(p.targetControlId ? [p.targetControlId] : [])]);
+    const keptButtons   = new Set(p.keepButtonIds);
+    p.hideSelectorStrings = p.hideSelectorStrings.filter(sel => {
+      const idMatch = /^#([\w-]+)$/.exec(sel);
+      if (!idMatch) return true;
+      const sectionId = idMatch[1];
+      const section   = manifest.sections.find(s => s.id === sectionId);
+      if (!section) return true;
+      const hasShownChild = section.childControlIds.some(id => shownControls.has(id));
+      const hasKeptChild  = section.childButtonIds.some(id => keptButtons.has(id));
+      if (hasShownChild || hasKeptChild) {
+        logger.warn({ sectionId }, 'Plan repair: removing section selector — contains shown control or kept button');
+        return false;
+      }
+      return true;
+    });
+  }
+
+  // Belt-and-suspenders: always remove #draw-mode even if containment detection missed it.
+  p.hideSelectorStrings = p.hideSelectorStrings.filter(sel => sel !== '#draw-mode');
+
+  // Auto-add .tabs when simpleUi hides are present but .tabs wasn't included.
+  // The mode-switching tab bar should always be hidden in simple-UI mode.
+  if (p.hideSelectorStrings.length > 0 || p.hideControlIds.length > 0) {
+    if (!p.hideSelectorStrings.includes('.tabs')) {
+      p.hideSelectorStrings = ['.tabs', ...p.hideSelectorStrings];
+    }
+  }
+
   return p;
 }
 
@@ -384,6 +444,12 @@ export function compileBridgeFromPlan(plan: BridgePlan, manifest: SimManifest): 
   // SCRIPTS.main
   L.push(`  const SCRIPTS = {`);
   L.push(`    main: function () {`);
+  L.push(`      // ── Boot safety — idempotent calls; all guarded by ?. so no-op if absent ──`);
+  L.push(`      window.setupCanvas?.();`);
+  L.push(`      window.initializePoints?.();`);
+  L.push(`      window.applyResponsiveTableLabels?.();`);
+  L.push(`      window.updateDerivedPhysics?.();`);
+  L.push(``);
 
   if (hasHide) {
     L.push(`      // ── Record original display values for cleanup ─────────────────────────────`);
@@ -418,13 +484,13 @@ export function compileBridgeFromPlan(plan: BridgePlan, manifest: SimManifest): 
     L.push(`      document.getElementById('draw-mode')?.style.setProperty('display', 'block');`);
   }
 
-  // showOptimal
+  // showOptimal — set before first render so the initial draw includes the ballistic path
   if (plan.animation?.showOptimal) {
     L.push(`      window.showOptimal = true;`);
   }
 
-  // Static render calls (non-animation)
-  if (!plan.animation?.enabled && plan.renderCalls.length > 0) {
+  // Initial render — fires immediately so the canvas isn't blank while waiting for the first tick
+  if (plan.renderCalls.length > 0) {
     for (const fn of plan.renderCalls) L.push(`      window.${fn}?.();`);
   }
 
@@ -444,6 +510,7 @@ export function compileBridgeFromPlan(plan: BridgePlan, manifest: SimManifest): 
     L.push(`        if (_val <= ${anim.min}) { _val = ${anim.min}; _dir = 1; }`);
     L.push(`        _el.value = String(parseFloat(_val.toFixed(${dec})));`);
     L.push(`        _el.dispatchEvent(new Event('input', { bubbles: true }));`);
+    L.push(`        _el.dispatchEvent(new Event('change', { bubbles: true }));`);
     for (const fn of plan.renderCalls) L.push(`        window.${fn}?.();`);
     if (anim.showOptimal) L.push(`        window.showOptimal = true;`);
     L.push(`      }, ${anim.intervalMs});`);
@@ -568,8 +635,8 @@ export class SimulationService {
         const buf = await this.storage.readObject(key);
         // Strip ALL previously-injected bridge blocks (v1 and v2)
         const raw = buf.toString('utf-8')
-          .replace(/<script[^>]*>[\s\S]*?\/\* sim-bridge[\s\S]*?<\/script>\s*/gi, '')
-          .replace(/<script[^>]*>[\s\S]*?sim-bridge v[12][\s\S]*?<\/script>\s*/gi, '');
+          .replace(/<script[^>]*>\s*\/\* sim-bridge[\s\S]*?<\/script>/gi, '')
+          .replace(/<script[^>]*>\s*;?\s*\(function[\s\S]*?sim-bridge v[12][\s\S]*?<\/script>/gi, '');
         sourceMap.set(key, raw.slice(0, 12000));
       } catch { /* skip unreadable files */ }
     }));
@@ -608,8 +675,8 @@ export class SimulationService {
     // 8. Build section HTML (strip old bridge, add new external <script src>)
     const rawHtml = (await this.storage.readObject(entryKey)).toString('utf-8');
     const stripped = rawHtml
-      .replace(/<script[^>]*>[\s\S]*?\/\* sim-bridge[\s\S]*?<\/script>\s*/gi, '')
-      .replace(/<script[^>]*>[\s\S]*?sim-bridge v[12][\s\S]*?<\/script>\s*/gi, '');
+      .replace(/<script[^>]*>\s*\/\* sim-bridge[\s\S]*?<\/script>/gi, '')
+      .replace(/<script[^>]*>\s*;?\s*\(function[\s\S]*?sim-bridge v[12][\s\S]*?<\/script>/gi, '');
 
     const relativeDepth = entryDir === prefix
       ? 0
@@ -621,12 +688,125 @@ export class SimulationService {
       ? stripped.replace('</body>', `${scriptTag}\n</body>`)
       : stripped + '\n' + scriptTag;
 
+    // Validate: every external <script src="..."> from the original HTML must survive the strip.
+    // A missing src means the bridge-strip regex ate a real script tag — that is a bug.
+    const srcRe = /<script[^>]+src="([^"]+)"/gi;
+    let srcMatch: RegExpExecArray | null;
+    while ((srcMatch = srcRe.exec(rawHtml)) !== null) {
+      const src = srcMatch[1];
+      if (!sectionHtml.includes(`src="${src}"`)) {
+        throw new Error(
+          `Section HTML validation failed: <script src="${src}"> was lost after bridge-strip. ` +
+          `Do not upload broken HTML. Check the bridge-strip regex patterns.`
+        );
+      }
+    }
+
     const sectionHtmlKey = `${entryDir}/section_${sectionId}.html`;
     await this.storage.uploadFile(sectionHtmlKey, Buffer.from(sectionHtml, 'utf-8'), 'text/html; charset=utf-8');
     const sectionUrl = this.storage.getSimPublicUrl(sectionHtmlKey);
 
     logger.info({ simId, sectionId, projectId, sectionUrl, jsLen: jsCode.length }, 'Bridge script generated');
     return { sectionUrl, plan };
+  }
+
+  // ── Recompile from stored plan (no Claude call) ───────────────────────────────
+
+  async recompileBridgeScript(opts: {
+    simId:        string;
+    sectionId:    string;
+    projectId:    string;
+    simpleUi:     boolean;
+    autoScript:   boolean;
+    existingPlan: BridgePlan;
+  }): Promise<{ sectionUrl: string }> {
+    const { simId, sectionId, projectId, simpleUi, autoScript, existingPlan } = opts;
+    const prefix = `simulations/${projectId}/${simId}`;
+
+    // 1. Gather source files (same as generateBridgeScript — needed for manifest + entry HTML)
+    const allKeys = await this.storage.listObjects(prefix);
+    const isText        = (k: string) => /\.(js|mjs|html|htm|css|ts)$/.test(k);
+    const isSectionFile = (k: string) => /section_[^/]+\.(html|js)$/.test(k);
+    const textKeys    = allKeys.filter(k => isText(k) && !isSectionFile(k));
+    const jsKeys      = textKeys.filter(k => /\.(js|mjs|ts)$/.test(k));
+    const htmlCssKeys = textKeys.filter(k => /\.(html|htm|css)$/.test(k));
+    const orderedKeys = [...jsKeys, ...htmlCssKeys].slice(0, 10);
+
+    const sourceMap = new Map<string, string>();
+    await Promise.all(orderedKeys.map(async key => {
+      try {
+        const buf = await this.storage.readObject(key);
+        const raw = buf.toString('utf-8')
+          .replace(/<script[^>]*>\s*\/\* sim-bridge[\s\S]*?<\/script>/gi, '')
+          .replace(/<script[^>]*>\s*;?\s*\(function[\s\S]*?sim-bridge v[12][\s\S]*?<\/script>/gi, '');
+        sourceMap.set(key, raw.slice(0, 12000));
+      } catch { /* skip unreadable files */ }
+    }));
+
+    // 2. Build manifest (needed for validateAndRepairPlan + compileBridgeFromPlan)
+    const manifest = buildManifest(sourceMap);
+
+    // 3. Apply toggle overrides to stored plan (non-mutating)
+    let workingPlan: BridgePlan = { ...existingPlan };
+    if (!autoScript && workingPlan.animation) {
+      workingPlan = { ...workingPlan, animation: { ...workingPlan.animation, enabled: false } };
+    }
+    if (!simpleUi) {
+      workingPlan = { ...workingPlan, hideControlIds: [], hideButtonIds: [], hideSelectorStrings: [] };
+    }
+
+    // 4. Re-validate (sim source files could have been re-uploaded since original generation)
+    const plan = validateAndRepairPlan(workingPlan, manifest);
+
+    // 5. Compile deterministic JS
+    const jsCode = compileBridgeFromPlan(plan, manifest);
+
+    // 6. Locate entry HTML
+    const entryKey = allKeys.find(k => /\/(index|main)\.(html|htm)$/.test(k))
+      ?? allKeys.find(k => (k.endsWith('.html') || k.endsWith('.htm')) && !isSectionFile(k));
+    if (!entryKey) throw new Error('No HTML entry file found in simulation');
+
+    const entryDir = entryKey.substring(0, entryKey.lastIndexOf('/'));
+
+    // 7. Upload bridge JS
+    const bridgeJsKey = `${prefix}/section_${sectionId}.js`;
+    await this.storage.uploadFile(bridgeJsKey, Buffer.from(jsCode, 'utf-8'), 'application/javascript');
+
+    // 8. Build section HTML (strip old bridge, add new external <script src>)
+    const rawHtml = (await this.storage.readObject(entryKey)).toString('utf-8');
+    const stripped = rawHtml
+      .replace(/<script[^>]*>\s*\/\* sim-bridge[\s\S]*?<\/script>/gi, '')
+      .replace(/<script[^>]*>\s*;?\s*\(function[\s\S]*?sim-bridge v[12][\s\S]*?<\/script>/gi, '');
+
+    const relativeDepth = entryDir === prefix
+      ? 0
+      : entryDir.slice(prefix.length).split('/').filter(Boolean).length;
+    const relPath = (relativeDepth > 0 ? '../'.repeat(relativeDepth) : './') + `section_${sectionId}.js`;
+
+    const scriptTag = `<script src="${relPath}"></script>`;
+    const sectionHtml = stripped.includes('</body>')
+      ? stripped.replace('</body>', `${scriptTag}\n</body>`)
+      : stripped + '\n' + scriptTag;
+
+    // Validate: every external <script src="..."> from the original HTML must survive the strip.
+    const srcRe2 = /<script[^>]+src="([^"]+)"/gi;
+    let srcMatch2: RegExpExecArray | null;
+    while ((srcMatch2 = srcRe2.exec(rawHtml)) !== null) {
+      const src = srcMatch2[1];
+      if (!sectionHtml.includes(`src="${src}"`)) {
+        throw new Error(
+          `Section HTML validation failed: <script src="${src}"> was lost after bridge-strip. ` +
+          `Do not upload broken HTML. Check the bridge-strip regex patterns.`
+        );
+      }
+    }
+
+    const sectionHtmlKey = `${entryDir}/section_${sectionId}.html`;
+    await this.storage.uploadFile(sectionHtmlKey, Buffer.from(sectionHtml, 'utf-8'), 'text/html; charset=utf-8');
+    const sectionUrl = this.storage.getSimPublicUrl(sectionHtmlKey);
+
+    logger.info({ simId, sectionId, projectId, sectionUrl, jsLen: jsCode.length, recompile: true }, 'Bridge script recompiled from stored plan');
+    return { sectionUrl };
   }
 
   // ── Private ───────────────────────────────────────────────────────────────────

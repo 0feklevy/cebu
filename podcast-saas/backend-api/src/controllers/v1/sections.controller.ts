@@ -4,7 +4,7 @@ import { db } from '../../db/index.js';
 import { projects, timeline_sections, simulations } from '../../db/schema.js';
 import { eq, and, asc } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
-import { SimulationService } from '../../services/simulation/SimulationService.js';
+import { SimulationService, type BridgePlan } from '../../services/simulation/SimulationService.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 
 /** Resolve a simulation's entry_file (may be a storage key or a legacy full URL) to a public URL. */
@@ -108,6 +108,8 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       simulation_id: string;
       sim_script: string;
       global_offset_sec: number;
+      clip_source_video_id: string | null;
+      clip_in_sec: number;
     }>;
   }>(
     '/api/v1/projects/:id/sections/:sid',
@@ -127,7 +129,7 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       });
       if (!existing) return reply.code(404).send({ message: 'Section not found' });
 
-      const { simulation_id, sim_script, ...rest } = request.body;
+      const { simulation_id, sim_script, clip_source_video_id, clip_in_sec, ...rest } = request.body;
 
       if (rest.start_sec != null && rest.end_sec != null && rest.start_sec >= rest.end_sec) {
         return reply.code(400).send({ message: 'start_sec must be less than end_sec' });
@@ -145,9 +147,11 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       }
 
       const patch: Record<string, unknown> = { ...rest };
-      if (simulation_id !== undefined) patch.simulation_id = simulation_id || null;
-      if (sim_script !== undefined)    patch.sim_script    = sim_script || null;
-      if (resolvedSimUrl !== undefined) patch.simulation_url = resolvedSimUrl;
+      if (simulation_id !== undefined)       patch.simulation_id        = simulation_id || null;
+      if (sim_script !== undefined)          patch.sim_script           = sim_script || null;
+      if (resolvedSimUrl !== undefined)      patch.simulation_url       = resolvedSimUrl;
+      if (clip_source_video_id !== undefined) patch.clip_source_video_id = clip_source_video_id ?? null;
+      if (clip_in_sec !== undefined)         patch.clip_in_sec          = clip_in_sec;
 
       const [updated] = await db
         .update(timeline_sections)
@@ -194,29 +198,44 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       if (!anthropicApiKey) return reply.code(500).send({ message: 'ANTHROPIC_API_KEY not configured' });
 
       const svc = new SimulationService(getStorageAdapter(), anthropicApiKey);
-      const { sectionUrl, plan } = await svc.generateBridgeScript({
-        simId:      section.simulation_id,
-        sectionId:  section.id,
-        projectId:  project.id,
-        prompt,
-        simpleUi:   simple_ui,
-        autoScript: auto_script,
-      });
 
-      const simMeta = {
-        targetControlId:  plan.targetControlId,
-        confidence:       plan.confidence,
-        warnings:         plan.warnings,
-        hideControlIds:   plan.hideControlIds,
-        hideButtonIds:    plan.hideButtonIds,
-        hideSelectorStrings: plan.hideSelectorStrings,
-        animation:        plan.animation,
-        planVersion:      '2',
-      };
+      // Reuse stored plan when only toggles changed — skip Claude call
+      const storedMeta = section.sim_meta as (Record<string, unknown> & { planVersion?: string }) | null;
+      const canReuse = storedMeta?.planVersion === '3' && section.sim_prompt === prompt;
+
+      let sectionUrl: string;
+      const patch: Record<string, unknown> = { simple_ui, auto_script, sim_script: 'main' };
+
+      if (canReuse) {
+        ({ sectionUrl } = await svc.recompileBridgeScript({
+          simId:       section.simulation_id,
+          sectionId:   section.id,
+          projectId:   project.id,
+          simpleUi:    simple_ui,
+          autoScript:  auto_script,
+          existingPlan: storedMeta as unknown as BridgePlan,
+        }));
+        // sim_meta and sim_prompt unchanged — original AI plan is preserved
+      } else {
+        const { sectionUrl: url, plan } = await svc.generateBridgeScript({
+          simId:      section.simulation_id,
+          sectionId:  section.id,
+          projectId:  project.id,
+          prompt,
+          simpleUi:   simple_ui,
+          autoScript: auto_script,
+        });
+        sectionUrl = url;
+        // Store full plan (planVersion '3') so future toggle changes can recompile without Claude
+        patch.sim_prompt = prompt;
+        patch.sim_meta   = { ...plan, planVersion: '3' };
+      }
+
+      patch.simulation_url = sectionUrl;
 
       const [updated] = await db
         .update(timeline_sections)
-        .set({ simulation_url: sectionUrl, sim_prompt: prompt, simple_ui, auto_script, sim_script: 'main', sim_meta: simMeta })
+        .set(patch)
         .where(eq(timeline_sections.id, section.id))
         .returning();
 

@@ -379,6 +379,9 @@ export const timeline_sections = pgTable('timeline_sections', {
   track: text('track').notNull().default('main'),           // 'main' | 'broll'
   global_offset_sec: real('global_offset_sec'),             // broll only: absolute start on main timeline
   sim_meta: jsonb('sim_meta'),                              // bridge generation plan metadata (migration 013)
+  // Clip source fields (migration 014) — used by the new "clip" section type
+  clip_source_video_id: uuid('clip_source_video_id').references(() => video_files.id, { onDelete: 'set null' }),
+  clip_in_sec: real('clip_in_sec').default(0),              // in-point in source video (seconds)
   created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 

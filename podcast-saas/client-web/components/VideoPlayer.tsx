@@ -1,26 +1,12 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback, forwardRef, useImperativeHandle } from 'react';
-import { useClipSequence } from '../hooks/useClipSequence';
+import { useEditorPlayback } from '../hooks/useEditorPlayback';
+import { HLS_OPTS } from '../hooks/useSegmentedPlaybackCore';
 import type { Clip } from '../hooks/useClipSequence';
 import type { TimelineSection } from 'shared/src/generated/client-v1';
 
 export type { Clip };
-
-const HLS_OPTS = {
-  enableWorker: true,
-  startLevel: -1,
-  capLevelToPlayerSize: true,
-  startFragPrefetch: false,
-  maxBufferLength: 15,
-  maxMaxBufferLength: 30,
-  backBufferLength: 5,
-  abrEwmaDefaultEstimate: 500_000,
-  fragLoadingTimeOut: 20_000,
-  manifestLoadingTimeOut: 10_000,
-  maxBufferHole: 0.5,
-  nudgeMaxRetry: 5,
-};
 
 const IS_DEV = process.env.NODE_ENV === 'development';
 
@@ -67,7 +53,9 @@ interface MultiClipPlayerProps {
 
 function MultiClipPlayer({ clips, onTimeUpdate, sectionLabel, activeSimSection, activeBrollSection, brollHlsUrl, imperativeRef }: MultiClipPlayerProps) {
   const [speed, setSpeed] = useState(1);
-  const [localGlobalTime, setLocalGlobalTime] = useState(0);
+  // scrubDisplay: non-null while the user is dragging the seek bar — used for
+  // visual feedback only; the actual seek fires once on mouseup/touchend.
+  const [scrubDisplay, setScrubDisplay] = useState<number | null>(null);
 
   // ── broll overlay state ───────────────────────────────────────────────────
   const brollVideoRef = useRef<HTMLVideoElement>(null);
@@ -100,7 +88,14 @@ function MultiClipPlayer({ clips, onTimeUpdate, sectionLabel, activeSimSection, 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // postMessage listener
+  // ── shared playback engine (viewer-quality) ───────────────────────────────
+  const hook = useEditorPlayback(clips, onTimeUpdate);
+
+  useImperativeHandle(imperativeRef, () => ({
+    seek: (globalSec: number) => hook.seek(globalSec),
+  }));
+
+  // ── postMessage listener (sim ready + user interaction) ───────────────────
   useEffect(() => {
     const handler = (e: MessageEvent) => {
       if (e.source !== simFrameRef.current?.contentWindow) return;
@@ -167,34 +162,51 @@ function MultiClipPlayer({ clips, onTimeUpdate, sectionLabel, activeSimSection, 
   // broll cleanup on unmount
   useEffect(() => () => { brollHlsRef.current?.destroy(); brollHlsRef.current = null; }, []);
 
-  // ── broll video: resync on large manual seeks ────────────────────────────
+  // ── broll video: seek to correct position when section starts/ends ────────
+  useEffect(() => {
+    const v = brollVideoRef.current;
+    if (!v) return;
+    if (!activeBrollSection) { v.pause(); return; }
+    const brollTime = hook.globalTime - (activeBrollSection.global_offset_sec ?? 0) + activeBrollSection.start_sec;
+    v.currentTime = Math.max(0, brollTime);
+    if (hook.isPlaying) v.play().catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeBrollSection?.id]);
+
+  // ── broll video: resync drift on every global-time tick ──────────────────
+  // Runs at timeupdate rate (~8–10 Hz), not 60 Hz — drift check is cheap.
   useEffect(() => {
     const v = brollVideoRef.current;
     if (!v || !activeBrollSection) return;
-    const expected = localGlobalTime - (activeBrollSection.global_offset_sec ?? 0) + activeBrollSection.start_sec;
-    if (Math.abs(v.currentTime - expected) > 1.0) {
-      v.currentTime = Math.max(0, expected);
-    }
+    const expected = hook.globalTime - (activeBrollSection.global_offset_sec ?? 0) + activeBrollSection.start_sec;
+    if (Math.abs(v.currentTime - expected) > 1.0) v.currentTime = Math.max(0, expected);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [localGlobalTime]);
+  }, [hook.globalTime]);
 
-  // react to sim section boundary crossings
+  // ── broll video: play / pause in sync with main ──────────────────────────
+  useEffect(() => {
+    const v = brollVideoRef.current;
+    if (!v || !activeBrollSection) return;
+    if (hook.isPlaying && v.paused)    v.play().catch(() => {});
+    else if (!hook.isPlaying && !v.paused) v.pause();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hook.isPlaying, activeBrollSection?.id]);
+
+  // ── sim section boundary crossings ───────────────────────────────────────
   useEffect(() => {
     const newUrl = activeSimSection?.simulation_url ?? null;
     const script  = activeSimSection?.sim_script ?? 'auto';
-
     if (!newUrl) {
       if (activeSimUrlRef.current) {
         sendToSim({ type: 'stopScript' });
         setTimeout(() => setShowSim(false), 350);
       }
+      activeSimUrlRef.current = null;
       return;
     }
-
     const sameUrl = newUrl === activeSimUrlRef.current;
     activeSimUrlRef.current = newUrl;
     setSimUrl(newUrl);
-
     if (sameUrl && simReadyRef.current) {
       setShowSim(true);
       sendToSim({ type: 'startScript', script });
@@ -206,41 +218,7 @@ function MultiClipPlayer({ clips, onTimeUpdate, sectionLabel, activeSimSection, 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSimSection?.id, activeSimSection?.simulation_url]);
 
-  const handleTimeUpdate = useCallback((t: number) => {
-    setLocalGlobalTime(t);
-    onTimeUpdate(t);
-  }, [onTimeUpdate]);
-
-  const hook = useClipSequence(clips, handleTimeUpdate);
-
-  useImperativeHandle(imperativeRef, () => ({
-    seek: hook.seek,
-  }));
-
-  // ── broll video: seek on section entry / exit ────────────────────────────
-  useEffect(() => {
-    const v = brollVideoRef.current;
-    if (!v) return;
-    if (!activeBrollSection) {
-      v.pause();
-      return;
-    }
-    const brollTime = localGlobalTime - (activeBrollSection.global_offset_sec ?? 0) + activeBrollSection.start_sec;
-    v.currentTime = Math.max(0, brollTime);
-    if (hook.isPlaying) v.play().catch(() => {});
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeBrollSection?.id]);
-
-  // ── broll video: play / pause in sync with main ──────────────────────────
-  useEffect(() => {
-    const v = brollVideoRef.current;
-    if (!v || !activeBrollSection) return;
-    if (hook.isPlaying && v.paused) v.play().catch(() => {});
-    else if (!hook.isPlaying && !v.paused) v.pause();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hook.isPlaying, activeBrollSection?.id]);
-
-  // Apply speed to the current main video element
+  // ── playback speed ────────────────────────────────────────────────────────
   useEffect(() => {
     const vA = hook.videoARef.current;
     const vB = hook.videoBRef.current;
@@ -250,20 +228,30 @@ function MultiClipPlayer({ clips, onTimeUpdate, sectionLabel, activeSimSection, 
 
   const fmt = (s: number) => {
     const m = Math.floor(s / 60);
-    const sec = Math.floor(s % 60);
-    return `${m}:${sec.toString().padStart(2, '0')}`;
+    return `${m}:${Math.floor(s % 60).toString().padStart(2, '0')}`;
   };
 
+  const displayTime   = scrubDisplay ?? hook.globalTime;
   const totalDuration = hook.totalDuration;
-  const seekPct = totalDuration > 0 ? (localGlobalTime / totalDuration) * 100 : 0;
 
-  const handleSeekBar = (e: React.ChangeEvent<HTMLInputElement>) => {
-    hook.seek(parseFloat(e.target.value));
-  };
+  // ── seek bar handlers — scrub fires exactly once on release ──────────────
+  const handleScrubStart = useCallback(() => {
+    hook.startScrub();
+  }, [hook]);
+
+  const handleScrubMove = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    setScrubDisplay(parseFloat(e.target.value));
+  }, []);
+
+  const handleScrubEnd = useCallback((e: React.MouseEvent<HTMLInputElement> | React.TouchEvent<HTMLInputElement>) => {
+    const val = parseFloat((e.target as HTMLInputElement).value);
+    setScrubDisplay(null);
+    hook.endScrub(val);
+  }, [hook]);
 
   return (
     <div className="flex-1 relative bg-black rounded-xl overflow-hidden">
-      {/* Video A — initial z=2 (main), swapped by hook */}
+      {/* Video A — initial z=2 (main), swapped by hook on clip transitions */}
       <video
         ref={hook.videoARef}
         className="absolute inset-0 w-full h-full object-contain"
@@ -271,7 +259,7 @@ function MultiClipPlayer({ clips, onTimeUpdate, sectionLabel, activeSimSection, 
         playsInline
         preload="auto"
       />
-      {/* Video B — initial z=1 (standby) */}
+      {/* Video B — initial z=1 (standby), pre-warms the next clip */}
       <video
         ref={hook.videoBRef}
         className="absolute inset-0 w-full h-full object-contain"
@@ -280,7 +268,7 @@ function MultiClipPlayer({ clips, onTimeUpdate, sectionLabel, activeSimSection, 
         preload="auto"
       />
 
-      {/* B-roll overlay — sits above main video, below sim overlay */}
+      {/* B-roll overlay */}
       <video
         ref={brollVideoRef}
         className="absolute inset-0 w-full h-full"
@@ -303,7 +291,7 @@ function MultiClipPlayer({ clips, onTimeUpdate, sectionLabel, activeSimSection, 
         </div>
       )}
 
-      {/* Simulation overlay — stays mounted once loaded; fade driven by opacity */}
+      {/* Simulation overlay */}
       {simUrl && (
         <div
           className="absolute inset-0"
@@ -325,14 +313,12 @@ function MultiClipPlayer({ clips, onTimeUpdate, sectionLabel, activeSimSection, 
         </div>
       )}
 
-      {/* Section label overlay */}
       {sectionLabel && !showSimOverlay && (
         <div className="absolute top-3 left-3 bg-black/70 text-white text-xs font-medium px-2 py-1 rounded-md backdrop-blur-sm" style={{ zIndex: 10 }}>
           {sectionLabel}
         </div>
       )}
 
-      {/* Clip indicator badge */}
       {clips.length > 1 && (
         <div className="absolute top-3 right-3 bg-black/60 text-white/70 text-[10px] font-semibold px-2 py-0.5 rounded-md" style={{ zIndex: 10 }}>
           {hook.currentClipIdx + 1}/{clips.length}
@@ -346,8 +332,12 @@ function MultiClipPlayer({ clips, onTimeUpdate, sectionLabel, activeSimSection, 
           min={0}
           max={totalDuration || 1}
           step={0.1}
-          value={localGlobalTime}
-          onChange={handleSeekBar}
+          value={displayTime}
+          onChange={handleScrubMove}
+          onMouseDown={handleScrubStart}
+          onMouseUp={handleScrubEnd}
+          onTouchStart={handleScrubStart}
+          onTouchEnd={handleScrubEnd}
           className="w-full h-1 accent-primary cursor-pointer"
         />
         <div className="flex items-center justify-between">
@@ -368,7 +358,7 @@ function MultiClipPlayer({ clips, onTimeUpdate, sectionLabel, activeSimSection, 
               )}
             </button>
             <span className="text-xs text-white/70 font-mono">
-              {fmt(localGlobalTime)} / {fmt(totalDuration)}
+              {fmt(displayTime)} / {fmt(totalDuration)}
             </span>
           </div>
           <div className="flex gap-1">
@@ -384,9 +374,6 @@ function MultiClipPlayer({ clips, onTimeUpdate, sectionLabel, activeSimSection, 
           </div>
         </div>
       </div>
-
-      {/* Invisible progress overlay so seekPct is available to any future use */}
-      <div style={{ display: 'none' }}>{seekPct}</div>
     </div>
   );
 }

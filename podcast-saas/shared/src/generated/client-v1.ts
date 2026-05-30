@@ -66,6 +66,8 @@ export interface TimelineSection {
   track: 'main' | 'broll';              // default 'main'
   global_offset_sec: number | null;     // broll only: absolute start time on main timeline
   sim_meta: SimMeta | null;             // bridge generation plan metadata
+  clip_source_video_id: string | null;  // clip type: which library video to play
+  clip_in_sec: number | null;           // clip type: in-point in source video (seconds)
   created_at: string;
 }
 
@@ -286,7 +288,7 @@ export class ClientV1Api {
   updateSection(
     projectId: string,
     sectionId: string,
-    body: Partial<{ start_sec: number; end_sec: number; type: string; label: string; notes: string; sort_order: number; simulation_url: string; simulation_id: string; sim_script: string; global_offset_sec: number }>,
+    body: Partial<{ start_sec: number; end_sec: number; type: string; label: string; notes: string; sort_order: number; simulation_url: string; simulation_id: string; sim_script: string; global_offset_sec: number; clip_source_video_id: string | null; clip_in_sec: number }>,
   ): Promise<TimelineSection> {
     return this.request(`/api/v1/projects/${projectId}/sections/${sectionId}`, { method: 'PATCH', body });
   }

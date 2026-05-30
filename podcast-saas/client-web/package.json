@@ -5,6 +5,8 @@
   "scripts": {
     "dev": "bash dev.sh",
     "dev:doctor": "node scripts/dev-doctor.mjs",
+    "dev:check": "node scripts/dev-check.mjs",
+    "dev:watch": "node scripts/dev-watch.mjs",
     "build": "next build",
     "start": "next start -p 3000",
     "lint": "next lint",
