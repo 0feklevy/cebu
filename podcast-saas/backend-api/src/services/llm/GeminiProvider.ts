@@ -30,12 +30,22 @@ export class GeminiProvider extends LLMProvider {
       let outputTokens = 0;
       let stopReason = 'STOP';
 
-      const fullPrompt = `${opts.systemPrompt}\n\n---\n\n${opts.userPrompt}`;
+      // Build multi-turn contents; use systemInstruction for system prompt
+      // Gemini uses 'model' instead of 'assistant' for role names
+      const historyContents = (opts.previousMessages ?? []).map(m => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: m.content }],
+      }));
+      const contents = [
+        ...historyContents,
+        { role: 'user', parts: [{ text: opts.userPrompt }] },
+      ];
 
       const response = await this.client.models.generateContentStream({
         model: opts.model,
-        contents: [{ role: 'user', parts: [{ text: fullPrompt }] }],
+        contents,
         config: {
+          systemInstruction: opts.systemPrompt,
           maxOutputTokens: opts.maxTokens ?? 8192,
           temperature: opts.temperature ?? 0.7,
           ...(opts.thinkingBudgetTokens

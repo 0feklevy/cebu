@@ -17,6 +17,7 @@ export interface SendStructuredOpts<T> {
   task: TaskType;
   systemPrompt: string;
   userPrompt: string;
+  previousMessages?: Array<{ role: 'user' | 'assistant'; content: string }>;
   schema: ZodSchema<T>;
   userId: string;
   projectId: string;
@@ -24,6 +25,8 @@ export interface SendStructuredOpts<T> {
   abortSignal: AbortSignal;
   retryCount?: number;
 }
+
+export type SendTextOpts = Omit<SendStructuredOpts<unknown>, 'schema'>;
 
 export interface SendStructuredResult<T> {
   data: T;
@@ -38,6 +41,7 @@ const TASK_TIER: Record<TaskType, 'utility' | 'generation' | 'complex'> = {
   script_draft: 'generation',
   script_rewrite: 'generation', // needs Sonnet-level instruction-following for large JSON output
   single_turn_regen: 'generation',
+  bridge_plan: 'complex',       // benefits from strongest model + extended thinking
 };
 
 export class LLMService {
@@ -111,6 +115,7 @@ export class LLMService {
       model,
       systemPrompt: opts.systemPrompt,
       userPrompt,
+      previousMessages: opts.previousMessages,
       maxTokens: settings.max_tokens,
       temperature: settings.temperature,
       thinkingBudgetTokens: thinkingBudget,
@@ -199,6 +204,49 @@ export class LLMService {
 
     this.providerCache.set(name, provider);
     return provider;
+  }
+
+  async sendText(opts: SendTextOpts): Promise<{
+    text: string;
+    usage: TokenUsage;
+    provider: string;
+    model: string;
+  }> {
+    const settings = await db.query.admin_settings.findFirst();
+    if (!settings) throw new AppError(LLMErrorType.LLM_ERROR, 'Admin settings not found', 500);
+
+    const { provider, model } = await this.resolveProviderAndModel(
+      opts.userId,
+      opts.task,
+      settings,
+      opts.retryCount ?? 0,
+    );
+
+    const response = await provider.sendMessage({
+      model,
+      systemPrompt: opts.systemPrompt,
+      userPrompt: opts.userPrompt,
+      previousMessages: opts.previousMessages,
+      maxTokens: settings.max_tokens,
+      temperature: settings.temperature,
+      onTokenChunk: opts.onTokenChunk,
+      abortSignal: opts.abortSignal,
+    });
+
+    await this.usageTracking.record({
+      userId: opts.userId,
+      projectId: opts.projectId,
+      provider: provider.providerName,
+      model,
+      task: opts.task,
+      inputTokens: response.usage.input,
+      cachedInputTokens: response.usage.cached_input,
+      outputTokens: response.usage.output,
+      costCents: response.usage.cost_cents,
+      usedPersonalKey: false,
+    });
+
+    return { text: response.content, usage: response.usage, provider: provider.providerName, model };
   }
 
   invalidateProviderCache(providerName?: string): void {

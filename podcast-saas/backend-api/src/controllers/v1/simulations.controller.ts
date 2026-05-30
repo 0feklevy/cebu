@@ -6,7 +6,12 @@ import { eq, and } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { SimulationService } from '../../services/simulation/SimulationService.js';
+import { LLMService } from '../../services/llm/LLMService.js';
+import { ApiKeyService } from '../../services/secrets/ApiKeyService.js';
+import { UsageTrackingService } from '../../services/usage/UsageTrackingService.js';
 import { logger } from '../../lib/logger.js';
+
+const _llmService = new LLMService(new ApiKeyService(), new UsageTrackingService());
 
 export async function registerSimulationsRoutes(app: FastifyInstance): Promise<void> {
   const storage = getStorageAdapter();
@@ -88,8 +93,7 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
         .returning();
 
       // Process asynchronously so the response returns quickly
-      const apiKey = process.env.ANTHROPIC_API_KEY ?? '';
-      const svc    = new SimulationService(storage, apiKey);
+      const svc = new SimulationService(storage, _llmService);
 
       svc.processUpload({ projectId: project.id, simId, zipBuffer: zipBuf })
         .then(async ({ entryKey, bridgeFunctions }) => {

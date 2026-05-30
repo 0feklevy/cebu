@@ -18,7 +18,14 @@ export class ClaudeProvider extends LLMProvider {
   }
 
   getAvailableModels(): string[] {
-    return ['claude-haiku-4-5', 'claude-sonnet-4-5', 'claude-opus-4-7'];
+    return [
+      'claude-haiku-4-5',
+      'claude-haiku-4-5-20251001',
+      'claude-sonnet-4-5',
+      'claude-sonnet-4-6',
+      'claude-opus-4-7',
+      'claude-opus-4-8',
+    ];
   }
 
   async sendMessage(opts: LLMOptions): Promise<LLMResponse> {
@@ -38,6 +45,14 @@ export class ClaudeProvider extends LLMProvider {
       let cachedTokens = 0;
       let stopReason = 'end_turn';
 
+      // Build messages array — supports multi-turn conversation history
+      const messages: Array<{ role: 'user' | 'assistant'; content: string }> = opts.previousMessages
+        ? [
+            ...opts.previousMessages,
+            { role: 'user', content: opts.userPrompt },
+          ]
+        : [{ role: 'user', content: opts.userPrompt }];
+
       const stream = await this.client.messages.stream(
         {
           model: opts.model,
@@ -53,7 +68,7 @@ export class ClaudeProvider extends LLMProvider {
               cache_control: { type: 'ephemeral' },
             },
           ],
-          messages: [{ role: 'user', content: opts.userPrompt }],
+          messages,
         },
         { signal: opts.abortSignal },
       );

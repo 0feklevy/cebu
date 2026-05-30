@@ -5,7 +5,16 @@ import { adminApi } from '../../lib/api';
 import { AdminShell } from '../../components/AdminShell';
 import type { AdminSettings } from 'shared/src/generated/admin-v1';
 
-type Config = Pick<AdminSettings, 'utility_model' | 'temperature' | 'max_tokens'>;
+type Config = Pick<
+  AdminSettings,
+  | 'utility_model'
+  | 'generation_model'
+  | 'complex_model'
+  | 'temperature'
+  | 'max_tokens'
+  | 'extended_thinking_enabled'
+  | 'thinking_budget_tokens'
+>;
 
 export default function AiConfigPage() {
   const [form, setForm] = useState<Config | null>(null);
@@ -18,9 +27,13 @@ export default function AiConfigPage() {
       .getLlmConfig()
       .then((s) => {
         setForm({
-          utility_model: s.utility_model,
-          temperature: s.temperature,
-          max_tokens: s.max_tokens,
+          utility_model:              s.utility_model,
+          generation_model:           s.generation_model,
+          complex_model:              s.complex_model,
+          temperature:                s.temperature,
+          max_tokens:                 s.max_tokens,
+          extended_thinking_enabled:  s.extended_thinking_enabled,
+          thinking_budget_tokens:     s.thinking_budget_tokens,
         });
       })
       .catch((e) => setError(e.message));
@@ -58,7 +71,7 @@ export default function AiConfigPage() {
         <div>
           <h1 className="text-2xl font-bold">AI Config</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Settings for AI bridge function extraction (SimulationService)
+            Model routing and generation settings
           </p>
         </div>
         <button
@@ -74,45 +87,134 @@ export default function AiConfigPage() {
         <div className="mb-6 px-4 py-3 rounded-lg bg-destructive/20 text-destructive text-sm">{error}</div>
       )}
 
-      <div className="max-w-2xl">
-        <div className="rounded-lg border border-border bg-card p-5 space-y-5">
-          <Field
-            label="Extraction Model"
-            hint="Claude model used to extract bridge functions from simulation JS"
-          >
-            <input
-              type="text"
-              value={form.utility_model}
-              onChange={(e) => set('utility_model', e.target.value)}
-              className="input font-mono"
-              placeholder="claude-haiku-4-5"
-            />
-          </Field>
+      <div className="max-w-2xl space-y-6">
 
-          <Field label="Temperature" hint="0–1 · lower = more deterministic JSON output">
-            <input
-              type="number"
-              min={0}
-              max={1}
-              step={0.05}
-              value={form.temperature}
-              onChange={(e) => set('temperature', parseFloat(e.target.value))}
-              className="input"
-            />
-          </Field>
+        {/* Model Tiers */}
+        <section>
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+            Model Tiers
+          </h2>
+          <div className="rounded-lg border border-border bg-card p-5 space-y-5">
+            <Field
+              label="Utility Model"
+              hint="Content moderation, video prompt enhancement — fast &amp; cheap"
+            >
+              <input
+                type="text"
+                value={form.utility_model}
+                onChange={(e) => set('utility_model', e.target.value)}
+                className="input font-mono"
+                placeholder="claude-haiku-4-5"
+              />
+            </Field>
 
-          <Field label="Max Output Tokens" hint="Budget for the JSON extraction response">
-            <input
-              type="number"
-              min={256}
-              max={8192}
-              step={256}
-              value={form.max_tokens}
-              onChange={(e) => set('max_tokens', parseInt(e.target.value, 10))}
-              className="input"
-            />
-          </Field>
-        </div>
+            <Field
+              label="Generation Model"
+              hint="Standard script generation tasks"
+            >
+              <input
+                type="text"
+                value={form.generation_model}
+                onChange={(e) => set('generation_model', e.target.value)}
+                className="input font-mono"
+                placeholder="claude-sonnet-4-6"
+              />
+            </Field>
+
+            <Field
+              label="Complex Model"
+              hint="Bridge plan generation, structural analysis — uses strongest model + optional extended thinking"
+            >
+              <input
+                type="text"
+                value={form.complex_model}
+                onChange={(e) => set('complex_model', e.target.value)}
+                className="input font-mono"
+                placeholder="claude-sonnet-4-6"
+              />
+            </Field>
+          </div>
+          <p className="text-xs text-muted-foreground mt-2">
+            Supported: claude-haiku-4-5, claude-haiku-4-5-20251001, claude-sonnet-4-5, claude-sonnet-4-6, claude-opus-4-7, claude-opus-4-8
+          </p>
+        </section>
+
+        {/* Extended Thinking */}
+        <section>
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+            Extended Thinking (Complex Tier)
+          </h2>
+          <div className="rounded-lg border border-border bg-card p-5 space-y-5">
+            <Field
+              label="Enable Thinking"
+              hint="Claude reasons step-by-step before answering — higher quality for complex simulations"
+            >
+              <button
+                type="button"
+                onClick={() => set('extended_thinking_enabled', !form.extended_thinking_enabled)}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                  form.extended_thinking_enabled ? 'bg-primary' : 'bg-muted'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                    form.extended_thinking_enabled ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </Field>
+
+            {form.extended_thinking_enabled && (
+              <Field
+                label="Thinking Budget"
+                hint="Max tokens Claude can use for internal reasoning (1,000–32,000)"
+              >
+                <input
+                  type="number"
+                  min={1000}
+                  max={32000}
+                  step={1000}
+                  value={form.thinking_budget_tokens}
+                  onChange={(e) => set('thinking_budget_tokens', parseInt(e.target.value, 10))}
+                  className="input"
+                />
+              </Field>
+            )}
+          </div>
+        </section>
+
+        {/* Generation Settings */}
+        <section>
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+            Generation Settings
+          </h2>
+          <div className="rounded-lg border border-border bg-card p-5 space-y-5">
+            <Field label="Temperature" hint="0–1 · lower = more deterministic JSON output · forced to 1.0 when thinking is on">
+              <input
+                type="number"
+                min={0}
+                max={1}
+                step={0.05}
+                value={form.temperature}
+                onChange={(e) => set('temperature', parseFloat(e.target.value))}
+                className="input"
+                disabled={form.extended_thinking_enabled}
+              />
+            </Field>
+
+            <Field label="Max Output Tokens" hint="Token budget for the model response">
+              <input
+                type="number"
+                min={256}
+                max={32768}
+                step={256}
+                value={form.max_tokens}
+                onChange={(e) => set('max_tokens', parseInt(e.target.value, 10))}
+                className="input"
+              />
+            </Field>
+          </div>
+        </section>
       </div>
     </AdminShell>
   );

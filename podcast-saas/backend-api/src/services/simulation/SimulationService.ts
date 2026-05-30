@@ -1,9 +1,16 @@
 import AdmZip from 'adm-zip';
-import Anthropic from '@anthropic-ai/sdk';
+import { createHash } from 'crypto';
+import { z } from 'zod';
 import type { StorageService } from '../storage/StorageService.js';
+import { LLMService } from '../llm/LLMService.js';
+import { db } from '../../db/index.js';
+import { system_prompts } from '../../db/schema.js';
+import { eq } from 'drizzle-orm';
 import { logger } from '../../lib/logger.js';
 
 // ── Public types ──────────────────────────────────────────────────────────────
+
+export type ConversationMessage = { role: 'user' | 'assistant'; content: string };
 
 export interface BridgeFunction {
   name:        string;
@@ -13,12 +20,16 @@ export interface BridgeFunction {
 
 // Structured info extracted from simulation source files
 export interface SimManifest {
-  controls: SimControl[];
-  buttons:  SimButton[];
-  sections: SimSection[];
+  controls:        SimControl[];
+  buttons:         SimButton[];
+  sections:        SimSection[];
   renderFunctions: string[];   // e.g. ["redraw", "draw"]
   updateFunctions: string[];   // e.g. ["updateDerivedPhysics"]
   hasSetSimSection: boolean;
+  selectElements:   Array<{ id: string; options: string[] }>;
+  checkboxElements: Array<{ id: string; label: string }>;
+  canvasElements:   string[];
+  globalObjects:    string[];  // detected global libs: Plotly, d3, THREE, p5, etc.
 }
 
 interface SimControl {
@@ -34,27 +45,42 @@ interface SimControl {
 interface SimButton  { id: string; label: string; }
 interface SimSection { id: string; defaultHidden: boolean; childControlIds: string[]; childButtonIds: string[]; }
 
-// JSON plan that Claude returns — describes WHAT to do, not HOW to code it
-export interface BridgePlan {
-  targetControlId:     string | null;
-  showControlIds:      string[];
-  hideControlIds:      string[];
-  keepButtonIds:       string[];
-  hideButtonIds:       string[];
-  hideSelectorStrings: string[];
-  setSimSection:       string | null;
-  animation: {
-    enabled:      boolean;
-    controllerId: string | null;
-    min:          number;
-    max:          number;
-    step:         number;
-    intervalMs:   number;
-    showOptimal:  boolean;
-  } | null;
-  renderCalls: string[];
-  confidence:  number;
-  warnings:    string[];
+// The selected LLM provider generates the bridge script directly.
+// Phase 5 (multi-file generation) will extend this via a file-operation pipeline —
+// not by adding an optional field here. Do not add GeneratedFile or FileOperationType
+// until the operation application pipeline exists.
+export interface GeneratedBridge {
+  message:    string;
+  /** LLM writes only the body of SCRIPTS.main — system wraps it in the deterministic template */
+  mainBody:   string;
+  confidence: number;
+  warnings:   string[];
+}
+
+/** Structured result returned from generateBridgeScript.
+ *  Controller builds sim_meta from these fields — no recomputation needed. */
+export interface BridgeGenerationResult {
+  sectionUrl:        string;
+  conversationHistory: ConversationMessage[];
+  sourceHash:        string;
+  bridgeHash:        string;
+  provider:          string;
+  model:             string;
+  confidence:        number;
+  confidenceLevel:   'high' | 'medium' | 'low';
+  warnings:          string[];
+  validationErrors:  string[];  // always empty on success (fatals throw before upload)
+  validationWarnings: string[];
+  retryCount:        number;
+  retryReason:       string | null;
+  contextTruncated:  boolean;
+}
+
+// Validation result — classified by severity
+export interface ValidationResult {
+  fatal:    string[];  // Block upload, trigger auto-retry
+  warnings: string[];  // Trigger retry if present; save to metadata
+  weak:     string[];  // Save to metadata, no retry
 }
 
 // ── Storage content types ─────────────────────────────────────────────────────
@@ -122,71 +148,162 @@ const BRIDGE_TEMPLATE = /* js */ `;(function(){
   },{capture:true});
 })();`;
 
-// ── BRIDGE_PLAN_SYSTEM_PROMPT ─────────────────────────────────────────────────
-// Claude receives the manifest (structured data) and returns a JSON plan.
-// The plan is then compiled deterministically — Claude never writes raw JS.
+// ── BRIDGE_GENERATION_SYSTEM_PROMPT ─────────────────────────────────────────────
+// The selected LLM provider receives the full simulation source + manifest and writes the bridge script.
+// The prompt is stored in DB (key: bridge_plan) and admin-editable.
 
-const BRIDGE_PLAN_SYSTEM_PROMPT = `You generate a structured JSON plan for a simulation bridge script.
-You receive a parsed simulation manifest listing every control, button, section, and render function.
-You output ONLY a JSON object — no prose, no markdown fences.
+const BRIDGE_GENERATION_SYSTEM_PROMPT = `You generate a JavaScript bridge script for a science/physics simulation embedded in an iframe.
+The bridge communicates with the parent player via postMessage.
+You receive the simulation's FULL source code plus a manifest of verified IDs and functions.
 
-Output schema (all fields required):
+## BRIDGE SCRIPT TEMPLATE
+Your bridgeScript MUST follow this EXACT structure.
+
+The two sections marked DO NOT MODIFY must be included VERBATIM — copy them exactly.
+You only write the body of SCRIPTS.main.
+
+\`\`\`javascript
+(function () {
+  'use strict';
+
+  // ── SIM_READY — DO NOT MODIFY — copy exactly ────────────────────────────────
+  let _ready = false;
+  function _fireReady() {
+    if (_ready) return; _ready = true; window._simReadyFired = true;
+    window.parent?.postMessage({ type: 'SIM_READY' }, '*');
+  }
+  if (document.readyState === 'loading')
+    document.addEventListener('DOMContentLoaded', () => requestAnimationFrame(_fireReady));
+  else requestAnimationFrame(_fireReady);
+  setTimeout(_fireReady, 3000);
+
+  // ── YOUR IMPLEMENTATION — fill in SCRIPTS.main only ─────────────────────────
+  let _cancelFn = null;
+
+  const SCRIPTS = {
+    main: function (params) {
+      // params.simpleUi: boolean   — hide irrelevant controls when true
+      // params.autoScript: boolean — animate the target control when true
+
+      // Record original display values for all elements you hide
+      const _hidden = [];
+      function _hide(el) {
+        if (!el) return;
+        const orig = el.style.getPropertyValue('display') || '';
+        el.style.setProperty('display', 'none');
+        _hidden.push([el, orig]);
+      }
+      function _restoreAll() {
+        _hidden.forEach(([el, orig]) => {
+          if (orig) el.style.setProperty('display', orig);
+          else el.style.removeProperty('display');
+        });
+      }
+
+      // Track intervals, listeners, injected elements for cleanup
+      const _ivs = [];
+      const _listeners = [];
+      const _injected = [];
+
+      // [YOUR IMPLEMENTATION HERE]
+      // Use _hide() to hide elements.
+      // Push intervals: _ivs.push(setInterval(..., ms));
+      // Push listeners: _listeners.push([el, event, handler]); el.addEventListener(event, handler);
+      // Push injected: const el = document.createElement('div'); document.body.appendChild(el); _injected.push(el);
+
+      return function cleanup() {
+        _ivs.forEach(id => clearInterval(id));
+        _listeners.forEach(([el, ev, fn]) => el.removeEventListener(ev, fn));
+        _injected.forEach(el => el.remove?.());
+        _restoreAll();
+      };
+    },
+  };
+
+  // ── STANDARD LISTENER — DO NOT MODIFY — copy exactly ─────────────────────────
+  function stopScript() {
+    if (_cancelFn) { _cancelFn(); _cancelFn = null; }
+  }
+  function startScript(name, params) {
+    stopScript();
+    const fn = SCRIPTS[name] ?? SCRIPTS.main;
+    if (fn) _cancelFn = fn(params ?? {}) ?? null;
+  }
+  window.SimAPI = { start: startScript, stop: stopScript };
+  window.addEventListener('message', e => {
+    const { type, script, params } = e.data || {};
+    if (type === 'startScript')  startScript(script || 'main', params);
+    if (type === 'stopScript')   stopScript();
+    if (type === 'PING_SIM_READY' && window._simReadyFired)
+      window.parent?.postMessage({ type: 'SIM_READY' }, '*');
+  });
+  document.addEventListener('pointerdown', () => {
+    window.parent?.postMessage({ type: 'userInteraction' }, '*');
+  }, { capture: true });
+})();
+\`\`\`
+
+## OUTPUT FORMAT
+Return ONLY a JSON object — no markdown, no explanations outside the JSON:
 {
-  "targetControlId": string | null,
-  "showControlIds":      string[],
-  "hideControlIds":      string[],
-  "keepButtonIds":       string[],
-  "hideButtonIds":       string[],
-  "hideSelectorStrings": string[],
-  "setSimSection":       string | null,
-  "animation": {
-    "enabled":      boolean,
-    "controllerId": string | null,
-    "min":          number,
-    "max":          number,
-    "step":         number,
-    "intervalMs":   number,
-    "showOptimal":  boolean
-  } | null,
-  "renderCalls": string[],
-  "confidence":  number,
-  "warnings":    string[]
+  "message": "What the bridge does and key decisions made",
+  "mainBody": "// Your SCRIPTS.main body here (NOT the full IIFE wrapper)\n  const el = document.getElementById('velocity');\n  // ... implementation ...\n  return function cleanup() { /* ... */ };",
+  "confidence": 0.9,
+  "warnings": []
 }
 
-═══ MANDATORY RULES — NEVER VIOLATE ═══
-1. targetControlId MUST be an exact id from manifest.controls (case-sensitive). Never invent an id.
-2. targetControlId MUST appear in showControlIds. NEVER in hideControlIds.
-3. Every id in showControlIds / hideControlIds / keepButtonIds / hideButtonIds MUST exist in the manifest.
-4. "clear-btn" MUST be in keepButtonIds if manifest.buttons contains id="clear-btn".
-5. animation.controllerId MUST equal targetControlId when animation.enabled=true.
-6. animation.min/max MUST come from manifest.controls entry for targetControlId (parse as number).
-7. animation.step: choose 0.1–0.3 for smooth motion. Never 0.
-8. If simpleUi=false: showControlIds = all control ids, hideControlIds = [], hideSelectorStrings = [].
-9. If autoScript=false: animation = { enabled:false, controllerId:targetControlId, ...rest from manifest }.
-10. renderCalls: include only functions from manifest.renderFunctions or manifest.updateFunctions.
-11. ANCESTOR CONTAINERS: Each manifest section has childControlIds and childButtonIds. NEVER put
-    "#sectionId" in hideSelectorStrings when that section's childControlIds intersects showControlIds
-    or childButtonIds intersects keepButtonIds. Hide the individual children (via hideControlIds /
-    hideButtonIds / hideSelectorStrings with .control-group selectors) instead.
-12. updateDerivedPhysics: if manifest.updateFunctions contains "updateDerivedPhysics", ALWAYS include
-    it in renderCalls and place it BEFORE any renderFunctions entries (e.g. before "redraw").
+IMPORTANT: mainBody is ONLY the body of the SCRIPTS.main function.
+Do NOT include the function signature (main: function(params) {) or its closing brace.
+Do NOT include the IIFE wrapper, SIM_READY block, or message listener — the system provides those.
+Write plain JavaScript that runs inside SCRIPTS.main with access to the params argument.
+End the mainBody with: return function cleanup() { ... };
 
-═══ ALIAS RESOLUTION ═══
-Map user prompt terms to canonical manifest IDs:
-- "vy0", "v0y", "Vy0", "v_0y", "initial vertical velocity", "initial y velocity", "vertical velocity", "y-velocity" → id="v0y" (if manifest contains it)
-- "vx0", "v0x", "initial horizontal velocity", "horizontal velocity" → id="v0x" (if manifest contains it)
-- Use the label field in manifest.controls for other label-based lookups (case-insensitive)
+## MANDATORY RULES — NEVER VIOLATE
 
-═══ hideSelectorStrings guidelines ═══
-Common safe patterns (include a warning if you're guessing):
-  ".tabs"                           — mode-switching tab bar
-  ".sim-info"                       — explanation/formula block
-  ".legend"                         — path legend
-  ".action-display"                 — action/energy display block
-  ".instructions"                   — instruction text
-  ".control-group:has(#time-value)" — time-of-flight display row only (safe: scoped to one row)
+### Structure
+1. Copy the SIM_READY block and the STANDARD LISTENER block VERBATIM. Do not modify them.
+2. SCRIPTS.main MUST return a cleanup function that reverses all side effects.
+3. The cleanup function MUST call clearInterval for every setInterval you use.
+4. The cleanup function MUST call removeEventListener for every addEventListener you use.
+5. The cleanup function MUST remove any HTML elements you inject.
+6. The cleanup function MUST restore the original display value for every element you hide.
+7. Do not write minified or obfuscated code. Use clear variable names and small helper functions.
+8. Do not add external dependencies, network requests, or remote URLs.
 
-Output only the JSON object.`;
+### Security — NEVER do any of the following
+9. Do not use fetch(), XMLHttpRequest, or any network call.
+10. Do not access localStorage, sessionStorage, or document.cookie.
+11. Do not use eval(), new Function(), or dynamic script evaluation.
+12. Do not open popups (window.open, alert, confirm, prompt).
+13. Do not add <script> tags or load external resources.
+14. Do not navigate parent window (window.parent.location = ...).
+15. Do not read or write parent DOM.
+16. Do not exfiltrate any data outside of the established postMessage protocol.
+
+### DOM Access
+17. ONLY access DOM elements whose IDs appear in the MANIFEST or are visible in the HTML source.
+18. ONLY call functions from the MANIFEST or clearly visible in the source files.
+19. Use optional chaining (?.): document.getElementById('x')?.style may not exist.
+
+### Parameters
+20. When params.simpleUi = true: hide all irrelevant controls AND their labels. Show only the target.
+21. When params.autoScript = true: animate the target control. Stop animation in cleanup.
+22. Use _hide() for hiding: it records originals automatically for restoration.
+
+### Animation
+23. Use setInterval for animation: step 0.1–0.3, intervalMs 30–150ms. Pingpong at min/max.
+24. Push every interval ID into _ivs so cleanup clears it.
+25. Push every listener into _listeners so cleanup removes it.
+
+### Render functions
+26. Call updateDerivedPhysics before render functions if it exists in the manifest.
+27. Call render functions via window.fn?.() — they may not always be defined.
+
+### Confidence scoring
+28. confidence >= 0.9: all IDs/functions verified in manifest, no guesses
+29. confidence 0.6–0.89: some assumptions made (guessed selectors, assumed functions)
+30. confidence < 0.6: significant uncertainty — explain in warnings
+`;
 
 // ── Manifest builder ──────────────────────────────────────────────────────────
 
@@ -213,6 +330,7 @@ export function buildManifest(sourceMap: Map<string, string>): SimManifest {
   const manifest: SimManifest = {
     controls: [], buttons: [], sections: [],
     renderFunctions: [], updateFunctions: [], hasSetSimSection: false,
+    selectElements: [], checkboxElements: [], canvasElements: [], globalObjects: [],
   };
 
   for (const [key, content] of sourceMap) {
@@ -278,290 +396,536 @@ export function buildManifest(sourceMap: Map<string, string>): SimManifest {
         const sec = nearestSection(m.index);
         if (sec && !sec.childButtonIds.includes(id)) sec.childButtonIds.push(id);
       }
+
+      // Fourth pass: <select> elements
+      const selRe = /<select([^>]*)>/gi;
+      while ((m = selRe.exec(content)) !== null) {
+        const id = /\bid="([^"]+)"/.exec(m[1])?.[1];
+        if (!id || manifest.selectElements.some(s => s.id === id)) continue;
+        // Extract <option> values from the content following the <select>
+        const selectBody = content.slice(m.index, m.index + 500);
+        const options: string[] = [];
+        const optRe = /<option[^>]*>([^<]*)</gi;
+        let om: RegExpExecArray | null;
+        while ((om = optRe.exec(selectBody)) !== null) options.push(om[1].trim());
+        manifest.selectElements.push({ id, options });
+      }
+
+      // Fifth pass: <input type="checkbox"> elements
+      const cbRe = /<input([^>]*type=["']?checkbox["']?[^>]*)>/gi;
+      while ((m = cbRe.exec(content)) !== null) {
+        const id = /\bid="([^"]+)"/.exec(m[1])?.[1];
+        if (!id || manifest.checkboxElements.some(c => c.id === id)) continue;
+        const labelRe = new RegExp(`<label[^>]+for="${id}"[^>]*>\\s*([^<]+?)\\s*</label>`, 'i');
+        const label = labelRe.exec(content)?.[1]?.trim() ?? id;
+        manifest.checkboxElements.push({ id, label });
+      }
+
+      // Sixth pass: <canvas> elements
+      const canvasRe = /<canvas([^>]*)>/gi;
+      while ((m = canvasRe.exec(content)) !== null) {
+        const id = /\bid="([^"]+)"/.exec(m[1])?.[1];
+        if (id && !manifest.canvasElements.includes(id)) manifest.canvasElements.push(id);
+      }
     }
 
     if (isJs) {
-      for (const fn of ['redraw', 'draw', 'render', 'refresh', 'repaint']) {
-        if (!manifest.renderFunctions.includes(fn) && new RegExp(`function ${fn}\\s*\\(`).test(content)) {
+      // Detect functions using multiple patterns: named fn, arrow fn, class method, export
+      const fnExists = (fn: string): boolean => {
+        const esc = fn.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return [
+          `function ${esc}\\s*\\(`,
+          `(?:const|let|var)\\s+${esc}\\s*=\\s*(?:async\\s*)?(?:\\([^)]*\\)|\\w+)\\s*=>`,
+          `(?:const|let|var)\\s+${esc}\\s*=\\s*(?:async\\s+)?function`,
+          `^\\s+${esc}\\s*\\([^)]*\\)\\s*\\{`,
+          `export\\s+(?:default\\s+)?(?:async\\s+)?function\\s+${esc}`,
+          `export\\s+(?:default\\s+)?(?:const|let)\\s+${esc}\\s*=`,
+        ].some(p => new RegExp(p, 'm').test(content));
+      };
+
+      for (const fn of ['redraw', 'draw', 'render', 'refresh', 'repaint', 'animate', 'update']) {
+        if (!manifest.renderFunctions.includes(fn) && fnExists(fn)) {
           manifest.renderFunctions.push(fn);
         }
       }
       for (const fn of ['updateDerivedPhysics','updateActionDisplay','updateOptimalActionDisplay',
-                         'updateEnergyBars','computeAll','computeState','update']) {
-        if (!manifest.updateFunctions.includes(fn) && new RegExp(`function ${fn}\\s*\\(`).test(content)) {
+                         'updateEnergyBars','computeAll','computeState']) {
+        if (!manifest.updateFunctions.includes(fn) && fnExists(fn)) {
           manifest.updateFunctions.push(fn);
         }
       }
       if (/setSimSection/.test(content)) manifest.hasSetSimSection = true;
+
+      // Detect global library objects (Plotly, d3, THREE, p5, Chart, etc.)
+      for (const lib of ['Plotly', 'd3', 'THREE', 'p5', 'Chart', 'Highcharts', 'echarts', 'Phaser']) {
+        if (!manifest.globalObjects.includes(lib) && new RegExp(`\\b${lib}\\b`).test(content)) {
+          manifest.globalObjects.push(lib);
+        }
+      }
     }
   }
 
   return manifest;
 }
 
-// ── Plan validation & auto-repair ─────────────────────────────────────────────
+// ── GeneratedBridge Zod schema ────────────────────────────────────────────────
 
-function validateAndRepairPlan(plan: BridgePlan, manifest: SimManifest): BridgePlan {
-  const controlIds = new Set(manifest.controls.map(c => c.id));
-  const buttonIds  = new Set(manifest.buttons.map(b => b.id));
-  let p = { ...plan };
+const BridgeGenerationSchema = z.object({
+  message:    z.string().min(1),
+  /** Body of SCRIPTS.main only — not the full IIFE wrapper */
+  mainBody:   z.string().min(5),
+  confidence: z.number().min(0).max(1).default(0.5),
+  warnings:   z.array(z.string()).default([]),
+});
 
-  // Ensure targetControlId is in manifest
-  if (p.targetControlId && !controlIds.has(p.targetControlId)) {
-    logger.warn({ targetControlId: p.targetControlId }, 'Plan repair: targetControlId not in manifest');
-    p.targetControlId = null;
+/** Wrap LLM-generated mainBody in the guaranteed-correct bridge template.
+ *  The system owns: SIM_READY, startScript, stopScript, SimAPI, and the message listener.
+ *  The LLM only writes the SCRIPTS.main function body — it can NEVER break the protocol. */
+export function wrapBridgeMainBody(mainBody: string): string {
+  const indented = mainBody
+    .split('\n')
+    .map(l => (l.trim() === '' ? '' : '      ' + l))
+    .join('\n');
+  return [
+    '(function () {',
+    "  'use strict';",
+    '',
+    '  // ── SIM_READY — system-owned, guaranteed correct ────────────────────────────',
+    '  let _ready = false;',
+    '  function _fireReady() {',
+    "    if (_ready) return; _ready = true; window._simReadyFired = true;",
+    "    window.parent?.postMessage({ type: 'SIM_READY' }, '*');",
+    '  }',
+    "  if (document.readyState === 'loading')",
+    "    document.addEventListener('DOMContentLoaded', () => requestAnimationFrame(_fireReady));",
+    '  else requestAnimationFrame(_fireReady);',
+    '  setTimeout(_fireReady, 3000);',
+    '',
+    '  // ── LLM-GENERATED IMPLEMENTATION (SCRIPTS.main body only) ────────────────────',
+    '  let _cancelFn = null;',
+    '  const SCRIPTS = {',
+    '    main: function (params) {',
+    indented,
+    '    },',
+    '  };',
+    '',
+    '  // ── STANDARD LISTENER — system-owned, guaranteed correct ─────────────────────',
+    '  function stopScript() {',
+    '    if (_cancelFn) { _cancelFn(); _cancelFn = null; }',
+    '  }',
+    '  function startScript(name, params) {',
+    '    stopScript();',
+    '    const fn = SCRIPTS[name] ?? SCRIPTS.main;',
+    '    if (fn) _cancelFn = fn(params ?? {}) ?? null;',
+    '  }',
+    '  window.SimAPI = { start: startScript, stop: stopScript };',
+    "  window.addEventListener('message', e => {",
+    '    const { type, script, params } = e.data || {};',
+    "    if (type === 'startScript')  startScript(script || 'main', params);",
+    "    if (type === 'stopScript')   stopScript();",
+    "    if (type === 'PING_SIM_READY' && window._simReadyFired)",
+    "      window.parent?.postMessage({ type: 'SIM_READY' }, '*');",
+    '  });',
+    "  document.addEventListener('pointerdown', () => {",
+    "    window.parent?.postMessage({ type: 'userInteraction' }, '*');",
+    '  }, { capture: true });',
+    '})();',
+  ].join('\n');
+}
+
+// ── Deterministic source hash ─────────────────────────────────────────────────
+
+/** Compute a deterministic hash of source files.
+ *  Sort by full path so the same ZIP always produces the same hash regardless of
+ *  Map insertion order. Include path in the hash so renaming a file changes it. */
+export function computeSourceHash(sourceMap: Map<string, string>): string {
+  const sorted = [...sourceMap.entries()].sort(([a], [b]) => a.localeCompare(b));
+  const combined = sorted
+    .map(([path, c]) => `${path}\n${c.replace(/\r\n/g, '\n')}`)
+    .join('\n---FILE---\n');
+  return createHash('sha256').update(combined).digest('hex').slice(0, 12);
+}
+
+/** Compute a short hash of the generated bridge script */
+function computeBridgeHash(code: string): string {
+  return createHash('sha256').update(code).digest('hex').slice(0, 12);
+}
+
+// ── Full bridge validation (fatal / strong warnings / weak) ──────────────────
+//
+// fatal    → block upload, trigger retry (if budget remains), throw on final retry
+// warnings → strong: trigger retry if budget allows, always stored in metadata
+// weak     → stored in metadata only, do not block or retry
+//
+// Runtime validation (Playwright-based start/stop cycle) is a required future step
+// (Phase 5 / Phase 4B). Static validation catches structural and security issues only.
+
+/**
+ * Validate a generated bridge.
+ * @param code     — the fully assembled bridge script (mainBody already wrapped)
+ * @param manifest — simulation manifest for ID/function verification
+ * @param mainBody — the raw LLM-generated mainBody (used for targeted checks)
+ *
+ * Since the system owns the wrapper (SIM_READY, startScript/stopScript, listener),
+ * structural protocol checks are now just sanity assertions on the assembled output.
+ * Security and cleanup checks run on mainBody to focus on what the LLM wrote.
+ */
+export function validateGeneratedBridge(code: string, manifest: SimManifest, mainBody?: string): ValidationResult {
+  const fatal: string[] = [];
+  const warnings: string[] = [];
+  const weak: string[] = [];
+  const checkBody = mainBody ?? code;  // prefer checking mainBody when available
+
+  // ── FATAL: Syntax check on the fully assembled script ────────────────────────
+  try { new Function(code); } catch (e) { fatal.push(`Syntax error: ${(e as Error).message}`); }
+
+  // ── FATAL: Sanity checks on assembled output (system guarantees these, but verify) ──
+  if (!code.includes('SIM_READY'))        fatal.push('Assembled bridge missing SIM_READY (system error)');
+  if (!code.includes('startScript'))      fatal.push('Assembled bridge missing startScript (system error)');
+  if (!code.includes('stopScript'))       fatal.push('Assembled bridge missing stopScript (system error)');
+  if (!code.includes("window.addEventListener('message'")) {
+    fatal.push('Assembled bridge missing message listener (system error)');
   }
 
-  // targetControlId must never be hidden
-  if (p.targetControlId) {
-    p.hideControlIds = p.hideControlIds.filter(id => id !== p.targetControlId);
+  // ── FATAL: Cleanup return — check in mainBody ─────────────────────────────────
+  const hasCleanupReturn = checkBody.match(/return\s+(function|cleanup|\(\s*\)|_restoreAll|\w+\s*=>\s*\{)/);
+  if (!hasCleanupReturn) {
+    fatal.push('SCRIPTS.main implementation does not appear to return a cleanup function');
   }
 
-  // Filter IDs to those that exist in the manifest
-  p.hideControlIds = p.hideControlIds.filter(id => controlIds.has(id));
-  p.showControlIds = p.showControlIds.filter(id => controlIds.has(id));
-  p.keepButtonIds  = p.keepButtonIds.filter(id => buttonIds.has(id));
-  p.hideButtonIds  = p.hideButtonIds.filter(id => buttonIds.has(id));
-
-  // Ensure clear-btn stays if it exists
-  if (buttonIds.has('clear-btn')) {
-    p.hideButtonIds = p.hideButtonIds.filter(id => id !== 'clear-btn');
-    if (!p.keepButtonIds.includes('clear-btn')) p.keepButtonIds = [...p.keepButtonIds, 'clear-btn'];
+  // ── FATAL: Security — run on mainBody only (LLM-written code) ────────────────
+  const securityChecks: Array<[RegExp, string]> = [
+    [/\bfetch\s*\(/, 'Security: fetch() is not allowed'],
+    [/new\s+XMLHttpRequest\b/, 'Security: XMLHttpRequest is not allowed'],
+    [/\blocalStorage\b/, 'Security: localStorage access is not allowed'],
+    [/\bsessionStorage\b/, 'Security: sessionStorage access is not allowed'],
+    [/document\.cookie\b/, 'Security: cookie access is not allowed'],
+    [/\beval\s*\(/, 'Security: eval() is not allowed'],
+    [/new\s+Function\s*\(/, 'Security: new Function() is not allowed'],
+    [/window\.open\s*\(/, 'Security: window.open() is not allowed'],
+    [/<script[^>]*src\s*=/, 'Security: injecting external <script src> is not allowed'],
+    [/window\.parent\.location\b/, 'Security: navigating parent window is not allowed'],
+    [/window\.parent\.document\b/, 'Security: reading parent DOM is not allowed'],
+  ];
+  for (const [pattern, message] of securityChecks) {
+    if (pattern.test(checkBody)) fatal.push(message);
   }
 
-  // Fix animation
-  if (p.animation) {
-    if (p.animation.enabled && p.animation.controllerId !== p.targetControlId) {
-      const ctrl = manifest.controls.find(c => c.id === p.targetControlId);
-      p.animation = {
-        ...p.animation,
-        controllerId: p.targetControlId,
-        min:  ctrl ? parseFloat(ctrl.min ?? '0') : p.animation.min,
-        max:  ctrl ? parseFloat(ctrl.max ?? '100') : p.animation.max,
-      };
-    }
-    if (!p.animation.step || p.animation.step <= 0) p.animation = { ...p.animation, step: 0.2 };
-    if (!p.animation.intervalMs || p.animation.intervalMs < 20) p.animation = { ...p.animation, intervalMs: 60 };
-  }
-
-  // renderCalls: keep only known functions
+  // ── WARNINGS: Manifest ID mismatches ─────────────────────────────────────────
+  // Detect both window.fn?.() and window.fn() — not just optional chaining
+  const allManifestIds = new Set([
+    ...manifest.controls.map(c => c.id),
+    ...manifest.buttons.map(b => b.id),
+    ...manifest.selectElements.map(s => s.id),
+    ...manifest.canvasElements,
+    ...manifest.sections.map(s => s.id),
+  ]);
   const allFns = new Set([...manifest.renderFunctions, ...manifest.updateFunctions]);
-  p.renderCalls = p.renderCalls.filter(fn => allFns.has(fn));
-  // Always put updateFunctions before renderFunctions
-  p.renderCalls = [
-    ...p.renderCalls.filter(fn => manifest.updateFunctions.includes(fn)),
-    ...p.renderCalls.filter(fn => manifest.renderFunctions.includes(fn)),
+  const ignoredWindowProps = new Set([
+    'SimAPI', 'parent', '_simReadyFired', 'setSimSection',
+    'setupCanvas', 'initializePoints', 'applyResponsiveTableLabels',
+    'addEventListener', 'removeEventListener', 'postMessage',
+  ]);
+
+  // getElementById references: both 'id' and "id" forms
+  const getByIdRe = /document\.getElementById\(\s*['"`]([\w-]+)['"`]\s*\)/g;
+  let m: RegExpExecArray | null;
+  while ((m = getByIdRe.exec(checkBody)) !== null) {
+    if (!allManifestIds.has(m[1])) warnings.push(`getElementById('${m[1]}') — ID not found in manifest`);
+  }
+
+  // window.fn() and window.fn?.() calls — detect both patterns
+  const windowFnRe = /window\.([\w]+)\s*\(|window\.([\w]+)\?\.\s*\(/g;
+  while ((m = windowFnRe.exec(checkBody)) !== null) {
+    const fn = m[1] ?? m[2];
+    if (fn && !allFns.has(fn) && !ignoredWindowProps.has(fn)) {
+      warnings.push(`window.${fn}() — not found in manifest functions`);
+    }
+  }
+
+  // ── WARNINGS: Cleanup completeness — whole-code analysis ─────────────────────
+  // Approach: if a side-effect pattern appears anywhere in code,
+  // the compensating pattern should also appear anywhere in code.
+  // This avoids fragile nested-brace extraction.
+  const sideEffects: Array<[string, string, string]> = [
+    ['setInterval',        'clearInterval',       'setInterval used — clearInterval not found in code'],
+    ['setTimeout',         'clearTimeout',        'setTimeout used — clearTimeout not found in code'],
+    ['addEventListener',   'removeEventListener', 'addEventListener used — removeEventListener not found in code'],
+    ['insertAdjacentHTML', '.remove()',            'DOM injection used — element removal not found in code'],
+    ['appendChild',        '.remove()',            'appendChild used — element removal not found in code'],
+    ['classList.add',      'classList.remove',    'classList.add used — classList.remove not found in code'],
+  ];
+  for (const [sideEffect, compensator, message] of sideEffects) {
+    if (checkBody.includes(sideEffect) && !checkBody.includes(compensator)) {
+      warnings.push(message);
+    }
+  }
+
+  // style.display / style.opacity — check that restore pattern exists
+  if (checkBody.includes('style.display') && !checkBody.match(/style\.(?:removeProperty|display\s*=\s*['"])/)) {
+    warnings.push('style.display set — display restore not clearly found in code');
+  }
+  if (checkBody.includes('style.opacity') && !checkBody.match(/style\.opacity\s*=\s*['"]1|style\.removeProperty\('opacity'\)/)) {
+    warnings.push('style.opacity modified — opacity restore not clearly found in code');
+  }
+
+  // ── WEAK: Informational ────────────────────────────────────────────────────────
+  if (!checkBody.includes('params.simpleUi') && !checkBody.includes('simpleUi')) {
+    weak.push('params.simpleUi not referenced — simpleUi toggle may have no effect');
+  }
+  if (!checkBody.includes('params.autoScript') && !checkBody.includes('autoScript')) {
+    weak.push('params.autoScript not referenced — autoScript toggle may have no effect');
+  }
+
+  return { fatal, warnings, weak };
+}
+
+// ── Retry feedback formatter ──────────────────────────────────────────────────
+
+/** Format validation errors into a clear Fiji-style retry prompt.
+ *  Source files are NOT included here — they stay in the context/system prompt. */
+export function formatRetryPrompt(
+  validation: ValidationResult,
+  bridge: GeneratedBridge,
+  originalPrompt: string,
+  retryReason: string,
+): string {
+  const sections: string[] = [
+    `The bridge script has issues that must be fixed (retry reason: ${retryReason}).`,
+    '',
   ];
 
-  // Ancestor-container protection: never hide a section div that contains a shown control or
-  // a kept button — the bridge would immediately restore it anyway, and the flicker breaks UX.
-  // Works on ID selectors only (#foo); class selectors (.tabs) are not section containers.
-  {
-    const shownControls = new Set([...p.showControlIds, ...(p.targetControlId ? [p.targetControlId] : [])]);
-    const keptButtons   = new Set(p.keepButtonIds);
-    p.hideSelectorStrings = p.hideSelectorStrings.filter(sel => {
-      const idMatch = /^#([\w-]+)$/.exec(sel);
-      if (!idMatch) return true;
-      const sectionId = idMatch[1];
-      const section   = manifest.sections.find(s => s.id === sectionId);
-      if (!section) return true;
-      const hasShownChild = section.childControlIds.some(id => shownControls.has(id));
-      const hasKeptChild  = section.childButtonIds.some(id => keptButtons.has(id));
-      if (hasShownChild || hasKeptChild) {
-        logger.warn({ sectionId }, 'Plan repair: removing section selector — contains shown control or kept button');
-        return false;
-      }
-      return true;
-    });
+  if (validation.fatal.length > 0) {
+    sections.push('FATAL ERRORS (must fix):');
+    validation.fatal.forEach((e, i) => sections.push(`  ${i + 1}. ${e}`));
+    sections.push('');
   }
 
-  // Belt-and-suspenders: always remove #draw-mode even if containment detection missed it.
-  p.hideSelectorStrings = p.hideSelectorStrings.filter(sel => sel !== '#draw-mode');
-
-  // Auto-add .tabs when simpleUi hides are present but .tabs wasn't included.
-  // The mode-switching tab bar should always be hidden in simple-UI mode.
-  if (p.hideSelectorStrings.length > 0 || p.hideControlIds.length > 0) {
-    if (!p.hideSelectorStrings.includes('.tabs')) {
-      p.hideSelectorStrings = ['.tabs', ...p.hideSelectorStrings];
-    }
+  if (validation.warnings.length > 0) {
+    sections.push('STRONG WARNINGS (should fix):');
+    validation.warnings.forEach((w, i) => sections.push(`  ${i + 1}. ${w}`));
+    sections.push('');
   }
 
-  return p;
+  sections.push('CURRENT mainBody SUMMARY:');
+  sections.push(`  Implementation length: ${bridge.mainBody.length} chars. Confidence: ${bridge.confidence}.`);
+  sections.push(`  Original request: "${originalPrompt.slice(0, 120)}"`);
+  sections.push('');
+
+  sections.push('REQUIRED:');
+  sections.push('  - Fix all fatal errors listed above');
+  sections.push('  - Fix all strong warnings listed above');
+  sections.push('  - Preserve SIM_READY, startScript, stopScript, SimAPI, and the message listener EXACTLY');
+  sections.push('  - Ensure SCRIPTS.main returns a cleanup function that reverses ALL side effects');
+  sections.push('  - Do NOT include source files in your response — they are in your context');
+  sections.push('  - Return the COMPLETE corrected bridge script in your JSON response');
+
+  return sections.join('\n');
 }
 
-// ── Deterministic bridge compiler ─────────────────────────────────────────────
 
-function countDecimals(num: number): number {
-  const s = String(num);
-  const dot = s.indexOf('.');
-  return dot === -1 ? 0 : s.length - dot - 1;
+// ── Priority-based source file selection and budgeting ────────────────────────
+
+const SOURCE_BUDGETS = {
+  totalChars:       200_000,  // overall context budget
+  htmlPerFile:       50_000,  // HTML entry files get full budget
+  highPriorityJs:    30_000,  // relevant JS files
+  lowPriorityJs:     10_000,  // supporting JS files
+  cssPerFile:         8_000,  // CSS only if relevant to UI
+  minifiedExcerpt:    2_000,  // excerpt of minified files
+  largeFileTail:      5_000,  // tail chars shown for truncated files
+};
+
+function isMinified(content: string): boolean {
+  const lines = content.split('\n').filter(l => l.trim().length > 0);
+  if (lines.length === 0) return false;
+  const sampleLines = lines.slice(0, Math.min(10, lines.length));
+  return sampleLines.filter(l => l.length > 500).length > sampleLines.length * 0.5;
 }
 
-export function compileBridgeFromPlan(plan: BridgePlan, manifest: SimManifest): string {
-  const L: string[] = [];
+function isVendorOrLibrary(path: string): boolean {
+  return /[/\\](vendor|node_modules|dist|build|polyfill|chunk|bundle)[/\\]/i.test(path) ||
+    /\.(min|bundle|chunk)\.[jt]s$/.test(path);
+}
 
-  L.push(`(function () {`);
-  L.push(`  'use strict';`);
-  L.push(``);
+/** Score a JS/TS file by path to determine how relevant it is to the simulation */
+function scoreJsFile(key: string): number {
+  if (isVendorOrLibrary(key)) return -100;
+  const name = key.split('/').pop()?.toLowerCase() ?? '';
+  let score = 0;
+  if (/^(index|main|app|simulation|sim)\.[jt]s$/.test(name)) score += 12;
+  if (/render|draw|redraw|repaint|canvas|physics|animate/i.test(name)) score += 8;
+  if (/control|slider|input|ui|param/i.test(name)) score += 6;
+  if (/util|helper|math/i.test(name)) score += 2;
+  if (/lib|vendor|polyfill|third[_-]?party/i.test(name)) score -= 20;
+  return score;
+}
 
-  // SIM_READY — one RAF so sim's own boot() has run first
-  L.push(`  // ── SIM_READY — one RAF so sim boot() has run ────────────────────────────────`);
-  L.push(`  let _ready = false;`);
-  L.push(`  function _fireReady() {`);
-  L.push(`    if (_ready) return; _ready = true; window._simReadyFired = true;`);
-  L.push(`    window.parent?.postMessage({ type: 'SIM_READY' }, '*');`);
-  L.push(`  }`);
-  L.push(`  if (document.readyState === 'loading')`);
-  L.push(`    document.addEventListener('DOMContentLoaded', () => requestAnimationFrame(_fireReady));`);
-  L.push(`  else`);
-  L.push(`    requestAnimationFrame(_fireReady);`);
-  L.push(`  setTimeout(_fireReady, 3000);`);
-  L.push(``);
+interface SourceEntry { key: string; content: string; truncated: boolean; minified: boolean; }
 
-  // Lifecycle
-  L.push(`  // ── Script lifecycle ─────────────────────────────────────────────────────────`);
-  L.push(`  let _cancelFn = null;`);
-  L.push(``);
-  L.push(`  function stopScript() {`);
-  L.push(`    if (_cancelFn) { _cancelFn(); _cancelFn = null; }`);
-  L.push(`    window._setScriptedMode?.(false);`);
-  L.push(`    window.setSimSection?.('default');`);
-  L.push(`  }`);
-  L.push(`  function pauseScript() {`);
-  L.push(`    if (_cancelFn) { _cancelFn(); _cancelFn = null; }`);
-  L.push(`    window._setScriptedMode?.(false);`);
-  L.push(`  }`);
-  L.push(`  function startScript(name) {`);
-  L.push(`    stopScript();`);
-  L.push(`    window._setScriptedMode?.(true);`);
-  L.push(`    const fn = SCRIPTS[name] ?? SCRIPTS['main'];`);
-  L.push(`    if (fn) _cancelFn = fn();`);
-  L.push(`  }`);
-  L.push(``);
+export function selectSources(
+  rawMap: Map<string, string>,
+  isSectionFile: (k: string) => boolean,
+): { sourceMap: Map<string, string>; contextTruncated: boolean } {
+  let remaining = SOURCE_BUDGETS.totalChars;
+  let contextTruncated = false;
+  const selected: SourceEntry[] = [];
 
-  const hasHide = plan.hideControlIds.length > 0 || plan.hideButtonIds.length > 0 || plan.hideSelectorStrings.length > 0;
+  const entries = [...rawMap.entries()].filter(([k]) => !isSectionFile(k));
+  const htmlEntries = entries.filter(([k]) => /\.(html|htm)$/.test(k));
+  const jsEntries   = entries.filter(([k]) => /\.(js|mjs|ts)$/.test(k)).sort(([a], [b]) => scoreJsFile(b) - scoreJsFile(a));
+  const cssEntries  = entries.filter(([k]) => /\.css$/.test(k));
 
-  // SCRIPTS.main
-  L.push(`  const SCRIPTS = {`);
-  L.push(`    main: function () {`);
-  L.push(`      // ── Boot safety — idempotent calls; all guarded by ?. so no-op if absent ──`);
-  L.push(`      window.setupCanvas?.();`);
-  L.push(`      window.initializePoints?.();`);
-  L.push(`      window.applyResponsiveTableLabels?.();`);
-  L.push(`      window.updateDerivedPhysics?.();`);
-  L.push(``);
+  const addEntry = (key: string, rawContent: string, budget: number) => {
+    if (remaining <= 0) { contextTruncated = true; return; }
+    const minfied = isMinified(rawContent);
+    let content: string;
+    let truncated = false;
 
-  if (hasHide) {
-    L.push(`      // ── Record original display values for cleanup ─────────────────────────────`);
-    L.push(`      const _hidden = [];`);
-    L.push(`      function _hide(el) {`);
-    L.push(`        if (!el) return;`);
-    L.push(`        const orig = el.style.getPropertyValue('display');`);
-    L.push(`        el.style.setProperty('display', 'none');`);
-    L.push(`        _hidden.push([el, orig]);`);
-    L.push(`      }`);
-    L.push(``);
-
-    for (const id of plan.hideControlIds) {
-      L.push(`      _hide(document.getElementById('${id}')?.closest('.control-group') ?? document.getElementById('${id}'));`);
-    }
-    for (const id of plan.hideButtonIds) {
-      L.push(`      _hide(document.getElementById('${id}'));`);
-    }
-    for (const sel of plan.hideSelectorStrings) {
-      L.push(`      _hide(document.querySelector('${sel.replace(/'/g, "\\'")}'));`);
-    }
-    L.push(``);
-  }
-
-  // setSimSection
-  if (plan.setSimSection && manifest.hasSetSimSection) {
-    L.push(`      window.setSimSection?.('${plan.setSimSection}');`);
-  }
-
-  // Ensure draw-mode visible
-  if (manifest.sections.some(s => s.id === 'draw-mode')) {
-    L.push(`      document.getElementById('draw-mode')?.style.setProperty('display', 'block');`);
-  }
-
-  // showOptimal — set before first render so the initial draw includes the ballistic path
-  if (plan.animation?.showOptimal) {
-    L.push(`      window.showOptimal = true;`);
-  }
-
-  // Initial render — fires immediately so the canvas isn't blank while waiting for the first tick
-  if (plan.renderCalls.length > 0) {
-    for (const fn of plan.renderCalls) L.push(`      window.${fn}?.();`);
-  }
-
-  // Animation
-  if (plan.animation?.enabled && plan.animation.controllerId) {
-    const anim = plan.animation;
-    const dec  = countDecimals(anim.step);
-    L.push(``);
-    L.push(`      // ── Pingpong animation ────────────────────────────────────────────────────`);
-    L.push(`      const _el = document.getElementById('${anim.controllerId}');`);
-    L.push(`      if (!_el) { _restoreAll(); return () => {}; }`);
-    L.push(`      let _val = parseFloat(_el.value) || ${anim.min};`);
-    L.push(`      let _dir = 1;`);
-    L.push(`      const _iv = setInterval(() => {`);
-    L.push(`        _val += _dir * ${anim.step};`);
-    L.push(`        if (_val >= ${anim.max}) { _val = ${anim.max}; _dir = -1; }`);
-    L.push(`        if (_val <= ${anim.min}) { _val = ${anim.min}; _dir = 1; }`);
-    L.push(`        _el.value = String(parseFloat(_val.toFixed(${dec})));`);
-    L.push(`        _el.dispatchEvent(new Event('input', { bubbles: true }));`);
-    L.push(`        _el.dispatchEvent(new Event('change', { bubbles: true }));`);
-    for (const fn of plan.renderCalls) L.push(`        window.${fn}?.();`);
-    if (anim.showOptimal) L.push(`        window.showOptimal = true;`);
-    L.push(`      }, ${anim.intervalMs});`);
-  }
-
-  // Restore function
-  L.push(``);
-  if (hasHide) {
-    L.push(`      function _restoreAll() {`);
-    L.push(`        _hidden.forEach(([el, orig]) => {`);
-    L.push(`          if (orig) el.style.setProperty('display', orig);`);
-    L.push(`          else el.style.removeProperty('display');`);
-    L.push(`        });`);
-    L.push(`      }`);
-    L.push(``);
-  }
-
-  // Cancel return
-  if (plan.animation?.enabled) {
-    if (hasHide) {
-      L.push(`      return () => { clearInterval(_iv); _restoreAll(); };`);
+    if (minfied) {
+      content = rawContent.slice(0, SOURCE_BUDGETS.minifiedExcerpt) +
+        (rawContent.length > SOURCE_BUDGETS.minifiedExcerpt
+          ? `\n// [MINIFIED — showing first ${SOURCE_BUDGETS.minifiedExcerpt} of ${rawContent.length} chars]`
+          : '');
+      truncated = rawContent.length > SOURCE_BUDGETS.minifiedExcerpt;
+    } else if (rawContent.length > budget) {
+      const head = rawContent.slice(0, budget - SOURCE_BUDGETS.largeFileTail);
+      const tail = rawContent.slice(-SOURCE_BUDGETS.largeFileTail);
+      content = head +
+        `\n// [TRUNCATED — ${rawContent.length - head.length - SOURCE_BUDGETS.largeFileTail} chars omitted]\n` +
+        tail;
+      truncated = true;
     } else {
-      L.push(`      return () => clearInterval(_iv);`);
+      content = rawContent;
     }
-  } else {
-    L.push(`      return ${hasHide ? '_restoreAll' : '() => {}'};`);
+
+    if (truncated) contextTruncated = true;
+    remaining -= content.length;
+    selected.push({ key, content, truncated, minified: minfied });
+  };
+
+  // HTML always first — they contain the DOM structure with controls
+  for (const [key, raw] of htmlEntries) addEntry(key, raw, SOURCE_BUDGETS.htmlPerFile);
+
+  // JS by relevance score (high → low)
+  for (const [key, raw] of jsEntries) {
+    const budget = scoreJsFile(key) >= 6 ? SOURCE_BUDGETS.highPriorityJs : SOURCE_BUDGETS.lowPriorityJs;
+    addEntry(key, raw, budget);
   }
 
-  L.push(`    },`);
-  L.push(`  };`);
-  L.push(``);
+  // CSS last — lower priority
+  for (const [key, raw] of cssEntries) addEntry(key, raw, SOURCE_BUDGETS.cssPerFile);
 
-  // Public API + postMessage + pointerdown
-  L.push(`  window.SimAPI = { start: startScript, stop: stopScript };`);
-  L.push(``);
-  L.push(`  window.addEventListener('message', e => {`);
-  L.push(`    const { type, script } = e.data || {};`);
-  L.push(`    if (type === 'startScript')  startScript(script || 'main');`);
-  L.push(`    if (type === 'stopScript')   stopScript();`);
-  L.push(`    if (type === 'pauseScript')  pauseScript();`);
-  L.push(`    if (type === 'PING_SIM_READY' && window._simReadyFired)`);
-  L.push(`      window.parent?.postMessage({ type: 'SIM_READY' }, '*');`);
-  L.push(`  });`);
-  L.push(``);
-  L.push(`  document.addEventListener('pointerdown', () => {`);
-  L.push(`    window.parent?.postMessage({ type: 'userInteraction' }, '*');`);
-  L.push(`  }, { capture: true });`);
-  L.push(``);
-  L.push(`})();`);
+  // Rebuild as sorted Map (deterministic path order)
+  const sourceMap = new Map<string, string>(
+    selected.sort(({ key: a }, { key: b }) => a.localeCompare(b)).map(e => [e.key, e.content])
+  );
 
-  return L.join('\n');
+  return { sourceMap, contextTruncated };
+}
+
+// ── Conversation history normalizer ───────────────────────────────────────────
+
+/** Normalize conversation history before passing to LLM.
+ *  Strips old-format source-heavy messages and raw bridge code.
+ *  Handles multi-line prompts correctly. */
+export function normalizeConversationHistory(history: ConversationMessage[]): ConversationMessage[] {
+  return history.map(msg => {
+    if (msg.role === 'user' && msg.content.includes('## SIMULATION SOURCE FILES')) {
+      // Old format: user message contained full source files.
+      // Extract the actual prompt — may be multi-line, stop at next section separator.
+      const promptMatch = msg.content.match(
+        /(?:SECTION|REFINEMENT|FIX)\s*PROMPT:\s*([\s\S]+?)(?:\n\n---|(?:\n)simpleUi\s*=|\nautoScript\s*=|\nGenerate the|\nUpdate the|\nFix all|$)/i
+      );
+      const extracted = promptMatch?.[1]?.trim();
+      return {
+        role: 'user' as const,
+        content: extracted && extracted.length > 0 ? extracted : '[previous prompt]',
+      };
+    }
+    if (msg.role === 'assistant') {
+      // Old format: raw or truncated bridge code in history
+      const looksLikeCode = msg.content.includes('(function') || msg.content.includes('SCRIPTS') ||
+        msg.content.includes('startScript') || msg.content.includes('SIM_READY');
+      const alreadySummarized = msg.content.startsWith('Bridge for:') || msg.content.startsWith('[Previous bridge');
+      if (looksLikeCode && !alreadySummarized) {
+        return {
+          role: 'assistant' as const,
+          content: `[Previous bridge generated (${msg.content.length} chars)]`,
+        };
+      }
+    }
+    return msg;
+  });
+}
+
+// ── Bridge summary builder (for conversation history) ─────────────────────────
+
+function buildBridgeSummary(bridge: GeneratedBridge, prompt: string): string {
+  const code = bridge.mainBody;  // summary uses mainBody — bridgeScript is system-assembled
+  const intervalCount = (code.match(/setInterval/g) ?? []).length;
+  const fnCalls = [...code.matchAll(/window\.([\w]+)\?\./g)].map(m => m[1]).filter(Boolean);
+  const hiddenIds = [...code.matchAll(/getElementById\(['"`]([\w-]+)['"`]\)/g)].map(m => m[1]);
+  return [
+    `Bridge for: "${prompt.slice(0, 80)}".`,
+    `Length: ${code.length} chars. Confidence: ${bridge.confidence}.`,
+    intervalCount > 0 ? `Animation: yes (${intervalCount} loops).` : 'Animation: no.',
+    hiddenIds.length > 0 ? `DOM IDs: ${hiddenIds.slice(0, 6).join(', ')}.` : '',
+    fnCalls.length > 0   ? `Calls: ${fnCalls.slice(0, 4).join(', ')}.` : '',
+    bridge.warnings.length > 0 ? `Warnings: ${bridge.warnings.slice(0, 2).join('; ')}.` : '',
+    'SCRIPTS.main returns cleanup.',
+  ].filter(Boolean).join(' ');
+}
+
+// ── ContextPack builder (source files → system/context prompt) ───────────────
+
+export function buildContextPrompt(
+  baseInstructions: string,
+  sourceMap: Map<string, string>,
+  manifest: SimManifest,
+  sourceHash: string,
+  contextTruncated: boolean,
+): string {
+  // Sort deterministically by full storage path — critical for consistent prompt caching
+  const sortedEntries = [...sourceMap.entries()].sort(([a], [b]) => a.localeCompare(b));
+
+  const sourceFilesText = sortedEntries
+    .map(([key, content]) => {
+      const filename = key.split('/').pop() ?? key;
+      const ext = filename.split('.').pop() ?? '';
+      return `### ${filename}\n\`\`\`${ext}\n${content}\n\`\`\``;
+    })
+    .join('\n\n');
+
+  const manifestSummary = JSON.stringify({
+    controls:         manifest.controls.map(c => ({ id: c.id, type: c.type, label: c.label, min: c.min, max: c.max })),
+    buttons:          manifest.buttons,
+    selectElements:   manifest.selectElements,
+    checkboxElements: manifest.checkboxElements,
+    canvasElements:   manifest.canvasElements,
+    globalObjects:    manifest.globalObjects,
+    renderFunctions:  manifest.renderFunctions,
+    updateFunctions:  manifest.updateFunctions,
+    hasSetSimSection: manifest.hasSetSimSection,
+  }, null, 2);
+
+  const contextMeta = [
+    `<!-- sourceHash: ${sourceHash} -->`,
+    contextTruncated ? '<!-- contextTruncated: true — some large files were excerpted -->' : '',
+  ].filter(Boolean).join('\n');
+
+  return [
+    baseInstructions,
+    '',
+    '## SIMULATION SOURCE FILES',
+    contextMeta,
+    sourceFilesText,
+    '',
+    '## MANIFEST (verified IDs and functions)',
+    '```json',
+    manifestSummary,
+    '```',
+  ].join('\n');
 }
 
 // ── SimulationService ─────────────────────────────────────────────────────────
@@ -569,7 +933,7 @@ export function compileBridgeFromPlan(plan: BridgePlan, manifest: SimManifest): 
 export class SimulationService {
   constructor(
     private readonly storage: StorageService,
-    private readonly anthropicApiKey: string,
+    private readonly llmService: LLMService,
   ) {}
 
   async processUpload(opts: {
@@ -610,69 +974,202 @@ export class SimulationService {
   // ── AI-powered per-section bridge generation ──────────────────────────────────
 
   async generateBridgeScript(opts: {
-    simId:      string;
-    sectionId:  string;
-    projectId:  string;
-    prompt:     string;
-    simpleUi:   boolean;
-    autoScript: boolean;
-  }): Promise<{ sectionUrl: string; plan: BridgePlan }> {
-    const { simId, sectionId, projectId, prompt, simpleUi, autoScript } = opts;
+    simId:             string;
+    sectionId:         string;
+    projectId:         string;
+    userId:            string;
+    prompt:            string;
+    simpleUi:          boolean;
+    autoScript:        boolean;
+    storedSourceHash?: string;          // from sim_meta — service owns invalidation
+    conversationHistory?: ConversationMessage[];
+    onEvent?: (event: string, data: object) => void;
+    signal?: AbortSignal;
+  }): Promise<BridgeGenerationResult> {
+    const { simId, sectionId, projectId, userId, prompt, simpleUi, autoScript, onEvent, signal } = opts;
     const prefix = `simulations/${projectId}/${simId}`;
 
-    // 1. Gather source files
+    // 1. Load all text source files with priority budgeting
+    onEvent?.('status', { status: 'Loading simulation files…', type: 'progress' });
     const allKeys = await this.storage.listObjects(prefix);
-    const isText       = (k: string) => /\.(js|mjs|html|htm|css|ts)$/.test(k);
+    const isText        = (k: string) => /\.(js|mjs|html|htm|css|ts)$/.test(k);
     const isSectionFile = (k: string) => /section_[^/]+\.(html|js)$/.test(k);
-    const textKeys  = allKeys.filter(k => isText(k) && !isSectionFile(k));
-    const jsKeys    = textKeys.filter(k => /\.(js|mjs|ts)$/.test(k));
-    const htmlCssKeys = textKeys.filter(k => /\.(html|htm|css)$/.test(k));
-    const orderedKeys = [...jsKeys, ...htmlCssKeys].slice(0, 10);
 
-    const sourceMap = new Map<string, string>();
-    await Promise.all(orderedKeys.map(async key => {
-      try {
-        const buf = await this.storage.readObject(key);
-        // Strip ALL previously-injected bridge blocks (v1 and v2)
-        const raw = buf.toString('utf-8')
-          .replace(/<script[^>]*>\s*\/\* sim-bridge[\s\S]*?<\/script>/gi, '')
-          .replace(/<script[^>]*>\s*;?\s*\(function[\s\S]*?sim-bridge v[12][\s\S]*?<\/script>/gi, '');
-        sourceMap.set(key, raw.slice(0, 12000));
-      } catch { /* skip unreadable files */ }
-    }));
+    // Read all candidate text files (skip section-specific generated files)
+    const rawMap = new Map<string, string>();
+    await Promise.all(
+      allKeys.filter(k => isText(k)).map(async key => {
+        try {
+          const buf = await this.storage.readObject(key);
+          const raw = buf.toString('utf-8')
+            .replace(/<script[^>]*>\s*\/\* sim-bridge[\s\S]*?<\/script>/gi, '')
+            .replace(/<script[^>]*>\s*;?\s*\(function[\s\S]*?sim-bridge v[12][\s\S]*?<\/script>/gi, '');
+          rawMap.set(key, raw);
+        } catch { /* skip unreadable files */ }
+      }),
+    );
 
-    // 2. Build manifest
+    // Apply priority scoring and budget — produce final sourceMap
+    const { sourceMap, contextTruncated } = selectSources(rawMap, isSectionFile);
+
+    // 2. Compute deterministic source hash (includes path + content, sorted)
+    const sourceHash = computeSourceHash(sourceMap);
+
+    // 3. Own sourceHash invalidation: if the stored hash differs, the old history
+    //    references stale IDs/functions and must be discarded.
+    let conversationHistory = opts.conversationHistory ?? [];
+    if (opts.storedSourceHash && opts.storedSourceHash !== sourceHash) {
+      conversationHistory = [];
+      logger.info({ sectionId, old: opts.storedSourceHash, new: sourceHash }, 'sourceHash changed — conversation history cleared');
+    }
+    // Normalize regardless (strips old source-heavy or code-heavy messages)
+    conversationHistory = normalizeConversationHistory(conversationHistory);
+
+    // 4. Build manifest from the selected source files
+    onEvent?.('status', { status: 'Analyzing simulation structure…', type: 'progress' });
     const manifest = buildManifest(sourceMap);
-    logger.info({ simId, sectionId, controls: manifest.controls.length, buttons: manifest.buttons.length }, 'Manifest built');
+    logger.info({ simId, sectionId, controls: manifest.controls.length, renderFns: manifest.renderFunctions, contextTruncated }, 'Manifest built');
 
-    // 3. Generate JSON plan from Claude
-    const rawPlan = await this.callClaudeForPlan({ manifest, prompt, simpleUi, autoScript });
+    // 5. Load system/context prompt from DB (admin-editable), fall back to hardcoded
+    const dbPrompt = await db.query.system_prompts.findFirst({ where: eq(system_prompts.key, 'bridge_plan') });
+    const baseSystemPrompt = dbPrompt?.is_customized ? dbPrompt.content : BRIDGE_GENERATION_SYSTEM_PROMPT;
 
-    // 4. Validate & auto-repair
-    const plan = validateAndRepairPlan(rawPlan, manifest);
+    // 6. Build deterministic ContextPack — source files + manifest live in the system prompt.
+    //    This is provider-neutral: Claude caches it; OpenAI/Gemini receive it in system role.
+    const contextPrompt = buildContextPrompt(baseSystemPrompt, sourceMap, manifest, sourceHash, contextTruncated);
+
+    // 7. Call LLM + unified retry budget
+    //    One maxBridgeRetries retry covers: fatal validation, strong warnings, low confidence.
+    //    Runtime validation (Playwright-based start/stop cycle) is a REQUIRED future step.
+    const MAX_BRIDGE_RETRIES = 1;
+    const isRefinement = conversationHistory.length > 0;
+
+    // Throttle token heartbeat to at most one SSE event per 500ms
+    let lastTokenEventMs = 0;
+    const tokenHeartbeat = opts.onEvent
+      ? (_chunk: string) => {
+          const now = Date.now();
+          if (now - lastTokenEventMs >= 500) {
+            lastTokenEventMs = now;
+            opts.onEvent!('token', { content: '' });
+          }
+        }
+      : undefined;
+
+    onEvent?.('status', { status: isRefinement ? 'Refining bridge script...' : 'Generating bridge script...', type: 'progress' });
+
+    let { bridge, conversationHistory: updatedHistory, provider: llmProvider, model: llmModel } = await this.callLLMForBridge({
+      contextPrompt, manifest, prompt, simpleUi, autoScript,
+      userId, projectId, conversationHistory, signal,
+      onTokenChunk: tokenHeartbeat,
+    });
+
+    onEvent?.('status', { status: 'Validating bridge script...', type: 'progress' });
+    // System wraps LLM-generated mainBody into the deterministic bridge template.
+    // This guarantees SIM_READY, startScript, stopScript, and message listener are ALWAYS correct.
+    const assembledBridgeScript = wrapBridgeMainBody(bridge.mainBody);
+    let validation = validateGeneratedBridge(assembledBridgeScript, manifest, bridge.mainBody);
+
+    // ── Unified retry budget ──────────────────────────────────────────────────
+    // Retry policy (in priority order):
+    //   1. Fatal errors: ALWAYS retry if budget allows — upload is blocked until fixed
+    //   2. Low confidence (<0.45): retry — LLM was uncertain, may produce better result
+    //   3. HIGH-RISK warnings only: getElementById/window.fn with unknown ID/function
+    //      These will cause runtime errors. Other warnings (setInterval cleanup, etc.)
+    //      are stored in metadata but do NOT trigger retry — they're expected patterns.
+    let retryCount = 0;
+    let retryReason: string | null = null;
+
+    const highRiskWarnings = validation.warnings.filter(w =>
+      w.includes('ID not found in manifest') ||       // getElementById('xyz') missing from DOM
+      w.includes('not found in manifest functions')   // window.fn() will throw at runtime
+    );
+
+    if (validation.fatal.length > 0) {
+      retryReason = 'fatal_validation';
+    } else if (bridge.confidence < 0.45) {
+      retryReason = 'low_confidence';
+    } else if (highRiskWarnings.length > 0) {
+      retryReason = 'high_risk_warning';
+    }
+    // Other strong warnings (cleanup patterns, style restore, etc.) are saved to metadata
+    // but do NOT trigger retry — they won't cause immediate runtime failures.
+
+    // Auto-retry loop — one retry max, Fiji debug loop pattern
+    if (retryReason && retryCount < MAX_BRIDGE_RETRIES) {
+      retryCount++;
+      onEvent?.('status', { status: 'Issues found, requesting fix...', type: 'progress' });
+
+      const retryPrompt = formatRetryPrompt(validation, bridge, prompt, retryReason);
+
+      const retryResult = await this.callLLMForBridge({
+        contextPrompt, manifest,
+        prompt: retryPrompt, simpleUi, autoScript,
+        userId, projectId, conversationHistory: updatedHistory, signal,
+        onTokenChunk: tokenHeartbeat,
+      });
+      bridge = retryResult.bridge;
+      updatedHistory = retryResult.conversationHistory;
+      llmProvider = retryResult.provider;
+      llmModel = retryResult.model;
+
+      onEvent?.('status', { status: 'Validating fix...', type: 'progress' });
+      const assembledBridgeScriptRetry = wrapBridgeMainBody(bridge.mainBody);
+      validation = validateGeneratedBridge(assembledBridgeScriptRetry, manifest, bridge.mainBody);
+      logger.info({ sectionId, retryReason, fatalAfterRetry: validation.fatal.length }, 'Bridge retry completed');
+    }
+
+    // Safe failure: do NOT upload broken code — keep existing bridge intact
+    if (validation.fatal.length > 0) {
+      logger.warn({ sectionId, fatal: validation.fatal, retryReason }, 'Fatal errors remain after retry — aborting upload');
+      throw new Error(
+        'Bridge generation failed — fatal errors remain after retry. ' +
+        `Errors: ${validation.fatal.slice(0, 2).join('; ')}. ` +
+        'Try a simpler or more specific prompt.'
+      );
+    }
+
+    // Confidence policy (uses same retry budget — already consumed above if needed)
+    const confidence = bridge.confidence;
+    const confidenceLevel: 'high' | 'medium' | 'low' =
+      confidence >= 0.75 ? 'high' : confidence >= 0.45 ? 'medium' : 'low';
+
+    if (confidence < 0.3) {
+      throw new Error(
+        'Bridge generation failed — confidence too low after retry. ' +
+        'Try a more specific prompt or verify the simulation has the expected controls.'
+      );
+    }
+
+    // Build metadata
+    // Use the final assembled bridgeScript for upload and hashing
+    const finalBridgeScript = wrapBridgeMainBody(bridge.mainBody);
+    const bridgeHash = computeBridgeHash(finalBridgeScript);
+    const allValidationWarnings = [
+      ...validation.warnings,
+      ...validation.weak,
+      ...(bridge.warnings ?? []),
+    ];
+
     logger.info({
-      simId, sectionId,
-      targetControlId: plan.targetControlId,
-      confidence: plan.confidence,
-      animationEnabled: plan.animation?.enabled,
-      hideCount: plan.hideControlIds.length + plan.hideButtonIds.length,
-    }, 'Bridge plan ready');
+      simId, sectionId, confidence, confidenceLevel,
+      warnings: allValidationWarnings.length,
+      bridgeLen: finalBridgeScript.length,
+      retryCount, retryReason,
+    }, 'Bridge script ready');
 
-    // 5. Compile deterministic JS
-    const jsCode = compileBridgeFromPlan(plan, manifest);
-
-    // 6. Locate entry HTML
+    // 8. Locate entry HTML and upload bridge files
     const entryKey = allKeys.find(k => /\/(index|main)\.(html|htm)$/.test(k))
       ?? allKeys.find(k => (k.endsWith('.html') || k.endsWith('.htm')) && !isSectionFile(k));
     if (!entryKey) throw new Error('No HTML entry file found in simulation');
 
     const entryDir = entryKey.substring(0, entryKey.lastIndexOf('/'));
 
-    // 7. Upload bridge JS
+    onEvent?.('status', { status: 'Uploading files…', type: 'progress' });
     const bridgeJsKey = `${prefix}/section_${sectionId}.js`;
-    await this.storage.uploadFile(bridgeJsKey, Buffer.from(jsCode, 'utf-8'), 'application/javascript');
+    await this.storage.uploadFile(bridgeJsKey, Buffer.from(finalBridgeScript, 'utf-8'), 'application/javascript');
 
-    // 8. Build section HTML (strip old bridge, add new external <script src>)
+    // 12. Build section HTML (strip old bridge, add new external <script src>)
     const rawHtml = (await this.storage.readObject(entryKey)).toString('utf-8');
     const stripped = rawHtml
       .replace(/<script[^>]*>\s*\/\* sim-bridge[\s\S]*?<\/script>/gi, '')
@@ -688,17 +1185,13 @@ export class SimulationService {
       ? stripped.replace('</body>', `${scriptTag}\n</body>`)
       : stripped + '\n' + scriptTag;
 
-    // Validate: every external <script src="..."> from the original HTML must survive the strip.
-    // A missing src means the bridge-strip regex ate a real script tag — that is a bug.
+    // Validate no script tags were lost in strip
     const srcRe = /<script[^>]+src="([^"]+)"/gi;
     let srcMatch: RegExpExecArray | null;
     while ((srcMatch = srcRe.exec(rawHtml)) !== null) {
       const src = srcMatch[1];
       if (!sectionHtml.includes(`src="${src}"`)) {
-        throw new Error(
-          `Section HTML validation failed: <script src="${src}"> was lost after bridge-strip. ` +
-          `Do not upload broken HTML. Check the bridge-strip regex patterns.`
-        );
+        throw new Error(`Section HTML validation failed: <script src="${src}"> was lost after bridge-strip.`);
       }
     }
 
@@ -706,172 +1199,91 @@ export class SimulationService {
     await this.storage.uploadFile(sectionHtmlKey, Buffer.from(sectionHtml, 'utf-8'), 'text/html; charset=utf-8');
     const sectionUrl = this.storage.getSimPublicUrl(sectionHtmlKey);
 
-    logger.info({ simId, sectionId, projectId, sectionUrl, jsLen: jsCode.length }, 'Bridge script generated');
-    return { sectionUrl, plan };
-  }
+    logger.info({ simId, sectionId, projectId, sectionUrl }, 'Bridge script uploaded');
 
-  // ── Recompile from stored plan (no Claude call) ───────────────────────────────
-
-  async recompileBridgeScript(opts: {
-    simId:        string;
-    sectionId:    string;
-    projectId:    string;
-    simpleUi:     boolean;
-    autoScript:   boolean;
-    existingPlan: BridgePlan;
-  }): Promise<{ sectionUrl: string }> {
-    const { simId, sectionId, projectId, simpleUi, autoScript, existingPlan } = opts;
-    const prefix = `simulations/${projectId}/${simId}`;
-
-    // 1. Gather source files (same as generateBridgeScript — needed for manifest + entry HTML)
-    const allKeys = await this.storage.listObjects(prefix);
-    const isText        = (k: string) => /\.(js|mjs|html|htm|css|ts)$/.test(k);
-    const isSectionFile = (k: string) => /section_[^/]+\.(html|js)$/.test(k);
-    const textKeys    = allKeys.filter(k => isText(k) && !isSectionFile(k));
-    const jsKeys      = textKeys.filter(k => /\.(js|mjs|ts)$/.test(k));
-    const htmlCssKeys = textKeys.filter(k => /\.(html|htm|css)$/.test(k));
-    const orderedKeys = [...jsKeys, ...htmlCssKeys].slice(0, 10);
-
-    const sourceMap = new Map<string, string>();
-    await Promise.all(orderedKeys.map(async key => {
-      try {
-        const buf = await this.storage.readObject(key);
-        const raw = buf.toString('utf-8')
-          .replace(/<script[^>]*>\s*\/\* sim-bridge[\s\S]*?<\/script>/gi, '')
-          .replace(/<script[^>]*>\s*;?\s*\(function[\s\S]*?sim-bridge v[12][\s\S]*?<\/script>/gi, '');
-        sourceMap.set(key, raw.slice(0, 12000));
-      } catch { /* skip unreadable files */ }
-    }));
-
-    // 2. Build manifest (needed for validateAndRepairPlan + compileBridgeFromPlan)
-    const manifest = buildManifest(sourceMap);
-
-    // 3. Apply toggle overrides to stored plan (non-mutating)
-    let workingPlan: BridgePlan = { ...existingPlan };
-    if (!autoScript && workingPlan.animation) {
-      workingPlan = { ...workingPlan, animation: { ...workingPlan.animation, enabled: false } };
-    }
-    if (!simpleUi) {
-      workingPlan = { ...workingPlan, hideControlIds: [], hideButtonIds: [], hideSelectorStrings: [] };
-    }
-
-    // 4. Re-validate (sim source files could have been re-uploaded since original generation)
-    const plan = validateAndRepairPlan(workingPlan, manifest);
-
-    // 5. Compile deterministic JS
-    const jsCode = compileBridgeFromPlan(plan, manifest);
-
-    // 6. Locate entry HTML
-    const entryKey = allKeys.find(k => /\/(index|main)\.(html|htm)$/.test(k))
-      ?? allKeys.find(k => (k.endsWith('.html') || k.endsWith('.htm')) && !isSectionFile(k));
-    if (!entryKey) throw new Error('No HTML entry file found in simulation');
-
-    const entryDir = entryKey.substring(0, entryKey.lastIndexOf('/'));
-
-    // 7. Upload bridge JS
-    const bridgeJsKey = `${prefix}/section_${sectionId}.js`;
-    await this.storage.uploadFile(bridgeJsKey, Buffer.from(jsCode, 'utf-8'), 'application/javascript');
-
-    // 8. Build section HTML (strip old bridge, add new external <script src>)
-    const rawHtml = (await this.storage.readObject(entryKey)).toString('utf-8');
-    const stripped = rawHtml
-      .replace(/<script[^>]*>\s*\/\* sim-bridge[\s\S]*?<\/script>/gi, '')
-      .replace(/<script[^>]*>\s*;?\s*\(function[\s\S]*?sim-bridge v[12][\s\S]*?<\/script>/gi, '');
-
-    const relativeDepth = entryDir === prefix
-      ? 0
-      : entryDir.slice(prefix.length).split('/').filter(Boolean).length;
-    const relPath = (relativeDepth > 0 ? '../'.repeat(relativeDepth) : './') + `section_${sectionId}.js`;
-
-    const scriptTag = `<script src="${relPath}"></script>`;
-    const sectionHtml = stripped.includes('</body>')
-      ? stripped.replace('</body>', `${scriptTag}\n</body>`)
-      : stripped + '\n' + scriptTag;
-
-    // Validate: every external <script src="..."> from the original HTML must survive the strip.
-    const srcRe2 = /<script[^>]+src="([^"]+)"/gi;
-    let srcMatch2: RegExpExecArray | null;
-    while ((srcMatch2 = srcRe2.exec(rawHtml)) !== null) {
-      const src = srcMatch2[1];
-      if (!sectionHtml.includes(`src="${src}"`)) {
-        throw new Error(
-          `Section HTML validation failed: <script src="${src}"> was lost after bridge-strip. ` +
-          `Do not upload broken HTML. Check the bridge-strip regex patterns.`
-        );
-      }
-    }
-
-    const sectionHtmlKey = `${entryDir}/section_${sectionId}.html`;
-    await this.storage.uploadFile(sectionHtmlKey, Buffer.from(sectionHtml, 'utf-8'), 'text/html; charset=utf-8');
-    const sectionUrl = this.storage.getSimPublicUrl(sectionHtmlKey);
-
-    logger.info({ simId, sectionId, projectId, sectionUrl, jsLen: jsCode.length, recompile: true }, 'Bridge script recompiled from stored plan');
-    return { sectionUrl };
-  }
-
-  // ── Private ───────────────────────────────────────────────────────────────────
-
-  private async callClaudeForPlan(opts: {
-    manifest:   SimManifest;
-    prompt:     string;
-    simpleUi:   boolean;
-    autoScript: boolean;
-  }): Promise<BridgePlan> {
-    const { manifest, prompt, simpleUi, autoScript } = opts;
-
-    const userMessage = [
-      'SIMULATION MANIFEST:',
-      JSON.stringify(manifest, null, 2),
-      '',
-      '---',
-      `SECTION PROMPT: ${prompt}`,
-      '',
-      '---',
-      `TOGGLES:`,
-      `simpleUi = ${simpleUi}`,
-      `autoScript = ${autoScript}`,
-      '',
-      'Generate the bridge plan JSON now.',
-    ].join('\n');
-
-    const client = new Anthropic({ apiKey: this.anthropicApiKey });
-    const msg = await client.messages.create({
-      model:      'claude-sonnet-4-6',
-      max_tokens: 2048,
-      system:     BRIDGE_PLAN_SYSTEM_PROMPT,
-      messages:   [{ role: 'user', content: userMessage }],
-    });
-
-    const rawText = (msg.content as Anthropic.ContentBlock[])
-      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-      .map(b => b.text)
-      .join('');
-
-    const clean = rawText.replace(/^```(?:json)?\r?\n?/gm, '').replace(/^```\s*$/gm, '').trim();
-
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(clean);
-    } catch {
-      throw new Error(`Claude returned non-JSON plan: ${clean.slice(0, 300)}`);
-    }
-
+    // Return typed BridgeGenerationResult — controller builds sim_meta from this
     return {
-      targetControlId:     (parsed.targetControlId as string | null) ?? null,
-      showControlIds:      Array.isArray(parsed.showControlIds)      ? (parsed.showControlIds as string[])      : [],
-      hideControlIds:      Array.isArray(parsed.hideControlIds)      ? (parsed.hideControlIds as string[])      : [],
-      keepButtonIds:       Array.isArray(parsed.keepButtonIds)       ? (parsed.keepButtonIds as string[])       : [],
-      hideButtonIds:       Array.isArray(parsed.hideButtonIds)       ? (parsed.hideButtonIds as string[])       : [],
-      hideSelectorStrings: Array.isArray(parsed.hideSelectorStrings) ? (parsed.hideSelectorStrings as string[]) : [],
-      setSimSection:       (parsed.setSimSection as string | null)   ?? null,
-      animation:           (parsed.animation as BridgePlan['animation']) ?? null,
-      renderCalls:         Array.isArray(parsed.renderCalls)         ? (parsed.renderCalls as string[])         : [],
-      confidence:          typeof parsed.confidence === 'number'     ? parsed.confidence                        : 0.5,
-      warnings:            Array.isArray(parsed.warnings)            ? (parsed.warnings as string[])            : [],
+      sectionUrl,
+      conversationHistory:  updatedHistory,
+      sourceHash,
+      bridgeHash,
+      provider:             llmProvider,
+      model:                llmModel,
+      confidence,
+      confidenceLevel,
+      contextTruncated,
+      retryCount,
+      retryReason,
+      warnings:             allValidationWarnings,
+      validationErrors:     [],  // always empty — fatals throw before upload
+      validationWarnings:   validation.warnings,
     };
   }
 
-  private extractZip(buf: Buffer): Map<string, Buffer> {
+  reuseBridgeScript(existingUrl: string): { sectionUrl: string } {
+    return { sectionUrl: existingUrl };
+  }
+
+  private async callLLMForBridge(opts: {
+    contextPrompt:        string;
+    manifest:             SimManifest;
+    prompt:               string;
+    simpleUi:             boolean;
+    autoScript:           boolean;
+    userId:               string;
+    projectId:            string;
+    conversationHistory?: ConversationMessage[];
+    onTokenChunk?:        (chunk: string) => void;
+    signal?:              AbortSignal;
+  }): Promise<{ bridge: GeneratedBridge; conversationHistory: ConversationMessage[]; provider: string; model: string }> {
+    const { contextPrompt, prompt, simpleUi, autoScript, userId, projectId, onTokenChunk, signal } = opts;
+    const conversationHistory = opts.conversationHistory ?? [];
+    const hasHistory = conversationHistory.length > 0;
+
+    // User message is tiny — source files stay in contextPrompt (system prompt)
+    const userContent = hasHistory
+      ? `REFINEMENT PROMPT: ${prompt}\n\nsimpleUi = ${simpleUi}\nautoScript = ${autoScript}\n\nUpdate the bridge script.`
+      : `SECTION PROMPT: ${prompt}\n\nsimpleUi = ${simpleUi}\nautoScript = ${autoScript}\n\nGenerate the bridge script now.`;
+
+    const abortController = new AbortController();
+    const signalListener = () => abortController.abort();
+    signal?.addEventListener('abort', signalListener);
+
+    try {
+      const result = await this.llmService.sendStructured({
+        task: 'bridge_plan',
+        systemPrompt: contextPrompt,
+        userPrompt: userContent,
+        previousMessages: hasHistory ? conversationHistory : undefined,
+        schema: BridgeGenerationSchema,
+        userId,
+        projectId,
+        abortSignal: signal ?? abortController.signal,
+        onTokenChunk,
+      });
+
+      const bridge = result.data as GeneratedBridge;
+
+      // Store structured summary — never raw or truncated bridge code
+      const allHistory: ConversationMessage[] = [
+        ...conversationHistory,
+        { role: 'user',      content: userContent },
+        { role: 'assistant', content: buildBridgeSummary(bridge, prompt) },
+      ];
+      const updatedHistory = allHistory.slice(-6);
+
+      logger.debug({
+        model: result.model, provider: result.provider,
+        cachedTokens: result.usage.cached_input, mainBodyLen: bridge.mainBody.length,
+      }, 'Bridge generated via LLM');
+
+      return { bridge, conversationHistory: updatedHistory, provider: result.provider, model: result.model };
+    } finally {
+      signal?.removeEventListener('abort', signalListener);
+    }
+  }
+
+    private extractZip(buf: Buffer): Map<string, Buffer> {
     const zip   = new AdmZip(buf);
     const files = new Map<string, Buffer>();
     for (const entry of zip.getEntries()) {

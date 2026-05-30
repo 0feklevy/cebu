@@ -97,7 +97,9 @@ export function SectionEditor({
   const [simpleUi, setSimpleUi]     = useState(section.simple_ui ?? false);
   const [autoScript, setAutoScript] = useState(section.auto_script ?? true);
   const [generating, setGenerating] = useState(false);
+  const [generationStatus, setGenerationStatus] = useState<string | null>(null);
   const [simGenError, setSimGenError] = useState<string | null>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
   const [startStr, setStartStr] = useState(fmtTime(section.start_sec));
   const [endStr, setEndStr]     = useState(fmtTime(section.end_sec));
   const [saving, setSaving]     = useState(false);
@@ -152,6 +154,10 @@ export function SectionEditor({
     setAutoScript(section.auto_script ?? true);
     setSimGenError(null);
     setGenerating(false);
+    setGenerationStatus(null);
+    // Close any active SSE stream when section changes
+    eventSourceRef.current?.close();
+    eventSourceRef.current = null;
     setStartStr(fmtTime(section.start_sec));
     setEndStr(fmtTime(section.end_sec));
     setSaveError(null);
@@ -194,6 +200,11 @@ export function SectionEditor({
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [onClose]);
+
+  // Close SSE stream on unmount
+  useEffect(() => {
+    return () => { eventSourceRef.current?.close(); };
+  }, []);
 
   // 'i' key → mark in-point (clip type only)
   useEffect(() => {
@@ -301,51 +312,118 @@ export function SectionEditor({
     }
   }, [projectId, section, videos, genPrompt, genModel, genEnhance]);
 
-  // SIM_READY listener
+  // SIM_READY listener — passes simpleUi/autoScript as runtime params so toggle changes take effect immediately
   useEffect(() => {
     const handler = (e: MessageEvent) => {
       if (!e.data || typeof e.data !== 'object') return;
       if (e.data.type === 'SIM_READY' && previewIframeRef.current) {
         const script = section.sim_script ?? 'main';
-        previewIframeRef.current.contentWindow?.postMessage({ type: 'startScript', script }, '*');
+        previewIframeRef.current.contentWindow?.postMessage(
+          { type: 'startScript', script, params: { simpleUi: section.simple_ui ?? false, autoScript: section.auto_script ?? true } },
+          '*',
+        );
         setPreviewRunning(true);
       }
     };
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [section.sim_script]);
+  }, [section.sim_script, section.simple_ui, section.auto_script]);
 
   const sendToPreview = useCallback((type: string) => {
-    previewIframeRef.current?.contentWindow?.postMessage({ type }, '*');
+    const msg: Record<string, unknown> = { type };
+    // Pass current toggle state as runtime params so the bridge responds without re-generation
+    if (type === 'startScript') msg.params = { simpleUi, autoScript };
+    previewIframeRef.current?.contentWindow?.postMessage(msg, '*');
     if (type === 'stopScript') setPreviewRunning(false);
     if (type === 'startScript') setPreviewRunning(true);
-  }, []);
+  }, [simpleUi, autoScript]);
 
   const handleGenerateScript = useCallback(async () => {
     if (!simId || !simPrompt.trim()) return;
-    setGenerating(true);
-    setSimGenError(null);
-    try {
-      if (section.type !== 'simulation' || section.simulation_id !== simId) {
+
+    // Ensure section is set to simulation type first
+    if (section.type !== 'simulation' || section.simulation_id !== simId) {
+      try {
         const patched = await api.updateSection(projectId, section.id, {
           type: 'simulation',
           simulation_id: simId,
         });
         onUpdate(patched);
+      } catch (err) {
+        setSimGenError((err as Error).message ?? 'Failed to update section');
+        return;
       }
-      const updated = await api.generateSimScript(projectId, section.id, {
-        prompt: simPrompt.trim(),
-        simple_ui: simpleUi,
-        auto_script: autoScript,
-      });
-      onUpdate(updated);
-    } catch (err) {
-      setSimGenError((err as Error).message ?? 'Generation failed');
-    } finally {
-      setGenerating(false);
     }
+
+    eventSourceRef.current?.close();
+    setGenerating(true);
+    setGenerationStatus('Starting…');
+    setSimGenError(null);
+
+    const idToken = await getAuth().currentUser?.getIdToken();
+
+    const url = new URL(
+      `${API_URL}/api/v1/projects/${projectId}/sections/${section.id}/generate-sim-script/stream`,
+    );
+    url.searchParams.set('prompt', simPrompt.trim());
+    url.searchParams.set('simple_ui', String(simpleUi));
+    url.searchParams.set('auto_script', String(autoScript));
+    if (idToken) url.searchParams.set('token', idToken);
+
+    const es = new EventSource(url.toString());
+    eventSourceRef.current = es;
+    let errorHandled = false;
+
+    es.addEventListener('status', (e: MessageEvent) => {
+      const data = JSON.parse(e.data) as { status: string };
+      setGenerationStatus(data.status);
+    });
+
+    // Token heartbeat: LLM is actively generating (no raw JSON shown to user)
+    es.addEventListener('token', (_e: MessageEvent) => {
+      setGenerationStatus(prev =>
+        prev && !prev.endsWith('…') ? prev + '…' : (prev ?? 'Generating bridge script…'),
+      );
+    });
+
+    es.addEventListener('done', (e: MessageEvent) => {
+      const data = JSON.parse(e.data) as { section: TimelineSection };
+      onUpdate(data.section);
+      setGenerating(false);
+      setGenerationStatus(null);
+      es.close();
+      eventSourceRef.current = null;
+    });
+
+    es.addEventListener('error', (e: MessageEvent) => {
+      if (!e.data || errorHandled) return;
+      errorHandled = true;
+      const data = JSON.parse(e.data) as { error: string; errorType?: string };
+      setSimGenError(data.error || 'Generation failed');
+      setGenerating(false);
+      setGenerationStatus(null);
+      es.close();
+      eventSourceRef.current = null;
+    });
+
+    es.onerror = () => {
+      if (errorHandled) return;
+      errorHandled = true;
+      setSimGenError('Connection lost. Please try again.');
+      setGenerating(false);
+      setGenerationStatus(null);
+      es.close();
+      eventSourceRef.current = null;
+    };
   }, [projectId, section, simId, simPrompt, simpleUi, autoScript, onUpdate]);
+
+  const handleCancelGeneration = useCallback(() => {
+    eventSourceRef.current?.close();
+    eventSourceRef.current = null;
+    setGenerating(false);
+    setGenerationStatus(null);
+  }, []);
 
   // ── Clip source upload ─────────────────────────────────────────────────────
 
@@ -900,6 +978,13 @@ export function SectionEditor({
                             ))}
                           </div>
                         )}
+                        {simMeta.confidence !== undefined && simMeta.confidence < 0.45 && (
+                          <div style={{ backgroundColor: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '5px 8px' }}>
+                            <p style={{ fontSize: 10, color: '#dc2626', margin: 0 }}>
+                              ⚠ Low confidence ({Math.round(simMeta.confidence * 100)}%) — verify the bridge runs correctly before recording
+                            </p>
+                          </div>
+                        )}
                       </div>
                     )}
 
@@ -920,13 +1005,26 @@ export function SectionEditor({
                       {generating ? (
                         <>
                           <span style={{ width: 14, height: 14, borderRadius: '50%', border: '2px solid #92400e44', borderTopColor: '#92400e', display: 'inline-block', animation: 'spin 0.7s linear infinite' }} />
-                          Generating bridge script…
+                          {generationStatus ?? 'Generating…'}
                         </>
                       ) : '✦ Generate with AI'}
                     </button>
+                    {generating && (
+                      <button
+                        onClick={handleCancelGeneration}
+                        style={{
+                          width: '100%', height: 32, borderRadius: 8,
+                          border: '1.5px solid #fcd34d', backgroundColor: 'transparent',
+                          color: '#b45309', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                          marginTop: 6,
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    )}
                     {!generating && (
                       <p style={{ fontSize: 10, color: '#b45309', opacity: 0.7, textAlign: 'center', margin: '-8px 0 0' }}>
-                        ~30–60 s · Claude reads your full simulation code
+                        {simMeta ? 'Refines previous generation · Claude reads your simulation code' : '~30–60 s · Claude reads your full simulation code'}
                       </p>
                     )}
                   </div>

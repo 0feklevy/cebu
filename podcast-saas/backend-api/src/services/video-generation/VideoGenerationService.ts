@@ -5,8 +5,8 @@ import { mkdtemp, rm } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
-import Anthropic from '@anthropic-ai/sdk';
 import type { StorageService } from '../storage/StorageService.js';
+import { LLMService } from '../llm/LLMService.js';
 import { db } from '../../db/index.js';
 import { video_files } from '../../db/schema.js';
 import { logger } from '../../lib/logger.js';
@@ -54,7 +54,7 @@ function makeKlingJwt(accessKey: string, secretKey: string): string {
 export class VideoGenerationService {
   constructor(
     private readonly storage: StorageService,
-    private readonly anthropicKey: string | null,
+    private readonly llmService: LLMService,
     private readonly klingAccessKey: string | null,
     private readonly klingSecretKey: string | null,
     private readonly seedanceKey: string | null,
@@ -64,18 +64,16 @@ export class VideoGenerationService {
   // ── Prompt enhancement ──────────────────────────────────────────────────────
 
   async enhancePrompt(prompt: string, durationSec: number): Promise<string> {
-    if (!this.anthropicKey) return prompt;
     try {
-      const client = new Anthropic({ apiKey: this.anthropicKey });
-      const msg = await client.messages.create({
-        model: 'claude-haiku-4-5',
-        max_tokens: 512,
-        temperature: 0.7,
-        system: ENHANCE_SYSTEM_PROMPT,
-        messages: [{ role: 'user', content: `Duration: ${durationSec} seconds\nDescription: ${prompt}` }],
+      const result = await this.llmService.sendText({
+        task: 'content_moderation', // utility tier — Haiku, cheap, fast
+        systemPrompt: ENHANCE_SYSTEM_PROMPT,
+        userPrompt: `Duration: ${durationSec} seconds\nDescription: ${prompt}`,
+        userId: 'system',
+        projectId: 'system',
+        abortSignal: new AbortController().signal,
       });
-      const text = msg.content.find((c) => c.type === 'text');
-      return text?.type === 'text' ? text.text.trim() : prompt;
+      return result.text.trim() || prompt;
     } catch (err) {
       logger.warn({ err }, 'VideoGenerationService: prompt enhancement failed, using original');
       return prompt;
@@ -321,10 +319,10 @@ export class VideoGenerationService {
 
 // ── Factory ───────────────────────────────────────────────────────────────────
 
-export function createVideoGenerationService(storage: StorageService): VideoGenerationService {
+export function createVideoGenerationService(storage: StorageService, llmService: LLMService): VideoGenerationService {
   return new VideoGenerationService(
     storage,
-    process.env.ANTHROPIC_API_KEY ?? null,
+    llmService,
     process.env.KLING_ACCESS_KEY ?? null,
     process.env.KLING_SECRET_KEY ?? null,
     process.env.SEEDANCE_API_KEY ?? null,

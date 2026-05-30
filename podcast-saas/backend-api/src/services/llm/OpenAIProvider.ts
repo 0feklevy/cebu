@@ -31,15 +31,22 @@ export class OpenAIProvider extends LLMProvider {
       let cachedTokens = 0;
       let stopReason = 'stop';
 
+      // Build full message array supporting multi-turn conversation history
+      const messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: 'system', content: opts.systemPrompt },
+        ...(opts.previousMessages ?? []).map(m => ({
+          role: m.role as 'user' | 'assistant',
+          content: m.content,
+        })),
+        { role: 'user', content: opts.userPrompt },
+      ];
+
       const stream = await this.client.chat.completions.create(
         {
           model: opts.model,
           max_tokens: opts.maxTokens ?? 8192,
           temperature: opts.temperature ?? 0.7,
-          messages: [
-            { role: 'system', content: opts.systemPrompt },
-            { role: 'user', content: opts.userPrompt },
-          ],
+          messages,
           stream: true,
           stream_options: { include_usage: true },
         },
