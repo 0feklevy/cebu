@@ -87,6 +87,46 @@ export async function registerPlayerRoutes(app: FastifyInstance): Promise<void> 
             start_sec:         s.start_sec,
             end_sec:           s.end_sec,
             label:             s.label,
+            broll_volume:      s.broll_volume ?? 1.0,
+          };
+        })
+        .filter(Boolean);
+
+      // Build clip_overlays from clip sections — user-trimmed library videos shown as overlay
+      // Compute each main video's global offset (cumulative sum of durations).
+      const allVideoMap = new Map(allVideos.map((v) => [v.id, v]));
+      let globalOff = 0;
+      const videoGlobalOffsets = new Map<string, number>();
+      for (const v of mainVideos) {
+        videoGlobalOffsets.set(v.id, globalOff);
+        globalOff += v.duration_sec ?? 0;
+      }
+
+      const clipOverlays = sections
+        .filter((s) => s.type === 'clip' && s.clip_source_video_id)
+        .map((s) => {
+          const srcVideo = allVideoMap.get(s.clip_source_video_id!);
+          if (!srcVideo) return null;
+          const hls_url = srcVideo.hls_master_key
+            ? storage.getPublicUrl(srcVideo.hls_master_key)
+            : srcVideo.hls_360p_key
+              ? storage.getPublicUrl(srcVideo.hls_360p_key)
+              : null;
+          if (!hls_url) return null;
+
+          // Global start = this video's global offset + section's local start
+          const vidOffset = videoGlobalOffsets.get(s.video_file_id) ?? 0;
+          const sectionDuration = s.end_sec - s.start_sec;
+          const clipIn = s.clip_in_sec ?? 0;
+
+          return {
+            id:                s.id,
+            hls_url,
+            global_offset_sec: vidOffset + s.start_sec,  // when to show in global timeline
+            start_sec:         clipIn,                    // in-point of source video
+            end_sec:           clipIn + sectionDuration,  // out-point of source video
+            label:             s.label,
+            broll_volume:      1.0,                       // clips play at full volume
           };
         })
         .filter(Boolean);
@@ -96,6 +136,7 @@ export async function registerPlayerRoutes(app: FastifyInstance): Promise<void> 
         title: project.title,
         segments,
         broll_clips: brollClips,
+        clip_overlays: clipOverlays,
       });
     },
   );

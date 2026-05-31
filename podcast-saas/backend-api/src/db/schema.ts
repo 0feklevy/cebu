@@ -384,6 +384,8 @@ export const timeline_sections = pgTable('timeline_sections', {
   // Clip source fields (migration 014) — used by the new "clip" section type
   clip_source_video_id: uuid('clip_source_video_id').references(() => video_files.id, { onDelete: 'set null' }),
   clip_in_sec: real('clip_in_sec').default(0),              // in-point in source video (seconds)
+  // Audio gain control (migration 017) — used for broll audio volume 0.0–1.0
+  broll_volume: real('broll_volume').notNull().default(1.0),
   created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 

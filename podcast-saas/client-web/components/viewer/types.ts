@@ -30,6 +30,17 @@ export interface BrollClip {
   start_sec: number;
   end_sec: number;
   label: string | null;
+  broll_volume: number;
+}
+
+export interface ClipOverlay {
+  id: string;
+  hls_url: string;
+  global_offset_sec: number;  // when to show in the global timeline
+  start_sec: number;           // in-point of source video
+  end_sec: number;             // out-point of source video
+  label: string | null;
+  broll_volume: number;
 }
 
 export interface PlayerConfig {
@@ -37,6 +48,7 @@ export interface PlayerConfig {
   title: string | null;
   segments: PlayerSegment[];
   broll_clips: BrollClip[];
+  clip_overlays?: ClipOverlay[];  // user-trimmed library video overlays
 }
 
 export interface TimelineSeg {

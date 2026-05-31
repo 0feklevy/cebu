@@ -115,6 +115,7 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       global_offset_sec: number;
       clip_source_video_id: string | null;
       clip_in_sec: number;
+      broll_volume: number;
     }>;
   }>(
     '/api/v1/projects/:id/sections/:sid',
@@ -134,7 +135,7 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       });
       if (!existing) return reply.code(404).send({ message: 'Section not found' });
 
-      const { simulation_id, sim_script, clip_source_video_id, clip_in_sec, ...rest } = request.body;
+      const { simulation_id, sim_script, clip_source_video_id, clip_in_sec, broll_volume, ...rest } = request.body;
 
       if (rest.start_sec != null && rest.end_sec != null && rest.start_sec >= rest.end_sec) {
         return reply.code(400).send({ message: 'start_sec must be less than end_sec' });
@@ -159,6 +160,7 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       if (resolvedSimUrl !== undefined)      patch.simulation_url       = resolvedSimUrl;
       if (clip_source_video_id !== undefined) patch.clip_source_video_id = clip_source_video_id ?? null;
       if (clip_in_sec !== undefined)         patch.clip_in_sec          = clip_in_sec;
+      if (broll_volume !== undefined)        patch.broll_volume         = Math.max(0, Math.min(1, broll_volume));
 
       const [updated] = await db
         .update(timeline_sections)

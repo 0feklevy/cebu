@@ -156,6 +156,22 @@ export function VideoEditor({ projectId }: Props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingKey, projectId]);
 
+  // Poll for simulation status while any are still processing
+  const pendingSimKey = simulations.filter(s => s.status === 'processing').map(s => s.id).join(',');
+  useEffect(() => {
+    if (!pendingSimKey) return;
+    const poll = async () => {
+      try {
+        const updated = await api.listSimulations(projectId);
+        setSimulations(updated);
+      } catch { /* ignore */ }
+    };
+    poll();
+    const timer = setInterval(poll, 2000);
+    return () => clearInterval(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingSimKey, projectId]);
+
   // B-roll computed values
   const brollSections = sections.filter(s => s.track === 'broll');
   const hasBroll = brollSections.length > 0 || toolMode === 'broll';
@@ -166,9 +182,43 @@ export function VideoEditor({ projectId }: Props) {
     return playheadSec >= start && playheadSec < end;
   }) ?? null;
 
-  const brollHlsUrl = activeBrollSection
-    ? (hlsUrls[activeBrollSection.video_file_id] ?? null)
+  // Clip overlay — library video shown as overlay at playhead position.
+  // Compute each video's global offset to convert local start_sec → global time.
+  const _clipSortedVideos = [...allVideos.filter(v => !v.is_broll)].sort(
+    (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+  );
+  const videoGlobalOffsets = new Map<string, number>();
+  let _clipGlobalOff = 0;
+  for (const v of _clipSortedVideos) {
+    videoGlobalOffsets.set(v.id, _clipGlobalOff);
+    _clipGlobalOff += v.duration_sec ?? 0;
+  }
+
+  const activeClipSection = sections.find(s => {
+    if (s.type !== 'clip' || !s.clip_source_video_id) return false;
+    const vidOff = videoGlobalOffsets.get(s.video_file_id) ?? 0;
+    const globalStart = vidOff + s.start_sec;
+    const globalEnd   = vidOff + s.end_sec;
+    return playheadSec >= globalStart && playheadSec < globalEnd;
+  }) ?? null;
+
+  // Normalize clip section to broll-like shape so VideoPlayer's seek formula works:
+  // global_offset_sec = when the clip appears in global timeline
+  // clip_in_sec        = in-point of the source video (preserved for VideoPlayer)
+  const clipSectionAsOverlay: TimelineSection | null = activeClipSection
+    ? ({
+        ...activeClipSection,
+        global_offset_sec:
+          (videoGlobalOffsets.get(activeClipSection.video_file_id) ?? 0) +
+          activeClipSection.start_sec,
+        video_file_id: activeClipSection.clip_source_video_id!,
+      } as TimelineSection)
     : null;
+
+  const activeOverlay = activeBrollSection ?? clipSectionAsOverlay;
+  const overlaySourceId = activeOverlay?.video_file_id ?? null;
+
+  const brollHlsUrl = overlaySourceId ? (hlsUrls[overlaySourceId] ?? null) : null;
 
   // B-roll callbacks
   const handleToolModeChange = useCallback((mode: ToolMode) => {
@@ -343,7 +393,7 @@ export function VideoEditor({ projectId }: Props) {
                 onTimeUpdate={setPlayheadSec}
                 sectionLabel={activeSectionLabel}
                 activeSimSection={activeSimSection}
-                activeBrollSection={activeBrollSection}
+                activeBrollSection={activeOverlay ?? null}
                 brollHlsUrl={brollHlsUrl}
               />
             ) : (

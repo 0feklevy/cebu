@@ -388,7 +388,8 @@ export function useProjectPlayer(
   };
 
   const updateBrollOverlay = (gt: number) => {
-    const brollClips = config.broll_clips ?? [];
+    // Merge broll_clips and clip_overlays — both use the same video overlay mechanism
+    const brollClips = [...(config.broll_clips ?? []), ...(config.clip_overlays ?? [])];
     const clip = brollClips.find((b) => {
       const brollEnd = b.global_offset_sec + (b.end_sec - b.start_sec);
       return gt >= b.global_offset_sec && gt < brollEnd;
@@ -402,6 +403,11 @@ export function useProjectPlayer(
       if (clip) {
         const brollLocalTime = clip.start_sec + (gt - clip.global_offset_sec);
         activateBrollClip(clip, brollLocalTime, hlsLibRef.current);
+        // Apply broll volume from clip data
+        if (refs.videoBroll.current) {
+          refs.videoBroll.current.volume = typeof clip.broll_volume === 'number'
+            ? Math.max(0, Math.min(1, clip.broll_volume)) : 1.0;
+        }
         merge({ showBrollOverlay: true });
       } else {
         if (refs.videoBroll.current) refs.videoBroll.current.pause();

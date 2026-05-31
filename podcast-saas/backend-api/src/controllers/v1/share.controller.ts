@@ -56,6 +56,7 @@ async function buildPlayerConfig(projectId: string) {
     };
   });
 
+  const allVideoMap = new Map(allVideos.map((v) => [v.id, v]));
   const brollVideoMap = new Map(brollVideos.map((v) => [v.id, v]));
   const brollClips = sections
     .filter((s) => s.track === 'broll')
@@ -75,11 +76,45 @@ async function buildPlayerConfig(projectId: string) {
         start_sec:         s.start_sec,
         end_sec:           s.end_sec,
         label:             s.label,
+        broll_volume:      s.broll_volume ?? 1.0,
       };
     })
     .filter(Boolean);
 
-  return { segments, brollClips };
+  // Clip overlays: user-trimmed library videos shown as video overlay
+  let globalOff = 0;
+  const videoGlobalOffsets = new Map<string, number>();
+  for (const v of mainVideos) {
+    videoGlobalOffsets.set(v.id, globalOff);
+    globalOff += v.duration_sec ?? 0;
+  }
+  const clipOverlays = sections
+    .filter((s) => s.type === 'clip' && s.clip_source_video_id)
+    .map((s) => {
+      const srcVideo = allVideoMap.get(s.clip_source_video_id!);
+      if (!srcVideo) return null;
+      const hls_url = srcVideo.hls_master_key
+        ? storage.getPublicUrl(srcVideo.hls_master_key)
+        : srcVideo.hls_360p_key
+          ? storage.getPublicUrl(srcVideo.hls_360p_key)
+          : null;
+      if (!hls_url) return null;
+      const vidOffset = videoGlobalOffsets.get(s.video_file_id) ?? 0;
+      const sectionDuration = s.end_sec - s.start_sec;
+      const clipIn = s.clip_in_sec ?? 0;
+      return {
+        id:                s.id,
+        hls_url,
+        global_offset_sec: vidOffset + s.start_sec,
+        start_sec:         clipIn,
+        end_sec:           clipIn + sectionDuration,
+        label:             s.label,
+        broll_volume:      1.0,
+      };
+    })
+    .filter(Boolean);
+
+  return { segments, brollClips, clipOverlays };
 }
 
 export async function registerShareRoutes(app: FastifyInstance): Promise<void> {
@@ -96,13 +131,14 @@ export async function registerShareRoutes(app: FastifyInstance): Promise<void> {
         return reply.code(404).send({ message: 'Shared video not found or link has been revoked' });
       }
 
-      const { segments, brollClips } = await buildPlayerConfig(project.id);
+      const { segments, brollClips, clipOverlays } = await buildPlayerConfig(project.id);
 
       return reply.send({
         project_id:  project.id,
         title:       project.title,
         segments,
         broll_clips: brollClips,
+        clip_overlays: clipOverlays,
       });
     },
   );

@@ -753,6 +753,16 @@ export function TimelinePanel({
               </div>
             )}
 
+            {/* A2 label (broll audio channel) */}
+            {hasBroll && (
+              <div
+                className="shrink-0 flex items-center px-3 select-none"
+                style={{ height: AUDIO_TRACK_H, borderBottom: '1px solid #e5e7eb', backgroundColor: '#f0feff' }}
+              >
+                <span style={{ fontSize: 9, fontWeight: 700, color: '#06b6d4', letterSpacing: '0.08em', textTransform: 'uppercase' }}>A2</span>
+              </div>
+            )}
+
             {/* V1 label */}
             <div
               className="shrink-0 flex flex-col justify-center px-3 select-none"
@@ -893,6 +903,46 @@ export function TimelinePanel({
                   <div
                     className="absolute top-0 bottom-0 pointer-events-none"
                     style={{ left: `${playheadSec * zoom}px`, width: 2, backgroundColor: '#ef4444', opacity: 0.6, zIndex: 20 }}
+                  />
+                </div>
+              )}
+
+              {/* ── A2 BROLL AUDIO CHANNEL ─────────────────────────────── */}
+              {hasBroll && (
+                <div
+                  style={{
+                    height: AUDIO_TRACK_H,
+                    position: 'relative',
+                    backgroundColor: '#f0feff',
+                    borderBottom: '1px solid #cffafe',
+                    display: 'flex',
+                    alignItems: 'center',
+                  }}
+                >
+                  {brollSections.map(s => {
+                    const pos = brollSectionPos(s);
+                    if (!pos) return null;
+                    const vol = (s as unknown as { broll_volume?: number }).broll_volume ?? 1.0;
+                    const pct = Math.round(vol * 100);
+                    return (
+                      <div
+                        key={`a2-${s.id}`}
+                        className="absolute top-0 bottom-0 flex items-center px-1.5 gap-1.5 overflow-hidden"
+                        style={{ left: pos.left, width: pos.width }}
+                      >
+                        {/* Volume bar background */}
+                        <div style={{ flex: 1, height: 6, borderRadius: 3, backgroundColor: 'rgba(6,182,212,0.15)', position: 'relative', minWidth: 0 }}>
+                          <div style={{ height: '100%', borderRadius: 3, backgroundColor: vol > 0 ? '#06b6d4' : '#e5e7eb', width: `${pct}%`, transition: 'width 0.2s' }} />
+                        </div>
+                        {/* Volume pct label */}
+                        <span style={{ fontSize: 8, fontWeight: 700, color: '#0891b2', flexShrink: 0, fontFamily: 'monospace' }}>{pct}%</span>
+                      </div>
+                    );
+                  })}
+                  {/* Playhead */}
+                  <div
+                    className="absolute top-0 bottom-0 pointer-events-none"
+                    style={{ left: `${playheadSec * zoom}px`, width: 2, backgroundColor: '#ef4444', opacity: 0.5, zIndex: 20 }}
                   />
                 </div>
               )}

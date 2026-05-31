@@ -99,6 +99,9 @@ export function SectionEditor({
   const [simpleUi, setSimpleUi]     = useState(section.simple_ui ?? false);
   const [autoScript, setAutoScript] = useState(section.auto_script ?? true);
   const [showTiming, setShowTiming]   = useState(false);
+  const [brollVolume, setBrollVolume] = useState<number>(
+    (section as unknown as { broll_volume?: number }).broll_volume ?? 1.0
+  );
   const [generating, setGenerating] = useState(false);
   const [generationStatus, setGenerationStatus] = useState<string | null>(null);
   const [simGenError, setSimGenError] = useState<string | null>(null);
@@ -160,6 +163,7 @@ export function SectionEditor({
     setGenerating(false);
     setGenerationStatus(null);
     setShowTiming(false);
+    setBrollVolume((section as unknown as { broll_volume?: number }).broll_volume ?? 1.0);
     // Close any active SSE stream when section changes
     eventSourceRef.current?.close();
     eventSourceRef.current = null;
@@ -184,6 +188,19 @@ export function SectionEditor({
     setTimeout(() => labelRef.current?.focus(), 80);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [section.id]);
+
+  // Sync localVideos whenever the parent videos prop changes (e.g., new uploads or status changes).
+  // Merge: locally uploaded clips take precedence; prop additions are appended.
+  useEffect(() => {
+    setLocalVideos(prev => {
+      const propMap = new Map(videos.map(v => [v.id, v]));
+      const merged = prev.map(v => propMap.get(v.id) ?? v);
+      for (const v of videos) {
+        if (!merged.find(m => m.id === v.id)) merged.push(v);
+      }
+      return merged;
+    });
+  }, [videos]);
 
   // Poll active generation job
   useEffect(() => {
@@ -542,6 +559,7 @@ export function SectionEditor({
           clip_source_video_id: clipSourceVideoId || null,
           clip_in_sec: safeClipIn,
         } : {}),
+        ...(isBroll ? { broll_volume: brollVolume } as Record<string, unknown> : {}),
       });
       onUpdate(updated);
       onClose();
@@ -1248,6 +1266,28 @@ export function SectionEditor({
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   <span style={{ fontSize: 10, color: '#0891b2', backgroundColor: '#cffafe', borderRadius: 5, padding: '2px 8px', fontWeight: 600 }}>
                     {fmtTime(section.end_sec - section.start_sec)} clip
+                  </span>
+                </div>
+
+                {/* Volume control — Premiere-style audio gain */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: 11, color: '#0e7490', flexShrink: 0 }}>🔊</span>
+                  <input
+                    type="range"
+                    min={0} max={1} step={0.01}
+                    value={brollVolume}
+                    onChange={e => setBrollVolume(parseFloat(e.target.value))}
+                    onMouseUp={async () => {
+                      try {
+                        await api.updateSection(projectId, section.id, {
+                          broll_volume: brollVolume,
+                        } as Parameters<typeof api.updateSection>[2]);
+                      } catch { /* ignore */ }
+                    }}
+                    style={{ flex: 1, accentColor: '#06b6d4', cursor: 'pointer' }}
+                  />
+                  <span style={{ fontSize: 10, fontWeight: 700, color: '#0891b2', fontFamily: 'monospace', minWidth: 34 }}>
+                    {Math.round(brollVolume * 100)}%
                   </span>
                 </div>
               </div>

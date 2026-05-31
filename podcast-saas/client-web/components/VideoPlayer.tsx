@@ -162,23 +162,39 @@ function MultiClipPlayer({ clips, onTimeUpdate, sectionLabel, activeSimSection, 
   // broll cleanup on unmount
   useEffect(() => () => { brollHlsRef.current?.destroy(); brollHlsRef.current = null; }, []);
 
-  // ── broll video: seek to correct position when section starts/ends ────────
+  // ── broll/clip video: seek to correct position when section starts/ends ─────
   useEffect(() => {
     const v = brollVideoRef.current;
     if (!v) return;
     if (!activeBrollSection) { v.pause(); return; }
-    const brollTime = hook.globalTime - (activeBrollSection.global_offset_sec ?? 0) + activeBrollSection.start_sec;
+    // For clip sections, clip_in_sec is the source video in-point;
+    // for broll sections, start_sec is the in-point (usually 0).
+    const inPoint = (activeBrollSection as unknown as { clip_in_sec?: number }).clip_in_sec
+      ?? activeBrollSection.start_sec
+      ?? 0;
+    const brollTime = inPoint + (hook.globalTime - (activeBrollSection.global_offset_sec ?? 0));
     v.currentTime = Math.max(0, brollTime);
     if (hook.isPlaying) v.play().catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeBrollSection?.id]);
 
-  // ── broll video: resync drift on every global-time tick ──────────────────
+  // ── broll video: sync volume from section's broll_volume field ────────────
+  useEffect(() => {
+    const v = brollVideoRef.current;
+    if (!v) return;
+    const vol = (activeBrollSection as unknown as { broll_volume?: number })?.broll_volume;
+    v.volume = typeof vol === 'number' ? Math.max(0, Math.min(1, vol)) : 1.0;
+  }, [activeBrollSection?.id, (activeBrollSection as unknown as { broll_volume?: number })?.broll_volume]);
+
+  // ── broll/clip video: resync drift on every global-time tick ────────────────
   // Runs at timeupdate rate (~8–10 Hz), not 60 Hz — drift check is cheap.
   useEffect(() => {
     const v = brollVideoRef.current;
     if (!v || !activeBrollSection) return;
-    const expected = hook.globalTime - (activeBrollSection.global_offset_sec ?? 0) + activeBrollSection.start_sec;
+    const inPoint = (activeBrollSection as unknown as { clip_in_sec?: number }).clip_in_sec
+      ?? activeBrollSection.start_sec
+      ?? 0;
+    const expected = inPoint + (hook.globalTime - (activeBrollSection.global_offset_sec ?? 0));
     if (Math.abs(v.currentTime - expected) > 1.0) v.currentTime = Math.max(0, expected);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hook.globalTime]);
