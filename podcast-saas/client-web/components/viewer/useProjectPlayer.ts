@@ -132,7 +132,7 @@ export function useProjectPlayer(
   const userPausedRef   = useRef(false);
   const simReadyRef     = useRef(false);
   const simPollRef      = useRef<ReturnType<typeof setInterval> | null>(null);
-  const pendingSimRef   = useRef<{ script: string } | null>(null);
+  const pendingSimRef   = useRef<{ script: string; params: Record<string, boolean> } | null>(null);
   const startedRef    = useRef(false);
   const scrubbingRef  = useRef(false);
   const wasPlayingRef = useRef(false);
@@ -261,17 +261,18 @@ export function useProjectPlayer(
     activeSimRef.current = simSection;
 
     if (simSection) {
-      const script  = simSection.sim_script ?? 'auto';
+      const script  = simSection.sim_script ?? 'main';
+      const params  = { simpleUi: simSection.simple_ui ?? false, autoScript: simSection.auto_script ?? true };
       const sameUrl = simSection.simulation_url === activeSimUrlRef.current;
       activeSimUrlRef.current = simSection.simulation_url;
       merge({ activeSimUrl: simSection.simulation_url });
 
       if (sameUrl && simReadyRef.current) {
         merge({ showSimOverlay: true });
-        sendToSim({ type: 'startScript', script });
+        sendToSim({ type: 'startScript', script, params });
       } else {
         simReadyRef.current   = false;
-        pendingSimRef.current = { script };
+        pendingSimRef.current = { script, params };
         startSimPoll();
       }
     }
@@ -618,7 +619,7 @@ export function useProjectPlayer(
         pendingSimRef.current = null;
         if (pending && !userPausedRef.current) {
           merge({ showSimOverlay: true });
-          sendToSim({ type: 'startScript', script: pending.script });
+          sendToSim({ type: 'startScript', script: pending.script, params: pending.params });
         }
       }
       if (type === 'userInteraction') {
@@ -875,7 +876,14 @@ export function useProjectPlayer(
     merge({ showResumeBtn: false });
     // Restart the animation script that was paused on userInteraction
     if (activeSimRef.current) {
-      sendToSim({ type: 'startScript', script: activeSimRef.current.sim_script ?? 'main' });
+      sendToSim({
+        type: 'startScript',
+        script: activeSimRef.current.sim_script ?? 'main',
+        params: {
+          simpleUi:   activeSimRef.current.simple_ui   ?? false,
+          autoScript: activeSimRef.current.auto_script ?? true,
+        },
+      });
     }
     safePlay(videoRef.current!);
   // eslint-disable-next-line react-hooks/exhaustive-deps

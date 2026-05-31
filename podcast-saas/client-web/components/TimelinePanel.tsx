@@ -685,11 +685,11 @@ export function TimelinePanel({
     <div className="flex h-full overflow-hidden bg-white" style={{ fontFamily: 'system-ui, -apple-system, sans-serif' }}>
 
       {/* ── Tool sidebar ─────────────────────────────────────────────────── */}
-      <div className="shrink-0 w-11 flex flex-col items-center gap-1.5 pt-2 pb-2" style={{ borderRight: '1px solid #e5e7eb', backgroundColor: '#f9fafb' }}>
+      <div className="shrink-0 w-12 flex flex-col items-center gap-1.5 pt-2 pb-2" style={{ borderRight: '1px solid hsl(var(--border))', backgroundColor: 'hsl(var(--muted) / 0.45)' }}>
         <button
           onClick={() => onToolModeChange('video')}
           title="Video section (max 15s)"
-          className="w-8 h-8 rounded-lg flex items-center justify-center transition-all"
+          className="w-8 h-8 rounded-lg flex items-center justify-center transition-all focus-ring"
           style={toolMode === 'video'
             ? { backgroundColor: '#3b82f6', color: '#fff', boxShadow: '0 1px 3px rgba(59,130,246,0.4)' }
             : { color: '#9ca3af', backgroundColor: 'transparent' }}
@@ -702,7 +702,7 @@ export function TimelinePanel({
         <button
           onClick={() => onToolModeChange('simulation')}
           title="Simulation section"
-          className="w-8 h-8 rounded-lg flex items-center justify-center transition-all"
+          className="w-8 h-8 rounded-lg flex items-center justify-center transition-all focus-ring"
           style={toolMode === 'simulation'
             ? { backgroundColor: '#f59e0b', color: '#fff', boxShadow: '0 1px 3px rgba(245,158,11,0.4)' }
             : { color: '#9ca3af', backgroundColor: 'transparent' }}
@@ -715,7 +715,7 @@ export function TimelinePanel({
         <button
           onClick={() => onToolModeChange('broll')}
           title="B-roll — generate or insert above main track (min 4s)"
-          className="w-8 h-8 rounded-lg flex items-center justify-center transition-all"
+          className="w-8 h-8 rounded-lg flex items-center justify-center transition-all focus-ring"
           style={toolMode === 'broll'
             ? { backgroundColor: '#06b6d4', color: '#fff', boxShadow: '0 1px 3px rgba(6,182,212,0.4)' }
             : { color: '#9ca3af', backgroundColor: 'transparent' }}
@@ -737,8 +737,8 @@ export function TimelinePanel({
       </div>
 
       {/* ── Fixed label column ───────────────────────────────────────────── */}
-      <div className="shrink-0 flex flex-col" style={{ width: LABEL_W, borderRight: '1px solid #e5e7eb' }}>
-        <div style={{ height: RULER_H, backgroundColor: '#f3f4f6', borderBottom: '1px solid #e5e7eb', flexShrink: 0 }} />
+      <div className="shrink-0 flex flex-col" style={{ width: LABEL_W, borderRight: '1px solid hsl(var(--border))' }}>
+        <div style={{ height: RULER_H, backgroundColor: '#ffffff', borderBottom: '1.5px solid #e2e8f0', flexShrink: 0 }} />
 
         {videos.length > 0 && (
           <>
@@ -781,15 +781,15 @@ export function TimelinePanel({
       {/* ── Scrollable track area ────────────────────────────────────────── */}
       <div
         ref={scrollRef}
-        className="flex-1"
-        style={{ overflowX: 'auto', overflowY: 'hidden' }}
+        className="flex-1 fine-scrollbar"
+        style={{ overflowX: 'scroll', overflowY: 'hidden' }}
       >
         <div style={{ width: `${contentWidth}px`, minWidth: '100%', position: 'relative' }}>
 
           {/* ── Ruler ─────────────────────────────────────────────────────── */}
           <div
             className="select-none"
-            style={{ height: RULER_H, position: 'relative', backgroundColor: '#f3f4f6', borderBottom: '1px solid #e5e7eb' }}
+            style={{ height: RULER_H, position: 'relative', backgroundColor: '#ffffff', borderBottom: '1.5px solid #e2e8f0' }}
           >
             {Array.from({ length: Math.ceil(totalDuration / tickSec) + 1 }, (_, i) => {
               const sec = i * tickSec;
@@ -979,7 +979,7 @@ export function TimelinePanel({
 
                 <div
                   className="absolute top-0 bottom-0 pointer-events-none"
-                  style={{ left: `${playheadSec * zoom}px`, width: 2, backgroundColor: '#ef4444', boxShadow: '0 0 4px rgba(239,68,68,0.4)', zIndex: 20 }}
+                  style={{ left: `${playheadSec * zoom}px`, width: 2, backgroundColor: '#ef4444', boxShadow: '0 0 8px rgba(239,68,68,0.6), 0 0 2px rgba(239,68,68,0.9)', zIndex: 20 }}
                 />
               </div>
 
@@ -1021,7 +1021,7 @@ export function TimelinePanel({
           <button
             onClick={onAddVideo}
             title="Add clip"
-            className="w-7 h-7 flex items-center justify-center rounded-md transition-colors hover:bg-gray-100"
+            className="w-7 h-7 flex items-center justify-center rounded-md transition-colors hover:bg-gray-100 focus-ring"
             style={{ border: '1.5px dashed #d1d5db', color: '#9ca3af' }}
           >
             <svg width="11" height="11" viewBox="0 0 11 11" fill="none">

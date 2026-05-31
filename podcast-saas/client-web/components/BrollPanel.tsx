@@ -4,12 +4,13 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '../lib/api';
 import type { VideoFile, TimelineSection, VideoGenerationJob } from 'shared/src/generated/client-v1';
 
-type Model = 'kling' | 'veo';
+type Model = 'kling' | 'seedance' | 'veo';
 type Tab = 'generate' | 'existing';
 
-const MODEL_LABELS: Record<Model, { name: string; desc: string }> = {
-  kling: { name: 'Kling 3.0', desc: 'Kuaishou · 4–15s' },
-  veo:   { name: 'Veo 3',     desc: 'Google · 4–8s' },
+const MODEL_LABELS: Record<Model, string> = {
+  kling: 'kling',
+  seedance: 'seedance',
+  veo: 'veo',
 };
 
 const JOB_STATUS_LABEL: Record<string, string> = {
@@ -140,18 +141,18 @@ export function BrollPanel({ projectId, mark, videos, jobs, onNewJob, onJobUpdat
   const visibleJobs = jobs.filter(j => !dismissedJobIds.has(j.id));
 
   return (
-    <div className="flex flex-col h-full bg-card rounded-xl border border-border overflow-hidden">
+    <div className="flex flex-col h-full overflow-hidden rounded-lg border border-border bg-white shadow-card">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2.5 border-b border-border bg-cyan-50/50 shrink-0">
+      <div className="flex items-center justify-between px-3 py-2.5 border-b shell-bg shrink-0">
         <div>
-          <p className="text-xs font-semibold text-cyan-800">B-roll</p>
-          <p className="text-[10px] text-cyan-600 font-mono">
+          <p className="text-xs font-semibold shell-text">B-roll</p>
+          <p className="text-[10px] text-cyan-500 font-mono">
             {fmtSec(mark.start)} → {fmtSec(mark.end)} · {markDuration.toFixed(1)}s
           </p>
         </div>
         <button
           onClick={onClose}
-          className="w-6 h-6 rounded flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+          className="w-6 h-6 rounded flex items-center justify-center shell-muted shell-hover hover:text-[hsl(var(--shell-foreground))] transition-colors focus-ring"
         >
           <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden>
             <path d="M2 2l6 6M8 2L2 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
@@ -160,12 +161,12 @@ export function BrollPanel({ projectId, mark, videos, jobs, onNewJob, onJobUpdat
       </div>
 
       {/* Tab switcher */}
-      <div className="flex shrink-0 border-b border-border">
+      <div className="flex shrink-0 border-b border-border bg-slate-50">
         {(['generate', 'existing'] as const).map(t => (
           <button
             key={t}
             onClick={() => setTab(t)}
-            className="flex-1 py-2 text-[11px] font-semibold transition-colors"
+            className="flex-1 py-2 text-[11px] font-semibold transition-colors focus-ring"
             style={{
               color: tab === t ? '#0891b2' : '#9ca3af',
               borderBottom: tab === t ? '2px solid #06b6d4' : '2px solid transparent',
@@ -177,99 +178,91 @@ export function BrollPanel({ projectId, mark, videos, jobs, onNewJob, onJobUpdat
       </div>
 
       {/* Tab content */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-3">
+      <div className="flex-1 overflow-y-auto p-3 space-y-3 fine-scrollbar">
         {tab === 'generate' ? (
-          <>
-            {/* Prompt */}
-            <div>
-              <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider block mb-1">Prompt</label>
-              <textarea
-                value={prompt}
-                onChange={e => setPrompt(e.target.value)}
-                placeholder="Describe the shot… e.g. aerial cityscape at sunset, slow pan"
-                rows={3}
-                maxLength={500}
-                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-xs resize-none focus:outline-none focus:ring-2 focus:ring-cyan-400/50 focus:border-cyan-400"
-              />
-              <p className="text-right text-[9px] text-muted-foreground mt-0.5">{prompt.length}/500</p>
-            </div>
-
-            {/* Enhance toggle */}
-            <div className="flex items-center justify-between">
+          <div className="rounded-lg border border-border bg-card p-3 shadow-sm-soft">
+            <div className="space-y-3">
               <div>
-                <p className="text-[11px] font-semibold text-foreground">Enhance prompt</p>
-                <p className="text-[9px] text-muted-foreground">Claude adds camera motion, lighting &amp; style</p>
-              </div>
-              <button
-                onClick={() => setEnhance(v => !v)}
-                className="relative w-9 h-5 rounded-full transition-colors shrink-0"
-                style={{ backgroundColor: enhance ? '#06b6d4' : '#d1d5db' }}
-              >
-                <span
-                  className="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform"
-                  style={{ transform: enhance ? 'translateX(18px)' : 'translateX(2px)' }}
+                <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider block mb-1">Prompt</label>
+                <textarea
+                  value={prompt}
+                  onChange={e => setPrompt(e.target.value)}
+                  placeholder="Describe the shot… e.g. aerial cityscape at sunset, slow pan"
+                  rows={3}
+                  maxLength={500}
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2 text-xs resize-none focus:outline-none focus:ring-2 focus:ring-cyan-400/30 focus:border-cyan-400"
                 />
+                <p className="text-right text-[9px] text-muted-foreground mt-0.5">{prompt.length}/500</p>
+              </div>
+
+              <div className="rounded-lg border border-border bg-muted/35 px-3 py-2.5">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] font-semibold text-foreground">Enhance prompt</p>
+                    <p className="text-[9px] text-muted-foreground">Add camera motion, lighting, and style.</p>
+                  </div>
+                  <button
+                    onClick={() => setEnhance(v => !v)}
+                    className="relative w-9 h-5 rounded-full transition-colors shrink-0 focus-ring"
+                    style={{ backgroundColor: enhance ? '#06b6d4' : '#d1d5db' }}
+                  >
+                    <span
+                      className="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform"
+                      style={{ transform: enhance ? 'translateX(18px)' : 'translateX(2px)' }}
+                    />
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider block mb-1.5">Model</label>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {(Object.keys(MODEL_LABELS) as Model[]).map(m => (
+                    <button
+                      key={m}
+                      onClick={() => setModel(m)}
+                      className="rounded-lg border px-2 py-2 text-center text-xs font-semibold transition-all focus-ring"
+                      style={{
+                        borderColor: model === m ? '#06b6d4' : '#e5e7eb',
+                        backgroundColor: model === m ? '#ecfeff' : 'transparent',
+                        color: model === m ? '#0e7490' : undefined,
+                      }}
+                    >
+                      {MODEL_LABELS[m]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {model === 'veo' && markDuration > 8 && (
+                <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
+                  <p className="text-[10px] text-amber-700 font-medium">
+                    Veo max is 8s — generation will be capped.
+                  </p>
+                </div>
+              )}
+
+              {genError && (
+                <div className="rounded-lg bg-red-50 border border-red-200 px-3 py-2">
+                  <p className="text-[10px] text-red-600">{genError}</p>
+                </div>
+              )}
+
+              <button
+                onClick={handleGenerate}
+                disabled={generating || !prompt.trim()}
+                className="w-full h-9 rounded-lg text-xs font-semibold text-white transition-all hover:opacity-90 disabled:opacity-50 focus-ring"
+                style={{ background: 'linear-gradient(135deg,#06b6d4,#6366f1)' }}
+              >
+                {generating ? (
+                  <span className="flex items-center justify-center gap-2">
+                    <span className="w-3 h-3 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                    Queuing…
+                  </span>
+                ) : 'Generate'}
               </button>
             </div>
-
-            {/* Model selector */}
-            <div>
-              <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider block mb-1.5">Model</label>
-              <div className="space-y-1.5">
-                {(Object.keys(MODEL_LABELS) as Model[]).map(m => (
-                  <button
-                    key={m}
-                    onClick={() => setModel(m)}
-                    className="w-full flex items-center gap-2.5 rounded-lg px-3 py-2 border transition-all text-left"
-                    style={{
-                      borderColor: model === m ? '#06b6d4' : '#e5e7eb',
-                      backgroundColor: model === m ? '#ecfeff' : 'transparent',
-                    }}
-                  >
-                    <div
-                      className="w-3.5 h-3.5 rounded-full border-2 shrink-0 flex items-center justify-center"
-                      style={{ borderColor: model === m ? '#06b6d4' : '#d1d5db' }}
-                    >
-                      {model === m && <div className="w-1.5 h-1.5 rounded-full bg-cyan-500" />}
-                    </div>
-                    <div>
-                      <p className="text-xs font-semibold text-foreground">{MODEL_LABELS[m].name}</p>
-                      <p className="text-[9px] text-muted-foreground">{MODEL_LABELS[m].desc}</p>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Veo duration warning */}
-            {model === 'veo' && markDuration > 8 && (
-              <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
-                <p className="text-[10px] text-amber-700 font-medium">
-                  Veo 3 max is 8s — generation will be capped at 8s.
-                </p>
-              </div>
-            )}
-
-            {genError && (
-              <div className="rounded-lg bg-red-50 border border-red-200 px-3 py-2">
-                <p className="text-[10px] text-red-600">{genError}</p>
-              </div>
-            )}
-
-            <button
-              onClick={handleGenerate}
-              disabled={generating || !prompt.trim()}
-              className="w-full h-9 rounded-lg text-xs font-semibold transition-all disabled:opacity-50"
-              style={{ backgroundColor: '#06b6d4', color: '#fff' }}
-            >
-              {generating ? (
-                <span className="flex items-center justify-center gap-2">
-                  <span className="w-3 h-3 rounded-full border-2 border-white/30 border-t-white animate-spin" />
-                  Queuing…
-                </span>
-              ) : 'Generate'}
-            </button>
-          </>
+          </div>
         ) : (
           <>
             {/* Use existing video */}
@@ -281,7 +274,7 @@ export function BrollPanel({ projectId, mark, videos, jobs, onNewJob, onJobUpdat
                   <button
                     key={v.id}
                     onClick={() => setSelectedVideoId(v.id)}
-                    className="w-full flex items-center gap-2.5 rounded-lg px-3 py-2.5 border transition-all text-left"
+                    className="w-full flex items-center gap-2.5 rounded-lg px-3 py-2.5 border transition-all text-left focus-ring"
                     style={{
                       borderColor: selectedVideoId === v.id ? '#06b6d4' : '#e5e7eb',
                       backgroundColor: selectedVideoId === v.id ? '#ecfeff' : 'transparent',
@@ -323,8 +316,8 @@ export function BrollPanel({ projectId, mark, videos, jobs, onNewJob, onJobUpdat
             <button
               onClick={handleInsertExisting}
               disabled={inserting || !selectedVideoId}
-              className="w-full h-9 rounded-lg text-xs font-semibold transition-all disabled:opacity-50"
-              style={{ backgroundColor: '#06b6d4', color: '#fff' }}
+              className="w-full h-9 rounded-lg text-xs font-semibold text-white transition-all hover:opacity-90 disabled:opacity-50 focus-ring"
+              style={{ background: 'linear-gradient(135deg,#06b6d4,#6366f1)' }}
             >
               {inserting ? (
                 <span className="flex items-center justify-center gap-2">
@@ -359,7 +352,7 @@ export function BrollPanel({ projectId, mark, videos, jobs, onNewJob, onJobUpdat
                     </p>
                     <div className="flex items-center gap-1 shrink-0">
                       <span className="text-[9px] text-muted-foreground font-mono">
-                        {MODEL_LABELS[job.model as Model]?.name ?? job.model}
+                        {MODEL_LABELS[job.model as Model] ?? job.model}
                       </span>
                       {(isDone || isFailed) && (
                         <button

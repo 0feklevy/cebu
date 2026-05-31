@@ -1,5 +1,6 @@
 'use client';
 
+import { ConfirmDialog } from './ConfirmDialog';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { getAuth } from 'firebase/auth';
 import type { TimelineSection, Simulation, VideoFile, VideoGenerationJob, SimFile, SimMeta } from 'shared/src/generated/client-v1';
@@ -9,10 +10,10 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
 
 type GenModel = 'kling' | 'seedance' | 'veo';
 
-const GEN_MODELS: Record<GenModel, { name: string; desc: string }> = {
-  kling:    { name: 'Kling 3.0',   desc: 'Kuaishou · 4–15s' },
-  seedance: { name: 'Seedance 2.0', desc: 'ByteDance · 4–15s' },
-  veo:      { name: 'Veo 3',       desc: 'Google · 4–8s' },
+const GEN_MODELS: Record<GenModel, string> = {
+  kling: 'kling',
+  seedance: 'seedance',
+  veo: 'veo',
 };
 
 const JOB_STATUS_LABEL: Record<string, string> = {
@@ -42,10 +43,10 @@ function elapsed(createdAt: string): string {
   return `${Math.floor(secs / 60)}m ${secs % 60}s`;
 }
 
+// 'clip' is no longer a top-level type in the UI — it lives inside 'video' as a sub-mode
 const TYPES = [
   { value: 'video',      label: 'Video',      color: '#3b82f6', bg: '#eff6ff', border: '#93c5fd', text: '#1d4ed8' },
   { value: 'simulation', label: 'Simulation', color: '#f59e0b', bg: '#fffbeb', border: '#fcd34d', text: '#92400e' },
-  { value: 'clip',       label: 'Clip',       color: '#10b981', bg: '#ecfdf5', border: '#6ee7b7', text: '#065f46' },
 ] as const;
 
 function fmtTime(sec: number): string {
@@ -87,7 +88,8 @@ export function SectionEditor({
 }: Props) {
   const isBroll = section.track === 'broll';
   const knownTypes = TYPES.map(t => t.value) as string[];
-  const initialType = isBroll ? 'video' : (knownTypes.includes(section.type) ? section.type : 'video');
+  // 'clip' maps to 'video' in the switcher (it's a sub-mode), preserve it internally for save
+  const initialType = isBroll ? 'video' : (knownTypes.includes(section.type) ? section.type : section.type === 'clip' ? 'clip' : 'video');
 
   const [type, setType]         = useState(initialType);
   const [label, setLabel]       = useState(section.label ?? '');
@@ -96,6 +98,7 @@ export function SectionEditor({
   const [simPrompt, setSimPrompt]   = useState(section.sim_prompt ?? '');
   const [simpleUi, setSimpleUi]     = useState(section.simple_ui ?? false);
   const [autoScript, setAutoScript] = useState(section.auto_script ?? true);
+  const [showTiming, setShowTiming]   = useState(false);
   const [generating, setGenerating] = useState(false);
   const [generationStatus, setGenerationStatus] = useState<string | null>(null);
   const [simGenError, setSimGenError] = useState<string | null>(null);
@@ -105,6 +108,7 @@ export function SectionEditor({
   const [saving, setSaving]     = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   // Video generation state
   const [genPrompt, setGenPrompt]   = useState('');
@@ -155,6 +159,7 @@ export function SectionEditor({
     setSimGenError(null);
     setGenerating(false);
     setGenerationStatus(null);
+    setShowTiming(false);
     // Close any active SSE stream when section changes
     eventSourceRef.current?.close();
     eventSourceRef.current = null;
@@ -563,7 +568,8 @@ export function SectionEditor({
 
   // ── Derived values ─────────────────────────────────────────────────────────
 
-  const activeTypeDef = TYPES.find(t => t.value === type) ?? TYPES[0];
+  // 'clip' is a sub-mode of 'video' — use video colors in the switcher
+  const activeTypeDef = TYPES.find(t => t.value === (type === 'clip' ? 'video' : type)) ?? TYPES[0];
   const readySims = simulations.filter(s => s.status === 'ready');
   const activeSim = readySims.find(s => s.id === simId) ?? null;
   const videoUrl = videoUrls[section.video_file_id] ?? null;
@@ -602,8 +608,8 @@ export function SectionEditor({
         onClick={onClose}
         style={{
           position: 'fixed', inset: 0,
-          backgroundColor: 'rgba(0,0,0,0.6)',
-          backdropFilter: 'blur(4px)', zIndex: 200,
+          backgroundColor: 'rgba(2,6,23,0.55)',
+          backdropFilter: 'blur(10px)', zIndex: 800,
         }}
       />
 
@@ -612,32 +618,33 @@ export function SectionEditor({
         style={{
           position: 'fixed', top: '50%', left: '50%',
           transform: 'translate(-50%, -50%)',
-          zIndex: 201, width: '90vw', height: '90vh',
+          zIndex: 801, width: '90vw', height: '90vh',
           display: 'flex', flexDirection: 'column',
-          backgroundColor: '#ffffff', borderRadius: 16,
-          boxShadow: '0 30px 80px rgba(0,0,0,0.3), 0 10px 30px rgba(0,0,0,0.15)',
+          backgroundColor: '#ffffff', borderRadius: 10,
+          boxShadow: '0 16px 48px rgba(0,0,0,0.18), 0 4px 16px rgba(0,0,0,0.08)',
           overflow: 'hidden', fontFamily: 'system-ui, -apple-system, sans-serif',
         }}
       >
         {/* ── Header ── */}
         <div style={{
           flexShrink: 0, padding: '16px 24px',
-          borderBottom: '1px solid #f3f4f6',
+          borderBottom: '1px solid hsl(var(--shell-border))',
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          gap: 12, backgroundColor: '#fafafa',
+          gap: 12, background: 'hsl(var(--shell))',
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <span style={{
               width: 10, height: 10, borderRadius: '50%',
               backgroundColor: isBroll ? '#06b6d4' : activeTypeDef.color,
               display: 'inline-block', flexShrink: 0,
+              boxShadow: `0 0 0 4px ${isBroll ? 'rgba(6,182,212,0.18)' : 'rgba(99,102,241,0.18)'}`,
             }} />
-            <span style={{ fontSize: 15, fontWeight: 700, color: '#111827' }}>
+            <span style={{ fontSize: 15, fontWeight: 700, color: 'hsl(var(--shell-foreground))' }}>
               {isBroll ? 'B-Roll Clip' : 'Edit Section'}
             </span>
             <span style={{
-              fontSize: 10, fontWeight: 600, color: '#9ca3af',
-              backgroundColor: '#f3f4f6', borderRadius: 6, padding: '2px 8px',
+              fontSize: 10, fontWeight: 600, color: 'hsl(var(--shell-muted))',
+              backgroundColor: 'var(--shell-hover)', borderRadius: 6, padding: '2px 8px',
               fontFamily: 'monospace',
             }}>
               {fmtTime(section.start_sec)} → {fmtTime(section.end_sec)}
@@ -649,10 +656,10 @@ export function SectionEditor({
               width: 30, height: 30, borderRadius: 8,
               border: 'none', backgroundColor: 'transparent',
               cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-              color: '#9ca3af', flexShrink: 0,
+              color: 'hsl(var(--shell-muted))', flexShrink: 0,
             }}
-            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.backgroundColor = '#f3f4f6'; (e.currentTarget as HTMLElement).style.color = '#374151'; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent'; (e.currentTarget as HTMLElement).style.color = '#9ca3af'; }}
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--shell-hover)'; (e.currentTarget as HTMLElement).style.color = 'hsl(var(--shell-foreground))'; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent'; (e.currentTarget as HTMLElement).style.color = 'hsl(var(--shell-muted))'; }}
           >
             <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
               <path d="M2 2l9 9M11 2L2 11" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
@@ -667,16 +674,16 @@ export function SectionEditor({
           <div style={{
             width: 380, flexShrink: 0, overflowY: 'auto',
             padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 20,
-            borderRight: '1px solid #f3f4f6',
+            borderRight: '1px solid #e2e8f0', backgroundColor: '#f8fafc',
           }}>
 
-            {/* Type switcher */}
+            {/* Type switcher — Video / Simulation only; Clip is a sub-mode inside Video */}
             {!isBroll && (
-              <div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <label style={labelStyle}>Type</label>
                 <div style={{ display: 'flex', gap: 8 }}>
                   {TYPES.map(t => {
-                    const active = type === t.value;
+                    const active = (type === t.value) || (t.value === 'video' && type === 'clip');
                     return (
                       <button
                         key={t.value}
@@ -697,6 +704,49 @@ export function SectionEditor({
                     );
                   })}
                 </div>
+                {/* Clip sub-mode selector inside Video */}
+                {(type === 'video' || type === 'clip') && (
+                  <div
+                    role="group"
+                    aria-label="Video section mode"
+                    style={{
+                      display: 'flex',
+                      width: '100%',
+                      height: 36,
+                      borderRadius: 9,
+                      border: '1.5px solid #bfdbfe',
+                      backgroundColor: '#f8fafc',
+                      padding: 2,
+                      boxSizing: 'border-box',
+                    }}
+                  >
+                    {[
+                      { key: 'video', label: 'Generate B-Roll' },
+                      { key: 'clip',  label: 'Existing Clip'   },
+                    ].map(({ key, label: subLabel }) => (
+                      <button
+                        key={key}
+                        onClick={() => setType(key as 'video' | 'clip')}
+                        aria-pressed={type === key}
+                        style={{
+                          flex: 1,
+                          height: '100%',
+                          borderRadius: 7,
+                          fontSize: 11,
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          border: 'none',
+                          backgroundColor: type === key ? '#dbeafe' : 'transparent',
+                          color: type === key ? '#1d4ed8' : '#6b7280',
+                          transition: 'background-color 0.12s, color 0.12s, box-shadow 0.12s',
+                          boxShadow: type === key ? '0 1px 3px rgba(59,130,246,0.18)' : 'none',
+                        }}
+                      >
+                        {subLabel}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
@@ -722,8 +772,8 @@ export function SectionEditor({
                 <div style={{ height: 1, backgroundColor: '#f3f4f6' }} />
 
                 <div style={{
-                  backgroundColor: '#ecfdf5', border: '1.5px solid #6ee7b7',
-                  borderRadius: 12, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12,
+                  backgroundColor: '#fff', border: '1px solid #f1f5f9', borderTop: '3px solid #10b981',
+                  borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05), 0 1px 3px rgba(0,0,0,0.03)', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12,
                 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <span style={{ fontSize: 14 }}>🎞</span>
@@ -872,8 +922,8 @@ export function SectionEditor({
 
                 {simId && (
                   <div style={{
-                    backgroundColor: '#fffbeb', border: '1.5px solid #fde68a',
-                    borderRadius: 12, padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 14,
+                    backgroundColor: '#fff', border: '1px solid #f1f5f9', borderTop: '3px solid #f59e0b',
+                    borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05), 0 1px 3px rgba(0,0,0,0.03)', padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 14,
                   }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <span style={{ fontSize: 14 }}>✦</span>
@@ -945,40 +995,59 @@ export function SectionEditor({
                     )}
 
                     {simMeta && !generating && (
-                      <div style={{ backgroundColor: '#f0fdf4', border: '1.5px solid #bbf7d0', borderRadius: 10, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <div style={{ backgroundColor: '#fff', border: '1px solid #f1f5f9', borderLeft: '3px solid #10b981', borderRadius: 10, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 6, boxShadow: '0 1px 4px rgba(0,0,0,0.05)' }}>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                           <span style={{ fontSize: 11, fontWeight: 700, color: '#166534' }}>Last generation</span>
-                          <span style={{
-                            fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 5,
-                            backgroundColor: simMeta.confidence >= 0.8 ? '#dcfce7' : simMeta.confidence >= 0.5 ? '#fef9c3' : '#fee2e2',
-                            color: simMeta.confidence >= 0.8 ? '#166534' : simMeta.confidence >= 0.5 ? '#713f12' : '#991b1b',
-                          }}>
-                            {Math.round(simMeta.confidence * 100)}% confidence
-                          </span>
+                          {simMeta.confidence != null && (
+                            <span style={{
+                              fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 5,
+                              backgroundColor: simMeta.confidence >= 0.8 ? '#dcfce7' : simMeta.confidence >= 0.5 ? '#fef9c3' : '#fee2e2',
+                              color: simMeta.confidence >= 0.8 ? '#166534' : simMeta.confidence >= 0.5 ? '#713f12' : '#991b1b',
+                            }}>
+                              {Math.round(simMeta.confidence * 100)}% confidence
+                            </span>
+                          )}
                         </div>
-                        {simMeta.targetControlId && (
-                          <p style={{ fontSize: 11, color: '#15803d', margin: 0 }}>
-                            Control: <strong>#{simMeta.targetControlId}</strong>
-                            {simMeta.animation?.enabled && (
-                              <span style={{ marginLeft: 6, color: '#16a34a' }}>
-                                · animating {simMeta.animation.min}→{simMeta.animation.max} @ {simMeta.animation.intervalMs}ms
-                              </span>
-                            )}
-                          </p>
-                        )}
-                        {(simMeta.hideControlIds.length > 0 || simMeta.hideButtonIds.length > 0 || simMeta.hideSelectorStrings.length > 0) && (
-                          <p style={{ fontSize: 10, color: '#4b5563', margin: 0 }}>
-                            Hidden: {[...simMeta.hideControlIds.map(id => `#${id}`), ...simMeta.hideButtonIds.map(id => `#${id}`), ...simMeta.hideSelectorStrings].join(', ')}
-                          </p>
-                        )}
-                        {simMeta.warnings.length > 0 && (
-                          <div style={{ backgroundColor: '#fef9c3', border: '1px solid #fde68a', borderRadius: 6, padding: '5px 8px' }}>
-                            {simMeta.warnings.map((w, i) => (
-                              <p key={i} style={{ fontSize: 10, color: '#713f12', margin: 0 }}>⚠ {w}</p>
-                            ))}
-                          </div>
-                        )}
-                        {simMeta.confidence !== undefined && simMeta.confidence < 0.45 && (
+                        {/* Render any/all sim_meta fields safely — handles both old BridgePlan shape and new Phase 4 shape */}
+                        {(() => {
+                          const m = simMeta as unknown as Record<string, unknown>;
+                          const provider = m.provider as string | undefined;
+                          const model    = m.model    as string | undefined;
+                          const targetId = m.targetControlId as string | undefined;
+                          const hidden   = [
+                            ...((m.hideControlIds    as string[] | undefined) ?? []).map(id => `#${id}`),
+                            ...((m.hideButtonIds     as string[] | undefined) ?? []).map(id => `#${id}`),
+                            ...((m.hideSelectorStrings as string[] | undefined) ?? []),
+                          ];
+                          const warns = (m.warnings as string[] | undefined) ?? [];
+                          return (
+                            <>
+                              {provider && (
+                                <p style={{ fontSize: 10, color: '#4b5563', margin: 0 }}>
+                                  Provider: {provider}{model ? ` · ${model}` : ''}
+                                </p>
+                              )}
+                              {targetId && (
+                                <p style={{ fontSize: 11, color: '#15803d', margin: 0 }}>
+                                  Control: <strong>#{targetId}</strong>
+                                </p>
+                              )}
+                              {hidden.length > 0 && (
+                                <p style={{ fontSize: 10, color: '#4b5563', margin: 0 }}>
+                                  Hidden: {hidden.join(', ')}
+                                </p>
+                              )}
+                              {warns.length > 0 && (
+                                <div style={{ backgroundColor: '#fef9c3', border: '1px solid #fde68a', borderRadius: 6, padding: '5px 8px' }}>
+                                  {warns.map((w, i) => (
+                                    <p key={i} style={{ fontSize: 10, color: '#713f12', margin: 0 }}>⚠ {w}</p>
+                                  ))}
+                                </div>
+                              )}
+                            </>
+                          );
+                        })()}
+                        {simMeta.confidence != null && simMeta.confidence < 0.45 && (
                           <div style={{ backgroundColor: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '5px 8px' }}>
                             <p style={{ fontSize: 10, color: '#dc2626', margin: 0 }}>
                               ⚠ Low confidence ({Math.round(simMeta.confidence * 100)}%) — verify the bridge runs correctly before recording
@@ -993,14 +1062,14 @@ export function SectionEditor({
                       disabled={generating || !simPrompt.trim()}
                       style={{
                         width: '100%', height: 42, borderRadius: 10, border: 'none',
-                        backgroundColor: generating || !simPrompt.trim() ? '#fde68a' : '#f59e0b',
+                        background: generating || !simPrompt.trim() ? 'linear-gradient(135deg,#fde68a,#fcd34d)' : 'linear-gradient(135deg,#f59e0b,#d97706)',
                         color: '#78350f', fontSize: 13, fontWeight: 700,
                         cursor: generating || !simPrompt.trim() ? 'not-allowed' : 'pointer',
                         display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
                         transition: 'background-color 0.12s',
                       }}
-                      onMouseEnter={e => { if (!generating && simPrompt.trim()) (e.currentTarget as HTMLElement).style.backgroundColor = '#d97706'; }}
-                      onMouseLeave={e => { if (!generating && simPrompt.trim()) (e.currentTarget as HTMLElement).style.backgroundColor = '#f59e0b'; }}
+                      onMouseEnter={e => { if (!generating && simPrompt.trim()) (e.currentTarget as HTMLElement).style.opacity = '0.88'; }}
+                      onMouseLeave={e => { if (!generating && simPrompt.trim()) (e.currentTarget as HTMLElement).style.opacity = '1'; }}
                     >
                       {generating ? (
                         <>
@@ -1022,11 +1091,6 @@ export function SectionEditor({
                         Cancel
                       </button>
                     )}
-                    {!generating && (
-                      <p style={{ fontSize: 10, color: '#b45309', opacity: 0.7, textAlign: 'center', margin: '-8px 0 0' }}>
-                        {simMeta ? 'Refines previous generation · Claude reads your simulation code' : '~30–60 s · Claude reads your full simulation code'}
-                      </p>
-                    )}
                   </div>
                 )}
               </div>
@@ -1035,8 +1099,8 @@ export function SectionEditor({
             {/* ── VIDEO GENERATION (non-broll video sections) ── */}
             {type === 'video' && !isBroll && (
               <div style={{
-                backgroundColor: '#eff6ff', border: '1.5px solid #bfdbfe',
-                borderRadius: 12, padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 14,
+                backgroundColor: '#fff', border: '1px solid #f1f5f9', borderTop: '3px solid #3b82f6',
+                borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05), 0 1px 3px rgba(0,0,0,0.03)', padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 14,
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <span style={{ fontSize: 14 }}>🎬</span>
@@ -1064,61 +1128,6 @@ export function SectionEditor({
                   />
                   <p style={{ fontSize: 10, color: '#3b82f6', textAlign: 'right', margin: '3px 0 0', opacity: 0.7 }}>{genPrompt.length}/500</p>
                 </div>
-
-                <div>
-                  <label style={{ ...labelStyle, color: '#2563eb' }}>Model</label>
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    {(Object.keys(GEN_MODELS) as GenModel[]).map(m => {
-                      const active = genModel === m;
-                      return (
-                        <button
-                          key={m}
-                          onClick={() => setGenModel(m)}
-                          style={{
-                            flex: 1, padding: '8px 10px', borderRadius: 9, textAlign: 'left',
-                            border: `1.5px solid ${active ? '#3b82f6' : '#e5e7eb'}`,
-                            backgroundColor: active ? '#eff6ff' : '#f9fafb',
-                            cursor: 'pointer', transition: 'all 0.12s',
-                            display: 'flex', alignItems: 'center', gap: 8,
-                          }}
-                        >
-                          <div style={{ width: 12, height: 12, borderRadius: '50%', flexShrink: 0, border: `2px solid ${active ? '#3b82f6' : '#d1d5db'}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                            {active && <div style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: '#3b82f6' }} />}
-                          </div>
-                          <div>
-                            <p style={{ fontSize: 11, fontWeight: 700, color: active ? '#1d4ed8' : '#374151', margin: 0 }}>{GEN_MODELS[m].name}</p>
-                            <p style={{ fontSize: 9, color: '#9ca3af', margin: 0 }}>{GEN_MODELS[m].desc}</p>
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {genModel === 'veo' && (section.end_sec - section.start_sec) > 8 && (
-                  <div style={{ backgroundColor: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '8px 12px' }}>
-                    <p style={{ fontSize: 10, color: '#92400e', margin: 0 }}>Veo 3 max is 8s — generation will be capped at 8s.</p>
-                  </div>
-                )}
-
-                <button
-                  onClick={() => setGenEnhance(v => !v)}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 10,
-                    padding: '10px 12px', borderRadius: 9,
-                    border: `1.5px solid ${genEnhance ? '#3b82f6' : '#e5e7eb'}`,
-                    backgroundColor: genEnhance ? '#eff6ff' : '#f9fafb',
-                    cursor: 'pointer', textAlign: 'left', transition: 'all 0.12s',
-                  }}
-                >
-                  <span style={{ width: 36, height: 20, borderRadius: 10, flexShrink: 0, backgroundColor: genEnhance ? '#3b82f6' : '#d1d5db', position: 'relative', display: 'inline-block', transition: 'background-color 0.15s' }}>
-                    <span style={{ position: 'absolute', top: 3, left: genEnhance ? 18 : 3, width: 14, height: 14, borderRadius: '50%', backgroundColor: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.2)', transition: 'left 0.15s' }} />
-                  </span>
-                  <div>
-                    <p style={{ fontSize: 12, fontWeight: 600, color: genEnhance ? '#1d4ed8' : '#374151', margin: 0 }}>Enhance prompt</p>
-                    <p style={{ fontSize: 10, color: '#9ca3af', margin: 0 }}>Claude adds camera motion, lighting & style</p>
-                  </div>
-                </button>
 
                 {genError && (
                   <div style={{ backgroundColor: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '8px 12px' }}>
@@ -1153,27 +1162,68 @@ export function SectionEditor({
                 {(() => {
                   const isVidGenerating = genBusy || (genJob != null && genJob.status !== 'ready' && genJob.status !== 'failed');
                   return (
-                    <button
-                      onClick={handleGenerateVideo}
-                      disabled={isVidGenerating || !genPrompt.trim()}
-                      style={{
-                        width: '100%', height: 42, borderRadius: 10, border: 'none',
-                        backgroundColor: isVidGenerating || !genPrompt.trim() ? '#bfdbfe' : '#3b82f6',
-                        color: '#fff', fontSize: 13, fontWeight: 700,
-                        cursor: isVidGenerating || !genPrompt.trim() ? 'not-allowed' : 'pointer',
-                        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-                        transition: 'background-color 0.12s',
-                      }}
-                      onMouseEnter={e => { if (!isVidGenerating && genPrompt.trim()) (e.currentTarget as HTMLElement).style.backgroundColor = '#2563eb'; }}
-                      onMouseLeave={e => { if (!isVidGenerating && genPrompt.trim()) (e.currentTarget as HTMLElement).style.backgroundColor = '#3b82f6'; }}
-                    >
-                      {isVidGenerating ? (
-                        <>
-                          <span style={{ width: 14, height: 14, borderRadius: '50%', border: '2px solid rgba(255,255,255,0.3)', borderTopColor: '#fff', display: 'inline-block', animation: 'spin 0.7s linear infinite' }} />
-                          {genBusy ? 'Queuing…' : 'Generating…'}
-                        </>
-                      ) : '🎬 Generate Video'}
-                    </button>
+                    <>
+                      <button
+                        onClick={handleGenerateVideo}
+                        disabled={isVidGenerating || !genPrompt.trim()}
+                        style={{
+                          width: '100%', height: 42, borderRadius: 10, border: 'none',
+                          background: isVidGenerating || !genPrompt.trim() ? 'linear-gradient(135deg,#bfdbfe,#93c5fd)' : 'linear-gradient(135deg,#3b82f6,#6366f1)',
+                          color: '#fff', fontSize: 13, fontWeight: 700,
+                          cursor: isVidGenerating || !genPrompt.trim() ? 'not-allowed' : 'pointer',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                          transition: 'background-color 0.12s',
+                        }}
+                        onMouseEnter={e => { if (!isVidGenerating && genPrompt.trim()) (e.currentTarget as HTMLElement).style.opacity = '0.88'; }}
+                        onMouseLeave={e => { if (!isVidGenerating && genPrompt.trim()) (e.currentTarget as HTMLElement).style.opacity = '1'; }}
+                      >
+                        {isVidGenerating ? (
+                          <>
+                            <span style={{ width: 14, height: 14, borderRadius: '50%', border: '2px solid rgba(255,255,255,0.3)', borderTopColor: '#fff', display: 'inline-block', animation: 'spin 0.7s linear infinite' }} />
+                            {genBusy ? 'Queuing…' : 'Generating…'}
+                          </>
+                        ) : '🎬 Generate Video'}
+                      </button>
+
+                      {/* Model dropdown + Enhanced toggle — below generate button */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <select
+                          value={genModel}
+                          onChange={e => setGenModel(e.target.value as GenModel)}
+                          style={{
+                            flex: 1, height: 34, padding: '0 8px', borderRadius: 8,
+                            border: '1.5px solid #bfdbfe', backgroundColor: '#f0f9ff',
+                            fontSize: 12, color: '#1d4ed8', fontWeight: 600,
+                            cursor: 'pointer', outline: 'none',
+                          }}
+                        >
+                          {(Object.keys(GEN_MODELS) as GenModel[]).map(m => (
+                            <option key={m} value={m}>{GEN_MODELS[m]}</option>
+                          ))}
+                        </select>
+                        <button
+                          onClick={() => setGenEnhance(v => !v)}
+                          title="Enhance prompt with Claude"
+                          style={{
+                            height: 34, padding: '0 10px', borderRadius: 8, flexShrink: 0,
+                            border: `1.5px solid ${genEnhance ? '#3b82f6' : '#e5e7eb'}`,
+                            backgroundColor: genEnhance ? '#eff6ff' : '#f9fafb',
+                            color: genEnhance ? '#1d4ed8' : '#6b7280',
+                            fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                            display: 'flex', alignItems: 'center', gap: 5,
+                            transition: 'all 0.12s',
+                          }}
+                        >
+                          <span style={{ width: 26, height: 14, borderRadius: 7, flexShrink: 0, backgroundColor: genEnhance ? '#3b82f6' : '#d1d5db', position: 'relative', display: 'inline-block', transition: 'background-color 0.15s' }}>
+                            <span style={{ position: 'absolute', top: 2, left: genEnhance ? 13 : 2, width: 10, height: 10, borderRadius: '50%', backgroundColor: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,0.2)', transition: 'left 0.15s' }} />
+                          </span>
+                          Enhanced
+                        </button>
+                      </div>
+                      {genModel === 'veo' && (section.end_sec - section.start_sec) > 8 && (
+                        <p style={{ fontSize: 10, color: '#92400e', margin: 0 }}>Veo max is 8s — generation will be capped.</p>
+                      )}
+                    </>
                   );
                 })()}
               </div>
@@ -1182,8 +1232,8 @@ export function SectionEditor({
             {/* ── BROLL INFO ── */}
             {isBroll && (
               <div style={{
-                backgroundColor: '#ecfeff', border: '1.5px solid #a5f3fc',
-                borderRadius: 12, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10,
+                backgroundColor: '#fff', border: '1px solid #f1f5f9', borderTop: '3px solid #06b6d4',
+                borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05), 0 1px 3px rgba(0,0,0,0.03)', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10,
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <span style={{ fontSize: 13 }}>🎬</span>
@@ -1203,10 +1253,25 @@ export function SectionEditor({
               </div>
             )}
 
-            {/* ── TIMING ── */}
+            {/* ── TIMING (collapsible) ── */}
             <div>
-              <label style={labelStyle}>Timing</label>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <button
+                onClick={() => setShowTiming(v => !v)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6, background: 'none', border: 'none',
+                  cursor: 'pointer', padding: 0, width: '100%', textAlign: 'left',
+                }}
+              >
+                <span style={labelStyle as React.CSSProperties}>Timing</span>
+                <span style={{ fontSize: 10, color: '#9ca3af', marginTop: -1 }}>{showTiming ? '▲' : '▾'}</span>
+                {!showTiming && (
+                  <span style={{ fontSize: 10, color: '#9ca3af', marginLeft: 'auto', fontFamily: 'monospace' }}>
+                    {startStr} → {endStr}
+                  </span>
+                )}
+              </button>
+              {showTiming && (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 8 }}>
                 {[
                   { label: 'Start', value: startStr, set: setStartStr },
                   { label: 'End',   value: endStr,   set: setEndStr   },
@@ -1224,6 +1289,7 @@ export function SectionEditor({
                   </div>
                 ))}
               </div>
+              )}
             </div>
 
             {saveError && (
@@ -1631,7 +1697,7 @@ export function SectionEditor({
           gap: 10, backgroundColor: '#fafafa',
         }}>
           <button
-            onClick={handleDelete}
+            onClick={() => setShowDeleteConfirm(true)}
             disabled={deleting}
             style={{
               height: 36, padding: '0 16px', borderRadius: 8,
@@ -1665,12 +1731,12 @@ export function SectionEditor({
               style={{
                 height: 36, padding: '0 22px', borderRadius: 8,
                 border: 'none',
-                backgroundColor: saving ? '#93c5fd' : '#3b82f6',
+                background: saving ? 'linear-gradient(135deg,#93c5fd,#818cf8)' : 'linear-gradient(135deg,#3b82f6,#6366f1)',
                 color: '#fff', fontSize: 13, fontWeight: 600,
                 cursor: saving ? 'not-allowed' : 'pointer', transition: 'background-color 0.12s',
               }}
-              onMouseEnter={e => { if (!saving) (e.currentTarget as HTMLElement).style.backgroundColor = '#2563eb'; }}
-              onMouseLeave={e => { if (!saving) (e.currentTarget as HTMLElement).style.backgroundColor = '#3b82f6'; }}
+              onMouseEnter={e => { if (!saving) (e.currentTarget as HTMLElement).style.opacity = '0.88'; }}
+              onMouseLeave={e => { if (!saving) (e.currentTarget as HTMLElement).style.opacity = '1'; }}
             >
               {saving ? 'Saving…' : 'Save'}
             </button>
@@ -1682,6 +1748,16 @@ export function SectionEditor({
         @keyframes spin { to { transform: rotate(360deg); } }
         @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
       `}</style>
+
+      {showDeleteConfirm && (
+        <ConfirmDialog
+          title={type === 'simulation' ? 'Delete simulation section?' : type === 'clip' ? 'Delete clip section?' : 'Delete section?'}
+          description="This will permanently remove the section from your timeline. This cannot be undone."
+          confirmLabel="Delete section"
+          onConfirm={() => { setShowDeleteConfirm(false); handleDelete(); }}
+          onCancel={() => setShowDeleteConfirm(false)}
+        />
+      )}
     </>
   );
 }

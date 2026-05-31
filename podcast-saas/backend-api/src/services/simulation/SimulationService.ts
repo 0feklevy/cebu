@@ -1180,12 +1180,13 @@ export class SimulationService {
       : entryDir.slice(prefix.length).split('/').filter(Boolean).length;
     const relPath = (relativeDepth > 0 ? '../'.repeat(relativeDepth) : './') + `section_${sectionId}.js`;
 
-    const scriptTag = `<script src="${relPath}"></script>`;
+    // Include bridgeHash in the script src so the browser always fetches the new JS
+    const scriptTag = `<script src="${relPath}?v=${bridgeHash}"></script>`;
     const sectionHtml = stripped.includes('</body>')
       ? stripped.replace('</body>', `${scriptTag}\n</body>`)
       : stripped + '\n' + scriptTag;
 
-    // Validate no script tags were lost in strip
+    // Validate no script tags were lost in strip (check original src without hash query)
     const srcRe = /<script[^>]+src="([^"]+)"/gi;
     let srcMatch: RegExpExecArray | null;
     while ((srcMatch = srcRe.exec(rawHtml)) !== null) {
@@ -1197,7 +1198,9 @@ export class SimulationService {
 
     const sectionHtmlKey = `${entryDir}/section_${sectionId}.html`;
     await this.storage.uploadFile(sectionHtmlKey, Buffer.from(sectionHtml, 'utf-8'), 'text/html; charset=utf-8');
-    const sectionUrl = this.storage.getSimPublicUrl(sectionHtmlKey);
+    // Append bridgeHash as version query param → unique URL per generation → forces
+    // browser cache-bust and iframe key change in VideoPlayer/SectionEditor
+    const sectionUrl = `${this.storage.getSimPublicUrl(sectionHtmlKey)}?v=${bridgeHash}`;
 
     logger.info({ simId, sectionId, projectId, sectionUrl }, 'Bridge script uploaded');
 

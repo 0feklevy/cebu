@@ -3,9 +3,9 @@ import { HomeHero } from '@/components/HomeHero';
 
 export default function LandingPage() {
   return (
-    <div className="flex h-screen bg-background overflow-hidden">
+    <div className="min-h-screen overflow-x-hidden bg-background lg:flex lg:h-screen lg:overflow-hidden">
       <HomeSidebar />
-      <main className="flex-1 overflow-y-auto">
+      <main className="min-w-0 flex-1 overflow-x-hidden lg:overflow-y-auto">
         <HomeHero />
       </main>
     </div>

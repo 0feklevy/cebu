@@ -50,6 +50,8 @@ export async function registerPlayerRoutes(app: FastifyInstance): Promise<void> 
             simulation_url: s.simulation_url ?? null,
             simulation_id:  s.simulation_id  ?? null,
             sim_script:     s.sim_script     ?? null,
+            simple_ui:      s.simple_ui      ?? false,
+            auto_script:    s.auto_script    ?? true,
             label:          s.label,
             type:           s.type,
           }));

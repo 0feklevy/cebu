@@ -143,6 +143,8 @@ export const projects = pgTable('projects', {
   pacing: pacingEnum('pacing'),
   emotional_style: emotionalStyleEnum('emotional_style'),
   status: projectStatusEnum('status').default('draft').notNull(),
+  share_token:       text('share_token').unique(),
+  share_enabled_at:  timestamp('share_enabled_at', { withTimezone: true }),
   created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });

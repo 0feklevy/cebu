@@ -99,8 +99,8 @@ export function VideoUploader({ projectId, onUploaded }: Props) {
         onDragLeave={() => setDragging(false)}
         onDrop={(e) => { e.preventDefault(); setDragging(false); handleFiles(e.dataTransfer.files); }}
         onClick={() => inputRef.current?.click()}
-        className={`border-2 border-dashed rounded-xl px-6 py-8 text-center cursor-pointer transition-colors ${
-          dragging ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/40 hover:bg-muted/30'
+        className={`rounded-lg border-2 border-dashed px-6 py-8 text-center cursor-pointer transition-colors focus-ring ${
+          dragging ? 'border-violet-400 bg-violet-50' : 'border-border bg-white/70 hover:border-violet-300 hover:bg-muted/30'
         }`}
       >
         <svg width="32" height="32" viewBox="0 0 32 32" fill="none" className="mx-auto mb-2 text-muted-foreground/50" aria-hidden>
@@ -122,7 +122,7 @@ export function VideoUploader({ projectId, onUploaded }: Props) {
       {uploads.length > 0 && (
         <div className="space-y-2">
           {uploads.map((u, i) => (
-            <div key={i} className="bg-muted/40 rounded-lg px-3 py-2.5">
+            <div key={i} className="rounded-lg border border-border/70 bg-white px-3 py-2.5 shadow-sm-soft">
               <div className="flex items-center justify-between mb-1.5">
                 <span className="text-xs font-medium text-foreground truncate max-w-[200px]">{u.filename}</span>
                 <span className="text-[10px] text-muted-foreground shrink-0 ml-2">
@@ -134,8 +134,8 @@ export function VideoUploader({ projectId, onUploaded }: Props) {
               {!u.done && !u.error && (
                 <div className="h-1 bg-muted rounded-full overflow-hidden">
                   <div
-                    className="h-full bg-primary transition-all duration-300 rounded-full"
-                    style={{ width: `${u.percent}%` }}
+                    className="h-full transition-all duration-300 rounded-full"
+                    style={{ width: `${u.percent}%`, background: 'linear-gradient(135deg,#a855f7,#6366f1)' }}
                   />
                 </div>
               )}

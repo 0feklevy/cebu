@@ -66,7 +66,7 @@ function MultiClipPlayer({ clips, onTimeUpdate, sectionLabel, activeSimSection, 
   const simFrameRef     = useRef<HTMLIFrameElement>(null);
   const simReadyRef     = useRef(false);
   const simPollRef      = useRef<ReturnType<typeof setInterval> | null>(null);
-  const pendingSimRef   = useRef<{ script: string } | null>(null);
+  const pendingSimRef   = useRef<{ script: string; params: Record<string, boolean> } | null>(null);
   const activeSimUrlRef = useRef<string | null>(null);
   const [simUrl, setSimUrl]          = useState<string | null>(null);
   const [showSimOverlay, setShowSim] = useState(false);
@@ -107,7 +107,7 @@ function MultiClipPlayer({ clips, onTimeUpdate, sectionLabel, activeSimSection, 
         pendingSimRef.current = null;
         if (pending) {
           setShowSim(true);
-          sendToSim({ type: 'startScript', script: pending.script });
+          sendToSim({ type: 'startScript', script: pending.script, params: pending.params });
         }
       }
       if (type === 'userInteraction') hook.pause();
@@ -195,7 +195,12 @@ function MultiClipPlayer({ clips, onTimeUpdate, sectionLabel, activeSimSection, 
   // ── sim section boundary crossings ───────────────────────────────────────
   useEffect(() => {
     const newUrl = activeSimSection?.simulation_url ?? null;
-    const script  = activeSimSection?.sim_script ?? 'auto';
+    const script  = activeSimSection?.sim_script ?? 'main';
+    // Pass the section's toggle values so the bridge can apply simpleUi / autoScript
+    const params  = {
+      simpleUi:   activeSimSection?.simple_ui   ?? false,
+      autoScript: activeSimSection?.auto_script  ?? true,
+    };
     if (!newUrl) {
       if (activeSimUrlRef.current) {
         sendToSim({ type: 'stopScript' });
@@ -209,10 +214,10 @@ function MultiClipPlayer({ clips, onTimeUpdate, sectionLabel, activeSimSection, 
     setSimUrl(newUrl);
     if (sameUrl && simReadyRef.current) {
       setShowSim(true);
-      sendToSim({ type: 'startScript', script });
+      sendToSim({ type: 'startScript', script, params });
     } else {
       simReadyRef.current   = false;
-      pendingSimRef.current = { script };
+      pendingSimRef.current = { script, params };
       if (!sameUrl) startSimPoll();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -250,7 +255,7 @@ function MultiClipPlayer({ clips, onTimeUpdate, sectionLabel, activeSimSection, 
   }, [hook]);
 
   return (
-    <div className="flex-1 relative bg-black rounded-xl overflow-hidden">
+    <div className="flex-1 relative bg-black rounded-lg overflow-hidden shadow-card">
       {/* Video A — initial z=2 (main), swapped by hook on clip transitions */}
       <video
         ref={hook.videoARef}
@@ -326,7 +331,7 @@ function MultiClipPlayer({ clips, onTimeUpdate, sectionLabel, activeSimSection, 
       )}
 
       {/* Controls */}
-      <div className="absolute bottom-0 left-0 right-0 bg-black/80 backdrop-blur-sm px-4 py-2.5 space-y-2" style={{ zIndex: 10 }}>
+      <div className="absolute bottom-0 left-0 right-0 px-4 py-2.5 space-y-2" style={{ zIndex: 10, background: 'linear-gradient(180deg,rgba(2,6,23,0),rgba(2,6,23,0.9) 22%,rgba(2,6,23,0.96))', backdropFilter: 'blur(10px)' }}>
         <input
           type="range"
           min={0}
@@ -344,7 +349,7 @@ function MultiClipPlayer({ clips, onTimeUpdate, sectionLabel, activeSimSection, 
           <div className="flex items-center gap-3">
             <button
               onClick={() => hook.isPlaying ? hook.pause() : hook.play()}
-              className="text-white hover:text-primary transition-colors"
+              className="text-white hover:text-violet-300 transition-colors focus-ring rounded"
             >
               {hook.isPlaying ? (
                 <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden>
@@ -366,7 +371,7 @@ function MultiClipPlayer({ clips, onTimeUpdate, sectionLabel, activeSimSection, 
               <button
                 key={s}
                 onClick={() => setSpeed(s)}
-                className={`text-[10px] font-semibold px-1.5 py-0.5 rounded transition-colors ${speed === s ? 'bg-primary text-white' : 'text-white/50 hover:text-white'}`}
+                className={`text-[10px] font-semibold px-1.5 py-0.5 rounded transition-colors focus-ring ${speed === s ? 'bg-violet-500 text-white' : 'text-white/50 hover:text-white'}`}
               >
                 {s}x
               </button>
@@ -509,7 +514,7 @@ function SingleClipPlayer({ src, hlsUrl, hlsStatus, currentTime, onTimeUpdate, s
   };
 
   return (
-    <div className="flex-1 relative bg-black rounded-xl overflow-hidden">
+    <div className="flex-1 relative bg-black rounded-lg overflow-hidden shadow-card">
       {effectiveSrc ? (
         <video
           ref={videoRef}
@@ -590,7 +595,7 @@ function SingleClipPlayer({ src, hlsUrl, hlsStatus, currentTime, onTimeUpdate, s
         </div>
       )}
 
-      <div className="absolute bottom-0 left-0 right-0 bg-black/80 backdrop-blur-sm px-4 py-2.5 space-y-2">
+      <div className="absolute bottom-0 left-0 right-0 px-4 py-2.5 space-y-2" style={{ background: 'linear-gradient(180deg,rgba(2,6,23,0),rgba(2,6,23,0.9) 22%,rgba(2,6,23,0.96))', backdropFilter: 'blur(10px)' }}>
         <input
           type="range" min={0} max={duration || 1} step={0.1} value={currentTime}
           onChange={(e) => {
@@ -609,7 +614,7 @@ function SingleClipPlayer({ src, hlsUrl, hlsStatus, currentTime, onTimeUpdate, s
                 if (v.paused) { v.play().catch(() => setPlaying(false)); setPlaying(true); }
                 else { v.pause(); setPlaying(false); }
               }}
-              className="text-white hover:text-primary transition-colors"
+              className="text-white hover:text-violet-300 transition-colors focus-ring rounded"
             >
               {playing ? (
                 <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden>
@@ -629,7 +634,7 @@ function SingleClipPlayer({ src, hlsUrl, hlsStatus, currentTime, onTimeUpdate, s
               <button
                 key={s}
                 onClick={() => setSpeed(s)}
-                className={`text-[10px] font-semibold px-1.5 py-0.5 rounded transition-colors ${speed === s ? 'bg-primary text-white' : 'text-white/50 hover:text-white'}`}
+                className={`text-[10px] font-semibold px-1.5 py-0.5 rounded transition-colors focus-ring ${speed === s ? 'bg-violet-500 text-white' : 'text-white/50 hover:text-white'}`}
               >
                 {s}x
               </button>

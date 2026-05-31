@@ -1,199 +1,356 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
+import {
+  ArrowRight,
+  CheckCircle2,
+  Clock3,
+  Clapperboard,
+  Film,
+  Layers3,
+  MonitorPlay,
+  Plus,
+  Search,
+  Share2,
+  Sparkles,
+  Upload,
+  Wand2,
+} from 'lucide-react';
 import { CreateProjectDialog } from './CreateProjectDialog';
+import { api } from '../lib/api';
+import { useAuth } from '../lib/firebase';
+import type { Project } from 'shared/src/generated/client-v1';
 
-const FEATURES = [
-  {
-    icon: (
-      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-        <rect x="2" y="5" width="16" height="10" rx="2" stroke="currentColor" strokeWidth="1.4" />
-        <path d="M8 8l5 2-5 2V8z" fill="currentColor" />
-      </svg>
-    ),
-    title: 'Multi-clip timeline',
-    desc: 'Upload multiple video clips and they appear in one seamless timeline row with smart dividers.',
+const STATUS_META: Record<string, { label: string; className: string }> = {
+  draft: {
+    label: 'Draft',
+    className: 'bg-slate-500/10 text-slate-600 ring-slate-500/20 dark:text-slate-300',
   },
-  {
-    icon: (
-      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-        <rect x="2" y="8" width="16" height="4" rx="1" stroke="currentColor" strokeWidth="1.4" />
-        <rect x="4" y="10.5" width="4" height="3" rx="0.5" fill="currentColor" fillOpacity="0.4" />
-        <rect x="9" y="10.5" width="7" height="3" rx="0.5" fill="currentColor" fillOpacity="0.7" />
-        <path d="M2 6.5h16" stroke="currentColor" strokeWidth="1" strokeDasharray="2 2" />
-      </svg>
-    ),
-    title: 'Section flagging',
-    desc: 'Drag to mark video and simulation sections directly on the timeline. Edit labels and timing inline.',
+  has_videos: {
+    label: 'Clips added',
+    className: 'bg-blue-500/10 text-blue-700 ring-blue-500/20 dark:text-blue-300',
   },
-  {
-    icon: (
-      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-        <path d="M10 3v14M3 10h14" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeOpacity="0.3" />
-        <circle cx="10" cy="10" r="4" stroke="currentColor" strokeWidth="1.4" />
-        <circle cx="10" cy="10" r="1.5" fill="currentColor" />
-      </svg>
-    ),
-    title: 'Dual-buffer playback',
-    desc: 'Seamless clip transitions using a standby buffer — no flicker, no stutter between videos.',
+  ready: {
+    label: 'Ready',
+    className: 'bg-emerald-500/10 text-emerald-700 ring-emerald-500/20 dark:text-emerald-300',
   },
-  {
-    icon: (
-      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-        <path d="M4 16l4-8 3 5 2-3 3 6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-        <rect x="2" y="14" width="16" height="1" rx="0.5" fill="currentColor" fillOpacity="0.15" />
-      </svg>
-    ),
-    title: 'Audio waveform',
-    desc: 'See the audio waveform per clip extracted server-side — visually navigate your content.',
+  failed: {
+    label: 'Needs attention',
+    className: 'bg-red-500/10 text-red-700 ring-red-500/20 dark:text-red-300',
   },
+};
+
+const WORKFLOW = [
+  { label: 'Upload', icon: Upload, tone: 'text-sky-500', note: 'Clips, lectures, demos' },
+  { label: 'Structure', icon: Layers3, tone: 'text-violet-500', note: 'Mark video and sim moments' },
+  { label: 'Generate', icon: Wand2, tone: 'text-amber-500', note: 'B-roll and simulations' },
+  { label: 'Share', icon: Share2, tone: 'text-emerald-500', note: 'Public watch link' },
 ];
 
+const TEMPLATE_STARTERS = [
+  'Product walkthrough',
+  'Lecture breakdown',
+  'Course module',
+  'Interactive demo',
+];
+
+function projectTitle(project: Project): string {
+  return project.title?.trim() || project.topic?.trim() || 'Untitled project';
+}
+
+function timeAgo(dateStr: string): string {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 14) return `${days}d ago`;
+  return new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric' }).format(new Date(dateStr));
+}
+
+function statusMeta(status: string) {
+  return STATUS_META[status] ?? STATUS_META.draft;
+}
+
+function ProjectTile({ project }: { project: Project }) {
+  const meta = statusMeta(project.status);
+  const title = projectTitle(project);
+
+  return (
+    <Link
+      href={`/projects/${project.id}/editor`}
+      className="group flex min-h-[128px] flex-col justify-between rounded-lg border border-border bg-card p-4 text-card-foreground shadow-sm-soft transition-all hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-card focus-ring"
+    >
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
+            <Film size={18} strokeWidth={1.9} aria-hidden />
+          </div>
+          <h3 className="line-clamp-2 text-sm font-semibold leading-snug text-foreground">{title}</h3>
+        </div>
+        <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold ring-1 ${meta.className}`}>
+          {meta.label}
+        </span>
+      </div>
+      <div className="mt-4 flex items-center justify-between gap-3 text-xs text-muted-foreground">
+        <span className="inline-flex items-center gap-1.5">
+          <Clock3 size={13} strokeWidth={1.8} aria-hidden />
+          {timeAgo(project.created_at)}
+        </span>
+        <span className="inline-flex items-center gap-1 font-medium text-primary opacity-0 transition-opacity group-hover:opacity-100">
+          Open <ArrowRight size={13} strokeWidth={2} aria-hidden />
+        </span>
+      </div>
+    </Link>
+  );
+}
+
+function WorkspaceSkeleton() {
+  return (
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+      {[1, 2, 3].map((i) => (
+        <div key={i} className="h-32 animate-pulse rounded-lg border border-border bg-card/70 p-4">
+          <div className="mb-4 h-9 w-9 rounded-lg bg-muted" />
+          <div className="mb-2 h-3 w-3/4 rounded bg-muted" />
+          <div className="h-3 w-1/2 rounded bg-muted" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function HomeHero() {
+  const { loading: authLoading, user, isAnonymous } = useAuth();
   const [createOpen, setCreateOpen] = useState(false);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [query, setQuery] = useState('');
+
+  useEffect(() => {
+    if (authLoading) return;
+    let cancelled = false;
+    setLoading(true);
+    api.listProjects()
+      .then((items) => {
+        if (!cancelled) setProjects(items);
+      })
+      .catch(() => {
+        if (!cancelled) setProjects([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [authLoading]);
+
+  const sortedProjects = useMemo(
+    () => [...projects].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()),
+    [projects],
+  );
+
+  const filteredProjects = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return sortedProjects;
+    return sortedProjects.filter((project) => projectTitle(project).toLowerCase().includes(q));
+  }, [query, sortedProjects]);
+
+  const counts = useMemo(() => ({
+    total: projects.length,
+    ready: projects.filter((project) => project.status === 'ready').length,
+    active: projects.filter((project) => project.status !== 'ready' && project.status !== 'failed').length,
+  }), [projects]);
+
+  const latestProject = sortedProjects[0];
+  const accountLabel = authLoading
+    ? 'Loading account'
+    : user && !isAnonymous
+      ? user.email
+      : 'Guest workspace';
 
   return (
     <>
-      <section className="relative overflow-hidden">
-        {/* Background */}
-        <div aria-hidden className="pointer-events-none absolute inset-0"
-          style={{ backgroundImage: 'radial-gradient(ellipse 80% 50% at 50% -10%, hsl(243 74% 59% / 0.09) 0%, transparent 70%)' }}
-        />
-        <div aria-hidden className="pointer-events-none absolute inset-0"
-          style={{ backgroundImage: 'radial-gradient(circle, hsl(243 74% 59% / 0.04) 1px, transparent 1px)', backgroundSize: '28px 28px' }}
-        />
+      <section className="min-h-full overflow-x-hidden bg-background px-4 py-4 text-foreground sm:px-6 lg:px-8 lg:py-6">
+        <div className="mx-auto flex w-full min-w-0 max-w-7xl flex-col gap-5">
+          <header className="surface-panel w-full max-w-[calc(100vw-32px)] rounded-lg px-4 py-4 sm:max-w-none sm:px-5">
+            <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+              <div className="min-w-0">
+                <p className="mb-1 truncate text-xs font-medium text-muted-foreground">{accountLabel}</p>
+                <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-end sm:gap-3">
+                  <h1 className="text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
+                    Podcast Studio
+                  </h1>
+                  <span className="w-fit rounded-full border border-border bg-card px-2.5 py-1 text-[11px] font-medium text-muted-foreground sm:mb-1">
+                    Interactive video workspace
+                  </span>
+                </div>
+              </div>
 
-        {/* Hero text */}
-        <div className="relative max-w-2xl mx-auto text-center pt-20 pb-12 px-6">
-          <span className="inline-flex items-center gap-2 rounded-full border border-primary/20 bg-primary/6 px-3.5 py-1 text-xs font-medium text-primary mb-8">
-            <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse inline-block" />
-            Interactive Video Editor
-          </span>
-
-          <h1 className="text-4xl sm:text-5xl font-bold tracking-tight leading-[1.1] text-foreground mb-5">
-            Build interactive
-            <br />
-            <span
-              className="bg-clip-text text-transparent"
-              style={{ backgroundImage: 'linear-gradient(135deg, hsl(243 74% 59%), hsl(280 75% 60%))' }}
-            >
-              video experiences
-            </span>
-          </h1>
-
-          <p className="text-base text-muted-foreground max-w-lg mx-auto leading-relaxed mb-8">
-            Upload your video clips, arrange them on a timeline, flag sections as video or simulation,
-            and preview the final interactive experience — all in one editor.
-          </p>
-
-          <button
-            onClick={() => setCreateOpen(true)}
-            className="h-11 px-6 bg-primary text-primary-foreground font-semibold rounded-lg inline-flex items-center gap-2 hover:bg-primary/90 transition-all shadow-sm hover:shadow-md active:translate-y-px"
-          >
-            New project
-            <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden>
-              <path d="M1 6.5h11M7 1.5l5 5-5 5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </button>
-        </div>
-
-        {/* Features grid */}
-        <div className="relative max-w-3xl mx-auto px-6 pb-16">
-          <div className="grid grid-cols-2 gap-3">
-            {FEATURES.map(f => (
-              <div
-                key={f.title}
-                className="rounded-xl border border-border/60 bg-card/50 p-4 flex gap-3 hover:border-primary/20 hover:bg-card transition-all"
-              >
-                <div
-                  className="shrink-0 w-9 h-9 rounded-lg flex items-center justify-center text-primary"
-                  style={{ backgroundColor: 'hsl(243 74% 59% / 0.08)' }}
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <label className="relative block sm:w-[280px]">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={16} strokeWidth={1.8} aria-hidden />
+                  <input
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    className="h-10 w-full rounded-lg border border-input bg-card pl-9 pr-3 text-sm text-foreground shadow-sm outline-none transition-colors placeholder:text-muted-foreground/70 focus:border-primary/45 focus:ring-2 focus:ring-ring/20"
+                    placeholder="Search projects"
+                  />
+                </label>
+                <button
+                  onClick={() => setCreateOpen(true)}
+                  className="gradient-action inline-flex h-10 items-center justify-center gap-2 rounded-lg px-4 text-sm font-semibold shadow-sm transition-all hover:brightness-110 active:translate-y-px focus-ring"
                 >
-                  {f.icon}
-                </div>
-                <div className="min-w-0">
-                  <p className="text-sm font-semibold text-foreground mb-0.5">{f.title}</p>
-                  <p className="text-xs text-muted-foreground leading-relaxed">{f.desc}</p>
-                </div>
+                  <Plus size={16} strokeWidth={2} aria-hidden />
+                  New project
+                </button>
               </div>
-            ))}
-          </div>
-        </div>
+            </div>
+          </header>
 
-        {/* Timeline illustration */}
-        <div className="relative max-w-3xl mx-auto px-6 pb-16">
-          <div
-            className="rounded-xl border border-border/60 overflow-hidden"
-            style={{ backgroundColor: '#fff' }}
-          >
-            {/* Fake toolbar */}
-            <div className="flex items-center gap-2 px-4 py-2 border-b border-border/40" style={{ backgroundColor: '#fafafa' }}>
-              <div className="w-16 h-5 rounded bg-primary/80 flex items-center justify-center">
-                <span className="text-[9px] font-semibold text-white">+ Add video</span>
-              </div>
-              <div className="w-20 h-5 rounded border border-border/60 flex items-center justify-center">
-                <span className="text-[9px] text-muted-foreground">Show final video</span>
-              </div>
-            </div>
-            {/* Fake timeline */}
-            <div className="p-3" style={{ backgroundColor: '#f9fafb' }}>
-              <div className="flex gap-0">
-                {/* Label */}
-                <div className="w-20 shrink-0 border-r border-border/40 pr-2 flex flex-col justify-center" style={{ height: 40 }}>
-                  <div className="flex items-center gap-1">
-                    <span className="text-[8px] font-bold text-muted-foreground/60 uppercase">V1</span>
-                    <span className="text-[8px] text-indigo-400 font-semibold">2 clips</span>
-                  </div>
-                  <span className="text-[8px] text-muted-foreground/50 font-mono">1:42</span>
+          <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+            <div className="min-w-0 space-y-5">
+              <section className="grid gap-3 sm:grid-cols-3">
+                <div className="w-full max-w-[calc(100vw-32px)] rounded-lg border border-border bg-card p-4 shadow-sm-soft sm:max-w-none">
+                  <p className="text-xs font-medium text-muted-foreground">Projects</p>
+                  <p className="mt-2 text-2xl font-semibold text-foreground">{counts.total}</p>
                 </div>
-                {/* Clip 1 */}
-                <div className="flex-[3] relative border-r-2 border-indigo-400" style={{ height: 40, backgroundColor: '#e0f2fe' }}>
-                  <div className="absolute inset-0 flex" style={{ opacity: 0.4 }}>
-                    {[...Array(8)].map((_, i) => (
-                      <div key={i} className="flex-1 border-r border-black/5" style={{ backgroundImage: 'linear-gradient(180deg, #94a3b8 0%, #64748b 100%)' }} />
+                <div className="w-full max-w-[calc(100vw-32px)] rounded-lg border border-border bg-card p-4 shadow-sm-soft sm:max-w-none">
+                  <p className="text-xs font-medium text-muted-foreground">In progress</p>
+                  <p className="mt-2 text-2xl font-semibold text-foreground">{counts.active}</p>
+                </div>
+                <div className="w-full max-w-[calc(100vw-32px)] rounded-lg border border-border bg-card p-4 shadow-sm-soft sm:max-w-none">
+                  <p className="text-xs font-medium text-muted-foreground">Ready to share</p>
+                  <p className="mt-2 text-2xl font-semibold text-foreground">{counts.ready}</p>
+                </div>
+              </section>
+
+              <section className="w-full max-w-[calc(100vw-32px)] rounded-lg border border-border bg-card p-4 shadow-sm-soft sm:max-w-none sm:p-5">
+                <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h2 className="text-base font-semibold text-foreground">Recent projects</h2>
+                    <p className="text-sm text-muted-foreground">Pick up the edit, or search by project name.</p>
+                  </div>
+                  {latestProject && (
+                    <Link
+                      href={`/projects/${latestProject.id}/editor`}
+                      className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-border px-3 text-sm font-medium text-foreground transition-colors hover:bg-muted focus-ring"
+                    >
+                      Continue latest
+                      <ArrowRight size={14} strokeWidth={2} aria-hidden />
+                    </Link>
+                  )}
+                </div>
+
+                {loading ? (
+                  <WorkspaceSkeleton />
+                ) : filteredProjects.length > 0 ? (
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                    {filteredProjects.slice(0, 9).map((project) => (
+                      <ProjectTile key={project.id} project={project} />
                     ))}
                   </div>
-                  {/* Section mark */}
-                  <div className="absolute top-1 bottom-1" style={{ left: '25%', width: '30%', backgroundColor: 'rgba(59,130,246,0.25)', border: '1.5px solid #3b82f6', borderRadius: 3 }}>
-                    <span className="absolute inset-0 flex items-center justify-center text-[7px] font-bold text-blue-700">Intro</span>
+                ) : (
+                  <div className="flex min-h-[240px] flex-col items-center justify-center rounded-lg border border-dashed border-border bg-muted/25 px-5 py-10 text-center">
+                    <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                      <Clapperboard size={22} strokeWidth={1.8} aria-hidden />
+                    </div>
+                    <h3 className="text-sm font-semibold text-foreground">
+                      {query.trim() ? 'No matching projects' : 'Start with a blank studio'}
+                    </h3>
+                    <p className="mt-2 max-w-md text-sm leading-6 text-muted-foreground">
+                      {query.trim()
+                        ? 'Try a different title or clear the search to see every workspace.'
+                        : 'Create a project, upload clips, and the editor will become your timeline, b-roll, simulation, and share room.'}
+                    </p>
+                    {!query.trim() && (
+                      <button
+                        onClick={() => setCreateOpen(true)}
+                        className="gradient-action mt-5 inline-flex h-10 items-center justify-center gap-2 rounded-lg px-4 text-sm font-semibold shadow-sm transition-all hover:brightness-110 focus-ring"
+                      >
+                        <Plus size={16} strokeWidth={2} aria-hidden />
+                        Create first project
+                      </button>
+                    )}
                   </div>
-                </div>
-                {/* Clip divider badge */}
-                <div className="relative" style={{ width: 2, backgroundColor: '#6366f1', height: 40 }}>
-                  <div style={{ position: 'absolute', top: 3, left: 3, fontSize: 7, fontWeight: 700, color: '#6366f1', backgroundColor: '#eef2ff', border: '1px solid #c7d2fe', borderRadius: 2, padding: '0 2px' }}>2</div>
-                </div>
-                {/* Clip 2 */}
-                <div className="flex-[2] relative" style={{ height: 40, backgroundColor: '#f0f7ff' }}>
-                  <div className="absolute inset-0 flex" style={{ opacity: 0.4 }}>
-                    {[...Array(5)].map((_, i) => (
-                      <div key={i} className="flex-1 border-r border-black/5" style={{ backgroundImage: 'linear-gradient(180deg, #a5b4fc 0%, #818cf8 100%)' }} />
-                    ))}
-                  </div>
-                  {/* Sim section */}
-                  <div className="absolute top-1 bottom-1" style={{ left: '20%', width: '40%', backgroundColor: 'rgba(245,158,11,0.25)', border: '1.5px solid #f59e0b', borderRadius: 3 }}>
-                    <span className="absolute inset-0 flex items-center justify-center text-[7px] font-bold text-amber-700">Sim</span>
-                  </div>
-                </div>
-                {/* Playhead */}
-                <div className="absolute" style={{ left: 'calc(80px + 45%)', top: 0, bottom: 0, width: 2, backgroundColor: '#ef4444', opacity: 0.9, height: 40 }} />
-              </div>
-              {/* Audio track */}
-              <div className="flex gap-0 mt-0">
-                <div className="w-20 shrink-0 border-r border-border/40 flex items-center px-2" style={{ height: 16, backgroundColor: '#f0fdf4' }}>
-                  <span className="text-[8px] font-bold text-emerald-400/60 uppercase">A1</span>
-                </div>
-                <div className="flex-1" style={{ height: 16, backgroundColor: '#f0fdf4' }}>
-                  <svg className="w-full h-full" viewBox="0 0 200 16" preserveAspectRatio="none">
-                    {[...Array(100)].map((_, i) => {
-                      const h = 1 + Math.abs(Math.sin(i * 0.4 + 1) * Math.sin(i * 0.1)) * 5;
-                      return <line key={i} x1={i * 2 + 1} y1={8 - h} x2={i * 2 + 1} y2={8 + h} stroke="#10b981" strokeWidth="1" strokeOpacity="0.5" />;
-                    })}
-                  </svg>
-                </div>
-              </div>
+                )}
+              </section>
             </div>
+
+            <aside className="min-w-0 space-y-5">
+              <section className="w-full max-w-[calc(100vw-32px)] overflow-hidden rounded-lg border border-border bg-card shadow-sm-soft sm:max-w-none">
+                <div className="border-b border-border p-4">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                      <MonitorPlay size={20} strokeWidth={1.8} aria-hidden />
+                    </div>
+                    <div>
+                      <h2 className="text-sm font-semibold text-foreground">Studio flow</h2>
+                      <p className="text-xs text-muted-foreground">The shortest path to a watchable interactive cut.</p>
+                    </div>
+                  </div>
+                </div>
+                <div className="divide-y divide-border">
+                  {WORKFLOW.map((step, index) => {
+                    const Icon = step.icon;
+                    return (
+                      <div key={step.label} className="flex items-center gap-3 p-4">
+                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-muted text-xs font-semibold text-muted-foreground">
+                          {index + 1}
+                        </div>
+                        <Icon className={step.tone} size={17} strokeWidth={1.9} aria-hidden />
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-foreground">{step.label}</p>
+                          <p className="truncate text-xs text-muted-foreground">{step.note}</p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+
+              <section className="w-full max-w-[calc(100vw-32px)] rounded-lg border border-border bg-card p-4 shadow-sm-soft sm:max-w-none">
+                <div className="mb-4 flex items-center gap-2">
+                  <Sparkles size={17} strokeWidth={1.8} className="text-primary" aria-hidden />
+                  <h2 className="text-sm font-semibold text-foreground">Start faster</h2>
+                </div>
+                <div className="grid gap-2">
+                  {TEMPLATE_STARTERS.map((starter) => (
+                    <button
+                      key={starter}
+                      onClick={() => setCreateOpen(true)}
+                      className="flex h-10 items-center justify-between rounded-lg border border-border bg-background px-3 text-left text-sm text-foreground transition-colors hover:border-primary/35 hover:bg-primary/5 focus-ring"
+                    >
+                      <span>{starter}</span>
+                      <ArrowRight size={14} strokeWidth={2} className="text-muted-foreground" aria-hidden />
+                    </button>
+                  ))}
+                </div>
+              </section>
+
+              <section className="w-full max-w-[calc(100vw-32px)] rounded-lg border border-border bg-card p-4 shadow-sm-soft sm:max-w-none">
+                <div className="mb-4 flex items-center gap-2">
+                  <CheckCircle2 size={17} strokeWidth={1.9} className="text-emerald-500" aria-hidden />
+                  <h2 className="text-sm font-semibold text-foreground">Production checks</h2>
+                </div>
+                <div className="space-y-3">
+                  {[
+                    ['Timeline', 'Clips and sections arranged'],
+                    ['B-roll', 'Generated or selected cutaways'],
+                    ['Watch link', 'Share preview ready'],
+                  ].map(([label, value]) => (
+                    <div key={label} className="flex items-center justify-between gap-3 rounded-lg bg-muted/40 px-3 py-2">
+                      <span className="text-xs font-medium text-muted-foreground">{label}</span>
+                      <span className="truncate text-right text-xs font-semibold text-foreground">{value}</span>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            </aside>
           </div>
-          <p className="text-center text-[10px] text-muted-foreground/50 mt-2">Interactive timeline — drag clips, flag sections, scrub to any point</p>
         </div>
       </section>
 

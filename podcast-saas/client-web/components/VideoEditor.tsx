@@ -10,6 +10,7 @@ import { TimelinePanel } from './TimelinePanel';
 import { VideoUploader } from './VideoUploader';
 import { SimulationUploader } from './SimulationUploader';
 import { BrollPanel } from './BrollPanel';
+import { ConfirmDialog } from './ConfirmDialog';
 import type { VideoFile, TimelineSection, Simulation, VideoGenerationJob } from 'shared/src/generated/client-v1';
 
 type ToolMode = 'video' | 'simulation' | 'broll';
@@ -63,7 +64,10 @@ export function VideoEditor({ projectId }: Props) {
   const [showUploader, setShowUploader] = useState(false);
   const [showSimUploader, setShowSimUploader] = useState(false);
   const [deletingSimId, setDeletingSimId] = useState<string | null>(null);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deletingId,    setDeletingId]    = useState<string | null>(null);
+  // Confirm dialogs
+  const [confirmVideo, setConfirmVideo] = useState<string | null>(null);  // videoId to delete
+  const [confirmSim,   setConfirmSim]   = useState<string | null>(null);  // simId to delete
   const [hlsUrls, setHlsUrls] = useState<Record<string, string>>({});
   const [rawUrls, setRawUrls] = useState<Record<string, string>>({});
   const [tierProgress, setTierProgress] = useState<Record<string, { currentTier: string | null; is360pReady: boolean }>>({});
@@ -77,6 +81,7 @@ export function VideoEditor({ projectId }: Props) {
   const playerRef = useRef<VideoPlayerHandle>(null);
   const playerContainerRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+
 
   const loadData = useCallback(async () => {
     try {
@@ -119,6 +124,7 @@ export function VideoEditor({ projectId }: Props) {
   useEffect(() => {
     if (!authLoading) loadData();
   }, [authLoading, loadData]);
+
 
   // Poll HLS status for pending/processing videos
   const pendingVideoIds = videos
@@ -179,7 +185,12 @@ export function VideoEditor({ projectId }: Props) {
     if (job.status === 'ready') loadData();
   }, [loadData]);
 
-  const handleDeleteSim = async (simId: string) => {
+  const handleDeleteSim = (simId: string) => setConfirmSim(simId);
+
+  const confirmDeleteSim = async () => {
+    if (!confirmSim) return;
+    const simId = confirmSim;
+    setConfirmSim(null);
     setDeletingSimId(simId);
     try {
       await api.deleteSimulation(projectId, simId);
@@ -189,13 +200,19 @@ export function VideoEditor({ projectId }: Props) {
     }
   };
 
-  const handleDeleteVideo = async (e: React.MouseEvent, videoId: string) => {
+  const handleDeleteVideo = (e: React.MouseEvent, videoId: string) => {
     e.stopPropagation();
+    setConfirmVideo(videoId);
+  };
+
+  const confirmDeleteVideo = async () => {
+    if (!confirmVideo) return;
+    const videoId = confirmVideo;
+    setConfirmVideo(null);
     setDeletingId(videoId);
     try {
       await api.deleteVideo(projectId, videoId);
-      const remaining = videos.filter(v => v.id !== videoId);
-      setVideos(remaining);
+      setVideos(v => v.filter(vid => vid.id !== videoId));
       setSections(s => s.filter(sec => sec.video_file_id !== videoId));
     } catch { /* ignore */ } finally {
       setDeletingId(null);
@@ -292,6 +309,7 @@ export function VideoEditor({ projectId }: Props) {
   const tlHeight = hasBroll ? 164 : 110;
 
   return (
+    <>
     <div className="h-full flex flex-col bg-background overflow-hidden">
       {/* Upload panel (collapsible) */}
       {showUploader && (
@@ -310,11 +328,11 @@ export function VideoEditor({ projectId }: Props) {
       {/* Main split: player top, timeline bottom */}
       <div className="flex-1 flex flex-col min-h-0">
         {/* Player + sidebar row */}
-        <div className="flex-1 min-h-0 flex gap-4 p-4">
+        <div className="flex-1 min-h-0 flex flex-col gap-3 p-3 lg:flex-row lg:gap-4 lg:p-4">
           {/* Player area */}
           <div
             ref={playerContainerRef}
-            className="min-w-0 flex-1 min-h-0 flex flex-col relative"
+            className="min-w-0 flex-1 min-h-[280px] lg:min-h-0 flex flex-col relative"
             style={isFullscreen ? { backgroundColor: '#000', justifyContent: 'center' } : undefined}
           >
             {hasAnyVideo ? (
@@ -329,7 +347,7 @@ export function VideoEditor({ projectId }: Props) {
                 brollHlsUrl={brollHlsUrl}
               />
             ) : (
-              <div className="flex-1 flex flex-col items-center justify-center bg-black/5 rounded-xl border border-dashed border-border gap-3 text-center px-8">
+              <div className="flex-1 flex flex-col items-center justify-center bg-black/[0.03] rounded-lg border border-dashed border-border gap-3 text-center px-8">
                 <svg width="40" height="40" viewBox="0 0 40 40" fill="none" className="text-muted-foreground/30" aria-hidden>
                   <rect x="4" y="8" width="32" height="24" rx="3" stroke="currentColor" strokeWidth="1.5" />
                   <path d="M16 14l10 6-10 6V14z" fill="currentColor" />
@@ -337,19 +355,20 @@ export function VideoEditor({ projectId }: Props) {
                 <p className="text-sm text-muted-foreground">No videos yet</p>
                 <button
                   onClick={() => setShowUploader(true)}
-                  className="h-7 px-4 rounded-lg bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 transition-colors"
+                  className="h-8 px-4 rounded-lg bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 transition-colors focus-ring"
                 >
                   Upload video
                 </button>
               </div>
             )}
 
+
             {/* Fullscreen toggle */}
             {hasAnyVideo && (
               <button
                 onClick={toggleFullscreen}
                 title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen (F)'}
-                className="absolute top-2 right-2 z-20 w-8 h-8 rounded-lg flex items-center justify-center transition-colors"
+                className="absolute top-2 right-2 z-10 w-8 h-8 rounded-lg flex items-center justify-center transition-colors focus-ring"
                 style={{ backgroundColor: 'rgba(0,0,0,0.45)', color: '#fff' }}
                 onMouseEnter={e => (e.currentTarget.style.backgroundColor = 'rgba(0,0,0,0.7)')}
                 onMouseLeave={e => (e.currentTarget.style.backgroundColor = 'rgba(0,0,0,0.45)')}
@@ -369,7 +388,7 @@ export function VideoEditor({ projectId }: Props) {
 
           {/* Right panel: BrollPanel when marking, otherwise videos + simulations */}
           {toolMode === 'broll' && brollMark ? (
-            <div className="w-72 shrink-0 overflow-y-auto">
+            <div className="w-full lg:w-80 shrink-0 overflow-y-auto fine-scrollbar">
               <BrollPanel
                 projectId={projectId}
                 mark={brollMark}
@@ -385,9 +404,12 @@ export function VideoEditor({ projectId }: Props) {
               />
             </div>
           ) : (
-            <div className="w-72 shrink-0 flex flex-col gap-2 overflow-y-auto">
-              <div className="flex items-center justify-between px-1">
-                <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Videos</p>
+            <div className="w-full lg:w-80 shrink-0 flex flex-col gap-2 overflow-y-auto surface-panel rounded-lg px-3 py-3 fine-scrollbar">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-0.5 h-3 rounded-full bg-primary/70" />
+                  <p className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60">Videos</p>
+                </div>
                 <div className="flex items-center gap-1.5">
                   <span className="text-[10px] text-muted-foreground">
                     {videos.length} clip{videos.length !== 1 ? 's' : ''} · {sections.length} section{sections.length !== 1 ? 's' : ''}
@@ -395,7 +417,7 @@ export function VideoEditor({ projectId }: Props) {
                   <button
                     onClick={() => setShowUploader(v => !v)}
                     title="Add video"
-                    className="w-5 h-5 rounded flex items-center justify-center bg-primary text-primary-foreground hover:bg-primary/90 transition-colors shadow-sm"
+                    className="w-6 h-6 rounded-md flex items-center justify-center bg-primary text-primary-foreground hover:bg-primary/90 transition-colors shadow-sm focus-ring"
                   >
                     <svg width="9" height="9" viewBox="0 0 9 9" fill="none" aria-hidden>
                       <path d="M4.5 1v7M1 4.5h7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
@@ -404,17 +426,17 @@ export function VideoEditor({ projectId }: Props) {
                 </div>
               </div>
               {videos.length === 0 ? (
-                <button onClick={() => setShowUploader(true)} className="text-xs text-primary hover:underline text-left px-1">
-                  + Upload first video
+                  <button onClick={() => setShowUploader(true)} className="rounded-lg border border-dashed border-border bg-muted/30 px-3 py-4 text-left text-xs font-medium text-primary hover:bg-muted/50 transition-colors focus-ring">
+                  Upload first video
                 </button>
               ) : (
                 videos.map(v => (
                   <div
                     key={v.id}
-                    className={`relative rounded-xl border transition-all ${
+                    className={`relative rounded-xl border transition-all card-interactive ${
                       activeVideoId === v.id
-                        ? 'border-primary bg-primary/5 shadow-sm'
-                        : 'border-border bg-card hover:border-primary/30'
+                        ? 'border-primary/40 bg-primary/5 shadow-sm-soft'
+                        : 'border-border/60 bg-white/90 hover:border-primary/30'
                     }`}
                   >
                     <div className="w-full text-left px-3 py-2.5 pr-8">
@@ -455,13 +477,16 @@ export function VideoEditor({ projectId }: Props) {
               )}
 
               {/* Simulations section */}
-              <div className="mt-3 flex flex-col gap-2">
-                <div className="flex items-center justify-between px-1">
-                  <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Simulations</p>
+              <div className="mt-3 flex flex-col gap-2 pt-3 border-t border-border/40">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="w-0.5 h-3 rounded-full bg-amber-400/80" />
+                    <p className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60">Simulations</p>
+                  </div>
                   <button
                     onClick={() => setShowSimUploader(v => !v)}
                     title="Upload simulation"
-                    className="w-5 h-5 rounded flex items-center justify-center bg-amber-500 text-white hover:bg-amber-400 transition-colors shadow-sm"
+                    className="w-6 h-6 rounded-md flex items-center justify-center bg-amber-500 text-white hover:bg-amber-400 transition-colors shadow-sm focus-ring"
                   >
                     <svg width="9" height="9" viewBox="0 0 9 9" fill="none" aria-hidden>
                       <path d="M4.5 1v7M1 4.5h7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
@@ -480,14 +505,14 @@ export function VideoEditor({ projectId }: Props) {
                 )}
 
                 {simulations.length === 0 && !showSimUploader ? (
-                  <button onClick={() => setShowSimUploader(true)} className="text-xs text-amber-500 hover:underline text-left px-1">
-                    + Upload first simulation
+                  <button onClick={() => setShowSimUploader(true)} className="rounded-lg border border-dashed border-amber-200 bg-amber-50/60 px-3 py-4 text-left text-xs font-medium text-amber-600 hover:bg-amber-50 transition-colors focus-ring">
+                    Upload first simulation
                   </button>
                 ) : (
                   simulations.map(sim => (
                     <div
                       key={sim.id}
-                      className="relative rounded-xl border border-border bg-card hover:border-amber-400/40 transition-all"
+                      className="relative rounded-xl border border-border/60 bg-white/90 hover:border-amber-400/50 transition-all card-interactive"
                     >
                       <div className="w-full text-left px-3 py-2.5 pr-8">
                         <p className="text-xs font-medium text-foreground truncate">{sim.name}</p>
@@ -529,7 +554,7 @@ export function VideoEditor({ projectId }: Props) {
         </div>
 
         {/* Timeline */}
-        <div className="shrink-0 border-t border-border" style={{ height: tlHeight }}>
+        <div className="shrink-0 border-t border-border bg-white/70" style={{ height: tlHeight }}>
           <TimelinePanel
             projectId={projectId}
             videos={videos}
@@ -548,5 +573,26 @@ export function VideoEditor({ projectId }: Props) {
         </div>
       </div>
     </div>
+
+    {/* ── Confirm dialogs ───────────────────────────────────────────── */}
+    {confirmVideo && (
+      <ConfirmDialog
+        title="Delete video clip?"
+        description="This will permanently delete the video and all timeline sections that reference it. This cannot be undone."
+        confirmLabel="Delete video"
+        onConfirm={confirmDeleteVideo}
+        onCancel={() => setConfirmVideo(null)}
+      />
+    )}
+    {confirmSim && (
+      <ConfirmDialog
+        title="Delete simulation?"
+        description="This will permanently delete the simulation and all bridge scripts generated for it. This cannot be undone."
+        confirmLabel="Delete simulation"
+        onConfirm={confirmDeleteSim}
+        onCancel={() => setConfirmSim(null)}
+      />
+    )}
+    </>
   );
 }

@@ -27,6 +27,7 @@ import { firebaseAuthMiddleware } from './middleware/firebase-auth.js';
 // Phase 2+ stub routes
 import { registerPhase2StubRoutes } from './controllers/stubs.js';
 import { registerPlayerRoutes } from './controllers/v1/player.controller.js';
+import { registerShareRoutes }  from './controllers/v1/share.controller.js';
 import { registerSimulationsRoutes } from './controllers/v1/simulations.controller.js';
 import { registerBrollRoutes } from './controllers/v1/broll.controller.js';
 
@@ -323,6 +324,7 @@ async function build() {
   await registerAdminPipelineStatsRoutes(app);
 
   await registerPlayerRoutes(app);
+  await registerShareRoutes(app);
 
   // Phase 2+ stubs (return 501 Not Implemented)
   await registerPhase2StubRoutes(app);

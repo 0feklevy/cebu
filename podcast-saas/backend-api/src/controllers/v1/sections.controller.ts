@@ -140,9 +140,11 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
         return reply.code(400).send({ message: 'start_sec must be less than end_sec' });
       }
 
-      // When simulation_id is provided, denormalize entry_file → simulation_url
+      // When simulation_id is provided AND changed, denormalize entry_file → simulation_url.
+      // If simulation_id is unchanged, leave simulation_url alone — this preserves the
+      // generated bridge URL (section_id.html?v=hash) set by the SSE generation endpoint.
       let resolvedSimUrl: string | null | undefined = rest.simulation_url;
-      if (simulation_id !== undefined) {
+      if (simulation_id !== undefined && simulation_id !== existing.simulation_id) {
         if (simulation_id) {
           const sim = await db.query.simulations.findFirst({ where: eq(simulations.id, simulation_id) });
           resolvedSimUrl = resolveSimEntryUrl(sim?.entry_file ?? null);
@@ -224,6 +226,10 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       const autoScript = request.query.auto_script  !== 'false';
 
       // ── All validation done — switch to SSE mode ──────────────────────────────
+      // Must set CORS header manually — reply.raw bypasses the @fastify/cors plugin
+      const origin = request.headers.origin;
+      reply.raw.setHeader('Access-Control-Allow-Origin', origin ?? '*');
+      reply.raw.setHeader('Access-Control-Allow-Credentials', 'true');
       reply.raw.setHeader('Content-Type', 'text/event-stream');
       reply.raw.setHeader('Cache-Control', 'no-cache');
       reply.raw.setHeader('Connection', 'keep-alive');

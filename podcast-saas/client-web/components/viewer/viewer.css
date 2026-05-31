@@ -47,7 +47,7 @@
   transition: width .1s linear;
 }
 .viewer-progress-buf  { background: rgba(255,255,255,.22); width: 0; }
-.viewer-progress-fill { background: #4f9eff; width: 0; z-index: 1; }
+.viewer-progress-fill { background: #3b82f6; width: 0; z-index: 1; }
 
 .viewer-progress-thumb {
   position: absolute;
@@ -149,11 +149,12 @@
   max-width: 260px;
   transition: background .2s, color .2s;
 }
-.viewer-mode-badge.sim  { background: rgba(79,158,255,.2);  color: #4f9eff; }
-.viewer-mode-badge.free { background: rgba(255,159,67,.2);  color: #ff9f43; }
+.viewer-mode-badge.sim  { background: rgba(245,158,11,.18); color: #d97706; }
+.viewer-mode-badge.free { background: rgba(107,114,128,.18); color: #6b7280; }
 
 /* ── Simulation overlay ───────────────────────────────── */
 .sim-overlay {
+  backdrop-filter: blur(2px);
   position: absolute;
   inset: 0;
   z-index: 20;
@@ -180,7 +181,7 @@
   right: 16px;
   z-index: 35;
   padding: 10px 22px;
-  background: #ff9f43;
+  background: linear-gradient(135deg,#3b82f6,#6366f1);
   color: #000;
   border: none;
   border-radius: 8px;

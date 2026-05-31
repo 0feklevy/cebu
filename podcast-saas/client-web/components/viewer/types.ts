@@ -7,6 +7,8 @@ export interface SimulationOverlay {
   simulation_url: string | null;
   simulation_id:  string | null;
   sim_script:     string | null;
+  simple_ui:      boolean | null;
+  auto_script:    boolean | null;
   label:          string | null;
   type:           string;
 }

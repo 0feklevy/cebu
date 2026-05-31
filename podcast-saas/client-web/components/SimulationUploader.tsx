@@ -95,7 +95,7 @@ export function SimulationUploader({ projectId, onUploaded }: Props) {
         value={name}
         onChange={e => setName(e.target.value)}
         disabled={uploading}
-        className="w-full h-8 px-3 rounded-lg border border-border bg-background text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-amber-400 disabled:opacity-50"
+        className="w-full h-8 px-3 rounded-lg border border-border bg-white text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-400/20 disabled:opacity-50"
       />
 
       {/* Drop zone */}
@@ -104,10 +104,10 @@ export function SimulationUploader({ projectId, onUploaded }: Props) {
         onDragLeave={() => setDragging(false)}
         onDrop={(e) => { e.preventDefault(); setDragging(false); handleFiles(e.dataTransfer.files); }}
         onClick={() => !uploading && inputRef.current?.click()}
-        className={`border-2 border-dashed rounded-xl px-6 py-7 text-center transition-colors ${
+        className={`rounded-lg border-2 border-dashed px-6 py-7 text-center transition-colors ${
           uploading ? 'opacity-50 cursor-not-allowed border-border' :
-          dragging   ? 'border-amber-400 bg-amber-50/10 cursor-pointer'
-                     : 'border-border hover:border-amber-400/50 hover:bg-muted/30 cursor-pointer'
+          dragging   ? 'border-amber-400 bg-amber-50 cursor-pointer'
+                     : 'border-border bg-white/70 hover:border-amber-400/50 hover:bg-muted/30 cursor-pointer'
         }`}
       >
         <svg width="28" height="28" viewBox="0 0 28 28" fill="none" className="mx-auto mb-2 text-amber-400/70" aria-hidden>
@@ -128,7 +128,7 @@ export function SimulationUploader({ projectId, onUploaded }: Props) {
 
       {/* Progress */}
       {(uploading || done || error) && (
-        <div className="bg-muted/40 rounded-lg px-3 py-2.5">
+        <div className="rounded-lg border border-border/70 bg-white px-3 py-2.5 shadow-sm-soft">
           <div className="flex items-center justify-between mb-1.5">
             <span className="text-xs font-medium text-foreground">Uploading…</span>
             <span className="text-[10px] text-muted-foreground shrink-0 ml-2">
