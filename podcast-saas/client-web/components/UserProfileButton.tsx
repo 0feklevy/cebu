@@ -28,9 +28,9 @@ export function UserProfileButton({ showLabel = false }: Props) {
       <>
       <button
         onClick={() => signInWithGoogle()}
-        className="h-8 px-3 rounded-lg border border-border bg-card text-sm font-medium text-foreground shadow-sm hover:bg-muted transition-colors inline-flex items-center gap-1.5 focus-ring"
+        className={`${showLabel ? 'h-10 w-full justify-center px-3' : 'h-8 px-3'} inline-flex items-center gap-1.5 rounded-lg border border-border bg-card text-sm font-medium text-foreground shadow-sm transition-colors hover:bg-muted focus-ring`}
       >
-        <LogIn size={14} strokeWidth={1.8} aria-hidden />
+        <LogIn size={showLabel ? 16 : 14} strokeWidth={1.8} aria-hidden />
         Sign in
       </button>
       <UserSettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
@@ -49,13 +49,13 @@ export function UserProfileButton({ showLabel = false }: Props) {
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex h-8 items-center gap-2 rounded-full border border-border bg-card pl-1 pr-2 text-foreground shadow-sm transition-colors hover:bg-muted focus-ring"
+        className={`${showLabel ? 'h-10 w-full rounded-lg pl-1.5 pr-3' : 'h-8 rounded-full pl-1 pr-2'} flex items-center gap-2 border border-border bg-card text-foreground shadow-sm transition-colors hover:bg-muted focus-ring`}
         title={user.displayName || user.email || 'Account'}
       >
-        <div className="w-6 h-6 rounded-full text-white text-[10px] font-bold flex items-center justify-center shrink-0" style={{ background: 'linear-gradient(135deg,#a855f7,#6366f1)' }}>
+        <div className={`${showLabel ? 'h-7 w-7 text-xs' : 'h-6 w-6 text-[10px]'} flex shrink-0 items-center justify-center rounded-full font-bold text-white`} style={{ background: 'linear-gradient(135deg,#a855f7,#6366f1)' }}>
           {initials}
         </div>
-        {showLabel && <span className="hidden max-w-[120px] truncate text-sm text-foreground sm:block">
+        {showLabel && <span className="block min-w-0 flex-1 truncate text-left text-sm font-medium text-foreground">
           {user.displayName ?? user.email}
         </span>}
         <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden className="text-muted-foreground">
@@ -64,8 +64,8 @@ export function UserProfileButton({ showLabel = false }: Props) {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-10 z-[1000] w-64 rounded-lg border border-border bg-popover shadow-dropdown py-1.5">
-          <div className="px-3 py-2 border-b border-border mb-1">
+        <div className="floating-panel absolute right-0 top-11 z-[1000] w-72 overflow-hidden rounded-xl py-1.5">
+          <div className="mb-1 border-b border-border bg-muted/45 px-3 py-3">
             <p className="text-sm font-medium text-foreground truncate">{user.displayName ?? 'User'}</p>
             <p className="text-xs text-muted-foreground truncate">{user.email}</p>
           </div>

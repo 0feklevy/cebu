@@ -6,9 +6,8 @@
   "main": "./dist/server.js",
   "scripts": {
     "dev": "tsx watch --env-file=../.env src/server.ts",
-    "build": "tsc && tsoa spec && tsoa routes",
+    "build": "tsc",
     "start": "node dist/server.js",
-    "generate": "tsoa spec && tsoa routes",
     "db:migrate": "tsx --env-file=../.env src/db/migrate.ts",
     "db:check": "tsx --env-file=../.env src/scripts/check-db.ts",
     "db:studio": "drizzle-kit studio",

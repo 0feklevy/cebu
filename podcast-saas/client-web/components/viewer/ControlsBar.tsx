@@ -70,7 +70,7 @@ export function ControlsBar({
             ))}
           </div>
 
-          {/* Simulation markers — blue protrude (reference style) */}
+          {/* Simulation markers */}
           <div className="viewer-seg-markers">
             {simMarkers.map((s) => (
               <div
@@ -80,7 +80,7 @@ export function ControlsBar({
                   left:  `${(s.globalStart / tot) * 100}%`,
                   width: `${((s.globalEnd - s.globalStart) / tot) * 100}%`,
                 }}
-                title={s.label ?? 'Simulation'}
+                title={s.label?.trim() || 'Simulation'}
               />
             ))}
           </div>

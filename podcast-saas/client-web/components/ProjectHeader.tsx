@@ -184,9 +184,9 @@ export function ProjectHeader({ projectId }: Props) {
         {shareOpen && shareToken && shareUrl && canPortal && createPortal(
           <div
             ref={sheetRef}
-            className="fixed right-3 top-[58px] z-[10000] w-[min(380px,calc(100vw-24px))] overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-modal sm:right-4"
+            className="floating-panel fixed right-3 top-[58px] z-[10000] w-[min(400px,calc(100vw-24px))] overflow-hidden rounded-xl sm:right-4"
           >
-            <div className="flex items-start justify-between gap-3 border-b border-border bg-muted/50 px-4 py-3">
+            <div className="flex items-start justify-between gap-3 border-b border-border bg-muted px-4 py-3">
               <div className="min-w-0">
                 <div className="mb-1 flex items-center gap-2">
                   <span className="flex h-7 w-7 items-center justify-center rounded-md bg-primary/15 text-primary">
@@ -209,7 +209,7 @@ export function ProjectHeader({ projectId }: Props) {
             </div>
 
             <div className="space-y-3 px-4 py-4">
-              <div className="rounded-lg border border-border bg-muted/40 p-2">
+              <div className="rounded-lg border border-border bg-background p-2 shadow-sm-soft">
                 <div className="flex min-w-0 items-center gap-2">
                   <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-emerald-500/14 text-emerald-500">
                     <Check size={14} strokeWidth={2} aria-hidden />

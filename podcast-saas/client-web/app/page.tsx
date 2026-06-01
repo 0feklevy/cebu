@@ -5,7 +5,7 @@ export default function LandingPage() {
   return (
     <div className="min-h-screen overflow-x-hidden bg-background lg:flex lg:h-screen lg:overflow-hidden">
       <HomeSidebar />
-      <main className="min-w-0 flex-1 overflow-x-hidden lg:overflow-y-auto">
+      <main className="min-w-0 flex-1 overflow-x-hidden lg:overflow-hidden">
         <HomeHero />
       </main>
     </div>

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef, useCallback } from 'react';
-import Link from 'next/link';
+import { HelpCircle, Pencil, Plus, Trash2 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/firebase';
 import { UserProfileButton } from './UserProfileButton';
@@ -88,14 +88,14 @@ function ProjectCard({ project, onRename, onDelete }: ProjectCardProps) {
     >
       <a
         href={`/projects/${project.id}/editor`}
-        className="block px-2 py-2.5 rounded-lg transition-colors shell-hover"
+        className="block rounded-lg px-3 py-3 transition-colors shell-hover"
         style={{ textDecoration: 'none' }}
       >
-        <div className="flex items-start gap-1.5 mb-1 pr-14">
+        <div className="mb-1.5 flex items-start gap-2 pr-[72px]">
           {/* Status dot */}
           <span
             className="mt-0.5 shrink-0 inline-block rounded-full"
-            style={{ width: 6, height: 6, backgroundColor: status?.dot ?? '#94a3b8', marginTop: 5 }}
+            style={{ width: 8, height: 8, backgroundColor: status?.dot ?? '#94a3b8', marginTop: 6 }}
           />
           {isEditing ? (
             <input
@@ -108,50 +108,46 @@ function ProjectCard({ project, onRename, onDelete }: ProjectCardProps) {
                 if (e.key === 'Escape') { setIsEditing(false); }
               }}
               onClick={e => e.preventDefault()}
-              className="flex-1 text-xs font-medium rounded border border-violet-400/50 bg-background px-1.5 py-0.5 text-foreground outline-none focus:border-violet-300"
+              className="flex-1 rounded border border-violet-400/50 bg-background px-2 py-1 text-sm font-medium text-foreground outline-none focus:border-violet-300"
               style={{ minWidth: 0 }}
             />
           ) : (
-            <span className="flex-1 text-xs font-medium shell-text line-clamp-1" style={{ opacity: saving ? 0.5 : 1 }}>
+            <span className="flex-1 text-sm font-semibold leading-5 shell-text line-clamp-1" style={{ opacity: saving ? 0.5 : 1 }}>
               {saving ? editValue : projectTitle(project)}
             </span>
           )}
         </div>
-        <p className="text-[10px] shell-muted pl-[14px]">{timeAgo(project.created_at)}</p>
+        <p className="pl-4 text-xs shell-muted">{timeAgo(project.created_at)}</p>
       </a>
 
       {/* Action buttons — visible on hover */}
       <div
-        className="absolute top-1.5 right-1.5 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+        className="absolute right-1.5 top-1.5 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100"
         style={{ pointerEvents: 'auto' }}
       >
         {/* Edit / rename */}
         <button
           onClick={startEdit}
           title="Rename"
-          className="w-5 h-5 rounded flex items-center justify-center shell-muted hover:bg-[var(--shell-hover)] hover:text-[hsl(var(--shell-foreground))] transition-colors"
+          className="flex h-8 w-8 items-center justify-center rounded-lg shell-muted transition-colors hover:bg-[var(--shell-hover)] hover:text-[hsl(var(--shell-foreground))]"
         >
-          <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-            <path d="M7 1.5l1.5 1.5M1 9h1.5L7.5 3.5 6 2 1 7.5V9z" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
+          <Pencil size={15} strokeWidth={1.9} aria-hidden />
         </button>
         {/* Delete */}
         <button
           onClick={handleDelete}
           disabled={deleting}
           title={confirmDelete ? 'Click again to confirm delete' : 'Delete project'}
-          className={`w-5 h-5 rounded flex items-center justify-center transition-colors ${
+          className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${
             confirmDelete
               ? 'bg-red-500 text-white'
               : 'shell-muted hover:text-red-400 hover:bg-red-500/10'
           } disabled:opacity-40`}
         >
           {deleting ? (
-            <span style={{ fontSize: 8 }}>…</span>
+            <span className="text-xs">…</span>
           ) : (
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-              <path d="M1.5 3h7M4 3V1.5h2V3M3 3l.5 5.5h3L7 3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
+            <Trash2 size={15} strokeWidth={1.9} aria-hidden />
           )}
         </button>
       </div>
@@ -160,7 +156,7 @@ function ProjectCard({ project, onRename, onDelete }: ProjectCardProps) {
 }
 
 export function HomeSidebar() {
-  const { loading: authLoading, user, isAnonymous } = useAuth();
+  const { loading: authLoading } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
   const [howItWorksOpen, setHowItWorksOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
@@ -180,45 +176,32 @@ export function HomeSidebar() {
 
   return (
     <>
-      <aside className="z-30 flex h-auto w-full max-w-full shrink-0 flex-col overflow-hidden border-b shell-bg lg:h-full lg:w-[276px] lg:border-b-0 lg:border-r">
-        {/* Logo */}
-        <div className="shrink-0 px-4 py-3 lg:pt-5 lg:pb-3 flex items-center justify-between">
-          <Link href="/" className="min-w-0 flex flex-col gap-1">
-            <span className="max-w-[210px] truncate text-[11px] font-medium shell-muted">
-              {authLoading ? 'Loading account...' : user && !isAnonymous ? user.email : 'Guest workspace'}
-            </span>
-            <span className="flex items-center gap-2">
-              <span className="w-7 h-7 rounded-lg flex items-center justify-center shadow-sm gradient-action">
-                <svg width="14" height="10" viewBox="0 0 14 10" fill="none" aria-hidden>
-                  <ellipse cx="5" cy="5" rx="4" ry="4" fill="white" fillOpacity="0.9" />
-                  <ellipse cx="11" cy="5" rx="2.5" ry="2.5" fill="white" fillOpacity="0.5" />
-                </svg>
-              </span>
-              <span className="font-semibold tracking-tight text-sm shell-text">Podcast Studio</span>
-            </span>
-          </Link>
+      <aside className="z-30 flex h-auto w-full max-w-full shrink-0 flex-col overflow-hidden border-b shell-bg lg:h-full lg:w-[320px] lg:border-b-0 lg:border-r">
+        {/* Account */}
+        <div className="shrink-0 px-4 py-4">
+          <UserProfileButton showLabel />
         </div>
 
-        <div className="shrink-0 px-4 pb-3">
+        <div className="shrink-0 px-4 pb-4">
           <button
             onClick={() => setCreateOpen(true)}
-            className="gradient-action flex h-9 w-full max-w-[calc(100vw-32px)] items-center justify-center gap-2 rounded-lg text-sm font-semibold shadow-sm transition-all hover:brightness-110 active:translate-y-px focus-ring sm:max-w-none"
+            className="gradient-action flex h-11 w-full max-w-[calc(100vw-32px)] items-center justify-center gap-2 rounded-lg text-sm font-semibold shadow-sm transition-all hover:brightness-110 active:translate-y-px focus-ring sm:max-w-none"
           >
-            <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden>
-              <path d="M6.5 2v9M2 6.5h9" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
-            </svg>
+            <Plus size={17} strokeWidth={2} aria-hidden />
             New project
           </button>
         </div>
 
         {/* My Projects */}
         <div className="hidden flex-1 overflow-y-auto px-3 pb-3 fine-scrollbar lg:block">
-          <div className="flex items-center justify-between px-1 mb-2">
-            <p className="text-[10px] font-semibold uppercase tracking-widest shell-muted">
+          <div className="mb-3 flex items-center justify-between px-1">
+            <p className="text-xs font-semibold uppercase tracking-widest shell-muted">
               My Projects
             </p>
             {projects.length > 0 && (
-              <span className="text-[10px] shell-muted">{projects.length}</span>
+              <span className="rounded-full border px-2 py-0.5 text-xs font-semibold shell-muted" style={{ borderColor: 'hsl(var(--shell-border))' }}>
+                {projects.length}
+              </span>
             )}
           </div>
 
@@ -245,7 +228,7 @@ export function HomeSidebar() {
               </button>
             </div>
           ) : (
-            <div className="space-y-0.5">
+            <div className="space-y-1">
               {projects.map(p => (
                 <ProjectCard
                   key={p.id}
@@ -259,31 +242,24 @@ export function HomeSidebar() {
         </div>
 
         {/* Footer */}
-        <div className="hidden shrink-0 border-t px-3 py-3 space-y-1 lg:block" style={{ borderColor: 'hsl(var(--shell-border))' }}>
+        <div className="hidden shrink-0 border-t px-3 py-3 lg:block" style={{ borderColor: 'hsl(var(--shell-border))' }}>
           <button
             onClick={() => setHowItWorksOpen(true)}
-            className="w-full flex items-center gap-2 px-2 py-2 rounded-lg text-sm shell-muted shell-hover transition-colors text-left hover:text-[hsl(var(--shell-foreground))]"
+            className="flex h-10 w-full items-center gap-2 rounded-lg px-3 text-left text-sm font-medium shell-muted transition-colors shell-hover hover:text-[hsl(var(--shell-foreground))]"
           >
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
-              <circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.2" />
-              <path d="M7 6v4M7 4.5v.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-            </svg>
+            <HelpCircle size={16} strokeWidth={1.8} aria-hidden />
             How it works
           </button>
-          <div className="px-1">
-            <UserProfileButton />
-          </div>
         </div>
 
-        <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-t px-3 py-2 lg:hidden" style={{ borderColor: 'hsl(var(--shell-border))' }}>
+        <div className="border-t px-3 py-2 lg:hidden" style={{ borderColor: 'hsl(var(--shell-border))' }}>
           <button
             onClick={() => setHowItWorksOpen(true)}
-            className="h-8 min-w-0 rounded-lg border text-sm font-medium shell-muted shell-hover transition-colors hover:text-[hsl(var(--shell-foreground))]"
+            className="h-9 w-full min-w-0 rounded-lg border text-sm font-medium shell-muted shell-hover transition-colors hover:text-[hsl(var(--shell-foreground))]"
             style={{ borderColor: 'hsl(var(--shell-border))' }}
           >
             How it works
           </button>
-          <UserProfileButton />
         </div>
       </aside>
 

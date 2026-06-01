@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { X } from 'lucide-react';
 import { api } from '../lib/api';
 import type { VideoFile, TimelineSection, VideoGenerationJob } from 'shared/src/generated/client-v1';
 
@@ -152,11 +153,9 @@ export function BrollPanel({ projectId, mark, videos, jobs, onNewJob, onJobUpdat
         </div>
         <button
           onClick={onClose}
-          className="w-6 h-6 rounded flex items-center justify-center shell-muted shell-hover hover:text-[hsl(var(--shell-foreground))] transition-colors focus-ring"
+          className="flex h-8 w-8 items-center justify-center rounded-lg shell-muted transition-colors shell-hover hover:text-[hsl(var(--shell-foreground))] focus-ring"
         >
-          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden>
-            <path d="M2 2l6 6M8 2L2 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-          </svg>
+          <X size={15} strokeWidth={1.9} aria-hidden />
         </button>
       </div>
 

@@ -316,6 +316,8 @@ export class ClientV1Api {
       broll_volume?: number;
       simple_ui?: boolean;
       auto_script?: boolean;
+      clip_source_image_id?: string | null;
+      camera_movement?: string;
     },
   ): Promise<TimelineSection> {
     return this.request(`/api/v1/projects/${projectId}/sections`, { method: 'POST', body });
@@ -324,7 +326,7 @@ export class ClientV1Api {
   updateSection(
     projectId: string,
     sectionId: string,
-    body: Partial<{ start_sec: number; end_sec: number; type: string; label: string | null; notes: string | null; sort_order: number | null; simulation_url: string | null; simulation_id: string | null; sim_script: string | null; global_offset_sec: number | null; clip_source_video_id: string | null; clip_in_sec: number | null; broll_volume: number; simple_ui: boolean; auto_script: boolean }>,
+    body: Partial<{ start_sec: number; end_sec: number; type: string; label: string | null; notes: string | null; sort_order: number | null; simulation_url: string | null; simulation_id: string | null; sim_script: string | null; global_offset_sec: number | null; clip_source_video_id: string | null; clip_in_sec: number | null; broll_volume: number; simple_ui: boolean; auto_script: boolean; clip_source_image_id: string | null; camera_movement: string }>,
   ): Promise<TimelineSection> {
     return this.request(`/api/v1/projects/${projectId}/sections/${sectionId}`, { method: 'PATCH', body });
   }

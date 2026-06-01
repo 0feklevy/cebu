@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import {
   ArrowRight,
-  CheckCircle2,
   Clock3,
   Clapperboard,
   Film,
@@ -13,7 +12,6 @@ import {
   Plus,
   Search,
   Share2,
-  Sparkles,
   Upload,
   Wand2,
 } from 'lucide-react';
@@ -46,13 +44,6 @@ const WORKFLOW = [
   { label: 'Structure', icon: Layers3, tone: 'text-violet-500', note: 'Mark video and sim moments' },
   { label: 'Generate', icon: Wand2, tone: 'text-amber-500', note: 'B-roll and simulations' },
   { label: 'Share', icon: Share2, tone: 'text-emerald-500', note: 'Public watch link' },
-];
-
-const TEMPLATE_STARTERS = [
-  'Product walkthrough',
-  'Lecture breakdown',
-  'Course module',
-  'Interactive demo',
 ];
 
 function projectTitle(project: Project): string {
@@ -174,9 +165,9 @@ export function HomeHero() {
 
   return (
     <>
-      <section className="min-h-full overflow-x-hidden bg-background px-4 py-4 text-foreground sm:px-6 lg:px-8 lg:py-6">
-        <div className="mx-auto flex w-full min-w-0 max-w-7xl flex-col gap-5">
-          <header className="surface-panel w-full max-w-[calc(100vw-32px)] rounded-lg px-4 py-4 sm:max-w-none sm:px-5">
+      <section className="flex min-h-screen overflow-x-hidden bg-background px-4 py-4 text-foreground sm:px-6 lg:h-full lg:min-h-0 lg:overflow-hidden lg:px-8 lg:py-5">
+        <div className="mx-auto flex h-full w-full min-w-0 max-w-7xl flex-col gap-4 lg:min-h-0">
+          <header className="surface-panel w-full max-w-[calc(100vw-32px)] shrink-0 rounded-lg px-4 py-4 sm:max-w-none sm:px-5">
             <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
               <div className="min-w-0">
                 <p className="mb-1 truncate text-xs font-medium text-muted-foreground">{accountLabel}</p>
@@ -211,9 +202,9 @@ export function HomeHero() {
             </div>
           </header>
 
-          <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
-            <div className="min-w-0 space-y-5">
-              <section className="grid gap-3 sm:grid-cols-3">
+          <div className="grid min-h-0 min-w-0 flex-1 gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
+            <div className="flex min-h-0 min-w-0 flex-col gap-4">
+              <section className="grid shrink-0 gap-3 sm:grid-cols-3">
                 <div className="w-full max-w-[calc(100vw-32px)] rounded-lg border border-border bg-card p-4 shadow-sm-soft sm:max-w-none">
                   <p className="text-xs font-medium text-muted-foreground">Projects</p>
                   <p className="mt-2 text-2xl font-semibold text-foreground">{counts.total}</p>
@@ -228,7 +219,7 @@ export function HomeHero() {
                 </div>
               </section>
 
-              <section className="w-full max-w-[calc(100vw-32px)] rounded-lg border border-border bg-card p-4 shadow-sm-soft sm:max-w-none sm:p-5">
+              <section className="flex min-h-0 w-full max-w-[calc(100vw-32px)] flex-1 flex-col rounded-lg border border-border bg-card p-4 shadow-sm-soft sm:max-w-none sm:p-5">
                 <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <div>
                     <h2 className="text-base font-semibold text-foreground">Recent projects</h2>
@@ -245,55 +236,57 @@ export function HomeHero() {
                   )}
                 </div>
 
-                {loading ? (
-                  <WorkspaceSkeleton />
-                ) : filteredProjects.length > 0 ? (
-                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                    {filteredProjects.slice(0, 9).map((project) => (
-                      <ProjectTile key={project.id} project={project} />
-                    ))}
-                  </div>
-                ) : (
-                  <div className="flex min-h-[240px] flex-col items-center justify-center rounded-lg border border-dashed border-border bg-muted/25 px-5 py-10 text-center">
-                    <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                      <Clapperboard size={22} strokeWidth={1.8} aria-hidden />
+                <div className="min-h-0 flex-1 overflow-y-auto pr-1 fine-scrollbar">
+                  {loading ? (
+                    <WorkspaceSkeleton />
+                  ) : filteredProjects.length > 0 ? (
+                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                      {filteredProjects.slice(0, 12).map((project) => (
+                        <ProjectTile key={project.id} project={project} />
+                      ))}
                     </div>
-                    <h3 className="text-sm font-semibold text-foreground">
-                      {query.trim() ? 'No matching projects' : 'Start with a blank studio'}
-                    </h3>
-                    <p className="mt-2 max-w-md text-sm leading-6 text-muted-foreground">
-                      {query.trim()
-                        ? 'Try a different title or clear the search to see every workspace.'
-                        : 'Create a project, upload clips, and the editor will become your timeline, b-roll, simulation, and share room.'}
-                    </p>
-                    {!query.trim() && (
-                      <button
-                        onClick={() => setCreateOpen(true)}
-                        className="gradient-action mt-5 inline-flex h-10 items-center justify-center gap-2 rounded-lg px-4 text-sm font-semibold shadow-sm transition-all hover:brightness-110 focus-ring"
-                      >
-                        <Plus size={16} strokeWidth={2} aria-hidden />
-                        Create first project
-                      </button>
-                    )}
-                  </div>
-                )}
+                  ) : (
+                    <div className="flex min-h-[240px] flex-col items-center justify-center rounded-lg border border-dashed border-border bg-muted/25 px-5 py-10 text-center lg:min-h-full">
+                      <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                        <Clapperboard size={22} strokeWidth={1.8} aria-hidden />
+                      </div>
+                      <h3 className="text-sm font-semibold text-foreground">
+                        {query.trim() ? 'No matching projects' : 'Start with a blank studio'}
+                      </h3>
+                      <p className="mt-2 max-w-md text-sm leading-6 text-muted-foreground">
+                        {query.trim()
+                          ? 'Try a different title or clear the search to see every workspace.'
+                          : 'Create a project, upload clips, and the editor will become your timeline, b-roll, simulation, and share room.'}
+                      </p>
+                      {!query.trim() && (
+                        <button
+                          onClick={() => setCreateOpen(true)}
+                          className="gradient-action mt-5 inline-flex h-10 items-center justify-center gap-2 rounded-lg px-4 text-sm font-semibold shadow-sm transition-all hover:brightness-110 focus-ring"
+                        >
+                          <Plus size={16} strokeWidth={2} aria-hidden />
+                          Create first project
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
               </section>
             </div>
 
-            <aside className="min-w-0 space-y-5">
-              <section className="w-full max-w-[calc(100vw-32px)] overflow-hidden rounded-lg border border-border bg-card shadow-sm-soft sm:max-w-none">
+            <aside className="min-h-0 min-w-0">
+              <section className="flex h-full min-h-0 w-full max-w-[calc(100vw-32px)] flex-col overflow-hidden rounded-lg border border-border bg-card shadow-sm-soft sm:max-w-none">
                 <div className="border-b border-border p-4">
                   <div className="flex items-center gap-3">
                     <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
                       <MonitorPlay size={20} strokeWidth={1.8} aria-hidden />
                     </div>
                     <div>
-                      <h2 className="text-sm font-semibold text-foreground">Studio flow</h2>
-                      <p className="text-xs text-muted-foreground">The shortest path to a watchable interactive cut.</p>
+                      <h2 className="text-sm font-semibold text-foreground">Studio wizard</h2>
+                      <p className="text-xs text-muted-foreground">Move through each step without leaving the workspace.</p>
                     </div>
                   </div>
                 </div>
-                <div className="divide-y divide-border">
+                <div className="min-h-0 flex-1 divide-y divide-border overflow-y-auto fine-scrollbar">
                   {WORKFLOW.map((step, index) => {
                     const Icon = step.icon;
                     return (
@@ -309,44 +302,6 @@ export function HomeHero() {
                       </div>
                     );
                   })}
-                </div>
-              </section>
-
-              <section className="w-full max-w-[calc(100vw-32px)] rounded-lg border border-border bg-card p-4 shadow-sm-soft sm:max-w-none">
-                <div className="mb-4 flex items-center gap-2">
-                  <Sparkles size={17} strokeWidth={1.8} className="text-primary" aria-hidden />
-                  <h2 className="text-sm font-semibold text-foreground">Start faster</h2>
-                </div>
-                <div className="grid gap-2">
-                  {TEMPLATE_STARTERS.map((starter) => (
-                    <button
-                      key={starter}
-                      onClick={() => setCreateOpen(true)}
-                      className="flex h-10 items-center justify-between rounded-lg border border-border bg-background px-3 text-left text-sm text-foreground transition-colors hover:border-primary/35 hover:bg-primary/5 focus-ring"
-                    >
-                      <span>{starter}</span>
-                      <ArrowRight size={14} strokeWidth={2} className="text-muted-foreground" aria-hidden />
-                    </button>
-                  ))}
-                </div>
-              </section>
-
-              <section className="w-full max-w-[calc(100vw-32px)] rounded-lg border border-border bg-card p-4 shadow-sm-soft sm:max-w-none">
-                <div className="mb-4 flex items-center gap-2">
-                  <CheckCircle2 size={17} strokeWidth={1.9} className="text-emerald-500" aria-hidden />
-                  <h2 className="text-sm font-semibold text-foreground">Production checks</h2>
-                </div>
-                <div className="space-y-3">
-                  {[
-                    ['Timeline', 'Clips and sections arranged'],
-                    ['B-roll', 'Generated or selected cutaways'],
-                    ['Watch link', 'Share preview ready'],
-                  ].map(([label, value]) => (
-                    <div key={label} className="flex items-center justify-between gap-3 rounded-lg bg-muted/40 px-3 py-2">
-                      <span className="text-xs font-medium text-muted-foreground">{label}</span>
-                      <span className="truncate text-right text-xs font-semibold text-foreground">{value}</span>
-                    </div>
-                  ))}
                 </div>
               </section>
             </aside>
