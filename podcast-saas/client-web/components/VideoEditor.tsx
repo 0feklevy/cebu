@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { Clapperboard, Maximize2, Minimize2, Plus, Redo2, Trash2, Undo2 } from 'lucide-react';
 import { useAuth } from '../lib/firebase';
 import { api } from '../lib/api';
 import { VideoPlayer } from './VideoPlayer';
@@ -11,7 +12,8 @@ import { VideoUploader } from './VideoUploader';
 import { SimulationUploader } from './SimulationUploader';
 import { BrollPanel } from './BrollPanel';
 import { ConfirmDialog } from './ConfirmDialog';
-import type { VideoFile, TimelineSection, Simulation, VideoGenerationJob } from 'shared/src/generated/client-v1';
+import { ImageCropEditor } from './ImageCropEditor';
+import type { VideoFile, TimelineSection, Simulation, VideoGenerationJob, ImageFile } from 'shared/src/generated/client-v1';
 
 type ToolMode = 'video' | 'simulation' | 'broll';
 
@@ -20,6 +22,73 @@ type HlsTier = typeof HLS_TIERS[number];
 type SectionSnapshot = TimelineSection[];
 
 const HISTORY_LIMIT = 50;
+
+function EditorToolsPanel({
+  toolMode,
+  layersVisible,
+  onToggleAllLayers,
+  onUndo,
+  onRedo,
+  canUndo,
+  canRedo,
+  historyBusy,
+}: {
+  toolMode: ToolMode;
+  layersVisible: boolean;
+  onToggleAllLayers: () => void;
+  onUndo: () => void;
+  onRedo: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
+  historyBusy: boolean;
+}) {
+  const layersActive = layersVisible || toolMode === 'broll';
+
+  return (
+    <div className="surface-panel shrink-0 rounded-lg px-3 py-3">
+      <button
+        type="button"
+        onClick={onToggleAllLayers}
+        className={`flex min-h-11 w-full items-center gap-2 rounded-lg border px-3 py-2 text-left transition-colors focus-ring ${
+          layersActive
+            ? 'border-cyan-400 bg-cyan-50 text-cyan-700'
+            : 'border-border bg-card text-foreground hover:border-cyan-300 hover:bg-cyan-50/60'
+        }`}
+      >
+        <Clapperboard size={18} strokeWidth={1.9} aria-hidden />
+        <span className="min-w-0">
+          <span className="block text-xs font-semibold leading-tight">
+            {layersActive ? 'Hide all layers' : 'Show all layers'}
+          </span>
+          <span className={`block truncate text-[10px] leading-tight ${layersActive ? 'opacity-75' : 'text-muted-foreground'}`}>
+            {layersActive ? 'Hide additional channels' : 'Add a cutaway layer'}
+          </span>
+        </span>
+      </button>
+
+      <div className="mt-3 grid grid-cols-2 gap-2 border-t border-border/60 pt-3">
+        <button
+          type="button"
+          onClick={onUndo}
+          disabled={!canUndo || historyBusy}
+          className="flex h-9 items-center justify-center gap-2 rounded-lg border border-border bg-card px-3 text-xs font-semibold text-foreground transition-colors hover:bg-muted/50 disabled:cursor-not-allowed disabled:opacity-40 focus-ring"
+        >
+          <Undo2 size={15} strokeWidth={1.9} aria-hidden />
+          Undo
+        </button>
+        <button
+          type="button"
+          onClick={onRedo}
+          disabled={!canRedo || historyBusy}
+          className="flex h-9 items-center justify-center gap-2 rounded-lg border border-border bg-card px-3 text-xs font-semibold text-foreground transition-colors hover:bg-muted/50 disabled:cursor-not-allowed disabled:opacity-40 focus-ring"
+        >
+          <Redo2 size={15} strokeWidth={1.9} aria-hidden />
+          Redo
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function cloneSections(sections: TimelineSection[]): SectionSnapshot {
   return sections.map(s => ({ ...s }));
@@ -42,6 +111,8 @@ function sectionPatchBody(s: TimelineSection): Parameters<typeof api.updateSecti
     broll_volume: s.broll_volume,
     simple_ui: s.simple_ui,
     auto_script: s.auto_script,
+    clip_source_image_id: s.clip_source_image_id,
+    camera_movement: s.camera_movement ?? 'zoom_in',
   };
 }
 
@@ -64,6 +135,8 @@ function sectionCreateBody(s: TimelineSection): Parameters<typeof api.createSect
     broll_volume: s.broll_volume,
     simple_ui: s.simple_ui,
     auto_script: s.auto_script,
+    clip_source_image_id: s.clip_source_image_id,
+    camera_movement: s.camera_movement ?? 'zoom_in',
   };
 }
 
@@ -114,11 +187,18 @@ export function VideoEditor({ projectId }: Props) {
   const [undoStack, setUndoStack] = useState<SectionSnapshot[]>([]);
   const [redoStack, setRedoStack] = useState<SectionSnapshot[]>([]);
   const [historyBusy, setHistoryBusy] = useState(false);
+  const [showAllLayers, setShowAllLayers] = useState(false);
   const [playheadSec, setPlayheadSec] = useState(0);
   const [loading, setLoading] = useState(true);
   const [simulations, setSimulations] = useState<Simulation[]>([]);
+  const [images, setImages] = useState<ImageFile[]>([]);
   const [showUploader, setShowUploader] = useState(false);
   const [showSimUploader, setShowSimUploader] = useState(false);
+  const [showImgUploader, setShowImgUploader] = useState(false);
+  const [pendingCropImage, setPendingCropImage] = useState<ImageFile | null>(null);
+  const [imgUploading, setImgUploading] = useState(false);
+  const imgFileInputRef = useRef<HTMLInputElement>(null);
+  const [deletingImgId, setDeletingImgId] = useState<string | null>(null);
   const [deletingSimId, setDeletingSimId] = useState<string | null>(null);
   const [deletingId,    setDeletingId]    = useState<string | null>(null);
   // Confirm dialogs
@@ -141,11 +221,12 @@ export function VideoEditor({ projectId }: Props) {
 
   const loadData = useCallback(async () => {
     try {
-      const [vids, secs, sims, jobs] = await Promise.all([
+      const [vids, secs, sims, jobs, imgs] = await Promise.all([
         api.listVideos(projectId),
         api.listSections(projectId),
         api.listSimulations(projectId),
         api.listBrollJobs(projectId),
+        api.listImages(projectId),
       ]);
       // Separate main videos from AI-generated broll source files
       setVideos(vids.filter(v => !v.is_broll));
@@ -154,6 +235,7 @@ export function VideoEditor({ projectId }: Props) {
       setUndoStack([]);
       setRedoStack([]);
       setSimulations(sims);
+      setImages(imgs);
       // Keep in-progress jobs + recently completed ones (last 10 min) so the user sees the result
       const RECENT_MS = 10 * 60 * 1000;
       const now = Date.now();
@@ -232,7 +314,7 @@ export function VideoEditor({ projectId }: Props) {
 
   // B-roll computed values
   const brollSections = sections.filter(s => s.track === 'broll');
-  const hasBroll = brollSections.length > 0 || toolMode === 'broll';
+  const hasBroll = toolMode === 'broll' || showAllLayers;
 
   const activeBrollSection = brollSections.find(s => {
     const start = s.global_offset_sec ?? 0;
@@ -287,6 +369,15 @@ export function VideoEditor({ projectId }: Props) {
   const handleToolModeChange = useCallback((mode: ToolMode) => {
     setToolMode(mode);
     if (mode !== 'broll') setBrollMark(null);
+  }, []);
+
+  const handleToggleAllLayers = useCallback(() => {
+    setShowAllLayers((visible) => {
+      const next = !visible;
+      setToolMode(next ? 'broll' : 'video');
+      if (!next) setBrollMark(null);
+      return next;
+    });
   }, []);
 
   const handleNewBrollJob = useCallback((job: VideoGenerationJob) => {
@@ -444,6 +535,61 @@ export function VideoEditor({ projectId }: Props) {
     ) ?? null;
   })();
 
+  // Compute active image section for the editor preview overlay
+  const activeImageSection = (() => {
+    const s = sections.find(sec =>
+      sec.type === 'clip' &&
+      !!sec.clip_source_image_id &&
+      playheadSec >= sectionGlobalStart(sec) &&
+      playheadSec < sectionGlobalEnd(sec),
+    ) ?? null;
+    if (!s) return null;
+    const img = images.find(i => i.id === s.clip_source_image_id);
+    if (!img) return null;
+    return {
+      section: s,
+      image: img,
+      globalStart: sectionGlobalStart(s),
+      duration: s.end_sec - s.start_sec,
+    };
+  })();
+
+  // Image upload handler
+  const handleImageFileChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+    setImgUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const uploaded = await api.uploadImage(projectId, fd);
+      setImages(prev => [uploaded, ...prev]);
+      setPendingCropImage(uploaded);
+    } catch { /* ignore */ } finally {
+      setImgUploading(false);
+    }
+  }, [projectId]);
+
+  const handleCropApprove = useCallback(async (crop: { crop_x: number; crop_y: number; crop_w: number; crop_h: number }) => {
+    if (!pendingCropImage) return;
+    try {
+      const updated = await api.patchImageCrop(projectId, pendingCropImage.id, crop);
+      setImages(prev => prev.map(i => i.id === updated.id ? updated : i));
+    } catch { /* ignore */ }
+    setPendingCropImage(null);
+  }, [pendingCropImage, projectId]);
+
+  const handleDeleteImage = useCallback(async (imgId: string) => {
+    setDeletingImgId(imgId);
+    try {
+      await api.deleteImage(projectId, imgId);
+      setImages(prev => prev.filter(i => i.id !== imgId));
+    } catch { /* ignore */ } finally {
+      setDeletingImgId(null);
+    }
+  }, [projectId]);
+
   useEffect(() => {
     const handler = () => setIsFullscreen(!!document.fullscreenElement);
     document.addEventListener('fullscreenchange', handler);
@@ -472,7 +618,7 @@ export function VideoEditor({ projectId }: Props) {
   }
 
   const hasAnyVideo = videos.length > 0;
-  const tlHeight = hasBroll ? 164 : 110;
+  const tlHeight = hasBroll ? 178 : 124;
 
   return (
     <>
@@ -512,6 +658,7 @@ export function VideoEditor({ projectId }: Props) {
                 activeSimSection={activeSimSection}
                 activeBrollSection={activeOverlay ?? null}
                 brollHlsUrl={brollHlsUrl}
+                activeImageSection={activeImageSection}
               />
             ) : (
               <div className="flex-1 flex flex-col items-center justify-center bg-black/[0.03] rounded-lg border border-dashed border-border gap-3 text-center px-8">
@@ -535,19 +682,15 @@ export function VideoEditor({ projectId }: Props) {
               <button
                 onClick={toggleFullscreen}
                 title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen (F)'}
-                className="absolute top-2 right-2 z-10 w-8 h-8 rounded-lg flex items-center justify-center transition-colors focus-ring"
+                className="absolute top-2 right-2 z-10 flex h-10 w-10 items-center justify-center rounded-lg transition-colors focus-ring"
                 style={{ backgroundColor: 'rgba(0,0,0,0.45)', color: '#fff' }}
                 onMouseEnter={e => (e.currentTarget.style.backgroundColor = 'rgba(0,0,0,0.7)')}
                 onMouseLeave={e => (e.currentTarget.style.backgroundColor = 'rgba(0,0,0,0.45)')}
               >
                 {isFullscreen ? (
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
-                    <path d="M5 1v4H1M9 1v4h4M5 13v-4H1M9 13v-4h4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
+                  <Minimize2 size={18} strokeWidth={1.8} aria-hidden />
                 ) : (
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
-                    <path d="M1 5V1h4M9 1h4v4M13 9v4H9M5 13H1V9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
+                  <Maximize2 size={18} strokeWidth={1.8} aria-hidden />
                 )}
               </button>
             )}
@@ -571,35 +714,34 @@ export function VideoEditor({ projectId }: Props) {
               />
             </div>
           ) : (
-            <div className="w-full lg:w-80 shrink-0 flex flex-col gap-2 overflow-y-auto surface-panel rounded-lg px-3 py-3 fine-scrollbar">
-              <div className="pb-2 border-b border-border/40">
-                <h2 className="text-sm font-semibold text-foreground">Library</h2>
-                <p className="mt-0.5 text-[10px] text-muted-foreground">
-                  {videos.length} clip{videos.length !== 1 ? 's' : ''} · {sections.length} section{sections.length !== 1 ? 's' : ''}
-                </p>
-              </div>
-
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="w-0.5 h-3 rounded-full bg-primary/70" />
-                  <p className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60">Videos</p>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] text-muted-foreground">
+            <div className="flex min-h-0 w-full shrink-0 flex-col gap-2 lg:w-80">
+              <div className="surface-panel flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto rounded-lg px-3 py-3 fine-scrollbar">
+                <div className="pb-2 border-b border-border/40">
+                  <h2 className="text-sm font-semibold text-foreground">Library</h2>
+                  <p className="mt-0.5 text-[10px] text-muted-foreground">
                     {videos.length} clip{videos.length !== 1 ? 's' : ''} · {sections.length} section{sections.length !== 1 ? 's' : ''}
-                  </span>
-                  <button
-                    onClick={() => setShowUploader(v => !v)}
-                    title="Add video"
-                    className="w-6 h-6 rounded-md flex items-center justify-center bg-primary text-primary-foreground hover:bg-primary/90 transition-colors shadow-sm focus-ring"
-                  >
-                    <svg width="9" height="9" viewBox="0 0 9 9" fill="none" aria-hidden>
-                      <path d="M4.5 1v7M1 4.5h7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-                    </svg>
-                  </button>
+                  </p>
                 </div>
-              </div>
-              {videos.length === 0 ? (
+
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="w-0.5 h-3 rounded-full bg-primary/70" />
+                    <p className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60">Videos</p>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-muted-foreground">
+                      {videos.length} clip{videos.length !== 1 ? 's' : ''} · {sections.length} section{sections.length !== 1 ? 's' : ''}
+                    </span>
+                    <button
+                      onClick={() => setShowUploader(v => !v)}
+                      title="Add video"
+                      className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-ring"
+                    >
+                      <Plus size={15} strokeWidth={2} aria-hidden />
+                    </button>
+                  </div>
+                </div>
+                {videos.length === 0 ? (
                   <button onClick={() => setShowUploader(true)} className="rounded-lg border border-dashed border-border bg-muted/30 px-3 py-4 text-left text-xs font-medium text-primary hover:bg-muted/50 transition-colors focus-ring">
                   Upload first video
                 </button>
@@ -613,7 +755,7 @@ export function VideoEditor({ projectId }: Props) {
                         : 'border-border/60 bg-white/90 hover:border-primary/30'
                     }`}
                   >
-                    <div className="w-full text-left px-3 py-2.5 pr-8">
+                    <div className="w-full text-left px-3 py-2.5 pr-12">
                       <p className="text-xs font-medium text-foreground truncate">{v.filename}</p>
                       <div className="mt-1 space-y-0.5">
                         <p className="text-[10px] text-muted-foreground">
@@ -636,14 +778,12 @@ export function VideoEditor({ projectId }: Props) {
                       onClick={e => handleDeleteVideo(e, v.id)}
                       disabled={deletingId === v.id}
                       title="Delete video"
-                      className="absolute top-2 right-2 w-5 h-5 rounded flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-40"
+                      className="absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
                     >
                       {deletingId === v.id ? (
-                        <span className="text-[8px]">…</span>
+                        <span className="text-xs">…</span>
                       ) : (
-                        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden>
-                          <path d="M2 2l6 6M8 2L2 8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-                        </svg>
+                        <Trash2 size={14} strokeWidth={1.9} aria-hidden />
                       )}
                     </button>
                   </div>
@@ -660,11 +800,9 @@ export function VideoEditor({ projectId }: Props) {
                   <button
                     onClick={() => setShowSimUploader(v => !v)}
                     title="Upload simulation"
-                    className="w-6 h-6 rounded-md flex items-center justify-center bg-amber-500 text-white hover:bg-amber-400 transition-colors shadow-sm focus-ring"
+                    className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-500 text-white shadow-sm transition-colors hover:bg-amber-400 focus-ring"
                   >
-                    <svg width="9" height="9" viewBox="0 0 9 9" fill="none" aria-hidden>
-                      <path d="M4.5 1v7M1 4.5h7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-                    </svg>
+                    <Plus size={15} strokeWidth={2} aria-hidden />
                   </button>
                 </div>
 
@@ -688,7 +826,7 @@ export function VideoEditor({ projectId }: Props) {
                       key={sim.id}
                       className="relative rounded-xl border border-border/60 bg-white/90 hover:border-amber-400/50 transition-all card-interactive"
                     >
-                      <div className="w-full text-left px-3 py-2.5 pr-8">
+                      <div className="w-full text-left px-3 py-2.5 pr-12">
                         <p className="text-xs font-medium text-foreground truncate">{sim.name}</p>
                         <div className="mt-0.5 flex items-center gap-2">
                           {sim.status === 'ready' ? (
@@ -709,20 +847,123 @@ export function VideoEditor({ projectId }: Props) {
                         onClick={() => handleDeleteSim(sim.id)}
                         disabled={deletingSimId === sim.id}
                         title="Delete simulation"
-                        className="absolute top-2 right-2 w-5 h-5 rounded flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-40"
+                        className="absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
                       >
                         {deletingSimId === sim.id ? (
-                          <span className="text-[8px]">…</span>
+                          <span className="text-xs">…</span>
                         ) : (
-                          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden>
-                            <path d="M2 2l6 6M8 2L2 8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-                          </svg>
+                          <Trash2 size={14} strokeWidth={1.9} aria-hidden />
                         )}
                       </button>
                     </div>
                   ))
                 )}
+                </div>
+
+              {/* Images section */}
+              <div className="mt-3 flex flex-col gap-2 pt-3 border-t border-border/40">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="w-0.5 h-3 rounded-full bg-violet-400/80" />
+                    <p className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60">Images</p>
+                  </div>
+                  <button
+                    onClick={() => imgFileInputRef.current?.click()}
+                    disabled={imgUploading}
+                    title="Upload image"
+                    className="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-500 text-white shadow-sm transition-colors hover:bg-violet-400 focus-ring disabled:opacity-50"
+                  >
+                    {imgUploading ? <span className="text-[9px] animate-pulse">…</span> : <Plus size={15} strokeWidth={2} aria-hidden />}
+                  </button>
+                  <input
+                    ref={imgFileInputRef}
+                    type="file"
+                    accept="image/jpeg,image/jpg,image/png,image/webp,image/gif"
+                    className="hidden"
+                    onChange={handleImageFileChange}
+                  />
+                </div>
+
+                {/* Crop editor modal */}
+                {pendingCropImage && (
+                  <div style={{
+                    border: '1px solid #ddd6fe', borderRadius: 10,
+                    background: '#faf5ff', padding: '12px 12px',
+                  }}>
+                    <p style={{ fontSize: 11, fontWeight: 700, color: '#6d28d9', marginBottom: 8 }}>Crop image to 16:9</p>
+                    <ImageCropEditor
+                      image={pendingCropImage}
+                      onApprove={handleCropApprove}
+                      onCancel={() => setPendingCropImage(null)}
+                    />
+                  </div>
+                )}
+
+                {images.length === 0 && !pendingCropImage ? (
+                  <button
+                    onClick={() => imgFileInputRef.current?.click()}
+                    className="rounded-lg border border-dashed border-violet-200 bg-violet-50/60 px-3 py-4 text-left text-xs font-medium text-violet-600 hover:bg-violet-50 transition-colors focus-ring"
+                  >
+                    Upload first image (PNG, JPEG…)
+                  </button>
+                ) : (
+                  images.map(img => (
+                    <div
+                      key={img.id}
+                      className="relative rounded-xl border border-border/60 bg-white/90 hover:border-violet-400/50 transition-all card-interactive"
+                    >
+                      <div className="flex items-center gap-2 px-3 py-2 pr-10">
+                        {/* Thumbnail */}
+                        <div style={{
+                          width: 40, height: 23, borderRadius: 4, overflow: 'hidden',
+                          background: '#f3f4f6', flexShrink: 0, position: 'relative',
+                        }}>
+                          <img
+                            src={img.original_url}
+                            alt={img.filename}
+                            style={{
+                              position: 'absolute',
+                              width: `${(1 / img.crop_w) * 100}%`,
+                              height: `${(1 / img.crop_h) * 100}%`,
+                              left: `${(-img.crop_x / img.crop_w) * 100}%`,
+                              top: `${(-img.crop_y / img.crop_h) * 100}%`,
+                              objectFit: 'fill',
+                            }}
+                          />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs font-medium text-foreground truncate">{img.filename}</p>
+                          <button
+                            onClick={() => setPendingCropImage(img)}
+                            className="text-[9px] text-violet-500 hover:underline"
+                          >
+                            Edit crop
+                          </button>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => handleDeleteImage(img.id)}
+                        disabled={deletingImgId === img.id}
+                        title="Delete image"
+                        className="absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
+                      >
+                        {deletingImgId === img.id ? <span className="text-xs">…</span> : <Trash2 size={14} strokeWidth={1.9} aria-hidden />}
+                      </button>
+                    </div>
+                  ))
+                )}
               </div>
+              </div>
+              <EditorToolsPanel
+                toolMode={toolMode}
+                layersVisible={showAllLayers}
+                onToggleAllLayers={handleToggleAllLayers}
+                onUndo={handleUndo}
+                onRedo={handleRedo}
+                canUndo={undoStack.length > 0}
+                canRedo={redoStack.length > 0}
+                historyBusy={historyBusy}
+              />
             </div>
           )}
         </div>
@@ -734,19 +975,15 @@ export function VideoEditor({ projectId }: Props) {
             videos={videos}
             sections={sections}
             simulations={simulations}
+            images={images}
             playheadSec={playheadSec}
             activeVideoId={activeVideoId}
             videoUrls={rawUrls}
             onSeek={handleTimelineSeek}
             onSectionsChange={commitSections}
             onAddVideo={() => setShowUploader(true)}
-            onUndo={handleUndo}
-            onRedo={handleRedo}
-            canUndo={undoStack.length > 0}
-            canRedo={redoStack.length > 0}
-            historyBusy={historyBusy}
             toolMode={toolMode}
-            onToolModeChange={handleToolModeChange}
+            showAllLayers={showAllLayers}
             onBrollMarkComplete={setBrollMark}
           />
         </div>

@@ -43,12 +43,26 @@ export interface ClipOverlay {
   broll_volume: number;
 }
 
+export interface ImageOverlayItem {
+  id: string;
+  image_url: string;
+  global_offset_sec: number;  // absolute start on main timeline
+  duration_sec: number;
+  camera_movement: string;    // 'zoom_in' | 'zoom_out' | 'pan_right' | 'pan_left' | 'dolly_in' | 'drift'
+  crop_x: number;             // 0–1 fraction of original image
+  crop_y: number;
+  crop_w: number;
+  crop_h: number;
+  label: string | null;
+}
+
 export interface PlayerConfig {
   project_id: string;
   title: string | null;
   segments: PlayerSegment[];
   broll_clips: BrollClip[];
-  clip_overlays?: ClipOverlay[];  // user-trimmed library video overlays
+  clip_overlays?: ClipOverlay[];
+  image_overlays?: ImageOverlayItem[];
 }
 
 export interface TimelineSeg {

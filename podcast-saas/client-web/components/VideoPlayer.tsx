@@ -4,7 +4,8 @@ import { useEffect, useRef, useState, useCallback, forwardRef, useImperativeHand
 import { useEditorPlayback } from '../hooks/useEditorPlayback';
 import { HLS_OPTS } from '../hooks/useSegmentedPlaybackCore';
 import type { Clip } from '../hooks/useClipSequence';
-import type { TimelineSection } from 'shared/src/generated/client-v1';
+import type { TimelineSection, ImageFile } from 'shared/src/generated/client-v1';
+import { ImageOverlay } from './ImageOverlay';
 
 export type { Clip };
 
@@ -24,6 +25,13 @@ interface SingleClipProps {
   sectionLabel?: string | null;
 }
 
+export interface ActiveImageSectionData {
+  section: TimelineSection;
+  image: ImageFile;
+  globalStart: number;
+  duration: number;
+}
+
 interface MultiClipProps {
   clips: Clip[];
   src?: undefined;
@@ -36,6 +44,7 @@ interface MultiClipProps {
   activeSimSection?: TimelineSection | null;
   activeBrollSection?: TimelineSection | null;
   brollHlsUrl?: string | null;
+  activeImageSection?: ActiveImageSectionData | null;
 }
 
 type Props = SingleClipProps | MultiClipProps;
@@ -50,10 +59,11 @@ interface MultiClipPlayerProps {
   activeSimSection?: TimelineSection | null;
   activeBrollSection?: TimelineSection | null;
   brollHlsUrl?: string | null;
+  activeImageSection?: ActiveImageSectionData | null;
   imperativeRef: React.RefObject<VideoPlayerHandle | null>;
 }
 
-function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, activeSimSection, activeBrollSection, brollHlsUrl, imperativeRef }: MultiClipPlayerProps) {
+function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, activeSimSection, activeBrollSection, brollHlsUrl, activeImageSection, imperativeRef }: MultiClipPlayerProps) {
   const [speed, setSpeed] = useState(1);
   // scrubDisplay: non-null while the user is dragging the seek bar — used for
   // visual feedback only; the actual seek fires once on mouseup/touchend.
@@ -262,6 +272,9 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
 
   const displayTime   = scrubDisplay ?? hook.globalTime;
   const totalDuration = Math.max(hook.totalDuration, timelineDuration ?? 0);
+  const simulationBadgeText = activeSimSection
+    ? (activeSimSection.label?.trim() || 'Simulation')
+    : null;
 
   // ── seek bar handlers — scrub fires exactly once on release ──────────────
   const handleScrubStart = useCallback(() => {
@@ -312,6 +325,19 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
         preload="auto"
       />
 
+      {/* Image overlay — animated still with camera movement */}
+      {activeImageSection && (
+        <ImageOverlay
+          zIndex={4}
+          data={{
+            image: activeImageSection.image,
+            durationSec: activeImageSection.duration,
+            cameraMovement: activeImageSection.section.camera_movement ?? 'zoom_in',
+            visible: true,
+          }}
+        />
+      )}
+
       {/* No source yet */}
       {clips.length === 0 && (
         <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none" style={{ zIndex: 5 }}>
@@ -347,9 +373,15 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
         </div>
       )}
 
-      {sectionLabel && !showSimOverlay && (
+      {sectionLabel && !showSimOverlay && !simulationBadgeText && (
         <div className="absolute top-3 left-3 bg-black/70 text-white text-xs font-medium px-2 py-1 rounded-md backdrop-blur-sm" style={{ zIndex: 10 }}>
           {sectionLabel}
+        </div>
+      )}
+
+      {simulationBadgeText && (
+        <div className="absolute bottom-20 right-3 rounded-md bg-amber-500/90 px-2.5 py-1 text-xs font-semibold text-black shadow-sm backdrop-blur-sm" style={{ zIndex: 10 }}>
+          {simulationBadgeText}
         </div>
       )}
 
@@ -698,6 +730,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(function VideoPl
         activeSimSection={props.activeSimSection}
         activeBrollSection={props.activeBrollSection}
         brollHlsUrl={props.brollHlsUrl}
+        activeImageSection={props.activeImageSection}
         imperativeRef={imperativeRef}
       />
     );

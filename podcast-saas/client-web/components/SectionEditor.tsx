@@ -3,7 +3,8 @@
 import { ConfirmDialog } from './ConfirmDialog';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { getAuth } from 'firebase/auth';
-import type { TimelineSection, Simulation, VideoFile, VideoGenerationJob, SimFile, SimMeta } from 'shared/src/generated/client-v1';
+import { ChevronDown, ChevronUp } from 'lucide-react';
+import type { TimelineSection, Simulation, VideoFile, VideoGenerationJob, SimFile, SimMeta, ImageFile } from 'shared/src/generated/client-v1';
 import { api } from '../lib/api';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
@@ -71,19 +72,29 @@ function parseTime(str: string): number | null {
   return m * 60 + s;
 }
 
+const CAMERA_MOVEMENTS = [
+  { value: 'zoom_in',   label: 'Zoom In'     },
+  { value: 'zoom_out',  label: 'Zoom Out'    },
+  { value: 'pan_right', label: 'Pan Right'   },
+  { value: 'pan_left',  label: 'Pan Left'    },
+  { value: 'dolly_in',  label: 'Dolly In'    },
+  { value: 'drift',     label: 'Drift'       },
+] as const;
+
 interface Props {
   section: TimelineSection;
   projectId: string;
   simulations: Simulation[];
   videos: VideoFile[];
   videoUrls: Record<string, string>;
+  images?: ImageFile[];
   onUpdate: (s: TimelineSection) => void;
   onDelete: (id: string) => void;
   onClose: () => void;
 }
 
 export function SectionEditor({
-  section, projectId, simulations, videos, videoUrls,
+  section, projectId, simulations, videos, videoUrls, images = [],
   onUpdate, onDelete, onClose,
 }: Props) {
   const isBroll = section.track === 'broll';
@@ -137,6 +148,12 @@ export function SectionEditor({
   const [localVideos, setLocalVideos]   = useState<VideoFile[]>(videos);
   const [localClipUrls, setLocalClipUrls] = useState<Record<string, string>>({});
   const [clipSourceVideoId, setClipSourceVideoId] = useState(section.clip_source_video_id ?? '');
+  const [clipSourceImageId, setClipSourceImageId] = useState(section.clip_source_image_id ?? '');
+  const [cameraMovement, setCameraMovement] = useState(section.camera_movement ?? 'zoom_in');
+  // 'visual' sub-mode: 'video' = existing video clip, 'image' = uploaded still image
+  const [clipVisualMode, setClipVisualMode] = useState<'video' | 'image'>(
+    section.clip_source_image_id ? 'image' : 'video',
+  );
   const [clipInSec, setClipInSec]       = useState(section.clip_in_sec ?? 0);
   const [clipCurrentTime, setClipCurrentTime] = useState(section.clip_in_sec ?? 0);
   const [clipPlaying, setClipPlaying]   = useState(false);
@@ -181,6 +198,9 @@ export function SectionEditor({
     setFileContent(null);
     // Clip state reset
     setClipSourceVideoId(section.clip_source_video_id ?? '');
+    setClipSourceImageId(section.clip_source_image_id ?? '');
+    setCameraMovement(section.camera_movement ?? 'zoom_in');
+    setClipVisualMode(section.clip_source_image_id ? 'image' : 'video');
     setClipInSec(section.clip_in_sec ?? 0);
     setClipCurrentTime(section.clip_in_sec ?? 0);
     setClipPlaying(false);
@@ -556,8 +576,10 @@ export function SectionEditor({
         start_sec,
         end_sec,
         ...(type === 'clip' ? {
-          clip_source_video_id: clipSourceVideoId || null,
-          clip_in_sec: safeClipIn,
+          clip_source_video_id: clipVisualMode === 'video' ? (clipSourceVideoId || null) : null,
+          clip_in_sec: clipVisualMode === 'video' ? safeClipIn : 0,
+          clip_source_image_id: clipVisualMode === 'image' ? (clipSourceImageId || null) : null,
+          camera_movement: cameraMovement,
         } : {}),
         ...(isBroll ? { broll_volume: brollVolume } as Record<string, unknown> : {}),
       });
@@ -739,8 +761,8 @@ export function SectionEditor({
                     }}
                   >
                     {[
-                      { key: 'video', label: 'Generate B-Roll' },
-                      { key: 'clip',  label: 'Existing Clip'   },
+                      { key: 'video', label: 'Generate B-Roll'  },
+                      { key: 'clip',  label: 'Existing Visual'  },
                     ].map(({ key, label: subLabel }) => (
                       <button
                         key={key}
@@ -784,7 +806,7 @@ export function SectionEditor({
               />
             </div>
 
-            {/* ── CLIP SOURCE PICKER ── */}
+            {/* ── CLIP SOURCE PICKER (Existing Visual) ── */}
             {type === 'clip' && !isBroll && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
                 <div style={{ height: 1, backgroundColor: '#f3f4f6' }} />
@@ -794,13 +816,97 @@ export function SectionEditor({
                   borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05), 0 1px 3px rgba(0,0,0,0.03)', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12,
                 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ fontSize: 14 }}>🎞</span>
+                    <span style={{ fontSize: 14 }}>{clipVisualMode === 'image' ? '🖼' : '🎞'}</span>
                     <span style={{ fontSize: 13, fontWeight: 700, color: '#065f46' }}>Clip Source</span>
                     <span style={{ fontSize: 10, color: '#059669', backgroundColor: '#d1fae5', borderRadius: 6, padding: '2px 8px', fontWeight: 600 }}>
                       {fmtTime(sectionDuration)} slot
                     </span>
                   </div>
 
+                  {/* Visual type toggle: Video clip vs Still image */}
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    {(['video', 'image'] as const).map(mode => (
+                      <button
+                        key={mode}
+                        onClick={() => setClipVisualMode(mode)}
+                        style={{
+                          flex: 1, padding: '5px 0', borderRadius: 7, border: '1.5px solid',
+                          fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                          borderColor: clipVisualMode === mode ? '#10b981' : '#e5e7eb',
+                          background: clipVisualMode === mode ? '#d1fae5' : '#f9fafb',
+                          color: clipVisualMode === mode ? '#065f46' : '#6b7280',
+                        }}
+                      >
+                        {mode === 'video' ? 'Video Clip' : 'Still Image'}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* ── IMAGE MODE ── */}
+                  {clipVisualMode === 'image' && (
+                    <>
+                      <div>
+                        <label style={{ ...labelStyle, color: '#059669' }}>Select Image</label>
+                        {images.length === 0 ? (
+                          <p style={{ fontSize: 11, color: '#9ca3af', margin: '4px 0 0' }}>
+                            Upload images in the Library panel first.
+                          </p>
+                        ) : (
+                          <select
+                            value={clipSourceImageId}
+                            onChange={e => setClipSourceImageId(e.target.value)}
+                            style={{ ...inputStyle, borderColor: '#6ee7b7', color: clipSourceImageId ? '#111827' : '#9ca3af' }}
+                          >
+                            <option value="">— choose an image —</option>
+                            {images.map(img => (
+                              <option key={img.id} value={img.id}>{img.filename}</option>
+                            ))}
+                          </select>
+                        )}
+                        {/* Selected image preview */}
+                        {clipSourceImageId && (() => {
+                          const img = images.find(i => i.id === clipSourceImageId);
+                          if (!img) return null;
+                          return (
+                            <div style={{ marginTop: 8, borderRadius: 8, overflow: 'hidden', aspectRatio: '16/9', background: '#000', position: 'relative' }}>
+                              <img
+                                src={img.original_url}
+                                alt={img.filename}
+                                style={{
+                                  position: 'absolute',
+                                  width: `${(1 / img.crop_w) * 100}%`,
+                                  height: `${(1 / img.crop_h) * 100}%`,
+                                  left: `${(-img.crop_x / img.crop_w) * 100}%`,
+                                  top: `${(-img.crop_y / img.crop_h) * 100}%`,
+                                  objectFit: 'fill',
+                                }}
+                              />
+                            </div>
+                          );
+                        })()}
+                      </div>
+
+                      {/* Camera Movement */}
+                      <div>
+                        <label style={{ ...labelStyle, color: '#059669' }}>Camera Movement</label>
+                        <select
+                          value={cameraMovement}
+                          onChange={e => setCameraMovement(e.target.value)}
+                          style={{ ...inputStyle, borderColor: '#6ee7b7', color: '#111827' }}
+                        >
+                          {CAMERA_MOVEMENTS.map(m => (
+                            <option key={m.value} value={m.value}>{m.label}</option>
+                          ))}
+                        </select>
+                        <p style={{ fontSize: 10, color: '#6b7280', marginTop: 4 }}>
+                          Animation runs for the full section duration ({fmtTime(sectionDuration)}).
+                        </p>
+                      </div>
+                    </>
+                  )}
+
+                  {/* ── VIDEO MODE ── */}
+                  {clipVisualMode === 'video' && (<>
                   {/* Library picker */}
                   <div>
                     <label style={{ ...labelStyle, color: '#059669' }}>From Library</label>
@@ -912,6 +1018,7 @@ export function SectionEditor({
                       )}
                     </div>
                   )}
+                  </>) /* end clipVisualMode === 'video' */}
                 </div>
               </div>
             )}
@@ -1298,12 +1405,18 @@ export function SectionEditor({
               <button
                 onClick={() => setShowTiming(v => !v)}
                 style={{
-                  display: 'flex', alignItems: 'center', gap: 6, background: 'none', border: 'none',
-                  cursor: 'pointer', padding: 0, width: '100%', textAlign: 'left',
+                  display: 'flex', alignItems: 'center', gap: 8, background: 'none', border: 'none',
+                  cursor: 'pointer', padding: '2px 0', width: '100%', textAlign: 'left',
                 }}
               >
                 <span style={labelStyle as React.CSSProperties}>Timing</span>
-                <span style={{ fontSize: 10, color: '#9ca3af', marginTop: -1 }}>{showTiming ? '▲' : '▾'}</span>
+                <span style={{
+                  width: 28, height: 28, borderRadius: 8, display: 'inline-flex',
+                  alignItems: 'center', justifyContent: 'center', color: '#6b7280',
+                  backgroundColor: '#f3f4f6', border: '1px solid #e5e7eb',
+                }}>
+                  {showTiming ? <ChevronUp size={16} strokeWidth={1.9} aria-hidden /> : <ChevronDown size={16} strokeWidth={1.9} aria-hidden />}
+                </span>
                 {!showTiming && (
                   <span style={{ fontSize: 10, color: '#9ca3af', marginLeft: 'auto', fontFamily: 'monospace' }}>
                     {startStr} → {endStr}

@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { db } from '../../db/index.js';
-import { projects, video_files, timeline_sections } from '../../db/schema.js';
+import { projects, video_files, timeline_sections, image_files } from '../../db/schema.js';
 import { eq, and, asc } from 'drizzle-orm';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 
@@ -131,12 +131,40 @@ export async function registerPlayerRoutes(app: FastifyInstance): Promise<void> 
         })
         .filter(Boolean);
 
+      // Build image_overlays from clip sections that reference an image file
+      const imageFileMap = new Map(
+        (await db.query.image_files.findMany({ where: eq(image_files.project_id, project.id) }))
+          .map((img) => [img.id, img]),
+      );
+
+      const imageOverlays = sections
+        .filter((s) => s.type === 'clip' && s.clip_source_image_id)
+        .map((s) => {
+          const img = imageFileMap.get(s.clip_source_image_id!);
+          if (!img) return null;
+          const vidOffset = videoGlobalOffsets.get(s.video_file_id) ?? 0;
+          return {
+            id:               s.id,
+            image_url:        img.original_url,
+            global_offset_sec: vidOffset + s.start_sec,
+            duration_sec:     s.end_sec - s.start_sec,
+            camera_movement:  s.camera_movement ?? 'zoom_in',
+            crop_x:           img.crop_x,
+            crop_y:           img.crop_y,
+            crop_w:           img.crop_w,
+            crop_h:           img.crop_h,
+            label:            s.label,
+          };
+        })
+        .filter(Boolean);
+
       return reply.send({
         project_id: project.id,
         title: project.title,
         segments,
         broll_clips: brollClips,
         clip_overlays: clipOverlays,
+        image_overlays: imageOverlays,
       });
     },
   );

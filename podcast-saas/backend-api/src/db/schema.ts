@@ -361,6 +361,23 @@ export const simulations = pgTable('simulations', {
   created_at:       timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+// Image files uploaded by the user for animated still-image overlays (migration 018)
+export const image_files = pgTable('image_files', {
+  id:           uuid('id').primaryKey().defaultRandom(),
+  project_id:   uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  filename:     text('filename').notNull(),
+  storage_key:  text('storage_key').notNull(),
+  original_url: text('original_url').notNull(),
+  width:        integer('width'),
+  height:       integer('height'),
+  // Crop region as fractions of the original image (0.0–1.0)
+  crop_x: real('crop_x').notNull().default(0),
+  crop_y: real('crop_y').notNull().default(0),
+  crop_w: real('crop_w').notNull().default(1),
+  crop_h: real('crop_h').notNull().default(1),
+  created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const timeline_sections = pgTable('timeline_sections', {
   id: uuid('id').primaryKey().defaultRandom(),
   project_id: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
@@ -386,6 +403,9 @@ export const timeline_sections = pgTable('timeline_sections', {
   clip_in_sec: real('clip_in_sec').default(0),              // in-point in source video (seconds)
   // Audio gain control (migration 017) — used for broll audio volume 0.0–1.0
   broll_volume: real('broll_volume').notNull().default(1.0),
+  // Image clip fields (migration 018) — still image with animated camera movement
+  clip_source_image_id: uuid('clip_source_image_id').references(() => image_files.id, { onDelete: 'set null' }),
+  camera_movement: text('camera_movement').notNull().default('zoom_in'),
   created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -424,6 +444,7 @@ export type Job = typeof jobs.$inferSelect;
 export type AudioRender = typeof audio_renders.$inferSelect;
 export type Scene = typeof scenes.$inferSelect;
 export type VideoFile = typeof video_files.$inferSelect;
+export type ImageFile = typeof image_files.$inferSelect;
 export type TimelineSection = typeof timeline_sections.$inferSelect;
 export type VideoGenerationJob = typeof video_generation_jobs.$inferSelect;
 export type CameraPlan = typeof camera_plans.$inferSelect;

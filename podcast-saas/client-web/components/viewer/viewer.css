@@ -67,7 +67,7 @@
   opacity: 1;
 }
 
-/* ── Simulation segment markers ───────────────────────── */
+/* ── Section markers ──────────────────────────────────── */
 .viewer-seg-markers {
   position: absolute;
   inset: 0;
@@ -78,7 +78,7 @@
   position: absolute;
   top: -3px;
   height: calc(100% + 6px);
-  background: rgba(79,158,255,.6);
+  background: rgba(245,158,11,.72);
   border-radius: 3px;
 }
 
@@ -149,7 +149,7 @@
   max-width: 260px;
   transition: background .2s, color .2s;
 }
-.viewer-mode-badge.sim  { background: rgba(245,158,11,.18); color: #d97706; }
+.viewer-mode-badge.sim  { background: rgba(245,158,11,.22); color: #fbbf24; }
 .viewer-mode-badge.free { background: rgba(107,114,128,.18); color: #6b7280; }
 
 /* ── Simulation overlay ───────────────────────────────── */

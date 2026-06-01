@@ -6,9 +6,29 @@ import { logger } from '../lib/logger.js';
 const connectionString =
   process.env.DATABASE_URL ?? 'postgresql://postgres:postgres@localhost:5432/podcast_saas';
 
-const queryClient = postgres(connectionString, {
-  max: 10,
-  idle_timeout: 30,
+// postgres.js URL parser truncates usernames that contain a dot (e.g. the
+// Supabase pooler format "postgres.project-ref").  Parse the URL manually and
+// pass individual options so the full username is preserved.
+function parseDbUrl(url: string): Parameters<typeof postgres>[1] & { host: string; port: number; database: string; username: string; password: string } {
+  const u = new URL(url);
+  return {
+    host:     u.hostname,
+    port:     u.port ? parseInt(u.port, 10) : 5432,
+    database: u.pathname.replace(/^\//, ''),
+    username: decodeURIComponent(u.username),
+    password: decodeURIComponent(u.password),
+    ssl:      u.hostname.endsWith('.supabase.com') || u.hostname.endsWith('.supabase.co')
+                ? 'require'
+                : undefined,
+  };
+}
+
+const connOpts = parseDbUrl(connectionString);
+
+const queryClient = postgres({
+  ...connOpts,
+  max:             10,
+  idle_timeout:    30,
   connect_timeout: 10,
 });
 

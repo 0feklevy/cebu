@@ -61,6 +61,8 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       broll_volume?: number;
       simple_ui?: boolean;
       auto_script?: boolean;
+      clip_source_image_id?: string | null;
+      camera_movement?: string;
     };
   }>(
     '/api/v1/projects/:id/sections',
@@ -90,6 +92,8 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
         broll_volume,
         simple_ui,
         auto_script,
+        clip_source_image_id,
+        camera_movement,
       } = request.body;
       if (!video_file_id || start_sec == null || end_sec == null || !type) {
         return reply.code(400).send({ message: 'video_file_id, start_sec, end_sec, and type are required' });
@@ -131,6 +135,8 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
           broll_volume: broll_volume == null ? 1.0 : Math.max(0, Math.min(1, broll_volume)),
           simple_ui: simple_ui ?? false,
           auto_script: auto_script ?? true,
+          clip_source_image_id: clip_source_image_id ?? null,
+          camera_movement: camera_movement ?? 'zoom_in',
         })
         .returning();
 
@@ -157,6 +163,8 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       broll_volume: number;
       simple_ui: boolean;
       auto_script: boolean;
+      clip_source_image_id?: string | null;
+      camera_movement?: string;
     }>;
   }>(
     '/api/v1/projects/:id/sections/:sid',
@@ -176,7 +184,7 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       });
       if (!existing) return reply.code(404).send({ message: 'Section not found' });
 
-      const { simulation_id, sim_script, clip_source_video_id, clip_in_sec, broll_volume, ...rest } = request.body;
+      const { simulation_id, sim_script, clip_source_video_id, clip_in_sec, broll_volume, clip_source_image_id, camera_movement, ...rest } = request.body;
 
       if (rest.start_sec != null && rest.end_sec != null && rest.start_sec >= rest.end_sec) {
         return reply.code(400).send({ message: 'start_sec must be less than end_sec' });
@@ -202,6 +210,8 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       if (clip_source_video_id !== undefined) patch.clip_source_video_id = clip_source_video_id ?? null;
       if (clip_in_sec !== undefined)         patch.clip_in_sec          = clip_in_sec;
       if (broll_volume !== undefined)        patch.broll_volume         = Math.max(0, Math.min(1, broll_volume));
+      if (clip_source_image_id !== undefined) patch.clip_source_image_id = clip_source_image_id ?? null;
+      if (camera_movement !== undefined)     patch.camera_movement      = camera_movement;
 
       const [updated] = await db
         .update(timeline_sections)

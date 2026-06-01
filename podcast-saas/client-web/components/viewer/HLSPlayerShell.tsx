@@ -7,6 +7,7 @@ import { useProjectPlayer } from './useProjectPlayer';
 import { VideoLayer } from './VideoLayer';
 import { SimOverlayDynamic } from './SimOverlayDynamic';
 import { ControlsBar } from './ControlsBar';
+import { ImageOverlay } from '../ImageOverlay';
 import './viewer.css';
 
 interface Props {
@@ -121,6 +122,32 @@ export function HLSPlayerShell({ config }: Props) {
           Home
         </Link>
       </div>
+
+      {/* Animated still-image overlay */}
+      {state.activeImageOverlay && (
+        <ImageOverlay
+          zIndex={9}
+          data={{
+            image: {
+              id: state.activeImageOverlay.id,
+              project_id: '',
+              filename: state.activeImageOverlay.label ?? '',
+              storage_key: '',
+              original_url: state.activeImageOverlay.image_url,
+              width: null,
+              height: null,
+              crop_x: state.activeImageOverlay.crop_x,
+              crop_y: state.activeImageOverlay.crop_y,
+              crop_w: state.activeImageOverlay.crop_w,
+              crop_h: state.activeImageOverlay.crop_h,
+              created_at: '',
+            },
+            durationSec: state.activeImageOverlay.duration_sec,
+            cameraMovement: state.activeImageOverlay.camera_movement,
+            visible: true,
+          }}
+        />
+      )}
 
       <SimOverlayDynamic
         simulationUrl={state.activeSimUrl}

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
-import type { PlayerConfig, PlayerSegment, SimulationOverlay, TimelineSeg, BrollClip } from './types';
+import type { PlayerConfig, PlayerSegment, SimulationOverlay, TimelineSeg, BrollClip, ImageOverlayItem } from './types';
 
 // ── HLS.js config (ported from interactive-podcast-react/player/src/constants/index.ts) ──
 const HLS_OPTS = {
@@ -55,6 +55,7 @@ export interface ProjectPlayerState {
   badgeText:       string;
   badgeMode:       'sim' | 'free' | '';
   resumeAction:    'resume' | 'backToVideo';
+  activeImageOverlay: ImageOverlayItem | null;
 }
 
 export interface ProjectPlayerActions {
@@ -119,6 +120,7 @@ export function useProjectPlayer(
     badgeText:        config.segments[0]?.label ?? '',
     badgeMode:        '',
     resumeAction:     'resume',
+    activeImageOverlay: null,
   });
 
   const merge = (patch: Partial<ProjectPlayerState>) =>
@@ -315,7 +317,11 @@ export function useProjectPlayer(
     }
 
     merge({
-      badgeText: section ? (section.label ?? section.type) : (seg.label ?? ''),
+      badgeText: section
+        ? section.type === 'simulation'
+          ? (section.label?.trim() || 'Simulation')
+          : (section.label?.trim() || section.type)
+        : (seg.label ?? ''),
       badgeMode: section?.type === 'simulation' ? 'sim' : section ? 'free' : '',
     });
   };
@@ -466,6 +472,21 @@ export function useProjectPlayer(
     }
   };
 
+  // ── image overlay ─────────────────────────────────────────────────────────
+  const activeImageIdRef = useRef<string | null>(null);
+
+  const updateImageOverlay = (gt: number) => {
+    const overlays = config.image_overlays ?? [];
+    const active = overlays.find(
+      (o) => gt >= o.global_offset_sec && gt < o.global_offset_sec + o.duration_sec,
+    ) ?? null;
+
+    if (active?.id !== activeImageIdRef.current) {
+      activeImageIdRef.current = active?.id ?? null;
+      merge({ activeImageOverlay: active ?? null });
+    }
+  };
+
   // ── HLS helpers ───────────────────────────────────────────────────────────
   const getSegmentUrl = (segIdx: number) => {
     const seg = config.segments[segIdx];
@@ -598,6 +619,7 @@ export function useProjectPlayer(
     if (!userPausedRef.current && !swappingRef.current) {
       updateSimOverlay(idx, t);
       updateBrollOverlay(gt);
+      updateImageOverlay(gt);
 
       // Pre-warm next broll clip 15s before its start
       const brollClips = config.broll_clips ?? [];
@@ -812,7 +834,7 @@ export function useProjectPlayer(
           merge({ showResumeBtn: false, resumeAction: 'resume' });
         }
         updateSimOverlay(targetIdx, localTime);
-        updateBrollOverlay(targetGlobal);
+        updateBrollOverlay(targetGlobal); updateImageOverlay(targetGlobal);
         if (wasPlayingRef.current && localTime < targetSeg.duration - 0.01) safePlay(videoRef.current!);
       } else {
         loadSegment(targetIdx, localTime, wasPlayingRef.current);
@@ -910,7 +932,7 @@ export function useProjectPlayer(
         if (targetIdx === curIdxRef.current) {
           videoRef.current!.currentTime = Math.min(localTime, tl[targetIdx].duration);
           updateSimOverlay(targetIdx, localTime);
-          updateBrollOverlay(newGlobal);
+          updateBrollOverlay(newGlobal); updateImageOverlay(newGlobal);
           if (wasPlaying && localTime < tl[targetIdx].duration - 0.01) safePlay(videoRef.current!);
         } else {
           loadSegment(targetIdx, localTime, wasPlaying);
@@ -954,7 +976,7 @@ export function useProjectPlayer(
       resumeActionRef.current = 'resume';
       merge({ showResumeBtn: false, showSimOverlay: false, resumeAction: 'resume', controlsVisible: true });
       setProgress(targetGlobal);
-      updateBrollOverlay(targetGlobal);
+      updateBrollOverlay(targetGlobal); updateImageOverlay(targetGlobal);
 
       if (targetSeg && targetIdx === curIdxRef.current) {
         videoRef.current!.currentTime = Math.min(localTime, targetSeg.duration);

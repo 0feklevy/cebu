@@ -31,6 +31,7 @@ import { registerPlayerRoutes } from './controllers/v1/player.controller.js';
 import { registerShareRoutes }  from './controllers/v1/share.controller.js';
 import { registerSimulationsRoutes } from './controllers/v1/simulations.controller.js';
 import { registerBrollRoutes } from './controllers/v1/broll.controller.js';
+import { registerImageRoutes } from './controllers/v1/images.controller.js';
 
 const PORT = parseInt(process.env.PORT ?? '8080', 10);
 
@@ -305,6 +306,7 @@ async function build() {
   await registerSectionsRoutes(app);
   await registerSimulationsRoutes(app);
   await registerBrollRoutes(app);
+  await registerImageRoutes(app);
 
   // Admin routes
   await registerAdminSettingsRoutes(app);
@@ -341,15 +343,25 @@ async function build() {
 
 async function start() {
   try {
-    // Verify dependencies
-    await checkDatabaseConnection();
     getFirebaseAdmin(); // validates env vars early
 
+    // DB check: warn but don't crash — the postgres driver reconnects automatically.
+    // A paused/slow DB should not prevent the server from starting.
+    try {
+      await checkDatabaseConnection();
+    } catch (err) {
+      logger.warn({ err }, 'Database not reachable at startup — will retry on first request');
+    }
+
     // Configure R2 CORS so browsers can PUT directly to presigned URLs
-    const storage = getStorageAdapter();
-    if (storage instanceof R2StorageAdapter) {
-      const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
-      await storage.ensureBucketCors([appUrl, 'http://localhost:3000', 'http://localhost:3001']);
+    try {
+      const storage = getStorageAdapter();
+      if (storage instanceof R2StorageAdapter) {
+        const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
+        await storage.ensureBucketCors([appUrl, 'http://localhost:3000', 'http://localhost:3001']);
+      }
+    } catch (err) {
+      logger.warn({ err }, 'R2 CORS setup failed — configure manually in Cloudflare dashboard');
     }
 
     const app = await build();

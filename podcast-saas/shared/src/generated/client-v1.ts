@@ -69,6 +69,23 @@ export interface TimelineSection {
   clip_source_video_id: string | null;  // clip type: which library video to play
   clip_in_sec: number | null;           // clip type: in-point in source video (seconds)
   broll_volume: number;
+  clip_source_image_id: string | null;  // image clip: which uploaded image to show
+  camera_movement: string;              // image clip: 'zoom_in' | 'zoom_out' | 'pan_right' | 'pan_left' | 'dolly_in' | 'drift'
+  created_at: string;
+}
+
+export interface ImageFile {
+  id: string;
+  project_id: string;
+  filename: string;
+  storage_key: string;
+  original_url: string;
+  width: number | null;
+  height: number | null;
+  crop_x: number;
+  crop_y: number;
+  crop_w: number;
+  crop_h: number;
   created_at: string;
 }
 
@@ -359,6 +376,28 @@ export class ClientV1Api {
       `/api/v1/projects/${projectId}/sections/${sectionId}/generate-sim-script`,
       { method: 'POST', body },
     );
+  }
+
+  // ── Images ────────────────────────────────────────────────────────────────
+
+  listImages(projectId: string): Promise<ImageFile[]> {
+    return this.request(`/api/v1/projects/${projectId}/images`);
+  }
+
+  uploadImage(projectId: string, formData: FormData): Promise<ImageFile> {
+    return this.requestMultipart(`/api/v1/projects/${projectId}/images`, formData);
+  }
+
+  patchImageCrop(
+    projectId: string,
+    imageId: string,
+    crop: { crop_x: number; crop_y: number; crop_w: number; crop_h: number },
+  ): Promise<ImageFile> {
+    return this.request(`/api/v1/projects/${projectId}/images/${imageId}`, { method: 'PATCH', body: crop });
+  }
+
+  deleteImage(projectId: string, imageId: string): Promise<void> {
+    return this.request(`/api/v1/projects/${projectId}/images/${imageId}`, { method: 'DELETE' });
   }
 
   // ── Simulations ───────────────────────────────────────────────────────────

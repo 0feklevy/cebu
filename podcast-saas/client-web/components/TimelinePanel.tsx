@@ -1,8 +1,8 @@
 'use client';
 
 import { useRef, useState, useCallback, useEffect, useLayoutEffect } from 'react';
-import { Redo2, Undo2 } from 'lucide-react';
-import type { VideoFile, TimelineSection, Simulation } from 'shared/src/generated/client-v1';
+import { Plus } from 'lucide-react';
+import type { VideoFile, TimelineSection, Simulation, ImageFile } from 'shared/src/generated/client-v1';
 import { SectionEditor } from './SectionEditor';
 import { api } from '../lib/api';
 
@@ -11,7 +11,7 @@ import { api } from '../lib/api';
 const BROLL_TRACK_H  = 44;
 const VIDEO_TRACK_H  = 52;
 const AUDIO_TRACK_H  = 22;
-const RULER_H        = 20;
+const RULER_H        = 34;
 const LABEL_W        = 110;
 const FRAME_W        = 80;
 const FRAME_H        = 45;
@@ -247,6 +247,7 @@ interface Props {
   videos: VideoFile[];
   sections: TimelineSection[];
   simulations: Simulation[];
+  images?: ImageFile[];
   playheadSec: number;
   activeVideoId: string | null;
   videoUrls: Record<string, string>;
@@ -254,22 +255,16 @@ interface Props {
   onSectionsChange: (sections: TimelineSection[]) => void;
   onBrollMarkComplete?: (mark: { start: number; end: number }) => void;
   toolMode: ToolMode;
-  onToolModeChange: (mode: ToolMode) => void;
+  showAllLayers?: boolean;
   onAddVideo?: () => void;
-  onUndo?: () => void;
-  onRedo?: () => void;
-  canUndo?: boolean;
-  canRedo?: boolean;
-  historyBusy?: boolean;
 }
 
 // ─── main component ───────────────────────────────────────────────────────────
 
 export function TimelinePanel({
-  projectId, videos, sections, simulations, playheadSec, activeVideoId, videoUrls,
+  projectId, videos, sections, simulations, images = [], playheadSec, activeVideoId, videoUrls,
   onSeek, onSectionsChange, onBrollMarkComplete,
-  toolMode, onToolModeChange, onAddVideo,
-  onUndo, onRedo, canUndo = false, canRedo = false, historyBusy = false,
+  toolMode, showAllLayers = false, onAddVideo,
 }: Props) {
   const scrollRef    = useRef<HTMLDivElement>(null);
   const interRef     = useRef<Interaction | null>(null);
@@ -285,7 +280,7 @@ export function TimelinePanel({
 
   const mainSections  = sections.filter(s => s.track !== 'broll');
   const brollSections = sections.filter(s => s.track === 'broll');
-  const hasBroll = brollSections.length > 0 || toolMode === 'broll';
+  const hasBroll = toolMode === 'broll' || showAllLayers;
 
   const clipsWithOffset = buildClips(videos);
   const videoTimelineDuration = clipsWithOffset.reduce((s, c) => s + (c.video.duration_sec ?? 0), 0);
@@ -724,79 +719,6 @@ export function TimelinePanel({
 
   return (
     <div className="flex h-full overflow-hidden bg-white" style={{ fontFamily: 'system-ui, -apple-system, sans-serif' }}>
-
-      {/* ── Tool sidebar ─────────────────────────────────────────────────── */}
-      <div className="shrink-0 w-12 flex flex-col items-center gap-1.5 pt-2 pb-2" style={{ borderRight: '1px solid hsl(var(--border))', backgroundColor: 'hsl(var(--muted) / 0.45)' }}>
-        <button
-          onClick={() => onToolModeChange('video')}
-          title="Video section (max 15s)"
-          className="w-8 h-8 rounded-lg flex items-center justify-center transition-all focus-ring"
-          style={toolMode === 'video'
-            ? { backgroundColor: '#3b82f6', color: '#fff', boxShadow: '0 1px 3px rgba(59,130,246,0.4)' }
-            : { color: '#9ca3af', backgroundColor: 'transparent' }}
-        >
-          <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
-            <rect x="1" y="3" width="13" height="9" rx="2" stroke="currentColor" strokeWidth="1.3" />
-            <path d="M5.5 5.8l4 1.7-4 1.7V5.8z" fill="currentColor" />
-          </svg>
-        </button>
-        <button
-          onClick={() => onToolModeChange('simulation')}
-          title="Simulation section"
-          className="w-8 h-8 rounded-lg flex items-center justify-center transition-all focus-ring"
-          style={toolMode === 'simulation'
-            ? { backgroundColor: '#f59e0b', color: '#fff', boxShadow: '0 1px 3px rgba(245,158,11,0.4)' }
-            : { color: '#9ca3af', backgroundColor: 'transparent' }}
-        >
-          <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
-            <circle cx="7.5" cy="7.5" r="5.5" stroke="currentColor" strokeWidth="1.3" />
-            <path d="M7.5 4.5v3l2 1.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-          </svg>
-        </button>
-        <button
-          onClick={() => onToolModeChange('broll')}
-          title="B-roll — generate or insert above main track (min 4s)"
-          className="w-8 h-8 rounded-lg flex items-center justify-center transition-all focus-ring"
-          style={toolMode === 'broll'
-            ? { backgroundColor: '#06b6d4', color: '#fff', boxShadow: '0 1px 3px rgba(6,182,212,0.4)' }
-            : { color: '#9ca3af', backgroundColor: 'transparent' }}
-        >
-          <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
-            <rect x="1" y="1" width="13" height="5" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
-            <rect x="1" y="9" width="13" height="5" rx="1.5" stroke="currentColor" strokeWidth="1.3" opacity="0.4" />
-            <path d="M7.5 7.5v0" stroke="currentColor" strokeWidth="1.3" />
-          </svg>
-        </button>
-        <div style={{ flex: 1 }} />
-        <div className="flex flex-col items-center gap-1">
-          <button
-            onClick={onUndo}
-            disabled={!canUndo || historyBusy}
-            title="Undo"
-            className="w-8 h-8 rounded-lg flex items-center justify-center transition-all focus-ring disabled:cursor-not-allowed disabled:opacity-35"
-            style={{ color: canUndo && !historyBusy ? '#4b5563' : '#9ca3af', backgroundColor: 'transparent' }}
-          >
-            <Undo2 size={15} strokeWidth={1.8} />
-          </button>
-          <button
-            onClick={onRedo}
-            disabled={!canRedo || historyBusy}
-            title="Redo"
-            className="w-8 h-8 rounded-lg flex items-center justify-center transition-all focus-ring disabled:cursor-not-allowed disabled:opacity-35"
-            style={{ color: canRedo && !historyBusy ? '#4b5563' : '#9ca3af', backgroundColor: 'transparent' }}
-          >
-            <Redo2 size={15} strokeWidth={1.8} />
-          </button>
-        </div>
-        <div
-          title="Ctrl+scroll or pinch to zoom"
-          style={{ fontSize: 7, color: '#9ca3af', fontWeight: 600, letterSpacing: '0.04em', textAlign: 'center', lineHeight: 1.4 }}
-        >
-          {zoom < 10 ? zoom.toFixed(1) : Math.round(zoom)}
-          <br />px/s
-        </div>
-      </div>
-
       {/* ── Fixed label column ───────────────────────────────────────────── */}
       <div className="shrink-0 flex flex-col" style={{ width: LABEL_W, borderRight: '1px solid hsl(var(--border))' }}>
         <div style={{ height: RULER_H, backgroundColor: '#ffffff', borderBottom: '1.5px solid #e2e8f0', flexShrink: 0 }} />
@@ -869,7 +791,7 @@ export function TimelinePanel({
                 <div key={i} className="absolute bottom-0" style={{ left: `${sec * zoom}px` }}>
                   <div style={{ width: 1, height: isMajor ? 10 : 5, backgroundColor: isMajor ? '#9ca3af' : '#d1d5db' }} />
                   {isMajor && (
-                    <span style={{ position: 'absolute', bottom: 11, left: 3, fontSize: 9, color: '#6b7280', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                    <span style={{ position: 'absolute', top: 4, left: 3, fontSize: 10, lineHeight: 1.45, color: '#6b7280', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
                       {fmt(sec)}
                     </span>
                   )}
@@ -1132,12 +1054,10 @@ export function TimelinePanel({
           <button
             onClick={() => setAddMenuOpen(v => !v)}
             title="Add to end"
-            className="w-7 h-7 flex items-center justify-center rounded-md transition-colors hover:bg-gray-100 focus-ring"
+            className="flex h-9 w-9 items-center justify-center rounded-lg transition-colors hover:bg-gray-100 focus-ring"
             style={{ border: '1.5px dashed #d1d5db', color: '#9ca3af' }}
           >
-            <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
-              <path d="M5.5 1v9M1 5.5h9" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-            </svg>
+            <Plus size={16} strokeWidth={2} aria-hidden />
           </button>
 
           {addMenuOpen && (
@@ -1198,6 +1118,7 @@ export function TimelinePanel({
           simulations={simulations}
           videos={videos}
           videoUrls={videoUrls}
+          images={images}
           onUpdate={updated => {
             onSectionsChange(sections.map(s => s.id === updated.id ? updated : s));
             setSelectedSection(updated);
