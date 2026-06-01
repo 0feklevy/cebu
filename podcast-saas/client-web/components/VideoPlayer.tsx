@@ -29,6 +29,7 @@ interface MultiClipProps {
   src?: undefined;
   hlsUrl?: undefined;
   hlsStatus?: undefined;
+  timelineDuration?: number;
   currentTime: number;
   onTimeUpdate: (t: number) => void;
   sectionLabel?: string | null;
@@ -43,6 +44,7 @@ type Props = SingleClipProps | MultiClipProps;
 
 interface MultiClipPlayerProps {
   clips: Clip[];
+  timelineDuration?: number;
   onTimeUpdate: (t: number) => void;
   sectionLabel?: string | null;
   activeSimSection?: TimelineSection | null;
@@ -51,7 +53,7 @@ interface MultiClipPlayerProps {
   imperativeRef: React.RefObject<VideoPlayerHandle | null>;
 }
 
-function MultiClipPlayer({ clips, onTimeUpdate, sectionLabel, activeSimSection, activeBrollSection, brollHlsUrl, imperativeRef }: MultiClipPlayerProps) {
+function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, activeSimSection, activeBrollSection, brollHlsUrl, imperativeRef }: MultiClipPlayerProps) {
   const [speed, setSpeed] = useState(1);
   // scrubDisplay: non-null while the user is dragging the seek bar — used for
   // visual feedback only; the actual seek fires once on mouseup/touchend.
@@ -89,7 +91,7 @@ function MultiClipPlayer({ clips, onTimeUpdate, sectionLabel, activeSimSection, 
   }, []);
 
   // ── shared playback engine (viewer-quality) ───────────────────────────────
-  const hook = useEditorPlayback(clips, onTimeUpdate);
+  const hook = useEditorPlayback(clips, onTimeUpdate, timelineDuration);
 
   useImperativeHandle(imperativeRef, () => ({
     seek: (globalSec: number) => hook.seek(globalSec),
@@ -253,7 +255,7 @@ function MultiClipPlayer({ clips, onTimeUpdate, sectionLabel, activeSimSection, 
   };
 
   const displayTime   = scrubDisplay ?? hook.globalTime;
-  const totalDuration = hook.totalDuration;
+  const totalDuration = Math.max(hook.totalDuration, timelineDuration ?? 0);
 
   // ── seek bar handlers — scrub fires exactly once on release ──────────────
   const handleScrubStart = useCallback(() => {
@@ -679,6 +681,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(function VideoPl
     return (
       <MultiClipPlayer
         clips={props.clips}
+        timelineDuration={props.timelineDuration}
         onTimeUpdate={props.onTimeUpdate}
         sectionLabel={props.sectionLabel}
         activeSimSection={props.activeSimSection}

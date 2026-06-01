@@ -53,12 +53,15 @@ describe('extractZip', () => {
     const zip = new AdmZip();
     zip.addFile('index.html', Buffer.from('<h1/>'));
     zip.addFile('__MACOSX/._index.html', Buffer.from(''));
+    zip.addFile('__MACOSX/sim/._app.js', Buffer.from(''));
     const buf = zip.toBuffer();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const files: Map<string, Buffer> = (svc as any).extractZip(buf);
     expect(files.has('index.html')).toBe(true);
     expect([...files.keys()].some(k => k.includes('__MACOSX'))).toBe(false);
     expect([...files.keys()].some(k => k.startsWith('.'))).toBe(false);
+    expect([...files.keys()].some(k => k.endsWith('/._app.js'))).toBe(false);
+    expect(files.has('sim')).toBe(false);
   });
 
   it('excludes dot-files like .DS_Store', () => {
@@ -85,6 +88,54 @@ describe('extractZip', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const files: Map<string, Buffer> = (svc as any).extractZip(buf);
     expect(files.get('index.html')!.toString('utf-8')).toBe(html);
+  });
+
+  it('keeps nested binary assets like PNG files', () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    const zip = new AdmZip();
+    zip.addFile('ising-kid-simu/index.html', Buffer.from('<html></html>'));
+    zip.addFile('ising-kid-simu/VERSION3/BLUE_RED_HATS_NEW/1_BLUE_HAPPY.png', png);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const files: Map<string, Buffer> = (svc as any).extractZip(zip.toBuffer());
+    expect(files.get('ising-kid-simu/VERSION3/BLUE_RED_HATS_NEW/1_BLUE_HAPPY.png')).toEqual(png);
+  });
+
+  it('rejects unsafe paths', async () => {
+    await expect(svc.processFileUpload({
+      projectId: 'project-1',
+      simId:     'sim-1',
+      files:     [{ path: '../index.html', buffer: Buffer.from('<html></html>') }],
+    })).rejects.toThrow(/Unsafe file path/);
+  });
+});
+
+describe('processFileUpload', () => {
+  it('uploads folder bundles with preserved paths and content types', async () => {
+    const html = Buffer.from('<html><body></body></html>');
+    const css = Buffer.from('body { color: red; }');
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+
+    const result = await svc.processFileUpload({
+      projectId: 'project-1',
+      simId:     'sim-1',
+      files: [
+        { path: 'ising-kid-simu/ising_model.html', buffer: html },
+        { path: 'ising-kid-simu/ising_model.css', buffer: css },
+        { path: 'ising-kid-simu/VERSION3/BLUE_RED_HATS_NEW/1_BLUE_HAPPY.png', buffer: png },
+      ],
+    });
+
+    expect(result.entryKey).toBe('simulations/project-1/sim-1/ising-kid-simu/ising_model.html');
+    expect(mockStorage.uploadFile).toHaveBeenCalledWith(
+      'simulations/project-1/sim-1/ising-kid-simu/ising_model.css',
+      css,
+      'text/css',
+    );
+    expect(mockStorage.uploadFile).toHaveBeenCalledWith(
+      'simulations/project-1/sim-1/ising-kid-simu/VERSION3/BLUE_RED_HATS_NEW/1_BLUE_HAPPY.png',
+      png,
+      'image/png',
+    );
   });
 });
 

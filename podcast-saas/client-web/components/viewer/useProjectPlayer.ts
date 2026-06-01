@@ -54,6 +54,7 @@ export interface ProjectPlayerState {
   totalDuration:   number;
   badgeText:       string;
   badgeMode:       'sim' | 'free' | '';
+  resumeAction:    'resume' | 'backToVideo';
 }
 
 export interface ProjectPlayerActions {
@@ -80,7 +81,18 @@ function makeTimeline(segments: PlayerSegment[]): { segs: TimelineSeg[]; total: 
     segs.push({ id: seg.id, duration: seg.duration_sec, offset: off });
     off += seg.duration_sec;
   }
-  return { segs, total: off };
+  return { segs, total: computeDisplayTotal(segs, segments) };
+}
+
+function computeDisplayTotal(timeline: TimelineSeg[], segments: PlayerSegment[]): number {
+  let total = timeline.reduce((max, seg) => Math.max(max, seg.offset + seg.duration), 0);
+  segments.forEach((seg, idx) => {
+    const offset = timeline[idx]?.offset ?? 0;
+    for (const section of seg.simulations) {
+      total = Math.max(total, offset + section.end_sec);
+    }
+  });
+  return total;
 }
 
 // WeakMap tracks error handlers per Hls instance to allow precise removal
@@ -106,6 +118,7 @@ export function useProjectPlayer(
     totalDuration:    initialTotal,
     badgeText:        config.segments[0]?.label ?? '',
     badgeMode:        '',
+    resumeAction:     'resume',
   });
 
   const merge = (patch: Partial<ProjectPlayerState>) =>
@@ -127,6 +140,8 @@ export function useProjectPlayer(
   const curIdxRef     = useRef(0);
   const activeSimRef    = useRef<SimulationOverlay | null>(null);
   const activeSimUrlRef = useRef<string | null>(null);
+  const resumeActionRef = useRef<'resume' | 'backToVideo'>('resume');
+  const simReturnGlobalSecRef = useRef(0);
   const activeBrollRef  = useRef<BrollClip | null>(null);
   const swappingRef     = useRef(false);
   const userPausedRef   = useRef(false);
@@ -165,11 +180,12 @@ export function useProjectPlayer(
       timelineRef.current[i].offset = off;
       off += timelineRef.current[i].duration;
     }
-    totalDurRef.current = off;
+    const displayTotal = computeDisplayTotal(timelineRef.current, config.segments);
+    totalDurRef.current = displayTotal;
 
-    merge({ timeline: [...timelineRef.current], totalDuration: off });
+    merge({ timeline: [...timelineRef.current], totalDuration: displayTotal });
 
-    if (v === videoRef.current) setTotTime(off);
+    if (v === videoRef.current) setTotTime(displayTotal);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -251,6 +267,10 @@ export function useProjectPlayer(
 
     const section    = seg.simulations.find((s) => localTime >= s.start_sec && localTime < s.end_sec) ?? null;
     const simSection = section?.simulation_url ? section : null;
+    const segmentDuration = timelineRef.current[segmentIdx]?.duration ?? seg.duration_sec;
+    const isPostRollSim = !!simSection &&
+      simSection.type === 'simulation' &&
+      simSection.start_sec >= segmentDuration - 0.05;
 
     if (simSection !== null && simSection?.id === activeSimRef.current?.id) return;
 
@@ -260,12 +280,26 @@ export function useProjectPlayer(
     }
     activeSimRef.current = simSection;
 
+    if (!simSection && resumeActionRef.current === 'backToVideo') {
+      resumeActionRef.current = 'resume';
+      userPausedRef.current = false;
+      merge({ showResumeBtn: false, resumeAction: 'resume' });
+    }
+
     if (simSection) {
       const script  = simSection.sim_script ?? 'main';
       const params  = { simpleUi: simSection.simple_ui ?? false, autoScript: simSection.auto_script ?? true };
       const sameUrl = simSection.simulation_url === activeSimUrlRef.current;
       activeSimUrlRef.current = simSection.simulation_url;
       merge({ activeSimUrl: simSection.simulation_url });
+
+      if (isPostRollSim) {
+        videoRef.current?.pause();
+        userPausedRef.current = true;
+        resumeActionRef.current = 'backToVideo';
+        simReturnGlobalSecRef.current = timelineRef.current[segmentIdx]?.offset ?? 0;
+        merge({ showResumeBtn: true, resumeAction: 'backToVideo', controlsVisible: true });
+      }
 
       if (sameUrl && simReadyRef.current) {
         merge({ showSimOverlay: true });
@@ -501,11 +535,13 @@ export function useProjectPlayer(
     }
     activeSimRef.current = null;
     swappingRef.current = true;
+    resumeActionRef.current = 'resume';
 
     merge({
       currentSegIdx: idx,
       badgeText: config.segments[idx]?.label ?? '',
       badgeMode: 'free',
+      resumeAction: 'resume',
     });
 
     if (standbyIdRef.current !== seg.id) prewarm(idx);
@@ -515,7 +551,7 @@ export function useProjectPlayer(
       if (gen !== swapGenRef.current) return;
       swapVideos();
       swappingRef.current = false;
-      if (forcePlay) safePlay(videoRef.current!);
+      if (forcePlay && localTime < seg.duration - 0.01) safePlay(videoRef.current!);
       const nextIdx = idx + 1;
       if (nextIdx < timelineRef.current.length) prewarm(nextIdx);
       updateSimOverlay(idx, localTime);
@@ -524,7 +560,7 @@ export function useProjectPlayer(
     const doSwap = () => {
       if (gen !== swapGenRef.current) return;
       if (localTime > 0.05) {
-        sv.currentTime = localTime;
+        sv.currentTime = Math.min(localTime, seg.duration);
         sv.addEventListener('seeked', () => {
           if (gen !== swapGenRef.current) return;
           if (sv.readyState >= 2) finishSwap();
@@ -575,9 +611,25 @@ export function useProjectPlayer(
   // ── onEnded ───────────────────────────────────────────────────────────────
   const onEnded = useCallback(() => {
     merge({ playing: false });
+    const idx = curIdxRef.current;
+    const seg = timelineRef.current[idx];
+    const section = config.segments[idx]?.simulations.find((s) =>
+      s.type === 'simulation' &&
+      !!s.simulation_url &&
+      !!seg &&
+      seg.duration >= s.start_sec - 0.05 &&
+      seg.duration < s.end_sec,
+    ) ?? null;
+
+    if (seg && section) {
+      setProgress(seg.offset + Math.max(seg.duration, section.start_sec));
+      updateSimOverlay(idx, Math.max(seg.duration, section.start_sec));
+      return;
+    }
+
     activeSimRef.current = null;
 
-    const nextIdx = curIdxRef.current + 1;
+    const nextIdx = idx + 1;
     if (nextIdx < timelineRef.current.length) {
       loadSegment(nextIdx, 0);
     } else {
@@ -623,7 +675,7 @@ export function useProjectPlayer(
         if (simPollRef.current) clearInterval(simPollRef.current);
         const pending = pendingSimRef.current;
         pendingSimRef.current = null;
-        if (pending && !userPausedRef.current) {
+        if (pending && (!userPausedRef.current || resumeActionRef.current === 'backToVideo')) {
           merge({ showSimOverlay: true });
           sendToSim({ type: 'startScript', script: pending.script, params: pending.params });
         }
@@ -632,7 +684,7 @@ export function useProjectPlayer(
         videoRef.current?.pause();
         sendToSim({ type: 'pauseScript' });   // stop animation, keep sim panel visible
         userPausedRef.current = true;
-        merge({ showResumeBtn: true, badgeMode: 'free' });
+        merge({ showResumeBtn: true, badgeMode: 'free', resumeAction: resumeActionRef.current });
       }
     };
     window.addEventListener('message', handler);
@@ -741,7 +793,7 @@ export function useProjectPlayer(
       if (targetIdx === curIdxRef.current) {
         swapGenRef.current++;
         if (useHlsJsRef.current) hlsRef.current?.startLoad();
-        videoRef.current!.currentTime = localTime;
+        videoRef.current!.currentTime = Math.min(localTime, targetSeg.duration);
         if (useHlsJsRef.current && standbyIdRef.current) {
           const resumeGen = swapGenRef.current;
           setTimeout(() => {
@@ -750,10 +802,14 @@ export function useProjectPlayer(
             }
           }, 1500);
         }
-        if (userPausedRef.current) { userPausedRef.current = false; merge({ showResumeBtn: false }); }
+        if (userPausedRef.current) {
+          userPausedRef.current = false;
+          resumeActionRef.current = 'resume';
+          merge({ showResumeBtn: false, resumeAction: 'resume' });
+        }
         updateSimOverlay(targetIdx, localTime);
         updateBrollOverlay(targetGlobal);
-        if (wasPlayingRef.current) safePlay(videoRef.current!);
+        if (wasPlayingRef.current && localTime < targetSeg.duration - 0.01) safePlay(videoRef.current!);
       } else {
         loadSegment(targetIdx, localTime, wasPlayingRef.current);
       }
@@ -848,10 +904,10 @@ export function useProjectPlayer(
         showControls();
 
         if (targetIdx === curIdxRef.current) {
-          videoRef.current!.currentTime = localTime;
+          videoRef.current!.currentTime = Math.min(localTime, tl[targetIdx].duration);
           updateSimOverlay(targetIdx, localTime);
           updateBrollOverlay(newGlobal);
-          if (wasPlaying) safePlay(videoRef.current!);
+          if (wasPlaying && localTime < tl[targetIdx].duration - 0.01) safePlay(videoRef.current!);
         } else {
           loadSegment(targetIdx, localTime, wasPlaying);
         }
@@ -878,8 +934,37 @@ export function useProjectPlayer(
   }, [togglePlay, startPlayback]);
 
   const resumeFromSim = useCallback(() => {
+    if (resumeActionRef.current === 'backToVideo') {
+      const targetGlobal = Math.max(0, simReturnGlobalSecRef.current);
+      const tl = timelineRef.current;
+      let targetIdx = 0;
+      for (let i = tl.length - 1; i >= 0; i--) {
+        if (tl[i].offset <= targetGlobal) { targetIdx = i; break; }
+      }
+      const targetSeg = tl[targetIdx];
+      const localTime = targetSeg ? Math.max(0, targetGlobal - targetSeg.offset) : 0;
+
+      sendToSim({ type: 'stopScript' });
+      activeSimRef.current = null;
+      userPausedRef.current = false;
+      resumeActionRef.current = 'resume';
+      merge({ showResumeBtn: false, showSimOverlay: false, resumeAction: 'resume', controlsVisible: true });
+      setProgress(targetGlobal);
+      updateBrollOverlay(targetGlobal);
+
+      if (targetSeg && targetIdx === curIdxRef.current) {
+        videoRef.current!.currentTime = Math.min(localTime, targetSeg.duration);
+        updateSimOverlay(targetIdx, localTime);
+        safePlay(videoRef.current!);
+      } else if (targetSeg) {
+        loadSegment(targetIdx, localTime, true);
+      }
+      return;
+    }
+
     userPausedRef.current = false;
-    merge({ showResumeBtn: false });
+    resumeActionRef.current = 'resume';
+    merge({ showResumeBtn: false, resumeAction: 'resume' });
     // Restart the animation script that was paused on userInteraction
     if (activeSimRef.current) {
       sendToSim({

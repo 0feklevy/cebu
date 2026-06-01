@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => {
     mockProjects:         { findFirst: vi.fn() },
     mockSections:         { findFirst: vi.fn() },
     mockSimulations:      { findFirst: vi.fn() },
+    mockVideoFiles:       { findFirst: vi.fn() },
     mockInsert,
     mockInsertValues,
     mockInsertReturning,
@@ -39,6 +40,7 @@ vi.mock('../../../db/index.js', () => ({
       projects:          mocks.mockProjects,
       timeline_sections: mocks.mockSections,
       simulations:       mocks.mockSimulations,
+      video_files:        mocks.mockVideoFiles,
     },
     insert: mocks.mockInsert,
     update: mocks.mockUpdate,
@@ -48,7 +50,7 @@ vi.mock('../../../db/index.js', () => ({
 
 // Destructure for ergonomics in tests
 const {
-  mockProjects, mockSections, mockSimulations,
+  mockProjects, mockSections, mockSimulations, mockVideoFiles,
   mockInsertValues, mockInsertReturning,
   mockUpdateSet, mockUpdateReturning,
 } = mocks;
@@ -57,6 +59,7 @@ vi.mock('../../../db/schema.js', () => ({
   projects:          Symbol('projects'),
   timeline_sections: Symbol('timeline_sections'),
   simulations:       Symbol('simulations'),
+  video_files:        Symbol('video_files'),
 }));
 
 vi.mock('drizzle-orm', () => ({
@@ -80,6 +83,7 @@ const SIM_ID      = 'sim-1';
 const SIM_URL     = 'https://r2.example.com/simulations/proj-1/sim-1/index.html';
 
 const FAKE_PROJECT = { id: PROJECT_ID, created_by: 'user-1' };
+const FAKE_VIDEO = { id: 'vid-1', project_id: PROJECT_ID };
 const FAKE_SECTION = {
   id:           SECTION_ID,
   project_id:   PROJECT_ID,
@@ -121,6 +125,7 @@ describe('POST /api/v1/projects/:id/sections — simulation denormalization', ()
   beforeEach(async () => {
     vi.clearAllMocks();
     resetChains();
+    mockVideoFiles.findFirst.mockResolvedValue(FAKE_VIDEO);
     app = await makeApp();
   });
 
@@ -230,7 +235,7 @@ describe('PATCH /api/v1/projects/:id/sections/:sid — simulation denormalizatio
 
   it('denormalizes entry_file → simulation_url when simulation_id is provided', async () => {
     mockProjects.findFirst.mockResolvedValue(FAKE_PROJECT);
-    mockSections.findFirst.mockResolvedValue(FAKE_SECTION);
+    mockSections.findFirst.mockResolvedValue({ ...FAKE_SECTION, simulation_id: null, simulation_url: null });
     mockSimulations.findFirst.mockResolvedValue({ id: SIM_ID, entry_file: SIM_URL });
     const updated = { ...FAKE_SECTION };
     mockUpdateReturning.mockResolvedValue([updated]);

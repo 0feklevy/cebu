@@ -182,16 +182,16 @@
   z-index: 35;
   padding: 10px 22px;
   background: linear-gradient(135deg,#3b82f6,#6366f1);
-  color: #000;
+  color: #fff;
   border: none;
   border-radius: 8px;
   font-size: 14px;
   font-weight: 700;
   cursor: pointer;
-  box-shadow: 0 4px 20px rgba(255,159,67,.45);
+  box-shadow: 0 4px 20px rgba(59,130,246,.35);
   transition: background .15s;
 }
-.sim-resume-btn:hover { background: #ffa94d; }
+.sim-resume-btn:hover { background: #2563eb; }
 
 /* ── Responsive ───────────────────────────────────────── */
 @media (max-width: 500px) {

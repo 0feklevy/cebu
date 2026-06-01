@@ -17,6 +17,59 @@ type ToolMode = 'video' | 'simulation' | 'broll';
 
 const HLS_TIERS = ['360p', '480p', '720p', '1080p'] as const;
 type HlsTier = typeof HLS_TIERS[number];
+type SectionSnapshot = TimelineSection[];
+
+const HISTORY_LIMIT = 50;
+
+function cloneSections(sections: TimelineSection[]): SectionSnapshot {
+  return sections.map(s => ({ ...s }));
+}
+
+function sectionPatchBody(s: TimelineSection): Parameters<typeof api.updateSection>[2] {
+  return {
+    start_sec: s.start_sec,
+    end_sec: s.end_sec,
+    type: s.type,
+    label: s.label,
+    notes: s.notes,
+    sort_order: s.sort_order,
+    simulation_url: s.simulation_url,
+    simulation_id: s.simulation_id,
+    sim_script: s.sim_script,
+    global_offset_sec: s.global_offset_sec,
+    clip_source_video_id: s.clip_source_video_id,
+    clip_in_sec: s.clip_in_sec ?? 0,
+    broll_volume: s.broll_volume,
+    simple_ui: s.simple_ui,
+    auto_script: s.auto_script,
+  };
+}
+
+function sectionCreateBody(s: TimelineSection): Parameters<typeof api.createSection>[1] {
+  return {
+    video_file_id: s.video_file_id,
+    start_sec: s.start_sec,
+    end_sec: s.end_sec,
+    type: s.type,
+    label: s.label,
+    notes: s.notes,
+    sort_order: s.sort_order,
+    simulation_url: s.simulation_url,
+    simulation_id: s.simulation_id,
+    sim_script: s.sim_script,
+    track: s.track,
+    global_offset_sec: s.global_offset_sec,
+    clip_source_video_id: s.clip_source_video_id,
+    clip_in_sec: s.clip_in_sec ?? 0,
+    broll_volume: s.broll_volume,
+    simple_ui: s.simple_ui,
+    auto_script: s.auto_script,
+  };
+}
+
+function sectionComparable(s: TimelineSection) {
+  return JSON.stringify(sectionPatchBody(s));
+}
 
 function tierIndex(name: string | null): number {
   if (!name) return -1;
@@ -58,6 +111,9 @@ export function VideoEditor({ projectId }: Props) {
   const [videos, setVideos]   = useState<VideoFile[]>([]);     // main videos only (is_broll=false)
   const [allVideos, setAllVideos] = useState<VideoFile[]>([]);  // all videos incl. broll sources
   const [sections, setSections] = useState<TimelineSection[]>([]);
+  const [undoStack, setUndoStack] = useState<SectionSnapshot[]>([]);
+  const [redoStack, setRedoStack] = useState<SectionSnapshot[]>([]);
+  const [historyBusy, setHistoryBusy] = useState(false);
   const [playheadSec, setPlayheadSec] = useState(0);
   const [loading, setLoading] = useState(true);
   const [simulations, setSimulations] = useState<Simulation[]>([]);
@@ -95,6 +151,8 @@ export function VideoEditor({ projectId }: Props) {
       setVideos(vids.filter(v => !v.is_broll));
       setAllVideos(vids);
       setSections(secs);
+      setUndoStack([]);
+      setRedoStack([]);
       setSimulations(sims);
       // Keep in-progress jobs + recently completed ones (last 10 min) so the user sees the result
       const RECENT_MS = 10 * 60 * 1000;
@@ -182,23 +240,30 @@ export function VideoEditor({ projectId }: Props) {
     return playheadSec >= start && playheadSec < end;
   }) ?? null;
 
-  // Clip overlay — library video shown as overlay at playhead position.
-  // Compute each video's global offset to convert local start_sec → global time.
-  const _clipSortedVideos = [...allVideos.filter(v => !v.is_broll)].sort(
+  // Main timeline offsets. Sections may extend past the physical video duration
+  // when the user appends a simulation or existing clip after the last clip.
+  const mainVideosSorted = [...allVideos.filter(v => !v.is_broll)].sort(
     (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
   );
   const videoGlobalOffsets = new Map<string, number>();
-  let _clipGlobalOff = 0;
-  for (const v of _clipSortedVideos) {
-    videoGlobalOffsets.set(v.id, _clipGlobalOff);
-    _clipGlobalOff += v.duration_sec ?? 0;
+  let mainVideoDuration = 0;
+  for (const v of mainVideosSorted) {
+    videoGlobalOffsets.set(v.id, mainVideoDuration);
+    mainVideoDuration += v.duration_sec ?? 0;
   }
 
+  const sectionGlobalStart = (s: TimelineSection) => (videoGlobalOffsets.get(s.video_file_id) ?? 0) + s.start_sec;
+  const sectionGlobalEnd   = (s: TimelineSection) => (videoGlobalOffsets.get(s.video_file_id) ?? 0) + s.end_sec;
+  const timelineDuration = Math.max(
+    mainVideoDuration,
+    ...sections.filter(s => s.track !== 'broll').map(sectionGlobalEnd),
+  );
+
+  // Clip overlay — library video shown as overlay at playhead position.
   const activeClipSection = sections.find(s => {
     if (s.type !== 'clip' || !s.clip_source_video_id) return false;
-    const vidOff = videoGlobalOffsets.get(s.video_file_id) ?? 0;
-    const globalStart = vidOff + s.start_sec;
-    const globalEnd   = vidOff + s.end_sec;
+    const globalStart = sectionGlobalStart(s);
+    const globalEnd   = sectionGlobalEnd(s);
     return playheadSec >= globalStart && playheadSec < globalEnd;
   }) ?? null;
 
@@ -208,9 +273,7 @@ export function VideoEditor({ projectId }: Props) {
   const clipSectionAsOverlay: TimelineSection | null = activeClipSection
     ? ({
         ...activeClipSection,
-        global_offset_sec:
-          (videoGlobalOffsets.get(activeClipSection.video_file_id) ?? 0) +
-          activeClipSection.start_sec,
+        global_offset_sec: sectionGlobalStart(activeClipSection),
         video_file_id: activeClipSection.clip_source_video_id!,
       } as TimelineSection)
     : null;
@@ -234,6 +297,75 @@ export function VideoEditor({ projectId }: Props) {
     setBrollJobs(prev => prev.map(j => j.id === job.id ? job : j));
     if (job.status === 'ready') loadData();
   }, [loadData]);
+
+  const commitSections = useCallback((nextSections: TimelineSection[]) => {
+    setUndoStack(stack => [...stack.slice(-(HISTORY_LIMIT - 1)), cloneSections(sections)]);
+    setRedoStack([]);
+    setSections(nextSections);
+  }, [sections]);
+
+  const restoreSectionSnapshot = useCallback(async (target: SectionSnapshot): Promise<TimelineSection[]> => {
+    const currentById = new Map(sections.map(s => [s.id, s]));
+    const targetIds = new Set(target.map(s => s.id));
+    const restored: TimelineSection[] = [];
+
+    for (const targetSection of target) {
+      const currentSection = currentById.get(targetSection.id);
+      if (currentSection) {
+        if (sectionComparable(currentSection) === sectionComparable(targetSection)) {
+          restored.push(currentSection);
+        } else {
+          restored.push(await api.updateSection(projectId, targetSection.id, sectionPatchBody(targetSection)));
+        }
+      } else {
+        restored.push(await api.createSection(projectId, sectionCreateBody(targetSection)));
+      }
+    }
+
+    for (const currentSection of sections) {
+      if (!targetIds.has(currentSection.id)) {
+        await api.deleteSection(projectId, currentSection.id);
+      }
+    }
+
+    return restored;
+  }, [projectId, sections]);
+
+  const handleUndo = useCallback(async () => {
+    if (historyBusy || undoStack.length === 0) return;
+    const target = undoStack[undoStack.length - 1];
+    const remainingUndo = undoStack.slice(0, -1);
+    const redoSnapshot = cloneSections(sections);
+    setHistoryBusy(true);
+    try {
+      const restored = await restoreSectionSnapshot(target);
+      setSections(restored);
+      setUndoStack(remainingUndo);
+      setRedoStack(stack => [...stack.slice(-(HISTORY_LIMIT - 1)), redoSnapshot]);
+    } catch {
+      await loadData();
+    } finally {
+      setHistoryBusy(false);
+    }
+  }, [historyBusy, loadData, restoreSectionSnapshot, sections, undoStack]);
+
+  const handleRedo = useCallback(async () => {
+    if (historyBusy || redoStack.length === 0) return;
+    const target = redoStack[redoStack.length - 1];
+    const remainingRedo = redoStack.slice(0, -1);
+    const undoSnapshot = cloneSections(sections);
+    setHistoryBusy(true);
+    try {
+      const restored = await restoreSectionSnapshot(target);
+      setSections(restored);
+      setRedoStack(remainingRedo);
+      setUndoStack(stack => [...stack.slice(-(HISTORY_LIMIT - 1)), undoSnapshot]);
+    } catch {
+      await loadData();
+    } finally {
+      setHistoryBusy(false);
+    }
+  }, [historyBusy, loadData, redoStack, restoreSectionSnapshot, sections]);
 
   const handleDeleteSim = (simId: string) => setConfirmSim(simId);
 
@@ -295,37 +427,21 @@ export function VideoEditor({ projectId }: Props) {
 
   // Compute active section label (global → local → section lookup)
   const activeSectionLabel = (() => {
-    let off = 0;
-    for (const v of sortedVideos) {
-      const dur = v.duration_sec ?? 0;
-      if (playheadSec < off + dur) {
-        const localSec = playheadSec - off;
-        return sections.find(
-          s => s.track !== 'broll' && s.video_file_id === v.id && s.start_sec <= localSec && s.end_sec >= localSec,
-        )?.label ?? null;
-      }
-      off += dur;
-    }
-    return null;
+    return sections.find(s =>
+      s.track !== 'broll' &&
+      playheadSec >= sectionGlobalStart(s) &&
+      playheadSec < sectionGlobalEnd(s),
+    )?.label ?? null;
   })();
 
   // Compute active simulation section for the editor preview overlay
   const activeSimSection = (() => {
-    let off = 0;
-    for (const v of sortedVideos) {
-      const dur = v.duration_sec ?? 0;
-      if (playheadSec < off + dur) {
-        const localSec = playheadSec - off;
-        return sections.find(
-          s => s.video_file_id === v.id &&
-               s.type === 'simulation' &&
-               !!s.simulation_url &&
-               s.start_sec <= localSec && s.end_sec >= localSec,
-        ) ?? null;
-      }
-      off += dur;
-    }
-    return null;
+    return sections.find(s =>
+      s.type === 'simulation' &&
+      !!s.simulation_url &&
+      playheadSec >= sectionGlobalStart(s) &&
+      playheadSec < sectionGlobalEnd(s),
+    ) ?? null;
   })();
 
   useEffect(() => {
@@ -389,6 +505,7 @@ export function VideoEditor({ projectId }: Props) {
               <VideoPlayer
                 ref={playerRef}
                 clips={clips}
+                timelineDuration={timelineDuration}
                 currentTime={playheadSec}
                 onTimeUpdate={setPlayheadSec}
                 sectionLabel={activeSectionLabel}
@@ -447,7 +564,7 @@ export function VideoEditor({ projectId }: Props) {
                 onNewJob={handleNewBrollJob}
                 onJobUpdate={handleBrollJobUpdate}
                 onInserted={(section) => {
-                  setSections(prev => [...prev, section]);
+                  commitSections([...sections, section]);
                   setBrollMark(null);
                 }}
                 onClose={() => setBrollMark(null)}
@@ -455,6 +572,13 @@ export function VideoEditor({ projectId }: Props) {
             </div>
           ) : (
             <div className="w-full lg:w-80 shrink-0 flex flex-col gap-2 overflow-y-auto surface-panel rounded-lg px-3 py-3 fine-scrollbar">
+              <div className="pb-2 border-b border-border/40">
+                <h2 className="text-sm font-semibold text-foreground">Library</h2>
+                <p className="mt-0.5 text-[10px] text-muted-foreground">
+                  {videos.length} clip{videos.length !== 1 ? 's' : ''} · {sections.length} section{sections.length !== 1 ? 's' : ''}
+                </p>
+              </div>
+
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <div className="w-0.5 h-3 rounded-full bg-primary/70" />
@@ -614,8 +738,13 @@ export function VideoEditor({ projectId }: Props) {
             activeVideoId={activeVideoId}
             videoUrls={rawUrls}
             onSeek={handleTimelineSeek}
-            onSectionsChange={setSections}
+            onSectionsChange={commitSections}
             onAddVideo={() => setShowUploader(true)}
+            onUndo={handleUndo}
+            onRedo={handleRedo}
+            canUndo={undoStack.length > 0}
+            canRedo={redoStack.length > 0}
+            historyBusy={historyBusy}
             toolMode={toolMode}
             onToolModeChange={handleToolModeChange}
             onBrollMarkComplete={setBrollMark}

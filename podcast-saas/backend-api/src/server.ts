@@ -10,6 +10,7 @@ import { checkDatabaseConnection } from './db/index.js';
 import { getFirebaseAdmin } from './services/firebase.js';
 import { getStorageAdapter } from './services/storage/getStorageAdapter.js';
 import { R2StorageAdapter } from './services/storage/R2StorageAdapter.js';
+import { getSimulationContentType } from './services/simulation/SimulationService.js';
 
 // Controllers
 import { registerPlatformRoutes } from './controllers/v1/platform.controller.js';
@@ -271,19 +272,8 @@ async function build() {
       const filePath = join(tmpdir(), 'podcast-saas-local-storage', key);
       try {
         const data = await readFile(filePath);
-        const ext = key.split('.').pop()?.toLowerCase() ?? '';
-        const ct: Record<string, string> = {
-          html: 'text/html; charset=utf-8', htm: 'text/html; charset=utf-8',
-          js: 'application/javascript', mjs: 'application/javascript',
-          css: 'text/css', json: 'application/json',
-          png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
-          gif: 'image/gif', svg: 'image/svg+xml', ico: 'image/x-icon',
-          woff: 'font/woff', woff2: 'font/woff2', ttf: 'font/ttf',
-          mp3: 'audio/mpeg', mp4: 'video/mp4', webm: 'video/webm', wav: 'audio/wav',
-          txt: 'text/plain',
-        };
         return reply
-          .header('Content-Type', ct[ext] ?? 'application/octet-stream')
+          .header('Content-Type', getSimulationContentType(key))
           .header('Cross-Origin-Resource-Policy', 'cross-origin')
           .header('Access-Control-Allow-Origin', '*')
           .send(data);

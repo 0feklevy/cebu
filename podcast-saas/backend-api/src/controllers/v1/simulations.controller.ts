@@ -5,13 +5,38 @@ import { projects, simulations } from '../../db/schema.js';
 import { eq, and } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
-import { SimulationService } from '../../services/simulation/SimulationService.js';
+import {
+  getSimulationContentType,
+  isTextSimulationFile,
+  SimulationService,
+  type UploadedSimulationFile,
+} from '../../services/simulation/SimulationService.js';
 import { LLMService } from '../../services/llm/LLMService.js';
 import { ApiKeyService } from '../../services/secrets/ApiKeyService.js';
 import { UsageTrackingService } from '../../services/usage/UsageTrackingService.js';
 import { logger } from '../../lib/logger.js';
 
 const _llmService = new LLMService(new ApiKeyService(), new UsageTrackingService());
+const SIMULATION_UPLOAD_MAX_BYTES = 250 * 1024 * 1024;
+const SIMULATION_UPLOAD_MAX_FILES = 1000;
+
+function parseManifestPaths(value: unknown): string[] | null {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const parsed = JSON.parse(value) as unknown;
+  if (!Array.isArray(parsed)) throw new Error('manifest must be an array');
+  return parsed.map((item) => {
+    if (typeof item === 'string') return item;
+    if (
+      item &&
+      typeof item === 'object' &&
+      'path' in item &&
+      typeof (item as { path?: unknown }).path === 'string'
+    ) {
+      return (item as { path: string }).path;
+    }
+    throw new Error('manifest entries must be strings or { path } objects');
+  });
+}
 
 export async function registerSimulationsRoutes(app: FastifyInstance): Promise<void> {
   const storage = getStorageAdapter();
@@ -43,7 +68,9 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
   );
 
   // POST /api/v1/projects/:id/simulations/upload
-  // Accepts multipart: name (text field) + file (.zip)
+  // Accepts multipart:
+  // - name (text field) + file (.zip), or
+  // - name + manifest (JSON path array) + files (repeated folder/file bundle parts)
   app.post<{ Params: { id: string } }>(
     '/api/v1/projects/:id/simulations/upload',
     {
@@ -57,24 +84,71 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
       });
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
-      // Parse multipart (name field must come before file field)
-      let name  = '';
+      let name = '';
       let zipBuf: Buffer | null = null;
-      const MAX = 50 * 1024 * 1024; // 50 MB
+      let manifestPaths: string[] | null = null;
+      let totalBytes = 0;
+      const bundleFiles: UploadedSimulationFile[] = [];
 
-      const parts = request.parts({ limits: { fileSize: MAX } });
+      const parts = request.parts({
+        limits: {
+          fileSize: SIMULATION_UPLOAD_MAX_BYTES,
+          files:    SIMULATION_UPLOAD_MAX_FILES,
+          fields:   20,
+        },
+      });
       for await (const part of parts) {
         if (part.type === 'field' && part.fieldname === 'name') {
           name = String(part.value).trim();
+        } else if (part.type === 'field' && part.fieldname === 'manifest') {
+          try {
+            manifestPaths = parseManifestPaths(part.value);
+          } catch (err) {
+            return reply.code(400).send({ message: (err as Error).message });
+          }
         } else if (part.type === 'file' && part.fieldname === 'file') {
           const chunks: Buffer[] = [];
-          for await (const chunk of part.file) chunks.push(chunk as Buffer);
+          for await (const chunk of part.file) {
+            const buf = chunk as Buffer;
+            totalBytes += buf.length;
+            if (totalBytes > SIMULATION_UPLOAD_MAX_BYTES) {
+              return reply.code(413).send({ message: 'Simulation upload exceeds 250 MB' });
+            }
+            chunks.push(buf);
+          }
           zipBuf = Buffer.concat(chunks);
+        } else if (part.type === 'file' && part.fieldname === 'files') {
+          const chunks: Buffer[] = [];
+          for await (const chunk of part.file) {
+            const buf = chunk as Buffer;
+            totalBytes += buf.length;
+            if (totalBytes > SIMULATION_UPLOAD_MAX_BYTES) {
+              return reply.code(413).send({ message: 'Simulation upload exceeds 250 MB' });
+            }
+            chunks.push(buf);
+          }
+          bundleFiles.push({
+            path:   part.filename || `file-${bundleFiles.length + 1}`,
+            buffer: Buffer.concat(chunks),
+          });
         }
       }
 
       if (!name) return reply.code(400).send({ message: '"name" field is required' });
-      if (!zipBuf || zipBuf.length === 0) return reply.code(400).send({ message: '"file" (ZIP) is required' });
+      if (zipBuf && bundleFiles.length > 0) {
+        return reply.code(400).send({ message: 'Upload either one ZIP or a file bundle, not both' });
+      }
+      if ((!zipBuf || zipBuf.length === 0) && bundleFiles.length === 0) {
+        return reply.code(400).send({ message: '"file" (ZIP) or "files" bundle is required' });
+      }
+      if (manifestPaths && manifestPaths.length !== bundleFiles.length) {
+        return reply.code(400).send({ message: 'manifest file count does not match uploaded files' });
+      }
+      if (manifestPaths) {
+        for (let i = 0; i < bundleFiles.length; i++) {
+          bundleFiles[i].path = manifestPaths[i];
+        }
+      }
 
       const simId   = randomUUID();
       const prefix  = `simulations/${project.id}/${simId}`;
@@ -95,7 +169,11 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
       // Process asynchronously so the response returns quickly
       const svc = new SimulationService(storage, _llmService);
 
-      svc.processUpload({ projectId: project.id, simId, zipBuffer: zipBuf })
+      const processPromise = zipBuf
+        ? svc.processUpload({ projectId: project.id, simId, zipBuffer: zipBuf })
+        : svc.processFileUpload({ projectId: project.id, simId, files: bundleFiles });
+
+      processPromise
         .then(async ({ entryKey, bridgeFunctions }) => {
           // Store storage KEY (not URL) so it never goes stale across environments/ports
           await db
@@ -134,9 +212,8 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
       if (!sim) return reply.code(404).send({ message: 'Simulation not found' });
 
       const allKeys = await storage.listObjects(sim.storage_prefix);
-      const TEXT_EXTS = new Set(['html', 'htm', 'js', 'mjs', 'css', 'json', 'ts', 'txt', 'md']);
       const files = allKeys
-        .filter(k => TEXT_EXTS.has(k.split('.').pop()?.toLowerCase() ?? ''))
+        .filter(isTextSimulationFile)
         .sort()
         .map(k => ({
           key:      k,
@@ -174,14 +251,11 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
       }
 
       const buf = await storage.readObject(key);
-      const ext = (key.split('.').pop() ?? '').toLowerCase();
-      const CT: Record<string, string> = {
-        html: 'text/html; charset=utf-8', htm: 'text/html; charset=utf-8',
-        js: 'application/javascript', mjs: 'application/javascript',
-        css: 'text/css', json: 'application/json', ts: 'text/plain; charset=utf-8',
-      };
+      if (!isTextSimulationFile(key)) {
+        return reply.code(415).send({ message: 'Only text simulation files can be read as source' });
+      }
       return reply
-        .header('Content-Type', CT[ext] ?? 'text/plain; charset=utf-8')
+        .header('Content-Type', getSimulationContentType(key))
         .send(buf.toString('utf-8'));
     },
   );

@@ -1,10 +1,121 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { getAuth } from 'firebase/auth';
 import type { Simulation } from 'shared/src/generated/client-v1';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
+const MAX_UPLOAD_BYTES = 250 * 1024 * 1024;
+const MAX_UPLOAD_FILES = 1000;
+
+interface UploadItem {
+  file: File;
+  path: string;
+}
+
+interface WebkitEntry {
+  isFile: boolean;
+  isDirectory: boolean;
+  name: string;
+}
+
+interface WebkitFileEntry extends WebkitEntry {
+  file: (success: (file: File) => void, error?: (err: DOMException) => void) => void;
+}
+
+interface WebkitDirectoryEntry extends WebkitEntry {
+  createReader: () => {
+    readEntries: (success: (entries: WebkitEntry[]) => void, error?: (err: DOMException) => void) => void;
+  };
+}
+
+type FileWithRelativePath = File & {
+  webkitRelativePath?: string;
+};
+
+function browserRelativePath(file: File): string {
+  return (file as FileWithRelativePath).webkitRelativePath || file.name;
+}
+
+function skipBundlePath(path: string): boolean {
+  const parts = path.replace(/\\/g, '/').split('/').filter(Boolean);
+  return parts.some(part =>
+    part === '__MACOSX' ||
+    part === '.DS_Store' ||
+    part.startsWith('._') ||
+    part.startsWith('.'),
+  );
+}
+
+function inferBundleName(items: UploadItem[]): string {
+  if (items.length === 1 && items[0].file.name.toLowerCase().endsWith('.zip')) {
+    return items[0].file.name.replace(/\.zip$/i, '');
+  }
+  const roots = items
+    .map(item => item.path.replace(/\\/g, '/').split('/').filter(Boolean))
+    .filter(parts => parts.length > 1)
+    .map(parts => parts[0]);
+  if (roots.length > 0 && roots.every(root => root === roots[0])) return roots[0];
+  const html = items.find(item => /\.(html|htm)$/i.test(item.path));
+  return html ? html.file.name.replace(/\.(html|htm)$/i, '') : 'simulation';
+}
+
+function fileEntryToItem(entry: WebkitFileEntry, path: string): Promise<UploadItem> {
+  return new Promise((resolve, reject) => {
+    entry.file(
+      file => resolve({ file, path }),
+      err => reject(err),
+    );
+  });
+}
+
+function readDirectoryEntries(entry: WebkitDirectoryEntry): Promise<WebkitEntry[]> {
+  const reader = entry.createReader();
+  const entries: WebkitEntry[] = [];
+  return new Promise((resolve, reject) => {
+    const readBatch = () => {
+      reader.readEntries((batch) => {
+        if (batch.length === 0) {
+          resolve(entries);
+          return;
+        }
+        entries.push(...batch);
+        readBatch();
+      }, reject);
+    };
+    readBatch();
+  });
+}
+
+async function collectEntryFiles(entry: WebkitEntry, prefix = ''): Promise<UploadItem[]> {
+  const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+  if (entry.isFile) return [await fileEntryToItem(entry as WebkitFileEntry, path)];
+  if (!entry.isDirectory) return [];
+  const children = await readDirectoryEntries(entry as WebkitDirectoryEntry);
+  const nested = await Promise.all(children.map(child => collectEntryFiles(child, path)));
+  return nested.flat();
+}
+
+async function collectDroppedItems(dataTransfer: DataTransfer): Promise<UploadItem[]> {
+  const entryItems = Array.from(dataTransfer.items)
+    .map(item => {
+      const getAsEntry = (item as unknown as { webkitGetAsEntry?: () => unknown }).webkitGetAsEntry;
+      return getAsEntry?.() ?? null;
+    })
+    .filter((entry): entry is WebkitEntry =>
+      Boolean(entry) &&
+      typeof (entry as WebkitEntry).name === 'string' &&
+      typeof (entry as WebkitEntry).isFile === 'boolean' &&
+      typeof (entry as WebkitEntry).isDirectory === 'boolean',
+    );
+
+  if (entryItems.length === 0) {
+    return Array.from(dataTransfer.files).map(file => ({ file, path: browserRelativePath(file) }));
+  }
+
+  const nested = await Promise.all(entryItems.map(entry => collectEntryFiles(entry)));
+  return nested.flat();
+}
 
 interface Props {
   projectId: string;
@@ -20,9 +131,42 @@ export function SimulationUploader({ projectId, onUploaded }: Props) {
   const [error, setError]         = useState<string | null>(null);
   const [done, setDone]           = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
 
-  const uploadFile = async (file: File) => {
-    const simName = name.trim() || file.name.replace(/\.zip$/i, '');
+  useEffect(() => {
+    folderInputRef.current?.setAttribute('webkitdirectory', '');
+    folderInputRef.current?.setAttribute('directory', '');
+  }, []);
+
+  const uploadItems = async (rawItems: UploadItem[]) => {
+    const items = rawItems
+      .map(item => ({ ...item, path: item.path.replace(/\\/g, '/') }))
+      .filter(item => !skipBundlePath(item.path));
+
+    const isZip = items.length === 1 && items[0].file.name.toLowerCase().endsWith('.zip');
+    if (items.length === 0) {
+      setError('No uploadable files found');
+      return;
+    }
+    if (items.length > MAX_UPLOAD_FILES) {
+      setError(`Too many files (${items.length}). Maximum is ${MAX_UPLOAD_FILES}.`);
+      return;
+    }
+    const totalBytes = items.reduce((sum, item) => sum + item.file.size, 0);
+    if (totalBytes > MAX_UPLOAD_BYTES) {
+      setError('Simulation bundle is over 250 MB');
+      return;
+    }
+    if (!isZip && items.some(item => item.file.name.toLowerCase().endsWith('.zip'))) {
+      setError('Upload one ZIP, or upload the unzipped folder/files');
+      return;
+    }
+    if (!isZip && !items.some(item => /\.(html|htm)$/i.test(item.path))) {
+      setError('Simulation bundle needs at least one HTML file');
+      return;
+    }
+
+    const simName = name.trim() || inferBundleName(items);
     setUploading(true);
     setError(null);
     setPercent(0);
@@ -33,7 +177,14 @@ export function SimulationUploader({ projectId, onUploaded }: Props) {
 
       const formData = new FormData();
       formData.append('name', simName);
-      formData.append('file', file, file.name);
+      if (isZip) {
+        formData.append('file', items[0].file, items[0].file.name);
+      } else {
+        formData.append('manifest', JSON.stringify(items.map(item => ({ path: item.path }))));
+        for (const item of items) {
+          formData.append('files', item.file, item.file.name);
+        }
+      }
 
       const sim = await new Promise<Simulation>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
@@ -77,13 +228,8 @@ export function SimulationUploader({ projectId, onUploaded }: Props) {
   };
 
   const handleFiles = (files: FileList | null) => {
-    const file = files?.[0];
-    if (!file) return;
-    if (!file.name.toLowerCase().endsWith('.zip')) {
-      setError('Only .zip files are accepted');
-      return;
-    }
-    uploadFile(file);
+    if (!files || files.length === 0) return;
+    void uploadItems(Array.from(files).map(file => ({ file, path: browserRelativePath(file) })));
   };
 
   return (
@@ -102,7 +248,11 @@ export function SimulationUploader({ projectId, onUploaded }: Props) {
       <div
         onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
         onDragLeave={() => setDragging(false)}
-        onDrop={(e) => { e.preventDefault(); setDragging(false); handleFiles(e.dataTransfer.files); }}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragging(false);
+          if (!uploading) void collectDroppedItems(e.dataTransfer).then(uploadItems);
+        }}
         onClick={() => !uploading && inputRef.current?.click()}
         className={`rounded-lg border-2 border-dashed px-6 py-7 text-center transition-colors ${
           uploading ? 'opacity-50 cursor-not-allowed border-border' :
@@ -114,14 +264,39 @@ export function SimulationUploader({ projectId, onUploaded }: Props) {
           <rect x="2" y="4" width="24" height="20" rx="2" stroke="currentColor" strokeWidth="1.3" />
           <path d="M8 14h12M14 8v12" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
         </svg>
-        <p className="text-sm font-medium text-foreground">Drop ZIP file here</p>
-        <p className="text-xs text-muted-foreground mt-1">HTML / CSS / JS bundle · max 50 MB</p>
+        <p className="text-sm font-medium text-foreground">Drop ZIP or folder here</p>
+        <p className="text-xs text-muted-foreground mt-1">HTML / CSS / JS / PNG assets · max 250 MB</p>
+        <div className="mt-3 flex items-center justify-center gap-2">
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); inputRef.current?.click(); }}
+            disabled={uploading}
+            className="h-7 px-2.5 rounded-md border border-border bg-white text-[11px] font-medium text-foreground hover:border-amber-300 disabled:opacity-50"
+          >
+            Choose ZIP
+          </button>
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); folderInputRef.current?.click(); }}
+            disabled={uploading}
+            className="h-7 px-2.5 rounded-md bg-amber-500 text-[11px] font-semibold text-white hover:bg-amber-400 disabled:opacity-50"
+          >
+            Choose folder
+          </button>
+        </div>
       </div>
 
       <input
         ref={inputRef}
         type="file"
         accept=".zip"
+        className="hidden"
+        onChange={e => { handleFiles(e.target.files); e.target.value = ''; }}
+      />
+      <input
+        ref={folderInputRef}
+        type="file"
+        multiple
         className="hidden"
         onChange={e => { handleFiles(e.target.files); e.target.value = ''; }}
       />

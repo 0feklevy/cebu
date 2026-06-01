@@ -48,6 +48,7 @@ export interface UseEditorPlaybackResult {
 export function useEditorPlayback(
   clips: Clip[],
   onTimeUpdate: (globalSec: number) => void,
+  minTotalDuration = 0,
 ): UseEditorPlaybackResult {
   const videoARef = useRef<HTMLVideoElement>(null);
   const videoBRef = useRef<HTMLVideoElement>(null);
@@ -69,6 +70,7 @@ export function useEditorPlayback(
   const swappingRef     = useRef(false);   // true during A↔B video swap
   const wasPlayingRef   = useRef(false);   // play state captured at scrub start
   const onTimeUpdateRef = useRef(onTimeUpdate);
+  const minTotalDurationRef = useRef(minTotalDuration);
   // Actual durations learned from the video element override DB values.
   const actualDursRef   = useRef<number[]>(clips.map(c => c.duration || 0));
   // Fallback to clip.duration for the shared-core helpers.
@@ -78,11 +80,15 @@ export function useEditorPlayback(
   const [currentClipIdx, setCurrentClipIdx] = useState(0);
   const [isPlaying, setIsPlaying]           = useState(false);
   const [totalDuration, setTotalDuration]   = useState(
-    () => clips.reduce((s, c) => s + (c.duration || 0), 0),
+    () => Math.max(clips.reduce((s, c) => s + (c.duration || 0), 0), minTotalDuration),
   );
 
   useEffect(() => { clipsRef.current = clips; }, [clips]);
   useEffect(() => { onTimeUpdateRef.current = onTimeUpdate; }, [onTimeUpdate]);
+  useEffect(() => {
+    minTotalDurationRef.current = minTotalDuration;
+    setTotalDuration(prev => Math.max(prev, minTotalDuration));
+  }, [minTotalDuration]);
 
   // Extend actualDurs when clips are added after mount (upload while editor open)
   useEffect(() => {
@@ -92,7 +98,7 @@ export function useEditorPlayback(
     const newTotal = actualDursRef.current.reduce(
       (s, d, i) => s + (d || clipsRef.current[i]?.duration || 0), 0,
     );
-    if (newTotal > 0) setTotalDuration(newTotal);
+    if (newTotal > 0) setTotalDuration(Math.max(newTotal, minTotalDurationRef.current));
   }, [clips.length]);
 
   // ── prewarm ────────────────────────────────────────────────────────────────
@@ -172,6 +178,12 @@ export function useEditorPlayback(
 
   // ── onEnded ────────────────────────────────────────────────────────────────
   const onEnded = useCallback(() => {
+    const idx = curIdxRef.current;
+    const cls = clipsRef.current;
+    const dur = actualDursRef.current[idx] || cls[idx]?.duration || 0;
+    const endGlobal = computeSegmentOffset(actualDursRef.current, fallbackDurs(), idx) + dur;
+    setGlobalTime(endGlobal);
+    onTimeUpdateRef.current(endGlobal);
     setIsPlaying(false);
     isPlayingRef.current = false;
     const nextIdx = curIdxRef.current + 1;
@@ -196,7 +208,7 @@ export function useEditorPlayback(
     const newTotal = actualDursRef.current.reduce(
       (s, d, i) => s + (d || clipsRef.current[i]?.duration || 0), 0,
     );
-    setTotalDuration(newTotal);
+    setTotalDuration(Math.max(newTotal, minTotalDurationRef.current));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -290,6 +302,9 @@ export function useEditorPlayback(
       cls.length,
     );
     const shouldPlay = resumePlay !== undefined ? resumePlay : isPlayingRef.current;
+    const segDuration = actualDursRef.current[segIdx] || fallbackDurs()[segIdx] || 0;
+    const mediaLocalTime = segDuration > 0 ? Math.min(localTime, segDuration) : localTime;
+    const canPlayAtTarget = !segDuration || localTime < segDuration - 0.01;
 
     // Snap display immediately so the progress bar doesn't lag
     setGlobalTime(globalSec);
@@ -300,12 +315,12 @@ export function useEditorPlayback(
       const v = videoRef.current;
       if (!v) return;
       hlsRef.current?.startLoad();
-      v.currentTime = localTime;
-      if (shouldPlay) {
+      v.currentTime = mediaLocalTime;
+      if (shouldPlay && canPlayAtTarget) {
         v.addEventListener('seeked', () => { v.play().catch(() => {}); }, { once: true });
       }
     } else {
-      loadClip(segIdx, localTime, shouldPlay);
+      loadClip(segIdx, mediaLocalTime, shouldPlay && canPlayAtTarget);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

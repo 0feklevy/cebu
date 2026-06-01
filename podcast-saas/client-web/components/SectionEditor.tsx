@@ -152,7 +152,7 @@ export function SectionEditor({
   const labelRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    const t = isBroll ? 'video' : (knownTypes.includes(section.type) ? section.type : 'video');
+    const t = isBroll ? 'video' : (knownTypes.includes(section.type) ? section.type : section.type === 'clip' ? 'clip' : 'video');
     setType(t);
     setLabel(section.label ?? '');
     setSimId(section.simulation_id ?? '');

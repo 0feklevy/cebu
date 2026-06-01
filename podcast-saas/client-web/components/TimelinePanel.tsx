@@ -1,6 +1,7 @@
 'use client';
 
 import { useRef, useState, useCallback, useEffect, useLayoutEffect } from 'react';
+import { Redo2, Undo2 } from 'lucide-react';
 import type { VideoFile, TimelineSection, Simulation } from 'shared/src/generated/client-v1';
 import { SectionEditor } from './SectionEditor';
 import { api } from '../lib/api';
@@ -255,6 +256,11 @@ interface Props {
   toolMode: ToolMode;
   onToolModeChange: (mode: ToolMode) => void;
   onAddVideo?: () => void;
+  onUndo?: () => void;
+  onRedo?: () => void;
+  canUndo?: boolean;
+  canRedo?: boolean;
+  historyBusy?: boolean;
 }
 
 // ─── main component ───────────────────────────────────────────────────────────
@@ -263,6 +269,7 @@ export function TimelinePanel({
   projectId, videos, sections, simulations, playheadSec, activeVideoId, videoUrls,
   onSeek, onSectionsChange, onBrollMarkComplete,
   toolMode, onToolModeChange, onAddVideo,
+  onUndo, onRedo, canUndo = false, canRedo = false, historyBusy = false,
 }: Props) {
   const scrollRef    = useRef<HTMLDivElement>(null);
   const interRef     = useRef<Interaction | null>(null);
@@ -273,16 +280,20 @@ export function TimelinePanel({
   const [zoom, setZoom]                   = useState(10);
   const [interaction, setInteraction]     = useState<Interaction | null>(null);
   const [selectedSection, setSelectedSection] = useState<TimelineSection | null>(null);
+  const [addMenuOpen, setAddMenuOpen]     = useState(false);
+  const [addBusy, setAddBusy]             = useState<'simulation' | 'clip' | null>(null);
 
   const mainSections  = sections.filter(s => s.track !== 'broll');
   const brollSections = sections.filter(s => s.track === 'broll');
   const hasBroll = brollSections.length > 0 || toolMode === 'broll';
 
   const clipsWithOffset = buildClips(videos);
-  const totalDuration = Math.max(
-    clipsWithOffset.reduce((s, c) => s + (c.video.duration_sec ?? 0), 0),
-    50,
-  );
+  const videoTimelineDuration = clipsWithOffset.reduce((s, c) => s + (c.video.duration_sec ?? 0), 0);
+  const sectionTimelineEnd = mainSections.reduce((max, s) => {
+    const clip = clipsWithOffset.find(c => c.video.id === s.video_file_id);
+    return clip ? Math.max(max, clip.offset + s.end_sec) : max;
+  }, videoTimelineDuration);
+  const totalDuration = Math.max(sectionTimelineEnd, 50);
 
   useEffect(() => { zoomRef.current = zoom; }, [zoom]);
 
@@ -388,7 +399,8 @@ export function TimelinePanel({
     if (e.button !== 0) return;
     const globalSec = pixelsToGlobalSec(e.clientX);
     const localSec  = globalSec - clipOffset;
-    const dur = videos.find(v => v.id === s.video_file_id)?.duration_sec ?? totalDuration;
+    const baseDur = videos.find(v => v.id === s.video_file_id)?.duration_sec ?? totalDuration;
+    const dur = Math.max(baseDur, s.end_sec);
     didMoveRef.current = false;
     if (mode === 'move') {
       const offsetSec = localSec - s.start_sec;
@@ -562,6 +574,35 @@ export function TimelinePanel({
     onSeek(pixelsToGlobalSec(e.clientX));
   }, [pixelsToGlobalSec, onSeek]);
 
+  const handleAppendSection = useCallback(async (type: 'simulation' | 'clip') => {
+    const anchor = clipsWithOffset[clipsWithOffset.length - 1];
+    if (!anchor || addBusy) return;
+    setAddBusy(type);
+    setAddMenuOpen(false);
+    try {
+      const anchorDuration = anchor.video.duration_sec ?? 0;
+      const start = Math.max(anchorDuration, sectionTimelineEnd - anchor.offset);
+      const section = await api.createSection(projectId, {
+        video_file_id: anchor.video.id,
+        start_sec: start,
+        end_sec: start + VISUAL_MAX_SEC,
+        type,
+        label: type === 'simulation' ? 'Simulation' : 'Existing clip',
+      });
+      onSectionsChange([...sections, section]);
+      setSelectedSection(section);
+      onSeek(anchor.offset + start);
+    } catch { /* ignore */ }
+    finally {
+      setAddBusy(null);
+    }
+  }, [addBusy, clipsWithOffset, onSectionsChange, onSeek, projectId, sectionTimelineEnd, sections]);
+
+  const handleUploadNewClip = useCallback(() => {
+    setAddMenuOpen(false);
+    onAddVideo?.();
+  }, [onAddVideo]);
+
   // ── Ruler ticks ──────────────────────────────────────────────────────────
 
   const tickSec  = totalDuration <= 30 ? 1  : totalDuration <= 120 ? 5  : totalDuration <= 600 ? 15  : 60;
@@ -727,6 +768,26 @@ export function TimelinePanel({
           </svg>
         </button>
         <div style={{ flex: 1 }} />
+        <div className="flex flex-col items-center gap-1">
+          <button
+            onClick={onUndo}
+            disabled={!canUndo || historyBusy}
+            title="Undo"
+            className="w-8 h-8 rounded-lg flex items-center justify-center transition-all focus-ring disabled:cursor-not-allowed disabled:opacity-35"
+            style={{ color: canUndo && !historyBusy ? '#4b5563' : '#9ca3af', backgroundColor: 'transparent' }}
+          >
+            <Undo2 size={15} strokeWidth={1.8} />
+          </button>
+          <button
+            onClick={onRedo}
+            disabled={!canRedo || historyBusy}
+            title="Redo"
+            className="w-8 h-8 rounded-lg flex items-center justify-center transition-all focus-ring disabled:cursor-not-allowed disabled:opacity-35"
+            style={{ color: canRedo && !historyBusy ? '#4b5563' : '#9ca3af', backgroundColor: 'transparent' }}
+          >
+            <Redo2 size={15} strokeWidth={1.8} />
+          </button>
+        </div>
         <div
           title="Ctrl+scroll or pinch to zoom"
           style={{ fontSize: 7, color: '#9ca3af', fontWeight: 600, letterSpacing: '0.04em', textAlign: 'center', lineHeight: 1.4 }}
@@ -1062,15 +1123,15 @@ export function TimelinePanel({
         </div>
       </div>
 
-      {/* ── Add video button ─────────────────────────────────────────────── */}
+      {/* ── Append menu ──────────────────────────────────────────────────── */}
       {onAddVideo && (
         <div
-          className="shrink-0 flex items-center justify-center"
+          className="shrink-0 flex items-center justify-center relative"
           style={{ width: 43, borderLeft: '1px solid #e5e7eb', backgroundColor: '#fafafa' }}
         >
           <button
-            onClick={onAddVideo}
-            title="Add clip"
+            onClick={() => setAddMenuOpen(v => !v)}
+            title="Add to end"
             className="w-7 h-7 flex items-center justify-center rounded-md transition-colors hover:bg-gray-100 focus-ring"
             style={{ border: '1.5px dashed #d1d5db', color: '#9ca3af' }}
           >
@@ -1078,6 +1139,54 @@ export function TimelinePanel({
               <path d="M5.5 1v9M1 5.5h9" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
             </svg>
           </button>
+
+          {addMenuOpen && (
+            <div
+              className="absolute right-9 bottom-2 z-30 w-48 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-xl"
+              onMouseDown={e => e.stopPropagation()}
+              style={{ fontFamily: 'system-ui, -apple-system, sans-serif' }}
+            >
+              <div style={{ padding: '9px 10px 6px', fontSize: 10, fontWeight: 800, color: '#94a3b8', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+                Video
+              </div>
+              <button
+                onClick={handleUploadNewClip}
+                className="w-full flex items-center gap-2 px-3 py-2 text-left text-xs font-semibold text-gray-700 hover:bg-gray-50 focus-ring"
+              >
+                <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden>
+                  <path d="M6.5 9V4M4 6.5l2.5-2.5L9 6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                  <rect x="1.5" y="9.5" width="10" height="2" rx="1" stroke="currentColor" strokeWidth="1.2" />
+                </svg>
+                Upload new clip
+              </button>
+              <button
+                onClick={() => handleAppendSection('clip')}
+                disabled={!!addBusy || videos.length === 0}
+                className="w-full flex items-center gap-2 px-3 py-2 text-left text-xs font-semibold text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 focus-ring"
+              >
+                <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden>
+                  <rect x="1.5" y="3" width="10" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.2" />
+                  <path d="M5 5l3 1.5L5 8V5z" fill="currentColor" />
+                </svg>
+                Existing clip
+              </button>
+              <div style={{ height: 1, backgroundColor: '#f1f5f9' }} />
+              <div style={{ padding: '8px 10px 5px', fontSize: 10, fontWeight: 800, color: '#94a3b8', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+                Simulation
+              </div>
+              <button
+                onClick={() => handleAppendSection('simulation')}
+                disabled={!!addBusy || videos.length === 0}
+                className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-xs font-semibold text-amber-700 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-50 focus-ring"
+              >
+                <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden>
+                  <circle cx="6.5" cy="6.5" r="4.6" stroke="currentColor" strokeWidth="1.2" />
+                  <path d="M6.5 4.2v2.4l1.8 1.2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                </svg>
+                Show full simulation
+              </button>
+            </div>
+          )}
         </div>
       )}
 

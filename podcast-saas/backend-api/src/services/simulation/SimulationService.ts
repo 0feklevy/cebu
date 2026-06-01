@@ -90,23 +90,92 @@ const CONTENT_TYPES: Record<string, string> = {
   htm:  'text/html; charset=utf-8',
   js:   'application/javascript',
   mjs:  'application/javascript',
+  cjs:  'application/javascript',
+  jsx:  'text/plain; charset=utf-8',
+  ts:   'text/plain; charset=utf-8',
+  tsx:  'text/plain; charset=utf-8',
   css:  'text/css',
   json: 'application/json',
+  map:  'application/json',
   png:  'image/png',
+  apng: 'image/apng',
   jpg:  'image/jpeg',
   jpeg: 'image/jpeg',
   gif:  'image/gif',
+  webp: 'image/webp',
+  avif: 'image/avif',
+  bmp:  'image/bmp',
   svg:  'image/svg+xml',
   ico:  'image/x-icon',
   woff: 'font/woff',
   woff2:'font/woff2',
   ttf:  'font/ttf',
+  otf:  'font/otf',
   mp3:  'audio/mpeg',
+  ogg:  'audio/ogg',
   mp4:  'video/mp4',
   webm: 'video/webm',
   wav:  'audio/wav',
-  txt:  'text/plain',
+  wasm: 'application/wasm',
+  glb:  'model/gltf-binary',
+  gltf: 'model/gltf+json',
+  pdf:  'application/pdf',
+  csv:  'text/csv; charset=utf-8',
+  md:   'text/markdown; charset=utf-8',
+  txt:  'text/plain; charset=utf-8',
+  xml:  'application/xml',
+  yaml: 'text/yaml; charset=utf-8',
+  yml:  'text/yaml; charset=utf-8',
 };
+
+const TEXT_SIMULATION_EXTS = new Set([
+  'html', 'htm', 'js', 'mjs', 'cjs', 'css', 'json', 'map',
+  'ts', 'tsx', 'jsx', 'txt', 'md', 'csv', 'xml', 'yaml', 'yml',
+]);
+
+export interface UploadedSimulationFile {
+  path:   string;
+  buffer: Buffer;
+}
+
+export function getSimulationContentType(path: string): string {
+  const ext = path.split('.').pop()?.toLowerCase() ?? '';
+  return CONTENT_TYPES[ext] ?? 'application/octet-stream';
+}
+
+export function isTextSimulationFile(path: string): boolean {
+  const ext = path.split('.').pop()?.toLowerCase() ?? '';
+  return TEXT_SIMULATION_EXTS.has(ext);
+}
+
+function normalizeSimulationPath(rawPath: string): string | null {
+  const raw = rawPath.replace(/\\/g, '/').trim();
+  if (!raw || raw.startsWith('/') || /^[a-zA-Z]:\//.test(raw)) return null;
+
+  const parts = raw.split('/').filter(part => part && part !== '.');
+  if (parts.length === 0) return null;
+
+  if (parts.some(part => part === '..')) {
+    throw new Error(`Unsafe file path in simulation bundle: ${rawPath}`);
+  }
+
+  // Finder ZIPs include resource forks under __MACOSX plus ._ sidecar files.
+  // They are not web assets and can overwrite useful keys if we keep them.
+  if (parts.some(part =>
+    part === '__MACOSX' ||
+    part === '.DS_Store' ||
+    part.startsWith('._') ||
+    part.startsWith('.'),
+  )) {
+    return null;
+  }
+
+  const normalized = parts.join('/');
+  if (normalized.length > 512) {
+    throw new Error(`File path is too long in simulation bundle: ${rawPath}`);
+  }
+  return normalized;
+}
 
 // ── BRIDGE_TEMPLATE (injected at upload time) ─────────────────────────────────
 // Uses requestAnimationFrame so SIM_READY fires AFTER the sim's own boot() has run.
@@ -942,13 +1011,31 @@ export class SimulationService {
     zipBuffer: Buffer;
   }): Promise<{ entryUrl: string; entryKey: string; bridgeFunctions: BridgeFunction[] }> {
     const { projectId, simId, zipBuffer } = opts;
+    const files = this.extractZip(zipBuffer);
+    return this.processFiles({ projectId, simId, files });
+  }
+
+  async processFileUpload(opts: {
+    projectId: string;
+    simId:     string;
+    files:     UploadedSimulationFile[];
+  }): Promise<{ entryUrl: string; entryKey: string; bridgeFunctions: BridgeFunction[] }> {
+    const files = this.normalizeUploadedFiles(opts.files);
+    return this.processFiles({ projectId: opts.projectId, simId: opts.simId, files });
+  }
+
+  private async processFiles(opts: {
+    projectId: string;
+    simId:     string;
+    files:     Map<string, Buffer>;
+  }): Promise<{ entryUrl: string; entryKey: string; bridgeFunctions: BridgeFunction[] }> {
+    const { projectId, simId, files } = opts;
     const prefix = `simulations/${projectId}/${simId}`;
 
-    const files = this.extractZip(zipBuffer);
-    if (files.size === 0) throw new Error('ZIP appears to be empty');
+    if (files.size === 0) throw new Error('Simulation bundle appears to be empty');
 
     const entryRelPath = this.findEntryHtml(files);
-    if (!entryRelPath) throw new Error('No HTML file found in ZIP. Add an index.html or similar.');
+    if (!entryRelPath) throw new Error('No HTML file found in simulation bundle. Add an index.html or similar.');
 
     const bridgeFunctions: BridgeFunction[] = [];
     const rawHtml      = files.get(entryRelPath)!.toString('utf-8');
@@ -958,8 +1045,7 @@ export class SimulationService {
     const uploads: Promise<void>[] = [];
     for (const [relPath, buf] of files) {
       const storagePath = `${prefix}/${relPath}`;
-      const ext = relPath.split('.').pop()?.toLowerCase() ?? '';
-      const ct  = CONTENT_TYPES[ext] ?? 'application/octet-stream';
+      const ct = getSimulationContentType(relPath);
       uploads.push(this.storage.uploadFile(storagePath, buf, ct).then(() => undefined));
     }
     await Promise.all(uploads);
@@ -1286,13 +1372,23 @@ export class SimulationService {
     }
   }
 
-    private extractZip(buf: Buffer): Map<string, Buffer> {
+  private normalizeUploadedFiles(uploadedFiles: UploadedSimulationFile[]): Map<string, Buffer> {
+    const files = new Map<string, Buffer>();
+    for (const file of uploadedFiles) {
+      const name = normalizeSimulationPath(file.path);
+      if (!name) continue;
+      files.set(name, file.buffer);
+    }
+    return files;
+  }
+
+  private extractZip(buf: Buffer): Map<string, Buffer> {
     const zip   = new AdmZip(buf);
     const files = new Map<string, Buffer>();
     for (const entry of zip.getEntries()) {
       if (entry.isDirectory) continue;
-      const name = entry.entryName.replace(/^__MACOSX\//, '').replace(/\/\._[^/]+$/, '');
-      if (!name || name.startsWith('.') || name.includes('/__MACOSX/')) continue;
+      const name = normalizeSimulationPath(entry.entryName);
+      if (!name) continue;
       files.set(name, entry.getData());
     }
     return files;

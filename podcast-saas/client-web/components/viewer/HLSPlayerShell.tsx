@@ -130,7 +130,7 @@ export function HLSPlayerShell({ config }: Props) {
 
       {state.showResumeBtn && (
         <button className="sim-resume-btn" onClick={actions.resumeFromSim}>
-          Resume video →
+          {state.resumeAction === 'backToVideo' ? 'Go back to video' : 'Resume video →'}
         </button>
       )}
 

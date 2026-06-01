@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
-import { projects, timeline_sections, simulations } from '../../db/schema.js';
+import { projects, timeline_sections, simulations, video_files } from '../../db/schema.js';
 import { eq, and, asc } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { SimulationService, type ConversationMessage } from '../../services/simulation/SimulationService.js';
@@ -50,9 +50,17 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       type: string;
       label?: string;
       notes?: string;
+      sort_order?: number | null;
       simulation_url?: string;
       simulation_id?: string;
       sim_script?: string;
+      track?: 'main' | 'broll';
+      global_offset_sec?: number | null;
+      clip_source_video_id?: string | null;
+      clip_in_sec?: number | null;
+      broll_volume?: number;
+      simple_ui?: boolean;
+      auto_script?: boolean;
     };
   }>(
     '/api/v1/projects/:id/sections',
@@ -64,13 +72,36 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       });
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
-      const { video_file_id, start_sec, end_sec, type, label, notes, simulation_url, simulation_id, sim_script } = request.body;
+      const {
+        video_file_id,
+        start_sec,
+        end_sec,
+        type,
+        label,
+        notes,
+        sort_order,
+        simulation_url,
+        simulation_id,
+        sim_script,
+        track,
+        global_offset_sec,
+        clip_source_video_id,
+        clip_in_sec,
+        broll_volume,
+        simple_ui,
+        auto_script,
+      } = request.body;
       if (!video_file_id || start_sec == null || end_sec == null || !type) {
         return reply.code(400).send({ message: 'video_file_id, start_sec, end_sec, and type are required' });
       }
       if (start_sec >= end_sec) {
         return reply.code(400).send({ message: 'start_sec must be less than end_sec' });
       }
+
+      const videoFile = await db.query.video_files.findFirst({
+        where: and(eq(video_files.id, video_file_id), eq(video_files.project_id, project.id)),
+      });
+      if (!videoFile) return reply.code(404).send({ message: 'Video not found' });
 
       // Resolve simulation_url from simulation_id if provided
       let resolvedSimUrl = simulation_url ?? null;
@@ -89,9 +120,17 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
           type,
           label: label ?? null,
           notes: notes ?? null,
+          sort_order: sort_order ?? null,
           simulation_url: resolvedSimUrl,
           simulation_id: simulation_id ?? null,
           sim_script: sim_script ?? null,
+          track: track ?? 'main',
+          global_offset_sec: global_offset_sec ?? null,
+          clip_source_video_id: clip_source_video_id ?? null,
+          clip_in_sec: clip_in_sec ?? 0,
+          broll_volume: broll_volume == null ? 1.0 : Math.max(0, Math.min(1, broll_volume)),
+          simple_ui: simple_ui ?? false,
+          auto_script: auto_script ?? true,
         })
         .returning();
 
@@ -116,6 +155,8 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       clip_source_video_id: string | null;
       clip_in_sec: number;
       broll_volume: number;
+      simple_ui: boolean;
+      auto_script: boolean;
     }>;
   }>(
     '/api/v1/projects/:id/sections/:sid',
