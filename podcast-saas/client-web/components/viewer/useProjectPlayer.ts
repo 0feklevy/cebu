@@ -258,7 +258,8 @@ export function useProjectPlayer(
     if (!seg) {
       if (activeSimRef.current) {
         sendToSim({ type: 'stopScript' });
-        setTimeout(() => merge({ showSimOverlay: false }), 350);
+        // Fade out immediately at the boundary; CSS opacity transition smooths it.
+        merge({ showSimOverlay: false });
       }
       activeSimRef.current = null;
       merge({ badgeText: '', badgeMode: '' });
@@ -276,7 +277,8 @@ export function useProjectPlayer(
 
     if (activeSimRef.current) {
       sendToSim({ type: 'stopScript' });
-      setTimeout(() => merge({ showSimOverlay: false }), 350);
+      // Fade out immediately at the boundary; CSS opacity transition smooths it.
+      merge({ showSimOverlay: false });
     }
     activeSimRef.current = simSection;
 
@@ -302,8 +304,9 @@ export function useProjectPlayer(
       }
 
       if (sameUrl && simReadyRef.current) {
-        merge({ showSimOverlay: true });
+        // Send startScript first so sim applies simpleUi, then reveal
         sendToSim({ type: 'startScript', script, params });
+        setTimeout(() => merge({ showSimOverlay: true }), 50);
       } else {
         simReadyRef.current   = false;
         pendingSimRef.current = { script, params };
@@ -676,8 +679,9 @@ export function useProjectPlayer(
         const pending = pendingSimRef.current;
         pendingSimRef.current = null;
         if (pending && (!userPausedRef.current || resumeActionRef.current === 'backToVideo')) {
-          merge({ showSimOverlay: true });
+          // Send startScript first so sim applies simpleUi before overlay reveals
           sendToSim({ type: 'startScript', script: pending.script, params: pending.params });
+          setTimeout(() => merge({ showSimOverlay: true }), 50);
         }
       }
       if (type === 'userInteraction') {

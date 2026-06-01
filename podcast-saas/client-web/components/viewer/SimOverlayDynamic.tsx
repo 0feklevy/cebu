@@ -10,7 +10,11 @@ interface Props {
 
 // Keep iframe mounted while simulationUrl is set so the sim doesn't reload
 // when the overlay briefly hides between sections. Visibility is CSS-driven
-// via the .sim-overlay.visible class (350ms fade, matching the reference).
+// via the .sim-overlay.visible class (opacity fade). The black background
+// lives ON the fading layer (.sim-overlay { background:#0e0e0e }) so that when
+// the sim is hidden the video shows through — a true video↔sim crossfade.
+// (A separate always-opaque backdrop would stay black forever because
+// simulationUrl is intentionally never cleared → permanent black screen.)
 export function SimOverlayDynamic({ simulationUrl, visible, iframeRef }: Props) {
   if (!simulationUrl) return null;
 

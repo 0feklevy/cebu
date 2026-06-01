@@ -108,8 +108,9 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
         const pending = pendingSimRef.current;
         pendingSimRef.current = null;
         if (pending) {
-          setShowSim(true);
+          // Send startScript first so sim applies simpleUi, then reveal
           sendToSim({ type: 'startScript', script: pending.script, params: pending.params });
+          setTimeout(() => setShowSim(true), 50);
         }
       }
       if (type === 'userInteraction') hook.pause();
@@ -222,7 +223,10 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
     if (!newUrl) {
       if (activeSimUrlRef.current) {
         sendToSim({ type: 'stopScript' });
-        setTimeout(() => setShowSim(false), 350);
+        // Start the fade-out immediately at the boundary; the CSS opacity
+        // transition (200ms) does the smoothing. A delayed hide made the sim
+        // linger visibly past its section.
+        setShowSim(false);
       }
       activeSimUrlRef.current = null;
       return;
@@ -231,12 +235,14 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
     activeSimUrlRef.current = newUrl;
     setSimUrl(newUrl);
     if (sameUrl && simReadyRef.current) {
-      setShowSim(true);
+      // Send startScript first, then reveal after sim has applied simpleUi
       sendToSim({ type: 'startScript', script, params });
+      setTimeout(() => setShowSim(true), 50);
     } else {
       simReadyRef.current   = false;
       pendingSimRef.current = { script, params };
-      if (!sameUrl) startSimPoll();
+      // Always poll when not ready — fixes seek-to-sim-section not showing
+      startSimPoll();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSimSection?.id, activeSimSection?.simulation_url]);
@@ -314,7 +320,12 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
         </div>
       )}
 
-      {/* Simulation overlay */}
+      {/* Simulation overlay — the black background lives ON the fading layer so
+          that when the sim is hidden (opacity 0) the video shows through. This
+          is a true video↔sim crossfade. (A separate always-on backdrop would
+          stay opaque forever because simUrl is intentionally never cleared to
+          keep the iframe mounted → permanent black screen.) startScript is sent
+          before this reveals so the sim is already in minimal-UI mode. */}
       {simUrl && (
         <div
           className="absolute inset-0"
@@ -323,7 +334,7 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
             background: '#0e0e0e',
             opacity: showSimOverlay ? 1 : 0,
             pointerEvents: showSimOverlay ? 'auto' : 'none',
-            transition: 'opacity 350ms ease',
+            transition: 'opacity 200ms ease',
           }}
         >
           <iframe

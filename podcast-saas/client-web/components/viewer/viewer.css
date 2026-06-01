@@ -160,7 +160,7 @@
   z-index: 20;
   opacity: 0;
   pointer-events: none;
-  transition: opacity .35s ease;
+  transition: opacity .2s ease;
   background: #0e0e0e;
 }
 .sim-overlay.visible {
