@@ -254,6 +254,7 @@ interface Props {
   onSeek: (globalSec: number) => void;
   onSectionsChange: (sections: TimelineSection[]) => void;
   onBrollMarkComplete?: (mark: { start: number; end: number }) => void;
+  onSimulationUpdate?: (sim: Simulation) => void;
   toolMode: ToolMode;
   showAllLayers?: boolean;
   onAddVideo?: () => void;
@@ -263,7 +264,7 @@ interface Props {
 
 export function TimelinePanel({
   projectId, videos, sections, simulations, images = [], playheadSec, activeVideoId, videoUrls,
-  onSeek, onSectionsChange, onBrollMarkComplete,
+  onSeek, onSectionsChange, onBrollMarkComplete, onSimulationUpdate,
   toolMode, showAllLayers = false, onAddVideo,
 }: Props) {
   const scrollRef    = useRef<HTMLDivElement>(null);
@@ -1127,6 +1128,7 @@ export function TimelinePanel({
             onSectionsChange(sections.filter(s => s.id !== id));
             setSelectedSection(null);
           }}
+          onSimulationUpdate={onSimulationUpdate}
           onClose={() => setSelectedSection(null)}
         />
       )}

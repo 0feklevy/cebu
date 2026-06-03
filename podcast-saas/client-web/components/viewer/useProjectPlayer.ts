@@ -250,10 +250,14 @@ export function useProjectPlayer(
   };
 
   // ── Guided Simulation narration playback (serialized queue, ducks the video) ──
-  const startNextGuidance = () => {
+  // Use a stable ref so closures inside audio event listeners always call the latest version.
+  const startNextGuidanceRef = useRef<() => void>(() => {});
+  startNextGuidanceRef.current = () => {
     const next = guidanceQueueRef.current[0];
     if (!next) {
-      if (guidanceVolRef.current != null && videoRef.current) videoRef.current.volume = guidanceVolRef.current;
+      if (guidanceVolRef.current != null && videoRef.current) {
+        videoRef.current.volume = guidanceVolRef.current;
+      }
       guidanceVolRef.current = null;
       merge({ guidanceCaption: '' });
       return;
@@ -266,19 +270,22 @@ export function useProjectPlayer(
     const done = () => {
       guidanceQueueRef.current.shift();
       guidanceAudioRef.current = null;
-      startNextGuidance();
+      startNextGuidanceRef.current();
     };
-    if (!next.audioUrl) { setTimeout(done, 4000); return; }
+    if (!next.audioUrl) { setTimeout(done, 3500); return; }
     const audio = new Audio(next.audioUrl);
     guidanceAudioRef.current = audio;
     audio.addEventListener('ended', done);
     audio.addEventListener('error', done);
-    audio.play().catch(done);
+    audio.play().catch(() => {
+      // Autoplay blocked or load error — show caption only, then advance
+      setTimeout(done, 3500);
+    });
   };
 
   const enqueueGuidance = (cue: { id: string; text: string; audioUrl: string }) => {
     guidanceQueueRef.current.push(cue);
-    if (!guidanceAudioRef.current) startNextGuidance();
+    if (!guidanceAudioRef.current) startNextGuidanceRef.current();
   };
 
   const startSimPoll = useCallback(() => {
@@ -754,10 +761,16 @@ export function useProjectPlayer(
       }
       // ── Guided Simulation ──────────────────────────────────────────────────
       if (type === 'GUIDANCE_READY') {
-        // A freshly (re)loaded guidance overlay — seed it with the session's fired cues
-        // so cues already heard in a previous section do NOT replay, and set the gate.
+        // Seed with already-heard cues so they never replay across section reloads.
         sendToSim({ type: 'guidanceInit', firedIds: Array.from(firedCueIds.current) });
-        sendToSim({ type: 'guidanceGate', active: showSimOverlayRef.current });
+        // TIMING FIX: GUIDANCE_READY fires almost simultaneously with SIM_READY,
+        // before the overlay's 50ms reveal timeout. Always delay the gate so it
+        // reflects the overlay's actual visible state (true once it fades in).
+        // Feature triggers don't need the gate (they use isTrusted), but config
+        // polling must not run while the sim is still hidden.
+        setTimeout(() => {
+          sendToSim({ type: 'guidanceGate', active: showSimOverlayRef.current });
+        }, 100);
       }
       if (type === 'guidanceCue') {
         const { id, text, audioUrl } = (e.data as { id?: string; text?: string; audioUrl?: string }) ?? {};

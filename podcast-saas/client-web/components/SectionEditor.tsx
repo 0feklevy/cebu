@@ -103,12 +103,13 @@ interface Props {
   images?: ImageFile[];
   onUpdate: (s: TimelineSection) => void;
   onDelete: (id: string) => void;
+  onSimulationUpdate?: (sim: Simulation) => void;
   onClose: () => void;
 }
 
 export function SectionEditor({
   section, projectId, simulations, videos, videoUrls, images = [],
-  onUpdate, onDelete, onClose,
+  onUpdate, onDelete, onSimulationUpdate, onClose,
 }: Props) {
   const isBroll = section.track === 'broll';
   const knownTypes = TYPES.map(t => t.value) as string[];
@@ -491,22 +492,31 @@ export function SectionEditor({
   }, []);
 
   // ── Guided Simulation handlers ────────────────────────────────────────────
-  // Sync local guidance state from the selected simulation (it is mother-sim-level).
+  // Sync local guidance state when the user picks a different simulation.
+  // We track whether guidance state was already populated from a live server response
+  // so we don't overwrite it with stale props when simulations array reference changes.
+  const guidanceInitializedForSimRef = useRef<string | null>(null);
   useEffect(() => {
+    if (guidanceInitializedForSimRef.current === simId) return;  // already live-synced, don't stomp
+    guidanceInitializedForSimRef.current = simId;
     const s = simulations.find(x => x.id === simId);
     setGuidance(s?.guidance ?? null);
     setGuidanceStatus(s?.guidance_status ?? 'none');
     setGuidanceMeta(s?.guidance_meta ?? null);
     setGuidanceError(null);
     if (s?.guidance_meta?.language) setGuidanceLang(s.guidance_meta.language);
-  }, [simId, simulations]);
+  // Only re-run when simId changes (not on every stale simulations prop update)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [simId]);
 
   useEffect(() => () => { guidanceEsRef.current?.close(); }, []);
 
   const applyGuidanceSim = (sim: Simulation) => {
+    guidanceInitializedForSimRef.current = sim.id;  // mark as live-synced so useEffect won't stomp
     setGuidance(sim.guidance ?? null);
     setGuidanceStatus(sim.guidance_status ?? 'none');
     setGuidanceMeta(sim.guidance_meta ?? null);
+    onSimulationUpdate?.(sim);  // propagate up so VideoEditor's simulations state stays current
   };
 
   const runGuidanceStream = async (kind: 'generate' | 'publish') => {

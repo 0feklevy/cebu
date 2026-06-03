@@ -985,6 +985,7 @@ export function VideoEditor({ projectId }: Props) {
             toolMode={toolMode}
             showAllLayers={showAllLayers}
             onBrollMarkComplete={setBrollMark}
+            onSimulationUpdate={sim => setSimulations(prev => prev.map(s => s.id === sim.id ? sim : s))}
           />
         </div>
       </div>
