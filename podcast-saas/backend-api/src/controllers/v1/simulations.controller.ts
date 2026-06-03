@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
-import { projects, simulations } from '../../db/schema.js';
+import { projects, simulations, timeline_sections } from '../../db/schema.js';
 import { eq, and } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
@@ -466,6 +466,7 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
         const result = await svc.publishGuidance({
           simId: owned.sim.id, projectId: owned.project.id,
           entries, language, existing: entries,
+          entryKey: owned.sim.entry_file,   // authoritative entry-file storage key
           onEvent: sendEvent, signal: controller.signal,
         });
         if (!controller.signal.aborted) {
@@ -473,6 +474,23 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
           const [updated] = await db.update(simulations)
             .set({ guidance: result.entries, guidance_meta: newMeta, guidance_status: 'ready', guidance_error: null })
             .where(eq(simulations.id, owned.sim.id)).returning();
+
+          // Bust the iframe cache for every section using this sim so the freshly-injected
+          // guidance.js is actually loaded (the entry HTML changed but section URLs did not).
+          // Append/replace a `g=<guidanceHash>` query param on each section's simulation_url.
+          const usingSecs = await db.query.timeline_sections.findMany({
+            where: eq(timeline_sections.simulation_id, owned.sim.id),
+          });
+          for (const sec of usingSecs) {
+            if (!sec.simulation_url) continue;
+            const [base, query] = sec.simulation_url.split('?');
+            const params = new URLSearchParams(query ?? '');
+            params.set('g', result.guidanceHash);
+            await db.update(timeline_sections)
+              .set({ simulation_url: `${base}?${params.toString()}` })
+              .where(eq(timeline_sections.id, sec.id));
+          }
+
           sendEvent('done', { simulation: serializeSim(updated) });
         }
       } catch (err) {

@@ -506,6 +506,7 @@ export class GuidanceService {
     simId: string; projectId: string;
     entries: GuidanceEntryStored[]; language?: string;
     existing?: GuidanceEntryStored[] | null;
+    entryKey?: string;   // authoritative entry-file storage key (from the simulation row)
     onEvent?: OnEvent; signal?: AbortSignal;
   }): Promise<GuidancePublishResult> {
     const { simId, projectId, onEvent } = opts;
@@ -553,12 +554,24 @@ export class GuidanceService {
     await withGuidanceLock(guidanceKey, async () => {
       await this.storage.uploadFile(guidanceKey, Buffer.from(guidanceJs, 'utf-8'), 'application/javascript');
 
+      // Locate the entry HTML: prefer the authoritative entry_file (a storage key),
+      // else fall back to the same heuristic the bridge uses.
       const allKeys = await this.storage.listObjects(prefix);
-      const entryKey = allKeys.find(k => /\/(index|main)\.(html|htm)$/.test(k)) ?? allKeys.find(k => /\.html?$/.test(k));
+      const isGenerated = (k: string) => /\/(bridge|guidance)\.js$/.test(k) || /section_[^/]+\.(html|js)$/.test(k);
+      const entryKey =
+        (opts.entryKey && !opts.entryKey.startsWith('http') ? opts.entryKey : undefined) ??
+        allKeys.find(k => /\/(index|main)\.(html|htm)$/.test(k)) ??
+        allKeys.find(k => (k.endsWith('.html') || k.endsWith('.htm')) && !isGenerated(k));
       if (!entryKey) throw new Error('No HTML entry file found in simulation');
 
+      // guidance.js lives at the prefix root; the entry HTML may be nested in a
+      // sub-directory, so compute the correct relative path with ../ as needed
+      // (mirrors the bridge's relative-path computation).
       const entryDir = entryKey.substring(0, entryKey.lastIndexOf('/'));
-      const relPath = './' + guidanceKey.slice(entryDir.length + 1);
+      const relativeDepth = entryDir === prefix
+        ? 0
+        : entryDir.slice(prefix.length).split('/').filter(Boolean).length;
+      const relPath = (relativeDepth > 0 ? '../'.repeat(relativeDepth) : './') + 'guidance.js';
 
       const rawHtml = (await this.storage.readObject(entryKey)).toString('utf-8');
       const updatedHtml = injectGuidanceScriptTag(rawHtml, relPath, guidanceHash);
