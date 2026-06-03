@@ -42,6 +42,7 @@ const TASK_TIER: Record<TaskType, 'utility' | 'generation' | 'complex'> = {
   script_rewrite: 'generation', // needs Sonnet-level instruction-following for large JSON output
   single_turn_regen: 'generation',
   bridge_plan: 'complex',       // benefits from strongest model + extended thinking
+  guidance_plan: 'complex',     // deep code analysis + structured cue generation
 };
 
 export class LLMService {

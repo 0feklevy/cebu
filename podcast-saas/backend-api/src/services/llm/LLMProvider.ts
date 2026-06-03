@@ -6,7 +6,8 @@ export type TaskType =
   | 'script_rewrite'
   | 'content_moderation'
   | 'single_turn_regen'
-  | 'bridge_plan';
+  | 'bridge_plan'
+  | 'guidance_plan';
 
 export interface TokenUsage {
   input: number;

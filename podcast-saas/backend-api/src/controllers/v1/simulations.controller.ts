@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { randomUUID } from 'crypto';
+import { z } from 'zod';
 import { db } from '../../db/index.js';
 import { projects, simulations } from '../../db/schema.js';
 import { eq, and } from 'drizzle-orm';
@@ -11,10 +12,42 @@ import {
   SimulationService,
   type UploadedSimulationFile,
 } from '../../services/simulation/SimulationService.js';
+import {
+  GuidanceService,
+  type GuidanceEntryStored,
+} from '../../services/simulation/GuidanceService.js';
 import { LLMService } from '../../services/llm/LLMService.js';
 import { ApiKeyService } from '../../services/secrets/ApiKeyService.js';
 import { UsageTrackingService } from '../../services/usage/UsageTrackingService.js';
 import { logger } from '../../lib/logger.js';
+
+const GUIDANCE_ERROR_MESSAGES: Record<string, string> = {
+  aborted:          'Generation was cancelled.',
+  no_source:        'Simulation files not found. Please re-upload the simulation.',
+  tts_error:        'Voice synthesis failed. Check the ElevenLabs API key in Admin → API Keys.',
+  generation_error: 'Guidance generation failed. Please try again.',
+};
+
+function classifyGuidanceError(err: unknown): string {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  if (msg.includes('abort')) return 'aborted';
+  if (msg.includes('no readable') || msg.includes('no html entry')) return 'no_source';
+  if (msg.includes('elevenlabs') || msg.includes('tts')) return 'tts_error';
+  return 'generation_error';
+}
+
+// Stored guidance entry shape accepted from the editor on PATCH (narration/enabled edits).
+const StoredGuidanceEntrySchema = z.object({
+  id:         z.string().min(1),
+  kind:       z.enum(['feature', 'config']),
+  title:      z.string(),
+  narration:  z.string().min(1).max(400),
+  enabled:    z.boolean(),
+  trigger:    z.any(),
+  audioUrl:   z.string().nullable().optional(),
+  confidence: z.number().min(0).max(1).default(0.6),
+  warnings:   z.array(z.string()).default([]),
+});
 
 const _llmService = new LLMService(new ApiKeyService(), new UsageTrackingService());
 const SIMULATION_UPLOAD_MAX_BYTES = 250 * 1024 * 1024;
@@ -40,6 +73,15 @@ function parseManifestPaths(value: unknown): string[] | null {
 
 export async function registerSimulationsRoutes(app: FastifyInstance): Promise<void> {
   const storage = getStorageAdapter();
+
+  // entry_file is stored as a storage key on new rows and a full URL on old rows —
+  // always hand the client a working public URL.
+  const serializeSim = (r: typeof simulations.$inferSelect) => ({
+    ...r,
+    entry_file: r.entry_file
+      ? (r.entry_file.startsWith('http') ? r.entry_file : storage.getSimPublicUrl(r.entry_file))
+      : r.entry_file,
+  });
 
   // GET /api/v1/projects/:id/simulations
   app.get<{ Params: { id: string } }>(
@@ -283,6 +325,168 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
 
       await db.delete(simulations).where(eq(simulations.id, sim.id));
       return reply.code(204).send();
+    },
+  );
+
+  // ── Guided Simulation (mother-sim-level) ──────────────────────────────────────
+
+  // Helper: own the project + simulation, returning both or null.
+  const loadOwnedSim = async (userId: string, projectId: string, simId: string) => {
+    const project = await db.query.projects.findFirst({
+      where: and(eq(projects.id, projectId), eq(projects.created_by, userId)),
+    });
+    if (!project) return null;
+    const sim = await db.query.simulations.findFirst({
+      where: and(eq(simulations.id, simId), eq(simulations.project_id, project.id)),
+    });
+    if (!sim) return null;
+    return { project, sim };
+  };
+
+  // GET /api/v1/projects/:id/simulations/:simId/generate-guidance/stream
+  // SSE — deep analysis + draft cues (no audio yet). Auth via ?token= query param.
+  app.get<{ Params: { id: string; simId: string }; Querystring: { language?: string } }>(
+    '/api/v1/projects/:id/simulations/:simId/generate-guidance/stream',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const owned = await loadOwnedSim(user.id, request.params.id, request.params.simId);
+      if (!owned) return reply.code(404).send({ message: 'Simulation not found' });
+      if (owned.sim.status !== 'ready') return reply.code(400).send({ message: 'Simulation is not ready yet' });
+
+      const language = (String(request.query.language ?? 'en').slice(0, 10)) || 'en';
+
+      const origin = request.headers.origin;
+      reply.raw.setHeader('Access-Control-Allow-Origin', origin ?? '*');
+      reply.raw.setHeader('Access-Control-Allow-Credentials', 'true');
+      reply.raw.setHeader('Content-Type', 'text/event-stream');
+      reply.raw.setHeader('Cache-Control', 'no-cache');
+      reply.raw.setHeader('Connection', 'keep-alive');
+      reply.raw.setHeader('X-Accel-Buffering', 'no');
+      const sendEvent = (event: string, data: object) => {
+        try { reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch { /* closed */ }
+      };
+      sendEvent('connected', {});
+      const keepAlive = setInterval(() => { try { reply.raw.write(': keep-alive\n\n'); } catch { /* closed */ } }, 15_000);
+      const controller = new AbortController();
+      request.raw.on('close', () => { controller.abort(); clearInterval(keepAlive); });
+
+      await db.update(simulations).set({ guidance_status: 'analyzing', guidance_error: null }).where(eq(simulations.id, owned.sim.id));
+
+      try {
+        const svc = new GuidanceService(storage, _llmService);
+        const result = await svc.analyzeAndDraft({
+          simId: owned.sim.id, projectId: owned.project.id, userId: user.id,
+          language, onEvent: sendEvent, signal: controller.signal,
+        });
+        if (!controller.signal.aborted) {
+          const meta = {
+            provider: result.provider, model: result.model, confidence: result.confidence,
+            sourceHash: result.sourceHash, mdUrl: result.mdUrl, language: result.language,
+            generatedAt: new Date().toISOString(), entryCount: result.entries.length,
+            droppedCount: result.droppedCount, warnings: result.warnings,
+          };
+          const [updated] = await db.update(simulations)
+            .set({ guidance: result.entries, guidance_meta: meta, guidance_status: 'draft', guidance_error: null })
+            .where(eq(simulations.id, owned.sim.id)).returning();
+          sendEvent('done', { simulation: serializeSim(updated) });
+        }
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          const errorType = classifyGuidanceError(err);
+          await db.update(simulations)
+            .set({ guidance_status: 'error', guidance_error: (err instanceof Error ? err.message : String(err)).slice(0, 500) })
+            .where(eq(simulations.id, owned.sim.id));
+          sendEvent('error', { error: GUIDANCE_ERROR_MESSAGES[errorType] ?? GUIDANCE_ERROR_MESSAGES.generation_error, errorType });
+        }
+      } finally {
+        clearInterval(keepAlive);
+        try { reply.raw.end(); } catch { /* already closed */ }
+      }
+    },
+  );
+
+  // PATCH /api/v1/projects/:id/simulations/:simId/guidance
+  // Save editor edits (narration text, enabled flags) to the draft. Keeps status 'draft'.
+  app.patch<{ Params: { id: string; simId: string } }>(
+    '/api/v1/projects/:id/simulations/:simId/guidance',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const owned = await loadOwnedSim(user.id, request.params.id, request.params.simId);
+      if (!owned) return reply.code(404).send({ message: 'Simulation not found' });
+
+      const parsed = z.object({ entries: z.array(StoredGuidanceEntrySchema) }).safeParse(request.body);
+      if (!parsed.success) return reply.code(400).send({ message: 'Invalid guidance entries' });
+
+      const entries = parsed.data.entries as unknown as GuidanceEntryStored[];
+      const [updated] = await db.update(simulations)
+        .set({ guidance: entries })
+        .where(eq(simulations.id, owned.sim.id)).returning();
+      return reply.send(serializeSim(updated));
+    },
+  );
+
+  // GET /api/v1/projects/:id/simulations/:simId/publish-guidance/stream
+  // SSE — synthesize audio, assemble guidance.js, inject into entry HTML. Auth via ?token=.
+  app.get<{ Params: { id: string; simId: string } }>(
+    '/api/v1/projects/:id/simulations/:simId/publish-guidance/stream',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const owned = await loadOwnedSim(user.id, request.params.id, request.params.simId);
+      if (!owned) return reply.code(404).send({ message: 'Simulation not found' });
+
+      const entries = (owned.sim.guidance as GuidanceEntryStored[] | null) ?? [];
+      const meta = (owned.sim.guidance_meta as Record<string, unknown> | null) ?? {};
+      const language = (meta.language as string | undefined) ?? 'en';
+      if (entries.filter(e => e.enabled).length === 0) {
+        return reply.code(400).send({ message: 'No enabled guidance cues to publish — generate a draft first' });
+      }
+
+      const origin = request.headers.origin;
+      reply.raw.setHeader('Access-Control-Allow-Origin', origin ?? '*');
+      reply.raw.setHeader('Access-Control-Allow-Credentials', 'true');
+      reply.raw.setHeader('Content-Type', 'text/event-stream');
+      reply.raw.setHeader('Cache-Control', 'no-cache');
+      reply.raw.setHeader('Connection', 'keep-alive');
+      reply.raw.setHeader('X-Accel-Buffering', 'no');
+      const sendEvent = (event: string, data: object) => {
+        try { reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch { /* closed */ }
+      };
+      sendEvent('connected', {});
+      const keepAlive = setInterval(() => { try { reply.raw.write(': keep-alive\n\n'); } catch { /* closed */ } }, 15_000);
+      const controller = new AbortController();
+      request.raw.on('close', () => { controller.abort(); clearInterval(keepAlive); });
+
+      await db.update(simulations).set({ guidance_status: 'publishing', guidance_error: null }).where(eq(simulations.id, owned.sim.id));
+
+      try {
+        const svc = new GuidanceService(storage, _llmService);
+        const result = await svc.publishGuidance({
+          simId: owned.sim.id, projectId: owned.project.id,
+          entries, language, existing: entries,
+          onEvent: sendEvent, signal: controller.signal,
+        });
+        if (!controller.signal.aborted) {
+          const newMeta = { ...meta, guidanceHash: result.guidanceHash, language: result.language, publishedAt: new Date().toISOString() };
+          const [updated] = await db.update(simulations)
+            .set({ guidance: result.entries, guidance_meta: newMeta, guidance_status: 'ready', guidance_error: null })
+            .where(eq(simulations.id, owned.sim.id)).returning();
+          sendEvent('done', { simulation: serializeSim(updated) });
+        }
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          const errorType = classifyGuidanceError(err);
+          await db.update(simulations)
+            .set({ guidance_status: 'error', guidance_error: (err instanceof Error ? err.message : String(err)).slice(0, 500) })
+            .where(eq(simulations.id, owned.sim.id));
+          sendEvent('error', { error: GUIDANCE_ERROR_MESSAGES[errorType] ?? GUIDANCE_ERROR_MESSAGES.generation_error, errorType });
+        }
+      } finally {
+        clearInterval(keepAlive);
+        try { reply.raw.end(); } catch { /* already closed */ }
+      }
     },
   );
 }

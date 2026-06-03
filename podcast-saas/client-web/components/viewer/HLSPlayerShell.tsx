@@ -155,6 +155,10 @@ export function HLSPlayerShell({ config }: Props) {
         iframeRef={simFrameRef}
       />
 
+      {state.guidanceCaption && (
+        <div className="guidance-caption">{state.guidanceCaption}</div>
+      )}
+
       {state.showResumeBtn && (
         <button className="sim-resume-btn" onClick={actions.resumeFromSim}>
           {state.resumeAction === 'backToVideo' ? 'Go back to video' : 'Resume video →'}

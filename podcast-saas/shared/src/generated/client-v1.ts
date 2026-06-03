@@ -128,6 +128,39 @@ export interface VideoGenerationJob {
   finished_at: string | null;
 }
 
+export type GuidanceTrigger =
+  | { kind: 'feature'; targetId: string; events: Array<'pointerdown' | 'input' | 'change'> }
+  | { kind: 'config';  predicateBody: string; observables: string[]; debounce?: number };
+
+export interface GuidanceEntry {
+  id:         string;
+  kind:       'feature' | 'config';
+  title:      string;
+  narration:  string;
+  enabled:    boolean;
+  trigger:    GuidanceTrigger;
+  audioUrl:   string | null;
+  confidence: number;
+  warnings:   string[];
+}
+
+export interface GuidanceMeta {
+  provider?:     string;
+  model?:        string;
+  confidence?:   number;
+  sourceHash?:   string;
+  mdUrl?:        string;
+  guidanceHash?: string;
+  language?:     string;
+  generatedAt?:  string;
+  publishedAt?:  string;
+  entryCount?:   number;
+  droppedCount?: number;
+  warnings?:     string[];
+}
+
+export type GuidanceStatus = 'none' | 'analyzing' | 'draft' | 'publishing' | 'ready' | 'error';
+
 export interface Simulation {
   id:               string;
   project_id:       string;
@@ -137,6 +170,10 @@ export interface Simulation {
   bridge_functions: Array<{ name: string; windowFn: string; description: string }> | null;
   status:           'processing' | 'ready' | 'failed';
   error:            string | null;
+  guidance?:        GuidanceEntry[] | null;
+  guidance_status?: GuidanceStatus;
+  guidance_meta?:   GuidanceMeta | null;
+  guidance_error?:  string | null;
   created_at:       string;
 }
 

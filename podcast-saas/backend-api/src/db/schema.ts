@@ -358,6 +358,11 @@ export const simulations = pgTable('simulations', {
   bridge_functions: jsonb('bridge_functions'),
   status:           text('status').notNull().default('processing'),
   error:            text('error'),
+  // ── Guided Simulation (migration 019) — mother-sim-level voice guidance ──────
+  guidance:         jsonb('guidance'),                              // GuidanceEntry[] (draft or published)
+  guidance_status:  text('guidance_status').notNull().default('none'), // none|analyzing|draft|publishing|ready|error
+  guidance_meta:    jsonb('guidance_meta'),                         // {provider,model,confidence,sourceHash,mdUrl,guidanceHash,language,generatedAt,entryCount,droppedCount}
+  guidance_error:   text('guidance_error'),
   created_at:       timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 

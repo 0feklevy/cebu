@@ -4,10 +4,23 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { getAuth } from 'firebase/auth';
 import { ChevronDown, ChevronUp } from 'lucide-react';
-import type { TimelineSection, Simulation, VideoFile, VideoGenerationJob, SimFile, SimMeta, ImageFile } from 'shared/src/generated/client-v1';
+import type { TimelineSection, Simulation, VideoFile, VideoGenerationJob, SimFile, SimMeta, ImageFile, GuidanceEntry, GuidanceMeta, GuidanceStatus } from 'shared/src/generated/client-v1';
 import { api } from '../lib/api';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
+
+const GUIDANCE_LANGS: Array<{ code: string; label: string }> = [
+  { code: 'en', label: 'English' },
+  { code: 'he', label: 'עברית' },
+  { code: 'es', label: 'Español' },
+  { code: 'fr', label: 'Français' },
+  { code: 'de', label: 'Deutsch' },
+  { code: 'ar', label: 'العربية' },
+  { code: 'zh', label: '中文' },
+  { code: 'hi', label: 'हिन्दी' },
+  { code: 'pt', label: 'Português' },
+  { code: 'ru', label: 'Русский' },
+];
 
 type GenModel = 'kling' | 'seedance' | 'veo';
 
@@ -117,6 +130,16 @@ export function SectionEditor({
   const [generationStatus, setGenerationStatus] = useState<string | null>(null);
   const [simGenError, setSimGenError] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+
+  // ── Guided Simulation (mother-sim-level voice guidance) ───────────────────
+  const [guidanceLang, setGuidanceLang]         = useState('en');
+  const [guidance, setGuidance]                 = useState<GuidanceEntry[] | null>(null);
+  const [guidanceStatus, setGuidanceStatus]     = useState<GuidanceStatus>('none');
+  const [guidanceMeta, setGuidanceMeta]         = useState<GuidanceMeta | null>(null);
+  const [guidanceBusy, setGuidanceBusy]         = useState<false | 'analyzing' | 'publishing'>(false);
+  const [guidanceStatusMsg, setGuidanceStatusMsg] = useState<string | null>(null);
+  const [guidanceError, setGuidanceError]       = useState<string | null>(null);
+  const guidanceEsRef = useRef<EventSource | null>(null);
   const [startStr, setStartStr] = useState(fmtTime(section.start_sec));
   const [endStr, setEndStr]     = useState(fmtTime(section.end_sec));
   const [saving, setSaving]     = useState(false);
@@ -466,6 +489,99 @@ export function SectionEditor({
     setGenerating(false);
     setGenerationStatus(null);
   }, []);
+
+  // ── Guided Simulation handlers ────────────────────────────────────────────
+  // Sync local guidance state from the selected simulation (it is mother-sim-level).
+  useEffect(() => {
+    const s = simulations.find(x => x.id === simId);
+    setGuidance(s?.guidance ?? null);
+    setGuidanceStatus(s?.guidance_status ?? 'none');
+    setGuidanceMeta(s?.guidance_meta ?? null);
+    setGuidanceError(null);
+    if (s?.guidance_meta?.language) setGuidanceLang(s.guidance_meta.language);
+  }, [simId, simulations]);
+
+  useEffect(() => () => { guidanceEsRef.current?.close(); }, []);
+
+  const applyGuidanceSim = (sim: Simulation) => {
+    setGuidance(sim.guidance ?? null);
+    setGuidanceStatus(sim.guidance_status ?? 'none');
+    setGuidanceMeta(sim.guidance_meta ?? null);
+  };
+
+  const runGuidanceStream = async (kind: 'generate' | 'publish') => {
+    if (!simId) return;
+    guidanceEsRef.current?.close();
+    setGuidanceBusy(kind === 'generate' ? 'analyzing' : 'publishing');
+    setGuidanceStatusMsg(kind === 'generate' ? 'Starting analysis…' : 'Starting…');
+    setGuidanceError(null);
+
+    const idToken = await getAuth().currentUser?.getIdToken();
+    const path = kind === 'generate' ? 'generate-guidance/stream' : 'publish-guidance/stream';
+    const url = new URL(`${API_URL}/api/v1/projects/${projectId}/simulations/${simId}/${path}`);
+    if (kind === 'generate') url.searchParams.set('language', guidanceLang);
+    if (idToken) url.searchParams.set('token', idToken);
+
+    const es = new EventSource(url.toString());
+    guidanceEsRef.current = es;
+    let handled = false;
+
+    es.addEventListener('status', (e: MessageEvent) => {
+      setGuidanceStatusMsg((JSON.parse(e.data) as { status: string }).status);
+    });
+    es.addEventListener('done', (e: MessageEvent) => {
+      const data = JSON.parse(e.data) as { simulation: Simulation };
+      applyGuidanceSim(data.simulation);
+      setGuidanceBusy(false);
+      setGuidanceStatusMsg(null);
+      es.close();
+      guidanceEsRef.current = null;
+    });
+    es.addEventListener('error', (e: MessageEvent) => {
+      if (!e.data || handled) return;
+      handled = true;
+      setGuidanceError((JSON.parse(e.data) as { error: string }).error || 'Guidance generation failed');
+      setGuidanceBusy(false);
+      setGuidanceStatusMsg(null);
+      es.close();
+      guidanceEsRef.current = null;
+    });
+    es.onerror = () => {
+      if (handled) return;
+      handled = true;
+      setGuidanceError('Connection lost. Please try again.');
+      setGuidanceBusy(false);
+      setGuidanceStatusMsg(null);
+      es.close();
+      guidanceEsRef.current = null;
+    };
+  };
+
+  const saveGuidanceDraft = async (entries: GuidanceEntry[]) => {
+    const idToken = await getAuth().currentUser?.getIdToken();
+    await fetch(`${API_URL}/api/v1/projects/${projectId}/simulations/${simId}/guidance`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}) },
+      body: JSON.stringify({ entries }),
+    }).catch(() => { /* best-effort; publish re-reads from DB */ });
+  };
+
+  const handlePublishGuidance = async () => {
+    if (guidance) await saveGuidanceDraft(guidance);   // persist edits before TTS
+    await runGuidanceStream('publish');
+  };
+
+  const handleCancelGuidance = () => {
+    guidanceEsRef.current?.close();
+    guidanceEsRef.current = null;
+    setGuidanceBusy(false);
+    setGuidanceStatusMsg(null);
+  };
+
+  const setEntryNarration = (id: string, text: string) =>
+    setGuidance(g => (g ? g.map(e => (e.id === id ? { ...e, narration: text } : e)) : g));
+  const toggleEntryEnabled = (id: string) =>
+    setGuidance(g => (g ? g.map(e => (e.id === id ? { ...e, enabled: !e.enabled } : e)) : g));
 
   // ── Clip source upload ─────────────────────────────────────────────────────
 
@@ -1212,6 +1328,133 @@ export function SectionEditor({
                           color: '#b45309', fontSize: 12, fontWeight: 600, cursor: 'pointer',
                           marginTop: 6,
                         }}
+                      >
+                        Cancel
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* ── GUIDED SIMULATION (mother-sim-level voice guidance) ── */}
+                {simId && (
+                  <div style={{
+                    backgroundColor: '#fff', border: '1px solid #eef2ff', borderTop: '3px solid #6366f1',
+                    borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05), 0 1px 3px rgba(0,0,0,0.03)',
+                    padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 12,
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontSize: 14 }}>🎙</span>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: '#3730a3' }}>Guided Simulation</span>
+                      <span style={{ fontSize: 10, color: '#4f46e5', backgroundColor: '#eef2ff', borderRadius: 6, padding: '2px 8px', fontWeight: 600 }}>Whole simulation</span>
+                      {guidanceStatus !== 'none' && (
+                        <span style={{
+                          marginLeft: 'auto', fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 5,
+                          backgroundColor: guidanceStatus === 'ready' ? '#dcfce7' : guidanceStatus === 'error' ? '#fee2e2' : '#e0e7ff',
+                          color: guidanceStatus === 'ready' ? '#166534' : guidanceStatus === 'error' ? '#991b1b' : '#3730a3',
+                        }}>{guidanceStatus}</span>
+                      )}
+                    </div>
+
+                    <p style={{ fontSize: 10.5, color: '#6b7280', margin: 0, lineHeight: 1.5 }}>
+                      Analyzes the whole simulation, writes a 1–2 sentence voice cue per feature and interesting
+                      configuration, and plays each once when a viewer first reaches it. Separate from Simple UI / Auto Script.
+                    </p>
+
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+                      <div style={{ flex: '0 0 auto' }}>
+                        <label style={{ ...labelStyle, color: '#4338ca' }}>Language</label>
+                        <select
+                          value={guidanceLang}
+                          onChange={e => setGuidanceLang(e.target.value)}
+                          disabled={!!guidanceBusy}
+                          style={{ ...inputStyle, cursor: 'pointer', width: 130 }}
+                        >
+                          {GUIDANCE_LANGS.map(l => <option key={l.code} value={l.code}>{l.label}</option>)}
+                        </select>
+                      </div>
+                      <button
+                        onClick={() => runGuidanceStream('generate')}
+                        disabled={!!guidanceBusy}
+                        style={{
+                          flex: 1, height: 42, borderRadius: 10, border: 'none',
+                          background: guidanceBusy ? 'linear-gradient(135deg,#c7d2fe,#a5b4fc)' : 'linear-gradient(135deg,#6366f1,#4f46e5)',
+                          color: '#fff', fontSize: 13, fontWeight: 700, cursor: guidanceBusy ? 'not-allowed' : 'pointer',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                        }}
+                      >
+                        {guidanceBusy === 'analyzing'
+                          ? (<><span style={{ width: 14, height: 14, borderRadius: '50%', border: '2px solid #ffffff66', borderTopColor: '#fff', display: 'inline-block', animation: 'spin 0.7s linear infinite' }} />{guidanceStatusMsg ?? 'Analyzing…'}</>)
+                          : (guidance && guidance.length > 0 ? '↻ Re-analyze' : '✦ Analyze & draft')}
+                      </button>
+                    </div>
+
+                    {guidanceError && (
+                      <div style={{ backgroundColor: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '8px 12px' }}>
+                        <p style={{ fontSize: 11, color: '#dc2626', margin: 0 }}>{guidanceError}</p>
+                      </div>
+                    )}
+
+                    {guidanceMeta && (
+                      <p style={{ fontSize: 10, color: '#6b7280', margin: 0 }}>
+                        {guidanceMeta.provider ? `${guidanceMeta.provider}${guidanceMeta.model ? ` · ${guidanceMeta.model}` : ''} · ` : ''}
+                        {guidanceMeta.entryCount != null ? `${guidanceMeta.entryCount} cues` : ''}
+                        {guidanceMeta.droppedCount ? ` · ${guidanceMeta.droppedCount} dropped` : ''}
+                        {guidanceMeta.mdUrl ? <> · <a href={guidanceMeta.mdUrl} target="_blank" rel="noreferrer" style={{ color: '#4f46e5' }}>analysis ↗</a></> : null}
+                      </p>
+                    )}
+
+                    {guidance && guidance.length > 0 && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 280, overflowY: 'auto' }}>
+                        {guidance.map(e => (
+                          <div key={e.id} style={{ border: '1px solid #eef2ff', borderRadius: 10, padding: '8px 10px', backgroundColor: e.enabled ? '#fff' : '#f9fafb' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                              <button
+                                onClick={() => toggleEntryEnabled(e.id)}
+                                title={e.enabled ? 'Enabled' : 'Disabled'}
+                                style={{ width: 30, height: 17, borderRadius: 9, border: 'none', flexShrink: 0, backgroundColor: e.enabled ? '#6366f1' : '#d1d5db', position: 'relative', cursor: 'pointer' }}
+                              >
+                                <span style={{ position: 'absolute', top: 2.5, left: e.enabled ? 15 : 2.5, width: 12, height: 12, borderRadius: '50%', backgroundColor: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,0.2)', transition: 'left .15s' }} />
+                              </button>
+                              <span style={{ fontSize: 9, fontWeight: 700, color: e.kind === 'config' ? '#7c3aed' : '#0369a1', backgroundColor: e.kind === 'config' ? '#f3e8ff' : '#e0f2fe', borderRadius: 4, padding: '1px 6px' }}>{e.kind}</span>
+                              <span style={{ fontSize: 11, fontWeight: 600, color: '#374151', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.title}</span>
+                              <span style={{ marginLeft: 'auto', fontSize: 9, color: '#9ca3af' }}>{Math.round((e.confidence ?? 0) * 100)}%</span>
+                            </div>
+                            <textarea
+                              value={e.narration}
+                              onChange={ev => setEntryNarration(e.id, ev.target.value)}
+                              rows={2}
+                              maxLength={400}
+                              style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid #e5e7eb', fontSize: 11.5, color: '#111827', resize: 'vertical', boxSizing: 'border-box', fontFamily: 'inherit', lineHeight: 1.45, outline: 'none' }}
+                            />
+                            {e.warnings && e.warnings.length > 0 && (
+                              <p style={{ fontSize: 9, color: '#b45309', margin: '3px 0 0' }}>⚠ {e.warnings.join('; ')}</p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {guidance && guidance.some(e => e.enabled) && (
+                      <button
+                        onClick={handlePublishGuidance}
+                        disabled={!!guidanceBusy}
+                        style={{
+                          width: '100%', height: 40, borderRadius: 10, border: 'none',
+                          background: guidanceBusy ? '#a7f3d0' : 'linear-gradient(135deg,#10b981,#059669)',
+                          color: '#fff', fontSize: 13, fontWeight: 700, cursor: guidanceBusy ? 'not-allowed' : 'pointer',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                        }}
+                      >
+                        {guidanceBusy === 'publishing'
+                          ? (<><span style={{ width: 14, height: 14, borderRadius: '50%', border: '2px solid #ffffff66', borderTopColor: '#fff', display: 'inline-block', animation: 'spin 0.7s linear infinite' }} />{guidanceStatusMsg ?? 'Publishing…'}</>)
+                          : (guidanceStatus === 'ready' ? '🔊 Update voice guidance' : '🔊 Approve & generate voice')}
+                      </button>
+                    )}
+
+                    {guidanceBusy && (
+                      <button
+                        onClick={handleCancelGuidance}
+                        style={{ width: '100%', height: 30, borderRadius: 8, border: '1.5px solid #c7d2fe', backgroundColor: 'transparent', color: '#4f46e5', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
                       >
                         Cancel
                       </button>

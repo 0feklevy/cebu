@@ -56,6 +56,7 @@ export interface ProjectPlayerState {
   badgeMode:       'sim' | 'free' | '';
   resumeAction:    'resume' | 'backToVideo';
   activeImageOverlay: ImageOverlayItem | null;
+  guidanceCaption: string;
 }
 
 export interface ProjectPlayerActions {
@@ -121,6 +122,7 @@ export function useProjectPlayer(
     badgeMode:        '',
     resumeAction:     'resume',
     activeImageOverlay: null,
+    guidanceCaption:  '',
   });
 
   const merge = (patch: Partial<ProjectPlayerState>) =>
@@ -150,6 +152,12 @@ export function useProjectPlayer(
   const simReadyRef     = useRef(false);
   const simPollRef      = useRef<ReturnType<typeof setInterval> | null>(null);
   const pendingSimRef   = useRef<{ script: string; params: Record<string, boolean> } | null>(null);
+  // ── Guided Simulation: parent owns "fire once per viewing session" + audio ──
+  const firedCueIds       = useRef<Set<string>>(new Set());
+  const guidanceAudioRef  = useRef<HTMLAudioElement | null>(null);
+  const guidanceQueueRef  = useRef<Array<{ id: string; text: string; audioUrl: string }>>([]);
+  const guidanceVolRef    = useRef<number | null>(null);
+  const showSimOverlayRef = useRef(false);
   const startedRef    = useRef(false);
   const scrubbingRef  = useRef(false);
   const wasPlayingRef = useRef(false);
@@ -239,6 +247,38 @@ export function useProjectPlayer(
   // ── postMessage helpers ───────────────────────────────────────────────────
   const sendToSim = (msg: object) => {
     try { refs.simFrame.current?.contentWindow?.postMessage(msg, '*'); } catch (_) {}
+  };
+
+  // ── Guided Simulation narration playback (serialized queue, ducks the video) ──
+  const startNextGuidance = () => {
+    const next = guidanceQueueRef.current[0];
+    if (!next) {
+      if (guidanceVolRef.current != null && videoRef.current) videoRef.current.volume = guidanceVolRef.current;
+      guidanceVolRef.current = null;
+      merge({ guidanceCaption: '' });
+      return;
+    }
+    if (videoRef.current && guidanceVolRef.current == null) {
+      guidanceVolRef.current = videoRef.current.volume;
+      videoRef.current.volume = Math.min(videoRef.current.volume, 0.2);  // duck under narration
+    }
+    merge({ guidanceCaption: next.text });
+    const done = () => {
+      guidanceQueueRef.current.shift();
+      guidanceAudioRef.current = null;
+      startNextGuidance();
+    };
+    if (!next.audioUrl) { setTimeout(done, 4000); return; }
+    const audio = new Audio(next.audioUrl);
+    guidanceAudioRef.current = audio;
+    audio.addEventListener('ended', done);
+    audio.addEventListener('error', done);
+    audio.play().catch(done);
+  };
+
+  const enqueueGuidance = (cue: { id: string; text: string; audioUrl: string }) => {
+    guidanceQueueRef.current.push(cue);
+    if (!guidanceAudioRef.current) startNextGuidance();
   };
 
   const startSimPoll = useCallback(() => {
@@ -712,11 +752,33 @@ export function useProjectPlayer(
         userPausedRef.current = true;
         merge({ showResumeBtn: true, badgeMode: 'free', resumeAction: resumeActionRef.current });
       }
+      // ── Guided Simulation ──────────────────────────────────────────────────
+      if (type === 'GUIDANCE_READY') {
+        // A freshly (re)loaded guidance overlay — seed it with the session's fired cues
+        // so cues already heard in a previous section do NOT replay, and set the gate.
+        sendToSim({ type: 'guidanceInit', firedIds: Array.from(firedCueIds.current) });
+        sendToSim({ type: 'guidanceGate', active: showSimOverlayRef.current });
+      }
+      if (type === 'guidanceCue') {
+        const { id, text, audioUrl } = (e.data as { id?: string; text?: string; audioUrl?: string }) ?? {};
+        if (id && !firedCueIds.current.has(id)) {
+          firedCueIds.current.add(id);                       // once per viewing session, across section reloads
+          sendToSim({ type: 'guidanceFired', ids: [id] });
+          enqueueGuidance({ id, text: text ?? '', audioUrl: audioUrl ?? '' });
+        }
+      }
     };
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Keep the guidance overlay's config-poll gate in sync with overlay visibility.
+  useEffect(() => {
+    showSimOverlayRef.current = state.showSimOverlay;
+    sendToSim({ type: 'guidanceGate', active: state.showSimOverlay });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.showSimOverlay]);
 
   // ── iframe load listener — reset ready state when src changes ─────────────
   useEffect(() => {
