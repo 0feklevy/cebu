@@ -4,6 +4,7 @@ import { useRef, useState } from 'react';
 import Link from 'next/link';
 import type { PlayerConfig, SimulationOverlay } from './types';
 import { useProjectPlayer } from './useProjectPlayer';
+import { useCropOverlay } from './useCropOverlay';
 import { VideoLayer } from './VideoLayer';
 import { SimOverlayDynamic } from './SimOverlayDynamic';
 import { ControlsBar } from './ControlsBar';
@@ -53,6 +54,13 @@ export function HLSPlayerShell({ config, onProjectComplete, autoStart, hideHomeL
     root: rootRef,
     simFrame: simFrameRef,
   }, { onProjectComplete, autoStart });
+
+  // Smart portrait crop — no-op in landscape, follows the active speaker in portrait.
+  useCropOverlay(
+    { videoA: videoARef, videoB: videoBRef, root: rootRef },
+    config.segments,
+    state.currentSegIdx,
+  );
 
   const allMarkers = config.segments.flatMap((seg, idx) => {
     const offset = state.timeline[idx]?.offset ?? 0;

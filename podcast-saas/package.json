@@ -7,8 +7,7 @@
     "shared",
     "backend-api",
     "client-web",
-    "admin-web",
-    "interactive-podcast-react"
+    "admin-web"
   ],
   "scripts": {
     "build": "npm run build -w shared && npm run build -w backend-api && npm run build -w client-web && npm run build -w admin-web",

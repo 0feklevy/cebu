@@ -3,7 +3,6 @@ packages:
   - 'client-web'
   - 'admin-web'
   - 'shared'
-  - 'interactive-podcast-react'
 allowBuilds:
   '@google/genai': true
   bson: true

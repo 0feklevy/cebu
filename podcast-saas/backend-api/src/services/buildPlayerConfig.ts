@@ -2,6 +2,7 @@ import { db } from '../db/index.js';
 import { projects, video_files, timeline_sections, image_files, audio_files } from '../db/schema.js';
 import { eq, asc } from 'drizzle-orm';
 import { getStorageAdapter } from './storage/getStorageAdapter.js';
+import { enqueueCropForProject } from './crop/runCropAnalysis.js';
 
 /**
  * Build the PlayerConfig for a single project — the dynamic equivalent of
@@ -56,6 +57,8 @@ export async function buildPlayerConfig(projectId: string) {
         type:           s.type,
       }));
 
+    const crop_url = v.crop_status === 'ready' && v.crop_key ? storage.getPublicUrl(v.crop_key) : null;
+
     return {
       id: v.id,
       label: v.filename,
@@ -63,9 +66,15 @@ export async function buildPlayerConfig(projectId: string) {
       hls_url,
       fallback_url,
       hls_status: v.hls_status,
+      crop_url,                 // smart portrait-crop metadata (null until ready)
       simulations,
     };
   });
+
+  // Trigger / refresh smart-crop computation in the background. Fire-and-forget:
+  // this runs because the project is being previewed or shared, never blocks the
+  // response, and no-ops once the crop is already up to date (content-hash gated).
+  enqueueCropForProject(project.id).catch(() => { /* best-effort */ });
 
   // Build broll_clips from broll sections — each broll section points to a broll video
   const brollVideoMap = new Map(brollVideos.map((v) => [v.id, v]));

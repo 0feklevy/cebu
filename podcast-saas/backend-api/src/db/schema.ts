@@ -346,6 +346,11 @@ export const video_files = pgTable('video_files', {
   hls_error: text('hls_error'),
   waveform_peaks: text('waveform_peaks'),  // JSON array of 200 floats 0–1, set after transcode
   is_broll: boolean('is_broll').notNull().default(false),  // true for AI-generated broll source files
+  // Smart portrait-crop metadata (migration 022) — computed in the background
+  crop_status: text('crop_status').notNull().default('none'),   // none | processing | ready | failed
+  crop_key: text('crop_key'),                                    // storage key of the crop-metadata JSON
+  crop_source_hash: text('crop_source_hash'),                    // idempotency: re-run when the source changes
+  crop_error: text('crop_error'),
   created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 

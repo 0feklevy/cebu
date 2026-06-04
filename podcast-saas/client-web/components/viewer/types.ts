@@ -20,6 +20,7 @@ export interface PlayerSegment {
   hls_url: string | null;
   fallback_url: string | null;
   hls_status: string;
+  crop_url?: string | null;     // smart portrait-crop metadata JSON (null until computed)
   simulations: SimulationOverlay[];
 }
 
