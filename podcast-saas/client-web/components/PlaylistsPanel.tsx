@@ -3,10 +3,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ListVideo, Play, Plus } from 'lucide-react';
 import { api } from '../lib/api';
+import { useAuth } from '../lib/firebase';
 import type { PlaylistSummary } from 'shared/src/generated/client-v1';
 import { PlaylistEditorDialog } from './PlaylistEditorDialog';
 
 export function PlaylistsPanel() {
+  const { loading: authLoading } = useAuth();
   const [playlists, setPlaylists] = useState<PlaylistSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -20,7 +22,9 @@ export function PlaylistsPanel() {
       .finally(() => setLoading(false));
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    if (!authLoading) load();
+  }, [authLoading, load]);
 
   const handleNew = useCallback(async () => {
     if (creating) return;

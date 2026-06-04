@@ -145,11 +145,11 @@ export async function processVideoCrop(
   const threshold = hasAudio ? calibratePitchThreshold(pitches) : 160;
   const labels: Array<{ label: SpeakerLabel; conf: number }> = pitches.map((p) => labelFromPitch(p, threshold));
 
-  // Gender → side calibration by VOTING. With exactly two heads we only need to
-  // learn which head each gender speaks from; a confidence-weighted majority vote
-  // over "which head is moving while gender X talks" is far more stable than
-  // averaging positions (which collapses to centre when the active head flips).
-  const genderHead = mapGenderToHead(headModel.isTwoShot, heads, labels, motionPerFrame);
+  // ── Gender → head calibration ─────────────────────────────────────────────
+  // Two-stage: (1) accumulated voice-motion profiles — most robust for podcast
+  // content where faces are static but lips/head move subtly while speaking.
+  // (2) interestX statistics as fallback when motion is too low.
+  const genderHead = mapGenderToHead(headModel.isTwoShot, heads, labels, motionPerFrame, interestXs);
 
   // ── Pass 2 ──────────────────────────────────────────────────────────────────
   const stats = { two_shot: 0, calibrated: 0, motion: 0, fallback: 0 };
@@ -169,6 +169,12 @@ export async function processVideoCrop(
       if (seg !== lastSeg) { debounce = new DebounceState(); lastSeg = seg; }
 
       const speaker = labels[i].label;
+
+      // Resolve candidate — calibration → per-frame motion.
+      // THE KEY FIX: midpoint is NOT a candidate for the debounce.
+      // It is only the display-fallback when nothing has been committed yet.
+      // Previously, midpoint was fed into applyDebounce as the first candidate,
+      // which caused the debounce to commit at 0.505 and never recover.
       let candidate: number | null = null;
       if ((speaker === 'male' || speaker === 'female') && genderHead[speaker] !== null) {
         candidate = heads[genderHead[speaker]!];
@@ -178,13 +184,16 @@ export async function processVideoCrop(
         const ai = activeHeadIndex(motionPerFrame[i], heads);
         if (ai !== null) { candidate = heads[ai]; stats.motion++; }
       }
-      if (candidate === null && heads.length >= 2) {
-        candidate = (heads[0] + heads[heads.length - 1]) / 2;
-        stats.fallback++;
-      }
 
       const committed = applyDebounce(debounce, speaker, t, candidate);
-      if (committed !== null) cropX = interestToCropX(committed, W, H);
+      if (committed !== null) {
+        cropX = interestToCropX(committed, W, H);
+      } else {
+        // No speech has committed yet — show midpoint as a neutral holding position.
+        // This does NOT commit the debounce so the first real voice event will take over.
+        cropX = interestToCropX((heads[0] + heads[heads.length - 1]) / 2, W, H);
+        stats.fallback++;
+      }
     }
 
     raw[i] = { t, x: cropX };
@@ -211,46 +220,107 @@ export async function processVideoCrop(
 }
 
 /**
- * Confidence-weighted majority vote: for each gender, which head is moving while
- * they speak. Resolves conflicts (both genders voting the same head) by giving
- * the contested head to the stronger voter and the other head to the loser.
+ * Two-stage gender→head mapping.
+ *
+ * Stage 1 — Accumulated voice-motion profiles:
+ *   For every frame labeled 'male' (or 'female') with confident pitch, add that
+ *   frame's motion profile to a per-gender accumulator. The peak of the accumulated
+ *   profile reveals WHERE in the frame the face was moving while that voice spoke.
+ *   This is robust because: even tiny lip/nod movements accumulate into a clear
+ *   peak over many speaking frames, whereas per-frame votes are too noisy.
+ *
+ * Stage 2 — interestX statistics (fallback):
+ *   The interest-map centroid is biased toward whichever face is more active.
+ *   Mean interestX during male speech vs female speech separates the two positions
+ *   even without any motion — useful for fully static scenes.
  */
 function mapGenderToHead(
   isTwoShot: boolean,
   heads: number[],
   labels: Array<{ label: SpeakerLabel; conf: number }>,
   motionPerFrame: Float64Array[],
+  interestXs: Float64Array,
 ): { male: number | null; female: number | null } {
   if (!isTwoShot || heads.length < 2) return { male: null, female: null };
 
-  const votes: Record<'male' | 'female', number[]> = { male: [0, 0], female: [0, 0] };
+  const cols = PROFILE_COLS;
+  const CAL_CONF = 0.30;
+
+  // Stage 1: accumulated motion profiles per gender
+  const maleAcc   = new Float64Array(cols);
+  const femaleAcc = new Float64Array(cols);
+  let maleN = 0, femaleN = 0;
+
   for (let i = 0; i < labels.length; i++) {
     const { label, conf } = labels[i];
-    if (label !== 'male' && label !== 'female') continue;
-    const ai = activeHeadIndex(motionPerFrame[i], heads);
-    if (ai !== null) votes[label][ai] += conf;
+    if (conf < CAL_CONF) continue;
+    if (label === 'male') {
+      for (let x = 0; x < cols; x++) maleAcc[x] += motionPerFrame[i][x] * conf;
+      maleN++;
+    } else if (label === 'female') {
+      for (let x = 0; x < cols; x++) femaleAcc[x] += motionPerFrame[i][x] * conf;
+      femaleN++;
+    }
   }
 
-  const maleBest = votes.male[0] >= votes.male[1] ? 0 : 1;
-  const femaleBest = votes.female[0] >= votes.female[1] ? 0 : 1;
-  const maleHas = votes.male[0] + votes.male[1] > 0;
-  const femaleHas = votes.female[0] + votes.female[1] > 0;
+  // Smooth the accumulators with a broad kernel to merge adjacent columns
+  const smoothKernel = Math.max(2, Math.floor(cols * 0.07));
+  const maleSmooth   = boxSmooth(maleAcc,   smoothKernel);
+  const femaleSmooth = boxSmooth(femaleAcc, smoothKernel);
 
-  if (!maleHas && !femaleHas) return { male: null, female: null };
-  if (maleHas && femaleHas && maleBest === femaleBest) {
-    // Conflict — assign the contested head to whoever wants it more.
-    const contested = maleBest;
-    const other = 1 - contested;
-    const maleStrength = votes.male[contested];
-    const femaleStrength = votes.female[contested];
-    return maleStrength >= femaleStrength
-      ? { male: contested, female: other }
-      : { male: other, female: contested };
+  const malePeakX   = argmaxInRange(maleSmooth,   Math.floor(cols * 0.05), Math.floor(cols * 0.95)) / (cols - 1);
+  const femalePeakX = argmaxInRange(femaleSmooth, Math.floor(cols * 0.05), Math.floor(cols * 0.95)) / (cols - 1);
+  const maleStrong   = maleN   >= 3 && maleSmooth[Math.round(malePeakX * (cols - 1))]     > 1e-3;
+  const femaleStrong = femaleN >= 3 && femaleSmooth[Math.round(femalePeakX * (cols - 1))] > 1e-3;
+
+  if (maleStrong && femaleStrong && Math.abs(malePeakX - femalePeakX) > 0.12) {
+    const maleLeft = malePeakX < femalePeakX;
+    return { male: maleLeft ? 0 : 1, female: maleLeft ? 1 : 0 };
   }
-  return {
-    male: maleHas ? maleBest : (femaleHas ? 1 - femaleBest : null),
-    female: femaleHas ? femaleBest : (maleHas ? 1 - maleBest : null),
-  };
+  if (maleStrong && !femaleStrong) {
+    const mIdx = malePeakX < 0.5 ? 0 : 1;
+    return { male: mIdx, female: 1 - mIdx };
+  }
+  if (femaleStrong && !maleStrong) {
+    const fIdx = femalePeakX < 0.5 ? 0 : 1;
+    return { male: 1 - fIdx, female: fIdx };
+  }
+
+  // Stage 2: interestX statistics — works even when motion is absent
+  let maleIxSum = 0, maleIxW = 0, femaleIxSum = 0, femaleIxW = 0;
+  for (let i = 0; i < labels.length; i++) {
+    const { label, conf } = labels[i];
+    if (conf < 0.40) continue;
+    if (label === 'male')   { maleIxSum   += interestXs[i] * conf; maleIxW   += conf; }
+    if (label === 'female') { femaleIxSum += interestXs[i] * conf; femaleIxW += conf; }
+  }
+  const maleMx   = maleIxW   > 0 ? maleIxSum   / maleIxW   : null;
+  const femaleMx = femaleIxW > 0 ? femaleIxSum / femaleIxW : null;
+
+  if (maleMx !== null && femaleMx !== null && Math.abs(maleMx - femaleMx) > 0.04) {
+    const maleLeft = maleMx < femaleMx;
+    return { male: maleLeft ? 0 : 1, female: maleLeft ? 1 : 0 };
+  }
+  if (maleMx !== null) { const m = maleMx < 0.5 ? 0 : 1; return { male: m, female: 1 - m }; }
+  if (femaleMx !== null) { const f = femaleMx < 0.5 ? 0 : 1; return { male: 1 - f, female: f }; }
+
+  return { male: null, female: null };
+}
+
+function boxSmooth(a: Float64Array, radius: number): Float64Array {
+  const n = a.length, out = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    let s = 0, c = 0;
+    for (let k = -radius; k <= radius; k++) { const j = i + k; if (j >= 0 && j < n) { s += a[j]; c++; } }
+    out[i] = c > 0 ? s / c : 0;
+  }
+  return out;
+}
+
+function argmaxInRange(a: Float64Array, lo: number, hi: number): number {
+  let idx = lo, v = -Infinity;
+  for (let i = lo; i <= hi && i < a.length; i++) if (a[i] > v) { v = a[i]; idx = i; }
+  return idx;
 }
 
 function grayHist(frame: Uint8Array): Float64Array {

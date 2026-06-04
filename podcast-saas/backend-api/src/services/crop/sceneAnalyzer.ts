@@ -17,7 +17,7 @@ import { spectralResidualColumns, resample1d } from './dsp.js';
 
 export const PROFILE_COLS = 96;   // resolution of the compact per-frame profiles
 const SAL_SIZE = 64;              // power-of-two square for the saliency FFT
-const MOTION_THRESH = 12;         // per-pixel abs-diff noise floor
+const MOTION_THRESH = 5;          // per-pixel abs-diff noise floor (lower = catches lip/micro movements)
 // Heads live in the upper-centre band of a podcast frame; ignore motion/skin
 // outside it (hands, lower-thirds, gesturing torsos) when locating speakers.
 const BAND_TOP = 0.08;

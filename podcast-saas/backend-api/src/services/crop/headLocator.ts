@@ -17,9 +17,9 @@
 import { PROFILE_COLS } from './sceneAnalyzer.js';
 
 const HEAD_WINDOW = 0.09;       // ± window (norm.) used to pool per-head motion
-const SECOND_HEAD_MIN = 0.45;   // 2nd head must reach this fraction of the 1st to count
-const MIN_SEPARATION = 0.22;    // two heads must be at least this far apart (norm.)
-const VALLEY_RATIO = 0.70;      // dip between heads must fall below this × weaker peak
+const SECOND_HEAD_MIN = 0.28;   // 2nd head must reach this fraction of the 1st to count
+const MIN_SEPARATION = 0.20;    // two heads must be at least this far apart (norm.)
+const VALLEY_RATIO = 0.88;      // dip between heads must fall below this × weaker peak
 
 export interface HeadModel {
   heads: number[];              // 0..2 stable head centres, sorted left→right (0..1)
