@@ -36,7 +36,7 @@ importers:
         specifier: ^19.0.0
         version: 19.2.6(react@19.2.6)
       shared:
-        specifier: workspace:*
+        specifier: file:../shared
         version: link:../shared
       tailwind-merge:
         specifier: ^2.5.4
@@ -121,7 +121,7 @@ importers:
         specifier: ^3.4.4
         version: 3.4.9
       shared:
-        specifier: workspace:*
+        specifier: file:../shared
         version: link:../shared
       tsoa:
         specifier: ^6.4.0
@@ -200,7 +200,7 @@ importers:
         specifier: ^19.0.0
         version: 19.2.6(react@19.2.6)
       shared:
-        specifier: workspace:*
+        specifier: file:../shared
         version: link:../shared
       tailwind-merge:
         specifier: ^2.5.4

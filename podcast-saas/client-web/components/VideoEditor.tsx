@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { Clapperboard, Maximize2, Minimize2, Plus, Redo2, Trash2, Undo2 } from 'lucide-react';
+import { Clapperboard, Maximize2, Minimize2, Music, Plus, Redo2, Trash2, Undo2 } from 'lucide-react';
 import { useAuth } from '../lib/firebase';
 import { api } from '../lib/api';
 import { VideoPlayer } from './VideoPlayer';
@@ -13,7 +13,7 @@ import { SimulationUploader } from './SimulationUploader';
 import { BrollPanel } from './BrollPanel';
 import { ConfirmDialog } from './ConfirmDialog';
 import { ImageCropEditor } from './ImageCropEditor';
-import type { VideoFile, TimelineSection, Simulation, VideoGenerationJob, ImageFile } from 'shared/src/generated/client-v1';
+import type { VideoFile, TimelineSection, Simulation, VideoGenerationJob, ImageFile, AudioFile } from 'shared/src/generated/client-v1';
 
 type ToolMode = 'video' | 'simulation' | 'broll';
 
@@ -22,6 +22,11 @@ type HlsTier = typeof HLS_TIERS[number];
 type SectionSnapshot = TimelineSection[];
 
 const HISTORY_LIMIT = 50;
+const TIMELINE_RULER_H = 28;
+const TIMELINE_VIDEO_TRACK_H = 52;
+const TIMELINE_AUDIO_TRACK_H = 22;
+const TIMELINE_BROLL_TRACK_H = 44;
+const TIMELINE_SCROLLBAR_H = 12;
 
 function EditorToolsPanel({
   toolMode,
@@ -102,6 +107,7 @@ function sectionPatchBody(s: TimelineSection): Parameters<typeof api.updateSecti
     label: s.label,
     notes: s.notes,
     sort_order: s.sort_order,
+    track: s.track,
     simulation_url: s.simulation_url,
     simulation_id: s.simulation_id,
     sim_script: s.sim_script,
@@ -113,6 +119,7 @@ function sectionPatchBody(s: TimelineSection): Parameters<typeof api.updateSecti
     auto_script: s.auto_script,
     clip_source_image_id: s.clip_source_image_id,
     camera_movement: s.camera_movement ?? 'zoom_in',
+    clip_source_audio_id: s.clip_source_audio_id,
   };
 }
 
@@ -137,6 +144,7 @@ function sectionCreateBody(s: TimelineSection): Parameters<typeof api.createSect
     auto_script: s.auto_script,
     clip_source_image_id: s.clip_source_image_id,
     camera_movement: s.camera_movement ?? 'zoom_in',
+    clip_source_audio_id: s.clip_source_audio_id,
   };
 }
 
@@ -198,6 +206,10 @@ export function VideoEditor({ projectId }: Props) {
   const [pendingCropImage, setPendingCropImage] = useState<ImageFile | null>(null);
   const [imgUploading, setImgUploading] = useState(false);
   const imgFileInputRef = useRef<HTMLInputElement>(null);
+  const [audioFiles, setAudioFiles] = useState<AudioFile[]>([]);
+  const [audioUploading, setAudioUploading] = useState(false);
+  const [deletingAudioId, setDeletingAudioId] = useState<string | null>(null);
+  const audioFileInputRef = useRef<HTMLInputElement>(null);
   const [deletingImgId, setDeletingImgId] = useState<string | null>(null);
   const [deletingSimId, setDeletingSimId] = useState<string | null>(null);
   const [deletingId,    setDeletingId]    = useState<string | null>(null);
@@ -221,12 +233,13 @@ export function VideoEditor({ projectId }: Props) {
 
   const loadData = useCallback(async () => {
     try {
-      const [vids, secs, sims, jobs, imgs] = await Promise.all([
+      const [vids, secs, sims, jobs, imgs, auds] = await Promise.all([
         api.listVideos(projectId),
         api.listSections(projectId),
         api.listSimulations(projectId),
         api.listBrollJobs(projectId),
         api.listImages(projectId),
+        api.listAudioFiles(projectId),
       ]);
       // Separate main videos from AI-generated broll source files
       setVideos(vids.filter(v => !v.is_broll));
@@ -236,6 +249,7 @@ export function VideoEditor({ projectId }: Props) {
       setRedoStack([]);
       setSimulations(sims);
       setImages(imgs);
+      setAudioFiles(auds);
       // Keep in-progress jobs + recently completed ones (last 10 min) so the user sees the result
       const RECENT_MS = 10 * 60 * 1000;
       const now = Date.now();
@@ -313,7 +327,10 @@ export function VideoEditor({ projectId }: Props) {
   }, [pendingSimKey, projectId]);
 
   // B-roll computed values
-  const brollSections = sections.filter(s => s.track === 'broll');
+  const isAudioSection = (s: TimelineSection) => s.track === 'audio' || !!s.clip_source_audio_id;
+  const isVisualBrollSection = (s: TimelineSection) => s.track === 'broll' && !s.clip_source_audio_id;
+  const brollSections = sections.filter(isVisualBrollSection);
+  const audioSections = sections.filter(isAudioSection);
   const hasBroll = toolMode === 'broll' || showAllLayers;
 
   const activeBrollSection = brollSections.find(s => {
@@ -338,7 +355,7 @@ export function VideoEditor({ projectId }: Props) {
   const sectionGlobalEnd   = (s: TimelineSection) => (videoGlobalOffsets.get(s.video_file_id) ?? 0) + s.end_sec;
   const timelineDuration = Math.max(
     mainVideoDuration,
-    ...sections.filter(s => s.track !== 'broll').map(sectionGlobalEnd),
+    ...sections.filter(s => s.track === 'main').map(sectionGlobalEnd),
   );
 
   // Clip overlay — library video shown as overlay at playhead position.
@@ -519,7 +536,7 @@ export function VideoEditor({ projectId }: Props) {
   // Compute active section label (global → local → section lookup)
   const activeSectionLabel = (() => {
     return sections.find(s =>
-      s.track !== 'broll' &&
+      s.track === 'main' &&
       playheadSec >= sectionGlobalStart(s) &&
       playheadSec < sectionGlobalEnd(s),
     )?.label ?? null;
@@ -590,6 +607,31 @@ export function VideoEditor({ projectId }: Props) {
     }
   }, [projectId]);
 
+  const handleAudioFileChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+    setAudioUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const uploaded = await api.uploadAudioFile(projectId, fd);
+      setAudioFiles(prev => [uploaded, ...prev]);
+    } catch { /* ignore */ } finally {
+      setAudioUploading(false);
+    }
+  }, [projectId]);
+
+  const handleDeleteAudio = useCallback(async (audioId: string) => {
+    setDeletingAudioId(audioId);
+    try {
+      await api.deleteAudioFile(projectId, audioId);
+      setAudioFiles(prev => prev.filter(a => a.id !== audioId));
+    } catch { /* ignore */ } finally {
+      setDeletingAudioId(null);
+    }
+  }, [projectId]);
+
   useEffect(() => {
     const handler = () => setIsFullscreen(!!document.fullscreenElement);
     document.addEventListener('fullscreenchange', handler);
@@ -618,7 +660,15 @@ export function VideoEditor({ projectId }: Props) {
   }
 
   const hasAnyVideo = videos.length > 0;
-  const tlHeight = hasBroll ? 178 : 124;
+  const showBrollTrack = hasBroll;
+  const showAudioTrack = audioFiles.length > 0 || audioSections.length > 0;
+  const tlHeight =
+    TIMELINE_RULER_H +
+    TIMELINE_VIDEO_TRACK_H +
+    TIMELINE_AUDIO_TRACK_H +
+    TIMELINE_SCROLLBAR_H +
+    (showBrollTrack ? TIMELINE_BROLL_TRACK_H : 0) +
+    (showAudioTrack ? TIMELINE_AUDIO_TRACK_H : 0);
 
   return (
     <>
@@ -953,6 +1003,73 @@ export function VideoEditor({ projectId }: Props) {
                   ))
                 )}
               </div>
+
+              {/* Sound section */}
+              <div className="mt-3 flex flex-col gap-2 pt-3 border-t border-border/40">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="w-0.5 h-3 rounded-full bg-emerald-400/80" />
+                    <p className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60">Sound</p>
+                  </div>
+                  <button
+                    onClick={() => audioFileInputRef.current?.click()}
+                    disabled={audioUploading}
+                    title="Upload audio file"
+                    className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500 text-white shadow-sm transition-colors hover:bg-emerald-400 focus-ring disabled:opacity-50"
+                  >
+                    {audioUploading ? <span className="text-[9px] animate-pulse">…</span> : <Plus size={15} strokeWidth={2} aria-hidden />}
+                  </button>
+                  <input
+                    ref={audioFileInputRef}
+                    type="file"
+                    accept=".wav,.mp3,.m4a,.aac,.ogg,.flac,audio/*"
+                    className="hidden"
+                    onChange={handleAudioFileChange}
+                  />
+                </div>
+
+                {audioFiles.length === 0 ? (
+                  <button
+                    onClick={() => audioFileInputRef.current?.click()}
+                    className="rounded-lg border border-dashed border-emerald-200 bg-emerald-50/60 px-3 py-4 text-left text-xs font-medium text-emerald-600 hover:bg-emerald-50 transition-colors focus-ring"
+                  >
+                    Upload audio (wav, mp3, m4a…) — drag to A2 to add a sound layer
+                  </button>
+                ) : (
+                  audioFiles.map(af => (
+                    <div
+                      key={af.id}
+                      draggable
+                      onDragStart={e => {
+                        e.dataTransfer.setData('application/audio-cutaway', JSON.stringify({ id: af.id, filename: af.filename, url: af.url, duration_sec: af.duration_sec }));
+                        e.dataTransfer.effectAllowed = 'copy';
+                      }}
+                      className="relative rounded-xl border border-border/60 bg-white/90 hover:border-emerald-400/50 transition-all card-interactive cursor-grab active:cursor-grabbing"
+                      title="Drag to A2 audio track to add a sound layer"
+                    >
+                      <div className="flex items-center gap-2 px-3 py-2.5 pr-10">
+                        <Music size={14} strokeWidth={1.9} className="shrink-0 text-emerald-500" aria-hidden />
+                        <div className="min-w-0">
+                          <p className="text-xs font-medium text-foreground truncate">{af.filename}</p>
+                          {af.duration_sec && (
+                            <p className="text-[10px] text-muted-foreground">
+                              {Math.floor(af.duration_sec / 60)}m {Math.floor(af.duration_sec % 60)}s
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => handleDeleteAudio(af.id)}
+                        disabled={deletingAudioId === af.id}
+                        title="Delete audio"
+                        className="absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
+                      >
+                        {deletingAudioId === af.id ? <span className="text-xs">…</span> : <Trash2 size={14} strokeWidth={1.9} aria-hidden />}
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
               </div>
               <EditorToolsPanel
                 toolMode={toolMode}
@@ -976,6 +1093,7 @@ export function VideoEditor({ projectId }: Props) {
             sections={sections}
             simulations={simulations}
             images={images}
+            audioFiles={audioFiles}
             playheadSec={playheadSec}
             activeVideoId={activeVideoId}
             videoUrls={rawUrls}
@@ -984,7 +1102,10 @@ export function VideoEditor({ projectId }: Props) {
             onAddVideo={() => setShowUploader(true)}
             toolMode={toolMode}
             showAllLayers={showAllLayers}
+            showBrollTrack={showBrollTrack}
+            showAudioTrack={showAudioTrack}
             onBrollMarkComplete={setBrollMark}
+            onAudioCutawayInserted={section => commitSections([...sections, section])}
             onSimulationUpdate={sim => setSimulations(prev => prev.map(s => s.id === sim.id ? sim : s))}
           />
         </div>

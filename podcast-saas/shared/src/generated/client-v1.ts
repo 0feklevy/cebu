@@ -63,14 +63,15 @@ export interface TimelineSection {
   sim_prompt:     string | null;
   simple_ui:      boolean;
   auto_script:    boolean;
-  track: 'main' | 'broll';              // default 'main'
-  global_offset_sec: number | null;     // broll only: absolute start time on main timeline
+  track: 'main' | 'broll' | 'audio';    // default 'main'
+  global_offset_sec: number | null;     // broll/audio: absolute start time on main timeline
   sim_meta: SimMeta | null;             // bridge generation plan metadata
   clip_source_video_id: string | null;  // clip type: which library video to play
   clip_in_sec: number | null;           // clip type: in-point in source video (seconds)
   broll_volume: number;
   clip_source_image_id: string | null;  // image clip: which uploaded image to show
   camera_movement: string;              // image clip: 'zoom_in' | 'zoom_out' | 'pan_right' | 'pan_left' | 'dolly_in' | 'drift'
+  clip_source_audio_id: string | null;  // audio cutaway: which uploaded audio file to play
   created_at: string;
 }
 
@@ -86,6 +87,16 @@ export interface ImageFile {
   crop_y: number;
   crop_w: number;
   crop_h: number;
+  created_at: string;
+}
+
+export interface AudioFile {
+  id: string;
+  project_id: string;
+  filename: string;
+  storage_key: string;
+  url: string;
+  duration_sec: number | null;
   created_at: string;
 }
 
@@ -184,6 +195,60 @@ export interface SimFile {
   url:      string;
 }
 
+// ── Playlists ───────────────────────────────────────────────────────────────
+
+export interface Playlist {
+  id: string;
+  org_id: string;
+  created_by: string | null;
+  title: string | null;
+  description: string | null;
+  autoplay: boolean;
+  show_sidebar: boolean;
+  allow_shuffle: boolean;
+  share_token: string | null;
+  share_enabled_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PlaylistItem {
+  id: string;
+  project_id: string;
+  position: number;
+  title: string | null;
+  description: string | null;
+  status: string;
+}
+
+export interface PlaylistWithItems extends Playlist {
+  items: PlaylistItem[];
+}
+
+export interface PlaylistSummary extends Playlist {
+  item_count: number;
+}
+
+// Public play-config — each item carries its full project PlayerConfig.
+// PlayerConfig is intentionally loosely typed here (the viewer owns the precise shape).
+export interface PlaylistPlayItem {
+  project_id: string;
+  title: string | null;
+  description: string | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  config: any;
+}
+
+export interface PlaylistPlayConfig {
+  id: string;
+  title: string | null;
+  description: string | null;
+  autoplay: boolean;
+  show_sidebar: boolean;
+  allow_shuffle: boolean;
+  items: PlaylistPlayItem[];
+}
+
 export class ClientV1Api {
   private config: ApiConfig;
 
@@ -225,6 +290,15 @@ export class ClientV1Api {
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.text();
+  }
+
+  private async requestBlob(path: string): Promise<Blob> {
+    const token = await this.config.getToken();
+    const res = await fetch(this.config.baseURL + path, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.blob();
   }
 
   private async requestMultipart<T>(path: string, formData: FormData): Promise<T> {
@@ -346,7 +420,7 @@ export class ClientV1Api {
       simulation_url?: string | null;
       simulation_id?: string | null;
       sim_script?: string | null;
-      track?: 'main' | 'broll';
+      track?: 'main' | 'broll' | 'audio';
       global_offset_sec?: number | null;
       clip_source_video_id?: string | null;
       clip_in_sec?: number | null;
@@ -355,6 +429,7 @@ export class ClientV1Api {
       auto_script?: boolean;
       clip_source_image_id?: string | null;
       camera_movement?: string;
+      clip_source_audio_id?: string | null;
     },
   ): Promise<TimelineSection> {
     return this.request(`/api/v1/projects/${projectId}/sections`, { method: 'POST', body });
@@ -363,7 +438,7 @@ export class ClientV1Api {
   updateSection(
     projectId: string,
     sectionId: string,
-    body: Partial<{ start_sec: number; end_sec: number; type: string; label: string | null; notes: string | null; sort_order: number | null; simulation_url: string | null; simulation_id: string | null; sim_script: string | null; global_offset_sec: number | null; clip_source_video_id: string | null; clip_in_sec: number | null; broll_volume: number; simple_ui: boolean; auto_script: boolean; clip_source_image_id: string | null; camera_movement: string }>,
+    body: Partial<{ start_sec: number; end_sec: number; type: string; label: string | null; notes: string | null; sort_order: number | null; simulation_url: string | null; simulation_id: string | null; sim_script: string | null; track: 'main' | 'broll' | 'audio'; global_offset_sec: number | null; clip_source_video_id: string | null; clip_in_sec: number | null; broll_volume: number; simple_ui: boolean; auto_script: boolean; clip_source_image_id: string | null; camera_movement: string; clip_source_audio_id: string | null }>,
   ): Promise<TimelineSection> {
     return this.request(`/api/v1/projects/${projectId}/sections/${sectionId}`, { method: 'PATCH', body });
   }
@@ -439,6 +514,27 @@ export class ClientV1Api {
     return this.request(`/api/v1/projects/${projectId}/images/${imageId}`, { method: 'DELETE' });
   }
 
+  // ── Audio files ───────────────────────────────────────────────────────────
+
+  listAudioFiles(projectId: string): Promise<AudioFile[]> {
+    return this.request(`/api/v1/projects/${projectId}/audio`);
+  }
+
+  uploadAudioFile(projectId: string, formData: FormData): Promise<AudioFile> {
+    return this.requestMultipart(`/api/v1/projects/${projectId}/audio`, formData);
+  }
+
+  deleteAudioFile(projectId: string, audioId: string): Promise<void> {
+    return this.request(`/api/v1/projects/${projectId}/audio/${audioId}`, { method: 'DELETE' });
+  }
+
+  insertAudioCutaway(
+    projectId: string,
+    body: { audio_file_id: string; global_offset_sec: number; duration_sec: number; video_file_id: string },
+  ): Promise<TimelineSection> {
+    return this.request(`/api/v1/projects/${projectId}/audio/insert-cutaway`, { method: 'POST', body });
+  }
+
   // ── Simulations ───────────────────────────────────────────────────────────
 
   listSimulations(projectId: string): Promise<Simulation[]> {
@@ -461,5 +557,57 @@ export class ClientV1Api {
     return this.requestText(
       `/api/v1/projects/${projectId}/simulations/${simId}/file-content?key=${encodeURIComponent(key)}`,
     );
+  }
+
+  downloadSimZip(projectId: string, simId: string): Promise<Blob> {
+    return this.requestBlob(`/api/v1/projects/${projectId}/simulations/${simId}/download.zip`);
+  }
+
+  // ── Playlists ───────────────────────────────────────────────────────────────
+
+  listPlaylists(): Promise<PlaylistSummary[]> {
+    return this.request('/api/v1/playlists');
+  }
+
+  createPlaylist(body: { title?: string; description?: string }): Promise<PlaylistWithItems> {
+    return this.request('/api/v1/playlists', { method: 'POST', body });
+  }
+
+  getPlaylist(playlistId: string): Promise<PlaylistWithItems> {
+    return this.request(`/api/v1/playlists/${playlistId}`);
+  }
+
+  updatePlaylist(
+    playlistId: string,
+    body: Partial<Pick<Playlist, 'title' | 'description' | 'autoplay' | 'show_sidebar' | 'allow_shuffle'>>,
+  ): Promise<PlaylistWithItems> {
+    return this.request(`/api/v1/playlists/${playlistId}`, { method: 'PATCH', body });
+  }
+
+  deletePlaylist(playlistId: string): Promise<void> {
+    return this.request(`/api/v1/playlists/${playlistId}`, { method: 'DELETE' });
+  }
+
+  setPlaylistItems(playlistId: string, projectIds: string[]): Promise<PlaylistWithItems> {
+    return this.request(`/api/v1/playlists/${playlistId}/items`, {
+      method: 'PUT',
+      body: { items: projectIds.map((project_id) => ({ project_id })) },
+    });
+  }
+
+  getPlaylistShare(playlistId: string): Promise<{ shareToken: string | null; shareUrl: string | null }> {
+    return this.request(`/api/v1/playlists/${playlistId}/share`);
+  }
+
+  createPlaylistShare(playlistId: string): Promise<{ shareToken: string; shareUrl: string }> {
+    return this.request(`/api/v1/playlists/${playlistId}/share`, { method: 'POST' });
+  }
+
+  revokePlaylistShare(playlistId: string): Promise<void> {
+    return this.request(`/api/v1/playlists/${playlistId}/share`, { method: 'DELETE' });
+  }
+
+  getPlaylistPlayConfig(playlistId: string): Promise<PlaylistPlayConfig> {
+    return this.request(`/api/v1/playlists/${playlistId}/play-config`);
   }
 }

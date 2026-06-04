@@ -16,6 +16,7 @@ import {
   Wand2,
 } from 'lucide-react';
 import { CreateProjectDialog } from './CreateProjectDialog';
+import { PlaylistsPanel } from './PlaylistsPanel';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/firebase';
 import type { Project } from 'shared/src/generated/client-v1';
@@ -203,7 +204,7 @@ export function HomeHero() {
           </header>
 
           <div className="grid min-h-0 min-w-0 flex-1 gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
-            <div className="flex min-h-0 min-w-0 flex-col gap-4">
+            <div className="flex min-h-0 min-w-0 flex-col gap-4 overflow-y-auto fine-scrollbar pr-0.5">
               <section className="grid shrink-0 gap-3 sm:grid-cols-3">
                 <div className="w-full max-w-[calc(100vw-32px)] rounded-lg border border-border bg-card p-4 shadow-sm-soft sm:max-w-none">
                   <p className="text-xs font-medium text-muted-foreground">Projects</p>
@@ -219,7 +220,7 @@ export function HomeHero() {
                 </div>
               </section>
 
-              <section className="flex min-h-0 w-full max-w-[calc(100vw-32px)] flex-1 flex-col rounded-lg border border-border bg-card p-4 shadow-sm-soft sm:max-w-none sm:p-5">
+              <section className="flex min-h-0 w-full max-w-[calc(100vw-32px)] shrink-0 flex-col rounded-lg border border-border bg-card p-4 shadow-sm-soft sm:max-w-none sm:p-5">
                 <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <div>
                     <h2 className="text-base font-semibold text-foreground">Recent projects</h2>
@@ -236,7 +237,7 @@ export function HomeHero() {
                   )}
                 </div>
 
-                <div className="min-h-0 flex-1 overflow-y-auto pr-1 fine-scrollbar">
+                <div className="max-h-[46vh] overflow-y-auto pr-1 fine-scrollbar">
                   {loading ? (
                     <WorkspaceSkeleton />
                   ) : filteredProjects.length > 0 ? (
@@ -271,6 +272,8 @@ export function HomeHero() {
                   )}
                 </div>
               </section>
+
+              <PlaylistsPanel />
             </div>
 
             <aside className="min-h-0 min-w-0">

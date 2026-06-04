@@ -56,6 +56,16 @@ export interface ImageOverlayItem {
   label: string | null;
 }
 
+export interface AudioCutaway {
+  id: string;
+  audio_url: string;
+  global_offset_sec: number;
+  start_sec: number;
+  end_sec: number;
+  label: string | null;
+  broll_volume: number;
+}
+
 export interface PlayerConfig {
   project_id: string;
   title: string | null;
@@ -63,6 +73,7 @@ export interface PlayerConfig {
   broll_clips: BrollClip[];
   clip_overlays?: ClipOverlay[];
   image_overlays?: ImageOverlayItem[];
+  audio_cutaways?: AudioCutaway[];
 }
 
 export interface TimelineSeg {

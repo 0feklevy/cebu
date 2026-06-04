@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { randomUUID } from 'crypto';
+import AdmZip from 'adm-zip';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
 import { projects, simulations, timeline_sections } from '../../db/schema.js';
@@ -299,6 +300,40 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
       return reply
         .header('Content-Type', getSimulationContentType(key))
         .send(buf.toString('utf-8'));
+    },
+  );
+
+  // GET /api/v1/projects/:id/simulations/:simId/download.zip
+  app.get<{ Params: { id: string; simId: string } }>(
+    '/api/v1/projects/:id/simulations/:simId/download.zip',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const project = await db.query.projects.findFirst({
+        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
+      });
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+
+      const sim = await db.query.simulations.findFirst({
+        where: and(eq(simulations.id, request.params.simId), eq(simulations.project_id, project.id)),
+      });
+      if (!sim) return reply.code(404).send({ message: 'Simulation not found' });
+
+      const keys = (await storage.listObjects(sim.storage_prefix)).sort();
+      const zip = new AdmZip();
+      for (const key of keys) {
+        if (!key.startsWith(sim.storage_prefix + '/')) continue;
+        const relativePath = key.slice(sim.storage_prefix.length + 1).replace(/^\/+/, '');
+        if (!relativePath) continue;
+        const buf = await storage.readObject(key);
+        zip.addFile(relativePath, buf);
+      }
+
+      const safeName = sim.name.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'simulation';
+      return reply
+        .header('Content-Type', 'application/zip')
+        .header('Content-Disposition', `attachment; filename="${safeName}.zip"`)
+        .send(zip.toBuffer());
     },
   );
 

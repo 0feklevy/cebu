@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
-import type { PlayerConfig, PlayerSegment, SimulationOverlay, TimelineSeg, BrollClip, ImageOverlayItem } from './types';
+import type { PlayerConfig, PlayerSegment, SimulationOverlay, TimelineSeg, BrollClip, ImageOverlayItem, AudioCutaway } from './types';
 
 // ── HLS.js config (ported from interactive-podcast-react/player/src/constants/index.ts) ──
 const HLS_OPTS = {
@@ -101,11 +101,21 @@ function computeDisplayTotal(timeline: TimelineSeg[], segments: PlayerSegment[])
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const _hlsErrHandlers = new WeakMap<object, (e: string, d: any) => void>();
 
+export interface ProjectPlayerOptions {
+  /** Fired when the whole project (all segments) finishes — used by the playlist wrapper to advance. */
+  onProjectComplete?: () => void;
+  /** Auto-start playback on mount without the big play button (e.g. playlist videos 2..N). */
+  autoStart?: boolean;
+}
+
 export function useProjectPlayer(
   config: PlayerConfig,
   refs: ProjectPlayerRefs,
+  options: ProjectPlayerOptions = {},
 ): { state: ProjectPlayerState; actions: ProjectPlayerActions } {
   const { segs: initialSegs, total: initialTotal } = makeTimeline(config.segments);
+  const onProjectCompleteRef = useRef<(() => void) | undefined>(options.onProjectComplete);
+  onProjectCompleteRef.current = options.onProjectComplete;
 
   const [state, setState] = useState<ProjectPlayerState>({
     playing:          false,
@@ -147,6 +157,8 @@ export function useProjectPlayer(
   const resumeActionRef = useRef<'resume' | 'backToVideo'>('resume');
   const simReturnGlobalSecRef = useRef(0);
   const activeBrollRef  = useRef<BrollClip | null>(null);
+  const audioCutawayRef = useRef<HTMLAudioElement | null>(null);
+  const activeAudioCutawayIdRef = useRef<string | null>(null);
   const swappingRef     = useRef(false);
   const userPausedRef   = useRef(false);
   const simReadyRef     = useRef(false);
@@ -283,8 +295,16 @@ export function useProjectPlayer(
     });
   };
 
+  const guidanceLastStartedAt = useRef(0);
+  const MIN_GUIDANCE_GAP_MS = 12_000; // never queue a new cue within 12 s of starting the previous one
+
   const enqueueGuidance = (cue: { id: string; text: string; audioUrl: string }) => {
+    const now = Date.now();
+    // Drop the cue if another one is already queued/playing or the gap is too short
+    if (guidanceQueueRef.current.length > 0) return;
+    if (guidanceAudioRef.current && now - guidanceLastStartedAt.current < MIN_GUIDANCE_GAP_MS) return;
     guidanceQueueRef.current.push(cue);
+    guidanceLastStartedAt.current = now;
     if (!guidanceAudioRef.current) startNextGuidanceRef.current();
   };
 
@@ -519,6 +539,44 @@ export function useProjectPlayer(
     }
   };
 
+  // ── audio cutaway (audio-only broll) ─────────────────────────────────────
+  const updateAudioCutaway = (gt: number, isPlaying: boolean) => {
+    const cuts: AudioCutaway[] = config.audio_cutaways ?? [];
+    const active = cuts.find(c => {
+      const end = c.global_offset_sec + (c.end_sec - c.start_sec);
+      return gt >= c.global_offset_sec && gt < end;
+    }) ?? null;
+
+    if (active?.id !== activeAudioCutawayIdRef.current) {
+      // Stop previous
+      if (audioCutawayRef.current) {
+        audioCutawayRef.current.pause();
+        audioCutawayRef.current = null;
+      }
+      activeAudioCutawayIdRef.current = active?.id ?? null;
+
+      if (active) {
+        const audio = new Audio(active.audio_url);
+        audio.volume = Math.max(0, Math.min(1, active.broll_volume ?? 1.0));
+        const localTime = active.start_sec + (gt - active.global_offset_sec);
+        audio.currentTime = Math.max(0, localTime);
+        audioCutawayRef.current = audio;
+        if (isPlaying) audio.play().catch(() => {});
+      }
+    } else if (active && audioCutawayRef.current) {
+      // Same cutaway — sync drift
+      const expected = active.start_sec + (gt - active.global_offset_sec);
+      if (Math.abs(audioCutawayRef.current.currentTime - expected) > 1.0) {
+        audioCutawayRef.current.currentTime = Math.max(0, expected);
+      }
+      if (isPlaying && audioCutawayRef.current.paused) {
+        audioCutawayRef.current.play().catch(() => {});
+      } else if (!isPlaying && !audioCutawayRef.current.paused) {
+        audioCutawayRef.current.pause();
+      }
+    }
+  };
+
   // ── image overlay ─────────────────────────────────────────────────────────
   const activeImageIdRef = useRef<string | null>(null);
 
@@ -667,6 +725,7 @@ export function useProjectPlayer(
       updateSimOverlay(idx, t);
       updateBrollOverlay(gt);
       updateImageOverlay(gt);
+      updateAudioCutaway(gt, !videoRef.current?.paused);
 
       // Pre-warm next broll clip 15s before its start
       const brollClips = config.broll_clips ?? [];
@@ -708,6 +767,8 @@ export function useProjectPlayer(
       stopBroll();
       startedRef.current = false;
       merge({ started: false, controlsVisible: true });
+      // Playlist: hand control back to the wrapper to advance to the next project.
+      onProjectCompleteRef.current?.();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadSegment]);
@@ -724,6 +785,8 @@ export function useProjectPlayer(
       if (activeBrollRef.current && refs.videoBroll.current?.paused) {
         safePlay(refs.videoBroll.current);
       }
+      // Sync audio cutaway
+      if (audioCutawayRef.current?.paused) audioCutawayRef.current.play().catch(() => {});
     });
     v.addEventListener('pause', () => {
       if (v !== videoRef.current) return;
@@ -731,6 +794,8 @@ export function useProjectPlayer(
       showControls();
       // Sync broll: pause it too
       refs.videoBroll.current?.pause();
+      // Sync audio cutaway
+      audioCutawayRef.current?.pause();
     });
     v.addEventListener('ended',    () => { if (v === videoRef.current) onEnded(); });
     v.addEventListener('progress', () => { if (v === videoRef.current) updateBuf(); });
@@ -910,6 +975,7 @@ export function useProjectPlayer(
         }
         updateSimOverlay(targetIdx, localTime);
         updateBrollOverlay(targetGlobal); updateImageOverlay(targetGlobal);
+        updateAudioCutaway(targetGlobal, wasPlayingRef.current);
         if (wasPlayingRef.current && localTime < targetSeg.duration - 0.01) safePlay(videoRef.current!);
       } else {
         loadSegment(targetIdx, localTime, wasPlayingRef.current);
@@ -966,6 +1032,23 @@ export function useProjectPlayer(
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scheduleHide]);
 
+  // Auto-start (playlist videos 2..N): a user gesture already occurred in the lobby,
+  // so begin playing as soon as the first segment is ready.
+  useEffect(() => {
+    if (!options.autoStart) return;
+    let done = false;
+    const start = () => { if (done) return; done = true; startPlayback(); };
+    const v = refs.videoA.current;
+    const onCan = () => start();
+    if (v) {
+      if (v.readyState >= 2) start();
+      else v.addEventListener('canplay', onCan, { once: true });
+    }
+    const t = setTimeout(start, 600);
+    return () => { v?.removeEventListener('canplay', onCan); clearTimeout(t); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const togglePlay = useCallback(() => {
     if (!startedRef.current) { startPlayback(); return; }
     const v = videoRef.current;
@@ -1008,6 +1091,7 @@ export function useProjectPlayer(
           videoRef.current!.currentTime = Math.min(localTime, tl[targetIdx].duration);
           updateSimOverlay(targetIdx, localTime);
           updateBrollOverlay(newGlobal); updateImageOverlay(newGlobal);
+          updateAudioCutaway(newGlobal, wasPlaying);
           if (wasPlaying && localTime < tl[targetIdx].duration - 0.01) safePlay(videoRef.current!);
         } else {
           loadSegment(targetIdx, localTime, wasPlaying);
@@ -1052,6 +1136,7 @@ export function useProjectPlayer(
       merge({ showResumeBtn: false, showSimOverlay: false, resumeAction: 'resume', controlsVisible: true });
       setProgress(targetGlobal);
       updateBrollOverlay(targetGlobal); updateImageOverlay(targetGlobal);
+      updateAudioCutaway(targetGlobal, wasPlayingRef.current);
 
       if (targetSeg && targetIdx === curIdxRef.current) {
         videoRef.current!.currentTime = Math.min(localTime, targetSeg.duration);

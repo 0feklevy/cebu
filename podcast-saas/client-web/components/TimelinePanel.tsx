@@ -1,8 +1,8 @@
 'use client';
 
 import { useRef, useState, useCallback, useEffect, useLayoutEffect } from 'react';
-import { Plus } from 'lucide-react';
-import type { VideoFile, TimelineSection, Simulation, ImageFile } from 'shared/src/generated/client-v1';
+import { Music, Plus, Trash2, Volume2, X } from 'lucide-react';
+import type { VideoFile, TimelineSection, Simulation, ImageFile, AudioFile } from 'shared/src/generated/client-v1';
 import { SectionEditor } from './SectionEditor';
 import { api } from '../lib/api';
 
@@ -11,12 +11,14 @@ import { api } from '../lib/api';
 const BROLL_TRACK_H  = 44;
 const VIDEO_TRACK_H  = 52;
 const AUDIO_TRACK_H  = 22;
-const RULER_H        = 34;
+const RULER_H        = 28;
 const LABEL_W        = 110;
 const FRAME_W        = 80;
 const FRAME_H        = 45;
 const FRAMES_COUNT   = 20;
 const WAVEFORM_PEAKS = 200;
+const SCROLLBAR_H    = 12;
+const RULER_LABEL_TOP = 4;
 const VISUAL_MAX_SEC = 15;
 const MIN_DRAG_PX    = 4;
 const MIN_BROLL_SEC  = 4;   // minimum marked duration for B-roll creation
@@ -34,6 +36,7 @@ const TYPE_STYLE: Record<string, { fill: string; border: string; text: string; h
   outro:      { fill: 'rgba(139,92,246,0.18)',  border: '#8b5cf6', text: '#4c1d95', handle: '#7c3aed' },
   cut:        { fill: 'rgba(239,68,68,0.18)',   border: '#ef4444', text: '#991b1b', handle: '#dc2626' },
   clip:       { fill: 'rgba(34,197,94,0.18)',   border: '#22c55e', text: '#14532d', handle: '#16a34a' },
+  audio:      { fill: 'rgba(16,185,129,0.18)',  border: '#10b981', text: '#047857', handle: '#059669' },
   custom:     { fill: 'rgba(107,114,128,0.18)', border: '#6b7280', text: '#374151', handle: '#4b5563' },
 };
 const fallbackStyle = TYPE_STYLE.custom;
@@ -79,11 +82,23 @@ function findClipAtGlobalSec(clips: ClipWithOffset[], globalSec: number): ClipWi
   return clips.length > 0 ? clips[clips.length - 1] : null;
 }
 
+function isAudioSection(s: TimelineSection): boolean {
+  return s.track === 'audio' || !!s.clip_source_audio_id;
+}
+
+function isVisualBrollSection(s: TimelineSection): boolean {
+  return s.track === 'broll' && !isAudioSection(s);
+}
+
+function isMainSection(s: TimelineSection): boolean {
+  return s.track === 'main';
+}
+
 // ─── overlap helpers ──────────────────────────────────────────────────────────
 
 function sortedSections(sections: TimelineSection[], videoId: string) {
   return sections
-    .filter(s => s.track !== 'broll' && s.video_file_id === videoId)
+    .filter(s => isMainSection(s) && s.video_file_id === videoId)
     .sort((a, b) => a.start_sec - b.start_sec);
 }
 
@@ -240,6 +255,163 @@ function ClipFilmstrip({ videoUrl, duration }: { videoUrl: string | null; durati
   );
 }
 
+function getAudioDurationFromUrl(url: string): Promise<number | null> {
+  return new Promise(resolve => {
+    const audio = new Audio();
+    let timer: number | null = null;
+
+    const cleanup = () => {
+      if (timer !== null) window.clearTimeout(timer);
+      audio.onloadedmetadata = null;
+      audio.onerror = null;
+      audio.src = '';
+    };
+
+    timer = window.setTimeout(() => {
+      cleanup();
+      resolve(null);
+    }, 4000);
+
+    audio.preload = 'metadata';
+    audio.crossOrigin = 'anonymous';
+    audio.onloadedmetadata = () => {
+      const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : null;
+      cleanup();
+      resolve(duration);
+    };
+    audio.onerror = () => {
+      cleanup();
+      resolve(null);
+    };
+    audio.src = url;
+  });
+}
+
+function formatDuration(s: number): string {
+  return `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`;
+}
+
+function AudioGainPopover({
+  projectId,
+  section,
+  onUpdate,
+  onDelete,
+  onClose,
+}: {
+  projectId: string;
+  section: TimelineSection;
+  onUpdate: (section: TimelineSection) => void;
+  onDelete: (id: string) => void;
+  onClose: () => void;
+}) {
+  const [volume, setVolume] = useState(section.broll_volume ?? 1);
+  const [busy, setBusy] = useState(false);
+  const pct = Math.round(volume * 100);
+
+  useEffect(() => {
+    setVolume(section.broll_volume ?? 1);
+  }, [section.id, section.broll_volume]);
+
+  const commitVolume = useCallback(async (nextVolume = volume) => {
+    setBusy(true);
+    try {
+      const updated = await api.updateSection(projectId, section.id, { broll_volume: nextVolume });
+      onUpdate(updated);
+    } catch { /* ignore */ }
+    finally {
+      setBusy(false);
+    }
+  }, [onUpdate, projectId, section.id, volume]);
+
+  const deleteAudioSection = useCallback(async () => {
+    setBusy(true);
+    try {
+      await api.deleteSection(projectId, section.id);
+      onDelete(section.id);
+    } catch {
+      onDelete(section.id);
+    } finally {
+      setBusy(false);
+    }
+  }, [onDelete, projectId, section.id]);
+
+  return (
+    <>
+      <div
+        className="fixed inset-0"
+        style={{ zIndex: 700, background: 'transparent' }}
+        onClick={onClose}
+      />
+      <div
+        className="fixed overflow-hidden rounded-lg border bg-white shadow-xl"
+        style={{
+          right: 24,
+          bottom: 156,
+          width: 320,
+          zIndex: 701,
+          borderColor: '#d1fae5',
+          fontFamily: 'system-ui, -apple-system, sans-serif',
+        }}
+        onMouseDown={e => e.stopPropagation()}
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b px-4 py-3" style={{ borderColor: '#ecfdf5', backgroundColor: '#f0fdf4' }}>
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md" style={{ backgroundColor: '#d1fae5', color: '#047857' }}>
+              <Volume2 size={16} strokeWidth={2} aria-hidden />
+            </span>
+            <div className="min-w-0">
+              <p className="truncate text-xs font-semibold text-emerald-900">{section.label || 'Audio'}</p>
+              <p className="text-[10px] font-medium uppercase tracking-widest text-emerald-600">Audio gain</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-8 w-8 items-center justify-center rounded-md text-emerald-700 transition-colors hover:bg-emerald-100 focus-ring"
+            title="Close"
+          >
+            <X size={15} strokeWidth={2} aria-hidden />
+          </button>
+        </div>
+
+        <div className="space-y-3 px-4 py-4">
+          <div className="flex items-center gap-3">
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.01}
+              value={volume}
+              onChange={e => setVolume(parseFloat(e.target.value))}
+              onPointerUp={() => commitVolume()}
+              onKeyUp={e => {
+                if (e.key === 'Enter' || e.key === ' ') void commitVolume();
+              }}
+              className="min-w-0 flex-1"
+              style={{ accentColor: '#10b981' }}
+              aria-label="Audio volume"
+            />
+            <span className="w-12 text-right font-mono text-xs font-bold text-emerald-700">{pct}%</span>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[10px] text-muted-foreground">{formatDuration(section.end_sec - section.start_sec)}</p>
+            <button
+              type="button"
+              onClick={deleteAudioSection}
+              disabled={busy}
+              className="flex h-8 items-center gap-1.5 rounded-md border border-red-100 px-2.5 text-[11px] font-semibold text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50 focus-ring"
+            >
+              <Trash2 size={13} strokeWidth={1.9} aria-hidden />
+              Delete
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
 // ─── props ────────────────────────────────────────────────────────────────────
 
 interface Props {
@@ -248,24 +420,28 @@ interface Props {
   sections: TimelineSection[];
   simulations: Simulation[];
   images?: ImageFile[];
+  audioFiles?: AudioFile[];
   playheadSec: number;
   activeVideoId: string | null;
   videoUrls: Record<string, string>;
   onSeek: (globalSec: number) => void;
   onSectionsChange: (sections: TimelineSection[]) => void;
   onBrollMarkComplete?: (mark: { start: number; end: number }) => void;
+  onAudioCutawayInserted?: (section: TimelineSection) => void;
   onSimulationUpdate?: (sim: Simulation) => void;
   toolMode: ToolMode;
   showAllLayers?: boolean;
+  showBrollTrack?: boolean;
+  showAudioTrack?: boolean;
   onAddVideo?: () => void;
 }
 
 // ─── main component ───────────────────────────────────────────────────────────
 
 export function TimelinePanel({
-  projectId, videos, sections, simulations, images = [], playheadSec, activeVideoId, videoUrls,
-  onSeek, onSectionsChange, onBrollMarkComplete, onSimulationUpdate,
-  toolMode, showAllLayers = false, onAddVideo,
+  projectId, videos, sections, simulations, images = [], audioFiles = [], playheadSec, activeVideoId, videoUrls,
+  onSeek, onSectionsChange, onBrollMarkComplete, onAudioCutawayInserted, onSimulationUpdate,
+  toolMode, showAllLayers = false, showBrollTrack, showAudioTrack, onAddVideo,
 }: Props) {
   const scrollRef    = useRef<HTMLDivElement>(null);
   const interRef     = useRef<Interaction | null>(null);
@@ -278,10 +454,13 @@ export function TimelinePanel({
   const [selectedSection, setSelectedSection] = useState<TimelineSection | null>(null);
   const [addMenuOpen, setAddMenuOpen]     = useState(false);
   const [addBusy, setAddBusy]             = useState<'simulation' | 'clip' | null>(null);
+  const [a2DragOver, setA2DragOver]       = useState(false);
 
-  const mainSections  = sections.filter(s => s.track !== 'broll');
-  const brollSections = sections.filter(s => s.track === 'broll');
-  const hasBroll = toolMode === 'broll' || showAllLayers;
+  const mainSections  = sections.filter(isMainSection);
+  const brollSections = sections.filter(isVisualBrollSection);
+  const audioSections = sections.filter(isAudioSection);
+  const hasBroll = showBrollTrack ?? (toolMode === 'broll' || showAllLayers);
+  const hasAudio = showAudioTrack ?? (audioFiles.length > 0 || audioSections.length > 0 || hasBroll);
 
   const clipsWithOffset = buildClips(videos);
   const videoTimelineDuration = clipsWithOffset.reduce((s, c) => s + (c.video.duration_sec ?? 0), 0);
@@ -289,7 +468,11 @@ export function TimelinePanel({
     const clip = clipsWithOffset.find(c => c.video.id === s.video_file_id);
     return clip ? Math.max(max, clip.offset + s.end_sec) : max;
   }, videoTimelineDuration);
-  const totalDuration = Math.max(sectionTimelineEnd, 50);
+  const overlayTimelineEnd = sections.reduce((max, s) => {
+    if (!isVisualBrollSection(s) && !isAudioSection(s)) return max;
+    return Math.max(max, (s.global_offset_sec ?? 0) + (s.end_sec - s.start_sec));
+  }, 0);
+  const totalDuration = Math.max(sectionTimelineEnd, overlayTimelineEnd, 50);
 
   useEffect(() => { zoomRef.current = zoom; }, [zoom]);
 
@@ -599,12 +782,42 @@ export function TimelinePanel({
     onAddVideo?.();
   }, [onAddVideo]);
 
+  const handleA2Drop = useCallback(async (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setA2DragOver(false);
+    const raw = e.dataTransfer.getData('application/audio-cutaway');
+    if (!raw) return;
+    let audioData: { id: string; filename: string; url: string; duration_sec: number | null };
+    try {
+      audioData = JSON.parse(raw) as { id: string; filename: string; url: string; duration_sec: number | null };
+    } catch {
+      return;
+    }
+    const firstVideo = clipsWithOffset[0]?.video;
+    if (!firstVideo) return;
+    // Calculate global offset from drop X position
+    const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
+    const relX  = e.clientX - rect.left + (scrollRef.current?.scrollLeft ?? 0);
+    const dropSec = Math.max(0, relX / zoom);
+    const measuredDuration = audioData.duration_sec ?? await getAudioDurationFromUrl(audioData.url);
+    const dur = Math.max(0.5, measuredDuration ?? Math.max(10, totalDuration - dropSec));
+    try {
+      const section = await api.insertAudioCutaway(projectId, {
+        audio_file_id:     audioData.id,
+        global_offset_sec: dropSec,
+        duration_sec:      dur,
+        video_file_id:     firstVideo.id,
+      });
+      onAudioCutawayInserted?.(section);
+    } catch { /* ignore */ }
+  }, [clipsWithOffset, zoom, projectId, onAudioCutawayInserted, totalDuration]);
+
   // ── Ruler ticks ──────────────────────────────────────────────────────────
 
   const tickSec  = totalDuration <= 30 ? 1  : totalDuration <= 120 ? 5  : totalDuration <= 600 ? 15  : 60;
   const majorSec = totalDuration <= 30 ? 5  : totalDuration <= 120 ? 10 : totalDuration <= 600 ? 30  : 120;
   const fmt = (s: number) => s < 60 ? `${s}s` : `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`;
-  const fmtDur = (s: number) => `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`;
+  const fmtDur = formatDuration;
 
   // ── Section display helper (V1) ──────────────────────────────────────────
 
@@ -719,7 +932,7 @@ export function TimelinePanel({
   };
 
   return (
-    <div className="flex h-full overflow-hidden bg-white" style={{ fontFamily: 'system-ui, -apple-system, sans-serif' }}>
+    <div className="flex h-full overflow-visible bg-white" style={{ fontFamily: 'system-ui, -apple-system, sans-serif' }}>
       {/* ── Fixed label column ───────────────────────────────────────────── */}
       <div className="shrink-0 flex flex-col" style={{ width: LABEL_W, borderRight: '1px solid hsl(var(--border))' }}>
         <div style={{ height: RULER_H, backgroundColor: '#ffffff', borderBottom: '1.5px solid #e2e8f0', flexShrink: 0 }} />
@@ -737,13 +950,13 @@ export function TimelinePanel({
               </div>
             )}
 
-            {/* A2 label (broll audio channel) */}
-            {hasBroll && (
+            {/* A2 label (audio channel) */}
+            {hasAudio && (
               <div
                 className="shrink-0 flex items-center px-3 select-none"
-                style={{ height: AUDIO_TRACK_H, borderBottom: '1px solid #e5e7eb', backgroundColor: '#f0feff' }}
+                style={{ height: AUDIO_TRACK_H, borderBottom: '1px solid #e5e7eb', backgroundColor: '#f0fdf4' }}
               >
-                <span style={{ fontSize: 9, fontWeight: 700, color: '#06b6d4', letterSpacing: '0.08em', textTransform: 'uppercase' }}>A2</span>
+                <span style={{ fontSize: 9, fontWeight: 700, color: '#059669', letterSpacing: '0.08em', textTransform: 'uppercase' }}>A2</span>
               </div>
             )}
 
@@ -768,6 +981,11 @@ export function TimelinePanel({
             >
               <span style={{ fontSize: 9, fontWeight: 700, color: '#6ee7b7', letterSpacing: '0.08em', textTransform: 'uppercase' }}>A1</span>
             </div>
+
+            <div
+              className="shrink-0"
+              style={{ height: SCROLLBAR_H, backgroundColor: '#ffffff', borderTop: '1px solid #f1f5f9' }}
+            />
           </>
         )}
       </div>
@@ -776,7 +994,13 @@ export function TimelinePanel({
       <div
         ref={scrollRef}
         className="flex-1 fine-scrollbar"
-        style={{ overflowX: 'scroll', overflowY: 'hidden' }}
+        style={{
+          overflowX: 'scroll',
+          overflowY: 'hidden',
+          paddingBottom: SCROLLBAR_H,
+          boxSizing: 'border-box',
+          scrollbarGutter: 'stable',
+        }}
       >
         <div style={{ width: `${contentWidth}px`, minWidth: '100%', position: 'relative' }}>
 
@@ -789,10 +1013,10 @@ export function TimelinePanel({
               const sec = i * tickSec;
               const isMajor = sec % majorSec === 0;
               return (
-                <div key={i} className="absolute bottom-0" style={{ left: `${sec * zoom}px` }}>
-                  <div style={{ width: 1, height: isMajor ? 10 : 5, backgroundColor: isMajor ? '#9ca3af' : '#d1d5db' }} />
+                <div key={i} className="absolute top-0 bottom-0" style={{ left: `${sec * zoom}px` }}>
+                  <div style={{ position: 'absolute', bottom: 0, width: 1, height: isMajor ? 10 : 5, backgroundColor: isMajor ? '#9ca3af' : '#d1d5db' }} />
                   {isMajor && (
-                    <span style={{ position: 'absolute', top: 4, left: 3, fontSize: 10, lineHeight: 1.45, color: '#6b7280', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                    <span style={{ position: 'absolute', top: RULER_LABEL_TOP, left: 3, fontSize: 10, lineHeight: '12px', color: '#6b7280', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
                       {fmt(sec)}
                     </span>
                   )}
@@ -891,35 +1115,57 @@ export function TimelinePanel({
                 </div>
               )}
 
-              {/* ── A2 BROLL AUDIO CHANNEL ─────────────────────────────── */}
-              {hasBroll && (
+              {/* ── A2 AUDIO CHANNEL ───────────────────────────────────── */}
+              {hasAudio && (
                 <div
+                  onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setA2DragOver(true); }}
+                  onDragLeave={() => setA2DragOver(false)}
+                  onDrop={handleA2Drop}
+                  onClick={handleTrackClick}
                   style={{
                     height: AUDIO_TRACK_H,
                     position: 'relative',
-                    backgroundColor: '#f0feff',
-                    borderBottom: '1px solid #cffafe',
+                    backgroundColor: a2DragOver ? '#ccfbf1' : '#f0feff',
+                    borderBottom: `1px solid ${a2DragOver ? '#6ee7b7' : '#cffafe'}`,
+                    outline: a2DragOver ? '2px dashed #10b981' : 'none',
+                    outlineOffset: -2,
                     display: 'flex',
                     alignItems: 'center',
+                    transition: 'background-color 0.15s, outline 0.15s',
                   }}
                 >
-                  {brollSections.map(s => {
+                  {audioSections.map(s => {
                     const pos = brollSectionPos(s);
                     if (!pos) return null;
-                    const vol = (s as unknown as { broll_volume?: number }).broll_volume ?? 1.0;
+                    const vol = s.broll_volume ?? 1.0;
                     const pct = Math.round(vol * 100);
+                    const isSelected = selectedSection?.id === s.id;
                     return (
                       <div
                         key={`a2-${s.id}`}
                         className="absolute top-0 bottom-0 flex items-center px-1.5 gap-1.5 overflow-hidden"
-                        style={{ left: pos.left, width: pos.width }}
+                        style={{
+                          left: pos.left, width: pos.width,
+                          backgroundColor: 'rgba(16,185,129,0.18)',
+                          borderRadius: 3,
+                          border: `1px solid ${isSelected ? '#047857' : '#10b981'}`,
+                          boxShadow: isSelected ? '0 0 0 2px rgba(16,185,129,0.22)' : undefined,
+                          cursor: 'pointer',
+                          zIndex: 11,
+                        }}
+                        onMouseDown={e => e.stopPropagation()}
+                        onClick={e => {
+                          e.stopPropagation();
+                          setSelectedSection(s);
+                        }}
                       >
+                        <Music size={9} strokeWidth={2} style={{ color: '#059669', flexShrink: 0 }} />
                         {/* Volume bar background */}
-                        <div style={{ flex: 1, height: 6, borderRadius: 3, backgroundColor: 'rgba(6,182,212,0.15)', position: 'relative', minWidth: 0 }}>
-                          <div style={{ height: '100%', borderRadius: 3, backgroundColor: vol > 0 ? '#06b6d4' : '#e5e7eb', width: `${pct}%`, transition: 'width 0.2s' }} />
+                        <div style={{ flex: 1, height: 6, borderRadius: 3, backgroundColor: 'rgba(16,185,129,0.15)', position: 'relative', minWidth: 0 }}>
+                          <div style={{ height: '100%', borderRadius: 3, backgroundColor: vol > 0 ? '#10b981' : '#e5e7eb', width: `${pct}%`, transition: 'width 0.2s' }} />
                         </div>
                         {/* Volume pct label */}
-                        <span style={{ fontSize: 8, fontWeight: 700, color: '#0891b2', flexShrink: 0, fontFamily: 'monospace' }}>{pct}%</span>
+                        <span style={{ fontSize: 8, fontWeight: 700, color: '#059669', flexShrink: 0, fontFamily: 'monospace' }}>{pct}%</span>
                       </div>
                     );
                   })}
@@ -1112,7 +1358,21 @@ export function TimelinePanel({
       )}
 
       {/* ── Section editor modal ─────────────────────────────────────────── */}
-      {selectedSection && (
+      {selectedSection && isAudioSection(selectedSection) ? (
+        <AudioGainPopover
+          section={selectedSection}
+          projectId={projectId}
+          onUpdate={updated => {
+            onSectionsChange(sections.map(s => s.id === updated.id ? updated : s));
+            setSelectedSection(updated);
+          }}
+          onDelete={id => {
+            onSectionsChange(sections.filter(s => s.id !== id));
+            setSelectedSection(null);
+          }}
+          onClose={() => setSelectedSection(null)}
+        />
+      ) : selectedSection ? (
         <SectionEditor
           section={selectedSection}
           projectId={projectId}
@@ -1131,7 +1391,7 @@ export function TimelinePanel({
           onSimulationUpdate={onSimulationUpdate}
           onClose={() => setSelectedSection(null)}
         />
-      )}
+      ) : null}
     </div>
   );
 }

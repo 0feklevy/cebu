@@ -1,121 +1,10 @@
 import { randomBytes } from 'crypto';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { db } from '../../db/index.js';
-import { projects, video_files, timeline_sections } from '../../db/schema.js';
-import { eq, and, asc } from 'drizzle-orm';
-import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
+import { projects } from '../../db/schema.js';
+import { eq, and } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
-
-/** Build the same PlayerConfig shape used by player.controller.ts */
-async function buildPlayerConfig(projectId: string) {
-  const storage = getStorageAdapter();
-
-  const allVideos = await db.query.video_files.findMany({
-    where: eq(video_files.project_id, projectId),
-    orderBy: [asc(video_files.created_at)],
-  });
-
-  const sections = await db.query.timeline_sections.findMany({
-    where: eq(timeline_sections.project_id, projectId),
-    orderBy: [asc(timeline_sections.start_sec)],
-  });
-
-  const mainVideos = allVideos.filter((v) => !v.is_broll);
-  const brollVideos = allVideos.filter((v) => v.is_broll);
-
-  const segments = mainVideos.map((v) => {
-    const hls_url = v.hls_master_key
-      ? storage.getPublicUrl(v.hls_master_key)
-      : v.hls_360p_key
-        ? storage.getPublicUrl(v.hls_360p_key)
-        : null;
-
-    const simulations = sections
-      .filter((s) => s.video_file_id === v.id && s.track !== 'broll')
-      .map((s) => ({
-        id:             s.id,
-        start_sec:      s.start_sec,
-        end_sec:        s.end_sec,
-        simulation_url: s.simulation_url ?? null,
-        simulation_id:  s.simulation_id  ?? null,
-        sim_script:     s.sim_script     ?? null,
-        simple_ui:      s.simple_ui      ?? false,
-        auto_script:    s.auto_script    ?? true,
-        label:          s.label,
-        type:           s.type,
-      }));
-
-    return {
-      id:           v.id,
-      label:        v.filename,
-      duration_sec: v.duration_sec ?? 0,
-      hls_url,
-      fallback_url: hls_url,
-      hls_status:   v.hls_status,
-      simulations,
-    };
-  });
-
-  const allVideoMap = new Map(allVideos.map((v) => [v.id, v]));
-  const brollVideoMap = new Map(brollVideos.map((v) => [v.id, v]));
-  const brollClips = sections
-    .filter((s) => s.track === 'broll')
-    .map((s) => {
-      const bv = brollVideoMap.get(s.video_file_id);
-      if (!bv) return null;
-      const hls_url = bv.hls_master_key
-        ? storage.getPublicUrl(bv.hls_master_key)
-        : bv.hls_360p_key
-          ? storage.getPublicUrl(bv.hls_360p_key)
-          : null;
-      if (!hls_url) return null;
-      return {
-        id:                s.id,
-        hls_url,
-        global_offset_sec: s.global_offset_sec ?? 0,
-        start_sec:         s.start_sec,
-        end_sec:           s.end_sec,
-        label:             s.label,
-        broll_volume:      s.broll_volume ?? 1.0,
-      };
-    })
-    .filter(Boolean);
-
-  // Clip overlays: user-trimmed library videos shown as video overlay
-  let globalOff = 0;
-  const videoGlobalOffsets = new Map<string, number>();
-  for (const v of mainVideos) {
-    videoGlobalOffsets.set(v.id, globalOff);
-    globalOff += v.duration_sec ?? 0;
-  }
-  const clipOverlays = sections
-    .filter((s) => s.type === 'clip' && s.clip_source_video_id)
-    .map((s) => {
-      const srcVideo = allVideoMap.get(s.clip_source_video_id!);
-      if (!srcVideo) return null;
-      const hls_url = srcVideo.hls_master_key
-        ? storage.getPublicUrl(srcVideo.hls_master_key)
-        : srcVideo.hls_360p_key
-          ? storage.getPublicUrl(srcVideo.hls_360p_key)
-          : null;
-      if (!hls_url) return null;
-      const vidOffset = videoGlobalOffsets.get(s.video_file_id) ?? 0;
-      const sectionDuration = s.end_sec - s.start_sec;
-      const clipIn = s.clip_in_sec ?? 0;
-      return {
-        id:                s.id,
-        hls_url,
-        global_offset_sec: vidOffset + s.start_sec,
-        start_sec:         clipIn,
-        end_sec:           clipIn + sectionDuration,
-        label:             s.label,
-        broll_volume:      1.0,
-      };
-    })
-    .filter(Boolean);
-
-  return { segments, brollClips, clipOverlays };
-}
+import { buildPlayerConfig } from '../../services/buildPlayerConfig.js';
 
 export async function registerShareRoutes(app: FastifyInstance): Promise<void> {
 
@@ -131,15 +20,10 @@ export async function registerShareRoutes(app: FastifyInstance): Promise<void> {
         return reply.code(404).send({ message: 'Shared video not found or link has been revoked' });
       }
 
-      const { segments, brollClips, clipOverlays } = await buildPlayerConfig(project.id);
+      const config = await buildPlayerConfig(project.id);
+      if (!config) return reply.code(404).send({ message: 'Shared video not found' });
 
-      return reply.send({
-        project_id:  project.id,
-        title:       project.title,
-        segments,
-        broll_clips: brollClips,
-        clip_overlays: clipOverlays,
-      });
+      return reply.send(config);
     },
   );
 

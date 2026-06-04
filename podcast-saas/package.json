@@ -2,8 +2,16 @@
   "name": "podcast-saas",
   "private": true,
   "version": "0.1.0",
+  "main": "backend-api/dist/server.js",
+  "workspaces": [
+    "shared",
+    "backend-api",
+    "client-web",
+    "admin-web"
+  ],
   "scripts": {
-    "build": "pnpm -r build",
+    "build": "npm run build -w shared && npm run build -w backend-api && npm run build -w client-web && npm run build -w admin-web",
+    "start": "node backend-api/dist/server.js",
     "dev": "pnpm -r --parallel dev",
     "dev:backend": "pnpm --filter backend-api dev",
     "dev:client": "pnpm --filter client-web dev",
@@ -19,7 +27,6 @@
     "typescript": "^5.5.4"
   },
   "engines": {
-    "node": ">=22.0.0",
-    "pnpm": ">=9.0.0"
+    "node": ">=22.0.0"
   }
 }

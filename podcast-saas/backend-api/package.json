@@ -35,7 +35,7 @@
     "pino": "^9.3.2",
     "pino-pretty": "^11.2.1",
     "postgres": "^3.4.4",
-    "shared": "workspace:*",
+    "shared": "file:../shared",
     "tsoa": "^6.4.0",
     "adm-zip": "^0.5.10",
     "zod": "^3.23.8"

@@ -11,6 +11,11 @@ import {
   selectSources,
   formatRetryPrompt,
   wrapBridgeMainBody,
+  buildSectionEntry,
+  parseSectionEntries,
+  wrapBridgeCombined,
+  injectBridgeScriptTag,
+  SAFE_SECTION_ID_RE,
   type SimManifest,
   type ConversationMessage,
   type GeneratedBridge,
@@ -581,5 +586,173 @@ describe('wrapBridgeMainBody', () => {
     const result = wrapBridgeMainBody(body);
     const validation = validateGeneratedBridge(result, baseManifest, body);
     expect(validation.fatal).toHaveLength(0);
+  });
+});
+
+// ── SAFE_SECTION_ID_RE ────────────────────────────────────────────────────────
+
+describe('SAFE_SECTION_ID_RE', () => {
+  it('accepts UUIDs', () => {
+    expect(SAFE_SECTION_ID_RE.test('98fd5b48-c7cd-45d8-a1b2-4bd8703050b0')).toBe(true);
+  });
+  it('accepts slugs', () => {
+    expect(SAFE_SECTION_ID_RE.test('intro_forces')).toBe(true);
+  });
+  it('rejects slashes', () => {
+    expect(SAFE_SECTION_ID_RE.test('a/b')).toBe(false);
+  });
+  it('rejects spaces', () => {
+    expect(SAFE_SECTION_ID_RE.test('my section')).toBe(false);
+  });
+});
+
+// ── buildSectionEntry ─────────────────────────────────────────────────────────
+
+describe('buildSectionEntry', () => {
+  const id = 'abc-123';
+  const body = 'const el = document.getElementById("velocity");\nreturn function cleanup() {};';
+
+  it('contains the sectionId markers', () => {
+    const entry = buildSectionEntry(id, body);
+    expect(entry).toContain(`@@SIM_BRIDGE:${id}@@`);
+    expect(entry).toContain(`@@/SIM_BRIDGE:${id}@@`);
+  });
+
+  it('contains the mainBody content', () => {
+    const entry = buildSectionEntry(id, body);
+    expect(entry).toContain('getElementById("velocity")');
+  });
+
+  it('throws for unsafe sectionId', () => {
+    expect(() => buildSectionEntry('bad/id', 'return null;')).toThrow('Unsafe sectionId');
+  });
+});
+
+// ── parseSectionEntries ───────────────────────────────────────────────────────
+
+describe('parseSectionEntries', () => {
+  it('returns empty map for empty string', () => {
+    expect(parseSectionEntries('').size).toBe(0);
+  });
+
+  it('round-trips: buildSectionEntry then parse returns original mainBody', () => {
+    const id = 'section-uuid-1';
+    const body = 'const x = 1;\nreturn function cleanup() { x; };';
+    const entry = buildSectionEntry(id, body);
+    // Wrap in a minimal bridge structure so parser can find it
+    const bridgeJs = `var __SECTIONS__ = {\n${entry}\n};`;
+    const map = parseSectionEntries(bridgeJs);
+    expect(map.has(id)).toBe(true);
+    expect(map.get(id)).toContain('const x = 1;');
+  });
+
+  it('parses multiple sections independently', () => {
+    const entryA = buildSectionEntry('sec-a', 'return function cleanup() { /* A */ };');
+    const entryB = buildSectionEntry('sec-b', 'return function cleanup() { /* B */ };');
+    const bridgeJs = `var __SECTIONS__ = {\n${entryA}\n${entryB}\n};`;
+    const map = parseSectionEntries(bridgeJs);
+    expect(map.size).toBe(2);
+    expect(map.has('sec-a')).toBe(true);
+    expect(map.has('sec-b')).toBe(true);
+  });
+});
+
+// ── wrapBridgeCombined ────────────────────────────────────────────────────────
+
+describe('wrapBridgeCombined', () => {
+  const entries = new Map([
+    ['sec-1', 'return function cleanup() { /* sec1 */ };'],
+    ['sec-2', 'return function cleanup() { /* sec2 */ };'],
+  ]);
+
+  it('produces valid JS syntax', () => {
+    const result = wrapBridgeCombined(entries);
+    expect(() => new Function(result)).not.toThrow();
+  });
+
+  it('contains SIM_READY', () => {
+    expect(wrapBridgeCombined(entries)).toContain('SIM_READY');
+  });
+
+  it('contains both section IDs', () => {
+    const result = wrapBridgeCombined(entries);
+    expect(result).toContain('sec-1');
+    expect(result).toContain('sec-2');
+  });
+
+  it('contains URLSearchParams dispatch', () => {
+    expect(wrapBridgeCombined(entries)).toContain('URLSearchParams');
+  });
+
+  it('is deterministic', () => {
+    expect(wrapBridgeCombined(entries)).toBe(wrapBridgeCombined(entries));
+  });
+
+  it('add-replace: regenerating sec-1 does not lose sec-2', () => {
+    const initial = wrapBridgeCombined(entries);
+    const parsed  = parseSectionEntries(initial);
+    parsed.set('sec-1', 'return function cleanup() { /* updated sec1 */ };');
+    const updated = wrapBridgeCombined(parsed);
+    expect(updated).toContain('updated sec1');
+    expect(updated).toContain('sec-2');
+  });
+});
+
+// ── injectBridgeScriptTag ─────────────────────────────────────────────────────
+
+describe('injectBridgeScriptTag', () => {
+  const relPath = './bridge.js';
+  const hash    = 'abc123';
+
+  it('injects marker block before </body>', () => {
+    const html   = '<html><body><p>hi</p></body></html>';
+    const result = injectBridgeScriptTag(html, relPath, hash);
+    expect(result).toContain('SIM_BRIDGE_SCRIPT_START');
+    expect(result).toContain(`src="./bridge.js?v=abc123"`);
+    expect(result.indexOf('SIM_BRIDGE_SCRIPT_START')).toBeLessThan(result.indexOf('</body>'));
+  });
+
+  it('replaces existing marker block (no duplicate)', () => {
+    const html  = '<html><body><!-- SIM_BRIDGE_SCRIPT_START -->\n<script src="./bridge.js?v=old"></script>\n<!-- SIM_BRIDGE_SCRIPT_END -->\n</body></html>';
+    const result = injectBridgeScriptTag(html, relPath, 'newhash');
+    expect(result).toContain('newhash');
+    expect(result).not.toContain('?v=old');
+    expect((result.match(/SIM_BRIDGE_SCRIPT_START/g) ?? []).length).toBe(1);
+  });
+
+  it('strips old section_*.js script tags on first injection', () => {
+    const html = '<html><body><script src="./section_uuid123.js?v=x"></script></body></html>';
+    const result = injectBridgeScriptTag(html, relPath, hash);
+    expect(result).not.toContain('section_uuid123.js');
+    expect(result).toContain('bridge.js');
+  });
+
+  it('works with single-quoted src attributes', () => {
+    const html = "<html><body><script src='./section_x.js'></script></body></html>";
+    const result = injectBridgeScriptTag(html, relPath, hash);
+    expect(result).not.toContain('section_x.js');
+  });
+
+  it('appends after body if </body> is missing', () => {
+    const html   = '<html><body><p>no close</p>';
+    const result = injectBridgeScriptTag(html, relPath, hash);
+    expect(result).toContain('SIM_BRIDGE_SCRIPT_START');
+  });
+});
+
+// ── selectSources — bridge.js exclusion ──────────────────────────────────────
+
+describe('selectSources — bridge.js exclusion', () => {
+  it('excludes bridge.js from AI context', () => {
+    const isSectionFile = (k: string) =>
+      /section_[^/]+\.(html|js)$/.test(k) || /\/bridge\.js$/.test(k);
+    const raw = new Map([
+      ['sim/index.html', '<html/>'],
+      ['sim/app.js',     'const x = 1;'],
+      ['sim/bridge.js',  '(function(){})();'],
+    ]);
+    const { sourceMap } = selectSources(raw, isSectionFile);
+    expect([...sourceMap.keys()]).not.toContain('sim/bridge.js');
+    expect([...sourceMap.keys()]).toContain('sim/app.js');
   });
 });

@@ -1,1 +1,17 @@
 .env
+
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+.next/
+.output/
+out/
+
+# TypeScript incremental build info
+*.tsbuildinfo
+
+# Caches
+.turbo/
+.cache/

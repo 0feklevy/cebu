@@ -383,6 +383,16 @@ export const image_files = pgTable('image_files', {
   created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const audio_files = pgTable('audio_files', {
+  id:          uuid('id').primaryKey().defaultRandom(),
+  project_id:  uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  filename:    text('filename').notNull(),
+  storage_key: text('storage_key').notNull(),
+  url:         text('url').notNull(),
+  duration_sec: real('duration_sec'),
+  created_at:  timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const timeline_sections = pgTable('timeline_sections', {
   id: uuid('id').primaryKey().defaultRandom(),
   project_id: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
@@ -400,8 +410,8 @@ export const timeline_sections = pgTable('timeline_sections', {
   simple_ui:   boolean('simple_ui').notNull().default(false),
   auto_script: boolean('auto_script').notNull().default(true),
   // B-roll multi-track support (migration 010)
-  track: text('track').notNull().default('main'),           // 'main' | 'broll'
-  global_offset_sec: real('global_offset_sec'),             // broll only: absolute start on main timeline
+  track: text('track').notNull().default('main'),           // 'main' | 'broll' | 'audio'
+  global_offset_sec: real('global_offset_sec'),             // broll/audio only: absolute start on main timeline
   sim_meta: jsonb('sim_meta'),                              // bridge generation plan metadata (migration 013)
   // Clip source fields (migration 014) — used by the new "clip" section type
   clip_source_video_id: uuid('clip_source_video_id').references(() => video_files.id, { onDelete: 'set null' }),
@@ -411,6 +421,8 @@ export const timeline_sections = pgTable('timeline_sections', {
   // Image clip fields (migration 018) — still image with animated camera movement
   clip_source_image_id: uuid('clip_source_image_id').references(() => image_files.id, { onDelete: 'set null' }),
   camera_movement: text('camera_movement').notNull().default('zoom_in'),
+  // Audio-only cutaway (migration 020) — broll section backed by uploaded audio file
+  clip_source_audio_id: uuid('clip_source_audio_id').references(() => audio_files.id, { onDelete: 'set null' }),
   created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -433,6 +445,36 @@ export const video_generation_jobs = pgTable('video_generation_jobs', {
   finished_at: timestamp('finished_at', { withTimezone: true }),
 });
 
+// Playlists — ordered collections of projects played back-to-back (migration 021)
+export const playlists = pgTable('playlists', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  org_id: uuid('org_id').references(() => orgs.id).notNull(),
+  created_by: uuid('created_by').references(() => users.id),
+  title: text('title'),
+  description: text('description'),
+  autoplay:      boolean('autoplay').notNull().default(true),       // auto-advance with countdown
+  show_sidebar:  boolean('show_sidebar').notNull().default(true),   // YouTube-style aside + description
+  allow_shuffle: boolean('allow_shuffle').notNull().default(true),
+  share_token:      text('share_token').unique(),
+  share_enabled_at: timestamp('share_enabled_at', { withTimezone: true }),
+  created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updated_at: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const playlist_items = pgTable(
+  'playlist_items',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    playlist_id: uuid('playlist_id').notNull().references(() => playlists.id, { onDelete: 'cascade' }),
+    project_id:  uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+    position: integer('position').notNull(),
+    created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    uniq_playlist_project: unique().on(t.playlist_id, t.project_id),
+  }),
+);
+
 // ── Type exports ──────────────────────────────────────────────────────────────
 
 export type Org = typeof orgs.$inferSelect;
@@ -450,7 +492,10 @@ export type AudioRender = typeof audio_renders.$inferSelect;
 export type Scene = typeof scenes.$inferSelect;
 export type VideoFile = typeof video_files.$inferSelect;
 export type ImageFile = typeof image_files.$inferSelect;
+export type AudioFile = typeof audio_files.$inferSelect;
 export type TimelineSection = typeof timeline_sections.$inferSelect;
 export type VideoGenerationJob = typeof video_generation_jobs.$inferSelect;
 export type CameraPlan = typeof camera_plans.$inferSelect;
 export type SimulationRow = typeof simulations.$inferSelect;
+export type Playlist = typeof playlists.$inferSelect;
+export type PlaylistItem = typeof playlist_items.$inferSelect;

@@ -12,9 +12,15 @@ import './viewer.css';
 
 interface Props {
   config: PlayerConfig;
+  /** Fired when the project finishes all segments (playlist auto-advance). */
+  onProjectComplete?: () => void;
+  /** Auto-start playback on mount (playlist videos after the first). */
+  autoStart?: boolean;
+  /** Hide the top-left "Home" link (playlist viewer provides its own chrome). */
+  hideHomeLink?: boolean;
 }
 
-export function HLSPlayerShell({ config }: Props) {
+export function HLSPlayerShell({ config, onProjectComplete, autoStart, hideHomeLink }: Props) {
   const videoARef             = useRef<HTMLVideoElement>(null);
   const videoBRef             = useRef<HTMLVideoElement>(null);
   const videoBrollRef         = useRef<HTMLVideoElement>(null);
@@ -46,7 +52,7 @@ export function HLSPlayerShell({ config }: Props) {
     totTime,
     root: rootRef,
     simFrame: simFrameRef,
-  });
+  }, { onProjectComplete, autoStart });
 
   const allMarkers = config.segments.flatMap((seg, idx) => {
     const offset = state.timeline[idx]?.offset ?? 0;
@@ -100,6 +106,7 @@ export function HLSPlayerShell({ config }: Props) {
       />
 
       {/* Home button — appears on hover over top-left corner */}
+      {!hideHomeLink && (
       <div
         className="absolute top-0 left-0 z-30"
         style={{ width: 140, height: 80 }}
@@ -122,6 +129,7 @@ export function HLSPlayerShell({ config }: Props) {
           Home
         </Link>
       </div>
+      )}
 
       {/* Animated still-image overlay */}
       {state.activeImageOverlay && (

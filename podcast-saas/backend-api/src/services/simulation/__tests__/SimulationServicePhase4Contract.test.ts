@@ -276,10 +276,11 @@ describe('Phase 5 readiness', () => {
   it('BridgeGenerationResult includes provider and model fields', () => {
     // TypeScript structural check
     const r: BridgeGenerationResult = {
-      sectionUrl:        'https://cdn.example.com/section.html',
+      sectionUrl:        'https://cdn.example.com/index.html?section=abc&v=def456',
       conversationHistory: [],
       sourceHash:        'abc123',
       bridgeHash:        'def456',
+      mainBody:          'return function cleanup() {};',
       provider:          'claude',
       model:             'claude-sonnet-4-6',
       confidence:        0.9,

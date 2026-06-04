@@ -64,6 +64,7 @@ export interface BridgeGenerationResult {
   conversationHistory: ConversationMessage[];
   sourceHash:        string;
   bridgeHash:        string;
+  mainBody:          string;
   provider:          string;
   model:             string;
   confidence:        number;
@@ -602,6 +603,144 @@ export function wrapBridgeMainBody(mainBody: string): string {
   ].join('\n');
 }
 
+// ── Combined bridge.js helpers ────────────────────────────────────────────────
+
+/** Only UUIDs and slugs — rejects anything that could break JS object keys or regex. */
+export const SAFE_SECTION_ID_RE = /^[a-zA-Z0-9_-]+$/;
+
+/** Format one section's entry with parse-markers so it can later be replaced in place. */
+export function buildSectionEntry(sectionId: string, mainBody: string): string {
+  if (!SAFE_SECTION_ID_RE.test(sectionId))
+    throw new Error(`Unsafe sectionId: "${sectionId}"`);
+  const indented = mainBody
+    .split('\n')
+    .map(l => (l.trim() === '' ? '' : '      ' + l))
+    .join('\n');
+  return [
+    `    /* @@SIM_BRIDGE:${sectionId}@@ */`,
+    `    '${sectionId}': function (params) {`,
+    indented,
+    '    },',
+    `    /* @@/SIM_BRIDGE:${sectionId}@@ */`,
+  ].join('\n');
+}
+
+/** Parse existing bridge.js and return a Map of sectionId → mainBody. */
+export function parseSectionEntries(bridgeJs: string): Map<string, string> {
+  const entries = new Map<string, string>();
+  // Match /* @@SIM_BRIDGE:id@@ */ … /* @@/SIM_BRIDGE:id@@ */
+  // Each entry wraps: '  id': function(params) { mainBody }
+  const re = /\/\*\s*@@SIM_BRIDGE:([A-Za-z0-9_-]+)@@\s*\*\/([\s\S]*?)\/\*\s*@@\/SIM_BRIDGE:\1@@\s*\*\//g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(bridgeJs)) !== null) {
+    const id = m[1];
+    // Extract the mainBody from inside: '  id': function (params) { ... },
+    const block = m[2];
+    const bodyMatch = /function\s*\(params\)\s*\{([\s\S]*)\},\s*$/.exec(block.trimEnd());
+    if (bodyMatch) {
+      const dedented = bodyMatch[1]
+        .split('\n')
+        .map(l => l.startsWith('      ') ? l.slice(6) : l)
+        .join('\n')
+        .replace(/^\n/, '')
+        .replace(/\n$/, '');
+      entries.set(id, dedented);
+    }
+  }
+  return entries;
+}
+
+/** Build the full combined bridge.js IIFE from a sectionId→mainBody map. */
+export function wrapBridgeCombined(entries: Map<string, string>): string {
+  const sectionBlocks = [...entries.entries()]
+    .map(([id, body]) => buildSectionEntry(id, body))
+    .join('\n');
+
+  return [
+    '(function () {',
+    "  'use strict';",
+    '',
+    '  // ── Section Bridges ────────────────────────────────────────────────────────',
+    '  var __SECTIONS__ = {',
+    sectionBlocks,
+    '  };',
+    '',
+    '  // ── SIM_READY — fires unconditionally (simulation runs standalone too) ──────',
+    '  var _ready = false;',
+    '  function _fireReady() {',
+    "    if (_ready) return; _ready = true; window._simReadyFired = true;",
+    "    window.parent?.postMessage({ type: 'SIM_READY' }, '*');",
+    '  }',
+    "  if (document.readyState === 'loading')",
+    "    document.addEventListener('DOMContentLoaded', function() { requestAnimationFrame(_fireReady); });",
+    '  else requestAnimationFrame(_fireReady);',
+    '  setTimeout(_fireReady, 3000);',
+    '',
+    '  // ── Dispatch — only wire listeners when a valid section param exists ─────────',
+    "  var _sectionId = new URLSearchParams(location.search).get('section');",
+    '  var _mainBodyFn = _sectionId ? __SECTIONS__[_sectionId] : null;',
+    '  if (!_mainBodyFn) return;',
+    '',
+    '  // ── Standard Listener — system-owned, guaranteed correct ────────────────────',
+    '  var _cancelFn = null;',
+    '  var SCRIPTS = {',
+    '    main: function (params) {',
+    '      return _mainBodyFn(params);',
+    '    },',
+    '  };',
+    '  function stopScript() {',
+    '    if (_cancelFn) { _cancelFn(); _cancelFn = null; }',
+    '  }',
+    '  function startScript(name, params) {',
+    '    stopScript();',
+    '    var fn = SCRIPTS[name] || SCRIPTS.main;',
+    '    if (fn) _cancelFn = fn(params || {}) || null;',
+    '  }',
+    '  window.SimAPI = { start: startScript, stop: stopScript };',
+    "  window.addEventListener('message', function(e) {",
+    '    var d = e.data || {}; var type = d.type; var script = d.script; var params = d.params;',
+    "    if (type === 'startScript')  startScript(script || 'main', params);",
+    "    if (type === 'stopScript')   stopScript();",
+    "    if (type === 'PING_SIM_READY' && window._simReadyFired)",
+    "      window.parent?.postMessage({ type: 'SIM_READY' }, '*');",
+    '  });',
+    "  document.addEventListener('pointerdown', function() {",
+    "    window.parent?.postMessage({ type: 'userInteraction' }, '*');",
+    '  }, { capture: true });',
+    '})();',
+  ].join('\n');
+}
+
+/** Inject or update the bridge.js script tag in an HTML string using stable markers.
+ *  Removes old section_*.js script tags and any previous bridge.js tags, then inserts
+ *  a fresh marker block.  Returns the updated HTML. */
+export function injectBridgeScriptTag(html: string, relPath: string, bridgeHash: string): string {
+  const tag = `<script src="${relPath}?v=${bridgeHash}"></script>`;
+  const block = `<!-- SIM_BRIDGE_SCRIPT_START -->\n${tag}\n<!-- SIM_BRIDGE_SCRIPT_END -->`;
+
+  // Replace existing marker block if present
+  if (html.includes('<!-- SIM_BRIDGE_SCRIPT_START -->')) {
+    return html.replace(
+      /<!-- SIM_BRIDGE_SCRIPT_START -->[\s\S]*?<!-- SIM_BRIDGE_SCRIPT_END -->/,
+      block,
+    );
+  }
+
+  // First time: strip old section_*.js or inline bridge scripts, then inject before </body>
+  let cleaned = html
+    .replace(/<script[^>]*>\s*\/\* sim-bridge[\s\S]*?<\/script>/gi, '')
+    .replace(/<script[^>]*>\s*;?\s*\(function[\s\S]*?sim-bridge v[12][\s\S]*?<\/script>/gi, '');
+  // Strip any stale section_*.js or bridge.js script tags
+  cleaned = cleaned.replace(
+    /<script[^>]+src=["'][^"']*(?:section_[^"']*\.js|bridge\.js)[^"']*["'][^>]*>\s*<\/script>/gi,
+    '',
+  );
+
+  return cleaned.includes('</body>')
+    ? cleaned.replace('</body>', `${block}\n</body>`)
+    : cleaned + '\n' + block;
+}
+
 // ── Deterministic source hash ─────────────────────────────────────────────────
 
 /** Compute a deterministic hash of source files.
@@ -1000,10 +1139,27 @@ export function buildContextPrompt(
 // ── SimulationService ─────────────────────────────────────────────────────────
 
 export class SimulationService {
+  /** Per-simulation promise chain — serialises concurrent bridge.js read-modify-write. */
+  private readonly bridgeLocks = new Map<string, Promise<void>>();
+
   constructor(
     private readonly storage: StorageService,
     private readonly llmService: LLMService,
   ) {}
+
+  private async withBridgeLock<T>(simKey: string, fn: () => Promise<T>): Promise<T> {
+    const prior = this.bridgeLocks.get(simKey) ?? Promise.resolve();
+    let release!: () => void;
+    const next = new Promise<void>(r => { release = r; });
+    this.bridgeLocks.set(simKey, next);
+    try {
+      await prior;
+      return await fn();
+    } finally {
+      release();
+      if (this.bridgeLocks.get(simKey) === next) this.bridgeLocks.delete(simKey);
+    }
+  }
 
   async processUpload(opts: {
     projectId: string;
@@ -1079,7 +1235,8 @@ export class SimulationService {
     onEvent?.('status', { status: 'Loading simulation files…', type: 'progress' });
     const allKeys = await this.storage.listObjects(prefix);
     const isText        = (k: string) => /\.(js|mjs|html|htm|css|ts)$/.test(k);
-    const isSectionFile = (k: string) => /section_[^/]+\.(html|js)$/.test(k);
+    const isSectionFile = (k: string) =>
+      /section_[^/]+\.(html|js)$/.test(k) || /\/bridge\.js$/.test(k);
 
     // Read all candidate text files (skip section-specific generated files)
     const rawMap = new Map<string, string>();
@@ -1227,10 +1384,6 @@ export class SimulationService {
       );
     }
 
-    // Build metadata
-    // Use the final assembled bridgeScript for upload and hashing
-    const finalBridgeScript = wrapBridgeMainBody(bridge.mainBody);
-    const bridgeHash = computeBridgeHash(finalBridgeScript);
     const allValidationWarnings = [
       ...validation.warnings,
       ...validation.weak,
@@ -1240,55 +1393,53 @@ export class SimulationService {
     logger.info({
       simId, sectionId, confidence, confidenceLevel,
       warnings: allValidationWarnings.length,
-      bridgeLen: finalBridgeScript.length,
+      mainBodyLen: bridge.mainBody.length,
       retryCount, retryReason,
     }, 'Bridge script ready');
 
-    // 8. Locate entry HTML and upload bridge files
+    // Validate sectionId before touching storage
+    if (!SAFE_SECTION_ID_RE.test(sectionId))
+      throw new Error(`Unsafe sectionId: "${sectionId}"`);
+
+    // 8. Locate entry HTML
     const entryKey = allKeys.find(k => /\/(index|main)\.(html|htm)$/.test(k))
       ?? allKeys.find(k => (k.endsWith('.html') || k.endsWith('.htm')) && !isSectionFile(k));
     if (!entryKey) throw new Error('No HTML entry file found in simulation');
 
     const entryDir = entryKey.substring(0, entryKey.lastIndexOf('/'));
-
-    onEvent?.('status', { status: 'Uploading files…', type: 'progress' });
-    const bridgeJsKey = `${prefix}/section_${sectionId}.js`;
-    await this.storage.uploadFile(bridgeJsKey, Buffer.from(finalBridgeScript, 'utf-8'), 'application/javascript');
-
-    // 12. Build section HTML (strip old bridge, add new external <script src>)
-    const rawHtml = (await this.storage.readObject(entryKey)).toString('utf-8');
-    const stripped = rawHtml
-      .replace(/<script[^>]*>\s*\/\* sim-bridge[\s\S]*?<\/script>/gi, '')
-      .replace(/<script[^>]*>\s*;?\s*\(function[\s\S]*?sim-bridge v[12][\s\S]*?<\/script>/gi, '');
-
     const relativeDepth = entryDir === prefix
       ? 0
       : entryDir.slice(prefix.length).split('/').filter(Boolean).length;
-    const relPath = (relativeDepth > 0 ? '../'.repeat(relativeDepth) : './') + `section_${sectionId}.js`;
+    const bridgeRelPath = (relativeDepth > 0 ? '../'.repeat(relativeDepth) : './') + 'bridge.js';
+    const bridgeJsKey   = `${prefix}/bridge.js`;
 
-    // Include bridgeHash in the script src so the browser always fetches the new JS
-    const scriptTag = `<script src="${relPath}?v=${bridgeHash}"></script>`;
-    const sectionHtml = stripped.includes('</body>')
-      ? stripped.replace('</body>', `${scriptTag}\n</body>`)
-      : stripped + '\n' + scriptTag;
+    onEvent?.('status', { status: 'Uploading files…', type: 'progress' });
 
-    // Validate no script tags were lost in strip (check original src without hash query)
-    const srcRe = /<script[^>]+src="([^"]+)"/gi;
-    let srcMatch: RegExpExecArray | null;
-    while ((srcMatch = srcRe.exec(rawHtml)) !== null) {
-      const src = srcMatch[1];
-      if (!sectionHtml.includes(`src="${src}"`)) {
-        throw new Error(`Section HTML validation failed: <script src="${src}"> was lost after bridge-strip.`);
-      }
-    }
+    // 9. Read-modify-write bridge.js under a per-simulation lock (concurrency safety)
+    const { sectionUrl, bridgeHash } = await this.withBridgeLock(bridgeJsKey, async () => {
+      // Read existing bridge.js (may not exist on first generation)
+      let existingBridgeJs = '';
+      try { existingBridgeJs = (await this.storage.readObject(bridgeJsKey)).toString('utf-8'); }
+      catch { /* first generation — start fresh */ }
 
-    const sectionHtmlKey = `${entryDir}/section_${sectionId}.html`;
-    await this.storage.uploadFile(sectionHtmlKey, Buffer.from(sectionHtml, 'utf-8'), 'text/html; charset=utf-8');
-    // Append bridgeHash as version query param → unique URL per generation → forces
-    // browser cache-bust and iframe key change in VideoPlayer/SectionEditor
-    const sectionUrl = `${this.storage.getSimPublicUrl(sectionHtmlKey)}?v=${bridgeHash}`;
+      // Merge: parse existing sections, add/replace current section
+      const sectionEntries = parseSectionEntries(existingBridgeJs);
+      sectionEntries.set(sectionId, bridge.mainBody);
+      const combinedBridge = wrapBridgeCombined(sectionEntries);
+      const hash = computeBridgeHash(combinedBridge);
 
-    logger.info({ simId, sectionId, projectId, sectionUrl }, 'Bridge script uploaded');
+      await this.storage.uploadFile(bridgeJsKey, Buffer.from(combinedBridge, 'utf-8'), 'application/javascript');
+
+      // 10. Update index.html in place (stable marker approach)
+      const rawHtml = (await this.storage.readObject(entryKey)).toString('utf-8');
+      const updatedHtml = injectBridgeScriptTag(rawHtml, bridgeRelPath, hash);
+      await this.storage.uploadFile(entryKey, Buffer.from(updatedHtml, 'utf-8'), 'text/html; charset=utf-8');
+
+      // sectionUrl encodes which section to run + busts the iframe cache on every generation
+      const url = `${this.storage.getSimPublicUrl(entryKey)}?section=${sectionId}&v=${hash}`;
+      logger.info({ simId, sectionId, projectId, url, sections: sectionEntries.size }, 'Bridge script uploaded');
+      return { sectionUrl: url, bridgeHash: hash };
+    });
 
     // Return typed BridgeGenerationResult — controller builds sim_meta from this
     return {
@@ -1296,6 +1447,7 @@ export class SimulationService {
       conversationHistory:  updatedHistory,
       sourceHash,
       bridgeHash,
+      mainBody:             bridge.mainBody,
       provider:             llmProvider,
       model:                llmModel,
       confidence,

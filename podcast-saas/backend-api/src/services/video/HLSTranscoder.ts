@@ -56,7 +56,7 @@ function runProcess(bin: string, args: string[]): Promise<void> {
   });
 }
 
-async function probeDuration(inputPath: string): Promise<number> {
+export async function probeMediaDuration(inputPath: string): Promise<number> {
   return new Promise((resolve, reject) => {
     const args = [
       '-v', 'quiet', '-print_format', 'json', '-show_format', inputPath,
@@ -145,7 +145,7 @@ export function extractWaveformPeaks(inputPath: string, numPeaks = 200): Promise
 export async function transcodeToHLS(opts: TranscodeOpts): Promise<TranscodeResult> {
   const { inputPath, workDir, storageKeyPrefix, storage, onTierStart, onTierComplete } = opts;
 
-  const durationSec = await probeDuration(inputPath);
+  const durationSec = await probeMediaDuration(inputPath);
   logger.info({ durationSec, inputPath }, 'HLS transcode starting');
 
   for (const tier of TIERS) {

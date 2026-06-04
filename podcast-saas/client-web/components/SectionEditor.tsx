@@ -3,7 +3,7 @@
 import { ConfirmDialog } from './ConfirmDialog';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { getAuth } from 'firebase/auth';
-import { ChevronDown, ChevronUp } from 'lucide-react';
+import { Archive, Check, ChevronDown, ChevronUp, Copy, Download, Maximize2, Play, Square } from 'lucide-react';
 import type { TimelineSection, Simulation, VideoFile, VideoGenerationJob, SimFile, SimMeta, ImageFile, GuidanceEntry, GuidanceMeta, GuidanceStatus } from 'shared/src/generated/client-v1';
 import { api } from '../lib/api';
 
@@ -85,6 +85,33 @@ function parseTime(str: string): number | null {
   return m * 60 + s;
 }
 
+function saveBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function copyTextToClipboard(text: string): Promise<void> {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  document.execCommand('copy');
+  textarea.remove();
+}
+
 const CAMERA_MOVEMENTS = [
   { value: 'zoom_in',   label: 'Zoom In'     },
   { value: 'zoom_out',  label: 'Zoom Out'    },
@@ -158,6 +185,8 @@ export function SectionEditor({
 
   // Preview iframe control (simulation)
   const previewIframeRef = useRef<HTMLIFrameElement>(null);
+  const simPreviewShellRef = useRef<HTMLDivElement>(null);
+  const rightVideoRef = useRef<HTMLVideoElement>(null);
   const [previewRunning, setPreviewRunning] = useState(false);
 
   // Right-panel tabs (simulation only)
@@ -167,6 +196,9 @@ export function SectionEditor({
   const [activeFileKey, setActiveFileKey]     = useState<string | null>(null);
   const [fileContent, setFileContent]         = useState<string | null>(null);
   const [fileContentLoading, setFileContentLoading] = useState(false);
+  const [copiedFile, setCopiedFile] = useState(false);
+  const [fileDownloadBusy, setFileDownloadBusy] = useState(false);
+  const [zipDownloadBusy, setZipDownloadBusy] = useState(false);
 
   // ── Clip section state ─────────────────────────────────────────────────────
   const [localVideos, setLocalVideos]   = useState<VideoFile[]>(videos);
@@ -220,6 +252,9 @@ export function SectionEditor({
     setSimFiles([]);
     setActiveFileKey(null);
     setFileContent(null);
+    setCopiedFile(false);
+    setFileDownloadBusy(false);
+    setZipDownloadBusy(false);
     // Clip state reset
     setClipSourceVideoId(section.clip_source_video_id ?? '');
     setClipSourceImageId(section.clip_source_image_id ?? '');
@@ -346,6 +381,7 @@ export function SectionEditor({
     if (!activeFileKey || !simId) { setFileContent(null); return; }
     setFileContentLoading(true);
     setFileContent(null);
+    setCopiedFile(false);
     api.getSimFileContent(projectId, simId, activeFileKey)
       .then(text => setFileContent(text))
       .catch(() => setFileContent('/* could not load file */'))
@@ -404,6 +440,46 @@ export function SectionEditor({
     if (type === 'stopScript') setPreviewRunning(false);
     if (type === 'startScript') setPreviewRunning(true);
   }, [simpleUi, autoScript]);
+
+  const openFullscreen = useCallback((target: HTMLElement | null) => {
+    target?.requestFullscreen?.().catch(() => {});
+  }, []);
+
+  const handleCopyActiveFile = useCallback(async () => {
+    const file = simFiles.find(f => f.key === activeFileKey) ?? null;
+    if (!file || !simId) return;
+    const content = fileContent ?? await api.getSimFileContent(projectId, simId, file.key);
+    await copyTextToClipboard(content);
+    setCopiedFile(true);
+    window.setTimeout(() => setCopiedFile(false), 1400);
+  }, [activeFileKey, fileContent, projectId, simFiles, simId]);
+
+  const handleDownloadActiveFile = useCallback(async () => {
+    const file = simFiles.find(f => f.key === activeFileKey) ?? null;
+    if (!file || !simId) return;
+    setFileDownloadBusy(true);
+    try {
+      const content = fileContent ?? await api.getSimFileContent(projectId, simId, file.key);
+      saveBlob(new Blob([content], { type: 'text/plain;charset=utf-8' }), file.filename);
+    } catch { /* ignore */ }
+    finally {
+      setFileDownloadBusy(false);
+    }
+  }, [activeFileKey, fileContent, projectId, simFiles, simId]);
+
+  const handleDownloadSimulationZip = useCallback(async () => {
+    if (!simId) return;
+    setZipDownloadBusy(true);
+    try {
+      const blob = await api.downloadSimZip(projectId, simId);
+      const simName = simulations.find(s => s.id === simId)?.name ?? 'simulation';
+      const safeName = simName.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'simulation';
+      saveBlob(blob, `${safeName}.zip`);
+    } catch { /* ignore */ }
+    finally {
+      setZipDownloadBusy(false);
+    }
+  }, [projectId, simulations, simId]);
 
   const handleGenerateScript = useCallback(async () => {
     if (!simId || !simPrompt.trim()) return;
@@ -738,6 +814,7 @@ export function SectionEditor({
   const activeTypeDef = TYPES.find(t => t.value === (type === 'clip' ? 'video' : type)) ?? TYPES[0];
   const readySims = simulations.filter(s => s.status === 'ready');
   const activeSim = readySims.find(s => s.id === simId) ?? null;
+  const activeSimFile = simFiles.find(f => f.key === activeFileKey) ?? null;
   const videoUrl = videoUrls[section.video_file_id] ?? null;
   const simPreviewUrl = section.simulation_url ?? activeSim?.entry_file ?? null;
   const simMeta = section.sim_meta as SimMeta | null | undefined ?? null;
@@ -1950,79 +2027,162 @@ export function SectionEditor({
 
             {/* ── SIMULATION right panel ── */}
             {type === 'simulation' && (
-              <>
-                <div style={{ display: 'flex', borderBottom: '1px solid #1f2937', flexShrink: 0, backgroundColor: '#0f172a', alignItems: 'center' }}>
-                  {(['preview', 'files'] as const).map(t => (
-                    <button
-                      key={t}
-                      onClick={() => setRightTab(t)}
-                      style={{
-                        flex: 1, padding: '8px 0', fontSize: 11, fontWeight: 600,
-                        color: rightTab === t ? '#22d3ee' : '#6b7280',
-                        borderTop: 'none', borderLeft: 'none', borderRight: 'none',
-                        borderBottom: rightTab === t ? '2px solid #22d3ee' : '2px solid transparent',
-                        background: 'none', cursor: 'pointer', transition: 'color 0.15s',
-                      }}
-                    >
-                      {t === 'preview' ? 'Preview' : 'Files'}
-                    </button>
-                  ))}
-                  {rightTab === 'preview' && section.simulation_url && (
-                    <div style={{ display: 'flex', gap: 4, paddingRight: 8, flexShrink: 0 }}>
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', backgroundColor: '#f8fafc', color: '#111827' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0, padding: '10px 12px', borderBottom: '1px solid #e5e7eb', backgroundColor: '#ffffff' }}>
+                  <div style={{ display: 'flex', gap: 4, padding: 3, borderRadius: 8, backgroundColor: '#f1f5f9', border: '1px solid #e2e8f0' }}>
+                    {(['preview', 'files'] as const).map(t => (
                       <button
-                        onClick={() => sendToPreview('startScript')}
+                        key={t}
+                        onClick={() => setRightTab(t)}
                         style={{
-                          height: 24, padding: '0 8px', borderRadius: 5, border: 'none',
-                          backgroundColor: previewRunning ? '#065f46' : '#1e3a5f',
-                          color: previewRunning ? '#6ee7b7' : '#93c5fd',
-                          fontSize: 10, fontWeight: 700, cursor: 'pointer', letterSpacing: '0.03em',
+                          height: 30, minWidth: 82, padding: '0 12px', borderRadius: 6, border: 'none',
+                          backgroundColor: rightTab === t ? '#ffffff' : 'transparent',
+                          color: rightTab === t ? '#111827' : '#64748b',
+                          boxShadow: rightTab === t ? '0 1px 3px rgba(15,23,42,0.12)' : 'none',
+                          fontSize: 12, fontWeight: 700, cursor: 'pointer',
                         }}
-                      >▶ Run</button>
-                      <button
-                        onClick={() => sendToPreview('stopScript')}
-                        style={{
-                          height: 24, padding: '0 8px', borderRadius: 5, border: 'none',
-                          backgroundColor: '#1f2937', color: '#6b7280',
-                          fontSize: 10, fontWeight: 700, cursor: 'pointer',
-                        }}
-                      >■ Stop</button>
-                    </div>
-                  )}
+                      >
+                        {t === 'preview' ? 'Preview' : 'Files'}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                    {rightTab === 'preview' && simPreviewUrl && (
+                      <>
+                        <button
+                          onClick={() => sendToPreview('startScript')}
+                          style={{
+                            height: 30, padding: '0 10px', borderRadius: 7, border: '1px solid #bbf7d0',
+                            backgroundColor: previewRunning ? '#dcfce7' : '#f0fdf4',
+                            color: '#166534', fontSize: 11, fontWeight: 800, cursor: 'pointer',
+                            display: 'inline-flex', alignItems: 'center', gap: 6,
+                          }}
+                        >
+                          <Play size={13} strokeWidth={2.2} aria-hidden />
+                          Run
+                        </button>
+                        <button
+                          onClick={() => sendToPreview('stopScript')}
+                          style={{
+                            height: 30, padding: '0 10px', borderRadius: 7, border: '1px solid #e5e7eb',
+                            backgroundColor: '#ffffff', color: '#475569', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                            display: 'inline-flex', alignItems: 'center', gap: 6,
+                          }}
+                        >
+                          <Square size={12} strokeWidth={2.2} aria-hidden />
+                          Stop
+                        </button>
+                        <button
+                          onClick={() => openFullscreen(simPreviewShellRef.current)}
+                          style={{
+                            height: 30, padding: '0 10px', borderRadius: 7, border: '1px solid #dbeafe',
+                            backgroundColor: '#eff6ff', color: '#1d4ed8', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                            display: 'inline-flex', alignItems: 'center', gap: 6,
+                          }}
+                        >
+                          <Maximize2 size={13} strokeWidth={2} aria-hidden />
+                          Fullscreen
+                        </button>
+                        <button
+                          onClick={handleDownloadSimulationZip}
+                          disabled={zipDownloadBusy || !simId}
+                          style={{
+                            height: 30, padding: '0 10px', borderRadius: 7, border: '1px solid #ede9fe',
+                            backgroundColor: '#f5f3ff', color: '#6d28d9', fontSize: 11, fontWeight: 800,
+                            cursor: zipDownloadBusy || !simId ? 'not-allowed' : 'pointer', opacity: zipDownloadBusy ? 0.6 : 1,
+                            display: 'inline-flex', alignItems: 'center', gap: 6,
+                          }}
+                        >
+                          <Archive size={13} strokeWidth={2} aria-hidden />
+                          {zipDownloadBusy ? 'Zipping…' : 'ZIP'}
+                        </button>
+                      </>
+                    )}
+
+                    {rightTab === 'files' && (
+                      <>
+                        <button
+                          onClick={handleCopyActiveFile}
+                          disabled={!activeSimFile || fileContentLoading || fileContent == null}
+                          style={{
+                            height: 30, padding: '0 10px', borderRadius: 7, border: '1px solid #e0f2fe',
+                            backgroundColor: copiedFile ? '#dcfce7' : '#f0f9ff',
+                            color: copiedFile ? '#166534' : '#0369a1', fontSize: 11, fontWeight: 800,
+                            cursor: !activeSimFile || fileContentLoading || fileContent == null ? 'not-allowed' : 'pointer',
+                            opacity: !activeSimFile || fileContentLoading || fileContent == null ? 0.5 : 1,
+                            display: 'inline-flex', alignItems: 'center', gap: 6,
+                          }}
+                        >
+                          {copiedFile ? <Check size={13} strokeWidth={2.2} aria-hidden /> : <Copy size={13} strokeWidth={2} aria-hidden />}
+                          {copiedFile ? 'Copied' : 'Copy'}
+                        </button>
+                        <button
+                          onClick={handleDownloadActiveFile}
+                          disabled={!activeSimFile || fileDownloadBusy}
+                          style={{
+                            height: 30, padding: '0 10px', borderRadius: 7, border: '1px solid #e5e7eb',
+                            backgroundColor: '#ffffff', color: '#475569', fontSize: 11, fontWeight: 700,
+                            cursor: !activeSimFile || fileDownloadBusy ? 'not-allowed' : 'pointer', opacity: fileDownloadBusy ? 0.6 : 1,
+                            display: 'inline-flex', alignItems: 'center', gap: 6,
+                          }}
+                        >
+                          <Download size={13} strokeWidth={2} aria-hidden />
+                          {fileDownloadBusy ? 'Saving…' : 'File'}
+                        </button>
+                        <button
+                          onClick={handleDownloadSimulationZip}
+                          disabled={zipDownloadBusy || !simId}
+                          style={{
+                            height: 30, padding: '0 10px', borderRadius: 7, border: '1px solid #ede9fe',
+                            backgroundColor: '#f5f3ff', color: '#6d28d9', fontSize: 11, fontWeight: 800,
+                            cursor: zipDownloadBusy || !simId ? 'not-allowed' : 'pointer', opacity: zipDownloadBusy ? 0.6 : 1,
+                            display: 'inline-flex', alignItems: 'center', gap: 6,
+                          }}
+                        >
+                          <Archive size={13} strokeWidth={2} aria-hidden />
+                          {zipDownloadBusy ? 'Zipping…' : 'ZIP'}
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
 
                 {rightTab === 'preview' ? (
                   simPreviewUrl ? (
-                    <iframe
-                      key={simPreviewUrl}
-                      ref={previewIframeRef}
-                      src={simPreviewUrl}
-                      style={{ flex: 1, border: 'none', width: '100%', height: '100%' }}
-                      title={activeSim?.name ?? 'Simulation preview'}
-                      sandbox="allow-scripts allow-same-origin allow-forms allow-pointer-lock"
-                      onLoad={() => setPreviewRunning(false)}
-                    />
+                    <div ref={simPreviewShellRef} style={{ flex: 1, minHeight: 0, backgroundColor: '#ffffff', overflow: 'hidden' }}>
+                      <iframe
+                        key={simPreviewUrl}
+                        ref={previewIframeRef}
+                        src={simPreviewUrl}
+                        style={{ border: 'none', width: '100%', height: '100%', backgroundColor: '#fff' }}
+                        title={activeSim?.name ?? 'Simulation preview'}
+                        sandbox="allow-scripts allow-same-origin allow-forms allow-pointer-lock"
+                        onLoad={() => setPreviewRunning(false)}
+                      />
+                    </div>
                   ) : (
-                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, backgroundColor: '#f8fafc' }}>
                       <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
-                        <circle cx="24" cy="24" r="19" stroke="#374151" strokeWidth="2" />
-                        <path d="M24 14v10l6 4.5" stroke="#4b5563" strokeWidth="2" strokeLinecap="round" />
+                        <circle cx="24" cy="24" r="19" stroke="#cbd5e1" strokeWidth="2" />
+                        <path d="M24 14v10l6 4.5" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" />
                       </svg>
-                      <p style={{ fontSize: 13, color: '#6b7280', margin: 0 }}>Select a simulation to preview</p>
+                      <p style={{ fontSize: 13, color: '#64748b', margin: 0 }}>Select a simulation to preview</p>
                     </div>
                   )
                 ) : (
-                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                  <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', backgroundColor: '#ffffff' }}>
                     {simFilesLoading ? (
                       <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        <div style={{ width: 20, height: 20, borderRadius: '50%', border: '2px solid #374151', borderTopColor: '#22d3ee', animation: 'spin 0.8s linear infinite' }} />
+                        <div style={{ width: 20, height: 20, borderRadius: '50%', border: '2px solid #e2e8f0', borderTopColor: '#3b82f6', animation: 'spin 0.8s linear infinite' }} />
                       </div>
                     ) : simFiles.length === 0 ? (
                       <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        <p style={{ fontSize: 12, color: '#4b5563', margin: 0 }}>No files found</p>
+                        <p style={{ fontSize: 12, color: '#64748b', margin: 0 }}>No source files found</p>
                       </div>
                     ) : (
                       <>
-                        <div style={{ display: 'flex', overflowX: 'auto', flexShrink: 0, borderBottom: '1px solid #1f2937', backgroundColor: '#0f172a', scrollbarWidth: 'none' }}>
+                        <div className="fine-scrollbar" style={{ display: 'flex', overflowX: 'auto', flexShrink: 0, borderBottom: '1px solid #e5e7eb', backgroundColor: '#f8fafc' }}>
                           {simFiles.map(f => {
                             const isAiBridge = f.filename.startsWith('section_') && f.ext === 'js';
                             const isAiHtml   = f.filename.startsWith('section_') && f.ext === 'html';
@@ -2033,36 +2193,36 @@ export function SectionEditor({
                                 onClick={() => setActiveFileKey(f.key)}
                                 title={f.key}
                                 style={{
-                                  display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0,
-                                  padding: '6px 12px', fontSize: 11, fontWeight: isActive ? 600 : 400,
-                                  color: isActive ? '#e2e8f0' : '#6b7280',
-                                  background: isActive ? '#1e293b' : 'none',
-                                  borderTop: 'none', borderLeft: 'none', borderRight: 'none',
-                                  borderBottom: isActive ? '2px solid #22d3ee' : '2px solid transparent',
+                                  display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0,
+                                  padding: '9px 12px', fontSize: 11, fontWeight: isActive ? 800 : 600,
+                                  color: isActive ? '#1d4ed8' : '#64748b',
+                                  background: isActive ? '#eff6ff' : 'transparent',
+                                  borderTop: 'none', borderLeft: 'none', borderRight: '1px solid #e5e7eb',
+                                  borderBottom: isActive ? '2px solid #3b82f6' : '2px solid transparent',
                                   cursor: 'pointer', whiteSpace: 'nowrap',
                                 }}
                               >
                                 {f.filename}
                                 {(isAiBridge || isAiHtml) && (
-                                  <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 4px', borderRadius: 3, backgroundColor: '#0e7490', color: '#cffafe' }}>AI</span>
+                                  <span style={{ fontSize: 9, fontWeight: 800, padding: '1px 5px', borderRadius: 4, backgroundColor: '#dbeafe', color: '#1d4ed8' }}>AI</span>
                                 )}
                               </button>
                             );
                           })}
                         </div>
-                        <div style={{ flex: 1, overflow: 'auto', position: 'relative' }}>
+                        <div className="fine-scrollbar" style={{ flex: 1, minHeight: 0, overflow: 'auto', position: 'relative', backgroundColor: '#ffffff' }}>
                           {fileContentLoading ? (
                             <div style={{ padding: 20, display: 'flex', alignItems: 'center', gap: 8 }}>
-                              <div style={{ width: 14, height: 14, borderRadius: '50%', border: '2px solid #374151', borderTopColor: '#22d3ee', animation: 'spin 0.8s linear infinite' }} />
-                              <span style={{ fontSize: 11, color: '#6b7280' }}>Loading…</span>
+                              <div style={{ width: 14, height: 14, borderRadius: '50%', border: '2px solid #e2e8f0', borderTopColor: '#3b82f6', animation: 'spin 0.8s linear infinite' }} />
+                              <span style={{ fontSize: 11, color: '#64748b' }}>Loading…</span>
                             </div>
                           ) : fileContent !== null ? (
-                            <pre style={{ margin: 0, padding: '14px 16px', fontSize: 11, lineHeight: 1.6, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', color: '#94a3b8', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                            <pre style={{ margin: 0, padding: '16px 18px', fontSize: 11.5, lineHeight: 1.65, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', color: '#1e293b', whiteSpace: 'pre-wrap', wordBreak: 'break-word', tabSize: 2 }}>
                               {fileContent}
                             </pre>
                           ) : (
                             <div style={{ padding: 20 }}>
-                              <p style={{ fontSize: 11, color: '#4b5563', margin: 0 }}>Select a file above</p>
+                              <p style={{ fontSize: 11, color: '#64748b', margin: 0 }}>Select a file above</p>
                             </div>
                           )}
                         </div>
@@ -2070,17 +2230,35 @@ export function SectionEditor({
                     )}
                   </div>
                 )}
-              </>
+              </div>
             )}
 
             {/* ── VIDEO / BROLL right panel ── */}
             {(type === 'video' || isBroll) && (
               videoUrl ? (
-                <video
-                  src={videoUrl}
-                  controls
-                  style={{ flex: 1, width: '100%', height: '100%', objectFit: 'contain', backgroundColor: '#111827' }}
-                />
+                <div style={{ flex: 1, position: 'relative', minHeight: 0, backgroundColor: '#111827' }}>
+                  <video
+                    ref={rightVideoRef}
+                    src={videoUrl}
+                    controls
+                    style={{ width: '100%', height: '100%', objectFit: 'contain', backgroundColor: '#111827' }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => openFullscreen(rightVideoRef.current)}
+                    title="Fullscreen"
+                    style={{
+                      position: 'absolute', top: 12, right: 12,
+                      height: 32, width: 32, borderRadius: 8,
+                      border: '1px solid rgba(255,255,255,0.16)',
+                      backgroundColor: 'rgba(15,23,42,0.74)', color: '#fff',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      cursor: 'pointer', boxShadow: '0 6px 18px rgba(0,0,0,0.2)',
+                    }}
+                  >
+                    <Maximize2 size={15} strokeWidth={2} aria-hidden />
+                  </button>
+                </div>
               ) : (
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
                   <svg width="48" height="48" viewBox="0 0 48 48" fill="none">

@@ -32,6 +32,8 @@ import { registerShareRoutes }  from './controllers/v1/share.controller.js';
 import { registerSimulationsRoutes } from './controllers/v1/simulations.controller.js';
 import { registerBrollRoutes } from './controllers/v1/broll.controller.js';
 import { registerImageRoutes } from './controllers/v1/images.controller.js';
+import { registerAudioRoutes } from './controllers/v1/audio.controller.js';
+import { registerPlaylistRoutes } from './controllers/v1/playlists.controller.js';
 
 const PORT = parseInt(process.env.PORT ?? '8080', 10);
 
@@ -307,6 +309,7 @@ async function build() {
   await registerSimulationsRoutes(app);
   await registerBrollRoutes(app);
   await registerImageRoutes(app);
+  await registerAudioRoutes(app);
 
   // Admin routes
   await registerAdminSettingsRoutes(app);
@@ -317,6 +320,7 @@ async function build() {
 
   await registerPlayerRoutes(app);
   await registerShareRoutes(app);
+  await registerPlaylistRoutes(app);
 
   // Phase 2+ stubs (return 501 Not Implemented)
   await registerPhase2StubRoutes(app);

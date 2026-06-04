@@ -104,13 +104,14 @@ Be precise and skeptical: only claim what the code supports. This document will 
 const GUIDANCE_PLAN_SYSTEM_PROMPT = `You convert a simulation analysis into a JSON list of "guidance cues" for a guided-learning overlay.
 You receive the simulation's FULL source code, a manifest of verified IDs/functions, and (as prior turn) the analysis document.
 
-A cue fires ONCE at runtime, the first time the learner either USES a feature or REACHES an interesting configuration, and plays a 1–2 sentence voice narration.
+A cue fires ONCE at runtime, the first time the learner either USES a non-obvious feature or REACHES an interesting configuration, and plays a single short voice sentence.
 
 There are two trigger kinds:
 
-1) FEATURE (interaction): the learner touches a control/button.
+1) FEATURE (interaction): the learner touches a non-obvious control/button.
    trigger = { "kind": "feature", "targetId": "<element id that EXISTS in the manifest/source>", "events": ["pointerdown"|"input"|"change", ...] }
    Use "pointerdown" for buttons, "input"/"change" for sliders/selects/checkboxes.
+   SKIP feature cues for any control whose purpose is self-evident: start/stop/play/pause/reset/restart buttons, basic speed or volume sliders, simple zoom controls, and any clearly-labelled primary action buttons. Only add feature cues for controls whose effect on the simulation is non-obvious or whose conceptual meaning a learner is likely to miss.
 
 2) CONFIG (state reached): an observable predicate over simulation state becomes true.
    trigger = { "kind": "config", "predicateBody": "<JS body that returns a boolean>", "observables": ["<id or global it reads>", ...], "debounce": 3 }
@@ -131,12 +132,14 @@ There are two trigger kinds:
      "predicateBody": "var g = S.global('grid'); return !!g && S.allEqual(g);", "observables": ["grid"]
    Example (a displayed energy readout near zero):
      "predicateBody": "var e = S.num('energyValue'); return e !== null && Math.abs(e) < 0.01;", "observables": ["energyValue"]
+   Only emit CONFIG cues for phenomena that are genuinely interesting or surprising — not for trivial states (e.g. "simulation is running").
 
 RULES:
 - Ground EVERYTHING in real ids/globals visible in the source/manifest. Never invent ids.
 - Prefer DOM-readable observables; only use S.global for globals that clearly exist in the source.
 - If a phenomenon has no reliable observable, OMIT it (do not guess). Feature cues are always safe.
-- Keep each narration to 1–2 short sentences, in the requested language, encouraging and instructive.
+- Keep each narration to EXACTLY ONE short sentence (max ~15 words), in the requested language, concise and instructive. No two-sentence narrations.
+- Be selective: prefer 2–5 high-value cues over 10+ mediocre ones. Each cue must earn its place.
 - Give a unique short id per cue (letters/digits/_/- only) and a per-cue confidence.
 
 OUTPUT: return ONLY a JSON object:
@@ -284,11 +287,19 @@ export function wrapGuidanceCombined(entries: GuidanceEntryStored[]): string {
 ${configBlocks}
   ];
 
-  var _fired = {}, _streak = {}, _gate = true, _autoScript = false, _lastPoll = 0;
+  var _fired = {}, _streak = {}, _gate = true, _autoScript = false, _lastPoll = 0, _lastFired = 0;
+  var _COOLDOWN = 10000; // ms — minimum gap between any two guidance fires
   function _post(msg){ try { if (window.parent) window.parent.postMessage(msg, '*'); } catch (e) {} }
   function _active(){ return _gate && !_autoScript; }
   function _matchesId(el, id){ while (el) { if (el.id === id) return true; el = el.parentElement; } return false; }
-  function _fire(id, narration, audioUrl){ if (_fired[id]) return; _fired[id] = true; _post({ type: 'guidanceCue', id: id, text: narration, audioUrl: audioUrl }); }
+  function _fire(id, narration, audioUrl){
+    if (_fired[id]) return;
+    var now = Date.now();
+    if (now - _lastFired < _COOLDOWN) return; // global cooldown between fires
+    _fired[id] = true;
+    _lastFired = now;
+    _post({ type: 'guidanceCue', id: id, text: narration, audioUrl: audioUrl });
+  }
 
   // Read-only sim-state accessors — the ONLY API guidance predicates may use.
   var S = {

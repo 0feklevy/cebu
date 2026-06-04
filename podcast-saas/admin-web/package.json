@@ -5,12 +5,12 @@
   "scripts": {
     "dev": "next dev -p 3001",
     "build": "next build",
-    "start": "next start -p 3001",
+    "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "shared": "workspace:*",
+    "shared": "file:../shared",
     "next": "15.1.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
