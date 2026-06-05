@@ -438,8 +438,8 @@ export class ClientV1Api {
     return this.request(`/api/v1/projects/${projectId}/meta`, { method: 'PATCH', body });
   }
 
-  regenerateVideoMetadata(projectId: string): Promise<{ status: string }> {
-    return this.request(`/api/v1/projects/${projectId}/generate-metadata`, { method: 'POST' });
+  regenerateVideoMetadata(projectId: string, opts?: { prompt?: string; model?: 'gpt-4o-mini' | 'gpt-4o' }): Promise<{ status: string }> {
+    return this.request(`/api/v1/projects/${projectId}/generate-metadata`, { method: 'POST', body: opts ?? {} });
   }
 
   deleteProject(projectId: string): Promise<void> {

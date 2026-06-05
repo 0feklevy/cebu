@@ -27,17 +27,22 @@ import { logger } from '../lib/logger.js';
 const _inFlight = new Set<string>();
 
 /** Fire-and-forget entry point — safe to call from runVideoTranscode. */
-export function enqueueVideoMetadata(projectId: string, videoFileId: string): void {
+export function enqueueVideoMetadata(projectId: string, videoFileId: string, opts?: MetadataOptions): void {
   if (_inFlight.has(projectId)) return;
   _inFlight.add(projectId);
   setImmediate(() => {
-    generateVideoMetadata(projectId, videoFileId)
+    generateVideoMetadata(projectId, videoFileId, opts ?? {})
       .catch((err) => logger.warn({ err, projectId }, '[metadata] generation failed'))
       .finally(() => _inFlight.delete(projectId));
   });
 }
 
-export async function generateVideoMetadata(projectId: string, videoFileId: string): Promise<void> {
+export interface MetadataOptions {
+  promptHint?: string;     // optional context to guide the AI title/description
+  model?: 'gpt-4o-mini' | 'gpt-4o'; // override the default model
+}
+
+export async function generateVideoMetadata(projectId: string, videoFileId: string, opts: MetadataOptions = {}): Promise<void> {
   const storage = getStorageAdapter();
 
   // Get project + first ready video file
@@ -86,7 +91,7 @@ export async function generateVideoMetadata(projectId: string, videoFileId: stri
     const apiKey = process.env.OPENAI_API_KEY;
     if (apiKey) {
       try {
-        const gptResult = await generateTitleAndDescription(thumbBuf, video.filename, apiKey);
+        const gptResult = await generateTitleAndDescription(thumbBuf, video.filename, apiKey, opts.promptHint, opts.model);
         // Only set title if not already given by the user
         if (!title && gptResult.title) title = gptResult.title;
         if (gptResult.description) description = gptResult.description;
@@ -149,12 +154,15 @@ async function generateTitleAndDescription(
   thumbBuf: Buffer,
   filename: string,
   apiKey: string,
+  promptHint?: string,
+  model?: string,
 ): Promise<{ title: string; description: string }> {
   const client = new OpenAI({ apiKey });
   const b64 = thumbBuf.toString('base64');
+  const hintText = promptHint?.trim() ? `\nExtra context from the user: "${promptHint}"` : '';
 
   const response = await client.chat.completions.create({
-    model: 'gpt-4o-mini',
+    model: model ?? 'gpt-4o-mini',
     max_tokens: 200,
     temperature: 0.4,
     response_format: { type: 'json_object' },
@@ -165,7 +173,8 @@ async function generateTitleAndDescription(
           'You are a video content analyzer. Given a video thumbnail frame and filename, ' +
           'generate a concise title and a one-sentence description of what the video is about. ' +
           'Respond ONLY with valid JSON: {"title": string, "description": string}. ' +
-          'Title: max 8 words, title-case. Description: max 25 words, plain sentence.',
+          'Title: max 8 words, title-case. Description: max 25 words, plain sentence.' +
+          (hintText ? hintText : ''),
       },
       {
         role: 'user',

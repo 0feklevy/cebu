@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Loader2, RefreshCw, Settings, Upload, X } from 'lucide-react';
+import { Loader2, RefreshCw, Settings, Sparkles, Upload, X } from 'lucide-react';
 import { api } from '../lib/api';
 import { LockPriceControl } from './LockPriceControl';
 import type { Project } from 'shared/src/generated/client-v1';
@@ -19,36 +19,37 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
   const [desc, setDesc] = useState('');
   const [savingMeta, setSavingMeta] = useState(false);
   const [savedMeta, setSavedMeta] = useState(false);
+
+  // Generate controls
+  const [prompt, setPrompt] = useState('');
+  const [model, setModel] = useState<'gpt-4o-mini' | 'gpt-4o'>('gpt-4o-mini');
   const [regenerating, setRegenerating] = useState(false);
+  const [genError, setGenError] = useState<string | null>(null);
+
   const [canPortal, setCanPortal] = useState(false);
   const thumbInputRef = useRef<HTMLInputElement>(null);
-  const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => setCanPortal(true), []);
 
-  // Sync local state from project
+  // Sync from project
   useEffect(() => {
     setTitle(project?.title ?? '');
     setDesc(project?.topic ?? '');
   }, [project?.title, project?.topic]);
 
-  // Close on outside click / Escape
+  // Close on Escape
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
-    const onMouse = (e: MouseEvent) => {
-      if (panelRef.current && !panelRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    window.addEventListener('keydown', onKey);
-    document.addEventListener('mousedown', onMouse);
-    return () => { window.removeEventListener('keydown', onKey); document.removeEventListener('mousedown', onMouse); };
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
   }, [open]);
 
   const saveMeta = async () => {
     setSavingMeta(true);
     try {
       const updated = await api.updateProjectMeta(projectId, {
-        title:       title.trim() || '',
+        title: title.trim() || '',
         description: desc.trim() || null,
       });
       onProjectChange(updated);
@@ -59,9 +60,13 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
 
   const regen = async () => {
     setRegenerating(true);
+    setGenError(null);
     try {
-      await api.regenerateVideoMetadata(projectId);
-      // Poll until metadata_status = ready (max 60 s)
+      await api.regenerateVideoMetadata(projectId, {
+        prompt: prompt.trim() || undefined,
+        model,
+      });
+      // Poll until ready (max 60s)
       for (let i = 0; i < 30; i++) {
         await new Promise(r => setTimeout(r, 2000));
         const updated = await api.getProject(projectId).catch(() => null);
@@ -69,158 +74,235 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
           onProjectChange(updated);
           setTitle(updated.title ?? '');
           setDesc(updated.topic ?? '');
-          if (updated.metadata_status === 'ready' || updated.metadata_status === 'failed') break;
+          if (updated.metadata_status === 'ready') break;
+          if (updated.metadata_status === 'failed') { setGenError('Generation failed — check OPENAI_API_KEY'); break; }
         }
       }
-    } catch { /* ignore */ } finally { setRegenerating(false); }
-  };
-
-  const uploadThumb = async (file: File) => {
-    // Direct upload via the existing image upload, store as thumbnail
-    // We use the generate-metadata route to handle it server-side
-    // For now, just trigger regen which handles both
-    await regen();
+    } catch (e) {
+      setGenError((e as Error).message?.slice(0, 120));
+    } finally { setRegenerating(false); }
   };
 
   const thumbnailUrl = project?.thumbnail_url ?? null;
   const isGenerating = regenerating || project?.metadata_status === 'processing';
+
+  const modal = !open ? null : (
+    <>
+      {/* Backdrop — same as SectionEditor */}
+      <div
+        onClick={() => setOpen(false)}
+        style={{
+          position: 'fixed', inset: 0,
+          backgroundColor: 'rgba(2,6,23,0.55)',
+          backdropFilter: 'blur(10px)',
+          zIndex: 800,
+        }}
+      />
+
+      {/* Modal window — centered, same style as SectionEditor */}
+      <div
+        style={{
+          position: 'fixed',
+          top: '50%', left: '50%',
+          transform: 'translate(-50%, -50%)',
+          zIndex: 801,
+          width: 'min(560px, 96vw)',
+          maxHeight: '92dvh',
+          display: 'flex', flexDirection: 'column',
+          backgroundColor: '#ffffff',
+          borderRadius: 12,
+          boxShadow: '0 20px 60px rgba(0,0,0,0.22), 0 4px 16px rgba(0,0,0,0.10)',
+          overflow: 'hidden',
+          fontFamily: 'system-ui, -apple-system, sans-serif',
+        }}
+      >
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 20px', borderBottom: '1px solid #e5e7eb', flexShrink: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Settings size={16} strokeWidth={1.8} color="#6b7280" />
+            <span style={{ fontSize: 15, fontWeight: 700, color: '#111827' }}>Video settings</span>
+          </div>
+          <button
+            onClick={() => setOpen(false)}
+            style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, borderRadius: 8, border: 'none', background: 'transparent', cursor: 'pointer', color: '#9ca3af' }}
+            onMouseEnter={e => (e.currentTarget.style.background = '#f3f4f6')}
+            onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+          >
+            <X size={16} strokeWidth={1.8} aria-hidden />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '0 20px 20px' }}>
+
+          {/* ── Thumbnail ─────────────────────────────────────────────────── */}
+          <div style={{ paddingTop: 20, paddingBottom: 20, borderBottom: '1px solid #f3f4f6' }}>
+            <p style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#9ca3af', marginBottom: 12 }}>Thumbnail</p>
+
+            {/* Preview */}
+            <div style={{ position: 'relative', width: '100%', aspectRatio: '16/7', borderRadius: 8, overflow: 'hidden', background: '#f9fafb', border: '1px solid #e5e7eb', marginBottom: 12 }}>
+              {isGenerating ? (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 8, color: '#9ca3af' }}>
+                  <Loader2 size={18} style={{ animation: 'spin 1s linear infinite' }} />
+                  <span style={{ fontSize: 13 }}>Generating…</span>
+                </div>
+              ) : thumbnailUrl ? (
+                <img src={thumbnailUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} draggable={false} />
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 6, color: '#d1d5db' }}>
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.3"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9l4-4 4 4 5-5 5 5"/></svg>
+                  <span style={{ fontSize: 12, color: '#9ca3af' }}>No thumbnail yet</span>
+                </div>
+              )}
+            </div>
+
+            {/* Prompt input */}
+            <div style={{ marginBottom: 8 }}>
+              <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 4 }}>
+                Prompt <span style={{ fontSize: 11, fontWeight: 400, color: '#9ca3af' }}>(optional — helps AI understand the video)</span>
+              </label>
+              <input
+                value={prompt}
+                onChange={e => setPrompt(e.target.value)}
+                placeholder='e.g. "A podcast about AI and tech, two hosts in a studio"'
+                style={{ width: '100%', height: 36, border: '1px solid #d1d5db', borderRadius: 8, padding: '0 12px', fontSize: 13, color: '#111827', outline: 'none', boxSizing: 'border-box', background: '#fafafa' }}
+                onFocus={e => (e.target.style.borderColor = '#a855f7')}
+                onBlur={e => (e.target.style.borderColor = '#d1d5db')}
+              />
+            </div>
+
+            {/* Model + generate row */}
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <select
+                value={model}
+                onChange={e => setModel(e.target.value as 'gpt-4o-mini' | 'gpt-4o')}
+                style={{ height: 36, border: '1px solid #d1d5db', borderRadius: 8, padding: '0 8px', fontSize: 12, color: '#374151', background: '#fff', cursor: 'pointer', outline: 'none' }}
+              >
+                <option value="gpt-4o-mini">GPT-4o mini — faster</option>
+                <option value="gpt-4o">GPT-4o — best quality</option>
+              </select>
+
+              <button
+                onClick={regen}
+                disabled={isGenerating}
+                style={{
+                  flex: 1, height: 36, border: 'none', borderRadius: 8,
+                  background: isGenerating ? '#e5e7eb' : 'linear-gradient(135deg,#a855f7,#6366f1)',
+                  color: isGenerating ? '#9ca3af' : '#fff',
+                  fontSize: 13, fontWeight: 600, cursor: isGenerating ? 'not-allowed' : 'pointer',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                }}
+              >
+                {isGenerating
+                  ? <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Generating…</>
+                  : <><Sparkles size={13} strokeWidth={2} /> {thumbnailUrl ? 'Regenerate' : 'Generate'}</>
+                }
+              </button>
+
+              <input
+                ref={thumbInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                style={{ display: 'none' }}
+                onChange={async e => { e.target.value = ''; await regen(); }}
+              />
+              <button
+                onClick={() => thumbInputRef.current?.click()}
+                title="Upload thumbnail"
+                disabled={isGenerating}
+                style={{ width: 36, height: 36, border: '1px solid #d1d5db', borderRadius: 8, background: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#6b7280', flexShrink: 0 }}
+                onMouseEnter={e => (e.currentTarget.style.background = '#f3f4f6')}
+                onMouseLeave={e => (e.currentTarget.style.background = '#fff')}
+              >
+                <Upload size={13} strokeWidth={1.9} />
+              </button>
+            </div>
+
+            {genError && <p style={{ fontSize: 11, color: '#ef4444', marginTop: 6 }}>{genError}</p>}
+            <p style={{ fontSize: 11, color: '#9ca3af', marginTop: 6 }}>
+              Extracts a frame from your video · used as the thumbnail in playlists
+            </p>
+          </div>
+
+          {/* ── Name & Description ────────────────────────────────────────── */}
+          <div style={{ paddingTop: 20, paddingBottom: 20, borderBottom: '1px solid #f3f4f6' }}>
+            <p style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#9ca3af', marginBottom: 12 }}>Details</p>
+
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 4 }}>Name</label>
+              <input
+                value={title}
+                onChange={e => setTitle(e.target.value)}
+                placeholder="Video name"
+                style={{ width: '100%', height: 38, border: '1px solid #d1d5db', borderRadius: 8, padding: '0 12px', fontSize: 14, color: '#111827', outline: 'none', boxSizing: 'border-box', background: '#fafafa' }}
+                onFocus={e => (e.target.style.borderColor = '#a855f7')}
+                onBlur={e => (e.target.style.borderColor = '#d1d5db')}
+              />
+            </div>
+
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 4 }}>Description</label>
+              <textarea
+                value={desc}
+                onChange={e => setDesc(e.target.value)}
+                rows={3}
+                placeholder="What is this video about?"
+                style={{ width: '100%', border: '1px solid #d1d5db', borderRadius: 8, padding: '8px 12px', fontSize: 13, color: '#111827', outline: 'none', boxSizing: 'border-box', resize: 'none', background: '#fafafa', fontFamily: 'inherit' }}
+                onFocus={e => (e.target.style.borderColor = '#a855f7')}
+                onBlur={e => (e.target.style.borderColor = '#d1d5db')}
+              />
+            </div>
+
+            <button
+              onClick={saveMeta}
+              disabled={savingMeta}
+              style={{
+                width: '100%', height: 38, border: 'none', borderRadius: 8,
+                background: savedMeta ? '#10b981' : 'linear-gradient(135deg,#a855f7,#6366f1)',
+                color: '#fff', fontSize: 13, fontWeight: 600,
+                cursor: savingMeta ? 'not-allowed' : 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                opacity: savingMeta ? 0.7 : 1, transition: 'background 0.2s',
+              }}
+            >
+              {savingMeta
+                ? <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Saving…</>
+                : savedMeta ? '✓ Saved' : 'Save changes'
+              }
+            </button>
+          </div>
+
+          {/* ── Access / Lock ─────────────────────────────────────────────── */}
+          <div style={{ paddingTop: 20 }}>
+            <p style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#9ca3af', marginBottom: 12 }}>Access</p>
+            <LockPriceControl contentType="project" contentId={projectId} bordered={false} />
+          </div>
+        </div>
+      </div>
+    </>
+  );
 
   return (
     <>
       {/* Trigger button */}
       <button
         onClick={() => setOpen(v => !v)}
-        aria-label="Video settings"
-        title="Settings"
-        className={`flex h-8 w-8 items-center justify-center rounded-lg border transition-colors focus-ring ${
-          open ? 'border-primary/40 bg-primary/8 text-primary' : 'border-transparent shell-muted shell-hover hover:text-[hsl(var(--shell-foreground))]'
+        className={`flex h-8 items-center gap-1.5 rounded-lg border px-3 text-xs font-semibold transition-colors focus-ring ${
+          open
+            ? 'border-primary/40 bg-primary/8 text-primary'
+            : 'shell-muted shell-hover hover:text-[hsl(var(--shell-foreground))]'
         }`}
         style={{ borderColor: open ? undefined : 'hsl(var(--shell-border))' }}
       >
-        <Settings size={14} strokeWidth={1.8} aria-hidden />
+        <Settings size={13} strokeWidth={1.8} aria-hidden />
+        Settings
       </button>
 
-      {/* Panel */}
-      {canPortal && open && createPortal(
-        <div
-          ref={panelRef}
-          className="fixed right-0 top-[48px] bottom-0 z-[9999] flex w-[min(360px,100vw)] flex-col overflow-hidden shadow-2xl"
-          style={{ background: 'hsl(var(--background))', borderLeft: '1px solid hsl(var(--border))' }}
-        >
-          {/* Header */}
-          <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
-            <div className="flex items-center gap-2">
-              <Settings size={15} strokeWidth={1.8} className="text-muted-foreground" />
-              <h2 className="text-sm font-semibold text-foreground">Video settings</h2>
-            </div>
-            <button
-              onClick={() => setOpen(false)}
-              className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            >
-              <X size={15} strokeWidth={1.8} aria-hidden />
-            </button>
-          </div>
-
-          {/* Scrollable body */}
-          <div className="min-h-0 flex-1 overflow-y-auto fine-scrollbar divide-y divide-border/60">
-
-            {/* ── Thumbnail ─────────────────────────────────────────── */}
-            <section className="px-4 py-4 space-y-3">
-              <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground/60">Thumbnail</p>
-
-              <div className="relative aspect-video overflow-hidden rounded-lg bg-muted/40">
-                {isGenerating ? (
-                  <div className="flex h-full items-center justify-center gap-2 text-muted-foreground">
-                    <Loader2 size={18} className="animate-spin" />
-                    <span className="text-xs">Generating…</span>
-                  </div>
-                ) : thumbnailUrl ? (
-                  <img
-                    src={thumbnailUrl}
-                    alt="Video thumbnail"
-                    className="h-full w-full object-cover"
-                    draggable={false}
-                  />
-                ) : (
-                  <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground/50">
-                    <div className="h-8 w-8 rounded-lg border-2 border-dashed border-current opacity-40" />
-                    <p className="text-xs">No thumbnail yet</p>
-                  </div>
-                )}
-              </div>
-
-              <div className="flex gap-2">
-                <button
-                  onClick={regen}
-                  disabled={isGenerating}
-                  className="inline-flex h-8 flex-1 items-center justify-center gap-1.5 rounded-lg border border-border text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-40"
-                >
-                  {isGenerating ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} strokeWidth={2} />}
-                  {thumbnailUrl ? 'Regenerate' : 'Generate'}
-                </button>
-                <input
-                  ref={thumbInputRef}
-                  type="file"
-                  accept="image/jpeg,image/png,image/webp"
-                  className="hidden"
-                  onChange={async e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) await uploadThumb(f); }}
-                />
-                <button
-                  onClick={() => thumbInputRef.current?.click()}
-                  disabled={isGenerating}
-                  className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-border px-3 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted disabled:opacity-40"
-                >
-                  <Upload size={12} strokeWidth={1.9} />
-                </button>
-              </div>
-              <p className="text-[11px] text-muted-foreground/60">
-                Auto-generated from the first frame · used in playlists
-              </p>
-            </section>
-
-            {/* ── Name & Description ────────────────────────────────── */}
-            <section className="px-4 py-4 space-y-3">
-              <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground/60">Details</p>
-
-              <div>
-                <label className="mb-1.5 block text-xs font-medium text-foreground">Name</label>
-                <input
-                  value={title}
-                  onChange={e => setTitle(e.target.value)}
-                  placeholder="Video name"
-                  className="h-9 w-full rounded-lg border border-input bg-muted/30 px-3 text-sm text-foreground transition-colors placeholder:text-muted-foreground/50 focus:border-primary/40 focus:bg-white focus:outline-none focus:ring-2 focus:ring-ring/20"
-                />
-              </div>
-
-              <div>
-                <label className="mb-1.5 block text-xs font-medium text-foreground">Description</label>
-                <textarea
-                  value={desc}
-                  onChange={e => setDesc(e.target.value)}
-                  rows={3}
-                  placeholder="What is this video about?"
-                  className="w-full resize-none rounded-lg border border-input bg-muted/30 px-3 py-2 text-sm text-foreground transition-colors placeholder:text-muted-foreground/50 focus:border-primary/40 focus:bg-white focus:outline-none focus:ring-2 focus:ring-ring/20"
-                />
-              </div>
-
-              <button
-                onClick={saveMeta}
-                disabled={savingMeta}
-                className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-lg text-xs font-semibold text-white shadow-sm transition-all hover:opacity-90 disabled:opacity-40"
-                style={{ background: 'linear-gradient(135deg,#a855f7,#6366f1)' }}
-              >
-                {savingMeta && <Loader2 size={13} className="animate-spin" />}
-                {savedMeta ? '✓ Saved' : 'Save changes'}
-              </button>
-            </section>
-
-            {/* ── Premium / Lock ────────────────────────────────────── */}
-            <section className="px-4 py-4 space-y-2">
-              <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground/60">Access</p>
-              <LockPriceControl contentType="project" contentId={projectId} bordered={false} />
-            </section>
-          </div>
-        </div>,
+      {canPortal && createPortal(
+        <>
+          <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
+          {modal}
+        </>,
         document.body,
       )}
     </>

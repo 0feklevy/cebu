@@ -178,11 +178,19 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
       });
       if (!video) return reply.code(400).send({ message: 'No video uploaded yet' });
 
+      const optBody = z.object({
+        prompt: z.string().max(500).optional(),
+        model: z.enum(['gpt-4o-mini', 'gpt-4o']).optional(),
+      }).safeParse(request.body ?? {});
+
       // Reset status so the generator runs even if already ready
       await db.update(projects).set({ metadata_status: 'none' }).where(eq(projects.id, project.id));
 
       const { enqueueVideoMetadata } = await import('../../services/generateVideoMetadata.js');
-      enqueueVideoMetadata(project.id, video.id);
+      enqueueVideoMetadata(project.id, video.id, {
+        promptHint: optBody.success ? optBody.data.prompt : undefined,
+        model:      optBody.success ? optBody.data.model  : undefined,
+      });
 
       return reply.send({ status: 'processing' });
     },
