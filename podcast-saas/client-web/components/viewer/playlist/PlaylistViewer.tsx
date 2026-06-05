@@ -166,8 +166,10 @@ export function PlaylistViewer({ shareToken, playlistId }: Props) {
   }
   if (error) {
     return (
-      <div className="flex h-full w-full items-center justify-center bg-black px-6 text-center text-sm text-white/60">
-        {error}
+      <div className="flex h-full w-full min-w-0 items-center justify-center bg-black px-4 text-center text-sm text-white/60">
+        <p className="w-full max-w-[240px] break-words leading-6 whitespace-normal sm:max-w-sm">
+          {error}
+        </p>
       </div>
     );
   }
@@ -197,7 +199,7 @@ export function PlaylistViewer({ shareToken, playlistId }: Props) {
       {/* Fullscreen toggle (top-right of the video area) */}
       <button
         onClick={toggleFullscreen}
-        className="absolute right-3 top-3 z-[70] flex h-9 w-9 items-center justify-center rounded-lg text-white/80 transition-colors hover:bg-white/10"
+        className="absolute right-2 top-2 z-[70] flex h-8 w-8 items-center justify-center rounded-lg text-white/80 transition-colors hover:bg-white/10 sm:right-3 sm:top-3 sm:h-9 sm:w-9"
         style={{ background: 'rgba(0,0,0,0.4)' }}
         title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
       >
@@ -211,12 +213,12 @@ export function PlaylistViewer({ shareToken, playlistId }: Props) {
       {/* Back-to-playlist button (top-right, next to fullscreen) */}
       <button
         onClick={goToLobby}
-        className="absolute right-14 top-3 z-[70] flex h-9 items-center gap-1.5 rounded-lg px-3 text-xs font-medium text-white/80 transition-colors hover:bg-white/10"
+        className="absolute right-12 top-2 z-[70] flex h-8 items-center gap-1.5 rounded-lg px-2 text-xs font-medium text-white/80 transition-colors hover:bg-white/10 sm:right-14 sm:top-3 sm:h-9 sm:px-3"
         style={{ background: 'rgba(0,0,0,0.4)' }}
         title="Back to playlist"
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12h13M9 6l-6 6 6 6M21 6v12" /></svg>
-        Playlist
+        <span className="hidden min-[360px]:inline">Playlist</span>
       </button>
 
       {pendingNextPos != null && data.items[order[pendingNextPos]] && (

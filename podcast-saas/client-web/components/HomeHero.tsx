@@ -5,15 +5,9 @@ import Link from 'next/link';
 import {
   ArrowRight,
   Clock3,
-  Clapperboard,
   Film,
-  Layers3,
-  MonitorPlay,
   Plus,
   Search,
-  Share2,
-  Upload,
-  Wand2,
 } from 'lucide-react';
 import { CreateProjectDialog } from './CreateProjectDialog';
 import { PlaylistsPanel } from './PlaylistsPanel';
@@ -39,13 +33,6 @@ const STATUS_META: Record<string, { label: string; className: string }> = {
     className: 'bg-red-500/10 text-red-700 ring-red-500/20 dark:text-red-300',
   },
 };
-
-const WORKFLOW = [
-  { label: 'Upload', icon: Upload, tone: 'text-sky-500', note: 'Clips, lectures, demos' },
-  { label: 'Structure', icon: Layers3, tone: 'text-violet-500', note: 'Mark video and sim moments' },
-  { label: 'Generate', icon: Wand2, tone: 'text-amber-500', note: 'B-roll and simulations' },
-  { label: 'Share', icon: Share2, tone: 'text-emerald-500', note: 'Public watch link' },
-];
 
 function projectTitle(project: Project): string {
   return project.title?.trim() || project.topic?.trim() || 'Untitled project';
@@ -74,7 +61,7 @@ function ProjectTile({ project }: { project: Project }) {
   return (
     <Link
       href={`/projects/${project.id}/editor`}
-      className="group flex min-h-[128px] flex-col justify-between rounded-lg border border-border bg-card p-4 text-card-foreground shadow-sm-soft transition-all hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-card focus-ring"
+      className="group flex h-full min-h-[132px] w-[240px] shrink-0 flex-col justify-between rounded-lg border border-border bg-card p-4 text-card-foreground shadow-sm-soft transition-all hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-card focus-ring sm:w-[300px]"
     >
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
@@ -102,9 +89,9 @@ function ProjectTile({ project }: { project: Project }) {
 
 function WorkspaceSkeleton() {
   return (
-    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-      {[1, 2, 3].map((i) => (
-        <div key={i} className="h-32 animate-pulse rounded-lg border border-border bg-card/70 p-4">
+    <div className="flex h-full gap-3">
+      {[1, 2, 3, 4].map((i) => (
+        <div key={i} className="h-full min-h-[132px] w-[240px] shrink-0 animate-pulse rounded-lg border border-border bg-card/70 p-4 sm:w-[300px]">
           <div className="mb-4 h-9 w-9 rounded-lg bg-muted" />
           <div className="mb-2 h-3 w-3/4 rounded bg-muted" />
           <div className="h-3 w-1/2 rounded bg-muted" />
@@ -166,19 +153,27 @@ export function HomeHero() {
 
   return (
     <>
-      <section className="flex min-h-screen overflow-x-hidden bg-background px-4 py-4 text-foreground sm:px-6 lg:h-full lg:min-h-0 lg:overflow-hidden lg:px-8 lg:py-5">
-        <div className="mx-auto flex h-full w-full min-w-0 max-w-7xl flex-col gap-4 lg:min-h-0">
-          <header className="surface-panel w-full max-w-[calc(100vw-32px)] shrink-0 rounded-lg px-4 py-4 sm:max-w-none sm:px-5">
-            <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+      <section className="flex w-[100dvw] max-w-[100dvw] overflow-x-hidden bg-background p-3 text-foreground sm:p-4 lg:h-full lg:min-h-0 lg:w-full lg:max-w-none lg:overflow-hidden lg:p-5">
+        <div className="flex w-full min-w-0 max-w-full flex-col gap-4 overflow-visible lg:h-full lg:min-h-0 lg:overflow-hidden">
+          <header className="surface-panel w-full shrink-0 rounded-lg px-4 py-3 sm:px-5">
+            <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
               <div className="min-w-0">
                 <p className="mb-1 truncate text-xs font-medium text-muted-foreground">{accountLabel}</p>
-                <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-end sm:gap-3">
-                  <h1 className="text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
+                <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
+                  <h1 className="text-2xl font-semibold tracking-tight text-foreground">
                     Podcast Studio
                   </h1>
-                  <span className="w-fit rounded-full border border-border bg-card px-2.5 py-1 text-[11px] font-medium text-muted-foreground sm:mb-1">
-                    Interactive video workspace
-                  </span>
+                  <div className="flex flex-wrap gap-2">
+                    <span className="w-fit rounded-full border border-border bg-card px-2.5 py-1 text-[11px] font-medium text-muted-foreground">
+                      {counts.total} projects
+                    </span>
+                    <span className="w-fit rounded-full border border-border bg-card px-2.5 py-1 text-[11px] font-medium text-muted-foreground">
+                      {counts.active} active
+                    </span>
+                    <span className="w-fit rounded-full border border-border bg-card px-2.5 py-1 text-[11px] font-medium text-muted-foreground">
+                      {counts.ready} ready
+                    </span>
+                  </div>
                 </div>
               </div>
 
@@ -203,28 +198,12 @@ export function HomeHero() {
             </div>
           </header>
 
-          <div className="grid min-h-0 min-w-0 flex-1 gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
-            <div className="flex min-h-0 min-w-0 flex-col gap-4 overflow-y-auto fine-scrollbar pr-0.5">
-              <section className="grid shrink-0 gap-3 sm:grid-cols-3">
-                <div className="w-full max-w-[calc(100vw-32px)] rounded-lg border border-border bg-card p-4 shadow-sm-soft sm:max-w-none">
-                  <p className="text-xs font-medium text-muted-foreground">Projects</p>
-                  <p className="mt-2 text-2xl font-semibold text-foreground">{counts.total}</p>
-                </div>
-                <div className="w-full max-w-[calc(100vw-32px)] rounded-lg border border-border bg-card p-4 shadow-sm-soft sm:max-w-none">
-                  <p className="text-xs font-medium text-muted-foreground">In progress</p>
-                  <p className="mt-2 text-2xl font-semibold text-foreground">{counts.active}</p>
-                </div>
-                <div className="w-full max-w-[calc(100vw-32px)] rounded-lg border border-border bg-card p-4 shadow-sm-soft sm:max-w-none">
-                  <p className="text-xs font-medium text-muted-foreground">Ready to share</p>
-                  <p className="mt-2 text-2xl font-semibold text-foreground">{counts.ready}</p>
-                </div>
-              </section>
-
-              <section className="flex min-h-0 w-full max-w-[calc(100vw-32px)] shrink-0 flex-col rounded-lg border border-border bg-card p-4 shadow-sm-soft sm:max-w-none sm:p-5">
-                <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 flex-col gap-4 overflow-visible lg:grid lg:min-h-0 lg:flex-1 lg:grid-rows-[minmax(0,1fr)_minmax(0,1fr)] lg:overflow-hidden">
+            <section className="flex min-h-[250px] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card p-4 shadow-sm-soft sm:min-h-[270px] sm:p-5 lg:min-h-0">
+              <div className="mb-4 flex shrink-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <div>
                     <h2 className="text-base font-semibold text-foreground">Recent projects</h2>
-                    <p className="text-sm text-muted-foreground">Pick up the edit, or search by project name.</p>
+                    <p className="text-sm text-muted-foreground">One row for fast pickup and editing.</p>
                   </div>
                   {latestProject && (
                     <Link
@@ -235,21 +214,22 @@ export function HomeHero() {
                       <ArrowRight size={14} strokeWidth={2} aria-hidden />
                     </Link>
                   )}
-                </div>
+              </div>
 
-                <div className="max-h-[46vh] overflow-y-auto pr-1 fine-scrollbar">
+              <div className="min-h-0 min-w-0 flex-1 overflow-x-auto overflow-y-hidden pb-2 fine-scrollbar">
+                <div className="flex h-full min-w-max gap-3">
                   {loading ? (
                     <WorkspaceSkeleton />
                   ) : filteredProjects.length > 0 ? (
-                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                    <>
                       {filteredProjects.slice(0, 12).map((project) => (
                         <ProjectTile key={project.id} project={project} />
                       ))}
-                    </div>
+                    </>
                   ) : (
-                    <div className="flex min-h-[240px] flex-col items-center justify-center rounded-lg border border-dashed border-border bg-muted/25 px-5 py-10 text-center lg:min-h-full">
+                    <div className="flex h-full min-h-[132px] w-[260px] shrink-0 flex-col items-center justify-center rounded-lg border border-dashed border-border bg-muted/25 px-5 py-6 text-center sm:w-[320px]">
                       <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                        <Clapperboard size={22} strokeWidth={1.8} aria-hidden />
+                        <Film size={22} strokeWidth={1.8} aria-hidden />
                       </div>
                       <h3 className="text-sm font-semibold text-foreground">
                         {query.trim() ? 'No matching projects' : 'Start with a blank studio'}
@@ -271,43 +251,10 @@ export function HomeHero() {
                     </div>
                   )}
                 </div>
-              </section>
+              </div>
+            </section>
 
-              <PlaylistsPanel />
-            </div>
-
-            <aside className="min-h-0 min-w-0">
-              <section className="flex h-full min-h-0 w-full max-w-[calc(100vw-32px)] flex-col overflow-hidden rounded-lg border border-border bg-card shadow-sm-soft sm:max-w-none">
-                <div className="border-b border-border p-4">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                      <MonitorPlay size={20} strokeWidth={1.8} aria-hidden />
-                    </div>
-                    <div>
-                      <h2 className="text-sm font-semibold text-foreground">Studio wizard</h2>
-                      <p className="text-xs text-muted-foreground">Move through each step without leaving the workspace.</p>
-                    </div>
-                  </div>
-                </div>
-                <div className="min-h-0 flex-1 divide-y divide-border overflow-y-auto fine-scrollbar">
-                  {WORKFLOW.map((step, index) => {
-                    const Icon = step.icon;
-                    return (
-                      <div key={step.label} className="flex items-center gap-3 p-4">
-                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-muted text-xs font-semibold text-muted-foreground">
-                          {index + 1}
-                        </div>
-                        <Icon className={step.tone} size={17} strokeWidth={1.9} aria-hidden />
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium text-foreground">{step.label}</p>
-                          <p className="truncate text-xs text-muted-foreground">{step.note}</p>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </section>
-            </aside>
+            <PlaylistsPanel />
           </div>
         </div>
       </section>

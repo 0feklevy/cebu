@@ -4,7 +4,7 @@ import { SharedViewerPage } from '@/components/viewer/SharedViewerPage';
 export default async function SharedVideoRoute({ params }: { params: Promise<{ shareToken: string }> }) {
   const { shareToken } = await params;
   return (
-    <div className="w-screen h-screen bg-black">
+    <div className="h-dvh w-screen overflow-hidden bg-black">
       <SharedViewerPage shareToken={shareToken} />
     </div>
   );

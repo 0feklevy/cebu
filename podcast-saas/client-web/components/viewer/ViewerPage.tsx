@@ -84,8 +84,10 @@ export function ViewerPage({ projectId }: Props) {
 
   if (error) {
     return (
-      <div className="flex items-center justify-center w-full h-full bg-black text-white/60 text-sm">
-        {error}
+      <div className="flex h-full w-full min-w-0 items-center justify-center bg-black px-4 text-center text-sm text-white/60">
+        <p className="w-full max-w-[240px] break-words leading-6 whitespace-normal sm:max-w-sm">
+          {error}
+        </p>
       </div>
     );
   }
@@ -95,7 +97,7 @@ export function ViewerPage({ projectId }: Props) {
       <div className="flex flex-col items-center justify-center gap-3 w-full h-full bg-black">
         <div className="w-8 h-8 border-2 border-white/30 border-t-white rounded-full animate-spin" />
         {processing && (
-          <p className="text-white/40 text-xs">Video is processing — this may take a few minutes…</p>
+          <p className="max-w-[min(28rem,calc(100dvw-32px))] px-4 text-center text-xs leading-5 text-white/40">Video is processing — this may take a few minutes…</p>
         )}
       </div>
     );

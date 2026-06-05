@@ -47,9 +47,9 @@ export function PaywallOverlay({ contentType, contentId, title, priceCents, curr
   };
 
   return (
-    <div className="flex h-full w-full items-center justify-center bg-black px-6">
+    <div className="flex h-full w-full items-start justify-center overflow-y-auto bg-black px-4 py-8 sm:items-center sm:px-6">
       <div
-        className="w-full max-w-sm rounded-2xl border p-7 text-center"
+        className="w-full max-w-sm rounded-xl border p-5 text-center sm:p-7"
         style={{ background: 'rgba(20,20,24,0.92)', borderColor: 'rgba(255,255,255,0.1)' }}
       >
         <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full" style={{ background: 'linear-gradient(135deg,#a855f7,#6366f1)' }}>
@@ -63,12 +63,12 @@ export function PaywallOverlay({ contentType, contentId, title, priceCents, curr
           Unlock to watch — a one-time purchase, yours forever.
         </p>
 
-        <div className="my-5 text-4xl font-extrabold text-white">{price}</div>
+        <div className="my-5 text-3xl font-extrabold text-white sm:text-4xl">{price}</div>
 
         <button
           onClick={handleUnlock}
           disabled={busy || priceCents == null}
-          className="flex h-12 w-full items-center justify-center gap-2 rounded-xl text-base font-bold text-white shadow-lg transition-all hover:brightness-110 disabled:opacity-50"
+          className="flex min-h-12 w-full items-center justify-center gap-2 rounded-lg px-3 py-3 text-sm font-bold text-white shadow-lg transition-all hover:brightness-110 disabled:opacity-50 sm:text-base"
           style={{ background: 'linear-gradient(135deg,#a855f7,#6366f1)' }}
         >
           {busy ? <Loader2 size={18} className="animate-spin" /> : <Lock size={16} strokeWidth={2.2} />}

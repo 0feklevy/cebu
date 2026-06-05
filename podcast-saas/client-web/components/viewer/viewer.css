@@ -222,11 +222,35 @@
 
 /* ── Responsive ───────────────────────────────────────── */
 @media (max-width: 500px) {
-  .viewer-controls-bar { padding: 0 12px max(12px, env(safe-area-inset-bottom)) 12px; gap: 5px; }
+  .viewer-controls-bar { padding: 0 10px max(12px, env(safe-area-inset-bottom)) 10px; gap: 5px; }
+  .viewer-ctrl-row { gap: 6px; }
+  .viewer-ctrl-btn { width: 34px; height: 34px; }
+  .viewer-icon { width: 20px; height: 20px; }
+  .viewer-time-display { font-size: 11px; }
+  .viewer-t-sep { margin: 0 1px; }
+  .viewer-mode-badge {
+    max-width: 118px;
+    padding: 4px 8px;
+    font-size: 11px;
+  }
+  .guidance-caption {
+    bottom: 72px;
+    max-width: calc(100% - 24px);
+    padding: 8px 12px;
+    font-size: 13px;
+  }
+  .sim-resume-btn {
+    top: 10px;
+    right: 10px;
+    padding: 8px 12px;
+    font-size: 12px;
+  }
 }
 @media (max-height: 420px) {
   .viewer-controls-bar { padding: 0 14px max(6px, env(safe-area-inset-bottom)) 14px; gap: 3px; }
   .viewer-progress-wrap { padding: 5px 0; }
   .viewer-ctrl-btn { width: 30px; height: 30px; }
   .viewer-icon { width: 18px; height: 18px; }
+  .guidance-caption { bottom: 56px; font-size: 12px; padding: 7px 10px; }
+  .viewer-mode-badge { max-width: 140px; }
 }

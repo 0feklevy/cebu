@@ -4,7 +4,7 @@ import { PlaylistViewer } from '@/components/viewer/playlist/PlaylistViewer';
 export default async function PlaylistShareRoute({ params }: { params: Promise<{ shareToken: string }> }) {
   const { shareToken } = await params;
   return (
-    <div className="w-screen h-screen bg-black">
+    <div className="h-dvh w-screen overflow-hidden bg-black">
       <PlaylistViewer shareToken={shareToken} />
     </div>
   );

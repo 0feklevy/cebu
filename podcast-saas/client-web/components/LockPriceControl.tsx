@@ -64,8 +64,8 @@ export function LockPriceControl({ contentType, contentId, bordered = true, onCh
 
   return (
     <div className={bordered ? 'rounded-lg border border-border bg-card p-3' : ''}>
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-2">
           {paid ? <Lock size={15} className="text-amber-500" /> : <Unlock size={15} className="text-muted-foreground" />}
           <div>
             <p className="text-sm font-medium text-foreground">{paid ? 'Locked — pay to watch' : 'Free to watch'}</p>
@@ -87,7 +87,7 @@ export function LockPriceControl({ contentType, contentId, bordered = true, onCh
       </div>
 
       {paid && (
-        <div className="mt-3 flex items-center gap-2">
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
           <div className="relative flex-1">
             <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">$</span>
             <input
@@ -100,7 +100,7 @@ export function LockPriceControl({ contentType, contentId, bordered = true, onCh
             type="button"
             onClick={() => save(true)}
             disabled={saving || parseFloat(dollars || '0') < 0.5}
-            className="inline-flex h-9 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold text-white disabled:opacity-50"
+            className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg px-3 text-xs font-semibold text-white disabled:opacity-50"
             style={{ background: 'linear-gradient(135deg,#a855f7,#6366f1)' }}
           >
             {saving ? <Loader2 size={13} className="animate-spin" /> : saved ? <Check size={13} /> : null}

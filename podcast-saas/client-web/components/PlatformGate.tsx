@@ -30,7 +30,7 @@ export function PlatformGate({ children }: { children: React.ReactNode }) {
 
   if (loading) {
     return (
-      <div className="h-full flex items-center justify-center bg-background">
+      <div className="flex min-h-dvh items-center justify-center bg-background">
         <div className="w-5 h-5 rounded-full border-2 border-primary border-t-transparent animate-spin" />
       </div>
     );
@@ -38,7 +38,7 @@ export function PlatformGate({ children }: { children: React.ReactNode }) {
 
   if (settings?.maintenance_mode) {
     return (
-      <div className="h-full flex items-center justify-center bg-background px-6">
+      <div className="flex min-h-dvh items-center justify-center bg-background px-6 py-8">
         <div className="max-w-sm text-center space-y-3">
           <div className="w-12 h-12 rounded-full bg-muted flex items-center justify-center mx-auto">
             <svg width="20" height="20" viewBox="0 0 20 20" fill="none" className="text-muted-foreground" aria-hidden>

@@ -49,7 +49,7 @@ export function CorpusUploader({ files, urls, onFilesChange, onUrlsChange }: Pro
         onDrop={handleDrop}
         onDragOver={(e) => e.preventDefault()}
         onClick={() => fileRef.current?.click()}
-        className="border-2 border-dashed border-border rounded-xl p-8 text-center cursor-pointer hover:border-primary/50 transition-colors"
+        className="cursor-pointer rounded-lg border-2 border-dashed border-border p-5 text-center transition-colors hover:border-primary/50 sm:p-8"
       >
         <div className="text-3xl mb-2">📄</div>
         <p className="text-sm font-medium">Drop PDFs, audio, or images here</p>
@@ -68,18 +68,18 @@ export function CorpusUploader({ files, urls, onFilesChange, onUrlsChange }: Pro
       </div>
 
       {/* URL input */}
-      <div className="flex gap-2">
+      <div className="flex flex-col gap-2 sm:flex-row">
         <input
           type="url"
           placeholder="Paste a URL or YouTube link…"
           value={urlInput}
           onChange={(e) => setUrlInput(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && addUrl()}
-          className="flex-1 rounded-lg border border-input bg-card px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="min-w-0 flex-1 rounded-lg border border-input bg-card px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
         />
         <button
           onClick={addUrl}
-          className="px-4 py-2 bg-secondary text-secondary-foreground rounded-lg text-sm hover:bg-secondary/80 transition-colors"
+          className="rounded-lg bg-secondary px-4 py-2 text-sm text-secondary-foreground transition-colors hover:bg-secondary/80"
         >
           Add
         </button>
@@ -89,17 +89,17 @@ export function CorpusUploader({ files, urls, onFilesChange, onUrlsChange }: Pro
       {(files.length > 0 || urls.length > 0) && (
         <ul className="space-y-2">
           {files.map((f, i) => (
-            <li key={`file-${i}`} className="flex items-center gap-2 text-sm bg-card rounded-lg px-3 py-2">
+            <li key={`file-${i}`} className="flex min-w-0 items-center gap-2 rounded-lg bg-card px-3 py-2 text-sm">
               <span className="text-lg">{f.name.endsWith('.pdf') ? '📄' : f.type.startsWith('audio') ? '🎵' : '🖼'}</span>
               <span className="flex-1 truncate">{f.name}</span>
-              <span className="text-muted-foreground text-xs">{(f.size / 1024).toFixed(0)} KB</span>
+              <span className="shrink-0 text-xs text-muted-foreground">{(f.size / 1024).toFixed(0)} KB</span>
               <button onClick={() => removeFile(i)} className="text-muted-foreground hover:text-destructive ml-2">✕</button>
             </li>
           ))}
           {urls.map((u, i) => {
             const isYt = u.includes('youtube.com') || u.includes('youtu.be');
             return (
-              <li key={`url-${i}`} className="flex items-center gap-2 text-sm bg-card rounded-lg px-3 py-2">
+              <li key={`url-${i}`} className="flex min-w-0 items-center gap-2 rounded-lg bg-card px-3 py-2 text-sm">
                 <span className="text-lg">{isYt ? '▶️' : '🔗'}</span>
                 <span className="flex-1 truncate text-primary">{u}</span>
                 <button onClick={() => removeUrl(i)} className="text-muted-foreground hover:text-destructive ml-2">✕</button>

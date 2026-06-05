@@ -1,13 +1,13 @@
 'use client';
 
 import { useEffect, useState, useRef, useCallback } from 'react';
-import { HelpCircle, Pencil, Plus, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, HelpCircle, ListVideo, Pencil, PlaySquare, Plus, Trash2 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/firebase';
 import { UserProfileButton } from './UserProfileButton';
 import { HowItWorksDialog } from './HowItWorksDialog';
 import { CreateProjectDialog } from './CreateProjectDialog';
-import type { Project } from 'shared/src/generated/client-v1';
+import type { PlaylistItem, PlaylistWithItems, Project } from 'shared/src/generated/client-v1';
 
 const STATUS_STYLES: Record<string, { dot: string; label: string }> = {
   draft:      { dot: '#94a3b8', label: 'Draft' },
@@ -29,6 +29,16 @@ function timeAgo(dateStr: string): string {
 function projectTitle(p: Project): string {
   const t = p.title ?? p.topic ?? '';
   return t.length > 50 ? t.slice(0, 50) + '…' : t || 'Untitled';
+}
+
+function playlistTitle(p: PlaylistWithItems): string {
+  const t = p.title?.trim() || 'Untitled playlist';
+  return t.length > 42 ? t.slice(0, 42) + '…' : t;
+}
+
+function videoTitle(item: PlaylistItem): string {
+  const t = item.title?.trim() || item.description?.trim() || 'Untitled video';
+  return t.length > 44 ? t.slice(0, 44) + '…' : t;
 }
 
 interface ProjectCardProps {
@@ -155,15 +165,124 @@ function ProjectCard({ project, onRename, onDelete }: ProjectCardProps) {
   );
 }
 
+function PlaylistVideoRow({ item }: { item: PlaylistItem }) {
+  const status = STATUS_STYLES[item.status] ?? STATUS_STYLES.draft;
+
+  return (
+    <a
+      href={`/projects/${item.project_id}/editor`}
+      className="group/video flex min-w-0 items-center gap-2 rounded-lg px-2 py-2 transition-colors shell-hover"
+      style={{ textDecoration: 'none' }}
+    >
+      <span
+        className="shrink-0 rounded-full"
+        style={{ width: 7, height: 7, backgroundColor: status.dot }}
+        aria-hidden
+      />
+      <span className="min-w-0 flex-1 truncate text-xs font-medium shell-text">
+        {videoTitle(item)}
+      </span>
+      <PlaySquare
+        size={13}
+        strokeWidth={1.8}
+        className="shrink-0 opacity-0 transition-opacity group-hover/video:opacity-70"
+        aria-hidden
+      />
+    </a>
+  );
+}
+
+function SidebarPlaylistGroup({
+  playlist,
+  expanded,
+  onToggle,
+}: {
+  playlist: PlaylistWithItems;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const itemCount = playlist.items.length;
+
+  return (
+    <div className="rounded-lg">
+      <button
+        onClick={onToggle}
+        className="flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-2.5 text-left transition-colors shell-hover focus-ring"
+      >
+        {expanded ? (
+          <ChevronDown size={14} strokeWidth={2} className="shrink-0 shell-muted" aria-hidden />
+        ) : (
+          <ChevronRight size={14} strokeWidth={2} className="shrink-0 shell-muted" aria-hidden />
+        )}
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[var(--shell-hover)] shell-text">
+          <ListVideo size={14} strokeWidth={1.9} aria-hidden />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-semibold leading-5 shell-text">
+            {playlistTitle(playlist)}
+          </span>
+          <span className="block text-xs shell-muted">
+            {itemCount} video{itemCount !== 1 ? 's' : ''}
+          </span>
+        </span>
+      </button>
+
+      {expanded && (
+        <div className="ml-[27px] border-l pl-2" style={{ borderColor: 'hsl(var(--shell-border))' }}>
+          {itemCount > 0 ? (
+            playlist.items.map((item) => (
+              <PlaylistVideoRow key={item.id} item={item} />
+            ))
+          ) : (
+            <p className="px-2 py-2 text-xs shell-muted">No videos in this playlist yet</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function HomeSidebar() {
   const { loading: authLoading } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
+  const [playlists, setPlaylists] = useState<PlaylistWithItems[]>([]);
+  const [expandedPlaylists, setExpandedPlaylists] = useState<Set<string>>(new Set());
   const [howItWorksOpen, setHowItWorksOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
 
   useEffect(() => {
     if (authLoading) return;
-    api.listProjects().then(setProjects).catch(() => null);
+    let cancelled = false;
+
+    async function loadWorkspace() {
+      const [projectItems, playlistSummaries] = await Promise.all([
+        api.listProjects().catch(() => [] as Project[]),
+        api.listPlaylists().catch(() => []),
+      ]);
+
+      const playlistDetails = await Promise.all(
+        playlistSummaries.map(async (playlist) => {
+          try {
+            return await api.getPlaylist(playlist.id);
+          } catch {
+            return { ...playlist, items: [] } as PlaylistWithItems;
+          }
+        }),
+      );
+
+      if (cancelled) return;
+      setProjects(projectItems);
+      setPlaylists(playlistDetails);
+      setExpandedPlaylists((previous) => {
+        if (previous.size > 0) return previous;
+        return new Set(playlistDetails.slice(0, 4).map((playlist) => playlist.id));
+      });
+    }
+
+    loadWorkspace();
+    return () => {
+      cancelled = true;
+    };
   }, [authLoading]);
 
   const handleRename = useCallback((id: string, newTitle: string) => {
@@ -174,9 +293,18 @@ export function HomeSidebar() {
     setProjects(prev => prev.filter(p => p.id !== id));
   }, []);
 
+  const togglePlaylist = useCallback((id: string) => {
+    setExpandedPlaylists((previous) => {
+      const next = new Set(previous);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
   return (
     <>
-      <aside className="z-30 flex h-auto w-full max-w-full shrink-0 flex-col overflow-hidden border-b shell-bg lg:h-full lg:w-[320px] lg:border-b-0 lg:border-r">
+      <aside className="z-30 flex h-auto w-[100dvw] max-w-[100dvw] shrink-0 flex-col overflow-x-hidden border-b shell-bg lg:h-full lg:w-[320px] lg:max-w-none lg:overflow-hidden lg:border-b-0 lg:border-r">
         {/* Account */}
         <div className="shrink-0 px-4 py-4">
           <UserProfileButton showLabel />
@@ -198,9 +326,9 @@ export function HomeSidebar() {
             <p className="text-xs font-semibold uppercase tracking-widest shell-muted">
               My Projects
             </p>
-            {projects.length > 0 && (
+            {playlists.length > 0 && (
               <span className="rounded-full border px-2 py-0.5 text-xs font-semibold shell-muted" style={{ borderColor: 'hsl(var(--shell-border))' }}>
-                {projects.length}
+                {playlists.length}
               </span>
             )}
           </div>
@@ -211,32 +339,47 @@ export function HomeSidebar() {
                 <div key={i} className="h-14 rounded-lg bg-muted/40 animate-pulse" />
               ))}
             </div>
-          ) : projects.length === 0 ? (
+          ) : playlists.length === 0 ? (
             <div className="text-center py-10 px-2">
               <div className="w-10 h-10 rounded-xl bg-muted/50 flex items-center justify-center mx-auto mb-3">
-                <svg width="18" height="18" viewBox="0 0 18 18" fill="none" className="shell-muted">
-                  <rect x="2" y="4" width="14" height="10" rx="2" stroke="currentColor" strokeWidth="1.3" />
-                  <path d="M7 7l4 2-4 2V7z" fill="currentColor" />
-                </svg>
+                <ListVideo size={18} strokeWidth={1.8} className="shell-muted" aria-hidden />
               </div>
-              <p className="text-xs shell-muted mb-3">No projects yet</p>
+              <p className="text-xs shell-muted mb-3">No playlists yet</p>
               <button
                 onClick={() => setCreateOpen(true)}
                 className="text-xs font-medium text-primary hover:opacity-80"
               >
-                Create your first one
+                Create a project first
               </button>
             </div>
           ) : (
             <div className="space-y-1">
-              {projects.map(p => (
-                <ProjectCard
-                  key={p.id}
-                  project={p}
-                  onRename={handleRename}
-                  onDelete={handleDelete}
+              {playlists.map((playlist) => (
+                <SidebarPlaylistGroup
+                  key={playlist.id}
+                  playlist={playlist}
+                  expanded={expandedPlaylists.has(playlist.id)}
+                  onToggle={() => togglePlaylist(playlist.id)}
                 />
               ))}
+
+              {projects.length > 0 && (
+                <div className="pt-4">
+                  <div className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-widest shell-muted">
+                    Recent videos
+                  </div>
+                  <div className="space-y-1">
+                    {projects.slice(0, 5).map(p => (
+                      <ProjectCard
+                        key={p.id}
+                        project={p}
+                        onRename={handleRename}
+                        onDelete={handleDelete}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>

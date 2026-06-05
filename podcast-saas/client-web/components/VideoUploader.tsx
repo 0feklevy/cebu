@@ -99,7 +99,7 @@ export function VideoUploader({ projectId, onUploaded }: Props) {
         onDragLeave={() => setDragging(false)}
         onDrop={(e) => { e.preventDefault(); setDragging(false); handleFiles(e.dataTransfer.files); }}
         onClick={() => inputRef.current?.click()}
-        className={`rounded-lg border-2 border-dashed px-6 py-8 text-center cursor-pointer transition-colors focus-ring ${
+        className={`rounded-lg border-2 border-dashed px-4 py-5 text-center cursor-pointer transition-colors focus-ring sm:px-6 sm:py-8 ${
           dragging ? 'border-violet-400 bg-violet-50' : 'border-border bg-white/70 hover:border-violet-300 hover:bg-muted/30'
         }`}
       >
@@ -123,9 +123,9 @@ export function VideoUploader({ projectId, onUploaded }: Props) {
         <div className="space-y-2">
           {uploads.map((u, i) => (
             <div key={i} className="rounded-lg border border-border/70 bg-white px-3 py-2.5 shadow-sm-soft">
-              <div className="flex items-center justify-between mb-1.5">
-                <span className="text-xs font-medium text-foreground truncate max-w-[200px]">{u.filename}</span>
-                <span className="text-[10px] text-muted-foreground shrink-0 ml-2">
+              <div className="mb-1.5 flex min-w-0 flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                <span className="min-w-0 truncate text-xs font-medium text-foreground">{u.filename}</span>
+                <span className="text-[10px] text-muted-foreground sm:ml-2 sm:shrink-0">
                   {u.error ? <span className="text-destructive">{u.error}</span>
                     : u.done ? '✓ Done'
                     : `${u.percent}% · ${u.speed}`}

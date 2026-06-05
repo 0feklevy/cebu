@@ -254,7 +254,7 @@ export function SimulationUploader({ projectId, onUploaded }: Props) {
           if (!uploading) void collectDroppedItems(e.dataTransfer).then(uploadItems);
         }}
         onClick={() => !uploading && inputRef.current?.click()}
-        className={`rounded-lg border-2 border-dashed px-6 py-7 text-center transition-colors ${
+        className={`rounded-lg border-2 border-dashed px-4 py-5 text-center transition-colors sm:px-6 sm:py-7 ${
           uploading ? 'opacity-50 cursor-not-allowed border-border' :
           dragging   ? 'border-amber-400 bg-amber-50 cursor-pointer'
                      : 'border-border bg-white/70 hover:border-amber-400/50 hover:bg-muted/30 cursor-pointer'
@@ -266,12 +266,12 @@ export function SimulationUploader({ projectId, onUploaded }: Props) {
         </svg>
         <p className="text-sm font-medium text-foreground">Drop ZIP or folder here</p>
         <p className="text-xs text-muted-foreground mt-1">HTML / CSS / JS / PNG assets · max 250 MB</p>
-        <div className="mt-3 flex items-center justify-center gap-2">
+        <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); inputRef.current?.click(); }}
             disabled={uploading}
-            className="h-7 px-2.5 rounded-md border border-border bg-white text-[11px] font-medium text-foreground hover:border-amber-300 disabled:opacity-50"
+            className="h-8 rounded-md border border-border bg-white px-2.5 text-[11px] font-medium text-foreground hover:border-amber-300 disabled:opacity-50"
           >
             Choose ZIP
           </button>
@@ -279,7 +279,7 @@ export function SimulationUploader({ projectId, onUploaded }: Props) {
             type="button"
             onClick={(e) => { e.stopPropagation(); folderInputRef.current?.click(); }}
             disabled={uploading}
-            className="h-7 px-2.5 rounded-md bg-amber-500 text-[11px] font-semibold text-white hover:bg-amber-400 disabled:opacity-50"
+            className="h-8 rounded-md bg-amber-500 px-2.5 text-[11px] font-semibold text-white hover:bg-amber-400 disabled:opacity-50"
           >
             Choose folder
           </button>
@@ -304,9 +304,9 @@ export function SimulationUploader({ projectId, onUploaded }: Props) {
       {/* Progress */}
       {(uploading || done || error) && (
         <div className="rounded-lg border border-border/70 bg-white px-3 py-2.5 shadow-sm-soft">
-          <div className="flex items-center justify-between mb-1.5">
+          <div className="mb-1.5 flex min-w-0 flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
             <span className="text-xs font-medium text-foreground">Uploading…</span>
-            <span className="text-[10px] text-muted-foreground shrink-0 ml-2">
+            <span className="text-[10px] text-muted-foreground sm:ml-2 sm:shrink-0">
               {error ? <span className="text-destructive">{error}</span>
                 : done ? '✓ Processing…'
                 : `${percent}% · ${speed}`}

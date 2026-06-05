@@ -223,6 +223,16 @@ export function SectionEditor({
   const clipDragRef = useRef<{ mode: 'window' | 'scrub'; windowOffsetSec: number } | null>(null);
 
   const labelRef = useRef<HTMLInputElement>(null);
+  const [isCompactModal, setIsCompactModal] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const query = window.matchMedia('(max-width: 900px), (max-height: 680px)');
+    const sync = () => setIsCompactModal(query.matches);
+    sync();
+    query.addEventListener('change', sync);
+    return () => query.removeEventListener('change', sync);
+  }, []);
 
   useEffect(() => {
     const t = isBroll ? 'video' : (knownTypes.includes(section.type) ? section.type : section.type === 'clip' ? 'clip' : 'video');
@@ -859,23 +869,29 @@ export function SectionEditor({
       {/* Modal */}
       <div
         style={{
-          position: 'fixed', top: '50%', left: '50%',
-          transform: 'translate(-50%, -50%)',
-          zIndex: 801, width: '90vw', height: '90vh',
+          position: 'fixed',
+          top: isCompactModal ? 0 : '50%',
+          left: isCompactModal ? 0 : '50%',
+          transform: isCompactModal ? 'none' : 'translate(-50%, -50%)',
+          zIndex: 801,
+          width: isCompactModal ? '100vw' : 'min(1180px, 94vw)',
+          height: isCompactModal ? '100dvh' : 'min(820px, 92dvh)',
+          maxHeight: '100dvh',
           display: 'flex', flexDirection: 'column',
-          backgroundColor: '#ffffff', borderRadius: 10,
+          backgroundColor: '#ffffff', borderRadius: isCompactModal ? 0 : 10,
           boxShadow: '0 16px 48px rgba(0,0,0,0.18), 0 4px 16px rgba(0,0,0,0.08)',
           overflow: 'hidden', fontFamily: 'system-ui, -apple-system, sans-serif',
         }}
       >
         {/* ── Header ── */}
         <div style={{
-          flexShrink: 0, padding: '16px 24px',
+          flexShrink: 0, padding: isCompactModal ? '12px 14px' : '16px 24px',
           borderBottom: '1px solid hsl(var(--shell-border))',
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          flexWrap: 'wrap',
           gap: 12, background: 'hsl(var(--shell))',
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, flex: '1 1 220px', flexWrap: 'wrap' }}>
             <span style={{
               width: 10, height: 10, borderRadius: '50%',
               backgroundColor: isBroll ? '#06b6d4' : activeTypeDef.color,
@@ -911,13 +927,19 @@ export function SectionEditor({
         </div>
 
         {/* ── Body: two-column ── */}
-        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'row' }}>
+        <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: isCompactModal ? 'column' : 'row' }}>
 
           {/* LEFT: Controls */}
           <div style={{
-            width: 380, flexShrink: 0, overflowY: 'auto',
-            padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 20,
-            borderRight: '1px solid #e2e8f0', backgroundColor: '#f8fafc',
+            width: isCompactModal ? '100%' : 380,
+            maxHeight: isCompactModal ? '44dvh' : undefined,
+            flexShrink: 0, overflowY: 'auto',
+            padding: isCompactModal ? '14px' : '20px 24px',
+            display: 'flex', flexDirection: 'column', gap: isCompactModal ? 14 : 20,
+            borderRight: isCompactModal ? 'none' : '1px solid #e2e8f0',
+            borderBottom: isCompactModal ? '1px solid #e2e8f0' : 'none',
+            backgroundColor: '#f8fafc',
+            boxSizing: 'border-box',
           }}>
 
             {/* Type switcher — Video / Simulation only; Clip is a sub-mode inside Video */}
@@ -1784,7 +1806,7 @@ export function SectionEditor({
 
           {/* RIGHT: Preview / Trimmer / Files */}
           <div style={{
-            flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column',
+            flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column',
             backgroundColor: '#111827', position: 'relative',
           }}>
 
@@ -2275,9 +2297,11 @@ export function SectionEditor({
 
         {/* ── Footer ── */}
         <div style={{
-          flexShrink: 0, padding: '14px 24px',
+          flexShrink: 0,
+          padding: isCompactModal ? '10px 14px max(10px, env(safe-area-inset-bottom))' : '14px 24px',
           borderTop: '1px solid #f3f4f6',
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          flexWrap: 'wrap',
           gap: 10, backgroundColor: '#fafafa',
         }}>
           <button
@@ -2296,7 +2320,7 @@ export function SectionEditor({
             {deleting ? 'Deleting…' : 'Delete'}
           </button>
 
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginLeft: 'auto' }}>
             <button
               onClick={onClose}
               style={{

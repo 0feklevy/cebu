@@ -7,6 +7,7 @@ import { db, video_files } from '../../db/index.js';
 import { eq } from 'drizzle-orm';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import { transcodeToHLS, extractWaveformPeaks } from './HLSTranscoder.js';
+import { enqueueVideoMetadata } from '../generateVideoMetadata.js';
 import { logger } from '../../lib/logger.js';
 
 export async function runVideoTranscode(video_file_id: string): Promise<{ hls_master_key: string }> {
@@ -92,6 +93,11 @@ export async function runVideoTranscode(video_file_id: string): Promise<{ hls_ma
 
     console.log(`[HLS] ✅ STATUS → ready  masterKey=${result.masterKey}  duration=${result.durationSec}s  (${video_file_id})`);
     logger.info({ video_file_id, masterKey: result.masterKey }, 'HLS transcode complete');
+
+    // Generate thumbnail + AI title/description in the background.
+    // Uses the already-downloaded source file in inputPath for the frame extraction.
+    if (video.project_id) enqueueVideoMetadata(video.project_id, video_file_id);
+
     return { hls_master_key: result.masterKey };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

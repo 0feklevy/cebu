@@ -22,7 +22,7 @@ type HlsTier = typeof HLS_TIERS[number];
 type SectionSnapshot = TimelineSection[];
 
 const HISTORY_LIMIT = 50;
-const TIMELINE_RULER_H = 28;
+const TIMELINE_RULER_H = 24;
 const TIMELINE_VIDEO_TRACK_H = 52;
 const TIMELINE_AUDIO_TRACK_H = 22;
 const TIMELINE_BROLL_TRACK_H = 44;
@@ -669,13 +669,14 @@ export function VideoEditor({ projectId }: Props) {
     TIMELINE_SCROLLBAR_H +
     (showBrollTrack ? TIMELINE_BROLL_TRACK_H : 0) +
     (showAudioTrack ? TIMELINE_AUDIO_TRACK_H : 0);
+  const timelinePanelHeight = `min(${tlHeight}px, ${showBrollTrack || showAudioTrack ? 44 : 38}dvh)`;
 
   return (
     <>
     <div className="h-full flex flex-col bg-background overflow-hidden">
       {/* Upload panel (collapsible) */}
       {showUploader && (
-        <div className="shrink-0 border-b border-border bg-card/30 px-6 py-4">
+        <div className="shrink-0 border-b border-border bg-card/30 px-3 py-3 sm:px-6 sm:py-4">
           <VideoUploader
             projectId={projectId}
             onUploaded={(video) => {
@@ -690,11 +691,11 @@ export function VideoEditor({ projectId }: Props) {
       {/* Main split: player top, timeline bottom */}
       <div className="flex-1 flex flex-col min-h-0">
         {/* Player + sidebar row */}
-        <div className="flex-1 min-h-0 flex flex-col gap-3 p-3 lg:flex-row lg:gap-4 lg:p-4">
+        <div className="flex-1 min-h-0 flex flex-col gap-3 p-2 sm:p-3 xl:flex-row xl:gap-4 xl:p-4">
           {/* Player area */}
           <div
             ref={playerContainerRef}
-            className="min-w-0 flex-1 min-h-[280px] lg:min-h-0 flex flex-col relative"
+            className="min-w-0 flex-1 min-h-[220px] sm:min-h-[280px] xl:min-h-0 flex flex-col relative"
             style={isFullscreen ? { backgroundColor: '#000', justifyContent: 'center' } : undefined}
           >
             {hasAnyVideo ? (
@@ -748,7 +749,7 @@ export function VideoEditor({ projectId }: Props) {
 
           {/* Right panel: BrollPanel when marking, otherwise videos + simulations */}
           {toolMode === 'broll' && brollMark ? (
-            <div className="w-full lg:w-80 shrink-0 overflow-y-auto fine-scrollbar">
+            <div className="max-h-[34dvh] w-full shrink-0 overflow-y-auto fine-scrollbar xl:max-h-none xl:w-80">
               <BrollPanel
                 projectId={projectId}
                 mark={brollMark}
@@ -764,7 +765,7 @@ export function VideoEditor({ projectId }: Props) {
               />
             </div>
           ) : (
-            <div className="flex min-h-0 w-full shrink-0 flex-col gap-2 lg:w-80">
+            <div className="flex min-h-0 max-h-[36dvh] w-full shrink-0 flex-col gap-2 overflow-hidden xl:max-h-none xl:w-80">
               <div className="surface-panel flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto rounded-lg px-3 py-3 fine-scrollbar">
                 <div className="pb-2 border-b border-border/40">
                   <h2 className="text-sm font-semibold text-foreground">Library</h2>
@@ -1086,7 +1087,7 @@ export function VideoEditor({ projectId }: Props) {
         </div>
 
         {/* Timeline */}
-        <div className="shrink-0 border-t border-border bg-white/70" style={{ height: tlHeight }}>
+        <div className="shrink-0 border-t border-border bg-white/70" style={{ height: timelinePanelHeight }}>
           <TimelinePanel
             projectId={projectId}
             videos={videos}

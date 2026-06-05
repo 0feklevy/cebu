@@ -4,7 +4,7 @@ import { VideoEditor } from '@/components/VideoEditor';
 export default async function EditorPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   return (
-    <div className="flex flex-col h-screen">
+    <div className="flex h-dvh min-h-0 flex-col overflow-hidden">
       <ProjectHeader projectId={id} />
       <div className="flex-1 overflow-hidden min-h-0">
         <VideoEditor projectId={id} />

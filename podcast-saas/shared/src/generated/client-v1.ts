@@ -322,6 +322,7 @@ export interface PlaylistPlayItem {
   project_id: string;
   title: string | null;
   description: string | null;
+  thumbnail_url: string | null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   config: any;
 }

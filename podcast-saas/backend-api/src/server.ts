@@ -70,12 +70,20 @@ async function build() {
     version: process.env.npm_package_version ?? '0.1.0',
   }));
 
-  // Local file storage (dev only — active when R2 is not configured)
+  // Local file storage (dev only — active when R2 is not configured).
+  // Public prefixes (banners, images) need no auth so browsers can load them directly.
+  const PUBLIC_LOCAL_PREFIXES = ['playlist-banners/', 'crop/', 'images/', 'audio/'];
   app.get<{ Params: { '*': string } }>(
     '/local-storage/*',
-    { preHandler: [firebaseAuthMiddleware] },
     async (request, reply) => {
-      const filePath = join(tmpdir(), 'podcast-saas-local-storage', request.params['*']);
+      const key = request.params['*'];
+      const isPublic = PUBLIC_LOCAL_PREFIXES.some((p) => key.startsWith(p));
+      if (!isPublic) {
+        // Private assets (videos, HLS) require auth
+        await firebaseAuthMiddleware(request, reply);
+        if (reply.sent) return;
+      }
+      const filePath = join(tmpdir(), 'podcast-saas-local-storage', key);
       try {
         const data = await readFile(filePath);
         return reply.send(data);

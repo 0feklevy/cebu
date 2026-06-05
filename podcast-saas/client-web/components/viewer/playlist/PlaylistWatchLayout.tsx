@@ -5,8 +5,10 @@ import { UpNextSidebar } from './UpNextSidebar';
 import { fmtDuration, itemDuration, type PlaylistPlayItem } from './shared';
 
 interface Props {
-  playerArea: ReactNode;       // the HLSPlayerShell (+ overlays) for the current item
+  playerArea: ReactNode;
   playlistTitle: string | null;
+  playlistDescription: string | null;
+  bannerUrl: string | null;
   items: PlaylistPlayItem[];
   order: number[];
   currentPos: number;
@@ -16,39 +18,49 @@ interface Props {
 }
 
 export function PlaylistWatchLayout({
-  playerArea, playlistTitle, items, order, currentPos, watched, showSidebar, onJump,
+  playerArea, playlistTitle, playlistDescription, items, order, currentPos, watched, showSidebar, onJump,
 }: Props) {
   const current = items[order[currentPos]];
+  const dur = current ? itemDuration(current) : 0;
 
   return (
-    <div className="flex h-full w-full" style={{ background: '#0b0b0d' }}>
-      {/* Left column: video + title/description */}
-      <div className="flex min-w-0 flex-1 flex-col">
-        {/* Video area */}
-        <div className="relative w-full bg-black" style={{ flex: '1 1 auto', minHeight: 0 }}>
-          {playerArea}
-        </div>
+    <div
+      className="h-full w-full overflow-hidden"
+      style={{ display: 'grid', gridTemplateColumns: showSidebar ? 'minmax(0,1fr) 360px' : '1fr', background: '#080809' }}
+    >
+      {/* Player column */}
+      <div className="relative min-h-0 min-w-0 bg-black">
+        {playerArea}
 
-        {/* Title + description panel (YouTube watch-page style) */}
-        <div className="shrink-0 overflow-y-auto fine-scrollbar px-5 py-4" style={{ maxHeight: '34%', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
-          <h1 className="text-lg font-semibold text-white">{current?.title ?? 'Untitled video'}</h1>
-          <p className="mt-1 text-xs text-white/45">
-            Video {currentPos + 1} of {order.length}
-            {current ? ` · ${fmtDuration(itemDuration(current))}` : ''}
-          </p>
-          {current?.description && (
-            <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-white/65">
-              {current.description}
-            </p>
-          )}
+        {/* Slim info bar — bottom of video, above controls */}
+        <div
+          className="pointer-events-none absolute inset-x-0 bottom-0 z-[44]"
+          style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.72) 0%, transparent 100%)', height: 88 }}
+        >
+          <div className="absolute bottom-[72px] left-4 right-4 flex items-end justify-between gap-3 sm:left-5 sm:right-5">
+            <div className="min-w-0 flex-1">
+              <p className="mb-0.5 truncate text-[10px] font-semibold uppercase tracking-[0.16em] text-white/40">
+                {playlistTitle ?? 'Playlist'} · {currentPos + 1} / {order.length}
+              </p>
+              <h2 className="line-clamp-1 text-sm font-semibold text-white/95 sm:text-base">
+                {current?.title ?? 'Untitled video'}
+              </h2>
+            </div>
+            {dur > 0 && (
+              <span className="shrink-0 rounded-full bg-black/40 px-2.5 py-1 text-[11px] font-bold text-white/60 backdrop-blur-sm tabular-nums">
+                {fmtDuration(dur)}
+              </span>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Right: Up next sidebar (hidden on narrow screens) */}
+      {/* Sidebar — hidden on small screens */}
       {showSidebar && (
-        <div className="hidden lg:flex">
+        <div className="hidden min-h-0 lg:block">
           <UpNextSidebar
             title={playlistTitle}
+            description={playlistDescription}
             items={items}
             order={order}
             currentPos={currentPos}

@@ -70,7 +70,7 @@ export function HostPicker({ selectedAId, selectedBId, onSelectA, onSelectB }: P
     <button
       onClick={onSelect}
       disabled={disabled && !selected}
-      className={`w-full text-left p-4 rounded-xl border transition-colors ${
+      className={`w-full rounded-lg border p-3 text-left transition-colors sm:p-4 ${
         selected
           ? 'border-primary bg-primary/10'
           : disabled
@@ -112,7 +112,7 @@ export function HostPicker({ selectedAId, selectedBId, onSelectA, onSelectB }: P
                 </span>
               )}
             </h3>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               {hosts.map((host) => (
                 <HostCard
                   key={host.id}

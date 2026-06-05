@@ -11,7 +11,9 @@ import { firebaseAuthMiddleware, firebaseAuthOptionalMiddleware } from '../../mi
 import { buildPlayerConfig } from '../../services/buildPlayerConfig.js';
 import { BillingService } from '../../services/billing/BillingService.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
+import { LocalStorageAdapter } from '../../services/storage/LocalStorageAdapter.js';
 import { extname } from 'path';
+import { logger } from '../../lib/logger.js';
 
 const ALLOWED_BANNER_MIME = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif']);
 type BannerProvider = 'openai' | 'gemini';
@@ -78,44 +80,87 @@ function buildBannerPrompt(
   ].filter(Boolean).join('\n');
 }
 
+/**
+ * OpenAI banner generation — adapted from darwin-avatar imageService.ts.
+ * Key pattern: cast `generate` as `any` (bypasses SDK type restrictions on
+ * gpt-image-1 params), quality: 'low' for speed, no response_format needed
+ * (gpt-image-1 returns b64_json by default).
+ */
 async function generateOpenAiBanner(prompt: string): Promise<{ buffer: Buffer; mime: string }> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error('OPENAI_API_KEY is not configured');
 
   const client = new OpenAI({ apiKey });
-  const response = await client.images.generate({
-    model: 'gpt-image-1',
-    prompt,
-    size: '1536x1024',
-    quality: 'medium',
-    output_format: 'webp',
+  const model = process.env.OPENAI_IMAGE_MODEL ?? 'gpt-image-1';
+
+  // Cast as any — same pattern used in darwin-avatar/server/image/imageService.ts.
+  // gpt-image-1 parameters differ from dall-e-3; the SDK types reflect the older API.
+  const resp = await (client.images.generate as any)({
+    model,
+    prompt: prompt.slice(0, 4000),
+    quality: 'low',        // 'low' is valid for gpt-image-1 and generates fast
+    size:    '1536x1024',
     n: 1,
   });
 
-  const b64 = response.data?.[0]?.b64_json;
-  if (!b64) throw new Error('OpenAI did not return image bytes');
-  return { buffer: Buffer.from(b64, 'base64'), mime: 'image/webp' };
+  const item = resp?.data?.[0] as Record<string, unknown> | undefined;
+  if (!item) throw new Error('OpenAI returned no image data');
+
+  if (item.b64_json) {
+    return { buffer: Buffer.from(item.b64_json as string, 'base64'), mime: 'image/png' };
+  }
+  if (item.url) {
+    const imgRes = await fetch(item.url as string);
+    if (!imgRes.ok) throw new Error(`Failed to download image: ${imgRes.status}`);
+    return { buffer: Buffer.from(await imgRes.arrayBuffer()), mime: 'image/png' };
+  }
+  throw new Error('OpenAI returned an item with neither b64_json nor url');
 }
 
+/**
+ * Gemini banner generation — tries Imagen 4 first, falls back to
+ * gemini-2.5-flash-image (content generation API with IMAGE modality).
+ */
 async function generateGeminiBanner(prompt: string): Promise<{ buffer: Buffer; mime: string }> {
   const apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
   if (!apiKey) throw new Error('GOOGLE_GENERATIVE_AI_API_KEY is not configured');
 
   const client = new GoogleGenAI({ apiKey });
-  const response = await client.models.generateImages({
-    model: process.env.GOOGLE_IMAGE_MODEL ?? 'imagen-4.0-generate-001',
-    prompt,
-    config: {
-      numberOfImages: 1,
-      aspectRatio: '16:9',
-      outputMimeType: 'image/png',
-      enhancePrompt: true,
-    },
+
+  // Try Imagen 4 (generateImages / predict method).
+  const imagenModel = process.env.GOOGLE_IMAGE_MODEL ?? 'imagen-4.0-fast-generate-001';
+  try {
+    const response = await client.models.generateImages({
+      model: imagenModel,
+      prompt,
+      config: { numberOfImages: 1, aspectRatio: '16:9', outputMimeType: 'image/jpeg' },
+    });
+    const image = response.generatedImages?.[0]?.image;
+    if (image?.imageBytes) {
+      return { buffer: Buffer.from(image.imageBytes as string, 'base64'), mime: image.mimeType ?? 'image/jpeg' };
+    }
+  } catch (imagenErr: unknown) {
+    logger.warn({ imagenModel, err: (imagenErr as Error).message?.slice(0, 200) }, '[banner] Imagen failed, trying Gemini content API');
+  }
+
+  // Fallback: gemini-2.5-flash-image (generateContent with IMAGE response modality).
+  const geminiImageModel = 'gemini-2.5-flash-image';
+  const response = await (client.models.generateContent as any)({
+    model: geminiImageModel,
+    contents: `Generate a cinematic, wide 16:9 banner image. ${prompt}`,
+    config: { responseModalities: ['IMAGE', 'TEXT'] },
   });
 
-  const image = response.generatedImages?.[0]?.image;
-  if (!image?.imageBytes) throw new Error('Google did not return image bytes');
-  return { buffer: Buffer.from(image.imageBytes, 'base64'), mime: image.mimeType ?? 'image/png' };
+  const parts = (response?.candidates?.[0]?.content?.parts ?? []) as Array<Record<string, unknown>>;
+  const imgPart = parts.find((p) => p.inlineData);
+  const inlineData = imgPart?.inlineData as Record<string, unknown> | undefined;
+  if (inlineData?.data) {
+    return {
+      buffer: Buffer.from(inlineData.data as string, 'base64'),
+      mime: (inlineData.mimeType as string) ?? 'image/jpeg',
+    };
+  }
+  throw new Error('Gemini did not return image data from either Imagen or generateContent');
 }
 
 export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void> {
@@ -261,7 +306,14 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
 
       const ext = extname(data.filename || 'banner').replace(/[^a-z0-9.]/gi, '').toLowerCase() || bannerExt(mime);
       const key = `playlist-banners/${playlist.id}/${randomUUID()}${ext}`;
-      const publicUrl = await storage.uploadFile(key, await data.toBuffer(), mime);
+      const buf = await data.toBuffer();
+      let publicUrl: string;
+      try {
+        publicUrl = await storage.uploadFile(key, buf, mime);
+      } catch (uploadErr: unknown) {
+        logger.warn({ key, err: (uploadErr as Error).message?.slice(0, 120) }, '[banner] primary storage upload failed — falling back to local storage');
+        publicUrl = await new LocalStorageAdapter().uploadFile(key, buf, mime);
+      }
 
       const [updated] = await db
         .update(playlists)
@@ -305,7 +357,16 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
           : await generateOpenAiBanner(prompt);
         const ext = bannerExt(generated.mime);
         const key = `playlist-banners/${playlist.id}/${randomUUID()}${ext}`;
-        const publicUrl = await storage.uploadFile(key, generated.buffer, generated.mime);
+
+        // Try primary storage (R2 if configured); fall back to local disk when
+        // the upload is rejected (e.g. wrong R2 credentials or missing bucket).
+        let publicUrl: string;
+        try {
+          publicUrl = await storage.uploadFile(key, generated.buffer, generated.mime);
+        } catch (uploadErr: unknown) {
+          logger.warn({ key, err: (uploadErr as Error).message?.slice(0, 120) }, '[banner] primary storage upload failed — falling back to local storage');
+          publicUrl = await new LocalStorageAdapter().uploadFile(key, generated.buffer, generated.mime);
+        }
 
         const [updated] = await db
           .update(playlists)
@@ -321,9 +382,13 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
 
         return reply.send({ ...updated, items });
       } catch (err) {
-        const message = (err as Error).message || 'Banner generation failed';
-        const missingKey = message.includes('API_KEY') || message.includes('not configured');
-        return reply.code(missingKey ? 400 : 502).send({ message });
+        const raw = (err as Error).message || 'Banner generation failed';
+        // Surface helpful messages; strip verbose SDK noise.
+        const clean = raw.split('\n')[0].slice(0, 300);
+        const missingKey = raw.includes('API_KEY') || raw.includes('not configured');
+        const code = missingKey ? 400 : 502;
+        logger.warn({ err, provider, code }, '[banner] generation failed');
+        return reply.code(code).send({ message: clean });
       }
     },
   );
@@ -464,16 +529,24 @@ async function buildPlaylistPlayConfig(playlist: typeof playlists.$inferSelect) 
     orderBy: [asc(playlist_items.position)],
   });
 
-  const configs = await Promise.all(items.map((i) => buildPlayerConfig(i.project_id)));
+  const [configs, projectRows] = await Promise.all([
+    Promise.all(items.map((i) => buildPlayerConfig(i.project_id))),
+    items.length > 0
+      ? db.query.projects.findMany({ where: inArray(projects.id, items.map((i) => i.project_id)) })
+      : Promise.resolve([]),
+  ]);
+  const projectMap = new Map(projectRows.map((p) => [p.id, p]));
 
   const playItems = items
     .map((i, idx) => {
       const config = configs[idx];
       if (!config) return null;
+      const proj = projectMap.get(i.project_id);
       return {
-        project_id:  i.project_id,
-        title:       config.title,
-        description: config.description,
+        project_id:    i.project_id,
+        title:         config.title,
+        description:   config.description,
+        thumbnail_url: proj?.thumbnail_url ?? null,
         config,
       };
     })

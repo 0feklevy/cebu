@@ -392,7 +392,7 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
       )}
 
       {/* Controls */}
-      <div className="absolute bottom-0 left-0 right-0 px-4 py-2.5 space-y-2" style={{ zIndex: 10, background: 'linear-gradient(180deg,rgba(2,6,23,0),rgba(2,6,23,0.9) 22%,rgba(2,6,23,0.96))', backdropFilter: 'blur(10px)' }}>
+      <div className="absolute bottom-0 left-0 right-0 space-y-2 px-3 py-2 sm:px-4 sm:py-2.5" style={{ zIndex: 10, background: 'linear-gradient(180deg,rgba(2,6,23,0),rgba(2,6,23,0.9) 22%,rgba(2,6,23,0.96))', backdropFilter: 'blur(10px)' }}>
         <input
           type="range"
           min={0}
@@ -406,8 +406,8 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
           onTouchEnd={handleScrubEnd}
           className="w-full h-1 accent-primary cursor-pointer"
         />
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2 sm:gap-3">
             <button
               onClick={() => hook.isPlaying ? hook.pause() : hook.play()}
               className="text-white hover:text-violet-300 transition-colors focus-ring rounded"
@@ -423,11 +423,11 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
                 </svg>
               )}
             </button>
-            <span className="text-xs text-white/70 font-mono">
+            <span className="truncate font-mono text-[11px] text-white/70 sm:text-xs">
               {fmt(displayTime)} / {fmt(totalDuration)}
             </span>
           </div>
-          <div className="flex gap-1">
+          <div className="flex shrink-0 gap-1">
             {([0.5, 1, 1.5, 2] as const).map((s) => (
               <button
                 key={s}
@@ -656,7 +656,7 @@ function SingleClipPlayer({ src, hlsUrl, hlsStatus, currentTime, onTimeUpdate, s
         </div>
       )}
 
-      <div className="absolute bottom-0 left-0 right-0 px-4 py-2.5 space-y-2" style={{ background: 'linear-gradient(180deg,rgba(2,6,23,0),rgba(2,6,23,0.9) 22%,rgba(2,6,23,0.96))', backdropFilter: 'blur(10px)' }}>
+      <div className="absolute bottom-0 left-0 right-0 space-y-2 px-3 py-2 sm:px-4 sm:py-2.5" style={{ background: 'linear-gradient(180deg,rgba(2,6,23,0),rgba(2,6,23,0.9) 22%,rgba(2,6,23,0.96))', backdropFilter: 'blur(10px)' }}>
         <input
           type="range" min={0} max={duration || 1} step={0.1} value={currentTime}
           onChange={(e) => {
@@ -666,8 +666,8 @@ function SingleClipPlayer({ src, hlsUrl, hlsStatus, currentTime, onTimeUpdate, s
           }}
           className="w-full h-1 accent-primary cursor-pointer"
         />
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2 sm:gap-3">
             <button
               onClick={() => {
                 const v = videoRef.current;
@@ -688,9 +688,9 @@ function SingleClipPlayer({ src, hlsUrl, hlsStatus, currentTime, onTimeUpdate, s
                 </svg>
               )}
             </button>
-            <span className="text-xs text-white/70 font-mono">{fmt(currentTime)} / {fmt(duration)}</span>
+            <span className="truncate font-mono text-[11px] text-white/70 sm:text-xs">{fmt(currentTime)} / {fmt(duration)}</span>
           </div>
-          <div className="flex gap-1">
+          <div className="flex shrink-0 gap-1">
             {([0.5, 1, 1.5, 2] as const).map((s) => (
               <button
                 key={s}

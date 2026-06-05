@@ -64,7 +64,7 @@ export function UserProfileButton({ showLabel = false }: Props) {
       </button>
 
       {open && (
-        <div className="floating-panel absolute right-0 top-11 z-[1000] w-72 overflow-hidden rounded-xl py-1.5">
+        <div className="floating-panel absolute right-0 top-11 z-[1000] w-[min(18rem,calc(100dvw-24px))] overflow-hidden rounded-xl py-1.5">
           <div className="mb-1 border-b border-border bg-muted/45 px-3 py-3">
             <p className="text-sm font-medium text-foreground truncate">{user.displayName ?? 'User'}</p>
             <p className="text-xs text-muted-foreground truncate">{user.email}</p>

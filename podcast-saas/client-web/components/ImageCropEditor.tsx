@@ -199,12 +199,13 @@ export function ImageCropEditor({ image, onApprove, onCancel }: Props) {
       </div>
 
       {/* Actions */}
-      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
         <button
           onClick={onCancel}
           style={{
             padding: '6px 14px', borderRadius: 7, border: '1px solid #e5e7eb',
             background: '#fff', fontSize: 12, cursor: 'pointer', color: '#374151',
+            minWidth: 96,
           }}
         >
           Cancel
@@ -215,6 +216,7 @@ export function ImageCropEditor({ image, onApprove, onCancel }: Props) {
             padding: '6px 14px', borderRadius: 7, border: 'none',
             background: '#3b82f6', color: '#fff', fontSize: 12,
             fontWeight: 700, cursor: 'pointer',
+            minWidth: 120,
           }}
         >
           Use this crop

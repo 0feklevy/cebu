@@ -223,7 +223,7 @@ export function ProjectHeader({ projectId }: Props) {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 gap-2 min-[360px]:grid-cols-2">
                 <button
                   onClick={handleCopy}
                   className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg text-xs font-semibold text-white shadow-sm transition-all hover:opacity-90 active:scale-[0.98] focus-ring"
@@ -244,7 +244,7 @@ export function ProjectHeader({ projectId }: Props) {
                 </a>
               </div>
 
-              <div className="flex items-center justify-between border-t border-border pt-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
                 <button
                   onClick={handleRevoke}
                   disabled={shareLoading}

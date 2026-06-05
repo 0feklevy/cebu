@@ -11,14 +11,14 @@ import { api } from '../lib/api';
 const BROLL_TRACK_H  = 44;
 const VIDEO_TRACK_H  = 52;
 const AUDIO_TRACK_H  = 22;
-const RULER_H        = 28;
+const RULER_H        = 24;
 const LABEL_W        = 110;
 const FRAME_W        = 80;
 const FRAME_H        = 45;
 const FRAMES_COUNT   = 20;
 const WAVEFORM_PEAKS = 200;
 const SCROLLBAR_H    = 12;
-const RULER_LABEL_TOP = 4;
+const RULER_LABEL_TOP = 3;
 const VISUAL_MAX_SEC = 15;
 const MIN_DRAG_PX    = 4;
 const MIN_BROLL_SEC  = 4;   // minimum marked duration for B-roll creation
@@ -995,7 +995,7 @@ export function TimelinePanel({
         ref={scrollRef}
         className="flex-1 fine-scrollbar"
         style={{
-          overflowX: 'scroll',
+          overflowX: 'auto',
           overflowY: 'hidden',
           paddingBottom: SCROLLBAR_H,
           boxSizing: 'border-box',

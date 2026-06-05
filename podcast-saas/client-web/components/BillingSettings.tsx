@@ -54,7 +54,7 @@ export function BillingSettings() {
         <button
           onClick={openPortal}
           disabled={portalBusy}
-          className="inline-flex h-9 items-center gap-2 rounded-lg border border-border px-3.5 text-sm font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50 focus-ring"
+          className="inline-flex min-h-9 max-w-full flex-wrap items-center justify-center gap-2 rounded-lg border border-border px-3.5 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50 focus-ring"
         >
           {portalBusy ? <Loader2 size={15} className="animate-spin" /> : <CreditCard size={15} />}
           Manage payment methods
@@ -71,7 +71,7 @@ export function BillingSettings() {
         ) : (
           <ul className="space-y-1.5">
             {purchases.map((p) => (
-              <li key={p.id} className="flex items-center justify-between gap-3 rounded-lg border border-border bg-card px-3 py-2">
+              <li key={p.id} className="flex flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
                 <span className="flex min-w-0 items-center gap-2">
                   {p.content_type === 'playlist' ? <ListVideo size={14} className="text-primary" /> : <Play size={14} className="text-primary" />}
                   <span className="truncate text-sm text-foreground">{p.title ?? 'Untitled'}</span>
@@ -87,7 +87,7 @@ export function BillingSettings() {
       {earnings && earnings.salesCount > 0 && (
         <section>
           <h3 className="mb-2 text-sm font-semibold text-foreground">Your earnings</h3>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
             <div className="rounded-lg border border-border bg-card p-3 text-center">
               <p className="text-lg font-bold text-foreground">{earnings.salesCount}</p>
               <p className="text-[10px] text-muted-foreground">Sales</p>

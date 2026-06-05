@@ -90,12 +90,12 @@ export function SharedViewerPage({ shareToken }: Props) {
 
   if (error) {
     return (
-      <div className="flex flex-col items-center justify-center gap-4 w-full h-full bg-black">
+      <div className="flex h-full w-full min-w-0 flex-col items-center justify-center gap-4 bg-black px-4">
         <svg width="40" height="40" viewBox="0 0 40 40" fill="none" aria-hidden>
           <circle cx="20" cy="20" r="19" stroke="rgba(255,255,255,0.15)" strokeWidth="2" />
           <path d="M20 12v10M20 28v1" stroke="rgba(255,255,255,0.4)" strokeWidth="2" strokeLinecap="round" />
         </svg>
-        <p className="text-white/50 text-sm text-center max-w-xs">{error}</p>
+        <p className="w-full max-w-[240px] break-words text-center text-sm leading-6 text-white/50 whitespace-normal sm:max-w-sm">{error}</p>
       </div>
     );
   }
@@ -105,7 +105,7 @@ export function SharedViewerPage({ shareToken }: Props) {
       <div className="flex flex-col items-center justify-center gap-3 w-full h-full bg-black">
         <div className="w-8 h-8 border-2 border-white/30 border-t-white rounded-full animate-spin" />
         {processing && (
-          <p className="text-white/40 text-xs">Video is processing — this may take a few minutes…</p>
+          <p className="max-w-[min(28rem,calc(100dvw-32px))] px-4 text-center text-xs leading-5 text-white/40">Video is processing — this may take a few minutes…</p>
         )}
       </div>
     );

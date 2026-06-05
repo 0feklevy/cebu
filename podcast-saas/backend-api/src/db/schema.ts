@@ -146,10 +146,14 @@ export const projects = pgTable('projects', {
   status: projectStatusEnum('status').default('draft').notNull(),
   share_token:       text('share_token').unique(),
   share_enabled_at:  timestamp('share_enabled_at', { withTimezone: true }),
-  // Pay-to-unlock (migration 024): 'free' | 'paid'; price required when paid
+  // Pay-to-unlock (migration 024)
   access_type: text('access_type').notNull().default('free'),
   price_cents: integer('price_cents'),
   currency:    text('currency').notNull().default('usd'),
+  // Auto-generated metadata (migration 025)
+  thumbnail_url:   text('thumbnail_url'),
+  thumbnail_key:   text('thumbnail_key'),
+  metadata_status: text('metadata_status').notNull().default('none'), // none|processing|ready|failed
   created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });

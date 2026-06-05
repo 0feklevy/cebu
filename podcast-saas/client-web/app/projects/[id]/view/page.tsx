@@ -4,7 +4,7 @@ import { ViewerPage } from '@/components/viewer/ViewerPage';
 export default async function ViewerRoute({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   return (
-    <div className="w-screen h-screen bg-black">
+    <div className="h-dvh w-screen overflow-hidden bg-black">
       <ViewerPage projectId={id} />
     </div>
   );
