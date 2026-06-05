@@ -519,6 +519,13 @@ export class ClientV1Api {
     });
   }
 
+  async getFramePreview(projectId: string, timeSec: number): Promise<string> {
+    const blob = await this.requestBlob(
+      `/api/v1/projects/${projectId}/frame-preview?time_seconds=${encodeURIComponent(timeSec)}`,
+    );
+    return URL.createObjectURL(blob);
+  }
+
   // ── Timeline Sections ─────────────────────────────────────────────────────
 
   listSections(projectId: string): Promise<TimelineSection[]> {

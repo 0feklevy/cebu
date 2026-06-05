@@ -171,6 +171,36 @@ export async function extractThumbnailAtTime(
   }
 }
 
+// ── frame as buffer (preview only — no storage upload) ────────────────────────
+
+export async function extractFrameAsBuffer(
+  videoFileId: string,
+  timeSec: number,
+): Promise<Buffer> {
+  const storage = getStorageAdapter();
+  const video = await db.query.video_files.findFirst({ where: eq(video_files.id, videoFileId) });
+  if (!video) throw new Error('Video not found');
+
+  const hlsKey = video.hls_master_key ?? video.hls_360p_key;
+  let inputArg: string;
+  if (video.hls_status === 'ready' && hlsKey) {
+    inputArg = storage.getPublicUrl(hlsKey);
+  } else if (video.storage_key) {
+    inputArg = await storage.getPresignedDownloadUrl(video.storage_key, 3600);
+  } else {
+    throw new Error('No video source available — wait for transcoding to finish');
+  }
+
+  const workDir = await mkdtemp(join(tmpdir(), 'vprev-'));
+  try {
+    const framePath = join(workDir, 'preview.jpg');
+    await extractFrame(inputArg, framePath, Math.max(0, timeSec));
+    return await readFile(framePath);
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+}
+
 // ── ffmpeg frame extractor ─────────────────────────────────────────────────────
 
 function extractFrame(inputPath: string, outputPath: string, seekSec: number): Promise<void> {

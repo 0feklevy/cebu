@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Crop, Film, Loader2, RefreshCw, Settings, Sparkles, Upload, X } from 'lucide-react';
+import { Crop, Film, Loader2, Settings, Sparkles, Upload, X } from 'lucide-react';
 import { api } from '../lib/api';
 import { LockPriceControl } from './LockPriceControl';
 import type { Project, VideoFile } from 'shared/src/generated/client-v1';
@@ -34,12 +34,16 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
   const [timelineSec, setTimelineSec] = useState(0);
   const [pickingThumb, setPickingThumb] = useState(false);
   const [pickError, setPickError] = useState<string | null>(null);
-  const [videoSrcUrl, setVideoSrcUrl] = useState<string | null>(null);
+
+  // Frame preview (JPEG from server, debounced)
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const previewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevBlobRef = useRef<string | null>(null);
 
   const [isCompact, setIsCompact] = useState(false);
   const [canPortal, setCanPortal] = useState(false);
   const thumbInputRef = useRef<HTMLInputElement>(null);
-  const videoPreviewRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => setCanPortal(true), []);
 
@@ -67,13 +71,29 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
   // Poll crop status while any video is processing
   useEffect(() => {
     const mainVideos = videos.filter(v => !v.is_broll);
-    const anyProcessing = mainVideos.some(v => v.crop_status === 'processing' || v.crop_status === 'none' && cropping);
+    const anyProcessing = mainVideos.some(
+      v => v.crop_status === 'processing' || (v.crop_status === 'none' && cropping),
+    );
     if (!anyProcessing) return;
     const timer = setInterval(() => {
       api.listVideos(projectId).then(setVideos).catch(() => {});
     }, 3000);
     return () => clearInterval(timer);
   }, [videos, cropping, projectId]);
+
+  // Reset preview when switching away from timeline mode
+  useEffect(() => {
+    if (thumbMode !== 'timeline') {
+      setPreviewUrl(null);
+      setPreviewLoading(false);
+    }
+  }, [thumbMode]);
+
+  // Revoke old blob URL on unmount
+  useEffect(() => () => {
+    if (prevBlobRef.current) URL.revokeObjectURL(prevBlobRef.current);
+    if (previewTimerRef.current) clearTimeout(previewTimerRef.current);
+  }, []);
 
   // Close on Escape
   useEffect(() => {
@@ -83,21 +103,23 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
     return () => window.removeEventListener('keydown', handler);
   }, [open]);
 
-  // Fetch raw_url when switching to timeline mode
-  useEffect(() => {
-    if (thumbMode !== 'timeline') return;
-    const mainV = videos.find(v => !v.is_broll);
-    if (!mainV) return;
-    api.getHlsStatus(projectId, mainV.id)
-      .then(s => setVideoSrcUrl(s.raw_url ?? s.hls_url ?? null))
-      .catch(() => setVideoSrcUrl(mainV.hls_url ?? null));
-  }, [thumbMode, videos, projectId]);
-
-  // Seek video preview to current slider time
-  useEffect(() => {
-    const vid = videoPreviewRef.current;
-    if (vid) vid.currentTime = timelineSec;
-  }, [timelineSec]);
+  // Debounced frame preview fetch (600ms after slider stops)
+  const fetchPreview = useCallback((sec: number) => {
+    if (previewTimerRef.current) clearTimeout(previewTimerRef.current);
+    previewTimerRef.current = setTimeout(async () => {
+      setPreviewLoading(true);
+      try {
+        const url = await api.getFramePreview(projectId, sec);
+        if (prevBlobRef.current) URL.revokeObjectURL(prevBlobRef.current);
+        prevBlobRef.current = url;
+        setPreviewUrl(url);
+      } catch {
+        // preview failed silently — user still sees timestamp
+      } finally {
+        setPreviewLoading(false);
+      }
+    }, 600);
+  }, [projectId]);
 
   const saveMeta = async () => {
     setSavingMeta(true);
@@ -120,7 +142,6 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
         prompt: prompt.trim() || undefined,
         model,
       });
-      // Poll until ready (max 60s)
       for (let i = 0; i < 30; i++) {
         await new Promise(r => setTimeout(r, 2000));
         const updated = await api.getProject(projectId).catch(() => null);
@@ -142,8 +163,13 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
     setCropError(null);
     try {
       await api.recropProject(projectId);
-      const updated = await api.listVideos(projectId);
-      setVideos(updated);
+      // Poll up to 6s to catch the 'none' → 'processing' transition
+      for (let i = 0; i < 6; i++) {
+        await new Promise(r => setTimeout(r, 1000));
+        const updated = await api.listVideos(projectId);
+        setVideos(updated);
+        if (updated.some(v => !v.is_broll && v.crop_status === 'processing')) break;
+      }
     } catch (e) {
       setCropError((e as Error).message?.slice(0, 120));
     } finally {
@@ -181,22 +207,27 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
   const labelStyle: React.CSSProperties = {
     fontSize: 11, fontWeight: 600, color: '#6b7280',
     textTransform: 'uppercase', letterSpacing: '0.06em',
-    display: 'block', marginBottom: 6,
+    display: 'block', marginBottom: 8,
   };
 
   const inputStyle: React.CSSProperties = {
-    width: '100%', height: 36, border: '1px solid #e2e8f0', borderRadius: 8,
-    padding: '0 12px', fontSize: 13, color: '#111827', outline: 'none',
+    width: '100%', height: 40, border: '1px solid #e2e8f0', borderRadius: 8,
+    padding: '0 14px', fontSize: 14, color: '#111827', outline: 'none',
     boxSizing: 'border-box', background: '#fff', fontFamily: 'inherit',
   };
 
   const btnStyle = (active: boolean): React.CSSProperties => ({
-    width: '100%', height: 36, border: 'none', borderRadius: 8,
+    width: '100%', height: 38, border: 'none', borderRadius: 8,
     background: active ? '#e5e7eb' : 'linear-gradient(135deg,#a855f7,#6366f1)',
     color: active ? '#9ca3af' : '#fff',
     fontSize: 13, fontWeight: 600, cursor: active ? 'not-allowed' : 'pointer',
     display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
   });
+
+  // Active preview image in timeline mode
+  const timelinePreview = thumbMode === 'timeline'
+    ? (previewUrl ?? (thumbnailUrl || null))
+    : null;
 
   const modal = !open ? null : (
     <>
@@ -206,7 +237,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
         style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(2,6,23,0.55)', backdropFilter: 'blur(10px)', zIndex: 800 }}
       />
 
-      {/* Modal — matches SectionEditor exactly */}
+      {/* Modal */}
       <div
         style={{
           position: 'fixed',
@@ -224,7 +255,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
           overflow: 'hidden', fontFamily: 'system-ui, -apple-system, sans-serif',
         }}
       >
-        {/* ── Header — same as SectionEditor ── */}
+        {/* ── Header ── */}
         <div style={{
           flexShrink: 0, padding: isCompact ? '12px 14px' : '16px 24px',
           borderBottom: '1px solid hsl(var(--shell-border))',
@@ -250,95 +281,51 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
           </button>
         </div>
 
-        {/* ── Body: two-column — same as SectionEditor ── */}
+        {/* ── Body: two-column ── */}
         <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: isCompact ? 'column' : 'row' }}>
 
-          {/* LEFT panel — controls (same bg as SectionEditor left) */}
+          {/* LEFT panel — Thumbnail (narrower, white) */}
           <div style={{
             width: isCompact ? '100%' : 380,
-            maxHeight: isCompact ? '44dvh' : undefined,
+            maxHeight: isCompact ? '50dvh' : undefined,
             flexShrink: 0, overflowY: 'auto',
             padding: isCompact ? '14px' : '20px 24px',
-            display: 'flex', flexDirection: 'column', gap: 20,
+            display: 'flex', flexDirection: 'column', gap: 14,
             borderRight: isCompact ? 'none' : '1px solid #e2e8f0',
             borderBottom: isCompact ? '1px solid #e2e8f0' : 'none',
-            backgroundColor: '#f8fafc', boxSizing: 'border-box',
+            backgroundColor: '#fff', boxSizing: 'border-box',
           }}>
-
-            {/* Details */}
-            <div>
-              <span style={labelStyle}>Details</span>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                <input
-                  value={title} onChange={e => setTitle(e.target.value)} placeholder="Video name"
-                  style={inputStyle}
-                  onFocus={e => (e.target.style.borderColor = '#a855f7')}
-                  onBlur={e => (e.target.style.borderColor = '#e2e8f0')}
-                />
-                <textarea
-                  value={desc} onChange={e => setDesc(e.target.value)} rows={3} placeholder="What is this video about?"
-                  style={{ ...inputStyle, height: 'auto', padding: '8px 12px', resize: 'none' }}
-                  onFocus={e => (e.target.style.borderColor = '#a855f7')}
-                  onBlur={e => (e.target.style.borderColor = '#e2e8f0')}
-                />
-                <button onClick={saveMeta} disabled={savingMeta} style={btnStyle(savingMeta)}>
-                  {savingMeta ? <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Saving…</> : savedMeta ? '✓ Saved' : 'Save details'}
-                </button>
-              </div>
-            </div>
-
-            {/* Smart Crop */}
-            <div>
-              <span style={labelStyle}>Smart Crop</span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
-                <button
-                  onClick={recrop} disabled={cropping || anyCropProcessing}
-                  style={{ ...btnStyle(cropping || anyCropProcessing), width: 'auto', padding: '0 16px', height: 36, flexShrink: 0 }}
-                >
-                  {(cropping || anyCropProcessing) ? <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Cropping…</> : <><Crop size={13} strokeWidth={2} /> Recrop</>}
-                </button>
-                <span style={{ fontSize: 12, color: '#6b7280' }}>
-                  {anyCropProcessing ? 'Running…' : lastCropTime
-                    ? new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(lastCropTime))
-                    : 'Never cropped'}
-                </span>
-              </div>
-              {cropError && <p style={{ fontSize: 11, color: '#ef4444', marginTop: 4 }}>{cropError}</p>}
-            </div>
-
-            {/* Access */}
-            <div>
-              <span style={labelStyle}>Access</span>
-              <LockPriceControl contentType="project" contentId={projectId} bordered={false} />
-            </div>
-          </div>
-
-          {/* RIGHT panel — thumbnail (white, scrollable) */}
-          <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: isCompact ? '14px' : '20px 24px', display: 'flex', flexDirection: 'column', gap: 16 }}>
-
             <span style={labelStyle}>Thumbnail</span>
 
             {/* Preview */}
-            <div style={{ position: 'relative', width: '100%', aspectRatio: '16/9', borderRadius: 10, overflow: 'hidden', background: '#0f172a', border: '1px solid #e2e8f0' }}>
-              {thumbMode === 'timeline' && videoSrcUrl && (
-                <video ref={videoPreviewRef} src={videoSrcUrl}
-                  style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
-                  muted playsInline preload="metadata"
-                />
+            <div style={{ position: 'relative', width: '100%', aspectRatio: '16/9', borderRadius: 10, overflow: 'hidden', background: '#0f172a', border: '1px solid #e2e8f0', flexShrink: 0 }}>
+              {/* Show frame preview or existing thumbnail */}
+              {timelinePreview && !isGenerating && !pickingThumb && (
+                <img src={timelinePreview} alt="" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} draggable={false} />
               )}
-              {(isGenerating || pickingThumb) ? (
+              {thumbMode === 'ai' && thumbnailUrl && !isGenerating && (
+                <img src={thumbnailUrl} alt="" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} draggable={false} />
+              )}
+              {(isGenerating || pickingThumb || previewLoading) && (
                 <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, color: '#fff', background: 'rgba(0,0,0,0.55)' }}>
                   <Loader2 size={20} style={{ animation: 'spin 1s linear infinite' }} />
-                  <span style={{ fontSize: 13, fontWeight: 600 }}>{pickingThumb ? 'Extracting frame…' : 'Generating…'}</span>
+                  <span style={{ fontSize: 13, fontWeight: 600 }}>
+                    {pickingThumb ? 'Extracting frame…' : previewLoading ? 'Loading preview…' : 'Generating…'}
+                  </span>
                 </div>
-              ) : thumbMode === 'ai' && thumbnailUrl ? (
-                <img src={thumbnailUrl} alt="" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} draggable={false} />
-              ) : thumbMode === 'ai' ? (
+              )}
+              {!timelinePreview && thumbMode === 'timeline' && !isGenerating && !pickingThumb && !previewLoading && (
+                <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+                  <Film size={24} stroke="rgba(255,255,255,0.25)" strokeWidth={1.2} />
+                  <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)' }}>Scrub to preview</span>
+                </div>
+              )}
+              {thumbMode === 'ai' && !thumbnailUrl && !isGenerating && (
                 <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
                   <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.3)" strokeWidth="1.2"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9l4-4 4 4 5-5 5 5"/></svg>
                   <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)' }}>No thumbnail yet</span>
                 </div>
-              ) : null}
+              )}
             </div>
 
             {/* Mode tabs */}
@@ -360,18 +347,18 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 <input
                   value={prompt} onChange={e => setPrompt(e.target.value)}
-                  placeholder='Hint for AI (optional — e.g. "podcast about tech")'
-                  style={inputStyle}
+                  placeholder='Hint for AI (optional)'
+                  style={{ ...inputStyle, height: 36, fontSize: 13 }}
                   onFocus={e => (e.target.style.borderColor = '#a855f7')}
                   onBlur={e => (e.target.style.borderColor = '#e2e8f0')}
                 />
                 <div style={{ display: 'flex', gap: 8 }}>
                   <select value={model} onChange={e => setModel(e.target.value as 'gpt-4o-mini' | 'gpt-4o')}
                     style={{ height: 36, border: '1px solid #e2e8f0', borderRadius: 8, padding: '0 10px', fontSize: 12, color: '#374151', background: '#fff', cursor: 'pointer', outline: 'none' }}>
-                    <option value="gpt-4o-mini">GPT-4o mini — faster</option>
-                    <option value="gpt-4o">GPT-4o — best quality</option>
+                    <option value="gpt-4o-mini">GPT-4o mini</option>
+                    <option value="gpt-4o">GPT-4o</option>
                   </select>
-                  <button onClick={regen} disabled={isGenerating} style={{ ...btnStyle(isGenerating), flex: 1 }}>
+                  <button onClick={regen} disabled={isGenerating} style={{ ...btnStyle(isGenerating), flex: 1, height: 36 }}>
                     {isGenerating ? <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Generating…</> : <><Sparkles size={13} strokeWidth={2} /> {thumbnailUrl ? 'Regenerate' : 'Generate'}</>}
                   </button>
                   <input ref={thumbInputRef} type="file" accept="image/jpeg,image/png,image/webp" style={{ display: 'none' }} onChange={async e => { e.target.value = ''; await regen(); }} />
@@ -384,7 +371,6 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
                   </button>
                 </div>
                 {genError && <p style={{ fontSize: 11, color: '#ef4444' }}>{genError}</p>}
-                <p style={{ fontSize: 11, color: '#94a3b8' }}>AI picks the best frame and generates title + description</p>
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -394,7 +380,11 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
                     <span style={{ fontSize: 14, fontWeight: 700, color: '#a855f7', fontVariantNumeric: 'tabular-nums', minWidth: 44, textAlign: 'right' }}>{fmtTime(timelineSec)}</span>
                   </div>
                   <input type="range" min={0} max={Math.floor(dur)} step={1} value={timelineSec}
-                    onChange={e => setTimelineSec(Number(e.target.value))}
+                    onChange={e => {
+                      const sec = Number(e.target.value);
+                      setTimelineSec(sec);
+                      fetchPreview(sec);
+                    }}
                     style={{ width: '100%', accentColor: '#a855f7', cursor: 'pointer' }}
                   />
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#94a3b8' }}>
@@ -404,12 +394,63 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
                     {pickingThumb ? <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Extracting frame…</> : <><Film size={13} strokeWidth={1.9} /> Use this frame</>}
                   </button>
                   {pickError && <p style={{ fontSize: 11, color: '#ef4444' }}>{pickError}</p>}
-                  <p style={{ fontSize: 11, color: '#94a3b8' }}>Extracts the exact frame at this timestamp from your original clip</p>
+                  <p style={{ fontSize: 11, color: '#94a3b8' }}>Preview loads ~1s after you stop scrubbing</p>
                 </>) : (
                   <p style={{ fontSize: 13, color: '#94a3b8', textAlign: 'center', padding: '24px 0' }}>Upload a video first to use timeline scrubbing</p>
                 )}
               </div>
             )}
+          </div>
+
+          {/* RIGHT panel — Details + Crop + Access (full width, more space) */}
+          <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: isCompact ? '14px' : '24px 32px', display: 'flex', flexDirection: 'column', gap: 28, backgroundColor: '#f8fafc', boxSizing: 'border-box' }}>
+
+            {/* Details */}
+            <div>
+              <span style={labelStyle}>Details</span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <input
+                  value={title} onChange={e => setTitle(e.target.value)} placeholder="Video name"
+                  style={inputStyle}
+                  onFocus={e => (e.target.style.borderColor = '#a855f7')}
+                  onBlur={e => (e.target.style.borderColor = '#e2e8f0')}
+                />
+                <textarea
+                  value={desc} onChange={e => setDesc(e.target.value)} rows={6} placeholder="What is this video about?"
+                  style={{ ...inputStyle, height: 'auto', padding: '12px 14px', resize: 'vertical', lineHeight: 1.6, minHeight: 120 }}
+                  onFocus={e => (e.target.style.borderColor = '#a855f7')}
+                  onBlur={e => (e.target.style.borderColor = '#e2e8f0')}
+                />
+                <button onClick={saveMeta} disabled={savingMeta} style={{ ...btnStyle(savingMeta), width: 'auto', alignSelf: 'flex-start', padding: '0 24px' }}>
+                  {savingMeta ? <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Saving…</> : savedMeta ? '✓ Saved' : 'Save details'}
+                </button>
+              </div>
+            </div>
+
+            {/* Smart Crop */}
+            <div>
+              <span style={labelStyle}>Smart Crop</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
+                <button
+                  onClick={recrop} disabled={cropping || anyCropProcessing}
+                  style={{ ...btnStyle(cropping || anyCropProcessing), width: 'auto', padding: '0 20px', height: 38, flexShrink: 0 }}
+                >
+                  {(cropping || anyCropProcessing) ? <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Cropping…</> : <><Crop size={13} strokeWidth={2} /> Recrop</>}
+                </button>
+                <span style={{ fontSize: 13, color: '#6b7280' }}>
+                  {anyCropProcessing ? 'Running…' : lastCropTime
+                    ? new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(lastCropTime))
+                    : 'Never cropped'}
+                </span>
+              </div>
+              {cropError && <p style={{ fontSize: 12, color: '#ef4444', marginTop: 4 }}>{cropError}</p>}
+            </div>
+
+            {/* Access */}
+            <div>
+              <span style={labelStyle}>Access</span>
+              <LockPriceControl contentType="project" contentId={projectId} bordered={false} />
+            </div>
           </div>
         </div>
       </div>

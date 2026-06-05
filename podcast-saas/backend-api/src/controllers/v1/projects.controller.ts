@@ -222,6 +222,34 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
     },
   );
 
+  // GET /api/v1/projects/:id/frame-preview — returns JPEG of frame at given time (no storage)
+  app.get<{ Params: { id: string }; Querystring: { time_seconds?: string } }>(
+    '/api/v1/projects/:id/frame-preview',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const project = await db.query.projects.findFirst({
+        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
+      });
+      if (!project) return reply.code(404).send({ message: 'Not found' });
+
+      const timeSec = Math.max(0, parseFloat(request.query.time_seconds ?? '0') || 0);
+
+      const video = await db.query.video_files.findFirst({
+        where: and(eq(video_files.project_id, project.id), eq(video_files.is_broll, false)),
+      });
+      if (!video) return reply.code(400).send({ message: 'No video uploaded yet' });
+
+      const { extractFrameAsBuffer } = await import('../../services/generateVideoMetadata.js');
+      const buf = await extractFrameAsBuffer(video.id, timeSec);
+
+      return reply
+        .header('Content-Type', 'image/jpeg')
+        .header('Cache-Control', 'no-cache')
+        .send(buf);
+    },
+  );
+
   // DELETE /api/v1/projects/:id
   app.delete<{ Params: { id: string } }>(
     '/api/v1/projects/:id',
