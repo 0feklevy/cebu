@@ -6,3 +6,8 @@ dist/
 build/
 *.log
 .DS_Store
+
+# Reference projects — have their own repos, not backed up here
+fiji/
+podcast-saas/interactive-podcast-react/
+darwin-avatar/
