@@ -20,17 +20,20 @@
 
 import { probeVideo, extractRgbFrames, extractMonoPcm } from './ffmpegExtract.js';
 import { SceneAnalyzer, PROFILE_COLS, type FaceHook } from './sceneAnalyzer.js';
-import { locateHeads, activeHeadIndex } from './headLocator.js';
+import { locateHeads } from './headLocator.js';
 import {
   analyzeChunk, labelFromPitch, calibratePitchThreshold,
   SAMPLE_RATE, type SpeakerLabel, type ChunkPitch,
 } from './speaker.js';
+import {
+  regionMotionSeries, windowedActiveRegions, calibrateGenderRegion,
+} from './activeSpeaker.js';
 import { bhattacharyya } from './dsp.js';
 import { DebounceState, applyDebounce } from './debounce.js';
 import { smoothKeyframes, type Keyframe } from './smoother.js';
 
 export const CROP_ASPECT = 9 / 16;
-const DEFAULT_SAMPLE_INTERVAL = 0.5;   // 2 fps — snappier speaker switching than the 1 fps reference
+const DEFAULT_SAMPLE_INTERVAL = 0.25;  // 4 fps — fine enough for audio-visual correlation
 const ANALYSIS_W = 320;
 const ANALYSIS_H = 180;
 const SHOT_BINS = 32;
@@ -48,9 +51,9 @@ export interface CropMetadata {
     frames: number;
     heads: number[];
     two_shot: number;
-    calibrated: number;
-    motion: number;
-    fallback: number;
+    av: number;        // frames cropped from direct AV-correlation
+    gender: number;    // frames cropped from gender→region mapping
+    hold: number;      // frames holding (silence / ambiguous)
     pitch_threshold_hz: number;
     calibration: string;
     shots: number;
@@ -89,11 +92,10 @@ export async function processVideoCrop(
   const analyzer = new SceneAnalyzer(rgb.width, rgb.height, { faceHook: options.faceHook });
 
   // ── Pass 1 ──────────────────────────────────────────────────────────────────
-  const skinSum = new Float64Array(PROFILE_COLS);
-  const salSum = new Float64Array(PROFILE_COLS);
-  const actSum = new Float64Array(PROFILE_COLS);
-
+  // Per-frame profiles are kept so head localization can be done per shot below.
   const motionPerFrame: Float64Array[] = new Array(nFrames);
+  const skinPerFrame: Float64Array[] = new Array(nFrames);
+  const salPerFrame: Float64Array[] = new Array(nFrames);
   const interestXs = new Float64Array(nFrames);
   const pitches: ChunkPitch[] = new Array(nFrames);
   const times = new Float64Array(nFrames);
@@ -110,12 +112,9 @@ export async function processVideoCrop(
     const p = analyzer.analyze(frame, gray, prevGray);
 
     motionPerFrame[i] = p.motion;
+    skinPerFrame[i] = p.skin;
+    salPerFrame[i] = p.saliency;
     interestXs[i] = p.interestX;
-    for (let x = 0; x < PROFILE_COLS; x++) {
-      skinSum[x] += p.skin[x];
-      salSum[x] += p.saliency[x];
-      actSum[x] += p.motion[x];
-    }
 
     // inline shot detection
     const hist = grayHist(gray);
@@ -139,67 +138,80 @@ export async function processVideoCrop(
   }
 
   // ── Between passes ────────────────────────────────────────────────────────────
-  const headModel = locateHeads(skinSum, salSum, actSum);
-  const heads = headModel.heads;
-
   const threshold = hasAudio ? calibratePitchThreshold(pitches) : 160;
   const labels: Array<{ label: SpeakerLabel; conf: number }> = pitches.map((p) => labelFromPitch(p, threshold));
+  const env = Float64Array.from(pitches, (p) => p.rms);
 
-  // ── Gender → head calibration ─────────────────────────────────────────────
-  // Two-stage: (1) accumulated voice-motion profiles — most robust for podcast
-  // content where faces are static but lips/head move subtly while speaking.
-  // (2) interestX statistics as fallback when motion is too low.
-  const genderHead = mapGenderToHead(headModel.isTwoShot, heads, labels, motionPerFrame, interestXs);
+  // Convert shot-boundary times → frame-index segments. Head localization and the
+  // active-speaker decision run PER SHOT, not globally: the camera framing is only
+  // stable within a continuous take, and a video that mixes a two-shot with B-roll
+  // and single close-ups would otherwise have its global head profile swamped by
+  // the non-two-shot footage (→ a single false head in the middle).
+  const segments = buildFrameSegments(shotTimes, nFrames, sampleFps);
 
-  // ── Pass 2 ──────────────────────────────────────────────────────────────────
-  const stats = { two_shot: 0, calibrated: 0, motion: 0, fallback: 0 };
+  // ── Pass 2 (per shot) ───────────────────────────────────────────────────────
+  const stats = { two_shot: 0, av: 0, gender: 0, hold: 0 };
+  let twoShotSegs = 0;
+  const lastHeads: number[] = [];
+  let lastCal = 'n/a';
   const raw: Keyframe[] = new Array(nFrames);
-  let debounce = new DebounceState();
-  let lastSeg = -1;
 
-  for (let i = 0; i < nFrames; i++) {
-    const t = times[i];
-    let cropX = interestToCropX(interestXs[i], W, H);
-
-    if (headModel.isTwoShot) {
-      stats.two_shot++;
-      // reset debounce at shot boundaries
-      let seg = -1;
-      for (let s = 0; s < shotTimes.length; s++) { if (shotTimes[s] <= t) seg = s; else break; }
-      if (seg !== lastSeg) { debounce = new DebounceState(); lastSeg = seg; }
-
-      const speaker = labels[i].label;
-
-      // Resolve candidate — calibration → per-frame motion.
-      // THE KEY FIX: midpoint is NOT a candidate for the debounce.
-      // It is only the display-fallback when nothing has been committed yet.
-      // Previously, midpoint was fed into applyDebounce as the first candidate,
-      // which caused the debounce to commit at 0.505 and never recover.
-      let candidate: number | null = null;
-      if ((speaker === 'male' || speaker === 'female') && genderHead[speaker] !== null) {
-        candidate = heads[genderHead[speaker]!];
-        stats.calibrated++;
-      }
-      if (candidate === null) {
-        const ai = activeHeadIndex(motionPerFrame[i], heads);
-        if (ai !== null) { candidate = heads[ai]; stats.motion++; }
-      }
-
-      const committed = applyDebounce(debounce, speaker, t, candidate);
-      if (committed !== null) {
-        cropX = interestToCropX(committed, W, H);
-      } else {
-        // No speech has committed yet — show midpoint as a neutral holding position.
-        // This does NOT commit the debounce so the first real voice event will take over.
-        cropX = interestToCropX((heads[0] + heads[heads.length - 1]) / 2, W, H);
-        stats.fallback++;
-      }
+  for (const [f0, f1] of segments) {
+    // Localize heads from THIS shot's accumulated profiles.
+    const skinS = new Float64Array(PROFILE_COLS);
+    const salS  = new Float64Array(PROFILE_COLS);
+    const actS  = new Float64Array(PROFILE_COLS);
+    for (let i = f0; i < f1; i++) {
+      const sk = skinPerFrame[i], sa = salPerFrame[i], mo = motionPerFrame[i];
+      for (let x = 0; x < PROFILE_COLS; x++) { skinS[x] += sk[x]; salS[x] += sa[x]; actS[x] += mo[x]; }
     }
+    const hm = locateHeads(skinS, salS, actS);
 
-    raw[i] = { t, x: cropX };
+    if (hm.isTwoShot && hasAudio && f1 - f0 >= 4) {
+      twoShotSegs++;
+      const heads = hm.heads;
+      lastHeads.length = 0; lastHeads.push(...heads);
+
+      // AV-correlation within this shot only.
+      const segMotion = motionPerFrame.slice(f0, f1);
+      const segEnv = env.slice(f0, f1);
+      const motionL = regionMotionSeries(segMotion, heads[0]);
+      const motionR = regionMotionSeries(segMotion, heads[1]);
+      const avActive = windowedActiveRegions(motionL, motionR, segEnv);
+      const segLabels = labels.slice(f0, f1);
+      const genderRegion = calibrateGenderRegion(segLabels, avActive);
+      lastCal = `male→r${genderRegion.male ?? '?'} female→r${genderRegion.female ?? '?'}`;
+
+      const debounce = new DebounceState();
+      for (let i = f0; i < f1; i++) {
+        stats.two_shot++;
+        const j = i - f0;
+        const speaker = segLabels[j].label;
+
+        // Priority: AV-active (direct) → gender→region (gap-fill) → hold.
+        let region: 0 | 1 | null = null;
+        if (avActive[j] !== null) { region = avActive[j]; stats.av++; }
+        else if ((speaker === 'male' || speaker === 'female') && genderRegion[speaker] !== null) {
+          region = genderRegion[speaker]; stats.gender++;
+        }
+
+        let key: string;
+        let candidate: number | null;
+        if (region !== null) { key = `r${region}`; candidate = heads[region]; }
+        else if (speaker === 'silence') { key = 'silence'; candidate = null; stats.hold++; }
+        else { key = 'unclear'; candidate = null; stats.hold++; }
+
+        const committed = applyDebounce(debounce, key, times[i], candidate);
+        const cx = committed !== null ? committed : (heads[0] + heads[1]) / 2;
+        raw[i] = { t: times[i], x: interestToCropX(cx, W, H) };
+      }
+    } else {
+      // Not a two-shot (single speaker / B-roll / animation) → interest centroid.
+      for (let i = f0; i < f1; i++) raw[i] = { t: times[i], x: interestToCropX(interestXs[i], W, H) };
+    }
   }
 
-  const keyframes = smoothKeyframes(raw, shotTimes, 1.5, sampleInterval);
+  const keyframes = smoothKeyframes(raw, shotTimes, 1.2, sampleInterval);
 
   return {
     video_id: videoId,
@@ -210,121 +222,34 @@ export async function processVideoCrop(
     keyframes,
     stats: {
       frames: nFrames,
-      heads: heads.map((h) => Number(h.toFixed(3))),
-      ...stats,
+      heads: lastHeads.map((h) => Number(h.toFixed(3))),
+      two_shot: stats.two_shot,
+      av: stats.av,
+      gender: stats.gender,
+      hold: stats.hold,
       pitch_threshold_hz: Number(threshold.toFixed(1)),
-      calibration: `male→head${genderHead.male ?? '?'} female→head${genderHead.female ?? '?'}`,
+      calibration: `${twoShotSegs} two-shot seg(s); last ${lastCal}`,
       shots: shotTimes.length,
     },
   };
-}
-
-/**
- * Two-stage gender→head mapping.
- *
- * Stage 1 — Accumulated voice-motion profiles:
- *   For every frame labeled 'male' (or 'female') with confident pitch, add that
- *   frame's motion profile to a per-gender accumulator. The peak of the accumulated
- *   profile reveals WHERE in the frame the face was moving while that voice spoke.
- *   This is robust because: even tiny lip/nod movements accumulate into a clear
- *   peak over many speaking frames, whereas per-frame votes are too noisy.
- *
- * Stage 2 — interestX statistics (fallback):
- *   The interest-map centroid is biased toward whichever face is more active.
- *   Mean interestX during male speech vs female speech separates the two positions
- *   even without any motion — useful for fully static scenes.
- */
-function mapGenderToHead(
-  isTwoShot: boolean,
-  heads: number[],
-  labels: Array<{ label: SpeakerLabel; conf: number }>,
-  motionPerFrame: Float64Array[],
-  interestXs: Float64Array,
-): { male: number | null; female: number | null } {
-  if (!isTwoShot || heads.length < 2) return { male: null, female: null };
-
-  const cols = PROFILE_COLS;
-  const CAL_CONF = 0.30;
-
-  // Stage 1: accumulated motion profiles per gender
-  const maleAcc   = new Float64Array(cols);
-  const femaleAcc = new Float64Array(cols);
-  let maleN = 0, femaleN = 0;
-
-  for (let i = 0; i < labels.length; i++) {
-    const { label, conf } = labels[i];
-    if (conf < CAL_CONF) continue;
-    if (label === 'male') {
-      for (let x = 0; x < cols; x++) maleAcc[x] += motionPerFrame[i][x] * conf;
-      maleN++;
-    } else if (label === 'female') {
-      for (let x = 0; x < cols; x++) femaleAcc[x] += motionPerFrame[i][x] * conf;
-      femaleN++;
-    }
-  }
-
-  // Smooth the accumulators with a broad kernel to merge adjacent columns
-  const smoothKernel = Math.max(2, Math.floor(cols * 0.07));
-  const maleSmooth   = boxSmooth(maleAcc,   smoothKernel);
-  const femaleSmooth = boxSmooth(femaleAcc, smoothKernel);
-
-  const malePeakX   = argmaxInRange(maleSmooth,   Math.floor(cols * 0.05), Math.floor(cols * 0.95)) / (cols - 1);
-  const femalePeakX = argmaxInRange(femaleSmooth, Math.floor(cols * 0.05), Math.floor(cols * 0.95)) / (cols - 1);
-  const maleStrong   = maleN   >= 3 && maleSmooth[Math.round(malePeakX * (cols - 1))]     > 1e-3;
-  const femaleStrong = femaleN >= 3 && femaleSmooth[Math.round(femalePeakX * (cols - 1))] > 1e-3;
-
-  if (maleStrong && femaleStrong && Math.abs(malePeakX - femalePeakX) > 0.12) {
-    const maleLeft = malePeakX < femalePeakX;
-    return { male: maleLeft ? 0 : 1, female: maleLeft ? 1 : 0 };
-  }
-  if (maleStrong && !femaleStrong) {
-    const mIdx = malePeakX < 0.5 ? 0 : 1;
-    return { male: mIdx, female: 1 - mIdx };
-  }
-  if (femaleStrong && !maleStrong) {
-    const fIdx = femalePeakX < 0.5 ? 0 : 1;
-    return { male: 1 - fIdx, female: fIdx };
-  }
-
-  // Stage 2: interestX statistics — works even when motion is absent
-  let maleIxSum = 0, maleIxW = 0, femaleIxSum = 0, femaleIxW = 0;
-  for (let i = 0; i < labels.length; i++) {
-    const { label, conf } = labels[i];
-    if (conf < 0.40) continue;
-    if (label === 'male')   { maleIxSum   += interestXs[i] * conf; maleIxW   += conf; }
-    if (label === 'female') { femaleIxSum += interestXs[i] * conf; femaleIxW += conf; }
-  }
-  const maleMx   = maleIxW   > 0 ? maleIxSum   / maleIxW   : null;
-  const femaleMx = femaleIxW > 0 ? femaleIxSum / femaleIxW : null;
-
-  if (maleMx !== null && femaleMx !== null && Math.abs(maleMx - femaleMx) > 0.04) {
-    const maleLeft = maleMx < femaleMx;
-    return { male: maleLeft ? 0 : 1, female: maleLeft ? 1 : 0 };
-  }
-  if (maleMx !== null) { const m = maleMx < 0.5 ? 0 : 1; return { male: m, female: 1 - m }; }
-  if (femaleMx !== null) { const f = femaleMx < 0.5 ? 0 : 1; return { male: 1 - f, female: f }; }
-
-  return { male: null, female: null };
-}
-
-function boxSmooth(a: Float64Array, radius: number): Float64Array {
-  const n = a.length, out = new Float64Array(n);
-  for (let i = 0; i < n; i++) {
-    let s = 0, c = 0;
-    for (let k = -radius; k <= radius; k++) { const j = i + k; if (j >= 0 && j < n) { s += a[j]; c++; } }
-    out[i] = c > 0 ? s / c : 0;
-  }
-  return out;
-}
-
-function argmaxInRange(a: Float64Array, lo: number, hi: number): number {
-  let idx = lo, v = -Infinity;
-  for (let i = lo; i <= hi && i < a.length; i++) if (a[i] > v) { v = a[i]; idx = i; }
-  return idx;
 }
 
 function grayHist(frame: Uint8Array): Float64Array {
   const h = new Float64Array(SHOT_BINS);
   for (let i = 0; i < frame.length; i++) h[(frame[i] * SHOT_BINS) >> 8]++;
   return h;
+}
+
+/** Convert shot-boundary timestamps to [startFrame, endFrame) index ranges. */
+function buildFrameSegments(shotTimes: number[], nFrames: number, sampleFps: number): Array<[number, number]> {
+  const bounds = Array.from(new Set(shotTimes)).sort((a, b) => a - b);
+  const starts = bounds.map((t) => Math.max(0, Math.min(nFrames, Math.round(t * sampleFps))));
+  const segs: Array<[number, number]> = [];
+  for (let i = 0; i < starts.length; i++) {
+    const f0 = starts[i];
+    const f1 = i + 1 < starts.length ? starts[i + 1] : nFrames;
+    if (f1 > f0) segs.push([f0, f1]);
+  }
+  if (segs.length === 0) segs.push([0, nFrames]);
+  return segs;
 }

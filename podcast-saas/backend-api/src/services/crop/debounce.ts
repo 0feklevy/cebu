@@ -1,21 +1,22 @@
 /**
  * Speaker-continuity debounce for two-shot crop switching.
  *
- * A new speaker must hold the floor for MIN_SPEAKER_DURATION of continuous
- * speech before the crop commits to their face — brief interjections (< 1 s) are
- * suppressed so the framing doesn't ping-pong. Direct port of the Python state
- * machine.
+ * A new speaker must hold the floor for MIN_SPEAKER_DURATION before the crop
+ * commits to their face — brief interjections are suppressed so the framing
+ * doesn't ping-pong. The "speaker" is a free-form identity key: it can be a
+ * gender ('male'/'female') or a head-region id ('region0'/'region1'). Two special
+ * keys are handled distinctly:
+ *   • 'silence' — hold the last crop, reset the active speaker after a long pause.
+ *   • 'unclear' — hold the crop, don't touch the silence timer.
  */
 
-import type { SpeakerLabel } from './speaker.js';
-
-const MIN_SPEAKER_DURATION = 1.0; // s of continuous speech before a switch commits
+const MIN_SPEAKER_DURATION = 0.8; // s of continuous speech before a switch commits
 const SILENCE_HOLD = 1.5;         // s of silence before the active speaker resets
 
 export class DebounceState {
-  currentSpeaker: SpeakerLabel | null = null;
+  currentSpeaker: string | null = null;
   currentFaceX: number | null = null;
-  pendingSpeaker: SpeakerLabel | null = null;
+  pendingSpeaker: string | null = null;
   pendingSince = 0;
   lastSpeechT = -999;
 }
@@ -26,7 +27,7 @@ export class DebounceState {
  */
 export function applyDebounce(
   state: DebounceState,
-  speaker: SpeakerLabel,
+  speaker: string,
   t: number,
   faceXCandidate: number | null,
 ): number | null {
@@ -42,7 +43,7 @@ export function applyDebounce(
     return state.currentFaceX; // ambiguous — hold, don't reset silence timer
   }
 
-  // Active speaker ('male' | 'female')
+  // Active speaker (gender or region id)
   state.lastSpeechT = t;
 
   if (state.currentSpeaker === null) {

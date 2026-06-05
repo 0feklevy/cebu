@@ -86,51 +86,59 @@ Per-second audio is reduced to raw pitch features (`analyzeChunk` → `{rms, f0,
 conf}`) using FFT **autocorrelation** (not raw FFT peak — autocorrelation locks
 onto the true period, not a harmonic).
 
-### Stage 2 — global decisions (between passes)
+### Stage 2 — per-shot decisions (between passes)
+
+Everything here runs **per shot**, not globally. Camera framing is only stable
+within a continuous take, so a video that mixes a two-shot with B-roll and single
+close-ups would, under a global model, have its head profile swamped by the
+non-two-shot footage (→ one false head in the middle, crop stuck there). Shot
+boundaries come from the inline gray-histogram Bhattacharyya cuts.
 
 **Head localization** —
-[`headLocator.ts`](../backend-api/src/services/crop/headLocator.ts). Podcast
-cameras are static, so we localise **once** from the summed profiles rather than
-per frame (no wobble). Person-energy = `skin·2 + saliency·0.6 + activity·1`. We
-take the strongest peak in the **left half** and in the **right half**, then gate
-a genuine two-shot on three tests:
-- both peaks strong (≥ 45 % of the max),
-- separated by ≥ 0.22 of the width,
-- a real **valley** between them (two people have a gap; one centred face does
-  not).
+[`headLocator.ts`](../backend-api/src/services/crop/headLocator.ts). Within a
+shot the camera is static, so we localise from that shot's summed profiles.
+Person-energy = `skin·2 + saliency·0.6 + activity·1`. We take the strongest peak
+in the **left half** and the **right half**, then gate a genuine two-shot on:
+both peaks strong, separated by ≥ 0.20 width, and a real **valley** between them
+(two people have a gap; one centred face does not). This stops animations and
+single speakers from being split into two heads.
 
-This gate is what stops animations and single speakers from being wrongly split
-into two heads.
+**Active speaker by audio-visual correlation** (the core mechanism) —
+[`activeSpeaker.ts`](../backend-api/src/services/crop/activeSpeaker.ts). "Who is
+talking" is the hard part. Per-frame motion fails — both people move, trees sway,
+hands gesture. The robust signal (the basis of SyncNet/TalkNet) is **temporal
+correlation between a face's motion and the audio envelope**: the speaker's
+mouth/jaw moves *in sync* with the speech they produce. For each head region we
+pool its motion into a time series and, over a sliding ~2.5 s window, compute the
+Pearson correlation of (region motion) vs (audio RMS). The region whose motion
+tracks the audio is the speaker. Background motion and the listener's idle motion
+are uncorrelated with the current speech → they cancel. **This works even for two
+same-gender hosts**, where pitch is useless.
 
-**Pitch threshold (self-calibrating)** —
-[`speaker.ts`](../backend-api/src/services/crop/speaker.ts). Instead of a
-hard-coded 160 Hz male/female split, we 1-D **k-means** the confident F0 samples
-into two clusters and put the threshold at the valley between them — adapting to
-the actual two voices. Falls back to 160 Hz when the voices aren't separable
-(same-gender hosts).
-
-**Gender → side, by voting** — for every confident-gender frame we ask *which
-head is moving while this gender speaks* and tally a confidence-weighted vote.
-Majority wins. This is dramatically more stable than averaging positions (which
-collapses to centre whenever the active head flips), and conflicts (both genders
-voting the same head) are resolved by giving the contested head to the stronger
-voter.
+**Pitch threshold + gender→side (secondary)** —
+[`speaker.ts`](../backend-api/src/services/crop/speaker.ts). A self-calibrating
+F0 threshold (1-D k-means valley, falls back to 160 Hz) labels each window
+male/female. The AV-active series then *calibrates* gender→region (during male
+speech, which region did AV flag?), so pitch can fill gaps where the correlation
+is briefly ambiguous but the voice is clearly one gender.
 
 ### Stage 3 — emit crop_x (second pass, no decode)
 
-For each frame:
+Per shot:
 - **Not a two-shot** → `crop_x = clamp(interestX)`. A single speaker is followed
   by the interest centroid (skin-dominated, so it sits on the face).
-- **Two-shot** → resolve the active-speaker head by priority:
-  1. **calibrated** gender → side (from the vote),
-  2. **motion** — the head with the most motion this frame,
-  3. **midpoint** of the two heads (last resort),
+- **Two-shot** → resolve the active region by priority:
+  1. **AV-correlation** — direct observation of who is speaking (primary),
+  2. **gender → region** — gap-fill when the correlation is ambiguous but pitch
+     is clear,
+  3. **hold** (silence / ambiguous),
 
   then pass it through the **speaker debounce**
-  ([`debounce.ts`](../backend-api/src/services/crop/debounce.ts)): a switch only
-  commits after **1 s of continuous speech**, the crop **holds** through silence
-  (1.5 s) and ambiguous pitch, and the state **resets at shot boundaries**. This
-  suppresses ping-ponging on brief interjections.
+  ([`debounce.ts`](../backend-api/src/services/crop/debounce.ts), keyed on the
+  region id): a switch only commits after **0.8 s** of the new speaker holding the
+  floor, the crop **holds** through silence (1.5 s) and ambiguity, and the state
+  **resets at shot boundaries**. This suppresses ping-ponging on brief
+  interjections.
 
 ### Stage 4 — smoothing
 [`smoother.ts`](../backend-api/src/services/crop/smoother.ts). Per shot: a
@@ -149,25 +157,30 @@ in portrait orientation** — widens the active `<video>` and `translateX`-es it
 
 ## 4. Improvements over the reference
 
-1. **Self-calibrating pitch threshold** (k-means valley) instead of a fixed
-   160 Hz — the single biggest source of gender misclassification.
-2. **Sub-sample F0** via parabolic interpolation of the autocorrelation peak, and
-   an **octave-error guard** (prefer the shortest strong period) — verified to
-   recover 90–300 Hz tones to < 1 Hz.
-3. **Global static-camera head localization** with a bimodality/valley gate —
-   far steadier than per-frame face peaks, and it no longer mis-fires on
+1. **Audio-visual correlation for active-speaker detection** — the headline
+   change. Correlating each face's motion with the audio envelope robustly picks
+   the talker, rejecting background sway and listener fidgeting, and **works for
+   two same-gender hosts** (where the reference's pitch-only approach can't).
+   Validated end-to-end on a synthetic two-shot with identical voices.
+2. **Per-shot head localization** — the reference localised once globally, which
+   collapses to a single false head when a clip mixes a two-shot with B-roll /
+   single close-ups (the real failure the user hit). Localizing per shot fixes it.
+3. **Self-calibrating pitch threshold** (k-means valley) instead of a fixed
+   160 Hz — used now only as a secondary gap-filler.
+4. **Sub-sample F0** via parabolic interpolation + **octave-error guard** —
+   recovers 90–300 Hz tones to < 1 Hz.
+5. **Bimodality/valley gate** on head detection — no false two-shots on
    single-speaker or animated content.
-4. **Vote-based gender→side** mapping — robust to active-head flicker, where the
-   reference's position-averaging collapsed to centre.
-5. **Face-band-restricted motion & skin** — ignores hands / lower-thirds.
-6. **Median prefilter** before Gaussian smoothing — removes one-frame glitches
-   the reference could smear into a visible wobble.
-7. **2 fps** sampling (vs 1 fps) for snappier switching, still cheap.
-8. **One video decode** (RGB → gray in JS) instead of separate passes.
+6. **Face-band-restricted motion & skin** + lowered motion floor (catches lip
+   micro-movements at the 320×180 analysis resolution).
+7. **Median prefilter** before Gaussian smoothing — removes one-frame glitches.
+8. **4 fps** sampling (fine enough for AV correlation), **one video decode**
+   (RGB → gray in JS). ~50× realtime end-to-end.
 
 A precise face detector can still be slotted in via the `FaceHook` interface in
-`sceneAnalyzer.ts` to replace the heuristic head locator — everything downstream
-is unchanged.
+`sceneAnalyzer.ts` — it would replace the heuristic head locator and sharpen the
+per-region motion windows; everything downstream (AV correlation, debounce,
+smoothing) is unchanged.
 
 ---
 
@@ -210,16 +223,18 @@ backend-api/src/services/crop/
   dsp.ts            FFT, autocorr F0, spectral-residual saliency, gaussian/median, bhattacharyya
   ffmpegExtract.ts  probe + RGB frames + mono PCM (spawn ffmpeg)
   sceneAnalyzer.ts  per-frame motion/skin/saliency/interest profiles (+ optional FaceHook)
-  headLocator.ts    global static-camera head localization + per-frame active head
-  speaker.ts        pitch labelling + self-calibrating threshold
-  debounce.ts       speaker-continuity state machine
+  headLocator.ts    per-shot static-camera head localization (bimodality/valley gate)
+  activeSpeaker.ts  audio-visual correlation — region motion vs audio envelope
+  speaker.ts        pitch labelling + self-calibrating threshold (secondary signal)
+  debounce.ts       region-continuity state machine
   smoother.ts       per-shot median + gaussian, hard reset at cuts
-  cropProcessor.ts  two-pass orchestrator → CropMetadata
+  cropProcessor.ts  per-shot orchestrator → CropMetadata
   runCropAnalysis.ts background job + triggers + status tracking
-  __tests__/dsp.test.ts   11 deterministic unit tests (FFT, F0, saliency, threshold, clamp)
+  __tests__/dsp.test.ts            11 unit tests (FFT, F0, saliency, threshold, clamp)
+  __tests__/activeSpeaker.test.ts   5 unit tests (AV correlation, calibration)
 
 client-web/components/viewer/
-  useCropOverlay.ts  runtime portrait transform (no-op in landscape)
+  useCropOverlay.ts  runtime portrait transform (object-fit cover + object-position)
 ```
 
 ## 7. Verifying
