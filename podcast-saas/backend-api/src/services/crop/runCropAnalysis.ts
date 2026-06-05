@@ -96,7 +96,7 @@ export async function runCropAnalysis(videoFileId: string): Promise<void> {
     await storage.uploadFile(key, Buffer.from(json), 'application/json');
 
     await db.update(video_files)
-      .set({ crop_status: 'ready', crop_key: key, crop_source_hash: hash, crop_error: null })
+      .set({ crop_status: 'ready', crop_key: key, crop_source_hash: hash, crop_error: null, crop_updated_at: new Date() })
       .where(eq(video_files.id, videoFileId));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

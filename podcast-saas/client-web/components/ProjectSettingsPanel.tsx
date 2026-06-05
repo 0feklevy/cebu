@@ -2,10 +2,10 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Loader2, RefreshCw, Settings, Sparkles, Upload, X } from 'lucide-react';
+import { Crop, Loader2, RefreshCw, Settings, Sparkles, Upload, X } from 'lucide-react';
 import { api } from '../lib/api';
 import { LockPriceControl } from './LockPriceControl';
-import type { Project } from 'shared/src/generated/client-v1';
+import type { Project, VideoFile } from 'shared/src/generated/client-v1';
 
 interface Props {
   projectId: string;
@@ -19,6 +19,11 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
   const [desc, setDesc] = useState('');
   const [savingMeta, setSavingMeta] = useState(false);
   const [savedMeta, setSavedMeta] = useState(false);
+
+  // Crop state
+  const [videos, setVideos] = useState<VideoFile[]>([]);
+  const [cropping, setCropping] = useState(false);
+  const [cropError, setCropError] = useState<string | null>(null);
 
   // Generate controls
   const [prompt, setPrompt] = useState('');
@@ -36,6 +41,23 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
     setTitle(project?.title ?? '');
     setDesc(project?.topic ?? '');
   }, [project?.title, project?.topic]);
+
+  // Load videos when panel opens
+  useEffect(() => {
+    if (!open) return;
+    api.listVideos(projectId).then(setVideos).catch(() => {});
+  }, [open, projectId]);
+
+  // Poll crop status while any video is processing
+  useEffect(() => {
+    const mainVideos = videos.filter(v => !v.is_broll);
+    const anyProcessing = mainVideos.some(v => v.crop_status === 'processing' || v.crop_status === 'none' && cropping);
+    if (!anyProcessing) return;
+    const timer = setInterval(() => {
+      api.listVideos(projectId).then(setVideos).catch(() => {});
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [videos, cropping, projectId]);
 
   // Close on Escape
   useEffect(() => {
@@ -82,6 +104,28 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
       setGenError((e as Error).message?.slice(0, 120));
     } finally { setRegenerating(false); }
   };
+
+  const recrop = async () => {
+    setCropping(true);
+    setCropError(null);
+    try {
+      await api.recropProject(projectId);
+      const updated = await api.listVideos(projectId);
+      setVideos(updated);
+    } catch (e) {
+      setCropError((e as Error).message?.slice(0, 120));
+    } finally {
+      setCropping(false);
+    }
+  };
+
+  const mainVideos = videos.filter(v => !v.is_broll && v.crop_status !== 'none');
+  const lastCropTime = mainVideos.reduce<string | null>((latest, v) => {
+    if (!v.crop_updated_at) return latest;
+    if (!latest || v.crop_updated_at > latest) return v.crop_updated_at;
+    return latest;
+  }, null);
+  const anyCropProcessing = videos.some(v => !v.is_broll && v.crop_status === 'processing');
 
   const thumbnailUrl = project?.thumbnail_url ?? null;
   const isGenerating = regenerating || project?.metadata_status === 'processing';
@@ -270,6 +314,43 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
                 : savedMeta ? '✓ Saved' : 'Save changes'
               }
             </button>
+          </div>
+
+          {/* ── Smart Crop ───────────────────────────────────────────────── */}
+          <div style={{ paddingTop: 20, paddingBottom: 20, borderBottom: '1px solid #f3f4f6' }}>
+            <p style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#9ca3af', marginBottom: 12 }}>Smart Crop</p>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <button
+                onClick={recrop}
+                disabled={cropping || anyCropProcessing}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  height: 36, padding: '0 16px', border: 'none', borderRadius: 8,
+                  background: (cropping || anyCropProcessing) ? '#e5e7eb' : 'linear-gradient(135deg,#a855f7,#6366f1)',
+                  color: (cropping || anyCropProcessing) ? '#9ca3af' : '#fff',
+                  fontSize: 13, fontWeight: 600,
+                  cursor: (cropping || anyCropProcessing) ? 'not-allowed' : 'pointer',
+                  flexShrink: 0,
+                }}
+              >
+                {(cropping || anyCropProcessing)
+                  ? <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Cropping…</>
+                  : <><Crop size={13} strokeWidth={2} /> Recrop</>
+                }
+              </button>
+              <span style={{ fontSize: 12, color: '#9ca3af' }}>
+                {anyCropProcessing
+                  ? 'Running…'
+                  : lastCropTime
+                    ? `Last cropped ${new Date(lastCropTime).toLocaleString()}`
+                    : 'Never cropped'
+                }
+              </span>
+            </div>
+            {cropError && <p style={{ fontSize: 11, color: '#ef4444', marginTop: 6 }}>{cropError}</p>}
+            <p style={{ fontSize: 11, color: '#9ca3af', marginTop: 6 }}>
+              Re-runs the smart portrait-crop pipeline · detects active speakers for 9:16 framing
+            </p>
           </div>
 
           {/* ── Access / Lock ─────────────────────────────────────────────── */}

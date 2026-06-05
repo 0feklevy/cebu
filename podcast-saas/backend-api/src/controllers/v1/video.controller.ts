@@ -7,6 +7,7 @@ import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { logger } from '../../lib/logger.js';
 import { randomUUID } from 'crypto';
 import { runVideoTranscode } from '../../services/video/runVideoTranscode.js';
+import { enqueueCropForProject } from '../../services/crop/runCropAnalysis.js';
 
 const TEN_GB = 10 * 1024 * 1024 * 1024;
 
@@ -242,6 +243,33 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
       });
 
       return reply.send({ queued: true, video_file_id: videoFile.id });
+    },
+  );
+
+  // POST /api/v1/projects/:id/recrop — force re-run crop analysis for all videos
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/projects/:id/recrop',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const project = await db.query.projects.findFirst({
+        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
+      });
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+
+      // Clear crop_source_hash so the idempotency check doesn't skip re-runs
+      await db
+        .update(video_files)
+        .set({ crop_source_hash: null, crop_status: 'none', crop_error: null })
+        .where(eq(video_files.project_id, project.id));
+
+      setImmediate(() => {
+        enqueueCropForProject(project.id).catch((err) => {
+          logger.warn({ err, project_id: project.id }, 'recrop enqueue failed');
+        });
+      });
+
+      return reply.send({ queued: true });
     },
   );
 }

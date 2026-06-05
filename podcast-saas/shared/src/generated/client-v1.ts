@@ -115,6 +115,8 @@ export interface VideoFile {
   is_broll: boolean;              // true for AI-generated broll source files
   hls_url: string | null;   // computed: public HLS URL (only set when hls_status === 'ready')
   raw_url?: string | null;  // present in upload response and hls-status poll; absent in list
+  crop_status: string;      // none | processing | ready | failed
+  crop_updated_at: string | null;
   created_at: string;
 }
 
@@ -500,6 +502,10 @@ export class ClientV1Api {
 
   deleteVideo(projectId: string, videoId: string): Promise<void> {
     return this.request(`/api/v1/projects/${projectId}/videos/${videoId}`, { method: 'DELETE' });
+  }
+
+  recropProject(projectId: string): Promise<{ queued: boolean }> {
+    return this.request(`/api/v1/projects/${projectId}/recrop`, { method: 'POST' });
   }
 
   // ── Timeline Sections ─────────────────────────────────────────────────────

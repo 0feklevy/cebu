@@ -360,6 +360,7 @@ export const video_files = pgTable('video_files', {
   crop_key: text('crop_key'),                                    // storage key of the crop-metadata JSON
   crop_source_hash: text('crop_source_hash'),                    // idempotency: re-run when the source changes
   crop_error: text('crop_error'),
+  crop_updated_at: timestamp('crop_updated_at', { withTimezone: true }),
   created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
