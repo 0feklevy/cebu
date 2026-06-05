@@ -133,19 +133,24 @@ export async function extractThumbnailAtTime(
 ): Promise<string> {
   const storage = getStorageAdapter();
   const video = await db.query.video_files.findFirst({ where: eq(video_files.id, videoFileId) });
-  if (!video?.storage_key) throw new Error('Video not found or not uploaded');
+  if (!video) throw new Error('Video not found');
+
+  // Prefer HLS stream (always available post-transcode); ffmpeg reads HTTP URLs natively.
+  // Fall back to presigned raw URL if HLS not yet ready.
+  const hlsKey = video.hls_master_key ?? video.hls_360p_key;
+  let inputArg: string;
+  if (video.hls_status === 'ready' && hlsKey) {
+    inputArg = storage.getPublicUrl(hlsKey);
+  } else if (video.storage_key) {
+    inputArg = await storage.getPresignedDownloadUrl(video.storage_key, 3600);
+  } else {
+    throw new Error('No video source available — wait for transcoding to finish');
+  }
 
   const workDir = await mkdtemp(join(tmpdir(), 'vthumb-'));
   try {
-    const ext = video.storage_key.split('.').pop() ?? 'mp4';
-    const srcPath = join(workDir, `source.${ext}`);
-    const downloadUrl = await storage.getPresignedDownloadUrl(video.storage_key, 3600);
-    const res = await fetch(downloadUrl);
-    if (!res.ok) throw new Error(`Download failed: ${res.status}`);
-    await (await import('fs/promises')).writeFile(srcPath, Buffer.from(await res.arrayBuffer()));
-
     const thumbPath = join(workDir, 'thumb.jpg');
-    await extractFrame(srcPath, thumbPath, Math.max(0, timeSec));
+    await extractFrame(inputArg, thumbPath, Math.max(0, timeSec));
 
     const thumbBuf = await readFile(thumbPath);
     const thumbKey = `thumbnails/${projectId}.jpg`;

@@ -36,11 +36,21 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
   const [pickError, setPickError] = useState<string | null>(null);
   const [videoSrcUrl, setVideoSrcUrl] = useState<string | null>(null);
 
+  const [isCompact, setIsCompact] = useState(false);
   const [canPortal, setCanPortal] = useState(false);
   const thumbInputRef = useRef<HTMLInputElement>(null);
   const videoPreviewRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => setCanPortal(true), []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mq = window.matchMedia('(max-width: 900px), (max-height: 680px)');
+    const sync = () => setIsCompact(mq.matches);
+    sync();
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
+  }, []);
 
   // Sync from project
   useEffect(() => {
@@ -168,6 +178,26 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
   const dur = mainVid?.duration_sec ?? 0;
   const fmtTime = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
+  const labelStyle: React.CSSProperties = {
+    fontSize: 11, fontWeight: 600, color: '#6b7280',
+    textTransform: 'uppercase', letterSpacing: '0.06em',
+    display: 'block', marginBottom: 6,
+  };
+
+  const inputStyle: React.CSSProperties = {
+    width: '100%', height: 36, border: '1px solid #e2e8f0', borderRadius: 8,
+    padding: '0 12px', fontSize: 13, color: '#111827', outline: 'none',
+    boxSizing: 'border-box', background: '#fff', fontFamily: 'inherit',
+  };
+
+  const btnStyle = (active: boolean): React.CSSProperties => ({
+    width: '100%', height: 36, border: 'none', borderRadius: 8,
+    background: active ? '#e5e7eb' : 'linear-gradient(135deg,#a855f7,#6366f1)',
+    color: active ? '#9ca3af' : '#fff',
+    fontSize: 13, fontWeight: 600, cursor: active ? 'not-allowed' : 'pointer',
+    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+  });
+
   const modal = !open ? null : (
     <>
       {/* Backdrop */}
@@ -176,214 +206,210 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
         style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(2,6,23,0.55)', backdropFilter: 'blur(10px)', zIndex: 800 }}
       />
 
-      {/* Modal — 2-column, no inner scroll */}
+      {/* Modal — matches SectionEditor exactly */}
       <div
         style={{
-          position: 'fixed', top: '50%', left: '50%',
-          transform: 'translate(-50%, -50%)',
-          zIndex: 801, width: 'min(820px, 90vw)',
-          backgroundColor: '#ffffff', borderRadius: 14,
-          boxShadow: '0 24px 64px rgba(0,0,0,0.22), 0 4px 16px rgba(0,0,0,0.10)',
+          position: 'fixed',
+          top: isCompact ? 0 : '50%',
+          left: isCompact ? 0 : '50%',
+          transform: isCompact ? 'none' : 'translate(-50%, -50%)',
+          zIndex: 801,
+          width: isCompact ? '100vw' : '90vw',
+          height: isCompact ? '100dvh' : 'min(820px, 92dvh)',
+          maxHeight: '100dvh',
+          display: 'flex', flexDirection: 'column',
+          backgroundColor: '#ffffff',
+          borderRadius: isCompact ? 0 : 10,
+          boxShadow: '0 16px 48px rgba(0,0,0,0.18), 0 4px 16px rgba(0,0,0,0.08)',
           overflow: 'hidden', fontFamily: 'system-ui, -apple-system, sans-serif',
         }}
       >
-        {/* Header */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '13px 20px', borderBottom: '1px solid #e5e7eb' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Settings size={15} strokeWidth={1.8} color="#6b7280" />
-            <span style={{ fontSize: 14, fontWeight: 700, color: '#111827' }}>Video settings</span>
+        {/* ── Header — same as SectionEditor ── */}
+        <div style={{
+          flexShrink: 0, padding: isCompact ? '12px 14px' : '16px 24px',
+          borderBottom: '1px solid hsl(var(--shell-border))',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          gap: 12, background: 'hsl(var(--shell))',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ width: 10, height: 10, borderRadius: '50%', backgroundColor: '#a855f7', display: 'inline-block', flexShrink: 0, boxShadow: '0 0 0 4px rgba(168,85,247,0.18)' }} />
+            <span style={{ fontSize: 15, fontWeight: 700, color: 'hsl(var(--shell-foreground))' }}>Video settings</span>
+            {project?.title && (
+              <span style={{ fontSize: 10, fontWeight: 600, color: 'hsl(var(--shell-muted))', backgroundColor: 'var(--shell-hover)', borderRadius: 6, padding: '2px 8px', fontFamily: 'monospace' }}>
+                {project.title.slice(0, 40)}
+              </span>
+            )}
           </div>
           <button
             onClick={() => setOpen(false)}
-            style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, borderRadius: 8, border: 'none', background: 'transparent', cursor: 'pointer', color: '#9ca3af' }}
-            onMouseEnter={e => (e.currentTarget.style.background = '#f3f4f6')}
-            onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+            style={{ width: 30, height: 30, borderRadius: 8, border: 'none', backgroundColor: 'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'hsl(var(--shell-muted))', flexShrink: 0 }}
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--shell-hover)'; (e.currentTarget as HTMLElement).style.color = 'hsl(var(--shell-foreground))'; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent'; (e.currentTarget as HTMLElement).style.color = 'hsl(var(--shell-muted))'; }}
           >
-            <X size={15} strokeWidth={1.8} aria-hidden />
+            <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M2 2l9 9M11 2L2 11" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
           </button>
         </div>
 
-        {/* 2-column body */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 0 }}>
+        {/* ── Body: two-column — same as SectionEditor ── */}
+        <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: isCompact ? 'column' : 'row' }}>
 
-          {/* ── LEFT: Thumbnail ──────────────────────────────────── */}
-          <div style={{ padding: '18px 20px', borderRight: '1px solid #f3f4f6' }}>
-            <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.09em', textTransform: 'uppercase', color: '#9ca3af', marginBottom: 10 }}>Thumbnail</p>
+          {/* LEFT panel — controls (same bg as SectionEditor left) */}
+          <div style={{
+            width: isCompact ? '100%' : 380,
+            maxHeight: isCompact ? '44dvh' : undefined,
+            flexShrink: 0, overflowY: 'auto',
+            padding: isCompact ? '14px' : '20px 24px',
+            display: 'flex', flexDirection: 'column', gap: 20,
+            borderRight: isCompact ? 'none' : '1px solid #e2e8f0',
+            borderBottom: isCompact ? '1px solid #e2e8f0' : 'none',
+            backgroundColor: '#f8fafc', boxSizing: 'border-box',
+          }}>
 
-            {/* Preview — shows live video frame in timeline mode */}
-            <div style={{ position: 'relative', width: '100%', aspectRatio: '16/9', borderRadius: 8, overflow: 'hidden', background: '#0f172a', border: '1px solid #e5e7eb', marginBottom: 10 }}>
-              {/* Video element for live frame scrubbing */}
+            {/* Details */}
+            <div>
+              <span style={labelStyle}>Details</span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <input
+                  value={title} onChange={e => setTitle(e.target.value)} placeholder="Video name"
+                  style={inputStyle}
+                  onFocus={e => (e.target.style.borderColor = '#a855f7')}
+                  onBlur={e => (e.target.style.borderColor = '#e2e8f0')}
+                />
+                <textarea
+                  value={desc} onChange={e => setDesc(e.target.value)} rows={3} placeholder="What is this video about?"
+                  style={{ ...inputStyle, height: 'auto', padding: '8px 12px', resize: 'none' }}
+                  onFocus={e => (e.target.style.borderColor = '#a855f7')}
+                  onBlur={e => (e.target.style.borderColor = '#e2e8f0')}
+                />
+                <button onClick={saveMeta} disabled={savingMeta} style={btnStyle(savingMeta)}>
+                  {savingMeta ? <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Saving…</> : savedMeta ? '✓ Saved' : 'Save details'}
+                </button>
+              </div>
+            </div>
+
+            {/* Smart Crop */}
+            <div>
+              <span style={labelStyle}>Smart Crop</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+                <button
+                  onClick={recrop} disabled={cropping || anyCropProcessing}
+                  style={{ ...btnStyle(cropping || anyCropProcessing), width: 'auto', padding: '0 16px', height: 36, flexShrink: 0 }}
+                >
+                  {(cropping || anyCropProcessing) ? <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Cropping…</> : <><Crop size={13} strokeWidth={2} /> Recrop</>}
+                </button>
+                <span style={{ fontSize: 12, color: '#6b7280' }}>
+                  {anyCropProcessing ? 'Running…' : lastCropTime
+                    ? new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(lastCropTime))
+                    : 'Never cropped'}
+                </span>
+              </div>
+              {cropError && <p style={{ fontSize: 11, color: '#ef4444', marginTop: 4 }}>{cropError}</p>}
+            </div>
+
+            {/* Access */}
+            <div>
+              <span style={labelStyle}>Access</span>
+              <LockPriceControl contentType="project" contentId={projectId} bordered={false} />
+            </div>
+          </div>
+
+          {/* RIGHT panel — thumbnail (white, scrollable) */}
+          <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: isCompact ? '14px' : '20px 24px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+            <span style={labelStyle}>Thumbnail</span>
+
+            {/* Preview */}
+            <div style={{ position: 'relative', width: '100%', aspectRatio: '16/9', borderRadius: 10, overflow: 'hidden', background: '#0f172a', border: '1px solid #e2e8f0' }}>
               {thumbMode === 'timeline' && videoSrcUrl && (
-                <video
-                  ref={videoPreviewRef}
-                  src={videoSrcUrl}
+                <video ref={videoPreviewRef} src={videoSrcUrl}
                   style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
                   muted playsInline preload="metadata"
                 />
               )}
-
-              {/* Overlay: spinner or static image on top */}
               {(isGenerating || pickingThumb) ? (
-                <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, color: '#9ca3af', background: 'rgba(255,255,255,0.9)' }}>
-                  <Loader2 size={18} style={{ animation: 'spin 1s linear infinite' }} />
-                  <span style={{ fontSize: 13 }}>{pickingThumb ? 'Extracting…' : 'Generating…'}</span>
+                <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, color: '#fff', background: 'rgba(0,0,0,0.55)' }}>
+                  <Loader2 size={20} style={{ animation: 'spin 1s linear infinite' }} />
+                  <span style={{ fontSize: 13, fontWeight: 600 }}>{pickingThumb ? 'Extracting frame…' : 'Generating…'}</span>
                 </div>
               ) : thumbMode === 'ai' && thumbnailUrl ? (
-                <img src={thumbnailUrl} alt="" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} draggable={false} />
+                <img src={thumbnailUrl} alt="" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} draggable={false} />
               ) : thumbMode === 'ai' ? (
-                <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, color: '#4b5563' }}>
-                  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.3"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9l4-4 4 4 5-5 5 5"/></svg>
-                  <span style={{ fontSize: 11, color: '#6b7280' }}>No thumbnail yet</span>
+                <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.3)" strokeWidth="1.2"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9l4-4 4 4 5-5 5 5"/></svg>
+                  <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)' }}>No thumbnail yet</span>
                 </div>
               ) : null}
             </div>
 
             {/* Mode tabs */}
-            <div style={{ display: 'flex', gap: 3, marginBottom: 10, background: '#f3f4f6', borderRadius: 8, padding: 3 }}>
+            <div style={{ display: 'flex', gap: 4, background: '#f1f5f9', borderRadius: 9, padding: 3 }}>
               {(['ai', 'timeline'] as const).map(mode => (
-                <button
-                  key={mode}
-                  onClick={() => setThumbMode(mode)}
-                  style={{
-                    flex: 1, height: 28, border: 'none', borderRadius: 6,
-                    background: thumbMode === mode ? '#fff' : 'transparent',
-                    boxShadow: thumbMode === mode ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
-                    fontSize: 11, fontWeight: 600,
-                    color: thumbMode === mode ? '#111827' : '#6b7280',
-                    cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
-                  }}
-                >
-                  {mode === 'ai'
-                    ? <><Sparkles size={10} strokeWidth={2} /> AI Generate</>
-                    : <><Film size={10} strokeWidth={1.9} /> From Timeline</>}
+                <button key={mode} onClick={() => setThumbMode(mode)} style={{
+                  flex: 1, height: 32, border: 'none', borderRadius: 7,
+                  background: thumbMode === mode ? '#fff' : 'transparent',
+                  boxShadow: thumbMode === mode ? '0 1px 4px rgba(0,0,0,0.1)' : 'none',
+                  fontSize: 12, fontWeight: 600, color: thumbMode === mode ? '#111827' : '#6b7280',
+                  cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
+                }}>
+                  {mode === 'ai' ? <><Sparkles size={12} strokeWidth={2} /> AI Generate</> : <><Film size={12} strokeWidth={1.9} /> From Timeline</>}
                 </button>
               ))}
             </div>
 
-            {thumbMode === 'ai' ? (<>
-              <input
-                value={prompt}
-                onChange={e => setPrompt(e.target.value)}
-                placeholder='Hint for AI (optional)'
-                style={{ width: '100%', height: 34, border: '1px solid #e5e7eb', borderRadius: 8, padding: '0 10px', fontSize: 12, color: '#111827', outline: 'none', boxSizing: 'border-box', background: '#fafafa', marginBottom: 8 }}
-                onFocus={e => (e.target.style.borderColor = '#a855f7')}
-                onBlur={e => (e.target.style.borderColor = '#e5e7eb')}
-              />
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                <select
-                  value={model}
-                  onChange={e => setModel(e.target.value as 'gpt-4o-mini' | 'gpt-4o')}
-                  style={{ height: 34, border: '1px solid #e5e7eb', borderRadius: 8, padding: '0 8px', fontSize: 11, color: '#374151', background: '#fff', cursor: 'pointer', outline: 'none' }}
-                >
-                  <option value="gpt-4o-mini">GPT-4o mini</option>
-                  <option value="gpt-4o">GPT-4o</option>
-                </select>
-                <button
-                  onClick={regen} disabled={isGenerating}
-                  style={{ flex: 1, height: 34, border: 'none', borderRadius: 8, background: isGenerating ? '#e5e7eb' : 'linear-gradient(135deg,#a855f7,#6366f1)', color: isGenerating ? '#9ca3af' : '#fff', fontSize: 12, fontWeight: 600, cursor: isGenerating ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}
-                >
-                  {isGenerating ? <><Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> Generating…</> : <><Sparkles size={12} strokeWidth={2} /> {thumbnailUrl ? 'Regenerate' : 'Generate'}</>}
-                </button>
-                <input ref={thumbInputRef} type="file" accept="image/jpeg,image/png,image/webp" style={{ display: 'none' }} onChange={async e => { e.target.value = ''; await regen(); }} />
-                <button onClick={() => thumbInputRef.current?.click()} title="Upload" disabled={isGenerating}
-                  style={{ width: 34, height: 34, border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#6b7280', flexShrink: 0 }}
-                  onMouseEnter={e => (e.currentTarget.style.background = '#f3f4f6')}
-                  onMouseLeave={e => (e.currentTarget.style.background = '#fff')}
-                >
-                  <Upload size={12} strokeWidth={1.9} />
-                </button>
+            {thumbMode === 'ai' ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <input
+                  value={prompt} onChange={e => setPrompt(e.target.value)}
+                  placeholder='Hint for AI (optional — e.g. "podcast about tech")'
+                  style={inputStyle}
+                  onFocus={e => (e.target.style.borderColor = '#a855f7')}
+                  onBlur={e => (e.target.style.borderColor = '#e2e8f0')}
+                />
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <select value={model} onChange={e => setModel(e.target.value as 'gpt-4o-mini' | 'gpt-4o')}
+                    style={{ height: 36, border: '1px solid #e2e8f0', borderRadius: 8, padding: '0 10px', fontSize: 12, color: '#374151', background: '#fff', cursor: 'pointer', outline: 'none' }}>
+                    <option value="gpt-4o-mini">GPT-4o mini — faster</option>
+                    <option value="gpt-4o">GPT-4o — best quality</option>
+                  </select>
+                  <button onClick={regen} disabled={isGenerating} style={{ ...btnStyle(isGenerating), flex: 1 }}>
+                    {isGenerating ? <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Generating…</> : <><Sparkles size={13} strokeWidth={2} /> {thumbnailUrl ? 'Regenerate' : 'Generate'}</>}
+                  </button>
+                  <input ref={thumbInputRef} type="file" accept="image/jpeg,image/png,image/webp" style={{ display: 'none' }} onChange={async e => { e.target.value = ''; await regen(); }} />
+                  <button onClick={() => thumbInputRef.current?.click()} title="Upload image" disabled={isGenerating}
+                    style={{ width: 36, height: 36, border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#6b7280', flexShrink: 0 }}
+                    onMouseEnter={e => (e.currentTarget.style.background = '#f1f5f9')}
+                    onMouseLeave={e => (e.currentTarget.style.background = '#fff')}
+                  >
+                    <Upload size={14} strokeWidth={1.9} />
+                  </button>
+                </div>
+                {genError && <p style={{ fontSize: 11, color: '#ef4444' }}>{genError}</p>}
+                <p style={{ fontSize: 11, color: '#94a3b8' }}>AI picks the best frame and generates title + description</p>
               </div>
-              {genError && <p style={{ fontSize: 11, color: '#ef4444', marginTop: 6 }}>{genError}</p>}
-            </>) : (<>
-              {dur > 0 ? (
-                <div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                    <span style={{ fontSize: 11, fontWeight: 600, color: '#374151' }}>Scrub to pick frame</span>
-                    <span style={{ fontSize: 12, fontWeight: 700, color: '#a855f7', fontVariantNumeric: 'tabular-nums' }}>{fmtTime(timelineSec)}</span>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {dur > 0 ? (<>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>Scrub to pick frame</span>
+                    <span style={{ fontSize: 14, fontWeight: 700, color: '#a855f7', fontVariantNumeric: 'tabular-nums', minWidth: 44, textAlign: 'right' }}>{fmtTime(timelineSec)}</span>
                   </div>
-                  <input
-                    type="range" min={0} max={Math.floor(dur)} step={1} value={timelineSec}
+                  <input type="range" min={0} max={Math.floor(dur)} step={1} value={timelineSec}
                     onChange={e => setTimelineSec(Number(e.target.value))}
-                    style={{ width: '100%', marginBottom: 2, accentColor: '#a855f7' }}
+                    style={{ width: '100%', accentColor: '#a855f7', cursor: 'pointer' }}
                   />
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#9ca3af', marginBottom: 8 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#94a3b8' }}>
                     <span>0:00</span><span>{fmtTime(Math.floor(dur))}</span>
                   </div>
-                  <button
-                    onClick={pickFromTimeline} disabled={pickingThumb}
-                    style={{ width: '100%', height: 34, border: 'none', borderRadius: 8, background: pickingThumb ? '#e5e7eb' : 'linear-gradient(135deg,#a855f7,#6366f1)', color: pickingThumb ? '#9ca3af' : '#fff', fontSize: 12, fontWeight: 600, cursor: pickingThumb ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}
-                  >
-                    {pickingThumb ? <><Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> Extracting…</> : <><Film size={12} strokeWidth={1.9} /> Use this frame</>}
+                  <button onClick={pickFromTimeline} disabled={pickingThumb} style={btnStyle(pickingThumb)}>
+                    {pickingThumb ? <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Extracting frame…</> : <><Film size={13} strokeWidth={1.9} /> Use this frame</>}
                   </button>
-                  {pickError && <p style={{ fontSize: 11, color: '#ef4444', marginTop: 6 }}>{pickError}</p>}
-                </div>
-              ) : (
-                <p style={{ fontSize: 12, color: '#9ca3af', textAlign: 'center', padding: '12px 0' }}>No video uploaded yet</p>
-              )}
-            </>)}
-          </div>
-
-          {/* ── RIGHT: Details + Crop + Access ───────────────────── */}
-          <div style={{ padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 0 }}>
-
-            {/* Details */}
-            <div style={{ marginBottom: 16 }}>
-              <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.09em', textTransform: 'uppercase', color: '#9ca3af', marginBottom: 10 }}>Details</p>
-              <input
-                value={title}
-                onChange={e => setTitle(e.target.value)}
-                placeholder="Video name"
-                style={{ width: '100%', height: 36, border: '1px solid #e5e7eb', borderRadius: 8, padding: '0 10px', fontSize: 13, color: '#111827', outline: 'none', boxSizing: 'border-box', background: '#fafafa', marginBottom: 8 }}
-                onFocus={e => (e.target.style.borderColor = '#a855f7')}
-                onBlur={e => (e.target.style.borderColor = '#e5e7eb')}
-              />
-              <textarea
-                value={desc}
-                onChange={e => setDesc(e.target.value)}
-                rows={3}
-                placeholder="What is this video about?"
-                style={{ width: '100%', border: '1px solid #e5e7eb', borderRadius: 8, padding: '8px 10px', fontSize: 12, color: '#111827', outline: 'none', boxSizing: 'border-box', resize: 'none', background: '#fafafa', fontFamily: 'inherit', marginBottom: 8 }}
-                onFocus={e => (e.target.style.borderColor = '#a855f7')}
-                onBlur={e => (e.target.style.borderColor = '#e5e7eb')}
-              />
-              <button
-                onClick={saveMeta} disabled={savingMeta}
-                style={{ width: '100%', height: 34, border: 'none', borderRadius: 8, background: savedMeta ? '#10b981' : 'linear-gradient(135deg,#a855f7,#6366f1)', color: '#fff', fontSize: 12, fontWeight: 600, cursor: savingMeta ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, opacity: savingMeta ? 0.7 : 1 }}
-              >
-                {savingMeta ? <><Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> Saving…</> : savedMeta ? '✓ Saved' : 'Save details'}
-              </button>
-            </div>
-
-            {/* Divider */}
-            <div style={{ height: 1, background: '#f3f4f6', marginBottom: 16 }} />
-
-            {/* Smart Crop */}
-            <div style={{ marginBottom: 16 }}>
-              <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.09em', textTransform: 'uppercase', color: '#9ca3af', marginBottom: 8 }}>Smart Crop</p>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <button
-                  onClick={recrop} disabled={cropping || anyCropProcessing}
-                  style={{ display: 'flex', alignItems: 'center', gap: 5, height: 32, padding: '0 14px', border: 'none', borderRadius: 8, background: (cropping || anyCropProcessing) ? '#e5e7eb' : 'linear-gradient(135deg,#a855f7,#6366f1)', color: (cropping || anyCropProcessing) ? '#9ca3af' : '#fff', fontSize: 12, fontWeight: 600, cursor: (cropping || anyCropProcessing) ? 'not-allowed' : 'pointer', flexShrink: 0 }}
-                >
-                  {(cropping || anyCropProcessing) ? <><Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> Cropping…</> : <><Crop size={12} strokeWidth={2} /> Recrop</>}
-                </button>
-                <span style={{ fontSize: 11, color: '#9ca3af' }}>
-                  {anyCropProcessing ? 'Running…' : lastCropTime
-                  ? `Last: ${new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(lastCropTime))}`
-                  : 'Never cropped'}
-                </span>
+                  {pickError && <p style={{ fontSize: 11, color: '#ef4444' }}>{pickError}</p>}
+                  <p style={{ fontSize: 11, color: '#94a3b8' }}>Extracts the exact frame at this timestamp from your original clip</p>
+                </>) : (
+                  <p style={{ fontSize: 13, color: '#94a3b8', textAlign: 'center', padding: '24px 0' }}>Upload a video first to use timeline scrubbing</p>
+                )}
               </div>
-              {cropError && <p style={{ fontSize: 11, color: '#ef4444', marginTop: 5 }}>{cropError}</p>}
-            </div>
-
-            {/* Divider */}
-            <div style={{ height: 1, background: '#f3f4f6', marginBottom: 16 }} />
-
-            {/* Access */}
-            <div>
-              <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.09em', textTransform: 'uppercase', color: '#9ca3af', marginBottom: 8 }}>Access</p>
-              <LockPriceControl contentType="project" contentId={projectId} bordered={false} />
-            </div>
+            )}
           </div>
         </div>
       </div>
