@@ -515,7 +515,7 @@ export class ClientV1Api {
   thumbnailFromTimeline(projectId: string, timeSec: number): Promise<{ thumbnail_url: string }> {
     return this.request(`/api/v1/projects/${projectId}/thumbnail-from-timeline`, {
       method: 'POST',
-      body: JSON.stringify({ time_seconds: timeSec }),
+      body: { time_seconds: timeSec },
     });
   }
 
