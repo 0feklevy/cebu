@@ -133,6 +133,61 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
     },
   );
 
+  // PATCH /api/v1/projects/:id/meta — update title + description together
+  app.patch<{ Params: { id: string } }>(
+    '/api/v1/projects/:id/meta',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const body = z.object({
+        title:       z.string().max(200).optional(),
+        description: z.string().max(2000).nullable().optional(),
+      }).safeParse(request.body);
+      if (!body.success) return reply.code(400).send({ message: body.error.message });
+
+      const project = await db.query.projects.findFirst({
+        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
+      });
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+
+      const set: Record<string, unknown> = {};
+      if (body.data.title !== undefined) set.title = body.data.title;
+      if (body.data.description !== undefined) set.topic = body.data.description;
+
+      const [updated] = await db.update(projects).set(set).where(eq(projects.id, project.id)).returning();
+      return reply.send(updated);
+    },
+  );
+
+  // POST /api/v1/projects/:id/generate-metadata — (re-)generate thumbnail + title + description
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/projects/:id/generate-metadata',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const project = await db.query.projects.findFirst({
+        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
+      });
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+
+      // Pick first ready video file for the project
+      const { video_files: vf } = await import('../../db/schema.js');
+      const { eq: eqDrizzle, and: andDrizzle } = await import('drizzle-orm');
+      const video = await db.query.video_files.findFirst({
+        where: andDrizzle(eqDrizzle(vf.project_id, project.id), eqDrizzle(vf.is_broll, false)),
+      });
+      if (!video) return reply.code(400).send({ message: 'No video uploaded yet' });
+
+      // Reset status so the generator runs even if already ready
+      await db.update(projects).set({ metadata_status: 'none' }).where(eq(projects.id, project.id));
+
+      const { enqueueVideoMetadata } = await import('../../services/generateVideoMetadata.js');
+      enqueueVideoMetadata(project.id, video.id);
+
+      return reply.send({ status: 'processing' });
+    },
+  );
+
   // DELETE /api/v1/projects/:id
   app.delete<{ Params: { id: string } }>(
     '/api/v1/projects/:id',

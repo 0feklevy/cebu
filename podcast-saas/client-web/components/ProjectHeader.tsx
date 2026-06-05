@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom';
 import Link from 'next/link';
 import { ArrowLeft, Check, Copy, ExternalLink, Eye, Link2, Loader2, Share2, Unlink2, X } from 'lucide-react';
 import { api, createShareToken, revokeShareToken } from '../lib/api';
-import { ProjectLockButton } from './ProjectLockButton';
+import { ProjectSettingsPanel } from './ProjectSettingsPanel';
 import { useAuth } from '../lib/firebase';
 import type { Project } from 'shared/src/generated/client-v1';
 
@@ -164,7 +164,11 @@ export function ProjectHeader({ projectId }: Props) {
         Preview
       </a>
 
-      <ProjectLockButton projectId={projectId} />
+      <ProjectSettingsPanel
+        projectId={projectId}
+        project={project}
+        onProjectChange={p => setProject(p)}
+      />
 
       <div className="relative shrink-0" ref={popRef}>
         <button

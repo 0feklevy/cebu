@@ -18,6 +18,8 @@ export interface Project {
   access_type?: 'free' | 'paid';
   price_cents?: number | null;
   currency?: string;
+  thumbnail_url?: string | null;
+  metadata_status?: string;
   created_at: string;
 }
 
@@ -430,6 +432,14 @@ export class ClientV1Api {
 
   renameProject(projectId: string, title: string): Promise<Project> {
     return this.request(`/api/v1/projects/${projectId}`, { method: 'PATCH', body: { title } });
+  }
+
+  updateProjectMeta(projectId: string, body: { title?: string; description?: string | null }): Promise<Project> {
+    return this.request(`/api/v1/projects/${projectId}/meta`, { method: 'PATCH', body });
+  }
+
+  regenerateVideoMetadata(projectId: string): Promise<{ status: string }> {
+    return this.request(`/api/v1/projects/${projectId}/generate-metadata`, { method: 'POST' });
   }
 
   deleteProject(projectId: string): Promise<void> {
