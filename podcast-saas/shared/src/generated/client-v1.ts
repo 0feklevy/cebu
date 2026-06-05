@@ -15,7 +15,87 @@ export interface Project {
   topic: string | null;
   status: string;
   created_by: string | null;
+  access_type?: 'free' | 'paid';
+  price_cents?: number | null;
+  currency?: string;
   created_at: string;
+}
+
+// ── Billing / pay-to-unlock ─────────────────────────────────────────────────
+
+export type ContentType = 'project' | 'playlist';
+
+export interface BillingStatus {
+  enabled: boolean;
+  publishableKey: string | null;
+  platformFeePercent: number;
+}
+
+export interface ContentAccess {
+  accessType: 'free' | 'paid';
+  priceCents: number | null;
+  currency: string;
+  title: string | null;
+  hasAccess: boolean;
+  isOwner: boolean;
+  locked: boolean;
+}
+
+export interface ContentPricing {
+  access_type: 'free' | 'paid';
+  price_cents: number | null;
+  currency: string;
+}
+
+export interface Purchase {
+  id: string;
+  content_type: ContentType;
+  content_id: string;
+  title: string | null;
+  amount_cents: number;
+  currency: string;
+  purchased_at: string;
+}
+
+export interface BillingTransaction {
+  id: string;
+  type: string;
+  status: string;
+  amount_cents: number;
+  currency: string;
+  platform_fee_cents: number;
+  creator_payout_cents: number;
+  content_type: ContentType;
+  content_id: string;
+  description: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface CreatorEarnings {
+  salesCount: number;
+  totalGrossCents: number;
+  totalNetCents: number;
+  currency: string;
+  recent: Array<{
+    id: string;
+    content_type: ContentType;
+    title: string | null;
+    amount_cents: number;
+    creator_payout_cents: number;
+    currency: string;
+    completed_at: string | null;
+  }>;
+}
+
+/** A viewer player-config response may instead be a paywall stub. */
+export interface LockedContent {
+  locked: true;
+  content_type: ContentType;
+  content_id: string;
+  title: string | null;
+  price_cents: number | null;
+  currency: string;
 }
 
 export interface VideoFile {
@@ -206,8 +286,15 @@ export interface Playlist {
   autoplay: boolean;
   show_sidebar: boolean;
   allow_shuffle: boolean;
+  banner_url: string | null;
+  banner_storage_key: string | null;
+  banner_prompt: string | null;
+  banner_provider: string | null;
   share_token: string | null;
   share_enabled_at: string | null;
+  access_type?: 'free' | 'paid';
+  price_cents?: number | null;
+  currency?: string;
   created_at: string;
   updated_at: string;
 }
@@ -246,6 +333,9 @@ export interface PlaylistPlayConfig {
   autoplay: boolean;
   show_sidebar: boolean;
   allow_shuffle: boolean;
+  banner_url: string | null;
+  banner_prompt: string | null;
+  banner_provider: string | null;
   items: PlaylistPlayItem[];
 }
 
@@ -579,9 +669,22 @@ export class ClientV1Api {
 
   updatePlaylist(
     playlistId: string,
-    body: Partial<Pick<Playlist, 'title' | 'description' | 'autoplay' | 'show_sidebar' | 'allow_shuffle'>>,
+    body: Partial<Pick<Playlist, 'title' | 'description' | 'autoplay' | 'show_sidebar' | 'allow_shuffle' | 'banner_url' | 'banner_prompt' | 'banner_provider'>>,
   ): Promise<PlaylistWithItems> {
     return this.request(`/api/v1/playlists/${playlistId}`, { method: 'PATCH', body });
+  }
+
+  uploadPlaylistBanner(playlistId: string, file: File): Promise<PlaylistWithItems> {
+    const formData = new FormData();
+    formData.append('file', file);
+    return this.requestMultipart(`/api/v1/playlists/${playlistId}/banner`, formData);
+  }
+
+  generatePlaylistBanner(
+    playlistId: string,
+    body: { provider: 'openai' | 'gemini'; prompt?: string | null },
+  ): Promise<PlaylistWithItems> {
+    return this.request(`/api/v1/playlists/${playlistId}/banner/generate`, { method: 'POST', body });
   }
 
   deletePlaylist(playlistId: string): Promise<void> {
@@ -609,5 +712,43 @@ export class ClientV1Api {
 
   getPlaylistPlayConfig(playlistId: string): Promise<PlaylistPlayConfig> {
     return this.request(`/api/v1/playlists/${playlistId}/play-config`);
+  }
+
+  // ── Billing / pay-to-unlock ─────────────────────────────────────────────────
+
+  getBillingStatus(): Promise<BillingStatus> {
+    return this.request('/api/v1/billing/status');
+  }
+
+  getContentAccess(contentType: ContentType, contentId: string): Promise<ContentAccess> {
+    return this.request(`/api/v1/billing/access/${contentType}/${contentId}`);
+  }
+
+  createCheckout(contentType: ContentType, contentId: string): Promise<{ url: string }> {
+    return this.request('/api/v1/billing/checkout', { method: 'POST', body: { content_type: contentType, content_id: contentId } });
+  }
+
+  openBillingPortal(returnUrl?: string): Promise<{ url: string }> {
+    return this.request('/api/v1/billing/portal', { method: 'POST', body: { returnUrl } });
+  }
+
+  listPurchases(): Promise<Purchase[]> {
+    return this.request('/api/v1/billing/purchases');
+  }
+
+  listBillingTransactions(): Promise<BillingTransaction[]> {
+    return this.request('/api/v1/billing/transactions');
+  }
+
+  getCreatorEarnings(): Promise<CreatorEarnings> {
+    return this.request('/api/v1/billing/earnings');
+  }
+
+  setContentPricing(
+    contentType: ContentType,
+    contentId: string,
+    body: { access_type: 'free' | 'paid'; price_cents?: number | null; currency?: string },
+  ): Promise<ContentPricing> {
+    return this.request(`/api/v1/billing/pricing/${contentType}/${contentId}`, { method: 'PATCH', body });
   }
 }

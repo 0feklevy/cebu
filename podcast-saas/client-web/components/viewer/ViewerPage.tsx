@@ -2,7 +2,10 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { PlayerConfig } from './types';
+import type { LockedContent } from 'shared/src/generated/client-v1';
 import { HLSPlayerShell } from './HLSPlayerShell';
+import { PaywallOverlay } from '../PaywallOverlay';
+import { auth } from '../../lib/firebase';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
 const POLL_INTERVAL_MS = 5000;
@@ -13,6 +16,7 @@ interface Props {
 
 export function ViewerPage({ projectId }: Props) {
   const [config, setConfig] = useState<PlayerConfig | null>(null);
+  const [locked, setLocked] = useState<LockedContent | null>(null);
   const [error, setError]   = useState<string | null>(null);
   const [processing, setProcessing] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -20,9 +24,18 @@ export function ViewerPage({ projectId }: Props) {
   useEffect(() => {
     const check = async () => {
       try {
-        const r = await fetch(`${API_URL}/api/v1/projects/${projectId}/player-config`);
+        const token = await auth.currentUser?.getIdToken().catch(() => null);
+        const r = await fetch(`${API_URL}/api/v1/projects/${projectId}/player-config`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
         if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
-        const data = (await r.json()) as PlayerConfig;
+        const data = (await r.json()) as PlayerConfig & Partial<LockedContent>;
+
+        if (data.locked) {
+          setLocked(data as LockedContent);
+          clearInterval(intervalRef.current!);
+          return;
+        }
 
         if (!data.segments.length) {
           setError('This project has no videos yet.');
@@ -56,6 +69,18 @@ export function ViewerPage({ projectId }: Props) {
     intervalRef.current = setInterval(check, POLL_INTERVAL_MS);
     return () => clearInterval(intervalRef.current!);
   }, [projectId]);
+
+  if (locked) {
+    return (
+      <PaywallOverlay
+        contentType="project"
+        contentId={locked.content_id}
+        title={locked.title}
+        priceCents={locked.price_cents}
+        currency={locked.currency}
+      />
+    );
+  }
 
   if (error) {
     return (

@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { auth } from '../../../lib/firebase';
 import type { PlayerConfig } from '../types';
+import type { LockedContent } from 'shared/src/generated/client-v1';
 import { HLSPlayerShell } from '../HLSPlayerShell';
+import { PaywallOverlay } from '../../PaywallOverlay';
 import { PlaylistLobby } from './PlaylistLobby';
 import { PlaylistWatchLayout } from './PlaylistWatchLayout';
 import { UpNextCard } from './UpNextCard';
@@ -28,6 +30,7 @@ function shuffledIndices(n: number): number[] {
 
 export function PlaylistViewer({ shareToken, playlistId }: Props) {
   const [data, setData]   = useState<PlaylistPlayConfig | null>(null);
+  const [locked, setLocked] = useState<LockedContent | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const [order, setOrder]           = useState<number[]>([]);   // display order → item index
@@ -48,19 +51,19 @@ export function PlaylistViewer({ shareToken, playlistId }: Props) {
     let cancelled = false;
     const load = async () => {
       try {
+        const token = await auth.currentUser?.getIdToken().catch(() => null);
+        const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
         let res: Response;
         if (shareToken) {
-          res = await fetch(`${API_URL}/api/v1/playlist-share/${shareToken}`);
+          res = await fetch(`${API_URL}/api/v1/playlist-share/${shareToken}`, { headers });
         } else {
-          const token = await auth.currentUser?.getIdToken();
-          res = await fetch(`${API_URL}/api/v1/playlists/${playlistId}/play-config`, {
-            headers: token ? { Authorization: `Bearer ${token}` } : {},
-          });
+          res = await fetch(`${API_URL}/api/v1/playlists/${playlistId}/play-config`, { headers });
         }
         if (res.status === 404) { if (!cancelled) setError('This playlist is no longer active or does not exist.'); return; }
         if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-        const json = (await res.json()) as PlaylistPlayConfig;
+        const json = (await res.json()) as PlaylistPlayConfig & Partial<LockedContent>;
         if (cancelled) return;
+        if (json.locked) { setLocked(json as LockedContent); return; }
         if (!json.items?.length) { setError('This playlist has no videos yet.'); return; }
         setData(json);
         setOrder(json.items.map((_, i) => i));
@@ -150,9 +153,20 @@ export function PlaylistViewer({ shareToken, playlistId }: Props) {
     setCurrentPos(pos);
   }, [pendingNextPos, clearCountdown]);
 
+  if (locked) {
+    return (
+      <PaywallOverlay
+        contentType="playlist"
+        contentId={locked.content_id}
+        title={locked.title}
+        priceCents={locked.price_cents}
+        currency={locked.currency}
+      />
+    );
+  }
   if (error) {
     return (
-      <div className="flex h-full w-full items-center justify-center bg-black px-6 text-center text-sm text-white/55">
+      <div className="flex h-full w-full items-center justify-center bg-black px-6 text-center text-sm text-white/60">
         {error}
       </div>
     );
@@ -183,7 +197,7 @@ export function PlaylistViewer({ shareToken, playlistId }: Props) {
       {/* Fullscreen toggle (top-right of the video area) */}
       <button
         onClick={toggleFullscreen}
-        className="absolute right-3 top-3 z-40 flex h-9 w-9 items-center justify-center rounded-lg text-white/85 transition-colors hover:bg-white/10"
+        className="absolute right-3 top-3 z-[70] flex h-9 w-9 items-center justify-center rounded-lg text-white/80 transition-colors hover:bg-white/10"
         style={{ background: 'rgba(0,0,0,0.4)' }}
         title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
       >
@@ -197,7 +211,7 @@ export function PlaylistViewer({ shareToken, playlistId }: Props) {
       {/* Back-to-playlist button (top-right, next to fullscreen) */}
       <button
         onClick={goToLobby}
-        className="absolute right-14 top-3 z-40 flex h-9 items-center gap-1.5 rounded-lg px-3 text-xs font-medium text-white/85 transition-colors hover:bg-white/10"
+        className="absolute right-14 top-3 z-[70] flex h-9 items-center gap-1.5 rounded-lg px-3 text-xs font-medium text-white/80 transition-colors hover:bg-white/10"
         style={{ background: 'rgba(0,0,0,0.4)' }}
         title="Back to playlist"
       >
@@ -224,6 +238,7 @@ export function PlaylistViewer({ shareToken, playlistId }: Props) {
         <PlaylistLobby
           title={data.title}
           description={data.description}
+          bannerUrl={data.banner_url}
           items={data.items}
           allowShuffle={data.allow_shuffle}
           watched={watched}
@@ -236,6 +251,8 @@ export function PlaylistViewer({ shareToken, playlistId }: Props) {
         <PlaylistWatchLayout
           playerArea={playerArea}
           playlistTitle={data.title}
+          playlistDescription={data.description}
+          bannerUrl={data.banner_url}
           items={data.items}
           order={order}
           currentPos={currentPos}

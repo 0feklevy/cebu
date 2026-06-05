@@ -26,6 +26,7 @@
     "@fastify/multipart": "^8.3.0",
     "@google/genai": "^1.0.0",
     "@trigger.dev/sdk": "^3.1.0",
+    "adm-zip": "^0.5.10",
     "drizzle-orm": "^0.31.4",
     "fastify": "^4.28.0",
     "firebase-admin": "^12.3.0",
@@ -36,8 +37,8 @@
     "pino-pretty": "^11.2.1",
     "postgres": "^3.4.4",
     "shared": "file:../shared",
+    "stripe": "^22.2.0",
     "tsoa": "^6.4.0",
-    "adm-zip": "^0.5.10",
     "zod": "^3.23.8"
   },
   "devDependencies": {

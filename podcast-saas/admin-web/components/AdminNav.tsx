@@ -9,6 +9,7 @@ const NAV = [
   { href: '/llm-config', label: 'AI Config' },
   { href: '/api-keys', label: 'API Keys' },
   { href: '/feature-flags', label: 'Controls' },
+  { href: '/billing', label: 'Billing' },
   { href: '/users', label: 'Users' },
 ];
 

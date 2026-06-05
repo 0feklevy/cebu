@@ -3,11 +3,12 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { Bot, Brush, Database, KeyRound, Monitor, Moon, SlidersHorizontal, Sun, User, X } from 'lucide-react';
+import { Bot, Brush, CreditCard, Database, KeyRound, Monitor, Moon, SlidersHorizontal, Sun, User, X } from 'lucide-react';
 import { useAuth } from '../lib/firebase';
 import { type ThemeOption, useTheme } from '../lib/theme';
+import { BillingSettings } from './BillingSettings';
 
-type SettingsTab = 'profile' | 'preferences' | 'ai' | 'advanced' | 'privacy';
+type SettingsTab = 'profile' | 'preferences' | 'ai' | 'advanced' | 'privacy' | 'billing';
 
 interface Props {
   open: boolean;
@@ -125,6 +126,7 @@ export function UserSettingsDialog({ open, onOpenChange }: Props) {
     { id: 'profile', label: 'Profile', icon: <User size={15} aria-hidden />, hidden: isAnonymous },
     { id: 'preferences', label: 'Preferences', icon: <Brush size={15} aria-hidden /> },
     { id: 'ai', label: 'AI & API Keys', icon: <Bot size={15} aria-hidden />, hidden: isAnonymous },
+    { id: 'billing', label: 'Billing & Purchases', icon: <CreditCard size={15} aria-hidden />, hidden: isAnonymous },
     { id: 'advanced', label: 'Advanced', icon: <SlidersHorizontal size={15} aria-hidden /> },
     { id: 'privacy', label: 'Data & Privacy', icon: <Database size={15} aria-hidden />, hidden: isAnonymous },
   ];
@@ -139,7 +141,7 @@ export function UserSettingsDialog({ open, onOpenChange }: Props) {
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-[900] bg-slate-950/55 backdrop-blur-sm" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 z-[901] flex h-[min(760px,calc(100vh-32px))] w-[min(920px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-lg border border-border bg-background shadow-modal">
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-[901] flex h-dvh w-screen -translate-x-1/2 -translate-y-1/2 overflow-hidden border border-border bg-background shadow-modal sm:h-[min(760px,calc(100dvh-32px))] sm:w-[min(920px,calc(100vw-32px))] sm:rounded-lg">
           <aside className="hidden w-60 shrink-0 border-r shell-bg p-3 md:block">
             <div className="mb-3 flex items-center gap-3 rounded-lg border px-3 py-3" style={{ borderColor: 'hsl(var(--shell-border))' }}>
               <div className="flex h-9 w-9 items-center justify-center rounded-full gradient-action text-xs font-bold">
@@ -170,7 +172,7 @@ export function UserSettingsDialog({ open, onOpenChange }: Props) {
           </aside>
 
           <div className="flex min-w-0 flex-1 flex-col">
-            <div className="flex items-center justify-between border-b border-border bg-card px-5 py-4">
+            <div className="flex items-center justify-between gap-3 border-b border-border bg-card px-4 py-3 sm:px-5 sm:py-4">
               <div>
                 <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-primary/70">Settings</p>
                 <Dialog.Title className="text-lg font-bold text-foreground">
@@ -199,7 +201,7 @@ export function UserSettingsDialog({ open, onOpenChange }: Props) {
               ))}
             </div>
 
-            <div className="flex-1 overflow-y-auto p-5 fine-scrollbar">
+            <div className="flex-1 overflow-y-auto p-4 fine-scrollbar sm:p-5">
               {activeTab === 'profile' && (
                 <section className="space-y-4">
                   <div className="rounded-lg border border-border bg-card p-5 shadow-sm-soft">
@@ -321,6 +323,15 @@ export function UserSettingsDialog({ open, onOpenChange }: Props) {
                         </div>
                       ))}
                     </div>
+                  </div>
+                </section>
+              )}
+
+              {activeTab === 'billing' && (
+                <section className="space-y-4">
+                  <div className="rounded-lg border border-border bg-card p-5 shadow-sm-soft">
+                    <h3 className="mb-3 text-sm font-semibold text-foreground">Billing & Purchases</h3>
+                    <BillingSettings />
                   </div>
                 </section>
               )}

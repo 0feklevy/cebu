@@ -3,21 +3,34 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import { db } from '../../db/index.js';
 import { projects } from '../../db/schema.js';
 import { eq, and } from 'drizzle-orm';
-import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
+import { firebaseAuthMiddleware, firebaseAuthOptionalMiddleware } from '../../middleware/firebase-auth.js';
 import { buildPlayerConfig } from '../../services/buildPlayerConfig.js';
+import { BillingService } from '../../services/billing/BillingService.js';
 
 export async function registerShareRoutes(app: FastifyInstance): Promise<void> {
 
-  // ── Public: GET /api/v1/share/:shareToken ─────────────────────────────────
-  // Returns player config for a shared project — no authentication required.
+  // ── Public (optional auth): GET /api/v1/share/:shareToken ─────────────────
+  // Returns player config, or a `locked` paywall stub for paid, unpurchased content.
   app.get<{ Params: { shareToken: string } }>(
     '/api/v1/share/:shareToken',
+    { preHandler: [firebaseAuthOptionalMiddleware] },
     async (request, reply: FastifyReply) => {
       const project = await db.query.projects.findFirst({
         where: eq(projects.share_token, request.params.shareToken),
       });
       if (!project || !project.share_token) {
         return reply.code(404).send({ message: 'Shared video not found or link has been revoked' });
+      }
+
+      if (project.access_type === 'paid') {
+        const userId = request.dbUser?.id ?? null;
+        const hasAccess = await BillingService.hasAccess(userId, 'project', project.id);
+        if (!hasAccess) {
+          return reply.send({
+            locked: true, content_type: 'project', content_id: project.id,
+            title: project.title, price_cents: project.price_cents, currency: project.currency,
+          });
+        }
       }
 
       const config = await buildPlayerConfig(project.id);

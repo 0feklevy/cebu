@@ -204,4 +204,39 @@ export class AdminV1Api {
   getPipelineStats(): Promise<PipelineStats> {
     return this.request('/api/admin/v1/pipeline-stats');
   }
+
+  getBillingOverview(): Promise<AdminBillingOverview> {
+    return this.request('/api/admin/v1/billing/overview');
+  }
+
+  getBillingTransactions(): Promise<AdminBillingTransaction[]> {
+    return this.request('/api/admin/v1/billing/transactions');
+  }
+}
+
+export interface AdminBillingOverview {
+  enabled: boolean;
+  platformFeePercent: number;
+  totalTransactions: number;
+  totalVolumeCents: number;
+  totalPlatformFeesCents: number;
+  pendingTransactions: number;
+  activeCreators: number;
+  activeBuyers: number;
+}
+
+export interface AdminBillingTransaction {
+  id: string;
+  status: string;
+  type: string;
+  amount_cents: number;
+  currency: string;
+  platform_fee_cents: number;
+  creator_payout_cents: number;
+  content_type: string;
+  content_id: string;
+  description: string | null;
+  payer_email: string | null;
+  created_at: string;
+  completed_at: string | null;
 }

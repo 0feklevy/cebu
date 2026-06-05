@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, type ChangeEvent } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import {
-  Check, Copy, ExternalLink, GripVertical, Link2, Loader2, Plus, Search, Trash2, Unlink2, X,
+  Check, Copy, ExternalLink, GripVertical, ImageIcon, Link2, Loader2, Plus, Search, Sparkles, Trash2, Unlink2, Upload, X,
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { LockPriceControl } from './LockPriceControl';
 import type { Project } from 'shared/src/generated/client-v1';
 
 interface Props {
@@ -55,12 +56,18 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
   const [allProjects, setAllProjects] = useState<Project[]>([]);
   const [query, setQuery] = useState('');
   const [saving, setSaving] = useState(false);
+  const [bannerUrl, setBannerUrl] = useState<string | null>(null);
+  const [bannerPrompt, setBannerPrompt] = useState('');
+  const [bannerProvider, setBannerProvider] = useState<'openai' | 'gemini'>('openai');
+  const [bannerBusy, setBannerBusy] = useState(false);
+  const [bannerError, setBannerError] = useState<string | null>(null);
 
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [shareLoading, setShareLoading] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
 
   const dragIndex = useRef<number | null>(null);
+  const bannerInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!open || !playlistId) return;
@@ -75,6 +82,10 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
         setShowSidebar(pl.show_sidebar);
         setAllowShuffle(pl.allow_shuffle);
         setItems(pl.items.map((i) => ({ project_id: i.project_id, title: i.title })));
+        setBannerUrl(pl.banner_url);
+        setBannerPrompt(pl.banner_prompt ?? '');
+        setBannerProvider(pl.banner_provider === 'gemini' ? 'gemini' : 'openai');
+        setBannerError(null);
         setAllProjects(projects);
         setShareUrl(share.shareUrl);
       })
@@ -113,6 +124,9 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
         title: title.trim() || 'Untitled playlist',
         description: description.trim() || null,
         autoplay, show_sidebar: showSidebar, allow_shuffle: allowShuffle,
+        banner_url: bannerUrl,
+        banner_prompt: bannerPrompt.trim() || null,
+        banner_provider: bannerUrl ? bannerProvider : null,
       });
       await api.setPlaylistItems(playlistId, items.map((i) => i.project_id));
       onChanged();
@@ -120,7 +134,7 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
     } catch { /* ignore */ } finally {
       setSaving(false);
     }
-  }, [playlistId, title, description, autoplay, showSidebar, allowShuffle, items, onChanged, onClose]);
+  }, [playlistId, title, description, autoplay, showSidebar, allowShuffle, bannerUrl, bannerPrompt, bannerProvider, items, onChanged, onClose]);
 
   const handleCreateShare = async () => {
     if (!playlistId) return;
@@ -152,6 +166,47 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
     try { await navigator.clipboard.writeText(shareUrl); setShareCopied(true); setTimeout(() => setShareCopied(false), 1600); } catch { /* ignore */ }
   };
 
+  const applyPlaylistBanner = (pl: { banner_url: string | null; banner_prompt: string | null; banner_provider: string | null }) => {
+    setBannerUrl(pl.banner_url);
+    setBannerPrompt(pl.banner_prompt ?? '');
+    setBannerProvider(pl.banner_provider === 'gemini' ? 'gemini' : 'openai');
+    setBannerError(null);
+    onChanged();
+  };
+
+  const handleBannerUpload = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!playlistId || !file || bannerBusy) return;
+    setBannerBusy(true);
+    setBannerError(null);
+    try {
+      const updated = await api.uploadPlaylistBanner(playlistId, file);
+      applyPlaylistBanner(updated);
+    } catch (err) {
+      setBannerError((err as Error).message || 'Banner upload failed');
+    } finally {
+      setBannerBusy(false);
+    }
+  };
+
+  const handleBannerGenerate = async () => {
+    if (!playlistId || bannerBusy) return;
+    setBannerBusy(true);
+    setBannerError(null);
+    try {
+      const updated = await api.generatePlaylistBanner(playlistId, {
+        provider: bannerProvider,
+        prompt: bannerPrompt.trim() || null,
+      });
+      applyPlaylistBanner(updated);
+    } catch (err) {
+      setBannerError((err as Error).message || 'Banner generation failed');
+    } finally {
+      setBannerBusy(false);
+    }
+  };
+
   const handleDelete = async () => {
     if (!playlistId) return;
     if (!window.confirm('Delete this playlist? This cannot be undone.')) return;
@@ -162,9 +217,9 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
     <Dialog.Root open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-[900] bg-slate-950/55 backdrop-blur-sm" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 z-[901] flex max-h-[90vh] w-[calc(100vw-32px)] max-w-3xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-border bg-white shadow-modal">
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-[901] flex h-dvh w-screen -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden border border-border bg-white shadow-modal sm:h-[min(860px,calc(100dvh-24px))] sm:w-[calc(100vw-24px)] sm:max-w-5xl sm:rounded-xl">
           {/* Header */}
-          <div className="flex items-center justify-between border-b border-border px-5 py-3.5">
+          <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3 sm:px-5 sm:py-3.5">
             <Dialog.Title className="text-base font-semibold text-foreground">Edit playlist</Dialog.Title>
             <div className="flex items-center gap-2">
               {playlistId && (
@@ -189,9 +244,104 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
               <Loader2 className="animate-spin text-muted-foreground" size={22} />
             </div>
           ) : (
-            <div className="grid min-h-0 flex-1 gap-0 overflow-hidden md:grid-cols-[1fr_320px]">
+            <div className="flex min-h-0 flex-1 flex-col gap-0 overflow-hidden lg:grid lg:grid-cols-[1fr_320px]">
               {/* Left: meta + items */}
-              <div className="min-h-0 overflow-y-auto fine-scrollbar p-5 space-y-4">
+              <div className="min-h-0 flex-1 overflow-y-auto fine-scrollbar p-4 space-y-4 sm:p-5">
+                <div className="rounded-lg border border-border bg-card p-3">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                        <ImageIcon size={16} strokeWidth={1.9} aria-hidden />
+                      </span>
+                      <div>
+                        <p className="text-sm font-semibold text-foreground">Playlist banner</p>
+                        <p className="text-xs text-muted-foreground">Shown full-screen behind the playlist lobby.</p>
+                      </div>
+                    </div>
+                    <input
+                      ref={bannerInputRef}
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp,image/gif"
+                      className="hidden"
+                      onChange={handleBannerUpload}
+                    />
+                    <button
+                      onClick={() => bannerInputRef.current?.click()}
+                      disabled={bannerBusy}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-xs font-semibold text-foreground transition-colors hover:bg-muted disabled:opacity-40"
+                    >
+                      <Upload size={13} strokeWidth={1.8} aria-hidden />
+                      Upload
+                    </button>
+                  </div>
+
+                  <div className="relative aspect-video overflow-hidden rounded-lg border border-border bg-slate-950">
+                    {bannerUrl ? (
+                      <img src={bannerUrl} alt="" className="h-full w-full object-cover" draggable={false} />
+                    ) : (
+                      <div
+                        className="flex h-full w-full items-center justify-center"
+                        style={{
+                          background:
+                            'radial-gradient(circle at 22% 20%, rgba(14,165,233,0.42), transparent 32%), radial-gradient(circle at 78% 24%, rgba(168,85,247,0.36), transparent 34%), linear-gradient(135deg,#020617,#111827)',
+                        }}
+                      >
+                        <span className="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-semibold text-white/70 backdrop-blur">
+                          No banner yet
+                        </span>
+                      </div>
+                    )}
+                    <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent p-3">
+                      <p className="line-clamp-1 text-sm font-semibold text-white">{title.trim() || 'Untitled playlist'}</p>
+                      <p className="text-xs text-white/60">{items.length} video{items.length !== 1 ? 's' : ''}</p>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 grid gap-2 sm:grid-cols-[160px_minmax(0,1fr)_auto]">
+                    <select
+                      value={bannerProvider}
+                      onChange={(e) => setBannerProvider(e.target.value === 'gemini' ? 'gemini' : 'openai')}
+                      className="h-9 rounded-lg border border-input bg-white px-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring/25"
+                    >
+                      <option value="openai">ChatGPT / OpenAI</option>
+                      <option value="gemini">Google / Gemini</option>
+                    </select>
+                    <input
+                      value={bannerPrompt}
+                      onChange={(e) => setBannerPrompt(e.target.value)}
+                      placeholder="Optional image prompt"
+                      className="h-9 min-w-0 rounded-lg border border-input bg-white px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring/25"
+                    />
+                    <button
+                      onClick={handleBannerGenerate}
+                      disabled={bannerBusy}
+                      className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg px-3 text-xs font-semibold text-white shadow-sm transition-all hover:brightness-110 disabled:opacity-40"
+                      style={{ background: 'linear-gradient(135deg,#7c3aed,#2563eb)' }}
+                    >
+                      {bannerBusy ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} strokeWidth={1.8} />}
+                      Generate
+                    </button>
+                  </div>
+
+                  <div className="mt-2 flex min-h-[20px] items-center justify-between gap-3">
+                    {bannerError ? (
+                      <p className="text-xs text-red-500">{bannerError}</p>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        Use a 16:9 image. Generated banners are saved immediately.
+                      </p>
+                    )}
+                    {bannerUrl && (
+                      <button
+                        onClick={() => { setBannerUrl(null); setBannerPrompt(''); }}
+                        className="shrink-0 text-xs font-medium text-muted-foreground transition-colors hover:text-red-500"
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                </div>
+
                 <div>
                   <label className="mb-1.5 block text-sm font-medium text-foreground">Title</label>
                   <input
@@ -260,10 +410,18 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
                   <Toggle checked={showSidebar} onChange={setShowSidebar} label="Show sidebar" hint="YouTube-style up-next list and description" />
                   <Toggle checked={allowShuffle} onChange={setAllowShuffle} label="Allow shuffle" hint="Show a shuffle button on the lobby" />
                 </div>
+
+                {/* Pricing / lock (hidden when Stripe isn't configured) */}
+                {playlistId && (
+                  <div className="space-y-2 border-t border-border/60 pt-4">
+                    <p className="text-sm font-medium text-foreground">Access</p>
+                    <LockPriceControl contentType="playlist" contentId={playlistId} />
+                  </div>
+                )}
               </div>
 
               {/* Right: add videos + share */}
-              <div className="flex min-h-0 flex-col border-t border-border md:border-l md:border-t-0">
+              <div className="flex min-h-0 max-h-[38dvh] shrink-0 flex-col border-t border-border lg:max-h-none lg:shrink lg:border-l lg:border-t-0">
                 <div className="shrink-0 border-b border-border p-3">
                   <p className="mb-2 text-sm font-medium text-foreground">Add videos</p>
                   <label className="relative block">
@@ -330,7 +488,7 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
           )}
 
           {/* Footer */}
-          <div className="flex items-center justify-between border-t border-border px-5 py-3">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border px-4 py-3 sm:px-5">
             <button onClick={handleDelete} className="inline-flex items-center gap-1.5 text-xs font-medium text-red-500 transition-colors hover:text-red-600">
               <Trash2 size={13} strokeWidth={1.8} aria-hidden /> Delete playlist
             </button>

@@ -1,11 +1,20 @@
 import { randomBytes } from 'crypto';
+import { randomUUID } from 'crypto';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import OpenAI from 'openai';
+import { GoogleGenAI } from '@google/genai';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
 import { playlists, playlist_items, projects } from '../../db/schema.js';
 import { eq, and, asc, inArray } from 'drizzle-orm';
-import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
+import { firebaseAuthMiddleware, firebaseAuthOptionalMiddleware } from '../../middleware/firebase-auth.js';
 import { buildPlayerConfig } from '../../services/buildPlayerConfig.js';
+import { BillingService } from '../../services/billing/BillingService.js';
+import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
+import { extname } from 'path';
+
+const ALLOWED_BANNER_MIME = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif']);
+type BannerProvider = 'openai' | 'gemini';
 
 function appUrl(): string {
   return process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
@@ -43,18 +52,96 @@ async function playlistItemsWithProjects(playlistId: string) {
   });
 }
 
-export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void> {
+function bannerExt(mime: string): string {
+  if (mime === 'image/webp') return '.webp';
+  if (mime === 'image/png') return '.png';
+  if (mime === 'image/gif') return '.gif';
+  return '.jpg';
+}
 
-  // ── Public: GET /api/v1/playlist-share/:shareToken ────────────────────────
-  // Returns the full play-config for a shared playlist — no auth required.
+function buildBannerPrompt(
+  playlist: typeof playlists.$inferSelect,
+  items: Awaited<ReturnType<typeof playlistItemsWithProjects>>,
+  prompt?: string | null,
+): string {
+  const playlistTitle = playlist.title?.trim() || 'Untitled playlist';
+  const playlistDescription = playlist.description?.trim();
+  const itemTitles = items.map((item) => item.title).filter(Boolean).slice(0, 8).join(', ');
+  const custom = prompt?.trim();
+
+  return [
+    custom || `Create a premium cinematic 16:9 banner for a video playlist titled "${playlistTitle}".`,
+    playlistDescription ? `Playlist description: ${playlistDescription}` : null,
+    itemTitles ? `Videos in this playlist: ${itemTitles}.` : null,
+    'Style: editorial streaming platform hero art, sophisticated, high contrast, no text, no logos, no UI elements.',
+    'The image must work as a full-screen darkened background behind white title text.',
+  ].filter(Boolean).join('\n');
+}
+
+async function generateOpenAiBanner(prompt: string): Promise<{ buffer: Buffer; mime: string }> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error('OPENAI_API_KEY is not configured');
+
+  const client = new OpenAI({ apiKey });
+  const response = await client.images.generate({
+    model: 'gpt-image-1',
+    prompt,
+    size: '1536x1024',
+    quality: 'medium',
+    output_format: 'webp',
+    n: 1,
+  });
+
+  const b64 = response.data?.[0]?.b64_json;
+  if (!b64) throw new Error('OpenAI did not return image bytes');
+  return { buffer: Buffer.from(b64, 'base64'), mime: 'image/webp' };
+}
+
+async function generateGeminiBanner(prompt: string): Promise<{ buffer: Buffer; mime: string }> {
+  const apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+  if (!apiKey) throw new Error('GOOGLE_GENERATIVE_AI_API_KEY is not configured');
+
+  const client = new GoogleGenAI({ apiKey });
+  const response = await client.models.generateImages({
+    model: process.env.GOOGLE_IMAGE_MODEL ?? 'imagen-4.0-generate-001',
+    prompt,
+    config: {
+      numberOfImages: 1,
+      aspectRatio: '16:9',
+      outputMimeType: 'image/png',
+      enhancePrompt: true,
+    },
+  });
+
+  const image = response.generatedImages?.[0]?.image;
+  if (!image?.imageBytes) throw new Error('Google did not return image bytes');
+  return { buffer: Buffer.from(image.imageBytes, 'base64'), mime: image.mimeType ?? 'image/png' };
+}
+
+export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void> {
+  const storage = getStorageAdapter();
+
+  // ── Public (optional auth): GET /api/v1/playlist-share/:shareToken ────────
+  // Returns the full play-config, or a `locked` paywall stub for paid playlists.
   app.get<{ Params: { shareToken: string } }>(
     '/api/v1/playlist-share/:shareToken',
+    { preHandler: [firebaseAuthOptionalMiddleware] },
     async (request, reply: FastifyReply) => {
       const playlist = await db.query.playlists.findFirst({
         where: eq(playlists.share_token, request.params.shareToken),
       });
       if (!playlist || !playlist.share_token) {
         return reply.code(404).send({ message: 'Playlist not found or link has been revoked' });
+      }
+      if (playlist.access_type === 'paid') {
+        const userId = request.dbUser?.id ?? null;
+        const hasAccess = await BillingService.hasAccess(userId, 'playlist', playlist.id);
+        if (!hasAccess) {
+          return reply.send({
+            locked: true, content_type: 'playlist', content_id: playlist.id,
+            title: playlist.title, price_cents: playlist.price_cents, currency: playlist.currency,
+          });
+        }
       }
       return reply.send(await buildPlaylistPlayConfig(playlist));
     },
@@ -139,6 +226,9 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
         autoplay:      z.boolean().optional(),
         show_sidebar:  z.boolean().optional(),
         allow_shuffle: z.boolean().optional(),
+        banner_url: z.string().url().nullable().optional(),
+        banner_prompt: z.string().max(2000).nullable().optional(),
+        banner_provider: z.string().max(64).nullable().optional(),
       }).safeParse(request.body);
       if (!body.success) return reply.code(400).send({ message: body.error.message });
 
@@ -149,6 +239,92 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
         .returning();
       const items = await playlistItemsWithProjects(updated.id);
       return reply.send({ ...updated, items });
+    },
+  );
+
+  // ── Auth: POST /api/v1/playlists/:id/banner — upload a banner image ───────
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/playlists/:id/banner',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const playlist = await ownedPlaylist(request.params.id, user.id);
+      if (!playlist) return reply.code(404).send({ message: 'Playlist not found' });
+
+      const data = await request.file();
+      if (!data) return reply.code(400).send({ message: 'No file uploaded' });
+
+      const mime = data.mimetype.toLowerCase().split(';')[0].trim();
+      if (!ALLOWED_BANNER_MIME.has(mime)) {
+        return reply.code(400).send({ message: 'Only JPEG, PNG, WebP, and GIF banners are supported' });
+      }
+
+      const ext = extname(data.filename || 'banner').replace(/[^a-z0-9.]/gi, '').toLowerCase() || bannerExt(mime);
+      const key = `playlist-banners/${playlist.id}/${randomUUID()}${ext}`;
+      const publicUrl = await storage.uploadFile(key, await data.toBuffer(), mime);
+
+      const [updated] = await db
+        .update(playlists)
+        .set({
+          banner_url: publicUrl,
+          banner_storage_key: key,
+          banner_provider: 'upload',
+          banner_prompt: null,
+          updated_at: new Date(),
+        })
+        .where(eq(playlists.id, playlist.id))
+        .returning();
+
+      const items = await playlistItemsWithProjects(updated.id);
+      return reply.code(201).send({ ...updated, items });
+    },
+  );
+
+  // ── Auth: POST /api/v1/playlists/:id/banner/generate — AI banner ──────────
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/playlists/:id/banner/generate',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const playlist = await ownedPlaylist(request.params.id, user.id);
+      if (!playlist) return reply.code(404).send({ message: 'Playlist not found' });
+
+      const body = z.object({
+        provider: z.enum(['openai', 'gemini']).default('openai'),
+        prompt: z.string().max(2000).nullable().optional(),
+      }).safeParse(request.body ?? {});
+      if (!body.success) return reply.code(400).send({ message: body.error.message });
+
+      const items = await playlistItemsWithProjects(playlist.id);
+      const prompt = buildBannerPrompt(playlist, items, body.data.prompt);
+      const provider = body.data.provider as BannerProvider;
+
+      try {
+        const generated = provider === 'gemini'
+          ? await generateGeminiBanner(prompt)
+          : await generateOpenAiBanner(prompt);
+        const ext = bannerExt(generated.mime);
+        const key = `playlist-banners/${playlist.id}/${randomUUID()}${ext}`;
+        const publicUrl = await storage.uploadFile(key, generated.buffer, generated.mime);
+
+        const [updated] = await db
+          .update(playlists)
+          .set({
+            banner_url: publicUrl,
+            banner_storage_key: key,
+            banner_provider: provider,
+            banner_prompt: prompt,
+            updated_at: new Date(),
+          })
+          .where(eq(playlists.id, playlist.id))
+          .returning();
+
+        return reply.send({ ...updated, items });
+      } catch (err) {
+        const message = (err as Error).message || 'Banner generation failed';
+        const missingKey = message.includes('API_KEY') || message.includes('not configured');
+        return reply.code(missingKey ? 400 : 502).send({ message });
+      }
     },
   );
 
@@ -310,6 +486,9 @@ async function buildPlaylistPlayConfig(playlist: typeof playlists.$inferSelect) 
     autoplay:      playlist.autoplay,
     show_sidebar:  playlist.show_sidebar,
     allow_shuffle: playlist.allow_shuffle,
+    banner_url:    playlist.banner_url,
+    banner_prompt: playlist.banner_prompt,
+    banner_provider: playlist.banner_provider,
     items:         playItems,
   };
 }

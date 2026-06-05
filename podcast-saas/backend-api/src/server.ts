@@ -23,6 +23,7 @@ import { registerAdminSystemPromptRoutes } from './controllers/admin/v1/system-p
 import { registerAdminLlmConfigRoutes } from './controllers/admin/v1/llm-config.controller.js';
 import { registerAdminUsersRoutes } from './controllers/admin/v1/users.controller.js';
 import { registerAdminPipelineStatsRoutes } from './controllers/admin/v1/pipeline-stats.controller.js';
+import { registerAdminBillingRoutes } from './controllers/admin/v1/billing.controller.js';
 import { firebaseAuthMiddleware } from './middleware/firebase-auth.js';
 
 // Phase 2+ stub routes
@@ -34,6 +35,8 @@ import { registerBrollRoutes } from './controllers/v1/broll.controller.js';
 import { registerImageRoutes } from './controllers/v1/images.controller.js';
 import { registerAudioRoutes } from './controllers/v1/audio.controller.js';
 import { registerPlaylistRoutes } from './controllers/v1/playlists.controller.js';
+import { registerBillingRoutes } from './controllers/v1/billing.controller.js';
+import { registerStripeWebhookRoutes } from './controllers/v1/stripe-webhook.controller.js';
 
 const PORT = parseInt(process.env.PORT ?? '8080', 10);
 
@@ -317,10 +320,13 @@ async function build() {
   await registerAdminLlmConfigRoutes(app);
   await registerAdminUsersRoutes(app);
   await registerAdminPipelineStatsRoutes(app);
+  await registerAdminBillingRoutes(app);
 
   await registerPlayerRoutes(app);
   await registerShareRoutes(app);
   await registerPlaylistRoutes(app);
+  await registerBillingRoutes(app);
+  await registerStripeWebhookRoutes(app);
 
   // Phase 2+ stubs (return 501 Not Implemented)
   await registerPhase2StubRoutes(app);

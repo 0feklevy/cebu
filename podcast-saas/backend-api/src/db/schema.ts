@@ -98,6 +98,7 @@ export const users = pgTable('users', {
   default_org_id: uuid('default_org_id').references(() => orgs.id),
   weekly_token_limit: integer('weekly_token_limit'),
   monthly_token_limit: integer('monthly_token_limit'),
+  stripe_customer_id: text('stripe_customer_id'),  // Stripe customer for pay-to-unlock (migration 024)
   created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   last_seen_at: timestamp('last_seen_at', { withTimezone: true }),
 });
@@ -145,6 +146,10 @@ export const projects = pgTable('projects', {
   status: projectStatusEnum('status').default('draft').notNull(),
   share_token:       text('share_token').unique(),
   share_enabled_at:  timestamp('share_enabled_at', { withTimezone: true }),
+  // Pay-to-unlock (migration 024): 'free' | 'paid'; price required when paid
+  access_type: text('access_type').notNull().default('free'),
+  price_cents: integer('price_cents'),
+  currency:    text('currency').notNull().default('usd'),
   created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
@@ -460,8 +465,16 @@ export const playlists = pgTable('playlists', {
   autoplay:      boolean('autoplay').notNull().default(true),       // auto-advance with countdown
   show_sidebar:  boolean('show_sidebar').notNull().default(true),   // YouTube-style aside + description
   allow_shuffle: boolean('allow_shuffle').notNull().default(true),
+  banner_url: text('banner_url'),
+  banner_storage_key: text('banner_storage_key'),
+  banner_prompt: text('banner_prompt'),
+  banner_provider: text('banner_provider'),
   share_token:      text('share_token').unique(),
   share_enabled_at: timestamp('share_enabled_at', { withTimezone: true }),
+  // Pay-to-unlock (migration 024)
+  access_type: text('access_type').notNull().default('free'),
+  price_cents: integer('price_cents'),
+  currency:    text('currency').notNull().default('usd'),
   created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updated_at: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
@@ -480,10 +493,51 @@ export const playlist_items = pgTable(
   }),
 );
 
+// Billing (migration 024) — pay-to-unlock transactions + persistent purchases.
+export const billing_transactions = pgTable('billing_transactions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  stripe_checkout_session_id: text('stripe_checkout_session_id'),
+  stripe_payment_intent_id:   text('stripe_payment_intent_id'),
+  type:   text('type').notNull().default('charge'),       // charge | refund
+  status: text('status').notNull().default('pending'),    // pending | succeeded | failed | refunded
+  amount_cents:        integer('amount_cents').notNull(),
+  currency:            text('currency').notNull().default('usd'),
+  platform_fee_cents:  integer('platform_fee_cents').notNull().default(0),
+  creator_payout_cents: integer('creator_payout_cents').notNull().default(0),
+  payer_user_id:   uuid('payer_user_id').references(() => users.id, { onDelete: 'set null' }),
+  payer_email:     text('payer_email'),
+  creator_user_id: uuid('creator_user_id').references(() => users.id, { onDelete: 'set null' }),
+  content_type:    text('content_type').notNull(),         // project | playlist
+  content_id:      uuid('content_id').notNull(),
+  description:     text('description'),
+  error:           text('error'),
+  created_at:   timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  completed_at: timestamp('completed_at', { withTimezone: true }),
+});
+
+export const user_purchases = pgTable(
+  'user_purchases',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    user_id:      uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+    content_type: text('content_type').notNull(),          // project | playlist
+    content_id:   uuid('content_id').notNull(),
+    transaction_id: uuid('transaction_id').references(() => billing_transactions.id, { onDelete: 'set null' }),
+    amount_cents: integer('amount_cents').notNull(),
+    currency:     text('currency').notNull().default('usd'),
+    purchased_at: timestamp('purchased_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    uniq_user_content: unique().on(t.user_id, t.content_type, t.content_id),
+  }),
+);
+
 // ── Type exports ──────────────────────────────────────────────────────────────
 
 export type Org = typeof orgs.$inferSelect;
 export type User = typeof users.$inferSelect;
+export type BillingTransaction = typeof billing_transactions.$inferSelect;
+export type UserPurchase = typeof user_purchases.$inferSelect;
 export type ApiKey = typeof api_keys.$inferSelect;
 export type Host = typeof hosts.$inferSelect;
 export type Project = typeof projects.$inferSelect;
