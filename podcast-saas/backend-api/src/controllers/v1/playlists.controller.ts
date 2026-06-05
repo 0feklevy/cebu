@@ -6,7 +6,7 @@ import { GoogleGenAI } from '@google/genai';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
 import { playlists, playlist_items, projects } from '../../db/schema.js';
-import { eq, and, asc, inArray } from 'drizzle-orm';
+import { eq, and, asc, inArray, sql } from 'drizzle-orm';
 import { firebaseAuthMiddleware, firebaseAuthOptionalMiddleware } from '../../middleware/firebase-auth.js';
 import { buildPlayerConfig } from '../../services/buildPlayerConfig.js';
 import { BillingService } from '../../services/billing/BillingService.js';
@@ -188,6 +188,12 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
           });
         }
       }
+      // Fire-and-forget view count increment
+      db.update(playlists)
+        .set({ view_count: sql`${playlists.view_count} + 1` })
+        .where(eq(playlists.id, playlist.id))
+        .catch(() => {});
+
       return reply.send(await buildPlaylistPlayConfig(playlist));
     },
   );

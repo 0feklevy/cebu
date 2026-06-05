@@ -124,6 +124,48 @@ export async function generateVideoMetadata(projectId: string, videoFileId: stri
   }
 }
 
+// ── thumbnail from timeline (called from controller) ──────────────────────────
+
+export async function extractThumbnailAtTime(
+  projectId: string,
+  videoFileId: string,
+  timeSec: number,
+): Promise<string> {
+  const storage = getStorageAdapter();
+  const video = await db.query.video_files.findFirst({ where: eq(video_files.id, videoFileId) });
+  if (!video?.storage_key) throw new Error('Video not found or not uploaded');
+
+  const workDir = await mkdtemp(join(tmpdir(), 'vthumb-'));
+  try {
+    const ext = video.storage_key.split('.').pop() ?? 'mp4';
+    const srcPath = join(workDir, `source.${ext}`);
+    const downloadUrl = await storage.getPresignedDownloadUrl(video.storage_key, 3600);
+    const res = await fetch(downloadUrl);
+    if (!res.ok) throw new Error(`Download failed: ${res.status}`);
+    await (await import('fs/promises')).writeFile(srcPath, Buffer.from(await res.arrayBuffer()));
+
+    const thumbPath = join(workDir, 'thumb.jpg');
+    await extractFrame(srcPath, thumbPath, Math.max(0, timeSec));
+
+    const thumbBuf = await readFile(thumbPath);
+    const thumbKey = `thumbnails/${projectId}.jpg`;
+    let thumbnailUrl: string;
+    try {
+      thumbnailUrl = await storage.uploadFile(thumbKey, thumbBuf, 'image/jpeg');
+    } catch {
+      thumbnailUrl = await new LocalStorageAdapter().uploadFile(thumbKey, thumbBuf, 'image/jpeg');
+    }
+
+    await db.update(projects)
+      .set({ thumbnail_url: thumbnailUrl, thumbnail_key: thumbKey })
+      .where(eq(projects.id, projectId));
+
+    return thumbnailUrl;
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+}
+
 // ── ffmpeg frame extractor ─────────────────────────────────────────────────────
 
 function extractFrame(inputPath: string, outputPath: string, seekSec: number): Promise<void> {

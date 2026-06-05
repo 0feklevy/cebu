@@ -15,11 +15,13 @@ export interface Project {
   topic: string | null;
   status: string;
   created_by: string | null;
+  share_token?: string | null;
   access_type?: 'free' | 'paid';
   price_cents?: number | null;
   currency?: string;
   thumbnail_url?: string | null;
   metadata_status?: string;
+  view_count?: number;
   created_at: string;
 }
 
@@ -277,6 +279,7 @@ export interface SimFile {
   filename: string;
   ext:      string;
   url:      string;
+  isText:   boolean;
 }
 
 // ── Playlists ───────────────────────────────────────────────────────────────
@@ -299,6 +302,7 @@ export interface Playlist {
   access_type?: 'free' | 'paid';
   price_cents?: number | null;
   currency?: string;
+  view_count?: number;
   created_at: string;
   updated_at: string;
 }
@@ -506,6 +510,13 @@ export class ClientV1Api {
 
   recropProject(projectId: string): Promise<{ queued: boolean }> {
     return this.request(`/api/v1/projects/${projectId}/recrop`, { method: 'POST' });
+  }
+
+  thumbnailFromTimeline(projectId: string, timeSec: number): Promise<{ thumbnail_url: string }> {
+    return this.request(`/api/v1/projects/${projectId}/thumbnail-from-timeline`, {
+      method: 'POST',
+      body: JSON.stringify({ time_seconds: timeSec }),
+    });
   }
 
   // ── Timeline Sections ─────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { ListVideo, Play, Plus, Clock3 } from 'lucide-react';
+import { Eye, ListVideo, Play, Plus, Clock3 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/firebase';
 import type { PlaylistSummary } from 'shared/src/generated/client-v1';
@@ -140,6 +140,12 @@ export function PlaylistsPanel() {
                           <Play size={9} fill="currentColor" strokeWidth={0} />
                           {pl.item_count} video{pl.item_count !== 1 ? 's' : ''}
                         </span>
+                        {pl.share_token && (pl.view_count ?? 0) > 0 && (
+                          <span className="flex items-center gap-1">
+                            <Eye size={9} strokeWidth={1.8} />
+                            {(pl.view_count ?? 0).toLocaleString()}
+                          </span>
+                        )}
                       </div>
                     </div>
                   </div>

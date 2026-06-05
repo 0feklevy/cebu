@@ -2,7 +2,7 @@ import { randomBytes } from 'crypto';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { db } from '../../db/index.js';
 import { projects } from '../../db/schema.js';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { firebaseAuthMiddleware, firebaseAuthOptionalMiddleware } from '../../middleware/firebase-auth.js';
 import { buildPlayerConfig } from '../../services/buildPlayerConfig.js';
 import { BillingService } from '../../services/billing/BillingService.js';
@@ -35,6 +35,12 @@ export async function registerShareRoutes(app: FastifyInstance): Promise<void> {
 
       const config = await buildPlayerConfig(project.id);
       if (!config) return reply.code(404).send({ message: 'Shared video not found' });
+
+      // Fire-and-forget view count increment
+      db.update(projects)
+        .set({ view_count: sql`${projects.view_count} + 1` })
+        .where(eq(projects.id, project.id))
+        .catch(() => {});
 
       return reply.send(config);
     },

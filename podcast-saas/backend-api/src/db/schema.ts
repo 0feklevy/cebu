@@ -154,6 +154,8 @@ export const projects = pgTable('projects', {
   thumbnail_url:   text('thumbnail_url'),
   thumbnail_key:   text('thumbnail_key'),
   metadata_status: text('metadata_status').notNull().default('none'), // none|processing|ready|failed
+  // View counter (migration 027)
+  view_count: integer('view_count').notNull().default(0),
   created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
@@ -480,6 +482,8 @@ export const playlists = pgTable('playlists', {
   access_type: text('access_type').notNull().default('free'),
   price_cents: integer('price_cents'),
   currency:    text('currency').notNull().default('usd'),
+  // View counter (migration 027)
+  view_count: integer('view_count').notNull().default(0),
   created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updated_at: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });

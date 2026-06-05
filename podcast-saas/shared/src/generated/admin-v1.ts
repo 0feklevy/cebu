@@ -83,6 +83,10 @@ export interface PipelineStats {
   projects: {
     total: number;
     recent_30d: number;
+    total_views: number;
+  };
+  playlists: {
+    total_views: number;
   };
   videos: {
     total: number;

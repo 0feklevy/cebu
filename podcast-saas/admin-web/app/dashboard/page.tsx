@@ -47,9 +47,13 @@ export default function DashboardPage() {
           {/* Projects */}
           <section className="mb-8">
             <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">Projects</h2>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-2 gap-4 mb-3">
               <MetricCard label="Total Projects" value={stats.projects.total.toLocaleString()} />
               <MetricCard label="Created (Last 30 Days)" value={stats.projects.recent_30d.toLocaleString()} />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <MetricCard label="Project Views (All Time)" value={stats.projects.total_views.toLocaleString()} good={stats.projects.total_views > 0} />
+              <MetricCard label="Playlist Views (All Time)" value={(stats.playlists?.total_views ?? 0).toLocaleString()} good={(stats.playlists?.total_views ?? 0) > 0} />
             </div>
           </section>
 

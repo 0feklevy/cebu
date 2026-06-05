@@ -5,6 +5,7 @@ import Link from 'next/link';
 import {
   ArrowRight,
   Clock3,
+  Eye,
   Film,
   Plus,
   Search,
@@ -79,9 +80,17 @@ function ProjectTile({ project }: { project: Project }) {
           <Clock3 size={13} strokeWidth={1.8} aria-hidden />
           {timeAgo(project.created_at)}
         </span>
-        <span className="inline-flex items-center gap-1 font-medium text-primary opacity-0 transition-opacity group-hover:opacity-100">
-          Open <ArrowRight size={13} strokeWidth={2} aria-hidden />
-        </span>
+        <div className="flex items-center gap-2">
+          {project.share_token && (project.view_count ?? 0) > 0 && (
+            <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground/70">
+              <Eye size={11} strokeWidth={1.8} aria-hidden />
+              {(project.view_count ?? 0).toLocaleString()}
+            </span>
+          )}
+          <span className="inline-flex items-center gap-1 font-medium text-primary opacity-0 transition-opacity group-hover:opacity-100">
+            Open <ArrowRight size={13} strokeWidth={2} aria-hidden />
+          </span>
+        </div>
       </div>
     </Link>
   );

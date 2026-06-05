@@ -661,7 +661,7 @@ export function VideoEditor({ projectId }: Props) {
 
   const hasAnyVideo = videos.length > 0;
   const showBrollTrack = hasBroll;
-  const showAudioTrack = audioFiles.length > 0 || audioSections.length > 0;
+  const showAudioTrack = hasBroll;
   const tlHeight =
     TIMELINE_RULER_H +
     TIMELINE_VIDEO_TRACK_H +

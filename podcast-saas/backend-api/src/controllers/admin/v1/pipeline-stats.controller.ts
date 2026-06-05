@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { db } from '../../../db/index.js';
-import { projects, video_files, simulations, token_usage } from '../../../db/schema.js';
+import { projects, video_files, simulations, token_usage, playlists } from '../../../db/schema.js';
 import { sql, gte, and, eq } from 'drizzle-orm';
 import { firebaseAdminRequired } from '../../../middleware/firebase-admin-required.js';
 
@@ -14,12 +14,16 @@ export async function registerAdminPipelineStatsRoutes(app: FastifyInstance): Pr
       const [
         projectTotal,
         projectRecent,
+        projectViews,
+        playlistViews,
         videoRows,
         simRows,
         aiRows,
       ] = await Promise.all([
         db.select({ count: sql<number>`count(*)::int` }).from(projects),
         db.select({ count: sql<number>`count(*)::int` }).from(projects).where(gte(projects.created_at, since30d)),
+        db.select({ total: sql<number>`coalesce(sum(view_count), 0)::int` }).from(projects),
+        db.select({ total: sql<number>`coalesce(sum(view_count), 0)::int` }).from(playlists),
         db.select({ hls_status: video_files.hls_status, count: sql<number>`count(*)::int` })
           .from(video_files)
           .groupBy(video_files.hls_status),
@@ -52,6 +56,10 @@ export async function registerAdminPipelineStatsRoutes(app: FastifyInstance): Pr
         projects: {
           total: projectTotal[0]?.count ?? 0,
           recent_30d: projectRecent[0]?.count ?? 0,
+          total_views: projectViews[0]?.total ?? 0,
+        },
+        playlists: {
+          total_views: playlistViews[0]?.total ?? 0,
         },
         videos: {
           total: videoRows.reduce((s, r) => s + r.count, 0),

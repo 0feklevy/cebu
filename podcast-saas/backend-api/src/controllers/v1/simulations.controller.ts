@@ -254,15 +254,24 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
       });
       if (!sim) return reply.code(404).send({ message: 'Simulation not found' });
 
-      const allKeys = await storage.listObjects(sim.storage_prefix);
+      let allKeys: string[] = [];
+      try {
+        allKeys = await storage.listObjects(sim.storage_prefix);
+      } catch (err) {
+        logger.warn({ err, prefix: sim.storage_prefix }, 'listObjects failed for simulation files');
+        return reply.code(502).send({ message: 'Could not list simulation files from storage' });
+      }
+
+      const prefix = sim.storage_prefix.endsWith('/') ? sim.storage_prefix : sim.storage_prefix + '/';
       const files = allKeys
-        .filter(isTextSimulationFile)
+        .filter(k => k.startsWith(prefix) || k === sim.storage_prefix)
         .sort()
         .map(k => ({
-          key:      k,
-          filename: k.split('/').pop() ?? k,
-          ext:      (k.split('.').pop() ?? '').toLowerCase(),
-          url:      storage.getSimPublicUrl(k),
+          key:       k,
+          filename:  k.split('/').pop() ?? k,
+          ext:       (k.split('.').pop() ?? '').toLowerCase(),
+          url:       storage.getSimPublicUrl(k),
+          isText:    isTextSimulationFile(k),
         }));
 
       return reply.send(files);
@@ -319,11 +328,17 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
       });
       if (!sim) return reply.code(404).send({ message: 'Simulation not found' });
 
-      const keys = (await storage.listObjects(sim.storage_prefix)).sort();
+      const allKeys = (await storage.listObjects(sim.storage_prefix)).sort();
+      const prefix = sim.storage_prefix.endsWith('/') ? sim.storage_prefix : sim.storage_prefix + '/';
+      const keys = allKeys.filter(k => k.startsWith(prefix));
+
+      if (keys.length === 0) {
+        return reply.code(404).send({ message: 'No simulation files found — try re-uploading the simulation.' });
+      }
+
       const zip = new AdmZip();
       for (const key of keys) {
-        if (!key.startsWith(sim.storage_prefix + '/')) continue;
-        const relativePath = key.slice(sim.storage_prefix.length + 1).replace(/^\/+/, '');
+        const relativePath = key.slice(prefix.length).replace(/^\/+/, '');
         if (!relativePath) continue;
         const buf = await storage.readObject(key);
         zip.addFile(relativePath, buf);

@@ -3,7 +3,7 @@
 import { ConfirmDialog } from './ConfirmDialog';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { getAuth } from 'firebase/auth';
-import { Archive, Check, ChevronDown, ChevronUp, Copy, Download, Maximize2, Play, Square } from 'lucide-react';
+import { Archive, Check, ChevronDown, ChevronUp, Copy, Download, Maximize2, Minimize2, Play, Square } from 'lucide-react';
 import type { TimelineSection, Simulation, VideoFile, VideoGenerationJob, SimFile, SimMeta, ImageFile, GuidanceEntry, GuidanceMeta, GuidanceStatus } from 'shared/src/generated/client-v1';
 import { api } from '../lib/api';
 
@@ -193,6 +193,7 @@ export function SectionEditor({
   const [rightTab, setRightTab]               = useState<'preview' | 'files'>('preview');
   const [simFiles, setSimFiles]               = useState<SimFile[]>([]);
   const [simFilesLoading, setSimFilesLoading] = useState(false);
+  const [simFilesError, setSimFilesError]     = useState<string | null>(null);
   const [activeFileKey, setActiveFileKey]     = useState<string | null>(null);
   const [fileContent, setFileContent]         = useState<string | null>(null);
   const [fileContentLoading, setFileContentLoading] = useState(false);
@@ -374,14 +375,16 @@ export function SectionEditor({
     if (rightTab !== 'files' || !simId) return;
     setSimFilesLoading(true);
     setSimFiles([]);
+    setSimFilesError(null);
     setActiveFileKey(null);
     setFileContent(null);
     api.listSimFiles(projectId, simId)
       .then(files => {
         setSimFiles(files);
-        if (files.length > 0) setActiveFileKey(files[0].key);
+        const firstText = files.find(f => f.isText) ?? files[0] ?? null;
+        if (firstText) setActiveFileKey(firstText.key);
       })
-      .catch(() => {})
+      .catch(err => setSimFilesError((err as Error).message ?? 'Failed to load files'))
       .finally(() => setSimFilesLoading(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rightTab, simId, section.simulation_url]);
@@ -389,6 +392,8 @@ export function SectionEditor({
   // Load sim file content
   useEffect(() => {
     if (!activeFileKey || !simId) { setFileContent(null); return; }
+    const activeFile = simFiles.find(f => f.key === activeFileKey);
+    if (activeFile && !activeFile.isText) { setFileContent(null); return; }
     setFileContentLoading(true);
     setFileContent(null);
     setCopiedFile(false);
@@ -451,6 +456,22 @@ export function SectionEditor({
     if (type === 'startScript') setPreviewRunning(true);
   }, [simpleUi, autoScript]);
 
+  const [isSimFullscreen, setIsSimFullscreen] = useState(false);
+
+  useEffect(() => {
+    const handler = () => setIsSimFullscreen(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', handler);
+    return () => document.removeEventListener('fullscreenchange', handler);
+  }, []);
+
+  const toggleSimFullscreen = useCallback(() => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {});
+    } else {
+      simPreviewShellRef.current?.requestFullscreen?.().catch(() => {});
+    }
+  }, []);
+
   const openFullscreen = useCallback((target: HTMLElement | null) => {
     target?.requestFullscreen?.().catch(() => {});
   }, []);
@@ -485,8 +506,9 @@ export function SectionEditor({
       const simName = simulations.find(s => s.id === simId)?.name ?? 'simulation';
       const safeName = simName.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'simulation';
       saveBlob(blob, `${safeName}.zip`);
-    } catch { /* ignore */ }
-    finally {
+    } catch (err) {
+      alert(`ZIP download failed: ${(err as Error).message ?? 'Unknown error'}`);
+    } finally {
       setZipDownloadBusy(false);
     }
   }, [projectId, simulations, simId]);
@@ -874,7 +896,7 @@ export function SectionEditor({
           left: isCompactModal ? 0 : '50%',
           transform: isCompactModal ? 'none' : 'translate(-50%, -50%)',
           zIndex: 801,
-          width: isCompactModal ? '100vw' : 'min(1180px, 94vw)',
+          width: isCompactModal ? '100vw' : '90vw',
           height: isCompactModal ? '100dvh' : 'min(820px, 92dvh)',
           maxHeight: '100dvh',
           display: 'flex', flexDirection: 'column',
@@ -2096,17 +2118,6 @@ export function SectionEditor({
                           Stop
                         </button>
                         <button
-                          onClick={() => openFullscreen(simPreviewShellRef.current)}
-                          style={{
-                            height: 30, padding: '0 10px', borderRadius: 7, border: '1px solid #dbeafe',
-                            backgroundColor: '#eff6ff', color: '#1d4ed8', fontSize: 11, fontWeight: 700, cursor: 'pointer',
-                            display: 'inline-flex', alignItems: 'center', gap: 6,
-                          }}
-                        >
-                          <Maximize2 size={13} strokeWidth={2} aria-hidden />
-                          Fullscreen
-                        </button>
-                        <button
                           onClick={handleDownloadSimulationZip}
                           disabled={zipDownloadBusy || !simId}
                           style={{
@@ -2172,7 +2183,7 @@ export function SectionEditor({
 
                 {rightTab === 'preview' ? (
                   simPreviewUrl ? (
-                    <div ref={simPreviewShellRef} style={{ flex: 1, minHeight: 0, backgroundColor: '#ffffff', overflow: 'hidden' }}>
+                    <div ref={simPreviewShellRef} style={{ flex: 1, minHeight: 0, backgroundColor: '#ffffff', overflow: 'hidden', position: 'relative' }}>
                       <iframe
                         key={simPreviewUrl}
                         ref={previewIframeRef}
@@ -2182,6 +2193,33 @@ export function SectionEditor({
                         sandbox="allow-scripts allow-same-origin allow-forms allow-pointer-lock"
                         onLoad={() => setPreviewRunning(false)}
                       />
+                      {/* Fullscreen toggle — always visible, uses fixed when in fullscreen */}
+                      <button
+                        onClick={toggleSimFullscreen}
+                        title={isSimFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+                        style={{
+                          position: isSimFullscreen ? 'fixed' : 'absolute',
+                          top: 8, right: 8,
+                          zIndex: 9999,
+                          width: 32, height: 32,
+                          borderRadius: 8,
+                          border: '1px solid rgba(255,255,255,0.3)',
+                          background: 'rgba(0,0,0,0.45)',
+                          backdropFilter: 'blur(4px)',
+                          color: '#fff',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          cursor: 'pointer',
+                          opacity: 0.7,
+                          transition: 'opacity 0.15s',
+                        }}
+                        onMouseEnter={e => (e.currentTarget.style.opacity = '1')}
+                        onMouseLeave={e => (e.currentTarget.style.opacity = '0.7')}
+                      >
+                        {isSimFullscreen
+                          ? <Minimize2 size={14} strokeWidth={2} aria-hidden />
+                          : <Maximize2 size={14} strokeWidth={2} aria-hidden />
+                        }
+                      </button>
                     </div>
                   ) : (
                     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, backgroundColor: '#f8fafc' }}>
@@ -2198,9 +2236,15 @@ export function SectionEditor({
                       <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                         <div style={{ width: 20, height: 20, borderRadius: '50%', border: '2px solid #e2e8f0', borderTopColor: '#3b82f6', animation: 'spin 0.8s linear infinite' }} />
                       </div>
+                    ) : simFilesError ? (
+                      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+                        <p style={{ fontSize: 12, color: '#ef4444', margin: 0 }}>Failed to load files</p>
+                        <p style={{ fontSize: 10, color: '#94a3b8', margin: 0 }}>{simFilesError}</p>
+                      </div>
                     ) : simFiles.length === 0 ? (
-                      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
                         <p style={{ fontSize: 12, color: '#64748b', margin: 0 }}>No source files found</p>
+                        <p style={{ fontSize: 10, color: '#94a3b8', margin: 0 }}>Re-upload the simulation to restore files</p>
                       </div>
                     ) : (
                       <>
@@ -2237,6 +2281,11 @@ export function SectionEditor({
                             <div style={{ padding: 20, display: 'flex', alignItems: 'center', gap: 8 }}>
                               <div style={{ width: 14, height: 14, borderRadius: '50%', border: '2px solid #e2e8f0', borderTopColor: '#3b82f6', animation: 'spin 0.8s linear infinite' }} />
                               <span style={{ fontSize: 11, color: '#64748b' }}>Loading…</span>
+                            </div>
+                          ) : activeSimFile && !activeSimFile.isText ? (
+                            <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                              <p style={{ fontSize: 11, color: '#64748b', margin: 0 }}>Binary file — cannot display</p>
+                              <a href={activeSimFile.url} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: '#3b82f6' }}>Open in new tab ↗</a>
                             </div>
                           ) : fileContent !== null ? (
                             <pre style={{ margin: 0, padding: '16px 18px', fontSize: 11.5, lineHeight: 1.65, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', color: '#1e293b', whiteSpace: 'pre-wrap', wordBreak: 'break-word', tabSize: 2 }}>

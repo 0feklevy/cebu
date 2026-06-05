@@ -196,6 +196,32 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
     },
   );
 
+  // POST /api/v1/projects/:id/thumbnail-from-timeline — extract frame at given time
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/projects/:id/thumbnail-from-timeline',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const project = await db.query.projects.findFirst({
+        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
+      });
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+
+      const body = z.object({ time_seconds: z.number().min(0).max(86400) }).safeParse(request.body);
+      if (!body.success) return reply.code(400).send({ message: 'time_seconds required' });
+
+      const video = await db.query.video_files.findFirst({
+        where: and(eq(video_files.project_id, project.id), eq(video_files.is_broll, false)),
+      });
+      if (!video) return reply.code(400).send({ message: 'No video uploaded yet' });
+
+      const { extractThumbnailAtTime } = await import('../../services/generateVideoMetadata.js');
+      const thumbnailUrl = await extractThumbnailAtTime(project.id, video.id, body.data.time_seconds);
+
+      return reply.send({ thumbnail_url: thumbnailUrl });
+    },
+  );
+
   // DELETE /api/v1/projects/:id
   app.delete<{ Params: { id: string } }>(
     '/api/v1/projects/:id',
