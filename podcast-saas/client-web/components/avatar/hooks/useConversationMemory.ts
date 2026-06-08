@@ -38,8 +38,15 @@ export function useConversationMemory(characterId: string, projectId: string | u
   }, [sessionKey]);
 
   const inject = useCallback((client: AnamLike) => {
-    if (contextRef.current && client.addContext) {
+    if (!contextRef.current || !client.addContext) return;
+    // addContext throws "not currently streaming" if the stream isn't active
+    // (e.g. it ended/closed before this fired). Skip when not streaming and treat
+    // injection as best-effort — it's optional memory context, never fatal.
+    if (client.isStreaming && !client.isStreaming()) return;
+    try {
       client.addContext(`[Memory — context from previous conversations: ${contextRef.current}]`);
+    } catch {
+      /* stream not ready / ended — ignore (memory injection is non-essential) */
     }
   }, []);
 

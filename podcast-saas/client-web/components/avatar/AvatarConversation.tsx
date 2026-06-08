@@ -109,7 +109,7 @@ export function AvatarConversation({ characterId, projectId, sessionToken, displ
   const attachListeners = useCallback((client: AnamClient) => {
     client.addListener(AnamEvent.VIDEO_PLAY_STARTED, () => {
       setVideoStarted(true);
-      setTimeout(() => { memoryRef.current.inject(client as unknown as { addContext?: (s: string) => void }); }, 3000);
+      setTimeout(() => { memoryRef.current.inject(client as unknown as { addContext?: (s: string) => void; isStreaming?: () => boolean }); }, 3000);
     });
     client.addListener(AnamEvent.VIDEO_STREAM_STARTED, () => { setTimeout(() => setVideoStarted(true), 2000); });
     client.addListener(AnamEvent.CONNECTION_CLOSED, () => {
