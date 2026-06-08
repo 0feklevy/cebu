@@ -209,13 +209,17 @@ function writeCachedProjects(items: Project[]) {
 export function HomeHero() {
   const { loading: authLoading, user, isAnonymous } = useAuth();
   const [createOpen, setCreateOpen] = useState(false);
-  // Seed from localStorage immediately so the page isn't blank while auth loads
-  const [projects, setProjects] = useState<Project[]>(() => {
-    if (typeof window === 'undefined') return [];
-    return readCachedProjects();
-  });
+  // Start empty so the server and the first client render match (the page now
+  // SSRs). The localStorage cache is seeded in a mount effect below.
+  const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
+
+  // Seed from the client-side cache after hydration (avoids an SSR mismatch).
+  useEffect(() => {
+    const cached = readCachedProjects();
+    if (cached.length) setProjects(cached);
+  }, []);
 
   useEffect(() => {
     if (authLoading) return;
