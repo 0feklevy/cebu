@@ -56,6 +56,19 @@ export function captionPublicUrl(key: string | null | undefined): string | null 
   return `${base}/local-storage/${key}`;
 }
 
+/** Public URL that serves a video's DB-stored caption VTT (no object storage needed). */
+export function captionVttRouteUrl(videoId: string): string {
+  const base = process.env.BACKEND_API_URL ?? 'http://localhost:8080';
+  return `${base}/api/v1/videos/${videoId}/captions.vtt`;
+}
+
+/** Effective public VTT URL for a ready video — prefers the DB-backed route. */
+export function captionUrlForVideo(video: Pick<VideoRow, 'id' | 'captions_status' | 'captions_vtt' | 'captions_vtt_key'>): string | null {
+  if (video.captions_status !== CAPTION_STATUS.ready) return null;
+  if (video.captions_vtt) return captionVttRouteUrl(video.id);
+  return captionPublicUrl(video.captions_vtt_key);
+}
+
 // ── Caption engines ────────────────────────────────────────────────────────────
 // Primary: Groq Whisper over HTTPS (works on the managed host; same provider the
 // audio ingester already uses). Optional fallback: a local whisper.cpp binary.
@@ -199,12 +212,21 @@ async function runCaptionJob(videoId: string, opts: { force?: boolean } = {}): P
     if (hlsKey) candidates.push(storage.getPublicUrl(hlsKey));
     const vtt = generateVttValidate(await generateVtt(candidates, workDir));
 
-    const key = `captions/${video.project_id}/${video.id}/${randomUUID()}.vtt`;
-    await storage.uploadFile(key, Buffer.from(vtt, 'utf8'), 'text/vtt; charset=utf-8');
+    // Best-effort object-storage backup (may be denied on read-only tokens) —
+    // never fails the job, because the DB is the source of truth.
+    let key: string | null = null;
+    try {
+      const k = `captions/${video.project_id}/${video.id}/${randomUUID()}.vtt`;
+      await storage.uploadFile(k, Buffer.from(vtt, 'utf8'), 'text/vtt; charset=utf-8');
+      key = k;
+    } catch (err) {
+      logger.warn({ videoId: video.id, err: (err as Error).message?.slice(0, 120) }, '[captions] storage backup failed (using DB only)');
+    }
 
     await db.update(video_files).set({
       captions_status: CAPTION_STATUS.ready,
-      captions_vtt_key: key,
+      captions_vtt: vtt,          // DB is the source of truth
+      captions_vtt_key: key,      // optional storage backup
       captions_error: null,
       captions_source_hash: hash,
       captions_updated_at: new Date(),
@@ -261,7 +283,7 @@ export async function getCaptionStatusForProject(projectId: string) {
       .map((video) => ({
         id: video.id,
         status: video.captions_status ?? CAPTION_STATUS.none,
-        vtt_url: video.captions_status === CAPTION_STATUS.ready ? captionPublicUrl(video.captions_vtt_key) : null,
+        vtt_url: captionUrlForVideo(video),
         error: video.captions_status === CAPTION_STATUS.failed ? video.captions_error : null,
         updated_at: video.captions_updated_at,
       })),

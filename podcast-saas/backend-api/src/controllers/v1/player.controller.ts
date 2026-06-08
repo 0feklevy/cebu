@@ -1,4 +1,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
+import { eq } from 'drizzle-orm';
+import { db } from '../../db/index.js';
+import { video_files } from '../../db/schema.js';
 import { buildPlayerConfig } from '../../services/buildPlayerConfig.js';
 import { firebaseAuthMiddleware, firebaseAuthOptionalMiddleware } from '../../middleware/firebase-auth.js';
 import { BillingService } from '../../services/billing/BillingService.js';
@@ -56,6 +59,31 @@ export async function registerPlayerRoutes(app: FastifyInstance): Promise<void> 
 
       await enqueueCaptionsForProject(projectId).catch(() => {});
       return reply.send(await getCaptionStatusForProject(projectId));
+    },
+  );
+
+  // Serve a video's DB-stored caption WebVTT (no object storage dependency).
+  // Public for free videos; gated for paid content via the project's access.
+  app.get<{ Params: { videoId: string } }>(
+    '/api/v1/videos/:videoId/captions.vtt',
+    { preHandler: [firebaseAuthOptionalMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const video = await db.query.video_files.findFirst({
+        where: eq(video_files.id, request.params.videoId),
+        columns: { id: true, project_id: true, captions_vtt: true, captions_status: true },
+      });
+      if (!video || !video.captions_vtt || video.captions_status !== 'ready') {
+        return reply.code(404).send({ message: 'Captions not available' });
+      }
+      const pricing = await BillingService.getPricing('project', video.project_id);
+      if (pricing?.accessType === 'paid') {
+        const hasAccess = await BillingService.hasAccess(request.dbUser?.id ?? null, 'project', video.project_id);
+        if (!hasAccess) return reply.code(403).send({ message: 'Captions are locked for this paid video' });
+      }
+      return reply
+        .header('content-type', 'text/vtt; charset=utf-8')
+        .header('cache-control', 'public, max-age=3600')
+        .send(video.captions_vtt);
     },
   );
 
