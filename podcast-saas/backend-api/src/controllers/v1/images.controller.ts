@@ -4,15 +4,13 @@ import { db } from '../../db/index.js';
 import { projects, image_files } from '../../db/schema.js';
 import { eq, and } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
-import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
+import { uploadWithFallback } from '../../services/storage/uploadWithFallback.js';
 import { randomUUID } from 'crypto';
 import { extname } from 'path';
 
 const ALLOWED_MIME = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif']);
 
 export async function registerImageRoutes(app: FastifyInstance): Promise<void> {
-  const storage = getStorageAdapter();
-
   // POST /api/v1/projects/:id/images — upload a still image
   app.post<{ Params: { id: string } }>(
     '/api/v1/projects/:id/images',
@@ -36,7 +34,7 @@ export async function registerImageRoutes(app: FastifyInstance): Promise<void> {
       const key  = `images/${project.id}/${randomUUID()}${ext}`;
       const buf  = await data.toBuffer();
 
-      const publicUrl = await storage.uploadFile(key, buf, mime);
+      const publicUrl = await uploadWithFallback(key, buf, mime);
 
       // Auto-compute 16:9 crop from image dimensions if we can determine them.
       // We store fractions (0–1). Default to full image; frontend refines with crop editor.
