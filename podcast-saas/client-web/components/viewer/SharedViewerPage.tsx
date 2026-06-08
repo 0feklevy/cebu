@@ -6,6 +6,8 @@ import type { LockedContent } from 'shared/src/generated/client-v1';
 import { HLSPlayerShell } from './HLSPlayerShell';
 import { PaywallOverlay } from '../PaywallOverlay';
 import { auth } from '../../lib/firebase';
+import { AskAvatarButton } from '../avatar/AskAvatarButton';
+import { AvatarPopup } from '../avatar/AvatarPopup';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
 const POLL_INTERVAL_MS = 5000;
@@ -19,6 +21,8 @@ export function SharedViewerPage({ shareToken }: Props) {
   const [locked, setLocked]         = useState<LockedContent | null>(null);
   const [error, setError]           = useState<string | null>(null);
   const [processing, setProcessing] = useState(false);
+  const [avatarOpen, setAvatarOpen] = useState(false);
+  const [captionMenuOpen, setCaptionMenuOpen] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -111,5 +115,26 @@ export function SharedViewerPage({ shareToken }: Props) {
     );
   }
 
-  return <HLSPlayerShell config={config} />;
+  const cfg = config as PlayerConfig & { id?: string; project_id?: string; title?: string | null };
+
+  return (
+    <div className="relative h-full w-full">
+      <HLSPlayerShell config={config} onCaptionMenuOpenChange={setCaptionMenuOpen} />
+
+      {/* Ask-the-Avatar — bottom-right, above the controls; pauses the video.
+          Hidden while the caption-settings menu is open so they don't overlap. */}
+      {!captionMenuOpen && (
+        <div className="absolute bottom-24 right-3 z-[70] sm:bottom-32 sm:right-5">
+          <AskAvatarButton onClick={() => setAvatarOpen(true)} label="Ask!" />
+        </div>
+      )}
+
+      <AvatarPopup
+        open={avatarOpen}
+        onClose={() => setAvatarOpen(false)}
+        projectId={cfg.project_id ?? cfg.id}
+        videoTitle={cfg.title ?? null}
+      />
+    </div>
+  );
 }
