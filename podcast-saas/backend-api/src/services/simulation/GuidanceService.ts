@@ -565,26 +565,38 @@ export class GuidanceService {
     await withGuidanceLock(guidanceKey, async () => {
       await this.storage.uploadFile(guidanceKey, Buffer.from(guidanceJs, 'utf-8'), 'application/javascript');
 
-      // Locate the entry HTML: prefer the authoritative entry_file (a storage key),
-      // else fall back to the same heuristic the bridge uses.
-      const allKeys = await this.storage.listObjects(prefix);
+      // Resolve the entry HTML key: use the authoritative key from opts first (no listing
+      // needed), then fall back to listing if that's not available.
+      const passedKey = opts.entryKey && !opts.entryKey.startsWith('http') ? opts.entryKey : undefined;
       const isGenerated = (k: string) => /\/(bridge|guidance)\.js$/.test(k) || /section_[^/]+\.(html|js)$/.test(k);
-      const entryKey =
-        (opts.entryKey && !opts.entryKey.startsWith('http') ? opts.entryKey : undefined) ??
-        allKeys.find(k => /\/(index|main)\.(html|htm)$/.test(k)) ??
-        allKeys.find(k => (k.endsWith('.html') || k.endsWith('.htm')) && !isGenerated(k));
+      let entryKey = passedKey;
+      if (!entryKey) {
+        let allKeys: string[] = [];
+        try { allKeys = await this.storage.listObjects(prefix); } catch { /* listing denied — leave allKeys empty */ }
+        entryKey =
+          allKeys.find(k => /\/(index|main)\.(html|htm)$/.test(k)) ??
+          allKeys.find(k => (k.endsWith('.html') || k.endsWith('.htm')) && !isGenerated(k));
+      }
       if (!entryKey) throw new Error('No HTML entry file found in simulation');
 
       // guidance.js lives at the prefix root; the entry HTML may be nested in a
-      // sub-directory, so compute the correct relative path with ../ as needed
-      // (mirrors the bridge's relative-path computation).
+      // sub-directory, so compute the correct relative path with ../ as needed.
       const entryDir = entryKey.substring(0, entryKey.lastIndexOf('/'));
       const relativeDepth = entryDir === prefix
         ? 0
         : entryDir.slice(prefix.length).split('/').filter(Boolean).length;
       const relPath = (relativeDepth > 0 ? '../'.repeat(relativeDepth) : './') + 'guidance.js';
 
-      const rawHtml = (await this.storage.readObject(entryKey)).toString('utf-8');
+      // Read existing HTML: try storage first, fall back to the public URL (same path
+      // used by the viewer — works even when S3 GetObject is denied).
+      let rawHtml: string;
+      try {
+        rawHtml = (await this.storage.readObject(entryKey)).toString('utf-8');
+      } catch {
+        const res = await fetch(this.storage.getSimPublicUrl(entryKey));
+        if (!res.ok) throw new Error(`Could not read entry HTML (${res.status})`);
+        rawHtml = await res.text();
+      }
       const updatedHtml = injectGuidanceScriptTag(rawHtml, relPath, guidanceHash);
       await this.storage.uploadFile(entryKey, Buffer.from(updatedHtml, 'utf-8'), 'text/html; charset=utf-8');
     });

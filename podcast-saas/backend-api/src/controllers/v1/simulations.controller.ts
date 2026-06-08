@@ -254,15 +254,71 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
       });
       if (!sim) return reply.code(404).send({ message: 'Simulation not found' });
 
+      const prefix = sim.storage_prefix.endsWith('/') ? sim.storage_prefix : sim.storage_prefix + '/';
+
       let allKeys: string[] = [];
+      let listFailed = false;
       try {
         allKeys = await storage.listObjects(sim.storage_prefix);
       } catch (err) {
-        logger.warn({ err, prefix: sim.storage_prefix }, 'listObjects failed for simulation files');
-        return reply.code(502).send({ message: 'Could not list simulation files from storage' });
+        // Some R2 API tokens can read/write objects but lack ListBucket permission
+        // (→ AccessDenied). Don't hard-fail: fall back to probing the standard files.
+        listFailed = true;
+        logger.warn({ err, prefix: sim.storage_prefix }, 'listObjects failed — falling back to known-file probe (grant the storage token List permission to see all files)');
       }
 
-      const prefix = sim.storage_prefix.endsWith('/') ? sim.storage_prefix : sim.storage_prefix + '/';
+      // When listing is unavailable/empty (e.g. a write-only / public-only R2 token
+      // that denies ListBucket+GetObject), derive the file set from the entry HTML
+      // — fetched over the PUBLIC url the player already uses, which needs no S3 auth.
+      // Sim files live in an arbitrarily-named subfolder with arbitrary names, so we
+      // can't guess them; instead we parse the entry's <link href>/<script src> refs.
+      if (listFailed || allKeys.length === 0) {
+        const entryKey = sim.entry_file;
+        // entry_file may be a raw storage key OR a legacy full public URL.
+        const entryIsUrl = entryKey.startsWith('http://') || entryKey.startsWith('https://');
+        const entryPublicUrl = entryIsUrl ? entryKey : storage.getSimPublicUrl(entryKey);
+        // Normalise to an absolute base so relative-ref resolution works for both forms.
+        const entryBase = entryIsUrl ? entryKey : `http://x/${entryKey}`;
+        const entryDir  = entryBase.slice(0, entryBase.lastIndexOf('/') + 1);
+
+        // Only seed found with the entry key if it is a storage key (not a URL) so
+        // it survives the prefix filter below.
+        const found = new Set<string>(entryIsUrl ? [] : [entryKey]);
+        try {
+          const res = await fetch(entryPublicUrl);
+          if (res.ok) {
+            const html = await res.text();
+            const refs = [...html.matchAll(/(?:href|src)\s*=\s*["']([^"']+)["']/gi)]
+              .map((m) => m[1])
+              .filter((r) => !/^(https?:)?\/\//i.test(r) && !r.startsWith('data:') && !r.startsWith('#') && !r.startsWith('mailto:'));
+            for (const ref of refs) {
+              const clean = ref.split('?')[0].split('#')[0].trim();
+              if (!clean) continue;
+              let resolved: string;
+              try { resolved = new URL(clean, entryDir).pathname.slice(1); } catch { continue; }
+              if (resolved.startsWith(prefix)) found.add(resolved);
+            }
+          }
+        } catch { /* entry unreachable — fall through with just the entry key */ }
+
+        // Generated files (bridge.js, guidance.js) live at predictable paths regardless
+        // of whether they've been injected into the HTML yet. Probe via HEAD request
+        // (public bucket, so no auth needed) so they always appear in the Files tab.
+        // Use sim.storage_prefix (no trailing slash) to avoid double-slash in the key.
+        const knownGenerated = [
+          `${sim.storage_prefix}/bridge.js`,
+          `${sim.storage_prefix}/guidance.js`,
+        ];
+        await Promise.all(knownGenerated.map(async (k) => {
+          if (found.has(k)) return;
+          try {
+            const r = await fetch(storage.getSimPublicUrl(k), { method: 'HEAD' });
+            if (r.ok) found.add(k);
+          } catch { /* not accessible */ }
+        }));
+
+        allKeys = [...found];
+      }
       const files = allKeys
         .filter(k => k.startsWith(prefix) || k === sim.storage_prefix)
         .sort()
@@ -302,9 +358,19 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
         return reply.code(403).send({ message: 'Key outside simulation prefix' });
       }
 
-      const buf = await storage.readObject(key);
       if (!isTextSimulationFile(key)) {
         return reply.code(415).send({ message: 'Only text simulation files can be read as source' });
+      }
+
+      // Read via the storage API; fall back to the public URL when the storage
+      // token denies GetObject (write-only R2 token) — same path the player uses.
+      let buf: Buffer;
+      try {
+        buf = await storage.readObject(key);
+      } catch {
+        const res = await fetch(storage.getSimPublicUrl(key)).catch(() => null);
+        if (!res || !res.ok) return reply.code(404).send({ message: 'File not found' });
+        buf = Buffer.from(await res.arrayBuffer());
       }
       return reply
         .header('Content-Type', getSimulationContentType(key))

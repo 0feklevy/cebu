@@ -14,19 +14,19 @@ interface Props {
   currentPos: number;
   watched: Set<number>;
   showSidebar: boolean;
+  controlsVisible: boolean;
   onJump: (displayPos: number) => void;
 }
 
 export function PlaylistWatchLayout({
-  playerArea, playlistTitle, playlistDescription, items, order, currentPos, watched, showSidebar, onJump,
+  playerArea, playlistTitle, playlistDescription, items, order, currentPos, watched, showSidebar, controlsVisible, onJump,
 }: Props) {
   const current = items[order[currentPos]];
   const dur = current ? itemDuration(current) : 0;
 
   return (
     <div
-      className="h-full w-full overflow-hidden"
-      style={{ display: 'grid', gridTemplateColumns: showSidebar ? 'minmax(0,1fr) 360px' : '1fr', background: '#080809' }}
+      className={`grid h-full w-full grid-cols-1 overflow-hidden bg-[#080809] ${showSidebar ? 'lg:grid-cols-[minmax(0,1fr)_360px]' : ''}`}
     >
       {/* Player column */}
       <div className="relative min-h-0 min-w-0 bg-black">
@@ -34,7 +34,7 @@ export function PlaylistWatchLayout({
 
         {/* Slim info bar — bottom of video, above controls */}
         <div
-          className="pointer-events-none absolute inset-x-0 bottom-0 z-[44]"
+          className={`pointer-events-none absolute inset-x-0 bottom-0 z-[44] transition-all duration-300 ${controlsVisible ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0'}`}
           style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.72) 0%, transparent 100%)', height: 88 }}
         >
           <div className="absolute bottom-[72px] left-4 right-4 flex items-end justify-between gap-3 sm:left-5 sm:right-5">

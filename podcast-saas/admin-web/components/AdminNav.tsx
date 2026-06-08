@@ -6,6 +6,7 @@ import { useAdminAuth } from '../lib/firebase';
 
 const NAV = [
   { href: '/dashboard', label: 'Dashboard' },
+  { href: '/avatar', label: 'Avatar' },
   { href: '/llm-config', label: 'AI Config' },
   { href: '/api-keys', label: 'API Keys' },
   { href: '/feature-flags', label: 'Controls' },

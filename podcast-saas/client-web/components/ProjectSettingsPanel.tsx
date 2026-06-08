@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import { Crop, Film, Loader2, Settings, Sparkles, Upload, X } from 'lucide-react';
 import { api } from '../lib/api';
 import { LockPriceControl } from './LockPriceControl';
+import { AvatarSettingsModal } from './avatar/AvatarSettingsModal';
 import type { Project, VideoFile } from 'shared/src/generated/client-v1';
 
 interface Props {
@@ -15,6 +16,7 @@ interface Props {
 
 export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Props) {
   const [open, setOpen] = useState(false);
+  const [page, setPage] = useState<'main' | 'avatar'>('main');
   const [title, setTitle] = useState('');
   const [desc, setDesc] = useState('');
   const [savingMeta, setSavingMeta] = useState(false);
@@ -30,6 +32,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
   const [prompt, setPrompt] = useState('');
   const [model, setModel] = useState<'gpt-4o-mini' | 'gpt-4o'>('gpt-4o-mini');
   const [regenerating, setRegenerating] = useState(false);
+  const [uploadingThumb, setUploadingThumb] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
   const [timelineSec, setTimelineSec] = useState(0);
   const [pickingThumb, setPickingThumb] = useState(false);
@@ -95,13 +98,16 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
     if (previewTimerRef.current) clearTimeout(previewTimerRef.current);
   }, []);
 
-  // Close on Escape
+  // Reset to the main page whenever the panel closes
+  useEffect(() => { if (!open) setPage('main'); }, [open]);
+
+  // Escape: on the avatar wizard page go back to main; otherwise close the panel
   useEffect(() => {
     if (!open) return;
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') { if (page === 'avatar') setPage('main'); else setOpen(false); } };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [open]);
+  }, [open, page]);
 
   // Debounced frame preview fetch (600ms after slider stops)
   const fetchPreview = useCallback((sec: number) => {
@@ -158,6 +164,22 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
     } finally { setRegenerating(false); }
   };
 
+  const uploadThumbnail = async (file: File) => {
+    setUploadingThumb(true);
+    setGenError(null);
+    try {
+      const updated = await api.uploadProjectThumbnail(projectId, file);
+      onProjectChange(updated);
+      setTitle(updated.title ?? '');
+      setDesc(updated.topic ?? '');
+      setThumbMode('ai');
+    } catch (e) {
+      setGenError((e as Error).message?.slice(0, 120) || 'Upload failed');
+    } finally {
+      setUploadingThumb(false);
+    }
+  };
+
   const recrop = async () => {
     setCropping(true);
     setCropError(null);
@@ -196,19 +218,15 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
     return latest;
   }, null);
   const anyCropProcessing = videos.some(v => !v.is_broll && v.crop_status === 'processing');
+  const anyCropReady = videos.some(v => !v.is_broll && v.crop_status === 'ready');
+  const anyCropFailed = videos.some(v => !v.is_broll && v.crop_status === 'failed');
 
   const thumbnailUrl = project?.thumbnail_url ?? null;
-  const isGenerating = regenerating || project?.metadata_status === 'processing';
+  const isGenerating = regenerating || uploadingThumb || project?.metadata_status === 'processing';
 
   const mainVid = videos.find(v => !v.is_broll);
   const dur = mainVid?.duration_sec ?? 0;
   const fmtTime = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
-
-  const labelStyle: React.CSSProperties = {
-    fontSize: 11, fontWeight: 600, color: '#6b7280',
-    textTransform: 'uppercase', letterSpacing: '0.06em',
-    display: 'block', marginBottom: 8,
-  };
 
   const inputStyle: React.CSSProperties = {
     width: '100%', height: 40, border: '1px solid #e2e8f0', borderRadius: 8,
@@ -223,6 +241,42 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
     fontSize: 13, fontWeight: 600, cursor: active ? 'not-allowed' : 'pointer',
     display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
   });
+
+  const sectionCardStyle: React.CSSProperties = {
+    backgroundColor: '#fff',
+    border: '1px solid #f1f5f9',
+    borderRadius: 12,
+    boxShadow: '0 2px 8px rgba(0,0,0,0.05), 0 1px 3px rgba(0,0,0,0.03)',
+    padding: '14px 16px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 12,
+  };
+
+  const sectionHeaderStyle: React.CSSProperties = {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 9,
+    flexWrap: 'wrap',
+  };
+
+  const sectionKickerStyle: React.CSSProperties = {
+    fontSize: 10,
+    color: '#4338ca',
+    background: '#eef2ff',
+    borderRadius: 6,
+    padding: '2px 8px',
+    fontWeight: 700,
+    textTransform: 'uppercase',
+    letterSpacing: '0.06em',
+  };
+
+  const sectionTitleStyle: React.CSSProperties = {
+    margin: 0,
+    fontSize: 13,
+    fontWeight: 700,
+    color: '#0f172a',
+  };
 
   // Active preview image in timeline mode
   const timelinePreview = thumbMode === 'timeline'
@@ -255,6 +309,13 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
           overflow: 'hidden', fontFamily: 'system-ui, -apple-system, sans-serif',
         }}
       >
+        {/* Wizard page 2 — Avatar persona, overlaying this same window */}
+        {page === 'avatar' && (
+          <div style={{ position: 'absolute', inset: 0, zIndex: 5 }}>
+            <AvatarSettingsModal embedded open projectId={projectId} videoTitle={project?.title ?? null} onClose={() => setPage('main')} />
+          </div>
+        )}
+
         {/* ── Header ── */}
         <div style={{
           flexShrink: 0, padding: isCompact ? '12px 14px' : '16px 24px',
@@ -284,7 +345,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
         {/* ── Body: two-column ── */}
         <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: isCompact ? 'column' : 'row' }}>
 
-          {/* LEFT panel — Thumbnail (narrower, white) */}
+          {/* LEFT panel — Thumbnail controls */}
           <div style={{
             width: isCompact ? '100%' : 380,
             maxHeight: isCompact ? '50dvh' : undefined,
@@ -293,9 +354,31 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
             display: 'flex', flexDirection: 'column', gap: 14,
             borderRight: isCompact ? 'none' : '1px solid #e2e8f0',
             borderBottom: isCompact ? '1px solid #e2e8f0' : 'none',
-            backgroundColor: '#fff', boxSizing: 'border-box',
+            backgroundColor: '#f8fafc', boxSizing: 'border-box',
           }}>
-            <span style={labelStyle}>Thumbnail</span>
+            <div style={sectionCardStyle}>
+              <div style={sectionHeaderStyle}>
+                <span style={sectionKickerStyle}>Section 1</span>
+                <h3 style={sectionTitleStyle}>Thumbnail</h3>
+              </div>
+
+            {/* Ask-the-Avatar persona — per-video settings */}
+            <button
+              onClick={() => setPage('avatar')}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
+                padding: '11px 13px', borderRadius: 10, cursor: 'pointer',
+                border: '1px solid #e2e8f0', background: 'linear-gradient(135deg, rgba(99,102,241,0.08), rgba(168,85,247,0.05))',
+                color: '#4338ca', fontSize: 13, fontWeight: 700,
+              }}
+            >
+              <Sparkles size={15} strokeWidth={1.9} aria-hidden />
+              <span style={{ flex: 1 }}>Ask-the-Avatar persona</span>
+              <span style={{ fontSize: 16, color: '#94a3b8' }}>›</span>
+            </button>
+            <span style={{ fontSize: 11, color: '#94a3b8', marginTop: -6, marginBottom: 4 }}>
+              This video&apos;s greeting, prompt, knowledge, language, avatar &amp; voice
+            </span>
 
             {/* Preview */}
             <div style={{ position: 'relative', width: '100%', aspectRatio: '16/9', borderRadius: 10, overflow: 'hidden', background: '#0f172a', border: '1px solid #e2e8f0', flexShrink: 0 }}>
@@ -310,7 +393,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
                 <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, color: '#fff', background: 'rgba(0,0,0,0.55)' }}>
                   <Loader2 size={20} style={{ animation: 'spin 1s linear infinite' }} />
                   <span style={{ fontSize: 13, fontWeight: 600 }}>
-                    {pickingThumb ? 'Extracting frame…' : previewLoading ? 'Loading preview…' : 'Generating…'}
+                    {pickingThumb ? 'Extracting frame…' : previewLoading ? 'Loading preview…' : uploadingThumb ? 'Uploading…' : 'Generating…'}
                   </span>
                 </div>
               )}
@@ -361,7 +444,17 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
                   <button onClick={regen} disabled={isGenerating} style={{ ...btnStyle(isGenerating), flex: 1, height: 36 }}>
                     {isGenerating ? <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Generating…</> : <><Sparkles size={13} strokeWidth={2} /> {thumbnailUrl ? 'Regenerate' : 'Generate'}</>}
                   </button>
-                  <input ref={thumbInputRef} type="file" accept="image/jpeg,image/png,image/webp" style={{ display: 'none' }} onChange={async e => { e.target.value = ''; await regen(); }} />
+                  <input
+                    ref={thumbInputRef}
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    style={{ display: 'none' }}
+                    onChange={async e => {
+                      const file = e.target.files?.[0] ?? null;
+                      e.target.value = '';
+                      if (file) await uploadThumbnail(file);
+                    }}
+                  />
                   <button onClick={() => thumbInputRef.current?.click()} title="Upload image" disabled={isGenerating}
                     style={{ width: 36, height: 36, border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#6b7280', flexShrink: 0 }}
                     onMouseEnter={e => (e.currentTarget.style.background = '#f1f5f9')}
@@ -400,14 +493,18 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
                 )}
               </div>
             )}
+            </div>
           </div>
 
-          {/* RIGHT panel — Details + Crop + Access (full width, more space) */}
-          <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: isCompact ? '14px' : '24px 32px', display: 'flex', flexDirection: 'column', gap: 28, backgroundColor: '#f8fafc', boxSizing: 'border-box' }}>
+          {/* RIGHT panel — Details + Crop + Access */}
+          <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: isCompact ? '14px' : '20px 24px', display: 'flex', flexDirection: 'column', gap: 16, backgroundColor: '#fff', boxSizing: 'border-box' }}>
 
             {/* Details */}
-            <div>
-              <span style={labelStyle}>Details</span>
+            <div style={sectionCardStyle}>
+              <div style={sectionHeaderStyle}>
+                <span style={sectionKickerStyle}>Section 2</span>
+                <h3 style={sectionTitleStyle}>Details</h3>
+              </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 <input
                   value={title} onChange={e => setTitle(e.target.value)} placeholder="Video name"
@@ -428,8 +525,11 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
             </div>
 
             {/* Smart Crop */}
-            <div>
-              <span style={labelStyle}>Smart Crop</span>
+            <div style={sectionCardStyle}>
+              <div style={sectionHeaderStyle}>
+                <span style={sectionKickerStyle}>Section 3</span>
+                <h3 style={sectionTitleStyle}>Smart Crop</h3>
+              </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
                 <button
                   onClick={recrop} disabled={cropping || anyCropProcessing}
@@ -438,17 +538,26 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
                   {(cropping || anyCropProcessing) ? <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Cropping…</> : <><Crop size={13} strokeWidth={2} /> Recrop</>}
                 </button>
                 <span style={{ fontSize: 13, color: '#6b7280' }}>
-                  {anyCropProcessing ? 'Running…' : lastCropTime
-                    ? new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(lastCropTime))
-                    : 'Never cropped'}
+                  {(anyCropProcessing || cropping)
+                    ? 'Cropping…'
+                    : lastCropTime
+                      ? `Last cropped ${new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(lastCropTime))}`
+                      : anyCropReady
+                        ? 'Cropped'
+                        : anyCropFailed
+                          ? 'Crop failed'
+                          : 'Never cropped'}
                 </span>
               </div>
               {cropError && <p style={{ fontSize: 12, color: '#ef4444', marginTop: 4 }}>{cropError}</p>}
             </div>
 
             {/* Access */}
-            <div>
-              <span style={labelStyle}>Access</span>
+            <div style={sectionCardStyle}>
+              <div style={sectionHeaderStyle}>
+                <span style={sectionKickerStyle}>Section 4</span>
+                <h3 style={sectionTitleStyle}>Access</h3>
+              </div>
               <LockPriceControl contentType="project" contentId={projectId} bordered={false} />
             </div>
           </div>
@@ -480,6 +589,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
         </>,
         document.body,
       )}
+
     </>
   );
 }

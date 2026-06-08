@@ -20,28 +20,34 @@ export function PlaylistLobby({ title, description, bannerUrl, items, allowShuff
   const totalSec = items.reduce((s, it) => s + itemDuration(it), 0);
   const readyCount = items.filter(itemReady).length;
   const watchedCount = items.filter((_, idx) => watched.has(idx)).length;
+  const heroImageUrl = bannerUrl ?? items.find((item) => item.thumbnail_url)?.thumbnail_url ?? null;
 
   return (
     <div className="relative h-full w-full overflow-hidden bg-[#070709] text-white">
       {/* Background */}
-      {bannerUrl ? (
+      <div className="absolute inset-0" style={{
+        background: 'radial-gradient(ellipse 70% 60% at 15% 20%, rgba(99,102,241,0.28) 0%, transparent 60%), radial-gradient(ellipse 50% 50% at 85% 15%, rgba(168,85,247,0.22) 0%, transparent 55%), linear-gradient(160deg,#0d0d12 0%,#10101a 50%,#0a0a0e 100%)',
+      }} />
+      {heroImageUrl ? (
         <>
-          <img src={bannerUrl} alt="" className="absolute inset-0 h-full w-full object-cover" draggable={false} />
-          <div className="absolute inset-0 bg-black/70" />
-          <div className="absolute inset-0 bg-[linear-gradient(to_right,rgba(0,0,0,0.9)_0%,rgba(0,0,0,0.5)_50%,rgba(0,0,0,0.7)_100%)]" />
+          <img
+            src={heroImageUrl}
+            alt=""
+            className="absolute inset-0 h-full w-full object-cover"
+            draggable={false}
+            onError={(e) => { e.currentTarget.style.display = 'none'; }}
+          />
+          <div className="absolute inset-0 bg-black/55" />
+          <div className="absolute inset-0 bg-[linear-gradient(to_right,rgba(0,0,0,0.92)_0%,rgba(0,0,0,0.3)_46%,rgba(0,0,0,0.28)_66%,rgba(0,0,0,0.76)_100%)]" />
         </>
-      ) : (
-        <div className="absolute inset-0" style={{
-          background: 'radial-gradient(ellipse 70% 60% at 15% 20%, rgba(99,102,241,0.28) 0%, transparent 60%), radial-gradient(ellipse 50% 50% at 85% 15%, rgba(168,85,247,0.22) 0%, transparent 55%), linear-gradient(160deg,#0d0d12 0%,#10101a 50%,#0a0a0e 100%)',
-        }} />
-      )}
+      ) : null}
 
       {/* Content */}
       <div className="relative z-10 h-full overflow-y-auto fine-scrollbar">
-        <div className="mx-auto flex min-h-full w-full max-w-7xl flex-col gap-6 px-5 py-8 sm:px-8 sm:py-10 lg:h-full lg:flex-row lg:items-stretch lg:gap-8 lg:overflow-hidden lg:px-12 lg:py-10">
+        <div className="flex min-h-full w-full flex-col gap-6 px-5 py-8 sm:px-8 sm:py-10 lg:h-full lg:flex-row lg:items-stretch lg:justify-between lg:gap-10 lg:overflow-hidden lg:px-8 lg:py-10 xl:px-12 2xl:px-16">
 
           {/* Left — hero info */}
-          <section className="flex flex-col justify-between lg:flex-1 lg:min-w-0 lg:py-4">
+          <section className="flex flex-col justify-between lg:w-[min(40vw,560px)] lg:min-w-[340px] lg:py-4 xl:w-[min(36vw,600px)]">
             <div>
               {/* Eyebrow tag */}
               <span className="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.22em] text-white/55 backdrop-blur-md">
@@ -107,7 +113,7 @@ export function PlaylistLobby({ title, description, bannerUrl, items, allowShuff
           </section>
 
           {/* Right — video list */}
-          <aside className="flex min-h-0 shrink-0 flex-col overflow-hidden rounded-xl border border-white/10 bg-black/35 shadow-2xl shadow-black/40 backdrop-blur-xl lg:w-[380px] xl:w-[420px]">
+          <aside className="flex min-h-0 shrink-0 flex-col overflow-hidden rounded-xl border border-white/10 bg-black/30 shadow-2xl shadow-black/35 backdrop-blur-xl lg:ml-auto lg:w-[360px] xl:w-[380px] 2xl:w-[400px]">
             <div className="flex shrink-0 items-center justify-between border-b border-white/8 px-4 py-3.5">
               <p className="text-sm font-semibold text-white/90">Videos</p>
               <span className="rounded-full bg-white/8 px-2.5 py-0.5 text-xs font-bold text-white/50">{items.length}</span>

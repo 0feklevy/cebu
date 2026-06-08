@@ -3,6 +3,7 @@ import { projects, video_files, timeline_sections, image_files, audio_files } fr
 import { eq, asc } from 'drizzle-orm';
 import { getStorageAdapter } from './storage/getStorageAdapter.js';
 import { enqueueCropForProject } from './crop/runCropAnalysis.js';
+import { captionUrlForVideo, enqueueCaptionsForProject } from './captions/CaptionService.js';
 
 /**
  * Build the PlayerConfig for a single project — the dynamic equivalent of
@@ -67,6 +68,11 @@ export async function buildPlayerConfig(projectId: string) {
       fallback_url,
       hls_status: v.hls_status,
       crop_url,                 // smart portrait-crop metadata (null until ready)
+      captions: {
+        status: videoCaptionStatus(v.captions_status),
+        vtt_url: captionUrlForVideo(v),
+        error: v.captions_status === 'failed' ? v.captions_error : null,
+      },
       simulations,
     };
   });
@@ -75,6 +81,7 @@ export async function buildPlayerConfig(projectId: string) {
   // this runs because the project is being previewed or shared, never blocks the
   // response, and no-ops once the crop is already up to date (content-hash gated).
   enqueueCropForProject(project.id).catch(() => { /* best-effort */ });
+  enqueueCaptionsForProject(project.id).catch(() => { /* best-effort */ });
 
   // Build broll_clips from broll sections — each broll section points to a broll video
   const brollVideoMap = new Map(brollVideos.map((v) => [v.id, v]));
@@ -193,10 +200,15 @@ export async function buildPlayerConfig(projectId: string) {
     project_id:     project.id,
     title:          project.title,
     description:    project.topic ?? null,
+    thumbnail_url:  project.thumbnail_url ?? null,
     segments,
     broll_clips:    brollClips,
     clip_overlays:  clipOverlays,
     image_overlays: imageOverlays,
     audio_cutaways: audioCutaways,
   };
+}
+
+function videoCaptionStatus(status: string | null | undefined): 'none' | 'processing' | 'ready' | 'failed' {
+  return status === 'processing' || status === 'ready' || status === 'failed' ? status : 'none';
 }

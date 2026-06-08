@@ -313,6 +313,7 @@ export interface PlaylistItem {
   position: number;
   title: string | null;
   description: string | null;
+  thumbnail_url: string | null;
   status: string;
 }
 
@@ -322,6 +323,7 @@ export interface PlaylistWithItems extends Playlist {
 
 export interface PlaylistSummary extends Playlist {
   item_count: number;
+  thumbnail_url?: string | null;
 }
 
 // Public play-config — each item carries its full project PlayerConfig.
@@ -446,6 +448,12 @@ export class ClientV1Api {
 
   regenerateVideoMetadata(projectId: string, opts?: { prompt?: string; model?: 'gpt-4o-mini' | 'gpt-4o' }): Promise<{ status: string }> {
     return this.request(`/api/v1/projects/${projectId}/generate-metadata`, { method: 'POST', body: opts ?? {} });
+  }
+
+  uploadProjectThumbnail(projectId: string, file: File): Promise<Project> {
+    const formData = new FormData();
+    formData.set('file', file);
+    return this.requestMultipart(`/api/v1/projects/${projectId}/thumbnail`, formData);
   }
 
   deleteProject(projectId: string): Promise<void> {
@@ -692,6 +700,10 @@ export class ClientV1Api {
 
   listPlaylists(): Promise<PlaylistSummary[]> {
     return this.request('/api/v1/playlists');
+  }
+
+  listPlaylistsWithItems(): Promise<PlaylistWithItems[]> {
+    return this.request('/api/v1/playlists?with_items=true');
   }
 
   createPlaylist(body: { title?: string; description?: string }): Promise<PlaylistWithItems> {

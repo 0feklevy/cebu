@@ -21,6 +21,11 @@ export interface PlayerSegment {
   fallback_url: string | null;
   hls_status: string;
   crop_url?: string | null;     // smart portrait-crop metadata JSON (null until computed)
+  captions?: {
+    status: 'none' | 'processing' | 'ready' | 'failed';
+    vtt_url: string | null;
+    error?: string | null;
+  };
   simulations: SimulationOverlay[];
 }
 
@@ -70,6 +75,7 @@ export interface AudioCutaway {
 export interface PlayerConfig {
   project_id: string;
   title: string | null;
+  thumbnail_url: string | null;
   segments: PlayerSegment[];
   broll_clips: BrollClip[];
   clip_overlays?: ClipOverlay[];

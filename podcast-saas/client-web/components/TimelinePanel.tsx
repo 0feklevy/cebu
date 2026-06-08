@@ -4,13 +4,15 @@ import { useRef, useState, useCallback, useEffect, useLayoutEffect } from 'react
 import { Music, Plus, Trash2, Volume2, X } from 'lucide-react';
 import type { VideoFile, TimelineSection, Simulation, ImageFile, AudioFile } from 'shared/src/generated/client-v1';
 import { SectionEditor } from './SectionEditor';
+import { A2AudioModal } from './A2AudioModal';
 import { api } from '../lib/api';
 
 // ─── constants ────────────────────────────────────────────────────────────────
 
 const BROLL_TRACK_H  = 44;
+const A2_TRACK_H     = 44;   // A2 matches V2 height
 const VIDEO_TRACK_H  = 52;
-const AUDIO_TRACK_H  = 22;
+const AUDIO_TRACK_H  = 22;   // A1 original track
 const RULER_H        = 24;
 const LABEL_W        = 110;
 const FRAME_W        = 80;
@@ -455,6 +457,10 @@ export function TimelinePanel({
   const [addMenuOpen, setAddMenuOpen]     = useState(false);
   const [addBusy, setAddBusy]             = useState<'simulation' | 'clip' | null>(null);
   const [a2DragOver, setA2DragOver]       = useState(false);
+  const [a2Modal, setA2Modal]             = useState<{ clickSec: number; editSection?: TimelineSection } | null>(null);
+  const [localAudioFiles, setLocalAudioFiles] = useState<AudioFile[]>(audioFiles);
+
+  useEffect(() => { setLocalAudioFiles(audioFiles); }, [audioFiles]);
 
   const mainSections  = sections.filter(isMainSection);
   const brollSections = sections.filter(isVisualBrollSection);
@@ -830,6 +836,12 @@ export function TimelinePanel({
             end:   interaction.edge === 'end'   ? interaction.previewEnd   : s.end_sec,
           }
         : { start: s.start_sec, end: s.end_sec };
+    const nextStart = mainSections
+      .filter(other => other.id !== s.id && other.video_file_id === s.video_file_id)
+      .map(other => other.start_sec)
+      .filter(start => start > disp.start + 0.001 && start < disp.end - 0.001)
+      .sort((a, b) => a - b)[0];
+    if (nextStart != null) disp.end = nextStart;
     const leftPx  = (clip.offset + disp.start) * zoom;
     const widthPx = (disp.end - disp.start) * zoom;
     if (widthPx <= 0) return null;
@@ -953,10 +965,11 @@ export function TimelinePanel({
             {/* A2 label (audio channel) */}
             {hasAudio && (
               <div
-                className="shrink-0 flex items-center px-3 select-none"
-                style={{ height: AUDIO_TRACK_H, borderBottom: '1px solid #e5e7eb', backgroundColor: '#f0fdf4' }}
+                className="shrink-0 flex flex-col justify-center px-3 select-none"
+                style={{ height: A2_TRACK_H, borderBottom: '1px solid #e5e7eb', backgroundColor: '#f0fdf4' }}
               >
                 <span style={{ fontSize: 9, fontWeight: 700, color: '#059669', letterSpacing: '0.08em', textTransform: 'uppercase' }}>A2</span>
+                <span style={{ fontSize: 8, color: '#6ee7b7', marginTop: 2 }}>Music / SFX</span>
               </div>
             )}
 
@@ -1057,7 +1070,11 @@ export function TimelinePanel({
                     const dur = s.end_sec - s.start_sec;
                     return (
                       <div key={`bg-${s.id}`} className="absolute top-0 bottom-0 pointer-events-none"
-                        style={{ left: pos.left, width: pos.width, backgroundColor: 'rgba(6,182,212,0.08)' }}>
+                        style={{
+                          left: pos.left,
+                          width: pos.width,
+                          backgroundColor: 'rgba(6,182,212,0.08)',
+                        }}>
                         <ClipFilmstrip videoUrl={vidUrl} duration={dur} />
                       </div>
                     );
@@ -1121,19 +1138,32 @@ export function TimelinePanel({
                   onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setA2DragOver(true); }}
                   onDragLeave={() => setA2DragOver(false)}
                   onDrop={handleA2Drop}
-                  onClick={handleTrackClick}
+                  onClick={e => {
+                    // click on empty A2 area → open modal
+                    handleTrackClick(e);
+                    const clickSec = pixelsToGlobalSec(e.clientX);
+                    setA2Modal({ clickSec });
+                  }}
                   style={{
-                    height: AUDIO_TRACK_H,
+                    height: A2_TRACK_H,
                     position: 'relative',
-                    backgroundColor: a2DragOver ? '#ccfbf1' : '#f0feff',
-                    borderBottom: `1px solid ${a2DragOver ? '#6ee7b7' : '#cffafe'}`,
+                    backgroundColor: a2DragOver ? '#ccfbf1' : '#f0fdf4',
+                    borderBottom: `1px solid ${a2DragOver ? '#6ee7b7' : '#d1fae5'}`,
                     outline: a2DragOver ? '2px dashed #10b981' : 'none',
                     outlineOffset: -2,
-                    display: 'flex',
-                    alignItems: 'center',
+                    cursor: 'copy',
                     transition: 'background-color 0.15s, outline 0.15s',
                   }}
                 >
+                  {/* Empty hint */}
+                  {audioSections.length === 0 && (
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none select-none">
+                      <span style={{ fontSize: 9, color: '#a7f3d0', fontWeight: 600, letterSpacing: '0.05em' }}>
+                        + click to add music / SFX
+                      </span>
+                    </div>
+                  )}
+
                   {audioSections.map(s => {
                     const pos = brollSectionPos(s);
                     if (!pos) return null;
@@ -1143,13 +1173,14 @@ export function TimelinePanel({
                     return (
                       <div
                         key={`a2-${s.id}`}
-                        className="absolute top-0 bottom-0 flex items-center px-1.5 gap-1.5 overflow-hidden"
+                        className="absolute overflow-hidden"
                         style={{
+                          top: 4, bottom: 4,
                           left: pos.left, width: pos.width,
-                          backgroundColor: 'rgba(16,185,129,0.18)',
-                          borderRadius: 3,
-                          border: `1px solid ${isSelected ? '#047857' : '#10b981'}`,
-                          boxShadow: isSelected ? '0 0 0 2px rgba(16,185,129,0.22)' : undefined,
+                          backgroundColor: isSelected ? 'rgba(16,185,129,0.25)' : 'rgba(16,185,129,0.14)',
+                          borderRadius: 5,
+                          border: `1.5px solid ${isSelected ? '#047857' : '#10b981'}`,
+                          boxShadow: isSelected ? '0 0 0 2px rgba(16,185,129,0.22)' : '0 1px 3px rgba(0,0,0,0.06)',
                           cursor: 'pointer',
                           zIndex: 11,
                         }}
@@ -1157,15 +1188,31 @@ export function TimelinePanel({
                         onClick={e => {
                           e.stopPropagation();
                           setSelectedSection(s);
+                          setA2Modal({ clickSec: s.global_offset_sec ?? 0, editSection: s });
                         }}
                       >
-                        <Music size={9} strokeWidth={2} style={{ color: '#059669', flexShrink: 0 }} />
-                        {/* Volume bar background */}
-                        <div style={{ flex: 1, height: 6, borderRadius: 3, backgroundColor: 'rgba(16,185,129,0.15)', position: 'relative', minWidth: 0 }}>
-                          <div style={{ height: '100%', borderRadius: 3, backgroundColor: vol > 0 ? '#10b981' : '#e5e7eb', width: `${pct}%`, transition: 'width 0.2s' }} />
+                        {/* Volume fill bar */}
+                        <div
+                          className="absolute bottom-0 left-0 right-0"
+                          style={{ height: 3, backgroundColor: '#10b981', opacity: vol * 0.7, borderRadius: '0 0 4px 4px' }}
+                        />
+                        {/* Content */}
+                        <div className="absolute inset-0 flex flex-col justify-center px-2 gap-0.5">
+                          <div className="flex items-center gap-1">
+                            <Music size={9} strokeWidth={2} style={{ color: '#059669', flexShrink: 0 }} />
+                            <span style={{ fontSize: 9, fontWeight: 700, color: '#047857', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {s.label ?? 'Audio'}
+                            </span>
+                          </div>
+                          {/* Simulated waveform bars */}
+                          <div className="flex items-end gap-px" style={{ height: 10 }}>
+                            {Array.from({ length: 20 }, (_, i) => {
+                              const h = Math.max(2, Math.abs(Math.sin(i * 0.7 + (s.global_offset_sec ?? 0))) * 8 + 2);
+                              return <div key={i} style={{ width: 2, height: h, borderRadius: 1, backgroundColor: '#10b981', opacity: vol * 0.65, flexShrink: 0 }} />;
+                            })}
+                            <span style={{ fontSize: 8, fontWeight: 700, color: '#059669', flexShrink: 0, marginLeft: 3, fontFamily: 'monospace' }}>{pct}%</span>
+                          </div>
                         </div>
-                        {/* Volume pct label */}
-                        <span style={{ fontSize: 8, fontWeight: 700, color: '#059669', flexShrink: 0, fontFamily: 'monospace' }}>{pct}%</span>
                       </div>
                     );
                   })}
@@ -1357,22 +1404,34 @@ export function TimelinePanel({
         </div>
       )}
 
-      {/* ── Section editor modal ─────────────────────────────────────────── */}
-      {selectedSection && isAudioSection(selectedSection) ? (
-        <AudioGainPopover
-          section={selectedSection}
+      {/* ── A2 Audio Modal ───────────────────────────────────────────────── */}
+      {a2Modal && clipsWithOffset.length > 0 && (
+        <A2AudioModal
           projectId={projectId}
-          onUpdate={updated => {
+          videoFileId={clipsWithOffset[0].video.id}
+          globalOffsetSec={a2Modal.clickSec}
+          audioFiles={localAudioFiles}
+          editSection={a2Modal.editSection}
+          onInserted={section => {
+            onAudioCutawayInserted?.(section);
+            onSectionsChange([...sections, section]);
+            setSelectedSection(null);
+          }}
+          onAudioFilesChange={setLocalAudioFiles}
+          onSectionUpdate={updated => {
             onSectionsChange(sections.map(s => s.id === updated.id ? updated : s));
             setSelectedSection(updated);
           }}
-          onDelete={id => {
+          onSectionDelete={id => {
             onSectionsChange(sections.filter(s => s.id !== id));
             setSelectedSection(null);
           }}
-          onClose={() => setSelectedSection(null)}
+          onClose={() => setA2Modal(null)}
         />
-      ) : selectedSection ? (
+      )}
+
+      {/* ── Section editor modal ─────────────────────────────────────────── */}
+      {selectedSection && isAudioSection(selectedSection) ? null : selectedSection ? (
         <SectionEditor
           section={selectedSection}
           projectId={projectId}

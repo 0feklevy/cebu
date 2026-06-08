@@ -7,6 +7,7 @@ import { Bot, Brush, CreditCard, Database, KeyRound, Monitor, Moon, SlidersHoriz
 import { useAuth } from '../lib/firebase';
 import { type ThemeOption, useTheme } from '../lib/theme';
 import { BillingSettings } from './BillingSettings';
+import { AnamKeyField } from './avatar/AnamKeyField';
 
 type SettingsTab = 'profile' | 'preferences' | 'ai' | 'advanced' | 'privacy' | 'billing';
 
@@ -324,6 +325,7 @@ export function UserSettingsDialog({ open, onOpenChange }: Props) {
                       ))}
                     </div>
                   </div>
+                  <AnamKeyField />
                 </section>
               )}
 

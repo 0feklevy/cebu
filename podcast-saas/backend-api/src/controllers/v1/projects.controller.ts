@@ -1,12 +1,24 @@
+import { randomUUID } from 'crypto';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import { extname } from 'path';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
-import { projects, hosts, video_files } from '../../db/schema.js';
+import { projects, hosts, video_files, simulations, audio_files, image_files } from '../../db/schema.js';
 import { eq, and } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
+import { LocalStorageAdapter } from '../../services/storage/LocalStorageAdapter.js';
 import { logger } from '../../lib/logger.js';
 import { CreateProjectSchema } from 'shared';
+
+const ALLOWED_THUMBNAIL_MIME = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp']);
+const MAX_THUMBNAIL_BYTES = 10 * 1024 * 1024;
+
+function thumbnailExt(mime: string): string {
+  if (mime === 'image/png') return '.png';
+  if (mime === 'image/webp') return '.webp';
+  return '.jpg';
+}
 
 export async function registerProjectRoutes(app: FastifyInstance): Promise<void> {
   // POST /api/v1/projects
@@ -222,6 +234,58 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
     },
   );
 
+  // POST /api/v1/projects/:id/thumbnail — upload a custom thumbnail image
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/projects/:id/thumbnail',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const project = await db.query.projects.findFirst({
+        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
+      });
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+
+      const data = await request.file();
+      if (!data) return reply.code(400).send({ message: 'No file uploaded' });
+
+      const mime = data.mimetype.toLowerCase().split(';')[0].trim();
+      if (!ALLOWED_THUMBNAIL_MIME.has(mime)) {
+        return reply.code(400).send({ message: 'Only JPEG, PNG, and WebP thumbnails are supported' });
+      }
+
+      const buf = await data.toBuffer();
+      if (buf.length > MAX_THUMBNAIL_BYTES) {
+        return reply.code(413).send({ message: 'Thumbnail must be 10MB or smaller' });
+      }
+
+      const sourceExt = extname(data.filename || '').replace(/[^a-z0-9.]/gi, '').toLowerCase();
+      const ext = ['.jpg', '.jpeg', '.png', '.webp'].includes(sourceExt) ? sourceExt : thumbnailExt(mime);
+      const key = `thumbnails/${project.id}/${randomUUID()}${ext}`;
+
+      const storage = getStorageAdapter();
+      let thumbnailUrl: string;
+      try {
+        thumbnailUrl = await storage.uploadFile(key, buf, mime);
+      } catch (uploadErr: unknown) {
+        logger.warn({ key, err: (uploadErr as Error).message?.slice(0, 120) }, '[thumbnail] primary storage upload failed — falling back to local storage');
+        thumbnailUrl = await new LocalStorageAdapter().uploadFile(key, buf, mime);
+      }
+
+      const [updated] = await db
+        .update(projects)
+        .set({
+          thumbnail_url: thumbnailUrl,
+          thumbnail_key: key,
+          metadata_status: 'ready',
+          updated_at: new Date(),
+        })
+        .where(eq(projects.id, project.id))
+        .returning();
+
+      return reply.code(201).send(updated);
+    },
+  );
+
   // GET /api/v1/projects/:id/frame-preview — returns JPEG of frame at given time (no storage)
   app.get<{ Params: { id: string }; Querystring: { time_seconds?: string } }>(
     '/api/v1/projects/:id/frame-preview',
@@ -263,17 +327,31 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
 
       // Best-effort storage cleanup before DB delete
       const storage = getStorageAdapter();
-      const videos = await db.query.video_files.findMany({
-        where: eq(video_files.project_id, project.id),
-      });
-      await Promise.all(
-        videos.flatMap(v => [
-          v.storage_key ? storage.deleteFile(v.storage_key).catch(err => logger.warn({ err }, 'delete raw')) : null,
+
+      const [videos, sims, audios, images] = await Promise.all([
+        db.query.video_files.findMany({ where: eq(video_files.project_id, project.id) }),
+        db.query.simulations.findMany({ where: eq(simulations.project_id, project.id) }),
+        db.query.audio_files.findMany({ where: eq(audio_files.project_id, project.id) }),
+        db.query.image_files.findMany({ where: eq(image_files.project_id, project.id) }),
+      ]);
+
+      await Promise.all([
+        // Raw video files + HLS segments
+        ...videos.flatMap(v => [
+          v.storage_key ? storage.deleteFile(v.storage_key).catch(err => logger.warn({ err }, 'delete raw video')) : null,
           storage.deleteWithPrefix(`hls/${v.id}`).catch(err => logger.warn({ err }, 'delete hls')),
         ].filter(Boolean)),
-      );
+        // Simulation file trees
+        ...sims.map(s => storage.deleteWithPrefix(s.storage_prefix).catch(err => logger.warn({ err }, 'delete sim prefix'))),
+        // Audio files
+        ...audios.map(a => storage.deleteFile(a.storage_key).catch(err => logger.warn({ err }, 'delete audio'))),
+        // Image files
+        ...images.map(i => storage.deleteFile(i.storage_key).catch(err => logger.warn({ err }, 'delete image'))),
+        // Project thumbnail
+        ...(project.thumbnail_key ? [storage.deleteFile(project.thumbnail_key).catch(err => logger.warn({ err }, 'delete thumbnail'))] : []),
+      ]);
 
-      // DB delete — cascades to video_files and timeline_sections
+      // DB delete — cascades to all child tables
       await db.delete(projects).where(eq(projects.id, project.id));
       return reply.code(204).send();
     },

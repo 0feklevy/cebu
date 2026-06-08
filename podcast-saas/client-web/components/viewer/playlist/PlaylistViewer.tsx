@@ -10,6 +10,8 @@ import { PlaylistLobby } from './PlaylistLobby';
 import { PlaylistWatchLayout } from './PlaylistWatchLayout';
 import { UpNextCard } from './UpNextCard';
 import type { PlaylistPlayConfig } from './shared';
+import { AskAvatarButton } from '../../avatar/AskAvatarButton';
+import { AvatarPopup } from '../../avatar/AvatarPopup';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
 const COUNTDOWN_SEC = 6;
@@ -42,7 +44,12 @@ export function PlaylistViewer({ shareToken, playlistId }: Props) {
   // Up-next card state
   const [pendingNextPos, setPendingNextPos] = useState<number | null>(null);
   const [countdown, setCountdown]           = useState<number | null>(null);
+  const [playerControlsVisible, setPlayerControlsVisible] = useState(true);
   const countdownTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Ask-the-Avatar popup state (scoped to a specific video/project).
+  const [avatar, setAvatar] = useState<{ projectId: string; title: string | null } | null>(null);
+  const openAvatar = useCallback((projectId: string, title: string | null) => setAvatar({ projectId, title }), []);
 
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -185,6 +192,30 @@ export function PlaylistViewer({ shareToken, playlistId }: Props) {
   const currentItem = !inLobby ? data.items[order[currentPos]] : null;
   const showSidebar = data.show_sidebar && !isFullscreen;
 
+  const playlistChrome = (
+    <>
+      <button
+        onClick={goToLobby}
+        className="viewer-top-btn"
+        title="Back to playlist"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M3 12h13M9 6l-6 6 6 6M21 6v12" /></svg>
+        <span className="hidden min-[360px]:inline">Playlist</span>
+      </button>
+      <button
+        onClick={toggleFullscreen}
+        className="viewer-top-btn viewer-top-btn--icon"
+        title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+      >
+        {isFullscreen ? (
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M9 9H5V5M15 9h4V5M9 15H5v4M15 15h4v4" /></svg>
+        ) : (
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" /></svg>
+        )}
+      </button>
+    </>
+  );
+
   // The player + overlays for the current item.
   const playerArea = currentItem ? (
     <>
@@ -194,32 +225,14 @@ export function PlaylistViewer({ shareToken, playlistId }: Props) {
         autoStart
         hideHomeLink
         onProjectComplete={handleProjectComplete}
+        topRightControls={playlistChrome}
+        onControlsVisibleChange={setPlayerControlsVisible}
       />
 
-      {/* Fullscreen toggle (top-right of the video area) */}
-      <button
-        onClick={toggleFullscreen}
-        className="absolute right-2 top-2 z-[70] flex h-8 w-8 items-center justify-center rounded-lg text-white/80 transition-colors hover:bg-white/10 sm:right-3 sm:top-3 sm:h-9 sm:w-9"
-        style={{ background: 'rgba(0,0,0,0.4)' }}
-        title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-      >
-        {isFullscreen ? (
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 9H5V5M15 9h4V5M9 15H5v4M15 15h4v4" /></svg>
-        ) : (
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" /></svg>
-        )}
-      </button>
-
-      {/* Back-to-playlist button (top-right, next to fullscreen) */}
-      <button
-        onClick={goToLobby}
-        className="absolute right-12 top-2 z-[70] flex h-8 items-center gap-1.5 rounded-lg px-2 text-xs font-medium text-white/80 transition-colors hover:bg-white/10 sm:right-14 sm:top-3 sm:h-9 sm:px-3"
-        style={{ background: 'rgba(0,0,0,0.4)' }}
-        title="Back to playlist"
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12h13M9 6l-6 6 6 6M21 6v12" /></svg>
-        <span className="hidden min-[360px]:inline">Playlist</span>
-      </button>
+      {/* Ask-the-Avatar — bottom-right, above the controls; pauses the video */}
+      <div className="absolute bottom-16 right-3 z-[70] sm:bottom-20 sm:right-4">
+        <AskAvatarButton onClick={() => openAvatar(currentItem.project_id, currentItem.title)} label="Ask!" />
+      </div>
 
       {pendingNextPos != null && data.items[order[pendingNextPos]] && (
         <UpNextCard
@@ -236,6 +249,12 @@ export function PlaylistViewer({ shareToken, playlistId }: Props) {
 
   return (
     <div ref={rootRef} className="h-full w-full bg-black">
+      <AvatarPopup
+        open={!!avatar}
+        onClose={() => setAvatar(null)}
+        projectId={avatar?.projectId}
+        videoTitle={avatar?.title}
+      />
       {inLobby ? (
         <PlaylistLobby
           title={data.title}
@@ -249,7 +268,7 @@ export function PlaylistViewer({ shareToken, playlistId }: Props) {
           onShuffle={shuffle}
           onPick={pick}
         />
-      ) : showSidebar ? (
+      ) : (
         <PlaylistWatchLayout
           playerArea={playerArea}
           playlistTitle={data.title}
@@ -260,10 +279,9 @@ export function PlaylistViewer({ shareToken, playlistId }: Props) {
           currentPos={currentPos}
           watched={watched}
           showSidebar={showSidebar}
+          controlsVisible={playerControlsVisible}
           onJump={jumpTo}
         />
-      ) : (
-        <div className="relative h-full w-full bg-black">{playerArea}</div>
       )}
     </div>
   );

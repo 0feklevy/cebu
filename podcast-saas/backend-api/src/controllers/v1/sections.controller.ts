@@ -342,6 +342,10 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
           sendEvent('status', { status: 'Toggle updated — bridge handles it at runtime.', type: 'info' });
           ({ sectionUrl } = svc.reuseBridgeScript(section.simulation_url!));
         } else {
+          // Look up the simulation row to pass entryKey — used when storage listing is denied
+          const simRow = await db.query.simulations.findFirst({
+            where: and(eq(simulations.id, section.simulation_id), eq(simulations.project_id, project.id)),
+          });
           const result = await svc.generateBridgeScript({
             simId:               section.simulation_id,
             sectionId:           section.id,
@@ -350,6 +354,7 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
             prompt:              rawPrompt,
             simpleUi,
             autoScript,
+            entryKey:            simRow?.entry_file && !simRow.entry_file.startsWith('http') ? simRow.entry_file : undefined,
             storedSourceHash:    storedMeta?.sourceHash,   // service owns hash invalidation
             conversationHistory: savedHistory.length > 0 ? savedHistory : undefined,
             onEvent:             sendEvent,
@@ -458,6 +463,10 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       if (canReuse) {
         ({ sectionUrl } = svc.reuseBridgeScript(section.simulation_url!));
       } else {
+        // Look up the simulation row to pass entryKey — used when storage listing is denied
+        const simRow2 = await db.query.simulations.findFirst({
+          where: and(eq(simulations.id, section.simulation_id), eq(simulations.project_id, project.id)),
+        });
         const savedHistory2 = (storedMeta2?.conversationHistory as ConversationMessage[] | undefined) ?? [];
         const result2 = await svc.generateBridgeScript({
           simId:            section.simulation_id,
@@ -467,6 +476,7 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
           prompt,
           simpleUi:         simple_ui,
           autoScript:       auto_script,
+          entryKey:         simRow2?.entry_file && !simRow2.entry_file.startsWith('http') ? simRow2.entry_file : undefined,
           storedSourceHash: storedMeta2?.sourceHash,
           conversationHistory: savedHistory2.length > 0 ? savedHistory2 : undefined,
         });

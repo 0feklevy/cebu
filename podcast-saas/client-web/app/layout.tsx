@@ -7,9 +7,12 @@ import { PlatformGate } from '../components/PlatformGate';
 
 const inter = Inter({ subsets: ['latin'] });
 
+const SITE_URL = process.env.PUBLIC_SITE_URL ?? process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
+
 export const metadata: Metadata = {
-  title: 'Podcast Studio',
-  description: 'Upload videos, mark sections, build interactive structures.',
+  metadataBase: new URL(SITE_URL),
+  title: 'Interactive Video Studio',
+  description: 'Upload videos, mark sections, and build interactive watch experiences.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

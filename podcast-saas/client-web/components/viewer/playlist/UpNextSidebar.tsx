@@ -39,39 +39,40 @@ export function UpNextSidebar({ title, description, items, order, currentPos, wa
           const dur = itemDuration(item);
 
           return (
-            <button
-              key={item.project_id + displayPos}
-              onClick={() => ready && !active && onJump(displayPos)}
-              disabled={!ready || active}
-              className="flex w-full items-start gap-2.5 px-3 py-2 text-left transition-colors"
-              style={{
-                background: active ? 'linear-gradient(90deg,rgba(99,102,241,0.18),rgba(99,102,241,0.06))' : 'transparent',
-                borderLeft: active ? '2px solid rgba(129,140,248,0.7)' : '2px solid transparent',
-                opacity: ready ? 1 : 0.45,
-                cursor: active || !ready ? 'default' : 'pointer',
-              }}
-              onMouseEnter={(e) => { if (!active && ready) (e.currentTarget.style.background = 'rgba(255,255,255,0.05)'); }}
-              onMouseLeave={(e) => { (e.currentTarget.style.background = active ? 'linear-gradient(90deg,rgba(99,102,241,0.18),rgba(99,102,241,0.06))' : 'transparent'); }}
-            >
-              <div className="relative shrink-0">
-                <PlaylistThumb index={displayPos} title={item.title} thumbnailUrl={item.thumbnail_url} durationSec={dur} size="sm" active={active} />
-                {active && (
-                  <span className="absolute inset-0 flex items-center justify-center rounded-md bg-black/30">
-                    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-indigo-500/90">
-                      <Play size={10} fill="white" strokeWidth={0} />
+            <div key={item.project_id + displayPos} className="group relative">
+              <button
+                onClick={() => ready && !active && onJump(displayPos)}
+                disabled={!ready || active}
+                className="flex w-full items-start gap-2.5 px-3 py-2 text-left transition-colors"
+                style={{
+                  background: active ? 'linear-gradient(90deg,rgba(99,102,241,0.18),rgba(99,102,241,0.06))' : 'transparent',
+                  borderLeft: active ? '2px solid rgba(129,140,248,0.7)' : '2px solid transparent',
+                  opacity: ready ? 1 : 0.45,
+                  cursor: active || !ready ? 'default' : 'pointer',
+                }}
+                onMouseEnter={(e) => { if (!active && ready) (e.currentTarget.style.background = 'rgba(255,255,255,0.05)'); }}
+                onMouseLeave={(e) => { (e.currentTarget.style.background = active ? 'linear-gradient(90deg,rgba(99,102,241,0.18),rgba(99,102,241,0.06))' : 'transparent'); }}
+              >
+                <div className="relative shrink-0">
+                  <PlaylistThumb index={displayPos} title={item.title} thumbnailUrl={item.thumbnail_url} durationSec={dur} size="sm" active={active} />
+                  {active && (
+                    <span className="absolute inset-0 flex items-center justify-center rounded-md bg-black/30">
+                      <span className="flex h-6 w-6 items-center justify-center rounded-full bg-indigo-500/90">
+                        <Play size={10} fill="white" strokeWidth={0} />
+                      </span>
                     </span>
-                  </span>
-                )}
-              </div>
-              <div className="min-w-0 flex-1 pt-0.5">
-                <p className="line-clamp-2 text-[12px] font-medium leading-[1.35] text-white/80" style={{ color: active ? 'rgba(199,210,254,0.95)' : undefined }}>
-                  {item.title ?? 'Untitled video'}
-                </p>
-                <p className="mt-1 text-[10px] font-medium" style={{ color: active ? 'rgba(129,140,248,0.8)' : 'rgba(255,255,255,0.35)' }}>
-                  {active ? 'Now playing' : watched.has(itemIdx) ? '✓ Watched' : !ready ? 'Processing…' : fmtDuration(dur)}
-                </p>
-              </div>
-            </button>
+                  )}
+                </div>
+                <div className="min-w-0 flex-1 pt-0.5">
+                  <p className="line-clamp-2 text-[12px] font-medium leading-[1.35] text-white/80" style={{ color: active ? 'rgba(199,210,254,0.95)' : undefined }}>
+                    {item.title ?? 'Untitled video'}
+                  </p>
+                  <p className="mt-1 text-[10px] font-medium" style={{ color: active ? 'rgba(129,140,248,0.8)' : 'rgba(255,255,255,0.35)' }}>
+                    {active ? 'Now playing' : watched.has(itemIdx) ? '✓ Watched' : !ready ? 'Processing…' : fmtDuration(dur)}
+                  </p>
+                </div>
+              </button>
+            </div>
           );
         })}
       </div>

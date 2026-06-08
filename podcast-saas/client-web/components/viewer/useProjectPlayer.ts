@@ -48,10 +48,13 @@ export interface ProjectPlayerState {
   showSimOverlay:  boolean;
   showBrollOverlay: boolean;
   controlsVisible: boolean;
+  globalTime:       number;
   activeSimUrl:    string | null;
   currentSegIdx:   number;
   timeline:        TimelineSeg[];
   totalDuration:   number;
+  volume:          number;
+  muted:           boolean;
   badgeText:       string;
   badgeMode:       'sim' | 'free' | '';
   resumeAction:    'resume' | 'backToVideo';
@@ -64,6 +67,8 @@ export interface ProjectPlayerActions {
   togglePlay:       () => void;
   handleVideoClick: () => void;
   resumeFromSim:    () => void;
+  setVolume:        (volume: number) => void;
+  toggleMute:       () => void;
 }
 
 function fmt(s: number): string {
@@ -124,10 +129,13 @@ export function useProjectPlayer(
     showSimOverlay:   false,
     showBrollOverlay: false,
     controlsVisible:  true,
+    globalTime:       0,
     activeSimUrl:     null,
     currentSegIdx:    0,
     timeline:         initialSegs,
     totalDuration:    initialTotal,
+    volume:           1,
+    muted:            false,
     badgeText:        config.segments[0]?.label ?? '',
     badgeMode:        '',
     resumeAction:     'resume',
@@ -171,6 +179,8 @@ export function useProjectPlayer(
   const guidanceVolRef    = useRef<number | null>(null);
   const showSimOverlayRef = useRef(false);
   const startedRef    = useRef(false);
+  const volumeRef     = useRef(1);
+  const mutedRef      = useRef(false);
   const scrubbingRef  = useRef(false);
   const wasPlayingRef = useRef(false);
   const swapGenRef    = useRef(0);
@@ -238,6 +248,27 @@ export function useProjectPlayer(
   const globalTime = () =>
     (timelineRef.current[curIdxRef.current]?.offset ?? 0) + (videoRef.current?.currentTime ?? 0);
 
+  const effectiveVolume = () => mutedRef.current ? 0 : volumeRef.current;
+
+  const applyMediaVolume = useCallback(() => {
+    const volume = effectiveVolume();
+    const mainVideoVolume = guidanceVolRef.current != null ? Math.min(volume, 0.2) : volume;
+    for (const video of [refs.videoA.current, refs.videoB.current]) {
+      if (!video) continue;
+      video.volume = mainVideoVolume;
+      video.muted = mutedRef.current;
+    }
+    if (audioCutawayRef.current) {
+      const active = (config.audio_cutaways ?? []).find((cut) => cut.id === activeAudioCutawayIdRef.current);
+      audioCutawayRef.current.volume = Math.max(0, Math.min(1, (active?.broll_volume ?? 1) * volume));
+      audioCutawayRef.current.muted = mutedRef.current;
+    }
+    if (guidanceAudioRef.current) {
+      guidanceAudioRef.current.volume = volume;
+      guidanceAudioRef.current.muted = mutedRef.current;
+    }
+  }, [config.audio_cutaways, refs.videoA, refs.videoB]);
+
   // ── controls reveal ───────────────────────────────────────────────────────
   const hideControls = () => {
     clearTimeout(idleTimerRef.current ?? undefined);
@@ -267,16 +298,14 @@ export function useProjectPlayer(
   startNextGuidanceRef.current = () => {
     const next = guidanceQueueRef.current[0];
     if (!next) {
-      if (guidanceVolRef.current != null && videoRef.current) {
-        videoRef.current.volume = guidanceVolRef.current;
-      }
       guidanceVolRef.current = null;
+      applyMediaVolume();
       merge({ guidanceCaption: '' });
       return;
     }
     if (videoRef.current && guidanceVolRef.current == null) {
       guidanceVolRef.current = videoRef.current.volume;
-      videoRef.current.volume = Math.min(videoRef.current.volume, 0.2);  // duck under narration
+      videoRef.current.volume = Math.min(effectiveVolume(), 0.2);  // duck under narration
     }
     merge({ guidanceCaption: next.text });
     const done = () => {
@@ -286,6 +315,8 @@ export function useProjectPlayer(
     };
     if (!next.audioUrl) { setTimeout(done, 3500); return; }
     const audio = new Audio(next.audioUrl);
+    audio.volume = effectiveVolume();
+    audio.muted = mutedRef.current;
     guidanceAudioRef.current = audio;
     audio.addEventListener('ended', done);
     audio.addEventListener('error', done);
@@ -516,7 +547,8 @@ export function useProjectPlayer(
         // Apply broll volume from clip data
         if (refs.videoBroll.current) {
           refs.videoBroll.current.volume = typeof clip.broll_volume === 'number'
-            ? Math.max(0, Math.min(1, clip.broll_volume)) : 1.0;
+            ? Math.max(0, Math.min(1, clip.broll_volume * effectiveVolume()))
+            : effectiveVolume();
         }
         merge({ showBrollOverlay: true });
       } else {
@@ -557,7 +589,8 @@ export function useProjectPlayer(
 
       if (active) {
         const audio = new Audio(active.audio_url);
-        audio.volume = Math.max(0, Math.min(1, active.broll_volume ?? 1.0));
+        audio.volume = Math.max(0, Math.min(1, (active.broll_volume ?? 1.0) * effectiveVolume()));
+        audio.muted = mutedRef.current;
         const localTime = active.start_sec + (gt - active.global_offset_sec);
         audio.currentTime = Math.max(0, localTime);
         audioCutawayRef.current = audio;
@@ -640,6 +673,7 @@ export function useProjectPlayer(
     a.pause();
     hlsStandbyRef.current?.stopLoad();
     hlsStandbyRef.current?.detachMedia();
+    applyMediaVolume();
   };
 
   // ── loadSegment ───────────────────────────────────────────────────────────
@@ -668,6 +702,7 @@ export function useProjectPlayer(
 
     merge({
       currentSegIdx: idx,
+      globalTime: seg.offset + localTime,
       badgeText: config.segments[idx]?.label ?? '',
       badgeMode: 'free',
       resumeAction: 'resume',
@@ -712,6 +747,7 @@ export function useProjectPlayer(
     if (scrubbingRef.current) return;
     const gt = globalTime();
     setProgress(gt);
+    merge({ globalTime: gt });
     const t   = videoRef.current?.currentTime ?? 0;
     const idx = curIdxRef.current;
 
@@ -902,6 +938,7 @@ export function useProjectPlayer(
       attachListeners(vA);
       attachListeners(vB);
       setTotTime(totalDurRef.current);
+      applyMediaVolume();
     };
 
     initAsync();
@@ -948,6 +985,7 @@ export function useProjectPlayer(
       const targetGlobal = getPct(cx) * totalDurRef.current;
       const tl = timelineRef.current;
       setProgress(targetGlobal, totalDurRef.current);
+      merge({ globalTime: targetGlobal });
 
       let targetIdx = 0;
       for (let i = tl.length - 1; i >= 0; i--) {
@@ -1027,10 +1065,11 @@ export function useProjectPlayer(
   const startPlayback = useCallback(() => {
     startedRef.current = true;
     merge({ started: true });
+    applyMediaVolume();
     safePlay(videoRef.current!);
     scheduleHide();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scheduleHide]);
+  }, [scheduleHide, applyMediaVolume]);
 
   // Auto-start (playlist videos 2..N): a user gesture already occurred in the lobby,
   // so begin playing as soon as the first segment is ready.
@@ -1055,6 +1094,20 @@ export function useProjectPlayer(
     if (!v) return;
     if (v.paused) safePlay(v); else v.pause();
   }, [startPlayback]);
+
+  const setVolume = useCallback((nextVolume: number) => {
+    const volume = Math.max(0, Math.min(1, nextVolume));
+    volumeRef.current = volume;
+    if (volume > 0) mutedRef.current = false;
+    applyMediaVolume();
+    merge({ volume, muted: mutedRef.current });
+  }, [applyMediaVolume]);
+
+  const toggleMute = useCallback(() => {
+    mutedRef.current = !mutedRef.current;
+    applyMediaVolume();
+    merge({ muted: mutedRef.current });
+  }, [applyMediaVolume]);
 
   // ── keyboard shortcuts (Space, ←, →) — global, like YouTube ──────────────
   useEffect(() => {
@@ -1085,6 +1138,7 @@ export function useProjectPlayer(
         const wasPlaying = !videoRef.current?.paused;
 
         setProgress(newGlobal);
+        merge({ globalTime: newGlobal });
         showControls();
 
         if (targetIdx === curIdxRef.current) {
@@ -1133,7 +1187,7 @@ export function useProjectPlayer(
       activeSimRef.current = null;
       userPausedRef.current = false;
       resumeActionRef.current = 'resume';
-      merge({ showResumeBtn: false, showSimOverlay: false, resumeAction: 'resume', controlsVisible: true });
+      merge({ showResumeBtn: false, showSimOverlay: false, resumeAction: 'resume', controlsVisible: true, globalTime: targetGlobal });
       setProgress(targetGlobal);
       updateBrollOverlay(targetGlobal); updateImageOverlay(targetGlobal);
       updateAudioCutaway(targetGlobal, wasPlayingRef.current);
@@ -1168,6 +1222,6 @@ export function useProjectPlayer(
 
   return {
     state,
-    actions: { startPlayback, togglePlay, handleVideoClick, resumeFromSim },
+    actions: { startPlayback, togglePlay, handleVideoClick, resumeFromSim, setVolume, toggleMute },
   };
 }

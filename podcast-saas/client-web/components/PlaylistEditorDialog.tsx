@@ -17,7 +17,7 @@ interface Props {
   onChanged: () => void;
 }
 
-interface EditorItem { project_id: string; title: string | null; }
+interface EditorItem { project_id: string; title: string | null; thumbnail_url: string | null; }
 
 function Toggle({ checked, onChange, label, hint }: { checked: boolean; onChange: (v: boolean) => void; label: string; hint?: string }) {
   return (
@@ -82,7 +82,7 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
         setAutoplay(pl.autoplay);
         setShowSidebar(pl.show_sidebar);
         setAllowShuffle(pl.allow_shuffle);
-        setItems(pl.items.map((i) => ({ project_id: i.project_id, title: i.title })));
+        setItems(pl.items.map((i) => ({ project_id: i.project_id, title: i.title, thumbnail_url: i.thumbnail_url ?? null })));
         setBannerUrl(pl.banner_url ?? null);
         setBannerPrompt(pl.banner_prompt ?? '');
         setBannerProvider(pl.banner_provider === 'gemini' ? 'gemini' : 'openai');
@@ -105,7 +105,7 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
       return !q || projectTitle(p).toLowerCase().includes(q);
     });
 
-  const addItem = (p: Project) => setItems((prev) => [...prev, { project_id: p.id, title: projectTitle(p) }]);
+  const addItem = (p: Project) => setItems((prev) => [...prev, { project_id: p.id, title: projectTitle(p), thumbnail_url: p.thumbnail_url ?? null }]);
   const removeItem = (id: string) => setItems((prev) => prev.filter((i) => i.project_id !== id));
   const move = (from: number, to: number) => {
     setItems((prev) => {
@@ -192,9 +192,9 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
             <div className="flex items-center gap-2">
               {playlistId && (
                 <a href={`/playlists/${playlistId}/view`} target="_blank" rel="noreferrer"
-                  className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-xs font-medium text-foreground transition-colors hover:bg-muted focus-ring">
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-2 text-xs font-medium text-foreground transition-colors hover:bg-muted focus-ring sm:px-3">
                   <ExternalLink size={12} strokeWidth={1.9} aria-hidden />
-                  Preview
+                  <span className="hidden min-[390px]:inline">Preview</span>
                 </a>
               )}
               <Dialog.Close onClick={onClose} className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-ring">
@@ -253,8 +253,19 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
                           onClick={() => { addItem(p); setQuery(''); }}
                           className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-muted/60"
                         >
-                          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
-                            <Plus size={11} strokeWidth={2.5} aria-hidden />
+                          <span className="relative h-8 w-12 shrink-0 overflow-hidden rounded-md bg-primary/8">
+                            {p.thumbnail_url ? (
+                              <img
+                                src={p.thumbnail_url}
+                                alt=""
+                                className="h-full w-full object-cover"
+                                draggable={false}
+                                onError={(event) => { event.currentTarget.style.display = 'none'; }}
+                              />
+                            ) : null}
+                            <span className="absolute inset-0 flex items-center justify-center text-primary">
+                              <Plus size={11} strokeWidth={2.5} aria-hidden />
+                            </span>
                           </span>
                           <span className="min-w-0 flex-1 truncate text-sm text-foreground">{projectTitle(p)}</span>
                         </button>
@@ -287,7 +298,18 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
                           className="group flex items-center gap-2 rounded-lg border border-transparent bg-muted/30 px-2.5 py-2 transition-colors hover:border-border/70 hover:bg-muted/50"
                         >
                           <GripVertical size={14} className="shrink-0 cursor-grab text-muted-foreground/40 group-hover:text-muted-foreground/70" aria-hidden />
-                          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-primary/8 text-[10px] font-bold text-primary/70">{idx + 1}</span>
+                          <span className="relative h-9 w-14 shrink-0 overflow-hidden rounded-md bg-primary/8 text-[10px] font-bold text-primary/70">
+                            {it.thumbnail_url ? (
+                              <img
+                                src={it.thumbnail_url}
+                                alt=""
+                                className="h-full w-full object-cover"
+                                draggable={false}
+                                onError={(event) => { event.currentTarget.style.display = 'none'; }}
+                              />
+                            ) : null}
+                            <span className="absolute left-1 top-1 rounded bg-black/55 px-1 text-[9px] font-bold text-white">{idx + 1}</span>
+                          </span>
                           <span className="min-w-0 flex-1 truncate text-sm text-foreground">{it.title ?? 'Untitled video'}</span>
                           <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
                             <button onClick={() => move(idx, idx - 1)} disabled={idx === 0} title="Move up" className="rounded p-1 text-muted-foreground hover:text-foreground disabled:opacity-20">
@@ -316,8 +338,19 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
                             onClick={() => addItem(p)}
                             className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-muted/60"
                           >
-                            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-primary/8 text-primary">
-                              <Plus size={11} strokeWidth={2.5} aria-hidden />
+                            <span className="relative h-8 w-12 shrink-0 overflow-hidden rounded-md bg-primary/8 text-primary">
+                              {p.thumbnail_url ? (
+                                <img
+                                  src={p.thumbnail_url}
+                                  alt=""
+                                  className="h-full w-full object-cover"
+                                  draggable={false}
+                                  onError={(event) => { event.currentTarget.style.display = 'none'; }}
+                                />
+                              ) : null}
+                              <span className="absolute inset-0 flex items-center justify-center">
+                                <Plus size={11} strokeWidth={2.5} aria-hidden />
+                              </span>
                             </span>
                             <span className="min-w-0 flex-1 truncate text-sm text-foreground">{projectTitle(p)}</span>
                           </button>

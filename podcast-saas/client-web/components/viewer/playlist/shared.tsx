@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import type { PlayerConfig } from '../types';
 
 export interface PlaylistPlayItem {
@@ -66,11 +67,17 @@ export function PlaylistThumb({
   size?: 'sm' | 'md';
   active?: boolean;
 }) {
+  const [imageFailed, setImageFailed] = useState(false);
   const p = PALETTES[index % PALETTES.length];
   const isSmall = size === 'sm';
   const w = isSmall ? 108 : '100%';
   const h = isSmall ? 62 : undefined;
   const aspect = isSmall ? undefined : '16 / 9';
+  const showImage = !!thumbnailUrl && !imageFailed;
+
+  useEffect(() => {
+    setImageFailed(false);
+  }, [thumbnailUrl]);
 
   const label = (title ?? '').trim();
   const initials = label
@@ -87,16 +94,17 @@ export function PlaylistThumb({
         flexShrink: 0,
         borderRadius: isSmall ? 6 : 8,
         overflow: 'hidden',
-        background: thumbnailUrl ? '#000' : `linear-gradient(135deg, ${p.from}, ${p.to})`,
+        background: showImage ? '#000' : `linear-gradient(135deg, ${p.from}, ${p.to})`,
         boxShadow: active ? `0 0 0 2px white, 0 0 0 4px ${p.from}66` : 'none',
       }}
     >
-      {thumbnailUrl ? (
+      {showImage ? (
         /* Real thumbnail from the video */
         <img
           src={thumbnailUrl}
           alt={title ?? ''}
           draggable={false}
+          onError={() => setImageFailed(true)}
           style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
         />
       ) : (

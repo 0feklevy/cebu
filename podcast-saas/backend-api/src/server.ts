@@ -3,7 +3,7 @@ import multipart from '@fastify/multipart';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import { readFile } from 'fs/promises';
-import { join } from 'path';
+import { extname, join } from 'path';
 import { tmpdir } from 'os';
 import { logger } from './lib/logger.js';
 import { checkDatabaseConnection } from './db/index.js';
@@ -37,8 +37,26 @@ import { registerAudioRoutes } from './controllers/v1/audio.controller.js';
 import { registerPlaylistRoutes } from './controllers/v1/playlists.controller.js';
 import { registerBillingRoutes } from './controllers/v1/billing.controller.js';
 import { registerStripeWebhookRoutes } from './controllers/v1/stripe-webhook.controller.js';
+import { registerAvatarRoutes } from './controllers/v1/avatar.controller.js';
+import { registerAdminAvatarRoutes } from './controllers/admin/v1/avatar.controller.js';
+import { registerPublicCourseRoutes } from './controllers/v1/public-courses.controller.js';
+import { registerCourseAuthoringRoutes } from './controllers/v1/courses.controller.js';
 
 const PORT = parseInt(process.env.PORT ?? '8080', 10);
+
+function getLocalStorageContentType(key: string): string | undefined {
+  const ext = extname(key).toLowerCase();
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+  if (ext === '.png') return 'image/png';
+  if (ext === '.webp') return 'image/webp';
+  if (ext === '.gif') return 'image/gif';
+  if (ext === '.svg') return 'image/svg+xml';
+  if (ext === '.json') return 'application/json';
+  if (ext === '.vtt') return 'text/vtt; charset=utf-8';
+  if (ext === '.mp3') return 'audio/mpeg';
+  if (ext === '.wav') return 'audio/wav';
+  return undefined;
+}
 
 async function build() {
   const app = Fastify({
@@ -72,7 +90,7 @@ async function build() {
 
   // Local file storage (dev only — active when R2 is not configured).
   // Public prefixes (banners, images) need no auth so browsers can load them directly.
-  const PUBLIC_LOCAL_PREFIXES = ['playlist-banners/', 'crop/', 'images/', 'audio/'];
+  const PUBLIC_LOCAL_PREFIXES = ['playlist-banners/', 'thumbnails/', 'crop/', 'images/', 'audio/', 'captions/'];
   app.get<{ Params: { '*': string } }>(
     '/local-storage/*',
     async (request, reply) => {
@@ -86,7 +104,12 @@ async function build() {
       const filePath = join(tmpdir(), 'podcast-saas-local-storage', key);
       try {
         const data = await readFile(filePath);
-        return reply.send(data);
+        const contentType = getLocalStorageContentType(key);
+        if (contentType) reply.header('Content-Type', contentType);
+        return reply
+          .header('Cross-Origin-Resource-Policy', 'cross-origin')
+          .header('Access-Control-Allow-Origin', '*')
+          .send(data);
       } catch {
         return reply.code(404).send({ message: 'File not found' });
       }
@@ -335,6 +358,10 @@ async function build() {
   await registerPlaylistRoutes(app);
   await registerBillingRoutes(app);
   await registerStripeWebhookRoutes(app);
+  await registerAvatarRoutes(app);
+  await registerAdminAvatarRoutes(app);
+  await registerPublicCourseRoutes(app);
+  await registerCourseAuthoringRoutes(app);
 
   // Phase 2+ stubs (return 501 Not Implemented)
   await registerPhase2StubRoutes(app);

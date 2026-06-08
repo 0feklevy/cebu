@@ -8,9 +8,14 @@ import {
   jsonb,
   timestamp,
   unique,
+  uniqueIndex,
+  index,
+  check,
+  foreignKey,
   real,
   pgEnum,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
 // ── Enums ─────────────────────────────────────────────────────────────────────
 
@@ -79,6 +84,20 @@ export const audioRenderStatusEnum = pgEnum('audio_render_status', [
   'failed',
 ]);
 
+// Course publishing (migration 030)
+export const publishStateEnum = pgEnum('publish_state', [
+  'draft',
+  'unlisted',
+  'published',
+  'archived',
+]);
+export const courseKindEnum = pgEnum('course_kind', ['single', 'playlist']);
+export const archiveDispositionEnum = pgEnum('archive_disposition', [
+  'temporary',
+  'permanent',
+  'redirect',
+]);
+
 // ── Tables ────────────────────────────────────────────────────────────────────
 
 export const orgs = pgTable('orgs', {
@@ -99,6 +118,7 @@ export const users = pgTable('users', {
   weekly_token_limit: integer('weekly_token_limit'),
   monthly_token_limit: integer('monthly_token_limit'),
   stripe_customer_id: text('stripe_customer_id'),  // Stripe customer for pay-to-unlock (migration 024)
+  anam_api_key_encrypted: text('anam_api_key_encrypted'),  // BYOK Anam key (migration 029)
   created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   last_seen_at: timestamp('last_seen_at', { withTimezone: true }),
 });
@@ -156,6 +176,9 @@ export const projects = pgTable('projects', {
   metadata_status: text('metadata_status').notNull().default('none'), // none|processing|ready|failed
   // View counter (migration 027)
   view_count: integer('view_count').notNull().default(0),
+  // Per-video Ask-the-Avatar persona config (migration 029) — greeting, system
+  // prompt, knowledge, language, avatarId/voiceId/llmId, advanced flags.
+  avatar_config: jsonb('avatar_config'),
   created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
@@ -242,6 +265,9 @@ export const admin_settings = pgTable('admin_settings', {
   elevenlabs_model: text('elevenlabs_model').default('eleven_v3').notNull(),
   default_voice_id_a: text('default_voice_id_a'),
   default_voice_id_b: text('default_voice_id_b'),
+  // When true, a video's avatar uses its owner's own Anam key (BYOK); otherwise
+  // the shared server ANAM_API_KEY is used for everyone (migration 029).
+  avatar_byok_enabled: boolean('avatar_byok_enabled').default(false).notNull(),
   updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
@@ -363,6 +389,13 @@ export const video_files = pgTable('video_files', {
   crop_source_hash: text('crop_source_hash'),                    // idempotency: re-run when the source changes
   crop_error: text('crop_error'),
   crop_updated_at: timestamp('crop_updated_at', { withTimezone: true }),
+  // Auto captions (migration 031) — generated as WebVTT from the source audio.
+  captions_status: text('captions_status').notNull().default('none'), // none | processing | ready | failed
+  captions_vtt_key: text('captions_vtt_key'),               // optional object-storage backup (legacy)
+  captions_vtt: text('captions_vtt'),                        // WebVTT stored in DB (migration 033) — source of truth
+  captions_source_hash: text('captions_source_hash'),
+  captions_error: text('captions_error'),
+  captions_updated_at: timestamp('captions_updated_at', { withTimezone: true }),
   created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -541,6 +574,206 @@ export const user_purchases = pgTable(
   }),
 );
 
+// ── Ask-the-Avatar (migration 028) — interactive avatar + visual Library ───────
+
+// The avatar's visual Library. scope='basic' are assets the editor put in the
+// project; scope='extended' are visuals the avatar generated and stored for reuse.
+export const avatar_visuals = pgTable('avatar_visuals', {
+  id:                 uuid('id').primaryKey().defaultRandom(),
+  project_id:         uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }), // null = global
+  scope:              text('scope').notNull().default('extended'),    // basic | extended
+  source:             text('source').notNull().default('generated'),  // editor | generated | uploaded
+  character_id:       text('character_id').notNull().default('einstein'),
+  visual_type:        text('visual_type').notNull(),                  // image | equation | chart | diagram | simulation
+  lookup_key:         text('lookup_key'),
+  caption:            text('caption'),
+  alt_text:           text('alt_text'),
+  image_url:          text('image_url'),
+  image_key:          text('image_key'),
+  dalle_prompt:       text('dalle_prompt'),
+  visual_spec:        jsonb('visual_spec'),
+  sim_storage_prefix: text('sim_storage_prefix'),
+  sim_entry_url:      text('sim_entry_url'),
+  use_count:          integer('use_count').notNull().default(0),
+  created_by:         uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+  created_at:         timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const avatar_conversations = pgTable('avatar_conversations', {
+  id:           uuid('id').primaryKey().defaultRandom(),
+  session_key:  text('session_key').notNull(),
+  character_id: text('character_id').notNull(),
+  project_id:   uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }),
+  role:         text('role').notNull(),       // user | persona
+  content:      text('content').notNull(),
+  created_at:   timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const avatar_profiles = pgTable('avatar_profiles', {
+  id:          uuid('id').primaryKey().defaultRandom(),
+  session_key: text('session_key').notNull().unique(),
+  facts:       jsonb('facts').notNull().default({}),
+  updated_at:  timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+// ── Course publishing layer (migration 030) ───────────────────────────────────
+// A course owns the public URL, publication state, canonical host, course-level
+// SEO and (future) custom-domain config. It has one lesson (single-video course)
+// or many ordered lessons (playlist course). The reusable interactive content
+// stays in `projects`; a lesson references a project. SEO columns are overrides
+// only (nullable) — effective values are resolved at render time, never stored.
+
+export const courses = pgTable(
+  'courses',
+  {
+    id:         uuid('id').primaryKey().defaultRandom(),
+    org_id:     uuid('org_id').references(() => orgs.id).notNull(),
+    created_by: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    kind:       courseKindEnum('kind').notNull().default('single'),
+
+    // Source content (server-rendered landing page text)
+    title:                 text('title'),
+    subtitle:              text('subtitle'),
+    description:           text('description'),
+    learning_outcomes:     jsonb('learning_outcomes'),       // string[]
+    instructor_name:       text('instructor_name'),
+    instructor_bio:        text('instructor_bio'),
+    instructor_avatar_url: text('instructor_avatar_url'),
+    cover_image_url:       text('cover_image_url'),
+    cover_image_key:       text('cover_image_key'),
+
+    // Publication state machine
+    publish_state:            publishStateEnum('publish_state').notNull().default('draft'),
+    published_at:             timestamp('published_at', { withTimezone: true }),
+    archived_at:              timestamp('archived_at', { withTimezone: true }),
+    archive_disposition:      archiveDispositionEnum('archive_disposition'),
+    archived_replacement_url: text('archived_replacement_url'),
+
+    // Routing / SEO (overrides only — nullable)
+    slug:            text('slug').notNull(),
+    canonical_host:  text('canonical_host'),     // null = platform default host
+    canonical_url:   text('canonical_url'),       // explicit full canonical override
+    seo_title:       text('seo_title'),
+    seo_description: text('seo_description'),
+    og_title:        text('og_title'),
+    og_description:  text('og_description'),
+    og_image_url:    text('og_image_url'),
+    og_image_key:    text('og_image_key'),
+    language:        text('language').notNull().default('en'),
+    indexable:       boolean('indexable').notNull().default(true),
+
+    // Backfill provenance (one course per legacy source)
+    legacy_playlist_id: uuid('legacy_playlist_id').references(() => playlists.id, { onDelete: 'set null' }),
+    legacy_project_id:  uuid('legacy_project_id').references(() => projects.id, { onDelete: 'set null' }),
+
+    view_count: integer('view_count').notNull().default(0),
+    created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updated_at: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    // Unique slug under the canonical-host strategy (default host = sentinel)
+    uniqHostSlug:       uniqueIndex('uniq_courses_host_slug').on(sql`COALESCE(${t.canonical_host}, '@platform')`, t.slug),
+    uniqLegacyPlaylist: uniqueIndex('uniq_courses_legacy_playlist').on(t.legacy_playlist_id).where(sql`${t.legacy_playlist_id} IS NOT NULL`),
+    uniqLegacyProject:  uniqueIndex('uniq_courses_legacy_project').on(t.legacy_project_id).where(sql`${t.legacy_project_id} IS NOT NULL`),
+    idxOrg:             index('idx_courses_org').on(t.org_id),
+    idxPublishState:    index('idx_courses_publish_state').on(t.publish_state),
+    slugFormatChk:      check('courses_slug_format_chk', sql`${t.slug} ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$'`),
+    languageFormatChk:  check('courses_language_format_chk', sql`${t.language} ~ '^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})*$'`),
+    outcomesArrayChk:   check('courses_outcomes_array_chk', sql`${t.learning_outcomes} IS NULL OR jsonb_typeof(${t.learning_outcomes}) = 'array'`),
+    // Archive state machine (see migration 030 for the full rationale).
+    archivedDispositionChk: check('courses_archived_requires_disposition_chk', sql`${t.publish_state} <> 'archived' OR ${t.archive_disposition} IS NOT NULL`),
+    archivedTimestampChk:   check('courses_archived_requires_timestamp_chk', sql`${t.publish_state} <> 'archived' OR ${t.archived_at} IS NOT NULL`),
+    redirectUrlChk:         check('courses_redirect_requires_url_chk', sql`${t.archive_disposition} <> 'redirect' OR (${t.archived_replacement_url} IS NOT NULL AND length(btrim(${t.archived_replacement_url})) > 0)`),
+    replacementUrlOnlyChk:  check('courses_replacement_url_only_redirect_chk', sql`${t.archived_replacement_url} IS NULL OR ${t.archive_disposition} = 'redirect'`),
+    nonArchivedCleanChk:    check('courses_non_archived_clean_chk', sql`${t.publish_state} = 'archived' OR (${t.archive_disposition} IS NULL AND ${t.archived_replacement_url} IS NULL AND ${t.archived_at} IS NULL)`),
+  }),
+);
+
+export const course_lessons = pgTable(
+  'course_lessons',
+  {
+    id:        uuid('id').primaryKey().defaultRandom(),
+    course_id: uuid('course_id').notNull().references(() => courses.id, { onDelete: 'cascade' }),
+    // RESTRICT: a project backing a lesson cannot be deleted out from under a
+    // course. Course deletion cascades to lessons but never to projects.
+    project_id: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'restrict' }),
+    position:   integer('position').notNull(),
+
+    // Lesson routing + optional SEO overrides (null = inherit course)
+    slug:            text('slug').notNull(),
+    title:           text('title'),
+    summary:         text('summary'),
+    seo_title:       text('seo_title'),
+    seo_description: text('seo_description'),
+    og_title:        text('og_title'),
+    og_description:  text('og_description'),
+    og_image_url:    text('og_image_url'),
+    language:        text('language'),
+    indexable:       boolean('indexable'),
+
+    created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updated_at: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    uniqCourseSlug:     unique('uniq_lesson_course_slug').on(t.course_id, t.slug),
+    uniqCourseProject:  unique('uniq_lesson_course_project').on(t.course_id, t.project_id),
+    // DEFERRABLE so a single transaction can reorder positions without tripping
+    // (the DEFERRABLE clause itself lives in migration 030; Drizzle can't express it).
+    uniqCoursePosition: unique('uniq_lesson_course_position').on(t.course_id, t.position),
+    // Target of the composite FK from project_redirect_targets.
+    uniqIdProject:      unique('uniq_lesson_id_project').on(t.id, t.project_id),
+    idxCourse:          index('idx_course_lessons_course').on(t.course_id),
+    idxProject:         index('idx_course_lessons_project').on(t.project_id),
+    slugFormatChk:      check('course_lessons_slug_format_chk', sql`${t.slug} ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$'`),
+    positionChk:        check('course_lessons_position_chk', sql`${t.position} >= 0`),
+    languageFormatChk:  check('course_lessons_language_format_chk', sql`${t.language} IS NULL OR ${t.language} ~ '^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})*$'`),
+  }),
+);
+
+// Future custom-domain → course mapping. Present now so custom domains can be
+// added later without changing the course/lesson model. The canonical resolver
+// consults this table; absence of a row ⇒ platform default host.
+export const course_custom_domains = pgTable(
+  'course_custom_domains',
+  {
+    id:          uuid('id').primaryKey().defaultRandom(),
+    course_id:   uuid('course_id').notNull().references(() => courses.id, { onDelete: 'cascade' }),
+    hostname:    text('hostname').notNull(),
+    is_primary:  boolean('is_primary').notNull().default(false),
+    verified:    boolean('verified').notNull().default(false),
+    verified_at: timestamp('verified_at', { withTimezone: true }),
+    created_at:  timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    uniqHostname:    unique('uniq_custom_domain_hostname').on(t.hostname),
+    uniqPrimary:     uniqueIndex('uniq_custom_domain_primary').on(t.course_id).where(sql`${t.is_primary}`),
+    hostnameLowerChk: check('custom_domain_hostname_lower_chk', sql`${t.hostname} = lower(${t.hostname})`),
+  }),
+);
+
+// Canonical lesson a legacy project's /v/<shareToken> link redirects to. One per
+// project; the composite FK proves the target lesson belongs to this project.
+export const project_redirect_targets = pgTable(
+  'project_redirect_targets',
+  {
+    project_id:       uuid('project_id').primaryKey().references(() => projects.id, { onDelete: 'cascade' }),
+    course_lesson_id: uuid('course_lesson_id').notNull(),
+    is_ambiguous:     boolean('is_ambiguous').notNull().default(false),
+    candidate_count:  integer('candidate_count').notNull().default(1),
+    created_at:       timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updated_at:       timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    sameProjectFk: foreignKey({
+      columns: [t.course_lesson_id, t.project_id],
+      foreignColumns: [course_lessons.id, course_lessons.project_id],
+      name: 'fk_redirect_lesson_same_project',
+    }).onDelete('cascade'),
+    candidateCountChk: check('project_redirect_candidate_count_chk', sql`${t.candidate_count} >= 1`),
+    idxLesson:         index('idx_project_redirect_lesson').on(t.course_lesson_id),
+  }),
+);
+
 // ── Type exports ──────────────────────────────────────────────────────────────
 
 export type Org = typeof orgs.$inferSelect;
@@ -564,6 +797,15 @@ export type AudioFile = typeof audio_files.$inferSelect;
 export type TimelineSection = typeof timeline_sections.$inferSelect;
 export type VideoGenerationJob = typeof video_generation_jobs.$inferSelect;
 export type CameraPlan = typeof camera_plans.$inferSelect;
+export type Course = typeof courses.$inferSelect;
+export type NewCourse = typeof courses.$inferInsert;
+export type CourseLesson = typeof course_lessons.$inferSelect;
+export type NewCourseLesson = typeof course_lessons.$inferInsert;
+export type CourseCustomDomain = typeof course_custom_domains.$inferSelect;
+export type ProjectRedirectTarget = typeof project_redirect_targets.$inferSelect;
 export type SimulationRow = typeof simulations.$inferSelect;
 export type Playlist = typeof playlists.$inferSelect;
 export type PlaylistItem = typeof playlist_items.$inferSelect;
+export type AvatarVisual = typeof avatar_visuals.$inferSelect;
+export type AvatarConversation = typeof avatar_conversations.$inferSelect;
+export type AvatarProfile = typeof avatar_profiles.$inferSelect;

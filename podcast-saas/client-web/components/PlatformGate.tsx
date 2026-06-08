@@ -15,27 +15,18 @@ export function usePlatform(): PlatformContextValue {
 
 export function PlatformGate({ children }: { children: React.ReactNode }) {
   const [settings, setSettings] = useState<PlatformSettings | null>(null);
-  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
     fetch(`${apiUrl}/api/v1/platform/settings`)
       .then((r) => r.json())
-      .then((s: PlatformSettings) => {
-        setSettings(s);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
+      .then((s: PlatformSettings) => setSettings(s))
+      .catch(() => { /* settings stay null — render content normally */ });
   }, []);
 
-  if (loading) {
-    return (
-      <div className="flex min-h-dvh items-center justify-center bg-background">
-        <div className="w-5 h-5 rounded-full border-2 border-primary border-t-transparent animate-spin" />
-      </div>
-    );
-  }
-
+  // IMPORTANT: render children during SSR and while settings load, so server HTML
+  // contains real content (required for the public /c SEO pages). We only swap in
+  // the maintenance screen once settings confirm maintenance_mode (client-side).
   if (settings?.maintenance_mode) {
     return (
       <div className="flex min-h-dvh items-center justify-center bg-background px-6 py-8">

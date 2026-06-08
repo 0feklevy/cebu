@@ -49,6 +49,7 @@ async function playlistItemsWithProjects(playlistId: string) {
       position:    i.position,
       title:       p?.title ?? null,
       description: p?.topic ?? null,
+      thumbnail_url: p?.thumbnail_url ?? null,
       status:      p?.status ?? 'failed',
     };
   });
@@ -198,25 +199,67 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
     },
   );
 
-  // ── Auth: GET /api/v1/playlists ───────────────────────────────────────────
-  app.get(
+  // ── Auth: GET /api/v1/playlists[?with_items=true] ────────────────────────
+  // with_items=true collapses the sidebar's N+1 pattern into a single call:
+  // returns PlaylistWithItems[] so the caller doesn't need a follow-up getPlaylist().
+  app.get<{ Querystring: { with_items?: string } }>(
     '/api/v1/playlists',
     { preHandler: [firebaseAuthMiddleware] },
-    async (request: FastifyRequest, reply: FastifyReply) => {
+    async (request: FastifyRequest<{ Querystring: { with_items?: string } }>, reply: FastifyReply) => {
       const user = request.dbUser!;
+      const withItems = request.query.with_items === 'true';
       const rows = await db.query.playlists.findMany({
         where: eq(playlists.created_by, user.id),
         orderBy: (p, { desc }) => [desc(p.updated_at)],
       });
-      // attach item counts
+
       const counts = new Map<string, number>();
+      const firstThumbnails = new Map<string, string>();
+      // itemsByPlaylist only populated when with_items=true
+      const itemsByPlaylist = new Map<string, {
+        id: string; project_id: string; position: number;
+        title: string | null; description: string | null;
+        thumbnail_url: string | null; status: string;
+      }[]>();
+
       if (rows.length > 0) {
         const allItems = await db.query.playlist_items.findMany({
           where: inArray(playlist_items.playlist_id, rows.map((r) => r.id)),
+          orderBy: [asc(playlist_items.position)],
         });
         for (const it of allItems) counts.set(it.playlist_id, (counts.get(it.playlist_id) ?? 0) + 1);
+        const projectIds = Array.from(new Set(allItems.map((it) => it.project_id)));
+        if (projectIds.length > 0) {
+          const projs = await db.query.projects.findMany({ where: inArray(projects.id, projectIds) });
+          const projMap = new Map(projs.map((p) => [p.id, p]));
+          for (const it of allItems) {
+            const p = projMap.get(it.project_id);
+            if (!firstThumbnails.has(it.playlist_id) && p?.thumbnail_url) {
+              firstThumbnails.set(it.playlist_id, p.thumbnail_url);
+            }
+            if (withItems) {
+              const list = itemsByPlaylist.get(it.playlist_id) ?? [];
+              list.push({
+                id:            it.id,
+                project_id:    it.project_id,
+                position:      it.position,
+                title:         p?.title ?? null,
+                description:   p?.topic ?? null,
+                thumbnail_url: p?.thumbnail_url ?? null,
+                status:        p?.status ?? 'failed',
+              });
+              itemsByPlaylist.set(it.playlist_id, list);
+            }
+          }
+        }
       }
-      return reply.send(rows.map((r) => ({ ...r, item_count: counts.get(r.id) ?? 0 })));
+
+      return reply.send(rows.map((r) => ({
+        ...r,
+        item_count:    counts.get(r.id) ?? 0,
+        thumbnail_url: firstThumbnails.get(r.id) ?? null,
+        ...(withItems ? { items: itemsByPlaylist.get(r.id) ?? [] } : {}),
+      })));
     },
   );
 

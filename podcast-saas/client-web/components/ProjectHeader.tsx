@@ -157,11 +157,11 @@ export function ProjectHeader({ projectId }: Props) {
         href={`/projects/${projectId}/view`}
         target="_blank"
         rel="noopener noreferrer"
-        className="hidden h-8 shrink-0 items-center gap-1.5 rounded-lg border px-3 text-xs font-medium shell-muted transition-colors shell-hover hover:text-[hsl(var(--shell-foreground))] focus-ring sm:inline-flex"
+        className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-2 text-xs font-medium shell-muted transition-colors shell-hover hover:text-[hsl(var(--shell-foreground))] focus-ring sm:px-3"
         style={{ borderColor: 'hsl(var(--shell-border))' }}
       >
         <Eye size={13} strokeWidth={1.8} aria-hidden />
-        Preview
+        <span className="hidden min-[390px]:inline">Preview</span>
       </a>
 
       <ProjectSettingsPanel

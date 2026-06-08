@@ -102,11 +102,21 @@ function ProjectCard({ project, onRename, onDelete }: ProjectCardProps) {
         style={{ textDecoration: 'none' }}
       >
         <div className="mb-1.5 flex items-start gap-2 pr-[72px]">
-          {/* Status dot */}
-          <span
-            className="mt-0.5 shrink-0 inline-block rounded-full"
-            style={{ width: 8, height: 8, backgroundColor: status?.dot ?? '#94a3b8', marginTop: 6 }}
-          />
+          <span className="relative mt-0.5 h-8 w-12 shrink-0 overflow-hidden rounded-md bg-[var(--shell-hover)]">
+            {project.thumbnail_url ? (
+              <img
+                src={project.thumbnail_url}
+                alt=""
+                className="h-full w-full object-cover"
+                draggable={false}
+                onError={(event) => { event.currentTarget.style.display = 'none'; }}
+              />
+            ) : null}
+            <span
+              className="absolute bottom-1 left-1 inline-block rounded-full ring-1 ring-black/20"
+              style={{ width: 6, height: 6, backgroundColor: status?.dot ?? '#94a3b8' }}
+            />
+          </span>
           {isEditing ? (
             <input
               ref={inputRef}
@@ -174,11 +184,21 @@ function PlaylistVideoRow({ item }: { item: PlaylistItem }) {
       className="group/video flex min-w-0 items-center gap-2 rounded-lg px-2 py-2 transition-colors shell-hover"
       style={{ textDecoration: 'none' }}
     >
-      <span
-        className="shrink-0 rounded-full"
-        style={{ width: 7, height: 7, backgroundColor: status.dot }}
-        aria-hidden
-      />
+      <span className="relative h-8 w-12 shrink-0 overflow-hidden rounded-md bg-[var(--shell-hover)]" aria-hidden>
+        {item.thumbnail_url ? (
+          <img
+            src={item.thumbnail_url}
+            alt=""
+            className="h-full w-full object-cover"
+            draggable={false}
+            onError={(event) => { event.currentTarget.style.display = 'none'; }}
+          />
+        ) : null}
+        <span
+          className="absolute bottom-1 left-1 rounded-full ring-1 ring-black/20"
+          style={{ width: 6, height: 6, backgroundColor: status.dot }}
+        />
+      </span>
       <span className="min-w-0 flex-1 truncate text-xs font-medium shell-text">
         {videoTitle(item)}
       </span>
@@ -201,7 +221,8 @@ function SidebarPlaylistGroup({
   expanded: boolean;
   onToggle: () => void;
 }) {
-  const itemCount = playlist.items.length;
+  const items = playlist.items ?? [];
+  const itemCount = items.length;
 
   return (
     <div className="rounded-lg">
@@ -230,7 +251,7 @@ function SidebarPlaylistGroup({
       {expanded && (
         <div className="ml-[27px] border-l pl-2" style={{ borderColor: 'hsl(var(--shell-border))' }}>
           {itemCount > 0 ? (
-            playlist.items.map((item) => (
+            items.map((item) => (
               <PlaylistVideoRow key={item.id} item={item} />
             ))
           ) : (
@@ -255,20 +276,11 @@ export function HomeSidebar() {
     let cancelled = false;
 
     async function loadWorkspace() {
-      const [projectItems, playlistSummaries] = await Promise.all([
+      // Single parallel pair of calls instead of the old listPlaylists + N×getPlaylist pattern
+      const [projectItems, playlistDetails] = await Promise.all([
         api.listProjects().catch(() => [] as Project[]),
-        api.listPlaylists().catch(() => []),
+        api.listPlaylistsWithItems().catch(() => [] as PlaylistWithItems[]),
       ]);
-
-      const playlistDetails = await Promise.all(
-        playlistSummaries.map(async (playlist) => {
-          try {
-            return await api.getPlaylist(playlist.id);
-          } catch {
-            return { ...playlist, items: [] } as PlaylistWithItems;
-          }
-        }),
-      );
 
       if (cancelled) return;
       setProjects(projectItems);

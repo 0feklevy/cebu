@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { Clapperboard, Maximize2, Minimize2, Music, Plus, Redo2, Trash2, Undo2 } from 'lucide-react';
+import { Clapperboard, Maximize2, Minimize2, Music, Plus, Redo2, Sparkles, Trash2, Undo2 } from 'lucide-react';
 import { useAuth } from '../lib/firebase';
 import { api } from '../lib/api';
 import { VideoPlayer } from './VideoPlayer';
@@ -13,6 +13,7 @@ import { SimulationUploader } from './SimulationUploader';
 import { BrollPanel } from './BrollPanel';
 import { ConfirmDialog } from './ConfirmDialog';
 import { ImageCropEditor } from './ImageCropEditor';
+import { ExtendedLibraryModal } from './avatar/ExtendedLibraryModal';
 import type { VideoFile, TimelineSection, Simulation, VideoGenerationJob, ImageFile, AudioFile } from 'shared/src/generated/client-v1';
 
 type ToolMode = 'video' | 'simulation' | 'broll';
@@ -204,6 +205,7 @@ export function VideoEditor({ projectId }: Props) {
   const [showSimUploader, setShowSimUploader] = useState(false);
   const [showImgUploader, setShowImgUploader] = useState(false);
   const [pendingCropImage, setPendingCropImage] = useState<ImageFile | null>(null);
+  const [extendedLibraryOpen, setExtendedLibraryOpen] = useState(false);
   const [imgUploading, setImgUploading] = useState(false);
   const imgFileInputRef = useRef<HTMLInputElement>(null);
   const [audioFiles, setAudioFiles] = useState<AudioFile[]>([]);
@@ -691,11 +693,11 @@ export function VideoEditor({ projectId }: Props) {
       {/* Main split: player top, timeline bottom */}
       <div className="flex-1 flex flex-col min-h-0">
         {/* Player + sidebar row */}
-        <div className="flex-1 min-h-0 flex flex-col gap-3 p-2 sm:p-3 xl:flex-row xl:gap-4 xl:p-4">
+        <div className="flex-1 min-h-0 flex flex-col gap-3 p-2 sm:p-3 min-[900px]:flex-row min-[900px]:gap-4 min-[900px]:p-4">
           {/* Player area */}
           <div
             ref={playerContainerRef}
-            className="min-w-0 flex-1 min-h-[220px] sm:min-h-[280px] xl:min-h-0 flex flex-col relative"
+            className="min-w-0 flex-1 min-h-[220px] sm:min-h-[280px] min-[900px]:min-h-0 flex flex-col relative"
             style={isFullscreen ? { backgroundColor: '#000', justifyContent: 'center' } : undefined}
           >
             {hasAnyVideo ? (
@@ -749,7 +751,7 @@ export function VideoEditor({ projectId }: Props) {
 
           {/* Right panel: BrollPanel when marking, otherwise videos + simulations */}
           {toolMode === 'broll' && brollMark ? (
-            <div className="max-h-[34dvh] w-full shrink-0 overflow-y-auto fine-scrollbar xl:max-h-none xl:w-80">
+            <div className="max-h-[34dvh] w-full shrink-0 overflow-y-auto fine-scrollbar min-[900px]:max-h-none min-[900px]:w-[300px] xl:w-80">
               <BrollPanel
                 projectId={projectId}
                 mark={brollMark}
@@ -765,13 +767,24 @@ export function VideoEditor({ projectId }: Props) {
               />
             </div>
           ) : (
-            <div className="flex min-h-0 max-h-[36dvh] w-full shrink-0 flex-col gap-2 overflow-hidden xl:max-h-none xl:w-80">
+            <div className="flex min-h-0 max-h-[36dvh] w-full shrink-0 flex-col gap-2 overflow-hidden min-[900px]:max-h-none min-[900px]:w-[300px] xl:w-80">
               <div className="surface-panel flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto rounded-lg px-3 py-3 fine-scrollbar">
-                <div className="pb-2 border-b border-border/40">
-                  <h2 className="text-sm font-semibold text-foreground">Library</h2>
-                  <p className="mt-0.5 text-[10px] text-muted-foreground">
-                    {videos.length} clip{videos.length !== 1 ? 's' : ''} · {sections.length} section{sections.length !== 1 ? 's' : ''}
-                  </p>
+                <div className="flex items-start justify-between gap-3 border-b border-border/40 pb-2">
+                  <div className="min-w-0">
+                    <h2 className="text-sm font-semibold text-foreground">Library</h2>
+                    <p className="mt-0.5 text-[10px] text-muted-foreground">
+                      {videos.length} clip{videos.length !== 1 ? 's' : ''} · {sections.length} section{sections.length !== 1 ? 's' : ''}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setExtendedLibraryOpen(true)}
+                    className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-[10px] font-semibold text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground focus-ring"
+                    title="Manage the avatar's basic and extended visual library"
+                  >
+                    <Sparkles size={12} strokeWidth={1.9} aria-hidden />
+                    Extended
+                  </button>
                 </div>
 
                 <div className="flex items-center justify-between">
@@ -1132,6 +1145,11 @@ export function VideoEditor({ projectId }: Props) {
         onCancel={() => setConfirmSim(null)}
       />
     )}
+    <ExtendedLibraryModal
+      open={extendedLibraryOpen}
+      onClose={() => setExtendedLibraryOpen(false)}
+      projectId={projectId}
+    />
     </>
   );
 }

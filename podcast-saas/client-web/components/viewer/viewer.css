@@ -3,12 +3,12 @@
   position: absolute;
   left: 0; right: 0; bottom: 0;
   z-index: 55;
-  padding: 0 16px max(14px, env(safe-area-inset-bottom));
-  padding-top: 40px;
+  padding: 0 clamp(18px, 3vw, 34px) max(20px, env(safe-area-inset-bottom));
+  padding-top: 58px;
   background: linear-gradient(transparent, rgba(0,0,0,.85) 60%);
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 10px;
   opacity: 0;
   pointer-events: none;
   transform: translateY(8px);
@@ -23,19 +23,19 @@
 /* ── Progress bar ─────────────────────────────────────── */
 .viewer-progress-wrap {
   cursor: pointer;
-  padding: 8px 0;
+  padding: 13px 0 10px;
   touch-action: none;
 }
 .viewer-progress-track {
   position: relative;
-  height: 4px;
+  height: 6px;
   background: rgba(255,255,255,.18);
-  border-radius: 4px;
+  border-radius: 999px;
   transition: height .15s;
 }
 .viewer-root.controls-visible .viewer-progress-wrap:hover .viewer-progress-track,
 .viewer-root.controls-visible .viewer-progress-wrap:focus  .viewer-progress-track {
-  height: 6px;
+  height: 9px;
 }
 
 .viewer-progress-buf,
@@ -52,8 +52,8 @@
 .viewer-progress-thumb {
   position: absolute;
   top: 50%;
-  width: 14px; height: 14px;
-  margin: -7px 0 0 -7px;
+  width: 20px; height: 20px;
+  margin: -10px 0 0 -10px;
   background: #fff;
   border-radius: 50%;
   z-index: 2;
@@ -76,8 +76,8 @@
 }
 .viewer-seg-marker {
   position: absolute;
-  top: -3px;
-  height: calc(100% + 6px);
+  top: -4px;
+  height: calc(100% + 8px);
   background: rgba(245,158,11,.72);
   border-radius: 3px;
 }
@@ -97,9 +97,9 @@
 }
 .viewer-timeline-divider {
   position: absolute;
-  top: -5px;
-  bottom: -5px;
-  width: 2px;
+  top: -7px;
+  bottom: -7px;
+  width: 3px;
   background: rgba(255,255,255,.55);
   transform: translateX(-50%);
   border-radius: 2px;
@@ -109,48 +109,152 @@
 .viewer-ctrl-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 14px;
+  min-height: 48px;
 }
 .viewer-ctrl-btn {
-  width: 36px; height: 36px;
+  width: 46px; height: 46px;
   display: flex; align-items: center; justify-content: center;
   background: none; border: none;
   cursor: pointer; color: #fff;
-  border-radius: 6px;
+  border-radius: 9px;
   flex-shrink: 0;
   transition: background .15s;
 }
 .viewer-ctrl-btn:hover { background: rgba(255,255,255,.1); }
-.viewer-icon { width: 22px; height: 22px; fill: currentColor; }
+.viewer-icon { width: 27px; height: 27px; fill: currentColor; }
 .viewer-icon-pause { display: none; }
 .viewer-root.playing .viewer-icon-play  { display: none; }
 .viewer-root.playing .viewer-icon-pause { display: block; }
 
 .viewer-time-display {
-  font-size: 12px;
+  font-size: 15px;
+  line-height: 1;
   color: rgba(255,255,255,.7);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 .viewer-t-sep { margin: 0 3px; color: rgba(255,255,255,.4); }
 .viewer-spacer { flex: 1; }
-
-/* ── Mode badge ───────────────────────────────────────── */
-.viewer-mode-badge {
-  font-size: 13px;
-  font-weight: 600;
-  padding: 5px 14px;
-  border-radius: 100px;
-  background: rgba(255,255,255,.1);
-  color: rgba(255,255,255,.75);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 260px;
-  transition: background .2s, color .2s;
+.viewer-volume-wrap,
+.viewer-caption-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
 }
-.viewer-mode-badge.sim  { background: rgba(245,158,11,.22); color: #fbbf24; }
-.viewer-mode-badge.free { background: rgba(107,114,128,.18); color: #6b7280; }
+.viewer-ctrl-btn--small {
+  width: 40px;
+  height: 40px;
+}
+.viewer-icon--small {
+  width: 21px;
+  height: 21px;
+}
+.viewer-volume-pop {
+  width: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition: width .18s ease, opacity .18s ease;
+}
+.viewer-volume-pop.is-open,
+.viewer-volume-wrap:focus-within .viewer-volume-pop {
+  width: 132px;
+  opacity: 1;
+}
+.viewer-volume-pop input {
+  width: 122px;
+  accent-color: #fff;
+}
+.viewer-cc-btn {
+  min-width: 48px;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid rgba(255,255,255,.38);
+  border-radius: 8px;
+  background: rgba(255,255,255,.08);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.viewer-cc-btn:hover { background: rgba(255,255,255,.16); }
+.viewer-cc-btn.is-on {
+  background: #fff;
+  color: #06080d;
+  border-color: #fff;
+}
+.viewer-cc-btn.is-loading {
+  border-color: rgba(255,255,255,.22);
+  color: rgba(255,255,255,.55);
+}
+.viewer-cc-btn:disabled,
+.viewer-ctrl-btn:disabled {
+  opacity: .45;
+  cursor: default;
+}
+.viewer-cc-menu {
+  position: absolute;
+  right: 0;
+  bottom: 54px;
+  width: min(360px, calc(100vw - 24px));
+  padding: 16px;
+  border: 1px solid rgba(255,255,255,.16);
+  border-radius: 8px;
+  background: rgba(18, 22, 32, .96);
+  box-shadow: 0 18px 48px rgba(0,0,0,.42);
+  backdrop-filter: blur(10px);
+  display: grid;
+  gap: 14px;
+}
+.viewer-cc-menu label {
+  display: grid;
+  grid-template-columns: 1fr minmax(140px, 170px);
+  align-items: center;
+  gap: 12px;
+  color: rgba(255,255,255,.86);
+  font-size: 14px;
+  font-weight: 650;
+}
+.viewer-cc-menu select,
+.viewer-cc-menu input {
+  min-width: 0;
+  accent-color: #fff;
+}
+.viewer-cc-menu select {
+  height: 38px;
+  border: 1px solid rgba(255,255,255,.18);
+  border-radius: 6px;
+  background: #111827;
+  color: #fff;
+  padding: 0 8px;
+}
+
+.viewer-caption-overlay {
+  position: absolute;
+  left: 50%;
+  bottom: 44px;
+  z-index: 44;
+  transform: translateX(-50%);
+  width: min(86%, 920px);
+  text-align: center;
+  pointer-events: none;
+  transition: bottom .24s ease;
+}
+.viewer-root.controls-visible .viewer-caption-overlay {
+  bottom: 120px;
+}
+.viewer-caption-text {
+  display: inline;
+  padding: .18em .42em;
+  border-radius: 4px;
+  line-height: 1.42;
+  font-weight: 700;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  text-shadow: 0 1px 2px rgba(0,0,0,.72);
+  white-space: pre-line;
+}
 
 /* ── Simulation overlay ───────────────────────────────── */
 .sim-overlay {
@@ -174,39 +278,94 @@
   display: block;
 }
 
-/* Resume button — shown when user interacts inside simulation */
-.sim-resume-btn {
+/* ── Top overlay controls: resume, playlist, fullscreen ───────────────── */
+.viewer-top-controls {
   position: absolute;
   top: 16px;
   right: 16px;
-  z-index: 35;
-  padding: 10px 22px;
+  z-index: 72;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  max-width: calc(100% - 32px);
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-4px);
+  transition: opacity .25s, transform .25s, visibility .25s;
+}
+.viewer-root.controls-visible .viewer-top-controls,
+.viewer-top-controls--resume {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+.viewer-top-btn,
+.sim-resume-btn {
+  min-height: 46px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 22px;
   background: linear-gradient(135deg,#3b82f6,#6366f1);
   color: #fff;
-  border: none;
+  border: 1px solid rgba(255,255,255,.18);
   border-radius: 8px;
-  font-size: 14px;
-  font-weight: 700;
-  cursor: pointer;
   box-shadow: 0 4px 20px rgba(59,130,246,.35);
-  transition: background .15s;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  pointer-events: auto;
+  white-space: nowrap;
+  transition: background .15s, color .15s, border-color .15s, transform .15s;
 }
-.sim-resume-btn:hover { background: #2563eb; }
+.viewer-top-btn:hover,
+.sim-resume-btn:hover {
+  background: linear-gradient(135deg,#2563eb,#4f46e5);
+  color: #fff;
+  border-color: rgba(255,255,255,.22);
+}
+.viewer-top-btn:active,
+.sim-resume-btn:active {
+  transform: translateY(1px);
+}
+.viewer-top-btn--primary {
+  padding: 0 26px;
+  background: linear-gradient(135deg,rgba(59,130,246,.95),rgba(99,102,241,.95));
+  color: #fff;
+  border-color: rgba(255,255,255,.18);
+  box-shadow: 0 8px 28px rgba(59,130,246,.36);
+}
+.viewer-top-btn--primary:hover {
+  background: linear-gradient(135deg,#2563eb,#4f46e5);
+}
+.viewer-top-btn--icon {
+  width: 46px;
+  padding: 0;
+}
+.sim-resume-btn {
+  top: 16px;
+  right: 16px;
+  z-index: 72;
+}
 
 /* Guided Simulation — on-screen narration caption (plays over the sim overlay) */
 .guidance-caption {
   position: absolute;
   left: 50%;
-  bottom: 84px;
+  bottom: 108px;
   transform: translateX(-50%);
   z-index: 36;
   max-width: 78%;
-  padding: 10px 18px;
+  padding: 12px 20px;
   background: rgba(8, 10, 18, 0.82);
   color: #f8fafc;
   border: 1px solid rgba(148, 163, 184, 0.25);
   border-radius: 12px;
-  font-size: 15px;
+  font-size: 17px;
   line-height: 1.5;
   font-weight: 500;
   text-align: center;
@@ -222,35 +381,83 @@
 
 /* ── Responsive ───────────────────────────────────────── */
 @media (max-width: 500px) {
-  .viewer-controls-bar { padding: 0 10px max(12px, env(safe-area-inset-bottom)) 10px; gap: 5px; }
-  .viewer-ctrl-row { gap: 6px; }
-  .viewer-ctrl-btn { width: 34px; height: 34px; }
-  .viewer-icon { width: 20px; height: 20px; }
-  .viewer-time-display { font-size: 11px; }
+  .viewer-controls-bar { padding: 0 12px max(14px, env(safe-area-inset-bottom)) 12px; padding-top: 48px; gap: 8px; }
+  .viewer-progress-wrap { padding: 11px 0 8px; }
+  .viewer-progress-track { height: 6px; }
+  .viewer-root.controls-visible .viewer-progress-wrap:hover .viewer-progress-track,
+  .viewer-root.controls-visible .viewer-progress-wrap:focus .viewer-progress-track { height: 7px; }
+  .viewer-progress-thumb { width: 18px; height: 18px; margin: -9px 0 0 -9px; opacity: 1; }
+  .viewer-ctrl-row { gap: 8px; min-height: 44px; }
+  .viewer-ctrl-btn { width: 42px; height: 42px; }
+  .viewer-icon { width: 24px; height: 24px; }
+  .viewer-time-display { font-size: 13px; }
   .viewer-t-sep { margin: 0 1px; }
-  .viewer-mode-badge {
-    max-width: 118px;
-    padding: 4px 8px;
-    font-size: 11px;
+  .viewer-ctrl-btn--small { width: 38px; height: 38px; }
+  .viewer-icon--small { width: 20px; height: 20px; }
+  .viewer-cc-btn { min-width: 46px; height: 36px; font-size: 13px; }
+  .viewer-volume-pop.is-open,
+  .viewer-volume-wrap:focus-within .viewer-volume-pop {
+    width: 92px;
   }
-  .guidance-caption {
-    bottom: 72px;
-    max-width: calc(100% - 24px);
-    padding: 8px 12px;
+  .viewer-volume-pop input {
+    width: 84px;
+  }
+  .viewer-caption-overlay {
+    width: calc(100% - 20px);
+    bottom: 36px;
+  }
+  .viewer-root.controls-visible .viewer-caption-overlay {
+    bottom: 104px;
+  }
+  .viewer-cc-menu {
+    right: -36px;
+    bottom: 50px;
+    width: min(330px, calc(100vw - 20px));
+    padding: 14px;
+  }
+  .viewer-cc-menu label {
+    grid-template-columns: 1fr;
+    gap: 6px;
     font-size: 13px;
   }
+  .guidance-caption {
+    bottom: 92px;
+    max-width: calc(100% - 24px);
+    padding: 10px 14px;
+    font-size: 15px;
+  }
   .sim-resume-btn {
-    top: 10px;
-    right: 10px;
-    padding: 8px 12px;
-    font-size: 12px;
+    top: 12px;
+    right: 12px;
+    font-size: 13px;
+  }
+  .viewer-top-controls {
+    top: 12px;
+    right: 12px;
+    gap: 6px;
+    max-width: calc(100% - 24px);
+  }
+  .viewer-top-btn,
+  .sim-resume-btn {
+    min-height: 40px;
+    padding: 0 14px;
+    font-size: 13px;
+  }
+  .viewer-top-btn--primary {
+    padding: 0 16px;
+  }
+  .viewer-top-btn--icon {
+    width: 40px;
+    padding: 0;
   }
 }
 @media (max-height: 420px) {
-  .viewer-controls-bar { padding: 0 14px max(6px, env(safe-area-inset-bottom)) 14px; gap: 3px; }
-  .viewer-progress-wrap { padding: 5px 0; }
-  .viewer-ctrl-btn { width: 30px; height: 30px; }
-  .viewer-icon { width: 18px; height: 18px; }
-  .guidance-caption { bottom: 56px; font-size: 12px; padding: 7px 10px; }
-  .viewer-mode-badge { max-width: 140px; }
+  .viewer-controls-bar { padding: 0 14px max(8px, env(safe-area-inset-bottom)) 14px; padding-top: 34px; gap: 5px; }
+  .viewer-progress-wrap { padding: 7px 0 5px; }
+  .viewer-ctrl-btn { width: 38px; height: 38px; }
+  .viewer-icon { width: 22px; height: 22px; }
+  .viewer-time-display { font-size: 12px; }
+  .viewer-cc-btn { min-width: 42px; height: 34px; font-size: 12px; }
+  .viewer-root.controls-visible .viewer-caption-overlay { bottom: 82px; }
+  .guidance-caption { bottom: 76px; font-size: 13px; padding: 8px 12px; }
 }

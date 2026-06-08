@@ -1223,6 +1223,7 @@ export class SimulationService {
     prompt:            string;
     simpleUi:          boolean;
     autoScript:        boolean;
+    entryKey?:         string;           // storage key for the entry HTML (from DB) — used when listing is denied
     storedSourceHash?: string;          // from sim_meta — service owns invalidation
     conversationHistory?: ConversationMessage[];
     onEvent?: (event: string, data: object) => void;
@@ -1233,18 +1234,59 @@ export class SimulationService {
 
     // 1. Load all text source files with priority budgeting
     onEvent?.('status', { status: 'Loading simulation files…', type: 'progress' });
-    const allKeys = await this.storage.listObjects(prefix);
     const isText        = (k: string) => /\.(js|mjs|html|htm|css|ts)$/.test(k);
     const isSectionFile = (k: string) =>
       /section_[^/]+\.(html|js)$/.test(k) || /\/bridge\.js$/.test(k);
 
-    // Read all candidate text files (skip section-specific generated files)
+    // Try to list objects; when the storage token lacks ListBucket permission
+    // (e.g. R2 write-only token) fall back to probing the public entry HTML.
+    let allKeys: string[] = [];
+    try {
+      allKeys = await this.storage.listObjects(prefix);
+    } catch {
+      logger.warn({ prefix }, 'listObjects failed in generateBridgeScript — falling back to entry-HTML probe');
+    }
+    if (allKeys.length === 0 && opts.entryKey && !opts.entryKey.startsWith('http')) {
+      const entryKey = opts.entryKey;
+      const entryDir = entryKey.slice(0, entryKey.lastIndexOf('/') + 1);
+      const found = new Set<string>([entryKey]);
+      try {
+        const res = await fetch(this.storage.getSimPublicUrl(entryKey));
+        if (res.ok) {
+          const html = await res.text();
+          const refs = [...html.matchAll(/(?:href|src)\s*=\s*["']([^"']+)["']/gi)]
+            .map(m => m[1])
+            .filter(r => !/^(https?:)?\/\//i.test(r) && !r.startsWith('data:') && !r.startsWith('#'));
+          for (const ref of refs) {
+            const clean = ref.split('?')[0].split('#')[0].trim();
+            if (!clean) continue;
+            try {
+              const resolved = new URL(clean, `http://x/${entryDir}`).pathname.slice(1);
+              if (resolved.startsWith(prefix)) found.add(resolved);
+            } catch { /* skip invalid refs */ }
+          }
+        }
+      } catch { /* entry unreachable */ }
+      allKeys = [...found];
+    }
+
+    // Read all candidate text files (skip section-specific generated files).
+    // For each file, prefer storage.readObject; fall back to public URL read
+    // when the storage token lacks GetObject permission.
     const rawMap = new Map<string, string>();
     await Promise.all(
       allKeys.filter(k => isText(k)).map(async key => {
         try {
-          const buf = await this.storage.readObject(key);
-          const raw = buf.toString('utf-8')
+          let raw: string;
+          try {
+            const buf = await this.storage.readObject(key);
+            raw = buf.toString('utf-8');
+          } catch {
+            const res = await fetch(this.storage.getSimPublicUrl(key));
+            if (!res.ok) return;
+            raw = await res.text();
+          }
+          raw = raw
             .replace(/<script[^>]*>\s*\/\* sim-bridge[\s\S]*?<\/script>/gi, '')
             .replace(/<script[^>]*>\s*;?\s*\(function[\s\S]*?sim-bridge v[12][\s\S]*?<\/script>/gi, '');
           rawMap.set(key, raw);
@@ -1401,8 +1443,10 @@ export class SimulationService {
     if (!SAFE_SECTION_ID_RE.test(sectionId))
       throw new Error(`Unsafe sectionId: "${sectionId}"`);
 
-    // 8. Locate entry HTML
-    const entryKey = allKeys.find(k => /\/(index|main)\.(html|htm)$/.test(k))
+    // 8. Locate entry HTML — prefer opts.entryKey (authoritative from DB), then probe allKeys
+    const passedEntryKey = opts.entryKey && !opts.entryKey.startsWith('http') ? opts.entryKey : undefined;
+    const entryKey = passedEntryKey
+      ?? allKeys.find(k => /\/(index|main)\.(html|htm)$/.test(k))
       ?? allKeys.find(k => (k.endsWith('.html') || k.endsWith('.htm')) && !isSectionFile(k));
     if (!entryKey) throw new Error('No HTML entry file found in simulation');
 
@@ -1430,8 +1474,16 @@ export class SimulationService {
 
       await this.storage.uploadFile(bridgeJsKey, Buffer.from(combinedBridge, 'utf-8'), 'application/javascript');
 
-      // 10. Update index.html in place (stable marker approach)
-      const rawHtml = (await this.storage.readObject(entryKey)).toString('utf-8');
+      // 10. Update index.html in place (stable marker approach).
+      // Fall back to public URL read when storage GetObject is denied.
+      let rawHtml: string;
+      try {
+        rawHtml = (await this.storage.readObject(entryKey)).toString('utf-8');
+      } catch {
+        const res = await fetch(this.storage.getSimPublicUrl(entryKey));
+        if (!res.ok) throw new Error(`Could not read entry HTML for bridge injection (${res.status})`);
+        rawHtml = await res.text();
+      }
       const updatedHtml = injectBridgeScriptTag(rawHtml, bridgeRelPath, hash);
       await this.storage.uploadFile(entryKey, Buffer.from(updatedHtml, 'utf-8'), 'text/html; charset=utf-8');
 

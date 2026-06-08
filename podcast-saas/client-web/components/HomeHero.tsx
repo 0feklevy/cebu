@@ -91,15 +91,15 @@ function ProjectTile({ project, onDelete }: { project: Project; onDelete: (id: s
   return (
     <div
       ref={tileRef}
-      className="group relative flex h-full min-h-[228px] w-[320px] shrink-0 sm:w-[360px] xl:w-[392px]"
+      className="group relative flex h-full min-h-[232px] w-[300px] shrink-0 sm:w-[320px] xl:w-[340px]"
       onMouseLeave={() => { if (!deleting) setConfirm(false); }}
     >
       <Link
         href={`/projects/${project.id}/editor`}
-        className="flex h-full w-full flex-col rounded-lg border border-border bg-card text-card-foreground shadow-sm-soft transition-all hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-card focus-ring"
+        className="grid h-full w-full grid-rows-[minmax(128px,1fr)_auto] rounded-lg border border-border bg-card text-card-foreground shadow-sm-soft transition-all hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-card focus-ring"
         tabIndex={confirm ? -1 : 0}
       >
-        <div className="relative aspect-video w-full shrink-0 overflow-hidden rounded-t-lg bg-muted">
+        <div className="relative min-h-[128px] w-full overflow-hidden rounded-t-lg bg-muted">
           <div className="absolute inset-0 flex items-center justify-center bg-primary/8 text-primary">
             <Film size={32} strokeWidth={1.8} aria-hidden />
           </div>
@@ -117,22 +117,22 @@ function ProjectTile({ project, onDelete }: { project: Project; onDelete: (id: s
           </span>
         </div>
 
-        <div className="flex flex-1 flex-col p-4">
-          <h3 className="line-clamp-2 text-base font-semibold leading-snug text-foreground">{title}</h3>
-          <div className="mt-auto flex items-center justify-between gap-3 pt-4 text-sm text-muted-foreground">
+        <div className="flex min-h-0 flex-col p-3">
+          <h3 className="line-clamp-2 text-sm font-semibold leading-snug text-foreground">{title}</h3>
+          <div className="mt-auto flex items-center justify-between gap-2 pt-2 text-xs text-muted-foreground">
             <span className="inline-flex items-center gap-1.5">
-              <Clock3 size={15} strokeWidth={1.8} aria-hidden />
+              <Clock3 size={14} strokeWidth={1.8} aria-hidden />
               {timeAgo(project.created_at)}
             </span>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2.5">
               {project.share_token && (project.view_count ?? 0) > 0 && (
                 <span className="inline-flex items-center gap-1.5 font-medium text-foreground" title={`${(project.view_count ?? 0).toLocaleString()} views`}>
-                  <Eye size={18} strokeWidth={1.9} aria-hidden />
+                  <Eye size={16} strokeWidth={1.9} aria-hidden />
                   {(project.view_count ?? 0).toLocaleString()}
                 </span>
               )}
               <span className="inline-flex items-center gap-1 font-medium text-primary opacity-0 transition-opacity group-hover:opacity-100">
-                Open <ArrowRight size={15} strokeWidth={2} aria-hidden />
+                Open <ArrowRight size={14} strokeWidth={2} aria-hidden />
               </span>
             </div>
           </div>
@@ -183,8 +183,8 @@ function WorkspaceSkeleton() {
   return (
     <div className="flex h-full gap-3">
       {[1, 2, 3, 4].map((i) => (
-        <div key={i} className="h-full min-h-[228px] w-[320px] shrink-0 animate-pulse rounded-lg border border-border bg-card/70 p-4 sm:w-[360px] xl:w-[392px]">
-          <div className="mb-4 aspect-video w-full rounded-md bg-muted" />
+        <div key={i} className="grid h-full min-h-[232px] w-[300px] shrink-0 animate-pulse grid-rows-[minmax(128px,1fr)_auto] rounded-lg border border-border bg-card/70 p-3 sm:w-[320px] xl:w-[340px]">
+          <div className="mb-3 min-h-[128px] w-full rounded-md bg-muted" />
           <div className="mb-3 h-4 w-3/4 rounded bg-muted" />
           <div className="h-4 w-1/2 rounded bg-muted" />
         </div>
