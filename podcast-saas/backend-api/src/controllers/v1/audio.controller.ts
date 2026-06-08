@@ -5,11 +5,15 @@ import { projects, audio_files, timeline_sections, video_files } from '../../db/
 import { eq, and } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
+import { uploadWithFallback } from '../../services/storage/uploadWithFallback.js';
 import { probeMediaDuration } from '../../services/video/HLSTranscoder.js';
+import { ApiKeyService } from '../../services/secrets/ApiKeyService.js';
 import { randomUUID } from 'crypto';
 import { mkdtemp, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { extname, join } from 'path';
+
+const ELEVENLABS_API_BASE = 'https://api.elevenlabs.io/v1';
 
 const ALLOWED_MIME = new Set([
   'audio/wav', 'audio/wave', 'audio/x-wav',
@@ -64,7 +68,7 @@ export async function registerAudioRoutes(app: FastifyInstance): Promise<void> {
       const buf = await data.toBuffer();
       const durationSec = await probeUploadedAudioDuration(buf, ext);
 
-      const url = await storage.uploadFile(key, buf, data.mimetype.split(';')[0].trim());
+      const url = await uploadWithFallback(key, buf, data.mimetype.split(';')[0].trim());
 
       const [row] = await db
         .insert(audio_files)
@@ -122,6 +126,81 @@ export async function registerAudioRoutes(app: FastifyInstance): Promise<void> {
         .delete(audio_files)
         .where(and(eq(audio_files.id, request.params.audioId), eq(audio_files.project_id, project.id)));
       return reply.code(204).send();
+    },
+  );
+
+  // POST /api/v1/projects/:id/audio/generate — generate music or SFX via ElevenLabs
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/projects/:id/audio/generate',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const project = await db.query.projects.findFirst({
+        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
+      });
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+
+      const body = z.object({
+        prompt:           z.string().min(1).max(500),
+        type:             z.enum(['sfx', 'music']).default('sfx'),
+        duration_seconds: z.number().min(0.5).max(22).optional(),
+      }).safeParse(request.body);
+      if (!body.success) return reply.code(400).send({ message: body.error.message });
+
+      const apiKey = (await new ApiKeyService().getSystemKey('elevenlabs')) ?? process.env.ELEVENLABS_API_KEY ?? null;
+      if (!apiKey) return reply.code(503).send({ message: 'ElevenLabs API key not configured. Set it in Admin → API Keys.' });
+
+      const elBody: Record<string, unknown> = {
+        text: body.data.type === 'music' ? `Background music: ${body.data.prompt}` : body.data.prompt,
+        prompt_influence: body.data.type === 'music' ? 0.5 : 0.3,
+      };
+      if (body.data.duration_seconds) elBody.duration_seconds = body.data.duration_seconds;
+
+      // Call ElevenLabs sound-generation
+      let elRes: Response;
+      try {
+        elRes = await fetch(`${ELEVENLABS_API_BASE}/sound-generation`, {
+          method: 'POST',
+          headers: { 'xi-api-key': apiKey, 'Content-Type': 'application/json', 'Accept': 'audio/mpeg' },
+          body: JSON.stringify(elBody),
+        });
+      } catch (err) {
+        return reply.code(502).send({ message: `Could not reach ElevenLabs: ${(err as Error).message ?? err}` });
+      }
+
+      if (!elRes.ok) {
+        const errText = await elRes.text().catch(() => '');
+        return reply.code(502).send({ message: `ElevenLabs error ${elRes.status}: ${errText.slice(0, 300)}` });
+      }
+
+      let audioBuf: Buffer;
+      try {
+        audioBuf = Buffer.from(await elRes.arrayBuffer());
+      } catch (err) {
+        return reply.code(502).send({ message: `Failed to read ElevenLabs response: ${(err as Error).message ?? err}` });
+      }
+      if (!audioBuf.length) {
+        return reply.code(502).send({ message: 'ElevenLabs returned an empty audio response' });
+      }
+
+      const key = `audio/${project.id}/${randomUUID()}.mp3`;
+      // Falls back to local storage when the primary write is denied (read-only R2),
+      // so generated music/SFX still saves instead of failing with "Access Denied".
+      const url = await uploadWithFallback(key, audioBuf, 'audio/mpeg');
+
+      const durationSec = await probeUploadedAudioDuration(audioBuf, '.mp3');
+      const label = body.data.type === 'music' ? 'music' : 'sfx';
+      const filename = `${label}-${Date.now()}.mp3`;
+
+      const [row] = await db.insert(audio_files).values({
+        project_id:  project.id,
+        filename,
+        storage_key: key,
+        url,
+        duration_sec: durationSec,
+      }).returning();
+
+      return reply.code(201).send(row);
     },
   );
 
