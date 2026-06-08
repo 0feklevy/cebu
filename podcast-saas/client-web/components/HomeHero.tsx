@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import {
   ArrowRight,
@@ -9,6 +9,7 @@ import {
   Film,
   Plus,
   Search,
+  Trash2,
 } from 'lucide-react';
 import { CreateProjectDialog } from './CreateProjectDialog';
 import { PlaylistsPanel } from './PlaylistsPanel';
@@ -55,44 +56,126 @@ function statusMeta(status: string) {
   return STATUS_META[status] ?? STATUS_META.draft;
 }
 
-function ProjectTile({ project }: { project: Project }) {
+function ProjectTile({ project, onDelete }: { project: Project; onDelete: (id: string) => void }) {
   const meta = statusMeta(project.status);
   const title = projectTitle(project);
+  const [confirm, setConfirm] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const tileRef = useRef<HTMLDivElement>(null);
+
+  // Close confirm when clicking outside the tile
+  useEffect(() => {
+    if (!confirm) return;
+    const handler = (e: MouseEvent) => {
+      if (tileRef.current && !tileRef.current.contains(e.target as Node)) {
+        setConfirm(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [confirm]);
+
+  const handleDelete = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDeleting(true);
+    try {
+      await api.deleteProject(project.id);
+      onDelete(project.id);
+    } catch {
+      setDeleting(false);
+      setConfirm(false);
+    }
+  };
 
   return (
-    <Link
-      href={`/projects/${project.id}/editor`}
-      className="group flex h-full min-h-[132px] w-[240px] shrink-0 flex-col justify-between rounded-lg border border-border bg-card p-4 text-card-foreground shadow-sm-soft transition-all hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-card focus-ring sm:w-[300px]"
+    <div
+      ref={tileRef}
+      className="group relative flex h-full min-h-[228px] w-[320px] shrink-0 sm:w-[360px] xl:w-[392px]"
+      onMouseLeave={() => { if (!deleting) setConfirm(false); }}
     >
-      <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
-            <Film size={18} strokeWidth={1.9} aria-hidden />
+      <Link
+        href={`/projects/${project.id}/editor`}
+        className="flex h-full w-full flex-col rounded-lg border border-border bg-card text-card-foreground shadow-sm-soft transition-all hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-card focus-ring"
+        tabIndex={confirm ? -1 : 0}
+      >
+        <div className="relative aspect-video w-full shrink-0 overflow-hidden rounded-t-lg bg-muted">
+          <div className="absolute inset-0 flex items-center justify-center bg-primary/8 text-primary">
+            <Film size={32} strokeWidth={1.8} aria-hidden />
           </div>
-          <h3 className="line-clamp-2 text-sm font-semibold leading-snug text-foreground">{title}</h3>
-        </div>
-        <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold ring-1 ${meta.className}`}>
-          {meta.label}
-        </span>
-      </div>
-      <div className="mt-4 flex items-center justify-between gap-3 text-xs text-muted-foreground">
-        <span className="inline-flex items-center gap-1.5">
-          <Clock3 size={13} strokeWidth={1.8} aria-hidden />
-          {timeAgo(project.created_at)}
-        </span>
-        <div className="flex items-center gap-2">
-          {project.share_token && (project.view_count ?? 0) > 0 && (
-            <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground/70">
-              <Eye size={11} strokeWidth={1.8} aria-hidden />
-              {(project.view_count ?? 0).toLocaleString()}
-            </span>
+          {project.thumbnail_url && (
+            <img
+              src={project.thumbnail_url}
+              alt=""
+              className="absolute inset-0 h-full w-full object-cover"
+              draggable={false}
+              onError={(event) => { event.currentTarget.style.display = 'none'; }}
+            />
           )}
-          <span className="inline-flex items-center gap-1 font-medium text-primary opacity-0 transition-opacity group-hover:opacity-100">
-            Open <ArrowRight size={13} strokeWidth={2} aria-hidden />
+          <span className={`absolute right-3 top-3 rounded-full px-2.5 py-1.5 text-[11px] font-semibold shadow-sm ring-1 ${meta.className}`}>
+            {meta.label}
           </span>
         </div>
-      </div>
-    </Link>
+
+        <div className="flex flex-1 flex-col p-4">
+          <h3 className="line-clamp-2 text-base font-semibold leading-snug text-foreground">{title}</h3>
+          <div className="mt-auto flex items-center justify-between gap-3 pt-4 text-sm text-muted-foreground">
+            <span className="inline-flex items-center gap-1.5">
+              <Clock3 size={15} strokeWidth={1.8} aria-hidden />
+              {timeAgo(project.created_at)}
+            </span>
+            <div className="flex items-center gap-3">
+              {project.share_token && (project.view_count ?? 0) > 0 && (
+                <span className="inline-flex items-center gap-1.5 font-medium text-foreground" title={`${(project.view_count ?? 0).toLocaleString()} views`}>
+                  <Eye size={18} strokeWidth={1.9} aria-hidden />
+                  {(project.view_count ?? 0).toLocaleString()}
+                </span>
+              )}
+              <span className="inline-flex items-center gap-1 font-medium text-primary opacity-0 transition-opacity group-hover:opacity-100">
+                Open <ArrowRight size={15} strokeWidth={2} aria-hidden />
+              </span>
+            </div>
+          </div>
+        </div>
+      </Link>
+
+      {/* Trash button — appears on hover, sits outside the Link so it doesn't trigger navigation */}
+      <button
+        onClick={(e) => { e.preventDefault(); e.stopPropagation(); setConfirm(true); }}
+        title="Delete project"
+        aria-label="Delete project"
+        className="absolute left-3 top-3 z-10 flex h-9 w-9 items-center justify-center rounded-md bg-black/60 text-white opacity-0 transition-opacity group-hover:opacity-100 hover:bg-red-600"
+        style={{ pointerEvents: confirm ? 'none' : 'auto' }}
+      >
+        <Trash2 size={16} strokeWidth={2} aria-hidden />
+      </button>
+
+      {/* Inline confirmation overlay — rendered inside the tile, no portal/z-index games */}
+      {confirm && (
+        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 rounded-lg bg-card/97 px-4 text-center shadow-inner">
+          <Trash2 size={24} strokeWidth={1.8} className="text-red-500" aria-hidden />
+          <div>
+            <p className="text-base font-semibold text-foreground">Delete project?</p>
+            <p className="mt-1 line-clamp-1 text-sm text-muted-foreground">{title}</p>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); setConfirm(false); }}
+              className="h-9 rounded-lg border border-border px-4 text-sm font-medium text-foreground transition-colors hover:bg-muted"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleDelete}
+              disabled={deleting}
+              className="h-9 rounded-lg bg-red-600 px-4 text-sm font-semibold text-white transition-colors hover:bg-red-700 disabled:opacity-60"
+            >
+              {deleting ? '…' : 'Delete'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -100,33 +183,54 @@ function WorkspaceSkeleton() {
   return (
     <div className="flex h-full gap-3">
       {[1, 2, 3, 4].map((i) => (
-        <div key={i} className="h-full min-h-[132px] w-[240px] shrink-0 animate-pulse rounded-lg border border-border bg-card/70 p-4 sm:w-[300px]">
-          <div className="mb-4 h-9 w-9 rounded-lg bg-muted" />
-          <div className="mb-2 h-3 w-3/4 rounded bg-muted" />
-          <div className="h-3 w-1/2 rounded bg-muted" />
+        <div key={i} className="h-full min-h-[228px] w-[320px] shrink-0 animate-pulse rounded-lg border border-border bg-card/70 p-4 sm:w-[360px] xl:w-[392px]">
+          <div className="mb-4 aspect-video w-full rounded-md bg-muted" />
+          <div className="mb-3 h-4 w-3/4 rounded bg-muted" />
+          <div className="h-4 w-1/2 rounded bg-muted" />
         </div>
       ))}
     </div>
   );
 }
 
+const PROJECTS_CACHE_KEY = 'hero_projects_v1';
+
+function readCachedProjects(): Project[] {
+  try {
+    const raw = localStorage.getItem(PROJECTS_CACHE_KEY);
+    return raw ? (JSON.parse(raw) as Project[]) : [];
+  } catch { return []; }
+}
+
+function writeCachedProjects(items: Project[]) {
+  try { localStorage.setItem(PROJECTS_CACHE_KEY, JSON.stringify(items)); } catch { /* quota */ }
+}
+
 export function HomeHero() {
   const { loading: authLoading, user, isAnonymous } = useAuth();
   const [createOpen, setCreateOpen] = useState(false);
-  const [projects, setProjects] = useState<Project[]>([]);
+  // Seed from localStorage immediately so the page isn't blank while auth loads
+  const [projects, setProjects] = useState<Project[]>(() => {
+    if (typeof window === 'undefined') return [];
+    return readCachedProjects();
+  });
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
 
   useEffect(() => {
     if (authLoading) return;
     let cancelled = false;
-    setLoading(true);
+    // Don't show skeleton if we already have cached data — just quietly refresh
+    if (projects.length === 0) setLoading(true);
     api.listProjects()
       .then((items) => {
-        if (!cancelled) setProjects(items);
+        if (!cancelled) {
+          setProjects(items);
+          writeCachedProjects(items);
+        }
       })
       .catch(() => {
-        if (!cancelled) setProjects([]);
+        if (!cancelled && projects.length === 0) setProjects([]);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -134,6 +238,7 @@ export function HomeHero() {
     return () => {
       cancelled = true;
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading]);
 
   const sortedProjects = useMemo(
@@ -170,7 +275,7 @@ export function HomeHero() {
                 <p className="mb-1 truncate text-xs font-medium text-muted-foreground">{accountLabel}</p>
                 <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
                   <h1 className="text-2xl font-semibold tracking-tight text-foreground">
-                    Podcast Studio
+                    Interactive Video Studio
                   </h1>
                   <div className="flex flex-wrap gap-2">
                     <span className="w-fit rounded-full border border-border bg-card px-2.5 py-1 text-[11px] font-medium text-muted-foreground">
@@ -207,11 +312,11 @@ export function HomeHero() {
             </div>
           </header>
 
-          <div className="flex min-w-0 flex-col gap-4 overflow-visible lg:grid lg:min-h-0 lg:flex-1 lg:grid-rows-[minmax(0,1fr)_minmax(0,1fr)] lg:overflow-hidden">
-            <section className="flex min-h-[250px] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card p-4 shadow-sm-soft sm:min-h-[270px] sm:p-5 lg:min-h-0">
+          <div className="flex min-w-0 flex-col gap-4 overflow-visible lg:grid lg:min-h-0 lg:flex-1 lg:grid-rows-[minmax(340px,1.08fr)_minmax(0,.92fr)] lg:overflow-hidden">
+            <section className="flex min-h-[340px] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card p-4 shadow-sm-soft sm:min-h-[370px] sm:p-5 lg:min-h-0">
               <div className="mb-4 flex shrink-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <div>
-                    <h2 className="text-base font-semibold text-foreground">Recent projects</h2>
+                    <h2 className="text-lg font-semibold text-foreground">Recent projects</h2>
                     <p className="text-sm text-muted-foreground">One row for fast pickup and editing.</p>
                   </div>
                   {latestProject && (
@@ -226,17 +331,27 @@ export function HomeHero() {
               </div>
 
               <div className="min-h-0 min-w-0 flex-1 overflow-x-auto overflow-y-hidden pb-2 fine-scrollbar">
-                <div className="flex h-full min-w-max gap-3">
+                <div className="flex h-full min-w-max gap-4">
                   {loading ? (
                     <WorkspaceSkeleton />
                   ) : filteredProjects.length > 0 ? (
                     <>
                       {filteredProjects.slice(0, 12).map((project) => (
-                        <ProjectTile key={project.id} project={project} />
+                        <ProjectTile
+                          key={project.id}
+                          project={project}
+                          onDelete={(id) => {
+                            setProjects(prev => {
+                              const next = prev.filter(p => p.id !== id);
+                              writeCachedProjects(next);
+                              return next;
+                            });
+                          }}
+                        />
                       ))}
                     </>
                   ) : (
-                    <div className="flex h-full min-h-[132px] w-[260px] shrink-0 flex-col items-center justify-center rounded-lg border border-dashed border-border bg-muted/25 px-5 py-6 text-center sm:w-[320px]">
+                    <div className="flex h-full min-h-[228px] w-[320px] shrink-0 flex-col items-center justify-center rounded-lg border border-dashed border-border bg-muted/25 px-5 py-6 text-center sm:w-[360px] xl:w-[392px]">
                       <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-primary/10 text-primary">
                         <Film size={22} strokeWidth={1.8} aria-hidden />
                       </div>
