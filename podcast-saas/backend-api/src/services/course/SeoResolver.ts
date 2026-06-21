@@ -119,6 +119,9 @@ export interface LessonSeoInput {
   // underlying project content
   projectTitle: string | null;
   projectTopic: string | null;
+  // transcript-derived SEO (generated from the video's captions)
+  projectSeoDescription?: string | null;
+  projectKeywords?: string | null;
 }
 
 export function resolveLessonSeo(
@@ -128,7 +131,8 @@ export function resolveLessonSeo(
   const title =
     firstReal(l.seoTitle, l.lessonTitle, l.projectTitle) ?? `${l.courseTitle} — Lesson ${l.position + 1}`;
   const description = clampDescription(
-    firstReal(l.seoDescription, l.lessonSummary, l.projectTopic) ??
+    // Author override → lesson summary → transcript-derived description → topic → fallback.
+    firstReal(l.seoDescription, l.lessonSummary, l.projectSeoDescription, l.projectTopic) ??
       `A lesson from ${l.courseTitle} on ${brandName()}.`,
   );
   // Lesson inherits course indexability unless it explicitly overrides to false.
@@ -144,5 +148,6 @@ export function resolveLessonSeo(
     language: firstReal(l.lessonLanguage) ?? l.courseLanguage,
     indexable,
     robots: robotsFor(indexable),
+    keywords: firstReal(l.projectKeywords),
   };
 }

@@ -20,6 +20,8 @@ export const EffectiveSeoSchema = z.object({
   indexable: z.boolean(),
   // Fully-resolved robots directive string, e.g. "index, follow" / "noindex, nofollow".
   robots: z.string(),
+  // Comma-separated keywords (transcript-derived); null when none resolved.
+  keywords: z.string().nullable().optional(),
 });
 export type EffectiveSeo = z.infer<typeof EffectiveSeoSchema>;
 

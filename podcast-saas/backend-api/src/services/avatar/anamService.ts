@@ -27,8 +27,45 @@ const PERSONA_MAP: Record<string, { personaId: string; name: string }> = {
   archimedes: { personaId: ANAM_ENV.ANAM_PERSONA_ID_ARCHIMEDES, name: 'Archimedes' },
 };
 
+// One audio-reactive avatar circle shown during b-roll (bottom corner).
+export interface AvatarCircleFace {
+  speaker: 'host_a' | 'host_b';      // whose voice drives this circle (from the script timeline)
+  side: 'left' | 'right';            // which bottom corner
+  imageUrl?: string;                 // circular avatar face (uploaded or captured+cropped)
+  label?: string;                    // display name
+}
+
+// "Clean podcast-style radial visualizer" config + the 1–2 avatar circles.
+// Stored per-video in avatar_config; the frame-style fields drive the Phase-2
+// animated bars (Phase 1 renders static circles during b-roll).
+export interface AvatarCirclesConfig {
+  enabled: boolean;
+  count: 1 | 2;
+  faces?: AvatarCircleFace[];
+  // radial visualizer frame style
+  barStyle?: 'bars' | 'solid' | 'gradient';
+  numberOfBars?: number;
+  sensitivity?: number;
+  barWidth?: number;
+  innerRadius?: number;
+  smoothness?: number;
+  minHeight?: number;
+  maxHeight?: number;
+  rotationOffset?: number;
+  lowFreqCutPct?: number;
+  highFreqCutPct?: number;
+  colorMode?: 'solid' | 'gradient';
+  barColor?: string;
+  gradientEnd?: string;
+  background?: string;
+  roundedBars?: boolean;
+  circleSize?: number;
+  showCenterCircle?: boolean;
+}
+
 // Everything controllable from podcast-saas video settings.
 export interface AvatarPersonaConfig {
+  avatarCircles?: AvatarCirclesConfig; // audio-reactive circles shown during b-roll
   personaId?: string;                // saved Anam persona id for THIS video (server-managed)
   characterId?: string;
   name?: string;
@@ -50,6 +87,7 @@ export interface AvatarPersonaConfig {
   voiceSensitivity?: number;         // client-side end-of-speech sensitivity (0–1)
   knowledgeGroupId?: string;         // Anam knowledge group for this video (server-managed)
   knowledgeToolId?: string;          // the RAG tool wrapping that group (server-managed)
+  transcriptDocId?: string;          // auto-uploaded caption-transcript doc id (server-managed)
   toolIds?: string[];                // selected system tools (end_call, change_language, …)
 }
 

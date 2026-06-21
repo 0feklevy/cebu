@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 interface Props {
   title:       string;
@@ -9,6 +10,7 @@ interface Props {
   onConfirm:   () => void;
   onCancel:    () => void;
   danger?:     boolean;
+  busy?:       boolean;
 }
 
 export function ConfirmDialog({
@@ -18,7 +20,14 @@ export function ConfirmDialog({
   onConfirm,
   onCancel,
   danger = true,
+  busy = false,
 }: Props) {
+  // Portal to <body> so the dialog's fixed positioning + z-index are never
+  // broken by an ancestor with transform/filter/overflow (e.g. hover-translate
+  // cards or scroll containers on the home page).
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
+
   // Close on Escape
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel(); };
@@ -26,7 +35,9 @@ export function ConfirmDialog({
     return () => window.removeEventListener('keydown', handler);
   }, [onCancel]);
 
-  return (
+  if (!mounted) return null;
+
+  return createPortal(
     <>
       {/* Backdrop */}
       <div
@@ -82,34 +93,39 @@ export function ConfirmDialog({
         <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
           <button
             onClick={onCancel}
+            disabled={busy}
             style={{
               flex: 1, height: 38, borderRadius: 9,
               border: '1.5px solid #e5e7eb', backgroundColor: '#fff',
               color: '#374151', fontSize: 13, fontWeight: 600,
-              cursor: 'pointer', transition: 'background 0.12s',
+              cursor: busy ? 'default' : 'pointer', transition: 'background 0.12s',
+              opacity: busy ? 0.6 : 1,
             }}
-            onMouseEnter={e => (e.currentTarget.style.backgroundColor = '#f9fafb')}
+            onMouseEnter={e => { if (!busy) e.currentTarget.style.backgroundColor = '#f9fafb'; }}
             onMouseLeave={e => (e.currentTarget.style.backgroundColor = '#fff')}
           >
             Cancel
           </button>
           <button
             onClick={onConfirm}
+            disabled={busy}
             style={{
               flex: 1, height: 38, borderRadius: 9, border: 'none',
               background: danger
                 ? 'linear-gradient(135deg,#ef4444,#dc2626)'
                 : 'linear-gradient(135deg,#3b82f6,#6366f1)',
               color: '#fff', fontSize: 13, fontWeight: 600,
-              cursor: 'pointer', transition: 'opacity 0.12s',
+              cursor: busy ? 'default' : 'pointer', transition: 'opacity 0.12s',
+              opacity: busy ? 0.7 : 1,
             }}
-            onMouseEnter={e => (e.currentTarget.style.opacity = '0.88')}
+            onMouseEnter={e => { if (!busy) e.currentTarget.style.opacity = '0.88'; }}
             onMouseLeave={e => (e.currentTarget.style.opacity = '1')}
           >
-            {confirmLabel}
+            {busy ? 'Deleting…' : confirmLabel}
           </button>
         </div>
       </div>
-    </>
+    </>,
+    document.body,
   );
 }

@@ -6,6 +6,8 @@ import { HLS_OPTS } from '../hooks/useSegmentedPlaybackCore';
 import type { Clip } from '../hooks/useClipSequence';
 import type { TimelineSection, ImageFile } from 'shared/src/generated/client-v1';
 import { ImageOverlay } from './ImageOverlay';
+import { AvatarCirclesOverlay } from './viewer/AvatarCirclesOverlay';
+import type { AvatarCirclesConfig } from './viewer/types';
 
 export type { Clip };
 
@@ -45,6 +47,7 @@ interface MultiClipProps {
   activeBrollSection?: TimelineSection | null;
   brollHlsUrl?: string | null;
   activeImageSection?: ActiveImageSectionData | null;
+  avatarCircles?: AvatarCirclesConfig | null;
 }
 
 type Props = SingleClipProps | MultiClipProps;
@@ -60,10 +63,11 @@ interface MultiClipPlayerProps {
   activeBrollSection?: TimelineSection | null;
   brollHlsUrl?: string | null;
   activeImageSection?: ActiveImageSectionData | null;
+  avatarCircles?: AvatarCirclesConfig | null;
   imperativeRef: React.RefObject<VideoPlayerHandle | null>;
 }
 
-function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, activeSimSection, activeBrollSection, brollHlsUrl, activeImageSection, imperativeRef }: MultiClipPlayerProps) {
+function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, activeSimSection, activeBrollSection, brollHlsUrl, activeImageSection, avatarCircles, imperativeRef }: MultiClipPlayerProps) {
   const [speed, setSpeed] = useState(1);
   // scrubDisplay: non-null while the user is dragging the seek bar — used for
   // visual feedback only; the actual seek fires once on mouseup/touchend.
@@ -323,6 +327,15 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
         }}
         playsInline
         preload="auto"
+      />
+
+      {/* Avatar circles — preview the speaker circles during b-roll in the editor */}
+      <AvatarCirclesOverlay
+        config={avatarCircles}
+        visible={(!!activeBrollSection || !!activeImageSection) && !showSimOverlay}
+        videoARef={hook.videoARef}
+        videoBRef={hook.videoBRef}
+        globalTime={0}
       />
 
       {/* Image overlay — animated still with camera movement */}
@@ -731,6 +744,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(function VideoPl
         activeBrollSection={props.activeBrollSection}
         brollHlsUrl={props.brollHlsUrl}
         activeImageSection={props.activeImageSection}
+        avatarCircles={props.avatarCircles}
         imperativeRef={imperativeRef}
       />
     );

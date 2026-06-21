@@ -3,6 +3,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { ChevronDown, ChevronRight, HelpCircle, ListVideo, Pencil, PlaySquare, Plus, Trash2 } from 'lucide-react';
 import { api } from '../lib/api';
+import { ConfirmDialog } from './ConfirmDialog';
 import { useAuth } from '../lib/firebase';
 import { UserProfileButton } from './UserProfileButton';
 import { HowItWorksDialog } from './HowItWorksDialog';
@@ -77,10 +78,7 @@ function ProjectCard({ project, onRename, onDelete }: ProjectCardProps) {
     }
   }, [isEditing, editValue, project, onRename]);
 
-  const handleDelete = async (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (!confirmDelete) { setConfirmDelete(true); return; }
+  const confirmDeleteNow = async () => {
     setDeleting(true);
     try {
       await api.deleteProject(project.id);
@@ -94,7 +92,6 @@ function ProjectCard({ project, onRename, onDelete }: ProjectCardProps) {
     <div
       className="group relative rounded-lg transition-colors"
       style={{ backgroundColor: 'transparent' }}
-      onMouseLeave={() => setConfirmDelete(false)}
     >
       <a
         href={`/projects/${project.id}/editor`}
@@ -155,14 +152,10 @@ function ProjectCard({ project, onRename, onDelete }: ProjectCardProps) {
         </button>
         {/* Delete */}
         <button
-          onClick={handleDelete}
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); setConfirmDelete(true); }}
           disabled={deleting}
-          title={confirmDelete ? 'Click again to confirm delete' : 'Delete project'}
-          className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${
-            confirmDelete
-              ? 'bg-red-500 text-white'
-              : 'shell-muted hover:text-red-400 hover:bg-red-500/10'
-          } disabled:opacity-40`}
+          title="Delete project"
+          className="flex h-8 w-8 items-center justify-center rounded-lg shell-muted transition-colors hover:text-red-400 hover:bg-red-500/10 disabled:opacity-40"
         >
           {deleting ? (
             <span className="text-xs">…</span>
@@ -171,6 +164,17 @@ function ProjectCard({ project, onRename, onDelete }: ProjectCardProps) {
           )}
         </button>
       </div>
+
+      {confirmDelete && (
+        <ConfirmDialog
+          title="Delete project?"
+          description={`"${projectTitle(project)}" and its videos will be permanently removed. This cannot be undone.`}
+          confirmLabel="Delete"
+          busy={deleting}
+          onConfirm={confirmDeleteNow}
+          onCancel={() => { if (!deleting) setConfirmDelete(false); }}
+        />
+      )}
     </div>
   );
 }

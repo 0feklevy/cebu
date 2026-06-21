@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { auth } from '../../../lib/firebase';
+import { useAuth } from '../../../lib/firebase';
 import type { PlayerConfig } from '../types';
 import type { LockedContent } from 'shared/src/generated/client-v1';
 import { HLSPlayerShell } from '../HLSPlayerShell';
@@ -53,12 +53,17 @@ export function PlaylistViewer({ shareToken, playlistId }: Props) {
 
   const rootRef = useRef<HTMLDivElement>(null);
 
+  // Wait for Firebase auth to resolve before fetching — the owner-preview route
+  // requires the owner's token; a fresh tab has no currentUser yet (→ 401 / lock).
+  const { loading: authLoading, getIdToken } = useAuth();
+
   // ── load play-config ──────────────────────────────────────────────────────
   useEffect(() => {
+    if (authLoading) return;
     let cancelled = false;
     const load = async () => {
       try {
-        const token = await auth.currentUser?.getIdToken().catch(() => null);
+        const token = await getIdToken().catch(() => null);
         const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
         let res: Response;
         if (shareToken) {
@@ -80,7 +85,7 @@ export function PlaylistViewer({ shareToken, playlistId }: Props) {
     };
     load();
     return () => { cancelled = true; };
-  }, [shareToken, playlistId]);
+  }, [shareToken, playlistId, authLoading, getIdToken]);
 
   // ── fullscreen tracking ───────────────────────────────────────────────────
   useEffect(() => {

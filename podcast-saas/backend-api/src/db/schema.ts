@@ -174,6 +174,9 @@ export const projects = pgTable('projects', {
   thumbnail_url:   text('thumbnail_url'),
   thumbnail_key:   text('thumbnail_key'),
   metadata_status: text('metadata_status').notNull().default('none'), // none|processing|ready|failed
+  // Transcript-derived SEO (migration 034) — generated from the captions once ready.
+  seo_description: text('seo_description'),
+  seo_keywords:    text('seo_keywords'),
   // View counter (migration 027)
   view_count: integer('view_count').notNull().default(0),
   // Per-video Ask-the-Avatar persona config (migration 029) — greeting, system
@@ -274,7 +277,7 @@ export const admin_settings = pgTable('admin_settings', {
 export const token_usage = pgTable('token_usage', {
   id: uuid('id').primaryKey().defaultRandom(),
   user_id: uuid('user_id').references(() => users.id),
-  project_id: uuid('project_id').references(() => projects.id),
+  project_id: uuid('project_id').references(() => projects.id, { onDelete: 'set null' }), // keep usage history when project deleted
   provider: text('provider').notNull(),
   model: text('model').notNull(),
   task: text('task').notNull(),
@@ -289,7 +292,7 @@ export const token_usage = pgTable('token_usage', {
 export const jobs = pgTable('jobs', {
   id: uuid('id').primaryKey().defaultRandom(),
   type: text('type').notNull(),
-  project_id: uuid('project_id').references(() => projects.id),
+  project_id: uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }),
   status: jobStatusEnum('status').default('queued').notNull(),
   attempts: integer('attempts').default(0).notNull(),
   last_error: text('last_error'),
@@ -694,9 +697,10 @@ export const course_lessons = pgTable(
   {
     id:        uuid('id').primaryKey().defaultRandom(),
     course_id: uuid('course_id').notNull().references(() => courses.id, { onDelete: 'cascade' }),
-    // RESTRICT: a project backing a lesson cannot be deleted out from under a
-    // course. Course deletion cascades to lessons but never to projects.
-    project_id: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'restrict' }),
+    // CASCADE: deleting the source project/video removes its lesson (so a video
+    // can always be deleted from the home page). Course deletion still cascades
+    // to its lessons; this only adds removal when the underlying project is gone.
+    project_id: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
     position:   integer('position').notNull(),
 
     // Lesson routing + optional SEO overrides (null = inherit course)

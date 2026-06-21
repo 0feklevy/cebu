@@ -1,5 +1,5 @@
 import { db } from '../db/index.js';
-import { projects, video_files, timeline_sections, image_files, audio_files } from '../db/schema.js';
+import { projects, video_files, timeline_sections, image_files, audio_files, scenes } from '../db/schema.js';
 import { eq, asc } from 'drizzle-orm';
 import { getStorageAdapter } from './storage/getStorageAdapter.js';
 import { enqueueCropForProject } from './crop/runCropAnalysis.js';
@@ -196,6 +196,31 @@ export async function buildPlayerConfig(projectId: string) {
     })
     .filter(Boolean);
 
+  // Avatar circles config (audio-reactive overlays shown during b-roll). Tolerate
+  // a legacy double-encoded JSON string for avatar_config.
+  const avatarConfigObj: { avatarCircles?: unknown } | null = (() => {
+    const v = project.avatar_config as unknown;
+    if (v && typeof v === 'object' && !Array.isArray(v)) return v as { avatarCircles?: unknown };
+    if (typeof v === 'string') { try { const o = JSON.parse(v); return o && typeof o === 'object' ? o : null; } catch { return null; } }
+    return null;
+  })();
+  const avatarCircles = avatarConfigObj?.avatarCircles ?? null;
+
+  // Speaker timeline (from the latest script version) so the viewer can animate
+  // whichever avatar is speaking. Empty for uploaded videos with no script —
+  // the viewer then animates all circles to the audio.
+  let speakerTimeline: Array<{ speaker: string; start_sec: number; end_sec: number }> = [];
+  if (avatarCircles) {
+    const allScenes = await db.query.scenes.findMany({ where: eq(scenes.project_id, project.id) });
+    if (allScenes.length > 0) {
+      const latestVersion = Math.max(...allScenes.map((s) => s.script_version));
+      speakerTimeline = allScenes
+        .filter((s) => s.script_version === latestVersion)
+        .sort((a, b) => a.start_ms - b.start_ms)
+        .map((s) => ({ speaker: s.speaker, start_sec: s.start_ms / 1000, end_sec: s.end_ms / 1000 }));
+    }
+  }
+
   return {
     project_id:     project.id,
     title:          project.title,
@@ -206,6 +231,8 @@ export async function buildPlayerConfig(projectId: string) {
     clip_overlays:  clipOverlays,
     image_overlays: imageOverlays,
     audio_cutaways: audioCutaways,
+    avatar_circles: avatarCircles,
+    speaker_timeline: speakerTimeline,
   };
 }
 

@@ -72,6 +72,39 @@ export interface AudioCutaway {
   broll_volume: number;
 }
 
+export interface AvatarCircleFace {
+  speaker: 'host_a' | 'host_b';
+  side: 'left' | 'right';
+  imageUrl?: string;
+  label?: string;
+}
+
+export interface AvatarCirclesConfig {
+  enabled: boolean;
+  count: 1 | 2;
+  faces?: AvatarCircleFace[];
+  barStyle?: 'bars' | 'solid' | 'gradient';
+  numberOfBars?: number;
+  sensitivity?: number;
+  barWidth?: number;
+  innerRadius?: number;
+  smoothness?: number;
+  minHeight?: number;
+  maxHeight?: number;
+  rotationOffset?: number;
+  lowFreqCutPct?: number;
+  highFreqCutPct?: number;
+  colorMode?: 'solid' | 'gradient';
+  barColor?: string;
+  gradientEnd?: string;
+  background?: string;
+  roundedBars?: boolean;
+  circleSize?: number;
+  showCenterCircle?: boolean;
+}
+
+export interface SpeakerSpan { speaker: string; start_sec: number; end_sec: number; }
+
 export interface PlayerConfig {
   project_id: string;
   title: string | null;
@@ -81,6 +114,8 @@ export interface PlayerConfig {
   clip_overlays?: ClipOverlay[];
   image_overlays?: ImageOverlayItem[];
   audio_cutaways?: AudioCutaway[];
+  avatar_circles?: AvatarCirclesConfig | null;
+  speaker_timeline?: SpeakerSpan[];
 }
 
 export interface TimelineSeg {

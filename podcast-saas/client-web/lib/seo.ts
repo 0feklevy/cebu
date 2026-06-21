@@ -17,6 +17,7 @@ export function seoToMetadata(seo: EffectiveSeo, opts: { ogType?: 'website' | 'v
   return {
     title: seo.title,
     description: seo.description,
+    ...(seo.keywords ? { keywords: seo.keywords } : {}),
     alternates: { canonical: seo.canonicalUrl },
     openGraph: {
       title: seo.ogTitle,

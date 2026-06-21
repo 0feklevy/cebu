@@ -14,6 +14,7 @@ import { BrollPanel } from './BrollPanel';
 import { ConfirmDialog } from './ConfirmDialog';
 import { ImageCropEditor } from './ImageCropEditor';
 import { ExtendedLibraryModal } from './avatar/ExtendedLibraryModal';
+import { getAvatarCircles, type AvatarCirclesConfig } from './avatar/avatarApi';
 import type { VideoFile, TimelineSection, Simulation, VideoGenerationJob, ImageFile, AudioFile } from 'shared/src/generated/client-v1';
 
 type ToolMode = 'video' | 'simulation' | 'broll';
@@ -192,6 +193,7 @@ export function VideoEditor({ projectId }: Props) {
   const { loading: authLoading } = useAuth();
   const [videos, setVideos]   = useState<VideoFile[]>([]);     // main videos only (is_broll=false)
   const [allVideos, setAllVideos] = useState<VideoFile[]>([]);  // all videos incl. broll sources
+  const [avatarCircles, setAvatarCircles] = useState<AvatarCirclesConfig | null>(null);
   const [sections, setSections] = useState<TimelineSection[]>([]);
   const [undoStack, setUndoStack] = useState<SectionSnapshot[]>([]);
   const [redoStack, setRedoStack] = useState<SectionSnapshot[]>([]);
@@ -232,6 +234,13 @@ export function VideoEditor({ projectId }: Props) {
   const playerContainerRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
+  // Load the avatar-circles config so the editor preview can show them over b-roll.
+  useEffect(() => {
+    if (authLoading) return;
+    let cancelled = false;
+    getAvatarCircles(projectId).then((r) => { if (!cancelled) setAvatarCircles(r.config); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [projectId, authLoading]);
 
   const loadData = useCallback(async () => {
     try {
@@ -712,6 +721,7 @@ export function VideoEditor({ projectId }: Props) {
                 activeBrollSection={activeOverlay ?? null}
                 brollHlsUrl={brollHlsUrl}
                 activeImageSection={activeImageSection}
+                avatarCircles={avatarCircles}
               />
             ) : (
               <div className="flex-1 flex flex-col items-center justify-center bg-black/[0.03] rounded-lg border border-dashed border-border gap-3 text-center px-8">

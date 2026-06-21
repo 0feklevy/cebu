@@ -5,7 +5,7 @@ import type { PlayerConfig } from './types';
 import type { LockedContent } from 'shared/src/generated/client-v1';
 import { HLSPlayerShell } from './HLSPlayerShell';
 import { PaywallOverlay } from '../PaywallOverlay';
-import { auth } from '../../lib/firebase';
+import { useAuth } from '../../lib/firebase';
 import { AskAvatarButton } from '../avatar/AskAvatarButton';
 import { AvatarPopup } from '../avatar/AvatarPopup';
 
@@ -24,11 +24,16 @@ export function ViewerPage({ projectId }: Props) {
   const [avatarOpen, setAvatarOpen] = useState(false);
   const [captionMenuOpen, setCaptionMenuOpen] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Wait for Firebase auth to resolve before fetching — otherwise a fresh tab
+  // fetches with no token and the owner is treated as anonymous (paid content
+  // shows the paywall to its own creator).
+  const { loading: authLoading, getIdToken } = useAuth();
 
   useEffect(() => {
+    if (authLoading) return;
     const check = async () => {
       try {
-        const token = await auth.currentUser?.getIdToken().catch(() => null);
+        const token = await getIdToken().catch(() => null);
         const r = await fetch(`${API_URL}/api/v1/projects/${projectId}/player-config`, {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         });
@@ -72,7 +77,7 @@ export function ViewerPage({ projectId }: Props) {
     check();
     intervalRef.current = setInterval(check, POLL_INTERVAL_MS);
     return () => clearInterval(intervalRef.current!);
-  }, [projectId]);
+  }, [projectId, authLoading, getIdToken]);
 
   if (locked) {
     return (

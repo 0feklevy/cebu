@@ -40,6 +40,7 @@ export function enqueueVideoMetadata(projectId: string, videoFileId: string, opt
 export interface MetadataOptions {
   promptHint?: string;     // optional context to guide the AI title/description
   model?: 'gpt-4o-mini' | 'gpt-4o'; // override the default model
+  skipVision?: boolean;    // only grab a placeholder frame (no GPT title/description) — cheap backfill
 }
 
 export async function generateVideoMetadata(projectId: string, videoFileId: string, opts: MetadataOptions = {}): Promise<void> {
@@ -59,36 +60,45 @@ export async function generateVideoMetadata(projectId: string, videoFileId: stri
 
   const workDir = await mkdtemp(join(tmpdir(), 'vmeta-'));
   try {
-    // ── 1. Download source video ──────────────────────────────────────────────
-    const ext = video.storage_key.split('.').pop() ?? 'mp4';
-    const srcPath = join(workDir, `source.${ext}`);
-    const downloadUrl = await storage.getPresignedDownloadUrl(video.storage_key, 3600);
-    const res = await fetch(downloadUrl);
-    if (!res.ok) throw new Error(`Download failed: ${res.status}`);
-    const buf = Buffer.from(await res.arrayBuffer());
-    await (await import('fs/promises')).writeFile(srcPath, buf);
+    // ── 1. Resolve a frame input — prefer the HLS rendition (always reachable
+    //      post-transcode), fall back to the raw source. ffmpeg reads the HTTP
+    //      URL directly, so we never depend on the source object still existing
+    //      in object storage (which may have gone to local fallback). ──────────
+    const hlsKey = video.hls_master_key ?? video.hls_360p_key;
+    let inputArg: string;
+    if (video.hls_status === 'ready' && hlsKey) {
+      inputArg = storage.getPublicUrl(hlsKey);
+    } else {
+      inputArg = await storage.getPresignedDownloadUrl(video.storage_key, 3600);
+    }
 
     // ── 2. Extract frame at 12% of duration ──────────────────────────────────
     const durationSec = video.duration_sec ?? 30;
     const seekSec = Math.max(1, Math.round(durationSec * 0.12));
     const thumbPath = join(workDir, 'thumb.jpg');
-    await extractFrame(srcPath, thumbPath, seekSec);
+    await extractFrame(inputArg, thumbPath, seekSec);
 
-    // ── 3. Upload thumbnail ───────────────────────────────────────────────────
+    // ── 3. Upload thumbnail (placeholder frame) ──────────────────────────────
+    // Only auto-set a thumbnail when the user hasn't already provided one — the
+    // extracted frame is the placeholder for videos with no custom thumbnail.
+    // (The frame is still read here so the vision step can describe the video.)
     const thumbBuf = await readFile(thumbPath);
     const thumbKey = `thumbnails/${projectId}.jpg`;
-    let thumbnailUrl: string;
-    try {
-      thumbnailUrl = await storage.uploadFile(thumbKey, thumbBuf, 'image/jpeg');
-    } catch {
-      thumbnailUrl = await new LocalStorageAdapter().uploadFile(thumbKey, thumbBuf, 'image/jpeg');
+    const hasUserThumbnail = Boolean(project.thumbnail_url);
+    let thumbnailUrl: string | null = project.thumbnail_url ?? null;
+    if (!hasUserThumbnail) {
+      try {
+        thumbnailUrl = await storage.uploadFile(thumbKey, thumbBuf, 'image/jpeg');
+      } catch {
+        thumbnailUrl = await new LocalStorageAdapter().uploadFile(thumbKey, thumbBuf, 'image/jpeg');
+      }
     }
 
     // ── 4. GPT-4o-mini vision → title + description ───────────────────────────
     let title = project.title?.trim() || null;
     let description = project.topic?.trim() || null;
 
-    const apiKey = process.env.OPENAI_API_KEY;
+    const apiKey = opts.skipVision ? undefined : process.env.OPENAI_API_KEY;
     if (apiKey) {
       try {
         const gptResult = await generateTitleAndDescription(thumbBuf, video.filename, apiKey, opts.promptHint, opts.model);
@@ -105,8 +115,8 @@ export async function generateVideoMetadata(projectId: string, videoFileId: stri
 
     // ── 5. Persist ─────────────────────────────────────────────────────────────
     await db.update(projects).set({
-      thumbnail_url:   thumbnailUrl,
-      thumbnail_key:   thumbKey,
+      // Never clobber a user-provided thumbnail with the auto placeholder.
+      ...(hasUserThumbnail ? {} : { thumbnail_url: thumbnailUrl, thumbnail_key: thumbKey }),
       metadata_status: 'ready',
       ...(title       ? { title }       : {}),
       ...(description ? { topic: description } : {}),

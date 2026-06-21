@@ -257,7 +257,9 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
       return reply.send(rows.map((r) => ({
         ...r,
         item_count:    counts.get(r.id) ?? 0,
-        thumbnail_url: firstThumbnails.get(r.id) ?? null,
+        // Prefer the playlist's own saved banner; fall back to the first item's
+        // project thumbnail so a playlist with a cover always shows it.
+        thumbnail_url: r.banner_url ?? firstThumbnails.get(r.id) ?? null,
         ...(withItems ? { items: itemsByPlaylist.get(r.id) ?? [] } : {}),
       })));
     },

@@ -4,7 +4,7 @@ import { extname } from 'path';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
 import { projects, hosts, video_files, simulations, audio_files, image_files } from '../../db/schema.js';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { LocalStorageAdapter } from '../../services/storage/LocalStorageAdapter.js';
@@ -18,6 +18,39 @@ function thumbnailExt(mime: string): string {
   if (mime === 'image/png') return '.png';
   if (mime === 'image/webp') return '.webp';
   return '.jpg';
+}
+
+type ProjectRow = typeof projects.$inferSelect;
+
+/**
+ * Fire-and-forget: for projects with no thumbnail yet, grab a placeholder frame
+ * from their source video. Bounded per call (the in-process guard in
+ * generateVideoMetadata dedupes); only acts on projects whose auto-metadata has
+ * not completed, so it never clobbers a user-chosen thumbnail.
+ */
+async function backfillMissingThumbnails(rows: ProjectRow[]): Promise<void> {
+  try {
+    const missing = rows
+      .filter((p) => !p.thumbnail_url && p.metadata_status === 'none')  // skip ready/processing/failed
+      .slice(0, 8);
+    if (missing.length === 0) return;
+
+    const vids = await db.query.video_files.findMany({
+      where: and(inArray(video_files.project_id, missing.map((p) => p.id)), eq(video_files.is_broll, false)),
+    });
+    const firstVideo = new Map<string, typeof vids[number]>();
+    for (const v of vids) {
+      if (v.storage_key && !firstVideo.has(v.project_id)) firstVideo.set(v.project_id, v);
+    }
+
+    const { enqueueVideoMetadata } = await import('../../services/generateVideoMetadata.js');
+    for (const p of missing) {
+      const v = firstVideo.get(p.id);
+      if (v) enqueueVideoMetadata(p.id, v.id, { skipVision: true });
+    }
+  } catch (err) {
+    logger.warn({ err: (err as Error).message?.slice(0, 120) }, '[thumbnail] backfill skipped');
+  }
 }
 
 export async function registerProjectRoutes(app: FastifyInstance): Promise<void> {
@@ -84,6 +117,9 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
         where: eq(projects.created_by, user.id),
         orderBy: (p, { desc }) => [desc(p.created_at)],
       });
+      // Best-effort: backfill a frame-placeholder thumbnail for videos that don't
+      // have one yet (older videos predate auto-generation, or it never ran).
+      void backfillMissingThumbnails(all);
       return reply.send(all);
     },
   );

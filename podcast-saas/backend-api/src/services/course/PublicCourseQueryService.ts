@@ -155,7 +155,7 @@ export const PublicCourseQueryService = {
 
     const project = await db.query.projects.findFirst({
       where: eq(projects.id, lesson.project_id),
-      columns: { id: true, title: true, topic: true, thumbnail_url: true, created_at: true },
+      columns: { id: true, title: true, topic: true, thumbnail_url: true, created_at: true, seo_description: true, seo_keywords: true },
     });
 
     // Sanitized interactive player payload (existing renderer's data source).
@@ -193,6 +193,7 @@ export const PublicCourseQueryService = {
         lessonTitle: lesson.title, lessonSummary: lesson.summary, lessonLanguage: lesson.language,
         lessonIndexable: lesson.indexable,
         projectTitle: project?.title ?? null, projectTopic: project?.topic ?? null,
+        projectSeoDescription: project?.seo_description ?? null, projectKeywords: project?.seo_keywords ?? null,
       },
       { canonicalUrl, ogImageUrl },
     );

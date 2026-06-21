@@ -8,10 +8,12 @@
 //   • extended  — GLOBAL pool (project_id = null) of every visual the avatar has
 //                 generated for any viewer of any video; reused everywhere.
 // At runtime the avatar prefers basic, then global extended, over generating new.
+import { randomUUID } from 'crypto';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { and, or, eq, isNull } from 'drizzle-orm';
 import { db } from '../../db/index.js';
+import { uploadWithFallback } from '../../services/storage/uploadWithFallback.js';
 import { projects, avatar_visuals, admin_settings, users } from '../../db/schema.js';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import {
@@ -20,7 +22,8 @@ import {
   ensureKnowledgeGroup, ensureKnowledgeTool, uploadKnowledgeDocument, listKnowledgeDocuments, deleteKnowledgeDocument, listSystemTools,
   type AvatarPersonaConfig,
 } from '../../services/avatar/anamService.js';
-import { encryptKey, decryptKey } from '../../services/secrets/ApiKeyService.js';
+import { encryptKey } from '../../services/secrets/ApiKeyService.js';
+import { resolveAnamKeyForProject } from '../../services/avatar/anamKey.js';
 import { analyzeVisual, generateLibrarySimulation, editLibrarySimulation } from '../../services/avatar/visualService.js';
 import { analyzeAndGenerateImage, generateLibraryImage } from '../../services/avatar/imageService.js';
 import { listVisuals, updateVisual, deleteVisual, syncBasicLibrary } from '../../services/avatar/libraryService.js';
@@ -28,17 +31,15 @@ import { saveTurns, getTurns, getProfile, extractAndSaveFacts, type Turn } from 
 import { CHARACTERS, DEFAULT_CHARACTER_ID } from '../../services/avatar/characters.js';
 import { logger } from '../../lib/logger.js';
 
-// Resolve the Anam API key for a video: its owner's BYOK key when the admin has
-// enabled BYOK and the owner has set one, otherwise the shared server key (undefined).
-async function resolveAnamKeyForProject(projectId?: string | null): Promise<string | undefined> {
-  if (!projectId) return undefined;
-  const [settings] = await db.select({ byok: admin_settings.avatar_byok_enabled }).from(admin_settings).limit(1);
-  if (!settings?.byok) return undefined;
-  const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId), columns: { created_by: true } });
-  if (!project?.created_by) return undefined;
-  const owner = await db.query.users.findFirst({ where: eq(users.id, project.created_by), columns: { anam_api_key_encrypted: true } });
-  if (!owner?.anam_api_key_encrypted) return undefined;
-  try { return decryptKey(owner.anam_api_key_encrypted); } catch { return undefined; }
+// Read avatar_config defensively: normally a jsonb object, but tolerate a legacy
+// double-encoded JSON string so a merge-write never spreads a string into
+// numeric-index keys (which would corrupt the column).
+function asPersonaConfig(v: unknown): AvatarPersonaConfig {
+  if (v && typeof v === 'object' && !Array.isArray(v)) return v as AvatarPersonaConfig;
+  if (typeof v === 'string') {
+    try { const o = JSON.parse(v); if (o && typeof o === 'object' && !Array.isArray(o)) return o as AvatarPersonaConfig; } catch { /* ignore */ }
+  }
+  return {};
 }
 
 export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> {
@@ -331,6 +332,34 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
     uninterruptibleGreeting: z.boolean().optional(),
     voiceSensitivity: z.number().min(0).max(1).optional(),
     toolIds: z.array(z.string().max(80)).max(20).optional(),
+    avatarCircles: z.object({
+      enabled: z.boolean(),
+      count: z.union([z.literal(1), z.literal(2)]),
+      faces: z.array(z.object({
+        speaker: z.enum(['host_a', 'host_b']),
+        side: z.enum(['left', 'right']),
+        imageUrl: z.string().max(2048).optional(),
+        label: z.string().max(120).optional(),
+      })).max(2).optional(),
+      barStyle: z.enum(['bars', 'solid', 'gradient']).optional(),
+      numberOfBars: z.number().min(8).max(512).optional(),
+      sensitivity: z.number().min(0).max(1).optional(),
+      barWidth: z.number().min(1).max(64).optional(),
+      innerRadius: z.number().min(0).max(600).optional(),
+      smoothness: z.number().min(0).max(1).optional(),
+      minHeight: z.number().min(0).max(600).optional(),
+      maxHeight: z.number().min(1).max(1200).optional(),
+      rotationOffset: z.number().min(0).max(360).optional(),
+      lowFreqCutPct: z.number().min(0).max(100).optional(),
+      highFreqCutPct: z.number().min(0).max(100).optional(),
+      colorMode: z.enum(['solid', 'gradient']).optional(),
+      barColor: z.string().max(32).optional(),
+      gradientEnd: z.string().max(32).optional(),
+      background: z.string().max(32).optional(),
+      roundedBars: z.boolean().optional(),
+      circleSize: z.number().min(16).max(800).optional(),
+      showCenterCircle: z.boolean().optional(),
+    }).optional(),
   });
 
   app.put<{ Params: { id: string } }>(
@@ -348,12 +377,15 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
       const avatarChanged = Boolean(incoming.avatarId && incoming.avatarId !== existing.avatarId);
       const staleExistingVoice = Boolean(avatarChanged && existing.voiceId && incoming.voiceId === existing.voiceId);
 
-      // Server-managed fields (knowledge group + RAG tool) carry over from the
-      // saved config; user fields come from `incoming`.
+      // Server/feature-managed fields carry over from the saved config (the PUT
+      // rebuilds avatar_config from the form, so anything not in the form must be
+      // preserved explicitly); user fields come from `incoming`.
       const effectiveBase: AvatarPersonaConfig = {
         ...incoming,
         knowledgeGroupId: existing.knowledgeGroupId,
         knowledgeToolId: existing.knowledgeToolId,
+        transcriptDocId: existing.transcriptDocId,
+        avatarCircles: incoming.avatarCircles ?? existing.avatarCircles,
       };
       const effective = await enrichAvatarConfigFromAnam(effectiveBase, apiKey, {
         forceDefaultVoice: staleExistingVoice || !effectiveBase.voiceId,
@@ -462,6 +494,61 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
       const apiKey = await resolveAnamKeyForProject(project.id).catch(() => undefined);
       const ok = await deleteKnowledgeDocument(request.params.docId, apiKey).catch(() => false);
       return reply.code(ok ? 204 : 502).send();
+    },
+  );
+
+  // ── Avatar circles (audio-reactive overlays shown during b-roll) ───────────
+
+  const AvatarCirclesSchema = AvatarConfigSchema.shape.avatarCircles.unwrap();
+
+  // GET — this video's avatar-circles config (defaults to null/disabled).
+  app.get<{ Params: { id: string } }>(
+    '/api/v1/projects/:id/avatar/circles',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const project = await requireOwnedProject(request, reply);
+      if (!project) return;
+      const cfg = asPersonaConfig(project.avatar_config);
+      return reply.send({ config: cfg.avatarCircles ?? null });
+    },
+  );
+
+  // PUT — save the avatar-circles config (merged into avatar_config, decoupled
+  // from the Anam persona save).
+  app.put<{ Params: { id: string } }>(
+    '/api/v1/projects/:id/avatar/circles',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const project = await requireOwnedProject(request, reply);
+      if (!project) return;
+      const parsed = AvatarCirclesSchema.safeParse(request.body);
+      if (!parsed.success) return reply.code(400).send({ message: parsed.error.message });
+      const existing = asPersonaConfig(project.avatar_config);
+      const merged: AvatarPersonaConfig = { ...existing, avatarCircles: parsed.data };
+      await db.update(projects).set({ avatar_config: merged, updated_at: new Date() }).where(eq(projects.id, project.id));
+      return reply.send({ ok: true, config: parsed.data });
+    },
+  );
+
+  // POST — upload an avatar face image for a circle; returns its public URL.
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/projects/:id/avatar/circle-face',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const project = await requireOwnedProject(request, reply);
+      if (!project) return;
+      const data = await request.file();
+      if (!data) return reply.code(400).send({ message: 'No file uploaded' });
+      const mime = data.mimetype.toLowerCase().split(';')[0].trim();
+      if (!['image/jpeg', 'image/jpg', 'image/png', 'image/webp'].includes(mime)) {
+        return reply.code(400).send({ message: 'Only JPEG, PNG, and WebP images are supported' });
+      }
+      const buf = await data.toBuffer();
+      if (buf.length > 8 * 1024 * 1024) return reply.code(413).send({ message: 'Image must be 8MB or smaller' });
+      const ext = mime === 'image/png' ? '.png' : mime === 'image/webp' ? '.webp' : '.jpg';
+      const key = `avatar-circles/${project.id}/${randomUUID()}${ext}`;
+      const url = await uploadWithFallback(key, buf, mime);
+      return reply.code(201).send({ url });
     },
   );
 

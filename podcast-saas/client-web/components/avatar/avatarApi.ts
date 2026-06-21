@@ -133,6 +133,55 @@ export const saveAvatarConfig = (projectId: string, config: AvatarPersonaConfig)
 export const listAnamResources = (projectId: string, kind: 'avatars' | 'voices' | 'llms' | 'personas') =>
   jsonFetch<{ data: AnamResource[] }>(`/api/v1/projects/${projectId}/avatar/anam-resources?kind=${kind}`, {}, true).catch(() => ({ data: [] }));
 
+// ── Avatar circles (audio-reactive overlays shown during b-roll) ────────────
+
+export interface AvatarCircleFace {
+  speaker: 'host_a' | 'host_b';
+  side: 'left' | 'right';
+  imageUrl?: string;
+  label?: string;
+}
+
+export interface AvatarCirclesConfig {
+  enabled: boolean;
+  count: 1 | 2;
+  faces?: AvatarCircleFace[];
+  barStyle?: 'bars' | 'solid' | 'gradient';
+  numberOfBars?: number;
+  sensitivity?: number;
+  barWidth?: number;
+  innerRadius?: number;
+  smoothness?: number;
+  minHeight?: number;
+  maxHeight?: number;
+  rotationOffset?: number;
+  lowFreqCutPct?: number;
+  highFreqCutPct?: number;
+  colorMode?: 'solid' | 'gradient';
+  barColor?: string;
+  gradientEnd?: string;
+  background?: string;
+  roundedBars?: boolean;
+  circleSize?: number;
+  showCenterCircle?: boolean;
+}
+
+export const getAvatarCircles = (projectId: string) =>
+  jsonFetch<{ config: AvatarCirclesConfig | null }>(`/api/v1/projects/${projectId}/avatar/circles`, {}, true)
+    .catch(() => ({ config: null }));
+
+export const saveAvatarCircles = (projectId: string, config: AvatarCirclesConfig) =>
+  jsonFetch<{ ok: boolean; config: AvatarCirclesConfig }>(`/api/v1/projects/${projectId}/avatar/circles`, { method: 'PUT', body: JSON.stringify(config) }, true);
+
+export const uploadCircleFace = async (projectId: string, file: Blob, filename = 'face.jpg'): Promise<{ url: string }> => {
+  const headers = await authHeaders();
+  const fd = new FormData();
+  fd.append('file', file, filename);
+  const res = await fetch(`${BASE}/api/v1/projects/${projectId}/avatar/circle-face`, { method: 'POST', headers, body: fd });
+  if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error((j as { message?: string }).message ?? `Upload failed: ${res.status}`); }
+  return res.json();
+};
+
 export const getByokStatus = () =>
   jsonFetch<{ byokEnabled: boolean; hasKey: boolean }>(`/api/v1/avatar/byok-status`, {}, true).catch(() => ({ byokEnabled: false, hasKey: false }));
 

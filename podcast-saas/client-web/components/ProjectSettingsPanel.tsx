@@ -6,6 +6,7 @@ import { Crop, Film, Loader2, Settings, Sparkles, Upload, X } from 'lucide-react
 import { api } from '../lib/api';
 import { LockPriceControl } from './LockPriceControl';
 import { AvatarSettingsModal } from './avatar/AvatarSettingsModal';
+import { AvatarCirclesSettings } from './avatar/AvatarCirclesSettings';
 import type { Project, VideoFile } from 'shared/src/generated/client-v1';
 
 interface Props {
@@ -16,7 +17,7 @@ interface Props {
 
 export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Props) {
   const [open, setOpen] = useState(false);
-  const [page, setPage] = useState<'main' | 'avatar'>('main');
+  const [page, setPage] = useState<'main' | 'avatar' | 'circles'>('main');
   const [title, setTitle] = useState('');
   const [desc, setDesc] = useState('');
   const [savingMeta, setSavingMeta] = useState(false);
@@ -104,7 +105,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
   // Escape: on the avatar wizard page go back to main; otherwise close the panel
   useEffect(() => {
     if (!open) return;
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') { if (page === 'avatar') setPage('main'); else setOpen(false); } };
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') { if (page === 'avatar' || page === 'circles') setPage('main'); else setOpen(false); } };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [open, page]);
@@ -315,6 +316,9 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
             <AvatarSettingsModal embedded open projectId={projectId} videoTitle={project?.title ?? null} onClose={() => setPage('main')} />
           </div>
         )}
+        {page === 'circles' && (
+          <AvatarCirclesSettings projectId={projectId} duration={dur} onClose={() => setPage('main')} />
+        )}
 
         {/* ── Header ── */}
         <div style={{
@@ -378,6 +382,24 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
             </button>
             <span style={{ fontSize: 11, color: '#94a3b8', marginTop: -6, marginBottom: 4 }}>
               This video&apos;s greeting, prompt, knowledge, language, avatar &amp; voice
+            </span>
+
+            {/* Avatar circles — audio-reactive overlays during b-roll */}
+            <button
+              onClick={() => setPage('circles')}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
+                padding: '11px 13px', borderRadius: 10, cursor: 'pointer',
+                border: '1px solid #e2e8f0', background: 'linear-gradient(135deg, rgba(168,85,247,0.08), rgba(236,72,153,0.05))',
+                color: '#9333ea', fontSize: 13, fontWeight: 700,
+              }}
+            >
+              <Sparkles size={15} strokeWidth={1.9} aria-hidden />
+              <span style={{ flex: 1 }}>Avatar circles (b-roll)</span>
+              <span style={{ fontSize: 16, color: '#94a3b8' }}>›</span>
+            </button>
+            <span style={{ fontSize: 11, color: '#94a3b8', marginTop: -6, marginBottom: 4 }}>
+              Audio-reactive speaker circles shown in the corners during b-roll
             </span>
 
             {/* Preview */}

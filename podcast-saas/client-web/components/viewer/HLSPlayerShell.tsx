@@ -10,6 +10,7 @@ import { VideoLayer } from './VideoLayer';
 import { SimOverlayDynamic } from './SimOverlayDynamic';
 import { ControlsBar, type CaptionStyle } from './ControlsBar';
 import { ImageOverlay } from '../ImageOverlay';
+import { AvatarCirclesOverlay } from './AvatarCirclesOverlay';
 import './viewer.css';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
@@ -268,6 +269,16 @@ export function HLSPlayerShell({
         playsInline
         muted
         preload="auto"
+      />
+
+      {/* Avatar circles — speaker circles shown in the corners during b-roll */}
+      <AvatarCirclesOverlay
+        config={config.avatar_circles}
+        visible={state.showBrollOverlay || !!state.activeImageOverlay}
+        videoARef={videoARef}
+        videoBRef={videoBRef}
+        globalTime={state.globalTime}
+        speakerTimeline={config.speaker_timeline}
       />
 
       {/* Home button — appears on hover over top-left corner */}

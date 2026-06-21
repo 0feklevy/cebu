@@ -15,3 +15,7 @@ out/
 # Caches
 .turbo/
 .cache/
+
+# Durable local-disk storage (R2 write-denied fallback)
+.local-storage/
+**/.local-storage/

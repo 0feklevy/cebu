@@ -4,8 +4,8 @@ import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import { readFile } from 'fs/promises';
 import { extname, join } from 'path';
-import { tmpdir } from 'os';
 import { logger } from './lib/logger.js';
+import { LOCAL_STORAGE_BASE_DIR } from './services/storage/localStoragePaths.js';
 import { checkDatabaseConnection } from './db/index.js';
 import { getFirebaseAdmin } from './services/firebase.js';
 import { getStorageAdapter } from './services/storage/getStorageAdapter.js';
@@ -90,7 +90,7 @@ async function build() {
 
   // Local file storage (dev only — active when R2 is not configured).
   // Public prefixes (banners, images) need no auth so browsers can load them directly.
-  const PUBLIC_LOCAL_PREFIXES = ['playlist-banners/', 'thumbnails/', 'crop/', 'images/', 'audio/', 'captions/'];
+  const PUBLIC_LOCAL_PREFIXES = ['playlist-banners/', 'thumbnails/', 'crop/', 'images/', 'audio/', 'captions/', 'avatar-circles/'];
   app.get<{ Params: { '*': string } }>(
     '/local-storage/*',
     async (request, reply) => {
@@ -101,7 +101,7 @@ async function build() {
         await firebaseAuthMiddleware(request, reply);
         if (reply.sent) return;
       }
-      const filePath = join(tmpdir(), 'podcast-saas-local-storage', key);
+      const filePath = join(LOCAL_STORAGE_BASE_DIR, key);
       try {
         const data = await readFile(filePath);
         const contentType = getLocalStorageContentType(key);
@@ -124,7 +124,7 @@ async function build() {
       if (!key.startsWith('hls/')) {
         return reply.code(403).send({ message: 'Forbidden' });
       }
-      const filePath = join(tmpdir(), 'podcast-saas-local-storage', key);
+      const filePath = join(LOCAL_STORAGE_BASE_DIR, key);
       try {
         const data = await readFile(filePath);
         const contentType = key.endsWith('.m3u8')
@@ -181,7 +181,7 @@ async function build() {
       if (!key.startsWith('videos/')) {
         return reply.code(403).send({ message: 'Forbidden' });
       }
-      const filePath = join(tmpdir(), 'podcast-saas-local-storage', key);
+      const filePath = join(LOCAL_STORAGE_BASE_DIR, key);
       try {
         const { stat, createReadStream } = await import('fs');
         const { promisify } = await import('util');
@@ -306,7 +306,7 @@ async function build() {
       if (!key.startsWith('simulations/')) {
         return reply.code(403).send({ message: 'Forbidden' });
       }
-      const filePath = join(tmpdir(), 'podcast-saas-local-storage', key);
+      const filePath = join(LOCAL_STORAGE_BASE_DIR, key);
       try {
         const data = await readFile(filePath);
         return reply
@@ -326,7 +326,7 @@ async function build() {
     async (request, reply) => {
       const { writeFile, mkdir } = await import('fs/promises');
       const key = request.params['*'];
-      const dest = join(tmpdir(), 'podcast-saas-local-storage', key);
+      const dest = join(LOCAL_STORAGE_BASE_DIR, key);
       const dir = dest.substring(0, dest.lastIndexOf('/'));
       await mkdir(dir, { recursive: true });
       await writeFile(dest, request.body as Buffer);

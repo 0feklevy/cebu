@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { CreateProjectDialog } from './CreateProjectDialog';
 import { PlaylistsPanel } from './PlaylistsPanel';
+import { ConfirmDialog } from './ConfirmDialog';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/firebase';
 import type { Project } from 'shared/src/generated/client-v1';
@@ -63,21 +64,7 @@ function ProjectTile({ project, onDelete }: { project: Project; onDelete: (id: s
   const [deleting, setDeleting] = useState(false);
   const tileRef = useRef<HTMLDivElement>(null);
 
-  // Close confirm when clicking outside the tile
-  useEffect(() => {
-    if (!confirm) return;
-    const handler = (e: MouseEvent) => {
-      if (tileRef.current && !tileRef.current.contains(e.target as Node)) {
-        setConfirm(false);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [confirm]);
-
-  const handleDelete = async (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
+  const handleDelete = async () => {
     setDeleting(true);
     try {
       await api.deleteProject(project.id);
@@ -92,7 +79,6 @@ function ProjectTile({ project, onDelete }: { project: Project; onDelete: (id: s
     <div
       ref={tileRef}
       className="group relative flex h-full min-h-[232px] w-[300px] shrink-0 sm:w-[320px] xl:w-[340px]"
-      onMouseLeave={() => { if (!deleting) setConfirm(false); }}
     >
       <Link
         href={`/projects/${project.id}/editor`}
@@ -150,30 +136,17 @@ function ProjectTile({ project, onDelete }: { project: Project; onDelete: (id: s
         <Trash2 size={16} strokeWidth={2} aria-hidden />
       </button>
 
-      {/* Inline confirmation overlay — rendered inside the tile, no portal/z-index games */}
+      {/* Confirmation modal — portaled to <body> so it is never clipped by the
+          tile's hover-transform or the horizontal scroll container. */}
       {confirm && (
-        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 rounded-lg bg-card/97 px-4 text-center shadow-inner">
-          <Trash2 size={24} strokeWidth={1.8} className="text-red-500" aria-hidden />
-          <div>
-            <p className="text-base font-semibold text-foreground">Delete project?</p>
-            <p className="mt-1 line-clamp-1 text-sm text-muted-foreground">{title}</p>
-          </div>
-          <div className="flex gap-2">
-            <button
-              onClick={(e) => { e.preventDefault(); e.stopPropagation(); setConfirm(false); }}
-              className="h-9 rounded-lg border border-border px-4 text-sm font-medium text-foreground transition-colors hover:bg-muted"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleDelete}
-              disabled={deleting}
-              className="h-9 rounded-lg bg-red-600 px-4 text-sm font-semibold text-white transition-colors hover:bg-red-700 disabled:opacity-60"
-            >
-              {deleting ? '…' : 'Delete'}
-            </button>
-          </div>
-        </div>
+        <ConfirmDialog
+          title="Delete project?"
+          description={`"${title}" and its videos will be permanently removed. This cannot be undone.`}
+          confirmLabel="Delete"
+          busy={deleting}
+          onConfirm={handleDelete}
+          onCancel={() => { if (!deleting) setConfirm(false); }}
+        />
       )}
     </div>
   );

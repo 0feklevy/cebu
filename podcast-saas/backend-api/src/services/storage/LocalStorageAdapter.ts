@@ -1,15 +1,16 @@
 import { writeFile, mkdir, readFile, rm, readdir, stat } from 'fs/promises';
 import { createWriteStream } from 'fs';
 import { join } from 'path';
-import { tmpdir } from 'os';
 import type { StorageService } from './StorageService.js';
+import { LOCAL_STORAGE_BASE_DIR } from './localStoragePaths.js';
 import { logger } from '../../lib/logger.js';
 
-// Dev-only local disk storage — activated when R2_ACCOUNT_ID is not set.
-// Files are written to <tmpdir>/podcast-saas-local-storage/ and served via
-// the backend's /local-storage/:path* route.
+// Local disk storage — used when R2 is not configured AND as the durable
+// fallback when R2 object writes are denied. Files are written to a PERSISTENT
+// directory (see localStoragePaths.ts — NOT os.tmpdir, which is wiped on
+// restart) and served via the backend's /local-storage/:path* route.
 
-const BASE_DIR = join(tmpdir(), 'podcast-saas-local-storage');
+const BASE_DIR = LOCAL_STORAGE_BASE_DIR;
 const SERVE_BASE = process.env.BACKEND_API_URL ?? 'http://localhost:8080';
 
 export class LocalStorageAdapter implements StorageService {

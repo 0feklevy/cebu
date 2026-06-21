@@ -10,6 +10,7 @@ import { db } from '../../db/index.js';
 import { video_files } from '../../db/schema.js';
 import { logger } from '../../lib/logger.js';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
+import { propagateTranscript } from '../transcriptPropagation.js';
 
 const execFileAsync = promisify(execFile);
 const inFlight = new Set<string>();
@@ -232,6 +233,9 @@ async function runCaptionJob(videoId: string, opts: { force?: boolean } = {}): P
       captions_updated_at: new Date(),
     }).where(eq(video_files.id, video.id));
     logger.info({ videoId: video.id }, '[captions] ready');
+
+    // Forward the transcript to SEO + the avatar's knowledge documents (best-effort).
+    propagateTranscript(video, vtt);
   } catch (err) {
     const message = (err as Error).message || 'Caption generation failed';
     logger.warn({ videoId, err: message.slice(0, 400) }, '[captions] generation failed');
