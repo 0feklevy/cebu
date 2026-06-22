@@ -83,6 +83,8 @@ interface Props {
   hideHomeLink?: boolean;
   /** Extra controls that share the player's top-right chrome. */
   topRightControls?: ReactNode;
+  /** Floating action that tracks the bottom-right player chrome. */
+  bottomRightOverlay?: ReactNode;
   /** Reports whether the player chrome is visible, so wrappers can sync their overlays. */
   onControlsVisibleChange?: (visible: boolean) => void;
   /** Reports caption-settings-menu open state, so overlays (e.g. "Ask!") can hide. */
@@ -95,6 +97,7 @@ export function HLSPlayerShell({
   autoStart,
   hideHomeLink,
   topRightControls,
+  bottomRightOverlay,
   onControlsVisibleChange,
   onCaptionMenuOpenChange,
 }: Props) {
@@ -279,6 +282,8 @@ export function HLSPlayerShell({
         videoBRef={videoBRef}
         globalTime={state.globalTime}
         speakerTimeline={config.speaker_timeline}
+        controlsVisible={state.controlsVisible}
+        avoidAskButton={!!bottomRightOverlay}
       />
 
       {/* Home button — appears on hover over top-left corner */}
@@ -355,6 +360,12 @@ export function HLSPlayerShell({
           >
             {activeCaptionText}
           </span>
+        </div>
+      )}
+
+      {bottomRightOverlay && (
+        <div className="viewer-bottom-right-overlay">
+          {bottomRightOverlay}
         </div>
       )}
 

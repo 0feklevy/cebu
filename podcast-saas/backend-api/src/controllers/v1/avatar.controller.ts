@@ -334,6 +334,7 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
     toolIds: z.array(z.string().max(80)).max(20).optional(),
     avatarCircles: z.object({
       enabled: z.boolean(),
+      visibility: z.enum(['broll', 'always', 'none']).optional(),
       count: z.union([z.literal(1), z.literal(2)]),
       faces: z.array(z.object({
         speaker: z.enum(['host_a', 'host_b']),
@@ -358,6 +359,11 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
       background: z.string().max(32).optional(),
       roundedBars: z.boolean().optional(),
       circleSize: z.number().min(16).max(800).optional(),
+      circleOpacity: z.number().min(0).max(1).optional(),
+      circleLayout: z.enum(['corners', 'right-stack']).optional(),
+      circleSideInsetPct: z.number().min(0).max(45).optional(),
+      circleBottomPct: z.number().min(0).max(70).optional(),
+      circleGapPct: z.number().min(0).max(20).optional(),
       showCenterCircle: z.boolean().optional(),
     }).optional(),
   });

@@ -119,15 +119,11 @@ export function SharedViewerPage({ shareToken }: Props) {
 
   return (
     <div className="relative h-full w-full">
-      <HLSPlayerShell config={config} onCaptionMenuOpenChange={setCaptionMenuOpen} />
-
-      {/* Ask-the-Avatar — bottom-right, above the controls; pauses the video.
-          Hidden while the caption-settings menu is open so they don't overlap. */}
-      {!captionMenuOpen && (
-        <div className="absolute bottom-24 right-3 z-[70] sm:bottom-32 sm:right-5">
-          <AskAvatarButton onClick={() => setAvatarOpen(true)} label="Ask!" />
-        </div>
-      )}
+      <HLSPlayerShell
+        config={config}
+        onCaptionMenuOpenChange={setCaptionMenuOpen}
+        bottomRightOverlay={!captionMenuOpen ? <AskAvatarButton onClick={() => setAvatarOpen(true)} label="Ask!" /> : null}
+      />
 
       <AvatarPopup
         open={avatarOpen}

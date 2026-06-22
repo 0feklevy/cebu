@@ -40,6 +40,7 @@ export interface AvatarCircleFace {
 // animated bars (Phase 1 renders static circles during b-roll).
 export interface AvatarCirclesConfig {
   enabled: boolean;
+  visibility?: 'broll' | 'always' | 'none'; // when circles appear (default 'broll')
   count: 1 | 2;
   faces?: AvatarCircleFace[];
   // radial visualizer frame style
@@ -60,6 +61,11 @@ export interface AvatarCirclesConfig {
   background?: string;
   roundedBars?: boolean;
   circleSize?: number;
+  circleOpacity?: number;
+  circleLayout?: 'corners' | 'right-stack';
+  circleSideInsetPct?: number;
+  circleBottomPct?: number;
+  circleGapPct?: number;
   showCenterCircle?: boolean;
 }
 

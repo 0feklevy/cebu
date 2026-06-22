@@ -231,13 +231,9 @@ export function PlaylistViewer({ shareToken, playlistId }: Props) {
         hideHomeLink
         onProjectComplete={handleProjectComplete}
         topRightControls={playlistChrome}
+        bottomRightOverlay={<AskAvatarButton onClick={() => openAvatar(currentItem.project_id, currentItem.title)} label="Ask!" />}
         onControlsVisibleChange={setPlayerControlsVisible}
       />
-
-      {/* Ask-the-Avatar — bottom-right, above the controls; pauses the video */}
-      <div className="absolute bottom-16 right-3 z-[70] sm:bottom-20 sm:right-4">
-        <AskAvatarButton onClick={() => openAvatar(currentItem.project_id, currentItem.title)} label="Ask!" />
-      </div>
 
       {pendingNextPos != null && data.items[order[pendingNextPos]] && (
         <UpNextCard

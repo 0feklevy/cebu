@@ -66,11 +66,13 @@ export function AvatarCircleViz({ config, face, size, frame, getFrame }: Props) 
   return (
     <>
       <canvas ref={canvasRef} style={{ position: 'absolute', inset: 0, width: frame, height: frame }} />
-      <div style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%,-50%)', width: size, height: size, borderRadius: '50%', overflow: 'hidden', background: '#0f172a', border: '3px solid rgba(255,255,255,0.92)', boxShadow: '0 6px 18px rgba(0,0,0,0.35)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        {face.imageUrl
-          ? <img src={face.imageUrl} alt={face.label ?? ''} style={{ width: '100%', height: '100%', objectFit: 'cover' }} draggable={false} />
-          : <span style={{ color: '#64748b', fontSize: Math.max(9, size * 0.12), fontWeight: 600 }}>{face.label || '—'}</span>}
-      </div>
+      {config.showCenterCircle !== false && (
+        <div style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%,-50%)', width: size, height: size, borderRadius: '50%', overflow: 'hidden', background: '#0f172a', border: '3px solid rgba(255,255,255,0.92)', boxShadow: '0 6px 18px rgba(0,0,0,0.35)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          {face.imageUrl
+            ? <img src={face.imageUrl} alt={face.label ?? ''} style={{ width: '100%', height: '100%', objectFit: 'cover' }} draggable={false} />
+            : <span style={{ color: '#64748b', fontSize: Math.max(9, size * 0.12), fontWeight: 600 }}>{face.label || '—'}</span>}
+        </div>
+      )}
       {face.label && (
         <div style={{ position: 'absolute', bottom: 0, width: '100%', textAlign: 'center', color: '#fff', fontSize: 11, fontWeight: 600, textShadow: '0 1px 3px rgba(0,0,0,0.7)' }}>{face.label}</div>
       )}

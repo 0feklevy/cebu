@@ -28,12 +28,11 @@ export function LessonPlayer({ config }: { config: PlayerConfig }) {
 
   return (
     <div className="relative h-full w-full">
-      <HLSPlayerShell config={config} onCaptionMenuOpenChange={setCaptionMenuOpen} />
-      {!captionMenuOpen && (
-        <div className="absolute bottom-24 right-3 z-[70] sm:bottom-32 sm:right-5">
-          <AskAvatarButton onClick={() => setAvatarOpen(true)} label="Ask!" />
-        </div>
-      )}
+      <HLSPlayerShell
+        config={config}
+        onCaptionMenuOpenChange={setCaptionMenuOpen}
+        bottomRightOverlay={!captionMenuOpen ? <AskAvatarButton onClick={() => setAvatarOpen(true)} label="Ask!" /> : null}
+      />
       <AvatarPopup
         open={avatarOpen}
         onClose={() => setAvatarOpen(false)}

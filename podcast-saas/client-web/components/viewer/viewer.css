@@ -256,6 +256,22 @@
   white-space: pre-line;
 }
 
+/* ── Bottom-right floating action ─────────────────────── */
+.viewer-bottom-right-overlay {
+  position: absolute;
+  right: clamp(12px, 2.6vw, 24px);
+  bottom: max(14px, env(safe-area-inset-bottom));
+  z-index: 70;
+  pointer-events: none;
+  transition: bottom .28s ease, transform .28s ease;
+}
+.viewer-bottom-right-overlay > * {
+  pointer-events: auto;
+}
+.viewer-root.controls-visible .viewer-bottom-right-overlay {
+  bottom: calc(max(20px, env(safe-area-inset-bottom)) + 108px);
+}
+
 /* ── Simulation overlay ───────────────────────────────── */
 .sim-overlay {
   backdrop-filter: blur(2px);
@@ -409,6 +425,13 @@
   .viewer-root.controls-visible .viewer-caption-overlay {
     bottom: 104px;
   }
+  .viewer-bottom-right-overlay {
+    right: 12px;
+    bottom: max(12px, env(safe-area-inset-bottom));
+  }
+  .viewer-root.controls-visible .viewer-bottom-right-overlay {
+    bottom: calc(max(14px, env(safe-area-inset-bottom)) + 92px);
+  }
   .viewer-cc-menu {
     right: -36px;
     bottom: 50px;
@@ -459,5 +482,8 @@
   .viewer-time-display { font-size: 12px; }
   .viewer-cc-btn { min-width: 42px; height: 34px; font-size: 12px; }
   .viewer-root.controls-visible .viewer-caption-overlay { bottom: 82px; }
+  .viewer-root.controls-visible .viewer-bottom-right-overlay {
+    bottom: calc(max(8px, env(safe-area-inset-bottom)) + 76px);
+  }
   .guidance-caption { bottom: 76px; font-size: 13px; padding: 8px 12px; }
 }

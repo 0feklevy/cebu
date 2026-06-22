@@ -81,6 +81,7 @@ export interface AvatarCircleFace {
 
 export interface AvatarCirclesConfig {
   enabled: boolean;
+  visibility?: 'broll' | 'always' | 'none'; // when circles appear (default 'broll')
   count: 1 | 2;
   faces?: AvatarCircleFace[];
   barStyle?: 'bars' | 'solid' | 'gradient';
@@ -100,6 +101,11 @@ export interface AvatarCirclesConfig {
   background?: string;
   roundedBars?: boolean;
   circleSize?: number;
+  circleOpacity?: number;
+  circleLayout?: 'corners' | 'right-stack';
+  circleSideInsetPct?: number;
+  circleBottomPct?: number;
+  circleGapPct?: number;
   showCenterCircle?: boolean;
 }
 
