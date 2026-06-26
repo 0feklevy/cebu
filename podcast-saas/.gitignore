@@ -19,3 +19,6 @@ out/
 # Durable local-disk storage (R2 write-denied fallback)
 .local-storage/
 **/.local-storage/
+
+# Review swarm run outputs (disposable; agent defs + protocol stay tracked)
+.claude/review/runs/
