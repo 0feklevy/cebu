@@ -4,6 +4,7 @@ import { projects, video_files } from '../../db/schema.js';
 import { eq, and, desc } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
+import { uploadStreamWithFallback } from '../../services/storage/uploadStreamWithFallback.js';
 import { logger } from '../../lib/logger.js';
 import { randomUUID } from 'crypto';
 import { runVideoTranscode } from '../../services/video/runVideoTranscode.js';
@@ -41,8 +42,13 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
           const ext = (part.filename ?? 'upload').split('.').pop() ?? 'mp4';
           const storage_key = `videos/${project.id}/${randomUUID()}.${ext}`;
 
+          // Stream the upload to durable local disk first, then best-effort
+          // re-upload to R2. A read-only R2 token (PutObject → AccessDenied) keeps
+          // the local copy, which is served via /video-proxy → /video-raw, so the
+          // upload never hard-fails. (A source stream can't be replayed, so we
+          // can't try R2 first and fall back.)
           try {
-            await storage.uploadStream(storage_key, part.file, part.mimetype, fileSize || undefined);
+            await uploadStreamWithFallback(storage_key, part.file, part.mimetype, fileSize || undefined);
           } catch (err) {
             logger.error({ err }, 'Video stream upload failed');
             return reply.code(500).send({ message: 'Storage upload failed' });

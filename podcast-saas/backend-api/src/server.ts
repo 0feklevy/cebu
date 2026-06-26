@@ -153,7 +153,10 @@ async function build() {
       try {
         const upstream = await fetch(`${r2PublicUrl}/${key}`);
         if (!upstream.ok) {
-          return reply.code(upstream.status).send({ message: 'Upstream error' });
+          // R2 may not have these segments when a read-only token forced the HLS
+          // upload to fall back to durable local disk. Serve the local copy via
+          // /hls-public (relative segment URLs then resolve there too).
+          return reply.redirect(`/hls-public/${key}`);
         }
         const contentType = key.endsWith('.m3u8')
           ? 'application/vnd.apple.mpegurl'
@@ -165,8 +168,8 @@ async function build() {
           .header('Cache-Control', 'public, max-age=3600')
           .send(data);
       } catch (err) {
-        logger.warn({ key, err }, 'hls-proxy: fetch failed');
-        return reply.code(502).send({ message: 'Failed to fetch from storage' });
+        logger.warn({ key, err }, 'hls-proxy: R2 fetch failed — falling back to local /hls-public');
+        return reply.redirect(`/hls-public/${key}`);
       }
     },
   );
@@ -289,10 +292,13 @@ async function build() {
 
         return reply.send(body);
       } catch (err: unknown) {
+        // R2 may not have the object when a read-only token forced the upload to
+        // fall back to durable local disk (uploadStreamWithFallback). Serve the
+        // local copy via /video-raw, which 404s only if it is truly absent.
         const code = (err as { $metadata?: { httpStatusCode?: number } })?.$metadata?.httpStatusCode;
-        if (code === 404 || code === 403) return reply.code(404).send({ message: 'Not found' });
-        logger.warn({ key, err }, 'video-proxy: R2 fetch failed');
-        return reply.code(502).send({ message: 'Failed to fetch from storage' });
+        if (code === 404 || code === 403) return reply.redirect(`/video-raw/${key}`);
+        logger.warn({ key, err }, 'video-proxy: R2 fetch failed — trying local fallback');
+        return reply.redirect(`/video-raw/${key}`);
       }
     },
   );

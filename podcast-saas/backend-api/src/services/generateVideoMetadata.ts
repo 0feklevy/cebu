@@ -14,6 +14,7 @@ import { spawn } from 'child_process';
 import { mkdtemp, rm } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { randomUUID } from 'crypto';
 import { readFile } from 'fs/promises';
 import OpenAI from 'openai';
 import { eq } from 'drizzle-orm';
@@ -41,6 +42,7 @@ export interface MetadataOptions {
   promptHint?: string;     // optional context to guide the AI title/description
   model?: 'gpt-4o-mini' | 'gpt-4o'; // override the default model
   skipVision?: boolean;    // only grab a placeholder frame (no GPT title/description) — cheap backfill
+  force?: boolean;         // explicit user-initiated regenerate: always (re)upload the thumbnail
 }
 
 export async function generateVideoMetadata(projectId: string, videoFileId: string, opts: MetadataOptions = {}): Promise<void> {
@@ -83,10 +85,16 @@ export async function generateVideoMetadata(projectId: string, videoFileId: stri
     // extracted frame is the placeholder for videos with no custom thumbnail.
     // (The frame is still read here so the vision step can describe the video.)
     const thumbBuf = await readFile(thumbPath);
-    const thumbKey = `thumbnails/${projectId}.jpg`;
+    // Unique key per write so the persisted thumbnail_url changes every time —
+    // otherwise the browser/CDN serves the cached previous image (identical URL).
+    const thumbKey = `thumbnails/${projectId}/${randomUUID()}.jpg`;
     const hasUserThumbnail = Boolean(project.thumbnail_url);
+    // Re-upload when the user explicitly (re)generated (force), or when there is
+    // no thumbnail yet. The auto-on-transcode run (no force) leaves a user
+    // thumbnail untouched.
+    const shouldWriteThumbnail = opts.force || !hasUserThumbnail;
     let thumbnailUrl: string | null = project.thumbnail_url ?? null;
-    if (!hasUserThumbnail) {
+    if (shouldWriteThumbnail) {
       try {
         thumbnailUrl = await storage.uploadFile(thumbKey, thumbBuf, 'image/jpeg');
       } catch {
@@ -115,8 +123,9 @@ export async function generateVideoMetadata(projectId: string, videoFileId: stri
 
     // ── 5. Persist ─────────────────────────────────────────────────────────────
     await db.update(projects).set({
-      // Never clobber a user-provided thumbnail with the auto placeholder.
-      ...(hasUserThumbnail ? {} : { thumbnail_url: thumbnailUrl, thumbnail_key: thumbKey }),
+      // Persist the new thumbnail when we actually wrote one (explicit regenerate
+      // or first-time auto). Otherwise leave the user's thumbnail untouched.
+      ...(shouldWriteThumbnail ? { thumbnail_url: thumbnailUrl, thumbnail_key: thumbKey } : {}),
       metadata_status: 'ready',
       ...(title       ? { title }       : {}),
       ...(description ? { topic: description } : {}),
@@ -163,7 +172,9 @@ export async function extractThumbnailAtTime(
     await extractFrame(inputArg, thumbPath, Math.max(0, timeSec));
 
     const thumbBuf = await readFile(thumbPath);
-    const thumbKey = `thumbnails/${projectId}.jpg`;
+    // Unique key per write so the persisted thumbnail_url changes every time —
+    // otherwise the browser/CDN serves the cached previous image (identical URL).
+    const thumbKey = `thumbnails/${projectId}/${randomUUID()}.jpg`;
     let thumbnailUrl: string;
     try {
       thumbnailUrl = await storage.uploadFile(thumbKey, thumbBuf, 'image/jpeg');

@@ -450,6 +450,16 @@ export class ClientV1Api {
     return this.request(`/api/v1/projects/${projectId}/generate-metadata`, { method: 'POST', body: opts ?? {} });
   }
 
+  // Generate a NEW thumbnail IMAGE with an image model from the video's known
+  // info (title + SEO summary/keywords) + an optional hint. Returns the URL and
+  // the updated project.
+  generateAiThumbnail(projectId: string, hint?: string): Promise<{ thumbnail_url: string; project: Project }> {
+    return this.request(`/api/v1/projects/${projectId}/thumbnail/generate-ai`, {
+      method: 'POST',
+      body: hint ? { hint } : {},
+    });
+  }
+
   uploadProjectThumbnail(projectId: string, file: File): Promise<Project> {
     const formData = new FormData();
     formData.set('file', file);

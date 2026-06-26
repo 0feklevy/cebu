@@ -238,6 +238,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
       enqueueVideoMetadata(project.id, video.id, {
         promptHint: optBody.success ? optBody.data.prompt : undefined,
         model:      optBody.success ? optBody.data.model  : undefined,
+        force:      true, // explicit user (re)generate — always produce a fresh thumbnail
       });
 
       return reply.send({ status: 'processing' });
@@ -267,6 +268,39 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
       const thumbnailUrl = await extractThumbnailAtTime(project.id, video.id, body.data.time_seconds);
 
       return reply.send({ thumbnail_url: thumbnailUrl });
+    },
+  );
+
+  // POST /api/v1/projects/:id/thumbnail/generate-ai — generate a NEW thumbnail
+  // IMAGE with an image model (gpt-image-1) from the video's known info
+  // (title + topic + SEO summary/keywords) plus an optional creator hint.
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/projects/:id/thumbnail/generate-ai',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const project = await db.query.projects.findFirst({
+        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
+      });
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+
+      if (!process.env.OPENAI_API_KEY) {
+        return reply.code(400).send({ message: 'AI image generation requires OPENAI_API_KEY' });
+      }
+
+      const body = z.object({ hint: z.string().max(500).optional() }).safeParse(request.body ?? {});
+
+      try {
+        const { generateAiThumbnail } = await import('../../services/generateAiThumbnail.js');
+        const thumbnail_url = await generateAiThumbnail(project.id, {
+          hint: body.success ? body.data.hint : undefined,
+        });
+        const updated = await db.query.projects.findFirst({ where: eq(projects.id, project.id) });
+        return reply.send({ thumbnail_url, project: updated });
+      } catch (err) {
+        logger.error({ err, projectId: project.id }, '[ai-thumbnail] generation failed');
+        return reply.code(500).send({ message: (err as Error).message?.slice(0, 200) || 'AI thumbnail generation failed' });
+      }
     },
   );
 

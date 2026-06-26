@@ -2,6 +2,7 @@ import { spawn } from 'child_process';
 import { readdir, readFile, mkdir } from 'fs/promises';
 import { join } from 'path';
 import type { StorageService } from '../storage/StorageService.js';
+import { uploadWithFallback } from '../storage/uploadWithFallback.js';
 import { logger } from '../../lib/logger.js';
 
 interface QualityTier {
@@ -92,7 +93,9 @@ async function uploadDir(
         const contentType = entry.name.endsWith('.m3u8')
           ? 'application/vnd.apple.mpegurl'
           : 'video/mp2t';
-        await storage.uploadFile(`${storagePrefix}/${entry.name}`, data, contentType);
+        // R2-first with durable local-disk fallback (read-only token → AccessDenied).
+        // Locally-stored segments are served via /hls-proxy → /hls-public fallback.
+        await uploadWithFallback(`${storagePrefix}/${entry.name}`, data, contentType);
       }
     }),
   );
@@ -199,7 +202,7 @@ export async function transcodeToHLS(opts: TranscodeOpts): Promise<TranscodeResu
   ];
   const masterContent = masterLines.join('\n') + '\n';
   const masterKey = `${storageKeyPrefix}/master.m3u8`;
-  await storage.uploadFile(masterKey, Buffer.from(masterContent), 'application/vnd.apple.mpegurl');
+  await uploadWithFallback(masterKey, Buffer.from(masterContent), 'application/vnd.apple.mpegurl');
   logger.info({ masterKey }, 'master playlist uploaded');
 
   return { masterKey, durationSec };

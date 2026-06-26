@@ -235,11 +235,19 @@ export function VideoEditor({ projectId }: Props) {
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   // Load the avatar-circles config so the editor preview can show them over b-roll.
+  // Re-read it whenever the (sibling) settings panel saves, so toggling Enable +
+  // Save reflects in the preview without a full page reload.
   useEffect(() => {
     if (authLoading) return;
     let cancelled = false;
-    getAvatarCircles(projectId).then((r) => { if (!cancelled) setAvatarCircles(r.config); }).catch(() => {});
-    return () => { cancelled = true; };
+    const refresh = () => getAvatarCircles(projectId).then((r) => { if (!cancelled) setAvatarCircles(r.config); }).catch(() => {});
+    refresh();
+    const onSaved = (e: Event) => {
+      const detail = (e as CustomEvent<{ projectId?: string }>).detail;
+      if (!detail?.projectId || detail.projectId === projectId) refresh();
+    };
+    window.addEventListener('avatar-circles-saved', onSaved);
+    return () => { cancelled = true; window.removeEventListener('avatar-circles-saved', onSaved); };
   }, [projectId, authLoading]);
 
   const loadData = useCallback(async () => {

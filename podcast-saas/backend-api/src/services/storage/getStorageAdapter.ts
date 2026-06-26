@@ -4,6 +4,7 @@ import type { StorageService } from './StorageService.js';
 import { logger } from '../../lib/logger.js';
 
 let _adapter: StorageService | null = null;
+let _forceLocal = false;
 
 // A real R2 credential is non-empty, not a copied .env.example placeholder
 // (e.g. "your-account-id"), and long enough to be a genuine Cloudflare value.
@@ -18,8 +19,29 @@ function isRealCred(v: string | undefined): boolean {
   return true;
 }
 
+/**
+ * Force every storage operation onto durable local disk for the rest of the
+ * process. Called at startup when the R2 write-probe is denied (read-only token →
+ * PutObject AccessDenied): keeping R2 would make uploads 500 and writes silently
+ * vanish, so we route the whole pipeline (uploads, HLS, thumbnails, …) to local,
+ * which has serve routes for every prefix (/local-storage, /video-raw, /hls-public).
+ * Idempotent and safe to call before or after the adapter is first resolved.
+ */
+export function forceLocalStorage(reason: string): void {
+  if (_forceLocal && _adapter instanceof LocalStorageAdapter) return;
+  _forceLocal = true;
+  _adapter = new LocalStorageAdapter();
+  logger.warn(`Storage backend forced to local disk — ${reason}`);
+}
+
 export function getStorageAdapter(): StorageService {
   if (_adapter) return _adapter;
+
+  // Explicit opt-in (e.g. a read-only R2 environment) or runtime probe result.
+  if (_forceLocal || process.env.STORAGE_BACKEND === 'local') {
+    _adapter = new LocalStorageAdapter();
+    return _adapter;
+  }
 
   const hasR2 =
     isRealCred(process.env.R2_ACCOUNT_ID) &&
