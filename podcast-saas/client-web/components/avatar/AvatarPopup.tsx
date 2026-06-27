@@ -58,18 +58,38 @@ export function AvatarPopup({ open, onClose, projectId, videoTitle, characterId 
     return () => { cancelled = true; };
   }, [open, characterId, projectId]);
 
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  // Focus management + trap: move focus into the dialog on open, keep Tab inside it,
+  // close on Escape, and restore focus to the trigger on close (a11y, review ui-ux-001).
   useEffect(() => {
     if (!open) return;
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    const prevActive = document.activeElement as HTMLElement | null;
+    panelRef.current?.focus();
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { onClose(); return; }
+      if (e.key === 'Tab' && panelRef.current) {
+        const f = panelRef.current.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        );
+        if (f.length === 0) return;
+        const first = f[0]!, last = f[f.length - 1]!;
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
+    };
     document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
+    return () => {
+      document.removeEventListener('keydown', handler);
+      prevActive?.focus?.();
+    };
   }, [open, onClose]);
 
   if (!open) return null;
 
   return (
-    <div className="avatar-popup-backdrop" role="dialog" aria-modal="true">
-      <div className="avatar-popup-panel">
+    <div className="avatar-popup-backdrop" role="dialog" aria-modal="true" aria-labelledby="avatar-popup-title">
+      <div className="avatar-popup-panel" ref={panelRef} tabIndex={-1}>
         <div className="avatar-popup-header">
           <div className="avatar-popup-title">
             {meta.portrait ? (
@@ -83,7 +103,7 @@ export function AvatarPopup({ open, onClose, projectId, videoTitle, characterId 
               <span className="avatar-popup-emoji">{meta.emoji}</span>
             )}
             <div>
-              <p className="avatar-popup-name">Ask {meta.displayName}</p>
+              <p className="avatar-popup-name" id="avatar-popup-title">Ask {meta.displayName}</p>
               {videoTitle && <p className="avatar-popup-sub">about “{videoTitle}”</p>}
             </div>
           </div>
