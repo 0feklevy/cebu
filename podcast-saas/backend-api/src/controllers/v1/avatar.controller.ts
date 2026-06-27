@@ -11,6 +11,7 @@
 import { randomUUID } from 'crypto';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
+import { rateLimit } from '../../lib/rateLimit.js';
 import { and, or, eq, isNull } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { uploadWithFallback } from '../../services/storage/uploadWithFallback.js';
@@ -81,7 +82,8 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
       });
     } catch (err) {
       const status = (err as { status?: number }).status ?? 500;
-      return reply.code(status).send({ message: (err as Error).message });
+      logger.warn({ err }, '[Avatar] start failed');
+      return reply.code(status).send({ message: status >= 500 ? 'Avatar session failed' : (err as Error).message });
     }
   });
 
@@ -92,11 +94,14 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
   app.post('/api/v1/avatar/visual/analyze', async (request: FastifyRequest, reply: FastifyReply) => {
     const body = (request.body ?? {}) as { message?: string; characterId?: string; context?: string; projectId?: string };
     if (!body.message || typeof body.message !== 'string') return reply.send({ type: 'none' });
+    // Unauthenticated + billable: per-IP rate limit + input cap to bound cost-DoS (security-003).
+    if (!rateLimit(`avatar-visual:${request.ip}`, 30, 60_000)) return reply.code(429).send({ type: 'none' });
+    const message = body.message.slice(0, 4000);
     const characterId = body.characterId && CHARACTERS[body.characterId] ? body.characterId : DEFAULT_CHARACTER_ID;
     // Keep the project's basic library fresh so it's preferred at retrieval (throttled).
     if (body.projectId) syncBasicLibrary(body.projectId).catch(() => {});
     try {
-      const result = await analyzeVisual(body.message, characterId, body.context, { projectId: body.projectId ?? null });
+      const result = await analyzeVisual(message, characterId, body.context, { projectId: body.projectId ?? null });
       return reply.send(result);
     } catch (err) {
       logger.warn({ err }, '[Avatar] visual/analyze failed');
@@ -110,10 +115,15 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
     if (!body.userMessage || typeof body.userMessage !== 'string') {
       return reply.send({ shouldGenerate: false, imageUrl: null, altText: '', caption: '', imageType: 'realistic' });
     }
+    // Unauthenticated + runs billable gpt-image-1: tighter per-IP cap + input cap (security-003).
+    if (!rateLimit(`avatar-image:${request.ip}`, 10, 60_000)) {
+      return reply.code(429).send({ shouldGenerate: false, imageUrl: null, altText: '', caption: '', imageType: 'realistic' });
+    }
+    const userMessage = body.userMessage.slice(0, 4000);
     const characterId = body.characterId && CHARACTERS[body.characterId] ? body.characterId : DEFAULT_CHARACTER_ID;
     if (body.projectId) syncBasicLibrary(body.projectId).catch(() => {});
     try {
-      const result = await analyzeAndGenerateImage(body.userMessage, characterId, body.conversationContext, body.projectId ?? null);
+      const result = await analyzeAndGenerateImage(userMessage, characterId, body.conversationContext, body.projectId ?? null);
       return reply.send(result);
     } catch (err) {
       logger.warn({ err }, '[Avatar] image/analyze failed');
@@ -224,7 +234,8 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
         });
         return reply.send({ ok: true, item: res!.row, imageUrl: res!.imageUrl });
       } catch (err) {
-        return reply.code(500).send({ message: (err as Error).message });
+        logger.error({ err }, '[Avatar] library image generation failed');
+        return reply.code(500).send({ message: 'Image generation failed' });
       }
     },
   );
@@ -246,7 +257,8 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
         });
         return reply.send({ ok: true, item: res!.row, simulationUrl: res!.simulationUrl });
       } catch (err) {
-        return reply.code(500).send({ message: (err as Error).message });
+        logger.error({ err }, '[Avatar] library simulation generation failed');
+        return reply.code(500).send({ message: 'Simulation generation failed' });
       }
     },
   );
@@ -265,7 +277,8 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
         const res = await editLibrarySimulation(request.params.visualId, body.instructions);
         return reply.send({ ok: true, simulationUrl: res.simulationUrl });
       } catch (err) {
-        return reply.code(400).send({ message: (err as Error).message });
+        logger.warn({ err }, '[Avatar] library simulation edit failed');
+        return reply.code(400).send({ message: 'Could not edit the simulation' });
       }
     },
   );
