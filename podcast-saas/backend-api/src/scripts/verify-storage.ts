@@ -40,6 +40,19 @@ async function main(): Promise<void> {
     const fetched = Buffer.from(await res.arrayBuffer());
     const getMatches = res.ok && fetched.equals(payload);
 
+    // Public-URL read (the HLS/thumbnail playback path). A private bucket is valid for
+    // signed-only media, but Phase 2/3 HLS + OG thumbnails need public read.
+    console.log('[verify-storage] public URL fetch (HLS/thumbnail playback path) …');
+    const pubRes = await fetch(publicUrl).catch(() => null);
+    const pubReadable = !!pubRes?.ok && Buffer.from(await pubRes.arrayBuffer()).equals(payload);
+    if (!pubReadable) {
+      console.warn(
+        `[verify-storage] ⚠ public URL NOT readable (status ${pubRes?.status ?? 'n/a'}). ` +
+          'HLS playback + OG thumbnails need the bucket (or the hls/ and thumbnails/ objects) ' +
+          'to be PUBLIC-read. Presigned GET works regardless (used for private media).',
+      );
+    }
+
     console.log('[verify-storage] presigned PUT round-trip (the browser upload path) …');
     const putKey = `_selfcheck/presigned-${Date.now()}.txt`;
     const putUrl = await storage.getPresignedUploadUrl(putKey, 'text/plain', 120);
@@ -53,8 +66,9 @@ async function main(): Promise<void> {
 
     if (readMatches && getMatches && putMatches) {
       console.log('\n[verify-storage] ✓ PASS — server PUT, presigned PUT, and presigned GET all round-trip.');
-      console.log(`  adapter:    ${adapterName}`);
-      console.log(`  publicUrl:  ${publicUrl}`);
+      console.log(`  adapter:        ${adapterName}`);
+      console.log(`  public read:    ${pubReadable ? 'yes (HLS/thumbnails OK)' : 'NO — make bucket public for HLS/OG'}`);
+      console.log(`  publicUrl:      ${publicUrl}`);
       process.exit(0);
     }
     console.error('\n[verify-storage] ✗ FAIL — bytes did not match.', {
