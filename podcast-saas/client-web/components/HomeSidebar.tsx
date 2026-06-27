@@ -73,7 +73,14 @@ function ProjectCard({ project, onRename, onDelete }: ProjectCardProps) {
     try {
       await api.renameProject(project.id, trimmed);
       onRename(project.id, trimmed);
-    } catch { /* ignore */ } finally {
+    } catch (err) {
+      // Don't swallow the failure: log it, reopen the editor with the attempted name
+      // so the change visibly didn't stick, and tell the user (review ui-ux-011).
+      console.error('Rename failed', err);
+      setEditValue(trimmed);
+      setIsEditing(true);
+      if (typeof window !== 'undefined') window.alert('Could not rename the project — please try again.');
+    } finally {
       setSaving(false);
     }
   }, [isEditing, editValue, project, onRename]);
@@ -83,7 +90,11 @@ function ProjectCard({ project, onRename, onDelete }: ProjectCardProps) {
     try {
       await api.deleteProject(project.id);
       onDelete(project.id);
-    } catch { setDeleting(false); setConfirmDelete(false); }
+    } catch (err) {
+      console.error('Delete failed', err);
+      setDeleting(false); setConfirmDelete(false);
+      if (typeof window !== 'undefined') window.alert('Could not delete the project — please try again.');
+    }
   };
 
   const status = STATUS_STYLES[project.status];
