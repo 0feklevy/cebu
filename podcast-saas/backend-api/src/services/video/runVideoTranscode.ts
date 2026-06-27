@@ -7,8 +7,10 @@ import { db, video_files } from '../../db/index.js';
 import { eq } from 'drizzle-orm';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import { transcodeToHLS, extractWaveformPeaks } from './HLSTranscoder.js';
+import { previousHlsTreeToGc } from './hlsVersioning.js';
 import { enqueueVideoMetadata } from '../generateVideoMetadata.js';
 import { fetchWithRetry } from '../../lib/fetchWithRetry.js';
+import { deleteWithPrefixFallback } from '../storage/deleteWithFallback.js';
 import { logger } from '../../lib/logger.js';
 
 export async function runVideoTranscode(video_file_id: string): Promise<{ hls_master_key: string }> {
@@ -44,7 +46,12 @@ export async function runVideoTranscode(video_file_id: string): Promise<{ hls_ma
     console.log(`[HLS] ✓ Source downloaded → ${inputPath}`);
     logger.info({ video_file_id, inputPath }, 'Source video downloaded');
 
-    const storageKeyPrefix = `hls/${video_file_id}`;
+    // Versioned HLS tree per transcode run: a re-transcode writes a fresh tree and the
+    // DB update below flips the pointer atomically, instead of overwriting the live tree
+    // in place (which caused torn reads for mid-stream viewers — review fiji-storage-008).
+    const runId = Date.now().toString(36);
+    const oldMasterKey = video.hls_master_key;
+    const storageKeyPrefix = `hls/${video_file_id}/${runId}`;
     const result = await transcodeToHLS({
       inputPath,
       workDir,
@@ -94,6 +101,10 @@ export async function runVideoTranscode(video_file_id: string): Promise<{ hls_ma
 
     console.log(`[HLS] ✅ STATUS → ready  masterKey=${result.masterKey}  duration=${result.durationSec}s  (${video_file_id})`);
     logger.info({ video_file_id, masterKey: result.masterKey }, 'HLS transcode complete');
+
+    // Pointer is flipped — GC the previous *versioned* tree (different run), if any.
+    const oldTree = previousHlsTreeToGc(video_file_id, oldMasterKey, runId);
+    if (oldTree) deleteWithPrefixFallback(oldTree).catch(() => {});
 
     // Generate thumbnail + AI title/description in the background.
     // Uses the already-downloaded source file in inputPath for the frame extraction.
