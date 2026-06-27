@@ -66,6 +66,12 @@ After all agents finish:
   it. If a signal points at an unreviewed area or a reviewer missed it, you may spawn a
   **targeted follow-up** agent (e.g. ask `security-reviewer` to verify one specific file).
   Keep follow-ups narrow.
+- **Architectural findings → `fiji-advisor`**: for cross-cutting design problems where a
+  better-architected reference exists (storage/public-links, contract drift, scalability,
+  unbounded job concurrency, cost-DoS), you may dispatch the `fiji-advisor` agent. It is an
+  expert on the `fiji` reference project (`/Users/admin/cebu/fiji`) and returns a concrete,
+  ported solution grounded in how fiji solves the equivalent. Pass it the finding id(s) +
+  file:line and your OUTPUT_DIR; fold its proposal into FIX_PLAN as a referenced approach.
 - Sanity-check P0/P1s yourself by reading the cited `file:line` before promoting them. Demote
   anything you cannot corroborate and mark it `confidence: low (orchestrator could not confirm)`.
 

@@ -24,6 +24,7 @@ commits or pushes on its own.
 | `types-contracts-reviewer` | TS strictness + backend↔frontend contract drift (`client-v1.ts`) |
 | `test-quality-reviewer` | runs the suites; failing/flaky/weak tests; missing tests on risky paths |
 | `review-fixer` | applies approved fixes conservatively on a branch (opt-in, post-approval) |
+| `fiji-advisor` | solves podcast-saas problems by porting patterns from the **fiji** reference project (storage/public-links, contract drift, scalability). Expert on `/Users/admin/cebu/fiji`; backed by `.claude/reference/fiji.md` |
 
 How they "communicate": reviewers run in parallel and don't talk directly. They coordinate by
 writing structured findings into a shared run directory and dropping cross-domain handoffs into
@@ -60,6 +61,21 @@ After you read the report, you can approve the fix pass:
 
 The fixer creates `review/fixes-<run-id>`, applies changes one at a time with verification, and
 writes `FIX_RESULTS.md`. Nothing is committed or pushed unless you say so.
+
+## Using the fiji reference
+`fiji-advisor` treats the **fiji** project (`/Users/admin/cebu/fiji`, separate repo, gitignored) as
+the gold-standard architecture and ports its patterns to fix podcast-saas. It's grounded in
+[`.claude/reference/fiji.md`](../reference/fiji.md) (a curated knowledge base) and reads real fiji
+source before recommending. Launch it directly for a fiji-grounded solution:
+
+```
+> Use the fiji-advisor agent: how does fiji avoid the local-storage path-traversal / public-link
+  problem, and give me a ported solution for podcast-saas?
+> fiji-advisor: fix our backend↔frontend contract drift the way fiji does it.
+```
+
+It writes proposals to `.claude/reference/solutions/<slug>.md` and never edits source (the
+`review-fixer` or you apply changes). It never modifies fiji.
 
 ## Notes
 - If the harness can't spawn nested sub-agents from the orchestrator, just launch the individual
