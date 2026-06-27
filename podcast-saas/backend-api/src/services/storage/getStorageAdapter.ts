@@ -1,4 +1,5 @@
 import { R2StorageAdapter } from './R2StorageAdapter.js';
+import { SupabaseStorageAdapter } from './SupabaseStorageAdapter.js';
 import { LocalStorageAdapter } from './LocalStorageAdapter.js';
 import type { StorageService } from './StorageService.js';
 import { logger } from '../../lib/logger.js';
@@ -34,12 +35,32 @@ export function forceLocalStorage(reason: string): void {
   logger.warn(`Storage backend forced to local disk — ${reason}`);
 }
 
+// Supabase Storage is the chosen writable provider (R2 token is read-only). Active when
+// its S3 credentials are present, or when STORAGE_BACKEND=supabase is set explicitly.
+function hasSupabaseStorage(): boolean {
+  return (
+    isRealCred(process.env.SUPABASE_S3_ACCESS_KEY_ID) &&
+    isRealCred(process.env.SUPABASE_S3_SECRET_ACCESS_KEY) &&
+    !!(process.env.SUPABASE_URL || process.env.SUPABASE_S3_ENDPOINT)
+  );
+}
+
 export function getStorageAdapter(): StorageService {
   if (_adapter) return _adapter;
 
+  const backend = process.env.STORAGE_BACKEND; // optional explicit override
+
   // Explicit opt-in (e.g. a read-only R2 environment) or runtime probe result.
-  if (_forceLocal || process.env.STORAGE_BACKEND === 'local') {
+  if (_forceLocal || backend === 'local') {
     _adapter = new LocalStorageAdapter();
+    return _adapter;
+  }
+
+  // Prefer Supabase Storage (the writable provider) when configured. Stays off the R2
+  // path entirely so the read-only-R2 fallback fragility doesn't apply.
+  if (backend === 'supabase' || (!backend && hasSupabaseStorage())) {
+    _adapter = new SupabaseStorageAdapter();
+    logger.info('Storage backend: Supabase Storage (S3-compatible)');
     return _adapter;
   }
 
@@ -57,4 +78,14 @@ export function getStorageAdapter(): StorageService {
 
   _adapter = hasR2 ? new R2StorageAdapter() : new LocalStorageAdapter();
   return _adapter;
+}
+
+/**
+ * Test-only: reset the cached adapter + forced-local flag so each test starts from a
+ * clean slate. The module-level singleton otherwise leaks state across tests in the
+ * same vitest worker (see review tq-007 / arch-002).
+ */
+export function resetStorageAdapterForTest(): void {
+  _adapter = null;
+  _forceLocal = false;
 }
