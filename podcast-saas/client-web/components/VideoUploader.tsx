@@ -31,48 +31,92 @@ export function VideoUploader({ projectId, onUploaded }: Props) {
     setUploads((prev) => prev.map((u, i) => (i === idx ? { ...u, ...patch } : u)));
   };
 
+  // Shared XHR progress reporter.
+  const trackProgress = (xhr: XMLHttpRequest, idx: number) => {
+    const startTime = Date.now();
+    xhr.upload.addEventListener('progress', (e) => {
+      if (!e.lengthComputable) return;
+      const percent = Math.round((e.loaded / e.total) * 100);
+      const elapsed = (Date.now() - startTime) / 1000;
+      const bytesPerSec = e.loaded / Math.max(elapsed, 0.001);
+      const speed = bytesPerSec > 1_000_000
+        ? `${(bytesPerSec / 1_000_000).toFixed(1)} MB/s`
+        : `${(bytesPerSec / 1_000).toFixed(0)} KB/s`;
+      updateUpload(idx, { percent, speed });
+    });
+  };
+
+  // Legacy path: stream the file through the API (multipart). Used as a fallback.
+  const uploadMultipart = (file: File, idx: number, token: string): Promise<VideoFile> => {
+    const formData = new FormData();
+    formData.append('file_size', String(file.size));
+    formData.append('file', file, file.name);
+    return new Promise<VideoFile>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      trackProgress(xhr, idx);
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try { resolve(JSON.parse(xhr.responseText) as VideoFile); }
+          catch { reject(new Error('Upload succeeded but response could not be parsed')); }
+        } else reject(new Error(`Upload failed: ${xhr.status} ${xhr.responseText}`));
+      });
+      xhr.addEventListener('error', () => reject(new Error('Network error')));
+      xhr.open('POST', `${API_URL}/api/v1/projects/${projectId}/videos/upload`);
+      xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+      xhr.send(formData);
+    });
+  };
+
+  // Preferred path: PUT the file straight to cloud storage via a presigned URL (no
+  // bytes through the API), then confirm so the server records it + starts processing.
+  const uploadPresigned = async (file: File, idx: number, token: string): Promise<VideoFile> => {
+    const urlRes = await fetch(`${API_URL}/api/v1/projects/${projectId}/videos/upload-url`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ filename: file.name, content_type: file.type || 'video/mp4' }),
+    });
+    if (!urlRes.ok) throw new Error(`upload-url ${urlRes.status}`);
+    const { upload_url, storage_key, content_type } =
+      (await urlRes.json()) as { upload_url: string; storage_key: string; content_type: string };
+
+    await new Promise<void>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      trackProgress(xhr, idx);
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) resolve();
+        else reject(new Error(`PUT ${xhr.status}`));
+      });
+      xhr.addEventListener('error', () => reject(new Error('Network error during direct upload')));
+      xhr.open('PUT', upload_url);
+      // Must match the content-type the presigned URL was signed with.
+      xhr.setRequestHeader('Content-Type', content_type);
+      xhr.send(file);
+    });
+
+    const confirmRes = await fetch(`${API_URL}/api/v1/projects/${projectId}/videos/confirm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ storage_key, filename: file.name, file_size: file.size }),
+    });
+    if (!confirmRes.ok) throw new Error(`confirm ${confirmRes.status}`);
+    return (await confirmRes.json()) as VideoFile;
+  };
+
   const uploadFile = async (file: File, idx: number) => {
     try {
       const token = await getAuth().currentUser?.getIdToken();
       if (!token) throw new Error('Not authenticated');
 
-      const formData = new FormData();
-      formData.append('file_size', String(file.size));
-      formData.append('file', file, file.name);
-
-      // Resolve with the parsed server response so the editor gets raw_url instantly.
-      const videoData = await new Promise<VideoFile>((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        const startTime = Date.now();
-
-        xhr.upload.addEventListener('progress', (e) => {
-          if (!e.lengthComputable) return;
-          const percent = Math.round((e.loaded / e.total) * 100);
-          const elapsed = (Date.now() - startTime) / 1000;
-          const bytesPerSec = e.loaded / elapsed;
-          const speed = bytesPerSec > 1_000_000
-            ? `${(bytesPerSec / 1_000_000).toFixed(1)} MB/s`
-            : `${(bytesPerSec / 1_000).toFixed(0)} KB/s`;
-          updateUpload(idx, { percent, speed });
-        });
-
-        xhr.addEventListener('load', () => {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            try {
-              resolve(JSON.parse(xhr.responseText) as VideoFile);
-            } catch {
-              reject(new Error('Upload succeeded but response could not be parsed'));
-            }
-          } else {
-            reject(new Error(`Upload failed: ${xhr.status} ${xhr.responseText}`));
-          }
-        });
-        xhr.addEventListener('error', () => reject(new Error('Network error')));
-
-        xhr.open('POST', `${API_URL}/api/v1/projects/${projectId}/videos/upload`);
-        xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-        xhr.send(formData);
-      });
+      let videoData: VideoFile;
+      try {
+        videoData = await uploadPresigned(file, idx, token);
+      } catch (presignErr) {
+        // Direct-to-cloud unavailable (storage not presign-capable, or bucket CORS not
+        // set) — fall back to streaming through the API so uploads never hard-break.
+        console.warn('Presigned upload failed, falling back to multipart:', presignErr);
+        updateUpload(idx, { percent: 0, speed: '' });
+        videoData = await uploadMultipart(file, idx, token);
+      }
 
       updateUpload(idx, { percent: 100, done: true });
       onUploaded(videoData);

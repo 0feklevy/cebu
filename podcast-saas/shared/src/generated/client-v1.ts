@@ -501,9 +501,22 @@ export class ClientV1Api {
   }
 
   // ── Videos ────────────────────────────────────────────────────────────────
-  // (Removed getVideoUploadUrl/confirmVideoUpload — they targeted /videos/upload-url
-  //  and /videos/confirm, which have no backend route. Upload is multipart POST to
-  //  /api/v1/projects/:id/videos/upload. See review types-001.)
+
+  // Phase 2 presigned direct-to-cloud upload: get a PUT URL, PUT the file to it,
+  // then confirm. (Multipart POST /videos/upload is still available as a fallback.)
+  getVideoUploadUrl(
+    projectId: string,
+    body: { filename: string; content_type: string },
+  ): Promise<{ upload_url: string; storage_key: string; content_type: string }> {
+    return this.request(`/api/v1/projects/${projectId}/videos/upload-url`, { method: 'POST', body });
+  }
+
+  confirmVideoUpload(
+    projectId: string,
+    body: { storage_key: string; filename: string; file_size: number },
+  ): Promise<VideoFile> {
+    return this.request(`/api/v1/projects/${projectId}/videos/confirm`, { method: 'POST', body });
+  }
 
   listVideos(projectId: string): Promise<VideoFile[]> {
     return this.request(`/api/v1/projects/${projectId}/videos`);

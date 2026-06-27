@@ -10,6 +10,23 @@ import { logger } from '../../lib/logger.js';
 import { randomUUID } from 'crypto';
 import { runVideoTranscode } from '../../services/video/runVideoTranscode.js';
 import { enqueueCropForProject } from '../../services/crop/runCropAnalysis.js';
+import { enqueueCaptionsForProject } from '../../services/captions/CaptionService.js';
+
+/**
+ * Kick off all background processing for a freshly-uploaded video on the WRITE path:
+ * HLS transcode, smart-crop, and captions. Captions/crop were previously triggered
+ * lazily from buildPlayerConfig on every read/preview (review perf-002) — they belong
+ * here, once, when the source actually arrives ("captions at processing time").
+ */
+function enqueueVideoProcessing(videoFileId: string, projectId: string): void {
+  setImmediate(() => {
+    runVideoTranscode(videoFileId).catch((err) => {
+      logger.warn({ err, video_file_id: videoFileId }, 'In-process HLS transcode failed');
+    });
+  });
+  enqueueCaptionsForProject(projectId).catch(() => { /* best-effort */ });
+  enqueueCropForProject(projectId).catch(() => { /* best-effort */ });
+}
 
 const TEN_GB = 10 * 1024 * 1024 * 1024;
 
@@ -67,16 +84,8 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
             })
             .returning();
 
-          // Run transcoding in-process in a detached async call (non-blocking).
-          // Trigger.dev is not wired up (no trigger.config.ts / worker), so we always
-          // use the direct path regardless of whether TRIGGER_SECRET_KEY is present.
-          console.log(`[HLS] Queuing in-process transcode  video_file_id=${videoFile.id}`);
-          setImmediate(() => {
-            runVideoTranscode(videoFile.id).catch((err) => {
-              console.error(`[HLS] In-process transcode failed:`, err);
-              logger.warn({ err, video_file_id: videoFile.id }, 'In-process HLS transcode failed');
-            });
-          });
+          // Transcode + crop + captions on the write path (non-blocking).
+          enqueueVideoProcessing(videoFile.id, project.id);
 
           // Include a presigned raw URL so the editor can play the video immediately
           // without waiting for the first HLS-status polling cycle.
@@ -89,6 +98,84 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
       }
 
       return reply.code(400).send({ message: 'No file received' });
+    },
+  );
+
+  // POST /api/v1/projects/:id/videos/upload-url — Phase 2: presigned direct-to-cloud upload.
+  // Returns a short-lived PUT URL + the server-constructed key; the browser PUTs the file
+  // straight to object storage (no bytes through Node). No DB row yet — created on confirm.
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/projects/:id/videos/upload-url',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const project = await db.query.projects.findFirst({
+        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
+      });
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+
+      const body = (request.body ?? {}) as { filename?: string; content_type?: string };
+      const ext = (body.filename ?? 'upload').split('.').pop()?.toLowerCase() ?? 'mp4';
+      const content_type = body.content_type || 'video/mp4';
+      // Server-constructed key — the client can never choose an arbitrary path.
+      const storage_key = `videos/${project.id}/${randomUUID()}.${ext}`;
+
+      try {
+        const upload_url = await storage.getPresignedUploadUrl(storage_key, content_type, 3600);
+        return reply.send({ upload_url, storage_key, content_type });
+      } catch (err) {
+        logger.error({ err }, 'Failed to mint presigned upload URL');
+        return reply.code(503).send({ message: 'Direct upload is unavailable; use multipart upload' });
+      }
+    },
+  );
+
+  // POST /api/v1/projects/:id/videos/confirm — Phase 2: finalize a presigned upload.
+  // Verifies the object landed, creates the video_files row, and enqueues processing.
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/projects/:id/videos/confirm',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const project = await db.query.projects.findFirst({
+        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
+      });
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+
+      const body = (request.body ?? {}) as { storage_key?: string; filename?: string; file_size?: number };
+      const storage_key = body.storage_key ?? '';
+      // The key must be one we minted for THIS project (defends against confirming arbitrary keys).
+      if (!storage_key.startsWith(`videos/${project.id}/`)) {
+        return reply.code(400).send({ message: 'Invalid storage key' });
+      }
+      // Cheap existence check (LIST by exact key) — confirm the bytes actually landed.
+      try {
+        const found = await storage.listObjects(storage_key);
+        if (!found.includes(storage_key)) {
+          return reply.code(400).send({ message: 'Uploaded object not found in storage' });
+        }
+      } catch (err) {
+        logger.error({ err, storage_key }, 'confirm: existence check failed');
+        return reply.code(502).send({ message: 'Could not verify the uploaded object' });
+      }
+
+      const ext = storage_key.split('.').pop() ?? 'mp4';
+      const [videoFile] = await db
+        .insert(video_files)
+        .values({
+          project_id: project.id,
+          filename: body.filename ?? `video.${ext}`,
+          file_size: body.file_size ?? null,
+          storage_key,
+          status: 'ready',
+          hls_status: 'pending',
+        })
+        .returning();
+
+      enqueueVideoProcessing(videoFile.id, project.id);
+
+      const raw_url = await storage.getPresignedDownloadUrl(storage_key, 3600).catch(() => null);
+      return reply.code(201).send({ ...videoFile, raw_url });
     },
   );
 

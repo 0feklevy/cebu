@@ -2,8 +2,7 @@ import { db } from '../db/index.js';
 import { projects, video_files, timeline_sections, image_files, audio_files, scenes } from '../db/schema.js';
 import { eq, asc } from 'drizzle-orm';
 import { getStorageAdapter } from './storage/getStorageAdapter.js';
-import { enqueueCropForProject } from './crop/runCropAnalysis.js';
-import { captionUrlForVideo, enqueueCaptionsForProject } from './captions/CaptionService.js';
+import { captionUrlForVideo } from './captions/CaptionService.js';
 
 /**
  * Build the PlayerConfig for a single project — the dynamic equivalent of
@@ -77,11 +76,9 @@ export async function buildPlayerConfig(projectId: string) {
     };
   });
 
-  // Trigger / refresh smart-crop computation in the background. Fire-and-forget:
-  // this runs because the project is being previewed or shared, never blocks the
-  // response, and no-ops once the crop is already up to date (content-hash gated).
-  enqueueCropForProject(project.id).catch(() => { /* best-effort */ });
-  enqueueCaptionsForProject(project.id).catch(() => { /* best-effort */ });
+  // NB: crop + captions are NOT enqueued here. They run once on the write path when a
+  // video is uploaded (video.controller enqueueVideoProcessing) instead of on every
+  // preview/share/course render, which was a per-render side-effect (review perf-002).
 
   // Build broll_clips from broll sections — each broll section points to a broll video
   const brollVideoMap = new Map(brollVideos.map((v) => [v.id, v]));
