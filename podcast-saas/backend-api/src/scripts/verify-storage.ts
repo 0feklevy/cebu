@@ -8,6 +8,7 @@
  * Fails loudly if the resolved adapter is the LocalStorageAdapter (i.e. NOT cloud).
  */
 import { getStorageAdapter } from '../services/storage/getStorageAdapter.js';
+import { fetchWithRetry } from '../lib/fetchWithRetry.js';
 
 async function main(): Promise<void> {
   const storage = getStorageAdapter();
@@ -39,15 +40,25 @@ async function main(): Promise<void> {
 
     console.log('[verify-storage] presigned GET round-trip …');
     const signed = await storage.getPresignedDownloadUrl(key, 120);
-    const res = await fetch(signed);
+    const res = await fetchWithRetry(signed);
     const fetched = Buffer.from(await res.arrayBuffer());
     const getMatches = res.ok && fetched.equals(payload);
 
     // Public-URL read (the HLS/thumbnail playback path). A private bucket is valid for
     // signed-only media, but Phase 2/3 HLS + OG thumbnails need public read.
     console.log('[verify-storage] public URL fetch (HLS/thumbnail playback path) …');
-    const pubRes = await fetch(publicUrl).catch(() => null);
-    const pubReadable = !!pubRes?.ok && Buffer.from(await pubRes.arrayBuffer()).equals(payload);
+    console.log(`[verify-storage]   GET ${publicUrl}`);
+    const pubRes = await fetchWithRetry(publicUrl, { headers: { Origin: 'http://localhost:3000' } })
+      .catch((e) => { console.log('[verify-storage]   public fetch threw:', String(e).slice(0, 140)); return null; });
+    const pubAcao = pubRes?.headers.get('access-control-allow-origin') ?? '(none)';
+    let pubReadable = false;
+    if (pubRes?.ok) {
+      pubReadable = Buffer.from(await pubRes.arrayBuffer()).equals(payload);
+    } else if (pubRes) {
+      const body = (await pubRes.text().catch(() => '')).slice(0, 200);
+      console.log(`[verify-storage]   public read FAILED status=${pubRes.status} body=${body}`);
+    }
+    console.log(`[verify-storage]   public read=${pubReadable ? 'yes' : 'NO'}  CORS(ACAO)=${pubAcao}`);
     if (!pubReadable) {
       console.warn(
         `[verify-storage] ⚠ public URL NOT readable (status ${pubRes?.status ?? 'n/a'}). ` +
@@ -59,7 +70,7 @@ async function main(): Promise<void> {
     console.log('[verify-storage] presigned PUT round-trip (the browser upload path) …');
     const putKey = `_selfcheck/presigned-${Date.now()}.txt`;
     const putUrl = await storage.getPresignedUploadUrl(putKey, 'text/plain', 120);
-    const putRes = await fetch(putUrl, { method: 'PUT', headers: { 'Content-Type': 'text/plain' }, body: payload });
+    const putRes = await fetchWithRetry(putUrl, { method: 'PUT', headers: { 'Content-Type': 'text/plain' }, body: payload });
     const putReadBack = putRes.ok ? await storage.readObject(putKey).catch(() => Buffer.alloc(0)) : Buffer.alloc(0);
     const putMatches = putRes.ok && putReadBack.equals(payload);
 

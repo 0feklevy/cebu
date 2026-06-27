@@ -8,6 +8,7 @@ import { eq } from 'drizzle-orm';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import { transcodeToHLS, extractWaveformPeaks } from './HLSTranscoder.js';
 import { enqueueVideoMetadata } from '../generateVideoMetadata.js';
+import { fetchWithRetry } from '../../lib/fetchWithRetry.js';
 import { logger } from '../../lib/logger.js';
 
 export async function runVideoTranscode(video_file_id: string): Promise<{ hls_master_key: string }> {
@@ -36,7 +37,7 @@ export async function runVideoTranscode(video_file_id: string): Promise<{ hls_ma
   try {
     console.log(`[HLS] ⬇ Downloading source from storage_key=${video.storage_key}`);
     const downloadUrl = await storage.getPresignedDownloadUrl(video.storage_key, 3600);
-    const response = await fetch(downloadUrl);
+    const response = await fetchWithRetry(downloadUrl);
     if (!response.ok) throw new Error(`Failed to download source video: ${response.status}`);
     if (!response.body) throw new Error('No response body');
     await pipeline(response.body as unknown as NodeJS.ReadableStream, createWriteStream(inputPath));
