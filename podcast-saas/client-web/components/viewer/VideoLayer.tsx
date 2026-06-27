@@ -10,7 +10,14 @@ interface Props {
 
 export function VideoLayer({ videoARef, videoBRef, onClick }: Props) {
   return (
-    <div className="absolute inset-0" onClick={onClick}>
+    <div
+      className="absolute inset-0"
+      role="button"
+      tabIndex={0}
+      aria-label="Play or pause video"
+      onClick={onClick}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
+    >
       <video
         ref={videoARef}
         className="absolute inset-0 w-full h-full object-contain bg-black"

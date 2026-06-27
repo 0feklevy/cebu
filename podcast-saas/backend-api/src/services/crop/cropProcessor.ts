@@ -19,6 +19,7 @@
  */
 
 import { probeVideo, extractRgbFrames, extractMonoPcm } from './ffmpegExtract.js';
+import { runFfmpegLimited } from '../ffmpegLimit.js';
 import { SceneAnalyzer, PROFILE_COLS, type FaceHook } from './sceneAnalyzer.js';
 import { locateHeads } from './headLocator.js';
 import {
@@ -80,11 +81,11 @@ export async function processVideoCrop(
   const sampleInterval = options.sampleInterval ?? DEFAULT_SAMPLE_INTERVAL;
   const sampleFps = 1 / sampleInterval;
 
-  const { width: W, height: H, durationSec } = await probeVideo(videoPath);
+  const { width: W, height: H, durationSec } = await runFfmpegLimited(() => probeVideo(videoPath));
 
   const [rgb, audio] = await Promise.all([
-    extractRgbFrames(videoPath, ANALYSIS_W, ANALYSIS_H, sampleFps),
-    extractMonoPcm(videoPath, SAMPLE_RATE).catch(() => new Float32Array(0)),
+    runFfmpegLimited(() => extractRgbFrames(videoPath, ANALYSIS_W, ANALYSIS_H, sampleFps)),
+    runFfmpegLimited(() => extractMonoPcm(videoPath, SAMPLE_RATE)).catch(() => new Float32Array(0)),
   ]);
   const hasAudio = audio.length > 0;
   const nFrames = rgb.frames.length;

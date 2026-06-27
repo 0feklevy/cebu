@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '../../db/index.js';
-import { video_files } from '../../db/schema.js';
+import { projects, video_files } from '../../db/schema.js';
 import { buildPlayerConfig } from '../../services/buildPlayerConfig.js';
 import { firebaseAuthMiddleware, firebaseAuthOptionalMiddleware } from '../../middleware/firebase-auth.js';
 import { BillingService } from '../../services/billing/BillingService.js';
@@ -94,8 +94,14 @@ export async function registerPlayerRoutes(app: FastifyInstance): Promise<void> 
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const projectId = request.params.id;
-      const pricing = await BillingService.getPricing('project', projectId);
-      if (!pricing) return reply.code(404).send({ message: 'Project not found' });
+      // Ownership check: only the project owner may force a (billable) caption re-run.
+      // (Existence probe alone allowed cross-tenant retries → IDOR + ffmpeg cost-DoS.)
+      const userId = request.dbUser?.id;
+      if (!userId) return reply.code(401).send({ message: 'Unauthorized' });
+      const project = await db.query.projects.findFirst({
+        where: and(eq(projects.id, projectId), eq(projects.created_by, userId)),
+      });
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
       await enqueueCaptionsForProject(projectId, { force: true }).catch(() => {});
       return reply.send(await getCaptionStatusForProject(projectId));
     },

@@ -1,7 +1,11 @@
 import { logger } from '../../lib/logger.js';
+import { assertPublicHost } from '../security/assertPublicHost.js';
 
 export class WebIngester {
   async extract(url: string): Promise<string> {
+    // SSRF guard: reject internal/loopback/metadata hosts before fetching or
+    // forwarding the URL to firecrawl/reader.
+    await assertPublicHost(url);
     try {
       return await this.extractWithFirecrawl(url);
     } catch (err) {

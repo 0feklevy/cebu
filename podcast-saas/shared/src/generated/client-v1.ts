@@ -20,6 +20,8 @@ export interface Project {
   price_cents?: number | null;
   currency?: string;
   thumbnail_url?: string | null;
+  seo_description?: string | null;
+  seo_keywords?: string | null;
   metadata_status?: string;
   view_count?: number;
   created_at: string;
@@ -499,20 +501,9 @@ export class ClientV1Api {
   }
 
   // ── Videos ────────────────────────────────────────────────────────────────
-
-  getVideoUploadUrl(
-    projectId: string,
-    body: { filename: string; file_size: number; content_type: string },
-  ): Promise<{ upload_url: string; storage_key: string }> {
-    return this.request(`/api/v1/projects/${projectId}/videos/upload-url`, { method: 'POST', body });
-  }
-
-  confirmVideoUpload(
-    projectId: string,
-    body: { storage_key: string; filename: string; file_size: number },
-  ): Promise<VideoFile> {
-    return this.request(`/api/v1/projects/${projectId}/videos/confirm`, { method: 'POST', body });
-  }
+  // (Removed getVideoUploadUrl/confirmVideoUpload — they targeted /videos/upload-url
+  //  and /videos/confirm, which have no backend route. Upload is multipart POST to
+  //  /api/v1/projects/:id/videos/upload. See review types-001.)
 
   listVideos(projectId: string): Promise<VideoFile[]> {
     return this.request(`/api/v1/projects/${projectId}/videos`);

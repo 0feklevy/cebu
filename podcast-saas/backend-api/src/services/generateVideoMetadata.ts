@@ -16,6 +16,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
 import { readFile } from 'fs/promises';
+import { runFfmpegLimited } from './ffmpegLimit.js';
 import OpenAI from 'openai';
 import { eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
@@ -225,7 +226,7 @@ export async function extractFrameAsBuffer(
 // ── ffmpeg frame extractor ─────────────────────────────────────────────────────
 
 function extractFrame(inputPath: string, outputPath: string, seekSec: number): Promise<void> {
-  return new Promise((resolve, reject) => {
+  return runFfmpegLimited(() => new Promise((resolve, reject) => {
     const proc = spawn('ffmpeg', [
       '-y',
       '-ss', String(seekSec),
@@ -243,7 +244,7 @@ function extractFrame(inputPath: string, outputPath: string, seekSec: number): P
       else reject(new Error(`ffmpeg exited ${code}: ${err.slice(-3).join('')}`));
     });
     proc.on('error', reject);
-  });
+  }));
 }
 
 // ── GPT-4o-mini vision ────────────────────────────────────────────────────────

@@ -8,7 +8,12 @@ interface AnamLike { addContext?: (s: string) => void; isStreaming?: () => boole
 function anonId(): string {
   if (typeof window === 'undefined') return 'server';
   let id = window.localStorage.getItem('avatar_anon_id');
-  if (!id) { id = Math.random().toString(36).slice(2) + Date.now().toString(36); window.localStorage.setItem('avatar_anon_id', id); }
+  if (!id) {
+    // crypto-random (was Math.random) — this id is the only secrecy on the
+    // unauthenticated conversation-memory endpoint (review security-005).
+    id = window.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${window.crypto?.getRandomValues ? Array.from(window.crypto.getRandomValues(new Uint8Array(8))).map((b) => b.toString(16).padStart(2, '0')).join('') : Math.random().toString(36).slice(2)}`;
+    window.localStorage.setItem('avatar_anon_id', id);
+  }
   return id;
 }
 

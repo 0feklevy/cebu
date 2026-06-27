@@ -3,6 +3,7 @@ import { readdir, readFile, mkdir } from 'fs/promises';
 import { join } from 'path';
 import type { StorageService } from '../storage/StorageService.js';
 import { uploadWithFallback } from '../storage/uploadWithFallback.js';
+import { runFfmpegLimited } from '../ffmpegLimit.js';
 import { logger } from '../../lib/logger.js';
 
 interface QualityTier {
@@ -36,7 +37,7 @@ export interface TranscodeOpts {
 }
 
 function runProcess(bin: string, args: string[]): Promise<void> {
-  return new Promise((resolve, reject) => {
+  return runFfmpegLimited(() => new Promise((resolve, reject) => {
     const proc = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     const stderr: string[] = [];
     proc.stderr.on('data', (d: Buffer) => stderr.push(d.toString()));
@@ -54,11 +55,11 @@ function runProcess(bin: string, args: string[]): Promise<void> {
         reject(new Error(`${bin} exited with code ${code}\n${stderr.slice(-20).join('')}`));
       }
     });
-  });
+  }));
 }
 
 export async function probeMediaDuration(inputPath: string): Promise<number> {
-  return new Promise((resolve, reject) => {
+  return runFfmpegLimited(() => new Promise((resolve, reject) => {
     const args = [
       '-v', 'quiet', '-print_format', 'json', '-show_format', inputPath,
     ];
@@ -75,7 +76,7 @@ export async function probeMediaDuration(inputPath: string): Promise<number> {
         resolve(0);
       }
     });
-  });
+  }));
 }
 
 async function uploadDir(
@@ -84,7 +85,9 @@ async function uploadDir(
   storage: StorageService,
 ): Promise<void> {
   const entries = await readdir(dir, { withFileTypes: true });
-  await Promise.all(
+  // allSettled (not all): wait for every upload to finish before returning so no
+  // in-flight upload is left floating to race the caller's rm(workDir) cleanup.
+  const results = await Promise.allSettled(
     entries.map(async (entry) => {
       if (entry.isDirectory()) {
         await uploadDir(join(dir, entry.name), `${storagePrefix}/${entry.name}`, storage);
@@ -99,6 +102,11 @@ async function uploadDir(
       }
     }),
   );
+  const failed = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+  if (failed.length > 0) {
+    const reasons = failed.slice(0, 3).map((r) => String(r.reason)).join('; ');
+    throw new Error(`HLS upload failed for ${failed.length}/${results.length} entries in ${storagePrefix}: ${reasons}`);
+  }
 }
 
 /**
@@ -107,7 +115,7 @@ async function uploadDir(
  * Returns [] if ffmpeg fails or the file has no audio.
  */
 export function extractWaveformPeaks(inputPath: string, numPeaks = 200): Promise<number[]> {
-  return new Promise((resolve) => {
+  return runFfmpegLimited(() => new Promise((resolve) => {
     const proc = spawn('ffmpeg', [
       '-y', '-i', inputPath,
       '-vn',
@@ -142,7 +150,7 @@ export function extractWaveformPeaks(inputPath: string, numPeaks = 200): Promise
       const globalMax = Math.max(...raw_peaks, 1);
       resolve(raw_peaks.map(p => p / globalMax));
     });
-  });
+  }));
 }
 
 export async function transcodeToHLS(opts: TranscodeOpts): Promise<TranscodeResult> {

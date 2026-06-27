@@ -5,6 +5,7 @@ import { eq, and, desc } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { uploadStreamWithFallback } from '../../services/storage/uploadStreamWithFallback.js';
+import { deleteWithFallback, deleteWithPrefixFallback } from '../../services/storage/deleteWithFallback.js';
 import { logger } from '../../lib/logger.js';
 import { randomUUID } from 'crypto';
 import { runVideoTranscode } from '../../services/video/runVideoTranscode.js';
@@ -189,16 +190,12 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
       });
       if (!videoFile) return reply.code(404).send({ message: 'Video not found' });
 
-      // Delete raw source file
+      // Delete raw source file (from R2 and/or local — wherever the bytes landed)
       if (videoFile.storage_key) {
-        await storage.deleteFile(videoFile.storage_key).catch((err) => {
-          logger.warn({ err }, 'Failed to delete raw video from storage');
-        });
+        await deleteWithFallback(videoFile.storage_key);
       }
       // Delete all HLS segments and playlists (hls/{videoId}/*)
-      await storage.deleteWithPrefix(`hls/${videoFile.id}`).catch((err) => {
-        logger.warn({ err }, 'Failed to delete HLS files from storage');
-      });
+      await deleteWithPrefixFallback(`hls/${videoFile.id}`);
 
       await db.delete(video_files).where(eq(video_files.id, videoFile.id));
 

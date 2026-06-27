@@ -11,6 +11,7 @@ import { video_files } from '../../db/schema.js';
 import { logger } from '../../lib/logger.js';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import { propagateTranscript } from '../transcriptPropagation.js';
+import { runFfmpegLimited } from '../ffmpegLimit.js';
 
 const execFileAsync = promisify(execFile);
 const inFlight = new Set<string>();
@@ -108,12 +109,12 @@ function normalizeVtt(raw: string): string {
 /** Run ffmpeg to extract mono 16 kHz audio from one input URL into `out`. */
 async function ffmpegExtract(inputUrl: string, out: string, format: 'wav' | 'mp3'): Promise<void> {
   const codecArgs = format === 'wav' ? ['-f', 'wav'] : ['-b:a', '64k', '-f', 'mp3'];
-  await execFileAsync('ffmpeg', [
+  await runFfmpegLimited(() => execFileAsync('ffmpeg', [
     '-y', '-hide_banner', '-loglevel', 'error',
     '-i', inputUrl,
     '-vn', '-ac', '1', '-ar', '16000',
     ...codecArgs, out,
-  ], { timeout: 30 * 60 * 1000, maxBuffer: 1024 * 1024 * 8 });
+  ], { timeout: 30 * 60 * 1000, maxBuffer: 1024 * 1024 * 8 }));
 }
 
 /**

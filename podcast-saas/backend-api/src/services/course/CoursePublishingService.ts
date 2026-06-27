@@ -9,7 +9,7 @@
  */
 import { randomUUID } from 'crypto';
 import { db } from '../../db/index.js';
-import { projects, type Course } from '../../db/schema.js';
+import { projects, course_lessons, type Course } from '../../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { CourseRepository } from './CourseRepository.js';
 import { CourseLessonRepository } from './CourseLessonRepository.js';
@@ -149,13 +149,17 @@ export const CoursePublishingService = {
     if (orderedLessonIds.length !== lessons.length || !orderedLessonIds.every((id) => ids.has(id))) {
       throw new CourseAuthzError(400, 'Reorder list must contain exactly the course lessons');
     }
-    // Two-phase to avoid colliding on the unique (course_id, position): park high, then set.
-    for (let i = 0; i < orderedLessonIds.length; i++) {
-      await CourseLessonRepository.update(orderedLessonIds[i], { position: 1000 + i });
-    }
-    for (let i = 0; i < orderedLessonIds.length; i++) {
-      await CourseLessonRepository.update(orderedLessonIds[i], { position: i });
-    }
+    // Two-phase to avoid colliding on the unique (course_id, position): park high, then
+    // set final. Wrapped in a transaction so a mid-reorder crash can't strand lessons at
+    // positions 1000+i (the unique constraint is DEFERRABLE for exactly this) — review db-001.
+    await db.transaction(async (tx) => {
+      for (let i = 0; i < orderedLessonIds.length; i++) {
+        await tx.update(course_lessons).set({ position: 1000 + i }).where(eq(course_lessons.id, orderedLessonIds[i]));
+      }
+      for (let i = 0; i < orderedLessonIds.length; i++) {
+        await tx.update(course_lessons).set({ position: i }).where(eq(course_lessons.id, orderedLessonIds[i]));
+      }
+    });
     await invalidate(course);
   },
 

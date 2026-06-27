@@ -164,6 +164,8 @@ function Toggle({
   return (
     <button
       type="button"
+      role="switch"
+      aria-checked={checked}
       onClick={() => onChange(!checked)}
       className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
         checked ? (danger ? 'bg-destructive' : 'bg-primary') : 'bg-muted'

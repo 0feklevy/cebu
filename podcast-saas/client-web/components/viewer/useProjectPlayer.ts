@@ -950,6 +950,10 @@ export function useProjectPlayer(
       hlsBrollStandbyRef.current?.destroy();
       clearTimeout(idleTimerRef.current ?? undefined);
       if (simPollRef.current) clearInterval(simPollRef.current);
+      // Stop any cutaway / guided-narration audio so it doesn't keep playing after
+      // the player unmounts (e.g. navigating away mid-cutaway or mid-guidance).
+      if (audioCutawayRef.current) { audioCutawayRef.current.pause(); audioCutawayRef.current = null; }
+      if (guidanceAudioRef.current) { guidanceAudioRef.current.pause(); guidanceAudioRef.current = null; }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

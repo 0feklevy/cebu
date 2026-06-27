@@ -332,13 +332,19 @@ function FaceCaptureDialog({ projectId, duration, onCancel, onConfirm }: { proje
       const r = await fetch(`${BASE}/api/v1/projects/${projectId}/frame-preview?time_seconds=${t.toFixed(2)}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
       if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error((j as { message?: string }).message ?? `Couldn't load frame (${r.status})`); }
       const blob = await r.blob();
-      setImgUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return URL.createObjectURL(blob); });
+      setImgUrl(URL.createObjectURL(blob)); // previous URL revoked by the cleanup effect below
       setScale(1); setOffset({ x: 0, y: 0 });
     } catch (e) { setErr((e as Error).message); }
     finally { setLoadingFrame(false); }
   }, [projectId]);
 
   useEffect(() => { loadFrame(time); /* initial */ }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Revoke the object URL when it changes or on unmount, so loading new frames and
+  // cancelling the dialog mid-capture don't leak blob URLs.
+  useEffect(() => {
+    return () => { if (imgUrl) URL.revokeObjectURL(imgUrl); };
+  }, [imgUrl]);
 
   const confirm = () => {
     const img = imgRef.current;

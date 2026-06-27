@@ -8,6 +8,7 @@ import { eq, and, inArray } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { LocalStorageAdapter } from '../../services/storage/LocalStorageAdapter.js';
+import { deleteWithFallback, deleteWithPrefixFallback } from '../../services/storage/deleteWithFallback.js';
 import { logger } from '../../lib/logger.js';
 import { CreateProjectSchema } from 'shared';
 
@@ -296,7 +297,9 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
           hint: body.success ? body.data.hint : undefined,
         });
         const updated = await db.query.projects.findFirst({ where: eq(projects.id, project.id) });
-        return reply.send({ thumbnail_url, project: updated });
+        // `project` is the owned row guaranteed above; fall back to it so the response
+        // `project` is never undefined (client types it non-null, reads `.title`).
+        return reply.send({ thumbnail_url, project: updated ?? project });
       } catch (err) {
         logger.error({ err, projectId: project.id }, '[ai-thumbnail] generation failed');
         return reply.code(500).send({ message: (err as Error).message?.slice(0, 200) || 'AI thumbnail generation failed' });
@@ -395,9 +398,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
       });
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
-      // Best-effort storage cleanup before DB delete
-      const storage = getStorageAdapter();
-
+      // Collect child media references BEFORE deleting (the cascade removes the rows).
       const [videos, sims, audios, images] = await Promise.all([
         db.query.video_files.findMany({ where: eq(video_files.project_id, project.id) }),
         db.query.simulations.findMany({ where: eq(simulations.project_id, project.id) }),
@@ -405,24 +406,30 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
         db.query.image_files.findMany({ where: eq(image_files.project_id, project.id) }),
       ]);
 
+      // DB delete FIRST (cascades to child tables). Doing this before storage GC means a
+      // DB failure can't leave rows pointing at already-deleted media (review db-003).
+      await db.delete(projects).where(eq(projects.id, project.id));
+
+      // Best-effort storage GC — from R2 and/or local disk, wherever the bytes landed
+      // (review backend-003). Helpers swallow + log their own errors.
       await Promise.all([
         // Raw video files + HLS segments
         ...videos.flatMap(v => [
-          v.storage_key ? storage.deleteFile(v.storage_key).catch(err => logger.warn({ err }, 'delete raw video')) : null,
-          storage.deleteWithPrefix(`hls/${v.id}`).catch(err => logger.warn({ err }, 'delete hls')),
+          v.storage_key ? deleteWithFallback(v.storage_key) : null,
+          deleteWithPrefixFallback(`hls/${v.id}`),
         ].filter(Boolean)),
         // Simulation file trees
-        ...sims.map(s => storage.deleteWithPrefix(s.storage_prefix).catch(err => logger.warn({ err }, 'delete sim prefix'))),
+        ...sims.map(s => deleteWithPrefixFallback(s.storage_prefix)),
         // Audio files
-        ...audios.map(a => storage.deleteFile(a.storage_key).catch(err => logger.warn({ err }, 'delete audio'))),
+        ...audios.map(a => deleteWithFallback(a.storage_key)),
         // Image files
-        ...images.map(i => storage.deleteFile(i.storage_key).catch(err => logger.warn({ err }, 'delete image'))),
+        ...images.map(i => deleteWithFallback(i.storage_key)),
         // Project thumbnail
-        ...(project.thumbnail_key ? [storage.deleteFile(project.thumbnail_key).catch(err => logger.warn({ err }, 'delete thumbnail'))] : []),
+        ...(project.thumbnail_key ? [deleteWithFallback(project.thumbnail_key)] : []),
+        // Avatar b-roll circle images (avatar-circles/{projectId}/*) — previously never deleted.
+        deleteWithPrefixFallback(`avatar-circles/${project.id}`),
       ]);
 
-      // DB delete — cascades to all child tables
-      await db.delete(projects).where(eq(projects.id, project.id));
       return reply.code(204).send();
     },
   );

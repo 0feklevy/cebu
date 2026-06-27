@@ -208,10 +208,21 @@ export function HLSPlayerShell({
       const json = (await res.json()) as CaptionStatusResponse;
       const segments = json.segments;
       if (cancelled || !segments) return;
-      setCaptionState((current) => ({
-        ...current,
-        ...Object.fromEntries(segments.map((seg) => [seg.id, { status: seg.status, vtt_url: seg.vtt_url, error: seg.error ?? null }])),
-      }));
+      setCaptionState((current) => {
+        // Only produce a new object when something actually changed — otherwise
+        // returning `current` lets React bail out, so the 8s poll interval and the
+        // VTT-fetch effect don't tear down/rebuild on every identical poll
+        // (review frontend-001/007).
+        const changed = segments.some((seg) => {
+          const prev = current[seg.id];
+          return !prev || prev.status !== seg.status || prev.vtt_url !== seg.vtt_url || (prev.error ?? null) !== (seg.error ?? null);
+        });
+        if (!changed) return current;
+        return {
+          ...current,
+          ...Object.fromEntries(segments.map((seg) => [seg.id, { status: seg.status, vtt_url: seg.vtt_url, error: seg.error ?? null }])),
+        };
+      });
     };
     poll();
     const interval = setInterval(poll, 8000);
@@ -383,7 +394,11 @@ export function HLSPlayerShell({
       {!state.started && (
         <div
           className="absolute inset-0 z-[25] flex items-center justify-center cursor-pointer"
+          role="button"
+          tabIndex={0}
+          aria-label="Play video"
           onClick={actions.startPlayback}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); actions.startPlayback(); } }}
         >
           <div className="w-20 h-20 bg-white/20 hover:bg-white/30 transition-colors rounded-full flex items-center justify-center backdrop-blur-sm">
             <svg className="w-10 h-10 text-white ml-1" fill="currentColor" viewBox="0 0 24 24">

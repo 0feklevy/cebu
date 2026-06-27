@@ -2,11 +2,14 @@ import Fastify from 'fastify';
 import multipart from '@fastify/multipart';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
-import { readFile } from 'fs/promises';
-import { extname, join } from 'path';
+import { Readable } from 'stream';
+import { dirname, extname } from 'path';
+import { and, eq, lt } from 'drizzle-orm';
 import { logger } from './lib/logger.js';
 import { LOCAL_STORAGE_BASE_DIR } from './services/storage/localStoragePaths.js';
-import { checkDatabaseConnection } from './db/index.js';
+import { safeLocalPath, keyHasTraversal } from './services/storage/pathSafety.js';
+import { serveLocalFile } from './services/storage/serveFile.js';
+import { checkDatabaseConnection, db, video_files } from './db/index.js';
 import { getFirebaseAdmin } from './services/firebase.js';
 import { getStorageAdapter } from './services/storage/getStorageAdapter.js';
 import { R2StorageAdapter } from './services/storage/R2StorageAdapter.js';
@@ -44,7 +47,7 @@ import { registerCourseAuthoringRoutes } from './controllers/v1/courses.controll
 
 const PORT = parseInt(process.env.PORT ?? '8080', 10);
 
-function getLocalStorageContentType(key: string): string | undefined {
+function getLocalStorageContentType(key: string): string {
   const ext = extname(key).toLowerCase();
   if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
   if (ext === '.png') return 'image/png';
@@ -55,7 +58,26 @@ function getLocalStorageContentType(key: string): string | undefined {
   if (ext === '.vtt') return 'text/vtt; charset=utf-8';
   if (ext === '.mp3') return 'audio/mpeg';
   if (ext === '.wav') return 'audio/wav';
-  return undefined;
+  // Default so the browser never MIME-sniffs an unknown user-controlled upload.
+  return 'application/octet-stream';
+}
+
+// On startup, fail any HLS transcode left mid-flight by a previous restart so it can
+// be retried instead of sitting at 'processing' forever (there was no graceful drain).
+async function recoverStuckTranscodes(): Promise<void> {
+  const cutoff = new Date(Date.now() - 30 * 60 * 1000); // 30 minutes
+  const recovered = await db
+    .update(video_files)
+    .set({
+      hls_status: 'failed',
+      hls_error: 'Interrupted by process restart',
+      hls_finished_at: new Date(),
+    })
+    .where(and(eq(video_files.hls_status, 'processing'), lt(video_files.hls_started_at, cutoff)))
+    .returning({ id: video_files.id });
+  if (recovered.length > 0) {
+    logger.warn({ count: recovered.length }, 'Recovered stuck HLS transcodes on startup');
+  }
 }
 
 async function build() {
@@ -81,12 +103,24 @@ async function build() {
     limits: { fileSize: 10 * 1024 * 1024 * 1024 }, // 10 GB (overridden per-route where needed)
   });
 
-  // Health check
-  app.get('/health', async () => ({
-    status: 'ok',
-    timestamp: new Date().toISOString(),
-    version: process.env.npm_package_version ?? '0.1.0',
-  }));
+  // Health check — reports degraded (503) when the database is unreachable so the
+  // platform load balancer can pull the instance instead of routing traffic to it.
+  app.get('/health', async (_req, reply) => {
+    try {
+      await checkDatabaseConnection();
+    } catch {
+      return reply.code(503).send({
+        status: 'degraded',
+        reason: 'db_unavailable',
+        timestamp: new Date().toISOString(),
+      });
+    }
+    return {
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      version: process.env.npm_package_version ?? '0.1.0',
+    };
+  });
 
   // Local file storage (dev only — active when R2 is not configured).
   // Public prefixes (banners, images) need no auth so browsers can load them directly.
@@ -101,18 +135,15 @@ async function build() {
         await firebaseAuthMiddleware(request, reply);
         if (reply.sent) return;
       }
-      const filePath = join(LOCAL_STORAGE_BASE_DIR, key);
-      try {
-        const data = await readFile(filePath);
-        const contentType = getLocalStorageContentType(key);
-        if (contentType) reply.header('Content-Type', contentType);
-        return reply
-          .header('Cross-Origin-Resource-Policy', 'cross-origin')
-          .header('Access-Control-Allow-Origin', '*')
-          .send(data);
-      } catch {
-        return reply.code(404).send({ message: 'File not found' });
-      }
+      const filePath = safeLocalPath(LOCAL_STORAGE_BASE_DIR, key);
+      if (!filePath) return reply.code(403).send({ message: 'Forbidden' });
+      return serveLocalFile(request, reply, filePath, getLocalStorageContentType(key), {
+        extraHeaders: {
+          'X-Content-Type-Options': 'nosniff',
+          'Cross-Origin-Resource-Policy': 'cross-origin',
+          'Access-Control-Allow-Origin': '*',
+        },
+      });
     },
   );
 
@@ -124,16 +155,14 @@ async function build() {
       if (!key.startsWith('hls/')) {
         return reply.code(403).send({ message: 'Forbidden' });
       }
-      const filePath = join(LOCAL_STORAGE_BASE_DIR, key);
-      try {
-        const data = await readFile(filePath);
-        const contentType = key.endsWith('.m3u8')
-          ? 'application/vnd.apple.mpegurl'
-          : 'video/mp2t';
-        return reply.header('Content-Type', contentType).send(data);
-      } catch {
-        return reply.code(404).send({ message: 'File not found' });
-      }
+      const filePath = safeLocalPath(LOCAL_STORAGE_BASE_DIR, key);
+      if (!filePath) return reply.code(403).send({ message: 'Forbidden' });
+      const isSegment = !key.endsWith('.m3u8');
+      const contentType = isSegment ? 'video/mp2t' : 'application/vnd.apple.mpegurl';
+      return serveLocalFile(request, reply, filePath, contentType, {
+        // .ts segments are immutable; the .m3u8 playlist can change on re-transcode.
+        cacheControl: isSegment ? 'public, max-age=86400' : 'no-cache',
+      });
     },
   );
 
@@ -143,16 +172,18 @@ async function build() {
     '/hls-proxy/*',
     async (request, reply) => {
       const key = request.params['*'];
-      if (!key.startsWith('hls/')) {
+      if (!key.startsWith('hls/') || keyHasTraversal(key)) {
         return reply.code(403).send({ message: 'Forbidden' });
       }
       const r2PublicUrl = process.env.R2_PUBLIC_URL;
       if (!r2PublicUrl) {
         return reply.code(500).send({ message: 'R2_PUBLIC_URL not set' });
       }
+      const controller = new AbortController();
+      request.raw.on('close', () => controller.abort());
       try {
-        const upstream = await fetch(`${r2PublicUrl}/${key}`);
-        if (!upstream.ok) {
+        const upstream = await fetch(`${r2PublicUrl}/${key}`, { signal: controller.signal });
+        if (!upstream.ok || !upstream.body) {
           // R2 may not have these segments when a read-only token forced the HLS
           // upload to fall back to durable local disk. Serve the local copy via
           // /hls-public (relative segment URLs then resolve there too).
@@ -161,13 +192,15 @@ async function build() {
         const contentType = key.endsWith('.m3u8')
           ? 'application/vnd.apple.mpegurl'
           : 'video/mp2t';
-        const data = Buffer.from(await upstream.arrayBuffer());
+        // Stream the upstream body through instead of buffering the whole segment
+        // into the Node heap (was Buffer.from(await upstream.arrayBuffer())).
         return reply
           .header('Content-Type', contentType)
           .header('Access-Control-Allow-Origin', '*')
           .header('Cache-Control', 'public, max-age=3600')
-          .send(data);
+          .send(Readable.fromWeb(upstream.body as unknown as Parameters<typeof Readable.fromWeb>[0]));
       } catch (err) {
+        if (controller.signal.aborted) return; // client disconnected mid-segment
         logger.warn({ key, err }, 'hls-proxy: R2 fetch failed — falling back to local /hls-public');
         return reply.redirect(`/hls-public/${key}`);
       }
@@ -184,7 +217,8 @@ async function build() {
       if (!key.startsWith('videos/')) {
         return reply.code(403).send({ message: 'Forbidden' });
       }
-      const filePath = join(LOCAL_STORAGE_BASE_DIR, key);
+      const filePath = safeLocalPath(LOCAL_STORAGE_BASE_DIR, key);
+      if (!filePath) return reply.code(403).send({ message: 'Forbidden' });
       try {
         const { stat, createReadStream } = await import('fs');
         const { promisify } = await import('util');
@@ -266,7 +300,7 @@ async function build() {
     '/video-proxy/*',
     async (request, reply) => {
       const key = request.params['*'];
-      if (!key.startsWith('videos/')) {
+      if (!key.startsWith('videos/') || keyHasTraversal(key)) {
         return reply.code(403).send({ message: 'Forbidden' });
       }
       const storage = getStorageAdapter();
@@ -312,17 +346,15 @@ async function build() {
       if (!key.startsWith('simulations/')) {
         return reply.code(403).send({ message: 'Forbidden' });
       }
-      const filePath = join(LOCAL_STORAGE_BASE_DIR, key);
-      try {
-        const data = await readFile(filePath);
-        return reply
-          .header('Content-Type', getSimulationContentType(key))
-          .header('Cross-Origin-Resource-Policy', 'cross-origin')
-          .header('Access-Control-Allow-Origin', '*')
-          .send(data);
-      } catch {
-        return reply.code(404).send({ message: 'File not found' });
-      }
+      const filePath = safeLocalPath(LOCAL_STORAGE_BASE_DIR, key);
+      if (!filePath) return reply.code(403).send({ message: 'Forbidden' });
+      return serveLocalFile(request, reply, filePath, getSimulationContentType(key), {
+        extraHeaders: {
+          'X-Content-Type-Options': 'nosniff',
+          'Cross-Origin-Resource-Policy': 'cross-origin',
+          'Access-Control-Allow-Origin': '*',
+        },
+      });
     },
   );
 
@@ -330,11 +362,17 @@ async function build() {
   app.put<{ Params: { '*': string } }>(
     '/local-storage/upload/*',
     async (request, reply) => {
+      // Dev-only durable-local upload path; never expose arbitrary writes in production.
+      if (process.env.NODE_ENV === 'production') {
+        return reply.code(404).send({ message: 'Not found' });
+      }
+      await firebaseAuthMiddleware(request, reply);
+      if (reply.sent) return;
       const { writeFile, mkdir } = await import('fs/promises');
       const key = request.params['*'];
-      const dest = join(LOCAL_STORAGE_BASE_DIR, key);
-      const dir = dest.substring(0, dest.lastIndexOf('/'));
-      await mkdir(dir, { recursive: true });
+      const dest = safeLocalPath(LOCAL_STORAGE_BASE_DIR, key);
+      if (!dest) return reply.code(403).send({ message: 'Forbidden' });
+      await mkdir(dirname(dest), { recursive: true });
       await writeFile(dest, request.body as Buffer);
       return reply.code(200).send({ ok: true });
     },
@@ -380,13 +418,13 @@ async function build() {
       logger.error({ err }, 'Unhandled server error');
     }
 
-    const error_type =
-      (err as { error_type?: string }).error_type ?? 'llm_error';
+    // Default to a neutral type (was 'llm_error', which mislabelled every storage/DB
+    // failure as an LLM error). For 5xx, return a generic message so internal detail
+    // (Postgres/R2/fs paths, connection strings) is logged but never sent to clients.
+    const error_type = (err as { error_type?: string }).error_type ?? 'server_error';
+    const message = statusCode >= 500 ? 'Internal server error' : (err.message ?? 'Request failed');
 
-    reply.code(statusCode).send({
-      error_type,
-      message: err.message ?? 'Internal server error',
-    });
+    reply.code(statusCode).send({ error_type, message });
   });
 
   return app;
@@ -394,6 +432,12 @@ async function build() {
 
 async function start() {
   try {
+    // Fail closed: never run in production on the in-source encryption fallback key.
+    if (process.env.NODE_ENV === 'production' && !process.env.ENCRYPTION_KEY) {
+      logger.error('ENCRYPTION_KEY must be set in production — refusing to start');
+      process.exit(1);
+    }
+
     getFirebaseAdmin(); // validates env vars early
 
     // DB check: warn but don't crash — the postgres driver reconnects automatically.
@@ -415,9 +459,32 @@ async function start() {
       logger.warn({ err }, 'R2 CORS setup failed — configure manually in Cloudflare dashboard');
     }
 
+    // Best-effort recovery of transcodes interrupted by a previous restart.
+    try {
+      await recoverStuckTranscodes();
+    } catch (err) {
+      logger.warn({ err }, 'Stuck-transcode recovery failed (non-fatal)');
+    }
+
     const app = await build();
     await app.listen({ port: PORT, host: '0.0.0.0' });
     logger.info(`Backend API listening on port ${PORT}`);
+
+    // Graceful shutdown: drain in-flight HTTP requests before exit so a managed-host
+    // redeploy doesn't hard-kill the process mid-request.
+    const shutdown = async (signal: string) => {
+      logger.info({ signal }, 'Shutdown signal received — draining');
+      try {
+        await app.close();
+        logger.info('Server closed cleanly — exiting');
+        process.exit(0);
+      } catch (err) {
+        logger.error({ err }, 'Error during graceful shutdown');
+        process.exit(1);
+      }
+    };
+    process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
+    process.on('SIGINT', () => { void shutdown('SIGINT'); });
   } catch (err) {
     logger.error({ err }, 'Failed to start server');
     process.exit(1);
