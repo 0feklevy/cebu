@@ -34,6 +34,9 @@ async function main(): Promise<void> {
     const readBack = await storage.readObject(key);
     const readMatches = readBack.equals(payload);
 
+    console.log('[verify-storage] listObjects (confirm-endpoint existence check) …');
+    const listMatches = (await storage.listObjects(key)).includes(key);
+
     console.log('[verify-storage] presigned GET round-trip …');
     const signed = await storage.getPresignedDownloadUrl(key, 120);
     const res = await fetch(signed);
@@ -64,15 +67,15 @@ async function main(): Promise<void> {
     await storage.deleteFile(key);
     await storage.deleteFile(putKey).catch(() => {});
 
-    if (readMatches && getMatches && putMatches) {
-      console.log('\n[verify-storage] ✓ PASS — server PUT, presigned PUT, and presigned GET all round-trip.');
+    if (readMatches && getMatches && putMatches && listMatches) {
+      console.log('\n[verify-storage] ✓ PASS — server PUT, presigned PUT, presigned GET, and list all work.');
       console.log(`  adapter:        ${adapterName}`);
       console.log(`  public read:    ${pubReadable ? 'yes (HLS/thumbnails OK)' : 'NO — make bucket public for HLS/OG'}`);
       console.log(`  publicUrl:      ${publicUrl}`);
       process.exit(0);
     }
-    console.error('\n[verify-storage] ✗ FAIL — bytes did not match.', {
-      readMatches, getMatches, putMatches, getStatus: res.status, putStatus: putRes.status,
+    console.error('\n[verify-storage] ✗ FAIL — a storage operation did not round-trip.', {
+      readMatches, getMatches, putMatches, listMatches, getStatus: res.status, putStatus: putRes.status,
     });
     process.exit(1);
   } catch (err) {

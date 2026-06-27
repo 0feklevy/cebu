@@ -149,14 +149,15 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
         return reply.code(400).send({ message: 'Invalid storage key' });
       }
       // Cheap existence check (LIST by exact key) — confirm the bytes actually landed.
+      // Non-fatal on a storage API hiccup: the client only confirms after a successful
+      // PUT, so proceed and let transcode surface a genuine miss rather than rejecting.
       try {
         const found = await storage.listObjects(storage_key);
         if (!found.includes(storage_key)) {
           return reply.code(400).send({ message: 'Uploaded object not found in storage' });
         }
       } catch (err) {
-        logger.error({ err, storage_key }, 'confirm: existence check failed');
-        return reply.code(502).send({ message: 'Could not verify the uploaded object' });
+        logger.warn({ err, storage_key }, 'confirm: existence check errored — proceeding');
       }
 
       const ext = storage_key.split('.').pop() ?? 'mp4';
