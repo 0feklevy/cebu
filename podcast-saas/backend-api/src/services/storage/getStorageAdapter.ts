@@ -76,6 +76,15 @@ export function getStorageAdapter(): StorageService {
     logger.warn('R2_* env vars look like placeholders — using local disk storage. Set real Cloudflare R2 credentials (or leave them blank) to use R2.');
   }
 
+  // Fail closed in production: this is a multi-user, scalable app — media must be in a
+  // shared cloud bucket, never per-instance local disk. Refuse to silently use local.
+  if (!hasR2 && process.env.NODE_ENV === 'production') {
+    throw new Error(
+      'No cloud storage configured. Set SUPABASE_S3_* (or real R2_*) credentials — ' +
+        'local-disk storage is not allowed in production.',
+    );
+  }
+
   _adapter = hasR2 ? new R2StorageAdapter() : new LocalStorageAdapter();
   return _adapter;
 }

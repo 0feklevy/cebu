@@ -11,6 +11,7 @@
     "db:migrate": "tsx --env-file=../.env src/db/migrate.ts",
     "db:check": "tsx --env-file=../.env src/scripts/check-db.ts",
     "verify:storage": "tsx --env-file=../.env src/scripts/verify-storage.ts",
+    "backfill:storage": "tsx --env-file=../.env src/scripts/backfill-storage.ts",
     "db:studio": "drizzle-kit studio",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
