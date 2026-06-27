@@ -1,7 +1,7 @@
 import { writeFile, mkdir, readFile, rm, readdir, stat } from 'fs/promises';
 import { createWriteStream } from 'fs';
 import { join } from 'path';
-import type { StorageService } from './StorageService.js';
+import type { CompletedPart, StorageService } from './StorageService.js';
 import { LOCAL_STORAGE_BASE_DIR } from './localStoragePaths.js';
 import { logger } from '../../lib/logger.js';
 
@@ -47,6 +47,25 @@ export class LocalStorageAdapter implements StorageService {
   async getPresignedUploadUrl(path: string, _contentType: string, _ttlSeconds: number): Promise<string> {
     // In local dev the "presigned" URL is just a backend PUT endpoint
     return `${SERVE_BASE}/local-storage/upload/${path}`;
+  }
+
+  // S3 multipart is a cloud-storage concept; local disk has no equivalent. Throwing a
+  // clear error lets the controller report "multipart unsupported" so the browser uses
+  // the single-PUT path in local dev. Production never resolves this adapter (fail-closed).
+  private static multipartUnsupported(): never {
+    throw new Error('Multipart upload is not supported by the local-disk adapter; use the single-PUT path');
+  }
+  async createMultipartUpload(_path: string, _contentType: string): Promise<string> {
+    return LocalStorageAdapter.multipartUnsupported();
+  }
+  async getPresignedUploadPartUrl(_path: string, _uploadId: string, _partNumber: number, _ttlSeconds: number): Promise<string> {
+    return LocalStorageAdapter.multipartUnsupported();
+  }
+  async completeMultipartUpload(_path: string, _uploadId: string, _parts: CompletedPart[]): Promise<string> {
+    return LocalStorageAdapter.multipartUnsupported();
+  }
+  async abortMultipartUpload(_path: string, _uploadId: string): Promise<void> {
+    return LocalStorageAdapter.multipartUnsupported();
   }
 
   async deleteFile(path: string): Promise<void> {

@@ -74,19 +74,66 @@ async function main(): Promise<void> {
     const putReadBack = putRes.ok ? await storage.readObject(putKey).catch(() => Buffer.alloc(0)) : Buffer.alloc(0);
     const putMatches = putRes.ok && putReadBack.equals(payload);
 
+    // ── Large-object MULTIPART round-trip (the big-video upload path) ──────────────
+    // This is the headline check: a >50 MB object exceeds Supabase's DEFAULT bucket
+    // file_size_limit, so a single PUT would be rejected. We upload it in parts the
+    // same way the browser does (CreateMultipartUpload → presigned UploadPart PUTs →
+    // CompleteMultipartUpload) and confirm the stitched object reads back identically.
+    // If the bucket size limit is still at the default, the part PUT or the Complete
+    // will fail here with a size error — which is exactly the misconfiguration to catch.
+    const PART_SIZE = 8 * 1024 * 1024; // 8 MiB (≥ S3's 5 MiB minimum)
+    const BIG_SIZE = 55 * 1024 * 1024; // 55 MiB — safely over the 50 MB default cap
+    console.log(`[verify-storage] multipart round-trip — ${(BIG_SIZE / 1024 / 1024) | 0} MB in ${Math.ceil(BIG_SIZE / PART_SIZE)} parts …`);
+    const bigKey = `_selfcheck/multipart-${Date.now()}.bin`;
+    // Deterministic, non-uniform bytes so a torn/misordered stitch is detectable.
+    const big = Buffer.allocUnsafe(BIG_SIZE);
+    for (let i = 0; i < BIG_SIZE; i++) big[i] = (i * 2654435761) & 0xff;
+
+    let multipartMatches = false;
+    let multipartErr: string | undefined;
+    try {
+      const uploadId = await storage.createMultipartUpload(bigKey, 'application/octet-stream');
+      const partCount = Math.ceil(BIG_SIZE / PART_SIZE);
+      const parts: { partNumber: number; etag: string }[] = [];
+      for (let i = 0; i < partCount; i++) {
+        const partNumber = i + 1;
+        const chunk = big.subarray(i * PART_SIZE, Math.min(BIG_SIZE, (i + 1) * PART_SIZE));
+        const partUrl = await storage.getPresignedUploadPartUrl(bigKey, uploadId, partNumber, 300);
+        const partRes = await fetchWithRetry(partUrl, { method: 'PUT', body: chunk });
+        const etag = partRes.headers.get('etag') ?? partRes.headers.get('ETag');
+        if (!partRes.ok || !etag) {
+          throw new Error(`part ${partNumber}/${partCount} PUT failed status=${partRes.status} etag=${etag ?? 'none'} ` +
+            (partRes.ok ? '(no ETag — CORS expose-headers?)' : `body=${(await partRes.text().catch(() => '')).slice(0, 200)}`));
+        }
+        parts.push({ partNumber, etag });
+      }
+      await storage.completeMultipartUpload(bigKey, uploadId, parts);
+      const bigReadBack = await storage.readObject(bigKey);
+      multipartMatches = bigReadBack.equals(big);
+      console.log(`[verify-storage]   multipart read-back ${multipartMatches ? 'MATCHES' : 'DIFFERS'} (${bigReadBack.length} bytes)`);
+    } catch (e) {
+      multipartErr = String(e instanceof Error ? e.message : e).slice(0, 300);
+      console.error(`[verify-storage]   multipart FAILED: ${multipartErr}`);
+      console.error('[verify-storage]   → If this is a size error, RAISE the bucket file_size_limit ' +
+        '(Storage → bucket → Edit → File size limit) to a video-appropriate value (e.g. 5 GB).');
+    }
+
     console.log('[verify-storage] DELETE (cleanup) …');
     await storage.deleteFile(key);
     await storage.deleteFile(putKey).catch(() => {});
+    await storage.deleteFile(bigKey).catch(() => {});
 
-    if (readMatches && getMatches && putMatches && listMatches) {
-      console.log('\n[verify-storage] ✓ PASS — server PUT, presigned PUT, presigned GET, and list all work.');
+    if (readMatches && getMatches && putMatches && listMatches && multipartMatches) {
+      console.log('\n[verify-storage] ✓ PASS — server PUT, presigned PUT, presigned GET, list, and >50 MB multipart all work.');
       console.log(`  adapter:        ${adapterName}`);
       console.log(`  public read:    ${pubReadable ? 'yes (HLS/thumbnails OK)' : 'NO — make bucket public for HLS/OG'}`);
+      console.log(`  multipart >50MB: yes (large videos upload via parts)`);
       console.log(`  publicUrl:      ${publicUrl}`);
       process.exit(0);
     }
     console.error('\n[verify-storage] ✗ FAIL — a storage operation did not round-trip.', {
-      readMatches, getMatches, putMatches, listMatches, getStatus: res.status, putStatus: putRes.status,
+      readMatches, getMatches, putMatches, listMatches, multipartMatches,
+      getStatus: res.status, putStatus: putRes.status, multipartErr,
     });
     process.exit(1);
   } catch (err) {

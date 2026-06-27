@@ -6,10 +6,14 @@ import {
   ListObjectsV2Command,
   GetObjectCommand,
   PutBucketCorsCommand,
+  CreateMultipartUploadCommand,
+  UploadPartCommand,
+  CompleteMultipartUploadCommand,
+  AbortMultipartUploadCommand,
 } from '@aws-sdk/client-s3';
 
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import type { StorageService } from './StorageService.js';
+import type { CompletedPart, StorageService } from './StorageService.js';
 import { logger } from '../../lib/logger.js';
 
 export class R2StorageAdapter implements StorageService {
@@ -113,6 +117,51 @@ export class R2StorageAdapter implements StorageService {
       this.client,
       new PutObjectCommand({ Bucket: this.bucket, Key: path, ContentType: contentType }),
       { expiresIn: ttlSeconds },
+    );
+  }
+
+  // ── S3 multipart upload (large files) — R2 is S3-compatible, so the same flow works. ──
+  async createMultipartUpload(path: string, contentType: string): Promise<string> {
+    const resp = await this.client.send(
+      new CreateMultipartUploadCommand({ Bucket: this.bucket, Key: path, ContentType: contentType }),
+    );
+    if (!resp.UploadId) throw new Error('R2 did not return an UploadId for the multipart upload');
+    return resp.UploadId;
+  }
+
+  async getPresignedUploadPartUrl(
+    path: string,
+    uploadId: string,
+    partNumber: number,
+    ttlSeconds: number,
+  ): Promise<string> {
+    return getSignedUrl(
+      this.client,
+      new UploadPartCommand({ Bucket: this.bucket, Key: path, UploadId: uploadId, PartNumber: partNumber }),
+      { expiresIn: ttlSeconds },
+    );
+  }
+
+  async completeMultipartUpload(path: string, uploadId: string, parts: CompletedPart[]): Promise<string> {
+    await this.client.send(
+      new CompleteMultipartUploadCommand({
+        Bucket: this.bucket,
+        Key: path,
+        UploadId: uploadId,
+        MultipartUpload: {
+          Parts: parts
+            .slice()
+            .sort((a, b) => a.partNumber - b.partNumber)
+            .map((p) => ({ PartNumber: p.partNumber, ETag: p.etag })),
+        },
+      }),
+    );
+    return `${this.publicUrl}/${path}`;
+  }
+
+  async abortMultipartUpload(path: string, uploadId: string): Promise<void> {
+    await this.client.send(
+      new AbortMultipartUploadCommand({ Bucket: this.bucket, Key: path, UploadId: uploadId }),
     );
   }
 

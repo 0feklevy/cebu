@@ -5,9 +5,13 @@ import {
   DeleteObjectsCommand,
   ListObjectsV2Command,
   GetObjectCommand,
+  CreateMultipartUploadCommand,
+  UploadPartCommand,
+  CompleteMultipartUploadCommand,
+  AbortMultipartUploadCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import type { StorageService } from './StorageService.js';
+import type { CompletedPart, StorageService } from './StorageService.js';
 
 /**
  * Supabase Storage adapter — uses Supabase's **S3-compatible** endpoint, so it reuses
@@ -100,6 +104,61 @@ export class SupabaseStorageAdapter implements StorageService {
       this.client,
       new PutObjectCommand({ Bucket: this.bucket, Key: path, ContentType: contentType }),
       { expiresIn: ttlSeconds },
+    );
+  }
+
+  // ── S3 multipart upload (large files beyond a single PUT) ───────────────────────
+  // Supabase Storage's S3 endpoint supports multipart. The per-part size cap is the
+  // S3 minimum (5 MiB except the last part); the OVERALL object size is still bounded
+  // by the bucket's file_size_limit, so raise that in the dashboard for big videos.
+  async createMultipartUpload(path: string, contentType: string): Promise<string> {
+    const resp = await this.client.send(
+      new CreateMultipartUploadCommand({ Bucket: this.bucket, Key: path, ContentType: contentType }),
+    );
+    if (!resp.UploadId) throw new Error('Supabase did not return an UploadId for the multipart upload');
+    return resp.UploadId;
+  }
+
+  async getPresignedUploadPartUrl(
+    path: string,
+    uploadId: string,
+    partNumber: number,
+    ttlSeconds: number,
+  ): Promise<string> {
+    // No ContentType on a part PUT — the browser sends the raw chunk and shouldn't have
+    // to set a matching header (parts are stitched into the object created above).
+    return getSignedUrl(
+      this.client,
+      new UploadPartCommand({
+        Bucket: this.bucket,
+        Key: path,
+        UploadId: uploadId,
+        PartNumber: partNumber,
+      }),
+      { expiresIn: ttlSeconds },
+    );
+  }
+
+  async completeMultipartUpload(path: string, uploadId: string, parts: CompletedPart[]): Promise<string> {
+    await this.client.send(
+      new CompleteMultipartUploadCommand({
+        Bucket: this.bucket,
+        Key: path,
+        UploadId: uploadId,
+        MultipartUpload: {
+          Parts: parts
+            .slice()
+            .sort((a, b) => a.partNumber - b.partNumber)
+            .map((p) => ({ PartNumber: p.partNumber, ETag: p.etag })),
+        },
+      }),
+    );
+    return `${this.publicBase}/${path}`;
+  }
+
+  async abortMultipartUpload(path: string, uploadId: string): Promise<void> {
+    await this.client.send(
+      new AbortMultipartUploadCommand({ Bucket: this.bucket, Key: path, UploadId: uploadId }),
     );
   }
 

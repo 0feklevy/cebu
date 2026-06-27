@@ -518,6 +518,42 @@ export class ClientV1Api {
     return this.request(`/api/v1/projects/${projectId}/videos/confirm`, { method: 'POST', body });
   }
 
+  // Multipart upload (large videos): start → presign each part (PUT direct to storage)
+  // → complete (or abort). Only the part PUTs touch storage; these calls are plain JSON.
+  startMultipartUpload(
+    projectId: string,
+    body: { filename: string; content_type: string; file_size: number },
+  ): Promise<{ upload_id: string; storage_key: string; content_type: string; part_size: number }> {
+    return this.request(`/api/v1/projects/${projectId}/videos/upload/multipart/start`, { method: 'POST', body });
+  }
+
+  getMultipartPartUrl(
+    projectId: string,
+    body: { storage_key: string; upload_id: string; part_number: number },
+  ): Promise<{ url: string; part_number: number }> {
+    return this.request(`/api/v1/projects/${projectId}/videos/upload/multipart/part-url`, { method: 'POST', body });
+  }
+
+  completeMultipartUpload(
+    projectId: string,
+    body: {
+      storage_key: string;
+      upload_id: string;
+      filename: string;
+      file_size: number;
+      parts: { partNumber: number; etag: string }[];
+    },
+  ): Promise<VideoFile> {
+    return this.request(`/api/v1/projects/${projectId}/videos/upload/multipart/complete`, { method: 'POST', body });
+  }
+
+  abortMultipartUpload(
+    projectId: string,
+    body: { storage_key: string; upload_id: string },
+  ): Promise<void> {
+    return this.request(`/api/v1/projects/${projectId}/videos/upload/multipart/abort`, { method: 'POST', body });
+  }
+
   listVideos(projectId: string): Promise<VideoFile[]> {
     return this.request(`/api/v1/projects/${projectId}/videos`);
   }
