@@ -12,6 +12,7 @@ import { logger } from '../../lib/logger.js';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import { propagateTranscript } from '../transcriptPropagation.js';
 import { runFfmpegLimited } from '../ffmpegLimit.js';
+import { enqueueJob } from '../../queue/index.js';
 
 const execFileAsync = promisify(execFile);
 const inFlight = new Set<string>();
@@ -312,11 +313,7 @@ export function enqueueCaptionsForVideo(video: VideoRow, opts: { force?: boolean
   if (video.is_broll || !video.storage_key) return;
   const hash = sourceHash(video);
   if (shouldSkip(video, hash, opts.force)) return;
-  setImmediate(() => {
-    runCaptionJob(video.id, opts).catch((err) => {
-      logger.warn({ videoId: video.id, err }, '[captions] background job crashed');
-    });
-  });
+  enqueueJob('captions', { videoId: video.id, force: opts.force });
 }
 
 export async function enqueueCaptionsForProject(projectId: string, opts: { force?: boolean } = {}): Promise<void> {

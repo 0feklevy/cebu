@@ -24,19 +24,14 @@ import { projects, video_files } from '../db/schema.js';
 import { getStorageAdapter } from './storage/getStorageAdapter.js';
 import { LocalStorageAdapter } from './storage/LocalStorageAdapter.js';
 import { logger } from '../lib/logger.js';
+import { enqueueJob } from '../queue/index.js';
 
 // In-process guard against concurrent runs for the same project.
 const _inFlight = new Set<string>();
 
 /** Fire-and-forget entry point — safe to call from runVideoTranscode. */
 export function enqueueVideoMetadata(projectId: string, videoFileId: string, opts?: MetadataOptions): void {
-  if (_inFlight.has(projectId)) return;
-  _inFlight.add(projectId);
-  setImmediate(() => {
-    generateVideoMetadata(projectId, videoFileId, opts ?? {})
-      .catch((err) => logger.warn({ err, projectId }, '[metadata] generation failed'))
-      .finally(() => _inFlight.delete(projectId));
-  });
+  enqueueJob('metadata', { projectId, videoFileId, ...(opts ?? {}) });
 }
 
 export interface MetadataOptions {
@@ -47,6 +42,18 @@ export interface MetadataOptions {
 }
 
 export async function generateVideoMetadata(projectId: string, videoFileId: string, opts: MetadataOptions = {}): Promise<void> {
+  // Process-local guard against concurrent runs for the same project; moved here (from the
+  // producer) so the queue producer stays a thin enqueue and the dedup follows the job.
+  if (_inFlight.has(projectId)) return;
+  _inFlight.add(projectId);
+  try {
+    await generateVideoMetadataInner(projectId, videoFileId, opts);
+  } finally {
+    _inFlight.delete(projectId);
+  }
+}
+
+async function generateVideoMetadataInner(projectId: string, videoFileId: string, opts: MetadataOptions = {}): Promise<void> {
   const storage = getStorageAdapter();
 
   // Get project + first ready video file

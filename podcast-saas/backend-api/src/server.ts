@@ -14,6 +14,8 @@ import { getFirebaseAdmin } from './services/firebase.js';
 import { getStorageAdapter } from './services/storage/getStorageAdapter.js';
 import { R2StorageAdapter } from './services/storage/R2StorageAdapter.js';
 import { getSimulationContentType } from './services/simulation/SimulationService.js';
+import { startWorker } from './queue/startWorker.js';
+import { stopBoss } from './queue/pgBoss.js';
 
 // Controllers
 import { registerPlatformRoutes } from './controllers/v1/platform.controller.js';
@@ -470,12 +472,26 @@ async function start() {
     await app.listen({ port: PORT, host: '0.0.0.0' });
     logger.info(`Backend API listening on port ${PORT}`);
 
+    // Opt-in in-process worker: run pg-boss workers inside the web process. This is the
+    // single-process form for the managed host (which can't run a second process) and for
+    // local dev. On hosts that support a separate worker service, run `npm run worker`
+    // instead and leave WORKER_INLINE unset.
+    if (process.env.QUEUE_DRIVER === 'pgboss' && process.env.WORKER_INLINE === '1') {
+      try {
+        await startWorker();
+        logger.info('Worker running in-process (WORKER_INLINE=1)');
+      } catch (err) {
+        logger.error({ err }, 'In-process worker failed to start (continuing web-only)');
+      }
+    }
+
     // Graceful shutdown: drain in-flight HTTP requests before exit so a managed-host
     // redeploy doesn't hard-kill the process mid-request.
     const shutdown = async (signal: string) => {
       logger.info({ signal }, 'Shutdown signal received — draining');
       try {
         await app.close();
+        await stopBoss(); // drains in-flight pg-boss jobs; no-op when never started
         logger.info('Server closed cleanly — exiting');
         process.exit(0);
       } catch (err) {
