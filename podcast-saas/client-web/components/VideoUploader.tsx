@@ -26,9 +26,12 @@ interface Props {
   // Receives the uploaded VideoFile (including raw_url) so the editor can play
   // the video immediately without waiting for a polling cycle.
   onUploaded: (video: VideoFile) => void;
+  // When set, the upload REPLACES this video's media (keeps the same id, so timeline
+  // clips stay attached) instead of adding a new one — the Library "Replace" action.
+  replaceVideoId?: string;
 }
 
-export function VideoUploader({ projectId, onUploaded }: Props) {
+export function VideoUploader({ projectId, onUploaded, replaceVideoId }: Props) {
   const [dragging, setDragging] = useState(false);
   const [uploads, setUploads] = useState<UploadProgress[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -107,7 +110,7 @@ export function VideoUploader({ projectId, onUploaded }: Props) {
     const confirmRes = await fetch(`${API_URL}/api/v1/projects/${projectId}/videos/confirm`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ storage_key, filename: file.name, file_size: file.size }),
+      body: JSON.stringify({ storage_key, filename: file.name, file_size: file.size, replace_video_id: replaceVideoId }),
     });
     if (!confirmRes.ok) throw new Error(`confirm ${confirmRes.status}`);
     return (await confirmRes.json()) as VideoFile;
@@ -187,7 +190,7 @@ export function VideoUploader({ projectId, onUploaded }: Props) {
 
       const completeRes = await fetch(`${API_URL}/api/v1/projects/${projectId}/videos/upload/multipart/complete`, {
         method: 'POST', headers: hdrs,
-        body: JSON.stringify({ storage_key, upload_id, filename: file.name, file_size: file.size, parts }),
+        body: JSON.stringify({ storage_key, upload_id, filename: file.name, file_size: file.size, parts, replace_video_id: replaceVideoId }),
       });
       if (!completeRes.ok) {
         const msg = ((await completeRes.json().catch(() => ({}))) as { message?: string }).message;

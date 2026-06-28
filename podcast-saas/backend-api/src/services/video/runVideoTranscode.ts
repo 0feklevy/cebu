@@ -4,7 +4,8 @@ import { pipeline } from 'stream/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { db, video_files } from '../../db/index.js';
-import { eq } from 'drizzle-orm';
+import { timeline_sections } from '../../db/schema.js';
+import { eq, and, gt, sql } from 'drizzle-orm';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import { transcodeToHLS, extractWaveformPeaks } from './HLSTranscoder.js';
 import { previousHlsTreeToGc } from './hlsVersioning.js';
@@ -101,6 +102,23 @@ export async function runVideoTranscode(video_file_id: string): Promise<{ hls_ma
 
     console.log(`[HLS] ✅ STATUS → ready  masterKey=${result.masterKey}  duration=${result.durationSec}s  (${video_file_id})`);
     logger.info({ video_file_id, masterKey: result.masterKey }, 'HLS transcode complete');
+
+    // Cut-to-fit: clamp any timeline clip that references this video to the new duration,
+    // so a replaced/shorter source doesn't leave clips pointing past the end of the video.
+    // (No-op on a first upload — clips don't exist yet — and on a same-length replacement.)
+    if (result.durationSec > 0) {
+      try {
+        await db
+          .update(timeline_sections)
+          .set({
+            end_sec: sql`LEAST(${timeline_sections.end_sec}, ${result.durationSec})`,
+            start_sec: sql`LEAST(${timeline_sections.start_sec}, ${result.durationSec})`,
+          })
+          .where(and(eq(timeline_sections.video_file_id, video_file_id), gt(timeline_sections.end_sec, result.durationSec)));
+      } catch (err) {
+        logger.warn({ err, video_file_id }, 'timeline cut-to-fit clamp failed (non-fatal)');
+      }
+    }
 
     // Pointer is flipped — GC the previous *versioned* tree (different run), if any.
     const oldTree = previousHlsTreeToGc(video_file_id, oldMasterKey, runId);

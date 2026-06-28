@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { Clapperboard, Maximize2, Minimize2, Music, Plus, Redo2, Sparkles, Trash2, Undo2 } from 'lucide-react';
+import { AlertTriangle, Clapperboard, Maximize2, Minimize2, Music, Plus, Redo2, RefreshCw, Sparkles, Trash2, Undo2 } from 'lucide-react';
 import { useAuth } from '../lib/firebase';
 import { api } from '../lib/api';
 import { VideoPlayer } from './VideoPlayer';
@@ -193,6 +193,7 @@ export function VideoEditor({ projectId }: Props) {
   const { loading: authLoading } = useAuth();
   const [videos, setVideos]   = useState<VideoFile[]>([]);     // main videos only (is_broll=false)
   const [allVideos, setAllVideos] = useState<VideoFile[]>([]);  // all videos incl. broll sources
+  const [replacingVideoId, setReplacingVideoId] = useState<string | null>(null); // Library "Replace" target
   const [avatarCircles, setAvatarCircles] = useState<AvatarCirclesConfig | null>(null);
   const [sections, setSections] = useState<TimelineSection[]>([]);
   const [undoStack, setUndoStack] = useState<SectionSnapshot[]>([]);
@@ -846,7 +847,13 @@ export function VideoEditor({ projectId }: Props) {
                         {v.hls_status === 'ready' ? (
                           <span className="text-[9px] text-emerald-500 font-medium">HLS ✓</span>
                         ) : v.hls_status === 'failed' ? (
-                          <span className="text-[9px] text-red-400 font-medium">Transcode failed</span>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setReplacingVideoId(v.id); }}
+                            title="This video isn't saved. Click to upload it again."
+                            className="inline-flex items-center gap-1 text-[9px] font-semibold text-amber-600 hover:text-amber-500"
+                          >
+                            <AlertTriangle size={10} strokeWidth={2.2} aria-hidden /> Not saved — re-upload
+                          </button>
                         ) : (v.hls_status === 'pending' || v.hls_status === 'processing') ? (
                           <HlsTierProgress
                             currentTier={tierProgress[v.id]?.currentTier ?? null}
@@ -856,6 +863,13 @@ export function VideoEditor({ projectId }: Props) {
                         ) : null}
                       </div>
                     </div>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setReplacingVideoId(v.id); }}
+                      title="Replace with a new version (re-upload)"
+                      className="absolute right-10 top-2 flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary"
+                    >
+                      <RefreshCw size={14} strokeWidth={1.9} aria-hidden />
+                    </button>
                     <button
                       onClick={e => handleDeleteVideo(e, v.id)}
                       disabled={deletingId === v.id}
@@ -1163,6 +1177,31 @@ export function VideoEditor({ projectId }: Props) {
         onCancel={() => setConfirmSim(null)}
       />
     )}
+    {replacingVideoId && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
+        <div className="w-full max-w-md rounded-xl bg-card p-4 shadow-lg">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-foreground">Replace video</h3>
+            <button onClick={() => setReplacingVideoId(null)} aria-label="Cancel" className="text-muted-foreground hover:text-foreground">✕</button>
+          </div>
+          <p className="mb-3 text-xs text-muted-foreground">
+            Upload a new version. It keeps this clip&apos;s place in the timeline — if the new
+            video is longer, the extra is trimmed to fit; the captions and avatar circles
+            re-process automatically.
+          </p>
+          <VideoUploader
+            projectId={projectId}
+            replaceVideoId={replacingVideoId}
+            onUploaded={(video) => {
+              if (video.raw_url) setRawUrls(prev => ({ ...prev, [video.id]: video.raw_url! }));
+              loadData();
+              setReplacingVideoId(null);
+            }}
+          />
+        </div>
+      </div>
+    )}
+
     <ExtendedLibraryModal
       open={extendedLibraryOpen}
       onClose={() => setExtendedLibraryOpen(false)}
