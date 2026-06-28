@@ -10,22 +10,20 @@ import { logger } from '../../lib/logger.js';
 import { randomUUID } from 'crypto';
 import { runVideoTranscode } from '../../services/video/runVideoTranscode.js';
 import { enqueueCropForProject } from '../../services/crop/runCropAnalysis.js';
-import { enqueueCaptionsForProject } from '../../services/captions/CaptionService.js';
 
 /**
- * Kick off all background processing for a freshly-uploaded video on the WRITE path:
- * HLS transcode, smart-crop, and captions. Captions/crop were previously triggered
- * lazily from buildPlayerConfig on every read/preview (review perf-002) — they belong
- * here, once, when the source actually arrives ("captions at processing time").
+ * Kick off background processing for a freshly-uploaded (or replaced) video on the WRITE
+ * path. Transcode runs first; it then decides — post-transcode — whether to (re)run
+ * captions + smart-crop, skipping them when a replacement's media is essentially unchanged
+ * (see runVideoTranscode's skip-if-similar). Captions/crop used to be triggered lazily from
+ * buildPlayerConfig on every read/preview (review perf-002); they belong on the write path.
  */
-function enqueueVideoProcessing(videoFileId: string, projectId: string): void {
+function enqueueVideoProcessing(videoFileId: string): void {
   setImmediate(() => {
     runVideoTranscode(videoFileId).catch((err) => {
       logger.warn({ err, video_file_id: videoFileId }, 'In-process HLS transcode failed');
     });
   });
-  enqueueCaptionsForProject(projectId).catch(() => { /* best-effort */ });
-  enqueueCropForProject(projectId).catch(() => { /* best-effort */ });
 }
 
 const TEN_GB = 10 * 1024 * 1024 * 1024;
@@ -97,7 +95,7 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
         .returning();
 
       if (oldStorageKey && oldStorageKey !== storage_key) deleteWithFallback(oldStorageKey).catch(() => {});
-      enqueueVideoProcessing(updated.id, projectId);
+      enqueueVideoProcessing(updated.id);
       const raw_url = await storage.getPresignedDownloadUrl(storage_key, 3600).catch(() => null);
       return { ...updated, raw_url };
     }
@@ -114,7 +112,7 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
       })
       .returning();
 
-    enqueueVideoProcessing(videoFile.id, projectId);
+    enqueueVideoProcessing(videoFile.id);
 
     const raw_url = await storage.getPresignedDownloadUrl(storage_key, 3600).catch(() => null);
     return { ...videoFile, raw_url };
@@ -171,8 +169,8 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
             })
             .returning();
 
-          // Transcode + crop + captions on the write path (non-blocking).
-          enqueueVideoProcessing(videoFile.id, project.id);
+          // Transcode (+ post-transcode captions/crop) on the write path (non-blocking).
+          enqueueVideoProcessing(videoFile.id);
 
           // Include a presigned raw URL so the editor can play the video immediately
           // without waiting for the first HLS-status polling cycle.

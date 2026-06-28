@@ -9,6 +9,9 @@ import { eq, and, gt, sql } from 'drizzle-orm';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import { transcodeToHLS, extractWaveformPeaks } from './HLSTranscoder.js';
 import { previousHlsTreeToGc } from './hlsVersioning.js';
+import { isSimilarMedia, parsePeaks } from './mediaSimilarity.js';
+import { enqueueCropForProject } from '../crop/runCropAnalysis.js';
+import { enqueueCaptionsForProject } from '../captions/CaptionService.js';
 import { enqueueVideoMetadata } from '../generateVideoMetadata.js';
 import { fetchWithRetry } from '../../lib/fetchWithRetry.js';
 import { deleteWithPrefixFallback } from '../storage/deleteWithFallback.js';
@@ -127,6 +130,20 @@ export async function runVideoTranscode(video_file_id: string): Promise<{ hls_ma
     // Generate thumbnail + AI title/description in the background.
     // Uses the already-downloaded source file in inputPath for the frame extraction.
     if (video.project_id) enqueueVideoMetadata(video.project_id, video_file_id);
+
+    // Captions + smart-crop run on the WRITE path. Skip-if-similar: on a REPLACE where the
+    // new media is essentially the same as the old (same duration + near-identical audio),
+    // keep the existing captions/crop instead of re-running them ("save extra effort").
+    // A first upload (no prior media) always processes. `video` holds the PRE-update values.
+    if (video.project_id) {
+      const similar = isSimilarMedia(video.duration_sec, parsePeaks(video.waveform_peaks), result.durationSec, waveformPeaks);
+      if (similar) {
+        logger.info({ video_file_id, project_id: video.project_id }, 'Replaced media unchanged — skipping caption/crop re-processing');
+      } else {
+        enqueueCaptionsForProject(video.project_id).catch(() => {});
+        enqueueCropForProject(video.project_id).catch(() => {});
+      }
+    }
 
     return { hls_master_key: result.masterKey };
   } catch (err) {
