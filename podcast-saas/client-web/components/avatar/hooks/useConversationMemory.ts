@@ -23,12 +23,14 @@ function anonId(): string {
 export function useConversationMemory(characterId: string, projectId: string | undefined) {
   const sessionKey = `${anonId()}:${projectId ?? 'global'}:${characterId}`;
   const contextRef = useRef<string>('');
+  const tokenRef = useRef<string | null>(null); // capability token minted by the memory GET
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    getMemory(sessionKey).then(({ turns, profile }) => {
+    getMemory(projectId, sessionKey).then(({ token, turns, profile }) => {
       if (cancelled) return;
+      tokenRef.current = token;
       const parts: string[] = [];
       if (profile && Object.keys(profile).length) {
         parts.push('What you remember about this person: ' + Object.entries(profile).map(([k, v]) => `${k}: ${v}`).join(', ') + '.');
@@ -62,7 +64,7 @@ export function useConversationMemory(characterId: string, projectId: string | u
       .slice(-20);
     if (!turns.length) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => saveMemory(sessionKey, characterId, projectId, turns), 1500);
+    saveTimer.current = setTimeout(() => saveMemory(tokenRef.current, sessionKey, characterId, projectId, turns), 1500);
   }, [sessionKey, characterId, projectId]);
 
   useEffect(() => () => { if (saveTimer.current) clearTimeout(saveTimer.current); }, []);

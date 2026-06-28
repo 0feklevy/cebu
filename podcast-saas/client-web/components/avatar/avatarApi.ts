@@ -226,15 +226,22 @@ export const analyzeImage = (userMessage: string, characterId: string, context?:
     { method: 'POST', body: JSON.stringify({ userMessage, characterId, conversationContext: context, projectId }) },
   ).catch(() => ({ shouldGenerate: false, imageUrl: null, altText: '', caption: '', imageType: 'realistic' as const }));
 
-export const getMemory = (sessionKey: string) =>
-  jsonFetch<{ turns: Turn[]; profile: Record<string, unknown> }>(`/api/v1/avatar/memory?sessionKey=${encodeURIComponent(sessionKey)}`)
-    .catch(() => ({ turns: [], profile: {} }));
+// Loads memory AND mints the capability token used to persist turns. withAuth=true so an
+// owner can load memory for their own private project; anonymous viewers of public/unlisted
+// projects work with no token header. A denied (private) project returns no token.
+export const getMemory = (projectId: string | undefined, sessionKey: string) =>
+  jsonFetch<{ token: string | null; turns: Turn[]; profile: Record<string, unknown> }>(
+    `/api/v1/avatar/memory?sessionKey=${encodeURIComponent(sessionKey)}${projectId ? `&projectId=${encodeURIComponent(projectId)}` : ''}`,
+    undefined,
+    true,
+  ).catch(() => ({ token: null, turns: [], profile: {} }));
 
-export const saveMemory = (sessionKey: string, characterId: string, projectId: string | undefined, turns: Turn[]): void => {
+export const saveMemory = (token: string | null, sessionKey: string, characterId: string, projectId: string | undefined, turns: Turn[]): void => {
+  if (!token) return; // no capability token (private/denied) → don't attempt to persist
   fetch(`${BASE}/api/v1/avatar/memory`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessionKey, characterId, projectId, turns }),
+    body: JSON.stringify({ token, sessionKey, characterId, projectId, turns }),
     keepalive: true,
   }).catch(() => {});
 };

@@ -29,6 +29,8 @@ import { analyzeVisual, generateLibrarySimulation, editLibrarySimulation } from 
 import { analyzeAndGenerateImage, generateLibraryImage } from '../../services/avatar/imageService.js';
 import { listVisuals, updateVisual, deleteVisual, syncBasicLibrary } from '../../services/avatar/libraryService.js';
 import { saveTurns, getTurns, getProfile, extractAndSaveFacts, type Turn } from '../../services/avatar/memoryService.js';
+import { avatarProjectAllowed } from '../../services/avatar/avatarAccess.js';
+import { signMemoryToken, verifyMemoryToken } from '../../services/avatar/memoryToken.js';
 import { CHARACTERS, DEFAULT_CHARACTER_ID } from '../../services/avatar/characters.js';
 import { logger } from '../../lib/logger.js';
 
@@ -41,20 +43,6 @@ function asPersonaConfig(v: unknown): AvatarPersonaConfig {
     try { const o = JSON.parse(v); if (o && typeof o === 'object' && !Array.isArray(o)) return o as AvatarPersonaConfig; } catch { /* ignore */ }
   }
   return {};
-}
-
-/**
- * Avatar viewer endpoints stay open to anonymous viewers of public/unlisted projects
- * (unlisted is reached via a share link, where the avatar is part of viewing), but a
- * PRIVATE project's avatar surface is owner-only (review security-004). Note this is
- * intentionally more permissive than requireProjectAccess (which denies unlisted-by-id).
- */
-function avatarProjectAllowed(
-  project: { visibility: string | null; created_by: string | null },
-  userId: string | null | undefined,
-): boolean {
-  if (project.visibility !== 'private') return true;
-  return !!userId && project.created_by === userId;
 }
 
 export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> {
@@ -174,29 +162,52 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
     },
   );
 
-  // ── Public: conversation memory ────────────────────────────────────────────
+  // ── Conversation memory ────────────────────────────────────────────────────
+  // Access is bound to a server-issued, project-scoped capability token: the GET applies
+  // the project visibility gate (optional-auth) and, when allowed, MINTS a token bound to
+  // {projectKey, sessionKey}; the POST requires that token to persist turns. Anonymous
+  // viewers of public/unlisted projects work as before; a private project's memory is not
+  // reachable by anonymous/non-owner callers, and the trusted-only sessionKey is no longer
+  // sufficient to write (review security-004/005).
   const MemorySchema = z.object({
+    token: z.string().min(1).max(800),
     sessionKey: z.string().min(1).max(200),
     characterId: z.string().max(64).optional(),
     projectId: z.string().uuid().optional(),
     turns: z.array(z.object({ role: z.enum(['user', 'persona']), content: z.string() })).max(40),
   });
 
-  app.get('/api/v1/avatar/memory', async (request: FastifyRequest, reply: FastifyReply) => {
-    const sessionKey = (request.query as { sessionKey?: string }).sessionKey;
-    if (!sessionKey) return reply.send({ turns: [], profile: {} });
+  app.get('/api/v1/avatar/memory', { preHandler: [firebaseAuthOptionalMiddleware] }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const { sessionKey, projectId } = request.query as { sessionKey?: string; projectId?: string };
+    if (!sessionKey) return reply.send({ token: null, turns: [], profile: {} });
+    // Project-scoped visibility gate (no projectId = global avatar, always allowed).
+    if (projectId) {
+      const proj = await db.query.projects.findFirst({
+        where: eq(projects.id, projectId),
+        columns: { visibility: true, created_by: true },
+      }).catch(() => null);
+      if (!proj || !avatarProjectAllowed(proj, request.dbUser?.id ?? null)) {
+        return reply.code(403).send({ message: 'Forbidden' });
+      }
+    }
+    const token = signMemoryToken(projectId ?? 'global', sessionKey);
     try {
       const [turns, profile] = await Promise.all([getTurns(sessionKey), getProfile(sessionKey)]);
-      return reply.send({ turns, profile });
+      return reply.send({ token, turns, profile });
     } catch {
-      return reply.send({ turns: [], profile: {} });
+      return reply.send({ token, turns: [], profile: {} });
     }
   });
 
   app.post('/api/v1/avatar/memory', async (request: FastifyRequest, reply: FastifyReply) => {
     const parsed = MemorySchema.safeParse(request.body);
     if (!parsed.success) return reply.send({ ok: false });
-    const { sessionKey, characterId, projectId, turns } = parsed.data;
+    const { token, sessionKey, characterId, projectId, turns } = parsed.data;
+    // The capability token (minted by the gated GET) authorizes writes to THIS session only.
+    const payload = verifyMemoryToken(token);
+    if (!payload || payload.s !== sessionKey || payload.p !== (projectId ?? 'global')) {
+      return reply.code(403).send({ ok: false });
+    }
     try {
       await saveTurns(sessionKey, characterId ?? DEFAULT_CHARACTER_ID, projectId ?? null, turns as Turn[]);
       extractAndSaveFacts(sessionKey, turns as Turn[]).catch(() => {});
