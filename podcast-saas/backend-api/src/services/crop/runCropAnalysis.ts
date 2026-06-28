@@ -23,6 +23,7 @@ import { db, video_files } from '../../db/index.js';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import { logger } from '../../lib/logger.js';
 import { processVideoCrop } from './cropProcessor.js';
+import { enqueueJob } from '../../queue/index.js';
 
 function sourceHash(storageKey: string, fileSize: number | null, durationSec: number | null): string {
   return createHash('sha256')
@@ -43,13 +44,7 @@ const STALE_CLAIM_MS = 20 * 60 * 1000;
  * Skips silently if the crop is already up to date or already running.
  */
 export function enqueueCropAnalysis(videoFileId: string): void {
-  if (inFlight.has(videoFileId)) return;
-  inFlight.add(videoFileId);
-  setImmediate(() => {
-    runCropAnalysis(videoFileId)
-      .catch((err) => logger.warn({ err, videoFileId }, 'crop analysis failed'))
-      .finally(() => inFlight.delete(videoFileId));
-  });
+  enqueueJob('crop', { videoFileId });
 }
 
 /** Enqueue crop for every main (non-broll) video in a project. */
@@ -62,6 +57,19 @@ export async function enqueueCropForProject(projectId: string): Promise<void> {
 }
 
 export async function runCropAnalysis(videoFileId: string): Promise<void> {
+  // Process-local fast-path so two in-process triggers don't both hit the DB claim; the
+  // authoritative cross-instance guard is the CAS claim inside runCropAnalysisInner. Lives
+  // in the handler (not the producer) so the queue producer stays a thin enqueue.
+  if (inFlight.has(videoFileId)) return;
+  inFlight.add(videoFileId);
+  try {
+    await runCropAnalysisInner(videoFileId);
+  } finally {
+    inFlight.delete(videoFileId);
+  }
+}
+
+async function runCropAnalysisInner(videoFileId: string): Promise<void> {
   const storage = getStorageAdapter();
 
   const video = await db.query.video_files.findFirst({ where: eq(video_files.id, videoFileId) });

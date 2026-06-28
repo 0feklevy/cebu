@@ -8,8 +8,8 @@ import { uploadStreamWithFallback } from '../../services/storage/uploadStreamWit
 import { deleteWithFallback, deleteWithPrefixFallback } from '../../services/storage/deleteWithFallback.js';
 import { logger } from '../../lib/logger.js';
 import { randomUUID } from 'crypto';
-import { runVideoTranscode } from '../../services/video/runVideoTranscode.js';
 import { enqueueCropForProject } from '../../services/crop/runCropAnalysis.js';
+import { enqueueJob } from '../../queue/index.js';
 
 /**
  * Kick off background processing for a freshly-uploaded (or replaced) video on the WRITE
@@ -19,11 +19,7 @@ import { enqueueCropForProject } from '../../services/crop/runCropAnalysis.js';
  * buildPlayerConfig on every read/preview (review perf-002); they belong on the write path.
  */
 function enqueueVideoProcessing(videoFileId: string): void {
-  setImmediate(() => {
-    runVideoTranscode(videoFileId).catch((err) => {
-      logger.warn({ err, video_file_id: videoFileId }, 'In-process HLS transcode failed');
-    });
-  });
+  enqueueJob('transcode', { videoFileId });
 }
 
 const TEN_GB = 10 * 1024 * 1024 * 1024;
@@ -546,12 +542,7 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
         .where(eq(video_files.id, videoFile.id));
 
       console.log(`[HLS] Retranscode requested  video_file_id=${videoFile.id}`);
-      setImmediate(() => {
-        runVideoTranscode(videoFile.id).catch((err) => {
-          console.error(`[HLS] Retranscode failed:`, err);
-          logger.warn({ err, video_file_id: videoFile.id }, 'Retranscode failed');
-        });
-      });
+      enqueueJob('transcode', { videoFileId: videoFile.id });
 
       return reply.send({ queued: true, video_file_id: videoFile.id });
     },
