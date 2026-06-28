@@ -16,7 +16,7 @@ import { and, or, eq, isNull } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { uploadWithFallback } from '../../services/storage/uploadWithFallback.js';
 import { projects, avatar_visuals, admin_settings, users } from '../../db/schema.js';
-import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
+import { firebaseAuthMiddleware, firebaseAuthOptionalMiddleware } from '../../middleware/firebase-auth.js';
 import {
   getSessionToken, isAnamConfigured, listAnamResource, upsertVideoPersona,
   enrichAvatarConfigFromAnam, buildAvatarDisplay,
@@ -54,13 +54,21 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
   }));
 
   // ── Public: start an avatar session (applies the video's saved persona config) ─
-  app.post('/api/v1/avatar/start', async (request: FastifyRequest, reply: FastifyReply) => {
+  app.post('/api/v1/avatar/start', { preHandler: [firebaseAuthOptionalMiddleware] }, async (request: FastifyRequest, reply: FastifyReply) => {
     const body = (request.body ?? {}) as { character_id?: string; projectId?: string };
     let cfg: AvatarPersonaConfig | undefined;
     let apiKey: string | undefined;
     if (body.projectId) {
-      const project = await db.query.projects.findFirst({ where: eq(projects.id, body.projectId), columns: { avatar_config: true } }).catch(() => null);
-      cfg = (project?.avatar_config as AvatarPersonaConfig | null) ?? undefined;
+      const project = await db.query.projects.findFirst({ where: eq(projects.id, body.projectId), columns: { avatar_config: true, visibility: true, created_by: true } }).catch(() => null);
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+      // A PRIVATE project's avatar/persona isn't anonymously accessible (review security-004).
+      // Public/unlisted stay open (unlisted is reached via a share link, where the avatar is
+      // part of viewing); the owner is always allowed.
+      const isOwner = !!request.dbUser?.id && project.created_by === request.dbUser.id;
+      if (project.visibility === 'private' && !isOwner) {
+        return reply.code(404).send({ message: 'Project not found' });
+      }
+      cfg = (project.avatar_config as AvatarPersonaConfig | null) ?? undefined;
       apiKey = await resolveAnamKeyForProject(body.projectId).catch(() => undefined);
       // Resolve the selected avatar's display name/image (and default voice) from
       // Anam when they were not persisted — otherwise the popup falls back to the
