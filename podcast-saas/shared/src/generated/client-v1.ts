@@ -685,6 +685,11 @@ export class ClientV1Api {
     return this.requestMultipart(`/api/v1/projects/${projectId}/images`, formData);
   }
 
+  // Replace an existing image's media (keeps the same id, crop, and timeline references).
+  replaceImage(projectId: string, imageId: string, formData: FormData): Promise<ImageFile> {
+    return this.requestMultipart(`/api/v1/projects/${projectId}/images/${imageId}/replace`, formData);
+  }
+
   patchImageCrop(
     projectId: string,
     imageId: string,

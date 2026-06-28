@@ -608,6 +608,26 @@ export function VideoEditor({ projectId }: Props) {
     }
   }, [projectId]);
 
+  // Replace an existing image's media — Library "Replace", available on every image.
+  const replaceImageInputRef = useRef<HTMLInputElement>(null);
+  const replaceImageTargetId = useRef<string | null>(null);
+  const handleReplaceImageFileChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    const imageId = replaceImageTargetId.current;
+    e.target.value = '';
+    if (!file || !imageId) return;
+    setImgUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const updated = await api.replaceImage(projectId, imageId, fd);
+      setImages(prev => prev.map(i => (i.id === updated.id ? updated : i)));
+    } catch { /* ignore */ } finally {
+      setImgUploading(false);
+      replaceImageTargetId.current = null;
+    }
+  }, [projectId]);
+
   const handleCropApprove = useCallback(async (crop: { crop_x: number; crop_y: number; crop_w: number; crop_h: number }) => {
     if (!pendingCropImage) return;
     try {
@@ -978,6 +998,13 @@ export function VideoEditor({ projectId }: Props) {
                     className="hidden"
                     onChange={handleImageFileChange}
                   />
+                  <input
+                    ref={replaceImageInputRef}
+                    type="file"
+                    accept="image/jpeg,image/jpg,image/png,image/webp,image/gif"
+                    className="hidden"
+                    onChange={handleReplaceImageFileChange}
+                  />
                 </div>
 
                 {/* Crop editor modal */}
@@ -1037,6 +1064,13 @@ export function VideoEditor({ projectId }: Props) {
                           </button>
                         </div>
                       </div>
+                      <button
+                        onClick={() => { replaceImageTargetId.current = img.id; replaceImageInputRef.current?.click(); }}
+                        title="Replace with a new version"
+                        className="absolute right-10 top-2 flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary"
+                      >
+                        <RefreshCw size={14} strokeWidth={1.9} aria-hidden />
+                      </button>
                       <button
                         onClick={() => handleDeleteImage(img.id)}
                         disabled={deletingImgId === img.id}
