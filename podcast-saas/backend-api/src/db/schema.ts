@@ -20,6 +20,9 @@ import { sql } from 'drizzle-orm';
 // ── Enums ─────────────────────────────────────────────────────────────────────
 
 export const projectTierEnum = pgEnum('project_tier', ['standard', 'premium', 'hybrid']);
+// Per-project visibility (migration 036): private = owner only; unlisted = owner or a valid
+// share link; public = anyone by id. Drafts default to private (not world-readable by id).
+export const projectVisibilityEnum = pgEnum('project_visibility', ['private', 'unlisted', 'public']);
 export const projectStatusEnum = pgEnum('project_status', [
   'draft',
   'ingesting',
@@ -164,6 +167,9 @@ export const projects = pgTable('projects', {
   pacing: pacingEnum('pacing'),
   emotional_style: emotionalStyleEnum('emotional_style'),
   status: projectStatusEnum('status').default('draft').notNull(),
+  // Access control (migration 036). New projects are private by default; existing rows were
+  // backfilled to 'public' to preserve prior by-id access. See requireProjectAccess.
+  visibility: projectVisibilityEnum('visibility').notNull().default('private'),
   share_token:       text('share_token').unique(),
   share_enabled_at:  timestamp('share_enabled_at', { withTimezone: true }),
   // Pay-to-unlock (migration 024)

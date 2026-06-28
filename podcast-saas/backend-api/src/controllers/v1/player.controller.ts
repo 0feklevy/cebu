@@ -6,6 +6,7 @@ import { buildPlayerConfig } from '../../services/buildPlayerConfig.js';
 import { firebaseAuthMiddleware, firebaseAuthOptionalMiddleware } from '../../middleware/firebase-auth.js';
 import { BillingService } from '../../services/billing/BillingService.js';
 import { enqueueCaptionsForProject, getCaptionStatusForProject } from '../../services/captions/CaptionService.js';
+import { requireProjectAccess } from '../../services/projectAccess.js';
 
 // Public (optional-auth) endpoint — returns player config for a project's viewer
 // page, or a `locked` paywall stub when the project is paid and the viewer has
@@ -17,6 +18,14 @@ export async function registerPlayerRoutes(app: FastifyInstance): Promise<void> 
     { preHandler: [firebaseAuthOptionalMiddleware] },
     async (request, reply: FastifyReply) => {
       const projectId = request.params.id;
+      const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+      // Visibility gate: a draft/private project isn't world-readable by id. 404 (not 403)
+      // so its existence isn't revealed. Owner (auth) and public projects pass.
+      if (!requireProjectAccess(project, request.dbUser?.id ?? null)) {
+        return reply.code(404).send({ message: 'Project not found' });
+      }
+
       const pricing = await BillingService.getPricing('project', projectId);
       if (!pricing) return reply.code(404).send({ message: 'Project not found' });
 
@@ -46,6 +55,12 @@ export async function registerPlayerRoutes(app: FastifyInstance): Promise<void> 
     { preHandler: [firebaseAuthOptionalMiddleware] },
     async (request, reply: FastifyReply) => {
       const projectId = request.params.id;
+      const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+      if (!requireProjectAccess(project, request.dbUser?.id ?? null)) {
+        return reply.code(404).send({ message: 'Project not found' });
+      }
+
       const pricing = await BillingService.getPricing('project', projectId);
       if (!pricing) return reply.code(404).send({ message: 'Project not found' });
 

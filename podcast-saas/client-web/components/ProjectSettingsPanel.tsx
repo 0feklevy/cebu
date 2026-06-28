@@ -140,6 +140,14 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
     } catch { /* ignore */ } finally { setSavingMeta(false); }
   };
 
+  const [savingVisibility, setSavingVisibility] = useState(false);
+  const changeVisibility = async (v: 'private' | 'unlisted' | 'public') => {
+    setSavingVisibility(true);
+    try {
+      onProjectChange(await api.setProjectVisibility(projectId, v));
+    } catch { /* ignore */ } finally { setSavingVisibility(false); }
+  };
+
   // Generate a NEW thumbnail IMAGE with an image model (gpt-image-1) from the
   // video's known info (title + SEO summary/keywords) + the optional hint.
   const genAiThumb = async () => {
@@ -623,6 +631,24 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
               <div style={sectionHeaderStyle}>
                 <span style={sectionKickerStyle}>Access</span>
                 <h3 style={sectionTitleStyle}>Access</h3>
+              </div>
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#6b7280', marginBottom: 6 }}>
+                  Who can view this video
+                </label>
+                <select
+                  value={project?.visibility ?? 'private'}
+                  onChange={(e) => changeVisibility(e.target.value as 'private' | 'unlisted' | 'public')}
+                  disabled={savingVisibility}
+                  style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 13, background: '#fff' }}
+                >
+                  <option value="private">Private — only you</option>
+                  <option value="unlisted">Unlisted — anyone with the share link</option>
+                  <option value="public">Public — anyone with the link</option>
+                </select>
+                <p style={{ fontSize: 10, color: '#9ca3af', marginTop: 5 }}>
+                  Private drafts can&apos;t be opened by their id. Share links still work for unlisted/private.
+                </p>
               </div>
               <LockPriceControl contentType="project" contentId={projectId} bordered={false} />
             </div>

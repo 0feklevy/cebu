@@ -14,6 +14,7 @@ export interface Project {
   title: string | null;
   topic: string | null;
   status: string;
+  visibility?: 'private' | 'unlisted' | 'public';
   created_by: string | null;
   share_token?: string | null;
   access_type?: 'free' | 'paid';
@@ -442,6 +443,12 @@ export class ClientV1Api {
 
   renameProject(projectId: string, title: string): Promise<Project> {
     return this.request(`/api/v1/projects/${projectId}`, { method: 'PATCH', body: { title } });
+  }
+
+  // Set who can view this project by id: private (owner only), unlisted (owner or a valid
+  // share link), or public (anyone). Drafts default to private.
+  setProjectVisibility(projectId: string, visibility: 'private' | 'unlisted' | 'public'): Promise<Project> {
+    return this.request(`/api/v1/projects/${projectId}`, { method: 'PATCH', body: { visibility } });
   }
 
   updateProjectMeta(projectId: string, body: { title?: string; description?: string | null }): Promise<Project> {
