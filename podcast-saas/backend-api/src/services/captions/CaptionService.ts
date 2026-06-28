@@ -5,7 +5,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { promisify } from 'util';
 import Groq from 'groq-sdk';
-import { eq } from 'drizzle-orm';
+import { eq, and, or, ne, lt, isNull } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { video_files } from '../../db/schema.js';
 import { logger } from '../../lib/logger.js';
@@ -22,6 +22,9 @@ const CAPTION_STATUS = {
   failed: 'failed',
 } as const;
 const FAILED_RETRY_MS = 10 * 60 * 1000;
+// A 'processing' claim older than this is treated as stale (a crashed worker) and may be
+// re-claimed by another instance. Generous vs. the longest plausible transcription.
+const STALE_CLAIM_MS = 20 * 60 * 1000;
 // Groq audio upload limit (~25 MB). 16 kHz mono mp3 ≈ 0.5 MB/min → ~50 min of audio.
 const GROQ_MAX_BYTES = 24 * 1024 * 1024;
 
@@ -38,16 +41,36 @@ function sourceHash(video: VideoRow): string {
     .digest('hex');
 }
 
+/**
+ * Pure skip decision (cluster-aware). Separated out so it can be unit-tested without a
+ * full video row. `processing` is skipped only while the claim is *fresh* — a stale claim
+ * (a crashed worker, older than STALE_CLAIM_MS) is NOT skipped, so another instance can
+ * reclaim it (the prior logic skipped 'processing' forever, stranding crashed jobs).
+ */
+export function shouldSkipCaption(args: {
+  status: string | null;
+  hashMatches: boolean;
+  updatedAtMs: number;
+  force?: boolean;
+  now?: number;
+}): boolean {
+  const { status, hashMatches, updatedAtMs, force = false, now = Date.now() } = args;
+  if (force) return false;
+  if (!hashMatches) return false; // source changed → regenerate
+  if (status === CAPTION_STATUS.ready) return true;
+  if (status === CAPTION_STATUS.processing) return now - updatedAtMs < STALE_CLAIM_MS;
+  if (status === CAPTION_STATUS.failed) return now - updatedAtMs < FAILED_RETRY_MS;
+  return false;
+}
+
 /** Whether a (re)generation should be skipped. `force` bypasses the ready/failed-window gates. */
 function shouldSkip(video: VideoRow, hash: string, force = false): boolean {
-  if (force) return false;
-  if (video.captions_source_hash !== hash) return false; // source changed → regenerate
-  if (video.captions_status === CAPTION_STATUS.ready || video.captions_status === CAPTION_STATUS.processing) return true;
-  if (video.captions_status === CAPTION_STATUS.failed) {
-    const updatedAt = video.captions_updated_at?.getTime() ?? 0;
-    return Date.now() - updatedAt < FAILED_RETRY_MS;
-  }
-  return false;
+  return shouldSkipCaption({
+    status: video.captions_status,
+    hashMatches: video.captions_source_hash === hash,
+    updatedAtMs: video.captions_updated_at?.getTime() ?? 0,
+    force,
+  });
 }
 
 export function captionPublicUrl(key: string | null | undefined): string | null {
@@ -200,12 +223,33 @@ async function runCaptionJob(videoId: string, opts: { force?: boolean } = {}): P
     const hash = sourceHash(video);
     if (shouldSkip(video, hash, opts.force)) return;
 
-    await db.update(video_files).set({
+    // Cluster-safe claim (review arch-008): atomically flip to 'processing' only if no
+    // other worker already holds it, so multiple app instances don't transcribe the same
+    // video. RETURNING tells us whether WE won; an empty result means another instance is
+    // already processing it, so we bow out. A stale 'processing' (a crashed worker, older
+    // than STALE_CLAIM_MS) is reclaimable; `force` always re-claims. This replaces the
+    // process-local `inFlight` Set as the authoritative guard (the Set stays a fast-path).
+    const staleBefore = new Date(Date.now() - STALE_CLAIM_MS);
+    const claimed = await db.update(video_files).set({
       captions_status: CAPTION_STATUS.processing,
       captions_error: null,
       captions_source_hash: hash,
       captions_updated_at: new Date(),
-    }).where(eq(video_files.id, video.id));
+    }).where(opts.force
+      ? eq(video_files.id, video.id)
+      : and(
+          eq(video_files.id, video.id),
+          or(
+            isNull(video_files.captions_status),
+            ne(video_files.captions_status, CAPTION_STATUS.processing),
+            lt(video_files.captions_updated_at, staleBefore),
+          ),
+        ),
+    ).returning({ id: video_files.id });
+    if (claimed.length === 0) {
+      logger.debug({ videoId: video.id }, '[captions] already claimed by another worker — skipping');
+      return;
+    }
 
     // Prefer the original source; fall back to the HLS rendition (always public)
     // so captions still generate when the source has been pruned.
