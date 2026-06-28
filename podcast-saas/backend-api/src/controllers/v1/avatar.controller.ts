@@ -43,6 +43,20 @@ function asPersonaConfig(v: unknown): AvatarPersonaConfig {
   return {};
 }
 
+/**
+ * Avatar viewer endpoints stay open to anonymous viewers of public/unlisted projects
+ * (unlisted is reached via a share link, where the avatar is part of viewing), but a
+ * PRIVATE project's avatar surface is owner-only (review security-004). Note this is
+ * intentionally more permissive than requireProjectAccess (which denies unlisted-by-id).
+ */
+function avatarProjectAllowed(
+  project: { visibility: string | null; created_by: string | null },
+  userId: string | null | undefined,
+): boolean {
+  if (project.visibility !== 'private') return true;
+  return !!userId && project.created_by === userId;
+}
+
 export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> {
   // ── Public: health ─────────────────────────────────────────────────────────
   app.get('/api/v1/avatar/health', async () => ({
@@ -61,11 +75,7 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
     if (body.projectId) {
       const project = await db.query.projects.findFirst({ where: eq(projects.id, body.projectId), columns: { avatar_config: true, visibility: true, created_by: true } }).catch(() => null);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
-      // A PRIVATE project's avatar/persona isn't anonymously accessible (review security-004).
-      // Public/unlisted stay open (unlisted is reached via a share link, where the avatar is
-      // part of viewing); the owner is always allowed.
-      const isOwner = !!request.dbUser?.id && project.created_by === request.dbUser.id;
-      if (project.visibility === 'private' && !isOwner) {
+      if (!avatarProjectAllowed(project, request.dbUser?.id ?? null)) {
         return reply.code(404).send({ message: 'Project not found' });
       }
       cfg = (project.avatar_config as AvatarPersonaConfig | null) ?? undefined;
@@ -142,7 +152,17 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
   // ── Public: read the basic + global extended library for a project (viewer) ─
   app.get<{ Params: { id: string } }>(
     '/api/v1/avatar/projects/:id/library',
+    { preHandler: [firebaseAuthOptionalMiddleware] },
     async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      // A private project's avatar library isn't anonymously readable (review security-004).
+      const proj = await db.query.projects.findFirst({
+        where: eq(projects.id, request.params.id),
+        columns: { visibility: true, created_by: true },
+      }).catch(() => null);
+      if (!proj) return reply.code(404).send({ message: 'Project not found' });
+      if (!avatarProjectAllowed(proj, request.dbUser?.id ?? null)) {
+        return reply.code(404).send({ message: 'Project not found' });
+      }
       await syncBasicLibrary(request.params.id).catch(() => {});
       const q = request.query as { scope?: string; type?: string; q?: string; page?: string };
       const result = await listVisuals({
