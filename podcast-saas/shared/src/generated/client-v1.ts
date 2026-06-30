@@ -353,6 +353,86 @@ export interface PlaylistPlayConfig {
   items: PlaylistPlayItem[];
 }
 
+// ── Branching Interactive Videos (migration 037) ──────────────────────────────
+export type BranchDestinationType =
+  | 'sequence' | 'project' | 'playlist' | 'external_url'
+  | 'simulation_full' | 'quiz' | 'back' | 'restart' | 'end';
+
+export interface BranchSequence {
+  id: string;
+  project_id: string;
+  label: string;
+  is_entry: boolean;
+  sort_order: number;
+  graph_x: number;
+  graph_y: number;
+  created_at: string;
+}
+
+export interface BranchChoicePoint {
+  id: string;
+  project_id: string;
+  sequence_id: string;
+  lead_in_sec: number;
+  timeout_sec: number | null;
+  behavior: 'continue' | 'pause' | 'loop';
+  prompt: string | null;
+  layout: string;
+  default_edge_id: string | null;
+  created_at: string;
+}
+
+export interface BranchEdge {
+  id: string;
+  project_id: string;
+  choice_point_id: string | null;
+  label: string | null;
+  description: string | null;
+  thumbnail_url: string | null;
+  sort_order: number;
+  destination_type: BranchDestinationType;
+  dest_sequence_id: string | null;
+  dest_project_id: string | null;
+  dest_playlist_id: string | null;
+  dest_url: string | null;
+  dest_simulation_id: string | null;
+  dest_quiz_id: string | null;
+  trigger_event: string | null;
+  trigger_match: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface BranchVideoAssignment {
+  id: string;
+  filename: string;
+  duration_sec: number | null;
+  sequence_id: string | null;
+  sequence_order: number | null;
+}
+
+export interface BranchGraph {
+  sequences: BranchSequence[];
+  choice_points: BranchChoicePoint[];
+  edges: BranchEdge[];
+  videos: BranchVideoAssignment[];
+}
+
+export interface BranchValidationIssue {
+  level: 'error' | 'warning';
+  code: string;
+  message: string;
+  sequence_id?: string;
+  edge_id?: string;
+}
+
+export interface BranchAnalytics {
+  total_events: number;
+  sessions: number;
+  completes: number;
+  edge_choice_counts: Record<string, number>;
+  sequence_enter_counts: Record<string, number>;
+}
+
 export class ClientV1Api {
   private config: ApiConfig;
 
@@ -635,6 +715,88 @@ export class ClientV1Api {
 
   deleteSection(projectId: string, sectionId: string): Promise<void> {
     return this.request(`/api/v1/projects/${projectId}/sections/${sectionId}`, { method: 'DELETE' });
+  }
+
+  // ── Branching Interactive Videos ──────────────────────────────────────────
+  getBranching(projectId: string): Promise<BranchGraph> {
+    return this.request(`/api/v1/projects/${projectId}/branching`);
+  }
+
+  createBranchSequence(
+    projectId: string,
+    body: { label?: string; is_entry?: boolean; sort_order?: number; graph_x?: number; graph_y?: number } = {},
+  ): Promise<BranchSequence> {
+    return this.request(`/api/v1/projects/${projectId}/branch/sequences`, { method: 'POST', body });
+  }
+
+  updateBranchSequence(
+    projectId: string,
+    sequenceId: string,
+    body: Partial<{ label: string; is_entry: boolean; sort_order: number; graph_x: number; graph_y: number }>,
+  ): Promise<BranchSequence> {
+    return this.request(`/api/v1/projects/${projectId}/branch/sequences/${sequenceId}`, { method: 'PATCH', body });
+  }
+
+  deleteBranchSequence(projectId: string, sequenceId: string): Promise<void> {
+    return this.request(`/api/v1/projects/${projectId}/branch/sequences/${sequenceId}`, { method: 'DELETE' });
+  }
+
+  assignVideoToSequence(
+    projectId: string,
+    body: { video_file_id: string; sequence_id: string | null; sequence_order?: number | null },
+  ): Promise<{ id: string; sequence_id: string | null; sequence_order: number | null }> {
+    return this.request(`/api/v1/projects/${projectId}/branch/assign`, { method: 'POST', body });
+  }
+
+  createChoicePoint(
+    projectId: string,
+    body: { sequence_id: string; lead_in_sec?: number; timeout_sec?: number | null; behavior?: 'continue' | 'pause' | 'loop'; prompt?: string | null; layout?: string },
+  ): Promise<BranchChoicePoint> {
+    return this.request(`/api/v1/projects/${projectId}/branch/choice-points`, { method: 'POST', body });
+  }
+
+  updateChoicePoint(
+    projectId: string,
+    choicePointId: string,
+    body: Partial<{ lead_in_sec: number; timeout_sec: number | null; behavior: 'continue' | 'pause' | 'loop'; prompt: string | null; layout: string; default_edge_id: string | null }>,
+  ): Promise<BranchChoicePoint> {
+    return this.request(`/api/v1/projects/${projectId}/branch/choice-points/${choicePointId}`, { method: 'PATCH', body });
+  }
+
+  deleteChoicePoint(projectId: string, choicePointId: string): Promise<void> {
+    return this.request(`/api/v1/projects/${projectId}/branch/choice-points/${choicePointId}`, { method: 'DELETE' });
+  }
+
+  createBranchEdge(
+    projectId: string,
+    body: {
+      choice_point_id?: string | null; label?: string | null; description?: string | null; thumbnail_url?: string | null; sort_order?: number;
+      destination_type: BranchDestinationType;
+      dest_sequence_id?: string | null; dest_project_id?: string | null; dest_playlist_id?: string | null; dest_url?: string | null; dest_simulation_id?: string | null; dest_quiz_id?: string | null;
+      trigger_event?: string | null; trigger_match?: Record<string, unknown> | null;
+    },
+  ): Promise<BranchEdge> {
+    return this.request(`/api/v1/projects/${projectId}/branch/edges`, { method: 'POST', body });
+  }
+
+  updateBranchEdge(projectId: string, edgeId: string, body: Partial<Omit<BranchEdge, 'id' | 'project_id' | 'created_at'>>): Promise<BranchEdge> {
+    return this.request(`/api/v1/projects/${projectId}/branch/edges/${edgeId}`, { method: 'PATCH', body });
+  }
+
+  deleteBranchEdge(projectId: string, edgeId: string): Promise<void> {
+    return this.request(`/api/v1/projects/${projectId}/branch/edges/${edgeId}`, { method: 'DELETE' });
+  }
+
+  validateBranching(projectId: string): Promise<{ issues: BranchValidationIssue[] }> {
+    return this.request(`/api/v1/projects/${projectId}/branch/validate`);
+  }
+
+  clearBranching(projectId: string): Promise<void> {
+    return this.request(`/api/v1/projects/${projectId}/branching`, { method: 'DELETE' });
+  }
+
+  getBranchAnalytics(projectId: string): Promise<BranchAnalytics> {
+    return this.request(`/api/v1/projects/${projectId}/branch/analytics`);
   }
 
   // ── B-Roll ────────────────────────────────────────────────────────────────

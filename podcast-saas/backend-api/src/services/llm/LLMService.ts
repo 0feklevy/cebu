@@ -318,7 +318,37 @@ export class LLMService {
   }
 
   private normalizePythonLiterals(s: string): string {
-    return s.replace(/\bFalse\b/g, 'false').replace(/\bTrue\b/g, 'true').replace(/\bNone\b/g, 'null');
+    // Convert bare Python literals True/False/None → JSON true/false/null, but ONLY outside of
+    // string values. A blanket global replace also rewrote these tokens inside string contents
+    // (e.g. a generated bridge's `mainBody` JS source, or any comment/label), silently
+    // corrupting the saved script (backend-003). This walks the text tracking string context so
+    // only structural literals are touched.
+    let out = '';
+    let inString = false;
+    let quote = '';
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      if (inString) {
+        out += ch;
+        if (ch === '\\') {                       // copy the escaped char verbatim
+          if (i + 1 < s.length) { out += s[i + 1]; i++; }
+          continue;
+        }
+        if (ch === quote) inString = false;
+        continue;
+      }
+      if (ch === '"' || ch === "'") { inString = true; quote = ch; out += ch; continue; }
+      // Outside a string: replace a bare literal only when it isn't part of a longer identifier.
+      const prevAlnum = i > 0 && /[A-Za-z0-9_]/.test(s[i - 1]);
+      const m = !prevAlnum ? /^(True|False|None)\b/.exec(s.slice(i)) : null;
+      if (m) {
+        out += m[1] === 'True' ? 'true' : m[1] === 'False' ? 'false' : 'null';
+        i += m[1].length - 1;
+        continue;
+      }
+      out += ch;
+    }
+    return out;
   }
 
   private stripTrailingCommas(s: string): string {

@@ -439,7 +439,16 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
         logger.warn({ err, prefix: sim.storage_prefix }, 'Could not delete simulation storage'),
       );
 
-      await db.delete(simulations).where(eq(simulations.id, sim.id));
+      // Clear the denormalized sim fields on any sections that referenced this sim BEFORE
+      // deleting it, so buildPlayerConfig stops emitting a now-dead simulation_url to the
+      // player. The FK only nulls simulation_id; the cached url/script/meta would otherwise
+      // linger (database-004). Both in one transaction so they can't diverge.
+      await db.transaction(async (tx) => {
+        await tx.update(timeline_sections)
+          .set({ simulation_url: null, sim_script: null, sim_meta: null })
+          .where(eq(timeline_sections.simulation_id, sim.id));
+        await tx.delete(simulations).where(eq(simulations.id, sim.id));
+      });
       return reply.code(204).send();
     },
   );

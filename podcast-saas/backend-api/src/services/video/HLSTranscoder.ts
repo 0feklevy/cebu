@@ -79,29 +79,48 @@ export async function probeMediaDuration(inputPath: string): Promise<number> {
   }));
 }
 
+// Run `fn` over `items` with at most `limit` in flight, collecting settled results in order.
+// Used to bound the HLS segment-upload fan-out: a long video's tier can be ~900 segments, and
+// reading+uploading them all at once held ~2.5 GB in heap and risked OOM (perf-002).
+async function mapSettledLimited<T>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<void>,
+): Promise<PromiseSettledResult<void>[]> {
+  const results: PromiseSettledResult<void>[] = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    for (let idx = next++; idx < items.length; idx = next++) {
+      try { await fn(items[idx]); results[idx] = { status: 'fulfilled', value: undefined }; }
+      catch (reason) { results[idx] = { status: 'rejected', reason }; }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
 async function uploadDir(
   dir: string,
   storagePrefix: string,
   storage: StorageService,
 ): Promise<void> {
   const entries = await readdir(dir, { withFileTypes: true });
-  // allSettled (not all): wait for every upload to finish before returning so no
-  // in-flight upload is left floating to race the caller's rm(workDir) cleanup.
-  const results = await Promise.allSettled(
-    entries.map(async (entry) => {
-      if (entry.isDirectory()) {
-        await uploadDir(join(dir, entry.name), `${storagePrefix}/${entry.name}`, storage);
-      } else {
-        const data = await readFile(join(dir, entry.name));
-        const contentType = entry.name.endsWith('.m3u8')
-          ? 'application/vnd.apple.mpegurl'
-          : 'video/mp2t';
-        // R2-first with durable local-disk fallback (read-only token → AccessDenied).
-        // Locally-stored segments are served via /hls-proxy → /hls-public fallback.
-        await uploadWithFallback(`${storagePrefix}/${entry.name}`, data, contentType);
-      }
-    }),
-  );
+  // Bounded fan-out (not Promise.all over every entry): wait for every upload to finish so no
+  // in-flight upload races the caller's rm(workDir) cleanup, but cap concurrency so a big tier
+  // doesn't buffer hundreds of segments into heap at once (perf-002).
+  const results = await mapSettledLimited(entries, 12, async (entry) => {
+    if (entry.isDirectory()) {
+      await uploadDir(join(dir, entry.name), `${storagePrefix}/${entry.name}`, storage);
+    } else {
+      const data = await readFile(join(dir, entry.name));
+      const contentType = entry.name.endsWith('.m3u8')
+        ? 'application/vnd.apple.mpegurl'
+        : 'video/mp2t';
+      // R2-first with durable local-disk fallback (read-only token → AccessDenied).
+      // Locally-stored segments are served via /hls-proxy → /hls-public fallback.
+      await uploadWithFallback(`${storagePrefix}/${entry.name}`, data, contentType);
+    }
+  });
   const failed = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
   if (failed.length > 0) {
     const reasons = failed.slice(0, 3).map((r) => String(r.reason)).join('; ');

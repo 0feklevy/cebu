@@ -5,6 +5,7 @@ import type { RefObject } from 'react';
 import type { SimulationOverlay, TimelineSeg } from './types';
 
 type MarkerWithGlobal = SimulationOverlay & { globalStart: number; globalEnd: number };
+type BrollMarker = { id: string; globalStart: number; globalEnd: number };
 
 interface Props {
   playing: boolean;
@@ -13,6 +14,7 @@ interface Props {
   totalDuration: number;
   simMarkers: MarkerWithGlobal[];
   videoMarkers: MarkerWithGlobal[];
+  brollMarkers: BrollMarker[];
   progressFillRef:  RefObject<HTMLDivElement | null>;
   progressThumbRef: RefObject<HTMLDivElement | null>;
   progressBufRef:   RefObject<HTMLDivElement | null>;
@@ -48,6 +50,7 @@ export function ControlsBar({
   totalDuration,
   simMarkers,
   videoMarkers,
+  brollMarkers,
   progressFillRef,
   progressThumbRef,
   progressBufRef,
@@ -87,6 +90,20 @@ export function ControlsBar({
         <div ref={progressTrackRef} className="viewer-progress-track">
           <div ref={progressBufRef}  className="viewer-progress-buf" />
           <div ref={progressFillRef} className="viewer-progress-fill" />
+
+          {/* B-roll markers — AI b-roll & clip overlays, teal band */}
+          <div className="viewer-seg-markers">
+            {brollMarkers.map((s) => (
+              <div
+                key={s.id}
+                className="viewer-seg-marker viewer-seg-marker--broll"
+                style={{
+                  left:  `${(s.globalStart / tot) * 100}%`,
+                  width: `${((s.globalEnd - s.globalStart) / tot) * 100}%`,
+                }}
+              />
+            ))}
+          </div>
 
           {/* Video-type section markers — subtle white, same protrude style */}
           <div className="viewer-seg-markers">

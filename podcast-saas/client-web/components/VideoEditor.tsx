@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { AlertTriangle, Clapperboard, Maximize2, Minimize2, Music, Plus, Redo2, RefreshCw, Sparkles, Trash2, Undo2 } from 'lucide-react';
+import { AlertTriangle, Clapperboard, GitBranch, Maximize2, Minimize2, Music, Plus, Redo2, RefreshCw, Sparkles, Trash2, Undo2 } from 'lucide-react';
 import { useAuth } from '../lib/firebase';
 import { api } from '../lib/api';
 import { VideoPlayer } from './VideoPlayer';
@@ -14,6 +14,7 @@ import { BrollPanel } from './BrollPanel';
 import { ConfirmDialog } from './ConfirmDialog';
 import { ImageCropEditor } from './ImageCropEditor';
 import { ExtendedLibraryModal } from './avatar/ExtendedLibraryModal';
+import { BranchingModal } from './branching/BranchingModal';
 import { getAvatarCircles, type AvatarCirclesConfig } from './avatar/avatarApi';
 import type { VideoFile, TimelineSection, Simulation, VideoGenerationJob, ImageFile, AudioFile } from 'shared/src/generated/client-v1';
 
@@ -205,6 +206,7 @@ export function VideoEditor({ projectId }: Props) {
   const [simulations, setSimulations] = useState<Simulation[]>([]);
   const [images, setImages] = useState<ImageFile[]>([]);
   const [showUploader, setShowUploader] = useState(false);
+  const [showBranching, setShowBranching] = useState(false);
   const [showSimUploader, setShowSimUploader] = useState(false);
   const [showImgUploader, setShowImgUploader] = useState(false);
   const [pendingCropImage, setPendingCropImage] = useState<ImageFile | null>(null);
@@ -233,7 +235,10 @@ export function VideoEditor({ projectId }: Props) {
   // Imperative handle to the VideoPlayer — used for timeline seeks
   const playerRef = useRef<VideoPlayerHandle>(null);
   const playerContainerRef = useRef<HTMLDivElement>(null);
+  const previewShellRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [previewViewportSize, setPreviewViewportSize] = useState({ width: 16, height: 9 });
+  const [previewShellSize, setPreviewShellSize] = useState({ width: 0, height: 0 });
 
   // Load the avatar-circles config so the editor preview can show them over b-roll.
   // Re-read it whenever the (sibling) settings panel saves, so toggling Enable +
@@ -678,6 +683,33 @@ export function VideoEditor({ projectId }: Props) {
     return () => document.removeEventListener('fullscreenchange', handler);
   }, []);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const update = () => setPreviewViewportSize({
+      width: Math.max(1, window.innerWidth),
+      height: Math.max(1, window.innerHeight),
+    });
+    update();
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, []);
+
+  useEffect(() => {
+    const node = previewShellRef.current;
+    if (!node) return;
+    const update = () => {
+      const rect = node.getBoundingClientRect();
+      setPreviewShellSize({
+        width: Math.max(0, Math.round(rect.width)),
+        height: Math.max(0, Math.round(rect.height)),
+      });
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(node);
+    return () => ro.disconnect();
+  }, []);
+
   const toggleFullscreen = useCallback(() => {
     if (document.fullscreenElement) {
       document.exitFullscreen();
@@ -690,6 +722,17 @@ export function VideoEditor({ projectId }: Props) {
     setPlayheadSec(globalSec);
     playerRef.current?.seek(globalSec);
   }, []);
+
+  const previewAspect = previewViewportSize.width / Math.max(1, previewViewportSize.height);
+  const previewFrameStyle: React.CSSProperties = (() => {
+    const { width: shellW, height: shellH } = previewShellSize;
+    if (!shellW || !shellH) return { width: '100%', height: '100%' };
+    const shellAspect = shellW / Math.max(1, shellH);
+    if (shellAspect > previewAspect) {
+      return { width: Math.round(shellH * previewAspect), height: shellH };
+    }
+    return { width: shellW, height: Math.round(shellW / previewAspect) };
+  })();
 
   if (loading) {
     return (
@@ -738,54 +781,61 @@ export function VideoEditor({ projectId }: Props) {
             className="min-w-0 flex-1 min-h-[220px] sm:min-h-[280px] min-[900px]:min-h-0 flex flex-col relative"
             style={isFullscreen ? { backgroundColor: '#000', justifyContent: 'center' } : undefined}
           >
-            {hasAnyVideo ? (
-              <VideoPlayer
-                ref={playerRef}
-                clips={clips}
-                timelineDuration={timelineDuration}
-                currentTime={playheadSec}
-                onTimeUpdate={setPlayheadSec}
-                sectionLabel={activeSectionLabel}
-                activeSimSection={activeSimSection}
-                activeBrollSection={activeOverlay ?? null}
-                brollHlsUrl={brollHlsUrl}
-                activeImageSection={activeImageSection}
-                avatarCircles={avatarCircles}
-              />
-            ) : (
-              <div className="flex-1 flex flex-col items-center justify-center bg-black/[0.03] rounded-lg border border-dashed border-border gap-3 text-center px-8">
-                <svg width="40" height="40" viewBox="0 0 40 40" fill="none" className="text-muted-foreground/30" aria-hidden>
-                  <rect x="4" y="8" width="32" height="24" rx="3" stroke="currentColor" strokeWidth="1.5" />
-                  <path d="M16 14l10 6-10 6V14z" fill="currentColor" />
-                </svg>
-                <p className="text-sm text-muted-foreground">No videos yet</p>
+            <div
+              ref={previewShellRef}
+              className={`relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-black ${isFullscreen ? '' : 'rounded-lg shadow-card'}`}
+            >
+              {hasAnyVideo ? (
+                <div className="flex min-h-0 min-w-0 bg-black" style={previewFrameStyle}>
+                  <VideoPlayer
+                    ref={playerRef}
+                    clips={clips}
+                    timelineDuration={timelineDuration}
+                    currentTime={playheadSec}
+                    onTimeUpdate={setPlayheadSec}
+                    sectionLabel={activeSectionLabel}
+                    activeSimSection={activeSimSection}
+                    activeBrollSection={activeOverlay ?? null}
+                    brollHlsUrl={brollHlsUrl}
+                    activeImageSection={activeImageSection}
+                    avatarCircles={avatarCircles}
+                    flush
+                  />
+                </div>
+              ) : (
+                <div className="flex flex-1 flex-col items-center justify-center gap-3 border border-dashed border-white/16 bg-white/[0.03] px-8 text-center">
+                  <svg width="40" height="40" viewBox="0 0 40 40" fill="none" className="text-white/25" aria-hidden>
+                    <rect x="4" y="8" width="32" height="24" rx="3" stroke="currentColor" strokeWidth="1.5" />
+                    <path d="M16 14l10 6-10 6V14z" fill="currentColor" />
+                  </svg>
+                  <p className="text-sm text-white/55">No videos yet</p>
+                  <button
+                    onClick={() => setShowUploader(true)}
+                    className="h-8 rounded-lg bg-primary px-4 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/90 focus-ring"
+                  >
+                    Upload video
+                  </button>
+                </div>
+              )}
+
+              {/* Fullscreen toggle */}
+              {hasAnyVideo && (
                 <button
-                  onClick={() => setShowUploader(true)}
-                  className="h-8 px-4 rounded-lg bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 transition-colors focus-ring"
+                  onClick={toggleFullscreen}
+                  title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen (F)'}
+                  className="absolute right-2 top-2 z-20 flex h-10 w-10 items-center justify-center rounded-lg transition-colors focus-ring"
+                  style={{ backgroundColor: 'rgba(0,0,0,0.45)', color: '#fff' }}
+                  onMouseEnter={e => (e.currentTarget.style.backgroundColor = 'rgba(0,0,0,0.7)')}
+                  onMouseLeave={e => (e.currentTarget.style.backgroundColor = 'rgba(0,0,0,0.45)')}
                 >
-                  Upload video
+                  {isFullscreen ? (
+                    <Minimize2 size={18} strokeWidth={1.8} aria-hidden />
+                  ) : (
+                    <Maximize2 size={18} strokeWidth={1.8} aria-hidden />
+                  )}
                 </button>
-              </div>
-            )}
-
-
-            {/* Fullscreen toggle */}
-            {hasAnyVideo && (
-              <button
-                onClick={toggleFullscreen}
-                title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen (F)'}
-                className="absolute top-2 right-2 z-10 flex h-10 w-10 items-center justify-center rounded-lg transition-colors focus-ring"
-                style={{ backgroundColor: 'rgba(0,0,0,0.45)', color: '#fff' }}
-                onMouseEnter={e => (e.currentTarget.style.backgroundColor = 'rgba(0,0,0,0.7)')}
-                onMouseLeave={e => (e.currentTarget.style.backgroundColor = 'rgba(0,0,0,0.45)')}
-              >
-                {isFullscreen ? (
-                  <Minimize2 size={18} strokeWidth={1.8} aria-hidden />
-                ) : (
-                  <Maximize2 size={18} strokeWidth={1.8} aria-hidden />
-                )}
-              </button>
-            )}
+              )}
+            </div>
           </div>
 
           {/* Right panel: BrollPanel when marking, otherwise videos + simulations */}
@@ -1161,6 +1211,17 @@ export function VideoEditor({ projectId }: Props) {
                 canRedo={redoStack.length > 0}
                 historyBusy={historyBusy}
               />
+              <button
+                type="button"
+                onClick={() => setShowBranching(true)}
+                className="surface-panel flex min-h-11 w-full shrink-0 items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-left transition-colors hover:border-cyan-300 hover:bg-cyan-50/60 focus-ring"
+              >
+                <GitBranch size={18} strokeWidth={1.9} aria-hidden className="text-cyan-600" />
+                <span className="min-w-0">
+                  <span className="block text-xs font-semibold leading-tight">Follow user decisions</span>
+                  <span className="block truncate text-[10px] leading-tight text-muted-foreground">Branch the video on viewer choices</span>
+                </span>
+              </button>
             </div>
           )}
         </div>
@@ -1241,6 +1302,9 @@ export function VideoEditor({ projectId }: Props) {
       onClose={() => setExtendedLibraryOpen(false)}
       projectId={projectId}
     />
+    {showBranching && (
+      <BranchingModal projectId={projectId} onClose={() => setShowBranching(false)} />
+    )}
     </>
   );
 }

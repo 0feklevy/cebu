@@ -1,6 +1,41 @@
 import { db } from '../db/index.js';
-import { projects, video_files, timeline_sections, image_files, audio_files, scenes } from '../db/schema.js';
-import { eq, asc } from 'drizzle-orm';
+import {
+  projects, video_files, timeline_sections, image_files, audio_files, scenes,
+  branch_sequences, branch_choice_points, branch_edges, playlists, simulations,
+} from '../db/schema.js';
+import { eq, asc, inArray } from 'drizzle-orm';
+import { requireProjectAccess } from './projectAccess.js';
+
+// Player-facing branching shapes (mirrored loosely in client-web viewer/types.ts).
+// Cross-project/playlist/sim destinations are resolved to share tokens / URLs in a
+// later phase; Phase 1 emits the structure with those fields null.
+type PlayerBranchEdge = {
+  id: string;
+  label: string | null;
+  description: string | null;
+  thumbnail_url: string | null;
+  destination_type: string;
+  dest_sequence_id: string | null;
+  dest_url: string | null;
+  dest_project_token: string | null;
+  dest_playlist_token: string | null;
+  dest_simulation_url: string | null;
+  trigger_event: string | null;
+  trigger_match: Record<string, unknown> | null;
+  disabled: boolean;
+  disabled_reason: string | null;
+};
+type PlayerChoicePoint = {
+  id: string;
+  sequence_id: string;
+  lead_in_sec: number;
+  timeout_sec: number | null;
+  behavior: string;
+  prompt: string | null;
+  layout: string;
+  default_edge_id: string | null;
+  edges: PlayerBranchEdge[];
+};
 import { getStorageAdapter } from './storage/getStorageAdapter.js';
 import { captionUrlForVideo } from './captions/CaptionService.js';
 
@@ -11,7 +46,7 @@ import { captionUrlForVideo } from './captions/CaptionService.js';
  *
  * Returns null if the project does not exist.
  */
-export async function buildPlayerConfig(projectId: string) {
+export async function buildPlayerConfig(projectId: string, requesterUserId: string | null = null) {
   const storage = getStorageAdapter();
 
   const project = await db.query.projects.findFirst({
@@ -33,7 +68,7 @@ export async function buildPlayerConfig(projectId: string) {
   const mainVideos = allVideos.filter((v) => !v.is_broll);
   const brollVideos = allVideos.filter((v) => v.is_broll);
 
-  const segments = mainVideos.map((v) => {
+  const buildSegment = (v: (typeof allVideos)[number]) => {
     const hls_url = v.hls_master_key
       ? storage.getPublicUrl(v.hls_master_key)
       : v.hls_360p_key
@@ -74,7 +109,9 @@ export async function buildPlayerConfig(projectId: string) {
       },
       simulations,
     };
-  });
+  };
+
+  const segments = mainVideos.map(buildSegment);
 
   // NB: crop + captions are NOT enqueued here. They run once on the write path when a
   // video is uploaded (video.controller enqueueVideoProcessing) instead of on every
@@ -218,6 +255,171 @@ export async function buildPlayerConfig(projectId: string) {
     }
   }
 
+  // ── Branching (migration 037) ────────────────────────────────────────────────
+  // Emit a graph block only when the project has been split into sequences. Projects
+  // with no branch_sequences rows return branching:null and play linearly as before —
+  // zero behavior change. Phase 1 is read-only (no authoring UI yet); the block exists
+  // so the viewer/editor can render a preview and Phase 2 can walk it.
+  type Segment = ReturnType<typeof buildSegment>;
+  type BranchingBlock = {
+    entry_sequence_id: string;
+    sequences: Array<{
+      id: string;
+      label: string;
+      is_entry: boolean;
+      segments: Segment[];
+      choice_point: PlayerChoicePoint | null;
+    }>;
+  };
+
+  let branching: BranchingBlock | null = null;
+
+  const sequenceRows = await db.query.branch_sequences.findMany({
+    where: eq(branch_sequences.project_id, project.id),
+    orderBy: [asc(branch_sequences.sort_order), asc(branch_sequences.created_at)],
+  });
+
+  if (sequenceRows.length > 0) {
+    const [choicePointRows, edgeRows] = await Promise.all([
+      db.query.branch_choice_points.findMany({
+        where: eq(branch_choice_points.project_id, project.id),
+        orderBy: [asc(branch_choice_points.created_at)],
+      }),
+      db.query.branch_edges.findMany({
+        where: eq(branch_edges.project_id, project.id),
+        orderBy: [asc(branch_edges.sort_order), asc(branch_edges.created_at)],
+      }),
+    ]);
+
+    // First choice point per sequence (Phase 1 supports one decision per sequence).
+    const cpBySequence = new Map<string, (typeof choicePointRows)[number]>();
+    for (const cp of choicePointRows) {
+      if (!cpBySequence.has(cp.sequence_id)) cpBySequence.set(cp.sequence_id, cp);
+    }
+    const edgesByChoicePoint = new Map<string, typeof edgeRows>();
+    for (const e of edgeRows) {
+      if (!e.choice_point_id) continue;
+      const list = edgesByChoicePoint.get(e.choice_point_id) ?? [];
+      list.push(e);
+      edgesByChoicePoint.set(e.choice_point_id, list);
+    }
+
+    const entrySeq = sequenceRows.find((s) => s.is_entry) ?? sequenceRows[0];
+
+    // Group main videos by sequence; unassigned main videos fall into the entry
+    // sequence so no segment is dropped from the preview.
+    const videosBySequence = new Map<string, typeof mainVideos>();
+    for (const seq of sequenceRows) videosBySequence.set(seq.id, []);
+    for (const v of mainVideos) {
+      const seqId = v.sequence_id && videosBySequence.has(v.sequence_id) ? v.sequence_id : entrySeq.id;
+      videosBySequence.get(seqId)!.push(v);
+    }
+    const orderInSequence = (a: (typeof mainVideos)[number], b: (typeof mainVideos)[number]) => {
+      const ao = a.sequence_order ?? Number.MAX_SAFE_INTEGER;
+      const bo = b.sequence_order ?? Number.MAX_SAFE_INTEGER;
+      if (ao !== bo) return ao - bo;
+      return a.created_at.getTime() - b.created_at.getTime();
+    };
+
+    // Resolve cross-destination edges (Phase 4): tokens for project/playlist, sim URLs, and
+    // access checks. Private/unpublished/missing destinations are disabled (greyed out at the
+    // viewer), never exposed as raw ids — only share tokens for reachable destinations.
+    const destProjectIds  = [...new Set(edgeRows.filter((e) => e.destination_type === 'project'         && e.dest_project_id).map((e) => e.dest_project_id!))];
+    const destPlaylistIds = [...new Set(edgeRows.filter((e) => e.destination_type === 'playlist'        && e.dest_playlist_id).map((e) => e.dest_playlist_id!))];
+    const destSimIds      = [...new Set(edgeRows.filter((e) => e.destination_type === 'simulation_full' && e.dest_simulation_id).map((e) => e.dest_simulation_id!))];
+
+    const [destProjects, destPlaylists, destSims] = await Promise.all([
+      destProjectIds.length  ? db.query.projects.findMany({ where: inArray(projects.id, destProjectIds) })       : Promise.resolve([]),
+      destPlaylistIds.length ? db.query.playlists.findMany({ where: inArray(playlists.id, destPlaylistIds) })    : Promise.resolve([]),
+      destSimIds.length      ? db.query.simulations.findMany({ where: inArray(simulations.id, destSimIds) })     : Promise.resolve([]),
+    ]);
+    const destProjectMap  = new Map(destProjects.map((p) => [p.id, p]));
+    const destPlaylistMap = new Map(destPlaylists.map((p) => [p.id, p]));
+    const destSimMap      = new Map(destSims.map((s) => [s.id, s]));
+    const resolveSimUrl = (entryFile: string | null) => !entryFile ? null : (entryFile.startsWith('http') ? entryFile : storage.getSimPublicUrl(entryFile));
+
+    const mapEdge = (e: (typeof edgeRows)[number]): PlayerBranchEdge => {
+      let dest_project_token: string | null = null;
+      let dest_playlist_token: string | null = null;
+      let dest_simulation_url: string | null = null;
+      let disabled = false;
+      let disabled_reason: string | null = null;
+
+      switch (e.destination_type) {
+        case 'project': {
+          const p = e.dest_project_id ? destProjectMap.get(e.dest_project_id) : undefined;
+          if (!p || !requireProjectAccess(p, requesterUserId, null)) { disabled = true; disabled_reason = 'unavailable'; }
+          else if (!p.share_token) { disabled = true; disabled_reason = 'no_share_link'; }
+          else dest_project_token = p.share_token;
+          break;
+        }
+        case 'playlist': {
+          const pl = e.dest_playlist_id ? destPlaylistMap.get(e.dest_playlist_id) : undefined;
+          if (!pl) { disabled = true; disabled_reason = 'unavailable'; }
+          else if (!pl.share_token) { disabled = true; disabled_reason = 'no_share_link'; }
+          else dest_playlist_token = pl.share_token;
+          break;
+        }
+        case 'simulation_full': {
+          const sim = e.dest_simulation_id ? destSimMap.get(e.dest_simulation_id) : undefined;
+          if (!sim || sim.status !== 'ready') { disabled = true; disabled_reason = 'unavailable'; }
+          else dest_simulation_url = resolveSimUrl(sim.entry_file);
+          break;
+        }
+        case 'external_url':
+          if (!e.dest_url) { disabled = true; disabled_reason = 'no_url'; }
+          break;
+        case 'sequence':
+          if (!e.dest_sequence_id || !sequenceRows.some((s) => s.id === e.dest_sequence_id)) { disabled = true; disabled_reason = 'unavailable'; }
+          break;
+        // back | restart | end | quiz: always enabled
+      }
+
+      return {
+        id:                  e.id,
+        label:               e.label ?? null,
+        description:         e.description ?? null,
+        thumbnail_url:       e.thumbnail_url ?? null,
+        destination_type:    e.destination_type,
+        dest_sequence_id:    e.dest_sequence_id ?? null,
+        dest_url:            e.dest_url ?? null,
+        dest_project_token,
+        dest_playlist_token,
+        dest_simulation_url,
+        trigger_event:       e.trigger_event ?? null,
+        trigger_match:       (e.trigger_match as Record<string, unknown> | null) ?? null,
+        disabled,
+        disabled_reason,
+      };
+    };
+
+    branching = {
+      entry_sequence_id: entrySeq.id,
+      sequences: sequenceRows.map((seq) => {
+        const cp = cpBySequence.get(seq.id) ?? null;
+        return {
+          id:       seq.id,
+          label:    seq.label,
+          is_entry: seq.is_entry,
+          segments: (videosBySequence.get(seq.id) ?? []).slice().sort(orderInSequence).map(buildSegment),
+          choice_point: cp
+            ? {
+                id:              cp.id,
+                sequence_id:     cp.sequence_id,
+                lead_in_sec:     cp.lead_in_sec,
+                timeout_sec:     cp.timeout_sec ?? null,
+                behavior:        cp.behavior,
+                prompt:          cp.prompt ?? null,
+                layout:          cp.layout,
+                default_edge_id: cp.default_edge_id ?? null,
+                edges:           (edgesByChoicePoint.get(cp.id) ?? []).map(mapEdge),
+              }
+            : null,
+        };
+      }),
+    };
+  }
+
   return {
     project_id:     project.id,
     title:          project.title,
@@ -230,6 +432,7 @@ export async function buildPlayerConfig(projectId: string) {
     audio_cutaways: audioCutaways,
     avatar_circles: avatarCircles,
     speaker_timeline: speakerTimeline,
+    branching,
   };
 }
 

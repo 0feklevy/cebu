@@ -10,6 +10,7 @@
 import { useState } from 'react';
 import type { PlayerConfig } from './types';
 import { HLSPlayerShell } from './HLSPlayerShell';
+import { branchNavigate } from './branchNavigate';
 import { AskAvatarButton } from '../avatar/AskAvatarButton';
 import { AvatarPopup } from '../avatar/AvatarPopup';
 
@@ -30,6 +31,7 @@ export function LessonPlayer({ config }: { config: PlayerConfig }) {
     <div className="relative h-full w-full">
       <HLSPlayerShell
         config={config}
+        onNavigate={branchNavigate}
         onCaptionMenuOpenChange={setCaptionMenuOpen}
         bottomRightOverlay={!captionMenuOpen ? <AskAvatarButton onClick={() => setAvatarOpen(true)} label="Ask!" /> : null}
       />

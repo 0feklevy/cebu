@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { X } from 'lucide-react';
 import { startAvatarSession, type AvatarDisplay } from './avatarApi';
 import { characterMeta, DEFAULT_CHARACTER_ID } from './characters';
 import { AvatarConversation } from './AvatarConversation';
@@ -107,7 +108,9 @@ export function AvatarPopup({ open, onClose, projectId, videoTitle, characterId 
               {videoTitle && <p className="avatar-popup-sub">about “{videoTitle}”</p>}
             </div>
           </div>
-          <button className="avatar-popup-x" onClick={onClose} aria-label="Close">✕</button>
+          <button className="avatar-popup-x" onClick={onClose} aria-label="Close">
+            <X size={17} strokeWidth={1.9} aria-hidden />
+          </button>
         </div>
 
         <div className="avatar-popup-body">

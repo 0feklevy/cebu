@@ -189,7 +189,15 @@ export class SupabaseStorageAdapter implements StorageService {
   }
 
   getSimPublicUrl(path: string): string {
-    return `${this.publicBase}/${path}`;
+    // Supabase's public-bucket endpoint force-downgrades text/html → text/plain
+    // (an anti-phishing measure; rendering HTML from a public bucket needs Pro + a
+    // custom domain). An iframe pointed straight at the bucket URL therefore shows
+    // the raw `<!DOCTYPE html>…` source. Serve sim files through the backend's
+    // /sim-public/* proxy instead, which reads the object and re-asserts the correct
+    // Content-Type (mirrors LocalStorageAdapter). BACKEND_API_URL must be the
+    // backend's public origin in production.
+    const serveBase = process.env.BACKEND_API_URL ?? 'http://localhost:8080';
+    return `${serveBase}/sim-public/${path}`;
   }
 
   async readObject(key: string): Promise<Buffer> {

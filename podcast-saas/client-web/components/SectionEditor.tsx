@@ -435,8 +435,10 @@ export function SectionEditor({
       if (!e.data || typeof e.data !== 'object') return;
       if (e.data.type === 'SIM_READY' && previewIframeRef.current) {
         const script = section.sim_script ?? 'main';
+        // Use the live toggle state, not the saved props, so the preview reflects what the
+        // viewer just toggled (and what Save will persist) — frontend-005.
         previewIframeRef.current.contentWindow?.postMessage(
-          { type: 'startScript', script, params: { simpleUi: section.simple_ui ?? false, autoScript: section.auto_script ?? true } },
+          { type: 'startScript', script, params: { simpleUi, autoScript } },
           '*',
         );
         setPreviewRunning(true);
@@ -445,7 +447,7 @@ export function SectionEditor({
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [section.sim_script, section.simple_ui, section.auto_script]);
+  }, [section.sim_script, simpleUi, autoScript]);
 
   const sendToPreview = useCallback((type: string) => {
     const msg: Record<string, unknown> = { type };
@@ -562,6 +564,9 @@ export function SectionEditor({
     });
 
     es.addEventListener('done', (e: MessageEvent) => {
+      // Mark handled BEFORE close(): closing an EventSource fires onerror synchronously in
+      // some browsers, which would otherwise flash "Connection lost" after success — frontend-011.
+      errorHandled = true;
       const data = JSON.parse(e.data) as { section: TimelineSection };
       onUpdate(data.section);
       setGenerating(false);
@@ -807,6 +812,11 @@ export function SectionEditor({
         label: label.trim() || undefined,
         simulation_id: simId || undefined,
         sim_script: simScript || undefined,
+        // Persist the simulation toggle state so a plain Save no longer discards it
+        // (these were previously only written by AI generation) — frontend-001. (sim_prompt
+        // is intentionally not in the PATCH contract; it is owned by the generate endpoint.)
+        simple_ui: simpleUi,
+        auto_script: autoScript,
         start_sec,
         end_sec,
         ...(type === 'clip' ? {

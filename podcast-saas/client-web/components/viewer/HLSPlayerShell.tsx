@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import Link from 'next/link';
-import type { PlayerConfig, SimulationOverlay } from './types';
+import type { PlayerConfig, PlayerSegment, SimulationOverlay } from './types';
 import { useProjectPlayer } from './useProjectPlayer';
 import { useCropOverlay } from './useCropOverlay';
 import { VideoLayer } from './VideoLayer';
@@ -11,6 +11,7 @@ import { SimOverlayDynamic } from './SimOverlayDynamic';
 import { ControlsBar, type CaptionStyle } from './ControlsBar';
 import { ImageOverlay } from '../ImageOverlay';
 import { AvatarCirclesOverlay } from './AvatarCirclesOverlay';
+import { ChoiceOverlay } from './ChoiceOverlay';
 import './viewer.css';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
@@ -89,6 +90,8 @@ interface Props {
   onControlsVisibleChange?: (visible: boolean) => void;
   /** Reports caption-settings-menu open state, so overlays (e.g. "Ask!") can hide. */
   onCaptionMenuOpenChange?: (open: boolean) => void;
+  /** Branching: navigate to another project/playlist/external URL on a cross-destination choice. */
+  onNavigate?: (dest: { type: 'project' | 'playlist' | 'external_url'; url?: string | null; token?: string | null }) => void;
 }
 
 export function HLSPlayerShell({
@@ -100,6 +103,7 @@ export function HLSPlayerShell({
   bottomRightOverlay,
   onControlsVisibleChange,
   onCaptionMenuOpenChange,
+  onNavigate,
 }: Props) {
   const videoARef             = useRef<HTMLVideoElement>(null);
   const videoBRef             = useRef<HTMLVideoElement>(null);
@@ -138,27 +142,56 @@ export function HLSPlayerShell({
     totTime,
     root: rootRef,
     simFrame: simFrameRef,
-  }, { onProjectComplete, autoStart });
+  }, { onProjectComplete, autoStart, onNavigate });
 
   // Smart portrait crop — no-op in landscape, follows the active speaker in portrait.
+  // Disabled in branching mode: flat segment indices don't map onto per-sequence timelines.
   useCropOverlay(
     { videoA: videoARef, videoB: videoBRef, root: rootRef },
-    config.segments,
+    config.branching ? [] : config.segments,
     state.currentSegIdx,
   );
 
-  const allMarkers = config.segments.flatMap((seg, idx) => {
-    const offset = state.timeline[idx]?.offset ?? 0;
+  // Scrub-bar markers are positioned off the *live* timeline (state.timeline) and matched
+  // to segments by id — correct both for linear projects (timeline === flat segments) and
+  // branching projects (timeline === the currently-playing sequence). Matching by id (not
+  // by config.segments index) is why sim markers now appear in branching mode and stay put
+  // as segment durations sync to the real video metadata.
+  const segmentById = new Map<string, PlayerSegment>();
+  config.segments.forEach((seg) => segmentById.set(seg.id, seg));
+  config.branching?.sequences.forEach((seq) => seq.segments.forEach((seg) => segmentById.set(seg.id, seg)));
+
+  const allMarkers = state.timeline.flatMap((tseg) => {
+    const seg = segmentById.get(tseg.id);
+    if (!seg) return [];
     return seg.simulations.map((s): SimulationOverlay & { globalStart: number; globalEnd: number } => ({
       ...s,
-      globalStart: offset + s.start_sec,
-      globalEnd:   offset + s.end_sec,
+      globalStart: tseg.offset + s.start_sec,
+      globalEnd:   tseg.offset + s.end_sec,
     }));
   });
 
   const simMarkers   = allMarkers.filter((s) => s.type === 'simulation');
   const videoMarkers = allMarkers.filter((s) => s.type !== 'simulation');
-  const activeSegment = config.segments[state.currentSegIdx];
+
+  // B-roll markers — AI b-roll clips (track 'broll') and trimmed library clip overlays are
+  // never part of seg.simulations, so they previously had no scrub-bar marker at all. They
+  // carry absolute global offsets on the flat timeline, so they're shown only in linear mode
+  // (branching disables flat overlays in the player). Dedupe against sections that already
+  // render as a marker (a clip overlay placed on the main track is also a seg.simulation).
+  const markedIds = new Set(allMarkers.map((m) => m.id));
+  const brollMarkers = config.branching ? [] : [
+    ...(config.broll_clips ?? []),
+    ...(config.clip_overlays ?? []),
+  ]
+    .filter((b) => !markedIds.has(b.id))
+    .map((b) => ({
+      id:          b.id,
+      globalStart: b.global_offset_sec,
+      globalEnd:   b.global_offset_sec + Math.max(0, b.end_sec - b.start_sec),
+    }));
+  // Look up by id so captions stay aligned in branching mode (currentSegIdx is per-sequence).
+  const activeSegment = config.segments.find((s) => s.id === state.activeSegmentId) ?? config.segments[state.currentSegIdx];
   const activeCaptionState = activeSegment ? captionState[activeSegment.id] : undefined;
   const captionStatus = activeCaptionState?.status ?? 'none';
   const captionsAvailable = captionStatus === 'ready' && !!activeCaptionState?.vtt_url;
@@ -408,11 +441,35 @@ export function HLSPlayerShell({
         </div>
       )}
 
+      {state.activeChoice && (
+        <ChoiceOverlay
+          choice={state.activeChoice}
+          countdown={state.choiceCountdown}
+          canGoBack={state.canGoBack}
+          onSelect={actions.selectEdge}
+          onBack={actions.goBack}
+        />
+      )}
+
       <div
         ref={tapFeedbackRef}
         className="absolute inset-0 z-10 pointer-events-none"
         style={{ opacity: 0, transition: 'opacity 0.3s' }}
       />
+
+      {/* Sim hover zone — the sim iframe captures the mouse, so the root mousemove that
+          normally reveals the controls never fires over it. While a sim overlay is up, this
+          bottom strip catches hover to bring the controls bar back (YouTube-style). It's
+          click-through (pointer-events:none) once the bar is already visible, so it never
+          blocks the bar's own controls. */}
+      {state.showSimOverlay && (
+        <div
+          className="viewer-sim-hover-zone"
+          style={{ pointerEvents: state.controlsVisible ? 'none' : 'auto' }}
+          onMouseEnter={actions.revealControls}
+          onMouseMove={actions.revealControls}
+        />
+      )}
 
       <ControlsBar
         playing={state.playing}
@@ -421,6 +478,7 @@ export function HLSPlayerShell({
         totalDuration={state.totalDuration}
         simMarkers={simMarkers}
         videoMarkers={videoMarkers}
+        brollMarkers={brollMarkers}
         progressFillRef={progressFill}
         progressThumbRef={progressThumb}
         progressBufRef={progressBuf}

@@ -99,8 +99,13 @@ async function collectEntryFiles(entry: WebkitEntry, prefix = ''): Promise<Uploa
 async function collectDroppedItems(dataTransfer: DataTransfer): Promise<UploadItem[]> {
   const entryItems = Array.from(dataTransfer.items)
     .map(item => {
-      const getAsEntry = (item as unknown as { webkitGetAsEntry?: () => unknown }).webkitGetAsEntry;
-      return getAsEntry?.() ?? null;
+      // Call webkitGetAsEntry ON the DataTransferItem. Pulling the method into a local
+      // and invoking it detached drops its `this`, which native DOM methods reject with
+      // "TypeError: Illegal invocation". Invoke it as a member so `this` stays bound.
+      const dtItem = item as unknown as { webkitGetAsEntry?: () => unknown };
+      return typeof dtItem.webkitGetAsEntry === 'function'
+        ? (dtItem.webkitGetAsEntry() ?? null)
+        : null;
     })
     .filter((entry): entry is WebkitEntry =>
       Boolean(entry) &&
@@ -132,6 +137,17 @@ export function SimulationUploader({ projectId, onUploaded }: Props) {
   const [done, setDone]           = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
+  // Depth counter so the highlight doesn't flicker as the cursor crosses child nodes
+  // (mirrors ExtendedLibraryModal) — frontend-003.
+  const dragDepthRef = useRef(0);
+
+  // Auto-clear the "Uploading… ✓ Processing…" banner after a success so it doesn't linger
+  // permanently when the panel stays open — frontend-008.
+  useEffect(() => {
+    if (!done) return;
+    const t = setTimeout(() => setDone(false), 3000);
+    return () => clearTimeout(t);
+  }, [done]);
 
   useEffect(() => {
     folderInputRef.current?.setAttribute('webkitdirectory', '');
@@ -246,10 +262,12 @@ export function SimulationUploader({ projectId, onUploaded }: Props) {
 
       {/* Drop zone */}
       <div
+        onDragEnter={(e) => { e.preventDefault(); dragDepthRef.current += 1; setDragging(true); }}
         onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-        onDragLeave={() => setDragging(false)}
+        onDragLeave={() => { dragDepthRef.current = Math.max(0, dragDepthRef.current - 1); if (dragDepthRef.current === 0) setDragging(false); }}
         onDrop={(e) => {
           e.preventDefault();
+          dragDepthRef.current = 0;
           setDragging(false);
           if (!uploading) void collectDroppedItems(e.dataTransfer).then(uploadItems);
         }}

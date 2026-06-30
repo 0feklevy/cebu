@@ -9,14 +9,20 @@
 //                 generated for any viewer of any video; reused everywhere.
 // At runtime the avatar prefers basic, then global extended, over generating new.
 import { randomUUID } from 'crypto';
+import AdmZip from 'adm-zip';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { rateLimit } from '../../lib/rateLimit.js';
 import { and, or, eq, isNull } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { uploadWithFallback } from '../../services/storage/uploadWithFallback.js';
+import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { projects, avatar_visuals, admin_settings, users } from '../../db/schema.js';
 import { firebaseAuthMiddleware, firebaseAuthOptionalMiddleware } from '../../middleware/firebase-auth.js';
+import { SimulationService } from '../../services/simulation/SimulationService.js';
+import { LLMService } from '../../services/llm/LLMService.js';
+import { ApiKeyService } from '../../services/secrets/ApiKeyService.js';
+import { UsageTrackingService } from '../../services/usage/UsageTrackingService.js';
 import {
   getSessionToken, isAnamConfigured, listAnamResource, upsertVideoPersona,
   enrichAvatarConfigFromAnam, buildAvatarDisplay,
@@ -27,7 +33,7 @@ import { encryptKey } from '../../services/secrets/ApiKeyService.js';
 import { resolveAnamKeyForProject } from '../../services/avatar/anamKey.js';
 import { analyzeVisual, generateLibrarySimulation, editLibrarySimulation } from '../../services/avatar/visualService.js';
 import { analyzeAndGenerateImage, generateLibraryImage } from '../../services/avatar/imageService.js';
-import { listVisuals, updateVisual, deleteVisual, syncBasicLibrary } from '../../services/avatar/libraryService.js';
+import { insertVisual, listVisuals, updateVisual, deleteVisual, syncBasicLibrary, storeImageBuffer, storeSimulationHtml } from '../../services/avatar/libraryService.js';
 import { saveTurns, getTurns, getProfile, extractAndSaveFacts, type Turn } from '../../services/avatar/memoryService.js';
 import { avatarProjectAllowed } from '../../services/avatar/avatarAccess.js';
 import { signMemoryToken, verifyMemoryToken } from '../../services/avatar/memoryToken.js';
@@ -43,6 +49,100 @@ function asPersonaConfig(v: unknown): AvatarPersonaConfig {
     try { const o = JSON.parse(v); if (o && typeof o === 'object' && !Array.isArray(o)) return o as AvatarPersonaConfig; } catch { /* ignore */ }
   }
   return {};
+}
+
+const AVATAR_LIBRARY_UPLOAD_MAX_BYTES = 250 * 1024 * 1024;
+const AVATAR_LIBRARY_UPLOAD_MAX_FILES = 40;
+const _avatarLibraryLlmService = new LLMService(new ApiKeyService(), new UsageTrackingService());
+
+type AvatarLibraryUploadAccepted = {
+  filename: string;
+  visualType: 'image' | 'equation' | 'chart' | 'diagram' | 'simulation';
+  id: string;
+};
+
+type AvatarLibraryUploadRejected = {
+  filename: string;
+  reason: string;
+};
+
+function extOf(filename: string): string {
+  return filename.split('.').pop()?.toLowerCase() ?? '';
+}
+
+function cleanCaption(filename: string): string {
+  return filename.replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' ').trim() || filename;
+}
+
+function csvToChartSpec(text: string, filename: string): Record<string, unknown> | null {
+  const rows = text
+    .split(/\r?\n/)
+    .map((line) => line.split(',').map((cell) => cell.trim().replace(/^"|"$/g, '')))
+    .filter((row) => row.some(Boolean));
+  if (rows.length < 2) return null;
+
+  const firstDataRow = Number.isFinite(Number(rows[0]?.[1])) ? 0 : 1;
+  const dataRows = rows.slice(firstDataRow, firstDataRow + 24);
+  const labels: string[] = [];
+  const values: number[] = [];
+  for (const row of dataRows) {
+    const label = row[0];
+    const value = Number(row[1]);
+    if (label && Number.isFinite(value)) {
+      labels.push(label);
+      values.push(value);
+    }
+  }
+  if (labels.length === 0) return null;
+  const title = cleanCaption(filename);
+  return {
+    type: 'chart',
+    chartType: 'bar',
+    title,
+    labels,
+    datasets: [{ label: rows[0]?.[1] || 'Value', data: values }],
+    caption: title,
+  };
+}
+
+function normalizeUploadedVisualSpec(parsed: unknown, filename: string): { type: AvatarLibraryUploadAccepted['visualType']; spec: Record<string, unknown>; caption: string } | null {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const obj = parsed as Record<string, unknown>;
+  const rawType = String(obj.visual_type ?? obj.type ?? '').toLowerCase();
+  const caption = String(obj.caption ?? cleanCaption(filename));
+
+  if (rawType === 'equation' && typeof obj.latex === 'string' && obj.latex.trim()) {
+    return { type: 'equation', spec: { type: 'equation', latex: obj.latex.trim(), caption }, caption };
+  }
+  if (rawType === 'chart' && Array.isArray(obj.labels) && Array.isArray(obj.datasets)) {
+    return {
+      type: 'chart',
+      spec: {
+        type: 'chart',
+        chartType: obj.chartType === 'line' || obj.chartType === 'pie' ? obj.chartType : 'bar',
+        title: typeof obj.title === 'string' ? obj.title : caption,
+        labels: obj.labels,
+        datasets: obj.datasets,
+        caption,
+      },
+      caption,
+    };
+  }
+  if (rawType === 'diagram' && typeof obj.html === 'string' && obj.html.trim()) {
+    return { type: 'diagram', spec: { type: 'diagram', html: obj.html, caption }, caption };
+  }
+  if (rawType === 'simulation' && typeof obj.html === 'string' && obj.html.trim()) {
+    return { type: 'simulation', spec: { type: 'simulation', html: obj.html, caption, source: 'json-upload' }, caption };
+  }
+  return null;
+}
+
+function zipHasHtml(buffer: Buffer): boolean {
+  try {
+    return new AdmZip(buffer).getEntries().some((entry) => !entry.isDirectory && /\.html?$/i.test(entry.entryName));
+  } catch {
+    return false;
+  }
 }
 
 export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> {
@@ -299,6 +399,183 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
         logger.error({ err }, '[Avatar] library simulation generation failed');
         return reply.code(500).send({ message: 'Simulation generation failed' });
       }
+    },
+  );
+
+  // POST upload — drag/drop files into the editor Library and classify by renderable type.
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/projects/:id/avatar/library/upload',
+    {
+      preHandler: [firebaseAuthMiddleware],
+      config: { rawBody: false },
+    },
+    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const project = await requireOwnedProject(request, reply);
+      if (!project) return;
+      const projectId = project.id;
+
+      const accepted: AvatarLibraryUploadAccepted[] = [];
+      const rejected: AvatarLibraryUploadRejected[] = [];
+      let characterId = DEFAULT_CHARACTER_ID;
+      let scope: 'basic' | 'extended' = 'extended';
+      let totalBytes = 0;
+
+      async function addVisual(
+        filename: string,
+        visualType: AvatarLibraryUploadAccepted['visualType'],
+        fields: {
+          caption: string;
+          lookupKey?: string;
+          altText?: string | null;
+          imageUrl?: string | null;
+          imageKey?: string | null;
+          visualSpec?: Record<string, unknown> | null;
+          simStoragePrefix?: string | null;
+          simEntryUrl?: string | null;
+        },
+      ): Promise<void> {
+        const row = await insertVisual({
+          projectId,
+          scope,
+          source: 'uploaded',
+          characterId,
+          visualType,
+          lookupKey: fields.lookupKey ?? fields.caption,
+          caption: fields.caption,
+          altText: fields.altText ?? fields.caption,
+          imageUrl: fields.imageUrl,
+          imageKey: fields.imageKey,
+          visualSpec: fields.visualSpec,
+          simStoragePrefix: fields.simStoragePrefix,
+          simEntryUrl: fields.simEntryUrl,
+          createdBy: request.dbUser!.id,
+        });
+        if (!row) throw new Error('Could not save library item');
+        accepted.push({ filename, visualType, id: row.id });
+      }
+
+      async function processFile(filename: string, mimetype: string, buffer: Buffer): Promise<void> {
+        const ext = extOf(filename);
+        const caption = cleanCaption(filename);
+        const isImage = mimetype.startsWith('image/') || ['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg'].includes(ext);
+        const isHtml = mimetype.includes('html') || ext === 'html' || ext === 'htm';
+        const isZip = mimetype.includes('zip') || ext === 'zip';
+
+        if (isImage) {
+          const contentType = mimetype || (ext === 'svg' ? 'image/svg+xml' : 'application/octet-stream');
+          const stored = await storeImageBuffer(buffer, contentType, projectId, ext || 'img');
+          await addVisual(filename, 'image', {
+            caption,
+            imageUrl: stored.url,
+            imageKey: stored.key,
+            visualSpec: { type: 'image', imageType: ext === 'svg' ? 'diagram' : 'realistic', source: 'upload' },
+          });
+          return;
+        }
+
+        if (isHtml) {
+          const html = buffer.toString('utf-8');
+          const stored = await storeSimulationHtml(html, projectId);
+          await addVisual(filename, 'simulation', {
+            caption,
+            simStoragePrefix: stored.prefix,
+            simEntryUrl: stored.url,
+            visualSpec: { type: 'simulation', caption, source: 'html-upload' },
+          });
+          return;
+        }
+
+        if (isZip) {
+          if (!zipHasHtml(buffer)) throw new Error('Simulation ZIP needs an HTML entry file.');
+          const simId = randomUUID();
+          const svc = new SimulationService(getStorageAdapter(), _avatarLibraryLlmService);
+          const processed = await svc.processUpload({ projectId, simId, zipBuffer: buffer });
+          await addVisual(filename, 'simulation', {
+            caption,
+            simStoragePrefix: `simulations/${projectId}/${simId}`,
+            simEntryUrl: processed.entryUrl,
+            visualSpec: { type: 'simulation', caption, source: 'zip-upload', entryKey: processed.entryKey },
+          });
+          return;
+        }
+
+        if (ext === 'csv') {
+          const spec = csvToChartSpec(buffer.toString('utf-8'), filename);
+          if (!spec) throw new Error('CSV needs a label column and a numeric value column.');
+          await addVisual(filename, 'chart', { caption, visualSpec: spec });
+          return;
+        }
+
+        if (ext === 'tex' || ext === 'latex') {
+          const latex = buffer.toString('utf-8').trim();
+          if (!latex) throw new Error('LaTeX file is empty.');
+          await addVisual(filename, 'equation', {
+            caption,
+            visualSpec: { type: 'equation', latex, caption },
+          });
+          return;
+        }
+
+        if (ext === 'json') {
+          const spec = normalizeUploadedVisualSpec(JSON.parse(buffer.toString('utf-8')), filename);
+          if (!spec) throw new Error('JSON must describe an equation, chart, diagram, or simulation visual.');
+          if (spec.type === 'simulation' && typeof spec.spec.html === 'string') {
+            const stored = await storeSimulationHtml(spec.spec.html, projectId);
+            await addVisual(filename, 'simulation', {
+              caption: spec.caption,
+              simStoragePrefix: stored.prefix,
+              simEntryUrl: stored.url,
+              visualSpec: { type: 'simulation', caption: spec.caption, source: 'json-upload' },
+            });
+          } else {
+            await addVisual(filename, spec.type, { caption: spec.caption, visualSpec: spec.spec });
+          }
+          return;
+        }
+
+        throw new Error('Not a supported visual Library file.');
+      }
+
+      const parts = request.parts({
+        limits: {
+          fileSize: AVATAR_LIBRARY_UPLOAD_MAX_BYTES,
+          files:    AVATAR_LIBRARY_UPLOAD_MAX_FILES,
+          fields:   20,
+        },
+      });
+
+      for await (const part of parts) {
+        if (part.type === 'field') {
+          if (part.fieldname === 'characterId' && typeof part.value === 'string' && CHARACTERS[part.value]) characterId = part.value;
+          if (part.fieldname === 'scope' && (part.value === 'basic' || part.value === 'extended')) scope = part.value;
+          continue;
+        }
+        const filename = part.filename || `upload-${accepted.length + rejected.length + 1}`;
+        const chunks: Buffer[] = [];
+        for await (const chunk of part.file) {
+          const buf = chunk as Buffer;
+          totalBytes += buf.length;
+          if (totalBytes > AVATAR_LIBRARY_UPLOAD_MAX_BYTES) {
+            return reply.code(413).send({ message: 'Library upload exceeds 250 MB' });
+          }
+          chunks.push(buf);
+        }
+        const buffer = Buffer.concat(chunks);
+        if (buffer.length === 0) {
+          rejected.push({ filename, reason: 'File is empty.' });
+          continue;
+        }
+        try {
+          await processFile(filename, part.mimetype || '', buffer);
+        } catch (err) {
+          rejected.push({ filename, reason: (err as Error).message });
+        }
+      }
+
+      if (accepted.length === 0 && rejected.length === 0) {
+        return reply.code(400).send({ message: 'No files received' });
+      }
+      return reply.send({ ok: true, accepted, rejected });
     },
   );
 

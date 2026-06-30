@@ -439,21 +439,35 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
                   <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground/60">Share link</p>
                   {shareUrl ? (
                     <>
-                      <div className="flex items-center gap-1.5 overflow-hidden rounded-lg border border-border bg-muted/30 px-2.5 py-1.5">
-                        <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground">{shareUrl}</span>
+                      <div className="rounded-xl border border-border bg-background p-1.5 shadow-sm-soft">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-600">
+                            <Check size={13} strokeWidth={2.1} aria-hidden />
+                          </span>
+                          <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground" title={shareUrl}>{shareUrl}</span>
+                          <button
+                            onClick={async () => { try { await navigator.clipboard.writeText(shareUrl); setShareCopied(true); setTimeout(() => setShareCopied(false), 1500); } catch {} }}
+                            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-ring"
+                            title={shareCopied ? 'Copied' : 'Copy link'}
+                            aria-label={shareCopied ? 'Copied' : 'Copy playlist share link'}
+                          >
+                            {shareCopied ? <Check size={14} strokeWidth={2.4} /> : <Copy size={14} strokeWidth={1.9} />}
+                          </button>
+                        </div>
                       </div>
                       <div className="flex gap-2">
-                        <button onClick={async () => { try { await navigator.clipboard.writeText(shareUrl); setShareCopied(true); setTimeout(() => setShareCopied(false), 1500); } catch {} }}
-                          className="inline-flex h-8 flex-1 items-center justify-center gap-1.5 rounded-lg text-xs font-semibold text-white transition-all hover:brightness-110"
-                          style={{ background: 'linear-gradient(135deg,#a855f7,#6366f1)' }}>
-                          {shareCopied ? <Check size={12} strokeWidth={2.5} /> : <Copy size={12} strokeWidth={1.9} />}
-                          {shareCopied ? 'Copied!' : 'Copy link'}
-                        </button>
+                        <a href={shareUrl} target="_blank" rel="noreferrer"
+                          className="inline-flex h-8 flex-1 items-center justify-center gap-1.5 rounded-lg border border-border text-xs font-semibold text-foreground transition-colors hover:bg-muted focus-ring">
+                          <ExternalLink size={12} strokeWidth={1.9} aria-hidden />
+                          Open viewer
+                        </a>
                         <button onClick={handleRevokeShare} disabled={shareLoading}
-                          className="inline-flex h-8 items-center justify-center rounded-lg border border-border px-2.5 text-xs text-red-500 transition-colors hover:bg-red-50 disabled:opacity-40">
-                          <Unlink2 size={12} strokeWidth={1.8} aria-hidden />
+                          className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 text-xs font-semibold text-red-600 transition-colors hover:bg-red-100 disabled:opacity-40 focus-ring">
+                          {shareLoading ? <Loader2 size={12} className="animate-spin" /> : <Unlink2 size={12} strokeWidth={1.8} aria-hidden />}
+                          Revoke link
                         </button>
                       </div>
+                      <p className="text-[11px] leading-5 text-muted-foreground">Revoking disables this playlist URL immediately.</p>
                     </>
                   ) : (
                     <button onClick={handleCreateShare} disabled={shareLoading || items.length === 0}

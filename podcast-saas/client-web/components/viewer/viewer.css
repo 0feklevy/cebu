@@ -88,6 +88,12 @@
   border-radius: 2px;
 }
 
+/* B-roll / clip overlays — teal band so it reads distinctly from sim (amber) markers */
+.viewer-seg-marker--broll {
+  background: rgba(45,212,191,.65);
+  border-radius: 2px;
+}
+
 /* ── Clip-transition dividers ─────────────────────────── */
 .viewer-timeline-dividers {
   position: absolute;
@@ -294,6 +300,18 @@
   display: block;
 }
 
+/* Bottom hover strip that reveals the controls bar over a simulation. Sits above the
+   sim overlay (z 20) but below the controls bar (z 55); pointer-events are toggled in
+   JS so it only catches hover while the bar is hidden. */
+.viewer-sim-hover-zone {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 84px;
+  z-index: 54;
+}
+
 /* ── Top overlay controls: resume, playlist, fullscreen ───────────────── */
 .viewer-top-controls {
   position: absolute;
@@ -486,4 +504,145 @@
     bottom: calc(max(8px, env(safe-area-inset-bottom)) + 76px);
   }
   .guidance-caption { bottom: 76px; font-size: 13px; padding: 8px 12px; }
+}
+
+/* ── Branching: decision overlay ─────────────────────────────────────────── */
+.viewer-choice-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 76;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  padding:
+    clamp(18px, 5vh, 54px)
+    clamp(14px, 4vw, 64px)
+    calc(max(116px, env(safe-area-inset-bottom)) + clamp(18px, 4vh, 54px));
+  background:
+    radial-gradient(circle at center, rgba(0,0,0,0.18), rgba(0,0,0,0.56) 72%),
+    linear-gradient(to top, rgba(0,0,0,0.58), rgba(0,0,0,0.12) 48%, rgba(0,0,0,0.36));
+}
+.viewer-choice-inner {
+  pointer-events: auto;
+  width: 100%;
+  max-width: min(1040px, calc(100vw - 28px));
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: clamp(14px, 2.4vh, 24px);
+  animation: viewer-choice-in 0.22s ease;
+}
+@keyframes viewer-choice-in { from { opacity: 0; transform: translateY(10px) scale(.985); } to { opacity: 1; transform: none; } }
+.viewer-choice-prompt {
+  margin: 0;
+  text-align: center;
+  color: #fff;
+  font-size: clamp(24px, 3.6vw, 46px);
+  line-height: 1.08;
+  font-weight: 800;
+  text-wrap: balance;
+  text-shadow: 0 3px 18px rgba(0,0,0,0.76);
+}
+.viewer-choice-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  gap: clamp(10px, 1.8vw, 18px);
+  justify-content: stretch;
+}
+.viewer-choice-card {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: clamp(12px, 2vw, 18px);
+  min-height: clamp(82px, 12vh, 132px);
+  padding: clamp(16px, 2.4vw, 28px);
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.34);
+  background: linear-gradient(180deg, rgba(20,28,45,0.92), rgba(7,12,24,0.88));
+  color: #fff;
+  cursor: pointer;
+  text-align: left;
+  box-shadow: 0 22px 58px rgba(0,0,0,0.34), 0 0 0 1px rgba(255,255,255,0.06) inset;
+  backdrop-filter: blur(12px);
+  transition: background 0.16s ease, border-color 0.16s ease, transform 0.12s ease, box-shadow 0.16s ease;
+}
+.viewer-choice-card:hover {
+  background: linear-gradient(180deg, rgba(8,145,178,0.96), rgba(14,116,144,0.94));
+  border-color: rgba(103,232,249,0.92);
+  box-shadow: 0 26px 70px rgba(8,145,178,0.28), 0 0 0 1px rgba(255,255,255,0.1) inset;
+}
+.viewer-choice-card:active { transform: scale(0.985); }
+.viewer-choice-thumb { width: clamp(58px, 8vw, 90px); height: clamp(58px, 8vw, 90px); border-radius: 8px; object-fit: cover; flex-shrink: 0; }
+.viewer-choice-card-text { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.viewer-choice-card-label { font-size: clamp(18px, 2.1vw, 25px); line-height: 1.15; font-weight: 800; overflow-wrap: anywhere; }
+.viewer-choice-card-desc { font-size: clamp(13px, 1.35vw, 16px); line-height: 1.38; opacity: 0.84; overflow-wrap: anywhere; }
+.viewer-choice-footer { display: flex; align-items: center; gap: 14px; justify-content: center; min-height: 26px; }
+.viewer-choice-back {
+  min-height: 34px;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.18);
+  background: rgba(8,12,24,0.52);
+  color: rgba(255,255,255,0.86);
+  font-size: 13px;
+  font-weight: 750;
+  cursor: pointer;
+  padding: 0 12px;
+  backdrop-filter: blur(8px);
+}
+.viewer-choice-back:hover { color: #fff; background: rgba(255,255,255,0.12); }
+.viewer-choice-timer {
+  flex: 1;
+  max-width: 520px;
+  height: 6px;
+  border-radius: 4px;
+  background: rgba(255,255,255,0.26);
+  overflow: hidden;
+}
+.viewer-choice-timer-bar {
+  height: 100%;
+  background: linear-gradient(90deg,#67e8f9,#22d3ee);
+  transition: width 0.25s linear;
+}
+@media (max-width: 640px) {
+  .viewer-choice-overlay {
+    padding:
+      max(16px, env(safe-area-inset-top))
+      12px
+      calc(max(104px, env(safe-area-inset-bottom)) + 10px);
+  }
+  .viewer-choice-cards { grid-template-columns: 1fr; }
+  .viewer-choice-card { min-height: 76px; }
+  .viewer-choice-footer { flex-direction: column-reverse; gap: 10px; }
+  .viewer-choice-timer { width: min(100%, 360px); }
+}
+/* Quiz / buttons layouts */
+.viewer-choice-question { font-size: clamp(26px, 4vw, 50px); }
+.viewer-choice-quiz { grid-template-columns: 1fr; }
+.viewer-choice-letter {
+  display: flex; align-items: center; justify-content: center;
+  width: clamp(34px, 5vw, 48px); height: clamp(34px, 5vw, 48px); border-radius: 50%;
+  background: rgba(255,255,255,0.18); font-size: clamp(15px, 1.8vw, 20px); font-weight: 850; flex-shrink: 0;
+}
+.viewer-choice-buttons {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr));
+}
+.viewer-choice-buttons .viewer-choice-card {
+  min-height: clamp(64px, 9vh, 92px);
+  justify-content: center;
+  text-align: center;
+  padding: clamp(14px, 2vw, 22px);
+}
+@media (max-height: 420px) {
+  .viewer-choice-overlay {
+    align-items: flex-start;
+    padding: 12px 12px calc(max(76px, env(safe-area-inset-bottom)) + 8px);
+  }
+  .viewer-choice-inner { gap: 10px; max-width: min(860px, calc(100vw - 24px)); }
+  .viewer-choice-prompt { font-size: clamp(20px, 5vh, 28px); }
+  .viewer-choice-cards { gap: 8px; }
+  .viewer-choice-card { min-height: 58px; padding: 10px 12px; }
+  .viewer-choice-thumb { width: 44px; height: 44px; }
+  .viewer-choice-card-label { font-size: 16px; }
+  .viewer-choice-card-desc { font-size: 12px; }
 }

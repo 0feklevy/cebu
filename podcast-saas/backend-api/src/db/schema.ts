@@ -405,6 +405,10 @@ export const video_files = pgTable('video_files', {
   captions_source_hash: text('captions_source_hash'),
   captions_error: text('captions_error'),
   captions_updated_at: timestamp('captions_updated_at', { withTimezone: true }),
+  // Branching (migration 037) — which sequence this main segment belongs to and its
+  // order within it. Null for non-branching projects and for broll source files.
+  sequence_id: uuid('sequence_id'),                          // FK → branch_sequences (declared below)
+  sequence_order: integer('sequence_order'),
   created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -784,6 +788,106 @@ export const project_redirect_targets = pgTable(
   }),
 );
 
+// ── Branching Interactive Videos (migration 037) ──────────────────────────────
+// A project's timeline becomes a graph of "sequences" (sub-timelines). Main video
+// segments are assigned to a sequence via video_files.sequence_id. A sequence may end
+// with a choice point whose edges route the viewer to a destination. Backward-compat:
+// a project with no branch_sequences rows is one implicit linear sequence.
+
+export const branch_sequences = pgTable(
+  'branch_sequences',
+  {
+    id:         uuid('id').primaryKey().defaultRandom(),
+    project_id: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+    label:      text('label').notNull().default('Sequence'),
+    is_entry:   boolean('is_entry').notNull().default(false),  // the graph's start node
+    sort_order: integer('sort_order').notNull().default(0),
+    graph_x:    real('graph_x').notNull().default(0),          // React-Flow canvas position
+    graph_y:    real('graph_y').notNull().default(0),
+    created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    idxProject: index('idx_branch_sequences_project').on(t.project_id),
+    // At most one entry sequence per project.
+    uniqEntry:  uniqueIndex('uniq_branch_entry').on(t.project_id).where(sql`${t.is_entry}`),
+  }),
+);
+
+export const branch_choice_points = pgTable(
+  'branch_choice_points',
+  {
+    id:          uuid('id').primaryKey().defaultRandom(),
+    project_id:  uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+    sequence_id: uuid('sequence_id').notNull().references(() => branch_sequences.id, { onDelete: 'cascade' }),
+    lead_in_sec: real('lead_in_sec').notNull().default(10),    // appears N sec before sequence end
+    timeout_sec: real('timeout_sec'),                          // null = wait indefinitely
+    // What the video does while waiting for a choice (creator-configurable).
+    behavior:    text('behavior').notNull().default('continue'),  // continue | pause | loop
+    prompt:      text('prompt'),
+    layout:      text('layout').notNull().default('cards'),    // cards | buttons | quiz
+    default_edge_id: uuid('default_edge_id'),                  // FK enforced in SQL (forward ref)
+    created_at:  timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    idxSequence:   index('idx_branch_cp_sequence').on(t.sequence_id),
+    idxProject:    index('idx_branch_cp_project').on(t.project_id),
+    behaviorChk:   check('branch_cp_behavior_chk', sql`${t.behavior} IN ('continue', 'pause', 'loop')`),
+  }),
+);
+
+export const branch_edges = pgTable(
+  'branch_edges',
+  {
+    id:              uuid('id').primaryKey().defaultRandom(),
+    project_id:      uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+    // null = auto edge (no overlay) or a sim-triggered edge (Phase 4).
+    choice_point_id: uuid('choice_point_id').references(() => branch_choice_points.id, { onDelete: 'cascade' }),
+    label:           text('label'),
+    description:     text('description'),
+    thumbnail_url:   text('thumbnail_url'),
+    sort_order:      integer('sort_order').notNull().default(0),
+
+    destination_type: text('destination_type').notNull(),     // see check below
+    // Polymorphic refs — exactly one set is meaningful per destination_type.
+    dest_sequence_id:   uuid('dest_sequence_id').references(() => branch_sequences.id, { onDelete: 'cascade' }),
+    dest_project_id:    uuid('dest_project_id').references(() => projects.id, { onDelete: 'set null' }),
+    dest_playlist_id:   uuid('dest_playlist_id').references(() => playlists.id, { onDelete: 'set null' }),
+    dest_url:           text('dest_url'),
+    dest_simulation_id: uuid('dest_simulation_id').references(() => simulations.id, { onDelete: 'set null' }),
+    dest_quiz_id:       uuid('dest_quiz_id'),                  // quiz table is Phase 4
+
+    // Simulation-triggered condition (Phase 4).
+    trigger_event:   text('trigger_event'),
+    trigger_match:   jsonb('trigger_match'),
+
+    created_at:      timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    idxChoicePoint: index('idx_branch_edges_cp').on(t.choice_point_id),
+    idxProject:     index('idx_branch_edges_project').on(t.project_id),
+    destTypeChk:    check('branch_edges_dest_type_chk', sql`${t.destination_type} IN ('sequence', 'project', 'playlist', 'external_url', 'simulation_full', 'quiz', 'back', 'restart', 'end')`),
+  }),
+);
+
+// Branching analytics (migration 038) — viewer path events. Soft refs to sequence/edge.
+export const branch_path_events = pgTable(
+  'branch_path_events',
+  {
+    id:               uuid('id').primaryKey().defaultRandom(),
+    project_id:       uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+    session_id:       text('session_id').notNull(),
+    event_type:       text('event_type').notNull(),       // sequence_enter | choice | complete
+    sequence_id:      uuid('sequence_id'),
+    edge_id:          uuid('edge_id'),
+    destination_type: text('destination_type'),
+    created_at:       timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    idxProject: index('idx_branch_events_project').on(t.project_id),
+    idxEdge:    index('idx_branch_events_edge').on(t.edge_id),
+  }),
+);
+
 // ── Type exports ──────────────────────────────────────────────────────────────
 
 export type Org = typeof orgs.$inferSelect;
@@ -819,3 +923,9 @@ export type PlaylistItem = typeof playlist_items.$inferSelect;
 export type AvatarVisual = typeof avatar_visuals.$inferSelect;
 export type AvatarConversation = typeof avatar_conversations.$inferSelect;
 export type AvatarProfile = typeof avatar_profiles.$inferSelect;
+export type BranchSequence = typeof branch_sequences.$inferSelect;
+export type NewBranchSequence = typeof branch_sequences.$inferInsert;
+export type BranchChoicePoint = typeof branch_choice_points.$inferSelect;
+export type NewBranchChoicePoint = typeof branch_choice_points.$inferInsert;
+export type BranchEdge = typeof branch_edges.$inferSelect;
+export type NewBranchEdge = typeof branch_edges.$inferInsert;

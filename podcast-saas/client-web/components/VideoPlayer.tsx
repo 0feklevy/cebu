@@ -22,6 +22,7 @@ interface SingleClipProps {
   hlsUrl?: string | null;
   hlsStatus?: string;
   clips?: undefined;
+  flush?: boolean;
   currentTime: number;
   onTimeUpdate: (t: number) => void;
   sectionLabel?: string | null;
@@ -39,6 +40,7 @@ interface MultiClipProps {
   src?: undefined;
   hlsUrl?: undefined;
   hlsStatus?: undefined;
+  flush?: boolean;
   timelineDuration?: number;
   currentTime: number;
   onTimeUpdate: (t: number) => void;
@@ -64,10 +66,11 @@ interface MultiClipPlayerProps {
   brollHlsUrl?: string | null;
   activeImageSection?: ActiveImageSectionData | null;
   avatarCircles?: AvatarCirclesConfig | null;
+  flush?: boolean;
   imperativeRef: React.RefObject<VideoPlayerHandle | null>;
 }
 
-function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, activeSimSection, activeBrollSection, brollHlsUrl, activeImageSection, avatarCircles, imperativeRef }: MultiClipPlayerProps) {
+function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, activeSimSection, activeBrollSection, brollHlsUrl, activeImageSection, avatarCircles, flush = false, imperativeRef }: MultiClipPlayerProps) {
   const [speed, setSpeed] = useState(1);
   // scrubDisplay: non-null while the user is dragging the seek bar — used for
   // visual feedback only; the actual seek fires once on mouseup/touchend.
@@ -84,6 +87,11 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
   const simPollRef      = useRef<ReturnType<typeof setInterval> | null>(null);
   const pendingSimRef   = useRef<{ script: string; params: Record<string, boolean> } | null>(null);
   const activeSimUrlRef = useRef<string | null>(null);
+  // Fallback reveal timer: some sims (heavy ES-module / CDN bundles like three.js) only
+  // emit SIM_READY via the bridge's 3s timeout because their modules delay DOMContentLoaded.
+  // Without this, the overlay stays hidden for ~3s (or never, on short sections) even though
+  // the iframe is already rendering — the player looked "blank" while the preview was fine.
+  const simRevealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [simUrl, setSimUrl]          = useState<string | null>(null);
   const [showSimOverlay, setShowSim] = useState(false);
 
@@ -124,6 +132,7 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
         if (pending) {
           // Send startScript first so sim applies simpleUi, then reveal
           sendToSim({ type: 'startScript', script: pending.script, params: pending.params });
+          if (simRevealTimerRef.current) { clearTimeout(simRevealTimerRef.current); simRevealTimerRef.current = null; }
           setTimeout(() => setShowSim(true), 50);
         }
       }
@@ -242,6 +251,7 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
         // linger visibly past its section.
         setShowSim(false);
       }
+      if (simRevealTimerRef.current) { clearTimeout(simRevealTimerRef.current); simRevealTimerRef.current = null; }
       activeSimUrlRef.current = null;
       return;
     }
@@ -257,6 +267,11 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
       pendingSimRef.current = { script, params };
       // Always poll when not ready — fixes seek-to-sim-section not showing
       startSimPoll();
+      // Reveal fallback: if SIM_READY is slow (module-heavy sims fire it via the bridge's
+      // 3s timeout), show the overlay anyway so the sim is visible while it finishes booting.
+      // SIM_READY still drives startScript when it arrives.
+      if (simRevealTimerRef.current) clearTimeout(simRevealTimerRef.current);
+      simRevealTimerRef.current = setTimeout(() => setShowSim(true), 800);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSimSection?.id, activeSimSection?.simulation_url]);
@@ -295,8 +310,10 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
     hook.endScrub(val);
   }, [hook]);
 
+  const rootClass = `flex-1 relative bg-black overflow-hidden${flush ? '' : ' rounded-lg shadow-card'}`;
+
   return (
-    <div className="flex-1 relative bg-black rounded-lg overflow-hidden shadow-card">
+    <div className={rootClass}>
       {/* Video A — initial z=2 (main), swapped by hook on clip transitions */}
       <video
         ref={hook.videoARef}
@@ -317,10 +334,9 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
       {/* B-roll overlay */}
       <video
         ref={brollVideoRef}
-        className="absolute inset-0 w-full h-full"
+        className="absolute inset-0 w-full h-full object-contain bg-transparent"
         style={{
           zIndex: 3,
-          objectFit: 'cover',
           opacity: activeBrollSection && !showSimOverlay ? 1 : 0,
           transition: 'opacity 150ms ease',
           pointerEvents: 'none',
@@ -335,7 +351,7 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
         visible={(!!activeBrollSection || !!activeImageSection) && !showSimOverlay}
         videoARef={hook.videoARef}
         videoBRef={hook.videoBRef}
-        globalTime={0}
+        globalTime={hook.globalTime}
       />
 
       {/* Image overlay — animated still with camera movement */}
@@ -466,10 +482,11 @@ interface SingleClipPlayerProps {
   currentTime: number;
   onTimeUpdate: (t: number) => void;
   sectionLabel?: string | null;
+  flush?: boolean;
   imperativeRef: React.RefObject<VideoPlayerHandle | null>;
 }
 
-function SingleClipPlayer({ src, hlsUrl, hlsStatus, currentTime, onTimeUpdate, sectionLabel, imperativeRef }: SingleClipPlayerProps) {
+function SingleClipPlayer({ src, hlsUrl, hlsStatus, currentTime, onTimeUpdate, sectionLabel, flush = false, imperativeRef }: SingleClipPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [playing, setPlaying] = useState(false);
   const [duration, setDuration] = useState(0);
@@ -587,8 +604,10 @@ function SingleClipPlayer({ src, hlsUrl, hlsStatus, currentTime, onTimeUpdate, s
     return `${m}:${Math.floor(s % 60).toString().padStart(2, '0')}`;
   };
 
+  const rootClass = `flex-1 relative bg-black overflow-hidden${flush ? '' : ' rounded-lg shadow-card'}`;
+
   return (
-    <div className="flex-1 relative bg-black rounded-lg overflow-hidden shadow-card">
+    <div className={rootClass}>
       {effectiveSrc ? (
         <video
           ref={videoRef}
@@ -745,6 +764,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(function VideoPl
         brollHlsUrl={props.brollHlsUrl}
         activeImageSection={props.activeImageSection}
         avatarCircles={props.avatarCircles}
+        flush={props.flush}
         imperativeRef={imperativeRef}
       />
     );
@@ -758,6 +778,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(function VideoPl
       currentTime={props.currentTime}
       onTimeUpdate={props.onTimeUpdate}
       sectionLabel={props.sectionLabel}
+      flush={props.flush}
       imperativeRef={imperativeRef}
     />
   );

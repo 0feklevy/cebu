@@ -457,6 +457,8 @@ export function TimelinePanel({
   const [addMenuOpen, setAddMenuOpen]     = useState(false);
   const [addBusy, setAddBusy]             = useState<'simulation' | 'clip' | null>(null);
   const [a2DragOver, setA2DragOver]       = useState(false);
+  // Depth counter so the A2 highlight doesn't flicker as the cursor crosses child segments — frontend-004.
+  const a2DragDepthRef = useRef(0);
   const [a2Modal, setA2Modal]             = useState<{ clickSec: number; editSection?: TimelineSection } | null>(null);
   const [localAudioFiles, setLocalAudioFiles] = useState<AudioFile[]>(audioFiles);
 
@@ -790,6 +792,7 @@ export function TimelinePanel({
 
   const handleA2Drop = useCallback(async (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
+    a2DragDepthRef.current = 0;
     setA2DragOver(false);
     const raw = e.dataTransfer.getData('application/audio-cutaway');
     if (!raw) return;
@@ -1135,8 +1138,9 @@ export function TimelinePanel({
               {/* ── A2 AUDIO CHANNEL ───────────────────────────────────── */}
               {hasAudio && (
                 <div
+                  onDragEnter={e => { e.preventDefault(); a2DragDepthRef.current += 1; setA2DragOver(true); }}
                   onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setA2DragOver(true); }}
-                  onDragLeave={() => setA2DragOver(false)}
+                  onDragLeave={() => { a2DragDepthRef.current = Math.max(0, a2DragDepthRef.current - 1); if (a2DragDepthRef.current === 0) setA2DragOver(false); }}
                   onDrop={handleA2Drop}
                   onClick={e => {
                     // click on empty A2 area → open modal

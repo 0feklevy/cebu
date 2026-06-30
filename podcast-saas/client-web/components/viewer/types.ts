@@ -111,6 +111,57 @@ export interface AvatarCirclesConfig {
 
 export interface SpeakerSpan { speaker: string; start_sec: number; end_sec: number; }
 
+// ── Branching Interactive Videos (migration 037) ──────────────────────────────
+// Present only for projects split into sequences. When `branching` is null/absent the
+// player walks the flat `segments` linearly (unchanged behavior). The graph walker
+// (Phase 2) reads from `branching.sequences`.
+
+export type BranchDestinationType =
+  | 'sequence' | 'project' | 'playlist' | 'external_url'
+  | 'simulation_full' | 'quiz' | 'back' | 'restart' | 'end';
+
+export interface PlayerBranchEdge {
+  id: string;
+  label: string | null;
+  description: string | null;
+  thumbnail_url: string | null;
+  destination_type: BranchDestinationType;
+  dest_sequence_id: string | null;     // 'sequence' destinations (same project)
+  dest_url: string | null;             // 'external_url'
+  dest_project_token: string | null;   // resolved share token (later phase)
+  dest_playlist_token: string | null;  // resolved share token (later phase)
+  dest_simulation_url: string | null;  // resolved sim entry URL (later phase)
+  trigger_event: string | null;        // sim-triggered edges (later phase)
+  trigger_match: Record<string, unknown> | null;
+  disabled: boolean;                   // server-set when destination missing/forbidden
+  disabled_reason: string | null;
+}
+
+export interface PlayerChoicePoint {
+  id: string;
+  sequence_id: string;
+  lead_in_sec: number;                 // overlay appears N sec before the sequence ends
+  timeout_sec: number | null;          // default-on-timeout; null = wait for a pick
+  behavior: 'continue' | 'pause' | 'loop';
+  prompt: string | null;
+  layout: 'cards' | 'buttons' | 'quiz';
+  default_edge_id: string | null;
+  edges: PlayerBranchEdge[];
+}
+
+export interface PlayerBranchSequence {
+  id: string;
+  label: string;
+  is_entry: boolean;
+  segments: PlayerSegment[];           // same shape as the flat segments, scoped to this sequence
+  choice_point: PlayerChoicePoint | null;
+}
+
+export interface PlayerBranchingConfig {
+  entry_sequence_id: string;
+  sequences: PlayerBranchSequence[];
+}
+
 export interface PlayerConfig {
   project_id: string;
   title: string | null;
@@ -122,6 +173,7 @@ export interface PlayerConfig {
   audio_cutaways?: AudioCutaway[];
   avatar_circles?: AvatarCirclesConfig | null;
   speaker_timeline?: SpeakerSpan[];
+  branching?: PlayerBranchingConfig | null;
 }
 
 export interface TimelineSeg {

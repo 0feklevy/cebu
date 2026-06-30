@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { PlayerConfig } from './types';
 import type { LockedContent } from 'shared/src/generated/client-v1';
 import { HLSPlayerShell } from './HLSPlayerShell';
+import { branchNavigate } from './branchNavigate';
 import { PaywallOverlay } from '../PaywallOverlay';
 import { useAuth } from '../../lib/firebase';
 import { AskAvatarButton } from '../avatar/AskAvatarButton';
@@ -116,6 +117,7 @@ export function ViewerPage({ projectId }: Props) {
     <div className="relative h-full w-full">
       <HLSPlayerShell
         config={config}
+        onNavigate={branchNavigate}
         onCaptionMenuOpenChange={setCaptionMenuOpen}
         bottomRightOverlay={!captionMenuOpen ? <AskAvatarButton onClick={() => setAvatarOpen(true)} label="Ask!" /> : null}
       />

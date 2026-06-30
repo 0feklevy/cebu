@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
-import type { PlayerConfig, PlayerSegment, SimulationOverlay, TimelineSeg, BrollClip, ImageOverlayItem, AudioCutaway } from './types';
+import type { PlayerConfig, PlayerSegment, SimulationOverlay, TimelineSeg, BrollClip, ImageOverlayItem, AudioCutaway, PlayerBranchSequence, PlayerChoicePoint, PlayerBranchEdge } from './types';
+
+const BRANCH_API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
 
 // ── HLS.js config (ported from interactive-podcast-react/player/src/constants/index.ts) ──
 const HLS_OPTS = {
@@ -10,15 +12,20 @@ const HLS_OPTS = {
   startLevel: -1,
   capLevelToPlayerSize: true,
   startFragPrefetch: false,
-  maxBufferLength: 15,
-  maxMaxBufferLength: 30,
-  backBufferLength: 5,
+  // Buffer headroom: 15s was a thin cushion that underran (stuttered) on variable
+  // networks. 45s ahead / 90s cap gives the active video room to ride out dips while
+  // still freeing bandwidth for the standby/broll instances once full.
+  maxBufferLength: 45,
+  maxMaxBufferLength: 90,
+  backBufferLength: 10,
   abrEwmaDefaultEstimate: 500_000,
   abrEwmaFastHalf: 2,
   fragLoadingTimeOut: 20_000,
   manifestLoadingTimeOut: 10_000,
   maxBufferHole: 0.5,
-  nudgeMaxRetry: 5,
+  // More nudge attempts before HLS.js declares a fatal bufferStalledError — most
+  // stalls clear with a nudge rather than needing a full reload.
+  nudgeMaxRetry: 10,
 };
 const HLS_OPTS_STANDBY       = { ...HLS_OPTS, startLevel: 0, maxBufferLength: 8 };
 const HLS_OPTS_BROLL         = { ...HLS_OPTS, startLevel: -1, maxBufferLength: 10 };
@@ -51,6 +58,7 @@ export interface ProjectPlayerState {
   globalTime:       number;
   activeSimUrl:    string | null;
   currentSegIdx:   number;
+  activeSegmentId: string;          // id of the playing segment (stable across branching)
   timeline:        TimelineSeg[];
   totalDuration:   number;
   volume:          number;
@@ -60,6 +68,10 @@ export interface ProjectPlayerState {
   resumeAction:    'resume' | 'backToVideo';
   activeImageOverlay: ImageOverlayItem | null;
   guidanceCaption: string;
+  // ── Branching (only used when config.branching is present) ──
+  activeChoice:    PlayerChoicePoint | null;  // the decision overlay to render, or null
+  choiceCountdown: number | null;             // seconds remaining on the timeout, or null
+  canGoBack:       boolean;                    // viewer has a previous decision to return to
 }
 
 export interface ProjectPlayerActions {
@@ -69,6 +81,9 @@ export interface ProjectPlayerActions {
   resumeFromSim:    () => void;
   setVolume:        (volume: number) => void;
   toggleMute:       () => void;
+  revealControls:   () => void;                        // YouTube-style hover reveal (over the sim)
+  selectEdge:       (edge: PlayerBranchEdge) => void;  // viewer picked a choice
+  goBack:           () => void;                        // back to the previous decision
 }
 
 function fmt(s: number): string {
@@ -79,6 +94,29 @@ function fmt(s: number): string {
 
 async function safePlay(v: HTMLVideoElement): Promise<void> {
   try { await v.play(); } catch (_) {}
+}
+
+// Branching: does a postMessage from the sim match an edge's sim-trigger condition?
+// trigger_event matches the message `type`; trigger_match optionally filters {key, op, value}.
+function triggerMatches(
+  triggerEvent: string | null,
+  triggerMatch: Record<string, unknown> | null,
+  data: Record<string, unknown>,
+): boolean {
+  if (!triggerEvent || data.type !== triggerEvent) return false;
+  if (!triggerMatch) return true;
+  const { key, op, value } = triggerMatch as { key?: string; op?: string; value?: unknown };
+  if (!key) return true;
+  const actual = data[key];
+  const nums = typeof actual === 'number' && typeof value === 'number';
+  switch (op) {
+    case 'gte': return nums && (actual as number) >= (value as number);
+    case 'lte': return nums && (actual as number) <= (value as number);
+    case 'gt':  return nums && (actual as number) >  (value as number);
+    case 'lt':  return nums && (actual as number) <  (value as number);
+    case 'eq':
+    default:    return actual === value;
+  }
 }
 
 function makeTimeline(segments: PlayerSegment[]): { segs: TimelineSeg[]; total: number } {
@@ -111,6 +149,8 @@ export interface ProjectPlayerOptions {
   onProjectComplete?: () => void;
   /** Auto-start playback on mount without the big play button (e.g. playlist videos 2..N). */
   autoStart?: boolean;
+  /** Branching: navigate away to another project/playlist/external URL (route change, not in-player). */
+  onNavigate?: (dest: { type: 'project' | 'playlist' | 'external_url'; url?: string | null; token?: string | null }) => void;
 }
 
 export function useProjectPlayer(
@@ -118,9 +158,45 @@ export function useProjectPlayer(
   refs: ProjectPlayerRefs,
   options: ProjectPlayerOptions = {},
 ): { state: ProjectPlayerState; actions: ProjectPlayerActions } {
-  const { segs: initialSegs, total: initialTotal } = makeTimeline(config.segments);
+  // ── Branching: the player walks a graph of sequences; each sequence is internally a
+  // linear timeline driven by `segmentsRef`. When config.branching is null this resolves
+  // to config.segments and every branching code path below is skipped → identical behavior.
+  const branching = config.branching ?? null;
+  const entrySequence: PlayerBranchSequence | null = branching
+    ? (branching.sequences.find((s) => s.id === branching.entry_sequence_id) ?? branching.sequences[0] ?? null)
+    : null;
+  const initialSegments = entrySequence ? entrySequence.segments : config.segments;
+
+  const { segs: initialSegs, total: initialTotal } = makeTimeline(initialSegments);
   const onProjectCompleteRef = useRef<(() => void) | undefined>(options.onProjectComplete);
   onProjectCompleteRef.current = options.onProjectComplete;
+  const onNavigateRef = useRef<ProjectPlayerOptions['onNavigate']>(options.onNavigate);
+  onNavigateRef.current = options.onNavigate;
+
+  // Active sequence's segments (the linear timeline currently playing). === config.segments
+  // for non-branching projects.
+  const segmentsRef = useRef<PlayerSegment[]>(initialSegments);
+  const currentSequenceIdRef = useRef<string | null>(entrySequence?.id ?? null);
+  const pathStackRef = useRef<Array<{ sequenceId: string; edgeId: string }>>([]);
+  const activeChoiceRef = useRef<PlayerChoicePoint | null>(null);
+  const choiceTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const choiceResolvedRef = useRef(false);  // a selection/timeout already navigated
+  const sessionIdRef = useRef<string>('');
+  if (!sessionIdRef.current) {
+    sessionIdRef.current = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : Math.random().toString(36).slice(2);
+  }
+  // Fire-and-forget branching analytics (Phase 5). No-op for non-branching projects.
+  const recordBranchEvent = (eventType: 'sequence_enter' | 'choice' | 'complete', payload: { sequence_id?: string | null; edge_id?: string | null; destination_type?: string | null } = {}) => {
+    if (!branching) return;
+    try {
+      fetch(`${BRANCH_API}/api/v1/projects/${config.project_id}/branch/events`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionIdRef.current, event_type: eventType, ...payload }),
+        keepalive: true,
+      }).catch(() => {});
+    } catch { /* ignore */ }
+  };
 
   const [state, setState] = useState<ProjectPlayerState>({
     playing:          false,
@@ -132,15 +208,19 @@ export function useProjectPlayer(
     globalTime:       0,
     activeSimUrl:     null,
     currentSegIdx:    0,
+    activeSegmentId:  initialSegments[0]?.id ?? '',
     timeline:         initialSegs,
     totalDuration:    initialTotal,
     volume:           1,
     muted:            false,
-    badgeText:        config.segments[0]?.label ?? '',
+    badgeText:        initialSegments[0]?.label ?? '',
     badgeMode:        '',
     resumeAction:     'resume',
     activeImageOverlay: null,
     guidanceCaption:  '',
+    activeChoice:     null,
+    choiceCountdown:  null,
+    canGoBack:        false,
   });
 
   const merge = (patch: Partial<ProjectPlayerState>) =>
@@ -212,7 +292,7 @@ export function useProjectPlayer(
       timelineRef.current[i].offset = off;
       off += timelineRef.current[i].duration;
     }
-    const displayTotal = computeDisplayTotal(timelineRef.current, config.segments);
+    const displayTotal = computeDisplayTotal(timelineRef.current, segmentsRef.current);
     totalDurRef.current = displayTotal;
 
     merge({ timeline: [...timelineRef.current], totalDuration: displayTotal });
@@ -277,7 +357,10 @@ export function useProjectPlayer(
 
   const scheduleHide = useCallback(() => {
     clearTimeout(idleTimerRef.current ?? undefined);
-    if (startedRef.current && !videoRef.current?.paused) {
+    // Auto-hide when playing, OR whenever a simulation overlay is up — even though the
+    // main video is paused for the sim — so a revealed bar fades back out YouTube-style
+    // instead of staying parked over the simulation.
+    if (startedRef.current && (!videoRef.current?.paused || showSimOverlayRef.current)) {
       idleTimerRef.current = setTimeout(() => merge({ controlsVisible: false }), 2500);
     }
   }, []);
@@ -354,7 +437,7 @@ export function useProjectPlayer(
 
   // ── simulation overlay ────────────────────────────────────────────────────
   const updateSimOverlay = (segmentIdx: number, localTime: number) => {
-    const seg = config.segments[segmentIdx];
+    const seg = segmentsRef.current[segmentIdx];
     if (!seg) {
       if (activeSimRef.current) {
         sendToSim({ type: 'stopScript' });
@@ -443,6 +526,14 @@ export function useProjectPlayer(
       hlsBrollRef.current = hls;
       hls.loadSource(url);
       hls.attachMedia(brollEl);
+      // Recover the b-roll overlay in place on fatal errors rather than leaving it
+      // frozen over the main video.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      hls.on(HlsLib.Events.ERROR, (_: string, d: any) => {
+        if (!d.fatal) return;
+        if (d.type === 'networkError') { setTimeout(() => { try { hls.startLoad(); } catch { /* detached */ } }, 1000); }
+        else { try { hls.recoverMediaError(); } catch { /* detached */ } }
+      });
       hls.on(HlsLib.Events.MANIFEST_PARSED, () => {
         brollEl.currentTime = Math.max(0, seekTo);
         brollEl.addEventListener('seeked', () => {
@@ -529,6 +620,7 @@ export function useProjectPlayer(
   };
 
   const updateBrollOverlay = (gt: number) => {
+    if (branching) return;  // flat overlays disabled in branching mode (Phase 2)
     // Merge broll_clips and clip_overlays — both use the same video overlay mechanism
     const brollClips = [...(config.broll_clips ?? []), ...(config.clip_overlays ?? [])];
     const clip = brollClips.find((b) => {
@@ -573,6 +665,7 @@ export function useProjectPlayer(
 
   // ── audio cutaway (audio-only broll) ─────────────────────────────────────
   const updateAudioCutaway = (gt: number, isPlaying: boolean) => {
+    if (branching) return;  // flat overlays disabled in branching mode (Phase 2)
     const cuts: AudioCutaway[] = config.audio_cutaways ?? [];
     const active = cuts.find(c => {
       const end = c.global_offset_sec + (c.end_sec - c.start_sec);
@@ -614,6 +707,7 @@ export function useProjectPlayer(
   const activeImageIdRef = useRef<string | null>(null);
 
   const updateImageOverlay = (gt: number) => {
+    if (branching) return;  // flat overlays disabled in branching mode (Phase 2)
     const overlays = config.image_overlays ?? [];
     const active = overlays.find(
       (o) => gt >= o.global_offset_sec && gt < o.global_offset_sec + o.duration_sec,
@@ -627,8 +721,36 @@ export function useProjectPlayer(
 
   // ── HLS helpers ───────────────────────────────────────────────────────────
   const getSegmentUrl = (segIdx: number) => {
-    const seg = config.segments[segIdx];
+    const seg = segmentsRef.current[segIdx];
     return seg?.hls_url ?? seg?.fallback_url ?? '';
+  };
+
+  // Attach (idempotently) a fatal-error recovery handler to an Hls instance. Recovers
+  // in place rather than killing playback: a fatal networkError retries the load, a
+  // mediaError calls recoverMediaError(), and any other fatal error tries a media
+  // recover too. Critically it never sets el.src to the HLS playlist as a "fallback"
+  // — fallback_url === hls_url (an .m3u8), which Chrome/Firefox can't play natively, so
+  // that path turned a recoverable stall into a permanent freeze. Only a *progressive*
+  // fallback (a real file, not the same .m3u8) is ever assigned.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const attachHlsRecovery = (hls: any, el: HTMLVideoElement, segIdxOf: () => number) => {
+    const HLS_ERROR = hlsLibRef.current?.Events?.ERROR ?? 'hlsError';
+    const prev = _hlsErrHandlers.get(hls);
+    if (prev) hls.off(HLS_ERROR, prev);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const onErr = (_: string, d: any) => {
+      if (!d.fatal) return;
+      const segIdx = segIdxOf();
+      if (d.type === 'networkError') { setTimeout(() => { try { hls.startLoad(); } catch { /* detached */ } }, 1000); }
+      else if (d.type === 'mediaError') { try { hls.recoverMediaError(); } catch { /* detached */ } }
+      else {
+        try { hls.recoverMediaError(); } catch { /* detached */ }
+        const fb = segmentsRef.current[segIdx]?.fallback_url ?? '';
+        if (fb && fb !== getSegmentUrl(segIdx)) { el.src = fb; el.load(); }
+      }
+    };
+    _hlsErrHandlers.set(hls, onErr);
+    hls.on(HLS_ERROR, onErr);
   };
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -638,27 +760,16 @@ export function useProjectPlayer(
     if (useHlsJsRef.current && hls) {
       hls.stopLoad(); hls.detachMedia();
       hls.loadSource(url); hls.attachMedia(el);
-      const HLS_ERROR = hlsLibRef.current?.Events?.ERROR ?? 'hlsError';
-      const prev = _hlsErrHandlers.get(hls);
-      if (prev) hls.off(HLS_ERROR, prev);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const onErr = (_: string, d: any) => {
-        if (!d.fatal) return;
-        if (d.type === 'networkError') setTimeout(() => hls.startLoad(), 1000);
-        else if (d.type === 'mediaError') hls.recoverMediaError();
-        else { el.src = config.segments[segIdx]?.fallback_url ?? ''; }
-      };
-      _hlsErrHandlers.set(hls, onErr);
-      hls.on(HLS_ERROR, onErr);
+      attachHlsRecovery(hls, el, () => segIdx);
     } else if (el.canPlayType('application/vnd.apple.mpegurl')) {
       el.src = url; el.load();
     } else {
-      el.src = config.segments[segIdx]?.fallback_url ?? url; el.load();
+      el.src = segmentsRef.current[segIdx]?.fallback_url ?? url; el.load();
     }
   };
 
   const prewarm = (segIdx: number) => {
-    const id = config.segments[segIdx]?.id;
+    const id = segmentsRef.current[segIdx]?.id;
     if (!id || standbyIdRef.current === id || !standbyRef.current) return;
     standbyIdRef.current = id;
     attachHlsSource(standbyRef.current, segIdx, hlsStandbyRef.current);
@@ -671,6 +782,19 @@ export function useProjectPlayer(
     [hlsRef.current, hlsStandbyRef.current] = [hlsStandbyRef.current, hlsRef.current];
     standbyIdRef.current = null;
     a.pause();
+    // The two instances were created with different buffer budgets — active 45s, standby
+    // 8s for cheap prewarm. The swap promotes the former standby to active, so re-apply the
+    // full active budget to it (and the lean budget to the new standby). Without this the
+    // player rode on only 8s of buffer from segment 2 onward and stalled on any dip >8s
+    // (perf-006). hls.config is mutable at runtime and takes effect on the next fragment.
+    if (hlsRef.current) {
+      hlsRef.current.config.maxBufferLength    = HLS_OPTS.maxBufferLength;
+      hlsRef.current.config.maxMaxBufferLength = HLS_OPTS.maxMaxBufferLength;
+      hlsRef.current.config.backBufferLength   = HLS_OPTS.backBufferLength;
+    }
+    if (hlsStandbyRef.current) {
+      hlsStandbyRef.current.config.maxBufferLength = HLS_OPTS_STANDBY.maxBufferLength;
+    }
     hlsStandbyRef.current?.stopLoad();
     hlsStandbyRef.current?.detachMedia();
     applyMediaVolume();
@@ -702,8 +826,9 @@ export function useProjectPlayer(
 
     merge({
       currentSegIdx: idx,
+      activeSegmentId: segmentsRef.current[idx]?.id ?? '',
       globalTime: seg.offset + localTime,
-      badgeText: config.segments[idx]?.label ?? '',
+      badgeText: segmentsRef.current[idx]?.label ?? '',
       badgeMode: 'free',
       resumeAction: 'resume',
     });
@@ -742,6 +867,114 @@ export function useProjectPlayer(
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scheduleHide]);
 
+  // ── Branching graph walker (no-op unless config.branching is present) ───────
+  const clearChoiceTimer = () => {
+    if (choiceTimerRef.current) { clearInterval(choiceTimerRef.current); choiceTimerRef.current = null; }
+  };
+
+  const currentSequence = (): PlayerBranchSequence | null =>
+    branching ? (branching.sequences.find((s) => s.id === currentSequenceIdRef.current) ?? null) : null;
+
+  function clearChoice() {
+    clearChoiceTimer();
+    activeChoiceRef.current = null;
+    merge({ activeChoice: null, choiceCountdown: null });
+  }
+
+  function startChoiceCountdown(cp: PlayerChoicePoint) {
+    clearChoiceTimer();
+    if (cp.timeout_sec == null) { merge({ choiceCountdown: null }); return; }
+    let remaining = cp.timeout_sec;
+    merge({ choiceCountdown: remaining });
+    choiceTimerRef.current = setInterval(() => {
+      remaining = Math.max(0, remaining - 0.25);
+      merge({ choiceCountdown: remaining });
+      if (remaining <= 0) {
+        clearChoiceTimer();
+        const def = cp.edges.find((e) => e.id === cp.default_edge_id) ?? cp.edges[0];
+        if (def) selectEdge(def);
+      }
+    }, 250);
+  }
+
+  function revealChoice(cp: PlayerChoicePoint) {
+    if (activeChoiceRef.current?.id === cp.id) return;
+    activeChoiceRef.current = cp;
+    merge({ activeChoice: cp, controlsVisible: true });
+    startChoiceCountdown(cp);  // 'pause'/'continue'-without-default hold at the end via onEnded
+  }
+
+  function loadSequence(sequenceId: string) {
+    clearChoice();
+    choiceResolvedRef.current = false;
+    const seq = branching?.sequences.find((s) => s.id === sequenceId) ?? null;
+    if (!seq || seq.segments.length === 0) {
+      // Missing or empty destination — end gracefully rather than dead-ending.
+      stopBroll();
+      startedRef.current = false;
+      merge({ started: false, controlsVisible: true });
+      onProjectCompleteRef.current?.();
+      return;
+    }
+    currentSequenceIdRef.current = seq.id;
+    recordBranchEvent('sequence_enter', { sequence_id: seq.id });
+    segmentsRef.current = seq.segments;
+    const { segs, total } = makeTimeline(seq.segments);
+    timelineRef.current = segs;
+    totalDurRef.current = total;
+    curIdxRef.current = 0;
+    standbyIdRef.current = null;
+    merge({ timeline: segs, totalDuration: total, currentSegIdx: 0, activeSegmentId: seq.segments[0]?.id ?? '' });
+    setTotTime(total);
+    loadSegment(0, 0, true);
+  }
+
+  function goBack() {
+    const prev = pathStackRef.current.pop();
+    merge({ canGoBack: pathStackRef.current.length > 0 });
+    if (prev) loadSequence(prev.sequenceId);
+  }
+
+  function followEdge(edge: PlayerBranchEdge) {
+    clearChoice();
+    switch (edge.destination_type) {
+      case 'sequence':
+        if (edge.dest_sequence_id) {
+          pathStackRef.current.push({ sequenceId: currentSequenceIdRef.current ?? '', edgeId: edge.id });
+          merge({ canGoBack: true });
+          loadSequence(edge.dest_sequence_id);
+        } else { onProjectCompleteRef.current?.(); }
+        return;
+      case 'back':    goBack(); return;
+      case 'restart':
+        pathStackRef.current = [];
+        merge({ canGoBack: false });
+        if (branching) loadSequence(branching.entry_sequence_id);
+        return;
+      case 'external_url':
+        if (onNavigateRef.current) onNavigateRef.current({ type: 'external_url', url: edge.dest_url });
+        else if (edge.dest_url && typeof window !== 'undefined') window.open(edge.dest_url, '_blank', 'noopener');
+        return;
+      case 'project':  onNavigateRef.current?.({ type: 'project',  token: edge.dest_project_token });  return;
+      case 'playlist': onNavigateRef.current?.({ type: 'playlist', token: edge.dest_playlist_token }); return;
+      case 'end':
+      default:
+        recordBranchEvent('complete');
+        stopBroll();
+        startedRef.current = false;
+        merge({ started: false, controlsVisible: true });
+        onProjectCompleteRef.current?.();
+        return;
+    }
+  }
+
+  function selectEdge(edge: PlayerBranchEdge) {
+    if (choiceResolvedRef.current) return;
+    choiceResolvedRef.current = true;
+    recordBranchEvent('choice', { sequence_id: currentSequenceIdRef.current, edge_id: edge.id, destination_type: edge.destination_type });
+    followEdge(edge);
+  }
+
   // ── tick ──────────────────────────────────────────────────────────────────
   const onTick = useCallback(() => {
     if (scrubbingRef.current) return;
@@ -757,19 +990,38 @@ export function useProjectPlayer(
       if (nextIdx < timelineRef.current.length) prewarm(nextIdx);
     }
 
+    // Branching: reveal the decision overlay in the last `lead_in_sec` of the final segment.
+    if (branching && seg) {
+      const cp = currentSequence()?.choice_point ?? null;
+      const isLast = idx === timelineRef.current.length - 1;
+      if (cp && isLast) {
+        const remaining = seg.duration - t;
+        if (remaining <= cp.lead_in_sec && !activeChoiceRef.current && !choiceResolvedRef.current) {
+          revealChoice(cp);
+        }
+        // Loop behavior: replay the trailing region until the viewer chooses.
+        if (cp.behavior === 'loop' && activeChoiceRef.current && remaining <= 0.3 && videoRef.current) {
+          videoRef.current.currentTime = Math.max(0, seg.duration - cp.lead_in_sec);
+        }
+      }
+    }
+
     if (!userPausedRef.current && !swappingRef.current) {
       updateSimOverlay(idx, t);
       updateBrollOverlay(gt);
       updateImageOverlay(gt);
       updateAudioCutaway(gt, !videoRef.current?.paused);
 
-      // Pre-warm next broll clip 15s before its start
-      const brollClips = config.broll_clips ?? [];
-      const nextBroll = brollClips.find((b) =>
-        gt < b.global_offset_sec && gt + 15 >= b.global_offset_sec
-      ) ?? null;
-      if (nextBroll && nextBroll.id !== standbyBrollClipIdRef.current && nextBroll.id !== activeBrollRef.current?.id) {
-        prewarmBroll(nextBroll, hlsLibRef.current);
+      // Pre-warm next broll clip 15s before its start (flat overlays are disabled in
+      // branching mode — their global offsets don't map onto per-sequence timelines).
+      if (!branching) {
+        const brollClips = config.broll_clips ?? [];
+        const nextBroll = brollClips.find((b) =>
+          gt < b.global_offset_sec && gt + 15 >= b.global_offset_sec
+        ) ?? null;
+        if (nextBroll && nextBroll.id !== standbyBrollClipIdRef.current && nextBroll.id !== activeBrollRef.current?.id) {
+          prewarmBroll(nextBroll, hlsLibRef.current);
+        }
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -780,7 +1032,7 @@ export function useProjectPlayer(
     merge({ playing: false });
     const idx = curIdxRef.current;
     const seg = timelineRef.current[idx];
-    const section = config.segments[idx]?.simulations.find((s) =>
+    const section = segmentsRef.current[idx]?.simulations.find((s) =>
       s.type === 'simulation' &&
       !!s.simulation_url &&
       !!seg &&
@@ -799,13 +1051,33 @@ export function useProjectPlayer(
     const nextIdx = idx + 1;
     if (nextIdx < timelineRef.current.length) {
       loadSegment(nextIdx, 0);
-    } else {
-      stopBroll();
-      startedRef.current = false;
-      merge({ started: false, controlsVisible: true });
-      // Playlist: hand control back to the wrapper to advance to the next project.
-      onProjectCompleteRef.current?.();
+      return;
     }
+
+    // End of the current sequence — branching resolves the decision here.
+    if (branching) {
+      const cp = currentSequence()?.choice_point ?? null;
+      if (cp) {
+        if (!choiceResolvedRef.current) {
+          if (!activeChoiceRef.current) revealChoice(cp);
+          // 'continue' with a default auto-advances; otherwise hold and wait for a pick.
+          if (cp.behavior === 'continue') {
+            const def = cp.edges.find((e) => e.id === cp.default_edge_id);
+            if (def) { selectEdge(def); return; }
+          }
+          videoRef.current?.pause();
+          merge({ playing: false });
+        }
+        return;  // resolved (navigating) or holding on the overlay
+      }
+      // sequence with no choice point → fall through to terminal behavior
+    }
+
+    stopBroll();
+    startedRef.current = false;
+    merge({ started: false, controlsVisible: true });
+    // Playlist: hand control back to the wrapper to advance to the next project.
+    onProjectCompleteRef.current?.();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadSegment]);
 
@@ -827,7 +1099,11 @@ export function useProjectPlayer(
     v.addEventListener('pause', () => {
       if (v !== videoRef.current) return;
       merge({ playing: false });
-      showControls();
+      // Pausing into a simulation (userInteraction) must NOT raise the controls bar — it
+      // would cover the sim. Keep it hidden; the viewer reveals it by moving the mouse
+      // (hover zone) and resumes with Space / the resume button. Normal pauses show it.
+      if (showSimOverlayRef.current) hideControls();
+      else showControls();
       // Sync broll: pause it too
       refs.videoBroll.current?.pause();
       // Sync audio cutaway
@@ -881,6 +1157,17 @@ export function useProjectPlayer(
           enqueueGuidance({ id, text: text ?? '', audioUrl: audioUrl ?? '' });
         }
       }
+      // ── Branching: simulation-triggered edges ──────────────────────────────
+      // If the current sequence's choice point has an edge whose sim-trigger matches this
+      // message, auto-select it (e.g. solved → response clip, wrong → explanation clip).
+      if (branching && !choiceResolvedRef.current) {
+        const cp = currentSequence()?.choice_point ?? null;
+        if (cp) {
+          const data = (e.data as Record<string, unknown>) ?? {};
+          const match = cp.edges.find((edge) => triggerMatches(edge.trigger_event, edge.trigger_match, data));
+          if (match) selectEdge(match);
+        }
+      }
     };
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
@@ -891,6 +1178,9 @@ export function useProjectPlayer(
   useEffect(() => {
     showSimOverlayRef.current = state.showSimOverlay;
     sendToSim({ type: 'guidanceGate', active: state.showSimOverlay });
+    // When a simulation comes up, drop the controls bar so it never covers the sim.
+    // It stays revealable on hover and auto-hides again via scheduleHide.
+    if (state.showSimOverlay) hideControls();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.showSimOverlay]);
 
@@ -927,12 +1217,16 @@ export function useProjectPlayer(
       if (canUse && firstUrl) {
         const hA = new HlsLib(HLS_OPTS);
         hA.loadSource(firstUrl); hA.attachMedia(vA);
+        // The primary instance previously had no error handler, so a fatal stall on
+        // the first segment was unrecoverable (frozen). Attach the same in-place
+        // recovery the standby/swap path uses; segIdx tracks the live segment.
+        attachHlsRecovery(hA, vA, () => curIdxRef.current);
         hlsRef.current = hA;
         hlsStandbyRef.current = new HlsLib(HLS_OPTS_STANDBY);
       } else if (vA.canPlayType('application/vnd.apple.mpegurl') && firstUrl) {
         vA.src = firstUrl;
       } else {
-        vA.src = config.segments[0]?.fallback_url ?? firstUrl;
+        vA.src = segmentsRef.current[0]?.fallback_url ?? firstUrl;
       }
 
       attachListeners(vA);
@@ -942,6 +1236,7 @@ export function useProjectPlayer(
     };
 
     initAsync();
+    if (branching && entrySequence) recordBranchEvent('sequence_enter', { sequence_id: entrySequence.id });
 
     return () => {
       hlsRef.current?.destroy();
@@ -1226,6 +1521,6 @@ export function useProjectPlayer(
 
   return {
     state,
-    actions: { startPlayback, togglePlay, handleVideoClick, resumeFromSim, setVolume, toggleMute },
+    actions: { startPlayback, togglePlay, handleVideoClick, resumeFromSim, setVolume, toggleMute, revealControls: showControls, selectEdge, goBack },
   };
 }

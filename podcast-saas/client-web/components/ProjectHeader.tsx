@@ -193,21 +193,21 @@ export function ProjectHeader({ projectId }: Props) {
             ref={sheetRef}
             className="floating-panel fixed right-3 top-[58px] z-[10000] w-[min(400px,calc(100vw-24px))] overflow-hidden rounded-xl sm:right-4"
           >
-            <div className="flex items-start justify-between gap-3 border-b border-border bg-muted px-4 py-3">
+            <div className="flex items-start justify-between gap-3 border-b border-border bg-card px-4 py-3">
               <div className="min-w-0">
                 <div className="mb-1 flex items-center gap-2">
-                  <span className="flex h-7 w-7 items-center justify-center rounded-md bg-primary/15 text-primary">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
                     <Link2 size={14} strokeWidth={1.9} aria-hidden />
                   </span>
                   <p className="text-sm font-semibold text-foreground">Public watch link</p>
                 </div>
                 <p className="text-xs leading-relaxed text-muted-foreground">
-                  Anyone with the link can watch the current final video.
+                  Anyone with this link can watch the current final video.
                 </p>
               </div>
               <button
                 onClick={() => setShareOpen(false)}
-                className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-ring"
+                className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-ring"
                 title="Close"
               >
                 <span className="sr-only">Close share sheet</span>
@@ -216,27 +216,26 @@ export function ProjectHeader({ projectId }: Props) {
             </div>
 
             <div className="space-y-3 px-4 py-4">
-              <div className="rounded-lg border border-border bg-background p-2 shadow-sm-soft">
+              <div className="rounded-xl border border-border bg-background p-1.5 shadow-sm-soft">
                 <div className="flex min-w-0 items-center gap-2">
-                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-emerald-500/14 text-emerald-500">
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-600">
                     <Check size={14} strokeWidth={2} aria-hidden />
                   </span>
-                  <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">
+                  <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground" title={shareUrl}>
                     {shareUrl}
                   </span>
+                  <button
+                    onClick={handleCopy}
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-ring"
+                    title={shareCopied ? 'Copied' : 'Copy link'}
+                    aria-label={shareCopied ? 'Copied' : 'Copy share link'}
+                  >
+                    {shareCopied ? <Check size={15} strokeWidth={2.2} aria-hidden /> : <Copy size={15} strokeWidth={1.9} aria-hidden />}
+                  </button>
                 </div>
               </div>
 
               <div className="grid grid-cols-1 gap-2 min-[360px]:grid-cols-2">
-                <button
-                  onClick={handleCopy}
-                  className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg text-xs font-semibold text-white shadow-sm transition-all hover:opacity-90 active:scale-[0.98] focus-ring"
-                  style={{ background: 'linear-gradient(135deg,#a855f7,#6366f1)' }}
-                >
-                  {shareCopied ? <Check size={14} strokeWidth={2} aria-hidden /> : <Copy size={14} strokeWidth={1.8} aria-hidden />}
-                  {shareCopied ? 'Copied' : 'Copy link'}
-                </button>
-
                 <a
                   href={shareUrl}
                   target="_blank"
@@ -246,19 +245,19 @@ export function ProjectHeader({ projectId }: Props) {
                   <ExternalLink size={14} strokeWidth={1.8} aria-hidden />
                   Open viewer
                 </a>
-              </div>
-
-              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
                 <button
                   onClick={handleRevoke}
                   disabled={shareLoading}
-                  className="flex items-center gap-1.5 rounded-md text-[11px] font-medium text-red-500 transition-colors hover:text-red-600 disabled:opacity-40 focus-ring"
+                  className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-red-200 bg-red-50 text-xs font-semibold text-red-600 transition-colors hover:bg-red-100 disabled:opacity-40 focus-ring"
                 >
-                  <Unlink2 size={13} strokeWidth={1.8} aria-hidden />
+                  {shareLoading ? <Loader2 size={14} className="animate-spin" aria-hidden /> : <Unlink2 size={14} strokeWidth={1.8} aria-hidden />}
                   Revoke link
                 </button>
-                <span className="text-[10px] text-muted-foreground">Revokes immediately</span>
               </div>
+
+              <p className="border-t border-border pt-3 text-[11px] leading-5 text-muted-foreground">
+                Revoking disables this public URL immediately. You can create a new link later.
+              </p>
             </div>
 
             {shareError && (

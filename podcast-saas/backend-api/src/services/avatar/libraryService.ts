@@ -409,6 +409,18 @@ export async function storeImageB64(b64: string, projectId?: string | null): Pro
   return { url, key };
 }
 
+export async function storeImageBuffer(
+  data: Buffer,
+  contentType: string,
+  projectId?: string | null,
+  extension = 'bin',
+): Promise<{ url: string; key: string }> {
+  const safeExt = extension.toLowerCase().replace(/[^a-z0-9]/g, '') || 'bin';
+  const key = `images/avatar/uploads/${projectId ?? 'global'}/${randomUUID()}.${safeExt}`;
+  const { url } = await uploadWithFallback(key, data, contentType);
+  return { url, key };
+}
+
 // Stores a full HTML simulation as a single-file entry. Returns prefix + public URL.
 export async function storeSimulationHtml(html: string, projectId?: string | null): Promise<{ prefix: string; url: string }> {
   const id = randomUUID();

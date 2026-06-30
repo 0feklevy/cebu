@@ -9,6 +9,7 @@ import { playlists, playlist_items, projects } from '../../db/schema.js';
 import { eq, and, asc, inArray, sql } from 'drizzle-orm';
 import { firebaseAuthMiddleware, firebaseAuthOptionalMiddleware } from '../../middleware/firebase-auth.js';
 import { buildPlayerConfig } from '../../services/buildPlayerConfig.js';
+import { requireProjectAccess } from '../../services/projectAccess.js';
 import { BillingService } from '../../services/billing/BillingService.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { LocalStorageAdapter } from '../../services/storage/LocalStorageAdapter.js';
@@ -195,7 +196,7 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
         .where(eq(playlists.id, playlist.id))
         .catch(() => {});
 
-      return reply.send(await buildPlaylistPlayConfig(playlist));
+      return reply.send(await buildPlaylistPlayConfig(playlist, request.dbUser?.id ?? null));
     },
   );
 
@@ -487,17 +488,21 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
       const ownedSet = new Set(owned.map((p) => p.id));
       const finalIds = orderedIds.filter((id) => ownedSet.has(id));
 
-      await db.delete(playlist_items).where(eq(playlist_items.playlist_id, playlist.id));
-      if (finalIds.length > 0) {
-        await db.insert(playlist_items).values(
-          finalIds.map((project_id, idx) => ({
-            playlist_id: playlist.id,
-            project_id,
-            position:    idx,
-          })),
-        );
-      }
-      await db.update(playlists).set({ updated_at: new Date() }).where(eq(playlists.id, playlist.id));
+      // Atomic replace: delete + re-insert + touch must all commit together, or a mid-write
+      // failure would leave the playlist emptied with nothing re-inserted (database-001).
+      await db.transaction(async (tx) => {
+        await tx.delete(playlist_items).where(eq(playlist_items.playlist_id, playlist.id));
+        if (finalIds.length > 0) {
+          await tx.insert(playlist_items).values(
+            finalIds.map((project_id, idx) => ({
+              playlist_id: playlist.id,
+              project_id,
+              position:    idx,
+            })),
+          );
+        }
+        await tx.update(playlists).set({ updated_at: new Date() }).where(eq(playlists.id, playlist.id));
+      });
 
       const items = await playlistItemsWithProjects(playlist.id);
       return reply.send({ ...playlist, items });
@@ -568,27 +573,50 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
       const user = request.dbUser!;
       const playlist = await ownedPlaylist(request.params.id, user.id);
       if (!playlist) return reply.code(404).send({ message: 'Playlist not found' });
-      return reply.send(await buildPlaylistPlayConfig(playlist));
+      return reply.send(await buildPlaylistPlayConfig(playlist, user.id));
     },
   );
 }
 
-/** Assemble playlist metadata + each ordered item's full PlayerConfig. */
-async function buildPlaylistPlayConfig(playlist: typeof playlists.$inferSelect) {
+/**
+ * Assemble playlist metadata + each ordered item's full PlayerConfig.
+ *
+ * `viewerUserId` is the id of whoever is viewing (the owner for the preview route, or the
+ * share viewer — possibly null — for the public link). Each item is gated with the SAME model
+ * as the single-project share/player-config path: public-or-owner visibility + per-project paid
+ * billing. Items the viewer can't access are omitted, so a playlist link can never leak a
+ * member project's private/draft config or hand out paid content for free (backend-001 /
+ * security-102). The owner preview passes its own id, so the owner still sees every item.
+ */
+async function buildPlaylistPlayConfig(
+  playlist: typeof playlists.$inferSelect,
+  viewerUserId: string | null,
+) {
   const items = await db.query.playlist_items.findMany({
     where: eq(playlist_items.playlist_id, playlist.id),
     orderBy: [asc(playlist_items.position)],
   });
 
-  const [configs, projectRows] = await Promise.all([
-    Promise.all(items.map((i) => buildPlayerConfig(i.project_id))),
-    items.length > 0
-      ? db.query.projects.findMany({ where: inArray(projects.id, items.map((i) => i.project_id)) })
-      : Promise.resolve([]),
-  ]);
+  const projectRows = items.length > 0
+    ? await db.query.projects.findMany({ where: inArray(projects.id, items.map((i) => i.project_id)) })
+    : [];
   const projectMap = new Map(projectRows.map((p) => [p.id, p]));
 
-  const playItems = items
+  // Resolve access per item first, then build configs only for the accessible ones — never
+  // build (or send) a config the viewer isn't entitled to.
+  const accessibleItems: typeof items = [];
+  for (const i of items) {
+    const proj = projectMap.get(i.project_id);
+    if (!proj) continue;
+    if (!requireProjectAccess(proj, viewerUserId, null)) continue;
+    const pricing = await BillingService.getPricing('project', i.project_id);
+    if (pricing?.accessType === 'paid' && !(await BillingService.hasAccess(viewerUserId, 'project', i.project_id))) continue;
+    accessibleItems.push(i);
+  }
+
+  const configs = await Promise.all(accessibleItems.map((i) => buildPlayerConfig(i.project_id, viewerUserId)));
+
+  const playItems = accessibleItems
     .map((i, idx) => {
       const config = configs[idx];
       if (!config) return null;

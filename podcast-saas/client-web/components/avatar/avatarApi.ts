@@ -60,6 +60,11 @@ export interface LibraryItem {
 }
 
 export interface LibraryPage { items: LibraryItem[]; total: number; typeCounts: Record<string, number>; }
+export interface LibraryUploadResult {
+  ok: boolean;
+  accepted: Array<{ filename: string; visualType: LibraryItem['visual_type']; id: string }>;
+  rejected: Array<{ filename: string; reason: string }>;
+}
 
 export interface Turn { role: 'user' | 'persona'; content: string; }
 
@@ -269,6 +274,22 @@ export const generateLibraryImage = (projectId: string, body: { prompt: string; 
 
 export const generateLibrarySimulation = (projectId: string, body: { prompt: string; caption?: string; characterId?: string; scope?: string }) =>
   jsonFetch<{ ok: boolean; item: LibraryItem; simulationUrl: string }>(`/api/v1/projects/${projectId}/avatar/library/generate-simulation`, { method: 'POST', body: JSON.stringify(body) }, true);
+
+export const uploadLibraryFiles = async (
+  projectId: string,
+  files: File[],
+  opts?: { characterId?: string; scope?: 'basic' | 'extended' },
+): Promise<LibraryUploadResult> => {
+  const form = new FormData();
+  form.set('scope', opts?.scope ?? 'extended');
+  if (opts?.characterId) form.set('characterId', opts.characterId);
+  for (const file of files) form.append('files', file, file.name);
+  const headers = await authHeaders();
+  const res = await fetch(`${BASE}/api/v1/projects/${projectId}/avatar/library/upload`, { method: 'POST', headers, body: form });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((json as { message?: string }).message ?? `Upload failed: ${res.status}`);
+  return json as LibraryUploadResult;
+};
 
 export const patchLibraryVisual = (projectId: string, visualId: string, body: { caption?: string; altText?: string; scope?: string }) =>
   jsonFetch<{ ok: boolean }>(`/api/v1/projects/${projectId}/avatar/library/${visualId}`, { method: 'PATCH', body: JSON.stringify(body) }, true);

@@ -13,6 +13,7 @@ import { checkDatabaseConnection, db, video_files } from './db/index.js';
 import { getFirebaseAdmin } from './services/firebase.js';
 import { getStorageAdapter } from './services/storage/getStorageAdapter.js';
 import { R2StorageAdapter } from './services/storage/R2StorageAdapter.js';
+import { LocalStorageAdapter } from './services/storage/LocalStorageAdapter.js';
 import { getSimulationContentType } from './services/simulation/SimulationService.js';
 import { startWorker } from './queue/startWorker.js';
 import { stopBoss } from './queue/pgBoss.js';
@@ -46,6 +47,7 @@ import { registerAvatarRoutes } from './controllers/v1/avatar.controller.js';
 import { registerAdminAvatarRoutes } from './controllers/admin/v1/avatar.controller.js';
 import { registerPublicCourseRoutes } from './controllers/v1/public-courses.controller.js';
 import { registerCourseAuthoringRoutes } from './controllers/v1/courses.controller.js';
+import { registerBranchRoutes } from './controllers/v1/branch.controller.js';
 
 const PORT = parseInt(process.env.PORT ?? '8080', 10);
 
@@ -339,24 +341,55 @@ async function build() {
     },
   );
 
-  // Public simulation file serving (dev only, no auth) — serves simulations/ prefix with correct content-types.
-  // In production, simulation files are served directly from R2 public URL.
+  // Public simulation file serving (no auth) — serves the simulations/ prefix with the
+  // CORRECT Content-Type. This must be a backend proxy, not a direct bucket link:
+  // Supabase's public bucket force-downgrades text/html → text/plain (anti-phishing),
+  // so an iframe pointed straight at the bucket renders raw `<!DOCTYPE html>…` source.
+  // Local disk is streamed (Range support); cloud objects are read via the adapter and
+  // re-emitted with getSimulationContentType so HTML renders and ES-module .js loads.
   app.get<{ Params: { '*': string } }>(
     '/sim-public/*',
+    // Opt this route out of helmet: it serves sim files INTO a cross-origin <iframe>, and
+    // helmet's default `X-Frame-Options: SAMEORIGIN` would refuse to display them. We set
+    // our own security headers (nosniff + cross-origin CORP) on every response below.
+    { helmet: false },
     async (request, reply) => {
       const key = request.params['*'];
-      if (!key.startsWith('simulations/')) {
+      if (!key.startsWith('simulations/') || keyHasTraversal(key)) {
         return reply.code(403).send({ message: 'Forbidden' });
       }
-      const filePath = safeLocalPath(LOCAL_STORAGE_BASE_DIR, key);
-      if (!filePath) return reply.code(403).send({ message: 'Forbidden' });
-      return serveLocalFile(request, reply, filePath, getSimulationContentType(key), {
-        extraHeaders: {
-          'X-Content-Type-Options': 'nosniff',
-          'Cross-Origin-Resource-Policy': 'cross-origin',
-          'Access-Control-Allow-Origin': '*',
-        },
-      });
+      const contentType = getSimulationContentType(key);
+      const storage = getStorageAdapter();
+
+      // Local disk: stream from the filesystem with HTTP Range support.
+      if (storage instanceof LocalStorageAdapter) {
+        const filePath = safeLocalPath(LOCAL_STORAGE_BASE_DIR, key);
+        if (!filePath) return reply.code(403).send({ message: 'Forbidden' });
+        return serveLocalFile(request, reply, filePath, contentType, {
+          extraHeaders: {
+            'X-Content-Type-Options': 'nosniff',
+            'Cross-Origin-Resource-Policy': 'cross-origin',
+            'Access-Control-Allow-Origin': '*',
+          },
+        });
+      }
+
+      // Cloud (Supabase / R2): read the object and re-assert the correct Content-Type,
+      // overriding whatever the bucket would have served.
+      try {
+        const buf = await storage.readObject(key);
+        return reply
+          .header('Content-Type', contentType)
+          .header('Content-Length', buf.length)
+          .header('X-Content-Type-Options', 'nosniff')
+          .header('Cross-Origin-Resource-Policy', 'cross-origin')
+          .header('Access-Control-Allow-Origin', '*')
+          .header('Cache-Control', 'public, max-age=300')
+          .send(buf);
+      } catch (err) {
+        logger.warn({ key, err }, 'sim-public: cloud object read failed');
+        return reply.code(404).send({ message: 'File not found' });
+      }
     },
   );
 
@@ -408,6 +441,7 @@ async function build() {
   await registerAdminAvatarRoutes(app);
   await registerPublicCourseRoutes(app);
   await registerCourseAuthoringRoutes(app);
+  await registerBranchRoutes(app);
 
   // Phase 2+ stubs (return 501 Not Implemented)
   await registerPhase2StubRoutes(app);

@@ -1,11 +1,11 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { Search, ArrowDownUp, X, Maximize2, Pencil, Sparkles, Trash2 } from 'lucide-react';
+import { Search, ArrowDownUp, X, Maximize2, Pencil, Sparkles, Trash2, Upload, CheckCircle2, AlertTriangle } from 'lucide-react';
 import {
   getProjectLibrary, generateLibraryImage, generateLibrarySimulation,
-  patchLibraryVisual, deleteLibraryVisual, editLibrarySimulation, type LibraryItem,
+  patchLibraryVisual, deleteLibraryVisual, editLibrarySimulation, uploadLibraryFiles, type LibraryItem,
 } from './avatarApi';
 import { EquationRenderer } from './renderers/EquationRenderer';
 import { ChartRenderer } from './renderers/ChartRenderer';
@@ -37,6 +37,10 @@ export function ExtendedLibraryModal({ open, onClose, projectId, characterId = '
   const [q, setQ] = useState('');
   const [sortBy, setSortBy] = useState<'newest' | 'most-used'>('newest');
   const [busy, setBusy] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [uploadingFiles, setUploadingFiles] = useState(false);
+  const [dropFeedback, setDropFeedback] = useState<{ tone: 'ok' | 'warn' | 'error'; message: string; details?: string[] } | null>(null);
+  const dragDepthRef = useRef(0);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -73,10 +77,67 @@ export function ExtendedLibraryModal({ open, onClose, projectId, characterId = '
   const doToggleScope = async (item: LibraryItem) => { const next = item.scope === 'basic' ? 'extended' : 'basic'; await patchLibraryVisual(projectId, item.id, { scope: next }); setItems((p) => p.map((i) => (i.id === item.id ? { ...i, scope: next } : i))); };
   const doEditCaption = async (item: LibraryItem, caption: string) => { await patchLibraryVisual(projectId, item.id, { caption }); setItems((p) => p.map((i) => (i.id === item.id ? { ...i, caption } : i))); };
   const doEditSim = (item: LibraryItem) => { const ins = window.prompt('How should the avatar change this simulation?'); if (ins) run('edit-sim', () => editLibrarySimulation(projectId, item.id, ins)); };
+  const isFileDrag = (e: DragEvent<HTMLElement>) => Array.from(e.dataTransfer.types).includes('Files');
+  const onLibraryDragEnter = (e: DragEvent<HTMLDivElement>) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    dragDepthRef.current += 1;
+    setDragOver(true);
+  };
+  const onLibraryDragOver = (e: DragEvent<HTMLDivElement>) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    setDragOver(true);
+  };
+  const onLibraryDragLeave = (e: DragEvent<HTMLDivElement>) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setDragOver(false);
+  };
+  const onLibraryDrop = (e: DragEvent<HTMLDivElement>) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    dragDepthRef.current = 0;
+    setDragOver(false);
+    void handleLibraryFiles(e.dataTransfer.files);
+  };
+  const handleLibraryFiles = async (rawFiles: FileList | File[]) => {
+    const files = Array.from(rawFiles).filter((file) => file.size > 0);
+    if (files.length === 0 || uploadingFiles) return;
+    setUploadingFiles(true);
+    setDropFeedback(null);
+    try {
+      const res = await uploadLibraryFiles(projectId, files, { characterId, scope: 'extended' });
+      await load();
+      const types = Array.from(new Set(res.accepted.map((item) => item.visualType)));
+      if (res.accepted.length > 0) {
+        setScope('extended');
+        setType(types.length === 1 ? types[0] : '');
+      }
+      const rejectedDetails = res.rejected.slice(0, 4).map((item) => `${item.filename}: ${item.reason}`);
+      setDropFeedback({
+        tone: res.accepted.length > 0 ? (res.rejected.length > 0 ? 'warn' : 'ok') : 'error',
+        message: `${res.accepted.length} added${res.rejected.length ? ` · ${res.rejected.length} rejected` : ''}`,
+        details: rejectedDetails.length ? rejectedDetails : undefined,
+      });
+    } catch (e) {
+      setDropFeedback({ tone: 'error', message: (e as Error).message || 'Upload failed' });
+    } finally {
+      setUploadingFiles(false);
+    }
+  };
 
   return (
     <div className="avatar-gallery" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="avatar-gallery__panel">
+      <div
+        className="avatar-gallery__panel"
+        onDragEnter={onLibraryDragEnter}
+        onDragOver={onLibraryDragOver}
+        onDragLeave={onLibraryDragLeave}
+        onDrop={onLibraryDrop}
+      >
         {/* Header */}
         <div className="avatar-gallery__header">
           <div>
@@ -90,6 +151,29 @@ export function ExtendedLibraryModal({ open, onClose, projectId, characterId = '
           </div>
           <button className="avatar-gallery__close" onClick={onClose} aria-label="Close"><X size={18} /></button>
         </div>
+
+        {(dragOver || uploadingFiles) && (
+          <div className={`avatar-gallery-drop-overlay${dragOver ? ' is-over' : ''}${uploadingFiles ? ' is-uploading' : ''}`}>
+            <div className="avatar-gallery-drop-target">
+              <span className="avatar-gallery-drop-target__icon">
+                {uploadingFiles ? <span className="avatar-spinner" /> : <Upload size={24} />}
+              </span>
+              <p>{uploadingFiles ? 'Organizing files...' : 'Drop files anywhere in the Library'}</p>
+              <span>Images, HTML/ZIP simulations, CSV charts, LaTeX equations, or JSON visual specs</span>
+            </div>
+          </div>
+        )}
+        {dropFeedback && (
+          <div className={`avatar-gallery-feedback is-${dropFeedback.tone}`}>
+            {dropFeedback.tone === 'ok' ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}
+            <span>{dropFeedback.message}</span>
+          </div>
+        )}
+        {dropFeedback?.details && (
+          <div className="avatar-gallery-drop-details">
+            {dropFeedback.details.map((detail) => <p key={detail}>{detail}</p>)}
+          </div>
+        )}
 
         {/* Filters */}
         <div className="avatar-gallery-filters">

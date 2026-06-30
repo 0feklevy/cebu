@@ -44,7 +44,7 @@ export async function registerPlayerRoutes(app: FastifyInstance): Promise<void> 
         }
       }
 
-      const config = await buildPlayerConfig(projectId);
+      const config = await buildPlayerConfig(projectId, request.dbUser?.id ?? null);
       if (!config) return reply.code(404).send({ message: 'Project not found' });
       return reply.send(config);
     },
@@ -88,6 +88,13 @@ export async function registerPlayerRoutes(app: FastifyInstance): Promise<void> 
         columns: { id: true, project_id: true, captions_vtt: true, captions_status: true },
       });
       if (!video || !video.captions_vtt || video.captions_status !== 'ready') {
+        return reply.code(404).send({ message: 'Captions not available' });
+      }
+      // Visibility gate (mirror player-config): a private/draft project's caption transcript
+      // must not be readable by video id alone, only its paid status was checked before
+      // (security-105). 404 so existence isn't revealed.
+      const project = await db.query.projects.findFirst({ where: eq(projects.id, video.project_id) });
+      if (!project || !requireProjectAccess(project, request.dbUser?.id ?? null)) {
         return reply.code(404).send({ message: 'Captions not available' });
       }
       const pricing = await BillingService.getPricing('project', video.project_id);
