@@ -11,8 +11,15 @@ import { EquationRenderer } from './renderers/EquationRenderer';
 import { ChartRenderer } from './renderers/ChartRenderer';
 import { DiagramRenderer } from './renderers/DiagramRenderer';
 import './avatar.css';
+import { GuidedTour, type TourStep } from '../GuidedTour';
 
 interface Props { open: boolean; onClose: () => void; projectId: string; characterId?: string; }
+
+const LIBRARY_TOUR_STEPS: TourStep[] = [
+  { selector: '[data-tour="lib-generate"]', title: 'Generate visuals', content: 'AI-generate an image or an interactive simulation for the avatar\'s library — describe what you want and it\'s added here.' },
+  { selector: '[data-tour="lib-panel"]',    title: 'Add your own',     content: 'Drag files anywhere onto this panel to upload — images, HTML/ZIP simulations, charts, equations, or JSON specs.' },
+  { selector: '[data-tour="lib-gallery"]',  title: 'Manage items',     content: 'Hover any item to edit its caption, move it between Basic and Extended, re-edit a simulation, or delete it.' },
+];
 
 const TYPE_PILLS = [
   { key: '',           label: 'All',         color: '#888',    bg: 'rgba(120,120,120,0.12)', border: '#bbb' },
@@ -44,6 +51,7 @@ export function ExtendedLibraryModal({ open, onClose, projectId, characterId = '
   const [promptReq, setPromptReq] = useState<{ title: string; placeholder?: string; submit: (value: string) => void } | null>(null);
   const [promptText, setPromptText] = useState('');
   const dragDepthRef = useRef(0);
+  const [tourOpen, setTourOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -135,7 +143,9 @@ export function ExtendedLibraryModal({ open, onClose, projectId, characterId = '
 
   return (
     <div className="avatar-gallery" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <GuidedTour steps={LIBRARY_TOUR_STEPS} open={tourOpen} onClose={() => setTourOpen(false)} />
       <div
+        data-tour="lib-panel"
         className="avatar-gallery__panel"
         role="dialog"
         aria-modal="true"
@@ -152,10 +162,11 @@ export function ExtendedLibraryModal({ open, onClose, projectId, characterId = '
             <p className="avatar-gallery__hint">Basic = this video&apos;s materials (auto-synced) · Extended = the global pool every viewer&apos;s avatar contributes to</p>
           </div>
           <span className="avatar-gallery__count">{total} item{total !== 1 ? 's' : ''}</span>
-          <div className="avatar-gallery__create-group">
+          <div data-tour="lib-generate" className="avatar-gallery__create-group">
             <button className="avatar-g-create" onClick={doGenImage} disabled={busy === 'gen-image'}><Sparkles size={13} />{busy === 'gen-image' ? '…' : 'Generate image'}</button>
             <button className="avatar-g-create" onClick={doGenSim} disabled={busy === 'gen-sim'}><Sparkles size={13} />{busy === 'gen-sim' ? '…' : 'Generate simulation'}</button>
           </div>
+          <button className="avatar-gallery__close" onClick={() => setTourOpen(true)} aria-label="Library walkthrough" title="Library walkthrough" style={{ fontSize: 15, fontWeight: 700 }}>?</button>
           <button className="avatar-gallery__close" onClick={onClose} aria-label="Close"><X size={18} /></button>
         </div>
 
@@ -247,7 +258,7 @@ export function ExtendedLibraryModal({ open, onClose, projectId, characterId = '
         </div>
 
         {/* Body */}
-        <div className="avatar-gallery__body">
+        <div data-tour="lib-gallery" className="avatar-gallery__body">
           {loading ? (
             <div className="avatar-g-empty"><span className="avatar-spinner" /></div>
           ) : sorted.length === 0 ? (

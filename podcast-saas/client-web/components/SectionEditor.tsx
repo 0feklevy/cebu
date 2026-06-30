@@ -6,6 +6,7 @@ import { getAuth } from 'firebase/auth';
 import { Archive, Check, ChevronDown, ChevronUp, Copy, Download, Maximize2, Minimize2, Play, Square } from 'lucide-react';
 import type { TimelineSection, Simulation, VideoFile, VideoGenerationJob, SimFile, SimMeta, ImageFile, GuidanceEntry, GuidanceMeta, GuidanceStatus } from 'shared/src/generated/client-v1';
 import { api } from '../lib/api';
+import { GuidedTour, type TourStep } from './GuidedTour';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
 
@@ -150,6 +151,7 @@ export function SectionEditor({
   const [simPrompt, setSimPrompt]   = useState(section.sim_prompt ?? '');
   const [simpleUi, setSimpleUi]     = useState(section.simple_ui ?? false);
   const [autoScript, setAutoScript] = useState(section.auto_script ?? true);
+  const [tourOpen, setTourOpen]     = useState(false);
   const [showTiming, setShowTiming]   = useState(false);
   const [brollVolume, setBrollVolume] = useState<number>(
     (section as unknown as { broll_volume?: number }).broll_volume ?? 1.0
@@ -886,6 +888,21 @@ export function SectionEditor({
     display: 'block', marginBottom: 6,
   };
 
+  // Per-type walkthrough: each section kind (simulation / image / video clip) gets its own steps.
+  const sectionTourSteps: TourStep[] =
+    type === 'simulation'
+      ? [
+          { selector: '[data-tour="sec-sim-prompt"]',   title: 'Describe the moment', content: 'Tell the AI exactly what the simulation should show here. Below, toggle Simple UI (hide extra controls) and Auto Script (animate the demo).' },
+          { selector: '[data-tour="sec-sim-generate"]', title: 'Generate & preview', content: 'Generate the interactive bridge script with AI, then play it in the preview before saving.' },
+        ]
+      : clipVisualMode === 'image'
+      ? [
+          { selector: '[data-tour="sec-camera"]', title: 'Image section', content: 'This section shows a still image — pick a camera movement (zoom or pan) to animate it over the video.' },
+        ]
+      : [
+          { selector: '[data-tour="sec-video"]', title: 'Video clip section', content: 'Pick a source clip from your library and trim its in/out points to set exactly what plays over this section.' },
+        ];
+
   return (
     <>
       {/* Backdrop */}
@@ -941,21 +958,38 @@ export function SectionEditor({
               {fmtTime(section.start_sec)} → {fmtTime(section.end_sec)}
             </span>
           </div>
-          <button
-            onClick={onClose}
-            style={{
-              width: 30, height: 30, borderRadius: 8,
-              border: 'none', backgroundColor: 'transparent',
-              cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-              color: 'hsl(var(--shell-muted))', flexShrink: 0,
-            }}
-            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--shell-hover)'; (e.currentTarget as HTMLElement).style.color = 'hsl(var(--shell-foreground))'; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent'; (e.currentTarget as HTMLElement).style.color = 'hsl(var(--shell-muted))'; }}
-          >
-            <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-              <path d="M2 2l9 9M11 2L2 11" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-            </svg>
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+            <button
+              onClick={() => setTourOpen(true)}
+              title="Walk me through this section"
+              aria-label="Walk me through this section"
+              style={{
+                width: 30, height: 30, borderRadius: 8, border: 'none', backgroundColor: 'transparent',
+                cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                color: 'hsl(var(--shell-muted))', fontSize: 15, fontWeight: 700,
+              }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--shell-hover)'; (e.currentTarget as HTMLElement).style.color = 'hsl(var(--shell-foreground))'; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent'; (e.currentTarget as HTMLElement).style.color = 'hsl(var(--shell-muted))'; }}
+            >
+              ?
+            </button>
+            <button
+              onClick={onClose}
+              style={{
+                width: 30, height: 30, borderRadius: 8,
+                border: 'none', backgroundColor: 'transparent',
+                cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                color: 'hsl(var(--shell-muted))',
+              }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--shell-hover)'; (e.currentTarget as HTMLElement).style.color = 'hsl(var(--shell-foreground))'; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent'; (e.currentTarget as HTMLElement).style.color = 'hsl(var(--shell-muted))'; }}
+            >
+              <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+                <path d="M2 2l9 9M11 2L2 11" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+              </svg>
+            </button>
+          </div>
+          <GuidedTour steps={sectionTourSteps} open={tourOpen} onClose={() => setTourOpen(false)} />
         </div>
 
         {/* ── Body: two-column ── */}
@@ -1144,7 +1178,7 @@ export function SectionEditor({
                       </div>
 
                       {/* Camera Movement */}
-                      <div>
+                      <div data-tour="sec-camera">
                         <label style={{ ...labelStyle, color: '#059669' }}>Camera Movement</label>
                         <select
                           value={cameraMovement}
@@ -1165,7 +1199,7 @@ export function SectionEditor({
                   {/* ── VIDEO MODE ── */}
                   {clipVisualMode === 'video' && (<>
                   {/* Library picker */}
-                  <div>
+                  <div data-tour="sec-video">
                     <label style={{ ...labelStyle, color: '#059669' }}>From Library</label>
                     <select
                       value={clipSourceVideoId}
@@ -1313,7 +1347,7 @@ export function SectionEditor({
                       <span style={{ fontSize: 10, color: '#b45309', backgroundColor: '#fef3c7', borderRadius: 6, padding: '2px 8px', fontWeight: 600 }}>Extended Thinking</span>
                     </div>
 
-                    <div>
+                    <div data-tour="sec-sim-prompt">
                       <label style={{ ...labelStyle, color: '#b45309' }}>Prompt</label>
                       <textarea
                         value={simPrompt}
@@ -1440,6 +1474,7 @@ export function SectionEditor({
                     )}
 
                     <button
+                      data-tour="sec-sim-generate"
                       onClick={handleGenerateScript}
                       disabled={generating || !simPrompt.trim()}
                       style={{

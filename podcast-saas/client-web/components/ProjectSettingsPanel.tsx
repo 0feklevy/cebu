@@ -7,6 +7,7 @@ import { api } from '../lib/api';
 import { LockPriceControl } from './LockPriceControl';
 import { AvatarSettingsModal } from './avatar/AvatarSettingsModal';
 import { AvatarCirclesSettings } from './avatar/AvatarCirclesSettings';
+import { GuidedTour, type TourStep } from './GuidedTour';
 import type { Project, VideoFile } from 'shared/src/generated/client-v1';
 
 interface Props {
@@ -14,6 +15,14 @@ interface Props {
   project: Project | null;
   onProjectChange: (p: Project) => void;
 }
+
+const SETTINGS_TOUR_STEPS: TourStep[] = [
+  { selector: '[data-tour="settings-thumbnail"]', title: 'Thumbnail',  content: 'Set the video\'s thumbnail — AI-generate one, or grab a frame from the timeline once the clip finishes processing.' },
+  { selector: '[data-tour="settings-details"]',   title: 'Title & description', content: 'Edit the title and description, or click "Generate with AI" to write them from the video\'s captions.' },
+  { selector: '[data-tour="settings-crop"]',      title: 'Smart Crop', content: 'Re-run the smart portrait crop that follows the speaker when the video is viewed vertically.' },
+  { selector: '[data-tour="settings-access"]',    title: 'Access',     content: 'Control who can see this video — private, unlisted, or public — and set a price to lock it.' },
+  { selector: '[data-tour="settings-avatar"]',    title: 'Interactive overlays', content: 'Configure the Ask-the-Avatar persona and the audio-reactive speaker circles shown during b-roll.' },
+];
 
 export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Props) {
   const [open, setOpen] = useState(false);
@@ -24,6 +33,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
   const [savedMeta, setSavedMeta] = useState(false);
   const [genMeta, setGenMeta] = useState(false);
   const [genMetaError, setGenMetaError] = useState<string | null>(null);
+  const [settingsTourOpen, setSettingsTourOpen] = useState(false);
 
   // Crop state
   const [videos, setVideos] = useState<VideoFile[]>([]);
@@ -281,24 +291,24 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
   const fmtTime = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
   const inputStyle: React.CSSProperties = {
-    width: '100%', height: 40, border: '1px solid #e2e8f0', borderRadius: 8,
+    width: '100%', height: 40, border: '1px solid hsl(var(--border))', borderRadius: 8,
     padding: '0 14px', fontSize: 14, color: 'hsl(var(--foreground))', outline: 'none',
-    boxSizing: 'border-box', background: '#fff', fontFamily: 'inherit',
+    boxSizing: 'border-box', background: 'hsl(var(--background))', fontFamily: 'inherit',
   };
 
   const btnStyle = (active: boolean): React.CSSProperties => ({
     width: '100%', height: 38, border: 'none', borderRadius: 8,
-    background: active ? '#e5e7eb' : 'linear-gradient(135deg,#a855f7,#6366f1)',
-    color: active ? '#9ca3af' : '#fff',
+    background: active ? 'hsl(var(--muted))' : 'linear-gradient(135deg,#a855f7,#6366f1)',
+    color: active ? 'hsl(var(--muted-foreground))' : '#fff',
     fontSize: 13, fontWeight: 600, cursor: active ? 'not-allowed' : 'pointer',
     display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-  });
+  };
 
   const sectionCardStyle: React.CSSProperties = {
     backgroundColor: 'hsl(var(--card))',
-    border: '1px solid #e2e8f0',
-    borderRadius: 10,
-    boxShadow: '0 1px 2px rgba(15,23,42,0.04)',
+    border: '1px solid hsl(var(--border))',
+    borderRadius: 12,
+    boxShadow: '0 1px 2px hsl(var(--foreground) / 0.04)',
     padding: '16px',
     display: 'flex',
     flexDirection: 'column',
@@ -314,8 +324,8 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
 
   const sectionKickerStyle: React.CSSProperties = {
     fontSize: 10,
-    color: '#4338ca',
-    background: '#eef2ff',
+    color: 'hsl(var(--primary))',
+    background: 'hsl(var(--primary) / 0.1)',
     borderRadius: 6,
     padding: '2px 8px',
     fontWeight: 700,
@@ -327,7 +337,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
     margin: 0,
     fontSize: 13,
     fontWeight: 700,
-    color: '#0f172a',
+    color: 'hsl(var(--foreground))',
   };
 
   const settingsActionCard = (color: string, from: string, to: string): React.CSSProperties => ({
@@ -335,7 +345,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
     minHeight: 84,
     padding: '12px',
     borderRadius: 10,
-    border: '1px solid #e2e8f0',
+    border: '1px solid hsl(var(--border))',
     background: `linear-gradient(135deg, ${from}, ${to})`,
     color,
     display: 'grid',
@@ -351,7 +361,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
     width: 34,
     height: 34,
     borderRadius: 8,
-    background: '#fff',
+    background: 'hsl(var(--card))',
     color,
     display: 'flex',
     alignItems: 'center',
@@ -378,7 +388,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
   };
 
   const settingsActionArrow: React.CSSProperties = {
-    color: '#94a3b8',
+    color: 'hsl(var(--muted-foreground))',
     fontSize: 18,
     lineHeight: 1,
     justifySelf: 'end',
@@ -446,15 +456,31 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
               </span>
             )}
           </div>
-          <button
-            onClick={() => setOpen(false)}
-            style={{ width: 30, height: 30, borderRadius: 8, border: 'none', backgroundColor: 'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'hsl(var(--shell-muted))', flexShrink: 0 }}
-            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--shell-hover)'; (e.currentTarget as HTMLElement).style.color = 'hsl(var(--shell-foreground))'; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent'; (e.currentTarget as HTMLElement).style.color = 'hsl(var(--shell-muted))'; }}
-          >
-            <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M2 2l9 9M11 2L2 11" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+            <button
+              onClick={() => setSettingsTourOpen(true)}
+              title="Walk me through these settings"
+              aria-label="Walk me through these settings"
+              style={{ width: 30, height: 30, borderRadius: 8, border: 'none', backgroundColor: 'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'hsl(var(--shell-muted))', fontSize: 15, fontWeight: 700 }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--shell-hover)'; (e.currentTarget as HTMLElement).style.color = 'hsl(var(--shell-foreground))'; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent'; (e.currentTarget as HTMLElement).style.color = 'hsl(var(--shell-muted))'; }}
+            >
+              ?
+            </button>
+            <button
+              onClick={() => setOpen(false)}
+              style={{ width: 30, height: 30, borderRadius: 8, border: 'none', backgroundColor: 'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'hsl(var(--shell-muted))' }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--shell-hover)'; (e.currentTarget as HTMLElement).style.color = 'hsl(var(--shell-foreground))'; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent'; (e.currentTarget as HTMLElement).style.color = 'hsl(var(--shell-muted))'; }}
+            >
+              <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M2 2l9 9M11 2L2 11" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
+            </button>
+          </div>
         </div>
+
+        {page === 'main' && (
+          <GuidedTour steps={SETTINGS_TOUR_STEPS} open={settingsTourOpen} onClose={() => setSettingsTourOpen(false)} />
+        )}
 
         {/* ── Body: two-column ── */}
         <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: isCompact ? 'column' : 'row' }}>
@@ -466,18 +492,18 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
             flexShrink: 0, overflowY: 'auto',
             padding: isCompact ? '14px' : '20px 22px',
             display: 'flex', flexDirection: 'column', gap: 16,
-            borderRight: isCompact ? 'none' : '1px solid #e2e8f0',
-            borderBottom: isCompact ? '1px solid #e2e8f0' : 'none',
+            borderRight: isCompact ? 'none' : '1px solid hsl(var(--border))',
+            borderBottom: isCompact ? '1px solid hsl(var(--border))' : 'none',
             backgroundColor: 'hsl(var(--card))', boxSizing: 'border-box',
           }}>
-            <div style={sectionCardStyle}>
+            <div data-tour="settings-thumbnail" style={sectionCardStyle}>
               <div style={sectionHeaderStyle}>
                 <span style={sectionKickerStyle}>Media</span>
                 <h3 style={sectionTitleStyle}>Thumbnail</h3>
               </div>
 
             {/* Preview */}
-            <div style={{ position: 'relative', width: '100%', aspectRatio: '16/9', borderRadius: 10, overflow: 'hidden', background: '#0f172a', border: '1px solid #e2e8f0', flexShrink: 0 }}>
+            <div style={{ position: 'relative', width: '100%', aspectRatio: '16/9', borderRadius: 10, overflow: 'hidden', background: '#0f172a', border: '1px solid hsl(var(--border))', flexShrink: 0 }}>
               {/* Show frame preview or existing thumbnail */}
               {timelinePreview && !isGenerating && !pickingThumb && (
                 <img src={timelinePreview} alt="" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} draggable={false} />
@@ -540,9 +566,9 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
                   placeholder='Hint for the AI image (optional)'
                   style={{ ...inputStyle, height: 36, fontSize: 13 }}
                   onFocus={e => (e.target.style.borderColor = '#a855f7')}
-                  onBlur={e => (e.target.style.borderColor = '#e2e8f0')}
+                  onBlur={e => (e.target.style.borderColor = 'hsl(var(--border))')}
                 />
-                <span style={{ fontSize: 11, color: '#94a3b8', marginTop: -4 }}>
+                <span style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', marginTop: -4 }}>
                   Generates a thumbnail image from your video&apos;s title &amp; AI summary. Takes ~20–40s.
                 </span>
                 <div style={{ display: 'flex', gap: 8 }}>
@@ -561,8 +587,8 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
                     }}
                   />
                   <button onClick={() => thumbInputRef.current?.click()} title="Upload image" disabled={isGenerating}
-                    style={{ width: 36, height: 36, border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#6b7280', flexShrink: 0 }}
-                    onMouseEnter={e => (e.currentTarget.style.background = '#f1f5f9')}
+                    style={{ width: 36, height: 36, border: '1px solid hsl(var(--border))', borderRadius: 8, background: 'hsl(var(--card))', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'hsl(var(--muted-foreground))', flexShrink: 0 }}
+                    onMouseEnter={e => (e.currentTarget.style.background = 'hsl(var(--muted))')}
                     onMouseLeave={e => (e.currentTarget.style.background = '#fff')}
                   >
                     <Upload size={14} strokeWidth={1.9} />
@@ -579,7 +605,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
                   </div>
                 ) : dur > 0 ? (<>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>Scrub to pick frame</span>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: 'hsl(var(--foreground))' }}>Scrub to pick frame</span>
                     <span style={{ fontSize: 14, fontWeight: 700, color: '#a855f7', fontVariantNumeric: 'tabular-nums', minWidth: 44, textAlign: 'right' }}>{fmtTime(timelineSec)}</span>
                   </div>
                   <input type="range" min={0} max={Math.floor(dur)} step={1} value={timelineSec}
@@ -590,22 +616,22 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
                     }}
                     style={{ width: '100%', accentColor: '#a855f7', cursor: 'pointer' }}
                   />
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#94a3b8' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'hsl(var(--muted-foreground))' }}>
                     <span>0:00</span><span>{fmtTime(Math.floor(dur))}</span>
                   </div>
                   <button onClick={pickFromTimeline} disabled={pickingThumb} style={btnStyle(pickingThumb)}>
                     {pickingThumb ? <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Extracting frame…</> : <><Film size={13} strokeWidth={1.9} /> Use this frame</>}
                   </button>
                   {pickError && <p style={{ fontSize: 11, color: '#ef4444' }}>{pickError}</p>}
-                  <p style={{ fontSize: 11, color: '#94a3b8' }}>Preview loads ~1s after you stop scrubbing</p>
+                  <p style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))' }}>Preview loads ~1s after you stop scrubbing</p>
                 </>) : (
-                  <p style={{ fontSize: 13, color: '#94a3b8', textAlign: 'center', padding: '24px 0' }}>Upload a video first to use timeline scrubbing</p>
+                  <p style={{ fontSize: 13, color: 'hsl(var(--muted-foreground))', textAlign: 'center', padding: '24px 0' }}>Upload a video first to use timeline scrubbing</p>
                 )}
               </div>
             )}
             </div>
 
-            <div style={sectionCardStyle}>
+            <div data-tour="settings-avatar" style={sectionCardStyle}>
               <div style={sectionHeaderStyle}>
                 <span style={sectionKickerStyle}>Avatar</span>
                 <h3 style={sectionTitleStyle}>Interactive overlays</h3>
@@ -646,7 +672,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
           }}>
 
             {/* Details */}
-            <div style={{ ...sectionCardStyle, gridColumn: isCompact ? undefined : '1 / -1' }}>
+            <div data-tour="settings-details" style={{ ...sectionCardStyle, gridColumn: isCompact ? undefined : '1 / -1' }}>
               <div style={sectionHeaderStyle}>
                 <span style={sectionKickerStyle}>Metadata</span>
                 <h3 style={sectionTitleStyle}>Details</h3>
@@ -656,13 +682,13 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
                   value={title} onChange={e => setTitle(e.target.value)} placeholder="Video name"
                   style={inputStyle}
                   onFocus={e => (e.target.style.borderColor = '#a855f7')}
-                  onBlur={e => (e.target.style.borderColor = '#e2e8f0')}
+                  onBlur={e => (e.target.style.borderColor = 'hsl(var(--border))')}
                 />
                 <textarea
                   value={desc} onChange={e => setDesc(e.target.value)} rows={6} placeholder="What is this video about?"
                   style={{ ...inputStyle, height: 'auto', padding: '12px 14px', resize: 'vertical', lineHeight: 1.6, minHeight: 120 }}
                   onFocus={e => (e.target.style.borderColor = '#a855f7')}
-                  onBlur={e => (e.target.style.borderColor = '#e2e8f0')}
+                  onBlur={e => (e.target.style.borderColor = 'hsl(var(--border))')}
                 />
                 <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
                   <button onClick={saveMeta} disabled={savingMeta} style={{ ...btnStyle(savingMeta), width: 'auto', padding: '0 24px' }}>
@@ -691,7 +717,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
             </div>
 
             {/* Smart Crop */}
-            <div style={sectionCardStyle}>
+            <div data-tour="settings-crop" style={sectionCardStyle}>
               <div style={sectionHeaderStyle}>
                 <span style={sectionKickerStyle}>Crop</span>
                 <h3 style={sectionTitleStyle}>Smart Crop</h3>
@@ -703,7 +729,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
                 >
                   {(cropping || anyCropProcessing) ? <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Cropping…</> : <><Crop size={13} strokeWidth={2} /> Recrop</>}
                 </button>
-                <span style={{ fontSize: 13, color: '#6b7280' }}>
+                <span style={{ fontSize: 13, color: 'hsl(var(--muted-foreground))' }}>
                   {(anyCropProcessing || cropping)
                     ? 'Cropping…'
                     : lastCropTime
@@ -719,20 +745,20 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
             </div>
 
             {/* Access */}
-            <div style={sectionCardStyle}>
+            <div data-tour="settings-access" style={sectionCardStyle}>
               <div style={sectionHeaderStyle}>
                 <span style={sectionKickerStyle}>Access</span>
                 <h3 style={sectionTitleStyle}>Access</h3>
               </div>
               <div style={{ marginBottom: 14 }}>
-                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#6b7280', marginBottom: 6 }}>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'hsl(var(--muted-foreground))', marginBottom: 6 }}>
                   Who can view this video
                 </label>
                 <select
                   value={project?.visibility ?? 'private'}
                   onChange={(e) => changeVisibility(e.target.value as 'private' | 'unlisted' | 'public')}
                   disabled={savingVisibility}
-                  style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 13, background: '#fff' }}
+                  style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 13, background: 'hsl(var(--card))' }}
                 >
                   <option value="private">Private — only you</option>
                   <option value="unlisted">Unlisted — anyone with the share link</option>
