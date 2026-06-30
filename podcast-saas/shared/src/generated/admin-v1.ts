@@ -19,6 +19,8 @@ export interface AdminSettings {
   maintenance_mode: boolean;
   maintenance_message: string | null;
   anonymous_user_limit: number;
+  generation_limit_enabled: boolean;
+  generation_daily_limit: number;
   default_provider: 'claude' | 'openai' | 'gemini';
   temperature: number;
   max_tokens: number;

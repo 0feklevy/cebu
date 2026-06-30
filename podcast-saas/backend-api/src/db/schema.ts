@@ -259,6 +259,10 @@ export const admin_settings = pgTable('admin_settings', {
   maintenance_mode: boolean('maintenance_mode').default(false).notNull(),
   maintenance_message: text('maintenance_message'),
   anonymous_user_limit: integer('anonymous_user_limit').default(3).notNull(),
+  // Admin-controlled per-user generation quota (off by default = unlimited). When enabled, caps
+  // billable LLM calls per user per rolling 24h (security-101).
+  generation_limit_enabled: boolean('generation_limit_enabled').default(false).notNull(),
+  generation_daily_limit: integer('generation_daily_limit').default(50).notNull(),
   default_provider: providerEnum('default_provider').default('gemini').notNull(),
   temperature: real('temperature').default(0.7).notNull(),
   max_tokens: integer('max_tokens').default(32000).notNull(),

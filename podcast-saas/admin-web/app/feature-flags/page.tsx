@@ -5,7 +5,10 @@ import { adminApi } from '../../lib/api';
 import { AdminShell } from '../../components/AdminShell';
 import type { AdminSettings } from 'shared/src/generated/admin-v1';
 
-type Controls = Pick<AdminSettings, 'maintenance_mode' | 'maintenance_message' | 'anonymous_user_limit'>;
+type Controls = Pick<
+  AdminSettings,
+  'maintenance_mode' | 'maintenance_message' | 'anonymous_user_limit' | 'generation_limit_enabled' | 'generation_daily_limit'
+>;
 
 export default function ControlsPage() {
   const [form, setForm] = useState<Controls | null>(null);
@@ -21,6 +24,8 @@ export default function ControlsPage() {
           maintenance_mode: s.maintenance_mode,
           maintenance_message: s.maintenance_message,
           anonymous_user_limit: s.anonymous_user_limit,
+          generation_limit_enabled: s.generation_limit_enabled,
+          generation_daily_limit: s.generation_daily_limit,
         }),
       )
       .catch((e) => setError(e.message));
@@ -111,6 +116,29 @@ export default function ControlsPage() {
             />
           </div>
         </div>
+
+        <FlagCard
+          title="Per-User Generation Limit"
+          description="Cap how many AI generations each user can run per day. Off = unlimited."
+          enabled={form.generation_limit_enabled}
+          onToggle={(v) => set('generation_limit_enabled', v)}
+        >
+          {form.generation_limit_enabled ? (
+            <div className="mt-3 flex items-center justify-between">
+              <label className="text-xs text-muted-foreground">Max generations per user / day</label>
+              <input
+                type="number"
+                min={1}
+                max={10000}
+                value={form.generation_daily_limit}
+                onChange={(e) => set('generation_daily_limit', parseInt(e.target.value, 10) || 1)}
+                className="w-24 rounded-md border border-input bg-background px-3 py-1.5 text-sm text-center focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+            </div>
+          ) : (
+            <div className="mt-2 text-xs text-muted-foreground">Currently unlimited.</div>
+          )}
+        </FlagCard>
       </div>
     </AdminShell>
   );

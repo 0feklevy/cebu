@@ -8,8 +8,8 @@ import { GeminiProvider } from './GeminiProvider.js';
 import { ApiKeyService } from '../secrets/ApiKeyService.js';
 import { UsageTrackingService } from '../usage/UsageTrackingService.js';
 import { db } from '../../db/index.js';
-import { admin_settings, system_prompts, api_keys } from '../../db/schema.js';
-import { eq } from 'drizzle-orm';
+import { admin_settings, system_prompts, api_keys, token_usage } from '../../db/schema.js';
+import { eq, and, gte, sql } from 'drizzle-orm';
 import { AppError, LLMErrorType } from 'shared';
 import { logger } from '../../lib/logger.js';
 
@@ -85,6 +85,31 @@ export class LLMService {
         settings.generation_paused_message ?? 'Generation is paused',
         503,
       );
+    }
+
+    // Per-user generation quota — OFF by default (generation_limit_enabled=false => unlimited).
+    // When an admin enables it, cap a user at generation_daily_limit billable LLM calls per
+    // rolling 24h (security-101 cost-DoS guard). content_moderation is a utility pre-screen and
+    // is neither blocked nor counted. Only enforced on the first attempt so retries of an
+    // already-admitted call aren't double-charged against the cap.
+    if (
+      settings.generation_limit_enabled &&
+      opts.userId &&
+      attempt === 0 &&
+      opts.task !== 'content_moderation'
+    ) {
+      const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const [usage] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(token_usage)
+        .where(and(eq(token_usage.user_id, opts.userId), gte(token_usage.occurred_at, since)));
+      if ((usage?.count ?? 0) >= settings.generation_daily_limit) {
+        throw new AppError(
+          LLMErrorType.LIMIT_EXCEEDED,
+          'You have reached the generation limit for now. Please try again later.',
+          429,
+        );
+      }
     }
 
     const { provider, model } = await this.resolveProviderAndModel(

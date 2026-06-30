@@ -12,6 +12,8 @@ const UpdateSettingsSchema = z.object({
   maintenance_mode: z.boolean().optional(),
   maintenance_message: z.string().nullable().optional(),
   anonymous_user_limit: z.number().int().min(0).optional(),
+  generation_limit_enabled: z.boolean().optional(),
+  generation_daily_limit: z.number().int().min(1).max(10000).optional(),
 });
 
 export async function registerAdminSettingsRoutes(app: FastifyInstance): Promise<void> {
