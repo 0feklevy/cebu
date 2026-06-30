@@ -30,18 +30,22 @@ export class YouTubeIngester {
 
   private async getTranscriptViaApi(videoId: string): Promise<string> {
     // youtube-transcript-api is a Python package; call via npx or a bundled wrapper
+    // Pass the id as argv (sys.argv[1]) rather than interpolating it into the program text, so
+    // a video id can never be parsed as Python code even if the upstream 11-char regex is ever
+    // loosened (security-107 — defense in depth).
     const { stdout } = await execFileAsync('python3', [
       '-c',
       `
 import json, sys
 from youtube_transcript_api import YouTubeTranscriptApi
 try:
-    transcript = YouTubeTranscriptApi.get_transcript('${videoId}')
+    transcript = YouTubeTranscriptApi.get_transcript(sys.argv[1])
     print(json.dumps(transcript))
 except Exception as e:
     print(json.dumps({'error': str(e)}), file=sys.stderr)
     sys.exit(1)
       `.trim(),
+      videoId,
     ]);
     const entries = JSON.parse(stdout) as Array<{ text: string; start: number }>;
     return entries.map((e) => e.text).join(' ');

@@ -165,6 +165,7 @@ export interface PlayerBranchingConfig {
 export interface PlayerConfig {
   project_id: string;
   title: string | null;
+  description: string | null;   // emitted by buildPlayerConfig (project.topic); was undeclared (types-008)
   thumbnail_url: string | null;
   segments: PlayerSegment[];
   broll_clips: BrollClip[];

@@ -415,7 +415,11 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
             .where(eq(timeline_sections.id, section.id))
             .returning();
 
-          sendEvent('done', { section: updated });
+          // The section (or project) could have been deleted during the long generation, so
+          // the update can match zero rows — emit an error rather than `done` with undefined
+          // (backend-014).
+          if (updated) sendEvent('done', { section: updated });
+          else sendEvent('error', { error: 'This section was removed during generation.', errorType: 'generation_error' });
         }
       } catch (err) {
         if (timedOut) {

@@ -46,6 +46,9 @@ export default function UsersPage() {
   };
 
   const toggleAdmin = async (user: User) => {
+    // Admin grant/revoke is a privilege-escalation action — confirm before firing (ui-ux-007).
+    const action = user.is_admin ? 'revoke admin from' : 'grant admin to';
+    if (!window.confirm(`Are you sure you want to ${action} ${user.email ?? user.id}?`)) return;
     try {
       const updated = await adminApi.updateUserLimits(user.id, { is_admin: !user.is_admin });
       setUsers((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));

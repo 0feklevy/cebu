@@ -13,7 +13,7 @@
  */
 
 import { createHash } from 'crypto';
-import { mkdtemp, rm, writeFile } from 'fs/promises';
+import { mkdtemp, rm } from 'fs/promises';
 import { createWriteStream } from 'fs';
 import { pipeline } from 'stream/promises';
 import { join } from 'path';
@@ -118,8 +118,6 @@ async function runCropAnalysisInner(videoFileId: string): Promise<void> {
     );
 
     const json = JSON.stringify(metadata);
-    const localJson = join(workDir, 'crop.json');
-    await writeFile(localJson, json);
     const key = `crop/${videoFileId}.json`;
     await storage.uploadFile(key, Buffer.from(json), 'application/json');
 

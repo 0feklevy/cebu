@@ -1131,10 +1131,10 @@ export function SectionEditor({
                                 alt={img.filename}
                                 style={{
                                   position: 'absolute',
-                                  width: `${(1 / img.crop_w) * 100}%`,
-                                  height: `${(1 / img.crop_h) * 100}%`,
-                                  left: `${(-img.crop_x / img.crop_w) * 100}%`,
-                                  top: `${(-img.crop_y / img.crop_h) * 100}%`,
+                                  width: `${(1 / (img.crop_w || 1)) * 100}%`,
+                                  height: `${(1 / (img.crop_h || 1)) * 100}%`,
+                                  left: `${(-img.crop_x / (img.crop_w || 1)) * 100}%`,
+                                  top: `${(-img.crop_y / (img.crop_h || 1)) * 100}%`,
                                   objectFit: 'fill',
                                 }}
                               />

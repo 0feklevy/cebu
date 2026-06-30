@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { AlertTriangle, Clapperboard, GitBranch, Maximize2, Minimize2, Music, Plus, Redo2, RefreshCw, Sparkles, Trash2, Undo2 } from 'lucide-react';
+import { AlertTriangle, Clapperboard, GitBranch, Maximize2, Minimize2, Music, Plus, Redo2, RefreshCw, Sparkles, Trash2, Undo2, Upload } from 'lucide-react';
 import { useAuth } from '../lib/firebase';
 import { api } from '../lib/api';
 import { VideoPlayer } from './VideoPlayer';
@@ -223,6 +223,8 @@ export function VideoEditor({ projectId }: Props) {
   // Confirm dialogs
   const [confirmVideo, setConfirmVideo] = useState<string | null>(null);  // videoId to delete
   const [confirmSim,   setConfirmSim]   = useState<string | null>(null);  // simId to delete
+  const [confirmImg,   setConfirmImg]   = useState<string | null>(null);  // imageId to delete (ui-ux-005)
+  const [confirmAudio, setConfirmAudio] = useState<string | null>(null);  // audioId to delete (ui-ux-005)
   const [hlsUrls, setHlsUrls] = useState<Record<string, string>>({});
   const [rawUrls, setRawUrls] = useState<Record<string, string>>({});
   const [tierProgress, setTierProgress] = useState<Record<string, { currentTier: string | null; is360pReady: boolean }>>({});
@@ -597,10 +599,7 @@ export function VideoEditor({ projectId }: Props) {
   })();
 
   // Image upload handler
-  const handleImageFileChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    e.target.value = '';
+  const uploadImageFile = useCallback(async (file: File) => {
     setImgUploading(true);
     try {
       const fd = new FormData();
@@ -612,6 +611,13 @@ export function VideoEditor({ projectId }: Props) {
       setImgUploading(false);
     }
   }, [projectId]);
+
+  const handleImageFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+    void uploadImageFile(file);
+  }, [uploadImageFile]);
 
   // Replace an existing image's media — Library "Replace", available on every image.
   const replaceImageInputRef = useRef<HTMLInputElement>(null);
@@ -652,10 +658,7 @@ export function VideoEditor({ projectId }: Props) {
     }
   }, [projectId]);
 
-  const handleAudioFileChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    e.target.value = '';
+  const uploadAudioFile = useCallback(async (file: File) => {
     setAudioUploading(true);
     try {
       const fd = new FormData();
@@ -666,6 +669,63 @@ export function VideoEditor({ projectId }: Props) {
       setAudioUploading(false);
     }
   }, [projectId]);
+
+  const handleAudioFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+    void uploadAudioFile(file);
+  }, [uploadAudioFile]);
+
+  // ── Whole-Library drop target (frontend-006 / ui-ux-001) ────────────────────
+  // Dragging any file over the Library panel highlights the entire panel; on drop the file is
+  // routed to the right place (image → images, audio → audio, .zip/folder → the simulation
+  // uploader) or a feedback toast explains why it was rejected.
+  const [libraryDragOver, setLibraryDragOver] = useState(false);
+  const [libraryFeedback, setLibraryFeedback] = useState<{ tone: 'info' | 'error'; message: string } | null>(null);
+  const [simAutoFiles, setSimAutoFiles] = useState<File[] | null>(null);
+  const libraryDragDepth = useRef(0);
+
+  useEffect(() => {
+    if (!libraryFeedback) return;
+    const t = setTimeout(() => setLibraryFeedback(null), 4000);
+    return () => clearTimeout(t);
+  }, [libraryFeedback]);
+
+  const onLibraryDragEnter = useCallback((e: React.DragEvent) => {
+    if (!Array.from(e.dataTransfer.types ?? []).includes('Files')) return;
+    e.preventDefault();
+    libraryDragDepth.current += 1;
+    setLibraryDragOver(true);
+  }, []);
+  const onLibraryDragOver = useCallback((e: React.DragEvent) => {
+    if (Array.from(e.dataTransfer.types ?? []).includes('Files')) e.preventDefault();
+  }, []);
+  const onLibraryDragLeave = useCallback(() => {
+    libraryDragDepth.current = Math.max(0, libraryDragDepth.current - 1);
+    if (libraryDragDepth.current === 0) setLibraryDragOver(false);
+  }, []);
+  const onLibraryDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    libraryDragDepth.current = 0;
+    setLibraryDragOver(false);
+    const files = Array.from(e.dataTransfer.files ?? []);
+    if (files.length === 0) { setShowSimUploader(true); return; } // folder drag → sim uploader
+    const images = files.filter(f => f.type.startsWith('image/'));
+    const audio  = files.filter(f => f.type.startsWith('audio/'));
+    const sims   = files.filter(f => f.name.toLowerCase().endsWith('.zip') || f.type === 'application/zip' || f.type === 'application/x-zip-compressed');
+    const other  = files.filter(f => !images.includes(f) && !audio.includes(f) && !sims.includes(f));
+    images.forEach(f => void uploadImageFile(f));
+    audio.forEach(f => void uploadAudioFile(f));
+    if (sims.length > 0) { setShowSimUploader(true); setSimAutoFiles(sims); }
+    const parts = [
+      images.length && `${images.length} image${images.length > 1 ? 's' : ''}`,
+      audio.length && `${audio.length} audio`,
+      sims.length && `${sims.length} simulation${sims.length > 1 ? 's' : ''}`,
+    ].filter(Boolean);
+    if (parts.length) setLibraryFeedback({ tone: 'info', message: `Added ${parts.join(', ')} to the library.` });
+    if (other.length) setLibraryFeedback({ tone: 'error', message: `Unsupported: ${other.map(f => f.name).join(', ')}` });
+  }, [uploadImageFile, uploadAudioFile]);
 
   const handleDeleteAudio = useCallback(async (audioId: string) => {
     setDeletingAudioId(audioId);
@@ -857,7 +917,28 @@ export function VideoEditor({ projectId }: Props) {
             </div>
           ) : (
             <div className="flex min-h-0 max-h-[36dvh] w-full shrink-0 flex-col gap-2 overflow-hidden min-[900px]:max-h-none min-[900px]:w-[300px] xl:w-80">
-              <div className="surface-panel flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto rounded-lg px-3 py-3 fine-scrollbar">
+              <div
+                className={`surface-panel relative flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto rounded-lg px-3 py-3 fine-scrollbar transition-shadow ${libraryDragOver ? 'ring-2 ring-amber-400 ring-offset-1' : ''}`}
+                onDragEnter={onLibraryDragEnter}
+                onDragOver={onLibraryDragOver}
+                onDragLeave={onLibraryDragLeave}
+                onDrop={onLibraryDrop}
+              >
+                {libraryDragOver && (
+                  <div className="pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed border-amber-400 bg-amber-50/85 backdrop-blur-sm">
+                    <Upload size={22} className="text-amber-500" aria-hidden />
+                    <p className="text-xs font-semibold text-amber-700">Drop to add to the Library</p>
+                    <p className="text-[10px] text-amber-600">Images · audio · simulation .zip</p>
+                  </div>
+                )}
+                {libraryFeedback && (
+                  <div
+                    role="status"
+                    className={`shrink-0 rounded-md px-2.5 py-1.5 text-[11px] font-medium ${libraryFeedback.tone === 'error' ? 'bg-destructive/15 text-destructive' : 'bg-emerald-500/15 text-emerald-700'}`}
+                  >
+                    {libraryFeedback.message}
+                  </div>
+                )}
                 <div className="flex items-start justify-between gap-3 border-b border-border/40 pb-2">
                   <div className="min-w-0">
                     <h2 className="text-sm font-semibold text-foreground">Library</h2>
@@ -975,6 +1056,8 @@ export function VideoEditor({ projectId }: Props) {
                 {showSimUploader && (
                   <SimulationUploader
                     projectId={projectId}
+                    autoFiles={simAutoFiles}
+                    onAutoFilesConsumed={() => setSimAutoFiles(null)}
                     onUploaded={(sim) => {
                       setSimulations(prev => [...prev, sim]);
                       setShowSimUploader(false);
@@ -1096,10 +1179,10 @@ export function VideoEditor({ projectId }: Props) {
                             alt={img.filename}
                             style={{
                               position: 'absolute',
-                              width: `${(1 / img.crop_w) * 100}%`,
-                              height: `${(1 / img.crop_h) * 100}%`,
-                              left: `${(-img.crop_x / img.crop_w) * 100}%`,
-                              top: `${(-img.crop_y / img.crop_h) * 100}%`,
+                              width: `${(1 / (img.crop_w || 1)) * 100}%`,
+                              height: `${(1 / (img.crop_h || 1)) * 100}%`,
+                              left: `${(-img.crop_x / (img.crop_w || 1)) * 100}%`,
+                              top: `${(-img.crop_y / (img.crop_h || 1)) * 100}%`,
                               objectFit: 'fill',
                             }}
                           />
@@ -1122,7 +1205,7 @@ export function VideoEditor({ projectId }: Props) {
                         <RefreshCw size={14} strokeWidth={1.9} aria-hidden />
                       </button>
                       <button
-                        onClick={() => handleDeleteImage(img.id)}
+                        onClick={() => setConfirmImg(img.id)}
                         disabled={deletingImgId === img.id}
                         title="Delete image"
                         className="absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
@@ -1189,7 +1272,7 @@ export function VideoEditor({ projectId }: Props) {
                         </div>
                       </div>
                       <button
-                        onClick={() => handleDeleteAudio(af.id)}
+                        onClick={() => setConfirmAudio(af.id)}
                         disabled={deletingAudioId === af.id}
                         title="Delete audio"
                         className="absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
@@ -1270,6 +1353,24 @@ export function VideoEditor({ projectId }: Props) {
         confirmLabel="Delete simulation"
         onConfirm={confirmDeleteSim}
         onCancel={() => setConfirmSim(null)}
+      />
+    )}
+    {confirmImg && (
+      <ConfirmDialog
+        title="Delete image?"
+        description="This will permanently delete the image from the library. This cannot be undone."
+        confirmLabel="Delete image"
+        onConfirm={() => { const id = confirmImg; setConfirmImg(null); void handleDeleteImage(id); }}
+        onCancel={() => setConfirmImg(null)}
+      />
+    )}
+    {confirmAudio && (
+      <ConfirmDialog
+        title="Delete audio?"
+        description="This will permanently delete the audio file from the library. This cannot be undone."
+        confirmLabel="Delete audio"
+        onConfirm={() => { const id = confirmAudio; setConfirmAudio(null); void handleDeleteAudio(id); }}
+        onCancel={() => setConfirmAudio(null)}
       />
     )}
     {replacingVideoId && (

@@ -125,9 +125,12 @@ async function collectDroppedItems(dataTransfer: DataTransfer): Promise<UploadIt
 interface Props {
   projectId: string;
   onUploaded: (sim: Simulation) => void;
+  /** Files routed in from the Library-panel dropzone — uploaded once, then reported consumed. */
+  autoFiles?: File[] | null;
+  onAutoFilesConsumed?: () => void;
 }
 
-export function SimulationUploader({ projectId, onUploaded }: Props) {
+export function SimulationUploader({ projectId, onUploaded, autoFiles, onAutoFilesConsumed }: Props) {
   const [dragging, setDragging]   = useState(false);
   const [name, setName]           = useState('');
   const [percent, setPercent]     = useState(0);
@@ -248,6 +251,17 @@ export function SimulationUploader({ projectId, onUploaded }: Props) {
     void uploadItems(Array.from(files).map(file => ({ file, path: browserRelativePath(file) })));
   };
 
+  // Consume files handed in from the Library-panel dropzone exactly once.
+  const consumedAutoRef = useRef<File[] | null>(null);
+  useEffect(() => {
+    if (!autoFiles || autoFiles.length === 0 || uploading) return;
+    if (consumedAutoRef.current === autoFiles) return;
+    consumedAutoRef.current = autoFiles;
+    void uploadItems(autoFiles.map(file => ({ file, path: browserRelativePath(file) })));
+    onAutoFilesConsumed?.();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoFiles, uploading]);
+
   return (
     <div className="space-y-3">
       {/* Name input */}
@@ -272,7 +286,11 @@ export function SimulationUploader({ projectId, onUploaded }: Props) {
           if (!uploading) void collectDroppedItems(e.dataTransfer).then(uploadItems);
         }}
         onClick={() => !uploading && inputRef.current?.click()}
-        className={`rounded-lg border-2 border-dashed px-4 py-5 text-center transition-colors sm:px-6 sm:py-7 ${
+        role="button"
+        tabIndex={uploading ? -1 : 0}
+        aria-label="Upload a simulation ZIP or folder"
+        onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && !uploading) { e.preventDefault(); inputRef.current?.click(); } }}
+        className={`rounded-lg border-2 border-dashed px-4 py-5 text-center transition-colors focus-ring sm:px-6 sm:py-7 ${
           uploading ? 'opacity-50 cursor-not-allowed border-border' :
           dragging   ? 'border-amber-400 bg-amber-50 cursor-pointer'
                      : 'border-border bg-white/70 hover:border-amber-400/50 hover:bg-muted/30 cursor-pointer'

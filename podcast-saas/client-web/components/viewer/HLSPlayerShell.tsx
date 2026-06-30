@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import Link from 'next/link';
 import type { PlayerConfig, PlayerSegment, SimulationOverlay } from './types';
@@ -225,6 +225,20 @@ export function HLSPlayerShell({
     window.localStorage.setItem('viewerCaptionStyle', JSON.stringify(captionStyle));
   }, [captionStyle]);
 
+  // Stable signature of the VTT urls that still need fetching. The 8s caption poll calls
+  // setCaptionState with a fresh object every cycle; depending on captionState/captionCues
+  // directly tore down and restarted this fetch each poll (and could cancel a slow in-flight
+  // fetch). Keying on the *content* makes the effect re-run only when the pending set actually
+  // changes (frontend-007).
+  const pendingVttKey = useMemo(() =>
+    Object.entries(captionState)
+      .filter(([segmentId, captions]) => captions.status === 'ready' && captions.vtt_url && !captionCues[segmentId])
+      .map(([segmentId, captions]) => `${segmentId}:${captions.vtt_url}`)
+      .sort()
+      .join('|'),
+    [captionState, captionCues],
+  );
+
   useEffect(() => {
     const urls = Object.entries(captionState)
       .filter(([, captions]) => captions.status === 'ready' && captions.vtt_url)
@@ -243,7 +257,8 @@ export function HLSPlayerShell({
     }).catch(() => {});
 
     return () => { cancelled = true; };
-  }, [captionState, captionCues]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingVttKey]);
 
   useEffect(() => {
     const shouldPoll = Object.values(captionState).some((captions) => captions.status === 'none' || captions.status === 'processing');

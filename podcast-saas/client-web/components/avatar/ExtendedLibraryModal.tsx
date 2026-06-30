@@ -40,6 +40,9 @@ export function ExtendedLibraryModal({ open, onClose, projectId, characterId = '
   const [dragOver, setDragOver] = useState(false);
   const [uploadingFiles, setUploadingFiles] = useState(false);
   const [dropFeedback, setDropFeedback] = useState<{ tone: 'ok' | 'warn' | 'error'; message: string; details?: string[] } | null>(null);
+  // Inline prompt (replaces window.prompt — styleable + accessible) — ui-ux-006.
+  const [promptReq, setPromptReq] = useState<{ title: string; placeholder?: string; submit: (value: string) => void } | null>(null);
+  const [promptText, setPromptText] = useState('');
   const dragDepthRef = useRef(0);
 
   const load = useCallback(async () => {
@@ -69,14 +72,15 @@ export function ExtendedLibraryModal({ open, onClose, projectId, characterId = '
 
   const run = async (tag: string, fn: () => Promise<unknown>) => {
     setBusy(tag);
-    try { await fn(); await load(); } catch (e) { alert((e as Error).message); } finally { setBusy(null); }
+    // Inline toast instead of alert() — styleable, accessible, and not blocked in sandboxes (ui-ux-006).
+    try { await fn(); await load(); } catch (e) { setDropFeedback({ tone: 'error', message: (e as Error).message }); } finally { setBusy(null); }
   };
-  const doGenImage = () => { const p = window.prompt('Describe the image to generate:'); if (p) run('gen-image', () => generateLibraryImage(projectId, { prompt: p, characterId, scope: 'extended' })); };
-  const doGenSim = () => { const p = window.prompt('Describe the interactive simulation to generate:'); if (p) run('gen-sim', () => generateLibrarySimulation(projectId, { prompt: p, characterId, scope: 'extended' })); };
+  const doGenImage = () => setPromptReq({ title: 'Describe the image to generate', placeholder: 'e.g. a labelled diagram of a neuron', submit: (p) => run('gen-image', () => generateLibraryImage(projectId, { prompt: p, characterId, scope: 'extended' })) });
+  const doGenSim = () => setPromptReq({ title: 'Describe the interactive simulation to generate', placeholder: 'e.g. a draggable pendulum with adjustable length', submit: (p) => run('gen-sim', () => generateLibrarySimulation(projectId, { prompt: p, characterId, scope: 'extended' })) });
   const doDelete = async (id: string) => { await deleteLibraryVisual(projectId, id); setItems((p) => p.filter((i) => i.id !== id)); setTotal((t) => Math.max(0, t - 1)); };
   const doToggleScope = async (item: LibraryItem) => { const next = item.scope === 'basic' ? 'extended' : 'basic'; await patchLibraryVisual(projectId, item.id, { scope: next }); setItems((p) => p.map((i) => (i.id === item.id ? { ...i, scope: next } : i))); };
   const doEditCaption = async (item: LibraryItem, caption: string) => { await patchLibraryVisual(projectId, item.id, { caption }); setItems((p) => p.map((i) => (i.id === item.id ? { ...i, caption } : i))); };
-  const doEditSim = (item: LibraryItem) => { const ins = window.prompt('How should the avatar change this simulation?'); if (ins) run('edit-sim', () => editLibrarySimulation(projectId, item.id, ins)); };
+  const doEditSim = (item: LibraryItem) => setPromptReq({ title: 'How should the avatar change this simulation?', placeholder: 'e.g. make the controls simpler and add a reset button', submit: (ins) => run('edit-sim', () => editLibrarySimulation(projectId, item.id, ins)) });
   const isFileDrag = (e: DragEvent<HTMLElement>) => Array.from(e.dataTransfer.types).includes('Files');
   const onLibraryDragEnter = (e: DragEvent<HTMLDivElement>) => {
     if (!isFileDrag(e)) return;
@@ -175,6 +179,35 @@ export function ExtendedLibraryModal({ open, onClose, projectId, characterId = '
         {dropFeedback?.details && (
           <div className="avatar-gallery-drop-details">
             {dropFeedback.details.map((detail) => <p key={detail}>{detail}</p>)}
+          </div>
+        )}
+        {promptReq && (
+          <div
+            className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"
+            role="dialog"
+            aria-modal="true"
+            aria-label={promptReq.title}
+            onClick={(e) => { if (e.target === e.currentTarget) { setPromptReq(null); setPromptText(''); } }}
+          >
+            <form
+              onSubmit={(e) => { e.preventDefault(); const v = promptText.trim(); if (v) { promptReq.submit(v); } setPromptReq(null); setPromptText(''); }}
+              className="w-full max-w-md rounded-xl bg-card p-4 shadow-lg"
+            >
+              <h3 className="mb-2 text-sm font-semibold text-foreground">{promptReq.title}</h3>
+              <textarea
+                autoFocus
+                rows={3}
+                value={promptText}
+                onChange={(e) => setPromptText(e.target.value)}
+                placeholder={promptReq.placeholder}
+                onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.currentTarget.form?.requestSubmit(); } }}
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+              <div className="mt-3 flex justify-end gap-2">
+                <button type="button" onClick={() => { setPromptReq(null); setPromptText(''); }} className="rounded-lg px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground">Cancel</button>
+                <button type="submit" disabled={!promptText.trim()} className="rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground disabled:opacity-50">Generate</button>
+              </div>
+            </form>
           </div>
         )}
 

@@ -111,6 +111,7 @@ export function AvatarSettingsModal({ open, onClose, projectId, videoTitle, embe
   const [vCountry, setVCountry] = useState('');
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const docDragDepth = useRef(0); // depth counter so the drop highlight doesn't flicker (ui-ux-012)
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
@@ -283,9 +284,10 @@ export function AvatarSettingsModal({ open, onClose, projectId, videoTitle, embe
                     <div className="avset__seclabel">Knowledge documents <em>— searchable during conversation</em></div>
                     <div
                       className={`avset__drop${dragOver ? ' is-over' : ''}`}
+                      onDragEnter={(e) => { e.preventDefault(); docDragDepth.current += 1; setDragOver(true); }}
                       onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-                      onDragLeave={() => setDragOver(false)}
-                      onDrop={(e) => { e.preventDefault(); setDragOver(false); uploadFiles(e.dataTransfer.files); }}
+                      onDragLeave={() => { docDragDepth.current = Math.max(0, docDragDepth.current - 1); if (docDragDepth.current === 0) setDragOver(false); }}
+                      onDrop={(e) => { e.preventDefault(); docDragDepth.current = 0; setDragOver(false); uploadFiles(e.dataTransfer.files); }}
                       onClick={() => fileRef.current?.click()}
                     >
                       <Upload size={20} />
