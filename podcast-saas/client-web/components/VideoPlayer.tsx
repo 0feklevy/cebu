@@ -662,7 +662,7 @@ function SingleClipPlayer({ src, hlsUrl, hlsStatus, currentTime, onTimeUpdate, s
           {src && (
             <button
               onClick={() => { const v = videoRef.current; if (!v) return; setLoadError(null); setIsLoading(true); v.src = src; v.load(); }}
-              className="h-7 px-4 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs font-medium transition-colors"
+              className="h-7 px-4 rounded-lg bg-card/10 hover:bg-card/20 text-white text-xs font-medium transition-colors"
             >
               Retry
             </button>

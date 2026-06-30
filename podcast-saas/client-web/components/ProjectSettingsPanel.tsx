@@ -254,7 +254,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
 
   const inputStyle: React.CSSProperties = {
     width: '100%', height: 40, border: '1px solid #e2e8f0', borderRadius: 8,
-    padding: '0 14px', fontSize: 14, color: '#111827', outline: 'none',
+    padding: '0 14px', fontSize: 14, color: 'hsl(var(--foreground))', outline: 'none',
     boxSizing: 'border-box', background: '#fff', fontFamily: 'inherit',
   };
 
@@ -267,7 +267,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
   });
 
   const sectionCardStyle: React.CSSProperties = {
-    backgroundColor: '#fff',
+    backgroundColor: 'hsl(var(--card))',
     border: '1px solid #e2e8f0',
     borderRadius: 10,
     boxShadow: '0 1px 2px rgba(15,23,42,0.04)',
@@ -386,7 +386,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
           height: isCompact ? '100dvh' : 'min(820px, 92dvh)',
           maxHeight: '100dvh',
           display: 'flex', flexDirection: 'column',
-          backgroundColor: '#ffffff',
+          backgroundColor: 'hsl(var(--card))',
           borderRadius: isCompact ? 0 : 10,
           boxShadow: '0 16px 48px rgba(0,0,0,0.18), 0 4px 16px rgba(0,0,0,0.08)',
           overflow: 'hidden', fontFamily: 'system-ui, -apple-system, sans-serif',
@@ -440,7 +440,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
             display: 'flex', flexDirection: 'column', gap: 16,
             borderRight: isCompact ? 'none' : '1px solid #e2e8f0',
             borderBottom: isCompact ? '1px solid #e2e8f0' : 'none',
-            backgroundColor: '#f8fafc', boxSizing: 'border-box',
+            backgroundColor: 'hsl(var(--card))', boxSizing: 'border-box',
           }}>
             <div style={sectionCardStyle}>
               <div style={sectionHeaderStyle}>
@@ -597,7 +597,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
             gridTemplateColumns: isCompact ? '1fr' : 'repeat(2, minmax(280px, 1fr))',
             gap: 16,
             alignContent: 'start',
-            backgroundColor: '#fff',
+            backgroundColor: 'hsl(var(--card))',
             boxSizing: 'border-box',
           }}>
 

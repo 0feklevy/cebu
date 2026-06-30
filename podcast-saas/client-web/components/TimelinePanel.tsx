@@ -345,7 +345,7 @@ function AudioGainPopover({
         onClick={onClose}
       />
       <div
-        className="fixed overflow-hidden rounded-lg border bg-white shadow-xl"
+        className="fixed overflow-hidden rounded-lg border bg-card shadow-xl"
         style={{
           right: 24,
           bottom: 156,
@@ -947,10 +947,10 @@ export function TimelinePanel({
   };
 
   return (
-    <div className="flex h-full overflow-visible bg-white" style={{ fontFamily: 'system-ui, -apple-system, sans-serif' }}>
+    <div className="flex h-full overflow-visible bg-card" style={{ fontFamily: 'system-ui, -apple-system, sans-serif' }}>
       {/* ── Fixed label column ───────────────────────────────────────────── */}
       <div className="shrink-0 flex flex-col" style={{ width: LABEL_W, borderRight: '1px solid hsl(var(--border))' }}>
-        <div style={{ height: RULER_H, backgroundColor: '#ffffff', borderBottom: '1.5px solid #e2e8f0', flexShrink: 0 }} />
+        <div style={{ height: RULER_H, backgroundColor: 'hsl(var(--card))', borderBottom: '1.5px solid #e2e8f0', flexShrink: 0 }} />
 
         {videos.length > 0 && (
           <>
@@ -979,7 +979,7 @@ export function TimelinePanel({
             {/* V1 label */}
             <div
               className="shrink-0 flex flex-col justify-center px-3 select-none"
-              style={{ height: VIDEO_TRACK_H, borderBottom: '1px solid #e5e7eb', backgroundColor: '#fafafa' }}
+              style={{ height: VIDEO_TRACK_H, borderBottom: '1px solid #e5e7eb', backgroundColor: 'hsl(var(--card))' }}
             >
               <div className="flex items-center gap-1.5 mb-0.5">
                 <span style={{ fontSize: 9, fontWeight: 700, color: '#9ca3af', letterSpacing: '0.08em', textTransform: 'uppercase' }}>V1</span>
@@ -1000,7 +1000,7 @@ export function TimelinePanel({
 
             <div
               className="shrink-0"
-              style={{ height: SCROLLBAR_H, backgroundColor: '#ffffff', borderTop: '1px solid #f1f5f9' }}
+              style={{ height: SCROLLBAR_H, backgroundColor: 'hsl(var(--card))', borderTop: '1px solid #f1f5f9' }}
             />
           </>
         )}
@@ -1023,7 +1023,7 @@ export function TimelinePanel({
           {/* ── Ruler ─────────────────────────────────────────────────────── */}
           <div
             className="select-none"
-            style={{ height: RULER_H, position: 'relative', backgroundColor: '#ffffff', borderBottom: '1.5px solid #e2e8f0' }}
+            style={{ height: RULER_H, position: 'relative', backgroundColor: 'hsl(var(--card))', borderBottom: '1.5px solid #e2e8f0' }}
           >
             {Array.from({ length: Math.ceil(totalDuration / tickSec) + 1 }, (_, i) => {
               const sec = i * tickSec;
@@ -1230,7 +1230,7 @@ export function TimelinePanel({
 
               {/* ── V1 VIDEO TRACK ─────────────────────────────────────── */}
               <div
-                style={{ height: VIDEO_TRACK_H, position: 'relative', backgroundColor: '#f9fafb', borderBottom: '1px solid #e5e7eb', cursor: 'crosshair' }}
+                style={{ height: VIDEO_TRACK_H, position: 'relative', backgroundColor: 'hsl(var(--card))', borderBottom: '1px solid #e5e7eb', cursor: 'crosshair' }}
                 onMouseDown={handleTrackMouseDown}
                 onClick={handleTrackClick}
               >
@@ -1347,7 +1347,7 @@ export function TimelinePanel({
       {onAddVideo && (
         <div
           className="shrink-0 flex items-center justify-center relative"
-          style={{ width: 43, borderLeft: '1px solid #e5e7eb', backgroundColor: '#fafafa' }}
+          style={{ width: 43, borderLeft: '1px solid #e5e7eb', backgroundColor: 'hsl(var(--card))' }}
         >
           <button
             onClick={() => setAddMenuOpen(v => !v)}
@@ -1360,7 +1360,7 @@ export function TimelinePanel({
 
           {addMenuOpen && (
             <div
-              className="absolute right-9 bottom-2 z-30 w-48 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-xl"
+              className="absolute right-9 bottom-2 z-30 w-48 overflow-hidden rounded-lg border border-gray-200 bg-card shadow-xl"
               onMouseDown={e => e.stopPropagation()}
               style={{ fontFamily: 'system-ui, -apple-system, sans-serif' }}
             >

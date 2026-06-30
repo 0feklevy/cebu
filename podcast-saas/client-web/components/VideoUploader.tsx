@@ -269,7 +269,7 @@ export function VideoUploader({ projectId, onUploaded, replaceVideoId }: Props) 
         onDrop={(e) => { e.preventDefault(); setDragging(false); handleFiles(e.dataTransfer.files); }}
         onClick={() => inputRef.current?.click()}
         className={`rounded-lg border-2 border-dashed px-4 py-5 text-center cursor-pointer transition-colors focus-ring sm:px-6 sm:py-8 ${
-          dragging ? 'border-violet-400 bg-violet-50' : 'border-border bg-white/70 hover:border-violet-300 hover:bg-muted/30'
+          dragging ? 'border-violet-400 bg-violet-50' : 'border-border bg-card/70 hover:border-violet-300 hover:bg-muted/30'
         }`}
       >
         <svg width="32" height="32" viewBox="0 0 32 32" fill="none" className="mx-auto mb-2 text-muted-foreground/50" aria-hidden>
@@ -291,7 +291,7 @@ export function VideoUploader({ projectId, onUploaded, replaceVideoId }: Props) 
       {uploads.length > 0 && (
         <div className="space-y-2">
           {uploads.map((u, i) => (
-            <div key={i} className="rounded-lg border border-border/70 bg-white px-3 py-2.5 shadow-sm-soft">
+            <div key={i} className="rounded-lg border border-border/70 bg-card px-3 py-2.5 shadow-sm-soft">
               <div className="mb-1.5 flex min-w-0 flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
                 <span className="min-w-0 truncate text-xs font-medium text-foreground">{u.filename}</span>
                 <span className="text-[10px] text-muted-foreground sm:ml-2 sm:shrink-0">

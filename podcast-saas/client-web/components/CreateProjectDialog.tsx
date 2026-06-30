@@ -40,7 +40,7 @@ export function CreateProjectDialog({ open, onOpenChange }: Props) {
     <Dialog.Root open={open} onOpenChange={(v) => { if (!v) handleClose(); }}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-[900] bg-slate-950/55 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 z-[901] max-h-[calc(100dvh-24px)] w-[calc(100vw-24px)] max-w-md -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-lg border border-border bg-white p-5 shadow-modal data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 sm:p-6">
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-[901] max-h-[calc(100dvh-24px)] w-[calc(100vw-24px)] max-w-md -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-lg border border-border bg-card p-5 shadow-modal data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 sm:p-6">
           <div className="flex items-center justify-between mb-5">
             <Dialog.Title className="text-lg font-semibold text-foreground">New project</Dialog.Title>
             <Dialog.Close onClick={handleClose} className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors focus-ring">
@@ -56,7 +56,7 @@ export function CreateProjectDialog({ open, onOpenChange }: Props) {
               <input
                 autoFocus
                 type="text"
-                className="w-full h-10 rounded-lg border border-input bg-white px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring/25 placeholder:text-muted-foreground/50"
+                className="w-full h-10 rounded-lg border border-input bg-card px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring/25 placeholder:text-muted-foreground/50"
                 placeholder="e.g. Product demo, lecture on photosynthesis…"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}

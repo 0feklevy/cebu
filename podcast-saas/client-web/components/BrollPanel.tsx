@@ -142,7 +142,7 @@ export function BrollPanel({ projectId, mark, videos, jobs, onNewJob, onJobUpdat
   const visibleJobs = jobs.filter(j => !dismissedJobIds.has(j.id));
 
   return (
-    <div className="flex flex-col h-full overflow-hidden rounded-lg border border-border bg-white shadow-card">
+    <div className="flex flex-col h-full overflow-hidden rounded-lg border border-border bg-card shadow-card">
       {/* Header */}
       <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2.5 shell-bg">
         <div className="min-w-0">
@@ -206,7 +206,7 @@ export function BrollPanel({ projectId, mark, videos, jobs, onNewJob, onJobUpdat
                     style={{ backgroundColor: enhance ? '#06b6d4' : '#d1d5db' }}
                   >
                     <span
-                      className="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform"
+                      className="absolute top-0.5 w-4 h-4 rounded-full bg-card shadow-sm transition-transform"
                       style={{ transform: enhance ? 'translateX(18px)' : 'translateX(2px)' }}
                     />
                   </button>

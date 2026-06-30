@@ -35,7 +35,7 @@ function Toggle({ checked, onChange, label, hint }: { checked: boolean; onChange
         aria-checked={checked}
       >
         <span
-          className="absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all"
+          className="absolute top-0.5 h-4 w-4 rounded-full bg-card shadow transition-all"
           style={{ left: checked ? 18 : 2 }}
         />
       </button>
@@ -184,7 +184,7 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
     <Dialog.Root open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-[900] bg-black/60 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 z-[901] flex h-dvh w-screen -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden bg-white shadow-2xl sm:h-[min(880px,calc(100dvh-32px))] sm:w-[calc(100vw-32px)] sm:max-w-[1000px] sm:rounded-2xl sm:border sm:border-border data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95">
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-[901] flex h-dvh w-screen -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden bg-card shadow-2xl sm:h-[min(880px,calc(100dvh-32px))] sm:w-[calc(100vw-32px)] sm:max-w-[1000px] sm:rounded-2xl sm:border sm:border-border data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95">
 
           {/* ── Header ── */}
           <header className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-5 py-3.5">
@@ -219,14 +219,14 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
                     value={title}
                     onChange={(e) => setTitle(e.target.value)}
                     placeholder="Playlist title"
-                    className="h-10 w-full rounded-lg border border-transparent bg-muted/50 px-3 text-[15px] font-semibold text-foreground transition-colors placeholder:text-muted-foreground/50 hover:border-border focus:border-primary/40 focus:bg-white focus:outline-none focus:ring-2 focus:ring-ring/20"
+                    className="h-10 w-full rounded-lg border border-transparent bg-muted/50 px-3 text-[15px] font-semibold text-foreground transition-colors placeholder:text-muted-foreground/50 hover:border-border focus:border-primary/40 focus:bg-card focus:outline-none focus:ring-2 focus:ring-ring/20"
                   />
                   <textarea
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
                     rows={2}
                     placeholder="Add a description…"
-                    className="w-full resize-none rounded-lg border border-transparent bg-muted/40 px-3 py-2 text-sm text-foreground transition-colors placeholder:text-muted-foreground/50 hover:border-border focus:border-primary/40 focus:bg-white focus:outline-none focus:ring-2 focus:ring-ring/20"
+                    className="w-full resize-none rounded-lg border border-transparent bg-muted/40 px-3 py-2 text-sm text-foreground transition-colors placeholder:text-muted-foreground/50 hover:border-border focus:border-primary/40 focus:bg-card focus:outline-none focus:ring-2 focus:ring-ring/20"
                   />
                 </div>
 
@@ -238,7 +238,7 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
                       value={query}
                       onChange={(e) => setQuery(e.target.value)}
                       placeholder="Search projects to add…"
-                      className="h-9 w-full rounded-lg border border-input bg-white pl-8 pr-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring/25 placeholder:text-muted-foreground/60"
+                      className="h-9 w-full rounded-lg border border-input bg-card pl-8 pr-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring/25 placeholder:text-muted-foreground/60"
                     />
                   </label>
 
@@ -374,7 +374,7 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
                       <img src={bannerUrl} alt="" className="h-full w-full object-cover" draggable={false} />
                     ) : (
                       <div className="flex h-full w-full items-center justify-center" style={{ background: 'radial-gradient(circle at 20% 50%, rgba(99,102,241,0.35), transparent 60%), linear-gradient(135deg,#080818,#181828)' }}>
-                        <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/8">
+                        <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-card/8">
                           <ImageIcon size={18} strokeWidth={1.5} className="text-white/40" />
                         </span>
                       </div>
@@ -408,12 +408,12 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
                       </div>
                       <div className="flex gap-2">
                         <select value={bannerProvider} onChange={(e) => setBannerProvider(e.target.value === 'gemini' ? 'gemini' : 'openai')}
-                          className="h-8 w-24 shrink-0 rounded-lg border border-input bg-white px-2 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-ring/25">
+                          className="h-8 w-24 shrink-0 rounded-lg border border-input bg-card px-2 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-ring/25">
                           <option value="openai">OpenAI</option>
                           <option value="gemini">Gemini</option>
                         </select>
                         <input value={bannerPrompt} onChange={(e) => setBannerPrompt(e.target.value)} placeholder="Prompt (optional)"
-                          className="h-8 min-w-0 flex-1 rounded-lg border border-input bg-white px-2.5 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-ring/25" />
+                          className="h-8 min-w-0 flex-1 rounded-lg border border-input bg-card px-2.5 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-ring/25" />
                         <button onClick={handleBannerGenerate} disabled={bannerBusy}
                           className="inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-lg px-2.5 text-xs font-semibold text-white disabled:opacity-40"
                           style={{ background: 'linear-gradient(135deg,#7c3aed,#2563eb)' }}>

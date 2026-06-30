@@ -271,7 +271,7 @@ export function SimulationUploader({ projectId, onUploaded, autoFiles, onAutoFil
         value={name}
         onChange={e => setName(e.target.value)}
         disabled={uploading}
-        className="w-full h-8 px-3 rounded-lg border border-border bg-white text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-400/20 disabled:opacity-50"
+        className="w-full h-8 px-3 rounded-lg border border-border bg-card text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-400/20 disabled:opacity-50"
       />
 
       {/* Drop zone */}
@@ -293,7 +293,7 @@ export function SimulationUploader({ projectId, onUploaded, autoFiles, onAutoFil
         className={`rounded-lg border-2 border-dashed px-4 py-5 text-center transition-colors focus-ring sm:px-6 sm:py-7 ${
           uploading ? 'opacity-50 cursor-not-allowed border-border' :
           dragging   ? 'border-amber-400 bg-amber-50 cursor-pointer'
-                     : 'border-border bg-white/70 hover:border-amber-400/50 hover:bg-muted/30 cursor-pointer'
+                     : 'border-border bg-card/70 hover:border-amber-400/50 hover:bg-muted/30 cursor-pointer'
         }`}
       >
         <svg width="28" height="28" viewBox="0 0 28 28" fill="none" className="mx-auto mb-2 text-amber-400/70" aria-hidden>
@@ -307,7 +307,7 @@ export function SimulationUploader({ projectId, onUploaded, autoFiles, onAutoFil
             type="button"
             onClick={(e) => { e.stopPropagation(); inputRef.current?.click(); }}
             disabled={uploading}
-            className="h-8 rounded-md border border-border bg-white px-2.5 text-[11px] font-medium text-foreground hover:border-amber-300 disabled:opacity-50"
+            className="h-8 rounded-md border border-border bg-card px-2.5 text-[11px] font-medium text-foreground hover:border-amber-300 disabled:opacity-50"
           >
             Choose ZIP
           </button>
@@ -339,7 +339,7 @@ export function SimulationUploader({ projectId, onUploaded, autoFiles, onAutoFil
 
       {/* Progress */}
       {(uploading || done || error) && (
-        <div className="rounded-lg border border-border/70 bg-white px-3 py-2.5 shadow-sm-soft">
+        <div className="rounded-lg border border-border/70 bg-card px-3 py-2.5 shadow-sm-soft">
           <div className="mb-1.5 flex min-w-0 flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
             <span className="text-xs font-medium text-foreground">Uploading…</span>
             <span className="text-[10px] text-muted-foreground sm:ml-2 sm:shrink-0">

@@ -186,7 +186,7 @@ export function A2AudioModal({
         onClick={onClose}
       />
       <div
-        className="fixed overflow-hidden rounded-xl border bg-white shadow-2xl"
+        className="fixed overflow-hidden rounded-xl border bg-card shadow-2xl"
         style={{
           right: 24, bottom: 164, width: 380,
           zIndex: 801, borderColor: '#bbf7d0',

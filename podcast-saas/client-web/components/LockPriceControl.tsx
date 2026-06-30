@@ -82,7 +82,7 @@ export function LockPriceControl({ contentType, contentId, bordered = true, onCh
           style={{ background: paid ? '#f59e0b' : 'hsl(var(--border))' }}
           title={paid ? 'Make free' : 'Lock'}
         >
-          <span className="absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all" style={{ left: paid ? 18 : 2 }} />
+          <span className="absolute top-0.5 h-4 w-4 rounded-full bg-card shadow transition-all" style={{ left: paid ? 18 : 2 }} />
         </button>
       </div>
 
@@ -93,7 +93,7 @@ export function LockPriceControl({ contentType, contentId, bordered = true, onCh
             <input
               type="number" min="0.50" step="0.50" value={dollars}
               onChange={(e) => setDollars(e.target.value)}
-              className="h-9 w-full rounded-lg border border-input bg-white pl-6 pr-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring/25"
+              className="h-9 w-full rounded-lg border border-input bg-card pl-6 pr-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring/25"
             />
           </div>
           <button

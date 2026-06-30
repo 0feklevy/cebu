@@ -1,13 +1,14 @@
 'use client';
 
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { AlertTriangle, Clapperboard, GitBranch, Maximize2, Minimize2, Music, Plus, Redo2, RefreshCw, Sparkles, Trash2, Undo2, Upload } from 'lucide-react';
+import { AlertTriangle, Clapperboard, GitBranch, HelpCircle, Maximize2, Minimize2, Music, Plus, Redo2, RefreshCw, Sparkles, Trash2, Undo2, Upload } from 'lucide-react';
 import { useAuth } from '../lib/firebase';
 import { api } from '../lib/api';
 import { VideoPlayer } from './VideoPlayer';
 import type { VideoPlayerHandle } from './VideoPlayer';
 import type { Clip } from '../hooks/useClipSequence';
 import { TimelinePanel } from './TimelinePanel';
+import { GuidedTour, type TourStep } from './GuidedTour';
 import { VideoUploader } from './VideoUploader';
 import { SimulationUploader } from './SimulationUploader';
 import { BrollPanel } from './BrollPanel';
@@ -19,6 +20,15 @@ import { getAvatarCircles, type AvatarCirclesConfig } from './avatar/avatarApi';
 import type { VideoFile, TimelineSection, Simulation, VideoGenerationJob, ImageFile, AudioFile } from 'shared/src/generated/client-v1';
 
 type ToolMode = 'video' | 'simulation' | 'broll';
+
+// The main-things-only editor walkthrough (fiji-style). Targets exist via data-tour attrs;
+// a step whose target isn't on screen is skipped automatically.
+const EDITOR_TOUR_STEPS: TourStep[] = [
+  { selector: '[data-tour="library"]',     title: 'Your Library',            content: 'Add videos, images, audio, and AI simulations here. Tip: drag files straight onto this panel and they sort themselves.' },
+  { selector: '[data-tour="simulations"]', title: 'Interactive simulations', content: 'Upload or AI-generate an interactive simulation, then drop it onto the timeline to make a moment interactive.' },
+  { selector: '[data-tour="timeline"]',    title: 'The timeline',            content: 'Arrange clips and flag sections — mark where a simulation, b-roll, image, or audio plays over the video.' },
+  { selector: '[data-tour="preview"]',     title: 'Preview & share',         content: 'Preview the finished interactive video exactly as viewers see it, then share it with a link.' },
+];
 
 const HLS_TIERS = ['360p', '480p', '720p', '1080p'] as const;
 type HlsTier = typeof HLS_TIERS[number];
@@ -686,6 +696,18 @@ export function VideoEditor({ projectId }: Props) {
   const [simAutoFiles, setSimAutoFiles] = useState<File[] | null>(null);
   const libraryDragDepth = useRef(0);
 
+  // ── Guided walkthrough — auto-runs once per browser, re-openable via the help button ──
+  const [tourOpen, setTourOpen] = useState(false);
+  useEffect(() => {
+    if (typeof window === 'undefined' || window.localStorage.getItem('editor-tour-seen')) return;
+    const t = setTimeout(() => setTourOpen(true), 900); // let the editor paint first
+    return () => clearTimeout(t);
+  }, []);
+  const closeTour = useCallback(() => {
+    setTourOpen(false);
+    try { window.localStorage.setItem('editor-tour-seen', '1'); } catch { /* ignore */ }
+  }, []);
+
   useEffect(() => {
     if (!libraryFeedback) return;
     const t = setTimeout(() => setLibraryFeedback(null), 4000);
@@ -863,7 +885,7 @@ export function VideoEditor({ projectId }: Props) {
                   />
                 </div>
               ) : (
-                <div className="flex flex-1 flex-col items-center justify-center gap-3 border border-dashed border-white/16 bg-white/[0.03] px-8 text-center">
+                <div className="flex flex-1 flex-col items-center justify-center gap-3 border border-dashed border-white/16 bg-card/[0.03] px-8 text-center">
                   <svg width="40" height="40" viewBox="0 0 40 40" fill="none" className="text-white/25" aria-hidden>
                     <rect x="4" y="8" width="32" height="24" rx="3" stroke="currentColor" strokeWidth="1.5" />
                     <path d="M16 14l10 6-10 6V14z" fill="currentColor" />
@@ -918,6 +940,7 @@ export function VideoEditor({ projectId }: Props) {
           ) : (
             <div className="flex min-h-0 max-h-[36dvh] w-full shrink-0 flex-col gap-2 overflow-hidden min-[900px]:max-h-none min-[900px]:w-[300px] xl:w-80">
               <div
+                data-tour="library"
                 className={`surface-panel relative flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto rounded-lg px-3 py-3 fine-scrollbar transition-shadow ${libraryDragOver ? 'ring-2 ring-amber-400 ring-offset-1' : ''}`}
                 onDragEnter={onLibraryDragEnter}
                 onDragOver={onLibraryDragOver}
@@ -946,15 +969,26 @@ export function VideoEditor({ projectId }: Props) {
                       {videos.length} clip{videos.length !== 1 ? 's' : ''} · {sections.length} section{sections.length !== 1 ? 's' : ''}
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setExtendedLibraryOpen(true)}
-                    className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-[10px] font-semibold text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground focus-ring"
-                    title="Manage the avatar's basic and extended visual library"
-                  >
-                    <Sparkles size={12} strokeWidth={1.9} aria-hidden />
-                    Extended
-                  </button>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setTourOpen(true)}
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-card text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground focus-ring"
+                      title="Show the editor walkthrough"
+                      aria-label="Show the editor walkthrough"
+                    >
+                      <HelpCircle size={14} strokeWidth={1.9} aria-hidden />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setExtendedLibraryOpen(true)}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-[10px] font-semibold text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground focus-ring"
+                      title="Manage the avatar's basic and extended visual library"
+                    >
+                      <Sparkles size={12} strokeWidth={1.9} aria-hidden />
+                      Extended
+                    </button>
+                  </div>
                 </div>
 
                 <div className="flex items-center justify-between">
@@ -986,7 +1020,7 @@ export function VideoEditor({ projectId }: Props) {
                     className={`relative rounded-xl border transition-all card-interactive ${
                       activeVideoId === v.id
                         ? 'border-primary/40 bg-primary/5 shadow-sm-soft'
-                        : 'border-border/60 bg-white/90 hover:border-primary/30'
+                        : 'border-border/60 bg-card/90 hover:border-primary/30'
                     }`}
                   >
                     <div className="w-full text-left px-3 py-2.5 pr-12">
@@ -1038,7 +1072,7 @@ export function VideoEditor({ projectId }: Props) {
               )}
 
               {/* Simulations section */}
-              <div className="mt-3 flex flex-col gap-2 pt-3 border-t border-border/40">
+              <div data-tour="simulations" className="mt-3 flex flex-col gap-2 pt-3 border-t border-border/40">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <div className="w-0.5 h-3 rounded-full bg-amber-400/80" />
@@ -1073,7 +1107,7 @@ export function VideoEditor({ projectId }: Props) {
                   simulations.map(sim => (
                     <div
                       key={sim.id}
-                      className="relative rounded-xl border border-border/60 bg-white/90 hover:border-amber-400/50 transition-all card-interactive"
+                      className="relative rounded-xl border border-border/60 bg-card/90 hover:border-amber-400/50 transition-all card-interactive"
                     >
                       <div className="w-full text-left px-3 py-2.5 pr-12">
                         <p className="text-xs font-medium text-foreground truncate">{sim.name}</p>
@@ -1166,7 +1200,7 @@ export function VideoEditor({ projectId }: Props) {
                   images.map(img => (
                     <div
                       key={img.id}
-                      className="relative rounded-xl border border-border/60 bg-white/90 hover:border-violet-400/50 transition-all card-interactive"
+                      className="relative rounded-xl border border-border/60 bg-card/90 hover:border-violet-400/50 transition-all card-interactive"
                     >
                       <div className="flex items-center gap-2 px-3 py-2 pr-10">
                         {/* Thumbnail */}
@@ -1257,7 +1291,7 @@ export function VideoEditor({ projectId }: Props) {
                         e.dataTransfer.setData('application/audio-cutaway', JSON.stringify({ id: af.id, filename: af.filename, url: af.url, duration_sec: af.duration_sec }));
                         e.dataTransfer.effectAllowed = 'copy';
                       }}
-                      className="relative rounded-xl border border-border/60 bg-white/90 hover:border-emerald-400/50 transition-all card-interactive cursor-grab active:cursor-grabbing"
+                      className="relative rounded-xl border border-border/60 bg-card/90 hover:border-emerald-400/50 transition-all card-interactive cursor-grab active:cursor-grabbing"
                       title="Drag to A2 audio track to add a sound layer"
                     >
                       <div className="flex items-center gap-2 px-3 py-2.5 pr-10">
@@ -1310,7 +1344,7 @@ export function VideoEditor({ projectId }: Props) {
         </div>
 
         {/* Timeline */}
-        <div className="shrink-0 border-t border-border bg-white/70" style={{ height: timelinePanelHeight }}>
+        <div data-tour="timeline" className="shrink-0 border-t border-border bg-card/70" style={{ height: timelinePanelHeight }}>
           <TimelinePanel
             projectId={projectId}
             videos={videos}
@@ -1337,6 +1371,7 @@ export function VideoEditor({ projectId }: Props) {
     </div>
 
     {/* ── Confirm dialogs ───────────────────────────────────────────── */}
+    <GuidedTour steps={EDITOR_TOUR_STEPS} open={tourOpen} onClose={closeTour} />
     {confirmVideo && (
       <ConfirmDialog
         title="Delete video clip?"

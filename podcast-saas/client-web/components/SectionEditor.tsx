@@ -875,8 +875,8 @@ export function SectionEditor({
 
   const inputStyle: React.CSSProperties = {
     width: '100%', height: 38, padding: '0 12px', borderRadius: 8,
-    border: '1.5px solid #e5e7eb', backgroundColor: '#fff',
-    fontSize: 13, color: '#111827', outline: 'none',
+    border: '1.5px solid #e5e7eb', backgroundColor: 'hsl(var(--card))',
+    fontSize: 13, color: 'hsl(var(--foreground))', outline: 'none',
     boxSizing: 'border-box', fontFamily: 'system-ui, -apple-system, sans-serif',
   };
 
@@ -910,7 +910,7 @@ export function SectionEditor({
           height: isCompactModal ? '100dvh' : 'min(820px, 92dvh)',
           maxHeight: '100dvh',
           display: 'flex', flexDirection: 'column',
-          backgroundColor: '#ffffff', borderRadius: isCompactModal ? 0 : 10,
+          backgroundColor: 'hsl(var(--card))', borderRadius: isCompactModal ? 0 : 10,
           boxShadow: '0 16px 48px rgba(0,0,0,0.18), 0 4px 16px rgba(0,0,0,0.08)',
           overflow: 'hidden', fontFamily: 'system-ui, -apple-system, sans-serif',
         }}
@@ -970,7 +970,7 @@ export function SectionEditor({
             display: 'flex', flexDirection: 'column', gap: isCompactModal ? 14 : 20,
             borderRight: isCompactModal ? 'none' : '1px solid #e2e8f0',
             borderBottom: isCompactModal ? '1px solid #e2e8f0' : 'none',
-            backgroundColor: '#f8fafc',
+            backgroundColor: 'hsl(var(--card))',
             boxSizing: 'border-box',
           }}>
 
@@ -1012,7 +1012,7 @@ export function SectionEditor({
                       height: 36,
                       borderRadius: 9,
                       border: '1.5px solid #bfdbfe',
-                      backgroundColor: '#f8fafc',
+                      backgroundColor: 'hsl(var(--card))',
                       padding: 2,
                       boxSizing: 'border-box',
                     }}
@@ -1069,7 +1069,7 @@ export function SectionEditor({
                 <div style={{ height: 1, backgroundColor: '#f3f4f6' }} />
 
                 <div style={{
-                  backgroundColor: '#fff', border: '1px solid #f1f5f9', borderTop: '3px solid #10b981',
+                  backgroundColor: 'hsl(var(--card))', border: '1px solid #f1f5f9', borderTop: '3px solid #10b981',
                   borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05), 0 1px 3px rgba(0,0,0,0.03)', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12,
                 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -1149,7 +1149,7 @@ export function SectionEditor({
                         <select
                           value={cameraMovement}
                           onChange={e => setCameraMovement(e.target.value)}
-                          style={{ ...inputStyle, borderColor: '#6ee7b7', color: '#111827' }}
+                          style={{ ...inputStyle, borderColor: '#6ee7b7', color: 'hsl(var(--foreground))' }}
                         >
                           {CAMERA_MOVEMENTS.map(m => (
                             <option key={m.value} value={m.value}>{m.label}</option>
@@ -1304,7 +1304,7 @@ export function SectionEditor({
 
                 {simId && (
                   <div style={{
-                    backgroundColor: '#fff', border: '1px solid #f1f5f9', borderTop: '3px solid #f59e0b',
+                    backgroundColor: 'hsl(var(--card))', border: '1px solid #f1f5f9', borderTop: '3px solid #f59e0b',
                     borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05), 0 1px 3px rgba(0,0,0,0.03)', padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 14,
                   }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -1323,8 +1323,8 @@ export function SectionEditor({
                         maxLength={1000}
                         style={{
                           width: '100%', padding: '10px 12px', borderRadius: 8,
-                          border: '1.5px solid #fcd34d', backgroundColor: '#fff',
-                          fontSize: 13, color: '#111827', outline: 'none',
+                          border: '1.5px solid #fcd34d', backgroundColor: 'hsl(var(--card))',
+                          fontSize: 13, color: 'hsl(var(--foreground))', outline: 'none',
                           resize: 'vertical', boxSizing: 'border-box',
                           fontFamily: 'system-ui, -apple-system, sans-serif', lineHeight: 1.5,
                         }}
@@ -1358,7 +1358,7 @@ export function SectionEditor({
                             <span style={{
                               position: 'absolute', top: 3,
                               left: on ? 18 : 3, width: 14, height: 14,
-                              borderRadius: '50%', backgroundColor: '#fff',
+                              borderRadius: '50%', backgroundColor: 'hsl(var(--card))',
                               boxShadow: '0 1px 3px rgba(0,0,0,0.2)', transition: 'left 0.15s',
                             }} />
                           </span>
@@ -1377,7 +1377,7 @@ export function SectionEditor({
                     )}
 
                     {simMeta && !generating && (
-                      <div style={{ backgroundColor: '#fff', border: '1px solid #f1f5f9', borderLeft: '3px solid #10b981', borderRadius: 10, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 6, boxShadow: '0 1px 4px rgba(0,0,0,0.05)' }}>
+                      <div style={{ backgroundColor: 'hsl(var(--card))', border: '1px solid #f1f5f9', borderLeft: '3px solid #10b981', borderRadius: 10, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 6, boxShadow: '0 1px 4px rgba(0,0,0,0.05)' }}>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                           <span style={{ fontSize: 11, fontWeight: 700, color: '#166534' }}>Last generation</span>
                           {simMeta.confidence != null && (
@@ -1479,7 +1479,7 @@ export function SectionEditor({
                 {/* ── GUIDED SIMULATION (mother-sim-level voice guidance) ── */}
                 {simId && (
                   <div style={{
-                    backgroundColor: '#fff', border: '1px solid #eef2ff', borderTop: '3px solid #6366f1',
+                    backgroundColor: 'hsl(var(--card))', border: '1px solid #eef2ff', borderTop: '3px solid #6366f1',
                     borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05), 0 1px 3px rgba(0,0,0,0.03)',
                     padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 12,
                   }}>
@@ -1554,7 +1554,7 @@ export function SectionEditor({
                                 title={e.enabled ? 'Enabled' : 'Disabled'}
                                 style={{ width: 30, height: 17, borderRadius: 9, border: 'none', flexShrink: 0, backgroundColor: e.enabled ? '#6366f1' : '#d1d5db', position: 'relative', cursor: 'pointer' }}
                               >
-                                <span style={{ position: 'absolute', top: 2.5, left: e.enabled ? 15 : 2.5, width: 12, height: 12, borderRadius: '50%', backgroundColor: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,0.2)', transition: 'left .15s' }} />
+                                <span style={{ position: 'absolute', top: 2.5, left: e.enabled ? 15 : 2.5, width: 12, height: 12, borderRadius: '50%', backgroundColor: 'hsl(var(--card))', boxShadow: '0 1px 2px rgba(0,0,0,0.2)', transition: 'left .15s' }} />
                               </button>
                               <span style={{ fontSize: 9, fontWeight: 700, color: e.kind === 'config' ? '#7c3aed' : '#0369a1', backgroundColor: e.kind === 'config' ? '#f3e8ff' : '#e0f2fe', borderRadius: 4, padding: '1px 6px' }}>{e.kind}</span>
                               <span style={{ fontSize: 11, fontWeight: 600, color: '#374151', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.title}</span>
@@ -1565,7 +1565,7 @@ export function SectionEditor({
                               onChange={ev => setEntryNarration(e.id, ev.target.value)}
                               rows={2}
                               maxLength={400}
-                              style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid #e5e7eb', fontSize: 11.5, color: '#111827', resize: 'vertical', boxSizing: 'border-box', fontFamily: 'inherit', lineHeight: 1.45, outline: 'none' }}
+                              style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid #e5e7eb', fontSize: 11.5, color: 'hsl(var(--foreground))', resize: 'vertical', boxSizing: 'border-box', fontFamily: 'inherit', lineHeight: 1.45, outline: 'none' }}
                             />
                             {e.warnings && e.warnings.length > 0 && (
                               <p style={{ fontSize: 9, color: '#b45309', margin: '3px 0 0' }}>⚠ {e.warnings.join('; ')}</p>
@@ -1608,7 +1608,7 @@ export function SectionEditor({
             {/* ── VIDEO GENERATION (non-broll video sections) ── */}
             {type === 'video' && !isBroll && (
               <div style={{
-                backgroundColor: '#fff', border: '1px solid #f1f5f9', borderTop: '3px solid #3b82f6',
+                backgroundColor: 'hsl(var(--card))', border: '1px solid #f1f5f9', borderTop: '3px solid #3b82f6',
                 borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05), 0 1px 3px rgba(0,0,0,0.03)', padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 14,
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -1627,8 +1627,8 @@ export function SectionEditor({
                     maxLength={500}
                     style={{
                       width: '100%', padding: '10px 12px', borderRadius: 8,
-                      border: '1.5px solid #bfdbfe', backgroundColor: '#fff',
-                      fontSize: 13, color: '#111827', outline: 'none',
+                      border: '1.5px solid #bfdbfe', backgroundColor: 'hsl(var(--card))',
+                      fontSize: 13, color: 'hsl(var(--foreground))', outline: 'none',
                       resize: 'vertical', boxSizing: 'border-box',
                       fontFamily: 'system-ui, -apple-system, sans-serif', lineHeight: 1.5,
                     }}
@@ -1724,7 +1724,7 @@ export function SectionEditor({
                           }}
                         >
                           <span style={{ width: 26, height: 14, borderRadius: 7, flexShrink: 0, backgroundColor: genEnhance ? '#3b82f6' : '#d1d5db', position: 'relative', display: 'inline-block', transition: 'background-color 0.15s' }}>
-                            <span style={{ position: 'absolute', top: 2, left: genEnhance ? 13 : 2, width: 10, height: 10, borderRadius: '50%', backgroundColor: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,0.2)', transition: 'left 0.15s' }} />
+                            <span style={{ position: 'absolute', top: 2, left: genEnhance ? 13 : 2, width: 10, height: 10, borderRadius: '50%', backgroundColor: 'hsl(var(--card))', boxShadow: '0 1px 2px rgba(0,0,0,0.2)', transition: 'left 0.15s' }} />
                           </span>
                           Enhanced
                         </button>
@@ -1741,7 +1741,7 @@ export function SectionEditor({
             {/* ── BROLL INFO ── */}
             {isBroll && (
               <div style={{
-                backgroundColor: '#fff', border: '1px solid #f1f5f9', borderTop: '3px solid #06b6d4',
+                backgroundColor: 'hsl(var(--card))', border: '1px solid #f1f5f9', borderTop: '3px solid #06b6d4',
                 borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05), 0 1px 3px rgba(0,0,0,0.03)', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10,
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -2081,8 +2081,8 @@ export function SectionEditor({
 
             {/* ── SIMULATION right panel ── */}
             {type === 'simulation' && (
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', backgroundColor: '#f8fafc', color: '#111827' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0, padding: '10px 12px', borderBottom: '1px solid #e5e7eb', backgroundColor: '#ffffff' }}>
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', backgroundColor: 'hsl(var(--card))', color: 'hsl(var(--foreground))' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0, padding: '10px 12px', borderBottom: '1px solid #e5e7eb', backgroundColor: 'hsl(var(--card))' }}>
                   <div style={{ display: 'flex', gap: 4, padding: 3, borderRadius: 8, backgroundColor: '#f1f5f9', border: '1px solid #e2e8f0' }}>
                     {(['preview', 'files'] as const).map(t => (
                       <button
@@ -2120,7 +2120,7 @@ export function SectionEditor({
                           onClick={() => sendToPreview('stopScript')}
                           style={{
                             height: 30, padding: '0 10px', borderRadius: 7, border: '1px solid #e5e7eb',
-                            backgroundColor: '#ffffff', color: '#475569', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                            backgroundColor: 'hsl(var(--card))', color: '#475569', fontSize: 11, fontWeight: 700, cursor: 'pointer',
                             display: 'inline-flex', alignItems: 'center', gap: 6,
                           }}
                         >
@@ -2165,7 +2165,7 @@ export function SectionEditor({
                           disabled={!activeSimFile || fileDownloadBusy}
                           style={{
                             height: 30, padding: '0 10px', borderRadius: 7, border: '1px solid #e5e7eb',
-                            backgroundColor: '#ffffff', color: '#475569', fontSize: 11, fontWeight: 700,
+                            backgroundColor: 'hsl(var(--card))', color: '#475569', fontSize: 11, fontWeight: 700,
                             cursor: !activeSimFile || fileDownloadBusy ? 'not-allowed' : 'pointer', opacity: fileDownloadBusy ? 0.6 : 1,
                             display: 'inline-flex', alignItems: 'center', gap: 6,
                           }}
@@ -2193,12 +2193,12 @@ export function SectionEditor({
 
                 {rightTab === 'preview' ? (
                   simPreviewUrl ? (
-                    <div ref={simPreviewShellRef} style={{ flex: 1, minHeight: 0, backgroundColor: '#ffffff', overflow: 'hidden', position: 'relative' }}>
+                    <div ref={simPreviewShellRef} style={{ flex: 1, minHeight: 0, backgroundColor: 'hsl(var(--card))', overflow: 'hidden', position: 'relative' }}>
                       <iframe
                         key={simPreviewUrl}
                         ref={previewIframeRef}
                         src={simPreviewUrl}
-                        style={{ border: 'none', width: '100%', height: '100%', backgroundColor: '#fff' }}
+                        style={{ border: 'none', width: '100%', height: '100%', backgroundColor: 'hsl(var(--card))' }}
                         title={activeSim?.name ?? 'Simulation preview'}
                         sandbox="allow-scripts allow-same-origin allow-forms allow-pointer-lock"
                         onLoad={() => setPreviewRunning(false)}
@@ -2232,7 +2232,7 @@ export function SectionEditor({
                       </button>
                     </div>
                   ) : (
-                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, backgroundColor: '#f8fafc' }}>
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, backgroundColor: 'hsl(var(--card))' }}>
                       <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
                         <circle cx="24" cy="24" r="19" stroke="#cbd5e1" strokeWidth="2" />
                         <path d="M24 14v10l6 4.5" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" />
@@ -2241,7 +2241,7 @@ export function SectionEditor({
                     </div>
                   )
                 ) : (
-                  <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', backgroundColor: '#ffffff' }}>
+                  <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', backgroundColor: 'hsl(var(--card))' }}>
                     {simFilesLoading ? (
                       <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                         <div style={{ width: 20, height: 20, borderRadius: '50%', border: '2px solid #e2e8f0', borderTopColor: '#3b82f6', animation: 'spin 0.8s linear infinite' }} />
@@ -2258,7 +2258,7 @@ export function SectionEditor({
                       </div>
                     ) : (
                       <>
-                        <div className="fine-scrollbar" style={{ display: 'flex', overflowX: 'auto', flexShrink: 0, borderBottom: '1px solid #e5e7eb', backgroundColor: '#f8fafc' }}>
+                        <div className="fine-scrollbar" style={{ display: 'flex', overflowX: 'auto', flexShrink: 0, borderBottom: '1px solid #e5e7eb', backgroundColor: 'hsl(var(--card))' }}>
                           {simFiles.map(f => {
                             const isAiBridge = f.filename.startsWith('section_') && f.ext === 'js';
                             const isAiHtml   = f.filename.startsWith('section_') && f.ext === 'html';
@@ -2286,7 +2286,7 @@ export function SectionEditor({
                             );
                           })}
                         </div>
-                        <div className="fine-scrollbar" style={{ flex: 1, minHeight: 0, overflow: 'auto', position: 'relative', backgroundColor: '#ffffff' }}>
+                        <div className="fine-scrollbar" style={{ flex: 1, minHeight: 0, overflow: 'auto', position: 'relative', backgroundColor: 'hsl(var(--card))' }}>
                           {fileContentLoading ? (
                             <div style={{ padding: 20, display: 'flex', alignItems: 'center', gap: 8 }}>
                               <div style={{ width: 14, height: 14, borderRadius: '50%', border: '2px solid #e2e8f0', borderTopColor: '#3b82f6', animation: 'spin 0.8s linear infinite' }} />
@@ -2361,14 +2361,14 @@ export function SectionEditor({
           borderTop: '1px solid #f3f4f6',
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           flexWrap: 'wrap',
-          gap: 10, backgroundColor: '#fafafa',
+          gap: 10, backgroundColor: 'hsl(var(--card))',
         }}>
           <button
             onClick={() => setShowDeleteConfirm(true)}
             disabled={deleting}
             style={{
               height: 36, padding: '0 16px', borderRadius: 8,
-              border: '1.5px solid #fecaca', backgroundColor: '#fff',
+              border: '1.5px solid #fecaca', backgroundColor: 'hsl(var(--card))',
               color: '#ef4444', fontSize: 13, fontWeight: 500,
               cursor: deleting ? 'not-allowed' : 'pointer',
               opacity: deleting ? 0.5 : 1, transition: 'background-color 0.1s',
@@ -2384,7 +2384,7 @@ export function SectionEditor({
               onClick={onClose}
               style={{
                 height: 36, padding: '0 16px', borderRadius: 8,
-                border: '1.5px solid #e5e7eb', backgroundColor: '#fff',
+                border: '1.5px solid #e5e7eb', backgroundColor: 'hsl(var(--card))',
                 color: '#6b7280', fontSize: 13, fontWeight: 500, cursor: 'pointer',
               }}
               onMouseEnter={e => { (e.currentTarget as HTMLElement).style.backgroundColor = '#f9fafb'; }}

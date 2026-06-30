@@ -154,6 +154,7 @@ export function ProjectHeader({ projectId }: Props) {
       </div>
 
       <a
+        data-tour="preview"
         href={`/projects/${projectId}/view`}
         target="_blank"
         rel="noopener noreferrer"

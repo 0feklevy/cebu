@@ -58,7 +58,7 @@ export function ConfirmDialog({
           top: '50%', left: '50%',
           transform: 'translate(-50%,-50%)',
           width: 'min(360px, calc(100vw - 32px))',
-          backgroundColor: '#fff',
+          backgroundColor: 'hsl(var(--card))',
           borderRadius: 10,
           boxShadow: '0 16px 48px rgba(0,0,0,0.18), 0 4px 16px rgba(0,0,0,0.08)',
           padding: '24px 24px 20px',
@@ -86,7 +86,7 @@ export function ConfirmDialog({
         </div>
 
         <div>
-          <p style={{ fontSize: 15, fontWeight: 700, color: '#111827', margin: 0, marginBottom: 6 }}>{title}</p>
+          <p style={{ fontSize: 15, fontWeight: 700, color: 'hsl(var(--foreground))', margin: 0, marginBottom: 6 }}>{title}</p>
           <p style={{ fontSize: 13, color: '#6b7280', margin: 0, lineHeight: 1.5 }}>{description}</p>
         </div>
 
@@ -96,7 +96,7 @@ export function ConfirmDialog({
             disabled={busy}
             style={{
               flex: 1, height: 38, borderRadius: 9,
-              border: '1.5px solid #e5e7eb', backgroundColor: '#fff',
+              border: '1.5px solid #e5e7eb', backgroundColor: 'hsl(var(--card))',
               color: '#374151', fontSize: 13, fontWeight: 600,
               cursor: busy ? 'default' : 'pointer', transition: 'background 0.12s',
               opacity: busy ? 0.6 : 1,
