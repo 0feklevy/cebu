@@ -36,9 +36,21 @@ export async function registerStripeWebhookRoutes(app: FastifyInstance): Promise
             break;
           case 'payment_intent.payment_failed': {
             const pi = event.data.object as Stripe.PaymentIntent;
-            await BillingService.markFailed(pi.id, pi.last_payment_error?.message);
+            // Resolve by transactionId from PI metadata — the row's stripe_payment_intent_id is
+            // NULL until grant, so keying on it alone never matched (stuck-'pending' P0 billing).
+            await BillingService.markFailed({
+              transactionId: pi.metadata?.transactionId,
+              paymentIntentId: pi.id,
+              message: pi.last_payment_error?.message,
+            });
             break;
           }
+          case 'charge.refunded':
+            await BillingService.handleRefund(event.data.object as Stripe.Charge);
+            break;
+          case 'charge.dispute.created':
+            await BillingService.handleDispute(event.data.object as Stripe.Dispute);
+            break;
           default:
             break; // ignore other events
         }

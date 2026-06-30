@@ -73,6 +73,25 @@ export async function registerBillingRoutes(app: FastifyInstance): Promise<void>
     },
   );
 
+  // ── Reconcile a Checkout session on return (webhook backstop) ──────────────
+  // The /unlock page calls this so a buyer who paid gets access even if the Stripe webhook is
+  // delayed or missed. Idempotent (reuses grantFromSession) — safe to race the webhook.
+  app.post(
+    '/api/v1/billing/checkout/reconcile',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      if (!BillingService.isEnabled()) return reply.code(503).send({ message: 'Billing is not configured' });
+      const body = z.object({ session_id: z.string().min(1) }).safeParse(request.body);
+      if (!body.success) return reply.code(400).send({ message: body.error.message });
+      try {
+        const { granted } = await BillingService.reconcileCheckout(request.dbUser!.id, body.data.session_id);
+        return reply.send({ granted });
+      } catch (err) {
+        return reply.code(400).send({ message: (err as Error).message });
+      }
+    },
+  );
+
   // ── Hosted Customer Portal (manage cards / receipts) ───────────────────────
   app.post(
     '/api/v1/billing/portal',
@@ -164,7 +183,9 @@ export async function registerBillingRoutes(app: FastifyInstance): Promise<void>
       const body = z.object({
         access_type: z.enum(['free', 'paid']),
         price_cents: z.number().int().min(50).max(100000).nullable().optional(),
-        currency: z.string().length(3).optional(),
+        // Single-currency platform (product decision): reject non-USD so earnings aggregates can't
+        // silently sum mixed currencies. Revisit if multi-currency is ever needed.
+        currency: z.literal('usd').optional(),
       }).safeParse(request.body);
       if (!body.success) return reply.code(400).send({ message: body.error.message });
       if (body.data.access_type === 'paid' && (!body.data.price_cents || body.data.price_cents < 50)) {

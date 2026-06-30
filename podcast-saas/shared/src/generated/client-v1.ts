@@ -999,6 +999,11 @@ export class ClientV1Api {
     return this.request('/api/v1/billing/checkout', { method: 'POST', body: { content_type: contentType, content_id: contentId } });
   }
 
+  /** Reconcile a Checkout session on the /unlock return — webhook backstop; idempotent. */
+  reconcileCheckout(sessionId: string): Promise<{ granted: boolean }> {
+    return this.request('/api/v1/billing/checkout/reconcile', { method: 'POST', body: { session_id: sessionId } });
+  }
+
   openBillingPortal(returnUrl?: string): Promise<{ url: string }> {
     return this.request('/api/v1/billing/portal', { method: 'POST', body: { returnUrl } });
   }

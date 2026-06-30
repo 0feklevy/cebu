@@ -17,6 +17,7 @@ function UnlockInner() {
   const router = useRouter();
   const type = (params.get('type') as ContentType) ?? 'project';
   const id = params.get('id') ?? '';
+  const sessionId = params.get('session_id') ?? '';
   const canceled = params.get('canceled') === '1';
 
   const [state, setState] = useState<'checking' | 'unlocked' | 'failed'>(canceled ? 'failed' : 'checking');
@@ -24,10 +25,18 @@ function UnlockInner() {
   useEffect(() => {
     if (canceled || !id) return;
     let tries = 0;
+    let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
     const viewerUrl = (type === 'playlist' ? `/playlists/${id}/view` : `/projects/${id}/view`) as Route;
 
+    // Actively reconcile the session first — grants access immediately if the payment is settled,
+    // so the viewer isn't stranded when the Stripe webhook is delayed or missed. Idempotent.
+    const reconcileOnce = sessionId
+      ? api.reconcileCheckout(sessionId).catch(() => undefined)
+      : Promise.resolve(undefined);
+
     const poll = async () => {
+      if (cancelled) return;
       try {
         const access = await api.getContentAccess(type, id);
         if (access.hasAccess) {
@@ -39,9 +48,9 @@ function UnlockInner() {
       if (++tries > 15) { setState('failed'); return; }
       timer = setTimeout(poll, 1000);
     };
-    poll();
-    return () => clearTimeout(timer);
-  }, [type, id, canceled, router]);
+    reconcileOnce.then(poll);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [type, id, sessionId, canceled, router]);
 
   const viewerUrl = (type === 'playlist' ? `/playlists/${id}/view` : `/projects/${id}/view`) as Route;
 

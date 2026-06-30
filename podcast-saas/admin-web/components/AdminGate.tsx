@@ -35,10 +35,11 @@ function LoadingScreen() {
 
 export function AdminGate({ children }: { children: React.ReactNode }) {
   const { loading, user, isAdmin } = useAdminAuth();
-  // DEV-ONLY BYPASS — opt-in and never in production. Must fail CLOSED: when the var is unset
-  // (the default) the isAdmin check is enforced, so the admin UI isn't shipped to non-admins
-  // (security-103). It previously defaulted ON (inverted check).
-  const bypass = process.env.NEXT_PUBLIC_ADMIN_BYPASS === 'true' && process.env.NODE_ENV !== 'production';
+  // Bypass is DEV-ONLY and fails CLOSED in production: a production build NEVER bypasses the
+  // isAdmin check, even if the env var is set (security-103). In local dev it stays on for
+  // convenience unless explicitly disabled with NEXT_PUBLIC_ADMIN_BYPASS=false.
+  const bypass =
+    process.env.NODE_ENV !== 'production' && process.env.NEXT_PUBLIC_ADMIN_BYPASS !== 'false';
 
   if (loading) return <LoadingScreen />;
   if (!user) return <LoginPage />;

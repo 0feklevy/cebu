@@ -193,10 +193,66 @@ export const BillingService = {
     logger.info({ transactionId, content: `${tx.content_type}:${tx.content_id}` }, '[billing] purchase granted');
   },
 
-  async markFailed(paymentIntentId: string, message?: string): Promise<void> {
+  async markFailed(opts: { transactionId?: string | null; paymentIntentId?: string | null; message?: string }): Promise<void> {
+    // Prefer transactionId (carried in the PaymentIntent metadata). A pending Checkout row has a
+    // NULL stripe_payment_intent_id until the grant, so keying only on the PI id matched ZERO rows
+    // and the transaction lingered as 'pending' forever (P0 billing).
+    if (opts.transactionId) {
+      await db.update(billing_transactions)
+        .set({ status: 'failed', error: opts.message ?? null })
+        .where(eq(billing_transactions.id, opts.transactionId));
+      return;
+    }
+    if (opts.paymentIntentId) {
+      await db.update(billing_transactions)
+        .set({ status: 'failed', error: opts.message ?? null })
+        .where(eq(billing_transactions.stripe_payment_intent_id, opts.paymentIntentId));
+    }
+  },
+
+  /**
+   * Refund / dispute handling — STATUS ONLY (product decision): record the transaction status but
+   * intentionally KEEP the user_purchases grant (no access revocation; grace model). Keys on the
+   * PaymentIntent id, which grantFromSession reliably sets on the succeeded transaction.
+   */
+  async handleRefund(charge: Stripe.Charge): Promise<void> {
+    const pi = typeof charge.payment_intent === 'string' ? charge.payment_intent : charge.payment_intent?.id ?? null;
+    if (!pi) return;
+    const fullyRefunded = (charge.amount_refunded ?? 0) >= (charge.amount ?? 0);
     await db.update(billing_transactions)
-      .set({ status: 'failed', error: message ?? null })
-      .where(eq(billing_transactions.stripe_payment_intent_id, paymentIntentId));
+      .set({ status: fullyRefunded ? 'refunded' : 'partially_refunded' })
+      .where(eq(billing_transactions.stripe_payment_intent_id, pi));
+    logger.info({ pi, fullyRefunded }, '[billing] refund recorded (access retained)');
+  },
+
+  async handleDispute(dispute: Stripe.Dispute): Promise<void> {
+    const pi = typeof dispute.payment_intent === 'string' ? dispute.payment_intent : dispute.payment_intent?.id ?? null;
+    if (!pi) return;
+    await db.update(billing_transactions)
+      .set({ status: 'disputed' })
+      .where(eq(billing_transactions.stripe_payment_intent_id, pi));
+    logger.warn({ pi }, '[billing] dispute recorded');
+  },
+
+  /**
+   * Reconcile a Checkout session on the buyer's return to /unlock — the safety net when the webhook
+   * is delayed/missed, so a buyer who paid isn't stranded on a still-locked video. Idempotent: it
+   * reuses grantFromSession, so it races the webhook safely (unique index + status short-circuit).
+   * Returns whether the viewer now has access.
+   */
+  async reconcileCheckout(buyerUserId: string, sessionId: string): Promise<{ granted: boolean }> {
+    const stripe = this.getStripe();
+    if (!stripe) throw new Error('Billing not configured');
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    // Only grant on the buyer's own session — never let one user reconcile another's checkout.
+    if (session.metadata?.buyerUserId && session.metadata.buyerUserId !== buyerUserId) {
+      return { granted: false };
+    }
+    if (session.payment_status === 'paid') {
+      await this.grantFromSession(session);
+      return { granted: true };
+    }
+    return { granted: false };
   },
 
   get platformFeePercent(): number { return PLATFORM_FEE_PERCENT; },

@@ -9,7 +9,6 @@ import { playlists, playlist_items, projects } from '../../db/schema.js';
 import { eq, and, asc, inArray, sql } from 'drizzle-orm';
 import { firebaseAuthMiddleware, firebaseAuthOptionalMiddleware } from '../../middleware/firebase-auth.js';
 import { buildPlayerConfig } from '../../services/buildPlayerConfig.js';
-import { requireProjectAccess } from '../../services/projectAccess.js';
 import { BillingService } from '../../services/billing/BillingService.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { LocalStorageAdapter } from '../../services/storage/LocalStorageAdapter.js';
@@ -581,12 +580,15 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
 /**
  * Assemble playlist metadata + each ordered item's full PlayerConfig.
  *
- * `viewerUserId` is the id of whoever is viewing (the owner for the preview route, or the
- * share viewer — possibly null — for the public link). Each item is gated with the SAME model
- * as the single-project share/player-config path: public-or-owner visibility + per-project paid
- * billing. Items the viewer can't access are omitted, so a playlist link can never leak a
- * member project's private/draft config or hand out paid content for free (backend-001 /
- * security-102). The owner preview passes its own id, so the owner still sees every item.
+ * BUNDLE model (product decision): a playlist is the unit of sale/sharing. Access is gated once,
+ * at the PLAYLIST level (the playlist-share route checks the playlist's own paid/billing status;
+ * the owner-preview route requires ownership). Once past that gate, ALL member projects are
+ * delivered regardless of their own `access_type` — a playlist purchase covers everything inside
+ * it. Items are owner-owned (enforced at add time), so there is no cross-tenant exposure. We do
+ * NOT re-gate per project here (that would drop items a playlist buyer already paid for).
+ *
+ * `viewerUserId` is still forwarded to buildPlayerConfig so branching edge-access resolves with
+ * the viewer's identity.
  */
 async function buildPlaylistPlayConfig(
   playlist: typeof playlists.$inferSelect,
@@ -597,26 +599,15 @@ async function buildPlaylistPlayConfig(
     orderBy: [asc(playlist_items.position)],
   });
 
-  const projectRows = items.length > 0
-    ? await db.query.projects.findMany({ where: inArray(projects.id, items.map((i) => i.project_id)) })
-    : [];
+  const [configs, projectRows] = await Promise.all([
+    Promise.all(items.map((i) => buildPlayerConfig(i.project_id, viewerUserId))),
+    items.length > 0
+      ? db.query.projects.findMany({ where: inArray(projects.id, items.map((i) => i.project_id)) })
+      : Promise.resolve([]),
+  ]);
   const projectMap = new Map(projectRows.map((p) => [p.id, p]));
 
-  // Resolve access per item first, then build configs only for the accessible ones — never
-  // build (or send) a config the viewer isn't entitled to.
-  const accessibleItems: typeof items = [];
-  for (const i of items) {
-    const proj = projectMap.get(i.project_id);
-    if (!proj) continue;
-    if (!requireProjectAccess(proj, viewerUserId, null)) continue;
-    const pricing = await BillingService.getPricing('project', i.project_id);
-    if (pricing?.accessType === 'paid' && !(await BillingService.hasAccess(viewerUserId, 'project', i.project_id))) continue;
-    accessibleItems.push(i);
-  }
-
-  const configs = await Promise.all(accessibleItems.map((i) => buildPlayerConfig(i.project_id, viewerUserId)));
-
-  const playItems = accessibleItems
+  const playItems = items
     .map((i, idx) => {
       const config = configs[idx];
       if (!config) return null;
