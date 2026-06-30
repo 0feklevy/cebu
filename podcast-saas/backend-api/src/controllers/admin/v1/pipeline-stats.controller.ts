@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { db } from '../../../db/index.js';
-import { projects, video_files, simulations, token_usage, playlists } from '../../../db/schema.js';
+import { projects, video_files, simulations, token_usage, playlists, users, billing_transactions } from '../../../db/schema.js';
 import { sql, gte, and, eq } from 'drizzle-orm';
 import { firebaseAdminRequired } from '../../../middleware/firebase-admin-required.js';
 
@@ -19,6 +19,9 @@ export async function registerAdminPipelineStatsRoutes(app: FastifyInstance): Pr
         videoRows,
         simRows,
         aiRows,
+        userTotal,
+        userRecent,
+        revenueRows,
       ] = await Promise.all([
         db.select({ count: sql<number>`count(*)::int` }).from(projects),
         db.select({ count: sql<number>`count(*)::int` }).from(projects).where(gte(projects.created_at, since30d)),
@@ -38,6 +41,17 @@ export async function registerAdminPipelineStatsRoutes(app: FastifyInstance): Pr
         })
           .from(token_usage)
           .where(and(gte(token_usage.occurred_at, since30d), eq(token_usage.task, 'sim_bridge_extract'))),
+        db.select({ count: sql<number>`count(*)::int` }).from(users),
+        db.select({ count: sql<number>`count(*)::int` }).from(users).where(gte(users.created_at, since30d)),
+        // Revenue = succeeded charges only (refunds/disputes are tracked via status, not netted here).
+        db.select({
+          sales:        sql<number>`count(*)::int`,
+          gross_cents:  sql<number>`coalesce(sum(amount_cents),0)::int`,
+          payout_cents: sql<number>`coalesce(sum(creator_payout_cents),0)::int`,
+          fee_cents:    sql<number>`coalesce(sum(platform_fee_cents),0)::int`,
+        })
+          .from(billing_transactions)
+          .where(and(eq(billing_transactions.type, 'charge'), eq(billing_transactions.status, 'succeeded'))),
       ]);
 
       const videoByStatus: Record<string, number> = { pending: 0, processing: 0, ready: 0, failed: 0 };
@@ -74,6 +88,16 @@ export async function registerAdminPipelineStatsRoutes(app: FastifyInstance): Pr
           total_output_tokens: ai?.output_tokens ?? 0,
           total_cost_cents: ai?.cost_cents ?? 0,
           count: ai?.count ?? 0,
+        },
+        users: {
+          total: userTotal[0]?.count ?? 0,
+          recent_30d: userRecent[0]?.count ?? 0,
+        },
+        revenue: {
+          sales: revenueRows[0]?.sales ?? 0,
+          gross_cents: revenueRows[0]?.gross_cents ?? 0,
+          creator_payout_cents: revenueRows[0]?.payout_cents ?? 0,
+          platform_fee_cents: revenueRows[0]?.fee_cents ?? 0,
         },
       });
     },

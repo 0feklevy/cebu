@@ -61,6 +61,21 @@ export default function DashboardPage() {
 
       {stats && (
         <>
+          {/* Users + Revenue */}
+          <section className="mb-8">
+            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">Users &amp; Revenue</h2>
+            <div className="grid grid-cols-2 gap-4 mb-3 sm:grid-cols-4">
+              <MetricCard label="Total Users" value={(stats.users?.total ?? 0).toLocaleString()} />
+              <MetricCard label="New Users (30d)" value={(stats.users?.recent_30d ?? 0).toLocaleString()} good={(stats.users?.recent_30d ?? 0) > 0} />
+              <MetricCard label="Sales" value={(stats.revenue?.sales ?? 0).toLocaleString()} good={(stats.revenue?.sales ?? 0) > 0} />
+              <MetricCard label="Gross Revenue" value={`$${((stats.revenue?.gross_cents ?? 0) / 100).toFixed(2)}`} good={(stats.revenue?.gross_cents ?? 0) > 0} />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <MetricCard label="Creator Payouts" value={`$${((stats.revenue?.creator_payout_cents ?? 0) / 100).toFixed(2)}`} />
+              <MetricCard label="Platform Fees" value={`$${((stats.revenue?.platform_fee_cents ?? 0) / 100).toFixed(2)}`} />
+            </div>
+          </section>
+
           {/* Projects */}
           <section className="mb-8">
             <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">Projects</h2>

@@ -111,6 +111,16 @@ export interface PipelineStats {
     total_cost_cents: number;
     count: number;
   };
+  users: {
+    total: number;
+    recent_30d: number;
+  };
+  revenue: {
+    sales: number;            // count of succeeded charges
+    gross_cents: number;      // total charged
+    creator_payout_cents: number;
+    platform_fee_cents: number;
+  };
 }
 
 export class AdminV1Api {
