@@ -17,6 +17,7 @@ import { LocalStorageAdapter } from './services/storage/LocalStorageAdapter.js';
 import { getSimulationContentType } from './services/simulation/SimulationService.js';
 import { startWorker } from './queue/startWorker.js';
 import { stopBoss } from './queue/pgBoss.js';
+import { drainInlineJobs } from './queue/inlineDriver.js';
 
 // Controllers
 import { registerPlatformRoutes } from './controllers/v1/platform.controller.js';
@@ -81,6 +82,21 @@ async function recoverStuckTranscodes(): Promise<void> {
     .returning({ id: video_files.id });
   if (recovered.length > 0) {
     logger.warn({ count: recovered.length }, 'Recovered stuck HLS transcodes on startup');
+  }
+}
+
+// Crop was removed from the read path, so a crashed crop job never self-heals the way
+// captions do — it sits at 'processing' forever. On the single-process managed host there is
+// no live crop worker after a restart, so flip every leftover 'processing' crop to 'failed'
+// (it can be re-claimed by a re-crop / re-upload). (backend-002 / backend-013)
+async function recoverStuckCrops(): Promise<void> {
+  const recovered = await db
+    .update(video_files)
+    .set({ crop_status: 'failed', crop_updated_at: new Date() })
+    .where(eq(video_files.crop_status, 'processing'))
+    .returning({ id: video_files.id });
+  if (recovered.length > 0) {
+    logger.warn({ count: recovered.length }, 'Recovered stuck crop jobs on startup');
   }
 }
 
@@ -495,11 +511,12 @@ async function start() {
       logger.warn({ err }, 'R2 CORS setup failed — configure manually in Cloudflare dashboard');
     }
 
-    // Best-effort recovery of transcodes interrupted by a previous restart.
+    // Best-effort recovery of transcodes + crops interrupted by a previous restart.
     try {
       await recoverStuckTranscodes();
+      await recoverStuckCrops();
     } catch (err) {
-      logger.warn({ err }, 'Stuck-transcode recovery failed (non-fatal)');
+      logger.warn({ err }, 'Stuck-job recovery failed (non-fatal)');
     }
 
     const app = await build();
@@ -525,6 +542,7 @@ async function start() {
       logger.info({ signal }, 'Shutdown signal received — draining');
       try {
         await app.close();
+        await drainInlineJobs(); // wait for in-flight inline transcode/crop/caption jobs (backend-004)
         await stopBoss(); // drains in-flight pg-boss jobs; no-op when never started
         logger.info('Server closed cleanly — exiting');
         process.exit(0);

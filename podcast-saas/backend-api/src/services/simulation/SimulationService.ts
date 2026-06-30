@@ -1198,13 +1198,18 @@ export class SimulationService {
     const injectedHtml = this.injectBridge(rawHtml, bridgeFunctions);
     files.set(entryRelPath, Buffer.from(injectedHtml, 'utf-8'));
 
-    const uploads: Promise<void>[] = [];
-    for (const [relPath, buf] of files) {
-      const storagePath = `${prefix}/${relPath}`;
-      const ct = getSimulationContentType(relPath);
-      uploads.push(this.storage.uploadFile(storagePath, buf, ct).then(() => undefined));
+    // Bound the upload fan-out: a sim bundle can be up to ~1000 files, and firing every PUT at
+    // once opened that many concurrent storage connections at peak. Upload in fixed-size waves
+    // so concurrency (and live connections) stay capped (backend-010).
+    const entries = [...files.entries()];
+    const UPLOAD_CONCURRENCY = 12;
+    for (let i = 0; i < entries.length; i += UPLOAD_CONCURRENCY) {
+      await Promise.all(
+        entries.slice(i, i + UPLOAD_CONCURRENCY).map(([relPath, buf]) =>
+          this.storage.uploadFile(`${prefix}/${relPath}`, buf, getSimulationContentType(relPath)).then(() => undefined),
+        ),
+      );
     }
-    await Promise.all(uploads);
 
     const entryStoragePath = `${prefix}/${entryRelPath}`;
     const entryUrl = this.storage.getSimPublicUrl(entryStoragePath);

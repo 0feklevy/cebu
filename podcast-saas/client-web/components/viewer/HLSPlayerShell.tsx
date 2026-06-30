@@ -41,6 +41,21 @@ function parseVttTime(raw: string): number {
   return hours * 3600 + minutes * 60 + seconds;
 }
 
+// Binary search for the cue covering `t`. VTT cues are time-ordered and non-overlapping, so
+// this replaces a linear scan that ran over every cue on each timeupdate (~4Hz) — cheap per
+// call but wasteful on long videos with thousands of cues (perf-007).
+function findCueAt(cues: CaptionCue[], t: number): CaptionCue | undefined {
+  let lo = 0, hi = cues.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const cue = cues[mid];
+    if (t < cue.start) hi = mid - 1;
+    else if (t > cue.end) lo = mid + 1;
+    else return cue;
+  }
+  return undefined;
+}
+
 function parseVtt(vtt: string): CaptionCue[] {
   return vtt
     .replace(/\r/g, '')
@@ -197,7 +212,7 @@ export function HLSPlayerShell({
   const captionsAvailable = captionStatus === 'ready' && !!activeCaptionState?.vtt_url;
   const activeLocalTime = Math.max(0, state.globalTime - (state.timeline[state.currentSegIdx]?.offset ?? 0));
   const activeCaptionText = captionsEnabled && activeSegment
-    ? (captionCues[activeSegment.id] ?? []).find((cue) => activeLocalTime >= cue.start && activeLocalTime <= cue.end)?.text ?? ''
+    ? findCueAt(captionCues[activeSegment.id] ?? [], activeLocalTime)?.text ?? ''
     : '';
 
   useEffect(() => {

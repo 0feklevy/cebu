@@ -54,15 +54,22 @@ export async function buildPlayerConfig(projectId: string, requesterUserId: stri
   });
   if (!project) return null;
 
-  const allVideos = await db.query.video_files.findMany({
-    where: eq(video_files.project_id, project.id),
-    orderBy: [asc(video_files.created_at)],
-  });
-
-  const sections = await db.query.timeline_sections.findMany({
-    where: eq(timeline_sections.project_id, project.id),
-    orderBy: [asc(timeline_sections.start_sec)],
-  });
+  // These four only depend on project.id and are independent of each other — run them in
+  // one round-trip instead of four sequential ones. buildPlayerConfig is the hottest read
+  // path (every player-config / share / playlist-item / course render), so the serial waits
+  // added up (perf-003).
+  const [allVideos, sections, imageRows, audioRows] = await Promise.all([
+    db.query.video_files.findMany({
+      where: eq(video_files.project_id, project.id),
+      orderBy: [asc(video_files.created_at)],
+    }),
+    db.query.timeline_sections.findMany({
+      where: eq(timeline_sections.project_id, project.id),
+      orderBy: [asc(timeline_sections.start_sec)],
+    }),
+    db.query.image_files.findMany({ where: eq(image_files.project_id, project.id) }),
+    db.query.audio_files.findMany({ where: eq(audio_files.project_id, project.id) }),
+  ]);
 
   // Main video segments (uploaded by user, not AI-generated broll sources)
   const mainVideos = allVideos.filter((v) => !v.is_broll);
@@ -181,10 +188,7 @@ export async function buildPlayerConfig(projectId: string, requesterUserId: stri
     .filter(Boolean);
 
   // Build image_overlays from clip sections that reference an image file
-  const imageFileMap = new Map(
-    (await db.query.image_files.findMany({ where: eq(image_files.project_id, project.id) }))
-      .map((img) => [img.id, img]),
-  );
+  const imageFileMap = new Map(imageRows.map((img) => [img.id, img]));
 
   const imageOverlays = sections
     .filter((s) => s.type === 'clip' && s.clip_source_image_id)
@@ -208,10 +212,7 @@ export async function buildPlayerConfig(projectId: string, requesterUserId: stri
     .filter(Boolean);
 
   // Build audio_cutaways from broll/audio sections backed by an audio file (audio-only cutaways)
-  const audioFileMap = new Map(
-    (await db.query.audio_files.findMany({ where: eq(audio_files.project_id, project.id) }))
-      .map((a) => [a.id, a]),
-  );
+  const audioFileMap = new Map(audioRows.map((a) => [a.id, a]));
 
   const audioCutaways = sections
     .filter((s) => (s.track === 'audio' || !!s.clip_source_audio_id) && s.clip_source_audio_id)

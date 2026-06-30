@@ -12,6 +12,16 @@ import { UsageTrackingService } from '../../services/usage/UsageTrackingService.
 
 const _llmService = new LLMService(new ApiKeyService(), new UsageTrackingService());
 
+// Per-section generation lock: two near-simultaneous generate requests for the SAME section
+// (double-click, retry, two editor tabs) both read the same conversationHistory and race the
+// final write, so the later one clobbers the earlier and the merged bridge can reference a URL
+// that was never persisted. We let only one generation per section proceed at a time (backend-005).
+const activeSimGenerations = new Set<string>();
+
+// Hard ceiling on a single sim-script generation so a hung LLM provider can't pin an open SSE
+// socket + keep-alive forever with the user stuck on "Generating…" (backend-007).
+const SIM_GEN_TIMEOUT_MS = 120_000;
+
 /** Resolve a simulation's entry_file (may be a storage key or a legacy full URL) to a public URL. */
 function resolveSimEntryUrl(entryFile: string | null): string | null {
   if (!entryFile) return null;
@@ -300,6 +310,14 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
 
       sendEvent('connected', {});
 
+      // Reject a concurrent generation on the same section rather than racing the DB write.
+      if (activeSimGenerations.has(section.id)) {
+        sendEvent('error', { error: 'A generation is already running for this section. Please wait for it to finish.', errorType: 'generation_error' });
+        try { reply.raw.end(); } catch { /* already closed */ }
+        return;
+      }
+      activeSimGenerations.add(section.id);
+
       const keepAlive = setInterval(() => {
         try { reply.raw.write(': keep-alive\n\n'); } catch { /* socket closed */ }
       }, 15_000);
@@ -309,6 +327,9 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
         controller.abort();
         clearInterval(keepAlive);
       });
+      // Deadline: abort the LLM call if it stalls, and surface a timeout the client can act on.
+      let timedOut = false;
+      const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, SIM_GEN_TIMEOUT_MS);
 
       try {
         const svc = new SimulationService(getStorageAdapter(), _llmService);
@@ -397,7 +418,10 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
           sendEvent('done', { section: updated });
         }
       } catch (err) {
-        if (!controller.signal.aborted) {
+        if (timedOut) {
+          // Our own deadline fired — the client is still connected, so tell it to stop.
+          sendEvent('error', { error: 'Generation timed out. Please try again.', errorType: 'generation_error' });
+        } else if (!controller.signal.aborted) {
           const errorType = classifySimulationError(err);
           sendEvent('error', {
             error:     ERROR_MESSAGES[errorType] ?? ERROR_MESSAGES.generation_error,
@@ -405,7 +429,9 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
           });
         }
       } finally {
+        clearTimeout(timeout);
         clearInterval(keepAlive);
+        activeSimGenerations.delete(section.id);
         try { reply.raw.end(); } catch { /* already closed */ }
       }
     },
@@ -441,6 +467,14 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       const body = GenerateSimScriptSchema.safeParse(request.body);
       if (!body.success) return reply.code(400).send({ message: body.error.message });
       const { prompt, simple_ui, auto_script } = body.data;
+
+      // Same per-section serialization as the SSE path (backend-005). Release when the response
+      // is sent (covers both success and a thrown error response).
+      if (activeSimGenerations.has(section.id)) {
+        return reply.code(409).send({ message: 'A generation is already running for this section. Please wait for it to finish.' });
+      }
+      activeSimGenerations.add(section.id);
+      reply.raw.on('finish', () => activeSimGenerations.delete(section.id));
 
       const svc = new SimulationService(getStorageAdapter(), _llmService);
 

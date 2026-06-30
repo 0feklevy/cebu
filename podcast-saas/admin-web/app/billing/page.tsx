@@ -23,7 +23,8 @@ export default function BillingPage() {
 
   useEffect(() => {
     adminApi.getBillingOverview().then(setOverview).catch((e) => setError(e.message));
-    adminApi.getBillingTransactions().then(setTxs).catch(() => { /* ignore */ });
+    // Surface transaction-load failures instead of silently rendering "no transactions" (frontend-013).
+    adminApi.getBillingTransactions().then(setTxs).catch((e) => setError(e.message));
   }, []);
 
   return (

@@ -35,8 +35,10 @@ function LoadingScreen() {
 
 export function AdminGate({ children }: { children: React.ReactNode }) {
   const { loading, user, isAdmin } = useAdminAuth();
-  // DEV BYPASS — skips the isAdmin check but still requires login for API tokens
-  const bypass = process.env.NEXT_PUBLIC_ADMIN_BYPASS !== 'false';
+  // DEV-ONLY BYPASS — opt-in and never in production. Must fail CLOSED: when the var is unset
+  // (the default) the isAdmin check is enforced, so the admin UI isn't shipped to non-admins
+  // (security-103). It previously defaulted ON (inverted check).
+  const bypass = process.env.NEXT_PUBLIC_ADMIN_BYPASS === 'true' && process.env.NODE_ENV !== 'production';
 
   if (loading) return <LoadingScreen />;
   if (!user) return <LoginPage />;

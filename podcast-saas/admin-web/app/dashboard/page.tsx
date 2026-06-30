@@ -10,6 +10,7 @@ export default function DashboardPage() {
   const [stats, setStats] = useState<PipelineStats | null>(null);
   const [usage, setUsage] = useState<UsageRollup | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     Promise.all([adminApi.getSettings(), adminApi.getPipelineStats(), adminApi.getUsageRollup()])
@@ -18,7 +19,8 @@ export default function DashboardPage() {
         setStats(p);
         setUsage(u);
       })
-      .catch((e) => setError(e.message));
+      .catch((e) => setError(e.message))
+      .finally(() => setLoading(false));
   }, []);
 
   return (
@@ -41,6 +43,21 @@ export default function DashboardPage() {
           value={settings ? String(settings.anonymous_user_limit) : '—'}
         />
       </div>
+
+      {loading && !stats && !error && (
+        <div className="space-y-8" aria-busy="true" aria-label="Loading statistics">
+          {[0, 1, 2].map((s) => (
+            <section key={s} className="mb-8">
+              <div className="mb-3 h-3 w-32 rounded bg-muted animate-pulse" />
+              <div className="grid grid-cols-2 gap-4">
+                {[0, 1, 2, 3].map((c) => (
+                  <div key={c} className="h-20 rounded-lg bg-muted animate-pulse" />
+                ))}
+              </div>
+            </section>
+          ))}
+        </div>
+      )}
 
       {stats && (
         <>

@@ -74,6 +74,13 @@ export function useCropOverlay(
   const dims       = useRef({ w: 1, h: 1 });
   const smoothX    = useRef(0.5);
   const rafRef     = useRef<number | null>(null);
+  // Latest tick implementation + a stable "(re)start the loop if idle" kick. The loop suspends
+  // itself in landscape (nothing to animate); the kick resumes it when we re-enter portrait
+  // (perf-008) — avoids ~60 no-op RAF callbacks/sec on every desktop (landscape) viewer.
+  const tickRef = useRef<() => void>(() => {});
+  const kick = useRef(() => {
+    if (rafRef.current === null) rafRef.current = requestAnimationFrame(() => tickRef.current());
+  });
 
   const seg    = segments[currentSegIdx];
   const segId  = seg?.id ?? '';
@@ -86,7 +93,9 @@ export function useCropOverlay(
       const w = root?.offsetWidth  ?? window.innerWidth;
       const h = root?.offsetHeight ?? window.innerHeight;
       dims.current = { w, h };
-      isPortrait.current = h > w;
+      const portrait = h > w;
+      isPortrait.current = portrait;
+      if (portrait) kick.current(); // resume the suspended loop when entering portrait
     };
     update();
     window.addEventListener('resize',            update);
@@ -113,21 +122,26 @@ export function useCropOverlay(
     smoothX.current = 0.5; // reset on segment change
 
     const tick = () => {
-      rafRef.current = requestAnimationFrame(tick);
       const vA = refs.videoA.current;
       const vB = refs.videoB.current;
-      if (!vA || !vB) return;
+      if (!vA || !vB) { rafRef.current = requestAnimationFrame(() => tickRef.current()); return; }
 
-      // ── LANDSCAPE: clear any portrait overrides and bail ──────────────────
+      // ── LANDSCAPE: clear any portrait overrides and SUSPEND ───────────────
+      // Stop rescheduling — there is nothing to animate in landscape. The orientation
+      // handler's kick() restarts the loop if we rotate back to portrait (perf-008).
       if (!isPortrait.current) {
         for (const v of [vA, vB]) {
           if (v.style.objectFit)       v.style.objectFit       = '';
           if (v.style.objectPosition)  v.style.objectPosition  = '';
         }
+        rafRef.current = null;
         return;
       }
 
-      // ── PORTRAIT: object-fit:cover + object-position ──────────────────────
+      // ── PORTRAIT: keep the loop running ───────────────────────────────────
+      rafRef.current = requestAnimationFrame(() => tickRef.current());
+
+      // ── object-fit:cover + object-position ────────────────────────────────
       const zA = parseInt(vA.style.zIndex) || 1;
       const zB = parseInt(vB.style.zIndex) || 1;
       const active = zA >= zB ? vA : vB;
@@ -152,7 +166,8 @@ export function useCropOverlay(
       }
     };
 
-    rafRef.current = requestAnimationFrame(tick);
-    return () => { if (rafRef.current !== null) cancelAnimationFrame(rafRef.current); };
+    tickRef.current = tick;
+    kick.current();  // start the loop (it suspends itself immediately if currently landscape)
+    return () => { if (rafRef.current !== null) { cancelAnimationFrame(rafRef.current); rafRef.current = null; } };
   }, [segId, refs.videoA, refs.videoB]);
 }
