@@ -18,7 +18,7 @@
  * See crop-processor/PIPELINE.md for the full rationale.
  */
 
-import { probeVideo, extractRgbFrames, extractMonoPcm } from './ffmpegExtract.js';
+import { probeVideo, streamRgbFrames, extractMonoPcm } from './ffmpegExtract.js';
 import { runFfmpegLimited } from '../ffmpegLimit.js';
 import { SceneAnalyzer, PROFILE_COLS, type FaceHook } from './sceneAnalyzer.js';
 import { locateHeads } from './headLocator.js';
@@ -83,39 +83,41 @@ export async function processVideoCrop(
 
   const { width: W, height: H, durationSec } = await runFfmpegLimited(() => probeVideo(videoPath));
 
-  const [rgb, audio] = await Promise.all([
-    runFfmpegLimited(() => extractRgbFrames(videoPath, ANALYSIS_W, ANALYSIS_H, sampleFps)),
-    runFfmpegLimited(() => extractMonoPcm(videoPath, SAMPLE_RATE)).catch(() => new Float32Array(0)),
-  ]);
+  // Audio is decoded up front because Pass 1 needs random access into the PCM per frame (pitch).
+  // The video frames, by contrast, are consumed strictly in order, so they're STREAMED below
+  // rather than buffered — the old code concatenated every decoded frame (~2.5 GB for a long
+  // take) before this loop even started (perf-001).
+  const audio = await runFfmpegLimited(() => extractMonoPcm(videoPath, SAMPLE_RATE)).catch(() => new Float32Array(0));
   const hasAudio = audio.length > 0;
-  const nFrames = rgb.frames.length;
 
-  const analyzer = new SceneAnalyzer(rgb.width, rgb.height, { faceHook: options.faceHook });
+  const analyzer = new SceneAnalyzer(ANALYSIS_W, ANALYSIS_H, { faceHook: options.faceHook });
 
   // ── Pass 1 ──────────────────────────────────────────────────────────────────
-  // Per-frame profiles are kept so head localization can be done per shot below.
-  const motionPerFrame: Float64Array[] = new Array(nFrames);
-  const skinPerFrame: Float64Array[] = new Array(nFrames);
-  const salPerFrame: Float64Array[] = new Array(nFrames);
-  const interestXs = new Float64Array(nFrames);
-  const pitches: ChunkPitch[] = new Array(nFrames);
-  const times = new Float64Array(nFrames);
+  // Per-frame profiles are kept so head localization can be done per shot below. Frame count is
+  // unknown until the stream ends, so these grow via push (identical contents/order to the old
+  // preallocated arrays). The raw RGB frame itself is never retained past its onFrame call.
+  const motionPerFrame: Float64Array[] = [];
+  const skinPerFrame: Float64Array[] = [];
+  const salPerFrame: Float64Array[] = [];
+  const interestXs: number[] = [];
+  const pitches: ChunkPitch[] = [];
+  const times: number[] = [];
 
   const shotTimes: number[] = [0];
   let prevGray: Uint8Array | null = null;
   let prevHist: Float64Array | null = null;
+  const totalEstimate = Math.max(1, Math.round(durationSec * sampleFps)); // progress denominator only
 
-  for (let i = 0; i < nFrames; i++) {
+  await runFfmpegLimited(() => streamRgbFrames(videoPath, ANALYSIS_W, ANALYSIS_H, sampleFps, (frame, i) => {
     const t = Number((i / sampleFps).toFixed(3));
-    times[i] = t;
-    const frame = rgb.frames[i];
+    times.push(t);
     const gray = analyzer.toGray(frame);
     const p = analyzer.analyze(frame, gray, prevGray);
 
-    motionPerFrame[i] = p.motion;
-    skinPerFrame[i] = p.skin;
-    salPerFrame[i] = p.saliency;
-    interestXs[i] = p.interestX;
+    motionPerFrame.push(p.motion);
+    skinPerFrame.push(p.skin);
+    salPerFrame.push(p.saliency);
+    interestXs.push(p.interestX);
 
     // inline shot detection
     const hist = grayHist(gray);
@@ -129,14 +131,16 @@ export async function processVideoCrop(
     if (hasAudio) {
       const a0 = Math.floor(t * SAMPLE_RATE);
       const a1 = Math.floor((t + sampleInterval) * SAMPLE_RATE);
-      pitches[i] = analyzeChunk(audio.subarray(a0, Math.min(a1, audio.length)), SAMPLE_RATE);
+      pitches.push(analyzeChunk(audio.subarray(a0, Math.min(a1, audio.length)), SAMPLE_RATE));
     } else {
-      pitches[i] = { rms: 0, f0: 0, conf: 0 };
+      pitches.push({ rms: 0, f0: 0, conf: 0 });
     }
 
     prevGray = gray;
-    options.onProgress?.(i + 1, nFrames);
-  }
+    options.onProgress?.(i + 1, totalEstimate);
+  }));
+
+  const nFrames = times.length;
 
   // ── Between passes ────────────────────────────────────────────────────────────
   const threshold = hasAudio ? calibratePitchThreshold(pitches) : 160;

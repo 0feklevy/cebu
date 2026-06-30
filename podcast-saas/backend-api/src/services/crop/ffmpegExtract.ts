@@ -145,6 +145,67 @@ export function extractRgbFrames(
   });
 }
 
+/**
+ * Streaming variant of extractRgbFrames: invokes `onFrame` for each decoded rgb24 frame as it
+ * arrives from ffmpeg, holding at most one frame (plus a sub-frame remainder) in memory instead
+ * of buffering the entire decoded stream. For a 60-min take at 320×180 / 4 fps the buffered
+ * approach concatenated ~2.5 GB of raw RGB; this keeps peak usage at one frame (perf-001).
+ *
+ * `onFrame` runs synchronously inside the stdout 'data' handler, which naturally backpressures
+ * ffmpeg (the OS pipe fills and ffmpeg blocks) so frames can't pile up. The Uint8Array passed to
+ * `onFrame` is a view valid only for that call — consumers must copy anything they retain (the
+ * crop analyzer's toGray() already allocates a fresh buffer). Frame count and ordering are
+ * identical to extractRgbFrames (same ffmpeg invocation; trailing partial frame discarded).
+ */
+export function streamRgbFrames(
+  inputPath: string,
+  analysisWidth: number,
+  analysisHeight: number,
+  sampleFps: number,
+  onFrame: (frame: Uint8Array, index: number) => void,
+): Promise<{ width: number; height: number; count: number }> {
+  return new Promise((resolve, reject) => {
+    const frameBytes = analysisWidth * analysisHeight * 3;
+    const proc = spawn('ffmpeg', [
+      '-y', '-i', inputPath,
+      '-an',
+      '-vf', `fps=${sampleFps},scale=${analysisWidth}:${analysisHeight}`,
+      '-pix_fmt', 'rgb24',
+      '-f', 'rawvideo',
+      'pipe:1',
+      '-loglevel', 'error',
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    let leftover: Buffer | null = null;
+    let count = 0;
+    let settled = false;
+    const err: Buffer[] = [];
+    const fail = (e: Error) => { if (settled) return; settled = true; try { proc.kill('SIGKILL'); } catch { /* already gone */ } reject(e); };
+
+    proc.stdout.on('data', (d: Buffer) => {
+      if (settled) return;
+      const buf = leftover ? Buffer.concat([leftover, d]) : d;
+      let off = 0;
+      while (buf.length - off >= frameBytes) {
+        const frame = new Uint8Array(buf.buffer, buf.byteOffset + off, frameBytes);
+        try { onFrame(frame, count++); }
+        catch (e) { fail(e as Error); return; }
+        off += frameBytes;
+      }
+      // Copy the sub-frame remainder out of the pooled chunk so the next concat is safe.
+      leftover = off < buf.length ? Buffer.from(buf.subarray(off)) : null;
+    });
+    proc.stderr.on('data', (d: Buffer) => err.push(d));
+    proc.on('error', fail);
+    proc.on('close', (code) => {
+      if (settled) return;
+      settled = true;
+      if (code !== 0) return reject(new Error(`ffmpeg rgb stream failed: ${Buffer.concat(err).toString().slice(-400)}`));
+      resolve({ width: analysisWidth, height: analysisHeight, count });
+    });
+  });
+}
+
 /** Decode the whole audio track as mono float32 at `sr` Hz. */
 export function extractMonoPcm(inputPath: string, sr = 16000): Promise<Float32Array> {
   return new Promise((resolve) => {
