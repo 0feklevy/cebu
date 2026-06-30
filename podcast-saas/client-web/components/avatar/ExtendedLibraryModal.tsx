@@ -133,6 +133,9 @@ export function ExtendedLibraryModal({ open, onClose, projectId, characterId = '
     <div className="avatar-gallery" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div
         className="avatar-gallery__panel"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Library"
         onDragEnter={onLibraryDragEnter}
         onDragOver={onLibraryDragOver}
         onDragLeave={onLibraryDragLeave}

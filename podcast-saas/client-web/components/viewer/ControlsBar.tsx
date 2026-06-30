@@ -86,6 +86,9 @@ export function ControlsBar({
         className="viewer-progress-wrap"
         role="slider"
         aria-label="Video progress"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        tabIndex={0}
       >
         <div ref={progressTrackRef} className="viewer-progress-track">
           <div ref={progressBufRef}  className="viewer-progress-buf" />

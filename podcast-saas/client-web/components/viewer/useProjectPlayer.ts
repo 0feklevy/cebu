@@ -307,6 +307,12 @@ export function useProjectPlayer(
     if (refs.progressFill.current)  refs.progressFill.current.style.width = `${pct}%`;
     if (refs.progressThumb.current) refs.progressThumb.current.style.left = `${pct}%`;
     if (refs.curTime.current)       refs.curTime.current.textContent = fmt(gt);
+    // Keep the slider's ARIA value in sync (the fill is driven imperatively, so React props
+    // can't carry it) — otherwise screen readers announce a value-less slider (ui-ux-004).
+    if (refs.progressWrap.current) {
+      refs.progressWrap.current.setAttribute('aria-valuenow', String(Math.round(pct)));
+      refs.progressWrap.current.setAttribute('aria-valuetext', `${fmt(gt)} of ${fmt(tot)}`);
+    }
   };
 
   const setTotTime = (tot: number) => {

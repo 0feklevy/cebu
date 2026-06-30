@@ -47,6 +47,29 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
   const [isCompact, setIsCompact] = useState(false);
   const [canPortal, setCanPortal] = useState(false);
   const thumbInputRef = useRef<HTMLInputElement>(null);
+  const settingsPanelRef = useRef<HTMLDivElement>(null);
+
+  // Focus management + trap for the settings modal: focus into it on open, keep Tab inside,
+  // close on Escape, restore focus on close (a11y — ui-ux-003, mirrors AvatarPopup).
+  useEffect(() => {
+    if (!open) return;
+    const prevActive = document.activeElement as HTMLElement | null;
+    settingsPanelRef.current?.focus();
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { setOpen(false); return; }
+      if (e.key === 'Tab' && settingsPanelRef.current) {
+        const f = settingsPanelRef.current.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        );
+        if (f.length === 0) return;
+        const first = f[0]!, last = f[f.length - 1]!;
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => { document.removeEventListener('keydown', handler); prevActive?.focus?.(); };
+  }, [open]);
 
   useEffect(() => setCanPortal(true), []);
 
@@ -348,6 +371,11 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
 
       {/* Modal */}
       <div
+        ref={settingsPanelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Project settings"
+        tabIndex={-1}
         style={{
           position: 'fixed',
           top: isCompact ? 0 : '50%',

@@ -235,7 +235,12 @@ export function AvatarSettingsModal({ open, onClose, projectId, videoTitle, embe
   );
 
   const inner = (
-    <div className={`avset__page${embedded ? ' avset__page--embedded' : ''}`}>
+    <div
+      className={`avset__page${embedded ? ' avset__page--embedded' : ''}`}
+      role="dialog"
+      aria-modal={!embedded}
+      aria-label="Avatar settings"
+    >
         {/* Header — wizard page: back to Video settings */}
         <div className="avset__header">
           <button className="avset__back" onClick={onClose} title="Back to Video settings"><ChevronLeft size={18} /> Video settings</button>
@@ -418,7 +423,15 @@ export function AvatarSettingsModal({ open, onClose, projectId, videoTitle, embe
                         {!cfg.voiceId && <Check size={15} className="avset__voice-check" />}
                       </button>
                       {filteredVoices.map((v) => (
-                        <div key={v.id} className={`avset__voice${cfg.voiceId === v.id ? ' is-sel' : ''}`} onClick={() => selectVoice(v)}>
+                        <div
+                          key={v.id}
+                          role="button"
+                          tabIndex={0}
+                          aria-pressed={cfg.voiceId === v.id}
+                          className={`avset__voice${cfg.voiceId === v.id ? ' is-sel' : ''}`}
+                          onClick={() => selectVoice(v)}
+                          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectVoice(v); } }}
+                        >
                           <button className="avset__voice-play" onClick={(e) => { e.stopPropagation(); playVoice(v); }} title="Preview voice" disabled={!(v.previewSampleUrl || v.sampleUrl)}>
                             {playingVoice === v.id ? <Pause size={13} /> : <Play size={13} />}
                           </button>

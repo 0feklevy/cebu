@@ -312,6 +312,17 @@
   z-index: 54;
 }
 
+/* Keyboard focus indicator — the dark-on-dark default outline is invisible over the player
+   gradient, so Tab users couldn't see which control was focused (ui-ux-013). */
+.viewer-ctrl-btn:focus-visible,
+.viewer-cc-btn:focus-visible,
+.viewer-top-btn:focus-visible,
+.viewer-progress-wrap:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.85);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
 /* ── Top overlay controls: resume, playlist, fullscreen ───────────────── */
 .viewer-top-controls {
   position: absolute;
