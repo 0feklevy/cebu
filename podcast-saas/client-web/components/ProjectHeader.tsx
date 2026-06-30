@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import Link from 'next/link';
-import { ArrowLeft, Check, Copy, ExternalLink, Eye, Link2, Loader2, Share2, Unlink2, X } from 'lucide-react';
+import { ArrowLeft, Check, Copy, ExternalLink, Eye, HelpCircle, Link2, Loader2, Share2, Unlink2, X } from 'lucide-react';
 import { api, createShareToken, revokeShareToken } from '../lib/api';
 import { ProjectSettingsPanel } from './ProjectSettingsPanel';
 import { useAuth } from '../lib/firebase';
@@ -164,6 +164,17 @@ export function ProjectHeader({ projectId }: Props) {
         <Eye size={13} strokeWidth={1.8} aria-hidden />
         <span className="hidden min-[390px]:inline">Preview</span>
       </a>
+
+      <button
+        type="button"
+        onClick={() => window.dispatchEvent(new Event('editor:start-tour'))}
+        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border shell-muted transition-colors shell-hover hover:text-[hsl(var(--shell-foreground))] focus-ring"
+        style={{ borderColor: 'hsl(var(--shell-border))' }}
+        title="Editor walkthrough"
+        aria-label="Editor walkthrough"
+      >
+        <HelpCircle size={14} strokeWidth={1.8} aria-hidden />
+      </button>
 
       <ProjectSettingsPanel
         projectId={projectId}

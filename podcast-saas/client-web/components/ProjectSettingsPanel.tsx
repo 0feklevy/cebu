@@ -22,6 +22,8 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
   const [desc, setDesc] = useState('');
   const [savingMeta, setSavingMeta] = useState(false);
   const [savedMeta, setSavedMeta] = useState(false);
+  const [genMeta, setGenMeta] = useState(false);
+  const [genMetaError, setGenMetaError] = useState<string | null>(null);
 
   // Crop state
   const [videos, setVideos] = useState<VideoFile[]>([]);
@@ -98,7 +100,8 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
   useEffect(() => {
     const mainVideos = videos.filter(v => !v.is_broll);
     const anyProcessing = mainVideos.some(
-      v => v.crop_status === 'processing' || (v.crop_status === 'none' && cropping),
+      v => v.crop_status === 'processing' || (v.crop_status === 'none' && cropping)
+        || v.hls_status === 'pending' || v.hls_status === 'processing',
     );
     if (!anyProcessing) return;
     const timer = setInterval(() => {
@@ -161,6 +164,28 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
       setSavedMeta(true);
       setTimeout(() => setSavedMeta(false), 1500);
     } catch { /* ignore */ } finally { setSavingMeta(false); }
+  };
+
+  // AI-generate the title + description (SEO) from the video's transcript/captions. The backend
+  // job (regenerateVideoMetadata) is async, so poll the project until metadata is ready.
+  const generateDetails = async () => {
+    setGenMeta(true);
+    setGenMetaError(null);
+    try {
+      await api.regenerateVideoMetadata(projectId);
+      for (let i = 0; i < 45; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const p = await api.getProject(projectId).catch(() => null);
+        if (!p) continue;
+        if (p.metadata_status === 'ready') { onProjectChange(p); setTitle(p.title ?? ''); setDesc(p.topic ?? ''); return; }
+        if (p.metadata_status === 'failed') { setGenMetaError('Generation failed. Please try again.'); return; }
+      }
+      setGenMetaError('Still generating — reopen settings shortly to see the result.');
+    } catch (e) {
+      setGenMetaError((e as Error).message?.slice(0, 160) || 'Generation failed');
+    } finally {
+      setGenMeta(false);
+    }
   };
 
   const [savingVisibility, setSavingVisibility] = useState(false);
@@ -244,6 +269,9 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
   const anyCropProcessing = videos.some(v => !v.is_broll && v.crop_status === 'processing');
   const anyCropReady = videos.some(v => !v.is_broll && v.crop_status === 'ready');
   const anyCropFailed = videos.some(v => !v.is_broll && v.crop_status === 'failed');
+
+  // "From Timeline" needs the main clip transcoded — disable + warn while it's still processing.
+  const mainClipProcessing = videos.length > 0 && videos.some(v => !v.is_broll && (v.hls_status === 'pending' || v.hls_status === 'processing'));
 
   const thumbnailUrl = project?.thumbnail_url ?? null;
   const isGenerating = regenerating || uploadingThumb || project?.metadata_status === 'processing';
@@ -480,18 +508,29 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
             </div>
 
             {/* Mode tabs */}
-            <div style={{ display: 'flex', gap: 4, background: '#f1f5f9', borderRadius: 9, padding: 3 }}>
-              {(['ai', 'timeline'] as const).map(mode => (
-                <button key={mode} onClick={() => setThumbMode(mode)} style={{
-                  flex: 1, height: 32, border: 'none', borderRadius: 7,
-                  background: thumbMode === mode ? '#fff' : 'transparent',
-                  boxShadow: thumbMode === mode ? '0 1px 4px rgba(0,0,0,0.1)' : 'none',
-                  fontSize: 12, fontWeight: 600, color: thumbMode === mode ? '#111827' : '#6b7280',
-                  cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
-                }}>
-                  {mode === 'ai' ? <><Sparkles size={12} strokeWidth={2} /> AI Generate</> : <><Film size={12} strokeWidth={1.9} /> From Timeline</>}
-                </button>
-              ))}
+            <div style={{ display: 'flex', gap: 4, background: 'hsl(var(--muted))', borderRadius: 9, padding: 3 }}>
+              {(['ai', 'timeline'] as const).map(mode => {
+                const disabled = mode === 'timeline' && mainClipProcessing;
+                return (
+                  <button
+                    key={mode}
+                    onClick={() => !disabled && setThumbMode(mode)}
+                    disabled={disabled}
+                    title={disabled ? 'The clip is still processing — available once it finishes.' : undefined}
+                    style={{
+                      flex: 1, height: 32, border: 'none', borderRadius: 7,
+                      background: thumbMode === mode ? 'hsl(var(--card))' : 'transparent',
+                      boxShadow: thumbMode === mode ? '0 1px 4px rgba(0,0,0,0.1)' : 'none',
+                      fontSize: 12, fontWeight: 600,
+                      color: thumbMode === mode ? 'hsl(var(--foreground))' : 'hsl(var(--muted-foreground))',
+                      cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.5 : 1,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
+                    }}
+                  >
+                    {mode === 'ai' ? <><Sparkles size={12} strokeWidth={2} /> AI Generate</> : <><Film size={12} strokeWidth={1.9} /> From Timeline</>}
+                  </button>
+                );
+              })}
             </div>
 
             {thumbMode === 'ai' ? (
@@ -533,7 +572,12 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {dur > 0 ? (<>
+                {mainClipProcessing ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 14px', borderRadius: 8, background: 'hsl(var(--muted))', color: 'hsl(var(--muted-foreground))', fontSize: 12 }}>
+                    <Loader2 size={14} style={{ animation: 'spin 1s linear infinite', flexShrink: 0 }} />
+                    <span>The clip is still processing — picking a frame from the timeline will be available once it finishes.</span>
+                  </div>
+                ) : dur > 0 ? (<>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>Scrub to pick frame</span>
                     <span style={{ fontSize: 14, fontWeight: 700, color: '#a855f7', fontVariantNumeric: 'tabular-nums', minWidth: 44, textAlign: 'right' }}>{fmtTime(timelineSec)}</span>
@@ -620,9 +664,29 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
                   onFocus={e => (e.target.style.borderColor = '#a855f7')}
                   onBlur={e => (e.target.style.borderColor = '#e2e8f0')}
                 />
-                <button onClick={saveMeta} disabled={savingMeta} style={{ ...btnStyle(savingMeta), width: 'auto', alignSelf: 'flex-start', padding: '0 24px' }}>
-                  {savingMeta ? <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Saving…</> : savedMeta ? '✓ Saved' : 'Save details'}
-                </button>
+                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+                  <button onClick={saveMeta} disabled={savingMeta} style={{ ...btnStyle(savingMeta), width: 'auto', padding: '0 24px' }}>
+                    {savingMeta ? <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Saving…</> : savedMeta ? '✓ Saved' : 'Save details'}
+                  </button>
+                  <button
+                    onClick={generateDetails}
+                    disabled={genMeta}
+                    title="Generate the title & description from the video's captions/transcript"
+                    style={{
+                      width: 'auto', padding: '0 16px', height: 38, borderRadius: 8,
+                      border: '1px solid hsl(var(--border))', background: 'hsl(var(--card))',
+                      color: 'hsl(var(--foreground))', fontSize: 13, fontWeight: 600,
+                      cursor: genMeta ? 'not-allowed' : 'pointer', opacity: genMeta ? 0.6 : 1,
+                      display: 'inline-flex', alignItems: 'center', gap: 6,
+                    }}
+                  >
+                    {genMeta ? <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Generating…</> : <><Sparkles size={13} strokeWidth={2} /> Generate with AI</>}
+                  </button>
+                </div>
+                {genMetaError && <p style={{ fontSize: 12, color: '#ef4444' }}>{genMetaError}</p>}
+                <p style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))' }}>
+                  AI fills the title &amp; description from your video&apos;s captions — generate captions first for the best result.
+                </p>
               </div>
             </div>
 

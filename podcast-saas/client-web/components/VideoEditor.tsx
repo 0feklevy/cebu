@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { AlertTriangle, Clapperboard, GitBranch, HelpCircle, Maximize2, Minimize2, Music, Plus, Redo2, RefreshCw, Sparkles, Trash2, Undo2, Upload } from 'lucide-react';
+import { AlertTriangle, Clapperboard, GitBranch, Maximize2, Minimize2, Music, Plus, Redo2, RefreshCw, Sparkles, Trash2, Undo2, Upload } from 'lucide-react';
 import { useAuth } from '../lib/firebase';
 import { api } from '../lib/api';
 import { VideoPlayer } from './VideoPlayer';
@@ -696,12 +696,18 @@ export function VideoEditor({ projectId }: Props) {
   const [simAutoFiles, setSimAutoFiles] = useState<File[] | null>(null);
   const libraryDragDepth = useRef(0);
 
-  // ── Guided walkthrough — auto-runs once per browser, re-openable via the help button ──
+  // ── Guided walkthrough — auto-runs once per browser, re-openable from the header "?" ──
   const [tourOpen, setTourOpen] = useState(false);
   useEffect(() => {
     if (typeof window === 'undefined' || window.localStorage.getItem('editor-tour-seen')) return;
     const t = setTimeout(() => setTourOpen(true), 900); // let the editor paint first
     return () => clearTimeout(t);
+  }, []);
+  // The "?" lives in the top header (next to Settings) and dispatches this event to start the tour.
+  useEffect(() => {
+    const start = () => setTourOpen(true);
+    window.addEventListener('editor:start-tour', start);
+    return () => window.removeEventListener('editor:start-tour', start);
   }, []);
   const closeTour = useCallback(() => {
     setTourOpen(false);
@@ -969,26 +975,15 @@ export function VideoEditor({ projectId }: Props) {
                       {videos.length} clip{videos.length !== 1 ? 's' : ''} · {sections.length} section{sections.length !== 1 ? 's' : ''}
                     </p>
                   </div>
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => setTourOpen(true)}
-                      className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-card text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground focus-ring"
-                      title="Show the editor walkthrough"
-                      aria-label="Show the editor walkthrough"
-                    >
-                      <HelpCircle size={14} strokeWidth={1.9} aria-hidden />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setExtendedLibraryOpen(true)}
-                      className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-[10px] font-semibold text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground focus-ring"
-                      title="Manage the avatar's basic and extended visual library"
-                    >
-                      <Sparkles size={12} strokeWidth={1.9} aria-hidden />
-                      Extended
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setExtendedLibraryOpen(true)}
+                    className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-[10px] font-semibold text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground focus-ring"
+                    title="Manage the avatar's basic and extended visual library"
+                  >
+                    <Sparkles size={12} strokeWidth={1.9} aria-hidden />
+                    Extended
+                  </button>
                 </div>
 
                 <div className="flex items-center justify-between">
