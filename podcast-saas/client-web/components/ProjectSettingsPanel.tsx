@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Crop, Film, Loader2, Settings, Sparkles, Upload, X } from 'lucide-react';
+import { Crop, Film, Image as ImageIcon, Layers, Loader2, Lock, Settings, Sparkles, Type, Upload, X } from 'lucide-react';
 import { api } from '../lib/api';
 import { LockPriceControl } from './LockPriceControl';
 import { AvatarSettingsModal } from './avatar/AvatarSettingsModal';
@@ -315,30 +315,39 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
     gap: 14,
   };
 
-  const sectionHeaderStyle: React.CSSProperties = {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 9,
-    flexWrap: 'wrap',
-  };
-
-  const sectionKickerStyle: React.CSSProperties = {
-    fontSize: 10,
-    color: 'hsl(var(--primary))',
-    background: 'hsl(var(--primary) / 0.1)',
-    borderRadius: 6,
-    padding: '2px 8px',
-    fontWeight: 700,
-    textTransform: 'uppercase',
-    letterSpacing: '0.06em',
-  };
-
   const sectionTitleStyle: React.CSSProperties = {
     margin: 0,
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: 700,
+    letterSpacing: '-0.01em',
     color: 'hsl(var(--foreground))',
   };
+
+  const sectionSubStyle: React.CSSProperties = {
+    margin: '2px 0 0',
+    fontSize: 11.5,
+    lineHeight: 1.3,
+    fontWeight: 500,
+    color: 'hsl(var(--muted-foreground))',
+  };
+
+  // Accent icon chip: translucent tint of the accent color + solid accent icon —
+  // reads correctly on both light and dark cards (tint is alpha-based).
+  const iconChip = (color: string): React.CSSProperties => ({
+    width: 32, height: 32, borderRadius: 9, flexShrink: 0,
+    background: `${color}22`, color,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+  });
+
+  const sectionHead = (icon: React.ReactNode, title: string, subtitle: string, color: string) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 11 }}>
+      <span style={iconChip(color)}>{icon}</span>
+      <div style={{ minWidth: 0 }}>
+        <h3 style={sectionTitleStyle}>{title}</h3>
+        <p style={sectionSubStyle}>{subtitle}</p>
+      </div>
+    </div>
+  );
 
   const settingsActionCard = (color: string, from: string, to: string): React.CSSProperties => ({
     minWidth: 0,
@@ -373,7 +382,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
     display: 'block',
     fontSize: 12,
     fontWeight: 800,
-    color: '#1e1b4b',
+    color: 'hsl(var(--foreground))',
     whiteSpace: 'nowrap',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
@@ -384,7 +393,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
     marginTop: 3,
     fontSize: 10.5,
     lineHeight: 1.35,
-    color: '#64748b',
+    color: 'hsl(var(--muted-foreground))',
   };
 
   const settingsActionArrow: React.CSSProperties = {
@@ -420,8 +429,8 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
           left: isCompact ? 0 : '50%',
           transform: isCompact ? 'none' : 'translate(-50%, -50%)',
           zIndex: 801,
-          width: isCompact ? '100vw' : '94vw',
-          height: isCompact ? '100dvh' : 'min(820px, 92dvh)',
+          width: isCompact ? '100vw' : 'min(1080px, 94vw)',
+          height: isCompact ? '100dvh' : 'min(760px, 92dvh)',
           maxHeight: '100dvh',
           display: 'flex', flexDirection: 'column',
           backgroundColor: 'hsl(var(--card))',
@@ -487,7 +496,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
 
           {/* LEFT panel — Thumbnail controls */}
           <div style={{
-            width: isCompact ? '100%' : 470,
+            width: isCompact ? '100%' : 440,
             maxHeight: isCompact ? '50dvh' : undefined,
             flexShrink: 0, overflowY: 'auto',
             padding: isCompact ? '14px' : '20px 22px',
@@ -497,10 +506,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
             backgroundColor: 'hsl(var(--card))', boxSizing: 'border-box',
           }}>
             <div data-tour="settings-thumbnail" style={sectionCardStyle}>
-              <div style={sectionHeaderStyle}>
-                <span style={sectionKickerStyle}>Media</span>
-                <h3 style={sectionTitleStyle}>Thumbnail</h3>
-              </div>
+              {sectionHead(<ImageIcon size={16} strokeWidth={2} />, 'Thumbnail', 'The cover image viewers see first', '#6366f1')}
 
             {/* Preview */}
             <div style={{ position: 'relative', width: '100%', aspectRatio: '16/9', borderRadius: 10, overflow: 'hidden', background: '#0f172a', border: '1px solid hsl(var(--border))', flexShrink: 0 }}>
@@ -589,7 +595,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
                   <button onClick={() => thumbInputRef.current?.click()} title="Upload image" disabled={isGenerating}
                     style={{ width: 36, height: 36, border: '1px solid hsl(var(--border))', borderRadius: 8, background: 'hsl(var(--card))', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'hsl(var(--muted-foreground))', flexShrink: 0 }}
                     onMouseEnter={e => (e.currentTarget.style.background = 'hsl(var(--muted))')}
-                    onMouseLeave={e => (e.currentTarget.style.background = '#fff')}
+                    onMouseLeave={e => (e.currentTarget.style.background = 'hsl(var(--card))')}
                   >
                     <Upload size={14} strokeWidth={1.9} />
                   </button>
@@ -632,10 +638,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
             </div>
 
             <div data-tour="settings-avatar" style={sectionCardStyle}>
-              <div style={sectionHeaderStyle}>
-                <span style={sectionKickerStyle}>Avatar</span>
-                <h3 style={sectionTitleStyle}>Interactive overlays</h3>
-              </div>
+              {sectionHead(<Layers size={16} strokeWidth={2} />, 'Interactive overlays', 'Avatar Q&A and audio-reactive circles', '#a855f7')}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
                 <button onClick={() => setPage('avatar')} style={settingsActionCard('#4338ca', 'rgba(99,102,241,0.1)', 'rgba(168,85,247,0.05)')}>
                   <span style={settingsActionIcon('#6366f1')}><Sparkles size={15} strokeWidth={1.9} aria-hidden /></span>
@@ -664,7 +667,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
             overflowY: 'auto',
             padding: isCompact ? '14px' : '20px 24px',
             display: 'grid',
-            gridTemplateColumns: isCompact ? '1fr' : 'repeat(2, minmax(280px, 1fr))',
+            gridTemplateColumns: isCompact ? '1fr' : 'repeat(2, minmax(0, 1fr))',
             gap: 16,
             alignContent: 'start',
             backgroundColor: 'hsl(var(--card))',
@@ -673,10 +676,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
 
             {/* Details */}
             <div data-tour="settings-details" style={{ ...sectionCardStyle, gridColumn: isCompact ? undefined : '1 / -1' }}>
-              <div style={sectionHeaderStyle}>
-                <span style={sectionKickerStyle}>Metadata</span>
-                <h3 style={sectionTitleStyle}>Details</h3>
-              </div>
+              {sectionHead(<Type size={16} strokeWidth={2} />, 'Details', 'Title & description for SEO and sharing', '#0ea5e9')}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 <input
                   value={title} onChange={e => setTitle(e.target.value)} placeholder="Video name"
@@ -718,10 +718,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
 
             {/* Smart Crop */}
             <div data-tour="settings-crop" style={sectionCardStyle}>
-              <div style={sectionHeaderStyle}>
-                <span style={sectionKickerStyle}>Crop</span>
-                <h3 style={sectionTitleStyle}>Smart Crop</h3>
-              </div>
+              {sectionHead(<Crop size={16} strokeWidth={2} />, 'Smart Crop', 'Auto-follow the speaker for vertical viewing', '#f59e0b')}
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
                 <button
                   onClick={recrop} disabled={cropping || anyCropProcessing}
@@ -746,10 +743,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
 
             {/* Access */}
             <div data-tour="settings-access" style={sectionCardStyle}>
-              <div style={sectionHeaderStyle}>
-                <span style={sectionKickerStyle}>Access</span>
-                <h3 style={sectionTitleStyle}>Access</h3>
-              </div>
+              {sectionHead(<Lock size={16} strokeWidth={2} />, 'Access', 'Who can watch, and the unlock price', '#10b981')}
               <div style={{ marginBottom: 14 }}>
                 <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'hsl(var(--muted-foreground))', marginBottom: 6 }}>
                   Who can view this video
@@ -758,13 +752,13 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
                   value={project?.visibility ?? 'private'}
                   onChange={(e) => changeVisibility(e.target.value as 'private' | 'unlisted' | 'public')}
                   disabled={savingVisibility}
-                  style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 13, background: 'hsl(var(--card))' }}
+                  style={{ width: '100%', height: 40, padding: '0 12px', borderRadius: 8, border: '1px solid hsl(var(--border))', fontSize: 13, background: 'hsl(var(--background))', color: 'hsl(var(--foreground))' }}
                 >
                   <option value="private">Private — only you</option>
                   <option value="unlisted">Unlisted — anyone with the share link</option>
                   <option value="public">Public — anyone with the link</option>
                 </select>
-                <p style={{ fontSize: 10, color: '#9ca3af', marginTop: 5 }}>
+                <p style={{ fontSize: 10, color: 'hsl(var(--muted-foreground))', marginTop: 5 }}>
                   Private drafts can&apos;t be opened by their id. Share links still work for unlisted/private.
                 </p>
               </div>
