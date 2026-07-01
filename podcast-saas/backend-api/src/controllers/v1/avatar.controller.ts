@@ -254,7 +254,7 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
       await syncBasicLibrary(request.params.id).catch(() => {});
       const q = request.query as { scope?: string; type?: string; q?: string; page?: string };
       const result = await listVisuals({
-        projectId: request.params.id, includeGlobal: true,
+        projectId: request.params.id, includeGlobal: false,  // per-project Extended Library (no shared globals)
         scope: q.scope === 'basic' || q.scope === 'extended' ? q.scope : undefined,
         type: q.type, q: q.q, page: q.page ? parseInt(q.page, 10) : 1, limit: 60,
       });
@@ -348,7 +348,7 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
       await syncBasicLibrary(project.id, true).catch(() => {});
       const q = request.query as { scope?: string; type?: string; q?: string; page?: string };
       const result = await listVisuals({
-        projectId: project.id, includeGlobal: true,
+        projectId: project.id, includeGlobal: false,  // per-project Extended Library (no shared globals)
         scope: q.scope === 'basic' || q.scope === 'extended' ? q.scope : undefined,
         type: q.type, q: q.q, page: q.page ? parseInt(q.page, 10) : 1, limit: 60,
       });
@@ -369,7 +369,7 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
         const res = await generateLibraryImage({
           prompt: body.prompt ?? body.dallePrompt!, dallePrompt: body.dallePrompt,
           characterId: body.characterId && CHARACTERS[body.characterId] ? body.characterId : DEFAULT_CHARACTER_ID,
-          caption: body.caption, createdBy: request.dbUser!.id,
+          caption: body.caption, createdBy: request.dbUser!.id, projectId: project.id,
         });
         return reply.send({ ok: true, item: res!.row, imageUrl: res!.imageUrl });
       } catch (err) {
@@ -392,7 +392,7 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
         const res = await generateLibrarySimulation({
           prompt: body.prompt, caption: body.caption,
           characterId: body.characterId && CHARACTERS[body.characterId] ? body.characterId : DEFAULT_CHARACTER_ID,
-          createdBy: request.dbUser!.id,
+          createdBy: request.dbUser!.id, projectId: project.id,
         });
         return reply.send({ ok: true, item: res!.row, simulationUrl: res!.simulationUrl });
       } catch (err) {

@@ -374,10 +374,11 @@ export async function generateLibrarySimulation(params: {
   if ((!html.startsWith('<!DOCTYPE') && !html.startsWith('<html')) || !html.includes('</html>')) {
     throw new Error('Model returned invalid simulation HTML — try again');
   }
-  // Editor-created sims also live in the GLOBAL extended library.
+  // Library-generated sims are scoped to the project that created them (each project has its
+  // own Extended Library) — was global, which leaked visuals across projects.
   const stored = await storeSimulationHtml(html, null);
   const row = await insertVisual({
-    projectId: null, scope: 'extended', source: 'generated',
+    projectId: params.projectId ?? null, scope: 'extended', source: 'generated',
     characterId: params.characterId, visualType: 'simulation', lookupKey: caption, caption,
     simStoragePrefix: stored.prefix, simEntryUrl: stored.url,
     visualSpec: { type: 'simulation', caption, simTopic: topic }, createdBy: params.createdBy,

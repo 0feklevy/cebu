@@ -85,9 +85,21 @@ export function ExtendedLibraryModal({ open, onClose, projectId, characterId = '
   };
   const doGenImage = () => setPromptReq({ title: 'Describe the image to generate', placeholder: 'e.g. a labelled diagram of a neuron', submit: (p) => run('gen-image', () => generateLibraryImage(projectId, { prompt: p, characterId, scope: 'extended' })) });
   const doGenSim = () => setPromptReq({ title: 'Describe the interactive simulation to generate', placeholder: 'e.g. a draggable pendulum with adjustable length', submit: (p) => run('gen-sim', () => generateLibrarySimulation(projectId, { prompt: p, characterId, scope: 'extended' })) });
-  const doDelete = async (id: string) => { await deleteLibraryVisual(projectId, id); setItems((p) => p.filter((i) => i.id !== id)); setTotal((t) => Math.max(0, t - 1)); };
-  const doToggleScope = async (item: LibraryItem) => { const next = item.scope === 'basic' ? 'extended' : 'basic'; await patchLibraryVisual(projectId, item.id, { scope: next }); setItems((p) => p.map((i) => (i.id === item.id ? { ...i, scope: next } : i))); };
-  const doEditCaption = async (item: LibraryItem, caption: string) => { await patchLibraryVisual(projectId, item.id, { caption }); setItems((p) => p.map((i) => (i.id === item.id ? { ...i, caption } : i))); };
+  // These act on a specific visual and can 404 ("Visual not found") if it's gone — catch so a
+  // failed action shows a toast instead of an unhandled runtime error.
+  const doDelete = async (id: string) => {
+    try { await deleteLibraryVisual(projectId, id); setItems((p) => p.filter((i) => i.id !== id)); setTotal((t) => Math.max(0, t - 1)); }
+    catch (e) { setDropFeedback({ tone: 'error', message: (e as Error).message }); }
+  };
+  const doToggleScope = async (item: LibraryItem) => {
+    const next = item.scope === 'basic' ? 'extended' : 'basic';
+    try { await patchLibraryVisual(projectId, item.id, { scope: next }); setItems((p) => p.map((i) => (i.id === item.id ? { ...i, scope: next } : i))); }
+    catch (e) { setDropFeedback({ tone: 'error', message: (e as Error).message }); }
+  };
+  const doEditCaption = async (item: LibraryItem, caption: string) => {
+    try { await patchLibraryVisual(projectId, item.id, { caption }); setItems((p) => p.map((i) => (i.id === item.id ? { ...i, caption } : i))); }
+    catch (e) { setDropFeedback({ tone: 'error', message: (e as Error).message }); }
+  };
   const doEditSim = (item: LibraryItem) => setPromptReq({ title: 'How should the avatar change this simulation?', placeholder: 'e.g. make the controls simpler and add a reset button', submit: (ins) => run('edit-sim', () => editLibrarySimulation(projectId, item.id, ins)) });
   const isFileDrag = (e: DragEvent<HTMLElement>) => Array.from(e.dataTransfer.types).includes('Files');
   const onLibraryDragEnter = (e: DragEvent<HTMLDivElement>) => {

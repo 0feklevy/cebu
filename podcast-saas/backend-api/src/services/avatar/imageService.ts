@@ -232,10 +232,11 @@ export async function generateLibraryImage(params: {
   const caption = params.caption || params.prompt || dallePrompt;
   const b64 = await genImage({ model: MODELS.imageGeneration, prompt: dallePrompt, quality: 'high', size: '1536x1024', n: 1 });
   if (!b64) throw new Error('Image generation returned no data');
-  // Editor-created images also live in the GLOBAL extended library.
+  // Library-generated images are scoped to the project that created them (each project has its
+  // own Extended Library) — was global, which leaked visuals across projects.
   const { url, key } = await storeImageB64(b64, null);
   const row = await insertVisual({
-    projectId: null, scope: 'extended', source: 'generated',
+    projectId: params.projectId ?? null, scope: 'extended', source: 'generated',
     characterId: params.characterId, visualType: 'image', lookupKey: caption,
     caption, altText: caption.split('.')[0] ?? '', imageUrl: url, imageKey: key,
     dallePrompt, visualSpec: { dallePrompt, imageType: 'realistic' }, createdBy: params.createdBy,
