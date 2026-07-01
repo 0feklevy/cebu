@@ -89,6 +89,8 @@ export function ProjectHeader({ projectId }: Props) {
 
   const statusStyle = project ? (STATUS_STYLES[project.status] ?? 'bg-muted text-muted-foreground') : '';
   const statusLabel = project ? (STATUS_LABELS[project.status] ?? project.status) : '';
+  // No video uploaded yet → Preview/Share aren't meaningful, so disable them.
+  const noVideos = !project || project.status === 'draft';
   const rawTitle    = project?.title ?? project?.topic ?? '';
   const title       = rawTitle.length > 60 ? rawTitle.slice(0, 60) + '…' : rawTitle;
   const shareUrl    = shareToken && typeof window !== 'undefined' ? `${window.location.origin}/v/${shareToken}` : null;
@@ -155,10 +157,14 @@ export function ProjectHeader({ projectId }: Props) {
 
       <a
         data-tour="preview"
-        href={`/projects/${projectId}/view`}
+        href={noVideos ? undefined : `/projects/${projectId}/view`}
         target="_blank"
         rel="noopener noreferrer"
-        className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-2 text-xs font-medium shell-muted transition-colors shell-hover hover:text-[hsl(var(--shell-foreground))] focus-ring sm:px-3"
+        aria-disabled={noVideos}
+        tabIndex={noVideos ? -1 : undefined}
+        onClick={(e) => { if (noVideos) e.preventDefault(); }}
+        title={noVideos ? 'Add a video first to preview' : undefined}
+        className={`inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-2 text-xs font-medium shell-muted transition-colors focus-ring sm:px-3 ${noVideos ? 'cursor-not-allowed opacity-50' : 'shell-hover hover:text-[hsl(var(--shell-foreground))]'}`}
         style={{ borderColor: 'hsl(var(--shell-border))' }}
       >
         <Eye size={13} strokeWidth={1.8} aria-hidden />
@@ -185,7 +191,8 @@ export function ProjectHeader({ projectId }: Props) {
       <div className="relative shrink-0" ref={popRef}>
         <button
           onClick={handleShare}
-          disabled={shareLoading}
+          disabled={shareLoading || noVideos}
+          title={noVideos ? 'Add a video first to share' : undefined}
           className={shareToken
             ? 'flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold text-white shadow-sm transition-all disabled:opacity-60 focus-ring'
             : 'flex h-8 items-center gap-1.5 rounded-lg border px-3 text-xs font-semibold shell-muted transition-colors shell-hover disabled:opacity-60 focus-ring hover:text-[hsl(var(--shell-foreground))]'

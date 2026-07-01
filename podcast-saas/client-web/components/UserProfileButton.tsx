@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { LogIn, LogOut, Settings, User } from 'lucide-react';
+import { LogIn, LogOut, Settings } from 'lucide-react';
 import { useAuth } from '../lib/firebase';
 import { UserSettingsDialog } from './UserSettingsDialog';
 
@@ -78,16 +78,6 @@ export function UserProfileButton({ showLabel = false }: Props) {
           >
             <Settings size={14} strokeWidth={1.8} aria-hidden />
             Settings
-          </button>
-          <button
-            onClick={() => {
-              setOpen(false);
-              setSettingsOpen(true);
-            }}
-            className="w-full text-left px-3 py-2 text-sm text-foreground hover:bg-muted transition-colors flex items-center gap-2"
-          >
-            <User size={14} strokeWidth={1.8} aria-hidden />
-            Account profile
           </button>
           <div className="my-1 border-t border-border" />
           <button

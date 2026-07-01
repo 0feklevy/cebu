@@ -302,7 +302,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
     color: active ? 'hsl(var(--muted-foreground))' : '#fff',
     fontSize: 13, fontWeight: 600, cursor: active ? 'not-allowed' : 'pointer',
     display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-  };
+  });
 
   const sectionCardStyle: React.CSSProperties = {
     backgroundColor: 'hsl(var(--card))',

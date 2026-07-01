@@ -236,11 +236,6 @@ export function HomeHero() {
   }), [projects]);
 
   const latestProject = sortedProjects[0];
-  const accountLabel = authLoading
-    ? 'Loading account'
-    : user && !isAnonymous
-      ? user.email
-      : 'Guest workspace';
 
   return (
     <>
@@ -249,7 +244,6 @@ export function HomeHero() {
           <header className="surface-panel w-full shrink-0 rounded-lg px-4 py-3 sm:px-5">
             <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
               <div className="min-w-0">
-                <p className="mb-1 truncate text-xs font-medium text-muted-foreground">{accountLabel}</p>
                 <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
                   <h1 className="text-2xl font-semibold tracking-tight text-foreground">
                     Interactive Video Studio
