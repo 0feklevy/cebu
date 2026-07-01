@@ -117,7 +117,8 @@ async function generateVideoMetadataInner(projectId: string, videoFileId: string
     const apiKey = opts.skipVision ? undefined : process.env.OPENAI_API_KEY;
     if (apiKey) {
       try {
-        const gptResult = await generateTitleAndDescription(thumbBuf, video.filename, apiKey, opts.promptHint, opts.model);
+        const transcript = vttToPlainText(video.captions_vtt);
+        const gptResult = await generateTitleAndDescription(thumbBuf, video.filename, apiKey, opts.promptHint, opts.model, transcript);
         // Only set title if not already given by the user
         if (!title && gptResult.title) title = gptResult.title;
         if (gptResult.description) description = gptResult.description;
@@ -262,36 +263,37 @@ async function generateTitleAndDescription(
   apiKey: string,
   promptHint?: string,
   model?: string,
+  transcript?: string,
 ): Promise<{ title: string; description: string }> {
   const client = new OpenAI({ apiKey });
   const b64 = thumbBuf.toString('base64');
-  const hintText = promptHint?.trim() ? `\nExtra context from the user: "${promptHint}"` : '';
+  const hintText = promptHint?.trim() ? `\nExtra creator context: "${promptHint.trim()}"` : '';
+  const hasTranscript = !!transcript?.trim();
+
+  // YouTube-style: the TITLE is a click-worthy hook, the DESCRIPTION says what the video is about
+  // — both grounded PRIMARILY in the transcript (captions); the frame + filename are only hints.
+  const system =
+    'You write YouTube-style titles and descriptions for videos. Base them PRIMARILY on the ' +
+    'transcript (captions) when one is provided; the thumbnail frame and filename are secondary. ' +
+    'Make the TITLE an irresistible, specific hook the target viewer would click — punchy and ' +
+    'curiosity-driven but accurate to the content: no clickbait lies, no ALL-CAPS, no emojis, ' +
+    'aim for ~50–70 characters. Make the DESCRIPTION a clear, engaging 1–2 sentence summary of ' +
+    'what the video is actually about and what the viewer will get out of it. ' +
+    'Respond ONLY with valid JSON: {"title": string, "description": string}.' + hintText;
+
+  const userContent: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [];
+  if (hasTranscript) userContent.push({ type: 'text', text: `Transcript (captions):\n${transcript}` });
+  userContent.push({ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${b64}`, detail: 'low' } });
+  userContent.push({ type: 'text', text: `Filename: ${filename}` });
 
   const response = await client.chat.completions.create({
-    model: model ?? 'gpt-4o-mini',
-    max_tokens: 200,
-    temperature: 0.4,
+    model: model ?? 'gpt-4o-mini',   // fast/low tier — no extended thinking
+    max_tokens: 300,
+    temperature: 0.6,
     response_format: { type: 'json_object' },
     messages: [
-      {
-        role: 'system',
-        content:
-          'You are a video content analyzer. Given a video thumbnail frame and filename, ' +
-          'generate a concise title and a one-sentence description of what the video is about. ' +
-          'Respond ONLY with valid JSON: {"title": string, "description": string}. ' +
-          'Title: max 8 words, title-case. Description: max 25 words, plain sentence.' +
-          (hintText ? hintText : ''),
-      },
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'image_url',
-            image_url: { url: `data:image/jpeg;base64,${b64}`, detail: 'low' },
-          },
-          { type: 'text', text: `Filename: ${filename}` },
-        ],
-      },
+      { role: 'system', content: system },
+      { role: 'user', content: userContent },
     ],
   });
 
@@ -301,6 +303,23 @@ async function generateTitleAndDescription(
     title: (parsed.title ?? '').slice(0, 120).trim(),
     description: (parsed.description ?? '').slice(0, 400).trim(),
   };
+}
+
+/** Strip a WebVTT track down to spoken words (no header/cue numbers/timestamps/tags). */
+function vttToPlainText(vtt: string | null | undefined, maxChars = 6000): string {
+  if (!vtt) return '';
+  const out: string[] = [];
+  for (const line of vtt.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t || t === 'WEBVTT') continue;
+    if (/^\d+$/.test(t)) continue;                 // cue index
+    if (t.includes('-->')) continue;               // timestamp line
+    if (/^(NOTE|STYLE|REGION)\b/.test(t)) continue;
+    const clean = t.replace(/<[^>]+>/g, '').trim();  // strip inline tags
+    if (clean && clean !== out[out.length - 1]) out.push(clean);
+  }
+  const text = out.join(' ').replace(/\s+/g, ' ').trim();
+  return text.length > maxChars ? text.slice(0, maxChars) + '…' : text;
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────────

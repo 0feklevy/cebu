@@ -41,6 +41,41 @@ export interface AiThumbnailOptions {
   model?: string;       // override the image model (default gpt-image-1)
 }
 
+const YT_THUMB_ENHANCE_SYSTEM = `You are a YouTube thumbnail prompt engineer. Rewrite the creator's idea into ONE vivid image-generation prompt for a scroll-stopping, YouTube-style 16:9 thumbnail.
+Rules:
+- YouTube thumbnail energy: bold, ultra-high-contrast, vibrant saturated colors, dramatic lighting, strong depth, ONE larger-than-life focal subject, punchy uncluttered composition that reads clearly at tiny size.
+- Cinematic photo OR clean illustration, whichever fits the topic; exaggerate scale and drama for clicks.
+- Weave in the video's actual subject so the thumbnail is relevant.
+- NO text, words, letters, numbers, logos or watermarks in the image. NO realistic human faces.
+- Max 800 characters. Respond with ONLY the prompt text — no preamble, no quotes.`;
+
+/**
+ * Turn a creator's rough thumbnail idea into an enhanced, YouTube-thumbnail-style image prompt,
+ * grounded in what we know about the video. Fast/low model, no extended thinking.
+ */
+export async function enhanceThumbnailPrompt(projectId: string, userPrompt: string): Promise<string> {
+  if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not configured');
+  const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
+  const info = project ? [
+    project.title ? `Title: ${project.title}` : '',
+    project.topic ? `About: ${project.topic}` : '',
+    project.seo_description ? `Summary: ${project.seo_description}` : '',
+    project.seo_keywords ? `Keywords: ${project.seo_keywords}` : '',
+  ].filter(Boolean).join('\n') : '';
+
+  const idea = userPrompt.trim();
+  const r = await openai.chat.completions.create({
+    model: MODELS.adminPromptBuilder,   // gpt-4.1-mini — fast, no thinking
+    max_tokens: 320,
+    temperature: 0.8,
+    messages: [
+      { role: 'system', content: YT_THUMB_ENHANCE_SYSTEM },
+      { role: 'user', content: `Video:\n${info || '(unknown)'}\n\nCreator's thumbnail idea: ${idea || '(none — invent a strong one from the video)'}\n\nWrite the enhanced YouTube-thumbnail image prompt.` },
+    ],
+  });
+  return r.choices[0]?.message?.content?.trim() || idea;
+}
+
 /** Build a thumbnail image from the video's known info. Returns the public URL. */
 export async function generateAiThumbnail(projectId: string, opts: AiThumbnailOptions = {}): Promise<string> {
   if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not configured');

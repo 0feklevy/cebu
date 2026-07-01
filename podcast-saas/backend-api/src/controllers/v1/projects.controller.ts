@@ -254,6 +254,30 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
     },
   );
 
+  // POST /api/v1/projects/:id/enhance-thumbnail-prompt — rewrite the creator's idea into a
+  // YouTube-thumbnail-style image prompt (fast/low model). Returns { prompt }.
+  app.post<{ Params: { id: string }; Body: { prompt?: string } }>(
+    '/api/v1/projects/:id/enhance-thumbnail-prompt',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const project = await db.query.projects.findFirst({
+        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
+      });
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+
+      const parsed = z.object({ prompt: z.string().max(500).optional() }).safeParse(request.body ?? {});
+      const userPrompt = parsed.success ? (parsed.data.prompt ?? '') : '';
+      try {
+        const { enhanceThumbnailPrompt } = await import('../../services/generateAiThumbnail.js');
+        const enhanced = await enhanceThumbnailPrompt(project.id, userPrompt);
+        return reply.send({ prompt: enhanced });
+      } catch (err) {
+        return reply.code(502).send({ message: (err as Error).message || 'Failed to enhance prompt' });
+      }
+    },
+  );
+
   // POST /api/v1/projects/:id/thumbnail-from-timeline — extract frame at given time
   app.post<{ Params: { id: string } }>(
     '/api/v1/projects/:id/thumbnail-from-timeline',

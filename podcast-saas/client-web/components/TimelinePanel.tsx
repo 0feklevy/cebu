@@ -185,6 +185,7 @@ function useVideoFrames(url: string | null, duration: number) {
       if (aborted) return;
       try { ctx.drawImage(vid, 0, 0, FRAME_W, FRAME_H); captured.push(canvas.toDataURL('image/jpeg', 0.6)); }
       catch { captured.push(''); }
+      setFrames([...captured]);   // reveal thumbnails progressively (left→right) so it feels instant
       i++; captureNext();
     };
     const onError = () => { aborted = true; setLoading(false); };
@@ -217,15 +218,17 @@ function parseWaveformPeaks(raw: string | null | undefined): number[] | null {
 function Waveform({ peaks }: { peaks: number[] | null }) {
   const midY = AUDIO_TRACK_H / 2;
   if (!peaks || peaks.length === 0) {
-    // Placeholder: deterministic sine-wave bar pattern at low opacity
+    // Placeholder: a denser deterministic wave that clearly reads as "audio here" while the real
+    // peaks are still being computed (was too faint to see on a new clip).
     return (
       <div className="absolute inset-0 overflow-hidden">
         <svg className="w-full h-full" viewBox={`0 0 200 ${AUDIO_TRACK_H}`} preserveAspectRatio="none">
-          {Array.from({ length: 50 }, (_, i) => {
-            const h = Math.max(1, (Math.abs(Math.sin(i * 0.55)) * 0.6 + 0.15) * (midY - 1));
+          <line x1={0} y1={midY} x2={200} y2={midY} stroke="#10b981" strokeOpacity="0.35" strokeWidth="0.5" />
+          {Array.from({ length: 100 }, (_, i) => {
+            const h = Math.max(1, (Math.abs(Math.sin(i * 0.5)) * 0.5 + Math.abs(Math.sin(i * 0.17)) * 0.35 + 0.12) * (midY - 1));
             return (
-              <rect key={i} x={i * 4} y={midY - h} width={2.5} height={h * 2}
-                fill="#10b981" fillOpacity="0.25" rx="0.5" />
+              <rect key={i} x={i * 2} y={midY - h} width={1.4} height={h * 2}
+                fill="#10b981" fillOpacity="0.5" rx="0.5" />
             );
           })}
         </svg>
@@ -250,31 +253,26 @@ function Waveform({ peaks }: { peaks: number[] | null }) {
 
 function ClipFilmstrip({ videoUrl, duration }: { videoUrl: string | null; duration: number }) {
   const { frames, loading } = useVideoFrames(videoUrl, duration);
-  if (frames.length === 0) {
-    // Placeholder bars while frames are loading or URL unavailable
-    return (
-      <div className="absolute inset-0 pointer-events-none overflow-hidden" style={{ opacity: 0.45 }}>
-        <div style={{
-          width: '100%', height: '100%',
-          backgroundImage: 'repeating-linear-gradient(90deg, rgba(59,130,246,0.22) 0px, rgba(59,130,246,0.22) 1px, rgba(59,130,246,0.08) 1px, rgba(59,130,246,0.08) 22px)',
-        }} />
-        {loading && (
-          <div style={{ position: 'absolute', top: '50%', left: 6, transform: 'translateY(-50%)', fontSize: 8, color: 'rgba(59,130,246,0.5)', fontWeight: 700, letterSpacing: 2, userSelect: 'none' }}>
-            ···
-          </div>
-        )}
-      </div>
-    );
-  }
+  // Always render FRAMES_COUNT slots: each shows its thumbnail once decoded, otherwise a solid
+  // clip-style fill (like a Premiere clip). Thumbnails fill in left→right as they arrive, so a
+  // brand-new clip is instantly a filled block instead of a blank/faint strip.
   return (
-    <div className="absolute inset-0 flex pointer-events-none" style={{ opacity: 0.55 }}>
-      {frames.map((src: string, idx: number) => (
-        <div key={idx} className="flex-1 overflow-hidden" style={{ borderRight: '1px solid rgba(0,0,0,0.08)' }}>
-          {src
-            ? <img src={src} className="w-full h-full object-cover" alt="" draggable={false} />
-            : <div className="w-full h-full bg-gray-200" />}
+    <div className="absolute inset-0 flex pointer-events-none overflow-hidden">
+      {Array.from({ length: FRAMES_COUNT }, (_, idx) => {
+        const src = frames[idx];
+        return (
+          <div key={idx} className="flex-1 overflow-hidden" style={{ borderRight: '1px solid rgba(0,0,0,0.06)' }}>
+            {src
+              ? <img src={src} className="w-full h-full object-cover" alt="" draggable={false} style={{ opacity: 0.6 }} />
+              : <div className="w-full h-full" style={{ background: idx % 2 ? 'rgba(59,130,246,0.26)' : 'rgba(59,130,246,0.18)' }} />}
+          </div>
+        );
+      })}
+      {loading && frames.length === 0 && (
+        <div style={{ position: 'absolute', top: '50%', left: 6, transform: 'translateY(-50%)', fontSize: 8, color: 'rgba(59,130,246,0.6)', fontWeight: 700, letterSpacing: 2, userSelect: 'none' }}>
+          ···
         </div>
-      ))}
+      )}
     </div>
   );
 }

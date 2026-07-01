@@ -570,6 +570,10 @@ export class ClientV1Api {
     });
   }
 
+  enhanceThumbnailPrompt(projectId: string, prompt: string): Promise<{ prompt: string }> {
+    return this.request(`/api/v1/projects/${projectId}/enhance-thumbnail-prompt`, { method: 'POST', body: { prompt } });
+  }
+
   uploadProjectThumbnail(projectId: string, file: File): Promise<Project> {
     const formData = new FormData();
     formData.set('file', file);

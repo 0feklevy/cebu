@@ -45,6 +45,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
   const [thumbMode, setThumbMode] = useState<'ai' | 'timeline'>('ai');
   const [prompt, setPrompt] = useState('');
   const [regenerating, setRegenerating] = useState(false);
+  const [enhancing, setEnhancing] = useState(false);
   const [uploadingThumb, setUploadingThumb] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
   const [timelineSec, setTimelineSec] = useState(0);
@@ -209,6 +210,17 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
 
   // Generate a NEW thumbnail IMAGE with an image model (gpt-image-1) from the
   // video's known info (title + SEO summary/keywords) + the optional hint.
+  const handleEnhancePrompt = async () => {
+    setEnhancing(true);
+    setGenError(null);
+    try {
+      const { prompt: enhanced } = await api.enhanceThumbnailPrompt(projectId, prompt.trim());
+      if (enhanced) setPrompt(enhanced);
+    } catch (e) {
+      setGenError((e as Error).message?.slice(0, 160) || 'Could not enhance the prompt');
+    } finally { setEnhancing(false); }
+  };
+
   const genAiThumb = async () => {
     setRegenerating(true);
     setGenError(null);
@@ -566,16 +578,27 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
 
             {thumbMode === 'ai' ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                <input
-                  value={prompt} onChange={e => setPrompt(e.target.value)}
-                  placeholder='Hint for the AI image (optional)'
-                  aria-label="Hint for AI thumbnail generation"
-                  style={{ ...inputStyle, height: 36, fontSize: 13 }}
-                  onFocus={e => (e.target.style.borderColor = '#a855f7')}
-                  onBlur={e => (e.target.style.borderColor = 'hsl(var(--border))')}
-                />
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input
+                    value={prompt} onChange={e => setPrompt(e.target.value)}
+                    placeholder='Hint for the AI image (optional)'
+                    aria-label="Hint for AI thumbnail generation"
+                    style={{ ...inputStyle, height: 36, fontSize: 13, flex: 1 }}
+                    onFocus={e => (e.target.style.borderColor = '#a855f7')}
+                    onBlur={e => (e.target.style.borderColor = 'hsl(var(--border))')}
+                  />
+                  <button
+                    onClick={handleEnhancePrompt}
+                    disabled={enhancing || isGenerating}
+                    title="Rewrite your hint into a bold, YouTube-thumbnail-style image prompt"
+                    style={{ height: 36, padding: '0 12px', border: '1px solid #a855f7', borderRadius: 8, background: 'hsl(var(--card))', color: '#a855f7', fontSize: 12, fontWeight: 600, cursor: enhancing || isGenerating ? 'not-allowed' : 'pointer', opacity: enhancing || isGenerating ? 0.6 : 1, display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0, whiteSpace: 'nowrap' }}
+                  >
+                    {enhancing ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Sparkles size={13} strokeWidth={2} />}
+                    Enhance prompt
+                  </button>
+                </div>
                 <span style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', marginTop: -4 }}>
-                  Generates a thumbnail image from your video&apos;s title &amp; AI summary. Takes ~20–40s.
+                  “Enhance prompt” makes it look like a YouTube thumbnail. Generates from your video&apos;s title &amp; AI summary — takes ~20–40s.
                 </span>
                 <div style={{ display: 'flex', gap: 8 }}>
                   <button onClick={genAiThumb} disabled={isGenerating} style={{ ...btnStyle(isGenerating), flex: 1, height: 36 }}>
