@@ -126,8 +126,11 @@ async function runCropAnalysisInner(videoFileId: string): Promise<void> {
       .where(eq(video_files.id, videoFileId));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    // Also refresh crop_updated_at so the row's "last touched" time reflects the failure,
+    // and clear crop_source_hash so a retry is never mistaken for an up-to-date result
+    // (the ready short-circuit keys on crop_source_hash === hash). (backend-104)
     await db.update(video_files)
-      .set({ crop_status: 'failed', crop_error: message })
+      .set({ crop_status: 'failed', crop_error: message, crop_updated_at: new Date(), crop_source_hash: null })
       .where(eq(video_files.id, videoFileId));
     throw err;
   } finally {

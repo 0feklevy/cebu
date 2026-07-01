@@ -111,6 +111,7 @@ export default function UsersPage() {
                           type="number"
                           value={editing.weekly}
                           onChange={(e) => setEditing({ ...editing, weekly: e.target.value })}
+                          aria-label={`Weekly token limit for ${u.email ?? u.id}`}
                           className="w-28 rounded border border-input bg-card px-2 py-1 text-right text-xs focus:outline-none focus:ring-1 focus:ring-ring"
                         />
                       ) : (
@@ -123,6 +124,7 @@ export default function UsersPage() {
                           type="number"
                           value={editing.monthly}
                           onChange={(e) => setEditing({ ...editing, monthly: e.target.value })}
+                          aria-label={`Monthly token limit for ${u.email ?? u.id}`}
                           className="w-28 rounded border border-input bg-card px-2 py-1 text-right text-xs focus:outline-none focus:ring-1 focus:ring-ring"
                         />
                       ) : (

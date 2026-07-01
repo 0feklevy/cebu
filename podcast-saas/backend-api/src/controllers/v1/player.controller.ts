@@ -26,12 +26,14 @@ export async function registerPlayerRoutes(app: FastifyInstance): Promise<void> 
         return reply.code(404).send({ message: 'Project not found' });
       }
 
-      const pricing = await BillingService.getPricing('project', projectId);
+      // Pass the already-loaded `project` row through the billing + config builders so
+      // they don't each re-SELECT the same row on this hot path (loadperf-002/backend-110).
+      const pricing = await BillingService.getPricing('project', projectId, project);
       if (!pricing) return reply.code(404).send({ message: 'Project not found' });
 
       if (pricing.accessType === 'paid') {
         const userId = request.dbUser?.id ?? null;
-        const hasAccess = await BillingService.hasAccess(userId, 'project', projectId);
+        const hasAccess = await BillingService.hasAccess(userId, 'project', projectId, project);
         if (!hasAccess) {
           return reply.send({
             locked: true,
@@ -44,7 +46,7 @@ export async function registerPlayerRoutes(app: FastifyInstance): Promise<void> 
         }
       }
 
-      const config = await buildPlayerConfig(projectId, request.dbUser?.id ?? null);
+      const config = await buildPlayerConfig(projectId, request.dbUser?.id ?? null, project);
       if (!config) return reply.code(404).send({ message: 'Project not found' });
       return reply.send(config);
     },

@@ -92,6 +92,8 @@ export function ConfirmDialog({
 
         <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
           <button
+            type="button"
+            className="focus-ring"
             onClick={onCancel}
             disabled={busy}
             style={{
@@ -101,12 +103,14 @@ export function ConfirmDialog({
               cursor: busy ? 'default' : 'pointer', transition: 'background 0.12s',
               opacity: busy ? 0.6 : 1,
             }}
-            onMouseEnter={e => { if (!busy) e.currentTarget.style.backgroundColor = '#f9fafb'; }}
-            onMouseLeave={e => (e.currentTarget.style.backgroundColor = '#fff')}
+            onMouseEnter={e => { if (!busy) e.currentTarget.style.backgroundColor = 'hsl(var(--muted))'; }}
+            onMouseLeave={e => (e.currentTarget.style.backgroundColor = 'hsl(var(--card))')}
           >
             Cancel
           </button>
           <button
+            type="button"
+            className="focus-ring"
             onClick={onConfirm}
             disabled={busy}
             style={{

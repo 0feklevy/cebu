@@ -3,15 +3,21 @@
  *
  * Two passes over the source file, both streaming raw bytes from ffmpeg stdout
  * (the same approach HLSTranscoder uses for waveform peaks):
- *   • extractGrayFrames — decimated grayscale frames at a fixed sample rate and
- *     a small analysis resolution (we never need full-res for a 1-D crop signal).
- *   • extractMonoPcm    — 16 kHz mono float PCM for pitch analysis.
+ *   • streamRgbFrames — decimated rgb24 frames at a fixed sample rate and a small
+ *     analysis resolution, delivered one at a time (never fully buffered).
+ *   • extractMonoPcm  — 16 kHz mono float PCM for pitch analysis.
  *
  * Keeping the analysis resolution small (default 320×180) is the single biggest
  * speed win versus the Python reference, which decoded full-resolution frames.
+ *
+ * NOTE: buffering variants (that concat every decoded frame before returning) were
+ * removed (perf-009) — they were the exact OOM anti-pattern streamRgbFrames fixes.
+ * Do not re-introduce a whole-stream buffering frame extractor; add a streaming
+ * variant instead.
  */
 
 import { spawn } from 'child_process';
+import { logger } from '../../lib/logger.js';
 
 export interface ProbeResult {
   width: number;
@@ -58,95 +64,8 @@ export function probeVideo(inputPath: string): Promise<ProbeResult> {
   });
 }
 
-export interface GrayFrames {
-  width: number;      // analysis width (downscaled)
-  height: number;     // analysis height (downscaled)
-  fps: number;        // sample rate of the returned frames (== sampleFps)
-  frames: Uint8Array[]; // one gray8 buffer (width*height) per sampled frame
-}
-
 /**
- * Decode `sampleFps` grayscale frames per second at a small analysis resolution.
- * Frames are gray8 (1 byte/px), row-major. Returns them as an array of buffers.
- */
-export function extractGrayFrames(
-  inputPath: string,
-  analysisWidth = 320,
-  analysisHeight = 180,
-  sampleFps = 1,
-): Promise<GrayFrames> {
-  return new Promise((resolve, reject) => {
-    const frameBytes = analysisWidth * analysisHeight;
-    const proc = spawn('ffmpeg', [
-      '-y', '-i', inputPath,
-      '-an',                                       // no audio
-      '-vf', `fps=${sampleFps},scale=${analysisWidth}:${analysisHeight}`,
-      '-pix_fmt', 'gray',
-      '-f', 'rawvideo',
-      'pipe:1',
-      '-loglevel', 'error',
-    ], { stdio: ['ignore', 'pipe', 'pipe'] });
-
-    const chunks: Buffer[] = [];
-    const err: Buffer[] = [];
-    proc.stdout.on('data', (d: Buffer) => chunks.push(d));
-    proc.stderr.on('data', (d: Buffer) => err.push(d));
-    proc.on('error', reject);
-    proc.on('close', (code) => {
-      if (code !== 0) return reject(new Error(`ffmpeg frames failed: ${Buffer.concat(err).toString().slice(-400)}`));
-      const raw = Buffer.concat(chunks);
-      const nFrames = Math.floor(raw.length / frameBytes);
-      const frames: Uint8Array[] = [];
-      for (let i = 0; i < nFrames; i++) {
-        frames.push(new Uint8Array(raw.buffer, raw.byteOffset + i * frameBytes, frameBytes));
-      }
-      resolve({ width: analysisWidth, height: analysisHeight, fps: sampleFps, frames });
-    });
-  });
-}
-
-/**
- * Decode RGB frames (for shot detection via colour histograms) at the same
- * sample rate, at a coarse resolution. Returns interleaved rgb24 buffers.
- */
-export function extractRgbFrames(
-  inputPath: string,
-  analysisWidth = 64,
-  analysisHeight = 36,
-  sampleFps = 1,
-): Promise<{ width: number; height: number; frames: Uint8Array[] }> {
-  return new Promise((resolve, reject) => {
-    const frameBytes = analysisWidth * analysisHeight * 3;
-    const proc = spawn('ffmpeg', [
-      '-y', '-i', inputPath,
-      '-an',
-      '-vf', `fps=${sampleFps},scale=${analysisWidth}:${analysisHeight}`,
-      '-pix_fmt', 'rgb24',
-      '-f', 'rawvideo',
-      'pipe:1',
-      '-loglevel', 'error',
-    ], { stdio: ['ignore', 'pipe', 'pipe'] });
-
-    const chunks: Buffer[] = [];
-    const err: Buffer[] = [];
-    proc.stdout.on('data', (d: Buffer) => chunks.push(d));
-    proc.stderr.on('data', (d: Buffer) => err.push(d));
-    proc.on('error', reject);
-    proc.on('close', (code) => {
-      if (code !== 0) return reject(new Error(`ffmpeg rgb frames failed: ${Buffer.concat(err).toString().slice(-400)}`));
-      const raw = Buffer.concat(chunks);
-      const nFrames = Math.floor(raw.length / frameBytes);
-      const frames: Uint8Array[] = [];
-      for (let i = 0; i < nFrames; i++) {
-        frames.push(new Uint8Array(raw.buffer, raw.byteOffset + i * frameBytes, frameBytes));
-      }
-      resolve({ width: analysisWidth, height: analysisHeight, frames });
-    });
-  });
-}
-
-/**
- * Streaming variant of extractRgbFrames: invokes `onFrame` for each decoded rgb24 frame as it
+ * Streaming rgb24 frame decoder: invokes `onFrame` for each decoded rgb24 frame as it
  * arrives from ffmpeg, holding at most one frame (plus a sub-frame remainder) in memory instead
  * of buffering the entire decoded stream. For a 60-min take at 320×180 / 4 fps the buffered
  * approach concatenated ~2.5 GB of raw RGB; this keeps peak usage at one frame (perf-001).
@@ -154,8 +73,8 @@ export function extractRgbFrames(
  * `onFrame` runs synchronously inside the stdout 'data' handler, which naturally backpressures
  * ffmpeg (the OS pipe fills and ffmpeg blocks) so frames can't pile up. The Uint8Array passed to
  * `onFrame` is a view valid only for that call — consumers must copy anything they retain (the
- * crop analyzer's toGray() already allocates a fresh buffer). Frame count and ordering are
- * identical to extractRgbFrames (same ffmpeg invocation; trailing partial frame discarded).
+ * crop analyzer's toGray() already allocates a fresh buffer). A trailing partial frame is
+ * discarded.
  */
 export function streamRgbFrames(
   inputPath: string,
@@ -220,9 +139,27 @@ export function extractMonoPcm(inputPath: string, sr = 16000): Promise<Float32Ar
     ], { stdio: ['ignore', 'pipe', 'pipe'] });
 
     const chunks: Buffer[] = [];
+    const err: Buffer[] = [];
     proc.stdout.on('data', (d: Buffer) => chunks.push(d));
-    proc.on('error', () => resolve(new Float32Array(0)));
-    proc.on('close', () => {
+    proc.stderr.on('data', (d: Buffer) => err.push(d));
+    proc.on('error', (e) => {
+      // Spawn failure (e.g. ffmpeg missing). Surface it so a decode failure is not silently
+      // mistaken for "video has no audio", but still resolve empty so crop proceeds. (perf-011)
+      logger.warn({ err: e.message }, 'extractMonoPcm: ffmpeg spawn error — proceeding without audio');
+      resolve(new Float32Array(0));
+    });
+    proc.on('close', (code) => {
+      // A non-zero exit means the audio decode failed (corrupt/unsupported codec). Previously
+      // this was indistinguishable from a legitimately silent video; log the stderr tail so the
+      // degraded (visual-only) crop is observable, then still resolve empty. (perf-011)
+      if (code !== 0) {
+        logger.warn(
+          { code, stderr: Buffer.concat(err).toString().slice(-400) },
+          'extractMonoPcm: ffmpeg exited non-zero — proceeding without audio',
+        );
+        resolve(new Float32Array(0));
+        return;
+      }
       if (chunks.length === 0) { resolve(new Float32Array(0)); return; }
       const raw = Buffer.concat(chunks);
       const n = Math.floor(raw.byteLength / 2);

@@ -37,7 +37,15 @@ export function SimulationOverlay({ html, src, caption, visible, onDismiss }: Pr
   }, [visible, onDismiss]);
 
   useEffect(() => () => {
-    try { iframeRef.current?.contentWindow?.postMessage({ type: 'stopScript' }, '*'); } catch { /* noop */ }
+    try {
+      const frame = iframeRef.current;
+      if (!frame?.contentWindow) return;
+      // Target the iframe's real origin for a cross-origin (src) sim; srcDoc iframes are opaque
+      // ('null' origin) so they still need '*' (frontend-011).
+      let targetOrigin = '*';
+      try { if (frame.src) targetOrigin = new URL(frame.src).origin; } catch { /* opaque → '*' */ }
+      frame.contentWindow.postMessage({ type: 'stopScript' }, targetOrigin);
+    } catch { /* noop */ }
   }, []);
 
   return (

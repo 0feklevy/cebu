@@ -1,7 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { X, Sparkles, Play, Pause, Check, ChevronLeft, Upload, FileText, Trash2, Wrench, HelpCircle } from 'lucide-react';
+import { X, Sparkles, Play, Pause, Check, ChevronLeft, Upload, FileText, Trash2, Wrench } from 'lucide-react';
+import { TourButton } from '../TourButton';
 import {
   getAvatarConfig, saveAvatarConfig, listAnamResources, getByokStatus,
   listAvatarTools, listKnowledgeDocs, uploadKnowledgeDoc, deleteKnowledgeDoc,
@@ -259,7 +260,7 @@ export function AvatarSettingsModal({ open, onClose, projectId, videoTitle, embe
           <span className="avset__title">Ask-the-Avatar persona</span>
           {videoTitle && <span className="avset__chip">{videoTitle.slice(0, 40)}</span>}
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
-            <button className="avset__x" style={{ margin: 0 }} onClick={() => setTourOpen(true)} aria-label="Persona walkthrough" title="How this works"><HelpCircle size={15} /></button>
+            <TourButton style={{ margin: 0 }} onClick={() => setTourOpen(true)} aria-label="Persona walkthrough" title="How this works" />
             {!embedded && <button className="avset__x" style={{ margin: 0 }} onClick={onClose} aria-label="Close"><X size={15} /></button>}
           </div>
         </div>

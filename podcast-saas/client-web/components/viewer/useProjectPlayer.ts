@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import type { PlayerConfig, PlayerSegment, SimulationOverlay, TimelineSeg, BrollClip, ImageOverlayItem, AudioCutaway, PlayerBranchSequence, PlayerChoicePoint, PlayerBranchEdge } from './types';
+import { releaseAvatarElement } from '../../lib/avatarAudioGraph';
 
 const BRANCH_API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
 
@@ -1255,6 +1256,15 @@ export function useProjectPlayer(
       // the player unmounts (e.g. navigating away mid-cutaway or mid-guidance).
       if (audioCutawayRef.current) { audioCutawayRef.current.pause(); audioCutawayRef.current = null; }
       if (guidanceAudioRef.current) { guidanceAudioRef.current.pause(); guidanceAudioRef.current = null; }
+      // Restore the video volume that guided narration ducked to 0.2 — otherwise a
+      // cleanup that runs mid-cue leaves the element (and any re-mount reusing it)
+      // permanently capped. Clear the duck ref, then re-apply the true volume.
+      guidanceVolRef.current = null;
+      applyMediaVolume();
+      // Release the avatar-circle audio taps so unmounted video elements (and their
+      // WebAudio nodes) can be GC'd instead of accumulating across navigations. (perf-006)
+      releaseAvatarElement(refs.videoA.current);
+      releaseAvatarElement(refs.videoB.current);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

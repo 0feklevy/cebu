@@ -23,13 +23,13 @@ export function AskAvatarButton({ onClick, variant = 'floating', label = 'Ask!',
   }
   if (variant === 'pill') {
     return (
-      <button type="button" onClick={handle} title={title} className={`avatar-ask-pill ${className}`}>
+      <button type="button" onClick={handle} title={title} aria-label={title} className={`avatar-ask-pill ${className}`}>
         <Sparkles size={13} /> {label}
       </button>
     );
   }
   return (
-    <button type="button" onClick={handle} title={title} className={`avatar-ask-floating ${className}`}>
+    <button type="button" onClick={handle} title={title} aria-label={title} className={`avatar-ask-floating ${className}`}>
       <Sparkles size={16} /> {label}
     </button>
   );

@@ -45,20 +45,30 @@ import { captionUrlForVideo } from './captions/CaptionService.js';
  * endpoint, the single-video share endpoint, and the playlist play-config.
  *
  * Returns null if the project does not exist.
+ *
+ * `preloadedProject` lets a caller that already loaded the project row (e.g. the
+ * player-config controller does a visibility check first) hand it in so we don't
+ * re-SELECT the same row on the hot path (loadperf-002/backend-110).
  */
-export async function buildPlayerConfig(projectId: string, requesterUserId: string | null = null) {
+export async function buildPlayerConfig(
+  projectId: string,
+  requesterUserId: string | null = null,
+  preloadedProject?: typeof projects.$inferSelect,
+) {
   const storage = getStorageAdapter();
 
-  const project = await db.query.projects.findFirst({
-    where: eq(projects.id, projectId),
-  });
+  const project = preloadedProject && preloadedProject.id === projectId
+    ? preloadedProject
+    : await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
   if (!project) return null;
 
-  // These four only depend on project.id and are independent of each other — run them in
-  // one round-trip instead of four sequential ones. buildPlayerConfig is the hottest read
-  // path (every player-config / share / playlist-item / course render), so the serial waits
-  // added up (perf-003).
-  const [allVideos, sections, imageRows, audioRows] = await Promise.all([
+  // These queries only depend on project.id and are independent of each other — run them in
+  // ONE round-trip instead of four sequential ones plus the two once-serial follow-ups
+  // (scenes, branch_sequences). buildPlayerConfig is the hottest read path (every
+  // player-config / share / playlist-item / course render), so the serial waits added up
+  // (perf-003; scenes+branch_sequences folded in per loadperf-002/backend-110). Scenes and
+  // sequences are filtered/used in memory below exactly as before.
+  const [allVideos, sections, imageRows, audioRows, allScenes, sequenceRows] = await Promise.all([
     db.query.video_files.findMany({
       where: eq(video_files.project_id, project.id),
       orderBy: [asc(video_files.created_at)],
@@ -69,6 +79,11 @@ export async function buildPlayerConfig(projectId: string, requesterUserId: stri
     }),
     db.query.image_files.findMany({ where: eq(image_files.project_id, project.id) }),
     db.query.audio_files.findMany({ where: eq(audio_files.project_id, project.id) }),
+    db.query.scenes.findMany({ where: eq(scenes.project_id, project.id) }),
+    db.query.branch_sequences.findMany({
+      where: eq(branch_sequences.project_id, project.id),
+      orderBy: [asc(branch_sequences.sort_order), asc(branch_sequences.created_at)],
+    }),
   ]);
 
   // Main video segments (uploaded by user, not AI-generated broll sources)
@@ -246,7 +261,7 @@ export async function buildPlayerConfig(projectId: string, requesterUserId: stri
   // the viewer then animates all circles to the audio.
   let speakerTimeline: Array<{ speaker: string; start_sec: number; end_sec: number }> = [];
   if (avatarCircles) {
-    const allScenes = await db.query.scenes.findMany({ where: eq(scenes.project_id, project.id) });
+    // allScenes was fetched in the opening Promise.all (loadperf-002/backend-110).
     if (allScenes.length > 0) {
       const latestVersion = Math.max(...allScenes.map((s) => s.script_version));
       speakerTimeline = allScenes
@@ -275,11 +290,7 @@ export async function buildPlayerConfig(projectId: string, requesterUserId: stri
 
   let branching: BranchingBlock | null = null;
 
-  const sequenceRows = await db.query.branch_sequences.findMany({
-    where: eq(branch_sequences.project_id, project.id),
-    orderBy: [asc(branch_sequences.sort_order), asc(branch_sequences.created_at)],
-  });
-
+  // sequenceRows was fetched in the opening Promise.all (loadperf-002/backend-110).
   if (sequenceRows.length > 0) {
     const [choicePointRows, edgeRows] = await Promise.all([
       db.query.branch_choice_points.findMany({

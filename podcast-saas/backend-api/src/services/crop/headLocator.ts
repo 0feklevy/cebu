@@ -64,10 +64,32 @@ export function locateHeads(
     return { heads: [lx, rx], isTwoShot: true };
   }
 
-  // Single dominant person → no speaker switching, crop follows the interest map.
-  const only = left.val >= right.val ? left.idx : right.idx;
-  void mid;
+  // Single dominant person → pick the strongest person-energy column across the WHOLE frame.
+  // The two side-bands above miss a centred or off-band subject, and the raw profile lets on-
+  // screen text/graphics (high saliency, no skin) hijack the crop. dominantColumn gates saliency
+  // by skin and up-weights motion, so with several candidates the MOVING / speaking subject wins
+  // and static captions are discounted. (backend-102 — the fix for "crop lands on the wrong thing".)
+  void left; void right; void mid;
+  const only = dominantColumn(sk, sa, ac, n);
   return { heads: only >= 0 ? [only / (n - 1)] : [], isTwoShot: false };
+}
+
+/**
+ * Strongest single "person energy" column across the full usable frame width.
+ * energy = skin×2 + (saliency gated by skin)×0.6 + motion×1.2
+ *   • skin gate discounts high-saliency / low-skin columns → on-screen text & graphics.
+ *   • motion up-weight makes the moving / speaking subject win over static bystanders.
+ */
+function dominantColumn(sk: Float64Array, sa: Float64Array, ac: Float64Array, n: number): number {
+  const energy = new Float64Array(n);
+  for (let x = 0; x < n; x++) {
+    const skinGate = sk[x] > 0.15 ? 1 : 0.35;
+    energy[x] = sk[x] * 2.0 + sa[x] * 0.6 * skinGate + ac[x] * 1.2;
+  }
+  const smoothed = boxBlur(energy, Math.max(2, Math.floor(n * 0.05)));
+  // Exclude the extreme edges — the crop window can't centre there anyway.
+  const { idx } = argmaxRange(smoothed, Math.floor(n * 0.06), Math.floor(n * 0.94));
+  return idx;
 }
 
 /** Index of the head with the most motion energy in this frame (or null). */

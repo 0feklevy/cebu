@@ -6,7 +6,7 @@
 // (from the script timeline) animates at full level; the other is damped. When
 // the audio graph can't be tapped, bars fall back to a gentle idle motion.
 
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import type { AvatarCirclesConfig, AvatarCircleFace } from './types';
 import { activeSpeakerAt, type SpeakerSpan } from '../../lib/avatarCirclesViz';
@@ -39,7 +39,7 @@ function askClearancePx(viewport: { width: number; height: number }, controlsVis
   return controlsVisible ? 130 : 70;
 }
 
-export function AvatarCirclesOverlay({
+function AvatarCirclesOverlayInner({
   config,
   visible,
   videoARef,
@@ -131,3 +131,10 @@ export function AvatarCirclesOverlay({
     </div>
   );
 }
+
+// The canvas animation runs on its own rAF loop and reads live time via timeRef inside
+// getFrame, so this component only needs to re-render when its *layout* inputs change —
+// not on every ~250ms globalTime tick from the parent. Memoize on the layout-relevant
+// props; globalTime is still compared so timeRef stays fresh for speaker detection, but
+// unrelated parent re-renders no longer re-run all the layout math here. (perf-013)
+export const AvatarCirclesOverlay = memo(AvatarCirclesOverlayInner);

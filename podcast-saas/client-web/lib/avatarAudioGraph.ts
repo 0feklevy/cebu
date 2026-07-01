@@ -11,7 +11,11 @@
 let ctx: AudioContext | null = null;
 let analyser: AnalyserNode | null = null;
 let unsupported = false;
-const gains = new Map<HTMLMediaElement, GainNode>();
+interface Tap { gain: GainNode; source: MediaElementAudioSourceNode }
+// Keyed by the tapped <video>. Kept as a Map (not a WeakMap) because syncAvatarGains
+// must iterate the live taps every frame; entries are released explicitly via
+// releaseAvatarElement() from the player cleanup so unmounted elements don't leak. (perf-006)
+const taps = new Map<HTMLMediaElement, Tap>();
 
 function audioCtor(): typeof AudioContext | undefined {
   if (typeof window === 'undefined') return undefined;
@@ -38,14 +42,14 @@ export function ensureAvatarAnalyser(els: Array<HTMLMediaElement | null | undefi
       analyser.smoothingTimeConstant = 0.7;
     }
     for (const el of els) {
-      if (!el || gains.has(el)) continue;
+      if (!el || taps.has(el)) continue;
       try {
         const src = ctx.createMediaElementSource(el);
         const gain = ctx.createGain();
         src.connect(analyser);            // full-signal tap for the visualizer
         src.connect(gain);
         gain.connect(ctx.destination);    // audible path (volume/mute mirrored below)
-        gains.set(el, gain);
+        taps.set(el, { gain, source: src });
       } catch {
         // This element is already tapped elsewhere or can't be tapped — skip it
         // only (do NOT disable the whole feature).
@@ -60,8 +64,22 @@ export function ensureAvatarAnalyser(els: Array<HTMLMediaElement | null | undefi
 
 /** Mirror each tapped element's volume/muted into its gain (keeps the volume slider working). */
 export function syncAvatarGains(): void {
-  for (const [el, gain] of gains) {
+  for (const [el, { gain }] of taps) {
     const v = el.muted ? 0 : (Number.isFinite(el.volume) ? el.volume : 1);
     try { gain.gain.value = v; } catch { /* ignore */ }
   }
+}
+
+/**
+ * Detach a media element from the shared graph and drop its tap, so unmounted
+ * players don't leak GainNode/MediaElementSourceNode references indefinitely.
+ * Safe to call for an untapped element. (perf-006)
+ */
+export function releaseAvatarElement(el: HTMLMediaElement | null | undefined): void {
+  if (!el) return;
+  const tap = taps.get(el);
+  if (!tap) return;
+  try { tap.source.disconnect(); } catch { /* ignore */ }
+  try { tap.gain.disconnect(); } catch { /* ignore */ }
+  taps.delete(el);
 }

@@ -7,6 +7,7 @@ import { Archive, Check, ChevronDown, ChevronUp, Copy, Download, Maximize2, Mini
 import type { TimelineSection, Simulation, VideoFile, VideoGenerationJob, SimFile, SimMeta, ImageFile, GuidanceEntry, GuidanceMeta, GuidanceStatus } from 'shared/src/generated/client-v1';
 import { api } from '../lib/api';
 import { GuidedTour, type TourStep } from './GuidedTour';
+import { TourButton } from './TourButton';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
 
@@ -959,20 +960,11 @@ export function SectionEditor({
             </span>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
-            <button
+            <TourButton
               onClick={() => setTourOpen(true)}
               title="Walk me through this section"
               aria-label="Walk me through this section"
-              style={{
-                width: 30, height: 30, borderRadius: 8, border: 'none', backgroundColor: 'transparent',
-                cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                color: 'hsl(var(--shell-muted))', fontSize: 15, fontWeight: 700,
-              }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--shell-hover)'; (e.currentTarget as HTMLElement).style.color = 'hsl(var(--shell-foreground))'; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent'; (e.currentTarget as HTMLElement).style.color = 'hsl(var(--shell-muted))'; }}
-            >
-              ?
-            </button>
+            />
             <button
               onClick={onClose}
               style={{

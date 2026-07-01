@@ -8,6 +8,7 @@ import { LockPriceControl } from './LockPriceControl';
 import { AvatarSettingsModal } from './avatar/AvatarSettingsModal';
 import { AvatarCirclesSettings } from './avatar/AvatarCirclesSettings';
 import { GuidedTour, type TourStep } from './GuidedTour';
+import { TourButton } from './TourButton';
 import type { Project, VideoFile } from 'shared/src/generated/client-v1';
 
 interface Props {
@@ -466,17 +467,15 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
             )}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
-            <button
+            <TourButton
               onClick={() => setSettingsTourOpen(true)}
               title="Walk me through these settings"
               aria-label="Walk me through these settings"
-              style={{ width: 30, height: 30, borderRadius: 8, border: 'none', backgroundColor: 'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'hsl(var(--shell-muted))', fontSize: 15, fontWeight: 700 }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--shell-hover)'; (e.currentTarget as HTMLElement).style.color = 'hsl(var(--shell-foreground))'; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent'; (e.currentTarget as HTMLElement).style.color = 'hsl(var(--shell-muted))'; }}
-            >
-              ?
-            </button>
+            />
             <button
+              type="button"
+              className="focus-ring"
+              aria-label="Close settings"
               onClick={() => setOpen(false)}
               style={{ width: 30, height: 30, borderRadius: 8, border: 'none', backgroundColor: 'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'hsl(var(--shell-muted))' }}
               onMouseEnter={e => { (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--shell-hover)'; (e.currentTarget as HTMLElement).style.color = 'hsl(var(--shell-foreground))'; }}
@@ -570,6 +569,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
                 <input
                   value={prompt} onChange={e => setPrompt(e.target.value)}
                   placeholder='Hint for the AI image (optional)'
+                  aria-label="Hint for AI thumbnail generation"
                   style={{ ...inputStyle, height: 36, fontSize: 13 }}
                   onFocus={e => (e.target.style.borderColor = '#a855f7')}
                   onBlur={e => (e.target.style.borderColor = 'hsl(var(--border))')}
@@ -615,6 +615,8 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
                     <span style={{ fontSize: 14, fontWeight: 700, color: '#a855f7', fontVariantNumeric: 'tabular-nums', minWidth: 44, textAlign: 'right' }}>{fmtTime(timelineSec)}</span>
                   </div>
                   <input type="range" min={0} max={Math.floor(dur)} step={1} value={timelineSec}
+                    aria-label="Timeline frame scrubber"
+                    aria-valuetext={fmtTime(timelineSec)}
                     onChange={e => {
                       const sec = Number(e.target.value);
                       setTimelineSec(sec);
@@ -680,12 +682,14 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 <input
                   value={title} onChange={e => setTitle(e.target.value)} placeholder="Video name"
+                  aria-label="Video title"
                   style={inputStyle}
                   onFocus={e => (e.target.style.borderColor = '#a855f7')}
                   onBlur={e => (e.target.style.borderColor = 'hsl(var(--border))')}
                 />
                 <textarea
                   value={desc} onChange={e => setDesc(e.target.value)} rows={6} placeholder="What is this video about?"
+                  aria-label="Video description"
                   style={{ ...inputStyle, height: 'auto', padding: '12px 14px', resize: 'vertical', lineHeight: 1.6, minHeight: 120 }}
                   onFocus={e => (e.target.style.borderColor = '#a855f7')}
                   onBlur={e => (e.target.style.borderColor = 'hsl(var(--border))')}

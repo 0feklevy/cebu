@@ -24,7 +24,8 @@ export async function registerShareRoutes(app: FastifyInstance): Promise<void> {
 
       if (project.access_type === 'paid') {
         const userId = request.dbUser?.id ?? null;
-        const hasAccess = await BillingService.hasAccess(userId, 'project', project.id);
+        // Reuse the already-loaded project row (loadperf-002/backend-110).
+        const hasAccess = await BillingService.hasAccess(userId, 'project', project.id, project);
         if (!hasAccess) {
           return reply.send({
             locked: true, content_type: 'project', content_id: project.id,
@@ -33,7 +34,7 @@ export async function registerShareRoutes(app: FastifyInstance): Promise<void> {
         }
       }
 
-      const config = await buildPlayerConfig(project.id);
+      const config = await buildPlayerConfig(project.id, null, project);
       if (!config) return reply.code(404).send({ message: 'Shared video not found' });
 
       // Fire-and-forget view count increment

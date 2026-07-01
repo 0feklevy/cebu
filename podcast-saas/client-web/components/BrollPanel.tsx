@@ -201,6 +201,10 @@ export function BrollPanel({ projectId, mark, videos, jobs, onNewJob, onJobUpdat
                     <p className="text-[9px] text-muted-foreground">Add camera motion, lighting, and style.</p>
                   </div>
                   <button
+                    type="button"
+                    role="switch"
+                    aria-checked={enhance}
+                    aria-label="Enhance prompt"
                     onClick={() => setEnhance(v => !v)}
                     className="relative w-9 h-5 rounded-full transition-colors shrink-0 focus-ring"
                     style={{ backgroundColor: enhance ? '#06b6d4' : '#d1d5db' }}

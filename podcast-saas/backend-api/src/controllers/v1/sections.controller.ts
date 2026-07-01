@@ -12,6 +12,20 @@ import { UsageTrackingService } from '../../services/usage/UsageTrackingService.
 
 const _llmService = new LLMService(new ApiKeyService(), new UsageTrackingService());
 
+// Single shared SimulationService for this controller. The bridge.js read-modify-write
+// lock (SimulationService.withBridgeLock) lives in a per-INSTANCE map, so a new instance
+// per request only serialized retries within one call — two different sections of the SAME
+// simulation generating concurrently each read the same bridge.js and the later write
+// clobbered the earlier section's entry. Sharing one instance (hence one bridgeLocks map)
+// across requests makes the lock effective process-wide. Lazily constructed so the storage
+// adapter is resolved AFTER the startup R2→local probe (getStorageAdapter can be flipped to
+// local at boot). (backend-101; still process-local — a cluster needs a durable advisory lock.)
+let _simService: SimulationService | null = null;
+function getSimService(): SimulationService {
+  if (!_simService) _simService = new SimulationService(getStorageAdapter(), _llmService);
+  return _simService;
+}
+
 // Per-section generation lock: two near-simultaneous generate requests for the SAME section
 // (double-click, retry, two editor tabs) both read the same conversationHistory and race the
 // final write, so the later one clobbers the earlier and the merged bridge can reference a URL
@@ -122,7 +136,9 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       // Resolve simulation_url from simulation_id if provided
       let resolvedSimUrl = simulation_url ?? null;
       if (simulation_id && !resolvedSimUrl) {
-        const sim = await db.query.simulations.findFirst({ where: eq(simulations.id, simulation_id) });
+        const sim = await db.query.simulations.findFirst({
+          where: and(eq(simulations.id, simulation_id), eq(simulations.project_id, project.id)),
+        });
         resolvedSimUrl = resolveSimEntryUrl(sim?.entry_file ?? null);
       }
 
@@ -211,7 +227,9 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       let resolvedSimUrl: string | null | undefined = rest.simulation_url;
       if (simulation_id !== undefined && simulation_id !== existing.simulation_id) {
         if (simulation_id) {
-          const sim = await db.query.simulations.findFirst({ where: eq(simulations.id, simulation_id) });
+          const sim = await db.query.simulations.findFirst({
+            where: and(eq(simulations.id, simulation_id), eq(simulations.project_id, project.id)),
+          });
           resolvedSimUrl = resolveSimEntryUrl(sim?.entry_file ?? null);
         } else {
           resolvedSimUrl = null;
@@ -332,7 +350,7 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, SIM_GEN_TIMEOUT_MS);
 
       try {
-        const svc = new SimulationService(getStorageAdapter(), _llmService);
+        const svc = getSimService();
 
         // Read stored metadata safely — handle all planVersions (3, 4, 5) and missing fields
         const storedMeta = section.sim_meta as (Record<string, unknown> & {
@@ -480,7 +498,7 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       activeSimGenerations.add(section.id);
       reply.raw.on('finish', () => activeSimGenerations.delete(section.id));
 
-      const svc = new SimulationService(getStorageAdapter(), _llmService);
+      const svc = getSimService();
 
       // canReuse: same prompt + bridge exists + supportsRuntimeParams (planVersion 5+)
       const storedMeta2 = section.sim_meta as (Record<string, unknown> & {

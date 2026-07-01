@@ -493,6 +493,19 @@ export const timeline_sections = pgTable('timeline_sections', {
   created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+// Editor timeline markers (migration 041) — Premiere-style flags the editor drops at a point
+// on the timeline (button or "m" hotkey) so they don't forget a note while cutting. Positioned
+// by absolute seconds on the global main timeline; rendered as a red vertical line + note.
+export const timeline_markers = pgTable('timeline_markers', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  project_id: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  at_sec: real('at_sec').notNull(),                          // absolute position on the global main timeline
+  label: text('label'),
+  notes: text('notes'),
+  color: text('color').notNull().default('#ef4444'),         // red, matching the playhead
+  created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const video_generation_jobs = pgTable('video_generation_jobs', {
   id: uuid('id').primaryKey().defaultRandom(),
   project_id: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
@@ -913,6 +926,7 @@ export type VideoFile = typeof video_files.$inferSelect;
 export type ImageFile = typeof image_files.$inferSelect;
 export type AudioFile = typeof audio_files.$inferSelect;
 export type TimelineSection = typeof timeline_sections.$inferSelect;
+export type TimelineMarker = typeof timeline_markers.$inferSelect;
 export type VideoGenerationJob = typeof video_generation_jobs.$inferSelect;
 export type CameraPlan = typeof camera_plans.$inferSelect;
 export type Course = typeof courses.$inferSelect;

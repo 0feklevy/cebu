@@ -25,6 +25,8 @@ import { registerProjectRoutes } from './controllers/v1/projects.controller.js';
 import { registerCorpusRoutes } from './controllers/v1/corpus.controller.js';
 import { registerVideoRoutes } from './controllers/v1/video.controller.js';
 import { registerSectionsRoutes } from './controllers/v1/sections.controller.js';
+import { registerMarkersRoutes } from './controllers/v1/markers.controller.js';
+import { registerEditorStateRoutes } from './controllers/v1/editor-state.controller.js';
 import { registerAdminSettingsRoutes } from './controllers/admin/v1/settings.controller.js';
 import { registerAdminSystemPromptRoutes } from './controllers/admin/v1/system-prompts.controller.js';
 import { registerAdminLlmConfigRoutes } from './controllers/admin/v1/llm-config.controller.js';
@@ -377,6 +379,29 @@ async function build() {
       const contentType = getSimulationContentType(key);
       const storage = getStorageAdapter();
 
+      // Restrictive CSP for served sims (security-003). The sim body is arbitrary
+      // user-uploaded HTML/JS, so we keep script/style/img/etc. permissive (inline +
+      // data/blob) to avoid breaking legit sims, but lock down the ambient surface:
+      //  • frame-ancestors → only the app origin(s), so a private sim URL can't be
+      //    reframed/clickjacked by an attacker page.
+      //  • base-uri/form-action → 'self', so a sim can't retarget navigation/base to
+      //    attacker infrastructure.
+      // Note: dropping the iframe's `allow-same-origin` sandbox flag (the fuller
+      // security-003 hardening) is deferred — it would break sims that use
+      // localStorage/canvas-with-same-origin-data and needs runtime verification.
+      const appOrigin = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
+      const simCsp = [
+        "default-src 'self' data: blob:",
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data: blob: https:",
+        "font-src 'self' data: https:",
+        "connect-src 'self' data: blob:",
+        `frame-ancestors ${appOrigin} http://localhost:3001`,
+        "base-uri 'self'",
+        "form-action 'self'",
+      ].join('; ');
+
       // Local disk: stream from the filesystem with HTTP Range support.
       if (storage instanceof LocalStorageAdapter) {
         const filePath = safeLocalPath(LOCAL_STORAGE_BASE_DIR, key);
@@ -386,6 +411,7 @@ async function build() {
             'X-Content-Type-Options': 'nosniff',
             'Cross-Origin-Resource-Policy': 'cross-origin',
             'Access-Control-Allow-Origin': '*',
+            'Content-Security-Policy': simCsp,
           },
         });
       }
@@ -400,6 +426,7 @@ async function build() {
           .header('X-Content-Type-Options', 'nosniff')
           .header('Cross-Origin-Resource-Policy', 'cross-origin')
           .header('Access-Control-Allow-Origin', '*')
+          .header('Content-Security-Policy', simCsp)
           .header('Cache-Control', 'public, max-age=300')
           .send(buf);
       } catch (err) {
@@ -435,6 +462,8 @@ async function build() {
   await registerCorpusRoutes(app);
   await registerVideoRoutes(app);
   await registerSectionsRoutes(app);
+  await registerMarkersRoutes(app);
+  await registerEditorStateRoutes(app);
   await registerSimulationsRoutes(app);
   await registerBrollRoutes(app);
   await registerImageRoutes(app);

@@ -32,7 +32,13 @@ export function AvatarPopup({ open, onClose, projectId, videoTitle, characterId 
     pausedVideos.current = videos.filter((v) => !v.paused);
     pausedVideos.current.forEach((v) => { try { v.pause(); } catch { /* noop */ } });
     return () => {
-      pausedVideos.current.forEach((v) => { try { void v.play().catch(() => {}); } catch { /* noop */ } });
+      // Only resume videos we paused that are still paused at close-time. If another
+      // effect resumed/started a video while the popup was open, re-check v.paused so
+      // we don't spuriously replay it.
+      pausedVideos.current.forEach((v) => {
+        if (!v.paused) return;
+        try { void v.play().catch(() => {}); } catch { /* noop */ }
+      });
       pausedVideos.current = [];
     };
   }, [open]);

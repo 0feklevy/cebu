@@ -40,6 +40,29 @@ export function AvatarCircleViz({ config, face, size, frame, getFrame }: Props) 
     let raf = 0;
     let phase = 0;
 
+    // Cache the gradient stroke style — it only depends on frame + the color config,
+    // never on the per-frame audio data, so recreating it every rAF tick is wasteful
+    // (a GPU-backed CanvasGradient alloc at 60fps per circle). Rebuild only when one of
+    // its inputs changes. (perf-004)
+    let cachedStroke: string | CanvasGradient | null = null;
+    let strokeKey = '';
+    const resolveStroke = (cfg: AvatarCirclesConfig): string | CanvasGradient => {
+      const key = cfg.colorMode === 'gradient'
+        ? `g:${cfg.barColor ?? '#a855f7'}:${cfg.gradientEnd ?? '#6366f1'}:${frame}`
+        : `s:${cfg.barColor ?? '#a855f7'}`;
+      if (cachedStroke !== null && key === strokeKey) return cachedStroke;
+      strokeKey = key;
+      if (cfg.colorMode === 'gradient') {
+        const g = ctx.createLinearGradient(0, 0, 0, frame);
+        g.addColorStop(0, cfg.barColor ?? '#a855f7');
+        g.addColorStop(1, cfg.gradientEnd ?? '#6366f1');
+        cachedStroke = g;
+      } else {
+        cachedStroke = cfg.barColor ?? '#a855f7';
+      }
+      return cachedStroke;
+    };
+
     const tick = () => {
       raf = requestAnimationFrame(tick);
       const { spectrum, level, running } = getFrameRef.current();
@@ -57,7 +80,7 @@ export function AvatarCircleViz({ config, face, size, frame, getFrame }: Props) 
       }
 
       barsRef.current = computeBars(data, cfg, barsRef.current, lvl);
-      render(ctx, frame, size, cfg, barsRef.current);
+      render(ctx, frame, size, cfg, barsRef.current, resolveStroke(cfg));
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
@@ -80,7 +103,7 @@ export function AvatarCircleViz({ config, face, size, frame, getFrame }: Props) 
   );
 }
 
-function render(ctx: CanvasRenderingContext2D, frame: number, size: number, cfg: AvatarCirclesConfig, bars: number[]) {
+function render(ctx: CanvasRenderingContext2D, frame: number, size: number, cfg: AvatarCirclesConfig, bars: number[], strokeStyle: string | CanvasGradient) {
   ctx.clearRect(0, 0, frame, frame);
   const cx = frame / 2, cy = frame / 2;
   const innerR = size / 2 + 3;
@@ -90,16 +113,8 @@ function render(ctx: CanvasRenderingContext2D, frame: number, size: number, cfg:
   const rot = ((cfg.rotationOffset ?? 180) * Math.PI) / 180;
   const barWidth = Math.max(1, Math.min(18, (cfg.barWidth ?? 12) * (size / 256)));
 
-  // Stroke style computed ONCE per frame (identical for every bar).
-  let strokeStyle: string | CanvasGradient;
-  if (cfg.colorMode === 'gradient') {
-    const g = ctx.createLinearGradient(0, 0, 0, frame);
-    g.addColorStop(0, cfg.barColor ?? '#a855f7');
-    g.addColorStop(1, cfg.gradientEnd ?? '#6366f1');
-    strokeStyle = g;
-  } else {
-    strokeStyle = cfg.barColor ?? '#a855f7';
-  }
+  // Stroke style is resolved/cached by the caller (identical for every bar; only
+  // rebuilt when frame or the color config changes — see resolveStroke, perf-004).
   ctx.strokeStyle = strokeStyle;
   ctx.lineCap = cfg.roundedBars === false ? 'butt' : 'round';
   ctx.lineWidth = barWidth;

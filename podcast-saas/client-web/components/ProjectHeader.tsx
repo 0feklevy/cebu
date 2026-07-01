@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import Link from 'next/link';
-import { ArrowLeft, Check, Copy, ExternalLink, Eye, HelpCircle, Link2, Loader2, Share2, Unlink2, X } from 'lucide-react';
+import { ArrowLeft, Check, Copy, ExternalLink, Eye, Link2, Loader2, Share2, Unlink2, X } from 'lucide-react';
+import { TourButton } from './TourButton';
 import { api, createShareToken, revokeShareToken } from '../lib/api';
 import { ProjectSettingsPanel } from './ProjectSettingsPanel';
 import { useAuth } from '../lib/firebase';
@@ -32,6 +33,7 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
 export function ProjectHeader({ projectId }: Props) {
   const { loading: authLoading } = useAuth();
   const [project,       setProject]       = useState<Project | null>(null);
+  const [hasMainVideo,  setHasMainVideo]   = useState(false);
   const [shareToken,    setShareToken]     = useState<string | null>(null);
   const [shareLoading,  setShareLoading]   = useState(false);
   const [shareCopied,   setShareCopied]    = useState(false);
@@ -44,6 +46,9 @@ export function ProjectHeader({ projectId }: Props) {
   useEffect(() => {
     if (authLoading) return;
     api.getProject(projectId).then(setProject).catch(() => null);
+    // Preview/Share are gated on whether an actual main clip exists in the timeline (not on
+    // project.status, which stays 'draft' even after a clip is uploaded).
+    api.listVideos(projectId).then(vs => setHasMainVideo(vs.some(v => !v.is_broll))).catch(() => {});
 
     // Check for an existing share token
     import('../lib/firebase').then(({ auth: fa }) => {
@@ -89,8 +94,9 @@ export function ProjectHeader({ projectId }: Props) {
 
   const statusStyle = project ? (STATUS_STYLES[project.status] ?? 'bg-muted text-muted-foreground') : '';
   const statusLabel = project ? (STATUS_LABELS[project.status] ?? project.status) : '';
-  // No video uploaded yet → Preview/Share aren't meaningful, so disable them.
-  const noVideos = !project || project.status === 'draft';
+  // Only disable Preview/Share when the timeline has no main clip (fresh project). Once any main
+  // video exists they're enabled — regardless of project.status, which lingers at 'draft'.
+  const noVideos = !hasMainVideo;
   const rawTitle    = project?.title ?? project?.topic ?? '';
   const title       = rawTitle.length > 60 ? rawTitle.slice(0, 60) + '…' : rawTitle;
   const shareUrl    = shareToken && typeof window !== 'undefined' ? `${window.location.origin}/v/${shareToken}` : null;
@@ -171,16 +177,11 @@ export function ProjectHeader({ projectId }: Props) {
         <span className="hidden min-[390px]:inline">Preview</span>
       </a>
 
-      <button
-        type="button"
+      <TourButton
         onClick={() => window.dispatchEvent(new Event('editor:start-tour'))}
-        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border shell-muted transition-colors shell-hover hover:text-[hsl(var(--shell-foreground))] focus-ring"
-        style={{ borderColor: 'hsl(var(--shell-border))' }}
         title="Editor walkthrough"
         aria-label="Editor walkthrough"
-      >
-        <HelpCircle size={14} strokeWidth={1.8} aria-hidden />
-      </button>
+      />
 
       <ProjectSettingsPanel
         projectId={projectId}

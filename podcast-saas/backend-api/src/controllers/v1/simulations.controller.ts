@@ -552,6 +552,25 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
     },
   );
 
+  // PATCH /api/v1/projects/:id/simulations/:simId — rename the simulation
+  app.patch<{ Params: { id: string; simId: string }; Body: { name?: string } }>(
+    '/api/v1/projects/:id/simulations/:simId',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const owned = await loadOwnedSim(user.id, request.params.id, request.params.simId);
+      if (!owned) return reply.code(404).send({ message: 'Simulation not found' });
+
+      const name = (request.body?.name ?? '').trim();
+      if (!name) return reply.code(400).send({ message: 'name is required' });
+
+      const [updated] = await db.update(simulations)
+        .set({ name })
+        .where(eq(simulations.id, owned.sim.id)).returning();
+      return reply.send(serializeSim(updated));
+    },
+  );
+
   // GET /api/v1/projects/:id/simulations/:simId/publish-guidance/stream
   // SSE — synthesize audio, assemble guidance.js, inject into entry HTML. Auth via ?token=.
   app.get<{ Params: { id: string; simId: string } }>(

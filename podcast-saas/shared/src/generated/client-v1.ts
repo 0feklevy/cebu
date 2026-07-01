@@ -164,6 +164,27 @@ export interface TimelineSection {
   created_at: string;
 }
 
+export interface TimelineMarker {
+  id: string;
+  project_id: string;
+  at_sec: number;              // absolute position on the global main timeline
+  label: string | null;
+  notes: string | null;
+  color: string;               // hex, defaults to '#ef4444' (red)
+  created_at: string;
+}
+
+// Aggregate editor bootstrap — the 6 editor lists in one round-trip. Each field is shaped
+// identically to its standalone list endpoint (loadperf-003).
+export interface EditorState {
+  videos: VideoFile[];
+  sections: TimelineSection[];
+  simulations: Simulation[];
+  brollJobs: VideoGenerationJob[];
+  images: ImageFile[];
+  audioFiles: AudioFile[];
+}
+
 export interface ImageFile {
   id: string;
   project_id: string;
@@ -717,6 +738,37 @@ export class ClientV1Api {
     return this.request(`/api/v1/projects/${projectId}/sections/${sectionId}`, { method: 'DELETE' });
   }
 
+  // ── Aggregate editor bootstrap ────────────────────────────────────────────
+
+  getEditorState(projectId: string): Promise<EditorState> {
+    return this.request(`/api/v1/projects/${projectId}/editor-state`);
+  }
+
+  // ── Timeline Markers (editor flags) ───────────────────────────────────────
+
+  listMarkers(projectId: string): Promise<TimelineMarker[]> {
+    return this.request(`/api/v1/projects/${projectId}/markers`);
+  }
+
+  createMarker(
+    projectId: string,
+    body: { at_sec: number; label?: string | null; notes?: string | null; color?: string | null },
+  ): Promise<TimelineMarker> {
+    return this.request(`/api/v1/projects/${projectId}/markers`, { method: 'POST', body });
+  }
+
+  updateMarker(
+    projectId: string,
+    markerId: string,
+    body: Partial<{ at_sec: number; label: string | null; notes: string | null; color: string | null }>,
+  ): Promise<TimelineMarker> {
+    return this.request(`/api/v1/projects/${projectId}/markers/${markerId}`, { method: 'PATCH', body });
+  }
+
+  deleteMarker(projectId: string, markerId: string): Promise<void> {
+    return this.request(`/api/v1/projects/${projectId}/markers/${markerId}`, { method: 'DELETE' });
+  }
+
   // ── Branching Interactive Videos ──────────────────────────────────────────
   getBranching(projectId: string): Promise<BranchGraph> {
     return this.request(`/api/v1/projects/${projectId}/branching`);
@@ -904,6 +956,10 @@ export class ClientV1Api {
 
   deleteSimulation(projectId: string, simId: string): Promise<void> {
     return this.request(`/api/v1/projects/${projectId}/simulations/${simId}`, { method: 'DELETE' });
+  }
+
+  updateSimulation(projectId: string, simId: string, body: { name: string }): Promise<Simulation> {
+    return this.request(`/api/v1/projects/${projectId}/simulations/${simId}`, { method: 'PATCH', body });
   }
 
   listSimFiles(projectId: string, simId: string): Promise<SimFile[]> {

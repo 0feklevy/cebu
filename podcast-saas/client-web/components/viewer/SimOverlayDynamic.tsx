@@ -23,6 +23,7 @@ export function SimOverlayDynamic({ simulationUrl, visible, iframeRef }: Props) 
       <iframe
         ref={iframeRef}
         src={simulationUrl}
+        loading="lazy"
         className="w-full h-full border-0"
         sandbox="allow-scripts allow-same-origin allow-forms"
         title="Interactive simulation"

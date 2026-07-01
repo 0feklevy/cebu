@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { AlertTriangle, Clapperboard, GitBranch, Maximize2, Minimize2, Music, Plus, Redo2, RefreshCw, Sparkles, Trash2, Undo2, Upload } from 'lucide-react';
+import { AlertTriangle, Clapperboard, Flag, GitBranch, Maximize2, Minimize2, Music, Pencil, Plus, Redo2, RefreshCw, Sparkles, Trash2, Undo2, Upload } from 'lucide-react';
 import { useAuth } from '../lib/firebase';
 import { api } from '../lib/api';
 import { VideoPlayer } from './VideoPlayer';
@@ -17,7 +17,7 @@ import { ImageCropEditor } from './ImageCropEditor';
 import { ExtendedLibraryModal } from './avatar/ExtendedLibraryModal';
 import { BranchingModal } from './branching/BranchingModal';
 import { getAvatarCircles, type AvatarCirclesConfig } from './avatar/avatarApi';
-import type { VideoFile, TimelineSection, Simulation, VideoGenerationJob, ImageFile, AudioFile } from 'shared/src/generated/client-v1';
+import type { VideoFile, TimelineSection, TimelineMarker, Simulation, VideoGenerationJob, ImageFile, AudioFile } from 'shared/src/generated/client-v1';
 
 type ToolMode = 'video' | 'simulation' | 'broll';
 
@@ -45,6 +45,9 @@ function EditorToolsPanel({
   toolMode,
   layersVisible,
   onToggleAllLayers,
+  flagMode,
+  onToggleFlagMode,
+  markerCount,
   onUndo,
   onRedo,
   canUndo,
@@ -54,6 +57,9 @@ function EditorToolsPanel({
   toolMode: ToolMode;
   layersVisible: boolean;
   onToggleAllLayers: () => void;
+  flagMode: boolean;
+  onToggleFlagMode: () => void;
+  markerCount: number;
   onUndo: () => void;
   onRedo: () => void;
   canUndo: boolean;
@@ -64,25 +70,48 @@ function EditorToolsPanel({
 
   return (
     <div className="surface-panel shrink-0 rounded-lg px-3 py-3">
-      <button
-        type="button"
-        onClick={onToggleAllLayers}
-        className={`flex min-h-11 w-full items-center gap-2 rounded-lg border px-3 py-2 text-left transition-colors focus-ring ${
-          layersActive
-            ? 'border-cyan-400 bg-cyan-50 text-cyan-700'
-            : 'border-border bg-card text-foreground hover:border-cyan-300 hover:bg-cyan-50/60'
-        }`}
-      >
-        <Clapperboard size={18} strokeWidth={1.9} aria-hidden />
-        <span className="min-w-0">
-          <span className="block text-xs font-semibold leading-tight">
-            {layersActive ? 'Hide all layers' : 'Show all layers'}
+      <div className="flex items-stretch gap-2">
+        <button
+          type="button"
+          onClick={onToggleAllLayers}
+          className={`flex min-h-11 flex-1 items-center gap-2 rounded-lg border px-3 py-2 text-left transition-colors focus-ring ${
+            layersActive
+              ? 'border-cyan-400 bg-cyan-50 text-cyan-700'
+              : 'border-border bg-card text-foreground hover:border-cyan-300 hover:bg-cyan-50/60'
+          }`}
+        >
+          <Clapperboard size={18} strokeWidth={1.9} aria-hidden />
+          <span className="min-w-0">
+            <span className="block text-xs font-semibold leading-tight">
+              {layersActive ? 'Hide all layers' : 'Show all layers'}
+            </span>
+            <span className={`block truncate text-[10px] leading-tight ${layersActive ? 'opacity-75' : 'text-muted-foreground'}`}>
+              {layersActive ? 'Hide additional channels' : 'Add a cutaway layer'}
+            </span>
           </span>
-          <span className={`block truncate text-[10px] leading-tight ${layersActive ? 'opacity-75' : 'text-muted-foreground'}`}>
-            {layersActive ? 'Hide additional channels' : 'Add a cutaway layer'}
-          </span>
-        </span>
-      </button>
+        </button>
+        <button
+          type="button"
+          onClick={onToggleFlagMode}
+          aria-pressed={flagMode}
+          title={flagMode
+            ? 'Flag mode ON — click the timeline to drop flags (or press M). Click here to exit.'
+            : 'Flag mode — click, then click the timeline to drop editor flags (or press M)'}
+          aria-label={flagMode ? 'Exit flag mode' : 'Enter flag mode to drop timeline markers'}
+          className={`relative flex min-h-11 w-11 shrink-0 items-center justify-center rounded-lg border transition-colors focus-ring ${
+            flagMode
+              ? 'border-red-500 bg-red-500 text-white shadow-sm'
+              : 'border-border bg-card text-red-500 hover:border-red-300 hover:bg-red-50/70'
+          }`}
+        >
+          <Flag size={18} strokeWidth={1.9} aria-hidden />
+          {markerCount > 0 && (
+            <span className={`absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[9px] font-bold ${flagMode ? 'bg-white text-red-600' : 'bg-red-500 text-white'}`}>
+              {markerCount}
+            </span>
+          )}
+        </button>
+      </div>
 
       <div className="mt-3 grid grid-cols-2 gap-2 border-t border-border/60 pt-3">
         <button
@@ -207,6 +236,7 @@ export function VideoEditor({ projectId }: Props) {
   const [replacingVideoId, setReplacingVideoId] = useState<string | null>(null); // Library "Replace" target
   const [avatarCircles, setAvatarCircles] = useState<AvatarCirclesConfig | null>(null);
   const [sections, setSections] = useState<TimelineSection[]>([]);
+  const [markers, setMarkers] = useState<TimelineMarker[]>([]);
   const [undoStack, setUndoStack] = useState<SectionSnapshot[]>([]);
   const [redoStack, setRedoStack] = useState<SectionSnapshot[]>([]);
   const [historyBusy, setHistoryBusy] = useState(false);
@@ -229,6 +259,8 @@ export function VideoEditor({ projectId }: Props) {
   const audioFileInputRef = useRef<HTMLInputElement>(null);
   const [deletingImgId, setDeletingImgId] = useState<string | null>(null);
   const [deletingSimId, setDeletingSimId] = useState<string | null>(null);
+  const [renamingSimId, setRenamingSimId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft]     = useState('');
   const [deletingId,    setDeletingId]    = useState<string | null>(null);
   // Confirm dialogs
   const [confirmVideo, setConfirmVideo] = useState<string | null>(null);  // videoId to delete
@@ -270,14 +302,25 @@ export function VideoEditor({ projectId }: Props) {
 
   const loadData = useCallback(async () => {
     try {
-      const [vids, secs, sims, jobs, imgs, auds] = await Promise.all([
-        api.listVideos(projectId),
-        api.listSections(projectId),
-        api.listSimulations(projectId),
-        api.listBrollJobs(projectId),
-        api.listImages(projectId),
-        api.listAudioFiles(projectId),
-      ]);
+      // One aggregate round-trip instead of 6 (loadperf-003). Falls back to the parallel list
+      // calls if the aggregate endpoint isn't available (e.g. mid-deploy).
+      let vids: VideoFile[], secs: TimelineSection[], sims: Simulation[], jobs: VideoGenerationJob[], imgs: ImageFile[], auds: AudioFile[];
+      try {
+        const st = await api.getEditorState(projectId);
+        vids = st.videos; secs = st.sections; sims = st.simulations; jobs = st.brollJobs; imgs = st.images; auds = st.audioFiles;
+      } catch {
+        [vids, secs, sims, jobs, imgs, auds] = await Promise.all([
+          api.listVideos(projectId),
+          api.listSections(projectId),
+          api.listSimulations(projectId),
+          api.listBrollJobs(projectId),
+          api.listImages(projectId),
+          api.listAudioFiles(projectId),
+        ]);
+      }
+      // Markers load separately + resiliently: a failure here (e.g. before the timeline_markers
+      // migration has run) must not blank out the rest of the editor.
+      api.listMarkers(projectId).then(setMarkers).catch(() => setMarkers([]));
       // Separate main videos from AI-generated broll source files
       setVideos(vids.filter(v => !v.is_broll));
       setAllVideos(vids);
@@ -513,6 +556,19 @@ export function VideoEditor({ projectId }: Props) {
   }, [historyBusy, loadData, redoStack, restoreSectionSnapshot, sections]);
 
   const handleDeleteSim = (simId: string) => setConfirmSim(simId);
+
+  const startRenameSim = (sim: Simulation) => { setRenamingSimId(sim.id); setRenameDraft(sim.name); };
+  const commitRenameSim = async () => {
+    const id = renamingSimId;
+    const name = renameDraft.trim();
+    setRenamingSimId(null);
+    if (!id || !name) return;
+    setSimulations(prev => prev.map(s => s.id === id ? { ...s, name } : s)); // optimistic
+    try {
+      const updated = await api.updateSimulation(projectId, id, { name });
+      setSimulations(prev => prev.map(s => s.id === id ? updated : s));
+    } catch { /* revert on next list refresh */ }
+  };
 
   const confirmDeleteSim = async () => {
     if (!confirmSim) return;
@@ -811,6 +867,73 @@ export function VideoEditor({ projectId }: Props) {
     playerRef.current?.seek(globalSec);
   }, []);
 
+  // ── Timeline markers (editor flags) ─────────────────────────────────────────
+  // Flag mode is a toggle: while on, a follow-line tracks the timeline and clicking drops a flag
+  // (the mode stays on so several can be placed). Playhead is read from a ref so the "m" hotkey
+  // handler stays stable. Flags can't overlap (MARKER_MIN_GAP).
+  const MARKER_MIN_GAP = 0.25; // seconds — two flags can't sit on the same spot
+  const [flagMode, setFlagMode] = useState(false);
+  const playheadRef = useRef(0);
+  playheadRef.current = playheadSec;
+  const markersRef = useRef<TimelineMarker[]>([]);
+  markersRef.current = markers;
+
+  const handleToggleFlagMode = useCallback(() => setFlagMode(v => !v), []);
+
+  // Create a flag at a specific timeline second, unless one already sits on that spot.
+  const handlePlaceMarker = useCallback(async (atSec: number) => {
+    const at = Math.max(0, atSec);
+    if (markersRef.current.some(m => Math.abs(m.at_sec - at) < MARKER_MIN_GAP)) return; // no overlap
+    const temp: TimelineMarker = {
+      id: `temp-${Date.now()}`, project_id: projectId, at_sec: at,
+      label: null, notes: null, color: '#ef4444', created_at: new Date().toISOString(),
+    };
+    setMarkers(prev => [...prev, temp].sort((a, b) => a.at_sec - b.at_sec));
+    try {
+      const saved = await api.createMarker(projectId, { at_sec: at });
+      setMarkers(prev => prev.map(m => (m.id === temp.id ? saved : m)).sort((a, b) => a.at_sec - b.at_sec));
+    } catch {
+      setMarkers(prev => prev.filter(m => m.id !== temp.id));
+    }
+  }, [projectId]);
+
+  const handleUpdateMarker = useCallback(async (id: string, patch: { label?: string | null; notes?: string | null; at_sec?: number }) => {
+    // Repositioning can't drop a flag onto another flag's spot.
+    if (patch.at_sec != null) {
+      const at = Math.max(0, patch.at_sec);
+      if (markersRef.current.some(m => m.id !== id && Math.abs(m.at_sec - at) < MARKER_MIN_GAP)) {
+        delete patch.at_sec;
+      } else {
+        patch.at_sec = at;
+      }
+    }
+    if (Object.keys(patch).length === 0) return;
+    setMarkers(prev => prev.map(m => (m.id === id ? { ...m, ...patch } : m)));
+    try {
+      const saved = await api.updateMarker(projectId, id, patch);
+      setMarkers(prev => prev.map(m => (m.id === id ? saved : m)).sort((a, b) => a.at_sec - b.at_sec));
+    } catch { /* keep optimistic */ }
+  }, [projectId]);
+
+  const handleDeleteMarker = useCallback(async (id: string) => {
+    setMarkers(prev => prev.filter(m => m.id !== id));
+    try { await api.deleteMarker(projectId, id); } catch { /* ignore */ }
+  }, [projectId]);
+
+  // "m" / "M" hotkey drops a flag at the playhead (ignored while typing in a field).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'm' && e.key !== 'M') return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      e.preventDefault();
+      void handlePlaceMarker(playheadRef.current);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [handlePlaceMarker]);
+
   const previewAspect = previewViewportSize.width / Math.max(1, previewViewportSize.height);
   const previewFrameStyle: React.CSSProperties = (() => {
     const { width: shellW, height: shellH } = previewShellSize;
@@ -1024,9 +1147,7 @@ export function VideoEditor({ projectId }: Props) {
                         <p className="text-[10px] text-muted-foreground">
                           {v.duration_sec ? `${Math.floor(v.duration_sec / 60)}m ${Math.floor(v.duration_sec % 60)}s` : v.status}
                         </p>
-                        {v.hls_status === 'ready' ? (
-                          <span className="text-[9px] text-emerald-500 font-medium">HLS ✓</span>
-                        ) : v.hls_status === 'failed' ? (
+                        {v.hls_status === 'ready' ? null : v.hls_status === 'failed' ? (
                           <button
                             onClick={(e) => { e.stopPropagation(); setReplacingVideoId(v.id); }}
                             title="This video isn't saved. Click to upload it again."
@@ -1046,7 +1167,7 @@ export function VideoEditor({ projectId }: Props) {
                     <button
                       onClick={(e) => { e.stopPropagation(); setReplacingVideoId(v.id); }}
                       title="Replace with a new version (re-upload)"
-                      className="absolute right-10 top-2 flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary"
+                      className="absolute right-2 bottom-2 flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary"
                     >
                       <RefreshCw size={14} strokeWidth={1.9} aria-hidden />
                     </button>
@@ -1104,12 +1225,22 @@ export function VideoEditor({ projectId }: Props) {
                       key={sim.id}
                       className="relative rounded-xl border border-border/60 bg-card/90 hover:border-amber-400/50 transition-all card-interactive"
                     >
-                      <div className="w-full text-left px-3 py-2.5 pr-12">
-                        <p className="text-xs font-medium text-foreground truncate">{sim.name}</p>
+                      <div className="w-full text-left px-3 py-2.5 pr-[76px]">
+                        {renamingSimId === sim.id ? (
+                          <input
+                            autoFocus
+                            value={renameDraft}
+                            onChange={(e) => setRenameDraft(e.target.value)}
+                            onBlur={commitRenameSim}
+                            onKeyDown={(e) => { if (e.key === 'Enter') commitRenameSim(); else if (e.key === 'Escape') setRenamingSimId(null); }}
+                            aria-label="Simulation name"
+                            className="w-full rounded border border-amber-300 bg-background px-1.5 py-0.5 text-xs font-medium text-foreground outline-none focus-ring"
+                          />
+                        ) : (
+                          <p className="text-xs font-medium text-foreground truncate">{sim.name}</p>
+                        )}
                         <div className="mt-0.5 flex items-center gap-2">
-                          {sim.status === 'ready' ? (
-                            <span className="text-[9px] text-emerald-500 font-medium">Ready</span>
-                          ) : sim.status === 'failed' ? (
+                          {sim.status === 'ready' ? null : sim.status === 'failed' ? (
                             <span className="text-[9px] text-red-400 font-medium">Failed</span>
                           ) : (
                             <span className="text-[9px] text-amber-400 font-medium animate-pulse">Processing…</span>
@@ -1121,6 +1252,14 @@ export function VideoEditor({ projectId }: Props) {
                           )}
                         </div>
                       </div>
+                      <button
+                        onClick={() => startRenameSim(sim)}
+                        title="Rename simulation"
+                        aria-label="Rename simulation"
+                        className="absolute right-10 top-2 flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-amber-500/10 hover:text-amber-600 focus-ring"
+                      >
+                        <Pencil size={13} strokeWidth={1.9} aria-hidden />
+                      </button>
                       <button
                         onClick={() => handleDeleteSim(sim.id)}
                         disabled={deletingSimId === sim.id}
@@ -1317,6 +1456,9 @@ export function VideoEditor({ projectId }: Props) {
                 toolMode={toolMode}
                 layersVisible={showAllLayers}
                 onToggleAllLayers={handleToggleAllLayers}
+                flagMode={flagMode}
+                onToggleFlagMode={handleToggleFlagMode}
+                markerCount={markers.length}
                 onUndo={handleUndo}
                 onRedo={handleRedo}
                 canUndo={undoStack.length > 0}
@@ -1343,7 +1485,14 @@ export function VideoEditor({ projectId }: Props) {
           <TimelinePanel
             projectId={projectId}
             videos={videos}
+            allVideos={allVideos}
             sections={sections}
+            markers={markers}
+            flagMode={flagMode}
+            onPlaceMarker={handlePlaceMarker}
+            onExitFlagMode={() => setFlagMode(false)}
+            onUpdateMarker={handleUpdateMarker}
+            onDeleteMarker={handleDeleteMarker}
             simulations={simulations}
             images={images}
             audioFiles={audioFiles}

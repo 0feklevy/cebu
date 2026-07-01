@@ -210,8 +210,14 @@ export async function processVideoCrop(
         const cx = committed !== null ? committed : (heads[0] + heads[1]) / 2;
         raw[i] = { t: times[i], x: interestToCropX(cx, W, H) };
       }
+    } else if (hm.heads.length === 1) {
+      // Not a two-shot but locateHeads confidently found ONE dominant person. Use that
+      // located head (stable over the whole shot) instead of the noisy per-frame interest
+      // centroid, which averages across faces/text/motion and lands in dead space (backend-107).
+      const cx = hm.heads[0];
+      for (let i = f0; i < f1; i++) raw[i] = { t: times[i], x: interestToCropX(cx, W, H) };
     } else {
-      // Not a two-shot (single speaker / B-roll / animation) → interest centroid.
+      // No located head (single speaker / B-roll / animation with no clear peak) → interest centroid.
       for (let i = f0; i < f1; i++) raw[i] = { t: times[i], x: interestToCropX(interestXs[i], W, H) };
     }
   }

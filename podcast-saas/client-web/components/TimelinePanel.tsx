@@ -1,8 +1,9 @@
 'use client';
 
 import { useRef, useState, useCallback, useEffect, useLayoutEffect } from 'react';
-import { Music, Plus, Trash2, Volume2, X } from 'lucide-react';
-import type { VideoFile, TimelineSection, Simulation, ImageFile, AudioFile } from 'shared/src/generated/client-v1';
+import { createPortal } from 'react-dom';
+import { Flag, Music, Plus, Trash2, Volume2, X } from 'lucide-react';
+import type { VideoFile, TimelineSection, TimelineMarker, Simulation, ImageFile, AudioFile } from 'shared/src/generated/client-v1';
 import { SectionEditor } from './SectionEditor';
 import { A2AudioModal } from './A2AudioModal';
 import { api } from '../lib/api';
@@ -30,18 +31,30 @@ const MAX_ZOOM       = 400;
 
 // ─── section colors ───────────────────────────────────────────────────────────
 
+// Stronger fills (Premiere-style) so an occupied section reads as a filled clip at a glance,
+// not a faint outline. Cutaway types (sim/broll/clip/audio) get the most saturation.
 const TYPE_STYLE: Record<string, { fill: string; border: string; text: string; handle: string }> = {
-  video:      { fill: 'rgba(59,130,246,0.18)',  border: '#3b82f6', text: '#1d4ed8', handle: '#2563eb' },
-  simulation: { fill: 'rgba(245,158,11,0.18)',  border: '#f59e0b', text: '#92400e', handle: '#d97706' },
-  broll:      { fill: 'rgba(6,182,212,0.22)',   border: '#06b6d4', text: '#0e7490', handle: '#0891b2' },
-  intro:      { fill: 'rgba(16,185,129,0.18)',  border: '#10b981', text: '#065f46', handle: '#059669' },
-  outro:      { fill: 'rgba(139,92,246,0.18)',  border: '#8b5cf6', text: '#4c1d95', handle: '#7c3aed' },
-  cut:        { fill: 'rgba(239,68,68,0.18)',   border: '#ef4444', text: '#991b1b', handle: '#dc2626' },
-  clip:       { fill: 'rgba(34,197,94,0.18)',   border: '#22c55e', text: '#14532d', handle: '#16a34a' },
-  audio:      { fill: 'rgba(16,185,129,0.18)',  border: '#10b981', text: '#047857', handle: '#059669' },
-  custom:     { fill: 'rgba(107,114,128,0.18)', border: '#6b7280', text: '#374151', handle: '#4b5563' },
+  video:      { fill: 'rgba(59,130,246,0.32)',  border: '#3b82f6', text: '#1d4ed8', handle: '#2563eb' },
+  simulation: { fill: 'rgba(245,158,11,0.42)',  border: '#f59e0b', text: '#92400e', handle: '#d97706' },
+  broll:      { fill: 'rgba(6,182,212,0.42)',   border: '#06b6d4', text: '#0e7490', handle: '#0891b2' },
+  intro:      { fill: 'rgba(16,185,129,0.32)',  border: '#10b981', text: '#065f46', handle: '#059669' },
+  outro:      { fill: 'rgba(139,92,246,0.32)',  border: '#8b5cf6', text: '#4c1d95', handle: '#7c3aed' },
+  cut:        { fill: 'rgba(239,68,68,0.34)',   border: '#ef4444', text: '#991b1b', handle: '#dc2626' },
+  clip:       { fill: 'rgba(34,197,94,0.40)',   border: '#22c55e', text: '#14532d', handle: '#16a34a' },
+  audio:      { fill: 'rgba(16,185,129,0.40)',  border: '#10b981', text: '#047857', handle: '#059669' },
+  custom:     { fill: 'rgba(107,114,128,0.30)', border: '#6b7280', text: '#374151', handle: '#4b5563' },
 };
 const fallbackStyle = TYPE_STYLE.custom;
+
+// Short Premiere-style badge so an occupied block communicates its content type even with no label.
+function sectionKindLabel(s: TimelineSection): string {
+  if (s.type === 'simulation') return 'SIM';
+  if (s.clip_source_audio_id) return 'AUDIO';
+  if (s.clip_source_image_id) return 'IMG';
+  if (s.clip_source_video_id || s.type === 'clip') return 'CLIP';
+  if (s.track === 'broll') return 'B-ROLL';
+  return s.type.toUpperCase();
+}
 
 // ─── types ────────────────────────────────────────────────────────────────────
 
@@ -168,16 +181,25 @@ function useVideoFrames(url: string | null, duration: number) {
       if (i >= FRAMES_COUNT) { setFrames([...captured]); setLoading(false); return; }
       vid.currentTime = Math.min(((i + 0.5) / FRAMES_COUNT) * duration, duration - 0.01);
     };
-    vid.addEventListener('loadedmetadata', captureNext);
-    vid.addEventListener('seeked', () => {
+    const onSeeked = () => {
       if (aborted) return;
       try { ctx.drawImage(vid, 0, 0, FRAME_W, FRAME_H); captured.push(canvas.toDataURL('image/jpeg', 0.6)); }
       catch { captured.push(''); }
       i++; captureNext();
-    });
-    vid.addEventListener('error', () => { aborted = true; setLoading(false); });
+    };
+    const onError = () => { aborted = true; setLoading(false); };
+    vid.addEventListener('loadedmetadata', captureNext);
+    vid.addEventListener('seeked', onSeeked);
+    vid.addEventListener('error', onError);
     vid.src = url;
-    return () => { aborted = true; vid.src = ''; setLoading(false); };
+    return () => {
+      aborted = true;
+      vid.removeEventListener('loadedmetadata', captureNext);
+      vid.removeEventListener('seeked', onSeeked);
+      vid.removeEventListener('error', onError);
+      vid.src = '';
+      setLoading(false);
+    };
   }, [url, duration]);
   return { frames, loading };
 }
@@ -419,7 +441,14 @@ function AudioGainPopover({
 interface Props {
   projectId: string;
   videos: VideoFile[];
+  allVideos?: VideoFile[];   // incl. broll sources — so broll clips can extend to their real length
   sections: TimelineSection[];
+  markers?: TimelineMarker[];
+  flagMode?: boolean;
+  onPlaceMarker?: (atSec: number) => void;
+  onExitFlagMode?: () => void;
+  onUpdateMarker?: (id: string, patch: { label?: string | null; notes?: string | null; at_sec?: number }) => void;
+  onDeleteMarker?: (id: string) => void;
   simulations: Simulation[];
   images?: ImageFile[];
   audioFiles?: AudioFile[];
@@ -441,7 +470,7 @@ interface Props {
 // ─── main component ───────────────────────────────────────────────────────────
 
 export function TimelinePanel({
-  projectId, videos, sections, simulations, images = [], audioFiles = [], playheadSec, activeVideoId, videoUrls,
+  projectId, videos, allVideos = [], sections, markers = [], flagMode = false, onPlaceMarker, onExitFlagMode, onUpdateMarker, onDeleteMarker, simulations, images = [], audioFiles = [], playheadSec, activeVideoId, videoUrls,
   onSeek, onSectionsChange, onBrollMarkComplete, onAudioCutawayInserted, onSimulationUpdate,
   toolMode, showAllLayers = false, showBrollTrack, showAudioTrack, onAddVideo,
 }: Props) {
@@ -454,13 +483,29 @@ export function TimelinePanel({
   const [zoom, setZoom]                   = useState(10);
   const [interaction, setInteraction]     = useState<Interaction | null>(null);
   const [selectedSection, setSelectedSection] = useState<TimelineSection | null>(null);
+  // Id of a section that was just created and opened in the editor but not yet configured.
+  // If the user closes the editor (Cancel) without touching it, we discard it so an empty
+  // "mark" isn't left on the timeline.
+  const provisionalSectionRef = useRef<string | null>(null);
   const [addMenuOpen, setAddMenuOpen]     = useState(false);
   const [addBusy, setAddBusy]             = useState<'simulation' | 'clip' | null>(null);
   const [a2DragOver, setA2DragOver]       = useState(false);
   // Depth counter so the A2 highlight doesn't flicker as the cursor crosses child segments — frontend-004.
   const a2DragDepthRef = useRef(0);
   const [a2Modal, setA2Modal]             = useState<{ clickSec: number; editSection?: TimelineSection } | null>(null);
+  const [markerMenu, setMarkerMenu]       = useState<string | null>(null);  // open marker's note popover
+  const [markerMenuPos, setMarkerMenuPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 }); // portal anchor (viewport)
+  const [markerDraft, setMarkerDraft]     = useState('');                    // in-progress note text
+  const [flagHoverSec, setFlagHoverSec]   = useState<number | null>(null);   // follow-line position in flag mode
+  const [markerDrag, setMarkerDrag]       = useState<{ id: string; previewSec: number } | null>(null);
   const [localAudioFiles, setLocalAudioFiles] = useState<AudioFile[]>(audioFiles);
+
+  const openMarker = (m: TimelineMarker, clientX: number, clientY: number) => {
+    setMarkerMenu(m.id);
+    setMarkerDraft(m.notes ?? '');
+    setMarkerMenuPos({ x: clientX, y: clientY });
+  };
+  const commitMarkerNote = (id: string) => { onUpdateMarker?.(id, { notes: markerDraft.trim() || null }); setMarkerMenu(null); };
 
   useEffect(() => { setLocalAudioFiles(audioFiles); }, [audioFiles]);
 
@@ -607,7 +652,11 @@ export function TimelinePanel({
     if (e.button !== 0) return;
     const globalSec = pixelsToGlobalSec(e.clientX);
     const offset = s.global_offset_sec ?? 0;
-    const sourceDuration = videos.find(v => v.id === s.video_file_id)?.duration_sec ?? (s.end_sec - s.start_sec);
+    // Real source length so a broll/AI clip can extend up to its full generated duration (not
+    // just its current trimmed length). Look through ALL videos incl. broll sources.
+    const sourceDuration = allVideos.find(v => v.id === s.video_file_id || v.id === s.clip_source_video_id)?.duration_sec
+      ?? videos.find(v => v.id === s.video_file_id)?.duration_sec
+      ?? (s.end_sec - s.start_sec);
     didMoveRef.current = false;
     if (mode === 'move') {
       setInter({ kind: 'broll-moving', section: s, dragOffsetSec: globalSec - offset, previewOffset: offset });
@@ -615,7 +664,7 @@ export function TimelinePanel({
       setInter({ kind: 'broll-trimming', section: s, edge: mode === 'trim-start' ? 'start' : 'end', sourceDuration, previewStart: s.start_sec, previewEnd: s.end_sec });
     }
     e.preventDefault();
-  }, [pixelsToGlobalSec, setInter, videos]);
+  }, [pixelsToGlobalSec, setInter, videos, allVideos]);
 
   // ── Global mouse move / up ───────────────────────────────────────────────
 
@@ -640,8 +689,13 @@ export function TimelinePanel({
         setInter({ ...inter, previewStart: ps, previewEnd: pe });
 
       } else if (inter.kind === 'trimming') {
-        const localSec = Math.max(0, Math.min(inter.duration, globalSec - inter.clipOffset));
-        const clamped = clampTrim(mainSections, inter.section, inter.edge, localSec, inter.duration);
+        // Right-edge (end) trim: footage (video/clip) is capped at its source length; but a
+        // simulation or image has no inherent length, so it may extend freely — clampTrim still
+        // stops it at the next section's start so they can't overlap. (right-drag limit fix)
+        const noSourceCap = inter.section.type === 'simulation' || !!inter.section.clip_source_image_id;
+        const endMax = inter.edge === 'end' && noSourceCap ? inter.section.end_sec + 3600 : inter.duration;
+        const localSec = Math.max(0, Math.min(endMax, globalSec - inter.clipOffset));
+        const clamped = clampTrim(mainSections, inter.section, inter.edge, localSec, endMax);
         if (inter.edge === 'start' && Math.abs(clamped - inter.section.start_sec) > 0.05) didMoveRef.current = true;
         if (inter.edge === 'end'   && Math.abs(clamped - inter.section.end_sec)   > 0.05) didMoveRef.current = true;
         setInter({
@@ -661,13 +715,12 @@ export function TimelinePanel({
       } else if (inter.kind === 'broll-trimming') {
         const localSec = globalSec - (inter.section.global_offset_sec ?? 0);
         if (inter.edge === 'start') {
-          const clamped = Math.max(0, Math.min(inter.previewEnd - 1, localSec + (inter.section.global_offset_sec ?? 0) - (inter.section.global_offset_sec ?? 0)));
-          // trim start: clamp between 0 and end_sec - 1
-          const val = Math.max(0, Math.min(inter.section.end_sec - 1, globalSec - (inter.section.global_offset_sec ?? 0) + inter.section.start_sec));
-          const newStart = Math.max(0, Math.min(inter.section.end_sec - 1, val));
+          // Left-edge trim: advance the source in-point by how far the handle moved. The block's
+          // global offset shifts by the same delta at render + commit so the LEFT edge follows the
+          // mouse and the RIGHT edge stays fixed (Premiere-style). Keep ≥1s of clip. (frontend-001)
+          const newStart = Math.max(0, Math.min(inter.section.end_sec - 1, inter.section.start_sec + localSec));
           if (Math.abs(newStart - inter.section.start_sec) > 0.05) didMoveRef.current = true;
           setInter({ ...inter, previewStart: newStart });
-          void clamped; // suppress unused warning
         } else {
           const clipDur = inter.sourceDuration;
           const val = Math.min(clipDur, Math.max(inter.section.start_sec + 1, globalSec - (inter.section.global_offset_sec ?? 0) + inter.section.start_sec));
@@ -704,6 +757,7 @@ export function TimelinePanel({
           });
           onSectionsChange([...sections, section]);
           setSelectedSection(section);
+          provisionalSectionRef.current = section.id;
         } catch { /* ignore */ }
 
       } else if (inter.kind === 'moving') {
@@ -737,10 +791,13 @@ export function TimelinePanel({
         } catch { /* ignore */ }
 
       } else if (inter.kind === 'broll-trimming') {
-        const { previewStart, previewEnd, section } = inter;
+        const { previewStart, previewEnd, section, edge } = inter;
         if (Math.abs(previewStart - section.start_sec) < 0.01 && Math.abs(previewEnd - section.end_sec) < 0.01) return;
         try {
-          const updated = await api.updateSection(projectId, section.id, { start_sec: previewStart, end_sec: previewEnd });
+          const patch: { start_sec: number; end_sec: number; global_offset_sec?: number } = { start_sec: previewStart, end_sec: previewEnd };
+          // Left-edge trim also shifts the placement so the right edge stays fixed (frontend-001).
+          if (edge === 'start') patch.global_offset_sec = (section.global_offset_sec ?? 0) + (previewStart - section.start_sec);
+          const updated = await api.updateSection(projectId, section.id, patch);
           onSectionsChange(sections.map(s => s.id === updated.id ? updated : s));
         } catch { /* ignore */ }
       }
@@ -758,8 +815,60 @@ export function TimelinePanel({
   }, []);
 
   const handleTrackClick = useCallback((e: React.MouseEvent) => {
-    onSeek(pixelsToGlobalSec(e.clientX));
-  }, [pixelsToGlobalSec, onSeek]);
+    const sec = pixelsToGlobalSec(e.clientX);
+    if (flagMode) { onPlaceMarker?.(Math.max(0, sec)); return; }  // flag mode: click drops a flag
+    onSeek(sec);
+  }, [pixelsToGlobalSec, onSeek, flagMode, onPlaceMarker]);
+
+  // Double-click the ruler drops a flag regardless of mode (Premiere-style), staying in flag mode.
+  const handleRulerDoubleClick = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    onPlaceMarker?.(Math.max(0, pixelsToGlobalSec(e.clientX)));
+  }, [pixelsToGlobalSec, onPlaceMarker]);
+
+  // Flag-mode overlay: follow-line tracking + click-to-place.
+  const handleFlagOverlayMove = useCallback((e: React.MouseEvent) => {
+    setFlagHoverSec(Math.max(0, pixelsToGlobalSec(e.clientX)));
+  }, [pixelsToGlobalSec]);
+  const handleFlagOverlayClick = useCallback((e: React.MouseEvent) => {
+    onPlaceMarker?.(Math.max(0, pixelsToGlobalSec(e.clientX)));
+  }, [pixelsToGlobalSec, onPlaceMarker]);
+
+  // Drag a placed flag to reposition it; a mousedown that doesn't move opens the note popover.
+  const startMarkerDrag = useCallback((e: React.MouseEvent, m: TimelineMarker) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const startX = e.clientX;
+    let moved = false;
+    let previewSec = m.at_sec;
+    const onMove = (ev: MouseEvent) => {
+      if (Math.abs(ev.clientX - startX) > 3) moved = true;
+      previewSec = Math.max(0, pixelsToGlobalSec(ev.clientX));
+      setMarkerDrag({ id: m.id, previewSec });
+    };
+    const onUp = (ev: MouseEvent) => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      setMarkerDrag(null);
+      if (moved) onUpdateMarker?.(m.id, { at_sec: previewSec });
+      else openMarker(m, ev.clientX, ev.clientY);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pixelsToGlobalSec, onUpdateMarker]);
+
+  // Escape closes an open note popover, else exits flag mode.
+  useEffect(() => {
+    if (!flagMode && !markerMenu) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (markerMenu) setMarkerMenu(null);
+      else if (flagMode) onExitFlagMode?.();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [flagMode, markerMenu, onExitFlagMode]);
 
   const handleAppendSection = useCallback(async (type: 'simulation' | 'clip') => {
     const anchor = clipsWithOffset[clipsWithOffset.length - 1];
@@ -778,6 +887,7 @@ export function TimelinePanel({
       });
       onSectionsChange([...sections, section]);
       setSelectedSection(section);
+      provisionalSectionRef.current = section.id;
       onSeek(anchor.offset + start);
     } catch { /* ignore */ }
     finally {
@@ -863,6 +973,8 @@ export function TimelinePanel({
     } else if (interaction?.kind === 'broll-trimming' && interaction.section.id === s.id) {
       start = interaction.previewStart;
       end   = interaction.previewEnd;
+      // Left-edge trim moves the placement so the right edge stays put (frontend-001).
+      if (interaction.edge === 'start') offset = (s.global_offset_sec ?? 0) + (interaction.previewStart - s.start_sec);
     }
 
     const leftPx  = offset * zoom;
@@ -915,6 +1027,16 @@ export function TimelinePanel({
         }}
         onClick={e => { e.stopPropagation(); handleSectionClick(e, s); }}
       >
+        {/* Image-clip thumbnail fill so the block visibly shows its content (Premiere-style). */}
+        {s.clip_source_image_id && (() => {
+          const img = images.find(i => i.id === s.clip_source_image_id);
+          return img ? (
+            <div
+              aria-hidden
+              style={{ position: 'absolute', inset: 0, opacity: 0.5, backgroundImage: `url(${img.original_url})`, backgroundSize: 'cover', backgroundPosition: 'center', pointerEvents: 'none' }}
+            />
+          ) : null;
+        })()}
         <div
           className="absolute top-0 bottom-0 flex items-center justify-center"
           style={{ left: 0, width: TRIM_ZONE_PX, cursor: 'ew-resize', zIndex: 2 }}
@@ -926,8 +1048,12 @@ export function TimelinePanel({
         >
           <div style={{ width: 2, height: '60%', borderRadius: 1, backgroundColor: style.handle, opacity: 0.7 }} />
         </div>
+        {/* Type badge — always present so an occupied block reads as filled content even with no label. */}
+        <span style={{ position: 'relative', zIndex: 1, marginLeft: 12, flexShrink: 0, fontSize: 8, fontWeight: 700, letterSpacing: '0.04em', color: '#fff', backgroundColor: style.handle, borderRadius: 3, padding: '1px 4px', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>
+          {sectionKindLabel(s)}
+        </span>
         {s.label && (
-          <span style={{ fontSize: 9, color: style.text, fontWeight: 600, paddingLeft: 14, paddingRight: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <span style={{ position: 'relative', zIndex: 1, fontSize: 9, color: style.text, fontWeight: 600, paddingLeft: 6, paddingRight: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {s.label}
           </span>
         )}
@@ -1023,7 +1149,9 @@ export function TimelinePanel({
           {/* ── Ruler ─────────────────────────────────────────────────────── */}
           <div
             className="select-none"
-            style={{ height: RULER_H, position: 'relative', backgroundColor: 'hsl(var(--card))', borderBottom: '1.5px solid #e2e8f0' }}
+            onDoubleClick={handleRulerDoubleClick}
+            title="Double-click to drop an editor flag"
+            style={{ height: RULER_H, position: 'relative', backgroundColor: 'hsl(var(--card))', borderBottom: '1.5px solid #e2e8f0', cursor: flagMode ? 'crosshair' : 'default' }}
           >
             {Array.from({ length: Math.ceil(totalDuration / tickSec) + 1 }, (_, i) => {
               const sec = i * tickSec;
@@ -1040,6 +1168,91 @@ export function TimelinePanel({
               );
             })}
           </div>
+
+          {/* ── Flag mode: follow-line + click-to-place overlay ─────────────── */}
+          {flagMode && (
+            <div
+              className="absolute inset-0"
+              style={{ zIndex: 22, cursor: 'crosshair' }}
+              onMouseMove={handleFlagOverlayMove}
+              onMouseLeave={() => setFlagHoverSec(null)}
+              onClick={handleFlagOverlayClick}
+            >
+              {flagHoverSec != null && (
+                <div className="pointer-events-none absolute top-0 bottom-0" style={{ left: flagHoverSec * zoom, borderLeft: '2px dashed #ef4444', opacity: 0.75 }}>
+                  <span style={{ position: 'absolute', top: 1, left: 2, fontSize: 8, fontWeight: 700, color: '#fff', background: '#ef4444', borderRadius: 3, padding: '1px 3px', whiteSpace: 'nowrap' }}>+ {fmt(flagHoverSec)}</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Editor flags (markers) — draggable, Premiere-style ───────────── */}
+          {markers.length > 0 && (
+            <div className="pointer-events-none absolute inset-0" style={{ zIndex: 26 }}>
+              {markers.map(m => {
+                const atSec = markerDrag?.id === m.id ? markerDrag.previewSec : m.at_sec;
+                const dragging = markerDrag?.id === m.id;
+                return (
+                  <div key={m.id} className="absolute top-0 bottom-0" style={{ left: atSec * zoom }}>
+                    <div style={{ position: 'absolute', top: RULER_H, bottom: 0, width: 2, backgroundColor: m.color, opacity: dragging ? 1 : 0.85, transform: 'translateX(-1px)' }} />
+                    <button
+                      type="button"
+                      className="pointer-events-auto absolute focus-ring"
+                      style={{ top: 1, left: -1, height: RULER_H - 3, display: 'flex', alignItems: 'center', gap: 2, padding: '0 3px', borderRadius: 3, background: m.color, color: '#fff', cursor: dragging ? 'grabbing' : 'grab', boxShadow: '0 1px 2px rgba(0,0,0,0.25)' }}
+                      title={m.notes || m.label || `Flag at ${fmt(atSec)} — drag to move, click to edit`}
+                      aria-label={`Editor flag at ${fmt(atSec)}`}
+                      onMouseDown={(e) => startMarkerDrag(e, m)}
+                    >
+                      <Flag size={9} strokeWidth={2.4} aria-hidden />
+                      {m.notes && !dragging && <span style={{ fontSize: 9, maxWidth: 70, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.notes}</span>}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* ── Flag note popover — portalled to <body> so the timeline's overflow can't clip it ── */}
+          {markerMenu && (() => {
+            const m = markers.find(mm => mm.id === markerMenu);
+            if (m == null || typeof document === 'undefined') return null;
+            const vw = typeof window !== 'undefined' ? window.innerWidth : 1200;
+            const vh = typeof window !== 'undefined' ? window.innerHeight : 800;
+            const W = 240, H = 150;
+            const left = Math.max(8, Math.min(markerMenuPos.x - W / 2, vw - W - 8));
+            const top  = Math.min(markerMenuPos.y + 10, vh - H - 8);
+            return createPortal(
+              <>
+                <div className="fixed inset-0" style={{ zIndex: 90 }} onMouseDown={() => setMarkerMenu(null)} />
+                <div
+                  className="fixed rounded-lg border border-border bg-card p-2 shadow-xl"
+                  style={{ zIndex: 91, left, top, width: W }}
+                  onMouseDown={(e) => e.stopPropagation()}
+                >
+                  <div className="mb-1 flex items-center justify-between">
+                    <span className="text-[10px] font-semibold text-muted-foreground">Flag · {fmt(m.at_sec)}</span>
+                    <button type="button" aria-label="Delete flag" title="Delete flag" onClick={() => { onDeleteMarker?.(m.id); setMarkerMenu(null); }} className="rounded text-muted-foreground transition-colors hover:text-destructive focus-ring">
+                      <Trash2 size={13} strokeWidth={1.9} aria-hidden />
+                    </button>
+                  </div>
+                  <textarea
+                    autoFocus
+                    value={markerDraft}
+                    onChange={(e) => setMarkerDraft(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); commitMarkerNote(m.id); } }}
+                    placeholder="Note to self… (e.g. fix audio here)"
+                    aria-label="Flag note"
+                    className="h-16 w-full resize-none rounded-md border border-border bg-background px-2 py-1 text-[11px] text-foreground outline-none focus-ring"
+                  />
+                  <div className="mt-1 flex justify-end gap-1.5">
+                    <button type="button" onClick={() => setMarkerMenu(null)} className="rounded-md px-2 py-1 text-[10px] font-semibold text-muted-foreground transition-colors hover:bg-muted/60 focus-ring">Cancel</button>
+                    <button type="button" onClick={() => commitMarkerNote(m.id)} className="rounded-md bg-primary px-2 py-1 text-[10px] font-semibold text-primary-foreground transition-colors hover:bg-primary/90 focus-ring">Save</button>
+                  </div>
+                </div>
+              </>,
+              document.body,
+            );
+          })()}
 
           {/* ── Tracks ────────────────────────────────────────────────────── */}
           {videos.length === 0 ? (
@@ -1444,15 +1657,26 @@ export function TimelinePanel({
           videoUrls={videoUrls}
           images={images}
           onUpdate={updated => {
+            provisionalSectionRef.current = null; // user configured it → keep it
             onSectionsChange(sections.map(s => s.id === updated.id ? updated : s));
             setSelectedSection(updated);
           }}
           onDelete={id => {
+            provisionalSectionRef.current = null;
             onSectionsChange(sections.filter(s => s.id !== id));
             setSelectedSection(null);
           }}
           onSimulationUpdate={onSimulationUpdate}
-          onClose={() => setSelectedSection(null)}
+          onClose={() => {
+            const sel = selectedSection;
+            setSelectedSection(null);
+            // Closed without configuring a just-created section → discard the empty mark.
+            if (sel && provisionalSectionRef.current === sel.id) {
+              provisionalSectionRef.current = null;
+              onSectionsChange(sections.filter(s => s.id !== sel.id));
+              api.deleteSection(projectId, sel.id).catch(() => {});
+            }
+          }}
         />
       ) : null}
     </div>

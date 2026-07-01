@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useLayoutEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 export interface TourStep {
@@ -25,7 +25,18 @@ interface Props {
 export function GuidedTour({ steps, open, onClose }: Props) {
   const [idx, setIdx] = useState(0);
   const [rect, setRect] = useState<DOMRect | null>(null);
+  const tipRef = useRef<HTMLDivElement>(null);
+  const [tipSize, setTipSize] = useState({ w: 320, h: 190 }); // measured tooltip size (for clamping)
   const step = steps[idx];
+
+  // Measure the actual rendered tooltip so we can keep it fully on-screen (it was clipped at the
+  // bottom/edges before, because placement guessed a fixed height and never clamped to it).
+  useLayoutEffect(() => {
+    const el = tipRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setTipSize(prev => (Math.abs(prev.h - r.height) > 1 || Math.abs(prev.w - r.width) > 1) ? { w: r.width, h: r.height } : prev);
+  });
 
   useEffect(() => { if (open) setIdx(0); }, [open]);
 
@@ -71,17 +82,26 @@ export function GuidedTour({ steps, open, onClose }: Props) {
     ? { left: rect.left - PAD, top: rect.top - PAD, width: rect.width + 2 * PAD, height: rect.height + 2 * PAD }
     : null;
 
-  // Place the tooltip below the target, or above if there's more room up top; clamp to viewport.
+  // Place the tooltip below the target, else above, then clamp so the WHOLE tooltip stays on
+  // screen (using its measured height). A max-height fallback keeps very long steps scrollable.
   const vw = window.innerWidth, vh = window.innerHeight;
-  const TW = Math.min(320, vw - 24);
-  const below = hole ? hole.top + hole.height + 12 : vh / 2;
-  const placeAbove = hole ? (hole.top + hole.height + 200 > vh && hole.top > 220) : false;
-  const tipTop = hole
-    ? (placeAbove ? Math.max(12, hole.top - 12) : below)
-    : Math.max(24, vh / 2 - 80);
+  const M = 12; // viewport margin
+  const TW = Math.min(320, vw - 2 * M);
+  const TH = Math.min(tipSize.h, vh - 2 * M);
+  let tipTop: number;
+  if (hole) {
+    const belowTop = hole.top + hole.height + M;
+    const aboveTop = hole.top - M - TH;
+    if (belowTop + TH <= vh - M) tipTop = belowTop;      // fits below
+    else if (aboveTop >= M) tipTop = aboveTop;           // fits above
+    else tipTop = vh - TH - M;                           // neither: pin to bottom, clamp below
+  } else {
+    tipTop = vh / 2 - TH / 2;
+  }
+  tipTop = Math.min(Math.max(M, tipTop), Math.max(M, vh - TH - M));
   const tipLeft = hole
-    ? Math.min(Math.max(12, hole.left + hole.width / 2 - TW / 2), vw - TW - 12)
-    : vw / 2 - TW / 2;
+    ? Math.min(Math.max(M, hole.left + hole.width / 2 - TW / 2), vw - TW - M)
+    : Math.max(M, vw / 2 - TW / 2);
 
   const isLast = idx === steps.length - 1;
 
@@ -101,8 +121,9 @@ export function GuidedTour({ steps, open, onClose }: Props) {
       <div className="absolute inset-0" onClick={onClose} />
 
       <div
-        className="absolute w-[320px] max-w-[calc(100vw-24px)] rounded-xl border border-border bg-card p-4 text-card-foreground shadow-xl"
-        style={{ top: tipTop, left: tipLeft, transform: placeAbove ? 'translateY(-100%)' : undefined }}
+        ref={tipRef}
+        className="absolute w-[320px] max-w-[calc(100vw-24px)] overflow-y-auto rounded-xl border border-border bg-card p-4 text-card-foreground shadow-xl"
+        style={{ top: tipTop, left: tipLeft, maxHeight: vh - 2 * M }}
         onClick={(e) => e.stopPropagation()}
       >
         <h3 className="text-sm font-semibold text-foreground">{step.title}</h3>

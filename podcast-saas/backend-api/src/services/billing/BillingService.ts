@@ -46,13 +46,25 @@ export const BillingService = {
     return { platformFeeCents, creatorPayoutCents: amountCents - platformFeeCents };
   },
 
-  /** Pricing + owner for a piece of content (or null if it does not exist). */
-  async getPricing(contentType: ContentType, contentId: string): Promise<{
+  /**
+   * Pricing + owner for a piece of content (or null if it does not exist).
+   *
+   * `preloadedProject` lets a caller that already loaded the project row hand it in
+   * to skip a redundant SELECT on the hot path (loadperf-002/backend-110). It is only
+   * honoured for the 'project' content type and when its id matches contentId.
+   */
+  async getPricing(
+    contentType: ContentType,
+    contentId: string,
+    preloadedProject?: typeof projects.$inferSelect,
+  ): Promise<{
     accessType: string; priceCents: number | null; currency: string;
     creatorUserId: string | null; title: string | null;
   } | null> {
     if (contentType === 'project') {
-      const p = await db.query.projects.findFirst({ where: eq(projects.id, contentId) });
+      const p = preloadedProject && preloadedProject.id === contentId
+        ? preloadedProject
+        : await db.query.projects.findFirst({ where: eq(projects.id, contentId) });
       if (!p) return null;
       return { accessType: p.access_type, priceCents: p.price_cents, currency: p.currency, creatorUserId: p.created_by, title: p.title };
     }
@@ -64,9 +76,17 @@ export const BillingService = {
   /**
    * Whether `userId` may watch the content. The owner always can; otherwise a
    * matching row in user_purchases grants access. Free content is open to all.
+   *
+   * `preloadedProject` is threaded into getPricing to avoid a redundant project
+   * SELECT when the caller already has the row (loadperf-002/backend-110).
    */
-  async hasAccess(userId: string | null, contentType: ContentType, contentId: string): Promise<boolean> {
-    const pricing = await this.getPricing(contentType, contentId);
+  async hasAccess(
+    userId: string | null,
+    contentType: ContentType,
+    contentId: string,
+    preloadedProject?: typeof projects.$inferSelect,
+  ): Promise<boolean> {
+    const pricing = await this.getPricing(contentType, contentId, preloadedProject);
     if (!pricing) return false;
     if (pricing.accessType !== 'paid') return true;          // free → open
     if (!userId) return false;
