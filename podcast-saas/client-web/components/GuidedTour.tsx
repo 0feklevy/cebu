@@ -91,7 +91,11 @@ export function GuidedTour({ steps, open, onClose }: Props) {
     return () => clearTimeout(t);
   }, [open, step, idx, steps.length, onClose]);
 
-  if (open && !step) { onClose(); return null; }
+  useEffect(() => {
+    if (!open || step) return;
+    onClose();
+  }, [open, step, onClose]);
+
   if (!open || !step || typeof document === 'undefined') return null;
 
   const PAD = 8;
