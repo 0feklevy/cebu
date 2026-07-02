@@ -6,10 +6,12 @@ import {
 } from '../../db/schema.js';
 import { eq, and, asc } from 'drizzle-orm';
 import { firebaseAuthMiddleware, firebaseAuthOptionalMiddleware } from '../../middleware/firebase-auth.js';
+import { editableProject, isCollaborator } from '../../services/collabAccess.js';
 
-// Branching Interactive Videos — authoring CRUD (Phase 2). Owner-gated, project-scoped.
-// The viewer reads the graph through buildPlayerConfig's `branching` block; these routes
-// are how the editor creates/edits it.
+// Branching Interactive Videos — authoring CRUD (Phase 2). Editor-gated (owner or
+// invited collaborator, migration 042), project-scoped. The viewer reads the graph
+// through buildPlayerConfig's `branching` block; these routes are how the editor
+// creates/edits it.
 
 const DESTINATION_TYPES = [
   'sequence', 'project', 'playlist', 'external_url',
@@ -19,12 +21,10 @@ type DestinationType = (typeof DESTINATION_TYPES)[number];
 
 const BEHAVIORS = ['continue', 'pause', 'loop'] as const;
 
-/** Load a project the requester owns, or send 404. Returns null when not found/owned. */
+/** Load a project the requester may edit (owner or collaborator), or send 404. */
 async function ownedProject(request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) {
   const user = request.dbUser!;
-  const project = await db.query.projects.findFirst({
-    where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-  });
+  const project = await editableProject(request.params.id, user);
   if (!project) {
     reply.code(404).send({ message: 'Project not found' });
     return null;
@@ -466,7 +466,10 @@ export async function registerBranchRoutes(app: FastifyInstance): Promise<void> 
       const project = await db.query.projects.findFirst({ where: eq(projects.id, request.params.id) });
       if (!project) return reply.code(404).send({ message: 'Project not found' });
       if (project.visibility === 'private' && project.created_by !== (request.dbUser?.id ?? null)) {
-        return reply.code(403).send({ message: 'Forbidden' });
+        const collab = request.dbUser
+          ? await isCollaborator('project', project.id, request.dbUser)
+          : false;
+        if (!collab) return reply.code(403).send({ message: 'Forbidden' });
       }
 
       await db.insert(branch_path_events).values({

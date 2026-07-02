@@ -1,9 +1,10 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
-import { projects, timeline_sections, simulations, video_files } from '../../db/schema.js';
+import { timeline_sections, simulations, video_files } from '../../db/schema.js';
 import { eq, and, asc } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
+import { editableProject } from '../../services/collabAccess.js';
 import { SimulationService, type ConversationMessage } from '../../services/simulation/SimulationService.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { LLMService } from '../../services/llm/LLMService.js';
@@ -50,9 +51,7 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const sections = await db.query.timeline_sections.findMany({
@@ -94,9 +93,7 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const {
@@ -202,9 +199,7 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const existing = await db.query.timeline_sections.findFirst({
@@ -290,9 +285,7 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const section = await db.query.timeline_sections.findFirst({
@@ -471,9 +464,7 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const section = await db.query.timeline_sections.findFirst({
@@ -578,9 +569,7 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const existing = await db.query.timeline_sections.findFirst({

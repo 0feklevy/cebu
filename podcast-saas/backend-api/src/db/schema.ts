@@ -565,6 +565,25 @@ export const playlist_items = pgTable(
   }),
 );
 
+// Collaboration (migration 042) — invite users by email to co-edit a project or playlist.
+// Polymorphic like user_purchases. invited_email is lowercased; user_id is resolved at
+// invite time when the user exists, otherwise matched by email once they sign in.
+export const collaborators = pgTable(
+  'collaborators',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    content_type:  text('content_type').notNull(),          // project | playlist
+    content_id:    uuid('content_id').notNull(),
+    invited_email: text('invited_email').notNull(),
+    user_id:    uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
+    invited_by: uuid('invited_by').references(() => users.id, { onDelete: 'set null' }),
+    created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    uniq_content_email: unique().on(t.content_type, t.content_id, t.invited_email),
+  }),
+);
+
 // Billing (migration 024) — pay-to-unlock transactions + persistent purchases.
 export const billing_transactions = pgTable('billing_transactions', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -937,6 +956,7 @@ export type CourseCustomDomain = typeof course_custom_domains.$inferSelect;
 export type ProjectRedirectTarget = typeof project_redirect_targets.$inferSelect;
 export type SimulationRow = typeof simulations.$inferSelect;
 export type Playlist = typeof playlists.$inferSelect;
+export type Collaborator = typeof collaborators.$inferSelect;
 export type PlaylistItem = typeof playlist_items.$inferSelect;
 export type AvatarVisual = typeof avatar_visuals.$inferSelect;
 export type AvatarConversation = typeof avatar_conversations.$inferSelect;

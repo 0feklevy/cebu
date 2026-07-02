@@ -3,9 +3,10 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { extname } from 'path';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
-import { projects, hosts, video_files, simulations, audio_files, image_files } from '../../db/schema.js';
+import { projects, hosts, video_files, simulations, audio_files, image_files, collaborators } from '../../db/schema.js';
 import { eq, and, inArray } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
+import { editableProject, projectsEditableByWhere } from '../../services/collabAccess.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { LocalStorageAdapter } from '../../services/storage/LocalStorageAdapter.js';
 import { deleteWithFallback, deleteWithPrefixFallback } from '../../services/storage/deleteWithFallback.js';
@@ -114,14 +115,18 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
     { preHandler: [firebaseAuthMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const user = request.dbUser!;
+      // Own projects + projects shared with this user (collaboration, migration 042).
       const all = await db.query.projects.findMany({
-        where: eq(projects.created_by, user.id),
+        where: projectsEditableByWhere(user),
         orderBy: (p, { desc }) => [desc(p.created_at)],
       });
       // Best-effort: backfill a frame-placeholder thumbnail for videos that don't
       // have one yet (older videos predate auto-generation, or it never ran).
       void backfillMissingThumbnails(all);
-      return reply.send(all);
+      return reply.send(all.map((p) => ({
+        ...p,
+        collab_role: p.created_by === user.id ? 'owner' : 'collaborator',
+      })));
     },
   );
 
@@ -131,12 +136,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(
-          eq(projects.id, request.params.id),
-          eq(projects.created_by, user.id),
-        ),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const [allCorpora, latestScript, hostA, hostB] = await Promise.all([
@@ -171,9 +171,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
       }).safeParse(request.body);
       if (!body.success) return reply.code(400).send({ message: body.error.message });
 
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const patch: { title?: string; visibility?: 'private' | 'unlisted' | 'public' } = {};
@@ -202,9 +200,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
       }).safeParse(request.body);
       if (!body.success) return reply.code(400).send({ message: body.error.message });
 
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const set: Record<string, unknown> = {};
@@ -222,9 +218,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       // Pick first ready video file for the project
@@ -261,9 +255,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const parsed = z.object({ prompt: z.string().max(500).optional() }).safeParse(request.body ?? {});
@@ -287,9 +279,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const body = z.object({ time_seconds: z.number().min(0).max(86400) }).safeParse(request.body);
@@ -315,9 +305,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       if (!process.env.OPENAI_API_KEY) {
@@ -348,9 +336,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const data = await request.file();
@@ -400,9 +386,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Not found' });
 
       const timeSec = Math.max(0, parseFloat(request.query.time_seconds ?? '0') || 0);
@@ -428,6 +412,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
+      // Deleting is owner-only — collaborators can edit but not destroy (collab-042).
       const project = await db.query.projects.findFirst({
         where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
       });
@@ -444,6 +429,10 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
       // DB delete FIRST (cascades to child tables). Doing this before storage GC means a
       // DB failure can't leave rows pointing at already-deleted media (review db-003).
       await db.delete(projects).where(eq(projects.id, project.id));
+      // No FK on the polymorphic collaborators table — clean up invites explicitly.
+      await db.delete(collaborators).where(
+        and(eq(collaborators.content_type, 'project'), eq(collaborators.content_id, project.id)),
+      );
 
       // Best-effort storage GC — from R2 and/or local disk, wherever the bytes landed
       // (review backend-003). Helpers swallow + log their own errors.

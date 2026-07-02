@@ -2,8 +2,9 @@ import { randomBytes } from 'crypto';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { db } from '../../db/index.js';
 import { projects } from '../../db/schema.js';
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { firebaseAuthMiddleware, firebaseAuthOptionalMiddleware } from '../../middleware/firebase-auth.js';
+import { editableProject } from '../../services/collabAccess.js';
 import { buildPlayerConfig } from '../../services/buildPlayerConfig.js';
 import { BillingService } from '../../services/billing/BillingService.js';
 
@@ -54,9 +55,7 @@ export async function registerShareRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       if (!project.share_token) {
@@ -77,9 +76,7 @@ export async function registerShareRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       // Idempotent — return existing token if already set
@@ -114,9 +111,7 @@ export async function registerShareRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       await db

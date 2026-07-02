@@ -5,6 +5,7 @@ import {
 } from '../db/schema.js';
 import { eq, asc, inArray } from 'drizzle-orm';
 import { requireProjectAccess } from './projectAccess.js';
+import { collaboratorContentIds } from './collabAccess.js';
 
 // Player-facing branching shapes (mirrored loosely in client-web viewer/types.ts).
 // Cross-project/playlist/sim destinations are resolved to share tokens / URLs in a
@@ -346,6 +347,11 @@ export async function buildPlayerConfig(
       destSimIds.length      ? db.query.simulations.findMany({ where: inArray(simulations.id, destSimIds) })     : Promise.resolve([]),
     ]);
     const destProjectMap  = new Map(destProjects.map((p) => [p.id, p]));
+    // Cross-project edge access also passes for invited collaborators (042); batch-resolved
+    // here because mapEdge is sync.
+    const collabDestIds = requesterUserId
+      ? await collaboratorContentIds('project', destProjectIds, requesterUserId)
+      : new Set<string>();
     const destPlaylistMap = new Map(destPlaylists.map((p) => [p.id, p]));
     const destSimMap      = new Map(destSims.map((s) => [s.id, s]));
     const resolveSimUrl = (entryFile: string | null) => !entryFile ? null : (entryFile.startsWith('http') ? entryFile : storage.getSimPublicUrl(entryFile));
@@ -360,7 +366,7 @@ export async function buildPlayerConfig(
       switch (e.destination_type) {
         case 'project': {
           const p = e.dest_project_id ? destProjectMap.get(e.dest_project_id) : undefined;
-          if (!p || !requireProjectAccess(p, requesterUserId, null)) { disabled = true; disabled_reason = 'unavailable'; }
+          if (!p || !(requireProjectAccess(p, requesterUserId, null) || collabDestIds.has(p.id))) { disabled = true; disabled_reason = 'unavailable'; }
           else if (!p.share_token) { disabled = true; disabled_reason = 'no_share_link'; }
           else dest_project_token = p.share_token;
           break;

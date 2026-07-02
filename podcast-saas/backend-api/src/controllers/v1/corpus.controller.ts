@@ -1,9 +1,10 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
-import { corpora, projects } from '../../db/schema.js';
+import { corpora } from '../../db/schema.js';
 import { eq, and } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
+import { editableProject } from '../../services/collabAccess.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { CorpusBuilder } from '../../services/ingestion/CorpusBuilder.js';
 import { MARKITDOWN_EXTENSIONS } from '../../services/ingestion/DocumentIngester.js';
@@ -28,9 +29,7 @@ export async function registerCorpusRoutes(app: FastifyInstance): Promise<void> 
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const contentType = request.headers['content-type'] ?? '';
@@ -118,9 +117,7 @@ export async function registerCorpusRoutes(app: FastifyInstance): Promise<void> 
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const corpus = await db.query.corpora.findFirst({

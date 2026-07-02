@@ -1,8 +1,9 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { db } from '../../db/index.js';
-import { projects, video_files } from '../../db/schema.js';
+import { video_files } from '../../db/schema.js';
 import { eq, and, desc } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
+import { editableProject, type CollabUser } from '../../services/collabAccess.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { uploadStreamWithFallback } from '../../services/storage/uploadStreamWithFallback.js';
 import { deleteWithFallback, deleteWithPrefixFallback } from '../../services/storage/deleteWithFallback.js';
@@ -45,11 +46,10 @@ function humanBytes(n: number): string {
 export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
   const storage = getStorageAdapter();
 
-  // Resolve the project for the authenticated user, or null if it isn't theirs / absent.
-  async function findOwnedProject(projectId: string, userId: string) {
-    return db.query.projects.findFirst({
-      where: and(eq(projects.id, projectId), eq(projects.created_by, userId)),
-    });
+  // Resolve the project the authenticated user may edit (creator OR invited collaborator),
+  // or undefined if it isn't editable by them / absent.
+  async function findOwnedProject(projectId: string, user: CollabUser) {
+    return editableProject(projectId, user);
   }
 
   // Create the video_files row for an upload that has fully landed in cloud storage,
@@ -120,9 +120,7 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [firebaseAuthMiddleware], bodyLimit: TEN_GB },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       let fileSize = 0;
@@ -192,7 +190,7 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await findOwnedProject(request.params.id, user.id);
+      const project = await findOwnedProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const body = (request.body ?? {}) as { filename?: string; content_type?: string; file_size?: number };
@@ -227,7 +225,7 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await findOwnedProject(request.params.id, user.id);
+      const project = await findOwnedProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const body = (request.body ?? {}) as { storage_key?: string; filename?: string; file_size?: number; replace_video_id?: string };
@@ -266,7 +264,7 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await findOwnedProject(request.params.id, user.id);
+      const project = await findOwnedProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const body = (request.body ?? {}) as { filename?: string; content_type?: string; file_size?: number };
@@ -304,7 +302,7 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await findOwnedProject(request.params.id, user.id);
+      const project = await findOwnedProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const body = (request.body ?? {}) as { storage_key?: string; upload_id?: string; part_number?: number };
@@ -333,7 +331,7 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await findOwnedProject(request.params.id, user.id);
+      const project = await findOwnedProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const body = (request.body ?? {}) as {
@@ -379,7 +377,7 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await findOwnedProject(request.params.id, user.id);
+      const project = await findOwnedProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const body = (request.body ?? {}) as { storage_key?: string; upload_id?: string };
@@ -402,9 +400,7 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const videoFile = await db.query.video_files.findFirst({
@@ -448,9 +444,7 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const files = await db.query.video_files.findMany({
@@ -481,9 +475,7 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const videoFile = await db.query.video_files.findFirst({
@@ -513,9 +505,7 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const videoFile = await db.query.video_files.findFirst({
@@ -554,9 +544,7 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       // Clear crop_source_hash so the idempotency check doesn't skip re-runs

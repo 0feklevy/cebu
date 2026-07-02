@@ -68,6 +68,12 @@ vi.mock('drizzle-orm', () => ({
   asc: vi.fn((_col: unknown) => ({ type: 'asc' })),
 }));
 
+// The controller gates via collabAccess (owner OR collaborator, migration 042);
+// delegate to the projects mock so each test's findFirst fixture still decides access.
+vi.mock('../../../services/collabAccess.js', () => ({
+  editableProject: vi.fn((_id: string, _user: unknown) => mocks.mockProjects.findFirst()),
+}));
+
 vi.mock('../../../middleware/firebase-auth.js', () => ({
   firebaseAuthMiddleware: (req: Record<string, unknown>, _reply: unknown, done: () => void) => {
     req.dbUser = { id: 'user-1' };

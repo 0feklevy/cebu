@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Crop, Film, Image as ImageIcon, Layers, Loader2, Lock, Settings, Sparkles, Type, Upload, X } from 'lucide-react';
+import { Crop, Film, Image as ImageIcon, Layers, Loader2, Lock, Settings, Sparkles, Type, Upload, Users, X } from 'lucide-react';
 import { api } from '../lib/api';
 import { LockPriceControl } from './LockPriceControl';
+import { CollaboratorsSection } from './CollaboratorsSection';
 import { AvatarSettingsModal } from './avatar/AvatarSettingsModal';
 import { AvatarCirclesSettings } from './avatar/AvatarCirclesSettings';
 import { GuidedTour, type TourStep } from './GuidedTour';
@@ -23,6 +24,7 @@ const SETTINGS_TOUR_STEPS: TourStep[] = [
   { selector: '[data-tour="settings-crop"]',      title: 'Smart Crop', content: 'Re-run the smart portrait crop that follows the speaker when the video is viewed vertically.' },
   { selector: '[data-tour="settings-access"]',    title: 'Access',     content: 'Control who can see this video — private, unlisted, or public — and set a price to lock it.' },
   { selector: '[data-tour="settings-avatar"]',    title: 'Interactive overlays', content: 'Configure the Ask-the-Avatar persona and the audio-reactive speaker circles shown during b-roll.' },
+  { selector: '[data-tour="settings-collab"]',    title: 'Collaborators', content: 'Invite people by email to co-edit this video — like GitHub collaborators, they can edit everything except deleting it.' },
 ];
 
 export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Props) {
@@ -810,6 +812,12 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
                 </p>
               </div>
               <LockPriceControl contentType="project" contentId={projectId} bordered={false} />
+            </div>
+
+            {/* Collaboration */}
+            <div data-tour="settings-collab" style={sectionCardStyle}>
+              {sectionHead(<Users size={16} strokeWidth={2} />, 'Collaborators', 'Invite people by email to edit this video with you', '#8b5cf6')}
+              <CollaboratorsSection contentType="project" contentId={projectId} />
             </div>
           </div>
         </div>

@@ -1,10 +1,11 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
-import { eq, and, asc, desc } from 'drizzle-orm';
+import { eq, asc, desc } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import {
-  projects, video_files, timeline_sections, simulations, video_generation_jobs, image_files, audio_files,
+  video_files, timeline_sections, simulations, video_generation_jobs, image_files, audio_files,
 } from '../../db/schema.js';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
+import { editableProject } from '../../services/collabAccess.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 
 // Aggregate editor bootstrap (loadperf-003). The editor previously opened with 6 parallel list
@@ -17,9 +18,7 @@ export async function registerEditorStateRoutes(app: FastifyInstance): Promise<v
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const storage = getStorageAdapter();

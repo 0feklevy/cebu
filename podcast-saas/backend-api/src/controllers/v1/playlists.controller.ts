@@ -5,9 +5,15 @@ import OpenAI from 'openai';
 import { GoogleGenAI } from '@google/genai';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
-import { playlists, playlist_items, projects } from '../../db/schema.js';
+import { playlists, playlist_items, projects, collaborators } from '../../db/schema.js';
 import { eq, and, asc, inArray, sql } from 'drizzle-orm';
 import { firebaseAuthMiddleware, firebaseAuthOptionalMiddleware } from '../../middleware/firebase-auth.js';
+import {
+  editablePlaylist,
+  playlistsEditableByWhere,
+  projectsEditableByWhere,
+  type CollabUser,
+} from '../../services/collabAccess.js';
 import { buildPlayerConfig } from '../../services/buildPlayerConfig.js';
 import { BillingService } from '../../services/billing/BillingService.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
@@ -22,11 +28,9 @@ function appUrl(): string {
   return process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
 }
 
-/** Load a playlist owned by the user, or null. */
-async function ownedPlaylist(playlistId: string, userId: string) {
-  return db.query.playlists.findFirst({
-    where: and(eq(playlists.id, playlistId), eq(playlists.created_by, userId)),
-  });
+/** Load a playlist the user may edit (creator or invited collaborator), or null. */
+async function ownedPlaylist(playlistId: string, user: CollabUser) {
+  return editablePlaylist(playlistId, user);
 }
 
 /** Ordered items for a playlist, each joined with its project's title/status. */
@@ -208,8 +212,9 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
     async (request: FastifyRequest<{ Querystring: { with_items?: string } }>, reply: FastifyReply) => {
       const user = request.dbUser!;
       const withItems = request.query.with_items === 'true';
+      // Own playlists + playlists shared with this user (collaboration, migration 042).
       const rows = await db.query.playlists.findMany({
-        where: eq(playlists.created_by, user.id),
+        where: playlistsEditableByWhere(user),
         orderBy: (p, { desc }) => [desc(p.updated_at)],
       });
 
@@ -256,6 +261,7 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
 
       return reply.send(rows.map((r) => ({
         ...r,
+        collab_role:   r.created_by === user.id ? 'owner' : 'collaborator',
         item_count:    counts.get(r.id) ?? 0,
         // Prefer the playlist's own saved banner; fall back to the first item's
         // project thumbnail so a playlist with a cover always shows it.
@@ -300,7 +306,7 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const playlist = await ownedPlaylist(request.params.id, user.id);
+      const playlist = await ownedPlaylist(request.params.id, user);
       if (!playlist) return reply.code(404).send({ message: 'Playlist not found' });
       const items = await playlistItemsWithProjects(playlist.id);
       return reply.send({ ...playlist, items });
@@ -313,7 +319,7 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const playlist = await ownedPlaylist(request.params.id, user.id);
+      const playlist = await ownedPlaylist(request.params.id, user);
       if (!playlist) return reply.code(404).send({ message: 'Playlist not found' });
 
       const body = z.object({
@@ -344,7 +350,7 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const playlist = await ownedPlaylist(request.params.id, user.id);
+      const playlist = await ownedPlaylist(request.params.id, user);
       if (!playlist) return reply.code(404).send({ message: 'Playlist not found' });
 
       const data = await request.file();
@@ -389,7 +395,7 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const playlist = await ownedPlaylist(request.params.id, user.id);
+      const playlist = await ownedPlaylist(request.params.id, user);
       if (!playlist) return reply.code(404).send({ message: 'Playlist not found' });
 
       const body = z.object({
@@ -450,9 +456,16 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const playlist = await ownedPlaylist(request.params.id, user.id);
+      // Deleting is owner-only — collaborators can edit but not destroy (collab-042).
+      const playlist = await db.query.playlists.findFirst({
+        where: and(eq(playlists.id, request.params.id), eq(playlists.created_by, user.id)),
+      });
       if (!playlist) return reply.code(404).send({ message: 'Playlist not found' });
       await db.delete(playlists).where(eq(playlists.id, playlist.id));
+      // No FK on the polymorphic collaborators table — clean up invites explicitly.
+      await db.delete(collaborators).where(
+        and(eq(collaborators.content_type, 'playlist'), eq(collaborators.content_id, playlist.id)),
+      );
       return reply.code(204).send();
     },
   );
@@ -463,7 +476,7 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const playlist = await ownedPlaylist(request.params.id, user.id);
+      const playlist = await ownedPlaylist(request.params.id, user);
       if (!playlist) return reply.code(404).send({ message: 'Playlist not found' });
 
       const body = z.object({
@@ -471,7 +484,8 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
       }).safeParse(request.body);
       if (!body.success) return reply.code(400).send({ message: body.error.message });
 
-      // De-dupe while preserving order; only keep projects the user owns
+      // De-dupe while preserving order; only keep projects the user can edit
+      // (their own or ones shared with them as a collaborator).
       const seen = new Set<string>();
       const orderedIds = body.data.items.map((i) => i.project_id).filter((id) => {
         if (seen.has(id)) return false;
@@ -481,7 +495,7 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
 
       const owned = orderedIds.length > 0
         ? await db.query.projects.findMany({
-            where: and(inArray(projects.id, orderedIds), eq(projects.created_by, user.id)),
+            where: and(inArray(projects.id, orderedIds), projectsEditableByWhere(user)),
           })
         : [];
       const ownedSet = new Set(owned.map((p) => p.id));
@@ -514,7 +528,7 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const playlist = await ownedPlaylist(request.params.id, user.id);
+      const playlist = await ownedPlaylist(request.params.id, user);
       if (!playlist) return reply.code(404).send({ message: 'Playlist not found' });
       if (!playlist.share_token) return reply.send({ shareToken: null, shareUrl: null });
       return reply.send({
@@ -530,7 +544,7 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const playlist = await ownedPlaylist(request.params.id, user.id);
+      const playlist = await ownedPlaylist(request.params.id, user);
       if (!playlist) return reply.code(404).send({ message: 'Playlist not found' });
 
       if (playlist.share_token) {
@@ -554,7 +568,7 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const playlist = await ownedPlaylist(request.params.id, user.id);
+      const playlist = await ownedPlaylist(request.params.id, user);
       if (!playlist) return reply.code(404).send({ message: 'Playlist not found' });
       await db
         .update(playlists)
@@ -570,7 +584,7 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const playlist = await ownedPlaylist(request.params.id, user.id);
+      const playlist = await ownedPlaylist(request.params.id, user);
       if (!playlist) return reply.code(404).send({ message: 'Playlist not found' });
       return reply.send(await buildPlaylistPlayConfig(playlist, user.id));
     },

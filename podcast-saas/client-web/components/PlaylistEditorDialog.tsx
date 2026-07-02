@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { LockPriceControl } from './LockPriceControl';
+import { CollaboratorsSection } from './CollaboratorsSection';
 import type { Project } from 'shared/src/generated/client-v1';
 
 interface Props {
@@ -483,6 +484,14 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
                   <section className="border-b border-border px-4 py-4 space-y-2">
                     <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground/60">Access</p>
                     <LockPriceControl contentType="playlist" contentId={playlistId} bordered={false} />
+                  </section>
+                )}
+
+                {/* Collaboration */}
+                {playlistId && (
+                  <section className="border-b border-border px-4 py-4 space-y-2.5">
+                    <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground/60">Collaborators</p>
+                    <CollaboratorsSection contentType="playlist" contentId={playlistId} />
                   </section>
                 )}
 

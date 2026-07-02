@@ -157,6 +157,14 @@ export function PlaylistsPanel() {
                         Live
                       </span>
                     )}
+                    {pl.collab_role === 'collaborator' && (
+                      <span
+                        className="absolute left-2 top-2 rounded-full bg-violet-600/90 px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-white shadow-sm"
+                        title="Shared with you — you can edit this playlist"
+                      >
+                        Shared
+                      </span>
+                    )}
                   </div>
 
                   <div className="flex flex-1 flex-col p-3.5">

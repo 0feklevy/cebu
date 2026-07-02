@@ -44,6 +44,7 @@ import { registerBrollRoutes } from './controllers/v1/broll.controller.js';
 import { registerImageRoutes } from './controllers/v1/images.controller.js';
 import { registerAudioRoutes } from './controllers/v1/audio.controller.js';
 import { registerPlaylistRoutes } from './controllers/v1/playlists.controller.js';
+import { registerCollaboratorRoutes } from './controllers/v1/collaborators.controller.js';
 import { registerBillingRoutes } from './controllers/v1/billing.controller.js';
 import { registerStripeWebhookRoutes } from './controllers/v1/stripe-webhook.controller.js';
 import { registerAvatarRoutes } from './controllers/v1/avatar.controller.js';
@@ -480,6 +481,7 @@ async function build() {
   await registerPlayerRoutes(app);
   await registerShareRoutes(app);
   await registerPlaylistRoutes(app);
+  await registerCollaboratorRoutes(app);
   await registerBillingRoutes(app);
   await registerStripeWebhookRoutes(app);
   await registerAvatarRoutes(app);

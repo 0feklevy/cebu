@@ -26,6 +26,26 @@ export interface Project {
   metadata_status?: string;
   view_count?: number;
   created_at: string;
+  /** 'owner' for own projects, 'collaborator' for projects shared with you (042). */
+  collab_role?: 'owner' | 'collaborator';
+}
+
+// ── Collaboration (migration 042) ───────────────────────────────────────────
+
+export interface CollaboratorEntry {
+  id: string;
+  email: string;
+  user_id: string | null;
+  display_name: string | null;
+  /** 'active' once the email maps to a real account, 'pending' before signup. */
+  status: 'active' | 'pending';
+  created_at: string;
+}
+
+export interface CollaboratorsResponse {
+  owner: { user_id: string; email: string | null; display_name: string | null } | null;
+  viewer_role: 'owner' | 'collaborator';
+  collaborators: CollaboratorEntry[];
 }
 
 // ── Billing / pay-to-unlock ─────────────────────────────────────────────────
@@ -329,6 +349,8 @@ export interface Playlist {
   view_count?: number;
   created_at: string;
   updated_at: string;
+  /** 'owner' for own playlists, 'collaborator' for playlists shared with you (042). */
+  collab_role?: 'owner' | 'collaborator';
 }
 
 export interface PlaylistItem {
@@ -1039,6 +1061,38 @@ export class ClientV1Api {
 
   revokePlaylistShare(playlistId: string): Promise<void> {
     return this.request(`/api/v1/playlists/${playlistId}/share`, { method: 'DELETE' });
+  }
+
+  // ── Collaboration (migration 042) ──────────────────────────────────────────
+
+  listProjectCollaborators(projectId: string): Promise<CollaboratorsResponse> {
+    return this.request(`/api/v1/projects/${projectId}/collaborators`);
+  }
+
+  addProjectCollaborator(projectId: string, email: string): Promise<{ collaborators: CollaboratorEntry[] }> {
+    return this.request(`/api/v1/projects/${projectId}/collaborators`, {
+      method: 'POST',
+      body: { email },
+    });
+  }
+
+  removeProjectCollaborator(projectId: string, collaboratorId: string): Promise<void> {
+    return this.request(`/api/v1/projects/${projectId}/collaborators/${collaboratorId}`, { method: 'DELETE' });
+  }
+
+  listPlaylistCollaborators(playlistId: string): Promise<CollaboratorsResponse> {
+    return this.request(`/api/v1/playlists/${playlistId}/collaborators`);
+  }
+
+  addPlaylistCollaborator(playlistId: string, email: string): Promise<{ collaborators: CollaboratorEntry[] }> {
+    return this.request(`/api/v1/playlists/${playlistId}/collaborators`, {
+      method: 'POST',
+      body: { email },
+    });
+  }
+
+  removePlaylistCollaborator(playlistId: string, collaboratorId: string): Promise<void> {
+    return this.request(`/api/v1/playlists/${playlistId}/collaborators/${collaboratorId}`, { method: 'DELETE' });
   }
 
   getPlaylistPlayConfig(playlistId: string): Promise<PlaylistPlayConfig> {

@@ -1,9 +1,10 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
-import { projects, audio_files, timeline_sections, video_files } from '../../db/schema.js';
+import { audio_files, timeline_sections, video_files } from '../../db/schema.js';
 import { eq, and } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
+import { editableProject } from '../../services/collabAccess.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { uploadWithFallback } from '../../services/storage/uploadWithFallback.js';
 import { probeMediaDuration } from '../../services/video/HLSTranscoder.js';
@@ -51,9 +52,7 @@ export async function registerAudioRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [firebaseAuthMiddleware] },
     async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const data = await request.file();
@@ -91,9 +90,7 @@ export async function registerAudioRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [firebaseAuthMiddleware] },
     async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const files = await db.query.audio_files.findMany({
@@ -110,9 +107,7 @@ export async function registerAudioRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [firebaseAuthMiddleware] },
     async (request: FastifyRequest<{ Params: { id: string; audioId: string } }>, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const file = await db.query.audio_files.findFirst({
@@ -135,9 +130,7 @@ export async function registerAudioRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [firebaseAuthMiddleware] },
     async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const body = z.object({
@@ -210,9 +203,7 @@ export async function registerAudioRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [firebaseAuthMiddleware] },
     async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const body = z.object({

@@ -10,6 +10,7 @@ import {
   Plus,
   Search,
   Trash2,
+  Users,
 } from 'lucide-react';
 import { CreateProjectDialog } from './CreateProjectDialog';
 import { PlaylistsPanel } from './PlaylistsPanel';
@@ -60,6 +61,7 @@ function statusMeta(status: string) {
 function ProjectTile({ project, onDelete }: { project: Project; onDelete: (id: string) => void }) {
   const meta = statusMeta(project.status);
   const title = projectTitle(project);
+  const isShared = project.collab_role === 'collaborator';
   const [confirm, setConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const tileRef = useRef<HTMLDivElement>(null);
@@ -101,6 +103,15 @@ function ProjectTile({ project, onDelete }: { project: Project; onDelete: (id: s
           <span className={`absolute right-3 top-3 rounded-full px-2.5 py-1.5 text-[11px] font-semibold shadow-sm ring-1 ${meta.className}`}>
             {meta.label}
           </span>
+          {isShared && (
+            <span
+              className="absolute bottom-3 right-3 inline-flex items-center gap-1 rounded-full bg-violet-600/90 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-white shadow-sm"
+              title="Shared with you — you can edit this project"
+            >
+              <Users size={11} strokeWidth={2.2} aria-hidden />
+              Shared
+            </span>
+          )}
         </div>
 
         <div className="flex min-h-0 flex-col p-3">
@@ -125,8 +136,9 @@ function ProjectTile({ project, onDelete }: { project: Project; onDelete: (id: s
         </div>
       </Link>
 
-      {/* Trash button — appears on hover, sits outside the Link so it doesn't trigger navigation */}
-      <button
+      {/* Trash button — appears on hover, sits outside the Link so it doesn't trigger navigation.
+          Hidden for shared projects: deleting is owner-only (collab-042). */}
+      {!isShared && <button
         onClick={(e) => { e.preventDefault(); e.stopPropagation(); setConfirm(true); }}
         title="Delete project"
         aria-label="Delete project"
@@ -134,7 +146,7 @@ function ProjectTile({ project, onDelete }: { project: Project; onDelete: (id: s
         style={{ pointerEvents: confirm ? 'none' : 'auto' }}
       >
         <Trash2 size={16} strokeWidth={2} aria-hidden />
-      </button>
+      </button>}
 
       {/* Confirmation modal — portaled to <body> so it is never clipped by the
           tile's hover-transform or the horizontal scroll container. */}

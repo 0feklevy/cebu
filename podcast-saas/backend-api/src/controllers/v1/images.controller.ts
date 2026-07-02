@@ -1,9 +1,10 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
-import { projects, image_files } from '../../db/schema.js';
+import { image_files } from '../../db/schema.js';
 import { eq, and } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
+import { editableProject } from '../../services/collabAccess.js';
 import { uploadWithFallback } from '../../services/storage/uploadWithFallback.js';
 import { deleteWithFallback } from '../../services/storage/deleteWithFallback.js';
 import { randomUUID } from 'crypto';
@@ -18,9 +19,7 @@ export async function registerImageRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [firebaseAuthMiddleware] },
     async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const data = await request.file();
@@ -65,9 +64,7 @@ export async function registerImageRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [firebaseAuthMiddleware] },
     async (request: FastifyRequest<{ Params: { id: string; imageId: string } }>, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const existing = await db.query.image_files.findFirst({
@@ -105,9 +102,7 @@ export async function registerImageRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [firebaseAuthMiddleware] },
     async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const images = await db.query.image_files.findMany({
@@ -124,9 +119,7 @@ export async function registerImageRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [firebaseAuthMiddleware] },
     async (request: FastifyRequest<{ Params: { id: string; imageId: string } }>, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const body = z.object({
@@ -154,9 +147,7 @@ export async function registerImageRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [firebaseAuthMiddleware] },
     async (request: FastifyRequest<{ Params: { id: string; imageId: string } }>, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       await db

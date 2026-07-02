@@ -3,9 +3,10 @@ import { randomUUID } from 'crypto';
 import AdmZip from 'adm-zip';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
-import { projects, simulations, timeline_sections } from '../../db/schema.js';
+import { simulations, timeline_sections } from '../../db/schema.js';
 import { eq, and } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
+import { editableProject, type CollabUser } from '../../services/collabAccess.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import {
   getSimulationContentType,
@@ -90,9 +91,7 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const rows = await db.query.simulations.findMany({
@@ -122,9 +121,7 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
     },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       let name = '';
@@ -244,9 +241,7 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const sim = await db.query.simulations.findFirst({
@@ -344,9 +339,7 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
       if (!key) return reply.code(400).send({ message: 'key query param required' });
 
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const sim = await db.query.simulations.findFirst({
@@ -384,9 +377,7 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const sim = await db.query.simulations.findFirst({
@@ -424,9 +415,7 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const sim = await db.query.simulations.findFirst({
@@ -455,11 +444,9 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
 
   // ── Guided Simulation (mother-sim-level) ──────────────────────────────────────
 
-  // Helper: own the project + simulation, returning both or null.
-  const loadOwnedSim = async (userId: string, projectId: string, simId: string) => {
-    const project = await db.query.projects.findFirst({
-      where: and(eq(projects.id, projectId), eq(projects.created_by, userId)),
-    });
+  // Helper: load the project (editable by user: owner or collaborator) + simulation.
+  const loadOwnedSim = async (user: CollabUser, projectId: string, simId: string) => {
+    const project = await editableProject(projectId, user);
     if (!project) return null;
     const sim = await db.query.simulations.findFirst({
       where: and(eq(simulations.id, simId), eq(simulations.project_id, project.id)),
@@ -475,7 +462,7 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const owned = await loadOwnedSim(user.id, request.params.id, request.params.simId);
+      const owned = await loadOwnedSim(user, request.params.id, request.params.simId);
       if (!owned) return reply.code(404).send({ message: 'Simulation not found' });
       if (owned.sim.status !== 'ready') return reply.code(400).send({ message: 'Simulation is not ready yet' });
 
@@ -538,7 +525,7 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const owned = await loadOwnedSim(user.id, request.params.id, request.params.simId);
+      const owned = await loadOwnedSim(user, request.params.id, request.params.simId);
       if (!owned) return reply.code(404).send({ message: 'Simulation not found' });
 
       const parsed = z.object({ entries: z.array(StoredGuidanceEntrySchema) }).safeParse(request.body);
@@ -558,7 +545,7 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const owned = await loadOwnedSim(user.id, request.params.id, request.params.simId);
+      const owned = await loadOwnedSim(user, request.params.id, request.params.simId);
       if (!owned) return reply.code(404).send({ message: 'Simulation not found' });
 
       const name = (request.body?.name ?? '').trim();
@@ -578,7 +565,7 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const owned = await loadOwnedSim(user.id, request.params.id, request.params.simId);
+      const owned = await loadOwnedSim(user, request.params.id, request.params.simId);
       if (!owned) return reply.code(404).send({ message: 'Simulation not found' });
 
       const entries = (owned.sim.guidance as GuidanceEntryStored[] | null) ?? [];

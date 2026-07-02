@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
-import { and, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { projects, video_files } from '../../db/schema.js';
 import { buildPlayerConfig } from '../../services/buildPlayerConfig.js';
@@ -7,6 +7,19 @@ import { firebaseAuthMiddleware, firebaseAuthOptionalMiddleware } from '../../mi
 import { BillingService } from '../../services/billing/BillingService.js';
 import { enqueueCaptionsForProject, getCaptionStatusForProject } from '../../services/captions/CaptionService.js';
 import { requireProjectAccess } from '../../services/projectAccess.js';
+import { editableProject, isCollaborator } from '../../services/collabAccess.js';
+
+import type { AccessProject } from '../../services/projectAccess.js';
+
+/** Read gate: visibility/owner/share-token first, then invited collaborators (042). */
+async function projectReadable(
+  project: AccessProject & { id: string },
+  dbUser: { id: string; email: string | null } | undefined,
+): Promise<boolean> {
+  if (requireProjectAccess(project, dbUser?.id ?? null)) return true;
+  if (!dbUser) return false;
+  return isCollaborator('project', project.id, dbUser);
+}
 
 // Public (optional-auth) endpoint — returns player config for a project's viewer
 // page, or a `locked` paywall stub when the project is paid and the viewer has
@@ -21,8 +34,8 @@ export async function registerPlayerRoutes(app: FastifyInstance): Promise<void> 
       const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
       if (!project) return reply.code(404).send({ message: 'Project not found' });
       // Visibility gate: a draft/private project isn't world-readable by id. 404 (not 403)
-      // so its existence isn't revealed. Owner (auth) and public projects pass.
-      if (!requireProjectAccess(project, request.dbUser?.id ?? null)) {
+      // so its existence isn't revealed. Owner/collaborator (auth) and public projects pass.
+      if (!(await projectReadable(project, request.dbUser))) {
         return reply.code(404).send({ message: 'Project not found' });
       }
 
@@ -59,7 +72,7 @@ export async function registerPlayerRoutes(app: FastifyInstance): Promise<void> 
       const projectId = request.params.id;
       const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
       if (!project) return reply.code(404).send({ message: 'Project not found' });
-      if (!requireProjectAccess(project, request.dbUser?.id ?? null)) {
+      if (!(await projectReadable(project, request.dbUser))) {
         return reply.code(404).send({ message: 'Project not found' });
       }
 
@@ -98,7 +111,7 @@ export async function registerPlayerRoutes(app: FastifyInstance): Promise<void> 
       // must not be readable by video id alone, only its paid status was checked before
       // (security-105). 404 so existence isn't revealed.
       const project = await db.query.projects.findFirst({ where: eq(projects.id, video.project_id) });
-      if (!project || !requireProjectAccess(project, request.dbUser?.id ?? null)) {
+      if (!project || !(await projectReadable(project, request.dbUser))) {
         return reply.code(404).send({ message: 'Captions not available' });
       }
       const pricing = await BillingService.getPricing('project', video.project_id);
@@ -120,13 +133,12 @@ export async function registerPlayerRoutes(app: FastifyInstance): Promise<void> 
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const projectId = request.params.id;
-      // Ownership check: only the project owner may force a (billable) caption re-run.
-      // (Existence probe alone allowed cross-tenant retries → IDOR + ffmpeg cost-DoS.)
-      const userId = request.dbUser?.id;
-      if (!userId) return reply.code(401).send({ message: 'Unauthorized' });
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, projectId), eq(projects.created_by, userId)),
-      });
+      // Ownership check: only the project owner/collaborator may force a (billable)
+      // caption re-run. (Existence probe alone allowed cross-tenant retries → IDOR +
+      // ffmpeg cost-DoS.)
+      const user = request.dbUser;
+      if (!user) return reply.code(401).send({ message: 'Unauthorized' });
+      const project = await editableProject(projectId, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
       await enqueueCaptionsForProject(projectId, { force: true }).catch(() => {});
       return reply.send(await getCaptionStatusForProject(projectId));

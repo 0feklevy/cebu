@@ -1,8 +1,9 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { db } from '../../db/index.js';
-import { projects, timeline_markers } from '../../db/schema.js';
+import { timeline_markers } from '../../db/schema.js';
 import { eq, and, asc } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
+import { editableProject } from '../../services/collabAccess.js';
 
 // Input bounds for markers (backend-206 / security-403): a 3- or 6-digit hex color, a sane
 // upper bound on at_sec (matching the thumbnail-from-timeline cap), and length caps on the
@@ -13,7 +14,8 @@ const LABEL_MAX = 200;
 const NOTES_MAX = 2000;
 
 // Editor timeline markers (Focus 5b). Premiere-style flags dropped at a point on the timeline
-// (Flag button or "m" hotkey) to leave a note for the editor. Owner-only, scoped to the project.
+// (Flag button or "m" hotkey) to leave a note for the editor. Editable by the project owner or
+// an invited collaborator, scoped to the project.
 
 export async function registerMarkersRoutes(app: FastifyInstance): Promise<void> {
   // GET /api/v1/projects/:id/markers
@@ -22,9 +24,7 @@ export async function registerMarkersRoutes(app: FastifyInstance): Promise<void>
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const markers = await db.query.timeline_markers.findMany({
@@ -41,9 +41,7 @@ export async function registerMarkersRoutes(app: FastifyInstance): Promise<void>
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const { at_sec, label, notes, color } = request.body;
@@ -81,9 +79,7 @@ export async function registerMarkersRoutes(app: FastifyInstance): Promise<void>
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const existing = await db.query.timeline_markers.findFirst({
@@ -129,9 +125,7 @@ export async function registerMarkersRoutes(app: FastifyInstance): Promise<void>
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const existing = await db.query.timeline_markers.findFirst({

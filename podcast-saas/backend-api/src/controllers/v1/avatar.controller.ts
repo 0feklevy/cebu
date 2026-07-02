@@ -35,7 +35,8 @@ import { analyzeVisual, generateLibrarySimulation, editLibrarySimulation } from 
 import { analyzeAndGenerateImage, generateLibraryImage } from '../../services/avatar/imageService.js';
 import { insertVisual, listVisuals, updateVisual, deleteVisual, syncBasicLibrary, storeImageBuffer, storeSimulationHtml } from '../../services/avatar/libraryService.js';
 import { saveTurns, getTurns, getProfile, extractAndSaveFacts, type Turn } from '../../services/avatar/memoryService.js';
-import { avatarProjectAllowed } from '../../services/avatar/avatarAccess.js';
+import { avatarProjectAllowedAsync } from '../../services/avatar/avatarAccess.js';
+import { editableProject } from '../../services/collabAccess.js';
 import { signMemoryToken, verifyMemoryToken } from '../../services/avatar/memoryToken.js';
 import { CHARACTERS, DEFAULT_CHARACTER_ID } from '../../services/avatar/characters.js';
 import { logger } from '../../lib/logger.js';
@@ -163,7 +164,7 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
     if (body.projectId) {
       const project = await db.query.projects.findFirst({ where: eq(projects.id, body.projectId), columns: { avatar_config: true, visibility: true, created_by: true } }).catch(() => null);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
-      if (!avatarProjectAllowed(project, request.dbUser?.id ?? null)) {
+      if (!(await avatarProjectAllowedAsync(body.projectId, project, request.dbUser ?? null))) {
         return reply.code(404).send({ message: 'Project not found' });
       }
       cfg = (project.avatar_config as AvatarPersonaConfig | null) ?? undefined;
@@ -248,7 +249,7 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
         columns: { visibility: true, created_by: true },
       }).catch(() => null);
       if (!proj) return reply.code(404).send({ message: 'Project not found' });
-      if (!avatarProjectAllowed(proj, request.dbUser?.id ?? null)) {
+      if (!(await avatarProjectAllowedAsync(request.params.id, proj, request.dbUser ?? null))) {
         return reply.code(404).send({ message: 'Project not found' });
       }
       await syncBasicLibrary(request.params.id).catch(() => {});
@@ -286,7 +287,7 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
         where: eq(projects.id, projectId),
         columns: { visibility: true, created_by: true },
       }).catch(() => null);
-      if (!proj || !avatarProjectAllowed(proj, request.dbUser?.id ?? null)) {
+      if (!proj || !(await avatarProjectAllowedAsync(projectId, proj, request.dbUser ?? null))) {
         return reply.code(403).send({ message: 'Forbidden' });
       }
     }
@@ -321,9 +322,7 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
 
   async function requireOwnedProject(request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) {
     const user = request.dbUser!;
-    const project = await db.query.projects.findFirst({
-      where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-    });
+    const project = await editableProject(request.params.id, user);
     if (!project) {
       reply.code(404).send({ message: 'Project not found' });
       return null;

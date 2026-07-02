@@ -2,8 +2,9 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { eq, and, desc } from 'drizzle-orm';
 import { db } from '../../db/index.js';
-import { projects, video_generation_jobs, timeline_sections, video_files } from '../../db/schema.js';
+import { video_generation_jobs, timeline_sections, video_files } from '../../db/schema.js';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
+import { editableProject } from '../../services/collabAccess.js';
 import { runVideoGenerateInProcess } from '../../jobs/video.generate.js';
 import { logger } from '../../lib/logger.js';
 
@@ -32,9 +33,7 @@ export async function registerBrollRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [firebaseAuthMiddleware] },
     async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const body = GenerateBodySchema.safeParse(request.body);
@@ -67,9 +66,7 @@ export async function registerBrollRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [firebaseAuthMiddleware] },
     async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const jobs = await db.query.video_generation_jobs.findMany({
@@ -86,9 +83,7 @@ export async function registerBrollRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const job = await db.query.video_generation_jobs.findFirst({
@@ -109,9 +104,7 @@ export async function registerBrollRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const [deleted] = await db.delete(video_generation_jobs)
@@ -132,9 +125,7 @@ export async function registerBrollRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [firebaseAuthMiddleware] },
     async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
       const user = request.dbUser!;
-      const project = await db.query.projects.findFirst({
-        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
-      });
+      const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const body = InsertExistingSchema.safeParse(request.body);

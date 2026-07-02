@@ -1,8 +1,8 @@
 import type { FastifyRequest, FastifyReply } from 'fastify';
 import { getFirebaseAdmin } from '../services/firebase.js';
 import { db } from '../db/index.js';
-import { users, orgs } from '../db/schema.js';
-import { eq } from 'drizzle-orm';
+import { users, orgs, collaborators } from '../db/schema.js';
+import { eq, and, isNull } from 'drizzle-orm';
 import type { DecodedIdToken } from 'firebase-admin/auth';
 
 // Emails listed in ADMIN_EMAILS (comma-separated) are auto-granted admin on every login.
@@ -72,6 +72,18 @@ export async function firebaseAuthMiddleware(
         .returning();
       // Link org owner
       await db.update(orgs).set({ owner_user_id: newUser.id }).where(eq(orgs.id, newOrg.id));
+      // Claim collaboration invites sent to this email before the account existed
+      // (migration 042), so user_id-only access checks see them.
+      if (newUser.email) {
+        await db
+          .update(collaborators)
+          .set({ user_id: newUser.id })
+          .where(and(
+            isNull(collaborators.user_id),
+            eq(collaborators.invited_email, newUser.email.toLowerCase()),
+          ))
+          .catch(() => {});
+      }
       request.dbUser = newUser;
     }
   } catch {
