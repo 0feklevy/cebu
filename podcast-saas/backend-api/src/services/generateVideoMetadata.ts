@@ -121,7 +121,11 @@ async function generateVideoMetadataInner(projectId: string, videoFileId: string
         const gptResult = await generateTitleAndDescription(thumbBuf, video.filename, apiKey, opts.promptHint, opts.model, transcript);
         // Only set title if not already given by the user
         if (!title && gptResult.title) title = gptResult.title;
-        if (gptResult.description) description = gptResult.description;
+        // Guard the description the same way as title: only overwrite the user's
+        // description on an explicit regenerate (opts.force). This keeps a description
+        // the creator typed during transcode from being clobbered by the un-forced
+        // post-transcode run.
+        if ((opts.force || !description) && gptResult.description) description = gptResult.description;
       } catch (visionErr) {
         logger.warn({ err: visionErr, projectId }, '[metadata] vision failed — using filename');
         if (!title) title = humaniseFilename(video.filename);

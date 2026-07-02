@@ -93,24 +93,22 @@ export function ConfirmDialog({
         <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
           <button
             type="button"
-            className="focus-ring"
+            className={`focus-ring bg-card ${busy ? '' : 'hover:bg-muted'}`}
             onClick={onCancel}
             disabled={busy}
             style={{
               flex: 1, height: 38, borderRadius: 9,
-              border: '1.5px solid #e5e7eb', backgroundColor: 'hsl(var(--card))',
+              border: '1.5px solid #e5e7eb',
               color: '#374151', fontSize: 13, fontWeight: 600,
               cursor: busy ? 'default' : 'pointer', transition: 'background 0.12s',
               opacity: busy ? 0.6 : 1,
             }}
-            onMouseEnter={e => { if (!busy) e.currentTarget.style.backgroundColor = 'hsl(var(--muted))'; }}
-            onMouseLeave={e => (e.currentTarget.style.backgroundColor = 'hsl(var(--card))')}
           >
             Cancel
           </button>
           <button
             type="button"
-            className="focus-ring"
+            className={`focus-ring ${busy ? '' : 'hover:opacity-[0.88]'}`}
             onClick={onConfirm}
             disabled={busy}
             style={{
@@ -122,8 +120,6 @@ export function ConfirmDialog({
               cursor: busy ? 'default' : 'pointer', transition: 'opacity 0.12s',
               opacity: busy ? 0.7 : 1,
             }}
-            onMouseEnter={e => { if (!busy) e.currentTarget.style.opacity = '0.88'; }}
-            onMouseLeave={e => (e.currentTarget.style.opacity = '1')}
           >
             {busy ? 'Deleting…' : confirmLabel}
           </button>

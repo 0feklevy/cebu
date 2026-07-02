@@ -129,7 +129,7 @@ export async function generateAiThumbnail(projectId: string, opts: AiThumbnailOp
   const thumbnailUrl = await uploadWithFallback(thumbKey, Buffer.from(b64, 'base64'), 'image/png');
 
   await db.update(projects)
-    .set({ thumbnail_url: thumbnailUrl, thumbnail_key: thumbKey, metadata_status: 'ready', updated_at: new Date() })
+    .set({ thumbnail_url: thumbnailUrl, thumbnail_key: thumbKey, updated_at: new Date() })
     .where(eq(projects.id, projectId));
 
   logger.info({ projectId, thumbnailUrl }, '[ai-thumbnail] ✓ generated');

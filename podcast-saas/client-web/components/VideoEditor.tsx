@@ -898,6 +898,10 @@ export function VideoEditor({ projectId }: Props) {
   }, [projectId]);
 
   const handleUpdateMarker = useCallback(async (id: string, patch: { label?: string | null; notes?: string | null; at_sec?: number }) => {
+    // A flag whose create hasn't resolved yet has a temp id that doesn't exist server-side —
+    // ignore edits/repositions until it's real (a PATCH against a temp id would 404, and the
+    // create response would then overwrite the edit anyway). (frontend-201)
+    if (id.startsWith('temp-')) return;
     // Repositioning can't drop a flag onto another flag's spot.
     if (patch.at_sec != null) {
       const at = Math.max(0, patch.at_sec);
@@ -916,6 +920,8 @@ export function VideoEditor({ projectId }: Props) {
   }, [projectId]);
 
   const handleDeleteMarker = useCallback(async (id: string) => {
+    // Don't fire a DELETE against a not-yet-created (temp) flag. (frontend-201)
+    if (id.startsWith('temp-')) { setMarkers(prev => prev.filter(m => m.id !== id)); return; }
     setMarkers(prev => prev.filter(m => m.id !== id));
     try { await api.deleteMarker(projectId, id); } catch { /* ignore */ }
   }, [projectId]);
@@ -1033,7 +1039,7 @@ export function VideoEditor({ projectId }: Props) {
               {hasAnyVideo && (
                 <button
                   onClick={toggleFullscreen}
-                  title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen (F)'}
+                  title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
                   className="absolute right-2 top-2 z-20 flex h-10 w-10 items-center justify-center rounded-lg transition-colors focus-ring"
                   style={{ backgroundColor: 'rgba(0,0,0,0.45)', color: '#fff' }}
                   onMouseEnter={e => (e.currentTarget.style.backgroundColor = 'rgba(0,0,0,0.7)')}

@@ -159,13 +159,42 @@ function clampTrim(sections: TimelineSection[], trimmed: TimelineSection, edge: 
 
 // ─── frame extraction ────────────────────────────────────────────────────────
 
-function useVideoFrames(url: string | null, duration: number) {
+// Shared decode-concurrency gate: at most FILMSTRIP_MAX_DECODES filmstrips decode frames at
+// once, the rest queue. Without this, a timeline with many clips/broll cuts spins up one
+// <video> decoder per strip on mount, all in parallel, competing for the main thread. (perf-014)
+const FILMSTRIP_MAX_DECODES = 3;
+let filmstripActive = 0;
+const filmstripQueue: Array<() => void> = [];
+function acquireFilmstripSlot(): Promise<() => void> {
+  return new Promise((resolve) => {
+    const grant = () => {
+      filmstripActive++;
+      let released = false;
+      resolve(() => {
+        if (released) return;
+        released = true;
+        filmstripActive--;
+        const next = filmstripQueue.shift();
+        if (next) next();
+      });
+    };
+    if (filmstripActive < FILMSTRIP_MAX_DECODES) grant();
+    else filmstripQueue.push(grant);
+  });
+}
+
+// `enabled` gates the actual decode work — ClipFilmstrip flips it on via IntersectionObserver
+// so off-screen strips don't decode until scrolled into view (the placeholder still renders
+// immediately regardless). (perf-014)
+function useVideoFrames(url: string | null, duration: number, enabled: boolean) {
   const [frames, setFrames] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   useEffect(() => {
     if (!url || duration <= 0) { setFrames([]); setLoading(false); return; }
+    if (!enabled) return; // in view not yet — keep placeholder, decode later
     setLoading(true);
     let aborted = false;
+    let release: (() => void) | null = null;
     const vid = document.createElement('video');
     vid.crossOrigin = 'anonymous';
     vid.preload = 'metadata';
@@ -176,9 +205,10 @@ function useVideoFrames(url: string | null, duration: number) {
     const ctx = canvas.getContext('2d')!;
     const captured: string[] = [];
     let i = 0;
+    const finish = () => { release?.(); release = null; setLoading(false); };
     const captureNext = () => {
       if (aborted) return;
-      if (i >= FRAMES_COUNT) { setFrames([...captured]); setLoading(false); return; }
+      if (i >= FRAMES_COUNT) { setFrames([...captured]); finish(); return; }
       vid.currentTime = Math.min(((i + 0.5) / FRAMES_COUNT) * duration, duration - 0.01);
     };
     const onSeeked = () => {
@@ -188,20 +218,26 @@ function useVideoFrames(url: string | null, duration: number) {
       setFrames([...captured]);   // reveal thumbnails progressively (left→right) so it feels instant
       i++; captureNext();
     };
-    const onError = () => { aborted = true; setLoading(false); };
+    const onError = () => { aborted = true; finish(); };
     vid.addEventListener('loadedmetadata', captureNext);
     vid.addEventListener('seeked', onSeeked);
     vid.addEventListener('error', onError);
-    vid.src = url;
+    // Wait for a decode slot before touching <video>.src so we cap concurrent decoders.
+    acquireFilmstripSlot().then((rel) => {
+      if (aborted) { rel(); return; }
+      release = rel;
+      vid.src = url;
+    });
     return () => {
       aborted = true;
       vid.removeEventListener('loadedmetadata', captureNext);
       vid.removeEventListener('seeked', onSeeked);
       vid.removeEventListener('error', onError);
       vid.src = '';
+      release?.(); release = null;
       setLoading(false);
     };
-  }, [url, duration]);
+  }, [url, duration, enabled]);
   return { frames, loading };
 }
 
@@ -252,12 +288,28 @@ function Waveform({ peaks }: { peaks: number[] | null }) {
 }
 
 function ClipFilmstrip({ videoUrl, duration }: { videoUrl: string | null; duration: number }) {
-  const { frames, loading } = useVideoFrames(videoUrl, duration);
+  const rootRef = useRef<HTMLDivElement>(null);
+  // Only decode frames once the strip scrolls into (or near) view, so off-screen strips on a
+  // long timeline don't all spin up video decoders on mount. The placeholder still renders
+  // immediately below regardless of visibility. Once seen, stay enabled (frames are cached). (perf-014)
+  const [inView, setInView] = useState(false);
+  useEffect(() => {
+    if (inView) return;
+    const el = rootRef.current;
+    if (!el) return;
+    if (typeof IntersectionObserver === 'undefined') { setInView(true); return; } // SSR/jsdom fallback
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) { setInView(true); io.disconnect(); }
+    }, { root: null, rootMargin: '200px' }); // decode a little before the strip is fully visible
+    io.observe(el);
+    return () => io.disconnect();
+  }, [inView]);
+  const { frames, loading } = useVideoFrames(videoUrl, duration, inView);
   // Always render FRAMES_COUNT slots: each shows its thumbnail once decoded, otherwise a solid
   // clip-style fill (like a Premiere clip). Thumbnails fill in left→right as they arrive, so a
   // brand-new clip is instantly a filled block instead of a blank/faint strip.
   return (
-    <div className="absolute inset-0 flex pointer-events-none overflow-hidden">
+    <div ref={rootRef} className="absolute inset-0 flex pointer-events-none overflow-hidden">
       {Array.from({ length: FRAMES_COUNT }, (_, idx) => {
         const src = frames[idx];
         return (
@@ -496,6 +548,7 @@ export function TimelinePanel({
   const [markerDraft, setMarkerDraft]     = useState('');                    // in-progress note text
   const [flagHoverSec, setFlagHoverSec]   = useState<number | null>(null);   // follow-line position in flag mode
   const [markerDrag, setMarkerDrag]       = useState<{ id: string; previewSec: number } | null>(null);
+  const markerDragCleanupRef = useRef<(() => void) | null>(null); // teardown for in-flight marker-drag listeners (frontend-102)
   const [localAudioFiles, setLocalAudioFiles] = useState<AudioFile[]>(audioFiles);
 
   const openMarker = (m: TimelineMarker, clientX: number, clientY: number) => {
@@ -721,13 +774,11 @@ export function TimelinePanel({
           setInter({ ...inter, previewStart: newStart });
         } else {
           const clipDur = inter.sourceDuration;
-          const val = Math.min(clipDur, Math.max(inter.section.start_sec + 1, globalSec - (inter.section.global_offset_sec ?? 0) + inter.section.start_sec));
-          // simpler: end_sec moves based on delta from mouse
+          // Right-edge trim: end_sec moves based on the delta from the mouse.
           const delta = globalSec - ((inter.section.global_offset_sec ?? 0) + (inter.section.end_sec - inter.section.start_sec));
           const newEnd = Math.min(clipDur, Math.max(inter.section.start_sec + 1, inter.section.end_sec + delta));
           if (Math.abs(newEnd - inter.section.end_sec) > 0.05) didMoveRef.current = true;
           setInter({ ...inter, previewEnd: newEnd });
-          void val;
         }
       }
     };
@@ -834,6 +885,9 @@ export function TimelinePanel({
 
   // Drag a placed flag to reposition it; a mousedown that doesn't move opens the note popover.
   const startMarkerDrag = useCallback((e: React.MouseEvent, m: TimelineMarker) => {
+    // A flag whose create hasn't resolved yet (temp id) can't be dragged/edited — a PATCH
+    // against a temp id would 404 and the create response would clobber the edit. (frontend-201)
+    if (m.id.startsWith('temp-')) return;
     e.stopPropagation();
     e.preventDefault();
     const startX = e.clientX;
@@ -844,17 +898,27 @@ export function TimelinePanel({
       previewSec = Math.max(0, pixelsToGlobalSec(ev.clientX));
       setMarkerDrag({ id: m.id, previewSec });
     };
-    const onUp = (ev: MouseEvent) => {
+    const teardown = () => {
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
+      markerDragCleanupRef.current = null;
+    };
+    const onUp = (ev: MouseEvent) => {
+      teardown();
       setMarkerDrag(null);
       if (moved) onUpdateMarker?.(m.id, { at_sec: previewSec });
       else openMarker(m, ev.clientX, ev.clientY);
     };
+    // Track the teardown so an unmount mid-drag removes these window listeners instead of
+    // leaking them (and firing a stale onUp against a previous project's closure). (frontend-102)
+    markerDragCleanupRef.current = teardown;
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pixelsToGlobalSec, onUpdateMarker]);
+
+  // Remove any in-flight marker-drag window listeners if the component unmounts mid-drag. (frontend-102)
+  useEffect(() => () => { markerDragCleanupRef.current?.(); }, []);
 
   // Escape closes an open note popover, else exits flag mode.
   useEffect(() => {
@@ -1190,16 +1254,27 @@ export function TimelinePanel({
               {markers.map(m => {
                 const atSec = markerDrag?.id === m.id ? markerDrag.previewSec : m.at_sec;
                 const dragging = markerDrag?.id === m.id;
+                const pending = m.id.startsWith('temp-'); // create not yet resolved (frontend-201)
                 return (
                   <div key={m.id} className="absolute top-0 bottom-0" style={{ left: atSec * zoom }}>
                     <div style={{ position: 'absolute', top: RULER_H, bottom: 0, width: 2, backgroundColor: m.color, opacity: dragging ? 1 : 0.85, transform: 'translateX(-1px)' }} />
                     <button
                       type="button"
+                      disabled={pending}
                       className="pointer-events-auto absolute focus-ring"
-                      style={{ top: 1, left: -1, height: RULER_H - 3, display: 'flex', alignItems: 'center', gap: 2, padding: '0 3px', borderRadius: 3, background: m.color, color: '#fff', cursor: dragging ? 'grabbing' : 'grab', boxShadow: '0 1px 2px rgba(0,0,0,0.25)' }}
-                      title={m.notes || m.label || `Flag at ${fmt(atSec)} — drag to move, click to edit`}
+                      style={{ top: 1, left: -1, height: RULER_H - 3, display: 'flex', alignItems: 'center', gap: 2, padding: '0 3px', borderRadius: 3, background: m.color, color: '#fff', cursor: pending ? 'progress' : dragging ? 'grabbing' : 'grab', opacity: pending ? 0.6 : 1, boxShadow: '0 1px 2px rgba(0,0,0,0.25)' }}
+                      title={pending ? 'Saving flag…' : (m.notes || m.label || `Flag at ${fmt(atSec)} — drag to move, click to edit`)}
                       aria-label={`Editor flag at ${fmt(atSec)}`}
                       onMouseDown={(e) => startMarkerDrag(e, m)}
+                      onKeyDown={(e) => {
+                        // Keyboard path: Enter/Space opens the same note popover a mouse click does.
+                        // (Mouse open/edit/delete is handled via startMarkerDrag's mouseup branch.)
+                        if (e.key !== 'Enter' && e.key !== ' ') return;
+                        if (pending) return; // wait for the create to resolve
+                        e.preventDefault();
+                        const r = e.currentTarget.getBoundingClientRect();
+                        openMarker(m, r.left + r.width / 2, r.bottom);
+                      }}
                     >
                       <Flag size={9} strokeWidth={2.4} aria-hidden />
                       {m.notes && !dragging && <span style={{ fontSize: 9, maxWidth: 70, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.notes}</span>}
@@ -1373,7 +1448,7 @@ export function TimelinePanel({
                   {/* Empty hint */}
                   {audioSections.length === 0 && (
                     <div className="absolute inset-0 flex items-center justify-center pointer-events-none select-none">
-                      <span style={{ fontSize: 9, color: '#a7f3d0', fontWeight: 600, letterSpacing: '0.05em' }}>
+                      <span style={{ fontSize: 10, color: '#059669', fontWeight: 600, letterSpacing: '0.05em' }}>
                         + click to add music / SFX
                       </span>
                     </div>

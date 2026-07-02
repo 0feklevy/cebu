@@ -134,7 +134,18 @@ function AvatarCirclesOverlayInner({
 
 // The canvas animation runs on its own rAF loop and reads live time via timeRef inside
 // getFrame, so this component only needs to re-render when its *layout* inputs change —
-// not on every ~250ms globalTime tick from the parent. Memoize on the layout-relevant
-// props; globalTime is still compared so timeRef stays fresh for speaker detection, but
-// unrelated parent re-renders no longer re-run all the layout math here. (perf-013)
-export const AvatarCirclesOverlay = memo(AvatarCirclesOverlayInner);
+// not on every ~250ms globalTime tick from the parent. The custom comparator below
+// deliberately EXCLUDES globalTime from the equality check so those ticks don't re-run
+// the layout math; timeRef.current is still assigned from globalTime in the render body
+// whenever the component does re-render for another reason, and getFrame reads it live
+// inside the rAF loop regardless of React timing, so speaker detection stays fresh.
+// (perf-013 / frontend-202 / perf-015)
+export const AvatarCirclesOverlay = memo(AvatarCirclesOverlayInner, (prev, next) =>
+  prev.config === next.config &&
+  prev.visible === next.visible &&
+  prev.videoARef === next.videoARef &&
+  prev.videoBRef === next.videoBRef &&
+  prev.speakerTimeline === next.speakerTimeline &&
+  prev.controlsVisible === next.controlsVisible &&
+  prev.avoidAskButton === next.avoidAskButton,
+);

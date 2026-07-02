@@ -61,7 +61,12 @@ export function AvatarPopup({ open, onClose, projectId, videoTitle, characterId 
           setAvatarDisplay(data.avatarDisplay ?? (data.voiceSensitivity != null ? { voiceSensitivity: data.voiceSensitivity } : undefined));
         }
       })
-      .catch((e) => { if (!cancelled) setError((e as Error).message); });
+      .catch((e) => {
+        // Keep the real error in the console for operators; show viewers a friendly,
+        // generic message (no server internals / env-var names). (ui-ux-205)
+        console.error('[AvatarPopup] failed to start avatar session:', e);
+        if (!cancelled) setError("The avatar couldn't start right now. Please try again in a moment.");
+      });
     return () => { cancelled = true; };
   }, [open, characterId, projectId]);
 
@@ -124,7 +129,7 @@ export function AvatarPopup({ open, onClose, projectId, videoTitle, characterId 
             <div className="avatar-popup-status">
               <p style={{ color: '#e87762', marginBottom: 16 }}>⚠ {error}</p>
               <p style={{ color: 'rgba(255,255,255,0.5)', fontSize: 13, maxWidth: 360, textAlign: 'center' }}>
-                The avatar needs <code>ANAM_API_KEY</code> and a persona configured on the server.
+                This video&apos;s avatar isn&apos;t available at the moment.
               </p>
               <button className="avatar-btn avatar-btn--secondary" style={{ marginTop: 18 }} onClick={onClose}>Close</button>
             </div>

@@ -63,12 +63,14 @@ export async function registerPlayerRoutes(app: FastifyInstance): Promise<void> 
         return reply.code(404).send({ message: 'Project not found' });
       }
 
-      const pricing = await BillingService.getPricing('project', projectId);
+      // Thread the already-loaded `project` row through billing so it isn't re-SELECTed
+      // (mirrors the player-config route above — perf-018).
+      const pricing = await BillingService.getPricing('project', projectId, project);
       if (!pricing) return reply.code(404).send({ message: 'Project not found' });
 
       if (pricing.accessType === 'paid') {
         const userId = request.dbUser?.id ?? null;
-        const hasAccess = await BillingService.hasAccess(userId, 'project', projectId);
+        const hasAccess = await BillingService.hasAccess(userId, 'project', projectId, project);
         if (!hasAccess) {
           return reply.code(403).send({ message: 'Captions are locked for this paid video' });
         }

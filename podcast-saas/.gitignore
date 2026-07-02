@@ -16,6 +16,9 @@ out/
 .turbo/
 .cache/
 
+# Test coverage output
+coverage/
+
 # Durable local-disk storage (R2 write-denied fallback)
 .local-storage/
 **/.local-storage/

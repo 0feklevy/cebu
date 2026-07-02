@@ -40,6 +40,23 @@ export function GuidedTour({ steps, open, onClose }: Props) {
 
   useEffect(() => { if (open) setIdx(0); }, [open]);
 
+  // Escape closes the tour — and ONLY the tour. Host dialogs (Settings/Avatar/Section) install
+  // their own window/document Escape listeners that would otherwise close the whole panel out
+  // from under the walkthrough. Listen in the capture phase and stopImmediatePropagation so this
+  // handler runs first and the host handlers never see the Escape. (ui-ux-210)
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      e.preventDefault();
+      onClose();
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [open, onClose]);
+
   // Measure the current target (and keep it in sync on scroll/resize).
   useLayoutEffect(() => {
     if (!open || !step) return;

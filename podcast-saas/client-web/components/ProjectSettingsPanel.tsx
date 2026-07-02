@@ -102,6 +102,14 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
     setDesc(project?.topic ?? '');
   }, [project?.title, project?.topic]);
 
+  // Abort in-flight generate polls when the project changes or the component unmounts, so a
+  // stale poll can't overwrite title/desc after the user has moved on. (frontend-101)
+  const genCancelledRef = useRef(false);
+  useEffect(() => {
+    genCancelledRef.current = false;
+    return () => { genCancelledRef.current = true; };
+  }, [projectId]);
+
   // Load videos when panel opens
   useEffect(() => {
     if (!open) return;
@@ -183,20 +191,32 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
   const generateDetails = async () => {
     setGenMeta(true);
     setGenMetaError(null);
+    // Snapshot the field values as they were when generation started. If the user hand-edits a
+    // field while the ~90s poll runs, don't clobber that edit with the AI result. (ui-ux-202)
+    const titleAtStart = title;
+    const descAtStart = desc;
     try {
       await api.regenerateVideoMetadata(projectId);
       for (let i = 0; i < 45; i++) {
         await new Promise((r) => setTimeout(r, 2000));
+        if (genCancelledRef.current) return;
         const p = await api.getProject(projectId).catch(() => null);
+        if (genCancelledRef.current) return;
         if (!p) continue;
-        if (p.metadata_status === 'ready') { onProjectChange(p); setTitle(p.title ?? ''); setDesc(p.topic ?? ''); return; }
+        if (p.metadata_status === 'ready') {
+          onProjectChange(p);
+          // Only overwrite a field the user hasn't dirtied since starting generation.
+          setTitle(prev => (prev === titleAtStart ? (p.title ?? '') : prev));
+          setDesc(prev => (prev === descAtStart ? (p.topic ?? '') : prev));
+          return;
+        }
         if (p.metadata_status === 'failed') { setGenMetaError('Generation failed. Please try again.'); return; }
       }
       setGenMetaError('Still generating — reopen settings shortly to see the result.');
     } catch (e) {
       setGenMetaError((e as Error).message?.slice(0, 160) || 'Generation failed');
     } finally {
-      setGenMeta(false);
+      if (!genCancelledRef.current) setGenMeta(false);
     }
   };
 

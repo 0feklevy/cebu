@@ -326,6 +326,8 @@ export function SectionEditor({
     if (type !== 'clip') return;
     const handler = (e: KeyboardEvent) => {
       if ((e.key === 'i' || e.key === 'I') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const t = e.target as HTMLElement | null;
+        if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
         setClipInSec(clipCurrentTime);
       }
     };

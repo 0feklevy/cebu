@@ -273,7 +273,10 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
         const enhanced = await enhanceThumbnailPrompt(project.id, userPrompt);
         return reply.send({ prompt: enhanced });
       } catch (err) {
-        return reply.code(502).send({ message: (err as Error).message || 'Failed to enhance prompt' });
+        // Log the real (possibly upstream) error server-side; return a generic message so
+        // provider/internal detail isn't surfaced to the client (backend-204 / security-404).
+        request.log.error({ err, projectId: project.id }, 'enhance-thumbnail-prompt failed');
+        return reply.code(502).send({ message: 'Failed to enhance prompt. Please try again.' });
       }
     },
   );

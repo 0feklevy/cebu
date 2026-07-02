@@ -14,7 +14,7 @@ export function TourButton({ className = '', ...props }: ButtonHTMLAttributes<HT
       aria-label="Show tutorial"
       title="How this works"
       {...props}
-      className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border-0 bg-[#eef1f5] text-[15px] font-bold leading-none text-[#51596a] transition-colors hover:bg-[#e2e6ec] focus-ring ${className}`}
+      className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border-0 bg-muted text-[15px] font-bold leading-none text-muted-foreground transition-colors hover:bg-muted/80 focus-ring ${className}`}
     >
       ?
     </button>

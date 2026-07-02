@@ -13,6 +13,7 @@ import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import { propagateTranscript } from '../transcriptPropagation.js';
 import { runFfmpegLimited } from '../ffmpegLimit.js';
 import { enqueueJob } from '../../queue/index.js';
+import { enqueueVideoMetadata } from '../generateVideoMetadata.js';
 
 const execFileAsync = promisify(execFile);
 const inFlight = new Set<string>();
@@ -282,6 +283,11 @@ async function runCaptionJob(videoId: string, opts: { force?: boolean } = {}): P
 
     // Forward the transcript to SEO + the avatar's knowledge documents (best-effort).
     propagateTranscript(video, vtt);
+
+    // Now that captions_vtt is written, (re)run auto title/description so it's grounded in
+    // the transcript — the feature's whole point. Non-forced, so it composes with the
+    // description-overwrite guard and never clobbers user-typed values. (backend-201)
+    if (video.project_id) enqueueVideoMetadata(video.project_id, video.id);
   } catch (err) {
     const message = (err as Error).message || 'Caption generation failed';
     logger.warn({ videoId, err: message.slice(0, 400) }, '[captions] generation failed');
@@ -290,6 +296,10 @@ async function runCaptionJob(videoId: string, opts: { force?: boolean } = {}): P
       captions_error: message.slice(0, 1000),
       captions_updated_at: new Date(),
     }).where(eq(video_files.id, videoId)).catch(() => {});
+    // Captions failed — still run metadata so the video gets a title/description from the
+    // frame + filename fallback (a caption-less run is better than no title). (backend-201)
+    const failedVideo = await db.query.video_files.findFirst({ where: eq(video_files.id, videoId) }).catch(() => null);
+    if (failedVideo?.project_id && !failedVideo.is_broll) enqueueVideoMetadata(failedVideo.project_id, failedVideo.id);
   } finally {
     inFlight.delete(videoId);
     await rm(workDir, { recursive: true, force: true }).catch(() => {});

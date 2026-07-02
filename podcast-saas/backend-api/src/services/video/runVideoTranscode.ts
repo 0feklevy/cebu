@@ -12,7 +12,6 @@ import { previousHlsTreeToGc } from './hlsVersioning.js';
 import { isSimilarMedia, parsePeaks } from './mediaSimilarity.js';
 import { enqueueCropForProject } from '../crop/runCropAnalysis.js';
 import { enqueueCaptionsForProject } from '../captions/CaptionService.js';
-import { enqueueVideoMetadata } from '../generateVideoMetadata.js';
 import { fetchWithRetry } from '../../lib/fetchWithRetry.js';
 import { deleteWithPrefixFallback } from '../storage/deleteWithFallback.js';
 import { logger } from '../../lib/logger.js';
@@ -126,10 +125,6 @@ export async function runVideoTranscode(video_file_id: string): Promise<{ hls_ma
     // Pointer is flipped — GC the previous *versioned* tree (different run), if any.
     const oldTree = previousHlsTreeToGc(video_file_id, oldMasterKey, runId);
     if (oldTree) deleteWithPrefixFallback(oldTree).catch(() => {});
-
-    // Generate thumbnail + AI title/description in the background.
-    // Uses the already-downloaded source file in inputPath for the frame extraction.
-    if (video.project_id) enqueueVideoMetadata(video.project_id, video_file_id);
 
     // Captions + smart-crop run on the WRITE path. Skip-if-similar: on a REPLACE where the
     // new media is essentially the same as the old (same duration + near-identical audio),
