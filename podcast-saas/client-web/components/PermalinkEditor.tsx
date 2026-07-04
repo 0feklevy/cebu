@@ -19,11 +19,13 @@ interface Props {
   contentId: string;
   visibility?: 'private' | 'unlisted' | 'public';
   onMakePublic?: () => Promise<void>;
+  /** Hide the "Permalink" heading (when the host UI already labels the section). */
+  hideTitle?: boolean;
 }
 
 type CheckState = { state: 'idle' | 'checking' | 'ok' | 'bad'; message?: string };
 
-export function PermalinkEditor({ contentType, contentId, visibility, onMakePublic }: Props) {
+export function PermalinkEditor({ contentType, contentId, visibility, onMakePublic, hideTitle }: Props) {
   const [info, setInfo]     = useState<PermalinkInfo | null>(null);
   const [input, setInput]   = useState('');
   const [check, setCheck]   = useState<CheckState>({ state: 'idle' });
@@ -84,6 +86,9 @@ export function PermalinkEditor({ contentType, contentId, visibility, onMakePubl
       const res = isProject
         ? await api.setProjectPermalink(contentId, slug)
         : await api.setPlaylistPermalink(contentId, slug);
+      // One-click publish: saving a permalink on a non-public project also makes
+      // it public (the permalink is meaningless otherwise).
+      if (slug && needsPublic && onMakePublic) await onMakePublic();
       applyResult(res);
     } catch (e) {
       setError((e as Error).message);
@@ -110,17 +115,19 @@ export function PermalinkEditor({ contentType, contentId, visibility, onMakePubl
 
   return (
     <div className="space-y-2">
-      <div className="flex items-center gap-1.5">
-        <Globe size={12} strokeWidth={1.9} className="text-muted-foreground/70" aria-hidden />
-        <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground/60">Permalink</p>
-        {savedSlug && !needsPublic && (
-          <span className="rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-600">Live</span>
-        )}
-      </div>
+      {!hideTitle && (
+        <div className="flex items-center gap-1.5">
+          <Globe size={12} strokeWidth={1.9} className="text-muted-foreground/70" aria-hidden />
+          <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground/60">Permalink</p>
+        </div>
+      )}
       <p className="text-[11px] leading-relaxed text-muted-foreground">
+        {savedSlug && !needsPublic && (
+          <span className="mr-1.5 inline-block rounded-full bg-emerald-500/10 px-1.5 py-0.5 align-middle text-[10px] font-semibold text-emerald-600">Live</span>
+        )}
         {isProject
-          ? 'Your public URL — pick a memorable address for this video.'
-          : 'Your public URL — setting one makes this playlist viewable by anyone at that address.'}
+          ? 'Your video’s public address — anyone can watch it here. Pick something memorable.'
+          : 'Your playlist’s public address — setting one makes it viewable by anyone.'}
       </p>
 
       <div className="flex items-center rounded-xl border border-border bg-background px-2.5 py-2 shadow-sm-soft">
@@ -155,7 +162,7 @@ export function PermalinkEditor({ contentType, contentId, visibility, onMakePubl
               style={{ background: 'linear-gradient(135deg,#a855f7,#6366f1)' }}
             >
               {saving ? <Loader2 size={12} className="animate-spin" aria-hidden /> : <Check size={12} strokeWidth={2.1} aria-hidden />}
-              {input.trim() ? 'Save permalink' : 'Remove permalink'}
+              {input.trim() ? (needsPublic ? 'Publish at this address' : 'Save permalink') : 'Remove permalink'}
             </button>
             <button
               onClick={() => { setInput(savedSlug ?? ''); setError(null); setCheck({ state: 'idle' }); }}
@@ -196,12 +203,16 @@ export function PermalinkEditor({ contentType, contentId, visibility, onMakePubl
         ) : null}
       </div>
 
-      {needsPublic && (
+      {needsPublic && dirty && input.trim() && (
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
+          Publishing makes this video public at the address above.
+        </p>
+      )}
+
+      {needsPublic && !dirty && savedSlug && (
         <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2">
           <p className="min-w-0 flex-1 text-[11px] leading-relaxed text-amber-700">
-            {savedSlug
-              ? 'This video isn’t public yet — the permalink goes live once visibility is Public.'
-              : 'This video isn’t public yet — permalinks only work for Public videos.'}
+            Not public yet — this address won&apos;t work until the video is public.
           </p>
           {onMakePublic && (
             <button

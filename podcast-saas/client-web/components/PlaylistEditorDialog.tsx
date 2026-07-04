@@ -438,7 +438,10 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
 
                 {/* Share */}
                 <section className="border-b border-border px-4 py-4 space-y-2.5">
-                  <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground/60">Share link</p>
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground/60">Private link</p>
+                  <p className="text-[11px] leading-relaxed text-muted-foreground">
+                    A secret link — anyone who has it can watch. It&apos;s not listed anywhere.
+                  </p>
                   {shareUrl ? (
                     <>
                       <div className="rounded-xl border border-border bg-background p-1.5 shadow-sm-soft">
@@ -469,13 +472,13 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
                           Revoke link
                         </button>
                       </div>
-                      <p className="text-[11px] leading-5 text-muted-foreground">Revoking disables this playlist URL immediately.</p>
+                      <p className="text-[11px] leading-5 text-muted-foreground">Revoking disables this private link immediately.</p>
                     </>
                   ) : (
                     <button onClick={handleCreateShare} disabled={shareLoading || items.length === 0}
                       className="inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-lg border border-border text-xs font-semibold text-foreground transition-colors hover:bg-muted disabled:opacity-40">
                       {shareLoading ? <Loader2 size={12} className="animate-spin" /> : <Link2 size={12} strokeWidth={1.9} />}
-                      Create share link
+                      Create private link
                     </button>
                   )}
                   {playlistId && !loading && (

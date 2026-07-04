@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import Link from 'next/link';
-import { ArrowLeft, Check, Copy, ExternalLink, Eye, Link2, Loader2, Share2, Unlink2, X } from 'lucide-react';
+import { ArrowLeft, Check, Copy, ExternalLink, Eye, Globe, Link2, Loader2, Lock, Share2, Unlink2, X } from 'lucide-react';
 import { TourButton } from './TourButton';
 import { api, createShareToken, revokeShareToken } from '../lib/api';
 import { PermalinkEditor } from './PermalinkEditor';
@@ -40,6 +40,7 @@ export function ProjectHeader({ projectId }: Props) {
   const [shareCopied,   setShareCopied]    = useState(false);
   const [shareOpen,     setShareOpen]      = useState(false);
   const [shareError,    setShareError]     = useState<string | null>(null);
+  const [shareTab,      setShareTab]       = useState<'public' | 'private'>('public');
   const popRef = useRef<HTMLDivElement>(null);
   const sheetRef = useRef<HTMLDivElement>(null);
 
@@ -223,7 +224,7 @@ export function ProjectHeader({ projectId }: Props) {
                   <p className="text-sm font-semibold text-foreground">Share this video</p>
                 </div>
                 <p className="text-xs leading-relaxed text-muted-foreground">
-                  Anyone with the private link below can watch. Set a permalink for a public, memorable URL.
+                  Choose how you want to share.
                 </p>
               </div>
               <button
@@ -237,60 +238,88 @@ export function ProjectHeader({ projectId }: Props) {
             </div>
 
             <div className="space-y-3 px-4 py-4">
-              <div className="rounded-xl border border-border bg-background p-1.5 shadow-sm-soft">
-                <div className="flex min-w-0 items-center gap-2">
-                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-600">
-                    <Check size={14} strokeWidth={2} aria-hidden />
-                  </span>
-                  <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground" title={shareUrl}>
-                    {shareUrl}
-                  </span>
-                  <button
-                    onClick={handleCopy}
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-ring"
-                    title={shareCopied ? 'Copied' : 'Copy link'}
-                    aria-label={shareCopied ? 'Copied' : 'Copy share link'}
-                  >
-                    {shareCopied ? <Check size={15} strokeWidth={2.2} aria-hidden /> : <Copy size={15} strokeWidth={1.9} aria-hidden />}
-                  </button>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 gap-2 min-[360px]:grid-cols-2">
-                <a
-                  href={shareUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-border text-xs font-semibold text-foreground transition-colors hover:bg-muted focus-ring"
-                >
-                  <ExternalLink size={14} strokeWidth={1.8} aria-hidden />
-                  Open viewer
-                </a>
+              {/* One link concept per tab: the public permalink OR the secret token link. */}
+              <div className="grid grid-cols-2 gap-1 rounded-lg bg-muted p-1" role="tablist" aria-label="Share options">
                 <button
-                  onClick={handleRevoke}
-                  disabled={shareLoading}
-                  className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-red-200 bg-red-50 text-xs font-semibold text-red-600 transition-colors hover:bg-red-100 disabled:opacity-40 focus-ring"
+                  role="tab"
+                  aria-selected={shareTab === 'public'}
+                  onClick={() => setShareTab('public')}
+                  className={`inline-flex h-8 items-center justify-center gap-1.5 rounded-md text-xs font-semibold transition-colors focus-ring ${shareTab === 'public' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
                 >
-                  {shareLoading ? <Loader2 size={14} className="animate-spin" aria-hidden /> : <Unlink2 size={14} strokeWidth={1.8} aria-hidden />}
-                  Revoke link
+                  <Globe size={12} strokeWidth={1.9} aria-hidden />
+                  Public page
+                </button>
+                <button
+                  role="tab"
+                  aria-selected={shareTab === 'private'}
+                  onClick={() => setShareTab('private')}
+                  className={`inline-flex h-8 items-center justify-center gap-1.5 rounded-md text-xs font-semibold transition-colors focus-ring ${shareTab === 'private' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+                >
+                  <Lock size={12} strokeWidth={1.9} aria-hidden />
+                  Private link
                 </button>
               </div>
 
-              <p className="text-[11px] leading-5 text-muted-foreground">
-                Revoking disables the private link immediately. You can create a new one later.
-              </p>
+              {shareTab === 'private' ? (
+                <>
+                  <p className="text-[11px] leading-relaxed text-muted-foreground">
+                    A secret link — anyone who has it can watch, even while the video stays private. It&apos;s not listed anywhere.
+                  </p>
+                  <div className="rounded-xl border border-border bg-background p-1.5 shadow-sm-soft">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-600">
+                        <Check size={14} strokeWidth={2} aria-hidden />
+                      </span>
+                      <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground" title={shareUrl}>
+                        {shareUrl}
+                      </span>
+                      <button
+                        onClick={handleCopy}
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-ring"
+                        title={shareCopied ? 'Copied' : 'Copy link'}
+                        aria-label={shareCopied ? 'Copied' : 'Copy share link'}
+                      >
+                        {shareCopied ? <Check size={15} strokeWidth={2.2} aria-hidden /> : <Copy size={15} strokeWidth={1.9} aria-hidden />}
+                      </button>
+                    </div>
+                  </div>
 
-              <div className="border-t border-border pt-3">
+                  <div className="grid grid-cols-1 gap-2 min-[360px]:grid-cols-2">
+                    <a
+                      href={shareUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-border text-xs font-semibold text-foreground transition-colors hover:bg-muted focus-ring"
+                    >
+                      <ExternalLink size={14} strokeWidth={1.8} aria-hidden />
+                      Open viewer
+                    </a>
+                    <button
+                      onClick={handleRevoke}
+                      disabled={shareLoading}
+                      className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-red-200 bg-red-50 text-xs font-semibold text-red-600 transition-colors hover:bg-red-100 disabled:opacity-40 focus-ring"
+                    >
+                      {shareLoading ? <Loader2 size={14} className="animate-spin" aria-hidden /> : <Unlink2 size={14} strokeWidth={1.8} aria-hidden />}
+                      Revoke link
+                    </button>
+                  </div>
+
+                  <p className="text-[11px] leading-5 text-muted-foreground">
+                    Revoking disables the private link immediately. You can create a new one later.
+                  </p>
+                </>
+              ) : (
                 <PermalinkEditor
                   contentType="project"
                   contentId={projectId}
+                  hideTitle
                   visibility={project?.visibility ?? 'private'}
                   onMakePublic={async () => {
                     await api.setProjectVisibility(projectId, 'public');
                     setProject(prev => (prev ? { ...prev, visibility: 'public' } : prev));
                   }}
                 />
-              </div>
+              )}
             </div>
 
             {shareError && (
