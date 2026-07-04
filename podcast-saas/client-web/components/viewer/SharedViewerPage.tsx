@@ -14,10 +14,13 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
 const POLL_INTERVAL_MS = 5000;
 
 interface Props {
-  shareToken: string;
+  /** Random unlisted share link (/v/:token). */
+  shareToken?: string;
+  /** Creator-controlled public permalink ({PUBLIC_SITE_URL}/{slug}, migration 043). */
+  permalinkSlug?: string;
 }
 
-export function SharedViewerPage({ shareToken }: Props) {
+export function SharedViewerPage({ shareToken, permalinkSlug }: Props) {
   const [config, setConfig]         = useState<PlayerConfig | null>(null);
   const [locked, setLocked]         = useState<LockedContent | null>(null);
   const [error, setError]           = useState<string | null>(null);
@@ -30,7 +33,10 @@ export function SharedViewerPage({ shareToken }: Props) {
     const check = async () => {
       try {
         const token = await auth.currentUser?.getIdToken().catch(() => null);
-        const r = await fetch(`${API_URL}/api/v1/share/${shareToken}`, {
+        const configUrl = shareToken
+          ? `${API_URL}/api/v1/share/${shareToken}`
+          : `${API_URL}/api/v1/public/permalink/${permalinkSlug}/config`;
+        const r = await fetch(configUrl, {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         });
         if (r.status === 404) {
@@ -79,7 +85,7 @@ export function SharedViewerPage({ shareToken }: Props) {
     check();
     intervalRef.current = setInterval(check, POLL_INTERVAL_MS);
     return () => clearInterval(intervalRef.current!);
-  }, [shareToken]);
+  }, [shareToken, permalinkSlug]);
 
   if (locked) {
     return (

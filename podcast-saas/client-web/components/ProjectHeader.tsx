@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { ArrowLeft, Check, Copy, ExternalLink, Eye, Link2, Loader2, Share2, Unlink2, X } from 'lucide-react';
 import { TourButton } from './TourButton';
 import { api, createShareToken, revokeShareToken } from '../lib/api';
+import { PermalinkEditor } from './PermalinkEditor';
 import { ProjectSettingsPanel } from './ProjectSettingsPanel';
 import { useAuth } from '../lib/firebase';
 import type { Project } from 'shared/src/generated/client-v1';
@@ -219,10 +220,10 @@ export function ProjectHeader({ projectId }: Props) {
                   <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
                     <Link2 size={14} strokeWidth={1.9} aria-hidden />
                   </span>
-                  <p className="text-sm font-semibold text-foreground">Public watch link</p>
+                  <p className="text-sm font-semibold text-foreground">Share this video</p>
                 </div>
                 <p className="text-xs leading-relaxed text-muted-foreground">
-                  Anyone with this link can watch the current final video.
+                  Anyone with the private link below can watch. Set a permalink for a public, memorable URL.
                 </p>
               </div>
               <button
@@ -275,9 +276,21 @@ export function ProjectHeader({ projectId }: Props) {
                 </button>
               </div>
 
-              <p className="border-t border-border pt-3 text-[11px] leading-5 text-muted-foreground">
-                Revoking disables this public URL immediately. You can create a new link later.
+              <p className="text-[11px] leading-5 text-muted-foreground">
+                Revoking disables the private link immediately. You can create a new one later.
               </p>
+
+              <div className="border-t border-border pt-3">
+                <PermalinkEditor
+                  contentType="project"
+                  contentId={projectId}
+                  visibility={project?.visibility ?? 'private'}
+                  onMakePublic={async () => {
+                    await api.setProjectVisibility(projectId, 'public');
+                    setProject(prev => (prev ? { ...prev, visibility: 'public' } : prev));
+                  }}
+                />
+              </div>
             </div>
 
             {shareError && (

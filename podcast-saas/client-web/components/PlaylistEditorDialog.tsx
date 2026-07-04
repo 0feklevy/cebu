@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { LockPriceControl } from './LockPriceControl';
+import { PermalinkEditor } from './PermalinkEditor';
 import { CollaboratorsSection } from './CollaboratorsSection';
 import type { Project } from 'shared/src/generated/client-v1';
 
@@ -474,8 +475,13 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
                     <button onClick={handleCreateShare} disabled={shareLoading || items.length === 0}
                       className="inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-lg border border-border text-xs font-semibold text-foreground transition-colors hover:bg-muted disabled:opacity-40">
                       {shareLoading ? <Loader2 size={12} className="animate-spin" /> : <Link2 size={12} strokeWidth={1.9} />}
-                      Create public link
+                      Create share link
                     </button>
+                  )}
+                  {playlistId && !loading && (
+                    <div className="border-t border-border pt-3">
+                      <PermalinkEditor contentType="playlist" contentId={playlistId} />
+                    </div>
                   )}
                 </section>
 

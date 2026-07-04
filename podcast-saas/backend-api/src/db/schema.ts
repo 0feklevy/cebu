@@ -172,6 +172,9 @@ export const projects = pgTable('projects', {
   visibility: projectVisibilityEnum('visibility').notNull().default('private'),
   share_token:       text('share_token').unique(),
   share_enabled_at:  timestamp('share_enabled_at', { withTimezone: true }),
+  // Creator-controlled permalink (migration 043): public URL is {PUBLIC_SITE_URL}/{slug}.
+  // One namespace with playlists.slug; uniqueness enforced by permalinkService + partial index.
+  slug: text('slug'),
   // Pay-to-unlock (migration 024)
   access_type: text('access_type').notNull().default('free'),
   price_cents: integer('price_cents'),
@@ -541,6 +544,9 @@ export const playlists = pgTable('playlists', {
   banner_provider: text('banner_provider'),
   share_token:      text('share_token').unique(),
   share_enabled_at: timestamp('share_enabled_at', { withTimezone: true }),
+  // Creator-controlled permalink (migration 043). A playlist with a slug is public
+  // at {PUBLIC_SITE_URL}/{slug} (playlists have no visibility column — slug = public).
+  slug: text('slug'),
   // Pay-to-unlock (migration 024)
   access_type: text('access_type').notNull().default('free'),
   price_cents: integer('price_cents'),

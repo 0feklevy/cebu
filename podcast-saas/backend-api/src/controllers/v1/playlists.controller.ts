@@ -604,7 +604,7 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
  * `viewerUserId` is still forwarded to buildPlayerConfig so branching edge-access resolves with
  * the viewer's identity.
  */
-async function buildPlaylistPlayConfig(
+export async function buildPlaylistPlayConfig(
   playlist: typeof playlists.$inferSelect,
   viewerUserId: string | null,
 ) {

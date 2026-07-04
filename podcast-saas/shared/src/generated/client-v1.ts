@@ -17,6 +17,8 @@ export interface Project {
   visibility?: 'private' | 'unlisted' | 'public';
   created_by: string | null;
   share_token?: string | null;
+  /** Creator-controlled permalink (043) — public URL is {PUBLIC_SITE_URL}/{slug}. */
+  slug?: string | null;
   access_type?: 'free' | 'paid';
   price_cents?: number | null;
   currency?: string;
@@ -343,6 +345,8 @@ export interface Playlist {
   banner_provider: string | null;
   share_token: string | null;
   share_enabled_at: string | null;
+  /** Creator-controlled permalink (043) — a playlist with a slug is public at {PUBLIC_SITE_URL}/{slug}. */
+  slug?: string | null;
   access_type?: 'free' | 'paid';
   price_cents?: number | null;
   currency?: string;
@@ -351,6 +355,28 @@ export interface Playlist {
   updated_at: string;
   /** 'owner' for own playlists, 'collaborator' for playlists shared with you (042). */
   collab_role?: 'owner' | 'collaborator';
+}
+
+// ── Permalinks (migration 043) ───────────────────────────────────────────────
+
+export interface PermalinkInfo {
+  slug: string | null;
+  /** Full public URL ({PUBLIC_SITE_URL}/{slug}), null when no slug is set. */
+  permalinkUrl: string | null;
+  /** Prefill suggestion derived from the title; only sent while slug is null. */
+  suggestedSlug?: string | null;
+  /** Public site origin the permalink lives under (no trailing slash). */
+  baseUrl: string;
+  /** Projects only — the permalink is live only while visibility === 'public'. */
+  visibility?: 'private' | 'unlisted' | 'public';
+}
+
+export interface PermalinkAvailability {
+  /** The normalised slug that would actually be saved (null when input is unusable). */
+  slug: string | null;
+  available: boolean;
+  reason?: 'invalid' | 'reserved' | 'taken';
+  message?: string;
 }
 
 export interface PlaylistItem {
@@ -1049,6 +1075,38 @@ export class ClientV1Api {
       method: 'PUT',
       body: { items: projectIds.map((project_id) => ({ project_id })) },
     });
+  }
+
+  // ── Permalinks (migration 043) ──────────────────────────────────────────
+
+  getProjectPermalink(projectId: string): Promise<PermalinkInfo> {
+    return this.request(`/api/v1/projects/${projectId}/permalink`);
+  }
+
+  /** Pass null (or '') to remove the permalink. Throws with the server message on 400/409. */
+  setProjectPermalink(projectId: string, slug: string | null): Promise<PermalinkInfo> {
+    return this.request(`/api/v1/projects/${projectId}/permalink`, { method: 'PUT', body: { slug } });
+  }
+
+  getPlaylistPermalink(playlistId: string): Promise<PermalinkInfo> {
+    return this.request(`/api/v1/playlists/${playlistId}/permalink`);
+  }
+
+  /** Pass null (or '') to remove the permalink. Throws with the server message on 400/409. */
+  setPlaylistPermalink(playlistId: string, slug: string | null): Promise<PermalinkInfo> {
+    return this.request(`/api/v1/playlists/${playlistId}/permalink`, { method: 'PUT', body: { slug } });
+  }
+
+  checkPermalinkAvailability(
+    slug: string,
+    exclude?: { type: 'project' | 'playlist'; id: string },
+  ): Promise<PermalinkAvailability> {
+    const params = new URLSearchParams({ slug });
+    if (exclude) {
+      params.set('exclude_type', exclude.type);
+      params.set('exclude_id', exclude.id);
+    }
+    return this.request(`/api/v1/permalink-availability?${params.toString()}`);
   }
 
   getPlaylistShare(playlistId: string): Promise<{ shareToken: string | null; shareUrl: string | null }> {

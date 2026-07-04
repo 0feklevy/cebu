@@ -17,8 +17,9 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
 const COUNTDOWN_SEC = 6;
 
 interface Props {
-  shareToken?: string;   // public playlist
-  playlistId?: string;   // owner preview (auth)
+  shareToken?: string;     // unlisted share link (/pl/:token)
+  playlistId?: string;     // owner preview (auth)
+  permalinkSlug?: string;  // creator-controlled public permalink (/{slug}, migration 043)
 }
 
 function shuffledIndices(n: number): number[] {
@@ -30,7 +31,7 @@ function shuffledIndices(n: number): number[] {
   return arr;
 }
 
-export function PlaylistViewer({ shareToken, playlistId }: Props) {
+export function PlaylistViewer({ shareToken, playlistId, permalinkSlug }: Props) {
   const [data, setData]   = useState<PlaylistPlayConfig | null>(null);
   const [locked, setLocked] = useState<LockedContent | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -68,6 +69,8 @@ export function PlaylistViewer({ shareToken, playlistId }: Props) {
         let res: Response;
         if (shareToken) {
           res = await fetch(`${API_URL}/api/v1/playlist-share/${shareToken}`, { headers });
+        } else if (permalinkSlug) {
+          res = await fetch(`${API_URL}/api/v1/public/permalink/${permalinkSlug}/config`, { headers });
         } else {
           res = await fetch(`${API_URL}/api/v1/playlists/${playlistId}/play-config`, { headers });
         }
@@ -85,7 +88,7 @@ export function PlaylistViewer({ shareToken, playlistId }: Props) {
     };
     load();
     return () => { cancelled = true; };
-  }, [shareToken, playlistId, authLoading, getIdToken]);
+  }, [shareToken, playlistId, permalinkSlug, authLoading, getIdToken]);
 
   // ── fullscreen tracking ───────────────────────────────────────────────────
   useEffect(() => {

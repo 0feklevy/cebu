@@ -39,6 +39,7 @@ import { firebaseAuthMiddleware } from './middleware/firebase-auth.js';
 import { registerPhase2StubRoutes } from './controllers/stubs.js';
 import { registerPlayerRoutes } from './controllers/v1/player.controller.js';
 import { registerShareRoutes }  from './controllers/v1/share.controller.js';
+import { registerPermalinkRoutes } from './controllers/v1/permalink.controller.js';
 import { registerSimulationsRoutes } from './controllers/v1/simulations.controller.js';
 import { registerBrollRoutes } from './controllers/v1/broll.controller.js';
 import { registerImageRoutes } from './controllers/v1/images.controller.js';
@@ -480,6 +481,7 @@ async function build() {
 
   await registerPlayerRoutes(app);
   await registerShareRoutes(app);
+  await registerPermalinkRoutes(app);
   await registerPlaylistRoutes(app);
   await registerCollaboratorRoutes(app);
   await registerBillingRoutes(app);
