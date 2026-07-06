@@ -126,15 +126,26 @@ describe('processFileUpload', () => {
     });
 
     expect(result.entryKey).toBe('simulations/project-1/sim-1/ising-kid-simu/ising_model.html');
+    // Write-once assets (css/png) upload with immutable cache metadata; the rewritable
+    // entry HTML must NOT (bridge regeneration overwrites it in place).
+    const IMMUTABLE = 'public, max-age=31536000, immutable';
     expect(mockStorage.uploadFile).toHaveBeenCalledWith(
       'simulations/project-1/sim-1/ising-kid-simu/ising_model.css',
       css,
       'text/css',
+      IMMUTABLE,
     );
     expect(mockStorage.uploadFile).toHaveBeenCalledWith(
       'simulations/project-1/sim-1/ising-kid-simu/VERSION3/BLUE_RED_HATS_NEW/1_BLUE_HAPPY.png',
       png,
       'image/png',
+      IMMUTABLE,
+    );
+    expect(mockStorage.uploadFile).toHaveBeenCalledWith(
+      'simulations/project-1/sim-1/ising-kid-simu/ising_model.html',
+      expect.any(Buffer),
+      'text/html; charset=utf-8',
+      undefined,
     );
   });
 });

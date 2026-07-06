@@ -18,7 +18,7 @@ export class LocalStorageAdapter implements StorageService {
     logger.warn('R2 not configured — using local disk storage (dev only). Files stored in ' + BASE_DIR);
   }
 
-  async uploadFile(path: string, data: Buffer, _contentType: string): Promise<string> {
+  async uploadFile(path: string, data: Buffer, _contentType: string, _cacheControl?: string): Promise<string> {
     const dest = join(BASE_DIR, path);
     await mkdir(dest.substring(0, dest.lastIndexOf('/')), { recursive: true });
     await writeFile(dest, data);

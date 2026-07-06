@@ -45,13 +45,14 @@ export class R2StorageAdapter implements StorageService {
     });
   }
 
-  async uploadFile(path: string, data: Buffer, contentType: string): Promise<string> {
+  async uploadFile(path: string, data: Buffer, contentType: string, cacheControl?: string): Promise<string> {
     await this.client.send(
       new PutObjectCommand({
         Bucket: this.bucket,
         Key: path,
         Body: data,
         ContentType: contentType,
+        CacheControl: cacheControl,
       }),
     );
     return `${this.publicUrl}/${path}`;

@@ -12,6 +12,40 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
 const MULTIPART_THRESHOLD = 40 * 1024 * 1024; // 40 MB
 // Fallback part size if the server doesn't specify one (it does: part_size).
 const DEFAULT_PART_SIZE = 8 * 1024 * 1024; // 8 MB
+// Attempts per part PUT (1 initial + retries). Long multipart uploads routinely hit
+// one-off connection resets (Chrome: net::ERR_HTTP2_PROTOCOL_ERROR when the server/CDN
+// recycles the connection mid-PUT) — one flaky part must not kill a multi-GB upload.
+const PART_MAX_ATTEMPTS = 4;
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+// A part PUT failed. `retryable` separates transient transport/server errors (connection
+// resets surface as an XHR 'error' with no status; 5xx/429/408) from deterministic ones
+// (403 bad signature, missing ETag) that retrying can't fix.
+class PartPutError extends Error {
+  constructor(message: string, readonly retryable: boolean) {
+    super(message);
+  }
+}
+
+// POST JSON to the backend, retrying transient failures (network errors, 5xx, 429) with
+// exponential backoff. Returns the first conclusive response.
+async function postJsonWithRetry(
+  url: string,
+  body: unknown,
+  headers: () => Promise<Record<string, string>>,
+  attempts = 3,
+): Promise<Response> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const res = await fetch(url, { method: 'POST', headers: await headers(), body: JSON.stringify(body) });
+      if ((res.status < 500 && res.status !== 429) || attempt >= attempts) return res;
+    } catch (err) {
+      if (attempt >= attempts) throw err;
+    }
+    await sleep(1000 * 2 ** (attempt - 1) + Math.random() * 250);
+  }
+}
 
 interface UploadProgress {
   filename: string;
@@ -117,30 +151,36 @@ export function VideoUploader({ projectId, onUploaded, replaceVideoId }: Props) 
   };
 
   // PUT one part to storage; resolve with its ETag (needed to complete the upload).
-  // Aggregate progress across all parts is reported via the onBytes callback.
+  // Progress is reported as ABSOLUTE bytes uploaded for THIS part, so a retried part
+  // simply rewinds its own contribution instead of double-counting.
   const putPart = (
     url: string,
     blob: Blob,
-    onBytes: (loadedDelta: number) => void,
+    onPartLoaded: (loaded: number) => void,
   ): Promise<string> =>
     new Promise<string>((resolve, reject) => {
       const xhr = new XMLHttpRequest();
-      let lastLoaded = 0;
       xhr.upload.addEventListener('progress', (e) => {
-        if (!e.lengthComputable) return;
-        onBytes(e.loaded - lastLoaded);
-        lastLoaded = e.loaded;
+        if (e.lengthComputable) onPartLoaded(e.loaded);
       });
       xhr.addEventListener('load', () => {
         if (xhr.status >= 200 && xhr.status < 300) {
           // ETag is required to complete the multipart upload. Storage must expose it via
           // Access-Control-Expose-Headers: ETag (Supabase's S3 endpoint does by default).
           const etag = xhr.getResponseHeader('ETag');
-          if (!etag) reject(new Error('Storage did not return an ETag for the part (check CORS expose-headers)'));
+          if (!etag) reject(new PartPutError('Storage did not return an ETag for the part (check CORS expose-headers)', false));
           else resolve(etag);
-        } else reject(new Error(`Part PUT ${xhr.status}`));
+        } else {
+          // 5xx/429/408 are transient server-side hiccups; other statuses are deterministic.
+          const retryable = xhr.status >= 500 || xhr.status === 429 || xhr.status === 408;
+          reject(new PartPutError(`Part PUT ${xhr.status}`, retryable));
+        }
       });
-      xhr.addEventListener('error', () => reject(new Error('Network error during part upload')));
+      // Transport-level failures (net::ERR_HTTP2_PROTOCOL_ERROR, dropped Wi-Fi, …) land
+      // here with no HTTP status — always worth retrying on a fresh connection.
+      xhr.addEventListener('error', () => reject(new PartPutError('Network error during part upload', true)));
+      xhr.addEventListener('timeout', () => reject(new PartPutError('Part upload timed out', true)));
+      xhr.timeout = 240_000; // unstick hung PUTs; generous for an 8 MB part on slow uplinks
       xhr.open('PUT', url);
       xhr.send(blob);
     });
@@ -149,11 +189,18 @@ export function VideoUploader({ projectId, onUploaded, replaceVideoId }: Props) 
   // complete. Returns null if the backend says multipart is unsupported (local dev) so
   // the caller can fall back to the single-PUT path.
   const uploadMultipartCloud = async (file: File, idx: number, token: string): Promise<VideoFile | null> => {
-    const hdrs = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
-    const startRes = await fetch(`${API_URL}/api/v1/projects/${projectId}/videos/upload/multipart/start`, {
-      method: 'POST', headers: hdrs,
-      body: JSON.stringify({ filename: file.name, content_type: file.type || 'video/mp4', file_size: file.size }),
+    // A multi-GB upload can outlive the initial Firebase ID token (~1 h), so headers are
+    // minted per call — getIdToken() transparently refreshes when close to expiry.
+    const freshHeaders = async (): Promise<Record<string, string>> => ({
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${(await getAuth().currentUser?.getIdToken()) ?? token}`,
     });
+
+    const startRes = await postJsonWithRetry(
+      `${API_URL}/api/v1/projects/${projectId}/videos/upload/multipart/start`,
+      { filename: file.name, content_type: file.type || 'video/mp4', file_size: file.size },
+      freshHeaders,
+    );
     if (startRes.status === 501) return null; // unsupported backend → caller falls back
     if (startRes.status === 413) throw new TooLargeError(((await startRes.json().catch(() => ({}))) as { message?: string }).message ?? 'File too large');
     if (!startRes.ok) throw new Error(`multipart start ${startRes.status}`);
@@ -163,13 +210,14 @@ export function VideoUploader({ projectId, onUploaded, replaceVideoId }: Props) 
     const partSize = part_size || DEFAULT_PART_SIZE;
     const partCount = Math.ceil(file.size / partSize);
     const parts: { partNumber: number; etag: string }[] = [];
-    let uploadedBytes = 0;
+    let completedBytes = 0;
     const startTime = Date.now();
-    const bumpProgress = (delta: number) => {
-      uploadedBytes += delta;
-      const percent = Math.min(100, Math.round((uploadedBytes / file.size) * 100));
+    // Absolute-bytes progress (completed parts + the in-flight part) so a part retry
+    // rewinds cleanly instead of double-counting.
+    const reportProgress = (loadedBytes: number) => {
+      const percent = Math.min(100, Math.round((loadedBytes / file.size) * 100));
       const elapsed = (Date.now() - startTime) / 1000;
-      const bps = uploadedBytes / Math.max(elapsed, 0.001);
+      const bps = loadedBytes / Math.max(elapsed, 0.001);
       const speed = bps > 1_000_000 ? `${(bps / 1_000_000).toFixed(1)} MB/s` : `${(bps / 1_000).toFixed(0)} KB/s`;
       updateUpload(idx, { percent, speed });
     };
@@ -178,20 +226,45 @@ export function VideoUploader({ projectId, onUploaded, replaceVideoId }: Props) 
       for (let i = 0; i < partCount; i++) {
         const partNumber = i + 1;
         const blob = file.slice(i * partSize, Math.min(file.size, (i + 1) * partSize));
-        const partUrlRes = await fetch(`${API_URL}/api/v1/projects/${projectId}/videos/upload/multipart/part-url`, {
-          method: 'POST', headers: hdrs,
-          body: JSON.stringify({ storage_key, upload_id, part_number: partNumber }),
-        });
-        if (!partUrlRes.ok) throw new Error(`part-url ${partUrlRes.status}`);
-        const { url } = (await partUrlRes.json()) as { url: string };
-        const etag = await putPart(url, blob, bumpProgress);
-        parts.push({ partNumber, etag });
+
+        // Retry transient failures per part, minting a fresh presigned URL each attempt.
+        const uploadPart = async (): Promise<string> => {
+          for (let attempt = 1; ; attempt++) {
+            try {
+              const partUrlRes = await fetch(`${API_URL}/api/v1/projects/${projectId}/videos/upload/multipart/part-url`, {
+                method: 'POST',
+                headers: await freshHeaders(),
+                body: JSON.stringify({ storage_key, upload_id, part_number: partNumber }),
+              });
+              if (!partUrlRes.ok) {
+                throw new PartPutError(`part-url ${partUrlRes.status}`, partUrlRes.status >= 500 || partUrlRes.status === 429);
+              }
+              const { url } = (await partUrlRes.json()) as { url: string };
+              return await putPart(url, blob, (loaded) => reportProgress(completedBytes + loaded));
+            } catch (err) {
+              // fetch() network failures throw TypeError (no status) — treat as transient.
+              const retryable = err instanceof PartPutError ? err.retryable : true;
+              if (!retryable || attempt >= PART_MAX_ATTEMPTS) {
+                throw err instanceof PartPutError
+                  ? new PartPutError(`part ${partNumber}/${partCount}: ${err.message}`, err.retryable)
+                  : err;
+              }
+              updateUpload(idx, { speed: `retrying part ${partNumber}/${partCount}…` });
+              await sleep(1000 * 2 ** (attempt - 1) + Math.random() * 500);
+            }
+          }
+        };
+
+        parts.push({ partNumber, etag: await uploadPart() });
+        completedBytes += blob.size;
+        reportProgress(completedBytes);
       }
 
-      const completeRes = await fetch(`${API_URL}/api/v1/projects/${projectId}/videos/upload/multipart/complete`, {
-        method: 'POST', headers: hdrs,
-        body: JSON.stringify({ storage_key, upload_id, filename: file.name, file_size: file.size, parts, replace_video_id: replaceVideoId }),
-      });
+      const completeRes = await postJsonWithRetry(
+        `${API_URL}/api/v1/projects/${projectId}/videos/upload/multipart/complete`,
+        { storage_key, upload_id, filename: file.name, file_size: file.size, parts, replace_video_id: replaceVideoId },
+        freshHeaders,
+      );
       if (!completeRes.ok) {
         const msg = ((await completeRes.json().catch(() => ({}))) as { message?: string }).message;
         throw new Error(msg ?? `multipart complete ${completeRes.status}`);
@@ -199,10 +272,11 @@ export function VideoUploader({ projectId, onUploaded, replaceVideoId }: Props) 
       return (await completeRes.json()) as VideoFile;
     } catch (err) {
       // Abort so storage drops the orphaned parts; best-effort, don't mask the real error.
-      fetch(`${API_URL}/api/v1/projects/${projectId}/videos/upload/multipart/abort`, {
-        method: 'POST', headers: hdrs,
-        body: JSON.stringify({ storage_key, upload_id }),
-      }).catch(() => {});
+      freshHeaders()
+        .then((h) => fetch(`${API_URL}/api/v1/projects/${projectId}/videos/upload/multipart/abort`, {
+          method: 'POST', headers: h, body: JSON.stringify({ storage_key, upload_id }),
+        }))
+        .catch(() => {});
       throw err;
     }
   };

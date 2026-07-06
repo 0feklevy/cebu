@@ -9,7 +9,7 @@ import { logger } from './lib/logger.js';
 import { LOCAL_STORAGE_BASE_DIR } from './services/storage/localStoragePaths.js';
 import { safeLocalPath, keyHasTraversal } from './services/storage/pathSafety.js';
 import { serveLocalFile } from './services/storage/serveFile.js';
-import { checkDatabaseConnection, db, video_files } from './db/index.js';
+import { checkDatabaseConnection, db, video_files, simulations } from './db/index.js';
 import { getFirebaseAdmin } from './services/firebase.js';
 import { getStorageAdapter } from './services/storage/getStorageAdapter.js';
 import { R2StorageAdapter } from './services/storage/R2StorageAdapter.js';
@@ -86,6 +86,21 @@ async function recoverStuckTranscodes(): Promise<void> {
     .returning({ id: video_files.id });
   if (recovered.length > 0) {
     logger.warn({ count: recovered.length }, 'Recovered stuck HLS transcodes on startup');
+  }
+}
+
+// Simulation ingestion runs in-process after the upload 202s; a restart (or a crash in
+// the async chain) strands the row at 'processing' with no watchdog, so the client shows
+// "Processing…" forever. Any 'processing' sim at boot is orphaned — flip it to 'failed'
+// so the user gets a clear re-upload prompt (mirrors recoverStuckCrops).
+async function recoverStuckSimulations(): Promise<void> {
+  const recovered = await db
+    .update(simulations)
+    .set({ status: 'failed', error: 'Interrupted by process restart — please re-upload' })
+    .where(eq(simulations.status, 'processing'))
+    .returning({ id: simulations.id });
+  if (recovered.length > 0) {
+    logger.warn({ count: recovered.length }, 'Recovered stuck simulations on startup');
   }
 }
 
@@ -392,13 +407,20 @@ async function build() {
       // security-003 hardening) is deferred — it would break sims that use
       // localStorage/canvas-with-same-origin-data and needs runtime verification.
       const appOrigin = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
+      // script/style/connect allow https: — sims legitimately pull CDN libs, Google
+      // Fonts, and remote data, and blocking them adds no security when 'unsafe-inline'
+      // + 'unsafe-eval' are already required by real sims (inline script can do anything
+      // a remote one can). The ambient lockdown (frame-ancestors/base-uri/form-action)
+      // is what actually protects the app. media-src covers sim audio/video, including
+      // assets redirected to the bucket's public URL below.
       const simCsp = [
         "default-src 'self' data: blob:",
-        "script-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:",
-        "style-src 'self' 'unsafe-inline'",
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https:",
+        "style-src 'self' 'unsafe-inline' https:",
         "img-src 'self' data: blob: https:",
         "font-src 'self' data: https:",
-        "connect-src 'self' data: blob:",
+        "media-src 'self' data: blob: https:",
+        "connect-src 'self' data: blob: https:",
         `frame-ancestors ${appOrigin} http://localhost:3001`,
         "base-uri 'self'",
         "form-action 'self'",
@@ -418,8 +440,29 @@ async function build() {
         });
       }
 
-      // Cloud (Supabase / R2): read the object and re-assert the correct Content-Type,
-      // overriding whatever the bucket would have served.
+      // Cloud (Supabase / R2): only TEXT types need the proxy — they're the ones whose
+      // Content-Type the public bucket mangles (text/html → text/plain) or that must
+      // carry the sim CSP. Binary media (images, fonts, audio, video) redirects to the
+      // bucket's public URL instead: those types serve with correct MIME, and the
+      // browser then loads them straight from the CDN — parallel over HTTP/2 and
+      // edge/browser-cached — rather than serializing through this proxy (one full
+      // readObject per request), which made image-heavy sims crawl.
+      const ext = extname(key).toLowerCase();
+      const PROXIED_TEXT_EXTS = new Set(['.html', '.htm', '.js', '.mjs', '.css', '.json', '.txt', '.md', '.xml', '.svg', '.vtt', '.csv']);
+      // Keys are simId-scoped and write-once — EXCEPT the entry HTML and bridge JS,
+      // which bridge (re)generation overwrites in place. Those must revalidate every
+      // load (the old max-age=300 could serve a stale bridge right after regeneration);
+      // everything else is safe to cache forever.
+      const isRewritable = ext === '.html' || ext === '.htm' || ext === '.js' || ext === '.mjs';
+      const IMMUTABLE = 'public, max-age=31536000, immutable';
+
+      if (!PROXIED_TEXT_EXTS.has(ext)) {
+        return reply
+          .header('Cache-Control', IMMUTABLE)
+          .header('Access-Control-Allow-Origin', '*')
+          .redirect(storage.getPublicUrl(key));
+      }
+
       try {
         const buf = await storage.readObject(key);
         return reply
@@ -429,7 +472,7 @@ async function build() {
           .header('Cross-Origin-Resource-Policy', 'cross-origin')
           .header('Access-Control-Allow-Origin', '*')
           .header('Content-Security-Policy', simCsp)
-          .header('Cache-Control', 'public, max-age=300')
+          .header('Cache-Control', isRewritable ? 'no-cache' : IMMUTABLE)
           .send(buf);
       } catch (err) {
         logger.warn({ key, err }, 'sim-public: cloud object read failed');
@@ -548,6 +591,7 @@ async function start() {
     try {
       await recoverStuckTranscodes();
       await recoverStuckCrops();
+      await recoverStuckSimulations();
     } catch (err) {
       logger.warn({ err }, 'Stuck-job recovery failed (non-fatal)');
     }

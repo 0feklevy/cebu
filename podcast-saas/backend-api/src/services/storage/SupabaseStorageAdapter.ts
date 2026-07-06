@@ -64,12 +64,59 @@ export class SupabaseStorageAdapter implements StorageService {
       // Match R2: don't embed CRC checksums (they break presigned URLs on some S3 impls).
       requestChecksumCalculation: 'WHEN_REQUIRED',
       responseChecksumValidation: 'WHEN_REQUIRED',
+      // Fail fast instead of hanging (fiji's StorageService pattern). Without a socket
+      // timeout, a black-holed connection through Supabase's CDN waits FOREVER — a sim
+      // upload wave's Promise.all then never resolves and the sim sits at 'processing'
+      // indefinitely. socketTimeout fires on socket INACTIVITY (verified in
+      // @smithy/node-http-handler), so slow-but-flowing large streams are unaffected.
+      requestHandler: {
+        connectionTimeout: 5_000, // 5s to establish TCP
+        // 15s of ZERO socket activity → fail + retry. Healthy transfers of any size
+        // keep the socket busy continuously, so this only fires on truly dead
+        // connections. 60s proved painfully slow in practice: a network flap mid-sim-
+        // upload meant each dead socket burned the full minute × retries (~5 min of
+        // "Processing…" for 44 files) before recovering.
+        socketTimeout: 15_000,
+      },
     });
   }
 
-  async uploadFile(path: string, data: Buffer, contentType: string): Promise<string> {
-    await this.client.send(
-      new PutObjectCommand({ Bucket: this.bucket, Key: path, Body: data, ContentType: contentType }),
+  /**
+   * Send an S3 command, retrying transient failures with backoff.
+   *
+   * Supabase's S3 gateway sits behind Cloudflare; sustained bursts occasionally get a
+   * transient 5xx (e.g. 522) whose HTML error page ALSO breaks the SDK's XML response
+   * parser — the SDK then surfaces a deserialization error after attempts:1 and its own
+   * retry policy never engages. Retry here on the response's real status (kept in
+   * err.$metadata), on 429/408, and on transport errors with no status at all (resets,
+   * socket timeouts). Used only for idempotent commands whose bodies are re-sendable
+   * (Buffers) — never streams.
+   */
+  private async withRetry<T>(op: () => Promise<T>, attempts = 4): Promise<T> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await op();
+      } catch (err) {
+        const status = (err as { $metadata?: { httpStatusCode?: number } })?.$metadata?.httpStatusCode;
+        const retryable = status === undefined || status >= 500 || status === 429 || status === 408;
+        if (!retryable || attempt >= attempts) throw err;
+        await new Promise((r) => setTimeout(r, 500 * 2 ** (attempt - 1) + Math.random() * 250));
+      }
+    }
+  }
+
+  async uploadFile(path: string, data: Buffer, contentType: string, cacheControl?: string): Promise<string> {
+    await this.withRetry(() =>
+      this.client.send(
+        new PutObjectCommand({
+          Bucket: this.bucket,
+          Key: path,
+          Body: data,
+          ContentType: contentType,
+          // Served verbatim by the public endpoint; without it Supabase serves `no-cache`.
+          CacheControl: cacheControl,
+        }),
+      ),
     );
     return `${this.publicBase}/${path}`;
   }
@@ -112,8 +159,10 @@ export class SupabaseStorageAdapter implements StorageService {
   // S3 minimum (5 MiB except the last part); the OVERALL object size is still bounded
   // by the bucket's file_size_limit, so raise that in the dashboard for big videos.
   async createMultipartUpload(path: string, contentType: string): Promise<string> {
-    const resp = await this.client.send(
-      new CreateMultipartUploadCommand({ Bucket: this.bucket, Key: path, ContentType: contentType }),
+    const resp = await this.withRetry(() =>
+      this.client.send(
+        new CreateMultipartUploadCommand({ Bucket: this.bucket, Key: path, ContentType: contentType }),
+      ),
     );
     if (!resp.UploadId) throw new Error('Supabase did not return an UploadId for the multipart upload');
     return resp.UploadId;
@@ -140,44 +189,52 @@ export class SupabaseStorageAdapter implements StorageService {
   }
 
   async completeMultipartUpload(path: string, uploadId: string, parts: CompletedPart[]): Promise<string> {
-    await this.client.send(
-      new CompleteMultipartUploadCommand({
-        Bucket: this.bucket,
-        Key: path,
-        UploadId: uploadId,
-        MultipartUpload: {
-          Parts: parts
-            .slice()
-            .sort((a, b) => a.partNumber - b.partNumber)
-            .map((p) => ({ PartNumber: p.partNumber, ETag: p.etag })),
-        },
-      }),
+    await this.withRetry(() =>
+      this.client.send(
+        new CompleteMultipartUploadCommand({
+          Bucket: this.bucket,
+          Key: path,
+          UploadId: uploadId,
+          MultipartUpload: {
+            Parts: parts
+              .slice()
+              .sort((a, b) => a.partNumber - b.partNumber)
+              .map((p) => ({ PartNumber: p.partNumber, ETag: p.etag })),
+          },
+        }),
+      ),
     );
     return `${this.publicBase}/${path}`;
   }
 
   async abortMultipartUpload(path: string, uploadId: string): Promise<void> {
-    await this.client.send(
-      new AbortMultipartUploadCommand({ Bucket: this.bucket, Key: path, UploadId: uploadId }),
+    await this.withRetry(() =>
+      this.client.send(
+        new AbortMultipartUploadCommand({ Bucket: this.bucket, Key: path, UploadId: uploadId }),
+      ),
     );
   }
 
   async deleteFile(path: string): Promise<void> {
-    await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: path }));
+    await this.withRetry(() =>
+      this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: path })),
+    );
   }
 
   async deleteWithPrefix(prefix: string): Promise<void> {
     let continuationToken: string | undefined;
     do {
-      const list = await this.client.send(
-        new ListObjectsV2Command({ Bucket: this.bucket, Prefix: prefix, ContinuationToken: continuationToken }),
+      const list = await this.withRetry(() =>
+        this.client.send(
+          new ListObjectsV2Command({ Bucket: this.bucket, Prefix: prefix, ContinuationToken: continuationToken }),
+        ),
       );
       if (list.Contents && list.Contents.length > 0) {
-        await this.client.send(
-          new DeleteObjectsCommand({
-            Bucket: this.bucket,
-            Delete: { Objects: list.Contents.map((o) => ({ Key: o.Key! })) },
-          }),
+        const objects = list.Contents.map((o) => ({ Key: o.Key! }));
+        await this.withRetry(() =>
+          this.client.send(
+            new DeleteObjectsCommand({ Bucket: this.bucket, Delete: { Objects: objects } }),
+          ),
         );
       }
       continuationToken = list.NextContinuationToken;
@@ -201,13 +258,17 @@ export class SupabaseStorageAdapter implements StorageService {
   }
 
   async readObject(key: string): Promise<Buffer> {
-    const resp = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));
-    const stream = resp.Body as NodeJS.ReadableStream;
-    return new Promise<Buffer>((resolve, reject) => {
-      const chunks: Buffer[] = [];
-      stream.on('data', (chunk: Buffer) => chunks.push(chunk));
-      stream.on('end', () => resolve(Buffer.concat(chunks)));
-      stream.on('error', reject);
+    // Retry covers the whole read (send + body collection): GetObject is idempotent, and
+    // a mid-body connection reset should re-read from scratch rather than fail the caller.
+    return this.withRetry(async () => {
+      const resp = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));
+      const stream = resp.Body as NodeJS.ReadableStream;
+      return new Promise<Buffer>((resolve, reject) => {
+        const chunks: Buffer[] = [];
+        stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+        stream.on('end', () => resolve(Buffer.concat(chunks)));
+        stream.on('error', reject);
+      });
     });
   }
 
@@ -215,8 +276,10 @@ export class SupabaseStorageAdapter implements StorageService {
     const keys: string[] = [];
     let continuationToken: string | undefined;
     do {
-      const list = await this.client.send(
-        new ListObjectsV2Command({ Bucket: this.bucket, Prefix: prefix, ContinuationToken: continuationToken }),
+      const list = await this.withRetry(() =>
+        this.client.send(
+          new ListObjectsV2Command({ Bucket: this.bucket, Prefix: prefix, ContinuationToken: continuationToken }),
+        ),
       );
       for (const obj of list.Contents ?? []) if (obj.Key) keys.push(obj.Key);
       continuationToken = list.NextContinuationToken;

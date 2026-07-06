@@ -7,7 +7,13 @@ export interface CompletedPart {
 }
 
 export interface StorageService {
-  uploadFile(path: string, data: Buffer, contentType: string): Promise<string>;
+  /**
+   * Upload a buffer. `cacheControl`, when given, is stored as the object's Cache-Control
+   * metadata — Supabase's public endpoint serves it verbatim (objects uploaded without it
+   * serve `no-cache`). Pass `public, max-age=31536000, immutable` ONLY for write-once keys;
+   * never for objects that are overwritten in place (sim entry HTML / bridge.js).
+   */
+  uploadFile(path: string, data: Buffer, contentType: string, cacheControl?: string): Promise<string>;
   uploadStream(path: string, stream: NodeJS.ReadableStream, contentType: string, contentLength?: number): Promise<string>;
   getPresignedDownloadUrl(path: string, ttlSeconds: number): Promise<string>;
   getPresignedUploadUrl(path: string, contentType: string, ttlSeconds: number): Promise<string>;

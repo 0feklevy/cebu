@@ -1203,11 +1203,25 @@ export class SimulationService {
     // so concurrency (and live connections) stay capped (backend-010).
     const entries = [...files.entries()];
     const UPLOAD_CONCURRENCY = 12;
+    logger.info({ simId, projectId, fileCount: entries.length }, 'Uploading simulation files to storage');
     for (let i = 0; i < entries.length; i += UPLOAD_CONCURRENCY) {
       await Promise.all(
-        entries.slice(i, i + UPLOAD_CONCURRENCY).map(([relPath, buf]) =>
-          this.storage.uploadFile(`${prefix}/${relPath}`, buf, getSimulationContentType(relPath)).then(() => undefined),
-        ),
+        entries.slice(i, i + UPLOAD_CONCURRENCY).map(([relPath, buf]) => {
+          // Keys are simId-scoped: media assets are write-once, so mark them immutable —
+          // the browser/CDN then caches them across sim reloads (image-heavy sims load
+          // once instead of re-fetching every asset). HTML/JS are excluded: the entry
+          // HTML and bridge.js get overwritten in place by bridge (re)generation, and
+          // they're served through the /sim-public proxy with its own cache policy anyway.
+          const rewritable = /\.(html?|m?js)$/i.test(relPath);
+          return this.storage
+            .uploadFile(
+              `${prefix}/${relPath}`,
+              buf,
+              getSimulationContentType(relPath),
+              rewritable ? undefined : 'public, max-age=31536000, immutable',
+            )
+            .then(() => undefined);
+        }),
       );
     }
 
