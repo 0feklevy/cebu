@@ -111,6 +111,22 @@ describe('planChunks', () => {
     expect(bc.inputs[1]).toEqual({ text: 'no way', voice_id: 'V_LEARNER' });
   });
 
+  it('backchannel context never carries a truncated audio tag (the v3 400 bug)', () => {
+    // A long previous line whose tail (last ~160 chars) slices THROUGH "[emphasized]".
+    const longLine = 'x'.repeat(200) + ' and the pressure just keeps climbing [emphasized] until it finally gives.';
+    const turns: PodcastTurn[] = [
+      { ...turn('t1', 'teacher', 'b1', 0), text: longLine },
+      { ...turn('bc1', 'learner', 'b1', 0, true), text: '[laughs]' },
+    ];
+    const { backchannels } = planChunks(turns, voiceFor, OPTS);
+    const ctx = backchannels[0].inputs[0].text;
+    // Every '[' must have a matching ']' — no dangling open bracket.
+    const opens = (ctx.match(/\[/g) ?? []).length;
+    const closes = (ctx.match(/\]/g) ?? []).length;
+    expect(opens).toBe(closes);
+    expect(ctx).not.toMatch(/\[[^\]]*$/); // no open bracket without a close before end
+  });
+
   it('a backchannel with no preceding line gets no context', () => {
     const turns: PodcastTurn[] = [
       { ...turn('bc1', 'learner', 'b1', 0, true), text: 'huh' },

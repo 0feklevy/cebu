@@ -1,5 +1,57 @@
 import { describe, it, expect } from 'vitest';
-import { computeClipBounds, HEAD_GUARD_SEC, TAIL_GUARD_SEC } from '../clipBounds.js';
+import { computeClipBounds, segmentsAligned, HEAD_GUARD_SEC, TAIL_GUARD_SEC } from '../clipBounds.js';
+
+describe('segmentsAligned', () => {
+  // The real chunk that shipped corrupt: 3 inputs of 226 / 155 / 46 chars.
+  const lens = [226, 155, 46];
+
+  it('accepts a correctly-positioned segmentation', () => {
+    const segs = [
+      { dialogue_input_index: 0, character_start_index: 0 },
+      { dialogue_input_index: 1, character_start_index: 226 },
+      { dialogue_input_index: 2, character_start_index: 381 },
+    ];
+    expect(segmentsAligned(segs, lens, 0, 3)).toBe(true);
+  });
+
+  it('REJECTS the scrambled segmentation that caused the 12s-clip / lanes overlap', () => {
+    // v3 returned 3 segments but positioned wrong: input 1 & 2 char-starts are far
+    // from where their text actually begins → recut slices land on the wrong audio.
+    const segs = [
+      { dialogue_input_index: 0, character_start_index: 0 },
+      { dialogue_input_index: 1, character_start_index: 12 },   // should be ~226
+      { dialogue_input_index: 2, character_start_index: 40 },   // should be ~381
+    ];
+    expect(segmentsAligned(segs, lens, 0, 3)).toBe(false);
+  });
+
+  it('rejects a missing segment', () => {
+    const segs = [
+      { dialogue_input_index: 0, character_start_index: 0 },
+      { dialogue_input_index: 2, character_start_index: 381 },
+    ];
+    expect(segmentsAligned(segs, lens, 0, 3)).toBe(false);
+  });
+
+  it('honors the context offset (context inputs precede the real turns)', () => {
+    const withCtx = [180, 226, 155]; // input 0 is context, 1 & 2 are real
+    const segs = [
+      { dialogue_input_index: 0, character_start_index: 0 },
+      { dialogue_input_index: 1, character_start_index: 180 },
+      { dialogue_input_index: 2, character_start_index: 406 },
+    ];
+    expect(segmentsAligned(segs, withCtx, 1, 2)).toBe(true);
+  });
+
+  it('tolerates small tag/whitespace drift', () => {
+    const segs = [
+      { dialogue_input_index: 0, character_start_index: 3 },
+      { dialogue_input_index: 1, character_start_index: 232 },
+      { dialogue_input_index: 2, character_start_index: 379 },
+    ];
+    expect(segmentsAligned(segs, lens, 0, 3)).toBe(true);
+  });
+});
 
 describe('computeClipBounds', () => {
   it('REGRESSION — the reported glitch: a late real tail must belong to clip N, never to clip N+1', () => {

@@ -28,7 +28,7 @@ import {
 } from './ffmpegAudio.js';
 import type { PodcastScriptBody, PodcastTurn } from 'shared';
 import { logger } from '../../../lib/logger.js';
-import { computeClipBounds, HEAD_GUARD_SEC, TAIL_GUARD_SEC } from './clipBounds.js';
+import { computeClipBounds, segmentsAligned, HEAD_GUARD_SEC, TAIL_GUARD_SEC } from './clipBounds.js';
 
 const OUTPUT_FORMAT = process.env.PODCAST_TTS_FORMAT ?? 'mp3_44100_128';
 const STABILITY = 0.5;
@@ -178,8 +178,14 @@ export class PodcastRenderer {
     });
 
     await runLimited(backchannels, SYNTH_CONCURRENCY, async (bc, bi) => {
-      const { audioBuf, segments } = await this.synthBackchannel(episodeId, bc, seed);
-      await this.recutBackchannel(workDir, bi, bc, audioBuf, segments, clipPath, clipDurMs);
+      // Backchannels are optional flavor — a failed one must NEVER fail the render.
+      // It's simply omitted from the timeline (the conversation stands without it).
+      try {
+        const { audioBuf, segments } = await this.synthBackchannel(episodeId, bc, seed);
+        await this.recutBackchannel(workDir, bi, bc, audioBuf, segments, clipPath, clipDurMs);
+      } catch (err) {
+        logger.warn({ err, turnId: bc.turnId }, 'backchannel synthesis failed — skipping this reaction');
+      }
       await bump();
     });
 
@@ -197,13 +203,17 @@ export class PodcastRenderer {
       return { audioBuf, segments: cached.segments_json as VoiceSegment[] };
     }
 
-    // Synthesize, with one seed+1 retry if segments don't cover the real inputs.
+    // Synthesize, retrying (seed+1) if segments don't COVER every real input OR are
+    // MISALIGNED — v3 occasionally returns the right number of segments but positions
+    // them wrong (one line's audio bleeds into another's slice), which shipped as the
+    // "12s clip for an 8-word line → lanes overlap" corruption. Char-range alignment
+    // catches that; a still-bad result is not cached so a rebuild self-heals.
     let result = await this.el.synthesize({ inputs: chunk.inputs, seed, outputFormat: OUTPUT_FORMAT, stability: STABILITY });
-    let complete = this.segmentsCoverReal(result.voiceSegments, chunk);
+    let complete = this.segmentsCoverReal(result.voiceSegments, chunk) && this.segmentsAligned(result.voiceSegments, chunk);
     if (!complete) {
-      logger.warn({ hash: chunk.hash }, 'chunk voice_segments incomplete — retrying with seed+1');
+      logger.warn({ hash: chunk.hash }, 'chunk voice_segments incomplete or misaligned — retrying with seed+1');
       result = await this.el.synthesize({ inputs: chunk.inputs, seed: seed + 1, outputFormat: OUTPUT_FORMAT, stability: STABILITY });
-      complete = this.segmentsCoverReal(result.voiceSegments, chunk);
+      complete = this.segmentsCoverReal(result.voiceSegments, chunk) && this.segmentsAligned(result.voiceSegments, chunk);
     }
 
     // Only CACHE a complete result — otherwise a re-render must be free to retry, and
@@ -270,6 +280,10 @@ export class PodcastRenderer {
       if (!byIndex.has(chunk.contextCount + k)) return false;
     }
     return true;
+  }
+
+  private segmentsAligned(segments: VoiceSegment[], chunk: Chunk): boolean {
+    return segmentsAligned(segments, chunk.inputs.map((i) => i.text.length), chunk.contextCount, chunk.turnIds.length);
   }
 
   // ── Recut ──────────────────────────────────────────────────────────────────

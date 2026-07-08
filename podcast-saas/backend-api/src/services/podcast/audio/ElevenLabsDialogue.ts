@@ -17,6 +17,10 @@ import { logger } from '../../../lib/logger.js';
 
 const EL_BASE = 'https://api.elevenlabs.io/v1';
 
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/** Exponential backoff with jitter: ~0.6s, 1.5s, 3.5s. */
+const backoffMs = (attempt: number) => Math.round((0.4 * 2 ** attempt + Math.random() * 0.5) * 1000);
+
 export interface DialogueInput { text: string; voice_id: string }
 
 export interface VoiceSegment {
@@ -70,12 +74,31 @@ export class ElevenLabsDialogue {
     if (params.seed != null) body.seed = params.seed;
     if (params.languageCode) body.language_code = params.languageCode;
 
-    const res = await fetch(`${EL_BASE}/text-to-dialogue/with-timestamps?output_format=${encodeURIComponent(outputFormat)}`, {
-      method: 'POST',
-      headers: { 'xi-api-key': key, 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify(body),
-      signal: params.signal,
-    });
+    // Transient upstream errors (429 rate-limit, 5xx, 529 overloaded) are common
+    // under the render job's concurrency — retry with exponential backoff + jitter
+    // so a whole rebuild doesn't fail on one blip. 4xx (bad request/auth) fail fast.
+    const url = `${EL_BASE}/text-to-dialogue/with-timestamps?output_format=${encodeURIComponent(outputFormat)}`;
+    const RETRYABLE = new Set([429, 500, 502, 503, 504, 529]);
+    const MAX_ATTEMPTS = 4;
+    let res!: Response;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        res = await fetch(url, {
+          method: 'POST',
+          headers: { 'xi-api-key': key, 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify(body),
+          signal: params.signal,
+        });
+      } catch (err) {
+        if (params.signal?.aborted || attempt === MAX_ATTEMPTS) throw err; // network error — retry unless last/aborted
+        await sleep(backoffMs(attempt));
+        continue;
+      }
+      if (res.ok || !RETRYABLE.has(res.status) || attempt === MAX_ATTEMPTS) break;
+      const retryAfter = Number(res.headers.get('retry-after')) * 1000;
+      logger.warn({ status: res.status, attempt }, 'ElevenLabs dialogue transient error — retrying');
+      await sleep(Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter, 15_000) : backoffMs(attempt));
+    }
 
     if (!res.ok) {
       const detail = await res.text().catch(() => res.statusText);

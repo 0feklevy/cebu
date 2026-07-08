@@ -41,13 +41,29 @@ function payloadHash(obj: unknown): string {
   return createHash('sha256').update(JSON.stringify(obj)).digest('hex');
 }
 
-/** Last full sentence(s) of a line, capped at maxChars — prosody context for a backchannel. */
+/**
+ * Last full sentence(s) of a line, capped at maxChars — prosody context for a
+ * backchannel. Slicing the raw tail can cut THROUGH an audio tag (e.g. leave a
+ * dangling "…[emph"), and ElevenLabs rejects a malformed "[" with a 400
+ * validation_error — which failed the whole render. So sanitize: drop any
+ * unmatched bracket fragments at either edge.
+ */
 function sentenceTail(text: string, maxChars: number): string {
   const clean = text.trim();
-  if (clean.length <= maxChars) return clean;
-  const tail = clean.slice(-maxChars);
-  const cut = Math.max(tail.indexOf('. '), tail.indexOf('? '), tail.indexOf('! '));
-  return (cut >= 0 ? tail.slice(cut + 2) : tail).trim();
+  const base = clean.length <= maxChars ? clean : clean.slice(-maxChars);
+  const cut = Math.max(base.indexOf('. '), base.indexOf('? '), base.indexOf('! '));
+  return sanitizeBrackets((cut >= 0 ? base.slice(cut + 2) : base).trim());
+}
+
+/** Remove a dangling "[tag" with no close, or a leading "tag]" with no open. */
+function sanitizeBrackets(s: string): string {
+  let out = s;
+  const lastOpen = out.lastIndexOf('[');
+  if (lastOpen > out.lastIndexOf(']')) out = out.slice(0, lastOpen).trim();   // unclosed tail tag
+  const firstClose = out.indexOf(']');
+  if (firstClose >= 0 && firstClose < out.indexOf('[')) out = out.slice(firstClose + 1).trim(); // orphan close
+  if (out.indexOf('[') === -1 && out.indexOf(']') === 0) out = out.slice(1).trim();
+  return out;
 }
 
 /**

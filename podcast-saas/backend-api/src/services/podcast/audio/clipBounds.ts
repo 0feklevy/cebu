@@ -37,6 +37,35 @@ export interface ClipBoundsInput {
 
 export interface ClipBounds { start: number; end: number }
 
+/**
+ * True if every real segment's char range lines up with its input's position in the
+ * concatenated dialogue. v3 sometimes returns the right COUNT of segments but with
+ * scrambled positions (one line's audio bleeds into another's slice) — that shipped
+ * as the "12s clip for an 8-word line → lanes overlap" corruption. Char indices map
+ * 1:1 to our input text (apply_text_normalization off), so a large deviation from the
+ * expected offset means the segmentation is unreliable. Generous tolerance so tag /
+ * whitespace quirks never false-positive a good synthesis.
+ */
+export function segmentsAligned(
+  segs: { dialogue_input_index: number; character_start_index?: number }[],
+  inputTextLens: number[],
+  contextCount: number,
+  turnCount: number,
+): boolean {
+  const offsets: number[] = [];
+  let acc = 0;
+  for (const len of inputTextLens) { offsets.push(acc); acc += len; }
+  if (acc === 0) return true;
+  const tol = Math.max(40, Math.round(acc * 0.15));
+  for (let k = 0; k < turnCount; k++) {
+    const idx = contextCount + k;
+    const seg = segs.find((s) => s.dialogue_input_index === idx);
+    if (!seg) return false;
+    if (Math.abs((seg.character_start_index ?? 0) - (offsets[idx] ?? 0)) > tol) return false;
+  }
+  return true;
+}
+
 export function computeClipBounds(b: ClipBoundsInput): ClipBounds {
   const tailAdj = b.isCutOff ? -CUTOFF_TAIL_SHAVE_SEC : TAIL_GUARD_SEC;
 
