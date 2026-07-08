@@ -36,6 +36,9 @@ export interface AdminSettings {
   elevenlabs_model: string;
   default_voice_id_a: string | null;
   default_voice_id_b: string | null;
+  // Podcast Studio writers'-room model + effort (migration 044).
+  podcast_model: string;
+  podcast_effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   updated_at: string;
 }
 

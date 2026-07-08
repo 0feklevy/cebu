@@ -284,6 +284,9 @@ export const admin_settings = pgTable('admin_settings', {
   // When true, a video's avatar uses its owner's own Anam key (BYOK); otherwise
   // the shared server ANAM_API_KEY is used for everyone (migration 029).
   avatar_byok_enabled: boolean('avatar_byok_enabled').default(false).notNull(),
+  // Podcast Studio writers'-room model + effort (migration 044).
+  podcast_model:  text('podcast_model').default('claude-opus-4-8').notNull(),
+  podcast_effort: text('podcast_effort').default('max').notNull(),
   updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
@@ -930,6 +933,175 @@ export const branch_path_events = pgTable(
   }),
 );
 
+// ── Podcast Studio (migration 044) — standalone homepage product ──────────────
+// Shows → Episodes. NOT related to video projects. Two-host generator: multi-agent
+// writers' room → editable per-turn script → ElevenLabs v3 export → single-channel MP4.
+
+export const podcast_shows = pgTable('podcast_shows', {
+  id:               uuid('id').primaryKey().defaultRandom(),
+  org_id:           uuid('org_id').notNull().references(() => orgs.id),
+  created_by:       uuid('created_by').references(() => users.id),
+  title:            text('title'),
+  description:      text('description'),
+  language:         text('language').notNull().default('en'),
+  teacher_name:     text('teacher_name').notNull().default('Brittney'),
+  teacher_voice_id: text('teacher_voice_id'),
+  learner_name:     text('learner_name').notNull().default('Titan'),
+  learner_voice_id: text('learner_voice_id'),
+  teacher_persona:  text('teacher_persona'),
+  learner_persona:  text('learner_persona'),
+  niche_pack:       text('niche_pack').notNull().default('general'),
+  style_config:     jsonb('style_config'),
+  memory_json:      jsonb('memory_json'),
+  tts_seed:         bigint('tts_seed', { mode: 'number' }),
+  created_at:       timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updated_at:       timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxOrg:     index('idx_podcast_shows_org').on(t.org_id),
+  idxCreator: index('idx_podcast_shows_creator').on(t.created_by),
+}));
+
+export const podcast_episodes = pgTable('podcast_episodes', {
+  id:             uuid('id').primaryKey().defaultRandom(),
+  show_id:        uuid('show_id').notNull().references(() => podcast_shows.id, { onDelete: 'cascade' }),
+  episode_number: integer('episode_number'),
+  title:          text('title'),
+  brief:          text('brief'),
+  target_minutes: integer('target_minutes').notNull().default(8),
+  language:       text('language'),
+  status:         text('status').notNull().default('draft'),   // draft|scripting|script_ready|approved|rendering|ready|failed
+  tts_seed:       bigint('tts_seed', { mode: 'number' }),
+  memory_summary: jsonb('memory_summary'),
+  error:          text('error'),
+  created_at:     timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updated_at:     timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxShow: index('idx_podcast_episodes_show').on(t.show_id),
+}));
+
+export const podcast_sources = pgTable('podcast_sources', {
+  id:           uuid('id').primaryKey().defaultRandom(),
+  episode_id:   uuid('episode_id').notNull().references(() => podcast_episodes.id, { onDelete: 'cascade' }),
+  kind:         text('kind').notNull(),                        // file | url | note
+  storage_key:  text('storage_key'),
+  source_url:   text('source_url'),
+  extracted_md: text('extracted_md'),
+  title:        text('title'),
+  status:       text('status').notNull().default('pending'),   // pending|processing|ready|failed
+  created_at:   timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxEpisode: index('idx_podcast_sources_episode').on(t.episode_id),
+}));
+
+export const podcast_scripts = pgTable('podcast_scripts', {
+  id:             uuid('id').primaryKey().defaultRandom(),
+  episode_id:     uuid('episode_id').notNull().references(() => podcast_episodes.id, { onDelete: 'cascade' }),
+  version:        integer('version').notNull(),
+  status:         text('status').notNull().default('drafting'), // drafting|reviewing|rewriting|compiling|ready|approved|failed
+  claimed_at:     timestamp('claimed_at', { withTimezone: true }),
+  story_json:     jsonb('story_json'),
+  materials_json: jsonb('materials_json'),
+  review_json:    jsonb('review_json'),
+  body_json:      jsonb('body_json'),
+  content_hash:   text('content_hash'),
+  telemetry:      jsonb('telemetry'),
+  approved_at:    timestamp('approved_at', { withTimezone: true }),
+  created_at:     timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updated_at:     timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  uniqEpisodeVersion: unique().on(t.episode_id, t.version),
+  idxEpisode:         index('idx_podcast_scripts_episode').on(t.episode_id),
+}));
+
+export const podcast_chunk_audio = pgTable('podcast_chunk_audio', {
+  id:            uuid('id').primaryKey().defaultRandom(),
+  episode_id:    uuid('episode_id').notNull().references(() => podcast_episodes.id, { onDelete: 'cascade' }),
+  chunk_hash:    text('chunk_hash').notNull(),
+  storage_key:   text('storage_key'),
+  duration_ms:   integer('duration_ms'),
+  segments_json: jsonb('segments_json'),
+  kind:          text('kind').notNull().default('chunk'),      // chunk | backchannel
+  created_at:    timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  uniqEpisodeHash: unique().on(t.episode_id, t.chunk_hash),
+  idxEpisode:      index('idx_podcast_chunk_audio_episode').on(t.episode_id),
+}));
+
+export const podcast_renders = pgTable('podcast_renders', {
+  id:             uuid('id').primaryKey().defaultRandom(),
+  episode_id:     uuid('episode_id').notNull().references(() => podcast_episodes.id, { onDelete: 'cascade' }),
+  script_version: integer('script_version'),
+  status:         text('status').notNull().default('queued'),  // queued|synthesizing|stitching|encoding|ready|failed
+  claimed_at:     timestamp('claimed_at', { withTimezone: true }),
+  progress:       jsonb('progress'),
+  master_mp4_key: text('master_mp4_key'),
+  master_mp3_key: text('master_mp3_key'),
+  duration_ms:    integer('duration_ms'),
+  script_hash:    text('script_hash'),
+  timeline_json:  jsonb('timeline_json'),
+  cost_cents:     integer('cost_cents'),
+  error:          text('error'),
+  // Audio Studio (migration 045): kind='mix' exports honor a user-edited timeline.
+  kind:            text('kind').notNull().default('auto'),      // auto (legacy one-click) | mix (studio export)
+  format:          text('format'),                              // mp4 | mp3 | wav (mix exports)
+  master_wav_key:  text('master_wav_key'),
+  mix_snapshot_id: uuid('mix_snapshot_id'),
+  created_at:     timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updated_at:     timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxEpisode: index('idx_podcast_renders_episode').on(t.episode_id),
+}));
+
+// ── Audio Studio (migration 045) ──────────────────────────────────────────────
+
+/** Persisted per-turn takes. Immutable, content-addressed, never deleted. */
+export const podcast_clips = pgTable('podcast_clips', {
+  id:             uuid('id').primaryKey().defaultRandom(),
+  episode_id:     uuid('episode_id').notNull().references(() => podcast_episodes.id, { onDelete: 'cascade' }),
+  turn_id:        text('turn_id').notNull(),
+  take_hash:      text('take_hash').notNull(),
+  text_hash:      text('text_hash').notNull(),                  // sha256(speaker|text) — staleness vs current script
+  script_version: integer('script_version'),
+  storage_key:    text('storage_key').notNull(),
+  duration_ms:    integer('duration_ms').notNull(),
+  peaks_json:     jsonb('peaks_json'),
+  source:         text('source').notNull().default('batch'),    // batch | regen
+  created_at:     timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  uniqTake:   unique().on(t.episode_id, t.turn_id, t.take_hash),
+  idxEpisode: index('idx_podcast_clips_episode').on(t.episode_id),
+}));
+
+/** ONE mutable studio draft per episode — the user-edited timeline document. */
+export const podcast_mixes = pgTable('podcast_mixes', {
+  id:             uuid('id').primaryKey().defaultRandom(),
+  episode_id:     uuid('episode_id').notNull().unique().references(() => podcast_episodes.id, { onDelete: 'cascade' }),
+  script_version: integer('script_version'),
+  script_hash:    text('script_hash'),
+  status:         text('status').notNull().default('empty'),   // empty | generating | ready | failed
+  claimed_at:     timestamp('claimed_at', { withTimezone: true }),
+  progress:       jsonb('progress'),
+  timeline_json:  jsonb('timeline_json'),
+  rev:            integer('rev').notNull().default(0),
+  error:          text('error'),
+  created_at:     timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updated_at:     timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Immutable named versions of the draft (manual save / export freeze / pre-rebuild). */
+export const podcast_mix_snapshots = pgTable('podcast_mix_snapshots', {
+  id:             uuid('id').primaryKey().defaultRandom(),
+  mix_id:         uuid('mix_id').notNull().references(() => podcast_mixes.id, { onDelete: 'cascade' }),
+  name:           text('name').notNull(),
+  kind:           text('kind').notNull().default('manual'),    // manual | export | pre_rebuild
+  script_version: integer('script_version'),
+  timeline_json:  jsonb('timeline_json').notNull(),
+  render_id:      uuid('render_id'),
+  created_at:     timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxMix: index('idx_podcast_mix_snapshots_mix').on(t.mix_id),
+}));
+
 // ── Type exports ──────────────────────────────────────────────────────────────
 
 export type Org = typeof orgs.$inferSelect;
@@ -973,3 +1145,18 @@ export type BranchChoicePoint = typeof branch_choice_points.$inferSelect;
 export type NewBranchChoicePoint = typeof branch_choice_points.$inferInsert;
 export type BranchEdge = typeof branch_edges.$inferSelect;
 export type NewBranchEdge = typeof branch_edges.$inferInsert;
+export type PodcastShow = typeof podcast_shows.$inferSelect;
+export type NewPodcastShow = typeof podcast_shows.$inferInsert;
+export type PodcastEpisode = typeof podcast_episodes.$inferSelect;
+export type NewPodcastEpisode = typeof podcast_episodes.$inferInsert;
+export type PodcastSource = typeof podcast_sources.$inferSelect;
+export type NewPodcastSource = typeof podcast_sources.$inferInsert;
+export type PodcastScript = typeof podcast_scripts.$inferSelect;
+export type NewPodcastScript = typeof podcast_scripts.$inferInsert;
+export type PodcastChunkAudio = typeof podcast_chunk_audio.$inferSelect;
+export type PodcastRender = typeof podcast_renders.$inferSelect;
+export type NewPodcastRender = typeof podcast_renders.$inferInsert;
+export type PodcastClip = typeof podcast_clips.$inferSelect;
+export type NewPodcastClip = typeof podcast_clips.$inferInsert;
+export type PodcastMix = typeof podcast_mixes.$inferSelect;
+export type PodcastMixSnapshot = typeof podcast_mix_snapshots.$inferSelect;

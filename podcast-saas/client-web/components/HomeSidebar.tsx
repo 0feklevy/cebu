@@ -1,12 +1,11 @@
 'use client';
 
 import { useEffect, useState, useRef, useCallback } from 'react';
-import { ChevronDown, ChevronRight, HelpCircle, ListVideo, Pencil, PlaySquare, Plus, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, ListVideo, Mic, Pencil, PlaySquare, Plus, Trash2 } from 'lucide-react';
 import { api } from '../lib/api';
 import { ConfirmDialog } from './ConfirmDialog';
 import { useAuth } from '../lib/firebase';
 import { UserProfileButton } from './UserProfileButton';
-import { HowItWorksDialog } from './HowItWorksDialog';
 import { CreateProjectDialog } from './CreateProjectDialog';
 import type { PlaylistItem, PlaylistWithItems, Project } from 'shared/src/generated/client-v1';
 
@@ -283,7 +282,6 @@ export function HomeSidebar() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [playlists, setPlaylists] = useState<PlaylistWithItems[]>([]);
   const [expandedPlaylists, setExpandedPlaylists] = useState<Set<string>>(new Set());
-  const [howItWorksOpen, setHowItWorksOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
 
   useEffect(() => {
@@ -411,29 +409,40 @@ export function HomeSidebar() {
           )}
         </div>
 
-        {/* Footer */}
+        {/* Footer — Podcast Studio entry (app primary accent, matches the product) */}
         <div className="hidden shrink-0 border-t px-3 py-3 lg:block" style={{ borderColor: 'hsl(var(--shell-border))' }}>
-          <button
-            onClick={() => setHowItWorksOpen(true)}
-            className="flex h-10 w-full items-center gap-2 rounded-lg px-3 text-left text-sm font-medium shell-muted transition-colors shell-hover hover:text-[hsl(var(--shell-foreground))]"
+          <a
+            href="/podcasts"
+            className="flex h-10 w-full items-center gap-2 rounded-lg px-3 text-left text-sm font-semibold transition-all hover:brightness-110 focus-ring"
+            style={{
+              border: '1px solid hsl(var(--primary) / 0.35)',
+              background: 'linear-gradient(135deg, hsl(var(--primary) / 0.14), hsl(var(--primary) / 0.06))',
+              color: 'hsl(var(--primary))',
+              textDecoration: 'none',
+            }}
           >
-            <HelpCircle size={16} strokeWidth={1.8} aria-hidden />
-            How it works
-          </button>
+            <Mic size={16} strokeWidth={2} aria-hidden />
+            Podcast Studio
+          </a>
         </div>
 
         <div className="border-t px-3 py-2 lg:hidden" style={{ borderColor: 'hsl(var(--shell-border))' }}>
-          <button
-            onClick={() => setHowItWorksOpen(true)}
-            className="h-9 w-full min-w-0 rounded-lg border text-sm font-medium shell-muted shell-hover transition-colors hover:text-[hsl(var(--shell-foreground))]"
-            style={{ borderColor: 'hsl(var(--shell-border))' }}
+          <a
+            href="/podcasts"
+            className="flex h-9 w-full min-w-0 items-center justify-center gap-2 rounded-lg text-sm font-semibold transition-all hover:brightness-110 focus-ring"
+            style={{
+              border: '1px solid hsl(var(--primary) / 0.35)',
+              background: 'linear-gradient(135deg, hsl(var(--primary) / 0.14), hsl(var(--primary) / 0.06))',
+              color: 'hsl(var(--primary))',
+              textDecoration: 'none',
+            }}
           >
-            How it works
-          </button>
+            <Mic size={16} strokeWidth={2} aria-hidden />
+            Podcast Studio
+          </a>
         </div>
       </aside>
 
-      <HowItWorksDialog open={howItWorksOpen} onOpenChange={setHowItWorksOpen} />
       <CreateProjectDialog open={createOpen} onOpenChange={setCreateOpen} />
     </>
   );

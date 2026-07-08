@@ -26,6 +26,9 @@ const LlmConfigSchema = z.object({
   elevenlabs_model: z.string().optional(),
   default_voice_id_a: z.string().optional(),
   default_voice_id_b: z.string().optional(),
+  // Podcast Studio writers'-room model + effort (migration 044).
+  podcast_model: z.string().optional(),
+  podcast_effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
 });
 
 export async function registerAdminLlmConfigRoutes(app: FastifyInstance): Promise<void> {

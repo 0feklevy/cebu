@@ -2,6 +2,149 @@
 import type { CreateProject, PlatformSettings } from '../types/project.js';
 import type { Host, CreateHost } from '../types/host.js';
 import type { Corpus } from '../types/corpus.js';
+import type {
+  CreatePodcastShow,
+  UpdatePodcastShow,
+  CreatePodcastEpisode,
+  UpdatePodcastEpisode,
+  CreatePodcastSource,
+  PodcastNichePack,
+  PodcastStyleConfig,
+  PodcastScriptBody,
+  PodcastTurn,
+  PodcastScriptStatus,
+} from '../types/podcast.js';
+import type {
+  PodcastStudioResponse,
+  PodcastStudioClip,
+  PodcastMixSnapshotInfo,
+  MixTimeline,
+} from '../types/podcastStudio.js';
+
+export interface PodcastShow {
+  id: string;
+  org_id: string;
+  created_by: string | null;
+  title: string | null;
+  description: string | null;
+  language: string;
+  teacher_name: string;
+  teacher_voice_id: string | null;
+  learner_name: string;
+  learner_voice_id: string | null;
+  teacher_persona: string | null;
+  learner_persona: string | null;
+  niche_pack: PodcastNichePack;
+  style_config: PodcastStyleConfig | null;
+  memory_json: unknown;
+  created_at: string;
+  updated_at: string;
+  episode_count?: number;
+}
+
+export interface PodcastEpisode {
+  id: string;
+  show_id: string;
+  episode_number: number | null;
+  title: string | null;
+  brief: string | null;
+  target_minutes: number;
+  language: string | null;
+  status: 'draft' | 'scripting' | 'script_ready' | 'approved' | 'rendering' | 'ready' | 'failed';
+  memory_summary: unknown;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PodcastSource {
+  id: string;
+  episode_id: string;
+  kind: 'file' | 'url' | 'note';
+  storage_key: string | null;
+  source_url: string | null;
+  extracted_md: string | null;
+  title: string | null;
+  status: 'pending' | 'processing' | 'ready' | 'failed';
+  created_at: string;
+}
+
+export interface PodcastEpisodeWithSources extends PodcastEpisode {
+  sources: PodcastSource[];
+}
+
+export interface SharedVoice {
+  voice_id: string;
+  public_owner_id: string;
+  name: string;
+  gender?: string | null;
+  age?: string | null;
+  accent?: string | null;
+  descriptive?: string | null;
+  use_case?: string | null;
+  category?: string | null;
+  language?: string | null;
+  preview_url?: string | null;
+}
+
+export interface PodcastScript {
+  id: string;
+  episode_id: string;
+  version: number;
+  status: PodcastScriptStatus;
+  story_json: unknown;
+  materials_json: unknown;
+  review_json: unknown;
+  body_json: PodcastScriptBody | null;
+  content_hash: string | null;
+  telemetry: unknown;
+  approved_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PodcastScriptVersion {
+  id: string;
+  version: number;
+  status: PodcastScriptStatus;
+  approved_at: string | null;
+  created_at: string;
+}
+
+export interface PodcastScriptResponse {
+  script: PodcastScript | null;
+  versions: PodcastScriptVersion[];
+}
+
+export interface PodcastRender {
+  id: string;
+  episode_id: string;
+  script_version: number | null;
+  status: 'queued' | 'synthesizing' | 'stitching' | 'encoding' | 'ready' | 'failed';
+  progress: { stage?: string; chunksDone?: number; chunksTotal?: number } | null;
+  master_mp4_key: string | null;
+  master_mp3_key: string | null;
+  master_wav_key?: string | null;
+  duration_ms: number | null;
+  script_hash: string | null;
+  cost_cents: number | null;
+  error: string | null;
+  kind?: 'auto' | 'mix';
+  format?: 'mp4' | 'mp3' | 'wav' | null;
+  created_at: string;
+  updated_at: string;
+  mp4_url: string | null;
+  mp3_url: string | null;
+  wav_url?: string | null;
+}
+
+export interface PodcastRendersResponse {
+  renders: PodcastRender[];
+  changed_since_render: boolean;
+  /** Newest script version that has a body (any status) — the audio tab syncs against this. */
+  latest_script_version: number | null;
+  latest_script_status: 'drafting' | 'reviewing' | 'rewriting' | 'compiling' | 'ready' | 'approved' | 'failed' | null;
+}
 
 export interface ApiConfig {
   baseURL: string;
@@ -1198,5 +1341,157 @@ export class ClientV1Api {
     body: { access_type: 'free' | 'paid'; price_cents?: number | null; currency?: string },
   ): Promise<ContentPricing> {
     return this.request(`/api/v1/billing/pricing/${contentType}/${contentId}`, { method: 'PATCH', body });
+  }
+
+  // ── Podcast Studio ──────────────────────────────────────────────────────────
+
+  listPodcastShows(): Promise<PodcastShow[]> {
+    return this.request('/api/v1/podcasts');
+  }
+
+  createPodcastShow(body: CreatePodcastShow): Promise<PodcastShow> {
+    return this.request('/api/v1/podcasts', { method: 'POST', body });
+  }
+
+  getPodcastShow(showId: string): Promise<PodcastShow> {
+    return this.request(`/api/v1/podcasts/${showId}`);
+  }
+
+  updatePodcastShow(showId: string, body: UpdatePodcastShow): Promise<PodcastShow> {
+    return this.request(`/api/v1/podcasts/${showId}`, { method: 'PATCH', body });
+  }
+
+  deletePodcastShow(showId: string): Promise<void> {
+    return this.request(`/api/v1/podcasts/${showId}`, { method: 'DELETE' });
+  }
+
+  listPodcastEpisodes(showId: string): Promise<PodcastEpisode[]> {
+    return this.request(`/api/v1/podcasts/${showId}/episodes`);
+  }
+
+  createPodcastEpisode(showId: string, body: CreatePodcastEpisode): Promise<PodcastEpisode> {
+    return this.request(`/api/v1/podcasts/${showId}/episodes`, { method: 'POST', body });
+  }
+
+  getPodcastEpisode(showId: string, episodeId: string): Promise<PodcastEpisodeWithSources> {
+    return this.request(`/api/v1/podcasts/${showId}/episodes/${episodeId}`);
+  }
+
+  updatePodcastEpisode(showId: string, episodeId: string, body: UpdatePodcastEpisode): Promise<PodcastEpisode> {
+    return this.request(`/api/v1/podcasts/${showId}/episodes/${episodeId}`, { method: 'PATCH', body });
+  }
+
+  deletePodcastEpisode(showId: string, episodeId: string): Promise<void> {
+    return this.request(`/api/v1/podcasts/${showId}/episodes/${episodeId}`, { method: 'DELETE' });
+  }
+
+  listPodcastSources(showId: string, episodeId: string): Promise<PodcastSource[]> {
+    return this.request(`/api/v1/podcasts/${showId}/episodes/${episodeId}/sources`);
+  }
+
+  createPodcastSource(showId: string, episodeId: string, body: CreatePodcastSource): Promise<PodcastSource> {
+    return this.request(`/api/v1/podcasts/${showId}/episodes/${episodeId}/sources`, { method: 'POST', body });
+  }
+
+  uploadPodcastSource(showId: string, episodeId: string, file: File): Promise<PodcastSource> {
+    const formData = new FormData();
+    formData.append('file', file);
+    return this.requestMultipart(`/api/v1/podcasts/${showId}/episodes/${episodeId}/sources/upload`, formData);
+  }
+
+  searchPodcastVoices(params: { search?: string; gender?: string; age?: string; accent?: string; language?: string; category?: string; use_case?: string; page?: number }): Promise<{ voices: SharedVoice[]; has_more: boolean }> {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) if (v != null && v !== '') q.set(k, String(v));
+    return this.request(`/api/v1/podcasts/voices/search?${q.toString()}`);
+  }
+
+  selectPodcastVoice(showId: string, body: { role: 'teacher' | 'learner'; public_owner_id: string; voice_id: string; name?: string }): Promise<PodcastShow> {
+    return this.request(`/api/v1/podcasts/${showId}/voices`, { method: 'POST', body });
+  }
+
+  deletePodcastSource(showId: string, episodeId: string, sourceId: string): Promise<void> {
+    return this.request(`/api/v1/podcasts/${showId}/episodes/${episodeId}/sources/${sourceId}`, { method: 'DELETE' });
+  }
+
+  // ── Podcast script (writers' room + editor) ─────────────────────────────────
+
+  generatePodcastScript(showId: string, episodeId: string, body: { notes?: string } = {}): Promise<{ script_id: string; version: number }> {
+    return this.request(`/api/v1/podcasts/${showId}/episodes/${episodeId}/script/generate`, { method: 'POST', body });
+  }
+
+  getPodcastScript(showId: string, episodeId: string, version?: number): Promise<PodcastScriptResponse> {
+    const q = version != null ? `?version=${version}` : '';
+    return this.request(`/api/v1/podcasts/${showId}/episodes/${episodeId}/script${q}`);
+  }
+
+  updatePodcastTurn(
+    showId: string, episodeId: string, version: number, turnId: string,
+    patch: Partial<Pick<PodcastTurn, 'text' | 'speaker' | 'overlap' | 'pause_after_ms' | 'is_hook'>>,
+  ): Promise<{ script: PodcastScript }> {
+    return this.request(`/api/v1/podcasts/${showId}/episodes/${episodeId}/script/${version}/turns/${turnId}`, { method: 'PATCH', body: patch });
+  }
+
+  replacePodcastTurns(showId: string, episodeId: string, version: number, turns: PodcastTurn[]): Promise<{ script: PodcastScript }> {
+    return this.request(`/api/v1/podcasts/${showId}/episodes/${episodeId}/script/${version}/turns`, { method: 'PUT', body: { turns } });
+  }
+
+  regeneratePodcastTurn(showId: string, episodeId: string, version: number, turnId: string, body: { hint?: string } = {}): Promise<{ script: PodcastScript; turn: PodcastTurn }> {
+    return this.request(`/api/v1/podcasts/${showId}/episodes/${episodeId}/script/${version}/turns/${turnId}/regenerate`, { method: 'POST', body });
+  }
+
+  approvePodcastScript(showId: string, episodeId: string, version: number): Promise<{ script: PodcastScript }> {
+    return this.request(`/api/v1/podcasts/${showId}/episodes/${episodeId}/script/${version}/approve`, { method: 'POST', body: {} });
+  }
+
+  // ── Podcast audio export ────────────────────────────────────────────────────
+
+  startPodcastRender(showId: string, episodeId: string): Promise<{ render_id: string }> {
+    return this.request(`/api/v1/podcasts/${showId}/episodes/${episodeId}/render`, { method: 'POST', body: {} });
+  }
+
+  listPodcastRenders(showId: string, episodeId: string): Promise<PodcastRendersResponse> {
+    return this.request(`/api/v1/podcasts/${showId}/episodes/${episodeId}/renders`);
+  }
+
+  getPodcastRender(showId: string, episodeId: string, renderId: string): Promise<PodcastRender> {
+    return this.request(`/api/v1/podcasts/${showId}/episodes/${episodeId}/render/${renderId}`);
+  }
+
+  previewPodcastTurn(showId: string, episodeId: string, version: number, turnId: string): Promise<{ url: string }> {
+    return this.request(`/api/v1/podcasts/${showId}/episodes/${episodeId}/script/${version}/turns/${turnId}/preview`, { method: 'POST', body: {} });
+  }
+
+  // ── Audio Studio (migration 045) ────────────────────────────────────────────
+
+  getPodcastStudio(showId: string, episodeId: string): Promise<PodcastStudioResponse> {
+    return this.request(`/api/v1/podcasts/${showId}/episodes/${episodeId}/studio`);
+  }
+
+  generatePodcastStudio(showId: string, episodeId: string): Promise<{ mix_id: string; already_running?: boolean }> {
+    return this.request(`/api/v1/podcasts/${showId}/episodes/${episodeId}/studio/generate`, { method: 'POST', body: {} });
+  }
+
+  savePodcastMixTimeline(showId: string, episodeId: string, timeline: MixTimeline, baseRev: number): Promise<{ rev: number }> {
+    return this.request(`/api/v1/podcasts/${showId}/episodes/${episodeId}/studio/timeline`, { method: 'PUT', body: { timeline, base_rev: baseRev } });
+  }
+
+  revoicePodcastTurnClip(showId: string, episodeId: string, turnId: string): Promise<{ clip: PodcastStudioClip }> {
+    return this.request(`/api/v1/podcasts/${showId}/episodes/${episodeId}/studio/turns/${turnId}/clip`, { method: 'POST', body: {} });
+  }
+
+  listPodcastMixSnapshots(showId: string, episodeId: string): Promise<{ snapshots: PodcastMixSnapshotInfo[] }> {
+    return this.request(`/api/v1/podcasts/${showId}/episodes/${episodeId}/studio/snapshots`);
+  }
+
+  createPodcastMixSnapshot(showId: string, episodeId: string, name: string): Promise<{ snapshot: PodcastMixSnapshotInfo }> {
+    return this.request(`/api/v1/podcasts/${showId}/episodes/${episodeId}/studio/snapshots`, { method: 'POST', body: { name } });
+  }
+
+  restorePodcastMixSnapshot(showId: string, episodeId: string, snapshotId: string): Promise<{ rev: number; timeline: MixTimeline }> {
+    return this.request(`/api/v1/podcasts/${showId}/episodes/${episodeId}/studio/snapshots/${snapshotId}/restore`, { method: 'POST', body: {} });
+  }
+
+  exportPodcastMix(showId: string, episodeId: string, format: 'mp4' | 'mp3' | 'wav'): Promise<{ render_id: string; already_running?: boolean }> {
+    return this.request(`/api/v1/podcasts/${showId}/episodes/${episodeId}/studio/export`, { method: 'POST', body: { format } });
   }
 }

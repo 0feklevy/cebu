@@ -1,0 +1,82 @@
+Brittney: [STORYTELLING]Okay, true story, and I need you to not laugh. Last week a friend saved me a seat at the movies, and she texted me exactly two words: "seat three."
+Titan: That's all? "Seat three"?
+Brittney: That's all. So I'm standing in the dark, holding popcorn, and I realize — there are six rows in this hall. Every single row has a seat three.
+Titan: [chuckles] So six possible friends.
+Brittney: [sarcastic] Six shadowy figures, and one of them is about to be very disappointed in me.
+Titan: [laugh] hehe[pause, interested] Hang on — I want to freeze this exact moment, because standing there with the popcorn, you ran into a genuine mathematical problem.
+Brittney: [sarcastic, chuckles] I ran into a friend who's bad at texting.
+Titan: [laugh] That too. [asking] But answer me this — what's the shortest message she could have sent so you'd find her instantly? Zero searching.
+Brittney: The row. Obviously. "Row two, seat three." Then I walk to row two, count one, two, three, and sit down.
+Titan: [leading for a conclusion] Two numbers. Not one — you proved one isn't enough, six times over. And not three. Two, in a fixed order: row first, then seat.
+Brittney: [confused] Wait, is that... the topic? Finding a seat?
+Titan: [exited] The intimidating word for it is "matrix." But strip the word away and it's a seating chart. And I promise that by the end of today, you'll see one every single time you look at your phone.
+Titan: [storytelling] Let's build one. Tiny hall — four rows, three seats in each row.
+Brittney: [chuckles] Sad little indie cinema. Go on.
+Titan: And the manager keeps a chart. One number for every seat.
+Brittney: A number for what?
+Titan: Anything she cares about. Tonight, let's say it's a politeness rating for whoever's sitting there. Row one, seat three — a lovely quiet person. She writes plus five.
+Brittney: Solid citizen. Row one, seat three, plus five. Got it.
+Titan: Row four, seat three — somebody smuggled in a dog.
+Brittney: [gasps] A dog in the cinema?!
+Titan: [chuckles] Barks at every jump scare. The manager writes minus three.
+Brittney: [trying to understand, interested] Okay, hold on, let me say it back. The hall is a grid. Every seat has an address — row first, then seat. And in every seat sits a number. The dog is... the number minus three, living at row four, seat three.
+Titan:[excited] And that chart — the full grid of all twelve numbers — that is a matrix. That's the entire definition.
+Brittney: Twelve because... four rows times three seats.
+Titan: Exactly — and that's how we name its shape: a "four by three" matrix. Rows first, columns second. Always in that order, like on the ticket.
+Titan: If you're watching the video, click any seat right now — its address lights up. Row four, seat three... and there's our minus three. Our dog.
+Brittney: [chuckles] The dog is immortalized. Good.
+Brittney: [suspicious] Okay, but honestly — does the order really matter that much? Row two seat three, row three seat two... same two numbers. It's basically the same seat, no?
+Titan: [leading for a different concept] Ah! That's what everyone thinks, so let's walk it. Physically. Row two... now slide along to seat three. Who do you see?
+Brittney: [confused] I don't know, some guy with glasses. [laugh]
+Titan: Now start over. Row three... slide to seat two.
+Brittney: That's... a totally different person. She's one row back and one seat over. Huh.
+Titan:[confidence] Swap the two numbers, and you teleport to a stranger. Row two seat three and row three seat two are different addresses, different seats — different numbers sitting in them.
+Brittney: [surprised] So the address isn't just a pair of numbers, it's an ordered pair. The order is part of the information.
+Titan: Which is exactly why one number failed you in the dark, and two numbers in a fixed order never fail.
+
+Titan: Now, a quick experiment. Take the same six people and seat them in two different halls. Hall one: two rows, three seats each. Hall two: three rows, two seats each.
+Brittney: Same crowd, same six people.
+Titan: Same crowd — different matrix. Because ask "who's sitting at row two, seat one" in each hall, and you get two different people.
+Brittney: So the shape isn't packaging. The shape is part of the identity.
+Titan: [laugh, chuckles] You keep writing my lines for me. [storytelling] And some hall shapes are so common they've earned nicknames. A hall that's just one long row?
+Brittney: A bench!
+Titan: [laugh] hehe! almost. actually it's called a row vector. One row, lots of seats. And the queue at the ticket booth — people standing one behind another?
+Brittney: [thinking] umm.. One column of people. Let me guess... column vector.
+Titan: And a hall with exactly one seat?
+Brittney: [confused] One seat is just... i dont know.. a number. A guy on a chair.
+Titan: That's exactly what it is. A one by one matrix is just an ordinary number — there's even a fancy word for it, "scalar," but it's literally a lonely number in a lonely chair.
+Brittney: Wait... [telling a joke] so a "vector" is a skinny matrix, and a "scalar" is a matrix that gave up.
+Titan: [laughs hard] I'm putting that on a shirt. [storytelling, interesting] One more quick tour, because a few matrix shapes come back again and again.
+Brittney: [curious] More halls?
+Titan: [chuckles] Yeah, More halls. First: a square hall. Same number of rows and seats. Three by three, four by four, five by five.
+Brittney: So a square matrix is just a matrix where the hall is actually square.
+Titan: [excited] Exactly! Simple name. Suspiciously important.
+[excited] Exactly! Simple name. Suspiciously important.
+Brittney: [sarcastic] Math does love hiding important things under boring names.
+Titan: [small smile] Constantly. Now, inside a square hall, draw a diagonal line: front-left seat, then one row back and one seat over, all the way to the back-right seat.
+Brittney:The movie-theater version of a slash.
+Titan: Yes. If the only seats with real numbers are on that diagonal, and everything else is zero, that's a diagonal matrix.
+Brittney: So the diagonal is the whole story.
+Titan: Right. And that diagonal gives us two more patterns. If everything below the diagonal is zero, and the numbers live on or above it, that's an upper triangular matrix.
+Brittney: [thinking it through] Above the diagonal... upper triangular.
+Titan: And if everything above the diagonal is zero, and the numbers live on or below it, that's a lower triangular matrix.
+Brittney: Upper triangle, lower triangle. Same square hall, different side of the diagonal.
+Titan: Perfect. And one diagonal matrix is so important it gets its own name: the identity matrix.
+Brittney: [skeptical] Identity matrix sounds like it should have a passport.
+Titan: [amused, chuckles] Honestly, fair. But it looks very plain: ones on the diagonal, zeros everywhere else.
+Brittney: That's it?
+Titan: That's it! It looks a bit technical now, but later it becomes one of the most useful matrices in the course. For today, we only need to recognize the shape.
+Brittney: So square, diagonal, upper triangular, lower triangular, identity. We're not using them yet. We're just learning to spot them.
+Titan: [gentle shift, a little wonder] And speaking of plots — the movie starts. Everyone in the hall looks forward. And the screen in front of them is also a matrix.
+Brittney: [quick interrupt, surprised] The actual screen?
+Titan: The actual screen. And your phone screen, too. We are surrounded by matrices all day; we just don't usually call them that! Wait I'll explain - so zoom into any digital image far enough, and it stops looking like a picture. It becomes a grid of tiny squares: pixels. Rows and columns. And each pixel holds a number, like how bright it should glow.
+Brittney: [conclusion, awe] So a photo is a seating chart for light.
+Titan: Exactly! Every pixel has an address, and every pixel has a value.
+Brittney - Social Media Voice - Fun, Youthful & Informative:  [soft realization] Row first, column second. Same idea.
+Titan: Same idea. Take a tiny screen: five rows, five columns. Zero means black, nine means bright white. Put the nines in the right places, and if you squint, you can make a little glowing heart.
+Brittney - Social Media Voice - Fun, Youthful & Informative: [amused] Romantic. In a spreadsheet kind of way.
+Titan: And now scale that up. A phone screen might have around two thousand three hundred and forty rows, and one thousand and eighty columns.
+Brittney - Social Media Voice - Fun, Youthful & Informative: That's... millions of tiny seats.
+Titan: About two and a half million. Each one holding numbers. And the whole thing refreshes again and again, about sixty times every second.
+Brittney - Social Media Voice - Fun, Youthful & Informative: [genuinely amazed, but not overdramatic] So every photo, every video, every movie frame... is a grid of numbers. [awe] I've been binge-watching matrices.
+Titan: Wait until the end of this unit, you will be extra mind-blown!

@@ -25,18 +25,56 @@ export class ClaudeProvider extends LLMProvider {
       'claude-sonnet-4-6',
       'claude-opus-4-7',
       'claude-opus-4-8',
+      'claude-fable-5',
     ];
+  }
+
+  /**
+   * Newest Claude models (Opus 4.7/4.8, Fable 5) reject `temperature` and
+   * `budget_tokens` with a 400 and use adaptive thinking + `output_config.effort`
+   * instead. Everything older keeps the classic thinking-budget / temperature path.
+   */
+  private isAdaptiveOnly(model: string): boolean {
+    return model === 'claude-opus-4-7' || model === 'claude-opus-4-8' || model === 'claude-fable-5';
   }
 
   async sendMessage(opts: LLMOptions): Promise<LLMResponse> {
     if (!this.client) throw new AppError(LLMErrorType.LLM_ERROR, 'Claude not configured', 500);
 
+    const adaptiveOnly = this.isAdaptiveOnly(opts.model);
+    const isFable = opts.model === 'claude-fable-5';
     const thinkingBudget = opts.thinkingBudgetTokens ?? 0;
-    const useThinking = thinkingBudget > 0;
-    // Claude requires max_tokens > budget_tokens
-    const maxTokens = useThinking
-      ? Math.max(opts.maxTokens ?? 8192, thinkingBudget + 1000)
-      : (opts.maxTokens ?? 8192);
+    const useLegacyThinking = !adaptiveOnly && thinkingBudget > 0;
+
+    // Adaptive-only models can't derive max_tokens from a budget; give a generous
+    // ceiling (streamed, so no HTTP timeout) so thinking + a full script fit.
+    const maxTokens = adaptiveOnly
+      ? Math.max(opts.maxTokens ?? 8192, 16000)
+      : useLegacyThinking
+        ? Math.max(opts.maxTokens ?? 8192, thinkingBudget + 1000)
+        : (opts.maxTokens ?? 8192);
+
+    // Model-specific parameter block. On adaptive-only models we send NO temperature
+    // and NO budget_tokens; adaptive thinking is explicit on Opus (omitting = no
+    // thinking) and always-on (omit the field) on Fable. Effort rides in output_config.
+    // These fields aren't in the installed SDK's types, so the block is built loosely
+    // and passed through — the wire body carries them to the API verbatim.
+    const modelParams: Record<string, unknown> = {};
+    if (adaptiveOnly) {
+      if (!isFable && opts.adaptiveThinking) {
+        modelParams.thinking = { type: 'adaptive' };
+      }
+      if (isFable && opts.adaptiveThinking === false) {
+        // Fable thinking is always on; an explicit disable would 400 — so never send it.
+      }
+      if (opts.effort) {
+        modelParams.output_config = { effort: opts.effort };
+      }
+    } else if (useLegacyThinking) {
+      modelParams.thinking = { type: 'enabled', budget_tokens: thinkingBudget };
+    } else {
+      modelParams.temperature = opts.temperature ?? 0.7;
+    }
 
     try {
       const chunks: string[] = [];
@@ -53,23 +91,25 @@ export class ClaudeProvider extends LLMProvider {
           ]
         : [{ role: 'user', content: opts.userPrompt }];
 
+      const body = {
+        model: opts.model,
+        max_tokens: maxTokens,
+        ...modelParams,
+        system: [
+          {
+            type: 'text',
+            text: opts.systemPrompt,
+            // Prompt caching: mark system prompt as ephemeral cache
+            cache_control: { type: 'ephemeral' },
+          },
+        ],
+        messages,
+      };
+
       const stream = await this.client.messages.stream(
-        {
-          model: opts.model,
-          max_tokens: maxTokens,
-          ...(useThinking
-            ? { thinking: { type: 'enabled', budget_tokens: thinkingBudget } }
-            : { temperature: opts.temperature ?? 0.7 }),
-          system: [
-            {
-              type: 'text',
-              text: opts.systemPrompt,
-              // Prompt caching: mark system prompt as ephemeral cache
-              cache_control: { type: 'ephemeral' },
-            },
-          ],
-          messages,
-        },
+        // Cast: `output_config` / adaptive `thinking` aren't in the installed SDK's
+        // types but pass through on the wire.
+        body as unknown as Parameters<typeof this.client.messages.stream>[0],
         { signal: opts.abortSignal },
       );
 

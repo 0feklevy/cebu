@@ -14,6 +14,8 @@ type Config = Pick<
   | 'max_tokens'
   | 'extended_thinking_enabled'
   | 'thinking_budget_tokens'
+  | 'podcast_model'
+  | 'podcast_effort'
 >;
 
 export default function AiConfigPage() {
@@ -34,6 +36,8 @@ export default function AiConfigPage() {
           max_tokens:                 s.max_tokens,
           extended_thinking_enabled:  s.extended_thinking_enabled,
           thinking_budget_tokens:     s.thinking_budget_tokens,
+          podcast_model:              s.podcast_model,
+          podcast_effort:             s.podcast_effort,
         });
       })
       .catch((e) => setError(e.message));
@@ -135,8 +139,39 @@ export default function AiConfigPage() {
             </Field>
           </div>
           <p className="text-xs text-muted-foreground mt-2">
-            Supported: claude-haiku-4-5, claude-haiku-4-5-20251001, claude-sonnet-4-5, claude-sonnet-4-6, claude-opus-4-7, claude-opus-4-8
+            Supported: claude-haiku-4-5, claude-haiku-4-5-20251001, claude-sonnet-4-5, claude-sonnet-4-6, claude-opus-4-7, claude-opus-4-8, claude-fable-5
           </p>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+            <Field
+              label="Podcast Writers'-Room Model"
+              hint="Model for the multi-agent podcast script generator (creative tier). Opus 4.8 or Fable 5."
+            >
+              <input
+                type="text"
+                value={form.podcast_model}
+                onChange={(e) => set('podcast_model', e.target.value)}
+                className="input font-mono"
+                placeholder="claude-opus-4-8"
+              />
+            </Field>
+            <Field
+              label="Podcast Effort"
+              hint="Adaptive-thinking depth for the writers' room. max = highest quality/cost; xhigh often the sweet spot."
+            >
+              <select
+                value={form.podcast_effort}
+                onChange={(e) => set('podcast_effort', e.target.value as Config['podcast_effort'])}
+                className="input"
+              >
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+                <option value="xhigh">xhigh</option>
+                <option value="max">max</option>
+              </select>
+            </Field>
+          </div>
         </section>
 
         {/* Extended Thinking */}

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { ZodSchema } from 'zod';
 import JSON5 from 'json5';
-import { LLMProvider, type TaskType, type TokenUsage } from './LLMProvider.js';
+import { LLMProvider, type TaskType, type TokenUsage, type EffortLevel } from './LLMProvider.js';
 import { ClaudeProvider } from './ClaudeProvider.js';
 import { OpenAIProvider } from './OpenAIProvider.js';
 import { GeminiProvider } from './GeminiProvider.js';
@@ -19,8 +19,8 @@ export interface SendStructuredOpts<T> {
   userPrompt: string;
   previousMessages?: Array<{ role: 'user' | 'assistant'; content: string }>;
   schema: ZodSchema<T>;
-  userId: string;
-  projectId: string;
+  userId: string | null;      // null when there is no resolved user
+  projectId: string | null;   // null for non-project work (e.g. Podcast Studio)
   onTokenChunk?: (chunk: string) => void;
   abortSignal: AbortSignal;
   retryCount?: number;
@@ -35,7 +35,11 @@ export interface SendStructuredResult<T> {
   model: string;
 }
 
-const TASK_TIER: Record<TaskType, 'utility' | 'generation' | 'complex'> = {
+type Tier = 'utility' | 'generation' | 'complex' | 'creative';
+
+const ADAPTIVE_MODELS = new Set(['claude-opus-4-7', 'claude-opus-4-8', 'claude-fable-5']);
+
+const TASK_TIER: Record<TaskType, Tier> = {
   content_moderation: 'utility',
   structural_analysis: 'complex',
   script_draft: 'generation',
@@ -43,6 +47,16 @@ const TASK_TIER: Record<TaskType, 'utility' | 'generation' | 'complex'> = {
   single_turn_regen: 'generation',
   bridge_plan: 'complex',       // benefits from strongest model + extended thinking
   guidance_plan: 'complex',     // deep code analysis + structured cue generation
+  // Podcast Studio writers' room — highest tier, admin-selected model + effort.
+  podcast_architect: 'creative',
+  podcast_materials: 'creative',
+  podcast_playwright: 'creative',
+  podcast_review: 'creative',
+  podcast_rewrite: 'creative',
+  podcast_compile: 'creative',
+  podcast_delivery: 'creative',
+  podcast_turn_regen: 'creative',
+  podcast_memory: 'creative',
 };
 
 export class LLMService {
@@ -66,6 +80,17 @@ export class LLMService {
           logger.warn({ task: opts.task, attempt }, 'JSON parse failed, retrying');
           continue;
         }
+        // Creative-tier safety refusal → one transparent retry on Opus 4.8, unless
+        // it was already the model that refused.
+        if (
+          err instanceof AppError &&
+          err.details?.refusal === true &&
+          TASK_TIER[opts.task] === 'creative' &&
+          err.details?.model !== 'claude-opus-4-8'
+        ) {
+          logger.warn({ task: opts.task, refusedModel: err.details?.model }, 'Creative refusal — retrying on Opus 4.8');
+          return await this._sendStructuredOnce(opts, 0, 'claude-opus-4-8');
+        }
         throw err;
       }
     }
@@ -75,6 +100,7 @@ export class LLMService {
   private async _sendStructuredOnce<T>(
     opts: SendStructuredOpts<T>,
     attempt: number,
+    forceModel?: string,
   ): Promise<SendStructuredResult<T>> {
     const settings = await db.query.admin_settings.findFirst();
     if (!settings) throw new AppError(LLMErrorType.LLM_ERROR, 'Admin settings not found', 500);
@@ -117,14 +143,23 @@ export class LLMService {
       opts.task,
       settings,
       (opts.retryCount ?? 0) + attempt,
+      forceModel,
     );
 
-    const thinkingBudget =
-      settings.extended_thinking_enabled &&
-      TASK_TIER[opts.task] === 'complex' &&
-      provider.providerName === 'claude'
-        ? settings.thinking_budget_tokens
-        : undefined;
+    const tier = TASK_TIER[opts.task];
+    const isClaude = provider.providerName === 'claude';
+    const isAdaptiveModel = ADAPTIVE_MODELS.has(model);
+    // Thinking is wanted for complex + creative work on Claude. On adaptive-only
+    // models we signal adaptive thinking (no token budget); on older Claude models
+    // we pass the classic thinking budget.
+    const wantThinking =
+      settings.extended_thinking_enabled && isClaude && (tier === 'complex' || tier === 'creative');
+    const thinkingBudget = wantThinking && !isAdaptiveModel ? settings.thinking_budget_tokens : undefined;
+    const adaptiveThinking = wantThinking && isAdaptiveModel ? true : undefined;
+    const effort: EffortLevel | undefined =
+      tier === 'creative' ? (settings.podcast_effort as EffortLevel) : undefined;
+    // Give creative passes generous headroom (streamed) so thinking + a full script fit.
+    const maxTokens = tier === 'creative' ? Math.max(settings.max_tokens, 64000) : settings.max_tokens;
 
     // On retry, reinforce the JSON-only instruction
     const userPrompt =
@@ -133,7 +168,7 @@ export class LLMService {
         : opts.userPrompt;
 
     logger.debug(
-      { task: opts.task, provider: provider.providerName, model, attempt },
+      { task: opts.task, provider: provider.providerName, model, attempt, effort, adaptiveThinking },
       'LLM call starting',
     );
 
@@ -142,14 +177,17 @@ export class LLMService {
       systemPrompt: opts.systemPrompt,
       userPrompt,
       previousMessages: opts.previousMessages,
-      maxTokens: settings.max_tokens,
+      maxTokens,
       temperature: settings.temperature,
       thinkingBudgetTokens: thinkingBudget,
+      effort,
+      adaptiveThinking,
       onTokenChunk: opts.onTokenChunk,
       abortSignal: opts.abortSignal,
     });
 
-    // Record usage
+    // Record usage first — a refused call is still billed, so it must be tracked
+    // for cost/quota accuracy before we branch on the refusal.
     await this.usageTracking.record({
       userId: opts.userId,
       projectId: opts.projectId,
@@ -163,6 +201,18 @@ export class LLMService {
       usedPersonalKey: false,
     });
 
+    // Safety refusal (Fable/Opus classifiers): surface as a distinct, non-parsing
+    // error so it is NOT misdiagnosed as a JSON failure (which would waste parse
+    // retries and escalate). sendStructured may retry a creative refusal on Opus.
+    if (response.stopReason === 'refusal') {
+      throw new AppError(
+        LLMErrorType.LLM_ERROR,
+        'The model declined this request (safety refusal).',
+        502,
+        { refusal: true, model },
+      );
+    }
+
     // Parse and validate
     const parsed = this.parseAndRepair(response.content, opts.schema);
 
@@ -175,12 +225,26 @@ export class LLMService {
   }
 
   private async resolveProviderAndModel(
-    userId: string,
+    userId: string | null,
     task: TaskType,
     settings: typeof admin_settings.$inferSelect,
     retryCount: number,
+    forceModel?: string,
   ): Promise<{ provider: LLMProvider; model: string }> {
     const tier = TASK_TIER[task];
+
+    // Creative tier (podcast writers' room) always runs on Claude with the
+    // admin-selected model — never falls back to the default provider, and is
+    // NOT escalated to complex (which would silently swap in a flash model and
+    // collapse quality). A refusal fallback may force a specific model.
+    if (tier === 'creative') {
+      const provider = await this.getProvider('claude');
+      return { provider, model: forceModel ?? settings.podcast_model };
+    }
+
+    if (forceModel) {
+      return { provider: await this.getProvider('claude'), model: forceModel };
+    }
 
     // Escalate to complex tier on retries
     const effectiveTier =

@@ -2,8 +2,8 @@ import { db } from '../../db/index.js';
 import { token_usage } from '../../db/schema.js';
 
 export interface RecordUsageOpts {
-  userId: string;
-  projectId: string;
+  userId: string | null;      // null when the caller has no resolved user
+  projectId: string | null;   // null for non-project work (e.g. Podcast Studio)
   provider: string;
   model: string;
   task: string;
@@ -17,8 +17,8 @@ export interface RecordUsageOpts {
 export class UsageTrackingService {
   async record(opts: RecordUsageOpts): Promise<void> {
     await db.insert(token_usage).values({
-      user_id: opts.userId,
-      project_id: opts.projectId,
+      user_id: opts.userId || null,   // '' / null → NULL (avoids invalid-uuid inserts)
+      project_id: opts.projectId ?? null,
       provider: opts.provider,
       model: opts.model,
       task: opts.task,

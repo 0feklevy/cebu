@@ -51,6 +51,18 @@ const MIGRATION_FILES = [
   '031_captions.sql',
   '032_course_publishing_hardening.sql',
   '033_captions_vtt.sql',
+  '034_project_seo.sql',
+  '035_project_delete_cascade.sql',
+  '036_project_visibility.sql',
+  '037_branching.sql',
+  '038_branch_analytics.sql',
+  '039_perf_indexes.sql',
+  '040_generation_limit.sql',
+  '041_timeline_markers.sql',
+  '042_collaborators.sql',
+  '043_permalink_slugs.sql',
+  '044_podcast_studio.sql',
+  '045_podcast_audio_studio.sql',
 ];
 
 type Row = Record<string, unknown>;

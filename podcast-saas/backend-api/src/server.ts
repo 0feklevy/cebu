@@ -53,6 +53,13 @@ import { registerAdminAvatarRoutes } from './controllers/admin/v1/avatar.control
 import { registerPublicCourseRoutes } from './controllers/v1/public-courses.controller.js';
 import { registerCourseAuthoringRoutes } from './controllers/v1/courses.controller.js';
 import { registerBranchRoutes } from './controllers/v1/branch.controller.js';
+import { registerPodcastRoutes } from './controllers/v1/podcast.controller.js';
+import { registerPodcastScriptRoutes } from './controllers/v1/podcast-script.controller.js';
+import { registerPodcastRenderRoutes } from './controllers/v1/podcast-render.controller.js';
+import { registerPodcastStudioRoutes } from './controllers/v1/podcast-studio.controller.js';
+import { recoverStuckPodcastScripts } from './services/podcast/runPodcastScript.js';
+import { recoverStuckPodcastRenders } from './services/podcast/audio/runPodcastRender.js';
+import { recoverStuckPodcastMixes } from './services/podcast/audio/runPodcastClips.js';
 
 const PORT = parseInt(process.env.PORT ?? '8080', 10);
 
@@ -163,7 +170,8 @@ async function build() {
 
   // Local file storage (dev only — active when R2 is not configured).
   // Public prefixes (banners, images) need no auth so browsers can load them directly.
-  const PUBLIC_LOCAL_PREFIXES = ['playlist-banners/', 'thumbnails/', 'crop/', 'images/', 'audio/', 'captions/', 'avatar-circles/'];
+  // 'podcasts/' — studio clips + render masters: immutable, public-URL-modeled (like prod Supabase).
+  const PUBLIC_LOCAL_PREFIXES = ['playlist-banners/', 'thumbnails/', 'crop/', 'images/', 'audio/', 'captions/', 'avatar-circles/', 'podcasts/'];
   app.get<{ Params: { '*': string } }>(
     '/local-storage/*',
     async (request, reply) => {
@@ -534,6 +542,10 @@ async function build() {
   await registerPublicCourseRoutes(app);
   await registerCourseAuthoringRoutes(app);
   await registerBranchRoutes(app);
+  await registerPodcastRoutes(app);
+  await registerPodcastScriptRoutes(app);
+  await registerPodcastRenderRoutes(app);
+  await registerPodcastStudioRoutes(app);
 
   // Phase 2+ stubs (return 501 Not Implemented)
   await registerPhase2StubRoutes(app);
@@ -592,6 +604,9 @@ async function start() {
       await recoverStuckTranscodes();
       await recoverStuckCrops();
       await recoverStuckSimulations();
+      await recoverStuckPodcastScripts();
+      await recoverStuckPodcastRenders();
+      await recoverStuckPodcastMixes();
     } catch (err) {
       logger.warn({ err }, 'Stuck-job recovery failed (non-fatal)');
     }

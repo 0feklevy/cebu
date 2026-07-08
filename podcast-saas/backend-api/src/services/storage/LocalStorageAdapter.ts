@@ -40,8 +40,11 @@ export class LocalStorageAdapter implements StorageService {
 
   async getPresignedDownloadUrl(path: string, _ttlSeconds: number): Promise<string> {
     // /video-raw/* serves with range-request support and no auth requirement,
-    // so the browser's <video> element can stream it directly.
-    return `${SERVE_BASE}/video-raw/${path}`;
+    // so the browser's <video> element can stream it directly — but it only
+    // accepts videos/ keys. Everything else (podcasts/ masters + clips) goes via
+    // /local-storage/* which has Range + CORS and public podcast prefixes.
+    if (path.startsWith('videos/')) return `${SERVE_BASE}/video-raw/${path}`;
+    return `${SERVE_BASE}/local-storage/${path}`;
   }
 
   async getPresignedUploadUrl(path: string, _contentType: string, _ttlSeconds: number): Promise<string> {
@@ -78,8 +81,11 @@ export class LocalStorageAdapter implements StorageService {
   }
 
   getPublicUrl(path: string): string {
-    // HLS segments are served via the unauthenticated /hls-public/* route
-    return `${SERVE_BASE}/hls-public/${path}`;
+    // HLS segments are served via the unauthenticated /hls-public/* route (which
+    // only accepts hls/ keys); other public assets (podcasts/ clips etc.) go via
+    // /local-storage/* whose PUBLIC_LOCAL_PREFIXES gate them.
+    if (path.startsWith('hls/')) return `${SERVE_BASE}/hls-public/${path}`;
+    return `${SERVE_BASE}/local-storage/${path}`;
   }
 
   getSimPublicUrl(path: string): string {

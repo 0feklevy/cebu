@@ -3,6 +3,10 @@ import { runVideoTranscode } from '../services/video/runVideoTranscode.js';
 import { runCaptionJobNow } from '../services/captions/CaptionService.js';
 import { runCropAnalysis } from '../services/crop/runCropAnalysis.js';
 import { generateVideoMetadata } from '../services/generateVideoMetadata.js';
+import { runPodcastScriptJob } from '../services/podcast/runPodcastScript.js';
+import { runPodcastRenderJob } from '../services/podcast/audio/runPodcastRender.js';
+import { runPodcastClipsJob } from '../services/podcast/audio/runPodcastClips.js';
+import { runPodcastMixExportJob } from '../services/podcast/audio/runPodcastMixExport.js';
 
 /**
  * Maps each job name to its existing service entrypoint. Handlers are thin adapters from
@@ -16,4 +20,8 @@ export const handlers: JobHandlers = {
   captions: (p) => runCaptionJobNow(p.videoId, { force: p.force }),
   crop: (p) => runCropAnalysis(p.videoFileId),
   metadata: (p) => generateVideoMetadata(p.projectId, p.videoFileId, p),
+  podcast_script: (p) => runPodcastScriptJob(p),
+  podcast_render: (p) => runPodcastRenderJob(p),
+  podcast_clips: (p) => runPodcastClipsJob(p),
+  podcast_mix_export: (p) => runPodcastMixExportJob(p),
 };

@@ -24,7 +24,7 @@ import { platformBaseUrl } from './course/CanonicalUrlService.js';
  */
 export const RESERVED_SLUGS = new Set([
   // Existing client-web/app top-level routes & metadata files
-  'api', 'c', 'v', 'pl', 'new', 'projects', 'playlists', 'unlock',
+  'api', 'c', 'v', 'pl', 'new', 'projects', 'playlists', 'podcasts', 'podcast', 'unlock',
   'icon', 'favicon', 'robots', 'llms', 'sitemap', 'sitemap-courses', 'sitemap-videos',
   // Platform / future routes
   'admin', 'login', 'logout', 'signup', 'signin', 'register', 'auth', 'account',
