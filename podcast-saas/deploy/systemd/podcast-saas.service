@@ -1,0 +1,23 @@
+# systemd unit to bring the stack up on boot and stop it cleanly on shutdown.
+# Installed & path-substituted by provision.sh -> /etc/systemd/system/podcast-saas.service
+# Docker's own restart policies (restart: unless-stopped) already keep containers
+# alive; this unit ensures the whole stack comes back after a VM reboot.
+
+[Unit]
+Description=podcast-saas Docker Compose stack
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=__USER__
+WorkingDirectory=__DEPLOY_DIR__
+# --env-file makes APP_VERSION etc. available; compose reads docker-compose.yml here.
+ExecStart=/usr/bin/docker compose --env-file .env -f docker-compose.yml up -d
+ExecStop=/usr/bin/docker compose --env-file .env -f docker-compose.yml down
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
