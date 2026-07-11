@@ -1,0 +1,99 @@
+# Rendered by the nginx image's envsubst at container start:
+#   /etc/nginx/templates/app.conf.template  ->  /etc/nginx/conf.d/app.conf
+# Only ${DOMAIN_*} and ${MAX_UPLOAD_SIZE} are substituted (they are set in the
+# container env); nginx runtime vars like $host / $uri are preserved.
+
+# ----------------------------------------------------------------------------
+# Port 80: ACME HTTP-01 challenge + health probe, everything else -> HTTPS.
+# ----------------------------------------------------------------------------
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+
+    # Load-balancer / uptime probe that must never redirect.
+    location = /healthz {
+        access_log off;
+        return 200 "ok\n";
+        add_header Content-Type text/plain;
+    }
+
+    # Let's Encrypt webroot challenge files.
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+# ----------------------------------------------------------------------------
+# Shared TLS + proxy snippets via map-free include-style duplication.
+# ----------------------------------------------------------------------------
+
+# flowvidco.com + www + app  ->  client-web (Next.js frontend)
+# All three names share ONE certificate (lineage named after ${DOMAIN_ROOT}).
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name ${DOMAIN_ROOT} ${DOMAIN_WWW} ${DOMAIN_APP};
+
+    ssl_certificate     /etc/letsencrypt/live/${DOMAIN_ROOT}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN_ROOT}/privkey.pem;
+    include /etc/nginx/ssl-params.conf;
+
+    client_max_body_size ${MAX_UPLOAD_SIZE};
+
+    location /.well-known/acme-challenge/ { root /var/www/certbot; }
+
+    location / {
+        set $upstream_client client-web:3000;
+        proxy_pass http://$upstream_client;
+    }
+}
+
+# api.<domain>  ->  backend (Fastify)
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name ${DOMAIN_API};
+
+    ssl_certificate     /etc/letsencrypt/live/${DOMAIN_API}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN_API}/privkey.pem;
+    include /etc/nginx/ssl-params.conf;
+
+    # Backend handles large media uploads + long transcode/LLM requests.
+    client_max_body_size ${MAX_UPLOAD_SIZE};
+
+    location /.well-known/acme-challenge/ { root /var/www/certbot; }
+
+    location / {
+        set $upstream_api backend:8080;
+        proxy_pass http://$upstream_api;
+        proxy_buffering off;          # stream HLS / large responses through
+    }
+}
+
+# admin.<domain>  ->  admin-web (Next.js admin)
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name ${DOMAIN_ADMIN};
+
+    ssl_certificate     /etc/letsencrypt/live/${DOMAIN_ADMIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN_ADMIN}/privkey.pem;
+    include /etc/nginx/ssl-params.conf;
+
+    client_max_body_size ${MAX_UPLOAD_SIZE};
+
+    location /.well-known/acme-challenge/ { root /var/www/certbot; }
+
+    location / {
+        set $upstream_admin admin-web:3000;
+        proxy_pass http://$upstream_admin;
+    }
+}

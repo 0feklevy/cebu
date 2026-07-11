@@ -1,0 +1,30 @@
+# Keep the Docker build context small and reproducible.
+# node_modules are reinstalled inside the image from the lockfile.
+**/node_modules
+**/.next
+**/dist
+**/.output
+**/out
+**/.turbo
+**/.cache
+**/coverage
+**/*.tsbuildinfo
+
+# Never ship secrets or local state into an image layer.
+.env
+**/.env
+**/.env.*
+!**/.env.example
+**/.local-storage
+.local-storage
+
+# VCS / editor / CI noise
+.git
+.github
+.claude
+**/.DS_Store
+
+# Deployment host artifacts (certs, keys, compose state) must never enter an image.
+deploy/keys
+keys
+**/*.pem

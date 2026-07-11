@@ -1,0 +1,7 @@
+# Never commit runtime secrets or host state.
+.env
+.deploy-state
+.deploy-state.tmp
+.env.tmp
+keys/
+*.pem

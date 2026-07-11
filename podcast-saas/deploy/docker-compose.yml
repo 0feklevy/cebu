@@ -1,0 +1,209 @@
+# Production stack for podcast-saas on a single AWS VM.
+#
+# NGINX is the only container that binds host ports (80/443) and terminates all
+# traffic + TLS. Everything else is reachable only on the private `edge`/`internal`
+# Docker networks and is routed to by NGINX by subdomain:
+#
+#   app.<domain>   -> client-web:3000
+#   api.<domain>   -> backend:8080
+#   admin.<domain> -> admin-web:3000
+#
+# Images are tagged with APP_VERSION (a git short SHA set by deploy.sh). The previous
+# version's images are kept on the host so rollback.sh can re-launch them WITHOUT a rebuild.
+#
+# Run from the deploy/ directory; compose auto-loads deploy/.env for ${...} interpolation.
+
+name: podcast-saas
+
+services:
+  # Database is EXTERNAL (Supabase). There is no db container — the app connects to
+  # Supabase using DATABASE_URL from the repo-root .env (loaded via env_file below).
+  # See deploy/README.md §4 for the session-mode-vs-pooler note pg-boss cares about.
+
+  # ---------------------------------------------------------------- backend (web tier)
+  backend:
+    image: podcast-saas/backend:${APP_VERSION:-latest}
+    build:
+      context: ..
+      dockerfile: deploy/docker/backend.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../.env                      # all app secrets / API keys live here (git-ignored)
+    environment:
+      NODE_ENV: production
+      PORT: '8080'
+      # DATABASE_URL / QUEUE_DATABASE_URL come from the root .env (Supabase) — no override.
+      QUEUE_DRIVER: pgboss
+      WORKER_INLINE: 'false'         # heavy jobs run in the dedicated worker container
+      NEXT_PUBLIC_APP_URL: https://${DOMAIN_ROOT}
+      PUBLIC_SITE_URL: https://${DOMAIN_ROOT}
+    volumes:
+      - media_work:/app/backend-api/.work   # scratch space for ffmpeg / transcoding
+    networks: [edge]
+    healthcheck:
+      test: ['CMD', 'curl', '-fsS', 'http://localhost:8080/health']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  # ---------------------------------------------------------------- worker (off-web-tier jobs)
+  worker:
+    # Reuses the exact image built for `backend` (same tag); only the command differs.
+    # deploy.sh always builds `backend` first, so this image is present before `up`.
+    image: podcast-saas/backend:${APP_VERSION:-latest}
+    restart: unless-stopped
+    command: ['node', 'dist/worker.js']
+    env_file:
+      - ../.env
+    environment:
+      NODE_ENV: production
+      # DATABASE_URL / QUEUE_DATABASE_URL come from the root .env (Supabase) — no override.
+      QUEUE_DRIVER: pgboss
+    volumes:
+      - media_work:/app/backend-api/.work
+    networks: [internal]
+    # No HTTP port to probe. The worker is PID 1, so if it crashes the container exits
+    # and `restart: unless-stopped` brings it back — that IS the liveness guarantee.
+
+  # ---------------------------------------------------------------- frontend: viewer/editor
+  client-web:
+    image: podcast-saas/client-web:${APP_VERSION:-latest}
+    build:
+      context: ..
+      dockerfile: deploy/docker/web.Dockerfile
+      args:
+        APP: client-web
+        NEXT_PUBLIC_API_URL: https://${DOMAIN_API}
+        NEXT_PUBLIC_APP_URL: https://${DOMAIN_ROOT}
+        NEXT_PUBLIC_FIREBASE_API_KEY: ${NEXT_PUBLIC_FIREBASE_API_KEY}
+        NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ${NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN}
+        NEXT_PUBLIC_FIREBASE_PROJECT_ID: ${NEXT_PUBLIC_FIREBASE_PROJECT_ID}
+        NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: ${NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET}
+        NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: ${NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID}
+        NEXT_PUBLIC_FIREBASE_APP_ID: ${NEXT_PUBLIC_FIREBASE_APP_ID}
+        PUBLIC_BRAND_NAME: ${PUBLIC_BRAND_NAME}
+        PUBLIC_SITE_URL: https://${DOMAIN_ROOT}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: '3000'
+      # Server-side (SSR) calls go over the private network — faster and avoids egress.
+      BACKEND_API_URL: http://backend:8080
+      NEXT_PUBLIC_API_URL: https://${DOMAIN_API}
+      NEXT_PUBLIC_APP_URL: https://${DOMAIN_ROOT}
+      REVALIDATE_SECRET: ${REVALIDATE_SECRET}
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [edge]
+    healthcheck:
+      test: ['CMD', 'curl', '-fsS', '-o', '/dev/null', 'http://localhost:3000/']
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ---------------------------------------------------------------- frontend: admin
+  admin-web:
+    image: podcast-saas/admin-web:${APP_VERSION:-latest}
+    build:
+      context: ..
+      dockerfile: deploy/docker/web.Dockerfile
+      args:
+        APP: admin-web
+        NEXT_PUBLIC_API_URL: https://${DOMAIN_API}
+        NEXT_PUBLIC_APP_URL: https://${DOMAIN_ROOT}
+        NEXT_PUBLIC_FIREBASE_API_KEY: ${NEXT_PUBLIC_FIREBASE_API_KEY}
+        NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ${NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN}
+        NEXT_PUBLIC_FIREBASE_PROJECT_ID: ${NEXT_PUBLIC_FIREBASE_PROJECT_ID}
+        NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: ${NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET}
+        NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: ${NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID}
+        NEXT_PUBLIC_FIREBASE_APP_ID: ${NEXT_PUBLIC_FIREBASE_APP_ID}
+        PUBLIC_BRAND_NAME: ${PUBLIC_BRAND_NAME}
+        PUBLIC_SITE_URL: https://${DOMAIN_ADMIN}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: '3000'
+      ADMIN_API_URL: http://backend:8080
+      NEXT_PUBLIC_API_URL: https://${DOMAIN_API}
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [edge]
+    healthcheck:
+      test: ['CMD', 'curl', '-fsS', '-o', '/dev/null', 'http://localhost:3000/']
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ---------------------------------------------------------------- reverse proxy + TLS
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+    environment:
+      # Consumed by envsubst against nginx/templates/*.template at container start.
+      DOMAIN_ROOT: ${DOMAIN_ROOT}
+      DOMAIN_WWW: ${DOMAIN_WWW}
+      DOMAIN_APP: ${DOMAIN_APP}
+      DOMAIN_API: ${DOMAIN_API}
+      DOMAIN_ADMIN: ${DOMAIN_ADMIN}
+      MAX_UPLOAD_SIZE: ${MAX_UPLOAD_SIZE:-2g}
+    volumes:
+      - ./nginx/templates:/etc/nginx/templates:ro
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl-params.conf:/etc/nginx/ssl-params.conf:ro
+      - certbot_etc:/etc/letsencrypt:ro
+      - certbot_www:/var/www/certbot
+      - nginx_logs:/var/log/nginx
+    depends_on:
+      - backend
+      - client-web
+      - admin-web
+    networks: [edge]
+    # Overriding `command` bypasses the image's auto-envsubst (it only runs when the
+    # command is `nginx`), so render the template ourselves, validate, then start nginx
+    # with a 6h reload loop that picks up renewed certificates without a restart.
+    command: >
+      /bin/sh -c "envsubst '$$DOMAIN_ROOT $$DOMAIN_WWW $$DOMAIN_APP $$DOMAIN_API $$DOMAIN_ADMIN $$MAX_UPLOAD_SIZE'
+      < /etc/nginx/templates/app.conf.template > /etc/nginx/conf.d/app.conf
+      && nginx -t
+      && (while :; do sleep 6h & wait $${!}; nginx -s reload; done & nginx -g 'daemon off;')"
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost/healthz']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ---------------------------------------------------------------- Let's Encrypt renewal
+  certbot:
+    image: certbot/certbot:latest
+    restart: unless-stopped
+    volumes:
+      - certbot_etc:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
+    # Attempt renewal twice a day; certbot only acts when a cert is near expiry.
+    entrypoint: >
+      /bin/sh -c "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done"
+    networks: [edge]
+
+networks:
+  # Public-facing path: nginx <-> frontends/backend.
+  edge:
+    driver: bridge
+  # Worker isolation. Ordinary bridge (has outbound internet for Supabase + external
+  # APIs) but off the edge network, so it is never reachable through nginx.
+  internal:
+    driver: bridge
+
+volumes:
+  media_work:
+  certbot_etc:
+  certbot_www:
+  nginx_logs:
