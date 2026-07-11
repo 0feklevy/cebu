@@ -1,5 +1,5 @@
 import { task } from '@trigger.dev/sdk/v3';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { video_generation_jobs, timeline_sections, video_files, projects } from '../db/schema.js';
 import { getStorageAdapter } from '../services/storage/getStorageAdapter.js';
@@ -9,6 +9,7 @@ import { ApiKeyService } from '../services/secrets/ApiKeyService.js';
 import { UsageTrackingService } from '../services/usage/UsageTrackingService.js';
 import { recordVideoUsage } from '../services/llm/systemAi.js';
 import { runVideoTranscode } from '../services/video/runVideoTranscode.js';
+import { enqueueJob } from '../queue/index.js';
 import { logger } from '../lib/logger.js';
 
 const _llmService = new LLMService(new ApiKeyService(), new UsageTrackingService());
@@ -60,37 +61,47 @@ export async function runVideoGenerate(job_id: string) {
   const svc = createVideoGenerationService(storage, _llmService);
 
   try {
-    // 1. Optionally enhance prompt
-    let prompt = job.original_prompt;
-    if (job.enhance_enabled) {
-      await setStatus(job_id, 'enhancing');
-      prompt = await withRetry(() => svc.enhancePrompt(job.original_prompt, job.target_duration_sec));
+    // Resume path: a job interrupted after submit already has an external task —
+    // re-submitting would generate (and bill) a second video. Skip straight to
+    // polling the existing task instead.
+    let externalTaskId = job.external_task_id;
+
+    if (!externalTaskId) {
+      // 1. Optionally enhance prompt
+      let prompt = job.original_prompt;
+      if (job.enhance_enabled) {
+        await setStatus(job_id, 'enhancing');
+        prompt = await withRetry(() => svc.enhancePrompt(job.original_prompt, job.target_duration_sec));
+        await db.update(video_generation_jobs)
+          .set({ enhanced_prompt: prompt, status: 'submitting' })
+          .where(eq(video_generation_jobs.id, job_id));
+      } else {
+        await setStatus(job_id, 'submitting');
+      }
+
+      // 2. Submit to provider (retry on transient errors)
+      externalTaskId = await withRetry(() => svc.submit(job.model as VideoModel, prompt, job.target_duration_sec));
       await db.update(video_generation_jobs)
-        .set({ enhanced_prompt: prompt, status: 'submitting' })
+        .set({ external_task_id: externalTaskId, status: 'generating' })
         .where(eq(video_generation_jobs.id, job_id));
+      logger.info({ job_id, model: job.model, externalTaskId }, 'B-roll generation submitted');
+
+      // Cost is incurred at submit — put it in the shared ledger so b-roll spend
+      // is visible and counts against the user's generation cap (database-103).
+      const proj = await db.query.projects.findFirst({
+        where: eq(projects.id, job.project_id),
+        columns: { created_by: true },
+      });
+      await recordVideoUsage({
+        userId: proj?.created_by ?? null,
+        projectId: job.project_id,
+        model: job.model,
+        task: 'broll_video',
+      });
     } else {
-      await setStatus(job_id, 'submitting');
+      logger.info({ job_id, model: job.model, externalTaskId }, 'B-roll generation resuming existing external task');
+      await setStatus(job_id, 'generating');
     }
-
-    // 2. Submit to provider (retry on transient errors)
-    const externalTaskId = await withRetry(() => svc.submit(job.model as VideoModel, prompt, job.target_duration_sec));
-    await db.update(video_generation_jobs)
-      .set({ external_task_id: externalTaskId, status: 'generating' })
-      .where(eq(video_generation_jobs.id, job_id));
-    logger.info({ job_id, model: job.model, externalTaskId }, 'B-roll generation submitted');
-
-    // Cost is incurred at submit — put it in the shared ledger so b-roll spend
-    // is visible and counts against the user's generation cap (database-103).
-    const proj = await db.query.projects.findFirst({
-      where: eq(projects.id, job.project_id),
-      columns: { created_by: true },
-    });
-    await recordVideoUsage({
-      userId: proj?.created_by ?? null,
-      projectId: job.project_id,
-      model: job.model,
-      task: 'broll_video',
-    });
 
     // 3. Poll until complete
     let videoUrl: string | undefined;
@@ -164,14 +175,23 @@ export const videoGenerateTask = task({
   run: ({ job_id }: { job_id: string }) => runVideoGenerate(job_id),
 });
 
-// ── In-process fallback (no Trigger.dev) ────────────────────────────────────
+// ── In-process execution (inline queue driver / no Trigger.dev) ─────────────
 
 // Bounded like ffmpegLimit: each run polls an external API for up to 20 min and
 // then downloads + HLS-transcodes, so an unbounded burst would fan out the whole
-// pipeline. The trigger.dev path has its own limits; this fallback needs one too.
+// pipeline. pg-boss workers have their own concurrency; this bound protects the
+// inline path.
 const MAX_INPROCESS = Math.max(1, Number(process.env.VIDEO_GEN_CONCURRENCY ?? '2'));
 let inProcessActive = 0;
 const inProcessQueue: Array<() => void> = [];
+
+function acquireInProcessSlot(): Promise<void> {
+  if (inProcessActive < MAX_INPROCESS) {
+    inProcessActive++;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => inProcessQueue.push(resolve));
+}
 
 function releaseInProcessSlot(): void {
   const next = inProcessQueue.shift();
@@ -179,18 +199,51 @@ function releaseInProcessSlot(): void {
   else inProcessActive = Math.max(0, inProcessActive - 1);
 }
 
-export function runVideoGenerateInProcess(job_id: string): void {
-  const run = () => {
-    runVideoGenerate(job_id)
-      .catch((err) => {
-        logger.error({ job_id, err }, 'In-process B-roll generation failed');
-      })
-      .finally(releaseInProcessSlot);
-  };
-  if (inProcessActive < MAX_INPROCESS) {
-    inProcessActive++;
-    setImmediate(run);
-  } else {
-    inProcessQueue.push(run);
+/** Queue-handler entrypoint: run one generation under the process-wide bound. */
+export async function runVideoGenerateLimited(job_id: string): Promise<unknown> {
+  await acquireInProcessSlot();
+  try {
+    return await runVideoGenerate(job_id);
+  } finally {
+    releaseInProcessSlot();
   }
+}
+
+export function runVideoGenerateInProcess(job_id: string): void {
+  setImmediate(() => {
+    runVideoGenerateLimited(job_id).catch((err) => {
+      logger.error({ job_id, err }, 'In-process B-roll generation failed');
+    });
+  });
+}
+
+// ── Startup recovery ─────────────────────────────────────────────────────────
+
+/**
+ * Re-drive b-roll jobs stranded by a restart. Jobs with an external task id are
+ * safely re-enqueued (runVideoGenerate resumes polling instead of re-submitting);
+ * 'queued' jobs never reached the provider so they re-enqueue too. Anything else
+ * (enhancing/submitting without a recorded task id) may have submitted without
+ * persisting the id — resubmitting would double-bill, so those are failed.
+ */
+export async function recoverStuckVideoGenerations(): Promise<void> {
+  const nonTerminal = ['queued', 'enhancing', 'submitting', 'generating', 'downloading', 'transcoding'];
+  const stuck = await db.query.video_generation_jobs.findMany({
+    where: inArray(video_generation_jobs.status, nonTerminal),
+    columns: { id: true, status: true, external_task_id: true },
+  });
+  if (stuck.length === 0) return;
+
+  let requeued = 0;
+  for (const job of stuck) {
+    if (job.external_task_id || job.status === 'queued') {
+      enqueueJob('video_generate', { jobId: job.id });
+      requeued++;
+    } else {
+      await db.update(video_generation_jobs)
+        .set({ status: 'failed', error: 'Interrupted by process restart', finished_at: new Date() })
+        .where(eq(video_generation_jobs.id, job.id));
+    }
+  }
+  logger.warn({ total: stuck.length, requeued }, 'Recovered stuck b-roll generations on startup');
 }

@@ -36,7 +36,7 @@ export async function registerAdminPipelineStatsRoutes(app: FastifyInstance): Pr
         db.select({
           input_tokens: sql<number>`sum(input_tokens)::int`,
           output_tokens: sql<number>`sum(output_tokens)::int`,
-          cost_cents: sql<number>`sum(cost_cents)::int`,
+          cost_cents: sql<number>`coalesce(sum(cost_cents),0)::float8`, // fractional cents (migration 046)
           count: sql<number>`count(*)::int`,
         })
           .from(token_usage)

@@ -1,17 +1,34 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, Download, History, RotateCcw, X } from 'lucide-react';
+import { Download, History, RotateCcw, X } from 'lucide-react';
 import { timeAgo } from '../PodcastChrome';
 import type { PodcastMixSnapshotInfo } from 'shared';
+import type { PodcastRender } from 'shared/src/generated/client-v1';
+import { api } from '../../../lib/api';
+import { renderDownloadUrl } from './renderUrl';
 
 const KIND_LABEL: Record<string, string> = { manual: 'Saved', export: 'Export', pre_rebuild: 'Before rebuild' };
 
-export function VersionsDrawer({ snapshots, onClose, onRestore }: {
+export function VersionsDrawer({ showId, episodeId, snapshots, onClose, onRestore }: {
+  showId: string;
+  episodeId: string;
   snapshots: PodcastMixSnapshotInfo[];
   onClose: () => void;
   onRestore: (id: string) => void;
 }) {
+  // Resolve each export snapshot's render → presigned download URL (renders carry
+  // the URLs; snapshots only carry render_id). Fetched once when the drawer opens.
+  const [rendersById, setRendersById] = useState<Record<string, PodcastRender>>({});
+  useEffect(() => {
+    let cancelled = false;
+    api.listPodcastRenders(showId, episodeId)
+      .then((res) => { if (!cancelled) setRendersById(Object.fromEntries(res.renders.map((r) => [r.id, r]))); })
+      .catch(() => { /* Download links stay disabled if we can't resolve them */ });
+    return () => { cancelled = true; };
+  }, [showId, episodeId]);
+
   return createPortal(
     <div className="fixed inset-0 z-[840] flex justify-end">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
@@ -32,7 +49,24 @@ export function VersionsDrawer({ snapshots, onClose, onRestore }: {
                     <span className="block truncate text-sm text-foreground">{s.name}</span>
                     <span className="block text-[11px] text-muted-foreground">{timeAgo(s.created_at)}{s.script_version != null ? ` · script v${s.script_version}` : ''}</span>
                   </span>
-                  {s.kind === 'export' && s.render_id && <Download size={13} className="text-muted-foreground" aria-hidden />}
+                  {s.kind === 'export' && s.render_id && (() => {
+                    const render = rendersById[s.render_id];
+                    const url = render ? renderDownloadUrl(render) : null;
+                    return url ? (
+                      <a
+                        href={url}
+                        download
+                        title={`Download ${render?.format?.toUpperCase() ?? 'export'}`}
+                        className="flex h-7 w-7 items-center justify-center rounded-md text-primary hover:bg-primary/10 focus-ring"
+                      >
+                        <Download size={13} aria-hidden />
+                      </a>
+                    ) : (
+                      <span title="Export not ready yet" className="flex h-7 w-7 items-center justify-center text-muted-foreground/40">
+                        <Download size={13} aria-hidden />
+                      </span>
+                    );
+                  })()}
                   <button onClick={() => onRestore(s.id)} title="Restore into the editor" className="flex h-7 items-center gap-1 rounded-md px-2 text-xs font-medium text-primary opacity-0 transition-opacity hover:bg-primary/10 group-hover:opacity-100 focus-ring">
                     <RotateCcw size={12} aria-hidden /> Restore
                   </button>

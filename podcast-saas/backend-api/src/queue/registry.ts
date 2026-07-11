@@ -7,6 +7,7 @@ import { runPodcastScriptJob } from '../services/podcast/runPodcastScript.js';
 import { runPodcastRenderJob } from '../services/podcast/audio/runPodcastRender.js';
 import { runPodcastClipsJob } from '../services/podcast/audio/runPodcastClips.js';
 import { runPodcastMixExportJob } from '../services/podcast/audio/runPodcastMixExport.js';
+import { runVideoGenerateLimited } from '../jobs/video.generate.js';
 
 /**
  * Maps each job name to its existing service entrypoint. Handlers are thin adapters from
@@ -24,4 +25,5 @@ export const handlers: JobHandlers = {
   podcast_render: (p) => runPodcastRenderJob(p),
   podcast_clips: (p) => runPodcastClipsJob(p),
   podcast_mix_export: (p) => runPodcastMixExportJob(p),
+  video_generate: (p) => runVideoGenerateLimited(p.jobId),
 };

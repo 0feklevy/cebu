@@ -92,8 +92,9 @@ export abstract class LLMProvider {
 
     const p = pricing[model] ?? { input: 0.0001, output: 0.0001, cached: 0.00001 };
     const nonCachedInput = inputTokens - cachedInputTokens;
-    return Math.round(
-      nonCachedInput * p.input + cachedInputTokens * p.cached + outputTokens * p.output,
-    );
+    // Fractional cents (4 dp) — whole-cent rounding recorded every sub-cent
+    // utility/Haiku call as 0 and made the moderation/enhance stream read as free.
+    const cents = nonCachedInput * p.input + cachedInputTokens * p.cached + outputTokens * p.output;
+    return Math.round(cents * 10_000) / 10_000;
   }
 }

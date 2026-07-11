@@ -13,6 +13,7 @@ import {
   check,
   foreignKey,
   real,
+  doublePrecision,
   pgEnum,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
@@ -300,10 +301,14 @@ export const token_usage = pgTable('token_usage', {
   input_tokens: integer('input_tokens').notNull(),
   cached_input_tokens: integer('cached_input_tokens').default(0).notNull(),
   output_tokens: integer('output_tokens').notNull(),
-  cost_cents: integer('cost_cents').default(0).notNull(),
+  // Fractional cents (migration 046) — sub-cent utility calls must not round to "free".
+  cost_cents: doublePrecision('cost_cents').default(0).notNull(),
   used_personal_key: boolean('used_personal_key').default(false).notNull(),
   occurred_at: timestamp('occurred_at', { withTimezone: true }).defaultNow().notNull(),
-});
+}, (t) => ({
+  // Hot path: the rolling-24h generation-cap count (migration 046).
+  idxUserOccurred: index('idx_token_usage_user_occurred').on(t.user_id, t.occurred_at),
+}));
 
 export const jobs = pgTable('jobs', {
   id: uuid('id').primaryKey().defaultRandom(),

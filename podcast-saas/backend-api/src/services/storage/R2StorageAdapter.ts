@@ -14,6 +14,7 @@ import {
 
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import type { CompletedPart, StorageService } from './StorageService.js';
+import { mediaKeyScope, mintMediaToken } from './mediaToken.js';
 import { logger } from '../../lib/logger.js';
 
 export class R2StorageAdapter implements StorageService {
@@ -80,7 +81,10 @@ export class R2StorageAdapter implements StorageService {
   async getPresignedDownloadUrl(path: string, _ttlSeconds: number): Promise<string> {
     // Route through backend proxy so CORS headers are guaranteed for browser playback.
     // Server-side callers (ffmpeg, ingestion) also work fine against localhost.
+    // The scoped media token authorizes private projects' media (security-002).
     const backendUrl = process.env.BACKEND_API_URL ?? 'http://localhost:8080';
+    const scope = mediaKeyScope(path);
+    if (scope) return `${backendUrl}/video-proxy/t/${mintMediaToken(scope)}/${path}`;
     return `${backendUrl}/video-proxy/${path}`;
   }
 
@@ -197,7 +201,10 @@ export class R2StorageAdapter implements StorageService {
   getPublicUrl(path: string): string {
     // Route HLS through the backend proxy so CORS headers are guaranteed regardless
     // of whether Cloudflare's pub-*.r2.dev CDN respects PutBucketCorsCommand rules.
+    // Token in the PATH so relative segment URLs inherit it (security-002).
     const backendUrl = process.env.BACKEND_API_URL ?? 'http://localhost:8080';
+    const scope = path.startsWith('hls/') ? mediaKeyScope(path) : null;
+    if (scope) return `${backendUrl}/hls-proxy/t/${mintMediaToken(scope)}/${path}`;
     return `${backendUrl}/hls-proxy/${path}`;
   }
 

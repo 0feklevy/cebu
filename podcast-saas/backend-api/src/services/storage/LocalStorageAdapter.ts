@@ -3,6 +3,7 @@ import { createWriteStream } from 'fs';
 import { join } from 'path';
 import type { CompletedPart, StorageService } from './StorageService.js';
 import { LOCAL_STORAGE_BASE_DIR } from './localStoragePaths.js';
+import { mediaKeyScope, mintMediaToken } from './mediaToken.js';
 import { logger } from '../../lib/logger.js';
 
 // Local disk storage — used when R2 is not configured AND as the durable
@@ -39,11 +40,17 @@ export class LocalStorageAdapter implements StorageService {
   }
 
   async getPresignedDownloadUrl(path: string, _ttlSeconds: number): Promise<string> {
-    // /video-raw/* serves with range-request support and no auth requirement,
-    // so the browser's <video> element can stream it directly — but it only
-    // accepts videos/ keys. Everything else (podcasts/ masters + clips) goes via
-    // /local-storage/* which has Range + CORS and public podcast prefixes.
-    if (path.startsWith('videos/')) return `${SERVE_BASE}/video-raw/${path}`;
+    // /video-raw/* serves with range-request support so the browser's <video>
+    // element can stream it directly — but it only accepts videos/ keys. The
+    // scoped media token in the path authorizes private projects' media without
+    // the player needing auth headers (security-002). Everything else
+    // (podcasts/ masters + clips) goes via /local-storage/* which has Range +
+    // CORS and public podcast prefixes.
+    if (path.startsWith('videos/')) {
+      const scope = mediaKeyScope(path);
+      if (scope) return `${SERVE_BASE}/video-raw/t/${mintMediaToken(scope)}/${path}`;
+      return `${SERVE_BASE}/video-raw/${path}`;
+    }
     return `${SERVE_BASE}/local-storage/${path}`;
   }
 
@@ -81,10 +88,15 @@ export class LocalStorageAdapter implements StorageService {
   }
 
   getPublicUrl(path: string): string {
-    // HLS segments are served via the unauthenticated /hls-public/* route (which
-    // only accepts hls/ keys); other public assets (podcasts/ clips etc.) go via
-    // /local-storage/* whose PUBLIC_LOCAL_PREFIXES gate them.
-    if (path.startsWith('hls/')) return `${SERVE_BASE}/hls-public/${path}`;
+    // HLS is served via /hls-public/* with a scoped media token in the PATH so
+    // relative child-playlist/segment URLs inherit it (security-002); other
+    // public assets (podcasts/ clips etc.) go via /local-storage/* whose
+    // PUBLIC_LOCAL_PREFIXES gate them.
+    if (path.startsWith('hls/')) {
+      const scope = mediaKeyScope(path);
+      if (scope) return `${SERVE_BASE}/hls-public/t/${mintMediaToken(scope)}/${path}`;
+      return `${SERVE_BASE}/hls-public/${path}`;
+    }
     return `${SERVE_BASE}/local-storage/${path}`;
   }
 

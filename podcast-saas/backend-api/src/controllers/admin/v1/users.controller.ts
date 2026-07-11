@@ -66,7 +66,7 @@ export async function registerAdminUsersRoutes(app: FastifyInstance): Promise<vo
       const agg = {
         input:  sql<number>`coalesce(sum(input_tokens),0)::int`,
         output: sql<number>`coalesce(sum(output_tokens),0)::int`,
-        cost:   sql<number>`coalesce(sum(cost_cents),0)::int`,
+        cost:   sql<number>`coalesce(sum(cost_cents),0)::float8`, // fractional cents (migration 046)
       };
       const [totals, providerRows, modelRows, taskRows] = await Promise.all([
         db.select(agg).from(token_usage).where(dateRange),

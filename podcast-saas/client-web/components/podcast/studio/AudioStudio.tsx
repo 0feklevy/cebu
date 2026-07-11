@@ -15,6 +15,7 @@ import { useClipBuffers } from './useClipBuffers';
 import { useMixWaveform } from './useMixWaveform';
 import { MixPlayer } from './mixEngine';
 import { setClipField, splitBlock } from './interactions';
+import { renderDownloadUrl } from './renderUrl';
 
 async function sha256(s: string): Promise<string> {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
@@ -42,6 +43,7 @@ export function AudioStudio({ showId, episodeId, initial, turns, onReloadScript 
   const [revoicing, setRevoicing] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [showVersions, setShowVersions] = useState(false);
+  const [exportJob, setExportJob] = useState<{ renderId: string; format: 'mp4' | 'mp3' | 'wav'; status: 'rendering' | 'ready' | 'failed'; url: string | null; error: string | null } | null>(null);
   const [staleTurnIds, setStaleTurnIds] = useState<Set<string>>(new Set());
   const clipsById = useMemo(() => new Map(clips.map((c) => [c.id, c])), [clips]);
   const turnsById = useMemo(() => new Map(turns.map((t) => [t.id, t])), [turns]);
@@ -170,9 +172,38 @@ export function AudioStudio({ showId, episodeId, initial, turns, onReloadScript 
   }, [timeline, turnsById, data.latest_script_version, showId, episodeId, apply, onReloadScript]);
 
   const doExport = useCallback(async (fmt: 'mp4' | 'mp3' | 'wav') => {
-    await api.exportPodcastMix(showId, episodeId, fmt);
+    const { render_id } = await api.exportPodcastMix(showId, episodeId, fmt);
+    setExportJob({ renderId: render_id, format: fmt, status: 'rendering', url: null, error: null });
     setShowExport(false);
   }, [showId, episodeId]);
+
+  // ── Export polling ────────────────────────────────────────────────────────────
+  // A mix export is an async ffmpeg/ElevenLabs job. Poll the render-status endpoint
+  // until it's ready/failed, then surface a real download link (and refresh the
+  // Versions drawer so its export row gets a working download too). Stops on unmount.
+  useEffect(() => {
+    if (!exportJob || exportJob.status !== 'rendering') return;
+    let cancelled = false;
+    const { renderId } = exportJob;
+    const iv = setInterval(async () => {
+      try {
+        const render = await api.getPodcastRender(showId, episodeId, renderId);
+        if (cancelled) return;
+        if (render.status === 'ready') {
+          const url = renderDownloadUrl(render);
+          setExportJob((j) => (j && j.renderId === renderId ? { ...j, status: 'ready', url } : j));
+          try {
+            const fresh = await api.getPodcastStudio(showId, episodeId);
+            if (!cancelled) setData((d) => ({ ...d, snapshots: fresh.snapshots }));
+          } catch { /* the download link above is enough on its own */ }
+        } else if (render.status === 'failed') {
+          setExportJob((j) => (j && j.renderId === renderId ? { ...j, status: 'failed', error: render.error ?? 'The export failed. Try again.' } : j));
+        }
+      } catch { /* keep polling */ }
+    }, 2500);
+    return () => { cancelled = true; clearInterval(iv); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [exportJob?.renderId, exportJob?.status, showId, episodeId]);
 
   const saveVersion = useCallback(async () => {
     const name = window.prompt('Name this version', `Edit · ${new Date().toLocaleString()}`);
@@ -269,6 +300,30 @@ export function AudioStudio({ showId, episodeId, initial, turns, onReloadScript 
           <button onClick={rebuild} className="rounded-md border border-amber-500/40 px-2 py-1 text-xs font-semibold">Rebuild</button>
         </div>
       )}
+      {exportJob && exportJob.status === 'rendering' && (
+        <div className="flex items-center gap-2 rounded-xl border border-primary/30 bg-primary/10 px-3 py-2.5 text-sm text-primary">
+          <Loader2 size={16} className="animate-spin" aria-hidden />
+          <span className="flex-1">Exporting {exportJob.format.toUpperCase()}… this can take a minute. You can keep editing.</span>
+        </div>
+      )}
+      {exportJob && exportJob.status === 'ready' && (
+        <div className="flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2.5 text-sm text-emerald-600 dark:text-emerald-400">
+          <Download size={16} strokeWidth={2} aria-hidden />
+          <span className="flex-1">Your {exportJob.format.toUpperCase()} export is ready.</span>
+          {exportJob.url && (
+            <a href={exportJob.url} download className="rounded-md border border-emerald-500/40 px-2 py-1 text-xs font-semibold hover:bg-emerald-500/10 focus-ring">Download</a>
+          )}
+          <button onClick={() => setExportJob(null)} className="text-xs font-medium underline">dismiss</button>
+        </div>
+      )}
+      {exportJob && exportJob.status === 'failed' && (
+        <div className="flex items-center gap-2 rounded-xl border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-sm text-destructive">
+          <AlertTriangle size={16} strokeWidth={2} aria-hidden />
+          <span className="flex-1">{exportJob.error ?? 'The export failed.'}</span>
+          <button onClick={() => { setExportJob(null); setShowExport(true); }} className="rounded-md border border-destructive/40 px-2 py-1 text-xs font-semibold">Try again</button>
+          <button onClick={() => setExportJob(null)} className="text-xs font-medium underline">dismiss</button>
+        </div>
+      )}
 
       {/* Toolbar */}
       <div className="rounded-xl border border-border bg-card shadow-sm">
@@ -293,7 +348,11 @@ export function AudioStudio({ showId, episodeId, initial, turns, onReloadScript 
             {draft.saving && <span className="px-1 text-[11px] text-muted-foreground">saving…</span>}
             <IconBtn title="Versions" onClick={() => setShowVersions(true)}><History size={15} aria-hidden /></IconBtn>
             <button onClick={saveVersion} className="flex h-9 items-center gap-1.5 rounded-lg border border-border px-2.5 text-xs font-medium text-muted-foreground hover:bg-muted focus-ring"><Save size={14} aria-hidden /> Save version</button>
-            <PodcastButton onClick={() => setShowExport(true)}><Download size={15} strokeWidth={2} aria-hidden /> Export</PodcastButton>
+            <PodcastButton onClick={() => setShowExport(true)} disabled={exportJob?.status === 'rendering'}>
+              {exportJob?.status === 'rendering'
+                ? <><Loader2 size={15} className="animate-spin" aria-hidden /> Exporting…</>
+                : <><Download size={15} strokeWidth={2} aria-hidden /> Export</>}
+            </PodcastButton>
           </div>
         </div>
 
@@ -340,7 +399,7 @@ export function AudioStudio({ showId, episodeId, initial, turns, onReloadScript 
       <p className="px-1 text-[11px] text-muted-foreground">Sticky off keeps later blocks fixed · Sticky on moves everything after the edited block · <kbd>C</kbd> then hover and click to cut · <kbd>Space</kbd> play/pause · <kbd>⌘Z</kbd> undo · <kbd>⇧⌘Z</kbd> redo</p>
 
       {showExport && <ExportDialog onClose={() => setShowExport(false)} onExport={doExport} />}
-      {showVersions && <VersionsDrawer snapshots={data.snapshots} onClose={() => setShowVersions(false)} onRestore={restore} />}
+      {showVersions && <VersionsDrawer showId={showId} episodeId={episodeId} snapshots={data.snapshots} onClose={() => setShowVersions(false)} onRestore={restore} />}
     </div>
   );
 }

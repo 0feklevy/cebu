@@ -129,7 +129,9 @@ export async function recordChatUsage(opts: {
     const output = opts.usage?.completion_tokens ?? 0;
     const cached = opts.usage?.prompt_tokens_details?.cached_tokens ?? 0;
     const p = CHAT_PRICING[opts.model] ?? { input: 0.0001, output: 0.0001, cached: 0.00001 };
-    const costCents = Math.round((input - cached) * p.input + cached * p.cached + output * p.output);
+    // Fractional cents (4 dp) — mirrors LLMProvider.estimateCostCents (migration 046).
+    const raw = (input - cached) * p.input + cached * p.cached + output * p.output;
+    const costCents = Math.round(raw * 10_000) / 10_000;
     await usageTracking.record({
       userId: opts.userId,
       projectId: opts.projectId,

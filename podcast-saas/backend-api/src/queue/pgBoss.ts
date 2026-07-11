@@ -13,15 +13,17 @@ import { logger } from '../lib/logger.js';
  * through transaction poolers, so it is the default.
  */
 
-/** Job names routed through pg-boss in this phase. Phase B: crop only. */
-export const PGBOSS_JOB_NAMES = ['crop'] as const satisfies readonly JobName[];
+/** Job names routed through pg-boss in this phase. Phase B: crop; Phase C: video_generate. */
+export const PGBOSS_JOB_NAMES = ['crop', 'video_generate'] as const satisfies readonly JobName[];
 
 const DLQ_SUFFIX = '-dead';
 
 // Per-queue retry/backoff + expiry. Inherited by each job; expireInSeconds must exceed the
-// worst-case job runtime (crop's stale-claim window is 20 min, so 30 min is a safe ceiling).
+// worst-case job runtime (crop's stale-claim window is 20 min, so 30 min is a safe ceiling;
+// video_generate polls up to 20 min then downloads + HLS-transcodes, so 45 min).
 const QUEUE_OPTIONS: Record<(typeof PGBOSS_JOB_NAMES)[number], QueueOptions> = {
   crop: { retryLimit: 3, retryDelay: 30, retryBackoff: true, expireInSeconds: 30 * 60 },
+  video_generate: { retryLimit: 2, retryDelay: 60, retryBackoff: true, expireInSeconds: 45 * 60 },
 };
 
 function connectionString(): string {

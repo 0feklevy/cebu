@@ -1,4 +1,4 @@
-import Fastify from 'fastify';
+import Fastify, { type FastifyRequest, type FastifyReply } from 'fastify';
 import multipart from '@fastify/multipart';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
@@ -33,7 +33,9 @@ import { registerAdminLlmConfigRoutes } from './controllers/admin/v1/llm-config.
 import { registerAdminUsersRoutes } from './controllers/admin/v1/users.controller.js';
 import { registerAdminPipelineStatsRoutes } from './controllers/admin/v1/pipeline-stats.controller.js';
 import { registerAdminBillingRoutes } from './controllers/admin/v1/billing.controller.js';
-import { firebaseAuthMiddleware } from './middleware/firebase-auth.js';
+import { firebaseAuthMiddleware, firebaseAuthOptionalMiddleware } from './middleware/firebase-auth.js';
+import { canServeMediaKey } from './services/storage/mediaAccess.js';
+import { splitMediaTokenPrefix } from './services/storage/mediaToken.js';
 
 // Phase 2+ stub routes
 import { registerPhase2StubRoutes } from './controllers/stubs.js';
@@ -60,6 +62,7 @@ import { registerPodcastStudioRoutes } from './controllers/v1/podcast-studio.con
 import { recoverStuckPodcastScripts } from './services/podcast/runPodcastScript.js';
 import { recoverStuckPodcastRenders } from './services/podcast/audio/runPodcastRender.js';
 import { recoverStuckPodcastMixes } from './services/podcast/audio/runPodcastClips.js';
+import { recoverStuckVideoGenerations } from './jobs/video.generate.js';
 
 const PORT = parseInt(process.env.PORT ?? '8080', 10);
 
@@ -168,6 +171,35 @@ async function build() {
     };
   });
 
+  // Per-object media authorization for the video/HLS serve+proxy routes
+  // (security-002 — fiji's checkVideoAccess pattern). Strips the optional
+  // `t/{token}/` path prefix minted by the storage adapters, verifies the
+  // expected key prefix, then allows: valid scoped token OR public/unlisted
+  // project OR authenticated owner/collaborator. Replies 403 and returns null
+  // otherwise.
+  async function authorizeMediaRequest(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    raw: string,
+    prefix: 'hls/' | 'videos/',
+  ): Promise<{ key: string; token: string | null } | null> {
+    const { key, token } = splitMediaTokenPrefix(raw);
+    if (!key.startsWith(prefix)) {
+      reply.code(403).send({ message: 'Forbidden' });
+      return null;
+    }
+    // Anonymous pass first (token / public project) — players never send auth headers.
+    if (await canServeMediaKey(key, token, null)) return { key, token };
+    if (request.headers.authorization) {
+      await firebaseAuthOptionalMiddleware(request, reply);
+      if (reply.sent) return null;
+      const user = request.dbUser ?? null;
+      if (user && (await canServeMediaKey(key, token, user))) return { key, token };
+    }
+    reply.code(403).send({ message: 'Access denied' });
+    return null;
+  }
+
   // Local file storage (dev only — active when R2 is not configured).
   // Public prefixes (banners, images) need no auth so browsers can load them directly.
   // 'podcasts/' — studio clips + render masters: immutable, public-URL-modeled (like prod Supabase).
@@ -178,9 +210,18 @@ async function build() {
       const key = request.params['*'];
       const isPublic = PUBLIC_LOCAL_PREFIXES.some((p) => key.startsWith(p));
       if (!isPublic) {
-        // Private assets (videos, HLS) require auth
-        await firebaseAuthMiddleware(request, reply);
-        if (reply.sent) return;
+        // Media keys get per-object authorization (any-logged-in-user was too
+        // broad — it let every account read every private key, security-002).
+        if (key.startsWith('videos/') || key.startsWith('hls/')) {
+          const authorized = await authorizeMediaRequest(
+            request, reply, key, key.startsWith('hls/') ? 'hls/' : 'videos/',
+          );
+          if (!authorized) return;
+        } else {
+          // Other private assets keep the legacy any-authenticated-user gate.
+          await firebaseAuthMiddleware(request, reply);
+          if (reply.sent) return;
+        }
       }
       const filePath = safeLocalPath(LOCAL_STORAGE_BASE_DIR, key);
       if (!filePath) return reply.code(403).send({ message: 'Forbidden' });
@@ -194,14 +235,15 @@ async function build() {
     },
   );
 
-  // Public HLS segment serving for local storage (dev only, no auth).
+  // HLS segment serving for local storage — per-object authorized (see
+  // authorizeMediaRequest); the token travels in the path so relative segment
+  // URLs stay authorized.
   app.get<{ Params: { '*': string } }>(
     '/hls-public/*',
     async (request, reply) => {
-      const key = request.params['*'];
-      if (!key.startsWith('hls/')) {
-        return reply.code(403).send({ message: 'Forbidden' });
-      }
+      const authorized = await authorizeMediaRequest(request, reply, request.params['*'], 'hls/');
+      if (!authorized) return;
+      const { key } = authorized;
       const filePath = safeLocalPath(LOCAL_STORAGE_BASE_DIR, key);
       if (!filePath) return reply.code(403).send({ message: 'Forbidden' });
       const isSegment = !key.endsWith('.m3u8');
@@ -218,8 +260,10 @@ async function build() {
   app.get<{ Params: { '*': string } }>(
     '/hls-proxy/*',
     async (request, reply) => {
-      const key = request.params['*'];
-      if (!key.startsWith('hls/') || keyHasTraversal(key)) {
+      const authorized = await authorizeMediaRequest(request, reply, request.params['*'], 'hls/');
+      if (!authorized) return;
+      const { key, token } = authorized;
+      if (keyHasTraversal(key)) {
         return reply.code(403).send({ message: 'Forbidden' });
       }
       const r2PublicUrl = process.env.R2_PUBLIC_URL;
@@ -233,8 +277,9 @@ async function build() {
         if (!upstream.ok || !upstream.body) {
           // R2 may not have these segments when a read-only token forced the HLS
           // upload to fall back to durable local disk. Serve the local copy via
-          // /hls-public (relative segment URLs then resolve there too).
-          return reply.redirect(`/hls-public/${key}`);
+          // /hls-public (relative segment URLs then resolve there too) — keep the
+          // media token so the redirect target stays authorized.
+          return reply.redirect(token ? `/hls-public/t/${token}/${key}` : `/hls-public/${key}`);
         }
         const contentType = key.endsWith('.m3u8')
           ? 'application/vnd.apple.mpegurl'
@@ -249,7 +294,7 @@ async function build() {
       } catch (err) {
         if (controller.signal.aborted) return; // client disconnected mid-segment
         logger.warn({ key, err }, 'hls-proxy: R2 fetch failed — falling back to local /hls-public');
-        return reply.redirect(`/hls-public/${key}`);
+        return reply.redirect(token ? `/hls-public/t/${token}/${key}` : `/hls-public/${key}`);
       }
     },
   );
@@ -260,10 +305,9 @@ async function build() {
   app.get<{ Params: { '*': string } }>(
     '/video-raw/*',
     async (request, reply) => {
-      const key = request.params['*'];
-      if (!key.startsWith('videos/')) {
-        return reply.code(403).send({ message: 'Forbidden' });
-      }
+      const authorized = await authorizeMediaRequest(request, reply, request.params['*'], 'videos/');
+      if (!authorized) return;
+      const { key } = authorized;
       const filePath = safeLocalPath(LOCAL_STORAGE_BASE_DIR, key);
       if (!filePath) return reply.code(403).send({ message: 'Forbidden' });
       try {
@@ -346,14 +390,16 @@ async function build() {
   app.get<{ Params: { '*': string } }>(
     '/video-proxy/*',
     async (request, reply) => {
-      const key = request.params['*'];
-      if (!key.startsWith('videos/') || keyHasTraversal(key)) {
+      const authorized = await authorizeMediaRequest(request, reply, request.params['*'], 'videos/');
+      if (!authorized) return;
+      const { key, token } = authorized;
+      if (keyHasTraversal(key)) {
         return reply.code(403).send({ message: 'Forbidden' });
       }
       const storage = getStorageAdapter();
       if (!(storage instanceof R2StorageAdapter)) {
-        // Local dev: redirect to the existing /video-raw/ handler
-        return reply.redirect(`/video-raw/${key}`);
+        // Local dev: redirect to the existing /video-raw/ handler (token preserved).
+        return reply.redirect(token ? `/video-raw/t/${token}/${key}` : `/video-raw/${key}`);
       }
       try {
         const rangeHeader = request.headers['range'] as string | undefined;
@@ -607,6 +653,7 @@ async function start() {
       await recoverStuckPodcastScripts();
       await recoverStuckPodcastRenders();
       await recoverStuckPodcastMixes();
+      await recoverStuckVideoGenerations();
     } catch (err) {
       logger.warn({ err }, 'Stuck-job recovery failed (non-fatal)');
     }

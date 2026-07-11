@@ -5,7 +5,7 @@ import { db } from '../../db/index.js';
 import { video_generation_jobs, timeline_sections, video_files } from '../../db/schema.js';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { editableProject } from '../../services/collabAccess.js';
-import { runVideoGenerateInProcess } from '../../jobs/video.generate.js';
+import { enqueueJob } from '../../queue/index.js';
 import { rateLimit } from '../../lib/rateLimit.js';
 import { assertGenerationAllowed } from '../../services/llm/systemAi.js';
 import { moderateGenerationInput } from '../../services/llm/ContentModerationService.js';
@@ -73,8 +73,9 @@ export async function registerBrollRoutes(app: FastifyInstance): Promise<void> {
         status: 'queued',
       }).returning();
 
-      // Trigger generation — runVideoGenerateInProcess is fire-and-forget (void)
-      runVideoGenerateInProcess(job.id);
+      // Trigger generation through the job queue — durable when QUEUE_DRIVER=pgboss
+      // (survives restarts via startup recovery), bounded inline otherwise.
+      enqueueJob('video_generate', { jobId: job.id });
 
       logger.info({ jobId: job.id, model, prompt }, 'B-roll generation queued');
       return reply.code(201).send({ jobId: job.id, status: 'queued' });
