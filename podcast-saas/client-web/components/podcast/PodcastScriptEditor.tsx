@@ -513,7 +513,7 @@ function TurnCard({
         </div>
 
         {/* Actions */}
-        <div className="flex shrink-0 flex-col items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+        <div className="flex shrink-0 flex-col items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
           <button onClick={onPreview} disabled={previewing} title="Preview this line (approximate)" className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted focus-ring disabled:opacity-50" style={{ color }}>
             {previewing ? <Loader2 size={13} className="animate-spin" aria-hidden /> : <Play size={13} strokeWidth={2} aria-hidden />}
           </button>
@@ -530,13 +530,13 @@ function TurnCard({
       </div>
 
       {/* Reorder / merge handles */}
-      <div className="absolute -left-6 top-1/2 hidden -translate-y-1/2 flex-col opacity-0 transition-opacity group-hover:opacity-100 lg:flex">
+      <div className="absolute -left-6 top-1/2 hidden -translate-y-1/2 flex-col opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 lg:flex">
         <button onClick={onUp} title="Move up" className="text-muted-foreground hover:text-foreground focus-ring"><ChevronDown size={13} className="rotate-180" aria-hidden /></button>
         <GripVertical size={13} className="text-muted-foreground/40" aria-hidden />
         <button onClick={onDown} title="Move down" className="text-muted-foreground hover:text-foreground focus-ring"><ChevronDown size={13} aria-hidden /></button>
       </div>
       {onMergeUp && (
-        <button onClick={onMergeUp} title="Merge into the line above" className="absolute right-11 top-2 hidden text-[10px] font-medium text-muted-foreground hover:text-foreground group-hover:block focus-ring">merge ↑</button>
+        <button onClick={onMergeUp} title="Merge into the line above" className="absolute right-11 top-2 hidden text-[10px] font-medium text-muted-foreground hover:text-foreground group-hover:block group-focus-within:block focus-ring">merge ↑</button>
       )}
     </div>
   );

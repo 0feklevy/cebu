@@ -7,6 +7,7 @@ import { firebaseAdminRequired } from '../../../middleware/firebase-admin-requir
 import { ApiKeyService } from '../../../services/secrets/ApiKeyService.js';
 import { LLMService } from '../../../services/llm/LLMService.js';
 import { UsageTrackingService } from '../../../services/usage/UsageTrackingService.js';
+import { invalidateSystemAiClients } from '../../../services/llm/systemAi.js';
 
 const apiKeyService = new ApiKeyService();
 
@@ -79,6 +80,9 @@ export async function registerAdminLlmConfigRoutes(app: FastifyInstance): Promis
       if (!body.success) return reply.code(400).send({ message: body.error.message });
 
       await apiKeyService.setSystemKey(body.data.provider, body.data.api_key, request.dbUser!.id);
+      // Other ApiKeyService instances pick the rotation up via their cache TTL;
+      // the shared aux-path clients are refreshed immediately.
+      invalidateSystemAiClients();
       return reply.send({ success: true });
     },
   );
@@ -131,6 +135,7 @@ export async function registerAdminLlmConfigRoutes(app: FastifyInstance): Promis
     async (request, reply: FastifyReply) => {
       const provider = request.params.provider as 'claude' | 'openai' | 'gemini' | 'elevenlabs';
       await apiKeyService.removeSystemKey(provider);
+      invalidateSystemAiClients();
       return reply.send({ success: true });
     },
   );

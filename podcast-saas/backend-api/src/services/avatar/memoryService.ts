@@ -1,13 +1,11 @@
 // Ported (simplified) from darwin-avatar/server/db/userMemory.ts
 // Cross-session conversation memory: stores turns + extracts personal facts.
-import OpenAI from 'openai';
 import { and, eq, desc } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { avatar_conversations, avatar_profiles } from '../../db/schema.js';
 import { MODELS } from './models.js';
+import { getOpenAIClient, recordChatUsage } from '../llm/systemAi.js';
 import { logger } from '../../lib/logger.js';
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY ?? '' });
 
 export interface Turn { role: 'user' | 'persona'; content: string; }
 
@@ -50,7 +48,8 @@ export async function saveTurns(
 }
 
 export async function extractAndSaveFacts(sessionKey: string, turns: Turn[]): Promise<void> {
-  if (!process.env.OPENAI_API_KEY) return;
+  const openai = await getOpenAIClient();
+  if (!openai) return;
   const userText = turns.filter((t) => t.role === 'user').map((t) => t.content).join('\n').slice(0, 4000);
   if (userText.trim().length < 20) return;
   try {
@@ -63,6 +62,13 @@ export async function extractAndSaveFacts(sessionKey: string, turns: Turn[]): Pr
         { role: 'system', content: 'Extract durable personal facts about the user from the conversation (name, interests, profession, goals, preferences). Respond ONLY with a flat JSON object of key→value strings. Omit anything uncertain. Empty object if nothing.' },
         { role: 'user', content: userText },
       ],
+    });
+    await recordChatUsage({
+      userId: null, // viewer sessions are anonymous
+      projectId: null,
+      model: MODELS.memoryCompact,
+      task: 'avatar_memory',
+      usage: resp.usage,
     });
     const facts = JSON.parse(resp.choices[0]?.message?.content ?? '{}') as Record<string, unknown>;
     if (!facts || Object.keys(facts).length === 0) return;

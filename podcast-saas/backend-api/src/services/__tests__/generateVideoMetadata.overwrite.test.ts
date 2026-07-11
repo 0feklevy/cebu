@@ -16,18 +16,34 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../../db/index.js', () => ({
   db: {
-    query: { projects: mocks.mockProjects, video_files: mocks.mockVideoFiles },
+    query: {
+      projects: mocks.mockProjects,
+      video_files: mocks.mockVideoFiles,
+      // systemAi gate: not paused, no quota; no admin-managed key → env fallback
+      admin_settings: { findFirst: async () => ({ generation_paused: false, generation_limit_enabled: false }) },
+      api_keys: { findFirst: async () => null },
+    },
     update: mocks.mockUpdate,
+    // usage recording (recordChatUsage → token_usage insert)
+    insert: vi.fn(() => ({ values: async () => undefined })),
   },
 }));
 
 vi.mock('../../db/schema.js', () => ({
   projects: Symbol('projects'),
   video_files: Symbol('video_files'),
+  admin_settings: Symbol('admin_settings'),
+  api_keys: { provider: 'provider', user_id: 'user_id' },
+  token_usage: { user_id: 'user_id', occurred_at: 'occurred_at', task: 'task' },
 }));
 
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn((_col: unknown, _val: unknown) => ({ type: 'eq' })),
+  ne: vi.fn(() => ({ type: 'ne' })),
+  and: vi.fn(() => ({ type: 'and' })),
+  gte: vi.fn(() => ({ type: 'gte' })),
+  isNull: vi.fn(() => ({ type: 'isNull' })),
+  sql: vi.fn(() => ({ type: 'sql' })),
 }));
 
 // Run the ffmpeg-limited work inline (no real ffmpeg is spawned — see child_process mock).

@@ -481,14 +481,22 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       if (!body.success) return reply.code(400).send({ message: body.error.message });
       const { prompt, simple_ui, auto_script } = body.data;
 
-      // Same per-section serialization as the SSE path (backend-005). Release when the response
-      // is sent (covers both success and a thrown error response).
+      // Same per-section serialization as the SSE path. The lock is released in
+      // `finally` — a 'finish'-only listener never fires on a client disconnect
+      // mid-generation ('close' is emitted instead), which left the section
+      // permanently 409-locked until restart (backend-004).
       if (activeSimGenerations.has(section.id)) {
         return reply.code(409).send({ message: 'A generation is already running for this section. Please wait for it to finish.' });
       }
       activeSimGenerations.add(section.id);
-      reply.raw.on('finish', () => activeSimGenerations.delete(section.id));
 
+      // Mirror the SSE sibling: stop the (billable) LLM generation when the
+      // client goes away, and enforce the same stall deadline.
+      const controller = new AbortController();
+      request.raw.on('close', () => controller.abort());
+      const timeout = setTimeout(() => controller.abort(), SIM_GEN_TIMEOUT_MS);
+
+      try {
       const svc = getSimService();
 
       // canReuse: same prompt + bridge exists + supportsRuntimeParams (planVersion 5+)
@@ -526,6 +534,7 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
           entryKey:         simRow2?.entry_file && !simRow2.entry_file.startsWith('http') ? simRow2.entry_file : undefined,
           storedSourceHash: storedMeta2?.sourceHash,
           conversationHistory: savedHistory2.length > 0 ? savedHistory2 : undefined,
+          signal:           controller.signal,
         });
         sectionUrl = result2.sectionUrl;
         patch.sim_prompt = prompt;
@@ -560,6 +569,10 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
         .returning();
 
       return reply.send(updated);
+      } finally {
+        clearTimeout(timeout);
+        activeSimGenerations.delete(section.id);
+      }
     },
   );
 

@@ -32,11 +32,13 @@ export function ImageCropEditor({ image, onApprove, onCancel }: Props) {
   const [naturalW, setNaturalW] = useState(image.width  ?? 0);
   const [naturalH, setNaturalH] = useState(image.height ?? 0);
 
-  // Crop state as fractions of the DISPLAYED image element size
+  // Crop state as fractions of the DISPLAYED image element size.
+  // Width/height are clamped to a positive minimum — a stored 0 would divide-by-zero
+  // in the preview transform (1/cw) and render an Infinity-sized element.
   const [cx, setCx] = useState(image.crop_x);
   const [cy, setCy] = useState(image.crop_y);
-  const [cw, setCw] = useState(image.crop_w);
-  const [ch, setCh] = useState(image.crop_h);
+  const [cw, setCw] = useState(Math.max(0.05, image.crop_w));
+  const [ch, setCh] = useState(Math.max(0.05, image.crop_h));
 
   // When the image loads and we know its natural size, set the default 16:9 crop
   const handleLoad = useCallback(() => {
@@ -58,18 +60,26 @@ export function ImageCropEditor({ image, onApprove, onCancel }: Props) {
     startX: number; startY: number;
     startCx: number; startCy: number;
   } | null>(null);
+  const [dragging, setDragging] = useState(false);
 
   const onMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
     const el = imgRef.current;
     if (!el) return;
-    const r = el.getBoundingClientRect();
     dragRef.current = {
       startX: e.clientX,
       startY: e.clientY,
       startCx: cx,
       startCy: cy,
     };
+    setDragging(true);
+  };
+
+  // Bind the window move/up listeners only while dragging, and always tear them
+  // down via the effect cleanup so they can't leak if the editor unmounts mid-drag.
+  useEffect(() => {
+    if (!dragging) return;
+    const el = imgRef.current;
     const onMove = (me: MouseEvent) => {
       if (!dragRef.current || !el) return;
       const r2 = el.getBoundingClientRect();
@@ -80,13 +90,15 @@ export function ImageCropEditor({ image, onApprove, onCancel }: Props) {
     };
     const onUp = () => {
       dragRef.current = null;
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
+      setDragging(false);
     };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
-    void r; // prevent unused warning
-  };
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [dragging, cw, ch]);
 
   // Preview: show cropped result at 16:9 in a small box
   const previewStyle: React.CSSProperties = {

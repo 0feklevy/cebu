@@ -2,23 +2,22 @@
 // Two-stage image pipeline: instant low-quality image returned to the viewer,
 // high-quality upgrade stored in the background for future cache hits. All media
 // is stored in podcast-saas storage; metadata lives in the avatar_visuals library.
-import OpenAI from 'openai';
+import type OpenAI from 'openai';
 import { eq } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { avatar_visuals } from '../../db/schema.js';
 import { MODELS } from './models.js';
 import { findVisual, incrementUseCount, insertVisual, storeImageB64 } from './libraryService.js';
+import { getOpenAIClient, isGenerationPaused, recordChatUsage, recordImageUsage } from '../llm/systemAi.js';
 import { logger } from '../../lib/logger.js';
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY ?? '' });
 
 // gpt-image-1 supports params (quality:'low'/'high', size:'1536x1024') not in the
 // openai@4 TS types. Call the method DIRECTLY (preserving `this`) with the params
 // cast — calling a detached `openai.images.generate` reference throws
 // "Cannot read properties of undefined (reading '_client')".
-type ImgGenParams = Parameters<typeof openai.images.generate>[0];
-async function genImage(params: Record<string, unknown>): Promise<string | undefined> {
-  const resp = await openai.images.generate(params as unknown as ImgGenParams);
+type ImgGenParams = Parameters<OpenAI['images']['generate']>[0];
+async function genImage(client: OpenAI, params: Record<string, unknown>): Promise<string | undefined> {
+  const resp = await client.images.generate(params as unknown as ImgGenParams);
   return (resp as { data?: Array<{ b64_json?: string }> })?.data?.[0]?.b64_json;
 }
 
@@ -84,7 +83,9 @@ export async function analyzeAndGenerateImage(
   conversationContext?: string,
   projectId?: string | null,
 ): Promise<ImageAnalysisResult> {
-  if (!process.env.OPENAI_API_KEY) return BLANK;
+  // Viewer-driven + billable image gen honors the platform pause switch.
+  const openai = (await isGenerationPaused()) ? null : await getOpenAIClient();
+  if (!openai) return BLANK;
 
   const realisticStyle = REALISTIC_STYLE[characterId] ?? REALISTIC_STYLE.einstein;
   const lookupKey = (conversationContext ?? userMessage).slice(0, 300);
@@ -122,6 +123,14 @@ export async function analyzeAndGenerateImage(
       ],
     });
 
+    await recordChatUsage({
+      userId: null, // viewer sessions are anonymous
+      projectId: projectId ?? null,
+      model: MODELS.imageClassify,
+      task: 'avatar_image_classify',
+      usage: classifyResp.usage,
+    });
+
     let c: GptClassification;
     try {
       c = JSON.parse(classifyResp.choices[0]?.message?.content ?? '{}') as GptClassification;
@@ -146,12 +155,14 @@ export async function analyzeAndGenerateImage(
     // Step 3: generate (low quality fast, fallback dall-e-3)
     let b64Low: string | undefined;
     try {
-      b64Low = await genImage({ model: MODELS.imageGeneration, prompt: c.dalle_prompt, quality: 'low', size: '1536x1024', n: 1 });
+      b64Low = await genImage(openai, { model: MODELS.imageGeneration, prompt: c.dalle_prompt, quality: 'low', size: '1536x1024', n: 1 });
+      await recordImageUsage({ userId: null, projectId: projectId ?? null, model: MODELS.imageGeneration, task: 'avatar_image', quality: 'low' });
     } catch (genErr) {
       logger.warn({ err: (genErr as Error).message }, '[AvatarImage] gpt-image-1 failed — falling back to dall-e-3');
       try {
         const resp = await openai.images.generate({ model: 'dall-e-3', prompt: c.dalle_prompt.slice(0, 4000), quality: 'standard', size: '1792x1024', n: 1, response_format: 'b64_json' });
         b64Low = resp?.data?.[0]?.b64_json;
+        await recordImageUsage({ userId: null, projectId: projectId ?? null, model: 'dall-e-3', task: 'avatar_image', quality: 'standard' });
       } catch (fbErr) {
         logger.error({ err: (fbErr as Error).message }, '[AvatarImage] dall-e-3 fallback also failed');
         return BLANK;
@@ -187,7 +198,8 @@ export async function analyzeAndGenerateImage(
       const dallePrompt = c.dalle_prompt;
       setTimeout(async () => {
         try {
-          const b64High = await genImage({ model: MODELS.imageGeneration, prompt: dallePrompt, quality: 'high', size: '1536x1024', n: 1 });
+          const b64High = await genImage(openai, { model: MODELS.imageGeneration, prompt: dallePrompt, quality: 'high', size: '1536x1024', n: 1 });
+          await recordImageUsage({ userId: null, projectId: projectId ?? null, model: MODELS.imageGeneration, task: 'avatar_image', quality: 'high' });
           if (!b64High) return;
           const high = await storeImageB64(b64High, null);
           await db.update(avatar_visuals).set({ image_url: high.url, image_key: high.key }).where(eq(avatar_visuals.id, rowId));
@@ -215,7 +227,8 @@ export async function generateLibraryImage(params: {
   createdBy?: string | null;
   scope?: 'basic' | 'extended';
 }): Promise<{ row: typeof avatar_visuals.$inferSelect; imageUrl: string } | null> {
-  if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY not configured');
+  const openai = await getOpenAIClient();
+  if (!openai) throw new Error('OpenAI API key is not configured');
   let dallePrompt = params.dallePrompt;
   if (!dallePrompt) {
     const promptResp = await openai.chat.completions.create({
@@ -227,10 +240,18 @@ export async function generateLibraryImage(params: {
         { role: 'user', content: `Generate a DALL-E prompt for: "${params.prompt.slice(0, 400)}"` },
       ],
     });
+    await recordChatUsage({
+      userId: params.createdBy ?? null,
+      projectId: params.projectId ?? null,
+      model: MODELS.adminPromptBuilder,
+      task: 'avatar_image_prompt',
+      usage: promptResp.usage,
+    });
     dallePrompt = promptResp.choices[0]?.message?.content?.trim() ?? params.prompt;
   }
   const caption = params.caption || params.prompt || dallePrompt;
-  const b64 = await genImage({ model: MODELS.imageGeneration, prompt: dallePrompt, quality: 'high', size: '1536x1024', n: 1 });
+  const b64 = await genImage(openai, { model: MODELS.imageGeneration, prompt: dallePrompt, quality: 'high', size: '1536x1024', n: 1 });
+  await recordImageUsage({ userId: params.createdBy ?? null, projectId: params.projectId ?? null, model: MODELS.imageGeneration, task: 'avatar_image', quality: 'high' });
   if (!b64) throw new Error('Image generation returned no data');
   // Library-generated images are scoped to the project that created them (each project has its
   // own Extended Library) — was global, which leaked visuals across projects.

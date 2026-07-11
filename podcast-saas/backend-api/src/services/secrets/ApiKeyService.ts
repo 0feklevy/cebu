@@ -31,12 +31,18 @@ export function decryptKey(ciphertext: string): string {
   return decipher.update(Buffer.from(encHex, 'hex')).toString('utf8') + decipher.final('utf8');
 }
 
+// Decrypted keys are cached with a TTL, not forever: ApiKeyService is instantiated
+// per call-site, so an admin rotating a key through one instance can't invalidate the
+// others — the TTL bounds how long any instance keeps serving the old key.
+const CACHE_TTL_MS = 5 * 60_000;
+
 export class ApiKeyService {
-  private cache: Map<string, string> = new Map();
+  private cache: Map<string, { value: string; expiresAt: number }> = new Map();
 
   async getSystemKey(provider: 'claude' | 'openai' | 'gemini' | 'elevenlabs'): Promise<string | null> {
     const cacheKey = `system:${provider}`;
-    if (this.cache.has(cacheKey)) return this.cache.get(cacheKey)!;
+    const cached = this.cache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) return cached.value;
 
     const row = await db.query.api_keys.findFirst({
       where: and(eq(api_keys.provider, provider), isNull(api_keys.user_id)),
@@ -46,12 +52,17 @@ export class ApiKeyService {
 
     try {
       const decrypted = decryptKey(row.encrypted_key);
-      this.cache.set(cacheKey, decrypted);
+      this.cache.set(cacheKey, { value: decrypted, expiresAt: Date.now() + CACHE_TTL_MS });
       return decrypted;
     } catch (err) {
       logger.error({ err, provider }, 'Failed to decrypt API key');
       return null;
     }
+  }
+
+  /** Drop all cached keys (e.g. after an admin rotation in this process). */
+  invalidateCache(): void {
+    this.cache.clear();
   }
 
   async setSystemKey(

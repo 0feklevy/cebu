@@ -198,18 +198,24 @@ export const BillingService = {
     if (!tx) { logger.warn({ transactionId }, '[billing] transaction not found'); return; }
     if (tx.status === 'succeeded') return; // already processed
 
-    await db.update(billing_transactions).set({
-      status: 'succeeded',
-      stripe_payment_intent_id: typeof session.payment_intent === 'string' ? session.payment_intent : null,
-      completed_at: new Date(),
-    }).where(eq(billing_transactions.id, tx.id));
+    // One transaction: the 'succeeded' sentinel and the purchase grant must land
+    // together. Writing the sentinel first and crashing before the grant would
+    // permanently deny a paying customer — the webhook retry sees 'succeeded'
+    // and early-returns without ever inserting the purchase.
+    await db.transaction(async (trx) => {
+      await trx.update(billing_transactions).set({
+        status: 'succeeded',
+        stripe_payment_intent_id: typeof session.payment_intent === 'string' ? session.payment_intent : null,
+        completed_at: new Date(),
+      }).where(eq(billing_transactions.id, tx.id));
 
-    if (tx.payer_user_id) {
-      await db.insert(user_purchases).values({
-        user_id: tx.payer_user_id, content_type: tx.content_type, content_id: tx.content_id,
-        transaction_id: tx.id, amount_cents: tx.amount_cents, currency: tx.currency,
-      }).onConflictDoNothing();
-    }
+      if (tx.payer_user_id) {
+        await trx.insert(user_purchases).values({
+          user_id: tx.payer_user_id, content_type: tx.content_type, content_id: tx.content_id,
+          transaction_id: tx.id, amount_cents: tx.amount_cents, currency: tx.currency,
+        }).onConflictDoNothing();
+      }
+    });
     logger.info({ transactionId, content: `${tx.content_type}:${tx.content_id}` }, '[billing] purchase granted');
   },
 

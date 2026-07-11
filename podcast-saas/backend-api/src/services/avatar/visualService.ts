@@ -1,7 +1,6 @@
 // Ported from darwin-avatar/server/visual/visualService.ts
 // Classifies a message into the best visual (equation / chart / diagram /
 // simulation / image), checking the Library first and generating + storing on miss.
-import OpenAI from 'openai';
 import { MODELS } from './models.js';
 import {
   findVisual, findRelevantLibraryVisual, isDuplicateVisual, incrementUseCount, insertVisual, getVisual,
@@ -9,9 +8,8 @@ import {
 } from './libraryService.js';
 import { detectVisualIntent, extractTopic, isFallbackTypeAllowed, type VisualIntent } from './visualIntent.js';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
+import { getOpenAIClient, isGenerationPaused, recordChatUsage } from '../llm/systemAi.js';
 import { logger } from '../../lib/logger.js';
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY ?? '' });
 
 export interface ChartDataset {
   label: string;
@@ -165,7 +163,10 @@ export async function analyzeVisual(
   const intent = detectVisualIntent(message);
   const projectId = options?.projectId ?? null;
 
-  if (!process.env.OPENAI_API_KEY) return { ...BLANK, _intentRequestedType: intent.requestedType } as VisualResultWithBank;
+  // Viewer-driven generation honors the platform pause switch (soft-skip: the
+  // Library lookups below still work; only fresh generation is disabled).
+  const openai = (await isGenerationPaused()) ? null : await getOpenAIClient();
+  if (!openai) return { ...BLANK, _intentRequestedType: intent.requestedType } as VisualResultWithBank;
 
   const topic = extractTopic(message, context);
   const storeKey = (intent.explicit && topic) ? topic.slice(0, 300) : (context ?? message).slice(0, 300);
@@ -226,6 +227,13 @@ export async function analyzeVisual(
         { role: 'user', content: `Character: ${characterId}\nMessage: "${message}"\nContext: ${context ?? 'none'}` },
       ],
     });
+    await recordChatUsage({
+      userId: options?.createdBy ?? null,
+      projectId,
+      model: MODELS.visualClassify,
+      task: 'avatar_visual_classify',
+      usage: classifyResp.usage,
+    });
     classification = JSON.parse(classifyResp.choices[0]?.message?.content ?? '{}');
   } catch {
     return { ...BLANK, _intentRequestedType: intent.requestedType } as VisualResultWithBank;
@@ -256,6 +264,13 @@ export async function analyzeVisual(
         max_tokens: 6000,
         temperature: 0.4,
         messages: [{ role: 'user', content: buildSimPrompt(simTopic, characterId) }],
+      });
+      await recordChatUsage({
+        userId: options?.createdBy ?? null,
+        projectId,
+        model: MODELS.simulationCode,
+        task: 'avatar_sim_generate',
+        usage: simResp.usage,
       });
       const choice = simResp.choices[0];
       if (choice?.finish_reason === 'length') return { ...BLANK, _intentRequestedType: intent.requestedType } as VisualResultWithBank;
@@ -360,7 +375,8 @@ export async function generateLibrarySimulation(params: {
   createdBy?: string | null;
   scope?: 'basic' | 'extended';
 }): Promise<{ row: AvatarVisualRow; simulationUrl: string } | null> {
-  if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY not configured');
+  const openai = await getOpenAIClient();
+  if (!openai) throw new Error('OpenAI API key is not configured');
   const topic = params.prompt.trim();
   const caption = (params.caption || topic).trim();
   const simResp = await openai.chat.completions.create({
@@ -368,6 +384,13 @@ export async function generateLibrarySimulation(params: {
     max_tokens: 9000,
     temperature: 0.5,
     messages: [{ role: 'user', content: buildSimPrompt(topic, params.characterId) }],
+  });
+  await recordChatUsage({
+    userId: params.createdBy ?? null,
+    projectId: params.projectId ?? null,
+    model: MODELS.simulationCode,
+    task: 'avatar_sim_generate',
+    usage: simResp.usage,
   });
   let html = simResp.choices[0]?.message?.content ?? '';
   html = html.replace(/^```html?\n?/i, '').replace(/\n?```$/i, '').trim();
@@ -390,7 +413,8 @@ export async function generateLibrarySimulation(params: {
 // AI-refine an existing single-file simulation in the Library and overwrite it
 // in place. Ported from darwin's POST /api/admin/simulation/edit.
 export async function editLibrarySimulation(visualId: string, instructions: string): Promise<{ simulationUrl: string }> {
-  if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY not configured');
+  const openai = await getOpenAIClient();
+  if (!openai) throw new Error('OpenAI API key is not configured');
   const row = await getVisual(visualId);
   if (!row || row.visual_type !== 'simulation' || !row.sim_storage_prefix) {
     throw new Error('Editable single-file simulation not found');
@@ -407,6 +431,13 @@ export async function editLibrarySimulation(visualId: string, instructions: stri
       { role: 'system', content: 'You are an expert HTML/JavaScript simulation developer. Return ONLY raw HTML — no markdown fences, no explanation. The response must start immediately with <!DOCTYPE html>. Fix any crash-causing bugs you notice (e.g. ctx.arc() with negative radius → guard with Math.max(0, r), NaN values, divide-by-zero). Keep the SIM_READY postMessage and stopScript listener. Never truncate.' },
       { role: 'user', content: `EXISTING SIMULATION HTML:\n${html.slice(0, 25000)}\n\nMODIFICATION INSTRUCTIONS:\n${instructions}\n\nGenerate the complete improved HTML. Keep all existing features unless explicitly asked to remove them. Maintain a dark or clean background, the SIM_READY postMessage, and the stopScript listener.` },
     ],
+  });
+  await recordChatUsage({
+    userId: null,
+    projectId: row.project_id ?? null,
+    model: MODELS.simulationEdit,
+    task: 'avatar_sim_edit',
+    usage: resp.usage,
   });
   let newHtml = resp.choices[0]?.message?.content ?? '';
   newHtml = newHtml.replace(/^```html?\n?/i, '').replace(/\n?```\s*$/i, '').trim();

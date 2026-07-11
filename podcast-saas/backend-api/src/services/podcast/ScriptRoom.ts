@@ -79,8 +79,12 @@ export class ScriptRoom {
 
   async run(input: ScriptRoomInput): Promise<void> {
     const { scriptId, episode, show, sources, userId, directorNotes, onStage } = input;
-    const signal = new AbortController().signal;
     const telemetry: PassTelemetry[] = [];
+
+    // Per-pass deadline — the old single controller was created but never armed,
+    // so a stalled provider stream hung the job until the 50-min stale-claim
+    // recovery. Each pass now gets its own controller aborted on timeout.
+    const PASS_TIMEOUT_MS = Number(process.env.PODCAST_PASS_TIMEOUT_MS ?? 10 * 60_000);
 
     const call = async <S extends z.ZodTypeAny>(
       task: TaskType,
@@ -89,16 +93,23 @@ export class ScriptRoom {
       userPrompt: string,
       schema: S,
     ): Promise<z.infer<S>> => {
-      const res = await this.llm.sendStructured({
-        task,
-        systemPrompt,
-        userPrompt,
-        // Zod input≠output (from .catch()/.default()); cast to the output-typed schema.
-        schema: schema as unknown as ZodSchema<z.infer<S>>,
-        userId,
-        projectId: null,
-        abortSignal: signal,
-      });
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), PASS_TIMEOUT_MS);
+      let res;
+      try {
+        res = await this.llm.sendStructured({
+          task,
+          systemPrompt,
+          userPrompt,
+          // Zod input≠output (from .catch()/.default()); cast to the output-typed schema.
+          schema: schema as unknown as ZodSchema<z.infer<S>>,
+          userId,
+          projectId: null,
+          abortSignal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeout);
+      }
       telemetry.push({
         pass: passName,
         provider: res.provider,

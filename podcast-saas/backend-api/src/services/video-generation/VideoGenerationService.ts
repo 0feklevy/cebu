@@ -66,11 +66,13 @@ export class VideoGenerationService {
   async enhancePrompt(prompt: string, durationSec: number): Promise<string> {
     try {
       const result = await this.llmService.sendText({
-        task: 'content_moderation', // utility tier — Haiku, cheap, fast
+        task: 'prompt_enhance', // utility tier — cheap, fast
         systemPrompt: ENHANCE_SYSTEM_PROMPT,
         userPrompt: `Duration: ${durationSec} seconds\nDescription: ${prompt}`,
-        userId: 'system',
-        projectId: 'system',
+        // No resolved user/project here — 'system' literals would be written to
+        // token_usage's uuid FK columns and fail/pollute quota counts.
+        userId: null,
+        projectId: null,
         abortSignal: new AbortController().signal,
       });
       return result.text.trim() || prompt;
@@ -126,7 +128,18 @@ export class VideoGenerationService {
         videos?: Array<{ url: string }>;
       };
     };
-    try { data = JSON.parse(text); } catch { return { status: 'generating' }; }
+    try { data = JSON.parse(text); } catch {
+      // A 4xx never turns into valid JSON on retry (bad auth, deleted task) —
+      // fail fast instead of polling the whole 20-min window. 5xx/parse noise
+      // stays "generating" so transient provider blips don't kill the job.
+      if (res.status >= 400 && res.status < 500) {
+        return { status: 'failed', error: `Kling poll HTTP ${res.status}: ${text.slice(0, 200)}` };
+      }
+      return { status: 'generating' };
+    }
+    if (!res.ok && res.status >= 400 && res.status < 500) {
+      return { status: 'failed', error: `Kling poll HTTP ${res.status}: ${text.slice(0, 200)}` };
+    }
 
     // Kling response: data.data.task_status, videos at data.data.task_result.videos
     const inner = data.data;
@@ -282,7 +295,13 @@ export class VideoGenerationService {
     const tmpFile = join(workDir, `source.${ext}`);
 
     try {
-      const res = await fetch(videoUrl);
+      // Veo returns a generativelanguage.googleapis.com file URI that requires
+      // the API key to download (unlike Kling/Seedance public CDN URLs) — a
+      // plain fetch 403s after the full generation completed (backend-007).
+      const isGoogleFileUri = videoUrl.includes('generativelanguage.googleapis.com');
+      const headers: Record<string, string> =
+        isGoogleFileUri && this.googleAiKey ? { 'x-goog-api-key': this.googleAiKey } : {};
+      const res = await fetch(videoUrl, { headers });
       if (!res.ok) throw new Error(`Failed to download video: ${res.status}`);
       if (!res.body) throw new Error('No response body');
 

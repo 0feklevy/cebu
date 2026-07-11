@@ -8,10 +8,12 @@ import { eq, and, inArray } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { editableProject, projectsEditableByWhere } from '../../services/collabAccess.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
-import { LocalStorageAdapter } from '../../services/storage/LocalStorageAdapter.js';
+import { uploadWithFallback } from '../../services/storage/uploadWithFallback.js';
 import { deleteWithFallback, deleteWithPrefixFallback } from '../../services/storage/deleteWithFallback.js';
+import { getOpenAIClient } from '../../services/llm/systemAi.js';
+import { moderateGenerationInput } from '../../services/llm/ContentModerationService.js';
 import { logger } from '../../lib/logger.js';
-import { CreateProjectSchema } from 'shared';
+import { AppError, CreateProjectSchema } from 'shared';
 
 const ALLOWED_THUMBNAIL_MIME = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp']);
 const MAX_THUMBNAIL_BYTES = 10 * 1024 * 1024;
@@ -261,10 +263,14 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
       const parsed = z.object({ prompt: z.string().max(500).optional() }).safeParse(request.body ?? {});
       const userPrompt = parsed.success ? (parsed.data.prompt ?? '') : '';
       try {
+        if (userPrompt.trim()) await moderateGenerationInput(userPrompt, { userId: user.id });
         const { enhanceThumbnailPrompt } = await import('../../services/generateAiThumbnail.js');
-        const enhanced = await enhanceThumbnailPrompt(project.id, userPrompt);
+        const enhanced = await enhanceThumbnailPrompt(project.id, userPrompt, user.id);
         return reply.send({ prompt: enhanced });
       } catch (err) {
+        if (err instanceof AppError) {
+          return reply.code(err.statusCode).send({ message: err.message });
+        }
         // Log the real (possibly upstream) error server-side; return a generic message so
         // provider/internal detail isn't surfaced to the client (backend-204 / security-404).
         request.log.error({ err, projectId: project.id }, 'enhance-thumbnail-prompt failed');
@@ -308,22 +314,26 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
       const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
-      if (!process.env.OPENAI_API_KEY) {
-        return reply.code(400).send({ message: 'AI image generation requires OPENAI_API_KEY' });
+      if (!(await getOpenAIClient())) {
+        return reply.code(400).send({ message: 'AI image generation requires an OpenAI API key' });
       }
 
       const body = z.object({ hint: z.string().max(500).optional() }).safeParse(request.body ?? {});
+      const hint = body.success ? body.data.hint : undefined;
 
       try {
+        if (hint?.trim()) await moderateGenerationInput(hint, { userId: user.id });
         const { generateAiThumbnail } = await import('../../services/generateAiThumbnail.js');
-        const thumbnail_url = await generateAiThumbnail(project.id, {
-          hint: body.success ? body.data.hint : undefined,
-        });
+        const thumbnail_url = await generateAiThumbnail(project.id, { hint, userId: user.id });
         const updated = await db.query.projects.findFirst({ where: eq(projects.id, project.id) });
         // `project` is the owned row guaranteed above; fall back to it so the response
         // `project` is never undefined (client types it non-null, reads `.title`).
         return reply.send({ thumbnail_url, project: updated ?? project });
       } catch (err) {
+        // Pause / quota / moderation rejections carry their own status + message.
+        if (err instanceof AppError) {
+          return reply.code(err.statusCode).send({ message: err.message });
+        }
         logger.error({ err, projectId: project.id }, '[ai-thumbnail] generation failed');
         return reply.code(500).send({ message: (err as Error).message?.slice(0, 200) || 'AI thumbnail generation failed' });
       }
@@ -356,14 +366,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
       const ext = ['.jpg', '.jpeg', '.png', '.webp'].includes(sourceExt) ? sourceExt : thumbnailExt(mime);
       const key = `thumbnails/${project.id}/${randomUUID()}${ext}`;
 
-      const storage = getStorageAdapter();
-      let thumbnailUrl: string;
-      try {
-        thumbnailUrl = await storage.uploadFile(key, buf, mime);
-      } catch (uploadErr: unknown) {
-        logger.warn({ key, err: (uploadErr as Error).message?.slice(0, 120) }, '[thumbnail] primary storage upload failed — falling back to local storage');
-        thumbnailUrl = await new LocalStorageAdapter().uploadFile(key, buf, mime);
-      }
+      const thumbnailUrl = await uploadWithFallback(key, buf, mime);
 
       const [updated] = await db
         .update(projects)

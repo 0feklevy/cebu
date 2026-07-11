@@ -5,26 +5,32 @@
  * video (title, description/topic, the SEO summary + keywords produced from the
  * transcript) plus an optional creator hint.
  *
- * Requires OPENAI_API_KEY. The result is uploaded under a UNIQUE key so the
- * persisted thumbnail_url changes every time (no stale browser/CDN cache).
+ * Uses the admin-managed system OpenAI key (env fallback), honors the platform
+ * generation pause + per-user quota, and records chat + image usage. The result
+ * is uploaded under a UNIQUE key so the persisted thumbnail_url changes every
+ * time (no stale browser/CDN cache).
  */
 
-import OpenAI from 'openai';
+import type OpenAI from 'openai';
 import { randomUUID } from 'crypto';
 import { eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { projects } from '../db/schema.js';
 import { uploadWithFallback } from './storage/uploadWithFallback.js';
 import { MODELS } from './avatar/models.js';
+import {
+  getOpenAIClient,
+  assertGenerationAllowed,
+  recordChatUsage,
+  recordImageUsage,
+} from './llm/systemAi.js';
 import { logger } from '../lib/logger.js';
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY ?? '' });
 
 // gpt-image-1 accepts params (quality:'low'|'medium'|'high', size:'1536x1024')
 // not in the openai@4 TS types — call DIRECTLY (preserve `this`) with a cast.
-type ImgGenParams = Parameters<typeof openai.images.generate>[0];
-async function genImage(params: Record<string, unknown>): Promise<string | undefined> {
-  const resp = await openai.images.generate(params as unknown as ImgGenParams);
+type ImgGenParams = Parameters<OpenAI['images']['generate']>[0];
+async function genImage(client: OpenAI, params: Record<string, unknown>): Promise<string | undefined> {
+  const resp = await client.images.generate(params as unknown as ImgGenParams);
   return (resp as { data?: Array<{ b64_json?: string }> })?.data?.[0]?.b64_json;
 }
 
@@ -39,6 +45,7 @@ Rules:
 export interface AiThumbnailOptions {
   hint?: string;        // optional creator guidance for the image
   model?: string;       // override the image model (default gpt-image-1)
+  userId?: string | null; // requesting user — quota subject + usage attribution
 }
 
 const YT_THUMB_ENHANCE_SYSTEM = `You are a YouTube thumbnail prompt engineer. Rewrite the creator's idea into ONE vivid image-generation prompt for a scroll-stopping, YouTube-style 16:9 thumbnail.
@@ -53,8 +60,14 @@ Rules:
  * Turn a creator's rough thumbnail idea into an enhanced, YouTube-thumbnail-style image prompt,
  * grounded in what we know about the video. Fast/low model, no extended thinking.
  */
-export async function enhanceThumbnailPrompt(projectId: string, userPrompt: string): Promise<string> {
-  if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not configured');
+export async function enhanceThumbnailPrompt(
+  projectId: string,
+  userPrompt: string,
+  userId?: string | null,
+): Promise<string> {
+  const openai = await getOpenAIClient();
+  if (!openai) throw new Error('OpenAI API key is not configured');
+  await assertGenerationAllowed(userId ?? null); // pause switch applies here too
   const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
   const info = project ? [
     project.title ? `Title: ${project.title}` : '',
@@ -73,15 +86,28 @@ export async function enhanceThumbnailPrompt(projectId: string, userPrompt: stri
       { role: 'user', content: `Video:\n${info || '(unknown)'}\n\nCreator's thumbnail idea: ${idea || '(none — invent a strong one from the video)'}\n\nWrite the enhanced YouTube-thumbnail image prompt.` },
     ],
   });
+  await recordChatUsage({
+    userId: userId ?? project?.created_by ?? null,
+    projectId,
+    model: MODELS.adminPromptBuilder,
+    task: 'thumbnail_prompt',
+    usage: r.usage,
+  });
   return r.choices[0]?.message?.content?.trim() || idea;
 }
 
 /** Build a thumbnail image from the video's known info. Returns the public URL. */
 export async function generateAiThumbnail(projectId: string, opts: AiThumbnailOptions = {}): Promise<string> {
-  if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not configured');
+  const openai = await getOpenAIClient();
+  if (!openai) throw new Error('OpenAI API key is not configured');
 
   const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
   if (!project) throw new Error('Project not found');
+
+  const userId = opts.userId ?? project.created_by ?? null;
+  // Image generation is the most expensive call in the app — honor the platform
+  // pause switch and the per-user generation quota like every other LLM path.
+  await assertGenerationAllowed(userId);
 
   // 1. Everything we know about the video (reuses the transcript→SEO summary).
   const info = [
@@ -105,6 +131,13 @@ export async function generateAiThumbnail(projectId: string, opts: AiThumbnailOp
         { role: 'user', content: `Write a thumbnail image prompt for this video:\n\n${subject}` },
       ],
     });
+    await recordChatUsage({
+      userId,
+      projectId,
+      model: MODELS.adminPromptBuilder,
+      task: 'thumbnail_prompt',
+      usage: r.usage,
+    });
     imagePrompt = r.choices[0]?.message?.content?.trim() || subject;
   } catch (err) {
     logger.warn({ err: (err as Error).message, projectId }, '[ai-thumbnail] prompt build failed — using raw info');
@@ -114,13 +147,15 @@ export async function generateAiThumbnail(projectId: string, opts: AiThumbnailOp
   const model = opts.model || MODELS.imageGeneration;
   let b64: string | undefined;
   try {
-    b64 = await genImage({ model, prompt: imagePrompt.slice(0, 4000), quality: 'high', size: '1536x1024', n: 1 });
+    b64 = await genImage(openai, { model, prompt: imagePrompt.slice(0, 4000), quality: 'high', size: '1536x1024', n: 1 });
+    await recordImageUsage({ userId, projectId, model, task: 'thumbnail_image', quality: 'high' });
   } catch (genErr) {
     logger.warn({ err: (genErr as Error).message, projectId }, '[ai-thumbnail] gpt-image-1 failed — falling back to dall-e-3');
     const resp = await openai.images.generate({
       model: 'dall-e-3', prompt: imagePrompt.slice(0, 4000), quality: 'standard', size: '1792x1024', n: 1, response_format: 'b64_json',
     });
     b64 = resp?.data?.[0]?.b64_json;
+    await recordImageUsage({ userId, projectId, model: 'dall-e-3', task: 'thumbnail_image', quality: 'standard' });
   }
   if (!b64) throw new Error('Image generation returned no data');
 

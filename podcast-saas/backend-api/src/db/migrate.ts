@@ -41,8 +41,16 @@ async function migrate() {
         const pg = err as { code?: string; message?: string };
         // 42701 = column already exists, 42P07 = relation already exists, 23505 = unique violation
         // These mean the migration was previously applied outside the tracker — mark it and continue.
+        // WARNING: Postgres runs each multi-statement file in one implicit transaction, so an
+        // "already exists" error rolls back the ENTIRE file (including any genuinely-new DDL) yet
+        // we still mark it applied below. Log loudly (not warn) so this shows up in error alerting:
+        // if the file mixed new + existing DDL, those new statements were silently dropped and the
+        // migration must be made idempotent (ADD COLUMN IF NOT EXISTS / CREATE ... IF NOT EXISTS).
         if (pg.code === '42701' || pg.code === '42P07' || pg.code === '23505') {
-          logger.warn({ file, code: pg.code }, 'Migration DDL already applied (tracking catch-up) — marking as done');
+          logger.error(
+            { file, code: pg.code, err },
+            'Migration file aborted on an already-applied statement — the whole file rolled back but it is being marked as applied. Verify no NEW statements in this file were dropped, and make the migration idempotent.',
+          );
         } else {
           throw err;
         }

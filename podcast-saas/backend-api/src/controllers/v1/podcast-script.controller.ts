@@ -3,7 +3,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import { and, desc, eq, notInArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
-import { podcast_scripts, podcast_episodes } from '../../db/schema.js';
+import { podcast_scripts, podcast_episodes, podcast_sources } from '../../db/schema.js';
 import type { PodcastScript } from '../../db/schema.js';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { rateLimit } from '../../lib/rateLimit.js';
@@ -11,7 +11,8 @@ import { ownedEpisodeInShow } from '../../services/podcastAccess.js';
 import { enqueueJob } from '../../queue/index.js';
 import { writeEpisodeMemory } from '../../services/podcast/PodcastMemory.js';
 import { regenerateTurn } from '../../services/podcast/regenerateTurn.js';
-import { PodcastEditorTurnSchema, type PodcastScriptBody, type PodcastTurn } from 'shared';
+import { moderateGenerationInput } from '../../services/llm/ContentModerationService.js';
+import { AppError, PodcastEditorTurnSchema, type PodcastScriptBody, type PodcastTurn } from 'shared';
 import { logger } from '../../lib/logger.js';
 
 /** Content hash of a body's turns — drives the "changed since render" banner. */
@@ -113,6 +114,29 @@ export async function registerPodcastScriptRoutes(app: FastifyInstance): Promise
 
       const body = z.object({ notes: z.string().max(4000).optional() }).safeParse(request.body ?? {});
       if (!body.success) return reply.code(400).send({ message: body.error.message });
+
+      // Safety pre-screen (utility tier, fail-open) on the user-supplied inputs
+      // BEFORE the expensive creative-tier writers' room chain runs on them.
+      // Uploaded source material feeds the same prompts, so an excerpt of each
+      // source is screened too (capped — the screen sees intent, not the corpus).
+      const sources = await db.query.podcast_sources.findMany({
+        where: eq(podcast_sources.episode_id, loaded.episode.id),
+        columns: { title: true, extracted_md: true },
+      });
+      const sourceExcerpts = sources
+        .map((s) => [s.title, s.extracted_md?.slice(0, 1500)].filter(Boolean).join('\n'))
+        .filter(Boolean)
+        .join('\n\n')
+        .slice(0, 4500);
+      const moderationInput = [loaded.episode.title, loaded.episode.brief, body.data.notes, sourceExcerpts]
+        .filter(Boolean)
+        .join('\n\n');
+      try {
+        await moderateGenerationInput(moderationInput, { userId: request.dbUser!.id });
+      } catch (err) {
+        if (err instanceof AppError) return reply.code(err.statusCode).send({ message: err.message });
+        throw err;
+      }
 
       const script = await insertScriptVersion(loaded.episode.id, { status: 'drafting' });
 
@@ -266,7 +290,9 @@ export async function registerPodcastScriptRoutes(app: FastifyInstance): Promise
         .where(eq(podcast_episodes.id, loaded.episode.id));
 
       // Background: refresh series memory (upsert this episode's summary).
-      writeEpisodeMemory(loaded.episode.id, script.id, request.dbUser!.id).catch(() => {});
+      writeEpisodeMemory(loaded.episode.id, script.id, request.dbUser!.id).catch((err) =>
+        logger.warn({ err, episodeId: loaded.episode.id }, '[podcast] episode memory refresh failed'),
+      );
 
       return reply.send({ script: approved });
     },

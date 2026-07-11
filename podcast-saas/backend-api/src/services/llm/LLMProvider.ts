@@ -5,6 +5,7 @@ export type TaskType =
   | 'script_draft'
   | 'script_rewrite'
   | 'content_moderation'
+  | 'prompt_enhance'
   | 'single_turn_regen'
   | 'bridge_plan'
   | 'guidance_plan'

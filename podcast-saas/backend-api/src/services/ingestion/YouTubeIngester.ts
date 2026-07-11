@@ -13,7 +13,9 @@ export class YouTubeIngester {
       return await this.getTranscriptViaApi(videoId);
     } catch (err) {
       logger.warn({ err, videoId }, 'youtube-transcript-api failed, trying yt-dlp');
-      return this.getTranscriptViaYtDlp(url);
+      // Rebuild a canonical YouTube URL from the validated 11-char id — never pass
+      // the raw user URL to yt-dlp, which would fetch any host it points at (SSRF).
+      return this.getTranscriptViaYtDlp(`https://www.youtube.com/watch?v=${videoId}`);
     }
   }
 

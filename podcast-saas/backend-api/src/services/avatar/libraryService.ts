@@ -7,31 +7,9 @@ import { and, or, eq, isNull, desc, sql } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { avatar_visuals, image_files, simulations, type AvatarVisual } from '../../db/schema.js';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
-import { LocalStorageAdapter } from '../storage/LocalStorageAdapter.js';
-import type { StorageService } from '../storage/StorageService.js';
+import { uploadWithFallback } from '../storage/uploadWithFallback.js';
 import { DEFAULT_CHARACTER_ID } from './characters.js';
 import { logger } from '../../lib/logger.js';
-
-// Local-disk fallback for avatar media. The configured storage (e.g. R2) may be
-// misconfigured or have a write-denied token; rather than failing image/sim
-// generation outright, the avatar persists its media to local disk (served via
-// /local-storage/* and /sim-public/*) so the feature still works for testing.
-let _localFallback: LocalStorageAdapter | null = null;
-function localFallback(): LocalStorageAdapter {
-  return (_localFallback ??= new LocalStorageAdapter());
-}
-async function uploadWithFallback(key: string, data: Buffer, contentType: string): Promise<{ url: string; storage: StorageService }> {
-  try {
-    const s = getStorageAdapter();
-    const url = await s.uploadFile(key, data, contentType);
-    return { url, storage: s };
-  } catch (err) {
-    logger.warn({ err: (err as Error).message, key }, '[AvatarLibrary] primary storage write failed — using local-disk fallback');
-    const s = localFallback();
-    const url = await s.uploadFile(key, data, contentType);
-    return { url, storage: s };
-  }
-}
 
 export type AvatarVisualRow = AvatarVisual;
 
@@ -405,7 +383,7 @@ export async function syncBasicLibrary(projectId: string, force = false): Promis
 // Stores a base64 PNG to the public images/ prefix. Returns the browser URL + key.
 export async function storeImageB64(b64: string, projectId?: string | null): Promise<{ url: string; key: string }> {
   const key = `images/avatar/${projectId ?? 'global'}/${randomUUID()}.png`;
-  const { url } = await uploadWithFallback(key, Buffer.from(b64, 'base64'), 'image/png');
+  const url = await uploadWithFallback(key, Buffer.from(b64, 'base64'), 'image/png');
   return { url, key };
 }
 
@@ -417,7 +395,7 @@ export async function storeImageBuffer(
 ): Promise<{ url: string; key: string }> {
   const safeExt = extension.toLowerCase().replace(/[^a-z0-9]/g, '') || 'bin';
   const key = `images/avatar/uploads/${projectId ?? 'global'}/${randomUUID()}.${safeExt}`;
-  const { url } = await uploadWithFallback(key, data, contentType);
+  const url = await uploadWithFallback(key, data, contentType);
   return { url, key };
 }
 
@@ -426,6 +404,6 @@ export async function storeSimulationHtml(html: string, projectId?: string | nul
   const id = randomUUID();
   const prefix = `simulations/avatar/${id}`;
   const key = `${prefix}/index.html`;
-  const { storage } = await uploadWithFallback(key, Buffer.from(html, 'utf-8'), 'text/html; charset=utf-8');
-  return { prefix, url: storage.getSimPublicUrl(key) };
+  await uploadWithFallback(key, Buffer.from(html, 'utf-8'), 'text/html; charset=utf-8');
+  return { prefix, url: getStorageAdapter().getSimPublicUrl(key) };
 }

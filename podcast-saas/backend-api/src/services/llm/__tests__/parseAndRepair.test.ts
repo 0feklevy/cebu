@@ -1,73 +1,36 @@
 /**
  * Tests for the JSON parse-and-repair logic inside LLMService.
- * We expose it through a thin test-only subclass to avoid mocking the entire DB.
+ *
+ * These previously hand-copied the private helpers into the test file. That copy
+ * went stale: `normalizePythonLiterals` in LLMService became string-context aware
+ * (backend-003) while the test kept a blanket global replace, so the test proved
+ * nothing about the real code (first-pass finding test-001). We now exercise the
+ * REAL private method via `(new LLMService(...) as any).parseAndRepair(...)`, the
+ * same construction the retry test uses.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
 import { AppError, LLMErrorType } from 'shared';
 
-// ── Replicate the private helpers from LLMService so we can unit-test them ──────
+// ── Mocks so importing LLMService is cheap (no real DB / providers / SDKs) ───────
 
-function stripCodeFences(s: string): string {
-  return s.replace(/^```(?:json)?\s*/m, '').replace(/\s*```\s*$/m, '').trim();
-}
+vi.mock('../../../db/index.js', () => ({
+  db: { query: { admin_settings: { findFirst: vi.fn() } } },
+}));
+vi.mock('../../../services/secrets/ApiKeyService.js', () => ({ ApiKeyService: vi.fn() }));
+vi.mock('../../../services/usage/UsageTrackingService.js', () => ({ UsageTrackingService: vi.fn() }));
+vi.mock('../ClaudeProvider.js', () => ({ ClaudeProvider: vi.fn() }));
+vi.mock('../OpenAIProvider.js', () => ({ OpenAIProvider: vi.fn() }));
+vi.mock('../GeminiProvider.js', () => ({ GeminiProvider: vi.fn() }));
 
-function normalizePythonLiterals(s: string): string {
-  return s.replace(/\bFalse\b/g, 'false').replace(/\bTrue\b/g, 'true').replace(/\bNone\b/g, 'null');
-}
+import { LLMService } from '../LLMService.js';
 
-function stripTrailingCommas(s: string): string {
-  return s.replace(/,\s*([\]}])/g, '$1');
-}
-
-import JSON5 from 'json5';
-
+// Call the REAL private parseAndRepair through the constructed service.
 function parseAndRepair<T>(raw: string, schema: z.ZodSchema<T>): T {
-  const stripped = stripCodeFences(raw);
-  const normalized = normalizePythonLiterals(stripped);
-  const noTrailingComma = stripTrailingCommas(normalized);
-
-  const extractObject = (s: string) => {
-    const start = s.indexOf('{');
-    const end = s.lastIndexOf('}');
-    if (start !== -1 && end > start) return s.slice(start, end + 1);
-    throw new Error('no object found');
+  const svc = new LLMService({} as never, {} as never) as unknown as {
+    parseAndRepair<U>(raw: string, schema: z.ZodSchema<U>): U;
   };
-
-  const repairs = [
-    () => JSON.parse(raw),
-    () => JSON.parse(stripped),
-    () => JSON.parse(normalized),
-    () => JSON.parse(noTrailingComma),
-    () => JSON5.parse(stripped),
-    () => JSON.parse(extractObject(raw)),
-    () => JSON5.parse(extractObject(normalized)),
-  ];
-
-  let lastSchemaError: AppError | undefined;
-
-  for (const repair of repairs) {
-    try {
-      const obj = repair();
-      const result = schema.safeParse(obj);
-      if (result.success) return result.data;
-      lastSchemaError = new AppError(
-        LLMErrorType.PARSING_ERROR,
-        `Schema validation failed: ${JSON.stringify(result.error.errors.slice(0, 3))}`,
-        422,
-      );
-    } catch (e) {
-      if (e instanceof AppError) throw e;
-    }
-  }
-
-  if (lastSchemaError) throw lastSchemaError;
-
-  throw new AppError(
-    LLMErrorType.PARSING_ERROR,
-    'Failed to parse LLM response as valid JSON after all repair attempts',
-    422,
-  );
+  return svc.parseAndRepair(raw, schema);
 }
 
 // ── Schema fixtures ─────────────────────────────────────────────────────────────
@@ -136,6 +99,20 @@ describe('parseAndRepair', () => {
       const PythonSchema = z.object({ flag: z.boolean(), other: z.boolean(), empty: z.null() });
       const raw = '{"flag": True, "other": False, "empty": None}';
       expect(parseAndRepair(raw, PythonSchema)).toEqual({ flag: true, other: false, empty: null });
+    });
+
+    it('does NOT rewrite a Python literal that appears inside a JSON string value (backend-003)', () => {
+      // The real normalizePythonLiterals is string-context aware: a bare `True`
+      // written inside a string value (e.g. generated JS/source text) must be
+      // preserved verbatim, not turned into `true`. The old hand-copied test
+      // helper used a blanket global replace and would have corrupted this.
+      const StrSchema = z.object({ name: z.string(), code: z.string(), value: z.number() });
+      const raw = '{"name":"Alice","code":"if x is True: return None","value":1}';
+      expect(parseAndRepair(raw, StrSchema)).toEqual({
+        name: 'Alice',
+        code: 'if x is True: return None',
+        value: 1,
+      });
     });
   });
 

@@ -243,6 +243,7 @@ export function VideoEditor({ projectId }: Props) {
   const [showAllLayers, setShowAllLayers] = useState(false);
   const [playheadSec, setPlayheadSec] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [simulations, setSimulations] = useState<Simulation[]>([]);
   const [images, setImages] = useState<ImageFile[]>([]);
   const [showUploader, setShowUploader] = useState(false);
@@ -301,6 +302,7 @@ export function VideoEditor({ projectId }: Props) {
   }, [projectId, authLoading]);
 
   const loadData = useCallback(async () => {
+    setLoadError(false);
     try {
       // One aggregate round-trip instead of 6 (loadperf-003). Falls back to the parallel list
       // calls if the aggregate endpoint isn't available (e.g. mid-deploy).
@@ -350,7 +352,12 @@ export function VideoEditor({ projectId }: Props) {
         for (const [id, url] of Object.entries(prev)) merged[id] = url;
         return merged;
       });
-    } catch { /* ignore */ } finally {
+    } catch {
+      // Both the aggregate load and the parallel fallback failed (auth expired, backend
+      // down, offline). Surface a retry affordance instead of an indistinguishable-from-empty
+      // project (frontend-006).
+      setLoadError(true);
+    } finally {
       setLoading(false);
     }
   }, [projectId]);
@@ -1018,6 +1025,17 @@ export function VideoEditor({ projectId }: Props) {
                     avatarCircles={avatarCircles}
                     flush
                   />
+                </div>
+              ) : loadError ? (
+                <div className="flex flex-1 flex-col items-center justify-center gap-3 border border-dashed border-destructive/40 bg-destructive/[0.06] px-8 text-center">
+                  <p className="text-sm text-white/70">Couldn&apos;t load this project.</p>
+                  <p className="text-xs text-white/45">Check your connection and try again.</p>
+                  <button
+                    onClick={() => { setLoading(true); loadData(); }}
+                    className="h-8 rounded-lg bg-primary px-4 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/90 focus-ring"
+                  >
+                    Retry
+                  </button>
                 </div>
               ) : (
                 <div className="flex flex-1 flex-col items-center justify-center gap-3 border border-dashed border-white/16 bg-card/[0.03] px-8 text-center">

@@ -11,11 +11,11 @@
  *
  * Everything here is best-effort: a failure never affects caption generation.
  */
-import OpenAI from 'openai';
 import { eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { projects, video_files } from '../db/schema.js';
 import { logger } from '../lib/logger.js';
+import { getOpenAIClient, isGenerationPaused, recordChatUsage } from './llm/systemAi.js';
 import { vttToPlainText } from './course/transcript.js';
 import { resolveAnamKeyForProject } from './avatar/anamKey.js';
 import {
@@ -62,7 +62,7 @@ async function runPropagation(projectId: string, transcript: string): Promise<vo
 // ── 1. SEO ──────────────────────────────────────────────────────────────────────
 
 async function propagateToSeo(project: typeof projects.$inferSelect, transcript: string): Promise<void> {
-  const { description, keywords } = await summariseForSeo(transcript, project.title);
+  const { description, keywords } = await summariseForSeo(transcript, project);
   if (!description) return;
   await db.update(projects).set({
     seo_description: description,
@@ -75,14 +75,19 @@ async function propagateToSeo(project: typeof projects.$inferSelect, transcript:
 }
 
 /** LLM summary of the transcript → {description, keywords}. Falls back to a plain excerpt. */
-async function summariseForSeo(transcript: string, title: string | null): Promise<{ description: string; keywords: string | null }> {
-  const apiKey = process.env.OPENAI_API_KEY;
+async function summariseForSeo(
+  transcript: string,
+  project: typeof projects.$inferSelect,
+): Promise<{ description: string; keywords: string | null }> {
+  const title = project.title;
   const clipped = transcript.slice(0, SEO_PROMPT_MAX_CHARS);
-  if (!apiKey) return { description: excerpt(transcript), keywords: null };
+  // Best-effort background path: no key or platform paused → plain excerpt, not an error.
+  const client = (await isGenerationPaused()) ? null : await getOpenAIClient();
+  if (!client) return { description: excerpt(transcript), keywords: null };
   try {
-    const client = new OpenAI({ apiKey });
+    const seoModel = process.env.SEO_MODEL || 'gpt-4o-mini';
     const res = await client.chat.completions.create({
-      model: process.env.SEO_MODEL || 'gpt-4o-mini',
+      model: seoModel,
       max_tokens: 300,
       temperature: 0.3,
       response_format: { type: 'json_object' },
@@ -100,6 +105,13 @@ async function summariseForSeo(transcript: string, title: string | null): Promis
           content: `${title ? `Title: ${title}\n` : ''}Transcript:\n${clipped}`,
         },
       ],
+    });
+    await recordChatUsage({
+      userId: project.created_by,
+      projectId: project.id,
+      model: seoModel,
+      task: 'seo_summary',
+      usage: res.usage,
     });
     const raw = res.choices[0]?.message?.content ?? '{}';
     const parsed = JSON.parse(raw) as { description?: string; keywords?: string };

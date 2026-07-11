@@ -81,6 +81,7 @@ export interface UsageRollup {
 export interface TestKeyResult {
   valid: boolean;
   model?: string;
+  tier?: string;
   error?: string;
 }
 

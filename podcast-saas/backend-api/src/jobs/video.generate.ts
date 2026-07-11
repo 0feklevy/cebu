@@ -1,12 +1,13 @@
 import { task } from '@trigger.dev/sdk/v3';
 import { eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { video_generation_jobs, timeline_sections, video_files } from '../db/schema.js';
+import { video_generation_jobs, timeline_sections, video_files, projects } from '../db/schema.js';
 import { getStorageAdapter } from '../services/storage/getStorageAdapter.js';
 import { createVideoGenerationService, type VideoModel } from '../services/video-generation/VideoGenerationService.js';
 import { LLMService } from '../services/llm/LLMService.js';
 import { ApiKeyService } from '../services/secrets/ApiKeyService.js';
 import { UsageTrackingService } from '../services/usage/UsageTrackingService.js';
+import { recordVideoUsage } from '../services/llm/systemAi.js';
 import { runVideoTranscode } from '../services/video/runVideoTranscode.js';
 import { logger } from '../lib/logger.js';
 
@@ -77,6 +78,19 @@ export async function runVideoGenerate(job_id: string) {
       .set({ external_task_id: externalTaskId, status: 'generating' })
       .where(eq(video_generation_jobs.id, job_id));
     logger.info({ job_id, model: job.model, externalTaskId }, 'B-roll generation submitted');
+
+    // Cost is incurred at submit — put it in the shared ledger so b-roll spend
+    // is visible and counts against the user's generation cap (database-103).
+    const proj = await db.query.projects.findFirst({
+      where: eq(projects.id, job.project_id),
+      columns: { created_by: true },
+    });
+    await recordVideoUsage({
+      userId: proj?.created_by ?? null,
+      projectId: job.project_id,
+      model: job.model,
+      task: 'broll_video',
+    });
 
     // 3. Poll until complete
     let videoUrl: string | undefined;
@@ -152,10 +166,31 @@ export const videoGenerateTask = task({
 
 // ── In-process fallback (no Trigger.dev) ────────────────────────────────────
 
+// Bounded like ffmpegLimit: each run polls an external API for up to 20 min and
+// then downloads + HLS-transcodes, so an unbounded burst would fan out the whole
+// pipeline. The trigger.dev path has its own limits; this fallback needs one too.
+const MAX_INPROCESS = Math.max(1, Number(process.env.VIDEO_GEN_CONCURRENCY ?? '2'));
+let inProcessActive = 0;
+const inProcessQueue: Array<() => void> = [];
+
+function releaseInProcessSlot(): void {
+  const next = inProcessQueue.shift();
+  if (next) next(); // hand the slot directly to the next waiter
+  else inProcessActive = Math.max(0, inProcessActive - 1);
+}
+
 export function runVideoGenerateInProcess(job_id: string): void {
-  setImmediate(() => {
-    runVideoGenerate(job_id).catch((err) => {
-      logger.error({ job_id, err }, 'In-process B-roll generation failed');
-    });
-  });
+  const run = () => {
+    runVideoGenerate(job_id)
+      .catch((err) => {
+        logger.error({ job_id, err }, 'In-process B-roll generation failed');
+      })
+      .finally(releaseInProcessSlot);
+  };
+  if (inProcessActive < MAX_INPROCESS) {
+    inProcessActive++;
+    setImmediate(run);
+  } else {
+    inProcessQueue.push(run);
+  }
 }

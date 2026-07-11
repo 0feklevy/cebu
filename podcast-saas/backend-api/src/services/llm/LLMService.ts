@@ -9,7 +9,7 @@ import { ApiKeyService } from '../secrets/ApiKeyService.js';
 import { UsageTrackingService } from '../usage/UsageTrackingService.js';
 import { db } from '../../db/index.js';
 import { admin_settings, system_prompts, api_keys, token_usage } from '../../db/schema.js';
-import { eq, and, gte, sql } from 'drizzle-orm';
+import { eq, and, gte, notInArray, sql } from 'drizzle-orm';
 import { AppError, LLMErrorType } from 'shared';
 import { logger } from '../../lib/logger.js';
 
@@ -39,8 +39,21 @@ type Tier = 'utility' | 'generation' | 'complex' | 'creative';
 
 const ADAPTIVE_MODELS = new Set(['claude-opus-4-7', 'claude-opus-4-8', 'claude-fable-5']);
 
+// Tasks recorded for cost visibility but exempt from the per-user rolling-24h
+// generation cap: the moderation pre-screen and cheap automatic background work
+// (post-transcode metadata, SEO summaries, ingestion captions, prompt utilities)
+// must not silently erode a user's interactive quota.
+export const QUOTA_EXEMPT_TASKS = [
+  'content_moderation',
+  'prompt_enhance',
+  'video_metadata',
+  'seo_summary',
+  'image_caption',
+];
+
 const TASK_TIER: Record<TaskType, Tier> = {
   content_moderation: 'utility',
+  prompt_enhance: 'utility',
   structural_analysis: 'complex',
   script_draft: 'generation',
   script_rewrite: 'generation', // needs Sonnet-level instruction-following for large JSON output
@@ -60,7 +73,10 @@ const TASK_TIER: Record<TaskType, Tier> = {
 };
 
 export class LLMService {
-  private providerCache: Map<string, LLMProvider> = new Map();
+  // Cached per provider WITH the key it was built from — when ApiKeyService starts
+  // returning a rotated key (its cache has a TTL), the provider is rebuilt instead
+  // of serving the stale key until restart.
+  private providerCache: Map<string, { key: string | null; provider: LLMProvider }> = new Map();
 
   constructor(
     private readonly apiKeyService: ApiKeyService,
@@ -128,7 +144,11 @@ export class LLMService {
       const [usage] = await db
         .select({ count: sql<number>`count(*)::int` })
         .from(token_usage)
-        .where(and(eq(token_usage.user_id, opts.userId), gte(token_usage.occurred_at, since)));
+        .where(and(
+          eq(token_usage.user_id, opts.userId),
+          gte(token_usage.occurred_at, since),
+          notInArray(token_usage.task, QUOTA_EXEMPT_TASKS),
+        ));
       if ((usage?.count ?? 0) >= settings.generation_daily_limit) {
         throw new AppError(
           LLMErrorType.LIMIT_EXCEEDED,
@@ -187,19 +207,24 @@ export class LLMService {
     });
 
     // Record usage first — a refused call is still billed, so it must be tracked
-    // for cost/quota accuracy before we branch on the refusal.
-    await this.usageTracking.record({
-      userId: opts.userId,
-      projectId: opts.projectId,
-      provider: provider.providerName,
-      model,
-      task: opts.task,
-      inputTokens: response.usage.input,
-      cachedInputTokens: response.usage.cached_input,
-      outputTokens: response.usage.output,
-      costCents: response.usage.cost_cents,
-      usedPersonalKey: false,
-    });
+    // for cost/quota accuracy before we branch on the refusal. Fail-open: a bad
+    // ledger row (e.g. FK violation) must not 500 an already-paid-for response.
+    try {
+      await this.usageTracking.record({
+        userId: opts.userId,
+        projectId: opts.projectId,
+        provider: provider.providerName,
+        model,
+        task: opts.task,
+        inputTokens: response.usage.input,
+        cachedInputTokens: response.usage.cached_input,
+        outputTokens: response.usage.output,
+        costCents: response.usage.cost_cents,
+        usedPersonalKey: false,
+      });
+    } catch (recordErr) {
+      logger.error({ err: recordErr, task: opts.task }, 'usage record failed (continuing)');
+    }
 
     // Safety refusal (Fable/Opus classifiers): surface as a distinct, non-parsing
     // error so it is NOT misdiagnosed as a JSON failure (which would waste parse
@@ -269,30 +294,37 @@ export class LLMService {
   }
 
   private async getProvider(name: string): Promise<LLMProvider> {
-    if (this.providerCache.has(name)) return this.providerCache.get(name)!;
-
-    const apiKey = await this.apiKeyService.getSystemKey(
+    const systemKey = await this.apiKeyService.getSystemKey(
       name as 'claude' | 'openai' | 'gemini',
     );
+
+    const envFallback =
+      name === 'claude'
+        ? process.env.ANTHROPIC_API_KEY
+        : name === 'openai'
+          ? process.env.OPENAI_API_KEY
+          : process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+    const apiKey = systemKey ?? envFallback ?? null;
+
+    const cached = this.providerCache.get(name);
+    if (cached && cached.key === apiKey) return cached.provider;
 
     let provider: LLMProvider;
     switch (name) {
       case 'claude':
-        provider = new ClaudeProvider(apiKey ?? process.env.ANTHROPIC_API_KEY ?? null);
+        provider = new ClaudeProvider(apiKey);
         break;
       case 'openai':
-        provider = new OpenAIProvider(apiKey ?? process.env.OPENAI_API_KEY ?? null);
+        provider = new OpenAIProvider(apiKey);
         break;
       case 'gemini':
-        provider = new GeminiProvider(
-          apiKey ?? process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? null,
-        );
+        provider = new GeminiProvider(apiKey);
         break;
       default:
         throw new AppError(LLMErrorType.LLM_ERROR, `Unknown provider: ${name}`, 500);
     }
 
-    this.providerCache.set(name, provider);
+    this.providerCache.set(name, { key: apiKey, provider });
     return provider;
   }
 
@@ -304,6 +336,16 @@ export class LLMService {
   }> {
     const settings = await db.query.admin_settings.findFirst();
     if (!settings) throw new AppError(LLMErrorType.LLM_ERROR, 'Admin settings not found', 500);
+
+    // Same platform pause switch as the structured path — only the moderation
+    // pre-screen itself is exempt (it must keep running to gate other requests).
+    if (settings.generation_paused && opts.task !== 'content_moderation') {
+      throw new AppError(
+        LLMErrorType.GENERATION_PAUSED,
+        settings.generation_paused_message ?? 'Generation is paused',
+        503,
+      );
+    }
 
     const { provider, model } = await this.resolveProviderAndModel(
       opts.userId,
@@ -323,18 +365,22 @@ export class LLMService {
       abortSignal: opts.abortSignal,
     });
 
-    await this.usageTracking.record({
-      userId: opts.userId,
-      projectId: opts.projectId,
-      provider: provider.providerName,
-      model,
-      task: opts.task,
-      inputTokens: response.usage.input,
-      cachedInputTokens: response.usage.cached_input,
-      outputTokens: response.usage.output,
-      costCents: response.usage.cost_cents,
-      usedPersonalKey: false,
-    });
+    try {
+      await this.usageTracking.record({
+        userId: opts.userId,
+        projectId: opts.projectId,
+        provider: provider.providerName,
+        model,
+        task: opts.task,
+        inputTokens: response.usage.input,
+        cachedInputTokens: response.usage.cached_input,
+        outputTokens: response.usage.output,
+        costCents: response.usage.cost_cents,
+        usedPersonalKey: false,
+      });
+    } catch (recordErr) {
+      logger.error({ err: recordErr, task: opts.task }, 'usage record failed (continuing)');
+    }
 
     return { text: response.content, usage: response.usage, provider: provider.providerName, model };
   }

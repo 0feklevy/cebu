@@ -17,15 +17,28 @@ export default function UsersPage() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
+    // Guard against out-of-order responses: only the latest request may commit
+    // its result (e.g. rapid Next/Previous clicks resolving out of order).
+    let active = true;
     setLoading(true);
+    setError(null); // clear a stale banner from a previous page's failure
+    setEditing(null); // an edit begun on another page must not save against this one
     adminApi
       .listUsers(page, limit)
       .then(({ users, total }) => {
+        if (!active) return;
         setUsers(users);
         setTotal(total);
       })
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false));
+      .catch((e) => {
+        if (active) setError(e.message);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
   }, [page]);
 
   const saveEditing = async () => {

@@ -3,11 +3,13 @@
  *
  * Flow (runs in the background after HLS transcoding):
  *   1. Extract a JPEG frame at ~12% of the video duration via ffmpeg.
- *   2. Upload the thumbnail to storage (falls back to local if R2 is denied).
+ *   2. Upload the thumbnail to cloud storage (retried; never falls back to local disk).
  *   3. Send the frame to GPT-4o-mini vision → get title + description.
  *   4. Update the project row: thumbnail_url, title (if still empty), topic.
  *
- * Requires OPENAI_API_KEY. Skips gracefully when the key is absent.
+ * The vision step uses the admin-managed system OpenAI key (env fallback) and
+ * records its usage; it skips gracefully when no key is configured or the
+ * platform generation pause is on.
  */
 
 import { spawn } from 'child_process';
@@ -17,12 +19,13 @@ import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
 import { readFile } from 'fs/promises';
 import { runFfmpegLimited } from './ffmpegLimit.js';
-import OpenAI from 'openai';
+import type OpenAI from 'openai';
 import { eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { projects, video_files } from '../db/schema.js';
 import { getStorageAdapter } from './storage/getStorageAdapter.js';
-import { LocalStorageAdapter } from './storage/LocalStorageAdapter.js';
+import { uploadWithFallback } from './storage/uploadWithFallback.js';
+import { getOpenAIClient, isGenerationPaused, recordChatUsage } from './llm/systemAi.js';
 import { logger } from '../lib/logger.js';
 import { enqueueJob } from '../queue/index.js';
 
@@ -103,22 +106,24 @@ async function generateVideoMetadataInner(projectId: string, videoFileId: string
     const shouldWriteThumbnail = opts.force || !hasUserThumbnail;
     let thumbnailUrl: string | null = project.thumbnail_url ?? null;
     if (shouldWriteThumbnail) {
-      try {
-        thumbnailUrl = await storage.uploadFile(thumbKey, thumbBuf, 'image/jpeg');
-      } catch {
-        thumbnailUrl = await new LocalStorageAdapter().uploadFile(thumbKey, thumbBuf, 'image/jpeg');
-      }
+      thumbnailUrl = await uploadWithFallback(thumbKey, thumbBuf, 'image/jpeg');
     }
 
     // ── 4. GPT-4o-mini vision → title + description ───────────────────────────
     let title = project.title?.trim() || null;
     let description = project.topic?.trim() || null;
 
-    const apiKey = opts.skipVision ? undefined : process.env.OPENAI_API_KEY;
-    if (apiKey) {
+    const openai = opts.skipVision || (await isGenerationPaused()) ? null : await getOpenAIClient();
+    if (openai) {
       try {
         const transcript = vttToPlainText(video.captions_vtt);
-        const gptResult = await generateTitleAndDescription(thumbBuf, video.filename, apiKey, opts.promptHint, opts.model, transcript);
+        const gptResult = await generateTitleAndDescription(openai, thumbBuf, video.filename, {
+          promptHint: opts.promptHint,
+          model: opts.model,
+          transcript,
+          userId: project.created_by,
+          projectId,
+        });
         // Only set title if not already given by the user
         if (!title && gptResult.title) title = gptResult.title;
         // Guard the description the same way as title: only overwrite the user's
@@ -188,12 +193,7 @@ export async function extractThumbnailAtTime(
     // Unique key per write so the persisted thumbnail_url changes every time —
     // otherwise the browser/CDN serves the cached previous image (identical URL).
     const thumbKey = `thumbnails/${projectId}/${randomUUID()}.jpg`;
-    let thumbnailUrl: string;
-    try {
-      thumbnailUrl = await storage.uploadFile(thumbKey, thumbBuf, 'image/jpeg');
-    } catch {
-      thumbnailUrl = await new LocalStorageAdapter().uploadFile(thumbKey, thumbBuf, 'image/jpeg');
-    }
+    const thumbnailUrl = await uploadWithFallback(thumbKey, thumbBuf, 'image/jpeg');
 
     await db.update(projects)
       .set({ thumbnail_url: thumbnailUrl, thumbnail_key: thumbKey })
@@ -262,14 +262,18 @@ function extractFrame(inputPath: string, outputPath: string, seekSec: number): P
 // ── GPT-4o-mini vision ────────────────────────────────────────────────────────
 
 async function generateTitleAndDescription(
+  client: OpenAI,
   thumbBuf: Buffer,
   filename: string,
-  apiKey: string,
-  promptHint?: string,
-  model?: string,
-  transcript?: string,
+  opts: {
+    promptHint?: string;
+    model?: string;
+    transcript?: string;
+    userId: string | null;
+    projectId: string | null;
+  },
 ): Promise<{ title: string; description: string }> {
-  const client = new OpenAI({ apiKey });
+  const { promptHint, model, transcript } = opts;
   const b64 = thumbBuf.toString('base64');
   const hintText = promptHint?.trim() ? `\nExtra creator context: "${promptHint.trim()}"` : '';
   const hasTranscript = !!transcript?.trim();
@@ -290,8 +294,9 @@ async function generateTitleAndDescription(
   userContent.push({ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${b64}`, detail: 'low' } });
   userContent.push({ type: 'text', text: `Filename: ${filename}` });
 
+  const visionModel = model ?? 'gpt-4o-mini'; // fast/low tier — no extended thinking
   const response = await client.chat.completions.create({
-    model: model ?? 'gpt-4o-mini',   // fast/low tier — no extended thinking
+    model: visionModel,
     max_tokens: 300,
     temperature: 0.6,
     response_format: { type: 'json_object' },
@@ -299,6 +304,14 @@ async function generateTitleAndDescription(
       { role: 'system', content: system },
       { role: 'user', content: userContent },
     ],
+  });
+
+  await recordChatUsage({
+    userId: opts.userId,
+    projectId: opts.projectId,
+    model: visionModel,
+    task: 'video_metadata',
+    usage: response.usage,
   });
 
   const raw = response.choices[0]?.message?.content ?? '{}';

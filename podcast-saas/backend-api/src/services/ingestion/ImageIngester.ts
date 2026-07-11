@@ -1,21 +1,16 @@
-import { GoogleGenAI } from '@google/genai';
-import { logger } from '../../lib/logger.js';
+import { getGeminiClient, recordChatUsage } from '../llm/systemAi.js';
+
+const CAPTION_MODEL = 'gemini-2.5-flash';
 
 export class ImageIngester {
-  private client: GoogleGenAI | null = null;
-
-  constructor() {
-    const apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
-    if (apiKey) this.client = new GoogleGenAI({ apiKey });
-  }
-
   async caption(imageBuffer: Buffer, mimeType: string): Promise<string> {
-    if (!this.client) throw new Error('GOOGLE_GENERATIVE_AI_API_KEY not configured');
+    const client = await getGeminiClient();
+    if (!client) throw new Error('Google AI API key is not configured');
 
     const base64 = imageBuffer.toString('base64');
 
-    const response = await this.client.models.generateContent({
-      model: 'gemini-2.5-flash',
+    const response = await client.models.generateContent({
+      model: CAPTION_MODEL,
       contents: [
         {
           role: 'user',
@@ -29,6 +24,16 @@ export class ImageIngester {
           ],
         },
       ],
+    });
+
+    const meta = response.usageMetadata;
+    await recordChatUsage({
+      userId: null,
+      projectId: null,
+      provider: 'gemini',
+      model: CAPTION_MODEL,
+      task: 'image_caption',
+      usage: { prompt_tokens: meta?.promptTokenCount ?? 0, completion_tokens: meta?.candidatesTokenCount ?? 0 },
     });
 
     return response.text ?? '';

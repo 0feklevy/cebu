@@ -6,6 +6,10 @@ import { video_generation_jobs, timeline_sections, video_files } from '../../db/
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { editableProject } from '../../services/collabAccess.js';
 import { runVideoGenerateInProcess } from '../../jobs/video.generate.js';
+import { rateLimit } from '../../lib/rateLimit.js';
+import { assertGenerationAllowed } from '../../services/llm/systemAi.js';
+import { moderateGenerationInput } from '../../services/llm/ContentModerationService.js';
+import { AppError } from 'shared';
 import { logger } from '../../lib/logger.js';
 
 const ALLOWED_MODELS = ['kling', 'veo'] as const;
@@ -40,6 +44,23 @@ export async function registerBrollRoutes(app: FastifyInstance): Promise<void> {
       if (!body.success) return reply.code(400).send({ message: body.error.message });
 
       const { prompt, model, enhance, target_duration_sec, target_global_offset_sec } = body.data;
+
+      // External video generation is the priciest per-call surface in the app and
+      // has no provider-side quota: rate-limit, honor the platform pause/user cap,
+      // and safety-screen the prompt before submitting (mirrors podcast generate).
+      if (!rateLimit(`broll-generate:${user.id}`, 20, 60 * 60_000)) {
+        return reply.code(429).send({ message: 'Too many video generations — please wait a bit before generating again.' });
+      }
+      try {
+        // Independent checks — run concurrently to keep submit latency down.
+        await Promise.all([
+          assertGenerationAllowed(user.id),
+          moderateGenerationInput(prompt, { userId: user.id }),
+        ]);
+      } catch (err) {
+        if (err instanceof AppError) return reply.code(err.statusCode).send({ message: err.message });
+        throw err;
+      }
 
       // Create job record
       const [job] = await db.insert(video_generation_jobs).values({

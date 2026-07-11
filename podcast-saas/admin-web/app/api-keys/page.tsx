@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { adminApi } from '../../lib/api';
 import { AdminShell } from '../../components/AdminShell';
-import type { ApiKeyStatus } from 'shared/src/generated/admin-v1';
+import type { ApiKeyStatus, TestKeyResult } from 'shared/src/generated/admin-v1';
 
 type Provider = 'claude' | 'openai' | 'gemini' | 'elevenlabs';
 
@@ -18,7 +18,7 @@ interface KeyEntry {
   status: ApiKeyStatus | null;
   draft: string;
   testing: boolean;
-  testResult: { valid: boolean; model?: string; error?: string } | null;
+  testResult: TestKeyResult | null;
   saving: boolean;
   deleting: boolean;
 }
@@ -158,7 +158,7 @@ export default function ApiKeysPage() {
                     }`}
                   >
                     {entry.testResult.valid
-                      ? `Valid · ${(entry.testResult as any).tier ?? entry.testResult.model ?? 'connected'}`
+                      ? `Valid · ${entry.testResult.tier ?? entry.testResult.model ?? 'connected'}`
                       : `Invalid · ${entry.testResult.error}`}
                   </div>
                 )}
