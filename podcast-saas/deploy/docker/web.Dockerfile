@@ -34,7 +34,13 @@ ARG NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID
 ARG NEXT_PUBLIC_FIREBASE_APP_ID
 ARG PUBLIC_BRAND_NAME
 ARG PUBLIC_SITE_URL
-ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
+# Give `next build` explicit heap headroom so it isn't JS-heap-OOM'd on small VMs
+# (backed by swap from provision.sh). deploy.sh sizes this to RAM+swap and passes it via
+# the compose build arg; the 2048 default is safe on a bare 2 GB VM. next build forks
+# ~1 worker/vCPU that each inherit this, so keep it modest relative to RAM+swap.
+ARG NODE_BUILD_MEMORY=2048
+ENV NODE_OPTIONS=--max-old-space-size=${NODE_BUILD_MEMORY} \
+    NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
     NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL \
     NEXT_PUBLIC_FIREBASE_API_KEY=$NEXT_PUBLIC_FIREBASE_API_KEY \
     NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=$NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN \

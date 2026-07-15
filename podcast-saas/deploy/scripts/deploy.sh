@@ -29,6 +29,20 @@ APP_SERVICES=(backend worker client-web admin-web nginx)
 
 require_env_file
 
+# --- 0. Never run as root/sudo ----------------------------------------------
+# Running via sudo makes the git checkout, deploy/.env and .deploy-state root-owned,
+# which breaks every later non-root run ("git: dubious ownership"). provision.sh puts
+# the ubuntu user in the docker group precisely so deploys run WITHOUT sudo.
+if [ "$(id -u)" -eq 0 ]; then
+  die "Do NOT run deploy.sh with sudo. Run it as the normal user. If docker needs sudo, your
+shell hasn't picked up the docker group yet: run 'newgrp docker' (or log out/in) and retry.
+If a previous sudo run left root-owned files: sudo chown -R \"\$(logname)\":\"\$(logname)\" \"${REPO_DIR}\""
+fi
+if ! docker info >/dev/null 2>&1; then
+  die "Cannot reach the Docker daemon. If you just ran provision.sh, activate the docker group:
+run 'newgrp docker' (or re-login) and retry — do NOT use sudo (it corrupts repo ownership)."
+fi
+
 # --- 1. Update source -------------------------------------------------------
 cd "${REPO_DIR}"
 command -v git >/dev/null || die "git not found on the VM."
@@ -67,12 +81,69 @@ fi
 state_set CURRENT_VERSION "${NEW_VERSION}"
 state_set LAST_DEPLOY_REF "${TARGET_REF}"
 
+# --- 2b. TLS certs must exist BEFORE we spend minutes building ----------------
+# nginx references /etc/letsencrypt/live/<domain>/fullchain.pem and crash-loops without
+# it, which would fail the health gate after a full build. Fail fast instead.
+DOMAIN_ROOT="$(env_get DOMAIN_ROOT)"
+if [ "${SKIP_CERT_CHECK:-0}" != "1" ]; then
+  if compose run --rm --no-deps --entrypoint sh nginx \
+        -c "test -s /etc/letsencrypt/live/${DOMAIN_ROOT}/fullchain.pem" >/dev/null 2>&1; then
+    ok "TLS certificate present for ${DOMAIN_ROOT}."
+  else
+    die "No TLS certificate for ${DOMAIN_ROOT} — nginx would crash-loop after the build.
+Run ./deploy/scripts/init-ssl.sh first. (Bypass this check with SKIP_CERT_CHECK=1.)"
+  fi
+fi
+
 # --- 3. Build new images ----------------------------------------------------
 env_set APP_VERSION "${NEW_VERSION}"
 export APP_VERSION="${NEW_VERSION}"
 
-log "Building images for ${NEW_VERSION} (unchanged layers are cached)…"
-compose build backend client-web admin-web
+# Memory guard — the Next.js builds are the OOM culprit. The earlier failure was
+# "failed to execute bake: signal: killed" (kernel OOM). Ensure enough RAM+swap and
+# size Node's build heap to fit. Swap itself is provisioned by provision.sh.
+RAM_MB="$(free -m 2>/dev/null | awk '/^Mem:/{print $2}' || true)";  RAM_MB="${RAM_MB:-0}"
+SWAP_MB="$(free -m 2>/dev/null | awk '/^Swap:/{print $2}' || true)"; SWAP_MB="${SWAP_MB:-0}"
+BUDGET_MB=$(( RAM_MB + SWAP_MB ))
+log "Build memory: RAM=${RAM_MB}MB, swap=${SWAP_MB}MB (budget ${BUDGET_MB}MB)"
+
+if [ "${SWAP_MB}" -lt 512 ] && [ "${RAM_MB}" -lt 3000 ] && [ "${FORCE_LOWMEM:-0}" != "1" ]; then
+  die "Low memory (${RAM_MB}MB RAM, ${SWAP_MB}MB swap) will OOM the build.
+Run ./deploy/scripts/provision.sh to add swap (or add a 4G swapfile manually), then retry.
+Override at your own risk with FORCE_LOWMEM=1."
+fi
+
+# Node heap ceiling for `next build`. next build forks ~1 worker/vCPU that each inherit
+# NODE_OPTIONS, so keep the per-process ceiling comfortably under the budget: ~45% of
+# budget, clamped to [1536, 4096] MB. Override with NODE_BUILD_MEMORY.
+if [ -z "${NODE_BUILD_MEMORY:-}" ]; then
+  NODE_BUILD_MEMORY=$(( BUDGET_MB * 45 / 100 ))
+  [ "${NODE_BUILD_MEMORY}" -lt 1536 ] && NODE_BUILD_MEMORY=1536
+  [ "${NODE_BUILD_MEMORY}" -gt 4096 ] && NODE_BUILD_MEMORY=4096
+fi
+export NODE_BUILD_MEMORY
+log "next build heap ceiling: ${NODE_BUILD_MEMORY}MB"
+
+# Warn (don't block) if the Docker data disk is tight — retained rollback images + build
+# cache can exhaust a small root volume (ENOSPC mid-build).
+DOCKER_FREE_GB="$(df -PBG /var/lib/docker 2>/dev/null | awk 'NR==2{gsub(/G/,"",$4); print $4}' || true)"
+[ -n "${DOCKER_FREE_GB:-}" ] && [ "${DOCKER_FREE_GB}" -lt 5 ] && \
+  warn "Only ${DOCKER_FREE_GB}G free for Docker — build may fail with 'no space left'. Use a >=30G root volume."
+
+# Build SERIALLY by default so only one heavy pnpm-install / next-build runs at a time.
+# Set BUILD_PARALLEL=1 on a large host to build all three concurrently via bake.
+BUILD_TARGETS=(backend client-web admin-web)
+if [ "${BUILD_PARALLEL:-0}" = "1" ]; then
+  unset COMPOSE_BAKE   # let compose bake parallelize on a big host
+  log "Building images for ${NEW_VERSION} in parallel (BUILD_PARALLEL=1)…"
+  compose build "${BUILD_TARGETS[@]}"
+else
+  export COMPOSE_BAKE=false   # keep each `compose build <svc>` on the classic builder
+  for svc in "${BUILD_TARGETS[@]}"; do
+    log "Building ${svc} for ${NEW_VERSION} (serial; unchanged layers are cached)…"
+    compose build "${svc}"
+  done
+fi
 
 # --- 4. Database migrations (against external Supabase) --------------------
 # DATABASE_URL comes from the root .env. Migrations are idempotent; running them

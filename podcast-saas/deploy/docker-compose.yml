@@ -26,6 +26,8 @@ services:
     build:
       context: ..
       dockerfile: deploy/docker/backend.Dockerfile
+      args:
+        NODE_BUILD_MEMORY: ${NODE_BUILD_MEMORY:-2048}
     restart: unless-stopped
     env_file:
       - ../.env                      # all app secrets / API keys live here (git-ignored)
@@ -74,6 +76,7 @@ services:
       dockerfile: deploy/docker/web.Dockerfile
       args:
         APP: client-web
+        NODE_BUILD_MEMORY: ${NODE_BUILD_MEMORY:-2048}
         NEXT_PUBLIC_API_URL: https://${DOMAIN_API}
         NEXT_PUBLIC_APP_URL: https://${DOMAIN_ROOT}
         NEXT_PUBLIC_FIREBASE_API_KEY: ${NEXT_PUBLIC_FIREBASE_API_KEY}
@@ -112,6 +115,7 @@ services:
       dockerfile: deploy/docker/web.Dockerfile
       args:
         APP: admin-web
+        NODE_BUILD_MEMORY: ${NODE_BUILD_MEMORY:-2048}
         NEXT_PUBLIC_API_URL: https://${DOMAIN_API}
         NEXT_PUBLIC_APP_URL: https://${DOMAIN_ROOT}
         NEXT_PUBLIC_FIREBASE_API_KEY: ${NEXT_PUBLIC_FIREBASE_API_KEY}

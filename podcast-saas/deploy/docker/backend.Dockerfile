@@ -28,6 +28,9 @@ RUN pnpm install --frozen-lockfile --filter "backend-api..."
 # Copy sources needed to build the backend and compile TypeScript -> dist/.
 COPY shared/      shared/
 COPY backend-api/ backend-api/
+# Heap headroom for tsc on small VMs (builder stage only — never in the runner).
+ARG NODE_BUILD_MEMORY=2048
+ENV NODE_OPTIONS=--max-old-space-size=${NODE_BUILD_MEMORY}
 RUN pnpm --filter shared build \
  && pnpm --filter backend-api build \
  # tsc doesn't emit non-TS assets — copy raw SQL migrations next to the compiled runner.

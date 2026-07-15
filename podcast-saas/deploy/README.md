@@ -85,6 +85,8 @@ ssh -i keys/Cebu_key1.pem ubuntu@44.225.68.155
 # On the VM — clone the repo (private repo: use a deploy key or a PAT):
 git clone <YOUR_REPO_URL> ~/podcast-saas
 cd ~/podcast-saas
+# NOTE: run provision.sh with sudo where it asks, but run deploy.sh / init-ssl.sh
+# WITHOUT sudo (as the ubuntu user). Recommended: a >=30 GB root volume for Docker.
 
 # 3a. Install Docker + compose, firewall, systemd unit (idempotent):
 ./deploy/scripts/provision.sh
@@ -246,6 +248,27 @@ Common issues:
 | Worker not processing jobs / queue errors | `DATABASE_URL` on the transaction pooler (:6543)? Switch queue to the :5432 session pooler (see §4) |
 | Frontend shows wrong API URL         | `NEXT_PUBLIC_*` are build-time — rebuild via `deploy.sh`              |
 | Deploy rolled back automatically     | `NO_ROLLBACK=1 ./deploy.sh` then inspect `logs.sh backend`            |
+| Build dies with `signal: killed`     | OOM on a small VM. `deploy.sh` builds serially, checks RAM+swap, and sizes the Node heap; ensure swap exists (`swapon --show`) via `provision.sh`. Lower with `NODE_BUILD_MEMORY=1536`. |
+| `git: dubious ownership` on deploy    | You ran `deploy.sh` with `sudo` earlier. Fix ownership: `sudo chown -R $(logname):$(logname) ~/cebu`, then run deploy **without** sudo. |
+| `docker: permission denied`          | Docker group not active in this shell. Run `newgrp docker` (or log out/in). **Do not** use `sudo` for `deploy.sh`. |
+| `no space left on device` mid-build  | Small root volume. Use a **≥30 GB** root EBS; retained rollback images + build cache need headroom. `docker system df` to inspect. |
+| Deploy dies "No TLS certificate…"    | Run `./deploy/scripts/init-ssl.sh` before `deploy.sh` (or `SKIP_CERT_CHECK=1` to bypass). |
+
+### Build OOM on a memory-constrained VM
+
+`failed to execute bake: signal: killed` = the kernel OOM-killed the build. `deploy.sh`
+builds images **one at a time** by default to bound peak memory (set `BUILD_PARALLEL=1`
+only on a large host). A swapfile is the safety net; `provision.sh` creates one, or add it
+manually:
+
+```bash
+sudo fallocate -l 4G /swapfile && sudo chmod 600 /swapfile
+sudo mkswap /swapfile && sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+swapon --show
+```
+
+Then re-run the deploy: `FORCE=1 ./deploy/scripts/deploy.sh`.
 
 ---
 
