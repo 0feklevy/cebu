@@ -73,7 +73,7 @@ for entry in "${CERTS[@]}"; do
   log "Requesting certificate '${lineage}' for:${sans}"
   # Remove the dummy so certbot writes a fresh lineage at the same path.
   compose run --rm --entrypoint sh certbot -c "rm -rf /etc/letsencrypt/live/${lineage} /etc/letsencrypt/archive/${lineage} /etc/letsencrypt/renewal/${lineage}.conf" || true
-  if ! compose run --rm certbot certonly --webroot -w /var/www/certbot \
+  if ! compose run --rm --entrypoint certbot certbot certonly --webroot -w /var/www/certbot \
         --email "${EMAIL}" --agree-tos --no-eff-email ${staging_arg} \
         --cert-name "${lineage}" ${d_args}; then
     die "Certbot failed for '${lineage}'. Check DNS (${sans}) -> this VM and that port 80 is open."
