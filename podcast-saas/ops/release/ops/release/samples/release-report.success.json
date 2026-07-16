@@ -1,0 +1,196 @@
+{
+  "schema": "flowvid.release-report/v1",
+  "runId": "rel-9917244101-1",
+  "workflow": {
+    "actor": "0feklevy",
+    "runUrl": "https://github.com/0feklevy/cebu/actions/runs/9917244101"
+  },
+  "requested": {
+    "bump": "patch",
+    "deploy": true,
+    "backfillPolicy": "allow-safe"
+  },
+  "version": "v0.1.3",
+  "previousVersion": "v0.1.2",
+  "gitSha": "255d06fd9b195dde0a0c2f97f8adcf0d66c2733e",
+  "startedAt": "2026-07-20T09:00:00Z",
+  "endedAt": "2026-07-20T09:41:30Z",
+  "state": "RELEASED",
+  "stages": [
+    {
+      "stage": "PLANNED → SOURCE_VERIFIED",
+      "status": "success",
+      "startedAt": "2026-07-16T09:38:41.221Z",
+      "endedAt": "2026-07-16T09:38:41.754Z",
+      "durationMs": 533
+    },
+    {
+      "stage": "SOURCE_VERIFIED → TESTED",
+      "status": "success",
+      "startedAt": "2026-07-16T09:38:41.754Z",
+      "endedAt": "2026-07-16T09:38:42.293Z",
+      "durationMs": 539
+    },
+    {
+      "stage": "TESTED → IMAGES_BUILT",
+      "status": "success",
+      "startedAt": "2026-07-16T09:38:42.293Z",
+      "endedAt": "2026-07-16T09:38:42.832Z",
+      "durationMs": 539
+    },
+    {
+      "stage": "IMAGES_BUILT → IMAGES_PUBLISHED",
+      "status": "success",
+      "startedAt": "2026-07-16T09:38:42.832Z",
+      "endedAt": "2026-07-16T09:38:43.371Z",
+      "durationMs": 539
+    },
+    {
+      "stage": "IMAGES_PUBLISHED → MIGRATIONS_PLANNED",
+      "status": "success",
+      "startedAt": "2026-07-16T09:38:43.371Z",
+      "endedAt": "2026-07-16T09:38:43.911Z",
+      "durationMs": 540
+    },
+    {
+      "stage": "MIGRATIONS_PLANNED → AWAITING_APPROVAL",
+      "status": "success",
+      "startedAt": "2026-07-16T09:38:43.911Z",
+      "endedAt": "2026-07-16T09:38:44.445Z",
+      "durationMs": 534
+    },
+    {
+      "stage": "AWAITING_APPROVAL → DEPLOYING",
+      "status": "success",
+      "startedAt": "2026-07-16T09:38:44.445Z",
+      "endedAt": "2026-07-16T09:38:44.981Z",
+      "durationMs": 536
+    },
+    {
+      "stage": "DEPLOYING → MIGRATED",
+      "status": "success",
+      "startedAt": "2026-07-16T09:38:44.981Z",
+      "endedAt": "2026-07-16T09:38:45.530Z",
+      "durationMs": 549
+    },
+    {
+      "stage": "MIGRATED → SERVICES_RECREATED",
+      "status": "success",
+      "startedAt": "2026-07-16T09:38:45.530Z",
+      "endedAt": "2026-07-16T09:38:46.075Z",
+      "durationMs": 545
+    },
+    {
+      "stage": "SERVICES_RECREATED → HEALTHY",
+      "status": "success",
+      "startedAt": "2026-07-16T09:38:46.075Z",
+      "endedAt": "2026-07-16T09:38:46.611Z",
+      "durationMs": 536
+    },
+    {
+      "stage": "HEALTHY → BROWSER_VERIFIED",
+      "status": "success",
+      "startedAt": "2026-07-16T09:38:46.611Z",
+      "endedAt": "2026-07-16T09:38:47.146Z",
+      "durationMs": 535
+    },
+    {
+      "stage": "BROWSER_VERIFIED → RELEASED",
+      "status": "success",
+      "startedAt": "2026-07-16T09:38:47.146Z",
+      "endedAt": "2026-07-16T09:38:47.684Z",
+      "durationMs": 538
+    }
+  ],
+  "tests": [
+    {
+      "suite": "vitest (all workspaces)",
+      "total": 687,
+      "passed": 687,
+      "failed": 0
+    }
+  ],
+  "images": [
+    {
+      "service": "backend",
+      "repository": "ghcr.io/0feklevy/cebu/backend",
+      "tag": "v0.1.3",
+      "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    {
+      "service": "client-web",
+      "repository": "ghcr.io/0feklevy/cebu/client-web",
+      "tag": "v0.1.3",
+      "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    {
+      "service": "admin-web",
+      "repository": "ghcr.io/0feklevy/cebu/admin-web",
+      "tag": "v0.1.3",
+      "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    }
+  ],
+  "migrationPlan": {
+    "summary": {
+      "newCount": 1,
+      "destructiveCount": 0,
+      "runnerListCount": 47,
+      "diskCount": 47
+    },
+    "newMigrations": [
+      {
+        "name": "047_release_autopilot_marker.sql",
+        "checksum": "9d5c…",
+        "statements": 1,
+        "classes": [],
+        "tables": [
+          "app_meta"
+        ],
+        "transactional": true
+      }
+    ]
+  },
+  "deployment": {
+    "endpoints": [
+      {
+        "name": "app",
+        "url": "https://flowvidco.com",
+        "httpStatus": 200,
+        "ok": true
+      },
+      {
+        "name": "api-health",
+        "url": "https://api.flowvidco.com/health",
+        "httpStatus": 200,
+        "ok": true
+      },
+      {
+        "name": "admin",
+        "url": "https://admin.flowvidco.com",
+        "httpStatus": 200,
+        "ok": true
+      }
+    ]
+  },
+  "playwright": {
+    "total": 9,
+    "passed": 7,
+    "failed": 0,
+    "skipped": 2,
+    "failures": [],
+    "findings": []
+  },
+  "findings": [],
+  "gate": {
+    "blocked": false,
+    "shouldRollback": false,
+    "counts": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "WARNING": 0,
+      "INFO": 0
+    },
+    "reasons": []
+  },
+  "remediation": []
+}

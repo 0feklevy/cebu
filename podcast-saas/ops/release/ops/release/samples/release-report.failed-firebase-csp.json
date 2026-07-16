@@ -1,0 +1,220 @@
+{
+  "schema": "flowvid.release-report/v1",
+  "runId": "rel-9916000000-1",
+  "workflow": {
+    "actor": "0feklevy",
+    "runUrl": "https://github.com/0feklevy/cebu/actions/runs/9916000000"
+  },
+  "requested": {
+    "bump": "patch",
+    "deploy": true,
+    "backfillPolicy": "report-only"
+  },
+  "version": "v0.1.1",
+  "previousVersion": "v0.1.0",
+  "gitSha": "56f5130f68204c13d29552b3c96b6648c45c7205",
+  "startedAt": "2026-07-15T21:00:00Z",
+  "endedAt": "2026-07-15T21:52:10Z",
+  "state": "ROLLED_BACK",
+  "stages": [
+    {
+      "stage": "PLANNED → SOURCE_VERIFIED",
+      "status": "success",
+      "startedAt": "2026-07-16T09:39:16.554Z",
+      "endedAt": "2026-07-16T09:39:17.089Z",
+      "durationMs": 535
+    },
+    {
+      "stage": "SOURCE_VERIFIED → TESTED",
+      "status": "success",
+      "startedAt": "2026-07-16T09:39:17.089Z",
+      "endedAt": "2026-07-16T09:39:17.663Z",
+      "durationMs": 574
+    },
+    {
+      "stage": "TESTED → IMAGES_BUILT",
+      "status": "success",
+      "startedAt": "2026-07-16T09:39:17.663Z",
+      "endedAt": "2026-07-16T09:39:18.198Z",
+      "durationMs": 535
+    },
+    {
+      "stage": "IMAGES_BUILT → IMAGES_PUBLISHED",
+      "status": "success",
+      "startedAt": "2026-07-16T09:39:18.198Z",
+      "endedAt": "2026-07-16T09:39:18.730Z",
+      "durationMs": 532
+    },
+    {
+      "stage": "IMAGES_PUBLISHED → MIGRATIONS_PLANNED",
+      "status": "success",
+      "startedAt": "2026-07-16T09:39:18.730Z",
+      "endedAt": "2026-07-16T09:39:19.281Z",
+      "durationMs": 551
+    },
+    {
+      "stage": "MIGRATIONS_PLANNED → AWAITING_APPROVAL",
+      "status": "success",
+      "startedAt": "2026-07-16T09:39:19.281Z",
+      "endedAt": "2026-07-16T09:39:19.849Z",
+      "durationMs": 568
+    },
+    {
+      "stage": "AWAITING_APPROVAL → DEPLOYING",
+      "status": "success",
+      "startedAt": "2026-07-16T09:39:19.849Z",
+      "endedAt": "2026-07-16T09:39:20.400Z",
+      "durationMs": 551
+    },
+    {
+      "stage": "DEPLOYING → MIGRATED",
+      "status": "success",
+      "startedAt": "2026-07-16T09:39:20.400Z",
+      "endedAt": "2026-07-16T09:39:20.943Z",
+      "durationMs": 543
+    },
+    {
+      "stage": "MIGRATED → SERVICES_RECREATED",
+      "status": "success",
+      "startedAt": "2026-07-16T09:39:20.943Z",
+      "endedAt": "2026-07-16T09:39:21.483Z",
+      "durationMs": 540
+    },
+    {
+      "stage": "SERVICES_RECREATED → HEALTHY",
+      "status": "success",
+      "startedAt": "2026-07-16T09:39:21.483Z",
+      "endedAt": "2026-07-16T09:39:22.032Z",
+      "durationMs": 549
+    },
+    {
+      "stage": "HEALTHY → FAILED",
+      "status": "failure",
+      "startedAt": "2026-07-16T09:39:22.032Z",
+      "endedAt": "2026-07-16T09:39:22.568Z",
+      "durationMs": 536
+    },
+    {
+      "stage": "FAILED → ROLLED_BACK",
+      "status": "success",
+      "startedAt": "2026-07-16T09:39:22.568Z",
+      "endedAt": "2026-07-16T09:39:23.121Z",
+      "durationMs": 553
+    }
+  ],
+  "images": [
+    {
+      "service": "backend",
+      "repository": "ghcr.io/0feklevy/cebu/backend",
+      "tag": "v0.1.1",
+      "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "service": "client-web",
+      "repository": "ghcr.io/0feklevy/cebu/client-web",
+      "tag": "v0.1.1",
+      "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+      "service": "admin-web",
+      "repository": "ghcr.io/0feklevy/cebu/admin-web",
+      "tag": "v0.1.1",
+      "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  ],
+  "deployment": {
+    "endpoints": [
+      {
+        "name": "app",
+        "url": "https://flowvidco.com",
+        "httpStatus": 200,
+        "ok": true
+      },
+      {
+        "name": "api-health",
+        "url": "https://api.flowvidco.com/health",
+        "httpStatus": 200,
+        "ok": true
+      },
+      {
+        "name": "admin",
+        "url": "https://admin.flowvidco.com",
+        "httpStatus": 200,
+        "ok": true
+      }
+    ]
+  },
+  "playwright": {
+    "total": 9,
+    "passed": 6,
+    "failed": 1,
+    "skipped": 2,
+    "failures": [
+      "audit: login entry point + Firebase auth iframe initiation"
+    ],
+    "findings": [
+      {
+        "id": "playwright.failures",
+        "severity": "CRITICAL",
+        "area": "browser",
+        "message": "1 production browser test(s) failed.",
+        "detail": "audit: login entry point + Firebase auth iframe initiation"
+      }
+    ]
+  },
+  "csp": {
+    "client-web": {
+      "url": "https://flowvidco.com",
+      "status": 200,
+      "header": "default-src 'self'; base-uri 'self'; form-action 'self'; object-src 'none'; frame-ancestors 'none'; frame-src 'self' https://api.flowvidco.com https://js.stripe.com; script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; style-src 'self' 'unsafe-inline' https:; font-src 'self' data: https:; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' https: wss:"
+    }
+  },
+  "findings": [
+    {
+      "id": "csp.client-web.frame-src.missing-firebase-auth-origin",
+      "severity": "CRITICAL",
+      "area": "csp",
+      "message": "client-web: frame-src does not allow https://cebu-1a10f.firebaseapp.com (the Firebase Auth iframe — sign-in breaks without it).",
+      "detail": "frame-src is: 'self' https://api.flowvidco.com https://js.stripe.com",
+      "remediation": "Fix shared/src/csp.ts inputs (never widen with wildcards)."
+    },
+    {
+      "id": "browser.csp-core-flow-blocked",
+      "severity": "CRITICAL",
+      "area": "csp",
+      "message": "page https://flowvidco.com/#login: CSP violation.",
+      "detail": "frame-src blocked https://cebu-1a10f.firebaseapp.com/__/auth/iframe on https://flowvidco.com/"
+    },
+    {
+      "id": "playwright.failures",
+      "severity": "CRITICAL",
+      "area": "browser",
+      "message": "1 production browser test(s) failed.",
+      "detail": "audit: login entry point + Firebase auth iframe initiation"
+    }
+  ],
+  "gate": {
+    "blocked": true,
+    "shouldRollback": true,
+    "counts": {
+      "CRITICAL": 3,
+      "HIGH": 0,
+      "WARNING": 0,
+      "INFO": 0
+    },
+    "reasons": [
+      "3 CRITICAL finding(s) — release policy always blocks on CRITICAL."
+    ]
+  },
+  "rollback": {
+    "attempted": true,
+    "target": "v0.1.0",
+    "success": true
+  },
+  "failing": {
+    "test": "audit: login entry point + Firebase auth iframe initiation"
+  },
+  "remediation": [
+    "Fix shared/src/csp.ts inputs (never widen with wildcards)."
+  ]
+}

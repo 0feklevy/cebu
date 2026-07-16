@@ -511,8 +511,12 @@ export function cmdReport(
   const rollback = read<ReleaseReport['rollback']>(ARTIFACTS.rollback);
   let failing = read<ReleaseReport['failing']>(ARTIFACTS.failing);
 
+  // gate.json embeds the findings it merged from the other artifacts — exclude it
+  // here or every gated finding would appear twice in the report.
   const findings = collectFindingsFromFiles(
-    Object.values(ARTIFACTS).map((n) => join(opts.dir, n)),
+    Object.values(ARTIFACTS)
+      .filter((n) => n !== ARTIFACTS.gate)
+      .map((n) => join(opts.dir, n)),
   );
 
   // Derive "first failure" when no explicit failing.json was recorded.
