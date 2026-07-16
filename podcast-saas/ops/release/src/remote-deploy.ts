@@ -72,6 +72,23 @@ export class SshExecutor implements Executor {
 
 const REMOTE_SCRIPTS_DIR = 'podcast-saas/deploy/scripts';
 
+/**
+ * Sync the VM checkout to the exact release commit BEFORE running deploy-images.sh
+ * (a bash script must never rewrite itself mid-run, so the checkout is a separate
+ * command). Detached checkout — the VM never builds from this tree on the normal path;
+ * it only needs docker-compose.yml, nginx templates, and the deploy scripts to match.
+ */
+export async function syncRemoteCheckout(exec: Executor, remoteRepoDir: string, gitSha: string): Promise<DeployOutcome> {
+  if (!/^[0-9a-f]{7,40}$/i.test(gitSha)) {
+    return { ok: false, result: { code: 1, stdout: '', stderr: `refusing to checkout suspicious ref: ${gitSha}` } };
+  }
+  const result = await exec.exec(
+    ['git', '-C', remoteRepoDir, 'fetch', 'origin', '--tags', '--prune', '&&', 'git', '-C', remoteRepoDir, 'checkout', '--detach', gitSha],
+    { timeoutMs: 5 * 60 * 1000 },
+  );
+  return { ok: result.code === 0, result };
+}
+
 export interface DeployImagesParams {
   manifest: ImageManifest;
   /** Registry credentials for the VM's ephemeral `docker login` (stdin only). */
