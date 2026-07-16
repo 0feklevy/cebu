@@ -67,6 +67,50 @@ test('no stale service worker remains registered', async ({ page }) => {
   expect(regs, 'no service worker should be registered (app ships none; stale ones self-unregister)').toBe(0);
 });
 
+test('Firebase auth iframe is allowed by CSP (sign-in works, frame-ancestors unchanged)', async ({ page }) => {
+  // Capture real securitypolicyviolation events (more reliable than console text).
+  await page.addInitScript(() => {
+    (window as unknown as { __csp: string[] }).__csp = [];
+    document.addEventListener('securitypolicyviolation', (e) => {
+      (window as unknown as { __csp: string[] }).__csp.push(
+        `${(e as SecurityPolicyViolationEvent).violatedDirective} blocked ${(e as SecurityPolicyViolationEvent).blockedURI}`,
+      );
+    });
+  });
+
+  const resp = await page.goto('/', { waitUntil: 'networkidle' });
+  const csp = resp?.headers()['content-security-policy'] ?? '';
+  const frameSrc = csp.split(';').map((s) => s.trim()).find((s) => s.startsWith('frame-src ')) ?? '';
+
+  // The Firebase Auth iframe origin (<project>.firebaseapp.com) MUST be allowed, or sign-in breaks.
+  expect(frameSrc, `frame-src must allow the Firebase Auth iframe origin (got: "${frameSrc}")`)
+    .toMatch(/https:\/\/[a-z0-9-]+\.firebaseapp\.com/i);
+  // frame-ancestors must remain restrictive (separate concern, not weakened).
+  expect(csp, 'frame-ancestors must stay restrictive').toContain("frame-ancestors 'none'");
+  // No localhost / no wildcard in a production CSP.
+  if ((process.env.SMOKE_BASE_URL ?? '').startsWith('https://')) {
+    expect(frameSrc, 'prod frame-src must not contain localhost').not.toMatch(LOOPBACK);
+    expect(frameSrc.split(/\s+/), 'prod frame-src must not use a bare * wildcard').not.toContain('*');
+  }
+
+  // Exercise the sign-in entry point if present; Firebase loads its authDomain iframe here.
+  const trigger = page
+    .locator('button, a')
+    .filter({ hasText: /sign\s?in|log\s?in|continue with google|get started/i })
+    .first();
+  if (await trigger.count()) {
+    await trigger.click({ timeout: 5000 }).catch(() => {});
+    await page.waitForTimeout(2500); // let the auth iframe attempt to load
+  } else {
+    await page.waitForTimeout(1500); // firebase may load its iframe on init anyway
+  }
+
+  // Fail on any CSP frame violation, especially against the Firebase auth origin.
+  const violations: string[] = await page.evaluate(() => (window as unknown as { __csp: string[] }).__csp ?? []);
+  const frameViolations = violations.filter((v) => /frame-src|firebaseapp\.com/i.test(v));
+  expect(frameViolations, `no CSP frame violations (Firebase auth):\n${frameViolations.join('\n')}`).toHaveLength(0);
+});
+
 test('public content page loads banners/thumbnails/iframes without localhost', async ({ page }) => {
   const publicPath = process.env.SMOKE_PUBLIC_PATH;
   test.skip(!publicPath, 'set SMOKE_PUBLIC_PATH to a public page with media to run this check');

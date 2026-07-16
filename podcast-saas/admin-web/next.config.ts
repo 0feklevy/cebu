@@ -1,4 +1,5 @@
 import type { NextConfig } from 'next';
+import { buildFrontendCsp } from 'shared/src/csp';
 
 // ── Fail-closed resolution of the browser-visible API URL ───────────────────────
 // A production build requires a public https origin; missing/localhost/internal/non-https
@@ -25,23 +26,13 @@ const PUBLIC_API_URL = resolvePublicUrl('NEXT_PUBLIC_API_URL', 'http://localhost
 // Defined as a const BEFORE nextConfig (Next's compiled config can ReferenceError on a
 // function declaration referenced from a config method — mirror client-web).
 const securityHeaders = (): { key: string; value: string }[] => {
-  const api = PUBLIC_API_URL;
-  const dev = !IS_PROD;
-  const devApi = dev ? ' http://localhost:8080' : '';
-  const csp = [
-    "default-src 'self'",
-    "base-uri 'self'",
-    "form-action 'self'",
-    "object-src 'none'",
-    "frame-ancestors 'none'",
-    `frame-src 'self' ${api}${devApi}`,
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https:" + (dev ? ' http:' : ''),
-    "style-src 'self' 'unsafe-inline' https:",
-    "font-src 'self' data: https:",
-    `img-src 'self' data: blob: https:${devApi}`,
-    `media-src 'self' blob: https:${devApi}`,
-    `connect-src 'self' https: wss:${dev ? ' http://localhost:8080 ws://localhost:8080' : ''}`,
-  ].join('; ');
+  const csp = buildFrontendCsp({
+    apiUrl: PUBLIC_API_URL,
+    // Admin also uses Firebase Auth → its auth-domain iframe origin must be allowed.
+    firebaseAuthDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
+    includeStripe: false, // admin has no Stripe checkout
+    dev: !IS_PROD,
+  });
   return [
     { key: 'Content-Security-Policy', value: csp },
     { key: 'X-Content-Type-Options', value: 'nosniff' },

@@ -1,4 +1,5 @@
 import type { NextConfig } from 'next';
+import { buildFrontendCsp } from 'shared/src/csp';
 
 // ── Fail-closed resolution of browser-visible URLs ──────────────────────────────
 // In a PRODUCTION build these MUST be public https origins. A missing value, a
@@ -35,23 +36,13 @@ const PUBLIC_SITE_URL = process.env.PUBLIC_SITE_URL?.trim()
 // and its bundler does not reliably resolve a helper referenced inside a config method when
 // that helper is a function *declaration* placed after the config object (ReferenceError).
 const securityHeaders = (): { key: string; value: string }[] => {
-  const api = PUBLIC_API_URL;
-  const dev = !IS_PROD;
-  const devApi = dev ? ' http://localhost:8080' : '';
-  const csp = [
-    "default-src 'self'",
-    "base-uri 'self'",
-    "form-action 'self'",
-    "object-src 'none'",
-    "frame-ancestors 'none'",
-    `frame-src 'self' ${api} https://js.stripe.com${devApi}`,
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https:" + (dev ? ' http:' : ''),
-    "style-src 'self' 'unsafe-inline' https:",
-    "font-src 'self' data: https:",
-    `img-src 'self' data: blob: https:${devApi}`,
-    `media-src 'self' blob: https:${devApi}`,
-    `connect-src 'self' https: wss:${dev ? ' http://localhost:8080 ws://localhost:8080' : ''}`,
-  ].join('; ');
+  const csp = buildFrontendCsp({
+    apiUrl: PUBLIC_API_URL,
+    // Firebase Auth iframe origin (<project>.firebaseapp.com) — required for sign-in.
+    firebaseAuthDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
+    includeStripe: true, // client-web loads the Stripe checkout iframe
+    dev: !IS_PROD,
+  });
   return [
     { key: 'Content-Security-Policy', value: csp },
     { key: 'X-Content-Type-Options', value: 'nosniff' },
