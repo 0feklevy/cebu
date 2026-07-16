@@ -1,0 +1,524 @@
+# Release FlowVid — the deterministic release autopilot.
+#
+# merge to main → run this workflow → pick bump → review the generated release plan →
+# approve the "production" environment → receive a full release report.
+#
+# The pipeline: plan/verify source → full test+build gate → immutable images on GHCR →
+# annotated tag + draft release → manual production approval → digest-pinned deploy on
+# the VM (no builds there) → health + browser verification → automatic rollback on any
+# CRITICAL failure → published release + release-report.{md,json}.
+#
+# No AI is involved anywhere in this workflow. Secrets are environment-scoped; the
+# GHCR pull token travels to the VM via stdin only.
+name: Release FlowVid
+
+run-name: 'Release FlowVid — ${{ inputs.bump }} (deploy=${{ inputs.deploy }}) by @${{ github.actor }}'
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'SemVer bump'
+        type: choice
+        options: [patch, minor, major]
+        required: true
+      deploy:
+        description: 'Deploy to production (after manual approval)?'
+        type: boolean
+        default: true
+      backfill_policy:
+        description: 'Data backfill policy (URL repair)'
+        type: choice
+        options: [report-only, allow-safe, require-approval]
+        default: report-only
+      approve_high:
+        description: 'Explicitly approve HIGH findings (destructive migrations / unsafe backfills)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-release
+  cancel-in-progress: false
+
+env:
+  ART: ${{ github.workspace }}/release-artifacts
+  RUN_ID: rel-${{ github.run_id }}-${{ github.run_attempt }}
+
+defaults:
+  run:
+    working-directory: podcast-saas
+
+jobs:
+  # ── 1. PLANNED → SOURCE_VERIFIED ────────────────────────────────────────────────
+  plan:
+    name: Plan & verify source
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      next_tag: ${{ steps.plan.outputs.next_tag }}
+      current_tag: ${{ steps.plan.outputs.current_tag }}
+      git_sha: ${{ steps.plan.outputs.git_sha }}
+    steps:
+      - name: Releases run only from main
+        working-directory: .
+        run: |
+          [ "${GITHUB_REF}" = "refs/heads/main" ] || { echo "::error::Release must be dispatched on main (got ${GITHUB_REF})."; exit 1; }
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: podcast-saas/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: podcast-saas/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile --filter ops-release
+      - name: Compute next version (immutable tags)
+        id: plan
+        run: pnpm --filter ops-release release-cli plan --bump "${{ inputs.bump }}" --out "$ART/plan.json"
+      - name: Initialize release state machine
+        run: |
+          pnpm --filter ops-release release-cli state-init --file "$ART/state.json" \
+            --run-id "$RUN_ID" --version "${{ steps.plan.outputs.next_tag }}" \
+            --git-sha "${{ steps.plan.outputs.git_sha }}" --bump "${{ inputs.bump }}"
+      - name: Preflight (clean main-only source, free tag, determinism pins)
+        run: pnpm --filter ops-release release-cli preflight --next-tag "${{ steps.plan.outputs.next_tag }}" --out "$ART/preflight.json"
+      - name: Secret scan
+        run: pnpm --filter ops-release release-cli secret-scan --out "$ART/secret-scan.json"
+      - name: Migration audit (vs previous release)
+        run: pnpm --filter ops-release release-cli migration-audit --base-ref "${{ steps.plan.outputs.current_tag }}" --out "$ART/migration-audit.json"
+      - name: Pre-build gate
+        run: |
+          pnpm --filter ops-release release-cli gate --phase pre-deploy \
+            --findings "$ART/preflight.json,$ART/secret-scan.json,$ART/migration-audit.json" \
+            ${{ inputs.approve_high && '--approve-high' || '' }} \
+            --out "$ART/gate.json"
+      - name: State → SOURCE_VERIFIED
+        run: pnpm --filter ops-release release-cli state-transition --file "$ART/state.json" --to SOURCE_VERIFIED
+      - uses: actions/upload-artifact@v4
+        with: { name: release-artifacts, path: release-artifacts, overwrite: true, include-hidden-files: true }
+
+  # ── 2. SOURCE_VERIFIED → TESTED ────────────────────────────────────────────────
+  verify:
+    name: Full release verification (tests + prod builds + bundle scan)
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.git_sha }}
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: podcast-saas/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: podcast-saas/pnpm-lock.yaml
+      - uses: actions/download-artifact@v4
+        with: { name: release-artifacts, path: release-artifacts }
+      - name: release:verify (frozen install → typecheck → lint → tests → prod builds → bundle scan)
+        run: pnpm release:verify 2>&1 | tee "$ART/release-verify.log"
+      - name: Record test counts (best effort)
+        run: |
+          {
+            echo '['
+            grep -hoE 'Tests[[:space:]]+[0-9]+ passed' "$ART/release-verify.log" \
+              | awk '{n+=$2} END { printf "{\"suite\":\"vitest (all workspaces)\",\"total\":%d,\"passed\":%d,\"failed\":0}", n, n }'
+            echo ']'
+          } > "$ART/tests.json" || echo '[]' > "$ART/tests.json"
+      - name: State → TESTED
+        run: pnpm --filter ops-release release-cli state-transition --file "$ART/state.json" --to TESTED
+      - uses: actions/upload-artifact@v4
+        with: { name: release-artifacts, path: release-artifacts, overwrite: true, include-hidden-files: true }
+
+  # ── 3. TESTED → IMAGES_BUILT/IMAGES_PUBLISHED (GitHub-hosted builders, never the VM) ──
+  build-images:
+    name: Build & push ${{ matrix.service }}
+    needs: [plan, verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: true
+      matrix:
+        service: [backend, client-web, admin-web]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.git_sha }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build & push backend image
+        if: matrix.service == 'backend'
+        id: build_backend
+        uses: docker/build-push-action@v6
+        with:
+          context: podcast-saas
+          file: podcast-saas/deploy/docker/backend.Dockerfile
+          push: true
+          provenance: false
+          tags: |
+            ghcr.io/0feklevy/cebu/backend:${{ needs.plan.outputs.next_tag }}
+            ghcr.io/0feklevy/cebu/backend:sha-${{ needs.plan.outputs.git_sha }}
+          build-args: |
+            NODE_BUILD_MEMORY=6144
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+      - name: Build & push ${{ matrix.service }} image
+        if: matrix.service != 'backend'
+        id: build_web
+        uses: docker/build-push-action@v6
+        with:
+          context: podcast-saas
+          file: podcast-saas/deploy/docker/web.Dockerfile
+          push: true
+          provenance: false
+          tags: |
+            ghcr.io/0feklevy/cebu/${{ matrix.service }}:${{ needs.plan.outputs.next_tag }}
+            ghcr.io/0feklevy/cebu/${{ matrix.service }}:sha-${{ needs.plan.outputs.git_sha }}
+          build-args: |
+            APP=${{ matrix.service }}
+            NODE_BUILD_MEMORY=6144
+            NEXT_PUBLIC_API_URL=https://api.flowvidco.com
+            NEXT_PUBLIC_APP_URL=https://flowvidco.com
+            PUBLIC_SITE_URL=${{ matrix.service == 'admin-web' && 'https://admin.flowvidco.com' || 'https://flowvidco.com' }}
+            NEXT_PUBLIC_FIREBASE_API_KEY=${{ vars.NEXT_PUBLIC_FIREBASE_API_KEY }}
+            NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=${{ vars.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN }}
+            NEXT_PUBLIC_FIREBASE_PROJECT_ID=${{ vars.NEXT_PUBLIC_FIREBASE_PROJECT_ID }}
+            NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=${{ vars.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET }}
+            NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=${{ vars.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID }}
+            NEXT_PUBLIC_FIREBASE_APP_ID=${{ vars.NEXT_PUBLIC_FIREBASE_APP_ID }}
+            PUBLIC_BRAND_NAME=${{ vars.PUBLIC_BRAND_NAME }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+      - name: Record immutable digest
+        working-directory: .
+        run: |
+          DIGEST='${{ steps.build_backend.outputs.digest || steps.build_web.outputs.digest }}'
+          [ -n "$DIGEST" ] || { echo '::error::no image digest returned'; exit 1; }
+          mkdir -p digests
+          printf '{"service":"%s","repository":"ghcr.io/0feklevy/cebu/%s","tag":"%s","digest":"%s"}\n' \
+            '${{ matrix.service }}' '${{ matrix.service }}' '${{ needs.plan.outputs.next_tag }}' "$DIGEST" \
+            > "digests/${{ matrix.service }}.json"
+      - uses: actions/upload-artifact@v4
+        with: { name: 'digest-${{ matrix.service }}', path: digests/ }
+
+  # ── 4. → MIGRATIONS_PLANNED (+ tag + draft release + reviewable plan) ───────────
+  release-plan:
+    name: Manifest, tag & draft release
+    needs: [plan, verify, build-images]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # annotated tag + draft release ONLY in this job
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.git_sha }}
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: podcast-saas/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: podcast-saas/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile --filter ops-release
+      - uses: actions/download-artifact@v4
+        with: { name: release-artifacts, path: release-artifacts }
+      - uses: actions/download-artifact@v4
+        with: { pattern: digest-*, path: digests, merge-multiple: true }
+      - name: Assemble immutable image manifest
+        working-directory: .
+        run: |
+          jq -s '{schema:"flowvid.image-manifest/v1",
+                  version:"${{ needs.plan.outputs.next_tag }}",
+                  gitSha:"${{ needs.plan.outputs.git_sha }}",
+                  images:.}' digests/*.json > "$ART/manifest.json"
+          cat "$ART/manifest.json"
+      - name: Verify manifest (digests, namespace, no floating tags)
+        run: pnpm --filter ops-release release-cli image-manifest --verify --manifest "$ART/manifest.json" --out "$ART/image-manifest.json"
+      - name: State → IMAGES_BUILT → IMAGES_PUBLISHED → MIGRATIONS_PLANNED
+        run: |
+          pnpm --filter ops-release release-cli state-transition --file "$ART/state.json" --to IMAGES_BUILT
+          pnpm --filter ops-release release-cli state-transition --file "$ART/state.json" --to IMAGES_PUBLISHED
+          pnpm --filter ops-release release-cli state-transition --file "$ART/state.json" --to MIGRATIONS_PLANNED
+      - name: Create annotated tag (never moved, never reused)
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag -a '${{ needs.plan.outputs.next_tag }}' '${{ needs.plan.outputs.git_sha }}' \
+            -m 'FlowVid ${{ needs.plan.outputs.next_tag }} (run ${{ env.RUN_ID }})'
+          git push origin 'refs/tags/${{ needs.plan.outputs.next_tag }}'
+      - name: Release plan → job summary + draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo '## Release plan — ${{ needs.plan.outputs.next_tag }}'
+            echo ''
+            echo '| Field | Value |'
+            echo '| --- | --- |'
+            echo '| Version | ${{ needs.plan.outputs.next_tag }} (was ${{ needs.plan.outputs.current_tag }}) |'
+            echo '| Commit | ${{ needs.plan.outputs.git_sha }} |'
+            echo '| Deploy | ${{ inputs.deploy }} |'
+            echo '| Backfill policy | ${{ inputs.backfill_policy }} |'
+            echo ''
+            echo '### Immutable images'
+            echo ''
+            echo '| Service | Digest |'
+            echo '| --- | --- |'
+            jq -r '.images[] | "| \(.service) | `\(.digest)` |"' "$ART/manifest.json"
+            echo ''
+            echo '### Migration plan'
+            echo ''
+            echo '```json'
+            jq '.summary, (.newMigrations | map({name, checksum, statements, transactional, tables}))' "$ART/migration-audit.json"
+            echo '```'
+            echo ''
+            echo '_Approve the **production** environment on the deploy job to proceed._'
+          } > plan-summary.md
+          cat plan-summary.md >> "$GITHUB_STEP_SUMMARY"
+          gh release create '${{ needs.plan.outputs.next_tag }}' --draft --verify-tag \
+            --title 'FlowVid ${{ needs.plan.outputs.next_tag }}' --notes-file plan-summary.md
+      - name: State → AWAITING_APPROVAL
+        if: ${{ inputs.deploy }}
+        run: pnpm --filter ops-release release-cli state-transition --file "$ART/state.json" --to AWAITING_APPROVAL
+      - uses: actions/upload-artifact@v4
+        with: { name: release-artifacts, path: release-artifacts, overwrite: true, include-hidden-files: true }
+
+  # ── 5. AWAITING_APPROVAL → … → BROWSER_VERIFIED (protected environment) ─────────
+  deploy:
+    name: Deploy to production (digest-pinned)
+    needs: [plan, release-plan]
+    if: ${{ inputs.deploy }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment:
+      name: production
+      url: https://flowvidco.com
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      SSH_KEY_FILE: ${{ github.workspace }}/.ssh-deploy-key
+      KNOWN_HOSTS_FILE: ${{ github.workspace }}/.ssh-known-hosts
+      REMOTE: >-
+        --host ${{ vars.PRODUCTION_SSH_HOST }} --user ${{ vars.PRODUCTION_SSH_USER }}
+        --key ${{ github.workspace }}/.ssh-deploy-key --known-hosts ${{ github.workspace }}/.ssh-known-hosts
+        --repo-dir ${{ vars.PRODUCTION_REPO_DIR }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.git_sha }}
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: podcast-saas/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: podcast-saas/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile --filter ops-release --filter client-web
+      - uses: actions/download-artifact@v4
+        with: { name: release-artifacts, path: release-artifacts }
+      - name: Write SSH credentials (0600, never logged)
+        working-directory: .
+        run: |
+          umask 077
+          printf '%s\n' "${{ secrets.PRODUCTION_SSH_KEY }}" > "$SSH_KEY_FILE"
+          printf '%s\n' "${{ secrets.PRODUCTION_SSH_KNOWN_HOSTS }}" > "$KNOWN_HOSTS_FILE"
+      - name: State → DEPLOYING
+        run: pnpm --filter ops-release release-cli state-transition --file "$ART/state.json" --to DEPLOYING
+      - name: Pin VM checkout to the release commit
+        run: pnpm --filter ops-release release-cli remote-sync $REMOTE --git-sha "${{ needs.plan.outputs.git_sha }}"
+      - name: Deploy exact digests (pull → verify → retag → migrate → recreate → health-gate)
+        id: remote_deploy
+        continue-on-error: true
+        env:
+          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+        run: pnpm --filter ops-release release-cli remote-deploy $REMOTE --manifest "$ART/manifest.json" --ghcr-user "${{ github.repository_owner }}"
+      - name: Handle deploy failure (VM auto-rolled-back)
+        if: steps.remote_deploy.outcome == 'failure'
+        run: |
+          pnpm --filter ops-release release-cli state-transition --file "$ART/state.json" --to FAILED --note "deploy-images failed; VM auto-rollback engaged"
+          if pnpm --filter ops-release release-cli remote-health $REMOTE; then
+            pnpm --filter ops-release release-cli state-transition --file "$ART/state.json" --to ROLLED_BACK --note "previous version healthy"
+            echo '{"attempted":true,"target":"(previous version)","success":true}' > "$ART/rollback.json"
+          else
+            echo '{"attempted":true,"target":"(previous version)","success":false}' > "$ART/rollback.json"
+            echo '::error::Deployment failed AND the rollback is not healthy — manual intervention required.'
+          fi
+      - name: State → MIGRATED → SERVICES_RECREATED → HEALTHY
+        if: steps.remote_deploy.outcome == 'success'
+        run: |
+          pnpm --filter ops-release release-cli state-transition --file "$ART/state.json" --to MIGRATED
+          pnpm --filter ops-release release-cli state-transition --file "$ART/state.json" --to SERVICES_RECREATED
+          pnpm --filter ops-release release-cli state-transition --file "$ART/state.json" --to HEALTHY
+      - name: Data backfill (per policy — report first, apply only when allowed)
+        if: steps.remote_deploy.outcome == 'success' && inputs.backfill_policy != 'report-only'
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          if [ '${{ inputs.backfill_policy }}' = 'require-approval' ] && [ '${{ inputs.approve_high }}' = 'true' ]; then
+            pnpm --filter ops-release release-cli remote-backfill $REMOTE --mode apply --approve-unsafe --out "$ART/backfill-run.json"
+          else
+            # allow-safe: the VM-side script self-blocks (exit 2) on any unsafe plan.
+            pnpm --filter ops-release release-cli remote-backfill $REMOTE --mode apply --out "$ART/backfill-run.json"
+          fi
+      - name: VM audit (read-only)
+        if: steps.remote_deploy.outcome == 'success'
+        continue-on-error: true
+        run: |
+          pnpm --filter ops-release release-cli remote-audit $REMOTE --out "$ART/vm-audit.json"
+          pnpm --filter ops-release release-cli vm-audit --file "$ART/vm-audit.json" --policy '${{ inputs.backfill_policy }}' --out "$ART/vm-findings.json"
+      - name: Endpoint + live CSP audits
+        if: steps.remote_deploy.outcome == 'success'
+        continue-on-error: true
+        run: |
+          pnpm --filter ops-release release-cli endpoint-audit --out "$ART/endpoints.json"
+          pnpm --filter ops-release release-cli csp-audit --app client-web --out "$ART/csp-client-web.json"
+          pnpm --filter ops-release release-cli csp-audit --app admin-web --out "$ART/csp-admin-web.json"
+      - name: Browser verification (Playwright against production)
+        if: steps.remote_deploy.outcome == 'success'
+        continue-on-error: true
+        working-directory: podcast-saas/client-web
+        env:
+          SMOKE_BASE_URL: https://flowvidco.com
+          SMOKE_PUBLIC_PATH: ${{ vars.SMOKE_PUBLIC_PATH }}
+          SMOKE_PLAYLIST_PATH: ${{ vars.SMOKE_PLAYLIST_PATH }}
+          SMOKE_ADMIN_URL: https://admin.flowvidco.com
+          SMOKE_ADMIN_EMAIL: ${{ secrets.SMOKE_ADMIN_EMAIL }}
+          SMOKE_ADMIN_PASSWORD: ${{ secrets.SMOKE_ADMIN_PASSWORD }}
+          SMOKE_ADMIN_PREVIEW_PATH: ${{ vars.SMOKE_ADMIN_PREVIEW_PATH }}
+          PLAYWRIGHT_AUDIT_OUT: ${{ env.ART }}/browser-audit.json
+        run: |
+          npx playwright install --with-deps chromium
+          npx playwright test
+      - name: Summarize browser results
+        if: steps.remote_deploy.outcome == 'success'
+        continue-on-error: true
+        run: |
+          pnpm --filter ops-release release-cli playwright-summary --report client-web/e2e-results/results.json --out "$ART/playwright-summary.json"
+          pnpm --filter ops-release release-cli browser-audit --report "$ART/browser-audit.json" --out "$ART/browser-findings.json"
+      - name: Post-deploy gate (CRITICAL ⇒ rollback)
+        id: gate
+        if: steps.remote_deploy.outcome == 'success'
+        continue-on-error: true
+        run: |
+          pnpm --filter ops-release release-cli gate --phase post-deploy \
+            --findings "$ART/vm-findings.json,$ART/endpoints.json,$ART/csp-client-web.json,$ART/csp-admin-web.json,$ART/browser-findings.json,$ART/playwright-summary.json" \
+            ${{ inputs.approve_high && '--approve-high' || '' }} \
+            --out "$ART/gate.json"
+      - name: Automatic rollback (post-deploy CRITICAL)
+        if: steps.gate.outcome == 'failure' && steps.gate.outputs.gate_rollback == 'true'
+        run: |
+          pnpm --filter ops-release release-cli state-transition --file "$ART/state.json" --to FAILED --note "post-deploy verification found CRITICAL findings"
+          pnpm --filter ops-release release-cli remote-rollback $REMOTE --out "$ART/rollback.json"
+          pnpm --filter ops-release release-cli remote-health $REMOTE
+          pnpm --filter ops-release release-cli state-transition --file "$ART/state.json" --to ROLLED_BACK
+      - name: Mark failed (blocked without rollback need)
+        if: steps.gate.outcome == 'failure' && steps.gate.outputs.gate_rollback != 'true'
+        run: pnpm --filter ops-release release-cli state-transition --file "$ART/state.json" --to FAILED --note "post-deploy gate blocked (unapproved HIGH findings)"
+      - name: State → BROWSER_VERIFIED
+        if: steps.gate.outcome == 'success'
+        run: pnpm --filter ops-release release-cli state-transition --file "$ART/state.json" --to BROWSER_VERIFIED
+      - name: Upload Playwright evidence (on failure)
+        if: always() && (steps.gate.outcome == 'failure' || steps.remote_deploy.outcome == 'failure')
+        uses: actions/upload-artifact@v4
+        with: { name: playwright-evidence, path: podcast-saas/client-web/e2e-results, if-no-files-found: ignore }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: release-artifacts, path: release-artifacts, overwrite: true, include-hidden-files: true }
+      - name: Fail the job if deployment or verification failed
+        if: steps.remote_deploy.outcome == 'failure' || steps.gate.outcome == 'failure'
+        run: exit 1
+
+  # ── 6. BROWSER_VERIFIED → RELEASED ───────────────────────────────────────────────
+  publish:
+    name: Publish GitHub release
+    needs: [plan, deploy]
+    if: ${{ inputs.deploy && needs.deploy.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.git_sha }}
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: podcast-saas/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: podcast-saas/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile --filter ops-release
+      - uses: actions/download-artifact@v4
+        with: { name: release-artifacts, path: release-artifacts }
+      - name: Publish the release (production verified)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit '${{ needs.plan.outputs.next_tag }}' --draft=false
+      - name: State → RELEASED
+        run: pnpm --filter ops-release release-cli state-transition --file "$ART/state.json" --to RELEASED
+      - uses: actions/upload-artifact@v4
+        with: { name: release-artifacts, path: release-artifacts, overwrite: true, include-hidden-files: true }
+
+  # ── 7. Always: assemble release-report.{md,json} ─────────────────────────────────
+  report:
+    name: Release report
+    needs: [plan, verify, build-images, release-plan, deploy, publish]
+    if: ${{ always() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: podcast-saas/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: podcast-saas/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile --filter ops-release
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with: { name: release-artifacts, path: release-artifacts }
+      - name: Assemble release-report.{md,json}
+        run: |
+          STARTED="$(jq -r '.history[0].at // empty' "$ART/state.json" 2>/dev/null || true)"
+          pnpm --filter ops-release release-cli report --dir "$ART" \
+            --run-id "$RUN_ID" \
+            --version '${{ needs.plan.outputs.next_tag }}' \
+            --previous-version '${{ needs.plan.outputs.current_tag }}' \
+            --git-sha '${{ needs.plan.outputs.git_sha }}' \
+            --bump '${{ inputs.bump }}' --deploy '${{ inputs.deploy }}' \
+            --backfill-policy '${{ inputs.backfill_policy }}' \
+            --actor '${{ github.actor }}' \
+            --workflow-url '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}' \
+            ${STARTED:+--started-at "$STARTED"} --ended-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --out-json "$ART/release-report.json" --out-md "$ART/release-report.md"
+      - name: Publish summary
+        run: cat "$ART/release-report.md" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with: { name: release-report, path: "release-artifacts/release-report.*" }

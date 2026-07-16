@@ -29,3 +29,6 @@ coverage/
 # Release-verify optional public build vars + temp isolation backups
 deploy/release.env
 *.release-bak
+
+# Playwright production-audit outputs (reports, traces, screenshots)
+e2e-results/

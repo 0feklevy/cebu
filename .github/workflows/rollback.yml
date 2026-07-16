@@ -1,0 +1,177 @@
+# Rollback FlowVid — restore a previous release's exact image digests.
+#
+# Application images only: backend, worker (same image), client-web, admin-web are
+# restored coherently. The database schema is NEVER rolled back automatically —
+# migrations are expand/contract by policy, so the previous images run against the
+# newer schema; any schema reversal is a manual, reviewed operation
+# (see backend-api/src/db/migrations/*.rollback.sql helpers).
+name: Rollback FlowVid
+
+run-name: 'Rollback FlowVid → ${{ inputs.version }} by @${{ github.actor }}'
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release tag to restore (e.g. v0.1.2). Its images must exist in GHCR.'
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+env:
+  ART: ${{ github.workspace }}/release-artifacts
+  RUN_ID: rollback-${{ github.run_id }}-${{ github.run_attempt }}
+
+defaults:
+  run:
+    working-directory: podcast-saas
+
+jobs:
+  resolve:
+    name: Resolve & verify target digests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      git_sha: ${{ steps.sha.outputs.git_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: podcast-saas/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: podcast-saas/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile --filter ops-release
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Validate the requested version tag
+        id: sha
+        run: |
+          [[ '${{ inputs.version }}' =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo '::error::version must look like vX.Y.Z'; exit 1; }
+          SHA="$(git rev-parse '${{ inputs.version }}^{commit}' 2>/dev/null || true)"
+          [ -n "$SHA" ] || { echo '::error::tag ${{ inputs.version }} does not exist in the repository'; exit 1; }
+          echo "git_sha=$SHA" >> "$GITHUB_OUTPUT"
+      - name: Resolve immutable digests from GHCR (must all exist)
+        working-directory: .
+        run: |
+          mkdir -p digests release-artifacts
+          for svc in backend client-web admin-web; do
+            REF="ghcr.io/0feklevy/cebu/${svc}:${{ inputs.version }}"
+            DIGEST="$(docker buildx imagetools inspect "$REF" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+            [ -n "$DIGEST" ] || { echo "::error::no digest for $REF"; exit 1; }
+            printf '{"service":"%s","repository":"ghcr.io/0feklevy/cebu/%s","tag":"%s","digest":"%s"}\n' \
+              "$svc" "$svc" '${{ inputs.version }}' "$DIGEST" > "digests/${svc}.json"
+          done
+          jq -s '{schema:"flowvid.image-manifest/v1", version:"${{ inputs.version }}",
+                  gitSha:"${{ steps.sha.outputs.git_sha }}", images:.}' digests/*.json > "$ART/manifest.json"
+          cat "$ART/manifest.json"
+      - name: Verify manifest
+        run: pnpm --filter ops-release release-cli image-manifest --verify --manifest "$ART/manifest.json" --out "$ART/image-manifest.json"
+      - uses: actions/upload-artifact@v4
+        with: { name: release-artifacts, path: release-artifacts, overwrite: true }
+
+  rollback:
+    name: Restore ${{ inputs.version }} on production
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment:
+      name: production
+      url: https://flowvidco.com
+    permissions:
+      contents: read
+    env:
+      REMOTE: >-
+        --host ${{ vars.PRODUCTION_SSH_HOST }} --user ${{ vars.PRODUCTION_SSH_USER }}
+        --key ${{ github.workspace }}/.ssh-deploy-key --known-hosts ${{ github.workspace }}/.ssh-known-hosts
+        --repo-dir ${{ vars.PRODUCTION_REPO_DIR }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.git_sha }}
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: podcast-saas/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: podcast-saas/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile --filter ops-release --filter client-web
+      - uses: actions/download-artifact@v4
+        with: { name: release-artifacts, path: release-artifacts }
+      - name: Write SSH credentials (0600, never logged)
+        working-directory: .
+        run: |
+          umask 077
+          printf '%s\n' "${{ secrets.PRODUCTION_SSH_KEY }}" > .ssh-deploy-key
+          printf '%s\n' "${{ secrets.PRODUCTION_SSH_KNOWN_HOSTS }}" > .ssh-known-hosts
+      - name: Pin VM checkout to the target release commit
+        run: pnpm --filter ops-release release-cli remote-sync $REMOTE --git-sha "${{ needs.resolve.outputs.git_sha }}"
+      - name: Restore images (pull → verify → retag → recreate; NO schema rollback)
+        env:
+          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+        run: |
+          pnpm --filter ops-release release-cli remote-deploy $REMOTE \
+            --manifest "$ART/manifest.json" --ghcr-user "${{ github.repository_owner }}" --skip-migrations
+          echo '{"attempted":true,"target":"${{ inputs.version }}","success":true}' > "$ART/rollback.json"
+      - name: Full health + endpoint + CSP verification
+        run: |
+          pnpm --filter ops-release release-cli remote-health $REMOTE
+          pnpm --filter ops-release release-cli endpoint-audit --out "$ART/endpoints.json"
+          pnpm --filter ops-release release-cli csp-audit --app client-web --out "$ART/csp-client-web.json" || true
+          pnpm --filter ops-release release-cli csp-audit --app admin-web --out "$ART/csp-admin-web.json" || true
+          pnpm --filter ops-release release-cli remote-audit $REMOTE --out "$ART/vm-audit.json" || true
+          pnpm --filter ops-release release-cli vm-audit --file "$ART/vm-audit.json" --policy report-only --out "$ART/vm-findings.json" || true
+      - name: Browser smoke suite against the restored version
+        continue-on-error: true
+        working-directory: podcast-saas/client-web
+        env:
+          SMOKE_BASE_URL: https://flowvidco.com
+          SMOKE_PUBLIC_PATH: ${{ vars.SMOKE_PUBLIC_PATH }}
+          SMOKE_PLAYLIST_PATH: ${{ vars.SMOKE_PLAYLIST_PATH }}
+          SMOKE_ADMIN_URL: https://admin.flowvidco.com
+          SMOKE_ADMIN_EMAIL: ${{ secrets.SMOKE_ADMIN_EMAIL }}
+          SMOKE_ADMIN_PASSWORD: ${{ secrets.SMOKE_ADMIN_PASSWORD }}
+          SMOKE_ADMIN_PREVIEW_PATH: ${{ vars.SMOKE_ADMIN_PREVIEW_PATH }}
+          PLAYWRIGHT_AUDIT_OUT: ${{ env.ART }}/browser-audit.json
+        run: |
+          npx playwright install --with-deps chromium
+          npx playwright test
+      - name: Post-rollback gate
+        run: |
+          pnpm --filter ops-release release-cli playwright-summary --report client-web/e2e-results/results.json --out "$ART/playwright-summary.json" || true
+          pnpm --filter ops-release release-cli browser-audit --report "$ART/browser-audit.json" --out "$ART/browser-findings.json" || true
+          pnpm --filter ops-release release-cli gate --phase post-deploy \
+            --findings "$ART/vm-findings.json,$ART/endpoints.json,$ART/csp-client-web.json,$ART/csp-admin-web.json,$ART/browser-findings.json,$ART/playwright-summary.json" \
+            --out "$ART/gate.json"
+      - name: Rollback report
+        if: always()
+        run: |
+          pnpm --filter ops-release release-cli report --dir "$ART" \
+            --run-id "$RUN_ID" --version '${{ inputs.version }}' \
+            --git-sha '${{ needs.resolve.outputs.git_sha }}' \
+            --actor '${{ github.actor }}' \
+            --workflow-url '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}' \
+            --ended-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --out-json "$ART/rollback-report.json" --out-md "$ART/rollback-report.md"
+          cat "$ART/rollback-report.md" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: rollback-report, path: "release-artifacts/rollback-report.*" }

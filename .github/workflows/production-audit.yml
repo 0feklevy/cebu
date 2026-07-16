@@ -1,0 +1,118 @@
+# Production audit — read-only inspection of the live system, on demand and daily.
+# Inspects containers, endpoints, certificates, CSP, browser behaviour, assets, and
+# database URL fields WITHOUT changing anything. Fails (red) when any CRITICAL
+# finding exists, so a broken production is visible even between releases.
+#
+# Uses the "production-audit" environment (read-only SSH credentials, no approval
+# gate) so the daily schedule never waits on a human.
+name: Production audit
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * *' # daily, 03:17 UTC (conservative, off-peak)
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-audit
+  cancel-in-progress: false
+
+env:
+  ART: ${{ github.workspace }}/release-artifacts
+  RUN_ID: audit-${{ github.run_id }}-${{ github.run_attempt }}
+
+defaults:
+  run:
+    working-directory: podcast-saas
+
+jobs:
+  audit:
+    name: Audit production (read-only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment:
+      name: production-audit
+    env:
+      REMOTE: >-
+        --host ${{ vars.PRODUCTION_SSH_HOST }} --user ${{ vars.PRODUCTION_SSH_USER }}
+        --key ${{ github.workspace }}/.ssh-deploy-key --known-hosts ${{ github.workspace }}/.ssh-known-hosts
+        --repo-dir ${{ vars.PRODUCTION_REPO_DIR }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: podcast-saas/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: podcast-saas/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile --filter ops-release --filter client-web
+      - name: Public endpoints + live CSP (semantic)
+        continue-on-error: true
+        run: |
+          mkdir -p "$ART"
+          pnpm --filter ops-release release-cli endpoint-audit --out "$ART/endpoints.json" || true
+          pnpm --filter ops-release release-cli csp-audit --app client-web --out "$ART/csp-client-web.json" || true
+          pnpm --filter ops-release release-cli csp-audit --app admin-web --out "$ART/csp-admin-web.json" || true
+      - name: Write SSH credentials (0600, never logged)
+        working-directory: .
+        run: |
+          umask 077
+          printf '%s\n' "${{ secrets.PRODUCTION_SSH_KEY }}" > .ssh-deploy-key
+          printf '%s\n' "${{ secrets.PRODUCTION_SSH_KNOWN_HOSTS }}" > .ssh-known-hosts
+      - name: VM snapshot (containers, /health, worker, certs, DB URL audit — read-only)
+        continue-on-error: true
+        run: |
+          pnpm --filter ops-release release-cli remote-audit $REMOTE --out "$ART/vm-audit.json" \
+            && pnpm --filter ops-release release-cli vm-audit --file "$ART/vm-audit.json" --policy report-only --out "$ART/vm-findings.json" \
+            || true
+      - name: Browser audit (Playwright over the live site)
+        continue-on-error: true
+        working-directory: podcast-saas/client-web
+        env:
+          SMOKE_BASE_URL: https://flowvidco.com
+          SMOKE_PUBLIC_PATH: ${{ vars.SMOKE_PUBLIC_PATH }}
+          SMOKE_PLAYLIST_PATH: ${{ vars.SMOKE_PLAYLIST_PATH }}
+          SMOKE_ADMIN_URL: https://admin.flowvidco.com
+          SMOKE_ADMIN_EMAIL: ${{ secrets.SMOKE_ADMIN_EMAIL }}
+          SMOKE_ADMIN_PASSWORD: ${{ secrets.SMOKE_ADMIN_PASSWORD }}
+          SMOKE_ADMIN_PREVIEW_PATH: ${{ vars.SMOKE_ADMIN_PREVIEW_PATH }}
+          PLAYWRIGHT_AUDIT_OUT: ${{ env.ART }}/browser-audit.json
+        run: |
+          npx playwright install --with-deps chromium
+          npx playwright test
+      - name: Findings + verdict
+        id: gate
+        continue-on-error: true
+        run: |
+          pnpm --filter ops-release release-cli playwright-summary --report client-web/e2e-results/results.json --out "$ART/playwright-summary.json" || true
+          pnpm --filter ops-release release-cli browser-audit --report "$ART/browser-audit.json" --out "$ART/browser-findings.json" || true
+          pnpm --filter ops-release release-cli gate --phase post-deploy \
+            --findings "$ART/vm-findings.json,$ART/endpoints.json,$ART/csp-client-web.json,$ART/csp-admin-web.json,$ART/browser-findings.json,$ART/playwright-summary.json" \
+            --out "$ART/gate.json"
+      - name: Audit report
+        if: always()
+        run: |
+          pnpm --filter ops-release release-cli report --dir "$ART" \
+            --run-id "$RUN_ID" --actor '${{ github.actor }}' \
+            --workflow-url '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}' \
+            --ended-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --out-json "$ART/audit-report.json" --out-md "$ART/audit-report.md"
+          cat "$ART/audit-report.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-audit-${{ github.run_id }}
+          path: |
+            release-artifacts
+            podcast-saas/client-web/e2e-results
+          if-no-files-found: ignore
+      - name: Red when CRITICAL findings exist
+        if: steps.gate.outcome == 'failure'
+        run: |
+          echo '::error::Production audit found blocking (CRITICAL/unapproved HIGH) findings — see the audit report.'
+          exit 1
