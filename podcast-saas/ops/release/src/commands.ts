@@ -482,7 +482,7 @@ export function cmdReport(
   };
 
   const plan = read<PlanArtifact>(ARTIFACTS.plan);
-  const stateDoc = read<{ state?: ReleaseState }>(ARTIFACTS.state);
+  const stateDoc = read<{ state?: ReleaseState; history?: Array<{ state: string; at: string }> }>(ARTIFACTS.state);
   const gateDoc = read<{ decision: GateDecision }>(ARTIFACTS.gate);
   const manifestDoc = read<{ manifest?: ImageManifest } | ImageManifest>(ARTIFACTS.imageManifest);
   const manifest = manifestDoc && 'images' in manifestDoc ? manifestDoc : (manifestDoc as { manifest?: ImageManifest } | undefined)?.manifest;
@@ -491,14 +491,38 @@ export function cmdReport(
   const dbAudit = read<Record<string, unknown>>(ARTIFACTS.dbUrlAudit);
   const playwright = read<PlaywrightSummary>(ARTIFACTS.playwright);
   const endpointsDoc = read<{ endpoints: EndpointStatus[] }>(ARTIFACTS.endpoints);
-  const stages = read<StageTiming[]>(ARTIFACTS.stages) ?? [];
+  // Stage timings: explicit stages.json wins; otherwise derive durations from the
+  // persisted state-machine history (time between consecutive transitions).
+  let stages = read<StageTiming[]>(ARTIFACTS.stages) ?? [];
+  if (stages.length === 0 && stateDoc?.history && stateDoc.history.length > 1) {
+    stages = stateDoc.history.slice(1).map((event, i) => {
+      const prev = stateDoc.history![i];
+      const duration = Date.parse(event.at) - Date.parse(prev.at);
+      return {
+        stage: `${prev.state} → ${event.state}`,
+        status: event.state === 'FAILED' ? ('failure' as const) : ('success' as const),
+        startedAt: prev.at,
+        endedAt: event.at,
+        ...(Number.isFinite(duration) ? { durationMs: duration } : {}),
+      };
+    });
+  }
   const tests = read<ReleaseReport['tests']>(ARTIFACTS.tests);
   const rollback = read<ReleaseReport['rollback']>(ARTIFACTS.rollback);
-  const failing = read<ReleaseReport['failing']>(ARTIFACTS.failing);
+  let failing = read<ReleaseReport['failing']>(ARTIFACTS.failing);
 
   const findings = collectFindingsFromFiles(
     Object.values(ARTIFACTS).map((n) => join(opts.dir, n)),
   );
+
+  // Derive "first failure" when no explicit failing.json was recorded.
+  if (!failing) {
+    if (playwright && playwright.failures.length > 0) failing = { test: playwright.failures[0] };
+    else {
+      const firstBlocking = findings.find((f) => f.severity === 'CRITICAL') ?? findings.find((f) => f.severity === 'HIGH');
+      if (firstBlocking && gateDoc?.decision.blocked) failing = { command: firstBlocking.id };
+    }
+  }
 
   const cspSection: Record<string, unknown> = {};
   for (const [key, file] of [['client-web', ARTIFACTS.cspClient], ['admin-web', ARTIFACTS.cspAdmin]] as const) {

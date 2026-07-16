@@ -24,6 +24,14 @@ import {
   defaultContext,
 } from './commands.js';
 import { cmdDryRun } from './dry-run.js';
+import {
+  cmdRemoteAudit,
+  cmdRemoteBackfill,
+  cmdRemoteDeploy,
+  cmdRemoteHealth,
+  cmdRemoteRollback,
+  cmdRemoteSync,
+} from './remote-commands.js';
 import type { BumpKind } from './semver.js';
 import type { Phase } from './severity.js';
 import type { ReleaseState } from './state-machine.js';
@@ -68,6 +76,14 @@ const USAGE = `Usage: release-cli <command> [flags]
   state-transition    --file state.json --to STATE [--note TEXT]
   report              --dir artifacts/ --run-id ID --out-json report.json --out-md report.md [meta flags]
   dry-run             --out-dir DIR
+
+  Remote (SSH; --host --user --key --repo-dir [--known-hosts]):
+  remote-sync         --git-sha SHA               pin the VM checkout to the release commit
+  remote-deploy       --manifest m.json --ghcr-user U [--skip-migrations]   (token via GHCR_PULL_TOKEN env)
+  remote-rollback     [--target vX.Y.Z] [--out rollback.json]
+  remote-audit        --out vm-audit.json         read-only VM snapshot
+  remote-backfill     --mode report|apply --out backfill.json [--approve-unsafe] [--max-affected N]
+  remote-health       run health-check.sh on the VM
 `;
 
 async function main(): Promise<number> {
@@ -156,6 +172,39 @@ async function main(): Promise<number> {
       return 0;
     case 'dry-run':
       return (await cmdDryRun(ctx, { outDir: need('out-dir') })).exitCode;
+    case 'remote-sync':
+    case 'remote-deploy':
+    case 'remote-rollback':
+    case 'remote-audit':
+    case 'remote-backfill':
+    case 'remote-health': {
+      const target = {
+        host: need('host'),
+        user: need('user'),
+        keyPath: need('key'),
+        knownHostsPath: flags.get('known-hosts'),
+        repoDir: need('repo-dir'),
+      };
+      if (command === 'remote-sync') return cmdRemoteSync(ctx, { ...target, gitSha: need('git-sha') });
+      if (command === 'remote-deploy')
+        return cmdRemoteDeploy(ctx, {
+          ...target,
+          manifestFile: need('manifest'),
+          ghcrUser: need('ghcr-user'),
+          skipMigrations: bools.has('skip-migrations'),
+        });
+      if (command === 'remote-rollback') return cmdRemoteRollback(ctx, { ...target, target: flags.get('target'), out: flags.get('out') });
+      if (command === 'remote-audit') return cmdRemoteAudit(ctx, { ...target, out: need('out') });
+      if (command === 'remote-backfill')
+        return cmdRemoteBackfill(ctx, {
+          ...target,
+          mode: need('mode') as 'report' | 'apply',
+          approveUnsafe: bools.has('approve-unsafe'),
+          maxAffected: flags.has('max-affected') ? Number(flags.get('max-affected')) : undefined,
+          out: need('out'),
+        });
+      return cmdRemoteHealth(ctx, target);
+    }
     case undefined:
     case 'help':
     case '--help':
