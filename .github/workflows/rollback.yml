@@ -43,19 +43,20 @@ jobs:
     outputs:
       git_sha: ${{ steps.sha.outputs.git_sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
+          persist-credentials: false
           fetch-depth: 0
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           package_json_file: podcast-saas/package.json
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: podcast-saas/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile --filter ops-release
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -83,7 +84,7 @@ jobs:
           cat "$ART/manifest.json"
       - name: Verify manifest
         run: pnpm --filter ops-release release-cli image-manifest --verify --manifest "$ART/manifest.json" --out "$ART/image-manifest.json"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with: { name: release-artifacts, path: release-artifacts, overwrite: true }
 
   rollback:
@@ -102,19 +103,23 @@ jobs:
         --key ${{ github.workspace }}/.ssh-deploy-key --known-hosts ${{ github.workspace }}/.ssh-known-hosts
         --repo-dir ${{ vars.PRODUCTION_REPO_DIR }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
+          persist-credentials: false
           ref: ${{ needs.resolve.outputs.git_sha }}
-      - uses: pnpm/action-setup@v4
+      - name: Record rollback start time (for the report's Started field)
+        working-directory: .
+        run: echo "ROLLBACK_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+      - uses: pnpm/action-setup@v6
         with:
           package_json_file: podcast-saas/package.json
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: podcast-saas/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile --filter ops-release --filter client-web
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with: { name: release-artifacts, path: release-artifacts }
       - name: Write SSH credentials (0600, never logged)
         working-directory: .
@@ -165,13 +170,15 @@ jobs:
         if: always()
         run: |
           pnpm --filter ops-release release-cli report --dir "$ART" \
+            --kind rollback \
             --run-id "$RUN_ID" --version '${{ inputs.version }}' \
+            --started-at "${ROLLBACK_STARTED_AT}" \
             --git-sha '${{ needs.resolve.outputs.git_sha }}' \
             --actor '${{ github.actor }}' \
             --workflow-url '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}' \
             --ended-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --out-json "$ART/rollback-report.json" --out-md "$ART/rollback-report.md"
           cat "$ART/rollback-report.md" >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with: { name: rollback-report, path: "release-artifacts/rollback-report.*" }

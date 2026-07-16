@@ -66,13 +66,14 @@ jobs:
         working-directory: .
         run: |
           [ "${GITHUB_REF}" = "refs/heads/main" ] || { echo "::error::Release must be dispatched on main (got ${GITHUB_REF})."; exit 1; }
-      - uses: actions/checkout@v4
+      # credentials kept: preflight runs `git ls-remote --tags origin` (remote read).
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           package_json_file: podcast-saas/package.json
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
@@ -100,7 +101,7 @@ jobs:
             --out "$ART/gate.json"
       - name: State → SOURCE_VERIFIED
         run: pnpm --filter ops-release release-cli state-transition --file "$ART/state.json" --to SOURCE_VERIFIED
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with: { name: release-artifacts, path: release-artifacts, overwrite: true, include-hidden-files: true }
 
   # ── 2. SOURCE_VERIFIED → TESTED ────────────────────────────────────────────────
@@ -110,18 +111,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
+          persist-credentials: false
           ref: ${{ needs.plan.outputs.git_sha }}
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           package_json_file: podcast-saas/package.json
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: podcast-saas/pnpm-lock.yaml
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with: { name: release-artifacts, path: release-artifacts }
       - name: release:verify (frozen install → typecheck → lint → tests → prod builds → bundle scan)
         run: pnpm release:verify 2>&1 | tee "$ART/release-verify.log"
@@ -135,7 +137,7 @@ jobs:
           } > "$ART/tests.json" || echo '[]' > "$ART/tests.json"
       - name: State → TESTED
         run: pnpm --filter ops-release release-cli state-transition --file "$ART/state.json" --to TESTED
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with: { name: release-artifacts, path: release-artifacts, overwrite: true, include-hidden-files: true }
 
   # ── 3. TESTED → IMAGES_BUILT/IMAGES_PUBLISHED (GitHub-hosted builders, never the VM) ──
@@ -152,11 +154,12 @@ jobs:
       matrix:
         service: [backend, client-web, admin-web]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
+          persist-credentials: false
           ref: ${{ needs.plan.outputs.git_sha }}
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -164,7 +167,7 @@ jobs:
       - name: Build & push backend image
         if: matrix.service == 'backend'
         id: build_backend
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: podcast-saas
           file: podcast-saas/deploy/docker/backend.Dockerfile
@@ -180,7 +183,7 @@ jobs:
       - name: Build & push ${{ matrix.service }} image
         if: matrix.service != 'backend'
         id: build_web
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: podcast-saas
           file: podcast-saas/deploy/docker/web.Dockerfile
@@ -213,7 +216,7 @@ jobs:
           printf '{"service":"%s","repository":"ghcr.io/0feklevy/cebu/%s","tag":"%s","digest":"%s"}\n' \
             '${{ matrix.service }}' '${{ matrix.service }}' '${{ needs.plan.outputs.next_tag }}' "$DIGEST" \
             > "digests/${{ matrix.service }}.json"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with: { name: 'digest-${{ matrix.service }}', path: digests/ }
 
   # ── 4. → MIGRATIONS_PLANNED (+ tag + draft release + reviewable plan) ───────────
@@ -225,22 +228,23 @@ jobs:
     permissions:
       contents: write # annotated tag + draft release ONLY in this job
     steps:
-      - uses: actions/checkout@v4
+      # credentials kept: this job pushes the annotated release tag.
+      - uses: actions/checkout@v6
         with:
           ref: ${{ needs.plan.outputs.git_sha }}
           fetch-depth: 0
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           package_json_file: podcast-saas/package.json
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: podcast-saas/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile --filter ops-release
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with: { name: release-artifacts, path: release-artifacts }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with: { pattern: digest-*, path: digests, merge-multiple: true }
       - name: Assemble immutable image manifest
         working-directory: .
@@ -298,7 +302,7 @@ jobs:
       - name: State → AWAITING_APPROVAL
         if: ${{ inputs.deploy }}
         run: pnpm --filter ops-release release-cli state-transition --file "$ART/state.json" --to AWAITING_APPROVAL
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with: { name: release-artifacts, path: release-artifacts, overwrite: true, include-hidden-files: true }
 
   # ── 5. AWAITING_APPROVAL → … → BROWSER_VERIFIED (protected environment) ─────────
@@ -324,19 +328,20 @@ jobs:
         --key ${{ github.workspace }}/.ssh-deploy-key --known-hosts ${{ github.workspace }}/.ssh-known-hosts
         --repo-dir ${{ vars.PRODUCTION_REPO_DIR }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
+          persist-credentials: false
           ref: ${{ needs.plan.outputs.git_sha }}
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           package_json_file: podcast-saas/package.json
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: podcast-saas/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile --filter ops-release --filter client-web
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with: { name: release-artifacts, path: release-artifacts }
       - name: Write SSH credentials (0600, never logged)
         working-directory: .
@@ -441,9 +446,9 @@ jobs:
         run: pnpm --filter ops-release release-cli state-transition --file "$ART/state.json" --to BROWSER_VERIFIED
       - name: Upload Playwright evidence (on failure)
         if: always() && (steps.gate.outcome == 'failure' || steps.remote_deploy.outcome == 'failure')
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with: { name: playwright-evidence, path: podcast-saas/client-web/e2e-results, if-no-files-found: ignore }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with: { name: release-artifacts, path: release-artifacts, overwrite: true, include-hidden-files: true }
       - name: Fail the job if deployment or verification failed
@@ -460,19 +465,20 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
+          persist-credentials: false
           ref: ${{ needs.plan.outputs.git_sha }}
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           package_json_file: podcast-saas/package.json
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: podcast-saas/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile --filter ops-release
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with: { name: release-artifacts, path: release-artifacts }
       - name: Publish the release (production verified)
         env:
@@ -480,7 +486,7 @@ jobs:
         run: gh release edit '${{ needs.plan.outputs.next_tag }}' --draft=false
       - name: State → RELEASED
         run: pnpm --filter ops-release release-cli state-transition --file "$ART/state.json" --to RELEASED
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with: { name: release-artifacts, path: release-artifacts, overwrite: true, include-hidden-files: true }
 
   # ── 7. Always: assemble release-report.{md,json} ─────────────────────────────────
@@ -491,23 +497,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
         with:
           package_json_file: podcast-saas/package.json
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: podcast-saas/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile --filter ops-release
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         continue-on-error: true
         with: { name: release-artifacts, path: release-artifacts }
       - name: Assemble release-report.{md,json}
         run: |
           STARTED="$(jq -r '.history[0].at // empty' "$ART/state.json" 2>/dev/null || true)"
           pnpm --filter ops-release release-cli report --dir "$ART" \
+            --kind release \
             --run-id "$RUN_ID" \
             --version '${{ needs.plan.outputs.next_tag }}' \
             --previous-version '${{ needs.plan.outputs.current_tag }}' \
@@ -520,5 +529,5 @@ jobs:
             --out-json "$ART/release-report.json" --out-md "$ART/release-report.md"
       - name: Publish summary
         run: cat "$ART/release-report.md" >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with: { name: release-report, path: "release-artifacts/release-report.*" }
