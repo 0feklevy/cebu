@@ -1,0 +1,22 @@
+{
+  "name": "ops-release",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Deterministic release engine for FlowVid. No AI at release time — plain TypeScript run by GitHub Actions.",
+  "scripts": {
+    "release-cli": "tsx src/cli.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.0.0",
+    "eslint": "^9.39.4",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.4",
+    "typescript-eslint": "^8.60.1",
+    "vitest": "^4.1.7"
+  }
+}

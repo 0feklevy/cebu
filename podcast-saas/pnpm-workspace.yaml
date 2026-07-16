@@ -3,6 +3,7 @@ packages:
   - 'client-web'
   - 'admin-web'
   - 'shared'
+  - 'ops/release'
 allowBuilds:
   '@google/genai': true
   bson: true
