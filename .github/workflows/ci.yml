@@ -1,0 +1,85 @@
+# CI — runs on every PR and push to main.
+# Deterministic gate: frozen install → typecheck → non-interactive lint → tests →
+# production builds with explicit public URLs → bundle localhost scan (all via the
+# existing pnpm release:verify), plus static audits (secrets, migrations, Dockerfiles,
+# incident regressions). No AI, no secrets, no production access.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: podcast-saas
+
+jobs:
+  release-verify:
+    name: Release verification gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: podcast-saas/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: podcast-saas/pnpm-lock.yaml
+      - name: release:verify (frozen install → typecheck → lint → tests → prod builds → bundle scan)
+        run: pnpm release:verify
+
+  static-audits:
+    name: Static audits (secrets, migrations, docker, incident regressions)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history + tags for the migration base ref
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: podcast-saas/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: podcast-saas/pnpm-lock.yaml
+      - name: Install release engine only
+        run: pnpm install --frozen-lockfile --filter ops-release
+      - name: Secret scan (tracked files only — never reads env/key contents)
+        run: pnpm --filter ops-release release-cli secret-scan
+      - name: Migration audit vs latest release tag
+        run: |
+          BASE_TAG="$(git tag -l | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)"
+          echo "Migration audit base: ${BASE_TAG:-<none>}"
+          pnpm --filter ops-release release-cli migration-audit --base-ref "${BASE_TAG}"
+      - name: Dockerfile checks (buildx lint, no build)
+        run: |
+          docker buildx build --check -f deploy/docker/backend.Dockerfile .
+          docker buildx build --check -f deploy/docker/web.Dockerfile --build-arg APP=client-web .
+      - name: Incident regression — certbot one-off runs must use an explicit entrypoint
+        run: |
+          grep -q -- '--entrypoint certbot certbot certonly' deploy/scripts/init-ssl.sh
+          if grep -nE 'compose run (--rm )?certbot certonly' deploy/scripts/init-ssl.sh; then
+            echo '::error::init-ssl.sh invokes the certbot renewal-loop entrypoint for a one-off run (the v0.1.0 hang).'
+            exit 1
+          fi
+      - name: Incident regression — VM deploy path must never build from source
+        run: |
+          for forbidden in 'pnpm install' 'next build' 'compose build' 'docker build' 'tsc'; do
+            if grep -nF "$forbidden" deploy/scripts/deploy-images.sh; then
+              echo "::error::deploy-images.sh contains '$forbidden' — the VM must not compile during releases."
+              exit 1
+            fi
+          done
