@@ -105,6 +105,32 @@ describe('auditMigrations', () => {
     expect(res.findings.some((f) => f.id === 'migrations.out-of-order')).toBe(true);
   });
 
+  it('treats .rollback.sql companions as INFO helpers, not runner drift (repo convention)', () => {
+    const res = auditMigrations(
+      input({
+        diskFiles: [
+          { name: '046_token_usage_cost_precision.sql', content: 'ALTER TABLE token_usage ALTER COLUMN cost TYPE numeric(12,6);' },
+          { name: '030_course_publishing.rollback.sql', content: 'DROP TABLE courses;' },
+        ],
+        runnerSource: runnerSource(['046_token_usage_cost_precision.sql']),
+      }),
+    );
+    expect(res.findings.map((f) => `${f.severity}:${f.id}`)).toEqual(['INFO:migrations.rollback-helper']);
+  });
+
+  it('flags unrecognized sql files (typo’d names the runner would silently skip) as HIGH', () => {
+    const res = auditMigrations(
+      input({
+        diskFiles: [
+          { name: '046_token_usage_cost_precision.sql', content: 'ALTER TABLE token_usage ALTER COLUMN cost TYPE numeric(12,6);' },
+          { name: '47-new-feature.sql', content: 'CREATE TABLE widgets (id int);' },
+        ],
+        runnerSource: runnerSource(['046_token_usage_cost_precision.sql']),
+      }),
+    );
+    expect(res.findings.some((f) => f.id === 'migrations.unrecognized-file' && f.severity === 'HIGH')).toBe(true);
+  });
+
   it('classifies destructive migrations as HIGH and CONCURRENTLY as CRITICAL', () => {
     const res = auditMigrations(
       input({

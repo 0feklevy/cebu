@@ -139,19 +139,28 @@ const numericPrefix = (name: string): number | null => {
 export function auditMigrations(input: MigrationAuditInput): MigrationAuditResult {
   const findings: Finding[] = [];
   const excluded = new Set(input.excluded);
-  const disk = input.diskFiles.filter((f) => !excluded.has(f.name)).sort((a, b) => a.name.localeCompare(b.name));
-  const diskNames = disk.map((f) => f.name);
-  const baseSet = new Set(input.baseNames.filter((n) => !excluded.has(n)));
-  const newFiles = disk.filter((f) => !baseSet.has(f.name));
+  const allSql = input.diskFiles.filter((f) => !excluded.has(f.name));
 
-  // --- filename shape + ordering -------------------------------------------------
-  for (const f of newFiles) {
-    if (!input.filePattern.test(f.name)) {
+  // Only canonical NNN_snake_case.sql files are runnable migrations. `.rollback.sql`
+  // companions are manual, forward-only-runner rollback helpers by repo convention;
+  // anything else unrecognized is a hazard (the runner would silently never apply it).
+  const disk = allSql.filter((f) => input.filePattern.test(f.name)).sort((a, b) => a.name.localeCompare(b.name));
+  for (const f of allSql.filter((x) => !input.filePattern.test(x.name))) {
+    if (/\.rollback\.sql$/i.test(f.name)) {
       findings.push(
-        finding('migrations.bad-filename', 'HIGH', 'migrations', `Migration ${f.name} does not match the required NNN_snake_case.sql pattern.`),
+        finding('migrations.rollback-helper', 'INFO', 'migrations', `${f.name} is a manual rollback helper (not run by the migration runner).`),
+      );
+    } else {
+      findings.push(
+        finding('migrations.unrecognized-file', 'HIGH', 'migrations', `${f.name} is neither a canonical NNN_snake_case.sql migration nor a .rollback.sql helper — the runner will silently never apply it.`, {
+          remediation: 'Rename it to the canonical pattern (and add it to migrate.ts) or remove it.',
+        }),
       );
     }
   }
+  const diskNames = disk.map((f) => f.name);
+  const baseSet = new Set(input.baseNames.filter((n) => !excluded.has(n)));
+  const newFiles = disk.filter((f) => !baseSet.has(f.name));
   const maxBase = Math.max(0, ...[...baseSet].map((n) => numericPrefix(n) ?? 0));
   for (const f of newFiles) {
     const n = numericPrefix(f.name);
