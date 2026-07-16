@@ -436,6 +436,8 @@ export function cmdStateTransition(ctx: CommandContext, opts: { file: string; to
 
 export interface ReportMeta {
   runId: string;
+  /** release (default) walks the state machine; audit/rollback derive an explicit verdict. */
+  kind?: 'release' | 'audit' | 'rollback';
   version?: string;
   previousVersion?: string;
   gitSha?: string;
@@ -534,8 +536,24 @@ export function cmdReport(
     if (doc) cspSection[key] = { url: doc.url, status: doc.status, header: doc.header };
   }
 
+  // ── Final state ──────────────────────────────────────────────────────────────
+  // Releases: the persisted state machine is authoritative. Audits/rollbacks have
+  // no deployment state machine — they get an EXPLICIT verdict from the gate
+  // instead of pretending a deployment occurred (and never report UNKNOWN when a
+  // gate decision exists). run 29528323804 regression: audits said "UNKNOWN".
+  const kind = opts.meta.kind ?? 'release';
+  let state: ReleaseReport['state'];
+  if (kind === 'audit') {
+    state = gateDoc ? (gateDoc.decision.blocked ? 'AUDIT_FAILED' : 'AUDIT_PASSED') : 'UNKNOWN';
+  } else if (kind === 'rollback') {
+    state = gateDoc ? (gateDoc.decision.blocked ? 'FAILED' : 'ROLLED_BACK') : 'UNKNOWN';
+  } else {
+    state = stateDoc?.state ?? 'UNKNOWN';
+  }
+
   const vm = vmDoc?.vm ?? undefined;
   const report = buildReport({
+    kind,
     runId: opts.meta.runId,
     workflow: {
       ...(opts.meta.actor ? { actor: opts.meta.actor } : {}),
@@ -551,7 +569,7 @@ export function cmdReport(
     gitSha: opts.meta.gitSha ?? plan?.gitSha,
     startedAt: opts.meta.startedAt,
     endedAt: opts.meta.endedAt,
-    state: stateDoc?.state ?? 'UNKNOWN',
+    state,
     stages,
     tests,
     images: manifest?.images,
