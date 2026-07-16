@@ -76,6 +76,29 @@ describe('auditCspHeader — hygiene', () => {
   });
 });
 
+describe('auditCoopHeader (Firebase popup flow guard)', () => {
+  it('absent COOP header → no findings (current production state, popups work)', async () => {
+    const { auditCoopHeader } = await import('../csp-audit.js');
+    expect(auditCoopHeader('client-web', null)).toEqual([]);
+    expect(auditCoopHeader('client-web', undefined)).toEqual([]);
+  });
+
+  it('strict same-origin COOP → HIGH (would sever the signInWithPopup opener)', async () => {
+    const { auditCoopHeader } = await import('../csp-audit.js');
+    const findings = auditCoopHeader('client-web', 'same-origin');
+    expect(findings).toHaveLength(1);
+    expect(findings[0].id).toBe('csp.client-web.coop-breaks-popup-auth');
+    expect(findings[0].severity).toBe('HIGH');
+  });
+
+  it('same-origin-allow-popups → INFO only (popup-compatible)', async () => {
+    const { auditCoopHeader } = await import('../csp-audit.js');
+    const findings = auditCoopHeader('client-web', 'same-origin-allow-popups');
+    expect(findings).toHaveLength(1);
+    expect(findings[0].severity).toBe('INFO');
+  });
+});
+
 describe('auditLiveCsp', () => {
   it('audits the header returned by fetch (mocked)', async () => {
     const fakeFetch = (async () =>

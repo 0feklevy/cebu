@@ -35,6 +35,21 @@ export interface ReleaseConfig {
     firebaseAuthDomain: string;
     stripeJsOrigin: string;
   };
+  api: {
+    /**
+     * First-party API routes (path-only, query stripped) that REQUIRE authentication
+     * BY DESIGN. A 401/403 from one of these during an explicitly ANONYMOUS browser
+     * audit is an expected rejection — diagnostic INFO, not a broken required
+     * resource. This is a deliberate, explicit list: never a blanket /api/v1 rule,
+     * and it only applies to fetch/XHR (static assets are never downgraded).
+     */
+    protectedRoutes: readonly RegExp[];
+    /**
+     * Public/required API routes that must work for EVERYONE — any 4xx here is
+     * always a HIGH finding regardless of auth context.
+     */
+    requiredPublicRoutes: readonly RegExp[];
+  };
   migrations: {
     /** Migration SQL directory, relative to the app root. */
     dir: string;
@@ -72,6 +87,13 @@ export const RELEASE_CONFIG: ReleaseConfig = {
   csp: {
     firebaseAuthDomain: 'cebu-1a10f.firebaseapp.com',
     stripeJsOrigin: 'https://js.stripe.com',
+  },
+  api: {
+    protectedRoutes: [
+      /^\/api\/v1\/projects\/?$/i, // GET workspace projects (owner collection)
+      /^\/api\/v1\/playlists\/?$/i, // GET workspace playlists (owner collection; ?with_items=true variant shares the path)
+    ],
+    requiredPublicRoutes: [/^\/health\/?$/i],
   },
   migrations: {
     dir: 'backend-api/src/db/migrations',

@@ -105,6 +105,25 @@ describe('incident 6 — no false-green: HTTP health alone can never conclude a 
   });
 });
 
+describe('incident 7 (run 29528323804) — context-aware anonymous-401 classification stays in sync', () => {
+  it('the Playwright spec mirrors config.api.protectedRoutes exactly (no blanket /api/v1 rule)', () => {
+    const spec = read('client-web/e2e/production-audit.spec.ts');
+    // The two explicitly-protected collection routes, nothing broader.
+    expect(spec).toContain(String.raw`/^\/api\/v1\/projects\/?$/i`);
+    expect(spec).toContain(String.raw`/^\/api\/v1\/playlists\/?$/i`);
+    expect(spec).not.toMatch(/api\\\/v1(?!\\\/(projects|playlists))\\\/[a-z*]/i); // no wider api/v1 pattern
+    // Auth context is explicit, and the admin flow flips it after signing in.
+    expect(spec).toMatch(/authContext: 'anonymous'/);
+    expect(spec).toMatch(/authContext = 'authenticated'/);
+  });
+
+  it('the spec mirrors the exact known-benign COOP message classification', () => {
+    const spec = read('client-web/e2e/production-audit.spec.ts');
+    expect(spec).toMatch(/Cross-Origin-Opener-Policy policy would block the window\\\.closed call/);
+    expect(spec).toMatch(/knownBenignWarnings/);
+  });
+});
+
 describe('the VM never builds on the release path', () => {
   it('deploy-images.sh pulls digests and refuses source builds', () => {
     const script = read('deploy/scripts/deploy-images.sh');
