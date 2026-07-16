@@ -5,17 +5,27 @@ import type { CompletedPart, StorageService } from './StorageService.js';
 import { LOCAL_STORAGE_BASE_DIR } from './localStoragePaths.js';
 import { mediaKeyScope, mintMediaToken } from './mediaToken.js';
 import { logger } from '../../lib/logger.js';
+import { publicApiOrigin, isProd } from '../../config/publicOrigins.js';
 
-// Local disk storage — used when R2 is not configured AND as the durable
-// fallback when R2 object writes are denied. Files are written to a PERSISTENT
-// directory (see localStoragePaths.ts — NOT os.tmpdir, which is wiped on
-// restart) and served via the backend's /local-storage/:path* route.
+// Local disk storage — DEV ONLY. Files are written to a PERSISTENT directory
+// (see localStoragePaths.ts — NOT os.tmpdir, which is wiped on restart) and served
+// via the backend's /local-storage/:path* route. This adapter must NEVER be used in
+// production: it serves per-instance disk over a localhost-based URL that no other
+// container/CDN/browser can reach (getStorageAdapter fails closed in prod).
 
 const BASE_DIR = LOCAL_STORAGE_BASE_DIR;
-const SERVE_BASE = process.env.BACKEND_API_URL ?? 'http://localhost:8080';
+// Resolved per-call (not at import) so it always reflects current env and so importing
+// this module in prod for type reasons never throws. In prod publicApiOrigin() is a real
+// https origin; getStorageAdapter guarantees this adapter isn't constructed in prod anyway.
+const serveBase = (): string => publicApiOrigin();
 
 export class LocalStorageAdapter implements StorageService {
   constructor() {
+    if (isProd()) {
+      throw new Error(
+        'LocalStorageAdapter must not be used in production — configure Supabase (SUPABASE_S3_*) storage.',
+      );
+    }
     logger.warn('R2 not configured — using local disk storage (dev only). Files stored in ' + BASE_DIR);
   }
 
@@ -23,7 +33,7 @@ export class LocalStorageAdapter implements StorageService {
     const dest = join(BASE_DIR, path);
     await mkdir(dest.substring(0, dest.lastIndexOf('/')), { recursive: true });
     await writeFile(dest, data);
-    return `${SERVE_BASE}/local-storage/${path}`;
+    return `${serveBase()}/local-storage/${path}`;
   }
 
   async uploadStream(path: string, stream: NodeJS.ReadableStream, _contentType: string, _contentLength?: number): Promise<string> {
@@ -36,7 +46,7 @@ export class LocalStorageAdapter implements StorageService {
       ws.on('error', reject);
       stream.on('error', reject);
     });
-    return `${SERVE_BASE}/local-storage/${path}`;
+    return `${serveBase()}/local-storage/${path}`;
   }
 
   async getPresignedDownloadUrl(path: string, _ttlSeconds: number): Promise<string> {
@@ -48,15 +58,15 @@ export class LocalStorageAdapter implements StorageService {
     // CORS and public podcast prefixes.
     if (path.startsWith('videos/')) {
       const scope = mediaKeyScope(path);
-      if (scope) return `${SERVE_BASE}/video-raw/t/${mintMediaToken(scope)}/${path}`;
-      return `${SERVE_BASE}/video-raw/${path}`;
+      if (scope) return `${serveBase()}/video-raw/t/${mintMediaToken(scope)}/${path}`;
+      return `${serveBase()}/video-raw/${path}`;
     }
-    return `${SERVE_BASE}/local-storage/${path}`;
+    return `${serveBase()}/local-storage/${path}`;
   }
 
   async getPresignedUploadUrl(path: string, _contentType: string, _ttlSeconds: number): Promise<string> {
     // In local dev the "presigned" URL is just a backend PUT endpoint
-    return `${SERVE_BASE}/local-storage/upload/${path}`;
+    return `${serveBase()}/local-storage/upload/${path}`;
   }
 
   // S3 multipart is a cloud-storage concept; local disk has no equivalent. Throwing a
@@ -94,15 +104,19 @@ export class LocalStorageAdapter implements StorageService {
     // PUBLIC_LOCAL_PREFIXES gate them.
     if (path.startsWith('hls/')) {
       const scope = mediaKeyScope(path);
-      if (scope) return `${SERVE_BASE}/hls-public/t/${mintMediaToken(scope)}/${path}`;
-      return `${SERVE_BASE}/hls-public/${path}`;
+      if (scope) return `${serveBase()}/hls-public/t/${mintMediaToken(scope)}/${path}`;
+      return `${serveBase()}/hls-public/${path}`;
     }
-    return `${SERVE_BASE}/local-storage/${path}`;
+    return `${serveBase()}/local-storage/${path}`;
   }
 
   getSimPublicUrl(path: string): string {
     // Simulation files served via the unauthenticated /sim-public/* route
-    return `${SERVE_BASE}/sim-public/${path}`;
+    return `${serveBase()}/sim-public/${path}`;
+  }
+
+  async objectExists(key: string): Promise<boolean> {
+    return stat(join(BASE_DIR, key)).then(() => true).catch(() => false);
   }
 
   async readObject(key: string): Promise<Buffer> {

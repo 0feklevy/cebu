@@ -5,6 +5,7 @@ import {
   DeleteObjectsCommand,
   ListObjectsV2Command,
   GetObjectCommand,
+  HeadObjectCommand,
   CreateMultipartUploadCommand,
   UploadPartCommand,
   CompleteMultipartUploadCommand,
@@ -12,6 +13,7 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import type { CompletedPart, StorageService } from './StorageService.js';
+import { publicApiOrigin } from '../../config/publicOrigins.js';
 
 /**
  * Supabase Storage adapter — uses Supabase's **S3-compatible** endpoint, so it reuses
@@ -253,8 +255,18 @@ export class SupabaseStorageAdapter implements StorageService {
     // /sim-public/* proxy instead, which reads the object and re-asserts the correct
     // Content-Type (mirrors LocalStorageAdapter). BACKEND_API_URL must be the
     // backend's public origin in production.
-    const serveBase = process.env.BACKEND_API_URL ?? 'http://localhost:8080';
-    return `${serveBase}/sim-public/${path}`;
+    return `${publicApiOrigin()}/sim-public/${path}`;
+  }
+
+  async objectExists(key: string): Promise<boolean> {
+    try {
+      await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }));
+      return true;
+    } catch (err) {
+      const status = (err as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode;
+      if (status === 404 || (err as { name?: string }).name === 'NotFound') return false;
+      throw err; // real error (auth/network) — don't misreport as "missing"
+    }
   }
 
   async readObject(key: string): Promise<Buffer> {

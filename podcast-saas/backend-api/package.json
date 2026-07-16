@@ -14,6 +14,7 @@
     "db:check": "tsx --env-file=../.env src/scripts/check-db.ts",
     "verify:storage": "tsx --env-file=../.env src/scripts/verify-storage.ts",
     "backfill:storage": "tsx --env-file=../.env src/scripts/backfill-storage.ts",
+    "backfill:urls": "tsx --env-file=../.env src/scripts/backfill-localhost-urls.ts",
     "videos:audit": "tsx --env-file=../.env src/scripts/audit-videos.ts",
     "db:studio": "drizzle-kit studio",
     "typecheck": "tsc --noEmit",

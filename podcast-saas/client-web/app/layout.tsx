@@ -33,10 +33,29 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     })();
   `;
 
+  // Kill-switch for any stale service worker left in returning users' browsers by a prior
+  // deploy / AI-tool export. This app ships NO service worker, so unregistering is always
+  // safe; it stops the 'no-response for http://localhost:8080/...' errors from a stale SW
+  // still trying to serve cached localhost URLs, and clears its obsolete caches.
+  const swCleanupScript = `
+    (() => {
+      try {
+        if ('serviceWorker' in navigator) {
+          navigator.serviceWorker.getRegistrations()
+            .then((rs) => rs.forEach((r) => r.unregister())).catch(() => {});
+        }
+        if (window.caches && caches.keys) {
+          caches.keys().then((ks) => ks.forEach((k) => caches.delete(k))).catch(() => {});
+        }
+      } catch (_) {}
+    })();
+  `;
+
   return (
     <html lang="en" className="h-full" suppressHydrationWarning>
       <body className={`${inter.className} h-full antialiased`} suppressHydrationWarning>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+        <script dangerouslySetInnerHTML={{ __html: swCleanupScript }} />
         <ThemeProvider>
           <FirebaseAuthProvider>
             <PlatformGate>{children}</PlatformGate>

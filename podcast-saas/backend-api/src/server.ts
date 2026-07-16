@@ -15,6 +15,10 @@ import { getStorageAdapter } from './services/storage/getStorageAdapter.js';
 import { R2StorageAdapter } from './services/storage/R2StorageAdapter.js';
 import { LocalStorageAdapter } from './services/storage/LocalStorageAdapter.js';
 import { getSimulationContentType } from './services/simulation/SimulationService.js';
+import {
+  browserOrigins,
+  assertPublicOriginsForProd,
+} from './config/publicOrigins.js';
 import { startWorker } from './queue/startWorker.js';
 import { stopBoss } from './queue/pgBoss.js';
 import { drainInlineJobs } from './queue/inlineDriver.js';
@@ -136,10 +140,10 @@ async function build() {
   });
 
   await app.register(cors, {
-    origin: [
-      process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000',
-      'http://localhost:3001',
-    ],
+    // App + admin public origins, plus the local dev origins ONLY outside production.
+    // (browserOrigins() includes localhost:3000/3001 only when NODE_ENV !== 'production',
+    // so production never ships dev origins, and the admin origin is always included.)
+    origin: browserOrigins(),
     credentials: true,
   });
 
@@ -460,7 +464,8 @@ async function build() {
       // Note: dropping the iframe's `allow-same-origin` sandbox flag (the fuller
       // security-003 hardening) is deferred — it would break sims that use
       // localStorage/canvas-with-same-origin-data and needs runtime verification.
-      const appOrigin = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
+      // Only the app + admin public origins may frame sims (localhost added in dev only).
+      const simFrameAncestors = browserOrigins().join(' ');
       // script/style/connect allow https: — sims legitimately pull CDN libs, Google
       // Fonts, and remote data, and blocking them adds no security when 'unsafe-inline'
       // + 'unsafe-eval' are already required by real sims (inline script can do anything
@@ -475,7 +480,7 @@ async function build() {
         "font-src 'self' data: https:",
         "media-src 'self' data: blob: https:",
         "connect-src 'self' data: blob: https:",
-        `frame-ancestors ${appOrigin} http://localhost:3001`,
+        `frame-ancestors ${simFrameAncestors}`,
         "base-uri 'self'",
         "form-action 'self'",
       ].join('; ');
@@ -624,6 +629,14 @@ async function start() {
       process.exit(1);
     }
 
+    // Fail closed: never serve/store localhost or internal-docker URLs to browsers in prod.
+    try {
+      assertPublicOriginsForProd();
+    } catch (err) {
+      logger.error({ err }, (err as Error).message);
+      process.exit(1);
+    }
+
     getFirebaseAdmin(); // validates env vars early
 
     // DB check: warn but don't crash — the postgres driver reconnects automatically.
@@ -638,8 +651,7 @@ async function start() {
     try {
       const storage = getStorageAdapter();
       if (storage instanceof R2StorageAdapter) {
-        const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
-        await storage.ensureBucketCors([appUrl, 'http://localhost:3000', 'http://localhost:3001']);
+        await storage.ensureBucketCors(browserOrigins());
       }
     } catch (err) {
       logger.warn({ err }, 'R2 CORS setup failed — configure manually in Cloudflare dashboard');

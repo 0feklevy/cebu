@@ -4,7 +4,7 @@
 // AdminV1Api). Mirrors the auth pattern used by lib/api.ts.
 import { auth } from './firebase';
 
-const BASE = process.env.ADMIN_API_URL ?? 'http://localhost:8080';
+const BASE = process.env.NEXT_PUBLIC_API_URL ?? '';
 
 async function authedFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const token = await auth.currentUser?.getIdToken();

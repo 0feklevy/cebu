@@ -49,7 +49,7 @@ export function AdminFirebaseAuthProvider({ children }: { children: React.ReactN
         // Check isAdmin from backend
         try {
           const token = await firebaseUser.getIdToken();
-          const apiUrl = process.env.ADMIN_API_URL ?? 'http://localhost:8080';
+          const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? '';
           const res = await fetch(`${apiUrl}/api/admin/v1/settings`, {
             headers: { Authorization: `Bearer ${token}` },
           });

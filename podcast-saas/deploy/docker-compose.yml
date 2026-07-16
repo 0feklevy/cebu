@@ -37,8 +37,17 @@ services:
       # DATABASE_URL / QUEUE_DATABASE_URL come from the root .env (Supabase) — no override.
       QUEUE_DRIVER: pgboss
       WORKER_INLINE: 'false'         # heavy jobs run in the dedicated worker container
+      # Public origins — MUST be the browser-reachable https origins, NOT localhost/internal
+      # docker hosts. These drive every browser-visible URL (sim iframes, /local-storage,
+      # captions) + CORS + CSP frame-ancestors. Backend fails closed if any is localhost.
+      BACKEND_API_URL: https://${DOMAIN_API}
       NEXT_PUBLIC_APP_URL: https://${DOMAIN_ROOT}
       PUBLIC_SITE_URL: https://${DOMAIN_ROOT}
+      ADMIN_ORIGIN: https://${DOMAIN_ADMIN}
+      # Force cloud storage — never per-instance local disk in production.
+      STORAGE_BACKEND: supabase
+      # ISR revalidation is server-to-server on the internal network (not browser-visible).
+      REVALIDATE_URL: http://client-web:3000/api/revalidate
     volumes:
       - media_work:/app/backend-api/.work   # scratch space for ffmpeg / transcoding
     networks: [edge]
@@ -62,6 +71,13 @@ services:
       NODE_ENV: production
       # DATABASE_URL / QUEUE_DATABASE_URL come from the root .env (Supabase) — no override.
       QUEUE_DRIVER: pgboss
+      # CRITICAL: the worker WRITES asset URLs into the DB at job completion. Without these
+      # it would persist http://localhost:8080/... rows that break for every browser. Must
+      # match the backend's public origins. Worker fails closed if any is localhost.
+      BACKEND_API_URL: https://${DOMAIN_API}
+      NEXT_PUBLIC_APP_URL: https://${DOMAIN_ROOT}
+      PUBLIC_SITE_URL: https://${DOMAIN_ROOT}
+      STORAGE_BACKEND: supabase
     volumes:
       - media_work:/app/backend-api/.work
     networks: [internal]
@@ -130,7 +146,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: '3000'
-      ADMIN_API_URL: http://backend:8080
+      # admin-web reads NEXT_PUBLIC_API_URL (baked at build time, public https origin).
       NEXT_PUBLIC_API_URL: https://${DOMAIN_API}
     depends_on:
       backend:

@@ -10,6 +10,7 @@ import { db } from '../../db/index.js';
 import { video_files } from '../../db/schema.js';
 import { logger } from '../../lib/logger.js';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
+import { publicApiOrigin } from '../../config/publicOrigins.js';
 import { propagateTranscript } from '../transcriptPropagation.js';
 import { runFfmpegLimited } from '../ffmpegLimit.js';
 import { enqueueJob } from '../../queue/index.js';
@@ -79,13 +80,13 @@ export function captionPublicUrl(key: string | null | undefined): string | null 
   if (!key) return null;
   const r2Public = process.env.R2_PUBLIC_URL?.replace(/\/$/, '');
   if (process.env.R2_ACCOUNT_ID && r2Public) return `${r2Public}/${key}`;
-  const base = process.env.BACKEND_API_URL ?? 'http://localhost:8080';
+  const base = publicApiOrigin();
   return `${base}/local-storage/${key}`;
 }
 
 /** Public URL that serves a video's DB-stored caption VTT (no object storage needed). */
 export function captionVttRouteUrl(videoId: string): string {
-  const base = process.env.BACKEND_API_URL ?? 'http://localhost:8080';
+  const base = publicApiOrigin();
   return `${base}/api/v1/videos/${videoId}/captions.vtt`;
 }
 

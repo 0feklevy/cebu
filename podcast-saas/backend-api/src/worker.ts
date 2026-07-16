@@ -12,6 +12,17 @@
 import { startWorker } from './queue/startWorker.js';
 import { stopBoss } from './queue/pgBoss.js';
 import { logger } from './lib/logger.js';
+import { assertPublicOriginsForProd } from './config/publicOrigins.js';
+
+// The worker WRITES browser-visible asset URLs into the DB at job completion
+// (thumbnails, banners, captions, …). Fail closed if the public origins are
+// misconfigured so it can never poison the database with localhost URLs.
+try {
+  assertPublicOriginsForProd();
+} catch (err) {
+  logger.error({ err }, (err as Error).message);
+  process.exit(1);
+}
 
 startWorker().catch((err) => {
   logger.error({ err }, '[worker] failed to start');

@@ -1,6 +1,7 @@
 'use client';
 
 import type { RefObject } from 'react';
+import { resolveAssetUrl } from '../../lib/assetUrl';
 
 interface Props {
   simulationUrl: string | null;
@@ -22,7 +23,7 @@ export function SimOverlayDynamic({ simulationUrl, visible, iframeRef }: Props) 
     <div className={`sim-overlay${visible ? ' visible' : ''}`}>
       <iframe
         ref={iframeRef}
-        src={simulationUrl}
+        src={resolveAssetUrl(simulationUrl) ?? undefined}
         loading="lazy"
         className="w-full h-full border-0"
         sandbox="allow-scripts allow-same-origin allow-forms"

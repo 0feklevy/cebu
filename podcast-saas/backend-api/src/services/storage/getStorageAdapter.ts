@@ -29,6 +29,13 @@ function isRealCred(v: string | undefined): boolean {
  * Idempotent and safe to call before or after the adapter is first resolved.
  */
 export function forceLocalStorage(reason: string): void {
+  // NEVER fall back to local disk in production — it serves per-instance disk over a
+  // localhost URL that no browser/CDN/other instance can reach (the incident this guards).
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error(
+      `Refusing to force local-disk storage in production (${reason}) — fix cloud storage credentials instead.`,
+    );
+  }
   if (_forceLocal && _adapter instanceof LocalStorageAdapter) return;
   _forceLocal = true;
   _adapter = new LocalStorageAdapter();
@@ -49,8 +56,34 @@ export function getStorageAdapter(): StorageService {
   if (_adapter) return _adapter;
 
   const backend = process.env.STORAGE_BACKEND; // optional explicit override
+  const prod = process.env.NODE_ENV === 'production';
 
-  // Explicit opt-in (e.g. a read-only R2 environment) or runtime probe result.
+  const hasR2 =
+    isRealCred(process.env.R2_ACCOUNT_ID) &&
+    isRealCred(process.env.R2_ACCESS_KEY_ID) &&
+    isRealCred(process.env.R2_SECRET_ACCESS_KEY);
+
+  // ── Production fail-closed guard (evaluated FIRST) ─────────────────────────────
+  // Media must live in a shared cloud bucket, never per-instance local disk served over
+  // a localhost URL. In production, refuse local disk under ANY input: STORAGE_BACKEND=local,
+  // a prior forceLocalStorage(), or simply missing cloud creds. This is the ordering fix for
+  // the incident where STORAGE_BACKEND=local short-circuited before the guard.
+  if (prod) {
+    if (backend === 'local' || _forceLocal) {
+      throw new Error(
+        'Local-disk storage is not allowed in production (STORAGE_BACKEND=local / forced). ' +
+          'Configure Supabase (SUPABASE_S3_*) or real R2 credentials.',
+      );
+    }
+    if (!hasSupabaseStorage() && !hasR2 && backend !== 'supabase') {
+      throw new Error(
+        'No cloud storage configured. Set SUPABASE_S3_* (or real R2_*) credentials — ' +
+          'local-disk storage is not allowed in production.',
+      );
+    }
+  }
+
+  // Explicit local opt-in (dev only — the prod guard above already rejected it).
   if (_forceLocal || backend === 'local') {
     _adapter = new LocalStorageAdapter();
     return _adapter;
@@ -64,25 +97,11 @@ export function getStorageAdapter(): StorageService {
     return _adapter;
   }
 
-  const hasR2 =
-    isRealCred(process.env.R2_ACCOUNT_ID) &&
-    isRealCred(process.env.R2_ACCESS_KEY_ID) &&
-    isRealCred(process.env.R2_SECRET_ACCESS_KEY);
-
-  // If R2 vars are present but look like placeholders, warn and use local disk.
+  // If R2 vars are present but look like placeholders, warn and use local disk (dev only).
   const r2VarsPresent =
     process.env.R2_ACCOUNT_ID || process.env.R2_ACCESS_KEY_ID || process.env.R2_SECRET_ACCESS_KEY;
   if (!hasR2 && r2VarsPresent) {
     logger.warn('R2_* env vars look like placeholders — using local disk storage. Set real Cloudflare R2 credentials (or leave them blank) to use R2.');
-  }
-
-  // Fail closed in production: this is a multi-user, scalable app — media must be in a
-  // shared cloud bucket, never per-instance local disk. Refuse to silently use local.
-  if (!hasR2 && process.env.NODE_ENV === 'production') {
-    throw new Error(
-      'No cloud storage configured. Set SUPABASE_S3_* (or real R2_*) credentials — ' +
-        'local-disk storage is not allowed in production.',
-    );
   }
 
   _adapter = hasR2 ? new R2StorageAdapter() : new LocalStorageAdapter();

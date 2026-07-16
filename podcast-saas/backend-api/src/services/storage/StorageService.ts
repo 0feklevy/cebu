@@ -47,4 +47,6 @@ export interface StorageService {
   readObject(key: string): Promise<Buffer>;
   /** List all object keys under the given prefix (non-recursive prefix, returns full keys). */
   listObjects(prefix: string): Promise<string[]>;
+  /** True if an object exists at this key (cheap HEAD; used by the URL backfill migration). */
+  objectExists(key: string): Promise<boolean>;
 }

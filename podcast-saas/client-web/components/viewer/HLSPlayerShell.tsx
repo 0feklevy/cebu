@@ -12,6 +12,7 @@ import { ControlsBar, type CaptionStyle } from './ControlsBar';
 import { ImageOverlay } from '../ImageOverlay';
 import { AvatarCirclesOverlay } from './AvatarCirclesOverlay';
 import { ChoiceOverlay } from './ChoiceOverlay';
+import { resolveAssetUrl } from '../../lib/assetUrl';
 import './viewer.css';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
@@ -316,7 +317,7 @@ export function HLSPlayerShell({
 
       {config.thumbnail_url && !state.started && (
         <img
-          src={config.thumbnail_url}
+          src={resolveAssetUrl(config.thumbnail_url) ?? undefined}
           alt=""
           draggable={false}
           className="absolute inset-0 z-[24] h-full w-full bg-black object-contain"
