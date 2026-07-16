@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ArrowRight, Clock3, Eye, ListVideo, Play, Plus } from 'lucide-react';
 import { api } from '../lib/api';
+import { canLoadPrivateWorkspace } from '../lib/authGate';
 import { useAuth } from '../lib/firebase';
 import type { PlaylistSummary } from 'shared/src/generated/client-v1';
 import { PlaylistEditorDialog } from './PlaylistEditorDialog';
@@ -38,7 +39,7 @@ function readCachedPlaylists(): PlaylistSummary[] {
 }
 
 export function PlaylistsPanel() {
-  const { loading: authLoading } = useAuth();
+  const { loading: authLoading, user } = useAuth();
   const [playlists, setPlaylists] = useState<PlaylistSummary[]>(() => {
     if (typeof window === 'undefined') return [];
     return readCachedPlaylists();
@@ -60,8 +61,16 @@ export function PlaylistsPanel() {
   }, []);
 
   useEffect(() => {
-    if (!authLoading) load();
-  }, [authLoading, load]);
+    if (authLoading) return;
+    // Anonymous visitor: GET /api/v1/playlists requires auth (401 otherwise) —
+    // never call it without a signed-in user; render the empty state instead.
+    if (!canLoadPrivateWorkspace(authLoading, user)) {
+      setPlaylists([]);
+      setLoading(false);
+      return;
+    }
+    load();
+  }, [authLoading, user, load]);
 
   const handleNew = useCallback(async () => {
     if (creating) return;

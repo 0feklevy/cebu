@@ -3,6 +3,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { ChevronDown, ChevronRight, ListVideo, Mic, Pencil, PlaySquare, Plus, Trash2 } from 'lucide-react';
 import { api } from '../lib/api';
+import { canLoadPrivateWorkspace } from '../lib/authGate';
 import { ConfirmDialog } from './ConfirmDialog';
 import { useAuth } from '../lib/firebase';
 import { UserProfileButton } from './UserProfileButton';
@@ -278,7 +279,7 @@ function SidebarPlaylistGroup({
 }
 
 export function HomeSidebar() {
-  const { loading: authLoading } = useAuth();
+  const { loading: authLoading, user } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
   const [playlists, setPlaylists] = useState<PlaylistWithItems[]>([]);
   const [expandedPlaylists, setExpandedPlaylists] = useState<Set<string>>(new Set());
@@ -286,6 +287,13 @@ export function HomeSidebar() {
 
   useEffect(() => {
     if (authLoading) return;
+    // Anonymous visitor: the workspace endpoints require auth (401 otherwise) —
+    // never call them without a user; show the empty state instead.
+    if (!canLoadPrivateWorkspace(authLoading, user)) {
+      setProjects([]);
+      setPlaylists([]);
+      return;
+    }
     let cancelled = false;
 
     async function loadWorkspace() {
@@ -308,7 +316,7 @@ export function HomeSidebar() {
     return () => {
       cancelled = true;
     };
-  }, [authLoading]);
+  }, [authLoading, user]);
 
   const handleRename = useCallback((id: string, newTitle: string) => {
     setProjects(prev => prev.map(p => p.id === id ? { ...p, title: newTitle } : p));
