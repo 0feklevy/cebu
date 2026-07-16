@@ -6,7 +6,7 @@ import type { AudioFile, TimelineSection } from 'shared/src/generated/client-v1'
 import { api } from '../lib/api';
 import { auth } from '../lib/firebase';
 
-const BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
+const BASE = process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
 
 async function generateAudio(projectId: string, body: { prompt: string; type: 'sfx' | 'music'; duration_seconds?: number }): Promise<AudioFile> {
   const token = await auth.currentUser?.getIdToken().catch(() => null);

@@ -17,7 +17,7 @@ export function PlatformGate({ children }: { children: React.ReactNode }) {
   const [settings, setSettings] = useState<PlatformSettings | null>(null);
 
   useEffect(() => {
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
     fetch(`${apiUrl}/api/v1/platform/settings`)
       .then((r) => r.json())
       .then((s: PlatformSettings) => setSettings(s))

@@ -5,7 +5,7 @@ import type { RefObject } from 'react';
 import type { PlayerConfig, PlayerSegment, SimulationOverlay, TimelineSeg, BrollClip, ImageOverlayItem, AudioCutaway, PlayerBranchSequence, PlayerChoicePoint, PlayerBranchEdge } from './types';
 import { releaseAvatarElement } from '../../lib/avatarAudioGraph';
 
-const BRANCH_API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
+const BRANCH_API = process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
 
 // ── HLS.js config (ported from interactive-podcast-react/player/src/constants/index.ts) ──
 const HLS_OPTS = {

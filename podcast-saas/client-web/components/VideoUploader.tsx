@@ -5,7 +5,7 @@ import { getAuth } from 'firebase/auth';
 import type { VideoFile } from 'shared/src/generated/client-v1';
 
 const ACCEPTED = '.mp4,.mov,.webm,.mkv,.avi,.m4v';
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
 
 // Files at/above this size use S3 multipart upload (parts), because a single presigned
 // PUT is capped by the storage bucket's file_size_limit. Smaller files use one PUT.

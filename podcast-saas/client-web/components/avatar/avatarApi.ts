@@ -2,7 +2,7 @@
 
 import { auth } from '../../lib/firebase';
 
-const BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
+const BASE = process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
 
 async function authHeaders(): Promise<Record<string, string>> {
   const token = await auth.currentUser?.getIdToken().catch(() => null);

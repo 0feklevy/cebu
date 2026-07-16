@@ -5,19 +5,19 @@ import { auth } from './firebase';
 
 export function getApiClient(): ClientV1Api {
   return new ClientV1Api({
-    baseURL: process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080',
+    baseURL: process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080'),
     getToken: async () => auth.currentUser?.getIdToken() ?? null,
   });
 }
 
 export const api = new ClientV1Api({
-  baseURL: process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080',
+  baseURL: process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080'),
   getToken: async () => auth.currentUser?.getIdToken() ?? null,
 });
 
 // ── Share token helpers ────────────────────────────────────────────────────
 
-const BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
+const BASE = process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
 
 async function authHeaders(): Promise<Record<string, string>> {
   const token = await auth.currentUser?.getIdToken();

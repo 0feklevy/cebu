@@ -9,7 +9,7 @@ import { PlaylistViewer } from '@/components/viewer/playlist/PlaylistViewer';
  * this catch-all, and the backend refuses reserved slugs, so there is no overlap.
  */
 
-const BACKEND = process.env.BACKEND_API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
+const BACKEND = process.env.BACKEND_API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
 // Mirrors shared SLUG_PATTERN — anything else (favicon.ico, …) short-circuits to 404.
 const SLUG_SHAPE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 

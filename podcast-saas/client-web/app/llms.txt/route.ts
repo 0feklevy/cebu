@@ -5,7 +5,7 @@ export const dynamic = 'force-dynamic'; // never serve a frozen build-time (poss
 // llms.txt — a secondary, LLM-friendly index of public courses. It complements,
 // and never replaces, normal SEO metadata and the XML sitemaps.
 export async function GET() {
-  const base = (process.env.PUBLIC_SITE_URL ?? process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000').replace(/\/+$/, '');
+  const base = (process.env.PUBLIC_SITE_URL ?? process.env.NEXT_PUBLIC_APP_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3000')).replace(/\/+$/, '');
   const brand = process.env.PUBLIC_BRAND_NAME ?? 'Interactive Video Studio';
   const courses = await getCourseSitemap();
   const body = [

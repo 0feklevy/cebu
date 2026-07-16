@@ -15,7 +15,7 @@ import { ChoiceOverlay } from './ChoiceOverlay';
 import { resolveAssetUrl } from '../../lib/assetUrl';
 import './viewer.css';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
 const DEFAULT_CAPTION_STYLE: CaptionStyle = {
   fontSize: 22,
   backgroundColor: '#000000',

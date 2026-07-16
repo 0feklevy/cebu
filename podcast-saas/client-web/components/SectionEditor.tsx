@@ -9,7 +9,7 @@ import { api } from '../lib/api';
 import { GuidedTour, type TourStep } from './GuidedTour';
 import { TourButton } from './TourButton';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
 
 const GUIDANCE_LANGS: Array<{ code: string; label: string }> = [
   { code: 'en', label: 'English' },

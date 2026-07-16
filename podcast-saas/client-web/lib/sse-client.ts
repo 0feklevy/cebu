@@ -10,7 +10,7 @@ export async function connectSSEStream(
   streamPath?: string,
 ): Promise<() => void> {
   const token = await getToken();
-  const baseURL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
+  const baseURL = process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
   const path = streamPath ?? `/api/v1/projects/${projectId}/stream`;
 
   const response = await fetch(

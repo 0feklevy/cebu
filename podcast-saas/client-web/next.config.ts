@@ -1,13 +1,29 @@
 import type { NextConfig } from 'next';
 
-// Fail the build rather than bake a localhost API URL into the shipped browser bundle.
-// NEXT_PUBLIC_API_URL is passed as a Docker build arg (deploy/docker-compose.yml); in
-// production it MUST be the public https API origin (never localhost/an internal host).
-if (process.env.NODE_ENV === 'production' && !process.env.NEXT_PUBLIC_API_URL) {
-  throw new Error(
-    'NEXT_PUBLIC_API_URL must be set at build time for client-web (public https API origin).',
-  );
+// ── Fail-closed resolution of browser-visible URLs ──────────────────────────────
+// In a PRODUCTION build these MUST be public https origins. A missing value, a
+// localhost/loopback value, an internal-docker host, or a non-https value FAILS the
+// build — production can never silently bake http://localhost:8080 (the incident).
+// Localhost is allowed ONLY in development (next dev / a non-production build).
+const IS_PROD = process.env.NODE_ENV === 'production';
+const NON_PUBLIC = /(localhost|127\.0\.0\.1|0\.0\.0\.0|\[?::1\]?)|^https?:\/\/(backend|worker|nginx|client-web|admin-web)(:|\/|$)/i;
+
+function resolvePublicUrl(name: string, devDefault: string): string {
+  const v = process.env[name]?.trim();
+  if (IS_PROD) {
+    if (!v) throw new Error(`[client-web build] ${name} must be set for a production build (public https origin).`);
+    if (NON_PUBLIC.test(v)) throw new Error(`[client-web build] ${name} must be a public URL in production, got: ${v}`);
+    if (!/^https:\/\//i.test(v)) throw new Error(`[client-web build] ${name} must be https in production, got: ${v}`);
+    return v;
+  }
+  return v || devDefault; // dev-only localhost fallback (never reached in a prod build)
 }
+
+const PUBLIC_API_URL = resolvePublicUrl('NEXT_PUBLIC_API_URL', 'http://localhost:8080');
+const PUBLIC_APP_URL = resolvePublicUrl('NEXT_PUBLIC_APP_URL', 'http://localhost:3000');
+const PUBLIC_SITE_URL = process.env.PUBLIC_SITE_URL?.trim()
+  ? resolvePublicUrl('PUBLIC_SITE_URL', 'http://localhost:3000')
+  : PUBLIC_APP_URL;
 
 // Production CSP for app pages. Two framing concerns kept separate:
 //   frame-ancestors 'none'  → nobody may embed OUR app pages (anti-clickjacking).
@@ -19,8 +35,8 @@ if (process.env.NODE_ENV === 'production' && !process.env.NEXT_PUBLIC_API_URL) {
 // and its bundler does not reliably resolve a helper referenced inside a config method when
 // that helper is a function *declaration* placed after the config object (ReferenceError).
 const securityHeaders = (): { key: string; value: string }[] => {
-  const api = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
-  const dev = process.env.NODE_ENV !== 'production';
+  const api = PUBLIC_API_URL;
+  const dev = !IS_PROD;
   const devApi = dev ? ' http://localhost:8080' : '';
   const csp = [
     "default-src 'self'",
@@ -48,8 +64,12 @@ const nextConfig: NextConfig = {
   experimental: {
     typedRoutes: true,
   },
+  // Bake the RESOLVED values (never a raw localhost literal) so every reference inlines
+  // the validated origin and the dev fallback never ships in the production bundle.
   env: {
-    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080',
+    NEXT_PUBLIC_API_URL: PUBLIC_API_URL,
+    NEXT_PUBLIC_APP_URL: PUBLIC_APP_URL,
+    PUBLIC_SITE_URL: PUBLIC_SITE_URL,
   },
   async headers() {
     return [{ source: '/:path*', headers: securityHeaders() }];

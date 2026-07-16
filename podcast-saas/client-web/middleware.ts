@@ -13,7 +13,7 @@ import { NextResponse, type NextRequest } from 'next/server';
  * no chains or loops. Only approved tracking query params are preserved.
  */
 
-const BACKEND = process.env.BACKEND_API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
+const BACKEND = process.env.BACKEND_API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
 const LEGACY_REDIRECTS_ENABLED = process.env.COURSE_LEGACY_REDIRECTS_ENABLED === 'true';
 const APPROVED_PARAMS = new Set(['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'ref']);
 

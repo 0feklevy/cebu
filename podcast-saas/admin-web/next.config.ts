@@ -1,13 +1,23 @@
 import type { NextConfig } from 'next';
 
-// Fail the build rather than bake a localhost API URL into the shipped admin bundle.
-// NEXT_PUBLIC_API_URL is passed as a Docker build arg (deploy/docker-compose.yml) and
-// auto-inlined by Next; in production it MUST be the public https API origin.
-if (process.env.NODE_ENV === 'production' && !process.env.NEXT_PUBLIC_API_URL) {
-  throw new Error(
-    'NEXT_PUBLIC_API_URL must be set at build time for admin-web (public https API origin).',
-  );
+// ── Fail-closed resolution of the browser-visible API URL ───────────────────────
+// A production build requires a public https origin; missing/localhost/internal/non-https
+// FAILS the build. Localhost allowed ONLY in development. (Mirrors client-web.)
+const IS_PROD = process.env.NODE_ENV === 'production';
+const NON_PUBLIC = /(localhost|127\.0\.0\.1|0\.0\.0\.0|\[?::1\]?)|^https?:\/\/(backend|worker|nginx|client-web|admin-web)(:|\/|$)/i;
+
+function resolvePublicUrl(name: string, devDefault: string): string {
+  const v = process.env[name]?.trim();
+  if (IS_PROD) {
+    if (!v) throw new Error(`[admin-web build] ${name} must be set for a production build (public https origin).`);
+    if (NON_PUBLIC.test(v)) throw new Error(`[admin-web build] ${name} must be a public URL in production, got: ${v}`);
+    if (!/^https:\/\//i.test(v)) throw new Error(`[admin-web build] ${name} must be https in production, got: ${v}`);
+    return v;
+  }
+  return v || devDefault;
 }
+
+const PUBLIC_API_URL = resolvePublicUrl('NEXT_PUBLIC_API_URL', 'http://localhost:8080');
 
 // Production CSP for admin pages. Admin is never embedded (frame-ancestors 'none') and
 // talks only to the API + its own origin. Scheme sources (https:) keep third-party SDKs
@@ -15,8 +25,8 @@ if (process.env.NODE_ENV === 'production' && !process.env.NEXT_PUBLIC_API_URL) {
 // Defined as a const BEFORE nextConfig (Next's compiled config can ReferenceError on a
 // function declaration referenced from a config method — mirror client-web).
 const securityHeaders = (): { key: string; value: string }[] => {
-  const api = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
-  const dev = process.env.NODE_ENV !== 'production';
+  const api = PUBLIC_API_URL;
+  const dev = !IS_PROD;
   const devApi = dev ? ' http://localhost:8080' : '';
   const csp = [
     "default-src 'self'",
@@ -46,7 +56,7 @@ const nextConfig: NextConfig = {
   // process.env.NEXT_PUBLIC_API_URL with this clean literal, so `?? 'http://localhost:8080'`
   // in the lib files folds away. (Mirrors client-web/next.config.ts.)
   env: {
-    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080',
+    NEXT_PUBLIC_API_URL: PUBLIC_API_URL,
   },
   async headers() {
     return [{ source: '/:path*', headers: securityHeaders() }];

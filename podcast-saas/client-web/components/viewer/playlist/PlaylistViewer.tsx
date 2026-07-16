@@ -13,7 +13,7 @@ import type { PlaylistPlayConfig } from './shared';
 import { AskAvatarButton } from '../../avatar/AskAvatarButton';
 import { AvatarPopup } from '../../avatar/AvatarPopup';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
 const COUNTDOWN_SEC = 6;
 
 interface Props {

@@ -200,7 +200,7 @@ export async function applyTempo(inWav: string, outWav: string, factor = PODCAST
 export async function loudnormTwoPass(inWav: string, outWav: string): Promise<void> {
   const stderr = await ff(['-i', inWav, '-af', 'loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json', '-f', 'null', '-'], true);
   const j = stderr.match(/\{[\s\S]*?"input_i"[\s\S]*?\}/);
-  let measured: { input_i: string; input_tp: string; input_lra: string; input_thresh: string; target_offset: string } | null = null;
+  let measured: { input_i: string; input_tp: string; input_lra: string; input_thresh: string; target_offset: string } | null;
   try { measured = j ? JSON.parse(j[0]) : null; } catch { measured = null; }
 
   if (measured) {

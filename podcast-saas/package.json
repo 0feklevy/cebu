@@ -21,7 +21,8 @@
     "db:studio": "pnpm --filter backend-api db:studio",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck",
-    "test": "pnpm -r test"
+    "test": "pnpm -r test",
+    "release:verify": "bash deploy/scripts/release-verify.sh"
   },
   "devDependencies": {
     "typescript": "^5.5.4"

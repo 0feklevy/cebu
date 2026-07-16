@@ -10,7 +10,7 @@ import type {
 } from 'shared/src/types/course-view';
 
 const BACKEND =
-  process.env.BACKEND_API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
+  process.env.BACKEND_API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
 
 const REVALIDATE_SECONDS = 300; // ISR; on-publish invalidation purges sooner
 

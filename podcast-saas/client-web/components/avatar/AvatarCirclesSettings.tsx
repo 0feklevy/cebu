@@ -15,7 +15,7 @@ import {
 } from './avatarApi';
 import { AvatarCircleViz, type CircleFrame } from '../viewer/AvatarCircleViz';
 
-const BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
+const BASE = process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
 
 const DEFAULT_CONFIG: AvatarCirclesConfig = {
   enabled: false,

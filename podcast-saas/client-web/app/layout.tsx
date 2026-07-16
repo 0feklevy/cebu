@@ -7,7 +7,7 @@ import { PlatformGate } from '../components/PlatformGate';
 
 const inter = Inter({ subsets: ['latin'] });
 
-const SITE_URL = process.env.PUBLIC_SITE_URL ?? process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
+const SITE_URL = process.env.PUBLIC_SITE_URL ?? process.env.NEXT_PUBLIC_APP_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3000');
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),

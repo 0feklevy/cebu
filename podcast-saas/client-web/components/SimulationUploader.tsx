@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { getAuth } from 'firebase/auth';
 import type { Simulation } from 'shared/src/generated/client-v1';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
 const MAX_UPLOAD_BYTES = 250 * 1024 * 1024;
 const MAX_UPLOAD_FILES = 1000;
 
