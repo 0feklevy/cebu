@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -121,6 +122,30 @@ describe('incident 7 (run 29528323804) — context-aware anonymous-401 classific
     const spec = read('client-web/e2e/production-audit.spec.ts');
     expect(spec).toMatch(/Cross-Origin-Opener-Policy policy would block the window\\\.closed call/);
     expect(spec).toMatch(/knownBenignWarnings/);
+  });
+});
+
+describe('incident 8 (PR #2) — deploy scripts must be valid on modern bash', () => {
+  const SCRIPTS_DIR = join(APP_ROOT, 'deploy', 'scripts');
+  const scripts = readdirSync(SCRIPTS_DIR).filter((f) => f.endsWith('.sh'));
+
+  it('bash -n parses every deploy script', () => {
+    for (const script of scripts) {
+      expect(() => execFileSync('/bin/bash', ['-n', join(SCRIPTS_DIR, script)]), script).not.toThrow();
+    }
+  });
+
+  it('no script combines array-length expansion with a :- default (bash-5 bad substitution)', () => {
+    // `${#arr[@]:-0}` runs on macOS bash 3.2 but is a runtime "bad substitution" on
+    // bash 4.4+/5 (the CI runner) — and `bash -n` cannot catch it (expansion errors
+    // are runtime-only), so this pattern ban is the actual guard.
+    const BAD = /\$\{#[A-Za-z_][A-Za-z0-9_]*\[[@*]\]:[-=?+]/;
+    const isComment = (l: string) => /^\s*#/.test(l); // bash never expands inside comments
+    for (const script of scripts) {
+      const text = readFileSync(join(SCRIPTS_DIR, script), 'utf8');
+      const hit = text.split('\n').findIndex((l) => !isComment(l) && BAD.test(l));
+      expect(hit, `${script}:${hit + 1} uses \${#arr[@]:-…} — invalid on bash 5`).toBe(-1);
+    }
   });
 });
 

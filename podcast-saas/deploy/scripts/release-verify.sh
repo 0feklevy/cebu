@@ -60,12 +60,20 @@ printf '  NEXT_PUBLIC_API_URL = %s\n  NEXT_PUBLIC_APP_URL = %s\n  PUBLIC_SITE_UR
   "${NEXT_PUBLIC_API_URL}" "${NEXT_PUBLIC_APP_URL}" "${PUBLIC_SITE_URL}" "${ADMIN_ORIGIN}"
 
 # ── Isolate developer .env.local files so the prod build can't consume dev values ──
-MOVED=()
+# Bash compatibility: `${#MOVED[@]:-0}` is a BAD SUBSTITUTION on modern bash (CI runs
+# bash 5; array-length expansion cannot take a `:-` default) even though macOS bash 3.2
+# tolerated it. The portable, nounset-safe pattern used here: explicitly declare the
+# array, guard on the plain length expansion (always valid for a declared array, even
+# when empty), and expand "${MOVED[@]}" only inside the guarded branch (bash < 4.4
+# errors on expanding an EMPTY array under `set -u`).
+declare -a MOVED=()
 restore_env_local() {
-  for f in "${MOVED[@]:-}"; do
-    [ -n "${f}" ] && [ -f "${f}.release-bak" ] && mv -f "${f}.release-bak" "${f}"
-  done
-  [ "${#MOVED[@]:-0}" -gt 0 ] && printf '%s↺ restored %d .env.local file(s)%s\n' "$c_b" "${#MOVED[@]}" "$c_z"
+  if [ "${#MOVED[@]}" -gt 0 ]; then
+    for f in "${MOVED[@]}"; do
+      if [ -f "${f}.release-bak" ]; then mv -f "${f}.release-bak" "${f}"; fi
+    done
+    printf '%s↺ restored %d .env.local file(s)%s\n' "$c_b" "${#MOVED[@]}" "$c_z"
+  fi
 }
 trap restore_env_local EXIT
 
@@ -73,7 +81,7 @@ step "Isolating .env.local files (dev overrides must not enter a prod build)"
 for f in "${REPO_DIR}/.env.local" "${REPO_DIR}/client-web/.env.local" "${REPO_DIR}/admin-web/.env.local"; do
   if [ -f "${f}" ]; then mv -f "${f}" "${f}.release-bak"; MOVED+=("${f}"); echo "  moved: ${f#${REPO_DIR}/}"; fi
 done
-[ "${#MOVED[@]:-0}" -eq 0 ] && echo "  (none present)"
+if [ "${#MOVED[@]}" -eq 0 ]; then echo "  (none present)"; fi
 
 # ── 1. Frozen install ──────────────────────────────────────────────────────────
 step "1/8 Install (frozen lockfile)"; pnpm install --frozen-lockfile; ok "install"
