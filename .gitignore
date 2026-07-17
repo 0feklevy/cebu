@@ -14,3 +14,7 @@ build/
 fiji/
 podcast-saas/interactive-podcast-react/
 darwin-avatar/
+
+# Local nested repos of personal projects — NEVER tracked (an undeclared gitlink here
+# broke actions/checkout: "No url found for submodule path 'myprojects' in .gitmodules")
+/myprojects/
