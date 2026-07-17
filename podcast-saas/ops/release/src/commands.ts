@@ -17,10 +17,11 @@ import { setOutput } from './gha.js';
 import { parseManifest, validateManifest, type ImageManifest } from './image-manifest.js';
 import { auditMigrations, sha256, type MigrationAuditResult } from './migration-audit.js';
 import { preflight } from './preflight.js';
+import { redactValue } from './redact.js';
 import { buildReport, renderMarkdown, type EndpointStatus, type ReleaseReport, type StageTiming } from './report.js';
 import { runCommand, type Runner } from './run.js';
 import { computeNextVersion, type BumpKind } from './semver.js';
-import { evaluateGate, finding, type Finding, type GateDecision, type GatePolicy, type Phase } from './severity.js';
+import { evaluateGate, finding, type Finding, type GateDecision, type GatePolicy, type Phase, sortFindings } from './severity.js';
 import { createRun, parseRun, serializeRun, transition, type ReleaseState } from './state-machine.js';
 import { secretScan } from './secret-scan.js';
 
@@ -103,6 +104,11 @@ export async function cmdPreflight(ctx: CommandContext, opts: { nextTag: string;
   });
   if (opts.out) writeJsonFile(opts.out, res);
   ctx.log(`preflight: ${res.findings.length} finding(s); HEAD=${res.facts.headSha}`);
+  // The count alone left the first release failing with no visible cause in the
+  // run log — print every finding, redacted (details may carry git remote stderr).
+  for (const f of redactValue(sortFindings(res.findings))) {
+    ctx.log(`  [${f.severity}] ${f.id}: ${f.message}${f.detail ? ` — ${f.detail}` : ''}`);
+  }
   return { findings: res.findings, exitCode: hasCritical(res.findings) ? 1 : 0 };
 }
 

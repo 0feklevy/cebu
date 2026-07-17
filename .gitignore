@@ -18,3 +18,7 @@ darwin-avatar/
 # Local nested repos of personal projects — NEVER tracked (an undeclared gitlink here
 # broke actions/checkout: "No url found for submodule path 'myprojects' in .gitmodules")
 /myprojects/
+
+# Release pipeline outputs ($ART in the workflows; also written by local release-cli runs).
+# Must be ignored or release preflight flags its own plan/state files as a dirty tree.
+/release-artifacts/

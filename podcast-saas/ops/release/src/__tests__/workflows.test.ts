@@ -102,3 +102,42 @@ describe('least-privilege permissions are preserved', () => {
     expect(wf['production-audit.yml']).not.toContain('write');
   });
 });
+
+describe('release artifacts never dirty the release checkout (run 29602969853 fix)', () => {
+  const REPO_ROOT = join(WF_DIR, '..', '..');
+
+  /** Text of one job in release.yml (two-space-indented job keys delimit sections). */
+  function releaseJob(name: string): string {
+    const m = wf['release.yml'].match(new RegExp(`\\n  ${name}:\\n[\\s\\S]*?(?=\\n  [a-z][a-z-]*:\\n|$)`));
+    if (!m) throw new Error(`job ${name} not found in release.yml`);
+    return m[0];
+  }
+
+  it('every artifact-staging workflow keeps $ART at <workspace>/release-artifacts', () => {
+    for (const name of ['release.yml', 'rollback.yml', 'production-audit.yml']) {
+      expect(wf[name], name).toContain('ART: ${{ github.workspace }}/release-artifacts');
+    }
+  });
+
+  it('the repo root gitignores /release-artifacts/ (else preflight flags its own plan/state files)', () => {
+    const rootIgnore = readFileSync(join(REPO_ROOT, '.gitignore'), 'utf8');
+    expect(rootIgnore).toMatch(/^\/release-artifacts\/$/m);
+  });
+
+  it('plan.json and state.json land in $ART before preflight runs (the order that failed)', () => {
+    const plan = releaseJob('plan');
+    const iPlan = plan.indexOf('release-cli plan --bump');
+    const iState = plan.indexOf('release-cli state-init');
+    const iPreflight = plan.indexOf('release-cli preflight');
+    expect(iPlan).toBeGreaterThan(-1);
+    expect(iState).toBeGreaterThan(iPlan);
+    expect(iPreflight).toBeGreaterThan(iState);
+  });
+
+  it('no tag is created when preflight fails: tagging lives only in release-plan, gated on the plan job', () => {
+    expect((wf['release.yml'].match(/git tag -a/g) ?? []).length).toBe(1);
+    const releasePlan = releaseJob('release-plan');
+    expect(releasePlan).toContain('git tag -a');
+    expect(releasePlan).toMatch(/needs: \[plan, verify, build-images\]/);
+  });
+});
