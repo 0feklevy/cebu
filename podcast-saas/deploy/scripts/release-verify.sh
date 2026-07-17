@@ -8,8 +8,9 @@
 # (overridable via env or a gitignored deploy/release.env). Stops on the first failure and
 # ALWAYS restores the moved .env.local files, even on failure.
 #
-# Steps: frozen install → typecheck → non-interactive lint → tests → clean .next →
-#        build client-web + admin-web with explicit prod URLs → scan bundles for localhost.
+# Steps: frozen install → build shared → typecheck → non-interactive lint → tests →
+#        clean .next → build client-web + admin-web with explicit prod URLs →
+#        scan bundles for localhost.
 #
 # Public production values (override by exporting them or via deploy/release.env):
 #   NEXT_PUBLIC_API_URL   = https://api.flowvidco.com
@@ -84,31 +85,39 @@ done
 if [ "${#MOVED[@]}" -eq 0 ]; then echo "  (none present)"; fi
 
 # ── 1. Frozen install ──────────────────────────────────────────────────────────
-step "1/8 Install (frozen lockfile)"; pnpm install --frozen-lockfile; ok "install"
+step "1/9 Install (frozen lockfile)"; pnpm install --frozen-lockfile; ok "install"
 
-# ── 2. Typecheck ───────────────────────────────────────────────────────────────
-step "2/8 Typecheck (all workspaces)"; pnpm -r typecheck; ok "typecheck"
+# ── 2. Build the shared workspace package ──────────────────────────────────────
+# The `shared` package's runtime entry is dist/index.js (gitignored build output).
+# Tests and app builds that import the bare 'shared' specifier resolve to it, so a
+# FRESH checkout (CI) fails with "Failed to resolve entry for package \"shared\""
+# unless it is built first — dev machines only passed because a stale dist existed.
+# Mirrors the Docker builds, which run `pnpm --filter shared build` before the apps.
+step "2/9 Build shared workspace package"; pnpm --filter shared build; ok "shared build"
 
-# ── 3. Lint (non-interactive) ──────────────────────────────────────────────────
-step "3/8 Lint (all workspaces, non-interactive)"; pnpm -r lint; ok "lint"
+# ── 3. Typecheck ───────────────────────────────────────────────────────────────
+step "3/9 Typecheck (all workspaces)"; pnpm -r typecheck; ok "typecheck"
 
-# ── 4. Tests ───────────────────────────────────────────────────────────────────
-step "4/8 Tests"; pnpm -r test; ok "tests"
+# ── 4. Lint (non-interactive) ──────────────────────────────────────────────────
+step "4/9 Lint (all workspaces, non-interactive)"; pnpm -r lint; ok "lint"
 
-# ── 5. Clean stale build output ────────────────────────────────────────────────
-step "5/8 Removing stale .next output"; rm -rf "${REPO_DIR}/client-web/.next" "${REPO_DIR}/admin-web/.next"; ok "cleaned"
+# ── 5. Tests ───────────────────────────────────────────────────────────────────
+step "5/9 Tests"; pnpm -r test; ok "tests"
 
-# ── 6-7. Production builds with explicit public URLs ──────────────────────────────
-step "6/8 Build client-web (production)"
+# ── 6. Clean stale build output ────────────────────────────────────────────────
+step "6/9 Removing stale .next output"; rm -rf "${REPO_DIR}/client-web/.next" "${REPO_DIR}/admin-web/.next"; ok "cleaned"
+
+# ── 7-8. Production builds with explicit public URLs ──────────────────────────────
+step "7/9 Build client-web (production)"
 ( cd "${REPO_DIR}/client-web" && pnpm build ) || die "client-web build failed"
 ok "client-web build"
 
-step "7/8 Build admin-web (production)"
+step "8/9 Build admin-web (production)"
 ( cd "${REPO_DIR}/admin-web" && pnpm build ) || die "admin-web build failed"
 ok "admin-web build"
 
-# ── 8. Scan the shipped browser bundles for loopback URLs ───────────────────────
-step "8/8 Scanning bundles for localhost/127.0.0.1/private hosts"
+# ── 9. Scan the shipped browser bundles for loopback URLs ───────────────────────
+step "9/9 Scanning bundles for localhost/127.0.0.1/private hosts"
 "${REPO_DIR}/deploy/scripts/scan-bundle-localhost.sh" || die "bundle scan found loopback references"
 ok "bundle scan"
 

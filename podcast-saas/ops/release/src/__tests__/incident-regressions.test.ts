@@ -135,6 +135,19 @@ describe('incident 8 (PR #2) — deploy scripts must be valid on modern bash', (
     }
   });
 
+  it('release-verify builds the shared workspace BEFORE running tests (fresh-checkout resolution)', () => {
+    // PR #2 CI: 14 backend test files failed with `Failed to resolve entry for
+    // package "shared"` — the bare 'shared' import resolves to dist/index.js,
+    // which is gitignored build output. Dev machines passed on stale dist; a
+    // fresh CI checkout has none. The gate must build it first (as Docker does).
+    const script = read('deploy/scripts/release-verify.sh');
+    const buildIdx = script.indexOf('pnpm --filter shared build');
+    const testIdx = script.indexOf('pnpm -r test');
+    expect(buildIdx, 'release-verify.sh must build the shared package').toBeGreaterThan(-1);
+    expect(testIdx).toBeGreaterThan(-1);
+    expect(buildIdx, 'shared must be built BEFORE the test step').toBeLessThan(testIdx);
+  });
+
   it('no script combines array-length expansion with a :- default (bash-5 bad substitution)', () => {
     // `${#arr[@]:-0}` runs on macOS bash 3.2 but is a runtime "bad substitution" on
     // bash 4.4+/5 (the CI runner) — and `bash -n` cannot catch it (expansion errors
