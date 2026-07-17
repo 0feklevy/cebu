@@ -40,11 +40,20 @@ jobs:
         --key ${{ github.workspace }}/.ssh-deploy-key --known-hosts ${{ github.workspace }}/.ssh-known-hosts
         --repo-dir ${{ vars.PRODUCTION_REPO_DIR }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      # persist-credentials: false — this read-only workflow never pushes, so no git
+      # credential is written and checkout's post-step credential cleanup (the source
+      # of the floating "git exited 128" warning in run 29528323804: annotation
+      # anchored at "Post Run actions/checkout", log line 11) has nothing to do.
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Record audit start time (for the report's Started field)
+        working-directory: .
+        run: echo "AUDIT_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+      - uses: pnpm/action-setup@v6
         with:
           package_json_file: podcast-saas/package.json
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
@@ -93,18 +102,20 @@ jobs:
           pnpm --filter ops-release release-cli gate --phase post-deploy \
             --findings "$ART/vm-findings.json,$ART/endpoints.json,$ART/csp-client-web.json,$ART/csp-admin-web.json,$ART/browser-findings.json,$ART/playwright-summary.json" \
             --out "$ART/gate.json"
-      - name: Audit report
+      - name: Audit report (explicit verdict — AUDIT_PASSED/AUDIT_FAILED, never a fake deploy state)
         if: always()
         run: |
           pnpm --filter ops-release release-cli report --dir "$ART" \
+            --kind audit \
             --run-id "$RUN_ID" --actor '${{ github.actor }}' \
             --workflow-url '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}' \
+            --started-at "${AUDIT_STARTED_AT}" \
             --ended-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --out-json "$ART/audit-report.json" --out-md "$ART/audit-report.md"
           cat "$ART/audit-report.md" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: production-audit-${{ github.run_id }}
           path: |

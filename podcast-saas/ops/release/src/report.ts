@@ -37,8 +37,19 @@ export interface ImageRecord {
   digest: string;
 }
 
+/** What kind of run produced this report. */
+export type ReportKind = 'release' | 'audit' | 'rollback';
+
+/**
+ * Verdict states for runs that do NOT walk the release state machine.
+ * A read-only audit must never pretend a deployment occurred: it ends in an
+ * explicit AUDIT_PASSED / AUDIT_FAILED, not a deployment state and not UNKNOWN.
+ */
+export type AuditState = 'AUDIT_PASSED' | 'AUDIT_FAILED';
+
 export interface ReleaseReport {
   schema: 'flowvid.release-report/v1';
+  kind?: ReportKind;
   runId: string;
   workflow?: { runId?: string; runUrl?: string; actor?: string; workflow?: string };
   requested?: { bump?: string; deploy?: boolean; backfillPolicy?: string };
@@ -47,7 +58,7 @@ export interface ReleaseReport {
   gitSha?: string;
   startedAt?: string;
   endedAt?: string;
-  state: ReleaseState | 'UNKNOWN';
+  state: ReleaseState | AuditState | 'UNKNOWN';
   stages: StageTiming[];
   source?: Record<string, unknown>;
   tests?: TestSummary[];
@@ -106,11 +117,17 @@ const SEVERITY_ICON: Record<string, string> = {
   INFO: 'ℹ️',
 };
 
+const KIND_TITLE: Record<ReportKind, string> = {
+  release: 'Release report',
+  audit: 'Production audit report',
+  rollback: 'Rollback report',
+};
+
 export function renderMarkdown(report: ReleaseReport): string {
   const lines: string[] = [];
   const r = report;
 
-  lines.push(`# Release report — ${r.version ?? '(unversioned run)'}`);
+  lines.push(`# ${KIND_TITLE[r.kind ?? 'release']} — ${r.version ?? r.runId}`);
   lines.push('');
   const meta: string[][] = [
     ['Run ID', r.runId],

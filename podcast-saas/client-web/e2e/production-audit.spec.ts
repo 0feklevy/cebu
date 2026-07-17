@@ -49,6 +49,8 @@ function hostKind(rawUrl: string): string | null {
 interface PageAudit {
   url: string;
   status: number | null;
+  /** Whether this page was audited anonymously or after signing in. */
+  authContext: 'anonymous' | 'authenticated';
   consoleErrors: string[];
   consoleSecurityWarnings: string[];
   pageErrors: string[];
@@ -56,7 +58,11 @@ interface PageAudit {
   mixedContent: string[];
   requestsFailed: Array<{ url: string; error: string }>;
   responses5xx: Array<{ url: string; status: number }>;
-  unexpected4xx: Array<{ url: string; status: number }>;
+  unexpected4xx: Array<{ url: string; status: number; type: string }>;
+  /** Protected-route 401/403 observed while ANONYMOUS — expected, diagnostic only. */
+  expectedAuthRejections: Array<{ url: string; status: number }>;
+  /** Exactly-matched known-benign browser messages (Firebase COOP popup poll). */
+  knownBenignWarnings: string[];
   nonPublicRequests: Array<{ url: string; kind: string }>;
   brokenImages: string[];
   iframes: string[];
@@ -68,16 +74,54 @@ const collectedPages: PageAudit[] = [];
 const SECURITY_CONSOLE = /content security policy|violates|refused to (frame|connect|load|execute)|mixed content|blocked by/i;
 /** Same-origin + first-party API/storage resources whose 401/403/404 means a broken page. */
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const API_ORIGIN = 'https://api.flowvidco.com';
 const REQUIRED_RESOURCE = new RegExp(
-  `^(?:${escapeRe(BASE)}|${escapeRe('https://api.flowvidco.com')}|https://[a-z0-9-]+\\.supabase\\.co)`,
+  `^(?:${escapeRe(BASE)}|${escapeRe(API_ORIGIN)}|https://[a-z0-9-]+\\.supabase\\.co)`,
   'i',
 );
 const REQUIRED_TYPES = new Set(['image', 'media', 'stylesheet', 'script', 'font', 'fetch', 'xhr']);
+
+/**
+ * First-party API routes that REQUIRE authentication BY DESIGN (path-only match,
+ * query stripped). A 401/403 from these while the audit is ANONYMOUS is an
+ * expected rejection recorded as diagnostic evidence — not a broken asset.
+ * Deliberately explicit (mirrors ops/release/src/config.ts api.protectedRoutes;
+ * the ops test suite checks the two lists stay in sync). Never a blanket
+ * /api/v1 rule, and never applied to static resources or authenticated audits.
+ */
+const PROTECTED_API_ROUTES: RegExp[] = [
+  /^\/api\/v1\/projects\/?$/i,
+  /^\/api\/v1\/playlists\/?$/i,
+];
+/** Public API routes that must work for everyone — 4xx here is always a failure. */
+const REQUIRED_PUBLIC_API_ROUTES: RegExp[] = [/^\/health\/?$/i];
+
+/**
+ * The exact known-benign Chrome message emitted while Firebase signInWithPopup
+ * polls popup.closed (Google's popup serves COOP same-origin-allow-popups; our
+ * pages send no COOP header — verified 2026-07-16 — and the popup/iframe flow is
+ * functional). Recorded as diagnostic evidence, never as a security warning.
+ * Mirrors ops/release/src/asset-audit.ts COOP_WINDOW_CLOSED_RE.
+ */
+const COOP_WINDOW_CLOSED = /Cross-Origin-Opener-Policy policy would block the window\.closed call/i;
+const CONSOLE_AUTH_LOAD_FAILURE = /Failed to load resource:.*\b(401|403)\b/i;
+
+function isProtectedApiRoute(rawUrl: string): boolean {
+  try {
+    const u = new URL(rawUrl);
+    if (u.origin !== API_ORIGIN) return false;
+    if (REQUIRED_PUBLIC_API_ROUTES.some((re) => re.test(u.pathname))) return false;
+    return PROTECTED_API_ROUTES.some((re) => re.test(u.pathname));
+  } catch {
+    return false;
+  }
+}
 
 function attach(page: Page): PageAudit {
   const audit: PageAudit = {
     url: '',
     status: null,
+    authContext: 'anonymous',
     consoleErrors: [],
     consoleSecurityWarnings: [],
     pageErrors: [],
@@ -86,6 +130,8 @@ function attach(page: Page): PageAudit {
     requestsFailed: [],
     responses5xx: [],
     unexpected4xx: [],
+    expectedAuthRejections: [],
+    knownBenignWarnings: [],
     nonPublicRequests: [],
     brokenImages: [],
     iframes: [],
@@ -109,16 +155,38 @@ function attach(page: Page): PageAudit {
     if (status >= 500) audit.responses5xx.push({ url, status });
     else if ([401, 403, 404].includes(status)) {
       const type = res.request().resourceType();
-      if (REQUIRED_TYPES.has(type) && REQUIRED_RESOURCE.test(url)) audit.unexpected4xx.push({ url, status });
+      if (!REQUIRED_TYPES.has(type) || !REQUIRED_RESOURCE.test(url)) return;
+      // Context-aware: a 401/403 from an explicitly-protected API route while the
+      // audit is ANONYMOUS is an expected rejection (diagnostic), not a broken asset.
+      // 404s, static resources, and authenticated audits are never downgraded.
+      const isAuthRejection =
+        (status === 401 || status === 403) &&
+        (type === 'fetch' || type === 'xhr') &&
+        audit.authContext === 'anonymous' &&
+        isProtectedApiRoute(url);
+      if (isAuthRejection) audit.expectedAuthRejections.push({ url, status });
+      else audit.unexpected4xx.push({ url, status, type });
     }
   });
   page.on('console', (msg: ConsoleMessage) => {
     const text = msg.text();
+    if (COOP_WINDOW_CLOSED.test(text)) {
+      audit.knownBenignWarnings.push(text); // exact known-benign message, never a security warning
+      return;
+    }
     if (SECURITY_CONSOLE.test(text)) {
       if (/mixed content/i.test(text)) audit.mixedContent.push(text);
       else audit.cspViolations.push(text);
       if (msg.type() === 'warning') audit.consoleSecurityWarnings.push(text);
     } else if (msg.type() === 'error') {
+      // Correlate the browser's own "Failed to load resource … 401/403" line with
+      // an expected anonymous auth rejection (same resource URL, from location()):
+      // that event is already represented once in expectedAuthRejections — don't
+      // duplicate it as console noise. Unrelated console errors are untouched.
+      const locUrl = msg.location()?.url ?? '';
+      if (CONSOLE_AUTH_LOAD_FAILURE.test(text) && audit.authContext === 'anonymous' && isProtectedApiRoute(locUrl)) {
+        return;
+      }
       audit.consoleErrors.push(text);
     }
   });
@@ -284,6 +352,9 @@ test('audit: admin login + preview (least-privileged smoke account)', async ({ p
       await emailInput.fill(email);
       await passInput.fill(password);
       await page.locator('button[type="submit"], button:has-text("Sign in"), button:has-text("Log in")').first().click({ timeout: 5000 }).catch(() => {});
+      // From here the audit is AUTHENTICATED: a 401/403 from a protected API route
+      // is now a real failure (HIGH), never an expected rejection.
+      audit.authContext = 'authenticated';
       await settle(page, 3000);
       const preview = process.env.SMOKE_ADMIN_PREVIEW_PATH;
       if (preview) {

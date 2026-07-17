@@ -74,7 +74,8 @@ const USAGE = `Usage: release-cli <command> [flags]
   gate                --phase pre-deploy|post-deploy --findings f1.json,f2.json [--approve-high] [--block-on-warning] [--out gate.json]
   state-init          --file state.json --run-id ID [--version V] [--git-sha SHA] [--bump B]
   state-transition    --file state.json --to STATE [--note TEXT]
-  report              --dir artifacts/ --run-id ID --out-json report.json --out-md report.md [meta flags]
+  report              --dir artifacts/ --run-id ID --out-json report.json --out-md report.md
+                      [--kind release|audit|rollback] [meta flags incl. --started-at/--ended-at]
   dry-run             --out-dir DIR
 
   Remote (SSH; --host --user --key --repo-dir [--known-hosts]):
@@ -155,6 +156,7 @@ async function main(): Promise<number> {
         dir: need('dir'),
         meta: {
           runId: need('run-id'),
+          kind: (flags.get('kind') as 'release' | 'audit' | 'rollback' | undefined) ?? 'release',
           version: flags.get('version'),
           previousVersion: flags.get('previous-version'),
           gitSha: flags.get('git-sha'),

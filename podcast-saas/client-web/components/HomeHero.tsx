@@ -16,6 +16,7 @@ import { CreateProjectDialog } from './CreateProjectDialog';
 import { PlaylistsPanel } from './PlaylistsPanel';
 import { ConfirmDialog } from './ConfirmDialog';
 import { api } from '../lib/api';
+import { canLoadPrivateWorkspace } from '../lib/authGate';
 import { useAuth } from '../lib/firebase';
 import type { Project } from 'shared/src/generated/client-v1';
 
@@ -208,6 +209,13 @@ export function HomeHero() {
 
   useEffect(() => {
     if (authLoading) return;
+    // Anonymous visitor: GET /api/v1/projects requires auth (401 otherwise) —
+    // never call it without a signed-in user; render the empty state instead.
+    if (!canLoadPrivateWorkspace(authLoading, user)) {
+      setProjects([]);
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     // Don't show skeleton if we already have cached data — just quietly refresh
     if (projects.length === 0) setLoading(true);
@@ -228,7 +236,7 @@ export function HomeHero() {
       cancelled = true;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authLoading]);
+  }, [authLoading, user]);
 
   const sortedProjects = useMemo(
     () => [...projects].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()),

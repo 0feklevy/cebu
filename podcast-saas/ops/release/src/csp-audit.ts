@@ -123,14 +123,39 @@ export function auditCspHeader(header: string | null | undefined, exp: CspExpect
   return findings;
 }
 
+/**
+ * Cross-Origin-Opener-Policy on OUR app pages. Firebase signInWithPopup keeps a
+ * reference to the popup and polls popup.closed; a STRICT `same-origin` COOP on
+ * the opener severs that relationship and breaks popup sign-in. We currently send
+ * no COOP header (verified 2026-07-16), which is fine; this guard exists so a
+ * future strict COOP cannot land silently. (The benign console message browsers
+ * emit while polling Google's popup is classified separately as INFO — see
+ * asset-audit COOP_WINDOW_CLOSED_RE.)
+ */
+export function auditCoopHeader(app: string, coop: string | null | undefined): Finding[] {
+  if (!coop) return [];
+  const value = coop.trim().toLowerCase().split(';')[0].trim();
+  if (value === 'same-origin' || value === 'noopener-allow-popups') {
+    return [
+      finding(`csp.${app}.coop-breaks-popup-auth`, 'HIGH', 'csp', `${app}: Cross-Origin-Opener-Policy "${coop}" severs the opener relationship — Firebase signInWithPopup breaks.`, {
+        remediation: "Use same-origin-allow-popups (or no COOP) on pages that start popup sign-in, or move to signInWithRedirect first.",
+      }),
+    ];
+  }
+  return [
+    finding(`csp.${app}.coop-present`, 'INFO', 'csp', `${app}: Cross-Origin-Opener-Policy is "${coop}" (popup-compatible).`),
+  ];
+}
+
 export interface LiveCspResult {
   url: string;
   status: number | null;
   header: string | null;
+  coopHeader?: string | null;
   findings: Finding[];
 }
 
-/** Fetch a page and audit its CSP header. Read-only GET; never mutates production. */
+/** Fetch a page and audit its CSP + COOP headers. Read-only GET; never mutates production. */
 export async function auditLiveCsp(
   url: string,
   exp: CspExpectation,
@@ -139,7 +164,14 @@ export async function auditLiveCsp(
   try {
     const res = await fetchImpl(url, { method: 'GET', redirect: 'follow' });
     const header = res.headers.get('content-security-policy');
-    return { url, status: res.status, header, findings: auditCspHeader(header, exp) };
+    const coopHeader = res.headers.get('cross-origin-opener-policy');
+    return {
+      url,
+      status: res.status,
+      header,
+      coopHeader,
+      findings: [...auditCspHeader(header, exp), ...auditCoopHeader(exp.app, coopHeader)],
+    };
   } catch (err) {
     return {
       url,
