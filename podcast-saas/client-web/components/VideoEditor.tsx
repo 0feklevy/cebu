@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { AlertTriangle, Clapperboard, Flag, GitBranch, Maximize2, Minimize2, Music, Pencil, Plus, Redo2, RefreshCw, Sparkles, Trash2, Undo2, Upload } from 'lucide-react';
+import { AlertTriangle, Clapperboard, Copy, Flag, GitBranch, Maximize2, Minimize2, Music, Pencil, Plus, Redo2, RefreshCw, Sparkles, Trash2, Undo2, Upload } from 'lucide-react';
 import { useAuth } from '../lib/firebase';
 import { api } from '../lib/api';
 import { VideoPlayer } from './VideoPlayer';
@@ -47,6 +47,8 @@ function EditorToolsPanel({
   onToggleAllLayers,
   flagMode,
   onToggleFlagMode,
+  duplicateMode,
+  onToggleDuplicateMode,
   markerCount,
   onUndo,
   onRedo,
@@ -59,6 +61,8 @@ function EditorToolsPanel({
   onToggleAllLayers: () => void;
   flagMode: boolean;
   onToggleFlagMode: () => void;
+  duplicateMode: boolean;
+  onToggleDuplicateMode: () => void;
   markerCount: number;
   onUndo: () => void;
   onRedo: () => void;
@@ -110,6 +114,22 @@ function EditorToolsPanel({
               {markerCount}
             </span>
           )}
+        </button>
+        <button
+          type="button"
+          onClick={onToggleDuplicateMode}
+          aria-pressed={duplicateMode}
+          title={duplicateMode
+            ? 'Duplicate mode ON — click a section to copy it, then click the timeline to place the copy. Click here to exit.'
+            : 'Duplicate a section — click, then click a section and drop an exact copy (keeps all simulation settings)'}
+          aria-label={duplicateMode ? 'Exit duplicate mode' : 'Enter duplicate mode to copy a section'}
+          className={`relative flex min-h-11 w-11 shrink-0 items-center justify-center rounded-lg border transition-colors focus-ring ${
+            duplicateMode
+              ? 'border-violet-500 bg-violet-500 text-white shadow-sm'
+              : 'border-border bg-card text-violet-500 hover:border-violet-300 hover:bg-violet-50/70'
+          }`}
+        >
+          <Copy size={18} strokeWidth={1.9} aria-hidden />
         </button>
       </div>
 
@@ -177,6 +197,8 @@ function sectionCreateBody(s: TimelineSection): Parameters<typeof api.createSect
     simulation_url: s.simulation_url,
     simulation_id: s.simulation_id,
     sim_script: s.sim_script,
+    sim_prompt: s.sim_prompt,
+    sim_meta: s.sim_meta,
     track: s.track,
     global_offset_sec: s.global_offset_sec,
     clip_source_video_id: s.clip_source_video_id,
@@ -381,8 +403,17 @@ export function VideoEditor({ projectId }: Props) {
           const status = await api.getHlsStatus(projectId, id);
           if (status.raw_url) setRawUrls(prev => prev[id] ? prev : { ...prev, [id]: status.raw_url! });
           if (status.hls_url) setHlsUrls(prev => ({ ...prev, [id]: status.hls_url! }));
+          // Adopt the transcode-probed duration (authoritative) so the timeline/player leave the 50s
+          // floor even for files the browser could not decode client-side (HEVC/ProRes/…). Without
+          // this, such a clip stays capped until a full reload. (timeline-50s-cap follow-up)
+          if (typeof status.duration_sec === 'number' && status.duration_sec > 0) {
+            const dsec = status.duration_sec;
+            setVideos(prev => prev.map(v => v.id === id && v.duration_sec !== dsec ? { ...v, duration_sec: dsec } : v));
+            setAllVideos(prev => prev.map(v => v.id === id && v.duration_sec !== dsec ? { ...v, duration_sec: dsec } : v));
+          }
           if (status.hls_status === 'ready' || status.hls_status === 'failed') {
             setVideos(prev => prev.map(v => v.id === id ? { ...v, hls_status: status.hls_status } : v));
+            setAllVideos(prev => prev.map(v => v.id === id ? { ...v, hls_status: status.hls_status } : v));
           }
           setTierProgress(prev => ({
             ...prev,
@@ -880,12 +911,69 @@ export function VideoEditor({ projectId }: Props) {
   // handler stays stable. Flags can't overlap (MARKER_MIN_GAP).
   const MARKER_MIN_GAP = 0.25; // seconds — two flags can't sit on the same spot
   const [flagMode, setFlagMode] = useState(false);
+  // Duplicate mode: click a section to pick it, then click the timeline to drop an exact copy
+  // (esp. simulation sections, keeping every setting). Mutually exclusive with flag mode so the
+  // two full-timeline overlays never fight for clicks. (duplicate-section)
+  const [duplicateMode, setDuplicateMode] = useState(false);
+  const [duplicateSourceId, setDuplicateSourceId] = useState<string | null>(null);
   const playheadRef = useRef(0);
   playheadRef.current = playheadSec;
   const markersRef = useRef<TimelineMarker[]>([]);
   markersRef.current = markers;
 
-  const handleToggleFlagMode = useCallback(() => setFlagMode(v => !v), []);
+  const handleToggleFlagMode = useCallback(() => {
+    setFlagMode(v => {
+      const next = !v;
+      if (next) { setDuplicateMode(false); setDuplicateSourceId(null); }
+      return next;
+    });
+  }, []);
+
+  const handleToggleDuplicateMode = useCallback(() => {
+    setDuplicateMode(v => {
+      const next = !v;
+      if (next) setFlagMode(false);
+      return next;
+    });
+    setDuplicateSourceId(null);
+  }, []);
+
+  const handlePickDuplicateSource = useCallback((id: string | null) => setDuplicateSourceId(id), []);
+
+  // A client-measured duration (from the timeline probe) fills in a clip that has no duration_sec
+  // yet, so the PLAYER coordinate system (offsets, active clip) matches what the timeline draws
+  // before transcode. Fill-only: never override a real/authoritative value. (timeline-50s-cap)
+  const handleMeasuredDuration = useCallback((id: string, sec: number) => {
+    setVideos(prev => prev.map(v => v.id === id && !(v.duration_sec != null && v.duration_sec > 0) ? { ...v, duration_sec: sec } : v));
+    setAllVideos(prev => prev.map(v => v.id === id && !(v.duration_sec != null && v.duration_sec > 0) ? { ...v, duration_sec: sec } : v));
+  }, []);
+
+  // Re-entrancy guard so a double-click on the drop overlay can't fire two createSection calls
+  // (each reading the same still-set duplicateSourceId) and produce two overlapping copies.
+  const dupBusyRef = useRef(false);
+
+  // Persist an exact copy of the source section at the resolved position. Reuses sectionCreateBody
+  // (the same field-copy list the undo/restore path uses) so all settings — including sim_prompt,
+  // sim_meta, sim_script, simple_ui, auto_script — come along; the server re-resolves simulation_url.
+  const handleDuplicateSection = useCallback(async (
+    source: TimelineSection,
+    position: { video_file_id?: string; start_sec: number; end_sec: number; global_offset_sec: number | null },
+  ) => {
+    if (dupBusyRef.current) return;   // a copy is already in flight (double-click) — ignore
+    dupBusyRef.current = true;
+    try {
+      const base = sectionCreateBody(source);
+      const section = await api.createSection(projectId, {
+        ...base,
+        ...position,
+        video_file_id: position.video_file_id ?? base.video_file_id,
+        sort_order: null,
+      });
+      commitSections([...sections, section]);
+      setDuplicateSourceId(null);
+    } catch { /* ignore */ }
+    finally { dupBusyRef.current = false; }
+  }, [projectId, sections, commitSections]);
 
   // Create a flag at a specific timeline second, unless one already sits on that spot.
   const handlePlaceMarker = useCallback(async (atSec: number) => {
@@ -1482,6 +1570,8 @@ export function VideoEditor({ projectId }: Props) {
                 onToggleAllLayers={handleToggleAllLayers}
                 flagMode={flagMode}
                 onToggleFlagMode={handleToggleFlagMode}
+                duplicateMode={duplicateMode}
+                onToggleDuplicateMode={handleToggleDuplicateMode}
                 markerCount={markers.length}
                 onUndo={handleUndo}
                 onRedo={handleRedo}
@@ -1515,6 +1605,11 @@ export function VideoEditor({ projectId }: Props) {
             flagMode={flagMode}
             onPlaceMarker={handlePlaceMarker}
             onExitFlagMode={() => setFlagMode(false)}
+            duplicateMode={duplicateMode}
+            duplicateSourceId={duplicateSourceId}
+            onPickDuplicateSource={handlePickDuplicateSource}
+            onDuplicateSection={handleDuplicateSection}
+            onExitDuplicateMode={() => { setDuplicateMode(false); setDuplicateSourceId(null); }}
             onUpdateMarker={handleUpdateMarker}
             onDeleteMarker={handleDeleteMarker}
             simulations={simulations}
@@ -1524,6 +1619,7 @@ export function VideoEditor({ projectId }: Props) {
             activeVideoId={activeVideoId}
             videoUrls={rawUrls}
             onSeek={handleTimelineSeek}
+            onMeasuredDuration={handleMeasuredDuration}
             onSectionsChange={commitSections}
             onAddVideo={() => setShowUploader(true)}
             toolMode={toolMode}

@@ -75,23 +75,29 @@ type Interaction =
 interface ClipWithOffset {
   video: VideoFile;
   offset: number;
+  dur: number;   // effective length (real, transcode-independent): duration_sec or a client-measured value
 }
 
-function buildClips(videos: VideoFile[]): ClipWithOffset[] {
+// durOf resolves each clip's effective length (see effDur() in the component). Threading it in
+// keeps buildClips pure and lets the timeline reflect the real video length before the async HLS
+// transcode worker backfills duration_sec — otherwise a null duration collapses every clip to 0
+// and the whole timeline floors to 50s. (timeline-50s-cap fix)
+function buildClips(videos: VideoFile[], durOf: (v: VideoFile) => number): ClipWithOffset[] {
   const sorted = [...videos].sort(
     (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
   );
   let off = 0;
   return sorted.map(v => {
-    const clip = { video: v, offset: off };
-    off += v.duration_sec ?? 0;
+    const dur = durOf(v);
+    const clip = { video: v, offset: off, dur };
+    off += dur;
     return clip;
   });
 }
 
 function findClipAtGlobalSec(clips: ClipWithOffset[], globalSec: number): ClipWithOffset | null {
   for (const c of clips) {
-    const end = c.offset + (c.video.duration_sec ?? 0);
+    const end = c.offset + c.dur;
     if (globalSec >= c.offset && globalSec < end) return c;
   }
   return clips.length > 0 ? clips[clips.length - 1] : null;
@@ -361,6 +367,45 @@ function getAudioDurationFromUrl(url: string): Promise<number | null> {
   });
 }
 
+// Measure a video's real length straight from its raw URL (mirrors getAudioDurationFromUrl).
+// Used as a transcode-independent fallback for the timeline width so an un-transcoded clip
+// (duration_sec still null) renders at its true length instead of the 50s floor. (timeline-50s-cap fix)
+function getVideoDurationFromUrl(url: string): Promise<number | null> {
+  return new Promise(resolve => {
+    const vid = document.createElement('video');
+    let timer: number | null = null;
+
+    const cleanup = () => {
+      if (timer !== null) window.clearTimeout(timer);
+      vid.onloadedmetadata = null;
+      vid.onerror = null;
+      vid.src = '';
+    };
+
+    // A non-faststart file keeps its moov atom at the end, so metadata can be slow to arrive —
+    // give it a generous window before giving up (the 50s floor still applies meanwhile).
+    timer = window.setTimeout(() => {
+      cleanup();
+      resolve(null);
+    }, 12000);
+
+    vid.preload = 'metadata';
+    vid.crossOrigin = 'anonymous';
+    vid.muted = true;
+    vid.playsInline = true;
+    vid.onloadedmetadata = () => {
+      const duration = Number.isFinite(vid.duration) && vid.duration > 0 ? vid.duration : null;
+      cleanup();
+      resolve(duration);
+    };
+    vid.onerror = () => {
+      cleanup();
+      resolve(null);
+    };
+    vid.src = url;
+  });
+}
+
 function formatDuration(s: number): string {
   return `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`;
 }
@@ -497,6 +542,16 @@ interface Props {
   flagMode?: boolean;
   onPlaceMarker?: (atSec: number) => void;
   onExitFlagMode?: () => void;
+  // Duplicate mode (icon toggle next to the flag): click a section to pick it, then click the
+  // timeline to drop an exact copy. (duplicate-section)
+  duplicateMode?: boolean;
+  duplicateSourceId?: string | null;
+  onPickDuplicateSource?: (id: string | null) => void;
+  onDuplicateSection?: (
+    source: TimelineSection,
+    position: { video_file_id?: string; start_sec: number; end_sec: number; global_offset_sec: number | null },
+  ) => void;
+  onExitDuplicateMode?: () => void;
   onUpdateMarker?: (id: string, patch: { label?: string | null; notes?: string | null; at_sec?: number }) => void;
   onDeleteMarker?: (id: string) => void;
   simulations: Simulation[];
@@ -506,6 +561,9 @@ interface Props {
   activeVideoId: string | null;
   videoUrls: Record<string, string>;
   onSeek: (globalSec: number) => void;
+  // Lift a client-measured duration up so the parent's player coordinate system (offsets, active
+  // clip, VideoPlayer) uses the same length the timeline does, before transcode. (timeline-50s-cap)
+  onMeasuredDuration?: (videoId: string, durationSec: number) => void;
   onSectionsChange: (sections: TimelineSection[]) => void;
   onBrollMarkComplete?: (mark: { start: number; end: number }) => void;
   onAudioCutawayInserted?: (section: TimelineSection) => void;
@@ -521,7 +579,8 @@ interface Props {
 
 export function TimelinePanel({
   projectId, videos, allVideos = [], sections, markers = [], flagMode = false, onPlaceMarker, onExitFlagMode, onUpdateMarker, onDeleteMarker, simulations, images = [], audioFiles = [], playheadSec, activeVideoId, videoUrls,
-  onSeek, onSectionsChange, onBrollMarkComplete, onAudioCutawayInserted, onSimulationUpdate,
+  duplicateMode = false, duplicateSourceId = null, onPickDuplicateSource, onDuplicateSection, onExitDuplicateMode,
+  onSeek, onMeasuredDuration, onSectionsChange, onBrollMarkComplete, onAudioCutawayInserted, onSimulationUpdate,
   toolMode, showAllLayers = false, showBrollTrack, showAudioTrack, onAddVideo,
 }: Props) {
   const scrollRef    = useRef<HTMLDivElement>(null);
@@ -547,9 +606,20 @@ export function TimelinePanel({
   const [markerMenuPos, setMarkerMenuPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 }); // portal anchor (viewport)
   const [markerDraft, setMarkerDraft]     = useState('');                    // in-progress note text
   const [flagHoverSec, setFlagHoverSec]   = useState<number | null>(null);   // follow-line position in flag mode
+  const [dupHoverSec, setDupHoverSec]     = useState<number | null>(null);   // follow-line/ghost position in duplicate-drop mode
   const [markerDrag, setMarkerDrag]       = useState<{ id: string; previewSec: number } | null>(null);
   const markerDragCleanupRef = useRef<(() => void) | null>(null); // teardown for in-flight marker-drag listeners (frontend-102)
   const [localAudioFiles, setLocalAudioFiles] = useState<AudioFile[]>(audioFiles);
+  // Client-measured durations (video id → seconds) for clips whose duration_sec is still null
+  // because the HLS transcode hasn't populated it yet. Keyed by id so a measurement survives
+  // re-renders. `measuringRef` dedupes in-flight probes; `mountedRef` gates writes after unmount.
+  const [measuredDur, setMeasuredDur] = useState<Record<string, number>>({});
+  const measuringRef = useRef<Set<string>>(new Set());
+  const mountedRef = useRef(true);
+  // Set true on (re)mount and false on unmount. Must restore true on mount, or React StrictMode's
+  // dev-only mount→unmount→mount double-invoke leaves it permanently false and every measured
+  // duration is silently dropped. (timeline-50s-cap follow-up)
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
 
   const openMarker = (m: TimelineMarker, clientX: number, clientY: number) => {
     setMarkerMenu(m.id);
@@ -566,8 +636,36 @@ export function TimelinePanel({
   const hasBroll = showBrollTrack ?? (toolMode === 'broll' || showAllLayers);
   const hasAudio = showAudioTrack ?? (audioFiles.length > 0 || audioSections.length > 0 || hasBroll);
 
-  const clipsWithOffset = buildClips(videos);
-  const videoTimelineDuration = clipsWithOffset.reduce((s, c) => s + (c.video.duration_sec ?? 0), 0);
+  // Effective clip length: the persisted duration_sec when present, else a client-measured value,
+  // else 0 (the 50s floor below covers the still-measuring / genuinely-empty case). (timeline-50s-cap fix)
+  const effDur = useCallback((v: VideoFile): number => {
+    if (v.duration_sec != null && v.duration_sec > 0) return v.duration_sec;
+    const m = measuredDur[v.id];
+    return m != null && m > 0 ? m : 0;
+  }, [measuredDur]);
+
+  // For any clip missing a real duration_sec, probe its raw URL once and cache the result so the
+  // timeline reflects the true length without waiting for (or depending on) the transcode worker.
+  useEffect(() => {
+    videos.forEach(v => {
+      if (v.duration_sec != null && v.duration_sec > 0) return;
+      if (measuredDur[v.id] != null && measuredDur[v.id] > 0) return;
+      if (measuringRef.current.has(v.id)) return;
+      const url = videoUrls[v.id];
+      if (!url) return;
+      measuringRef.current.add(v.id);
+      getVideoDurationFromUrl(url).then(d => {
+        measuringRef.current.delete(v.id);
+        if (mountedRef.current && d != null && d > 0) {
+          setMeasuredDur(prev => (prev[v.id] === d ? prev : { ...prev, [v.id]: d }));
+          onMeasuredDuration?.(v.id, d);   // lift to the parent so the player agrees with the timeline
+        }
+      });
+    });
+  }, [videos, videoUrls, measuredDur, onMeasuredDuration]);
+
+  const clipsWithOffset = buildClips(videos, effDur);
+  const videoTimelineDuration = clipsWithOffset.reduce((s, c) => s + c.dur, 0);
   const sectionTimelineEnd = mainSections.reduce((max, s) => {
     const clip = clipsWithOffset.find(c => c.video.id === s.video_file_id);
     return clip ? Math.max(max, clip.offset + s.end_sec) : max;
@@ -643,12 +741,13 @@ export function TimelinePanel({
   // ── V1 track mouse down ──────────────────────────────────────────────────
   const handleTrackMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return;
+    if (duplicateMode) return;         // duplicate mode owns clicks (pick source / drop copy)
     if (toolMode === 'broll') return; // handled by V2 track
     const globalSec = pixelsToGlobalSec(e.clientX);
     const clip = findClipAtGlobalSec(clipsWithOffset, globalSec);
     if (!clip) return;
     const localSec = Math.max(0, globalSec - clip.offset);
-    const dur = clip.video.duration_sec ?? totalDuration;
+    const dur = clip.dur > 0 ? clip.dur : totalDuration;
     const gap = findGap(mainSections, clip.video.id, localSec, dur);
     if (!gap) return;
     setInter({
@@ -661,16 +760,17 @@ export function TimelinePanel({
     });
     setSelectedSection(null);
     e.preventDefault();
-  }, [mainSections, clipsWithOffset, totalDuration, pixelsToGlobalSec, setInter, toolMode]);
+  }, [mainSections, clipsWithOffset, totalDuration, pixelsToGlobalSec, setInter, toolMode, duplicateMode]);
 
   // ── V2 broll track mouse down ────────────────────────────────────────────
   const handleBrollTrackMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0 || toolMode !== 'broll') return;
+    if (duplicateMode) return;         // duplicate mode owns clicks
     const globalSec = pixelsToGlobalSec(e.clientX);
     setInter({ kind: 'broll-creating', startSec: globalSec, curSec: globalSec });
     setSelectedSection(null);
     e.preventDefault();
-  }, [toolMode, pixelsToGlobalSec, setInter]);
+  }, [toolMode, pixelsToGlobalSec, setInter, duplicateMode]);
 
   // ── V1 section mouse down ────────────────────────────────────────────────
   const handleSectionMouseDown = useCallback((
@@ -680,9 +780,12 @@ export function TimelinePanel({
     mode: 'move' | 'trim-start' | 'trim-end',
   ) => {
     if (e.button !== 0) return;
+    if (duplicateMode) return;         // in duplicate mode a section click picks/places, never drags
     const globalSec = pixelsToGlobalSec(e.clientX);
     const localSec  = globalSec - clipOffset;
-    const baseDur = videos.find(v => v.id === s.video_file_id)?.duration_sec ?? totalDuration;
+    const v = videos.find(v => v.id === s.video_file_id);
+    const measured = v ? effDur(v) : 0;
+    const baseDur = measured > 0 ? measured : totalDuration;
     const dur = Math.max(baseDur, s.end_sec);
     didMoveRef.current = false;
     if (mode === 'move') {
@@ -692,7 +795,7 @@ export function TimelinePanel({
       setInter({ kind: 'trimming', section: s, clipOffset, edge: mode === 'trim-start' ? 'start' : 'end', duration: dur, previewStart: s.start_sec, previewEnd: s.end_sec });
     }
     e.preventDefault();
-  }, [videos, totalDuration, pixelsToGlobalSec, setInter]);
+  }, [videos, totalDuration, pixelsToGlobalSec, setInter, effDur, duplicateMode]);
 
   // ── V2 broll section mouse down ──────────────────────────────────────────
   const handleBrollSectionMouseDown = useCallback((
@@ -701,13 +804,15 @@ export function TimelinePanel({
     mode: 'move' | 'trim-start' | 'trim-end',
   ) => {
     if (e.button !== 0) return;
+    if (duplicateMode) return;         // in duplicate mode a section click picks/places, never drags
     const globalSec = pixelsToGlobalSec(e.clientX);
     const offset = s.global_offset_sec ?? 0;
     // Real source length so a broll/AI clip can extend up to its full generated duration (not
     // just its current trimmed length). Look through ALL videos incl. broll sources.
-    const sourceDuration = allVideos.find(v => v.id === s.video_file_id || v.id === s.clip_source_video_id)?.duration_sec
-      ?? videos.find(v => v.id === s.video_file_id)?.duration_sec
-      ?? (s.end_sec - s.start_sec);
+    const srcVid = allVideos.find(v => v.id === s.video_file_id || v.id === s.clip_source_video_id)
+      ?? videos.find(v => v.id === s.video_file_id);
+    const measuredSrc = srcVid ? effDur(srcVid) : 0;
+    const sourceDuration = measuredSrc > 0 ? measuredSrc : (s.end_sec - s.start_sec);
     didMoveRef.current = false;
     if (mode === 'move') {
       setInter({ kind: 'broll-moving', section: s, dragOffsetSec: globalSec - offset, previewOffset: offset });
@@ -715,7 +820,7 @@ export function TimelinePanel({
       setInter({ kind: 'broll-trimming', section: s, edge: mode === 'trim-start' ? 'start' : 'end', sourceDuration, previewStart: s.start_sec, previewEnd: s.end_sec });
     }
     e.preventDefault();
-  }, [pixelsToGlobalSec, setInter, videos, allVideos]);
+  }, [pixelsToGlobalSec, setInter, videos, allVideos, effDur, duplicateMode]);
 
   // ── Global mouse move / up ───────────────────────────────────────────────
 
@@ -859,9 +964,60 @@ export function TimelinePanel({
 
   const handleSectionClick = useCallback((e: React.MouseEvent, s: TimelineSection) => {
     e.stopPropagation();
+    // Duplicate mode, phase 1: a section click picks the source instead of opening the editor.
+    if (duplicateMode && !duplicateSourceId) {
+      onPickDuplicateSource?.(s.id);
+      return;
+    }
+    if (duplicateMode) return; // phase 2: clicks are handled by the drop overlay, not the section
     if (didMoveRef.current) return;
     setSelectedSection(s);
-  }, []);
+  }, [duplicateMode, duplicateSourceId, onPickDuplicateSource]);
+
+  // ── Duplicate-drop placement ─────────────────────────────────────────────
+  // Resolve where a dropped copy of the picked source lands. Main sections re-attach to the clip
+  // under the cursor and reuse findGap so they never overlap; broll/audio/image/clip keep their
+  // in/out points and move by global offset (parity with their create paths). Returns null when the
+  // drop is invalid (no clip / no room), which both greys the ghost and cancels the click.
+  const computeDuplicatePlacement = useCallback((dropSec: number): {
+    video_file_id?: string;
+    start_sec: number;
+    end_sec: number;
+    global_offset_sec: number | null;
+  } | null => {
+    const source = sections.find(s => s.id === duplicateSourceId);
+    if (!source) return null;
+    const dur = source.end_sec - source.start_sec;
+    if (dur <= 0) return null;
+    if (isMainSection(source)) {
+      const clip = findClipAtGlobalSec(clipsWithOffset, dropSec);
+      if (!clip) return null;
+      const localSec = Math.max(0, dropSec - clip.offset);
+      const span = clip.dur > 0 ? clip.dur : localSec + dur;
+      const gap = findGap(mainSections, clip.video.id, localSec, span);
+      if (!gap) return null;
+      let start = Math.max(localSec, gap[0]);
+      if (start + dur > gap[1]) start = gap[1] - dur;
+      if (start < gap[0] - 0.001) return null; // the gap is too small to hold the copy
+      return { video_file_id: clip.video.id, start_sec: start, end_sec: start + dur, global_offset_sec: null };
+    }
+    // broll / audio / image / clip: start_sec/end_sec are source in/out points — keep them and
+    // position the copy by its global offset.
+    return { start_sec: source.start_sec, end_sec: source.end_sec, global_offset_sec: Math.max(0, dropSec) };
+  }, [sections, duplicateSourceId, clipsWithOffset, mainSections]);
+
+  const handleDuplicateDrop = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    const source = sections.find(s => s.id === duplicateSourceId);
+    if (!source) return;
+    const placement = computeDuplicatePlacement(Math.max(0, pixelsToGlobalSec(e.clientX)));
+    if (!placement) return; // invalid drop — ignore the click, stay in place-mode
+    onDuplicateSection?.(source, placement);
+  }, [sections, duplicateSourceId, computeDuplicatePlacement, pixelsToGlobalSec, onDuplicateSection]);
+
+  const handleDuplicateOverlayMove = useCallback((e: React.MouseEvent) => {
+    setDupHoverSec(Math.max(0, pixelsToGlobalSec(e.clientX)));
+  }, [pixelsToGlobalSec]);
 
   const handleTrackClick = useCallback((e: React.MouseEvent) => {
     const sec = pixelsToGlobalSec(e.clientX);
@@ -920,17 +1076,22 @@ export function TimelinePanel({
   // Remove any in-flight marker-drag window listeners if the component unmounts mid-drag. (frontend-102)
   useEffect(() => () => { markerDragCleanupRef.current?.(); }, []);
 
-  // Escape closes an open note popover, else exits flag mode.
+  // Escape closes an open note popover; in duplicate mode it steps back (clear picked source →
+  // exit mode); otherwise it exits flag mode.
   useEffect(() => {
-    if (!flagMode && !markerMenu) return;
+    if (!flagMode && !markerMenu && !duplicateMode) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       if (markerMenu) setMarkerMenu(null);
+      else if (duplicateMode) {
+        if (duplicateSourceId) onPickDuplicateSource?.(null); // back to pick phase
+        else onExitDuplicateMode?.();
+      }
       else if (flagMode) onExitFlagMode?.();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [flagMode, markerMenu, onExitFlagMode]);
+  }, [flagMode, markerMenu, duplicateMode, duplicateSourceId, onExitFlagMode, onPickDuplicateSource, onExitDuplicateMode]);
 
   const handleAppendSection = useCallback(async (type: 'simulation' | 'clip') => {
     const anchor = clipsWithOffset[clipsWithOffset.length - 1];
@@ -938,7 +1099,7 @@ export function TimelinePanel({
     setAddBusy(type);
     setAddMenuOpen(false);
     try {
-      const anchorDuration = anchor.video.duration_sec ?? 0;
+      const anchorDuration = anchor.dur;
       const start = Math.max(anchorDuration, sectionTimelineEnd - anchor.offset);
       const section = await api.createSection(projectId, {
         video_file_id: anchor.video.id,
@@ -1057,6 +1218,8 @@ export function TimelinePanel({
   ) => {
     const style = TYPE_STYLE[s.type] ?? fallbackStyle;
     const isSelected = selectedSection?.id === s.id;
+    const isDupSource = duplicateMode && duplicateSourceId === s.id;   // picked copy source
+    const isDupPick   = duplicateMode && !duplicateSourceId;           // phase 1: click to pick
     const getSectionMode = (e: React.MouseEvent, el: HTMLElement): 'move' | 'trim-start' | 'trim-end' => {
       const r = el.getBoundingClientRect();
       const x = e.clientX - r.left;
@@ -1073,11 +1236,13 @@ export function TimelinePanel({
           left: pos.left,
           width: pos.width,
           backgroundColor: style.fill,
-          border: `1.5px solid ${style.border}`,
+          border: isDupSource ? '1.5px dashed #7c3aed' : `1.5px solid ${style.border}`,
           borderRadius: 4,
-          boxShadow: isSelected ? `0 0 0 2px ${style.border}` : '0 1px 3px rgba(0,0,0,0.1)',
-          cursor: 'grab',
-          zIndex: 10,
+          boxShadow: isDupSource
+            ? '0 0 0 2px #7c3aed, 0 0 0 5px rgba(124,58,237,0.22)'
+            : isSelected ? `0 0 0 2px ${style.border}` : '0 1px 3px rgba(0,0,0,0.1)',
+          cursor: isDupPick ? 'copy' : 'grab',
+          zIndex: isDupSource ? 12 : 10,
           userSelect: 'none',
           minWidth: 4,
         }}
@@ -1247,6 +1412,49 @@ export function TimelinePanel({
               )}
             </div>
           )}
+
+          {/* ── Duplicate mode: ghost preview + click-to-place overlay ──────── */}
+          {duplicateMode && duplicateSourceId && (() => {
+            const source = sections.find(s => s.id === duplicateSourceId);
+            if (!source) return null;
+            const dur = source.end_sec - source.start_sec;
+            return (
+              <div
+                className="absolute inset-0"
+                style={{ zIndex: 23, cursor: 'copy' }}
+                onMouseMove={handleDuplicateOverlayMove}
+                onMouseLeave={() => setDupHoverSec(null)}
+                onClick={handleDuplicateDrop}
+              >
+                {dupHoverSec != null && (() => {
+                  const placement = computeDuplicatePlacement(dupHoverSec);
+                  const valid = placement != null;
+                  // Snap the ghost to the resolved drop position so the preview matches the result.
+                  let ghostLeftSec = dupHoverSec;
+                  if (placement) {
+                    if (placement.global_offset_sec == null && placement.video_file_id) {
+                      const clip = clipsWithOffset.find(c => c.video.id === placement.video_file_id);
+                      ghostLeftSec = (clip?.offset ?? 0) + placement.start_sec;
+                    } else {
+                      ghostLeftSec = placement.global_offset_sec ?? dupHoverSec;
+                    }
+                  }
+                  return (
+                    <div className="pointer-events-none absolute top-0 bottom-0" style={{ left: ghostLeftSec * zoom, width: Math.max(2, dur * zoom) }}>
+                      <div style={{
+                        position: 'absolute', inset: 0,
+                        background: valid ? 'rgba(124,58,237,0.20)' : 'rgba(239,68,68,0.15)',
+                        border: `1.5px dashed ${valid ? '#7c3aed' : '#ef4444'}`, borderRadius: 4,
+                      }} />
+                      <span style={{ position: 'absolute', top: 2, left: 4, fontSize: 8, fontWeight: 700, color: '#fff', background: valid ? '#7c3aed' : '#ef4444', borderRadius: 3, padding: '1px 4px', whiteSpace: 'nowrap' }}>
+                        {valid ? `copy · ${fmtDur(dur)}` : 'no room here'}
+                      </span>
+                    </div>
+                  );
+                })()}
+              </div>
+            );
+          })()}
 
           {/* ── Editor flags (markers) — draggable, Premiere-style ───────────── */}
           {markers.length > 0 && (
@@ -1523,7 +1731,7 @@ export function TimelinePanel({
                 <div className="absolute inset-0 pointer-events-none" style={{ backgroundImage: 'repeating-linear-gradient(90deg, rgba(0,0,0,0.04) 0px, rgba(0,0,0,0.04) 1px, transparent 1px, transparent 60px)' }} />
 
                 {clipsWithOffset.map(c => {
-                  const wPx = (c.video.duration_sec ?? 0) * zoom;
+                  const wPx = c.dur * zoom;
                   const lPx = c.offset * zoom;
                   return (
                     <div
@@ -1531,7 +1739,7 @@ export function TimelinePanel({
                       className="absolute top-0 bottom-0"
                       style={{ left: `${lPx}px`, width: `${wPx}px`, backgroundColor: activeVideoId === c.video.id ? '#e0f2fe' : '#f0f7ff' }}
                     >
-                      <ClipFilmstrip videoUrl={videoUrls[c.video.id] ?? null} duration={c.video.duration_sec ?? 0} />
+                      <ClipFilmstrip videoUrl={videoUrls[c.video.id] ?? null} duration={c.dur} />
                     </div>
                   );
                 })}
@@ -1603,7 +1811,7 @@ export function TimelinePanel({
               {/* ── A1 AUDIO TRACK ─────────────────────────────────────── */}
               <div style={{ height: AUDIO_TRACK_H, position: 'relative', backgroundColor: '#f0fdf4' }}>
                 {clipsWithOffset.map(c => {
-                  const wPx = (c.video.duration_sec ?? 0) * zoom;
+                  const wPx = c.dur * zoom;
                   const lPx = c.offset * zoom;
                   const peaks = parseWaveformPeaks(c.video.waveform_peaks);
                   return (

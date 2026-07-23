@@ -77,6 +77,8 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       simulation_url?: string;
       simulation_id?: string;
       sim_script?: string;
+      sim_prompt?: string | null;
+      sim_meta?: unknown;
       track?: 'main' | 'broll' | 'audio';
       global_offset_sec?: number | null;
       clip_source_video_id?: string | null;
@@ -107,6 +109,8 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
         simulation_url,
         simulation_id,
         sim_script,
+        sim_prompt,
+        sim_meta,
         track,
         global_offset_sec,
         clip_source_video_id,
@@ -153,6 +157,10 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
           simulation_url: resolvedSimUrl,
           simulation_id: simulation_id ?? null,
           sim_script: sim_script ?? null,
+          // sim_prompt/sim_meta carry the simulation's generation prompt + bridge plan so a
+          // duplicated simulation section keeps its full config instead of losing it. (duplicate-section)
+          sim_prompt: sim_prompt ?? null,
+          sim_meta: sim_meta ?? null,
           track: track ?? 'main',
           global_offset_sec: global_offset_sec ?? null,
           clip_source_video_id: clip_source_video_id ?? null,

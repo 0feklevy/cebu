@@ -19,6 +19,42 @@ const PART_MAX_ATTEMPTS = 4;
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+// Measure the video's real duration in-browser before upload so we can persist it immediately
+// on confirm/complete. Without this, duration_sec stays null until the async HLS transcode probes
+// it — and until then the editor timeline floors to 50s and the published player mis-offsets its
+// segments. Best-effort: resolves undefined on decode/timeout failure (the row stays null, as before).
+// (timeline-50s-cap fix)
+function measureVideoDuration(file: File): Promise<number | undefined> {
+  return new Promise((resolve) => {
+    let objectUrl: string | null = null;
+    const vid = document.createElement('video');
+    let timer: number | null = null;
+    const cleanup = () => {
+      if (timer !== null) window.clearTimeout(timer);
+      vid.onloadedmetadata = null;
+      vid.onerror = null;
+      vid.src = '';
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+    timer = window.setTimeout(() => { cleanup(); resolve(undefined); }, 15000);
+    vid.preload = 'metadata';
+    vid.muted = true;
+    vid.onloadedmetadata = () => {
+      const d = Number.isFinite(vid.duration) && vid.duration > 0 ? vid.duration : undefined;
+      cleanup();
+      resolve(d);
+    };
+    vid.onerror = () => { cleanup(); resolve(undefined); };
+    try {
+      objectUrl = URL.createObjectURL(file);
+      vid.src = objectUrl;
+    } catch {
+      cleanup();
+      resolve(undefined);
+    }
+  });
+}
+
 // A part PUT failed. `retryable` separates transient transport/server errors (connection
 // resets surface as an XHR 'error' with no status; 5xx/429/408) from deterministic ones
 // (403 bad signature, missing ETag) that retrying can't fix.
@@ -116,7 +152,7 @@ export function VideoUploader({ projectId, onUploaded, replaceVideoId }: Props) 
 
   // Small-file path: PUT the whole file straight to cloud storage via one presigned URL,
   // then confirm so the server records it + starts processing.
-  const uploadPresigned = async (file: File, idx: number, token: string): Promise<VideoFile> => {
+  const uploadPresigned = async (file: File, idx: number, token: string, durationSec?: number): Promise<VideoFile> => {
     const urlRes = await fetch(`${API_URL}/api/v1/projects/${projectId}/videos/upload-url`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -144,7 +180,7 @@ export function VideoUploader({ projectId, onUploaded, replaceVideoId }: Props) 
     const confirmRes = await fetch(`${API_URL}/api/v1/projects/${projectId}/videos/confirm`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ storage_key, filename: file.name, file_size: file.size, replace_video_id: replaceVideoId }),
+      body: JSON.stringify({ storage_key, filename: file.name, file_size: file.size, replace_video_id: replaceVideoId, duration_sec: durationSec }),
     });
     if (!confirmRes.ok) throw new Error(`confirm ${confirmRes.status}`);
     return (await confirmRes.json()) as VideoFile;
@@ -188,7 +224,7 @@ export function VideoUploader({ projectId, onUploaded, replaceVideoId }: Props) 
   // Large-file path: S3 multipart. Upload the file in parts directly to storage, then
   // complete. Returns null if the backend says multipart is unsupported (local dev) so
   // the caller can fall back to the single-PUT path.
-  const uploadMultipartCloud = async (file: File, idx: number, token: string): Promise<VideoFile | null> => {
+  const uploadMultipartCloud = async (file: File, idx: number, token: string, durationSec?: number): Promise<VideoFile | null> => {
     // A multi-GB upload can outlive the initial Firebase ID token (~1 h), so headers are
     // minted per call — getIdToken() transparently refreshes when close to expiry.
     const freshHeaders = async (): Promise<Record<string, string>> => ({
@@ -262,7 +298,7 @@ export function VideoUploader({ projectId, onUploaded, replaceVideoId }: Props) 
 
       const completeRes = await postJsonWithRetry(
         `${API_URL}/api/v1/projects/${projectId}/videos/upload/multipart/complete`,
-        { storage_key, upload_id, filename: file.name, file_size: file.size, parts, replace_video_id: replaceVideoId },
+        { storage_key, upload_id, filename: file.name, file_size: file.size, parts, replace_video_id: replaceVideoId, duration_sec: durationSec },
         freshHeaders,
       );
       if (!completeRes.ok) {
@@ -286,10 +322,14 @@ export function VideoUploader({ projectId, onUploaded, replaceVideoId }: Props) 
       const token = await getAuth().currentUser?.getIdToken();
       if (!token) throw new Error('Not authenticated');
 
+      // Probe the real duration up front (best-effort) so it can be persisted at confirm/complete,
+      // making the timeline correct immediately instead of waiting on the HLS transcode. (timeline-50s-cap fix)
+      const durationSec = await measureVideoDuration(file);
+
       let videoData: VideoFile;
       if (file.size >= MULTIPART_THRESHOLD) {
         // Large file → S3 multipart (a single PUT would hit the bucket size cap).
-        const result = await uploadMultipartCloud(file, idx, token);
+        const result = await uploadMultipartCloud(file, idx, token, durationSec);
         if (result) {
           videoData = result;
         } else {
@@ -297,7 +337,7 @@ export function VideoUploader({ projectId, onUploaded, replaceVideoId }: Props) 
           // single presigned PUT, then to streaming-through-API if that also fails.
           updateUpload(idx, { percent: 0, speed: '' });
           try {
-            videoData = await uploadPresigned(file, idx, token);
+            videoData = await uploadPresigned(file, idx, token, durationSec);
           } catch (presignErr) {
             if (presignErr instanceof TooLargeError) throw presignErr;
             console.warn('Presigned upload failed, falling back to multipart-through-API:', presignErr);
@@ -308,7 +348,7 @@ export function VideoUploader({ projectId, onUploaded, replaceVideoId }: Props) 
       } else {
         // Small file → single presigned PUT, falling back to streaming-through-API.
         try {
-          videoData = await uploadPresigned(file, idx, token);
+          videoData = await uploadPresigned(file, idx, token, durationSec);
         } catch (presignErr) {
           if (presignErr instanceof TooLargeError) throw presignErr;
           console.warn('Presigned upload failed, falling back to multipart-through-API:', presignErr);

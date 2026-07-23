@@ -43,6 +43,14 @@ function humanBytes(n: number): string {
   return `${Math.round(n / 1024)} KB`;
 }
 
+// Accept a client-measured duration only when it's a sane, positive number of seconds (≤24h).
+// The transcode probe remains authoritative; this just seeds a good value at insert so the editor
+// timeline and published player are correct immediately instead of null-until-transcode. A bad or
+// hostile value is dropped (undefined → stored null, as before). (timeline-50s-cap fix)
+function sanitizeDurationSec(d: unknown): number | undefined {
+  return typeof d === 'number' && Number.isFinite(d) && d > 0 && d <= 86400 ? d : undefined;
+}
+
 export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
   const storage = getStorageAdapter();
 
@@ -61,6 +69,7 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
     filename: string | undefined,
     file_size: number | undefined,
     replaceVideoId?: string,
+    durationSec?: number,
   ) {
     const ext = storage_key.split('.').pop() ?? 'mp4';
 
@@ -105,6 +114,9 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
         storage_key,
         status: 'ready',
         hls_status: 'pending',
+        // Seed the client-measured length so the timeline/player are correct pre-transcode; the
+        // transcode probe overwrites it with the authoritative value (runVideoTranscode). (timeline-50s-cap fix)
+        duration_sec: durationSec ?? null,
       })
       .returning();
 
@@ -228,7 +240,7 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
       const project = await findOwnedProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
-      const body = (request.body ?? {}) as { storage_key?: string; filename?: string; file_size?: number; replace_video_id?: string };
+      const body = (request.body ?? {}) as { storage_key?: string; filename?: string; file_size?: number; replace_video_id?: string; duration_sec?: number };
       const storage_key = body.storage_key ?? '';
       // The key must be one we minted for THIS project (defends against confirming arbitrary keys).
       if (!storage_key.startsWith(`videos/${project.id}/`)) {
@@ -246,7 +258,7 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
         logger.warn({ err, storage_key }, 'confirm: existence check errored — proceeding');
       }
 
-      const videoFile = await finalizeUpload(project.id, storage_key, body.filename, body.file_size, body.replace_video_id);
+      const videoFile = await finalizeUpload(project.id, storage_key, body.filename, body.file_size, body.replace_video_id, sanitizeDurationSec(body.duration_sec));
       if (!videoFile) return reply.code(404).send({ message: 'Video to replace not found' });
       return reply.code(201).send(videoFile);
     },
@@ -340,6 +352,7 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
         filename?: string;
         file_size?: number;
         replace_video_id?: string;
+        duration_sec?: number;
         parts?: { partNumber?: number; etag?: string }[];
       };
       const storage_key = body.storage_key ?? '';
@@ -365,7 +378,7 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
-      const videoFile = await finalizeUpload(project.id, storage_key, body.filename, body.file_size, body.replace_video_id);
+      const videoFile = await finalizeUpload(project.id, storage_key, body.filename, body.file_size, body.replace_video_id, sanitizeDurationSec(body.duration_sec));
       if (!videoFile) return reply.code(404).send({ message: 'Video to replace not found' });
       return reply.code(201).send(videoFile);
     },

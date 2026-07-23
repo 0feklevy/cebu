@@ -816,7 +816,7 @@ export class ClientV1Api {
 
   confirmVideoUpload(
     projectId: string,
-    body: { storage_key: string; filename: string; file_size: number },
+    body: { storage_key: string; filename: string; file_size: number; replace_video_id?: string; duration_sec?: number },
   ): Promise<VideoFile> {
     return this.request(`/api/v1/projects/${projectId}/videos/confirm`, { method: 'POST', body });
   }
@@ -845,6 +845,8 @@ export class ClientV1Api {
       filename: string;
       file_size: number;
       parts: { partNumber: number; etag: string }[];
+      replace_video_id?: string;
+      duration_sec?: number;
     },
   ): Promise<VideoFile> {
     return this.request(`/api/v1/projects/${projectId}/videos/upload/multipart/complete`, { method: 'POST', body });
@@ -906,6 +908,8 @@ export class ClientV1Api {
       simulation_url?: string | null;
       simulation_id?: string | null;
       sim_script?: string | null;
+      sim_prompt?: string | null;
+      sim_meta?: SimMeta | null;
       track?: 'main' | 'broll' | 'audio';
       global_offset_sec?: number | null;
       clip_source_video_id?: string | null;
