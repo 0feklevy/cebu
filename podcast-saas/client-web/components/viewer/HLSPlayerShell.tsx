@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import Link from 'next/link';
+import { getAuth } from 'firebase/auth';
 import type { PlayerConfig, PlayerSegment, SimulationOverlay } from './types';
 import { useProjectPlayer } from './useProjectPlayer';
 import { useCropOverlay } from './useCropOverlay';
@@ -108,6 +109,27 @@ interface Props {
   onCaptionMenuOpenChange?: (open: boolean) => void;
   /** Branching: navigate to another project/playlist/external URL on a cross-destination choice. */
   onNavigate?: (dest: { type: 'project' | 'playlist' | 'external_url'; url?: string | null; token?: string | null }) => void;
+  /** Unlisted share-link token (/v/:token) — forwarded to the caption endpoints so
+   *  share-link viewers of a non-public project can read caption status + VTT. (cc fix) */
+  shareToken?: string | null;
+}
+
+// Auth headers for OUR backend caption endpoints. The player-config fetch already sends the
+// Firebase token (owner viewing a private project); the caption status poll and VTT fetch
+// didn't — so for a private/draft project they 404'd and the CC button never worked. (cc fix)
+async function captionAuthHeaders(): Promise<Record<string, string>> {
+  try {
+    const token = await getAuth().currentUser?.getIdToken();
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Append the share token to a backend caption URL (no-op for public-storage VTT URLs). */
+function withShare(url: string, shareToken?: string | null): string {
+  if (!shareToken || !url.includes('/api/v1/')) return url;
+  return `${url}${url.includes('?') ? '&' : '?'}share=${encodeURIComponent(shareToken)}`;
 }
 
 export function HLSPlayerShell({
@@ -120,6 +142,7 @@ export function HLSPlayerShell({
   onControlsVisibleChange,
   onCaptionMenuOpenChange,
   onNavigate,
+  shareToken,
 }: Props) {
   const videoARef             = useRef<HTMLVideoElement>(null);
   const videoBRef             = useRef<HTMLVideoElement>(null);
@@ -240,6 +263,12 @@ export function HLSPlayerShell({
     [captionState, captionCues],
   );
 
+  // Failed VTT fetches must NOT be cached as an empty cue list — that permanently blanked
+  // captions for the session (the pending filter skips segments that already have an entry).
+  // Instead skip the entry and retry a bounded number of times. (cc fix)
+  const vttRetriesRef = useRef<Record<string, number>>({});
+  const [vttRetryTick, setVttRetryTick] = useState(0);
+
   useEffect(() => {
     const urls = Object.entries(captionState)
       .filter(([, captions]) => captions.status === 'ready' && captions.vtt_url)
@@ -248,18 +277,34 @@ export function HLSPlayerShell({
     if (urls.length === 0) return;
 
     let cancelled = false;
-    Promise.all(urls.map(async ([segmentId, url]) => {
-      const res = await fetch(url);
-      if (!res.ok) return [segmentId, []] as const;
-      return [segmentId, parseVtt(await res.text())] as const;
-    })).then((items) => {
+    let scheduleRetry = false;
+    (async () => {
+      // The backend caption route gates on visibility — send the viewer's auth (owner of a
+      // private project) and share token, exactly like the player-config fetch does. Public
+      // storage URLs get a plain fetch (an Authorization header would force a CORS preflight).
+      const headers = await captionAuthHeaders();
+      const items = await Promise.all(urls.map(async ([segmentId, url]) => {
+        try {
+          const isBackendUrl = url.includes('/api/v1/');
+          const res = await fetch(withShare(url, shareToken), isBackendUrl ? { headers } : undefined);
+          if (!res.ok) throw new Error(`vtt ${res.status}`);
+          return [segmentId, parseVtt(await res.text())] as const;
+        } catch {
+          const tries = (vttRetriesRef.current[segmentId] ?? 0) + 1;
+          vttRetriesRef.current[segmentId] = tries;
+          if (tries < 3) scheduleRetry = true;
+          return null;
+        }
+      }));
       if (cancelled) return;
-      setCaptionCues((current) => ({ ...current, ...Object.fromEntries(items) }));
-    }).catch(() => {});
+      const ok = items.filter((x): x is readonly [string, CaptionCue[]] => x !== null);
+      if (ok.length > 0) setCaptionCues((current) => ({ ...current, ...Object.fromEntries(ok) }));
+      if (scheduleRetry) setTimeout(() => { if (!cancelled) setVttRetryTick((t) => t + 1); }, 4000);
+    })();
 
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingVttKey]);
+  }, [pendingVttKey, vttRetryTick]);
 
   useEffect(() => {
     const shouldPoll = Object.values(captionState).some((captions) => captions.status === 'none' || captions.status === 'processing');
@@ -267,7 +312,10 @@ export function HLSPlayerShell({
 
     let cancelled = false;
     const poll = async () => {
-      const res = await fetch(`${API_URL}/api/v1/projects/${config.project_id}/captions`).catch(() => null);
+      // Send auth + share token like the player-config fetch — without them a private/unlisted
+      // project 404s here and caption status never leaves 'processing'. (cc fix)
+      const headers = await captionAuthHeaders();
+      const res = await fetch(withShare(`${API_URL}/api/v1/projects/${config.project_id}/captions`, shareToken), { headers }).catch(() => null);
       if (!res?.ok) return;
       const json = (await res.json()) as CaptionStatusResponse;
       const segments = json.segments;

@@ -148,7 +148,6 @@ export function SectionEditor({
   const [type, setType]         = useState(initialType);
   const [label, setLabel]       = useState(section.label ?? '');
   const [simId, setSimId]       = useState(section.simulation_id ?? '');
-  const [simScript] = useState(section.sim_script ?? '');
   const [simPrompt, setSimPrompt]   = useState(section.sim_prompt ?? '');
   const [simpleUi, setSimpleUi]     = useState(section.simple_ui ?? false);
   const [autoScript, setAutoScript] = useState(section.auto_script ?? true);
@@ -463,6 +462,19 @@ export function SectionEditor({
     if (type === 'startScript') setPreviewRunning(true);
   }, [simpleUi, autoScript]);
 
+  // Live-apply toggle flips to a RUNNING preview. Toggles are runtime params (planVersion 5+),
+  // so no regeneration or reload is needed — but without this, flipping a toggle changed nothing
+  // on screen until the next Generate/Run click. (sim-preview fix)
+  useEffect(() => {
+    if (!previewRunning) return;
+    previewIframeRef.current?.contentWindow?.postMessage(
+      { type: 'startScript', script: section.sim_script ?? 'main', params: { simpleUi, autoScript } },
+      '*',
+    );
+  // Only re-fire on toggle changes — previewRunning/sim_script are read fresh but must not retrigger.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [simpleUi, autoScript]);
+
   const [isSimFullscreen, setIsSimFullscreen] = useState(false);
 
   useEffect(() => {
@@ -574,6 +586,17 @@ export function SectionEditor({
       errorHandled = true;
       const data = JSON.parse(e.data) as { section: TimelineSection };
       onUpdate(data.section);
+      // On the canReuse path the simulation_url comes back byte-identical, so the iframe
+      // (keyed on that URL) never reloads and no fresh SIM_READY fires — push the persisted
+      // params to the live iframe so the preview reflects the modification immediately.
+      // On a real regeneration the URL changes, the iframe remounts, and its own SIM_READY
+      // re-posts; this early message is harmlessly lost to the reloading frame. (sim-preview fix)
+      const s = data.section;
+      previewIframeRef.current?.contentWindow?.postMessage(
+        { type: 'startScript', script: s.sim_script ?? 'main', params: { simpleUi: s.simple_ui ?? false, autoScript: s.auto_script ?? true } },
+        '*',
+      );
+      setPreviewRunning(true);
       setGenerating(false);
       setGenerationStatus(null);
       es.close();
@@ -816,10 +839,13 @@ export function SectionEditor({
         type,
         label: label.trim() || undefined,
         simulation_id: simId || undefined,
-        sim_script: simScript || undefined,
-        // Persist the simulation toggle state so a plain Save no longer discards it
-        // (these were previously only written by AI generation) — frontend-001. (sim_prompt
-        // is intentionally not in the PATCH contract; it is owned by the generate endpoint.)
+        // Persist what the user actually edited: the AI prompt text and the toggle state, so a
+        // plain Save no longer discards them (frontend-001 / sim-persistence fix). sim_script is
+        // NOT sent — it's owned by the generate endpoint, and the old frozen-state copy here used
+        // to stamp a stale value across section switches. canReuse safety: the generate endpoint
+        // compares against sim_meta.prompt (the prompt that BUILT the bridge), not sim_prompt,
+        // so saving a new prompt can't cause a wrong bridge reuse.
+        sim_prompt: simPrompt.trim() || null,
         simple_ui: simpleUi,
         auto_script: autoScript,
         start_sec,

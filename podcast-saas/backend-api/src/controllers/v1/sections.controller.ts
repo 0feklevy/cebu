@@ -191,6 +191,8 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       simulation_url: string;
       simulation_id: string;
       sim_script: string;
+      sim_prompt: string | null;
+      sim_meta: unknown;
       global_offset_sec: number;
       clip_source_video_id: string | null;
       clip_in_sec: number;
@@ -218,7 +220,7 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       });
       if (!existing) return reply.code(404).send({ message: 'Section not found' });
 
-      const { simulation_id, sim_script, clip_source_video_id, clip_in_sec, broll_volume, clip_source_image_id, camera_movement, clip_source_audio_id, ...rest } = request.body;
+      const { simulation_id, sim_script, sim_prompt, sim_meta, clip_source_video_id, clip_in_sec, broll_volume, clip_source_image_id, camera_movement, clip_source_audio_id, ...rest } = request.body;
 
       if (rest.start_sec != null && rest.end_sec != null && rest.start_sec >= rest.end_sec) {
         return reply.code(400).send({ message: 'start_sec must be less than end_sec' });
@@ -227,8 +229,10 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       // When simulation_id is provided AND changed, denormalize entry_file → simulation_url.
       // If simulation_id is unchanged, leave simulation_url alone — this preserves the
       // generated bridge URL (section_id.html?v=hash) set by the SSE generation endpoint.
+      // An EXPLICIT simulation_url in the same request (undo/redo restore) wins over the
+      // recompute — the restore is putting back a known-good bridge URL. (sim-persistence fix)
       let resolvedSimUrl: string | null | undefined = rest.simulation_url;
-      if (simulation_id !== undefined && simulation_id !== existing.simulation_id) {
+      if (simulation_id !== undefined && simulation_id !== existing.simulation_id && rest.simulation_url === undefined) {
         if (simulation_id) {
           const sim = await db.query.simulations.findFirst({
             where: and(eq(simulations.id, simulation_id), eq(simulations.project_id, project.id)),
@@ -241,7 +245,17 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
 
       const patch: Record<string, unknown> = { ...rest };
       if (simulation_id !== undefined)       patch.simulation_id        = simulation_id || null;
+      // A CHANGED simulation invalidates the previously generated bridge: clear the stale
+      // sim_meta/sim_script so the UI stops claiming a bridge exists and the next Generate
+      // can't wrongly short-circuit through canReuse. Explicit values below (undo restore)
+      // still win over this clear. (sim-persistence fix)
+      if (simulation_id !== undefined && (simulation_id || null) !== existing.simulation_id) {
+        patch.sim_meta = null;
+        patch.sim_script = null;
+      }
       if (sim_script !== undefined)          patch.sim_script           = sim_script || null;
+      if (sim_prompt !== undefined)          patch.sim_prompt           = sim_prompt || null;
+      if (sim_meta !== undefined)            patch.sim_meta             = sim_meta ?? null;
       if (resolvedSimUrl !== undefined)      patch.simulation_url       = resolvedSimUrl;
       if (clip_source_video_id !== undefined) patch.clip_source_video_id = clip_source_video_id ?? null;
       if (clip_in_sec !== undefined)         patch.clip_in_sec          = clip_in_sec;
@@ -357,6 +371,7 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
         const storedMeta = section.sim_meta as (Record<string, unknown> & {
           planVersion?: string;
           sourceHash?: string;
+          prompt?: string;
           supportsRuntimeParams?: boolean;
           generatedBy?: string;
           conversationHistory?: ConversationMessage[];
@@ -368,9 +383,17 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
         const supportsRuntimeParams =
           storedMeta?.supportsRuntimeParams === true ||
           (storedMeta?.generatedBy === 'llm' && storedMeta?.planVersion === '5');
+        // Compare against the prompt that BUILT the current bridge (sim_meta.prompt). sim_prompt is
+        // user-editable via a plain Save now, so it can drift from the bridge; falling back to it
+        // only for legacy rows generated before meta.prompt existed. (sim-persistence fix)
+        const builtPrompt = (typeof storedMeta?.prompt === 'string' ? storedMeta.prompt : undefined) ?? section.sim_prompt;
+        // The stored URL must be scoped to THIS section: a duplicated section carries the SOURCE's
+        // ?section=<sourceId> URL, and a sim switch leaves a raw entry URL — both must regenerate
+        // their own bridge entry instead of silently reusing someone else's. (sim-persistence fix)
+        const urlIsOwn = !!section.simulation_url?.includes(`section=${section.id}`);
         const canReuse =
-          section.sim_prompt === rawPrompt &&
-          !!section.simulation_url &&
+          builtPrompt === rawPrompt &&
+          urlIsOwn &&
           supportsRuntimeParams;
 
         const savedHistory = (storedMeta?.conversationHistory as ConversationMessage[] | undefined) ?? [];
@@ -406,6 +429,9 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
           patch.sim_meta = {
             planVersion:        '5',
             generatedBy:        'llm',
+            // The prompt this bridge was built from — canReuse compares against THIS (not the
+            // user-editable sim_prompt) so a saved-but-not-generated prompt edit still regenerates.
+            prompt:             rawPrompt,
             sourceHash:         result.sourceHash,
             bridgeHash:         result.bridgeHash,
             generatedAt:        new Date().toISOString(),
@@ -510,14 +536,19 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       // canReuse: same prompt + bridge exists + supportsRuntimeParams (planVersion 5+)
       const storedMeta2 = section.sim_meta as (Record<string, unknown> & {
         planVersion?: string; supportsRuntimeParams?: boolean; generatedBy?: string;
-        sourceHash?: string; conversationHistory?: ConversationMessage[];
+        sourceHash?: string; prompt?: string; conversationHistory?: ConversationMessage[];
       }) | null;
       const supportsRuntimeParams2 =
         storedMeta2?.supportsRuntimeParams === true ||
         (storedMeta2?.generatedBy === 'llm' && storedMeta2?.planVersion === '5');
+      // Mirror the SSE sibling: compare against the prompt that BUILT the bridge (meta.prompt,
+      // sim_prompt fallback for legacy rows) and require the URL to be scoped to THIS section
+      // (a duplicate carries the source's ?section= URL; a sim switch leaves a raw entry URL).
+      const builtPrompt2 = (typeof storedMeta2?.prompt === 'string' ? storedMeta2.prompt : undefined) ?? section.sim_prompt;
+      const urlIsOwn2 = !!section.simulation_url?.includes(`section=${section.id}`);
       const canReuse =
-        section.sim_prompt === prompt &&
-        !!section.simulation_url &&
+        builtPrompt2 === prompt &&
+        urlIsOwn2 &&
         supportsRuntimeParams2;
 
       let sectionUrl: string;
@@ -549,6 +580,7 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
         patch.sim_meta = {
           planVersion:        '5',
           generatedBy:        'llm',
+          prompt,   // the prompt this bridge was built from — canReuse compares against this
           sourceHash:         result2.sourceHash,
           bridgeHash:         result2.bridgeHash,
           generatedAt:        new Date().toISOString(),

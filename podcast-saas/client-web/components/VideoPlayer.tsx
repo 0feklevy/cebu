@@ -86,6 +86,15 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
   const simReadyRef     = useRef(false);
   const simPollRef      = useRef<ReturnType<typeof setInterval> | null>(null);
   const pendingSimRef   = useRef<{ script: string; params: Record<string, boolean> } | null>(null);
+  // The CURRENT desired sim script+params while a sim section is active (null outside one).
+  // The iframe 'load' listener re-arms pendingSimRef from this, which heals the stale-SIM_READY
+  // race: when the iframe navigates to a new sim URL, the OLD page can answer a ping first and
+  // consume the pending startScript — leaving the NEW page visible but scriptless (no autoScript,
+  // wrong simpleUi). Re-arming on load guarantees the freshly loaded page gets startScript. (sim-race fix)
+  const desiredSimRef   = useRef<{ script: string; params: Record<string, boolean> } | null>(null);
+  // The 50ms reveal timers must be cancellable: leaving a section within that window otherwise
+  // strands the overlay visible over plain video during fast scrubbing. (sim-race fix)
+  const simShowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeSimUrlRef = useRef<string | null>(null);
   // Fallback reveal timer: some sims (heavy ES-module / CDN bundles like three.js) only
   // emit SIM_READY via the bridge's 3s timeout because their modules delay DOMContentLoaded.
@@ -133,7 +142,8 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
           // Send startScript first so sim applies simpleUi, then reveal
           sendToSim({ type: 'startScript', script: pending.script, params: pending.params });
           if (simRevealTimerRef.current) { clearTimeout(simRevealTimerRef.current); simRevealTimerRef.current = null; }
-          setTimeout(() => setShowSim(true), 50);
+          if (simShowTimerRef.current) clearTimeout(simShowTimerRef.current);
+          simShowTimerRef.current = setTimeout(() => { simShowTimerRef.current = null; setShowSim(true); }, 50);
         }
       }
       if (type === 'userInteraction') hook.pause();
@@ -143,11 +153,18 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // iframe load → reset ready + re-poll
+  // iframe load → reset ready + RE-ARM the pending startScript + re-poll. Re-arming from
+  // desiredSimRef is what makes navigation races harmless: even if a stale SIM_READY from the
+  // previous page consumed the pending entry, the freshly loaded page re-triggers startScript
+  // via its own SIM_READY / ping reply. (sim-race fix)
   useEffect(() => {
     const frame = simFrameRef.current;
     if (!frame) return;
-    const onLoad = () => { simReadyRef.current = false; startSimPoll(); };
+    const onLoad = () => {
+      simReadyRef.current = false;
+      if (desiredSimRef.current) pendingSimRef.current = { ...desiredSimRef.current };
+      startSimPoll();
+    };
     frame.addEventListener('load', onLoad);
     return () => frame.removeEventListener('load', onLoad);
   }, [startSimPoll]);
@@ -252,16 +269,25 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
         setShowSim(false);
       }
       if (simRevealTimerRef.current) { clearTimeout(simRevealTimerRef.current); simRevealTimerRef.current = null; }
+      // Cancel any in-flight 50ms reveal — otherwise a fast scrub out of the section right after
+      // entering leaves the overlay stranded visible over plain video. (sim-race fix)
+      if (simShowTimerRef.current) { clearTimeout(simShowTimerRef.current); simShowTimerRef.current = null; }
+      desiredSimRef.current = null;
+      pendingSimRef.current = null;
       activeSimUrlRef.current = null;
       return;
     }
     const sameUrl = newUrl === activeSimUrlRef.current;
     activeSimUrlRef.current = newUrl;
+    desiredSimRef.current = { script, params };   // what the loaded sim SHOULD be running now
     setSimUrl(newUrl);
     if (sameUrl && simReadyRef.current) {
-      // Send startScript first, then reveal after sim has applied simpleUi
+      // Send startScript first, then reveal after sim has applied simpleUi.
+      // Re-running on params/script changes (deps below) is what makes a canReuse
+      // regeneration — same URL, new toggles — show up live in the editor preview.
       sendToSim({ type: 'startScript', script, params });
-      setTimeout(() => setShowSim(true), 50);
+      if (simShowTimerRef.current) clearTimeout(simShowTimerRef.current);
+      simShowTimerRef.current = setTimeout(() => { simShowTimerRef.current = null; setShowSim(true); }, 50);
     } else {
       simReadyRef.current   = false;
       pendingSimRef.current = { script, params };
@@ -273,8 +299,10 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
       if (simRevealTimerRef.current) clearTimeout(simRevealTimerRef.current);
       simRevealTimerRef.current = setTimeout(() => setShowSim(true), 800);
     }
+  // Params/script deps: a regeneration that keeps the URL (canReuse) must still re-apply
+  // the new simple_ui / auto_script / sim_script to the live iframe. (sim-race fix)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSimSection?.id, activeSimSection?.simulation_url]);
+  }, [activeSimSection?.id, activeSimSection?.simulation_url, activeSimSection?.simple_ui, activeSimSection?.auto_script, activeSimSection?.sim_script]);
 
   // ── playback speed ────────────────────────────────────────────────────────
   useEffect(() => {

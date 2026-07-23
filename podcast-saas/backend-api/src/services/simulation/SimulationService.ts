@@ -30,6 +30,11 @@ export interface SimManifest {
   checkboxElements: Array<{ id: string; label: string }>;
   canvasElements:   string[];
   globalObjects:    string[];  // detected global libs: Plotly, d3, THREE, p5, etc.
+  // Modern runtime-built sims: the UI is created in JS and the API is an object on a window global.
+  // These give the LLM verified handles when there are no static HTML ids. (sim-bridge-deepfix)
+  runtimeGlobals:   string[];  // `window.__murmuration = ...` → ["__murmuration"]
+  instanceMethods:  string[];  // method names defined in classes / invoked as <global>.method(): ["toggleExploreExploit", ...]
+  cssControls:      string[];  // control class/id names created via createElement+className / _el('div','controls',…): ["controls", "show-menu-tab", …]
 }
 
 interface SimControl {
@@ -220,7 +225,9 @@ const BRIDGE_TEMPLATE = /* js */ `;(function(){
 
 // ── BRIDGE_GENERATION_SYSTEM_PROMPT ─────────────────────────────────────────────
 // The selected LLM provider receives the full simulation source + manifest and writes the bridge script.
-// The prompt is stored in DB (key: bridge_plan) and admin-editable.
+// THIS CONSTANT IS THE LIVE DEFAULT — generateBridgeScript uses it unless an admin has customized the
+// system_prompts row (key: bridge_plan, is_customized = true). The old shared/src/prompts/bridge-plan.txt
+// was never loaded by anything and has been deleted; edit THIS constant. (sim-bridge-deepfix)
 
 const BRIDGE_GENERATION_SYSTEM_PROMPT = `You generate a JavaScript bridge script for a science/physics simulation embedded in an iframe.
 The bridge communicates with the parent player via postMessage.
@@ -291,11 +298,16 @@ You only write the body of SCRIPTS.main.
   };
 
   // ── STANDARD LISTENER — DO NOT MODIFY — copy exactly ─────────────────────────
+  let _lastSig = null;
   function stopScript() {
     if (_cancelFn) { _cancelFn(); _cancelFn = null; }
+    _lastSig = null;
   }
   function startScript(name, params) {
+    const sig = (name || 'main') + ':' + JSON.stringify(params || {});
+    if (_cancelFn && sig === _lastSig) return;   // identical re-post — keep the script running
     stopScript();
+    _lastSig = sig;
     const fn = SCRIPTS[name] ?? SCRIPTS.main;
     if (fn) _cancelFn = fn(params ?? {}) ?? null;
   }
@@ -350,29 +362,109 @@ End the mainBody with: return function cleanup() { ... };
 15. Do not read or write parent DOM.
 16. Do not exfiltrate any data outside of the established postMessage protocol.
 
-### DOM Access
-17. ONLY access DOM elements whose IDs appear in the MANIFEST or are visible in the HTML source.
-18. ONLY call functions from the MANIFEST or clearly visible in the source files.
-19. Use optional chaining (?.): document.getElementById('x')?.style may not exist.
+### DOM access & APIs — the manifest is a HELP, not a WHITELIST
+17. Access a control by its manifest ID when it has one. When a control has NO id, target it by a CSS
+    class or selector that is clearly visible in the source — e.g. document.querySelectorAll('.controls'),
+    matching a class assigned via createElement/className/class="…" or a helper like _el('div','controls',…).
+    A source-visible selector is VALID even if it is not in the manifest. Do not refuse to act just
+    because the manifest is empty — many sims build their whole UI at runtime with no static ids.
+18. Call functions from the manifest, OR methods on a runtime global that is visible in the source
+    (e.g. window.__murmuration.toggleExploreExploit()), OR functions/classes defined anywhere in the
+    source — even if absent from the manifest's function lists. If the source shows it, you may use it.
+19. Use optional chaining (?.) and existence checks — an element, global, or method may not exist yet.
 
-### Parameters
-20. When params.simpleUi = true: hide all irrelevant controls AND their labels. Show only the target.
-21. When params.autoScript = true: animate the target control. Stop animation in cleanup.
-22. Use _hide() for hiding: it records originals automatically for restoration.
+### Runtime timing — async init()
+20. Many sims build their UI and controller objects inside an async init() that finishes AFTER SIM_READY
+    fires. If what you need (an element, a window global like window.__murmuration, a method) is not
+    present immediately, POLL for it with a ~200ms setInterval (pushed to _ivs, cleared in cleanup) until
+    it exists, then act. ALSO run one synchronous attempt up front so a re-fired startScript on an
+    already-initialised sim takes effect immediately.
+21. Prefer inline style.setProperty('display','none') over toggling CSS classes: runtime class churn (a
+    later resize / collapse / setCollapsed) can otherwise resurrect a panel you hid. Re-apply the hide on
+    each poll tick (guard it so you record each element's original display only once).
+
+### Parameters & idempotency
+22. When params.simpleUi = true (or the user prompt asks to hide the controls): hide ALL irrelevant
+    controls AND their labels — by ID, or by CSS selector when they have no id. Show only the target.
+23. When params.autoScript = true: animate the target control (setInterval). Stop the animation in cleanup.
+24. TOGGLE methods that flip internal state (e.g. app.exploreExploit.toggle(), app.toggleExploreExploit(),
+    app.togglePlay()) are NOT idempotent. Read the state boolean FIRST (e.g. app.exploreExploit.active) and
+    only call the toggle when it is not already in the desired state. Make cleanup equally guarded so it
+    only reverses what you actually changed — a re-fired startScript must NEVER bounce the state off/on.
+25. Use _hide() for hiding: it records originals automatically for restoration.
 
 ### Animation
-23. Use setInterval for animation: step 0.1–0.3, intervalMs 30–150ms. Pingpong at min/max.
-24. Push every interval ID into _ivs so cleanup clears it.
-25. Push every listener into _listeners so cleanup removes it.
+26. Use setInterval for animation: step 0.1–0.3, intervalMs 30–150ms. Pingpong at min/max.
+27. Push every interval ID into _ivs and every listener into _listeners so cleanup clears/removes them.
 
 ### Render functions
-26. Call updateDerivedPhysics before render functions if it exists in the manifest.
-27. Call render functions via window.fn?.() — they may not always be defined.
+28. Call updateDerivedPhysics before render functions if it exists. Call render functions defensively
+    (fn?.()) — they may not always be defined.
 
 ### Confidence scoring
-28. confidence >= 0.9: all IDs/functions verified in manifest, no guesses
-29. confidence 0.6–0.89: some assumptions made (guessed selectors, assumed functions)
-30. confidence < 0.6: significant uncertainty — explain in warnings
+29. A reference is "verified" if it is in the manifest OR appears verbatim in the source (a class selector,
+    a window-global method, a defined function/class). Count source-visible references as verified.
+30. confidence >= 0.9: all references verified (manifest or source); 0.6–0.89: some guessed selectors/
+    functions; < 0.6: significant uncertainty — explain in warnings.
+
+## WORKED EXAMPLE — runtime-built UI + object-method global
+When a sim builds its panel at runtime (no static ids) and exposes itself as a window global, follow this
+shape: target controls by source-visible CSS selectors, poll for the async-built global, and toggle state
+IDEMPOTENTLY. (This mainBody is self-contained — it declares its own tracking arrays.)
+
+\`\`\`javascript
+// Request: "hide all the controls of the menu totally + enable explore-exploit mode."
+var _hidden = [], _ivs = [], _listeners = [], _injected = [];
+var CONTROL_SELECTORS = ['.controls', '.show-menu-tab', '.collapse-menu-btn', '#hud'];
+var HIDDEN_FLAG = '__bridgeHidden';
+var _enabledByUs = false;
+
+function hideControls() {
+  for (var s = 0; s < CONTROL_SELECTORS.length; s++) {
+    var nodes = document.querySelectorAll(CONTROL_SELECTORS[s]);
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      if (el[HIDDEN_FLAG]) continue;                    // record original display only once
+      el[HIDDEN_FLAG] = true;
+      _hidden.push([el, el.style.getPropertyValue('display') || '']);
+      el.style.setProperty('display', 'none');          // inline none beats class toggles
+    }
+  }
+}
+function appReady() {
+  var app = window.__murmuration;
+  return !!(app && app.exploreExploit && app.menu);
+}
+function enableExploreExploit() {
+  var app = window.__murmuration;
+  if (app && app.exploreExploit && app.exploreExploit.active === false) { // idempotent
+    app.toggleExploreExploit();
+    _enabledByUs = true;
+  }
+}
+
+hideControls();                                          // one synchronous attempt (re-fired startScript)
+if (appReady()) enableExploreExploit();
+_ivs.push(setInterval(function () {                      // async init(): poll until ready, keep re-hiding
+  hideControls();
+  if (appReady()) enableExploreExploit();
+}, 200));
+
+return function cleanup() {
+  _ivs.forEach(function (id) { clearInterval(id); });
+  _listeners.forEach(function (l) { l[0].removeEventListener(l[1], l[2]); });
+  _injected.forEach(function (el) { el.remove && el.remove(); });
+  _hidden.forEach(function (h) {
+    if (h[1]) h[0].style.setProperty('display', h[1]); else h[0].style.removeProperty('display');
+    try { delete h[0][HIDDEN_FLAG]; } catch (e) { h[0][HIDDEN_FLAG] = false; }
+  });
+  var app = window.__murmuration;                        // only reverse what we changed
+  if (_enabledByUs && app && app.exploreExploit && app.exploreExploit.active === true) {
+    app.toggleExploreExploit();
+  }
+  _enabledByUs = false;
+};
+\`\`\`
 `;
 
 // ── Manifest builder ──────────────────────────────────────────────────────────
@@ -401,6 +493,7 @@ export function buildManifest(sourceMap: Map<string, string>): SimManifest {
     controls: [], buttons: [], sections: [],
     renderFunctions: [], updateFunctions: [], hasSetSimSection: false,
     selectElements: [], checkboxElements: [], canvasElements: [], globalObjects: [],
+    runtimeGlobals: [], instanceMethods: [], cssControls: [],
   };
 
   for (const [key, content] of sourceMap) {
@@ -532,8 +625,45 @@ export function buildManifest(sourceMap: Map<string, string>): SimManifest {
           manifest.globalObjects.push(lib);
         }
       }
+
+      // ── Modern runtime-built sims (sim-bridge-deepfix) ────────────────────────
+      // Runtime globals: `window.__murmuration = app`, `window.sim = ...` etc. These are the API
+      // surface for sims that expose an app object instead of top-level functions.
+      let rg: RegExpExecArray | null;
+      const globalRe = /window\.([A-Za-z_$][\w$]*)\s*=/g;
+      while ((rg = globalRe.exec(content)) !== null) {
+        const g = rg[1];
+        // Skip DOM/lifecycle assignments that aren't an app API (onload, addEventListener via = etc.)
+        if (/^(on\w+|location|name|status|open|close|top|self|parent|length)$/.test(g)) continue;
+        if (!manifest.runtimeGlobals.includes(g)) manifest.runtimeGlobals.push(g);
+      }
+      // Instance / API methods the LLM can DRIVE — action-named methods, captured whether they are
+      // defined as a class method (`  toggleExploreExploit() {`) or invoked as `obj.toggleX(`. We filter
+      // to action verbs (toggle/set/reset/play/…) so this stays high-signal and doesn't fill up with
+      // generic helpers or THREE vector `.set()` noise. (sim-bridge-deepfix)
+      let mm: RegExpExecArray | null;
+      const ACTION_RE = /^(toggle[A-Z]|set[A-Z]|reset$|play$|pause$|start$|stop$|enable|disable|mute$|unmute$|show[A-Z]|hide[A-Z]|next[A-Z]?$|prev[A-Z]?$|select[A-Z]|step$|seek$|activate|deactivate)/;
+      const methodRe = /(?:(?:^|\n)\s{2,}|\.)([A-Za-z_$][\w$]*)\s*\(/g;
+      while ((mm = methodRe.exec(content)) !== null) {
+        const name = mm[1];
+        if (name.length < 3 || !ACTION_RE.test(name)) continue;
+        if (!manifest.instanceMethods.includes(name)) manifest.instanceMethods.push(name);
+      }
+      // CSS controls: classes/ids assigned to created elements — className='controls',
+      // class="show-menu-tab", or the _el('div','controls',…) helper. These are how the bridge hides
+      // a runtime-built panel that has no static id.
+      let cc: RegExpExecArray | null;
+      const cssRe = /(?:className\s*=\s*|class\s*=\s*|_el\(\s*['"][\w-]+['"]\s*,\s*)['"]([\w][\w\s-]*)['"]/g;
+      while ((cc = cssRe.exec(content)) !== null) {
+        for (const cls of cc[1].trim().split(/\s+/)) {
+          if (cls && !manifest.cssControls.includes(cls)) manifest.cssControls.push(cls);
+        }
+      }
     }
   }
+  // Bound the runtime lists so a huge sim can't bloat the prompt.
+  manifest.instanceMethods = manifest.instanceMethods.slice(0, 60);
+  manifest.cssControls     = manifest.cssControls.slice(0, 60);
 
   return manifest;
 }
@@ -580,11 +710,16 @@ export function wrapBridgeMainBody(mainBody: string): string {
     '  };',
     '',
     '  // ── STANDARD LISTENER — system-owned, guaranteed correct ─────────────────────',
+    '  let _lastSig = null;',
     '  function stopScript() {',
     '    if (_cancelFn) { _cancelFn(); _cancelFn = null; }',
+    '    _lastSig = null;',
     '  }',
     '  function startScript(name, params) {',
+    "    const sig = (name || 'main') + ':' + JSON.stringify(params || {});",
+    '    if (_cancelFn && sig === _lastSig) return;   // identical re-post — keep the script running',
     '    stopScript();',
+    '    _lastSig = sig;',
     '    const fn = SCRIPTS[name] ?? SCRIPTS.main;',
     '    if (fn) _cancelFn = fn(params ?? {}) ?? null;',
     '  }',
@@ -688,11 +823,16 @@ export function wrapBridgeCombined(entries: Map<string, string>): string {
     '      return _mainBodyFn(params);',
     '    },',
     '  };',
+    '  var _lastSig = null;',
     '  function stopScript() {',
     '    if (_cancelFn) { _cancelFn(); _cancelFn = null; }',
+    '    _lastSig = null;',
     '  }',
     '  function startScript(name, params) {',
+    "    var sig = (name || 'main') + ':' + JSON.stringify(params || {});",
+    '    if (_cancelFn && sig === _lastSig) return;   // identical re-post — keep the script running',
     '    stopScript();',
+    '    _lastSig = sig;',
     '    var fn = SCRIPTS[name] || SCRIPTS.main;',
     '    if (fn) _cancelFn = fn(params || {}) || null;',
     '  }',
@@ -778,11 +918,15 @@ function computeBridgeHash(code: string): string {
  * structural protocol checks are now just sanity assertions on the assembled output.
  * Security and cleanup checks run on mainBody to focus on what the LLM wrote.
  */
-export function validateGeneratedBridge(code: string, manifest: SimManifest, mainBody?: string): ValidationResult {
+export function validateGeneratedBridge(code: string, manifest: SimManifest, mainBody?: string, sourceText?: string): ValidationResult {
   const fatal: string[] = [];
   const warnings: string[] = [];
   const weak: string[] = [];
   const checkBody = mainBody ?? code;  // prefer checking mainBody when available
+  // A reference is legitimate if it appears verbatim in the sim source — a runtime-built sim has no
+  // static ids, so class selectors / instance methods / window globals live only in the JS/CSS.
+  // Such refs must NOT be strong-warned (which triggers a wasteful retry/downgrade). (sim-bridge-deepfix)
+  const inSource = (needle: string): boolean => !!sourceText && sourceText.includes(needle);
 
   // ── FATAL: Syntax check on the fully assembled script ────────────────────────
   try { new Function(code); } catch (e) { fatal.push(`Syntax error: ${(e as Error).message}`); }
@@ -835,18 +979,29 @@ export function validateGeneratedBridge(code: string, manifest: SimManifest, mai
     'addEventListener', 'removeEventListener', 'postMessage',
   ]);
 
-  // getElementById references: both 'id' and "id" forms
+  // getElementById references: both 'id' and "id" forms. An id in the manifest OR visible in the
+  // source (e.g. an id set at runtime) is fine; only a truly-invented id is a strong warning.
   const getByIdRe = /document\.getElementById\(\s*['"`]([\w-]+)['"`]\s*\)/g;
   let m: RegExpExecArray | null;
   while ((m = getByIdRe.exec(checkBody)) !== null) {
-    if (!allManifestIds.has(m[1])) warnings.push(`getElementById('${m[1]}') — ID not found in manifest`);
+    if (allManifestIds.has(m[1])) continue;
+    if (inSource(`"${m[1]}"`) || inSource(`'${m[1]}'`) || inSource(`id="${m[1]}"`)) {
+      weak.push(`getElementById('${m[1]}') — not in manifest but present in source`);
+    } else {
+      warnings.push(`getElementById('${m[1]}') — ID not found in manifest`);
+    }
   }
 
-  // window.fn() and window.fn?.() calls — detect both patterns
+  // window.fn() and window.fn?.() calls — detect both patterns. (Note: window.__x.method() is NOT
+  // matched here — the regex needs a call right after window.<name> — so runtime-global method calls
+  // like window.__murmuration.toggleExploreExploit() correctly do not warn.)
   const windowFnRe = /window\.([\w]+)\s*\(|window\.([\w]+)\?\.\s*\(/g;
   while ((m = windowFnRe.exec(checkBody)) !== null) {
     const fn = m[1] ?? m[2];
-    if (fn && !allFns.has(fn) && !ignoredWindowProps.has(fn)) {
+    if (!fn || allFns.has(fn) || ignoredWindowProps.has(fn)) continue;
+    if ((manifest.runtimeGlobals ?? []).includes(fn) || (manifest.instanceMethods ?? []).includes(fn) || inSource(fn)) {
+      weak.push(`window.${fn}() — not in manifest but present in source`);
+    } else {
       warnings.push(`window.${fn}() — not found in manifest functions`);
     }
   }
@@ -878,10 +1033,14 @@ export function validateGeneratedBridge(code: string, manifest: SimManifest, mai
   }
 
   // ── WEAK: Informational ────────────────────────────────────────────────────────
-  if (!checkBody.includes('params.simpleUi') && !checkBody.includes('simpleUi')) {
+  // A selector-based hide (querySelectorAll + display:none) fulfils "hide the controls" without
+  // referencing params.simpleUi, so don't flag it — the user prompt drives it directly. (sim-bridge-deepfix)
+  const hidesBySelector = /querySelector(?:All)?\([^)]*\)/.test(checkBody) && /style[^\n]*display/.test(checkBody);
+  if (!checkBody.includes('simpleUi') && !hidesBySelector) {
     weak.push('params.simpleUi not referenced — simpleUi toggle may have no effect');
   }
-  if (!checkBody.includes('params.autoScript') && !checkBody.includes('autoScript')) {
+  const animates = checkBody.includes('setInterval');
+  if (!checkBody.includes('autoScript') && !animates) {
     weak.push('params.autoScript not referenced — autoScript toggle may have no effect');
   }
 
@@ -1108,6 +1267,7 @@ export function buildContextPrompt(
   const manifestSummary = JSON.stringify({
     controls:         manifest.controls.map(c => ({ id: c.id, type: c.type, label: c.label, min: c.min, max: c.max })),
     buttons:          manifest.buttons,
+    sections:         manifest.sections.map(s => s.id),
     selectElements:   manifest.selectElements,
     checkboxElements: manifest.checkboxElements,
     canvasElements:   manifest.canvasElements,
@@ -1115,6 +1275,10 @@ export function buildContextPrompt(
     renderFunctions:  manifest.renderFunctions,
     updateFunctions:  manifest.updateFunctions,
     hasSetSimSection: manifest.hasSetSimSection,
+    // Handles for runtime-built sims (empty for classic static-HTML sims). (sim-bridge-deepfix)
+    runtimeGlobals:   manifest.runtimeGlobals,   // e.g. ["__murmuration"] → window.__murmuration
+    instanceMethods:  manifest.instanceMethods,  // e.g. ["toggleExploreExploit"] → app.<method>()
+    cssControls:      manifest.cssControls,       // e.g. ["controls","show-menu-tab"] → querySelectorAll('.controls')
   }, null, 2);
 
   const contextMeta = [
@@ -1372,7 +1536,10 @@ export class SimulationService {
     // System wraps LLM-generated mainBody into the deterministic bridge template.
     // This guarantees SIM_READY, startScript, stopScript, and message listener are ALWAYS correct.
     const assembledBridgeScript = wrapBridgeMainBody(bridge.mainBody);
-    let validation = validateGeneratedBridge(assembledBridgeScript, manifest, bridge.mainBody);
+    // Concatenated source so validation can recognise refs that are legitimate-but-not-in-manifest
+    // (class selectors, instance methods, runtime globals in a dynamically-built sim). (sim-bridge-deepfix)
+    const sourceText = [...sourceMap.values()].join('\n');
+    let validation = validateGeneratedBridge(assembledBridgeScript, manifest, bridge.mainBody, sourceText);
 
     // ── Unified retry budget ──────────────────────────────────────────────────
     // Retry policy (in priority order):
@@ -1419,7 +1586,7 @@ export class SimulationService {
 
       onEvent?.('status', { status: 'Validating fix...', type: 'progress' });
       const assembledBridgeScriptRetry = wrapBridgeMainBody(bridge.mainBody);
-      validation = validateGeneratedBridge(assembledBridgeScriptRetry, manifest, bridge.mainBody);
+      validation = validateGeneratedBridge(assembledBridgeScriptRetry, manifest, bridge.mainBody, sourceText);
       logger.info({ sectionId, retryReason, fatalAfterRetry: validation.fatal.length }, 'Bridge retry completed');
     }
 

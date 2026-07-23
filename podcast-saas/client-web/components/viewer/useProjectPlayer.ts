@@ -253,6 +253,14 @@ export function useProjectPlayer(
   const simReadyRef     = useRef(false);
   const simPollRef      = useRef<ReturnType<typeof setInterval> | null>(null);
   const pendingSimRef   = useRef<{ script: string; params: Record<string, boolean> } | null>(null);
+  // The CURRENT desired sim script+params while a sim section is active (null outside one).
+  // The iframe 'load' listener re-arms pendingSimRef from this — heals the stale-SIM_READY race
+  // where the OLD page answers a ping during navigation and consumes the pending startScript,
+  // leaving the NEW page visible but scriptless (no autoScript / wrong simpleUi). (sim-race fix)
+  const desiredSimRef   = useRef<{ script: string; params: Record<string, boolean> } | null>(null);
+  // Cancellable 50ms reveal timer — a fast scrub out of a section right after entering must not
+  // strand the overlay visible over plain video. (sim-race fix)
+  const simShowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // ── Guided Simulation: parent owns "fire once per viewing session" + audio ──
   const firedCueIds       = useRef<Set<string>>(new Set());
   const guidanceAudioRef  = useRef<HTMLAudioElement | null>(null);
@@ -451,6 +459,9 @@ export function useProjectPlayer(
         // Fade out immediately at the boundary; CSS opacity transition smooths it.
         merge({ showSimOverlay: false });
       }
+      if (simShowTimerRef.current) { clearTimeout(simShowTimerRef.current); simShowTimerRef.current = null; }
+      desiredSimRef.current = null;
+      pendingSimRef.current = null;
       activeSimRef.current = null;
       merge({ badgeText: '', badgeMode: '' });
       return;
@@ -470,6 +481,9 @@ export function useProjectPlayer(
       // Fade out immediately at the boundary; CSS opacity transition smooths it.
       merge({ showSimOverlay: false });
     }
+    // A section change (into another sim OR out of sims) invalidates any queued reveal/start.
+    if (simShowTimerRef.current) { clearTimeout(simShowTimerRef.current); simShowTimerRef.current = null; }
+    if (!simSection) { desiredSimRef.current = null; pendingSimRef.current = null; }
     activeSimRef.current = simSection;
 
     if (!simSection && resumeActionRef.current === 'backToVideo') {
@@ -483,6 +497,7 @@ export function useProjectPlayer(
       const params  = { simpleUi: simSection.simple_ui ?? false, autoScript: simSection.auto_script ?? true };
       const sameUrl = simSection.simulation_url === activeSimUrlRef.current;
       activeSimUrlRef.current = simSection.simulation_url;
+      desiredSimRef.current = { script, params };   // what the loaded sim SHOULD be running now
       merge({ activeSimUrl: simSection.simulation_url });
 
       if (isPostRollSim) {
@@ -496,7 +511,8 @@ export function useProjectPlayer(
       if (sameUrl && simReadyRef.current) {
         // Send startScript first so sim applies simpleUi, then reveal
         sendToSim({ type: 'startScript', script, params });
-        setTimeout(() => merge({ showSimOverlay: true }), 50);
+        if (simShowTimerRef.current) clearTimeout(simShowTimerRef.current);
+        simShowTimerRef.current = setTimeout(() => { simShowTimerRef.current = null; merge({ showSimOverlay: true }); }, 50);
       } else {
         simReadyRef.current   = false;
         pendingSimRef.current = { script, params };
@@ -827,6 +843,9 @@ export function useProjectPlayer(
       sendToSim({ type: 'stopScript' });
       merge({ showSimOverlay: false });
     }
+    if (simShowTimerRef.current) { clearTimeout(simShowTimerRef.current); simShowTimerRef.current = null; }
+    desiredSimRef.current = null;
+    pendingSimRef.current = null;
     activeSimRef.current = null;
     swappingRef.current = true;
     resumeActionRef.current = 'resume';
@@ -1134,7 +1153,8 @@ export function useProjectPlayer(
         if (pending && (!userPausedRef.current || resumeActionRef.current === 'backToVideo')) {
           // Send startScript first so sim applies simpleUi before overlay reveals
           sendToSim({ type: 'startScript', script: pending.script, params: pending.params });
-          setTimeout(() => merge({ showSimOverlay: true }), 50);
+          if (simShowTimerRef.current) clearTimeout(simShowTimerRef.current);
+          simShowTimerRef.current = setTimeout(() => { simShowTimerRef.current = null; merge({ showSimOverlay: true }); }, 50);
         }
       }
       if (type === 'userInteraction') {
@@ -1191,12 +1211,16 @@ export function useProjectPlayer(
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.showSimOverlay]);
 
-  // ── iframe load listener — reset ready state when src changes ─────────────
+  // ── iframe load listener — reset ready state + RE-ARM startScript when src changes ──
+  // Re-arming from desiredSimRef heals the stale-SIM_READY race: the OLD page can answer a
+  // ping mid-navigation and consume pendingSimRef, which left the NEW page visible but
+  // scriptless. On load the freshly loaded page always gets the current desired script. (sim-race fix)
   useEffect(() => {
     const frame = refs.simFrame.current;
     if (!frame) return;
     const onLoad = () => {
       simReadyRef.current = false;
+      if (desiredSimRef.current) pendingSimRef.current = { ...desiredSimRef.current };
       startSimPoll();
     };
     frame.addEventListener('load', onLoad);
@@ -1499,6 +1523,9 @@ export function useProjectPlayer(
       const localTime = targetSeg ? Math.max(0, targetGlobal - targetSeg.offset) : 0;
 
       sendToSim({ type: 'stopScript' });
+      if (simShowTimerRef.current) { clearTimeout(simShowTimerRef.current); simShowTimerRef.current = null; }
+      desiredSimRef.current = null;
+      pendingSimRef.current = null;
       activeSimRef.current = null;
       userPausedRef.current = false;
       resumeActionRef.current = 'resume';

@@ -173,6 +173,10 @@ function sectionPatchBody(s: TimelineSection): Parameters<typeof api.updateSecti
     simulation_url: s.simulation_url,
     simulation_id: s.simulation_id,
     sim_script: s.sim_script,
+    // Restore the AI-generation state as one unit: reverting simulation_url while keeping the
+    // new sim_prompt/sim_meta left the section claiming a bridge that no longer matched. (sim-persistence fix)
+    sim_prompt: s.sim_prompt,
+    sim_meta: s.sim_meta,
     global_offset_sec: s.global_offset_sec,
     clip_source_video_id: s.clip_source_video_id,
     clip_in_sec: s.clip_in_sec ?? 0,
