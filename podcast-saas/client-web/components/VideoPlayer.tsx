@@ -1,8 +1,10 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback, forwardRef, useImperativeHandle } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react';
 import { useEditorPlayback } from '../hooks/useEditorPlayback';
 import { HLS_OPTS } from '../hooks/useSegmentedPlaybackCore';
+import { simDestroyGraceMs } from '../lib/simLifecycle';
+import { resolveSimUrl } from '../lib/simUrl';
 import type { Clip } from '../hooks/useClipSequence';
 import type { TimelineSection, ImageFile } from 'shared/src/generated/client-v1';
 import { ImageOverlay } from './ImageOverlay';
@@ -101,11 +103,32 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
   // Without this, the overlay stays hidden for ~3s (or never, on short sections) even though
   // the iframe is already rendering — the player looked "blank" while the preview was fine.
   const simRevealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // (D2b) Destroy-on-leave: after the overlay hides, keep the paused iframe mounted for a
+  // grace window (45s desktop / 700ms touch-or-low-memory), then clear simUrl so the iframe
+  // unmounts and its WebGL context is truly freed. Cancelled on re-entry.
+  const simDestroyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [simUrl, setSimUrl]          = useState<string | null>(null);
   const [showSimOverlay, setShowSim] = useState(false);
+  // Mirror of showSimOverlay for the window-event listener below (subscribed once).
+  const showSimRef = useRef(false);
+  useEffect(() => { showSimRef.current = showSimOverlay; }, [showSimOverlay]);
 
   const sendToSim = (msg: object) => {
     try { simFrameRef.current?.contentWindow?.postMessage(msg, '*'); } catch (_) {}
+  };
+
+  const cancelSimDestroy = () => {
+    if (simDestroyTimerRef.current) { clearTimeout(simDestroyTimerRef.current); simDestroyTimerRef.current = null; }
+  };
+
+  const scheduleSimDestroy = () => {
+    cancelSimDestroy();
+    simDestroyTimerRef.current = setTimeout(() => {
+      simDestroyTimerRef.current = null;
+      if (activeSimUrlRef.current) return;   // a sim became active again — keep the live iframe
+      simReadyRef.current = false;           // a future mount must re-run PING_SIM_READY → SIM_READY
+      setSimUrl(null);                       // unmounts the iframe → frees the WebGL context
+    }, simDestroyGraceMs());
   };
 
   const startSimPoll = useCallback(() => {
@@ -139,6 +162,9 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
         const pending = pendingSimRef.current;
         pendingSimRef.current = null;
         if (pending) {
+          // (D2b) Unfreeze first — the sim may have been simPause'd on a previous leave.
+          // Harmless no-op on a freshly loaded page.
+          sendToSim({ type: 'simResume' });
           // Send startScript first so sim applies simpleUi, then reveal
           sendToSim({ type: 'startScript', script: pending.script, params: pending.params });
           if (simRevealTimerRef.current) { clearTimeout(simRevealTimerRef.current); simRevealTimerRef.current = null; }
@@ -169,8 +195,25 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
     return () => frame.removeEventListener('load', onLoad);
   }, [startSimPoll]);
 
-  // poll cleanup on unmount
-  useEffect(() => () => { if (simPollRef.current) clearInterval(simPollRef.current); }, []);
+  // poll + destroy-timer cleanup on unmount
+  useEffect(() => () => {
+    if (simPollRef.current) clearInterval(simPollRef.current);
+    if (simDestroyTimerRef.current) { clearTimeout(simDestroyTimerRef.current); simDestroyTimerRef.current = null; }
+  }, []);
+
+  // (D2b) SectionEditor coordination: while its preview-tab sim iframe is live, freeze the
+  // timeline sim (simPause); when the preview goes away, unfreeze — but only if the timeline
+  // overlay is actually visible (otherwise the normal hide path already paused it on purpose).
+  // Two concurrently-running WebGL sims is exactly what this kills.
+  useEffect(() => {
+    const onPreviewActive = (e: Event) => {
+      const active = !!(e as CustomEvent<{ active?: boolean }>).detail?.active;
+      if (active) sendToSim({ type: 'simPause' });
+      else if (showSimRef.current) sendToSim({ type: 'simResume' });
+    };
+    window.addEventListener('sim-preview-active', onPreviewActive);
+    return () => window.removeEventListener('sim-preview-active', onPreviewActive);
+  }, []);
 
   // ── broll video: load / unload HLS ───────────────────────────────────────
   useEffect(() => {
@@ -267,6 +310,11 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
         // transition (200ms) does the smoothing. A delayed hide made the sim
         // linger visibly past its section.
         setShowSim(false);
+        // (D2b) After the existing messages, freeze the hidden sim's rAF loop so it stops
+        // burning CPU/GPU, then arm the destroy grace. simDestroyGraceMs() >= 700ms, so the
+        // iframe can never unmount during the 200ms fade.
+        sendToSim({ type: 'simPause' });
+        scheduleSimDestroy();
       }
       if (simRevealTimerRef.current) { clearTimeout(simRevealTimerRef.current); simRevealTimerRef.current = null; }
       // Cancel any in-flight 50ms reveal — otherwise a fast scrub out of the section right after
@@ -277,11 +325,15 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
       activeSimUrlRef.current = null;
       return;
     }
+    // (D2b) Re-entered a sim section before the destroy grace fired — keep the live iframe.
+    cancelSimDestroy();
     const sameUrl = newUrl === activeSimUrlRef.current;
     activeSimUrlRef.current = newUrl;
     desiredSimRef.current = { script, params };   // what the loaded sim SHOULD be running now
     setSimUrl(newUrl);
     if (sameUrl && simReadyRef.current) {
+      // (D2b) Unfreeze the rAF loop paused on leave BEFORE startScript + reveal.
+      sendToSim({ type: 'simResume' });
       // Send startScript first, then reveal after sim has applied simpleUi.
       // Re-running on params/script changes (deps below) is what makes a canReuse
       // regeneration — same URL, new toggles — show up live in the editor preview.
@@ -289,6 +341,10 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
       if (simShowTimerRef.current) clearTimeout(simShowTimerRef.current);
       simShowTimerRef.current = setTimeout(() => { simShowTimerRef.current = null; setShowSim(true); }, 50);
     } else {
+      // (D2b) Same URL but not ready (e.g. simPause'd mid-boot on a fast leave): unfreeze so
+      // the bridge can finish booting and answer the ping. Harmless when the iframe is about
+      // to navigate to a different URL — the old page discards it.
+      sendToSim({ type: 'simResume' });
       simReadyRef.current   = false;
       pendingSimRef.current = { script, params };
       // Always poll when not ready — fixes seek-to-sim-section not showing
@@ -319,6 +375,10 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
 
   const displayTime   = scrubDisplay ?? hook.globalTime;
   const totalDuration = Math.max(hook.totalDuration, timelineDuration ?? 0);
+  // (D6) Device-hint params for the iframe src ONLY — simUrl (raw) stays the identity used
+  // for mount/compare logic. Memoized per raw URL so a devicePixelRatio change (browser
+  // zoom) can't rewrite src and reload a live sim.
+  const resolvedSimSrc = useMemo(() => (simUrl ? resolveSimUrl(simUrl) : null), [simUrl]);
   const simulationBadgeText = activeSimSection
     ? (activeSimSection.label?.trim() || 'Simulation')
     : null;
@@ -406,9 +466,10 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
       {/* Simulation overlay — the black background lives ON the fading layer so
           that when the sim is hidden (opacity 0) the video shows through. This
           is a true video↔sim crossfade. (A separate always-on backdrop would
-          stay opaque forever because simUrl is intentionally never cleared to
-          keep the iframe mounted → permanent black screen.) startScript is sent
-          before this reveals so the sim is already in minimal-UI mode. */}
+          stay opaque while simUrl is set → black screen; simUrl is only cleared
+          by the destroy grace timer, never during the 200ms fade, so the iframe
+          stays mounted across brief hides.) startScript is sent before this
+          reveals so the sim is already in minimal-UI mode. */}
       {simUrl && (
         <div
           className="absolute inset-0"
@@ -422,7 +483,7 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
         >
           <iframe
             ref={simFrameRef}
-            src={simUrl}
+            src={resolvedSimSrc ?? simUrl}
             className="w-full h-full border-0"
             sandbox="allow-scripts allow-same-origin allow-forms"
             title="Interactive simulation"

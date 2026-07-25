@@ -9,6 +9,7 @@ import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { editableProject, type CollabUser } from '../../services/collabAccess.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import {
+  deriveEntryRelPath,
   getSimulationContentType,
   isTextSimulationFile,
   SimulationService,
@@ -232,6 +233,168 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
         });
 
       return reply.code(202).send(row);
+    },
+  );
+
+  // POST /api/v1/projects/:id/simulations/:simId/replace
+  // In-place file swap for an existing simulation — same simId and storage prefix.
+  // Mirrors the upload endpoint's multipart contract (one ZIP in "file" OR a "files"
+  // bundle + optional "manifest"; "name" is tolerated but ignored) and its caps.
+  // Semantics:
+  //   - only a 'ready' (or previously 'failed'-replace) sim can be swapped; the row is
+  //     CAS-claimed to 'processing' for the swap and set back to 'ready'/'failed' after
+  //   - the new bundle MUST contain an HTML file at the SAME relative path as the current
+  //     entry file — sections' stored simulation_url embeds that exact path, so a renamed
+  //     entry is rejected with 409 before any processing starts
+  //   - new files overwrite the old keys; stale keys are deleted EXCEPT generated
+  //     artifacts (bridge.js, guidance.js, guidance/*, legacy section_* files)
+  //   - the head rAF gate + bridge/guidance script tags are re-injected into the new
+  //     entry HTML (bridge.js keeps its current ?v= hash, guidance.js its current hash)
+  //   - sections' simulation_url / sim_meta are NOT touched — the next generate call
+  //     detects the changed sources via sourceHash
+  app.post<{ Params: { id: string; simId: string } }>(
+    '/api/v1/projects/:id/simulations/:simId/replace',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const project = await editableProject(request.params.id, user);
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+
+      const sim = await db.query.simulations.findFirst({
+        where: and(eq(simulations.id, request.params.simId), eq(simulations.project_id, project.id)),
+      });
+      if (!sim) return reply.code(404).send({ message: 'Simulation not found' });
+      // 'failed' is allowed so a failed replace can be retried; a failed INITIAL upload has
+      // no entry_file and is rejected by the entry-path check below.
+      if (sim.status !== 'ready' && sim.status !== 'failed') {
+        return reply.code(409).send({ message: `Simulation is ${sim.status} — wait for it to finish before replacing files` });
+      }
+
+      let zipBuf: Buffer | null = null;
+      let manifestPaths: string[] | null = null;
+      let totalBytes = 0;
+      const bundleFiles: UploadedSimulationFile[] = [];
+
+      const parts = request.parts({
+        limits: {
+          fileSize: SIMULATION_UPLOAD_MAX_BYTES,
+          files:    SIMULATION_UPLOAD_MAX_FILES,
+          fields:   20,
+        },
+      });
+      for await (const part of parts) {
+        if (part.type === 'field' && part.fieldname === 'manifest') {
+          try {
+            manifestPaths = parseManifestPaths(part.value);
+          } catch (err) {
+            return reply.code(400).send({ message: (err as Error).message });
+          }
+        } else if (part.type === 'file' && part.fieldname === 'file') {
+          const chunks: Buffer[] = [];
+          for await (const chunk of part.file) {
+            const buf = chunk as Buffer;
+            totalBytes += buf.length;
+            if (totalBytes > SIMULATION_UPLOAD_MAX_BYTES) {
+              return reply.code(413).send({ message: 'Simulation upload exceeds 250 MB' });
+            }
+            chunks.push(buf);
+          }
+          zipBuf = Buffer.concat(chunks);
+        } else if (part.type === 'file' && part.fieldname === 'files') {
+          const chunks: Buffer[] = [];
+          for await (const chunk of part.file) {
+            const buf = chunk as Buffer;
+            totalBytes += buf.length;
+            if (totalBytes > SIMULATION_UPLOAD_MAX_BYTES) {
+              return reply.code(413).send({ message: 'Simulation upload exceeds 250 MB' });
+            }
+            chunks.push(buf);
+          }
+          bundleFiles.push({
+            path:   part.filename || `file-${bundleFiles.length + 1}`,
+            buffer: Buffer.concat(chunks),
+          });
+        }
+      }
+
+      if (zipBuf && bundleFiles.length > 0) {
+        return reply.code(400).send({ message: 'Upload either one ZIP or a file bundle, not both' });
+      }
+      if ((!zipBuf || zipBuf.length === 0) && bundleFiles.length === 0) {
+        return reply.code(400).send({ message: '"file" (ZIP) or "files" bundle is required' });
+      }
+      if (manifestPaths && manifestPaths.length !== bundleFiles.length) {
+        return reply.code(400).send({ message: 'manifest file count does not match uploaded files' });
+      }
+      if (manifestPaths) {
+        for (let i = 0; i < bundleFiles.length; i++) {
+          bundleFiles[i].path = manifestPaths[i];
+        }
+      }
+
+      const svc = new SimulationService(storage, _llmService);
+
+      let fileMap: Map<string, Buffer>;
+      try {
+        fileMap = svc.buildUploadFileMap(zipBuf ? { zipBuffer: zipBuf } : { files: bundleFiles });
+      } catch (err) {
+        return reply.code(400).send({ message: (err as Error).message });
+      }
+      if (fileMap.size === 0) {
+        return reply.code(400).send({ message: 'Replacement bundle appears to be empty' });
+      }
+
+      // Same-entry-name rule: sections' simulation_url points at the exact current entry
+      // path, so the replacement must ship an HTML file at that same relative path.
+      const entryRelPath = deriveEntryRelPath(sim.entry_file, sim.storage_prefix);
+      if (!entryRelPath) {
+        return reply.code(409).send({
+          message: 'Cannot determine the current entry file of this simulation — delete it and upload the files as a new simulation instead.',
+        });
+      }
+      if (!fileMap.has(entryRelPath)) {
+        return reply.code(409).send({
+          message:
+            `Replacement must keep the same entry file name: expected "${entryRelPath}" in the new upload ` +
+            `but it was not found. Rename your entry HTML to "${entryRelPath}" and re-upload — existing ` +
+            'video sections reference this exact file, so a renamed entry would break them.',
+          expectedEntryFile: entryRelPath,
+        });
+      }
+
+      // CAS-claim ready/failed → processing so concurrent replaces can't interleave
+      // (cluster-safe: the WHERE re-checks the status we observed).
+      const [claimed] = await db
+        .update(simulations)
+        .set({ status: 'processing', error: null })
+        .where(and(eq(simulations.id, sim.id), eq(simulations.status, sim.status)))
+        .returning();
+      if (!claimed) {
+        return reply.code(409).send({ message: 'Simulation is busy — try again shortly' });
+      }
+
+      // Process asynchronously so the response returns quickly (mirrors the upload endpoint)
+      svc.processReplace({ projectId: project.id, simId: sim.id, files: fileMap, entryRelPath })
+        .then(async ({ entryKey, bridgeFunctions, deletedStale, preservedGenerated }) => {
+          await db
+            .update(simulations)
+            .set({ entry_file: entryKey, bridge_functions: bridgeFunctions, status: 'ready', error: null })
+            .where(eq(simulations.id, sim.id));
+          logger.info(
+            { simId: sim.id, entryKey, deletedStale: deletedStale.length, preservedGenerated: preservedGenerated.length },
+            'Simulation files replaced',
+          );
+        })
+        .catch(async (err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          await db
+            .update(simulations)
+            .set({ status: 'failed', error: msg })
+            .where(eq(simulations.id, sim.id));
+          logger.error({ simId: sim.id, err }, 'Simulation replace failed');
+        });
+
+      return reply.code(202).send(serializeSim(claimed));
     },
   );
 

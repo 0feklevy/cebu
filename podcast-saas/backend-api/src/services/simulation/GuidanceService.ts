@@ -9,6 +9,8 @@ import {
   computeSourceHash,
   buildManifest,
   buildContextPrompt,
+  injectRafGate,
+  stripRafGate,
   SAFE_SECTION_ID_RE,
   type SimManifest,
 } from './SimulationService.js';
@@ -331,6 +333,11 @@ ${configBlocks}
   document.addEventListener('change', _onEvt, true);
 
   // Configuration triggers — throttled rAF poll with stability debounce; gated off during auto-demos.
+  // Pause protocol: this rAF goes through the head sim-raf-gate wrapper (this file's script tag
+  // loads AFTER the gate, which is injected at the start of <head>), so a player-sent
+  // {type:'simPause'} freezes this poll loop too and {type:'simResume'} resumes it with native
+  // frame timestamps. No setInterval/setTimeout polling exists here, so no extra check is needed;
+  // pauseScript below keeps its own, unrelated meaning (auto-script gating).
   function _loop(ts){
     requestAnimationFrame(_loop);
     if (ts - _lastPoll < 150) return; _lastPoll = ts;
@@ -419,7 +426,8 @@ export class GuidanceService {
       allKeys.filter(isText).map(async key => {
         try {
           const buf = await this.storage.readObject(key);
-          const raw = buf.toString('utf-8')
+          // stripRafGate keeps the head rAF gate out of the LLM context and the sourceHash.
+          const raw = stripRafGate(buf.toString('utf-8'))
             .replace(/<script[^>]*>\s*\/\* sim-bridge[\s\S]*?<\/script>/gi, '')
             .replace(/<!-- SIM_BRIDGE_SCRIPT_START -->[\s\S]*?<!-- SIM_BRIDGE_SCRIPT_END -->/gi, '')
             .replace(/<!-- SIM_GUIDANCE_SCRIPT_START -->[\s\S]*?<!-- SIM_GUIDANCE_SCRIPT_END -->/gi, '');
@@ -597,7 +605,8 @@ export class GuidanceService {
         if (!res.ok) throw new Error(`Could not read entry HTML (${res.status})`);
         rawHtml = await res.text();
       }
-      const updatedHtml = injectGuidanceScriptTag(rawHtml, relPath, guidanceHash);
+      // Ensure the head rAF gate too (idempotent) — publish also brings pre-gate sims up to date.
+      const updatedHtml = injectGuidanceScriptTag(injectRafGate(rawHtml), relPath, guidanceHash);
       await this.storage.uploadFile(entryKey, Buffer.from(updatedHtml, 'utf-8'), 'text/html; charset=utf-8');
     });
 

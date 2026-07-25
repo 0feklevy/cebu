@@ -223,6 +223,125 @@ const BRIDGE_TEMPLATE = /* js */ `;(function(){
   },{capture:true});
 })();`;
 
+// ── rAF gate (head-injected, runs BEFORE the sim's own scripts) ───────────────
+// Real pause/freeze protocol for unmodified sims: the player posts {type:'simPause'} /
+// {type:'simResume'} (e.g. when the sim overlay is hidden/shown) and the gate freezes /
+// resumes every requestAnimationFrame-driven loop in the iframe — sim, bridge.js and
+// guidance.js alike — without touching the sim's own code.
+//
+// Design constraints (keep in sync with the tests in __tests__/rafGate.test.ts):
+//  - Injected at the START of <head> so the wrapper is installed before any sim script runs.
+//  - Strictly message-driven: NO extra visibilitychange logic (the browser already throttles
+//    rAF on hidden tabs natively; adding our own would double-pause sims that self-manage
+//    simPause/simResume — the flagship sims stop their own loop, which is harmless here
+//    because a stopped loop simply never requests a frame while paused).
+//  - While paused, callbacks are queued (each function once) instead of scheduled; on resume
+//    they are re-scheduled via the NATIVE rAF, so frame timestamps stay native — never fabricated.
+//  - Accepts any origin, matching the existing bridge listener pattern.
+//  - Exposes window.__SIM_ENV parsed once from the iframe's own URL query params
+//    (lowend / dpr / mem / section) — an enabler sims may consult later.
+//
+// IMPORTANT: the script body must NOT start with `(function` and must not contain the string
+// "sim-bridge v1"/"sim-bridge v2" — the legacy cleanup regexes in this file strip such blocks.
+
+const RAF_GATE_VERSION = 1;
+const RAF_GATE_MARKER_START = `<!-- sim-raf-gate v${RAF_GATE_VERSION} -->`;
+const RAF_GATE_MARKER_END   = '<!-- /sim-raf-gate -->';
+// Strips any version of the gate block (plus the '\n' separator injectRafGate adds before it)
+// so strip→re-inject is byte-stable and a version bump replaces the old block cleanly.
+const RAF_GATE_BLOCK_RE = /\n?<!-- sim-raf-gate v\d+ -->[\s\S]*?<!-- \/sim-raf-gate -->/g;
+
+const RAF_GATE_TEMPLATE = /* js */ `;(function () {
+  'use strict';
+  if (window.__SIM_RAF_GATE__) return;
+  var nativeRaf = window.requestAnimationFrame && window.requestAnimationFrame.bind(window);
+  var nativeCancel = window.cancelAnimationFrame && window.cancelAnimationFrame.bind(window);
+  var paused = false;
+  var queued = [];        // callbacks requested while paused — each queued once, replayed once
+  var nextQueuedId = -1;  // synthetic negative ids never collide with native (positive) handles
+  window.requestAnimationFrame = function (cb) {
+    if (!paused || typeof cb !== 'function') return nativeRaf ? nativeRaf(cb) : 0;
+    for (var i = 0; i < queued.length; i++) {
+      if (queued[i].cb === cb) return queued[i].id;   // each callback queued once
+    }
+    var id = nextQueuedId--;
+    queued.push({ id: id, cb: cb });
+    return id;
+  };
+  window.cancelAnimationFrame = function (id) {
+    if (typeof id === 'number' && id < 0) {
+      for (var i = 0; i < queued.length; i++) {
+        if (queued[i].id === id) { queued.splice(i, 1); return; }
+      }
+      return;
+    }
+    if (nativeCancel) nativeCancel(id);
+  };
+  function flush() {
+    var pending = queued;
+    queued = [];
+    if (!nativeRaf) return;
+    for (var i = 0; i < pending.length; i++) {
+      // Re-schedule via the NATIVE rAF: each callback runs once and receives the native
+      // timestamp of the resumed frame. Timestamps are never fabricated here.
+      nativeRaf(pending[i].cb);
+    }
+  }
+  window.addEventListener('message', function (e) {
+    var d = (e && e.data) || {};
+    if (d.type === 'simPause') { paused = true; }
+    else if (d.type === 'simResume') { if (paused) { paused = false; flush(); } }
+  });
+  var env = { lowend: null, dpr: null, mem: null, section: null };
+  try {
+    var q = new URLSearchParams(window.location.search);
+    env.lowend = q.get('lowend');
+    env.dpr = q.get('dpr');
+    env.mem = q.get('mem');
+    env.section = q.get('section');
+  } catch (err) { /* keep nulls */ }
+  window.__SIM_ENV = env;
+  window.__SIM_RAF_GATE__ = {
+    version: ${RAF_GATE_VERSION},
+    isPaused: function () { return paused; },
+    queuedCount: function () { return queued.length; }
+  };
+})();`;
+
+/** Remove every sim-raf-gate block (any version) from an HTML string. Used both for
+ *  idempotent re-injection and to keep the gate out of LLM source context / sourceHash. */
+export function stripRafGate(html: string): string {
+  return html.replace(RAF_GATE_BLOCK_RE, '');
+}
+
+/** Idempotently inject the rAF gate at the START of <head> (marker-guarded — re-injection
+ *  replaces the existing block, never duplicates). Fallback order when <head> is missing:
+ *  before the first <script>, then top of <body>, then prepended to the document. */
+export function injectRafGate(html: string): string {
+  const tag = `<script>\n/* sim-raf-gate v${RAF_GATE_VERSION} — auto-injected by podcast-saas — do not edit */\n${RAF_GATE_TEMPLATE}\n</script>`;
+  const block = `${RAF_GATE_MARKER_START}\n${tag}\n${RAF_GATE_MARKER_END}`;
+
+  // Strip any existing gate first: collapses accidental duplicates and refreshes stale versions.
+  const cleaned = stripRafGate(html);
+
+  // `(\s[^>]*)?` keeps <header>/<body …> lookalikes from matching a bare <head>/<body> probe.
+  const headMatch = /<head(\s[^>]*)?>/i.exec(cleaned);
+  if (headMatch) {
+    const at = headMatch.index + headMatch[0].length;
+    return cleaned.slice(0, at) + '\n' + block + cleaned.slice(at);
+  }
+  const scriptIdx = cleaned.search(/<script\b/i);
+  if (scriptIdx !== -1) {
+    return cleaned.slice(0, scriptIdx) + block + '\n' + cleaned.slice(scriptIdx);
+  }
+  const bodyMatch = /<body(\s[^>]*)?>/i.exec(cleaned);
+  if (bodyMatch) {
+    const at = bodyMatch.index + bodyMatch[0].length;
+    return cleaned.slice(0, at) + '\n' + block + cleaned.slice(at);
+  }
+  return block + '\n' + cleaned;
+}
+
 // ── BRIDGE_GENERATION_SYSTEM_PROMPT ─────────────────────────────────────────────
 // The selected LLM provider receives the full simulation source + manifest and writes the bridge script.
 // THIS CONSTANT IS THE LIVE DEFAULT — generateBridgeScript uses it unless an admin has customized the
@@ -894,9 +1013,24 @@ export function computeSourceHash(sourceMap: Map<string, string>): string {
   return createHash('sha256').update(combined).digest('hex').slice(0, 12);
 }
 
-/** Compute a short hash of the generated bridge script */
-function computeBridgeHash(code: string): string {
+/** Compute a short hash of the generated bridge script.
+ *  Exported so the replace flow can re-derive the CURRENT ?v= hash of a preserved
+ *  bridge.js when re-injecting its script tag into a fresh entry HTML. */
+export function computeBridgeHash(code: string): string {
   return createHash('sha256').update(code).digest('hex').slice(0, 12);
+}
+
+/** Derive the entry HTML path relative to the sim's storage prefix.
+ *  entry_file is a storage key on new rows (`simulations/<p>/<s>/index.html`) and a full
+ *  public URL on legacy rows — handle both; returns null when underivable. */
+export function deriveEntryRelPath(entryFile: string | null | undefined, storagePrefix: string): string | null {
+  if (!entryFile) return null;
+  const noQuery = entryFile.split('?')[0];
+  const marker = `${storagePrefix}/`;
+  if (noQuery.startsWith(marker)) return noQuery.slice(marker.length) || null;
+  const idx = noQuery.indexOf(`/${marker}`);
+  if (idx !== -1) return noQuery.slice(idx + 1 + marker.length) || null;
+  return null;
 }
 
 // ── Full bridge validation (fatal / strong warnings / weak) ──────────────────
@@ -1396,6 +1530,141 @@ export class SimulationService {
     return { entryUrl, entryKey: entryStoragePath, bridgeFunctions };
   }
 
+  /** Normalize an upload (one ZIP or a file bundle) into a relPath→Buffer map.
+   *  Public so the replace endpoint can validate the entry file BEFORE responding 202. */
+  buildUploadFileMap(opts: { zipBuffer?: Buffer | null; files?: UploadedSimulationFile[] }): Map<string, Buffer> {
+    if (opts.zipBuffer && opts.zipBuffer.length > 0) return this.extractZip(opts.zipBuffer);
+    return this.normalizeUploadedFiles(opts.files ?? []);
+  }
+
+  /** In-place file swap for an existing simulation (same simId + storage prefix).
+   *
+   *  - New files are uploaded over the old keys; stale keys (present before, absent now)
+   *    are deleted EXCEPT generated artifacts: bridge.js, guidance.js, guidance/* (audio +
+   *    understanding.md) and legacy section_*.html/js files.
+   *  - The new entry HTML gets the head rAF gate re-injected, plus either the existing
+   *    combined bridge.js script tag (with its CURRENT content hash) or — when no bridge.js
+   *    was ever generated — the inline bridge v2 template, and the guidance.js tag when a
+   *    published guidance.js exists.
+   *  - The new bundle MUST contain an HTML file at `entryRelPath` (the previous entry path):
+   *    sections' stored simulation_url embeds that exact path, so renaming the entry would
+   *    break them. Callers reject mismatches up front; this re-checks defensively.
+   *  - Sections' simulation_url / sim_meta are intentionally NOT touched — the generate flow
+   *    detects stale sources via sourceHash on the next generation.
+   */
+  async processReplace(opts: {
+    projectId:    string;
+    simId:        string;
+    files:        Map<string, Buffer>;
+    entryRelPath: string;
+  }): Promise<{
+    entryUrl:           string;
+    entryKey:           string;
+    bridgeFunctions:    BridgeFunction[];
+    uploadedCount:      number;
+    deletedStale:       string[];
+    preservedGenerated: string[];
+  }> {
+    const { projectId, simId, files, entryRelPath } = opts;
+    const prefix = `simulations/${projectId}/${simId}`;
+
+    if (files.size === 0) throw new Error('Replacement bundle appears to be empty');
+    if (!files.has(entryRelPath)) {
+      throw new Error(
+        `Replacement bundle must contain the entry file "${entryRelPath}" — upload with the same entry HTML name`,
+      );
+    }
+
+    // Current keys — needed to compute stale files. Listing can be denied on restricted
+    // tokens; then we do an overwrite-only replace (no stale deletion) instead of failing.
+    let existingKeys: string[] = [];
+    let listingAvailable = true;
+    try {
+      existingKeys = await this.storage.listObjects(prefix);
+    } catch {
+      listingAvailable = false;
+      logger.warn({ prefix }, 'listObjects failed during replace — stale files will not be deleted');
+    }
+
+    // Generated artifacts must survive the swap (they are system-owned, not part of the upload).
+    const isGeneratedKey = (k: string): boolean =>
+      /\/(bridge|guidance)\.js$/.test(k) ||
+      k.startsWith(`${prefix}/guidance/`) ||
+      /\/section_[^/]+\.(html|js)$/.test(k);
+
+    // Read the current generated artifacts so their script tags can be re-wired into the
+    // fresh entry HTML with their CURRENT hashes (section URLs keep working unchanged).
+    let bridgeJs: string | null = null;
+    try { bridgeJs = (await this.storage.readObject(`${prefix}/bridge.js`)).toString('utf-8'); }
+    catch { /* no combined bridge generated yet */ }
+    let guidanceJs: string | null = null;
+    try { guidanceJs = (await this.storage.readObject(`${prefix}/guidance.js`)).toString('utf-8'); }
+    catch { /* no guidance published yet */ }
+
+    const bridgeFunctions: BridgeFunction[] = [];
+    const entryKey = `${prefix}/${entryRelPath}`;
+    const entryDir = entryKey.substring(0, entryKey.lastIndexOf('/'));
+    const relativeDepth = entryDir === prefix
+      ? 0
+      : entryDir.slice(prefix.length).split('/').filter(Boolean).length;
+    const relPrefix = relativeDepth > 0 ? '../'.repeat(relativeDepth) : './';
+
+    let html = injectRafGate(files.get(entryRelPath)!.toString('utf-8'));
+    if (bridgeJs !== null) {
+      html = injectBridgeScriptTag(html, `${relPrefix}bridge.js`, computeBridgeHash(bridgeJs));
+    } else {
+      html = injectInlineBridge(html, bridgeFunctions);
+    }
+    if (guidanceJs !== null) {
+      // Lazy import — a static SimulationService⇄GuidanceService import would be circular.
+      const { injectGuidanceScriptTag, computeGuidanceHash } = await import('./GuidanceService.js');
+      html = injectGuidanceScriptTag(html, `${relPrefix}guidance.js`, computeGuidanceHash(guidanceJs));
+    }
+    files.set(entryRelPath, Buffer.from(html, 'utf-8'));
+
+    // Upload in fixed-size waves — same concurrency cap as the initial upload (backend-010).
+    // Unlike the initial upload, NOTHING is marked immutable here: replaced assets reuse
+    // their old keys, so immutable metadata would pin stale content at the bucket edge.
+    const entries = [...files.entries()];
+    const UPLOAD_CONCURRENCY = 12;
+    logger.info({ simId, projectId, fileCount: entries.length }, 'Replacing simulation files in storage');
+    for (let i = 0; i < entries.length; i += UPLOAD_CONCURRENCY) {
+      await Promise.all(
+        entries.slice(i, i + UPLOAD_CONCURRENCY).map(([relPath, buf]) =>
+          this.storage
+            .uploadFile(`${prefix}/${relPath}`, buf, getSimulationContentType(relPath))
+            .then(() => undefined),
+        ),
+      );
+    }
+
+    // Delete stale files AFTER the uploads so a viewer never sees a half-missing sim.
+    // Best-effort: a failed delete leaves a harmless orphan and must not fail the swap.
+    const newKeySet = new Set(entries.map(([relPath]) => `${prefix}/${relPath}`));
+    const staleKeys = listingAvailable
+      ? existingKeys.filter(k => k.startsWith(`${prefix}/`) && !newKeySet.has(k) && !isGeneratedKey(k))
+      : [];
+    const deletedStale: string[] = [];
+    for (const key of staleKeys) {
+      try {
+        await this.storage.deleteFile(key);
+        deletedStale.push(key);
+      } catch (err) {
+        logger.warn({ err, key }, 'Could not delete stale simulation file during replace');
+      }
+    }
+    const preservedGenerated = listingAvailable
+      ? existingKeys.filter(k => k.startsWith(`${prefix}/`) && isGeneratedKey(k))
+      : [];
+
+    const entryUrl = this.storage.getSimPublicUrl(entryKey);
+    logger.info(
+      { simId, projectId, entryRelPath, uploaded: entries.length, deletedStale: deletedStale.length, preservedGenerated: preservedGenerated.length },
+      'Simulation files replaced',
+    );
+    return { entryUrl, entryKey, bridgeFunctions, uploadedCount: entries.length, deletedStale, preservedGenerated };
+  }
+
   // ── AI-powered per-section bridge generation ──────────────────────────────────
 
   async generateBridgeScript(opts: {
@@ -1469,7 +1738,9 @@ export class SimulationService {
             if (!res.ok) return;
             raw = await res.text();
           }
-          raw = raw
+          // Strip system-injected blocks (rAF gate + inline bridge) so the LLM context and
+          // the deterministic sourceHash stay stable across gate/bridge (re-)injection.
+          raw = stripRafGate(raw)
             .replace(/<script[^>]*>\s*\/\* sim-bridge[\s\S]*?<\/script>/gi, '')
             .replace(/<script[^>]*>\s*;?\s*\(function[\s\S]*?sim-bridge v[12][\s\S]*?<\/script>/gi, '');
           rawMap.set(key, raw);
@@ -1670,7 +1941,9 @@ export class SimulationService {
         if (!res.ok) throw new Error(`Could not read entry HTML for bridge injection (${res.status})`);
         rawHtml = await res.text();
       }
-      const updatedHtml = injectBridgeScriptTag(rawHtml, bridgeRelPath, hash);
+      // Ensure the head rAF gate too: entry HTML uploaded before the gate existed gains it
+      // on the next generation (injectRafGate is marker-guarded and idempotent).
+      const updatedHtml = injectBridgeScriptTag(injectRafGate(rawHtml), bridgeRelPath, hash);
       await this.storage.uploadFile(entryKey, Buffer.from(updatedHtml, 'utf-8'), 'text/html; charset=utf-8');
 
       // sectionUrl encodes which section to run + busts the iframe cache on every generation
@@ -1792,11 +2065,26 @@ export class SimulationService {
     return htmlFiles.sort((a, b) => a.split('/').length - b.split('/').length)[0];
   }
 
+  /** Upload-time entry-HTML injection: head rAF gate + inline bridge v2 template.
+   *  Idempotent — re-running on already-injected HTML yields one gate and one bridge. */
   private injectBridge(html: string, fns: BridgeFunction[]): string {
-    const fnJson  = JSON.stringify(fns);
-    const script  = BRIDGE_TEMPLATE.replace('__SIM_BRIDGE_FUNCTIONS__', fnJson);
-    const tag     = `<script>\n/* sim-bridge v2 — auto-injected by podcast-saas */\n${script}\n</script>`;
-    if (html.includes('</body>')) return html.replace('</body>', `${tag}\n</body>`);
-    return html + '\n' + tag;
+    return injectInlineBridge(injectRafGate(html), fns);
   }
+}
+
+/** Idempotently inject the inline "sim-bridge v2" template before </body>.
+ *  - An existing inline v2 block is refreshed in place (never duplicated).
+ *  - When the combined bridge.js marker block is present the inline template is superseded
+ *    and must NOT be reintroduced (generateBridgeScript stripped it on first generation). */
+export function injectInlineBridge(html: string, fns: BridgeFunction[]): string {
+  const fnJson  = JSON.stringify(fns);
+  const script  = BRIDGE_TEMPLATE.replace('__SIM_BRIDGE_FUNCTIONS__', fnJson);
+  const tag     = `<script>\n/* sim-bridge v2 — auto-injected by podcast-saas */\n${script}\n</script>`;
+
+  const existingInline = /<script[^>]*>\s*\/\* sim-bridge v2[\s\S]*?<\/script>/i;
+  if (existingInline.test(html)) return html.replace(existingInline, tag);
+  if (html.includes('SIM_BRIDGE_SCRIPT_START')) return html;
+
+  if (html.includes('</body>')) return html.replace('</body>', `${tag}\n</body>`);
+  return html + '\n' + tag;
 }

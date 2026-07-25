@@ -367,7 +367,7 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       try {
         const svc = getSimService();
 
-        // Read stored metadata safely — handle all planVersions (3, 4, 5) and missing fields
+        // Read stored metadata safely — handle all planVersions (3, 4, 5, 6) and missing fields
         const storedMeta = section.sim_meta as (Record<string, unknown> & {
           planVersion?: string;
           sourceHash?: string;
@@ -427,7 +427,10 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
           patch.sim_prompt = rawPrompt;
           // Build sim_meta from typed result — no recomputation needed
           patch.sim_meta = {
-            planVersion:        '5',
+            // '6' = generated under the sim-raf-gate regime (head rAF gate ensured in entry HTML).
+            // canReuse is NOT affected: it keys on supportsRuntimeParams (always true here);
+            // the legacy `planVersion === '5'` fallback only matters for old stored rows.
+            planVersion:        '6',
             generatedBy:        'llm',
             // The prompt this bridge was built from — canReuse compares against THIS (not the
             // user-editable sim_prompt) so a saved-but-not-generated prompt edit still regenerates.
@@ -578,7 +581,8 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
         sectionUrl = result2.sectionUrl;
         patch.sim_prompt = prompt;
         patch.sim_meta = {
-          planVersion:        '5',
+          // '6' = sim-raf-gate regime — see the streaming route above; canReuse unaffected.
+          planVersion:        '6',
           generatedBy:        'llm',
           prompt,   // the prompt this bridge was built from — canReuse compares against this
           sourceHash:         result2.sourceHash,

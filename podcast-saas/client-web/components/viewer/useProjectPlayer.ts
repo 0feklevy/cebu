@@ -4,6 +4,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import type { PlayerConfig, PlayerSegment, SimulationOverlay, TimelineSeg, BrollClip, ImageOverlayItem, AudioCutaway, PlayerBranchSequence, PlayerChoicePoint, PlayerBranchEdge } from './types';
 import { releaseAvatarElement } from '../../lib/avatarAudioGraph';
+import { resolveAssetUrl } from '../../lib/assetUrl';
+import { simDestroyGraceMs } from '../../lib/simLifecycle';
+import { resolveSimUrl } from '../../lib/simUrl';
 
 const BRANCH_API = process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
 
@@ -261,6 +264,15 @@ export function useProjectPlayer(
   // Cancellable 50ms reveal timer — a fast scrub out of a section right after entering must not
   // strand the overlay visible over plain video. (sim-race fix)
   const simShowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // (D2) Destroy-on-leave: after the overlay hides, keep the simPause'd iframe mounted for a
+  // grace window (45s desktop / 700ms touch-or-low-memory), then clear activeSimUrl so
+  // SimOverlayDynamic unmounts it and the WebGL context is truly freed. Cancelled on re-entry.
+  const simDestroyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // (D5) True while we stopLoad()'ed the active+standby HLS because a sim holds the screen
+  // with the video paused by the player — only then may we startLoad() them back.
+  const simHlsStoppedRef = useRef(false);
+  // (D4) Sim entry URLs already prefetched this mount — warm the HTTP cache once per URL.
+  const prefetchedSimUrlsRef = useRef<Set<string>>(new Set());
   // ── Guided Simulation: parent owns "fire once per viewing session" + audio ──
   const firedCueIds       = useRef<Set<string>>(new Set());
   const guidanceAudioRef  = useRef<HTMLAudioElement | null>(null);
@@ -390,6 +402,64 @@ export function useProjectPlayer(
     try { refs.simFrame.current?.contentWindow?.postMessage(msg, '*'); } catch (_) {}
   };
 
+  // ── (D2) sim overlay lifecycle: pause on hide, destroy after grace ────────
+  const cancelSimDestroy = () => {
+    if (simDestroyTimerRef.current) { clearTimeout(simDestroyTimerRef.current); simDestroyTimerRef.current = null; }
+  };
+
+  const scheduleSimDestroy = () => {
+    cancelSimDestroy();
+    simDestroyTimerRef.current = setTimeout(() => {
+      simDestroyTimerRef.current = null;
+      if (activeSimRef.current) return;   // a sim became active again — keep the live iframe
+      // Reset the fresh-mount machinery: the next entry must take the not-sameUrl path
+      // (PING_SIM_READY poll → SIM_READY → startScript) against a brand-new iframe.
+      activeSimUrlRef.current = null;
+      simReadyRef.current = false;
+      merge({ activeSimUrl: null });      // unmounts the iframe → frees the WebGL context
+    }, simDestroyGraceMs());
+  };
+
+  // ── (D5) free HLS bandwidth/memory while a sim holds the screen ───────────
+  // Only the active + standby instances — never the b-roll pair. startLoad is only
+  // called if we stopLoad'ed (flag), and both are idempotent/null-guarded.
+  const stopHlsForSim = () => {
+    if (!useHlsJsRef.current || simHlsStoppedRef.current) return;
+    simHlsStoppedRef.current = true;
+    try { hlsRef.current?.stopLoad(); } catch { /* detached */ }
+    try { hlsStandbyRef.current?.stopLoad(); } catch { /* detached */ }
+  };
+
+  const resumeHlsAfterSim = () => {
+    if (!simHlsStoppedRef.current) return;
+    simHlsStoppedRef.current = false;
+    try { hlsRef.current?.startLoad(); } catch { /* detached */ }
+    try { hlsStandbyRef.current?.startLoad(); } catch { /* detached */ }
+  };
+
+  // ── (D4) warm the HTTP cache for an upcoming sim (entry + bridge.js) ──────
+  // Mirrors the iframe's exact request URL (resolveAssetUrl + resolveSimUrl) so the
+  // cache entry actually hits when the iframe mounts. Fetch-only — no iframe here.
+  const prefetchSimAssets = (rawUrl: string) => {
+    if (typeof window === 'undefined') return;
+    const nav = navigator as Navigator & { connection?: { saveData?: boolean } };
+    if (nav.connection?.saveData) return;
+    if (prefetchedSimUrlsRef.current.has(rawUrl)) return;
+    prefetchedSimUrlsRef.current.add(rawUrl);
+    try {
+      const entryHref = resolveSimUrl(resolveAssetUrl(rawUrl) ?? rawUrl);
+      fetch(entryHref, { credentials: 'omit', mode: 'cors' }).catch(() => {});
+      const entry = new URL(entryHref, window.location.href);
+      const v = entry.searchParams.get('v');
+      if (v) {
+        const bridge = new URL('bridge.js', entry);   // sibling of the entry file
+        bridge.search = '';
+        bridge.searchParams.set('v', v);
+        fetch(bridge.href, { credentials: 'omit', mode: 'cors' }).catch(() => {});
+      }
+    } catch { /* best-effort — never surface prefetch failures */ }
+  };
+
   // ── Guided Simulation narration playback (serialized queue, ducks the video) ──
   // Use a stable ref so closures inside audio event listeners always call the latest version.
   const startNextGuidanceRef = useRef<() => void>(() => {});
@@ -458,6 +528,10 @@ export function useProjectPlayer(
         sendToSim({ type: 'stopScript' });
         // Fade out immediately at the boundary; CSS opacity transition smooths it.
         merge({ showSimOverlay: false });
+        // (D2) After the existing messages: freeze the hidden sim's rAF loop, then arm the
+        // destroy grace (>= 700ms, so the unmount can never land inside the 200ms fade).
+        sendToSim({ type: 'simPause' });
+        scheduleSimDestroy();
       }
       if (simShowTimerRef.current) { clearTimeout(simShowTimerRef.current); simShowTimerRef.current = null; }
       desiredSimRef.current = null;
@@ -480,6 +554,10 @@ export function useProjectPlayer(
       sendToSim({ type: 'stopScript' });
       // Fade out immediately at the boundary; CSS opacity transition smooths it.
       merge({ showSimOverlay: false });
+      // (D2) Existing messages first, then freeze the hidden sim + arm the destroy grace.
+      // On a sim→sim change the enter branch below cancels the grace synchronously.
+      sendToSim({ type: 'simPause' });
+      scheduleSimDestroy();
     }
     // A section change (into another sim OR out of sims) invalidates any queued reveal/start.
     if (simShowTimerRef.current) { clearTimeout(simShowTimerRef.current); simShowTimerRef.current = null; }
@@ -493,6 +571,8 @@ export function useProjectPlayer(
     }
 
     if (simSection) {
+      // (D2) Entered a sim section before a pending destroy grace fired — keep the iframe.
+      cancelSimDestroy();
       const script  = simSection.sim_script ?? 'main';
       const params  = { simpleUi: simSection.simple_ui ?? false, autoScript: simSection.auto_script ?? true };
       const sameUrl = simSection.simulation_url === activeSimUrlRef.current;
@@ -506,9 +586,14 @@ export function useProjectPlayer(
         resumeActionRef.current = 'backToVideo';
         simReturnGlobalSecRef.current = timelineRef.current[segmentIdx]?.offset ?? 0;
         merge({ showResumeBtn: true, resumeAction: 'backToVideo', controlsVisible: true });
+        // (D5) The player itself paused the video for a post-roll sim — stop the active +
+        // standby HLS loaders (never the b-roll pair) until a resume path startLoads them.
+        stopHlsForSim();
       }
 
       if (sameUrl && simReadyRef.current) {
+        // (D2) Unfreeze the rAF loop paused on leave BEFORE startScript + reveal.
+        sendToSim({ type: 'simResume' });
         // Send startScript first so sim applies simpleUi, then reveal
         sendToSim({ type: 'startScript', script, params });
         if (simShowTimerRef.current) clearTimeout(simShowTimerRef.current);
@@ -832,6 +917,9 @@ export function useProjectPlayer(
     curIdxRef.current = idx;
     const tot = totalDurRef.current;
 
+    // (D5) Any segment load resumes normal streaming — clear a sim-hold if one was active.
+    // (The stopLoad below is the pre-existing swap choreography for the outgoing instance.)
+    resumeHlsAfterSim();
     if (useHlsJsRef.current) hlsRef.current?.stopLoad();
     setProgress(seg.offset + localTime, tot);
     if (refs.progressBuf.current) {
@@ -842,6 +930,11 @@ export function useProjectPlayer(
     if (activeSimRef.current) {
       sendToSim({ type: 'stopScript' });
       merge({ showSimOverlay: false });
+      // (D2) Existing messages first, then freeze the hidden sim + arm the destroy grace.
+      // If the new segment starts inside a sim section, finishSwap → updateSimOverlay
+      // re-enters and cancels the grace.
+      sendToSim({ type: 'simPause' });
+      scheduleSimDestroy();
     }
     if (simShowTimerRef.current) { clearTimeout(simShowTimerRef.current); simShowTimerRef.current = null; }
     desiredSimRef.current = null;
@@ -1049,6 +1142,16 @@ export function useProjectPlayer(
           prewarmBroll(nextBroll, hlsLibRef.current);
         }
       }
+
+      // (D4) Sim prefetch: while playing, if a sim section in THIS segment starts within
+      // the next 15s, warm the HTTP cache for its entry (+ bridge.js) so the iframe boots
+      // from cache at the boundary. Sim sections are segment-local → branching-safe.
+      if (!videoRef.current?.paused) {
+        const upcomingSim = segmentsRef.current[idx]?.simulations.find((s) =>
+          !!s.simulation_url && t < s.start_sec && s.start_sec - t <= 15,
+        ) ?? null;
+        if (upcomingSim?.simulation_url) prefetchSimAssets(upcomingSim.simulation_url);
+      }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1113,6 +1216,9 @@ export function useProjectPlayer(
     v.addEventListener('timeupdate',     () => { if (v === videoRef.current) onTick(); });
     v.addEventListener('play',  () => {
       if (v !== videoRef.current) return;
+      // (D5) Safety net: any playback resume must restore streaming if a sim-hold
+      // stopLoad'ed the loaders (e.g. Space to resume out of a userInteraction pause).
+      resumeHlsAfterSim();
       merge({ playing: true });
       scheduleHide();
       // Sync broll: if broll is active, resume it too
@@ -1151,6 +1257,9 @@ export function useProjectPlayer(
         const pending = pendingSimRef.current;
         pendingSimRef.current = null;
         if (pending && (!userPausedRef.current || resumeActionRef.current === 'backToVideo')) {
+          // (D2) Unfreeze first — the page may have been simPause'd on a previous leave.
+          // Harmless no-op on a freshly loaded sim.
+          sendToSim({ type: 'simResume' });
           // Send startScript first so sim applies simpleUi before overlay reveals
           sendToSim({ type: 'startScript', script: pending.script, params: pending.params });
           if (simShowTimerRef.current) clearTimeout(simShowTimerRef.current);
@@ -1161,6 +1270,10 @@ export function useProjectPlayer(
         videoRef.current?.pause();
         sendToSim({ type: 'pauseScript' });   // stop animation, keep sim panel visible
         userPausedRef.current = true;
+        // (D5) The player paused the video while the sim holds the screen — stop the
+        // active + standby HLS loaders. NO simPause here: the sim stays visible and
+        // interactive, and guidance depends on pauseScript arriving exactly as before.
+        if (showSimOverlayRef.current) stopHlsForSim();
         merge({ showResumeBtn: true, badgeMode: 'free', resumeAction: resumeActionRef.current });
       }
       // ── Guided Simulation ──────────────────────────────────────────────────
@@ -1276,6 +1389,8 @@ export function useProjectPlayer(
       hlsBrollStandbyRef.current?.destroy();
       clearTimeout(idleTimerRef.current ?? undefined);
       if (simPollRef.current) clearInterval(simPollRef.current);
+      // (D2) Pending destroy grace must not fire into an unmounted tree.
+      if (simDestroyTimerRef.current) { clearTimeout(simDestroyTimerRef.current); simDestroyTimerRef.current = null; }
       // Stop any cutaway / guided-narration audio so it doesn't keep playing after
       // the player unmounts (e.g. navigating away mid-cutaway or mid-guidance).
       if (audioCutawayRef.current) { audioCutawayRef.current.pause(); audioCutawayRef.current = null; }
@@ -1335,6 +1450,9 @@ export function useProjectPlayer(
 
       if (targetIdx === curIdxRef.current) {
         swapGenRef.current++;
+        // (D5) Scrub-away resumes streaming anyway (startLoad below) — clear the sim-hold
+        // flag so it stays truthful for the next stopHlsForSim.
+        resumeHlsAfterSim();
         if (useHlsJsRef.current) hlsRef.current?.startLoad();
         videoRef.current!.currentTime = Math.min(localTime, targetSeg.duration);
         if (useHlsJsRef.current && standbyIdRef.current) {
@@ -1512,6 +1630,8 @@ export function useProjectPlayer(
   }, [togglePlay, startPlayback]);
 
   const resumeFromSim = useCallback(() => {
+    // (D5) Both resume paths restart playback — restore streaming if a sim-hold stopped it.
+    resumeHlsAfterSim();
     if (resumeActionRef.current === 'backToVideo') {
       const targetGlobal = Math.max(0, simReturnGlobalSecRef.current);
       const tl = timelineRef.current;
@@ -1523,6 +1643,11 @@ export function useProjectPlayer(
       const localTime = targetSeg ? Math.max(0, targetGlobal - targetSeg.offset) : 0;
 
       sendToSim({ type: 'stopScript' });
+      // (D2) Overlay hides right below — freeze the sim and arm the destroy grace.
+      // (If the return point lands inside another sim section, updateSimOverlay /
+      // loadSegment below re-enters and cancels the grace.)
+      sendToSim({ type: 'simPause' });
+      scheduleSimDestroy();
       if (simShowTimerRef.current) { clearTimeout(simShowTimerRef.current); simShowTimerRef.current = null; }
       desiredSimRef.current = null;
       pendingSimRef.current = null;

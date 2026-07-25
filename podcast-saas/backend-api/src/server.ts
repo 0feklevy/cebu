@@ -13,8 +13,6 @@ import { checkDatabaseConnection, db, video_files, simulations } from './db/inde
 import { getFirebaseAdmin } from './services/firebase.js';
 import { getStorageAdapter } from './services/storage/getStorageAdapter.js';
 import { R2StorageAdapter } from './services/storage/R2StorageAdapter.js';
-import { LocalStorageAdapter } from './services/storage/LocalStorageAdapter.js';
-import { getSimulationContentType } from './services/simulation/SimulationService.js';
 import {
   browserOrigins,
   assertPublicOriginsForProd,
@@ -24,6 +22,7 @@ import { stopBoss } from './queue/pgBoss.js';
 import { drainInlineJobs } from './queue/inlineDriver.js';
 
 // Controllers
+import { registerSimPublicRoutes } from './controllers/sim-public.controller.js';
 import { registerPlatformRoutes } from './controllers/v1/platform.controller.js';
 import { registerProjectRoutes } from './controllers/v1/projects.controller.js';
 import { registerCorpusRoutes } from './controllers/v1/corpus.controller.js';
@@ -434,111 +433,10 @@ async function build() {
     },
   );
 
-  // Public simulation file serving (no auth) — serves the simulations/ prefix with the
-  // CORRECT Content-Type. This must be a backend proxy, not a direct bucket link:
-  // Supabase's public bucket force-downgrades text/html → text/plain (anti-phishing),
-  // so an iframe pointed straight at the bucket renders raw `<!DOCTYPE html>…` source.
-  // Local disk is streamed (Range support); cloud objects are read via the adapter and
-  // re-emitted with getSimulationContentType so HTML renders and ES-module .js loads.
-  app.get<{ Params: { '*': string } }>(
-    '/sim-public/*',
-    // Opt this route out of helmet: it serves sim files INTO a cross-origin <iframe>, and
-    // helmet's default `X-Frame-Options: SAMEORIGIN` would refuse to display them. We set
-    // our own security headers (nosniff + cross-origin CORP) on every response below.
-    { helmet: false },
-    async (request, reply) => {
-      const key = request.params['*'];
-      if (!key.startsWith('simulations/') || keyHasTraversal(key)) {
-        return reply.code(403).send({ message: 'Forbidden' });
-      }
-      const contentType = getSimulationContentType(key);
-      const storage = getStorageAdapter();
-
-      // Restrictive CSP for served sims (security-003). The sim body is arbitrary
-      // user-uploaded HTML/JS, so we keep script/style/img/etc. permissive (inline +
-      // data/blob) to avoid breaking legit sims, but lock down the ambient surface:
-      //  • frame-ancestors → only the app origin(s), so a private sim URL can't be
-      //    reframed/clickjacked by an attacker page.
-      //  • base-uri/form-action → 'self', so a sim can't retarget navigation/base to
-      //    attacker infrastructure.
-      // Note: dropping the iframe's `allow-same-origin` sandbox flag (the fuller
-      // security-003 hardening) is deferred — it would break sims that use
-      // localStorage/canvas-with-same-origin-data and needs runtime verification.
-      // Only the app + admin public origins may frame sims (localhost added in dev only).
-      const simFrameAncestors = browserOrigins().join(' ');
-      // script/style/connect allow https: — sims legitimately pull CDN libs, Google
-      // Fonts, and remote data, and blocking them adds no security when 'unsafe-inline'
-      // + 'unsafe-eval' are already required by real sims (inline script can do anything
-      // a remote one can). The ambient lockdown (frame-ancestors/base-uri/form-action)
-      // is what actually protects the app. media-src covers sim audio/video, including
-      // assets redirected to the bucket's public URL below.
-      const simCsp = [
-        "default-src 'self' data: blob:",
-        "script-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https:",
-        "style-src 'self' 'unsafe-inline' https:",
-        "img-src 'self' data: blob: https:",
-        "font-src 'self' data: https:",
-        "media-src 'self' data: blob: https:",
-        "connect-src 'self' data: blob: https:",
-        `frame-ancestors ${simFrameAncestors}`,
-        "base-uri 'self'",
-        "form-action 'self'",
-      ].join('; ');
-
-      // Local disk: stream from the filesystem with HTTP Range support.
-      if (storage instanceof LocalStorageAdapter) {
-        const filePath = safeLocalPath(LOCAL_STORAGE_BASE_DIR, key);
-        if (!filePath) return reply.code(403).send({ message: 'Forbidden' });
-        return serveLocalFile(request, reply, filePath, contentType, {
-          extraHeaders: {
-            'X-Content-Type-Options': 'nosniff',
-            'Cross-Origin-Resource-Policy': 'cross-origin',
-            'Access-Control-Allow-Origin': '*',
-            'Content-Security-Policy': simCsp,
-          },
-        });
-      }
-
-      // Cloud (Supabase / R2): only TEXT types need the proxy — they're the ones whose
-      // Content-Type the public bucket mangles (text/html → text/plain) or that must
-      // carry the sim CSP. Binary media (images, fonts, audio, video) redirects to the
-      // bucket's public URL instead: those types serve with correct MIME, and the
-      // browser then loads them straight from the CDN — parallel over HTTP/2 and
-      // edge/browser-cached — rather than serializing through this proxy (one full
-      // readObject per request), which made image-heavy sims crawl.
-      const ext = extname(key).toLowerCase();
-      const PROXIED_TEXT_EXTS = new Set(['.html', '.htm', '.js', '.mjs', '.css', '.json', '.txt', '.md', '.xml', '.svg', '.vtt', '.csv']);
-      // Keys are simId-scoped and write-once — EXCEPT the entry HTML and bridge JS,
-      // which bridge (re)generation overwrites in place. Those must revalidate every
-      // load (the old max-age=300 could serve a stale bridge right after regeneration);
-      // everything else is safe to cache forever.
-      const isRewritable = ext === '.html' || ext === '.htm' || ext === '.js' || ext === '.mjs';
-      const IMMUTABLE = 'public, max-age=31536000, immutable';
-
-      if (!PROXIED_TEXT_EXTS.has(ext)) {
-        return reply
-          .header('Cache-Control', IMMUTABLE)
-          .header('Access-Control-Allow-Origin', '*')
-          .redirect(storage.getPublicUrl(key));
-      }
-
-      try {
-        const buf = await storage.readObject(key);
-        return reply
-          .header('Content-Type', contentType)
-          .header('Content-Length', buf.length)
-          .header('X-Content-Type-Options', 'nosniff')
-          .header('Cross-Origin-Resource-Policy', 'cross-origin')
-          .header('Access-Control-Allow-Origin', '*')
-          .header('Content-Security-Policy', simCsp)
-          .header('Cache-Control', isRewritable ? 'no-cache' : IMMUTABLE)
-          .send(buf);
-      } catch (err) {
-        logger.warn({ key, err }, 'sim-public: cloud object read failed');
-        return reply.code(404).send({ message: 'File not found' });
-      }
-    },
-  );
+  // Public simulation file serving (no auth) — /sim-public/*. Extracted to its own
+  // controller (correct Content-Type proxy + sim CSP + compression + ETag/304 for
+  // cloud text, 308 CDN redirect for binary assets). See sim-public.controller.ts.
+  await registerSimPublicRoutes(app);
 
   // Local upload endpoint — receives PUT from client for large video files in dev
   app.put<{ Params: { '*': string } }>(

@@ -1,11 +1,12 @@
 'use client';
 
 import { ConfirmDialog } from './ConfirmDialog';
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { getAuth } from 'firebase/auth';
 import { Archive, Check, ChevronDown, ChevronUp, Copy, Download, Maximize2, Minimize2, Play, Square } from 'lucide-react';
 import type { TimelineSection, Simulation, VideoFile, VideoGenerationJob, SimFile, SimMeta, ImageFile, GuidanceEntry, GuidanceMeta, GuidanceStatus } from 'shared/src/generated/client-v1';
 import { api } from '../lib/api';
+import { resolveSimUrl } from '../lib/simUrl';
 import { GuidedTour, type TourStep } from './GuidedTour';
 import { TourButton } from './TourButton';
 
@@ -891,6 +892,28 @@ export function SectionEditor({
   const videoUrl = videoUrls[section.video_file_id] ?? null;
   const simPreviewUrl = section.simulation_url ?? activeSim?.entry_file ?? null;
   const simMeta = section.sim_meta as SimMeta | null | undefined ?? null;
+
+  // (D6) Device-hint params for the preview iframe ONLY. The iframe `key` and every
+  // canReuse/save comparison keep using the RAW simPreviewUrl / section.simulation_url —
+  // the resolved URL is never persisted or compared. Memoized per raw URL so a
+  // devicePixelRatio change (browser zoom) can't rewrite src and reload a live preview.
+  const resolvedSimPreviewSrc = useMemo(
+    () => (simPreviewUrl ? resolveSimUrl(simPreviewUrl) : null),
+    [simPreviewUrl],
+  );
+
+  // (D2b) Broadcast whether the preview-tab sim iframe is mounted so the timeline
+  // player (VideoPlayer) can freeze its own sim while this one is live — two
+  // concurrent WebGL sims is exactly what this kills. Fires false on tab switch,
+  // URL loss, and editor close (effect cleanup).
+  const previewSimMounted = rightTab === 'preview' && !!simPreviewUrl;
+  useEffect(() => {
+    if (!previewSimMounted) return;
+    window.dispatchEvent(new CustomEvent('sim-preview-active', { detail: { active: true } }));
+    return () => {
+      window.dispatchEvent(new CustomEvent('sim-preview-active', { detail: { active: false } }));
+    };
+  }, [previewSimMounted]);
 
   // Clip trimmer derived values
   const clipSourceVideo  = localVideos.find(v => v.id === clipSourceVideoId) ?? null;
@@ -2268,7 +2291,7 @@ export function SectionEditor({
                       <iframe
                         key={simPreviewUrl}
                         ref={previewIframeRef}
-                        src={simPreviewUrl}
+                        src={resolvedSimPreviewSrc ?? simPreviewUrl}
                         style={{ border: 'none', width: '100%', height: '100%', backgroundColor: 'hsl(var(--card))' }}
                         title={activeSim?.name ?? 'Simulation preview'}
                         sandbox="allow-scripts allow-same-origin allow-forms allow-pointer-lock"
