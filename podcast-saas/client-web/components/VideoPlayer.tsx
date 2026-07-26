@@ -182,17 +182,13 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
   // iframe load → reset ready + RE-ARM the pending startScript + re-poll. Re-arming from
   // desiredSimRef is what makes navigation races harmless: even if a stale SIM_READY from the
   // previous page consumed the pending entry, the freshly loaded page re-triggers startScript
-  // via its own SIM_READY / ping reply. (sim-race fix)
-  useEffect(() => {
-    const frame = simFrameRef.current;
-    if (!frame) return;
-    const onLoad = () => {
-      simReadyRef.current = false;
-      if (desiredSimRef.current) pendingSimRef.current = { ...desiredSimRef.current };
-      startSimPoll();
-    };
-    frame.addEventListener('load', onLoad);
-    return () => frame.removeEventListener('load', onLoad);
+  // via its own SIM_READY / ping reply. Wired as the iframe's React onLoad — the old
+  // addEventListener effect ran while the conditionally-rendered iframe ref was still
+  // null and never attached. (sim-race + sim-reliability fix)
+  const handleSimFrameLoad = useCallback(() => {
+    simReadyRef.current = false;
+    if (desiredSimRef.current) pendingSimRef.current = { ...desiredSimRef.current };
+    startSimPoll();
   }, [startSimPoll]);
 
   // poll + destroy-timer cleanup on unmount
@@ -484,6 +480,7 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
           <iframe
             ref={simFrameRef}
             src={resolvedSimSrc ?? simUrl}
+            onLoad={handleSimFrameLoad}
             className="w-full h-full border-0"
             sandbox="allow-scripts allow-same-origin allow-forms"
             title="Interactive simulation"

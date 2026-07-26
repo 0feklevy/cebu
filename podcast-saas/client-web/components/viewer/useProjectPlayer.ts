@@ -83,6 +83,7 @@ export interface ProjectPlayerActions {
   togglePlay:       () => void;
   handleVideoClick: () => void;
   resumeFromSim:    () => void;
+  simFrameLoaded:   () => void;                        // wire to the sim iframe's onLoad
   setVolume:        (volume: number) => void;
   toggleMute:       () => void;
   revealControls:   () => void;                        // YouTube-style hover reveal (over the sim)
@@ -273,6 +274,13 @@ export function useProjectPlayer(
   const simHlsStoppedRef = useRef(false);
   // (D4) Sim entry URLs already prefetched this mount — warm the HTTP cache once per URL.
   const prefetchedSimUrlsRef = useRef<Set<string>>(new Set());
+  // Reveal fallback: a freshly entered sim section must become visible even if the
+  // SIM_READY handshake is slow (heavy sim still booting) or lost — like the editor's
+  // 800ms fallback. Cleared on every leave and whenever the normal reveal fires.
+  const simRevealFallbackRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Scrub pre-mount: while the thumb rests over a sim section, mount its iframe
+  // hidden+unscripted so the boot happens DURING the scrub, not after release.
+  const scrubPremountTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // ── Guided Simulation: parent owns "fire once per viewing session" + audio ──
   const firedCueIds       = useRef<Set<string>>(new Set());
   const guidanceAudioRef  = useRef<HTMLAudioElement | null>(null);
@@ -407,7 +415,10 @@ export function useProjectPlayer(
     if (simDestroyTimerRef.current) { clearTimeout(simDestroyTimerRef.current); simDestroyTimerRef.current = null; }
   };
 
-  const scheduleSimDestroy = () => {
+  // graceOverrideMs: an explicit "the user is done with this sim" signal (e.g. the
+  // back-to-video resume) shortens the grace so the next entry is a guaranteed
+  // fresh mount in its initial state — still > the 200ms fade, never mid-fade.
+  const scheduleSimDestroy = (graceOverrideMs?: number) => {
     cancelSimDestroy();
     simDestroyTimerRef.current = setTimeout(() => {
       simDestroyTimerRef.current = null;
@@ -417,7 +428,7 @@ export function useProjectPlayer(
       activeSimUrlRef.current = null;
       simReadyRef.current = false;
       merge({ activeSimUrl: null });      // unmounts the iframe → frees the WebGL context
-    }, simDestroyGraceMs());
+    }, Math.max(700, graceOverrideMs ?? simDestroyGraceMs()));
   };
 
   // ── (D5) free HLS bandwidth/memory while a sim holds the screen ───────────
@@ -532,8 +543,13 @@ export function useProjectPlayer(
         // destroy grace (>= 700ms, so the unmount can never land inside the 200ms fade).
         sendToSim({ type: 'simPause' });
         scheduleSimDestroy();
+      } else if (activeSimUrlRef.current && !simDestroyTimerRef.current) {
+        // A scrub pre-mount that never became active: freeze it and let the grace free it.
+        sendToSim({ type: 'simPause' });
+        scheduleSimDestroy();
       }
       if (simShowTimerRef.current) { clearTimeout(simShowTimerRef.current); simShowTimerRef.current = null; }
+      if (simRevealFallbackRef.current) { clearTimeout(simRevealFallbackRef.current); simRevealFallbackRef.current = null; }
       desiredSimRef.current = null;
       pendingSimRef.current = null;
       activeSimRef.current = null;
@@ -558,9 +574,14 @@ export function useProjectPlayer(
       // On a sim→sim change the enter branch below cancels the grace synchronously.
       sendToSim({ type: 'simPause' });
       scheduleSimDestroy();
+    } else if (!simSection && activeSimUrlRef.current && !simDestroyTimerRef.current) {
+      // A scrub pre-mount that never became active: freeze it and let the grace free it.
+      sendToSim({ type: 'simPause' });
+      scheduleSimDestroy();
     }
     // A section change (into another sim OR out of sims) invalidates any queued reveal/start.
     if (simShowTimerRef.current) { clearTimeout(simShowTimerRef.current); simShowTimerRef.current = null; }
+    if (simRevealFallbackRef.current) { clearTimeout(simRevealFallbackRef.current); simRevealFallbackRef.current = null; }
     if (!simSection) { desiredSimRef.current = null; pendingSimRef.current = null; }
     activeSimRef.current = simSection;
 
@@ -602,6 +623,15 @@ export function useProjectPlayer(
         simReadyRef.current   = false;
         pendingSimRef.current = { script, params };
         startSimPoll();
+        // Reveal fallback: a sim section is part of the video — if the handshake is
+        // slow (heavy sim booting) the overlay must still come up, visibly loading,
+        // instead of silently playing video over the section. SIM_READY still sends
+        // simResume + startScript when it eventually arrives.
+        if (simRevealFallbackRef.current) clearTimeout(simRevealFallbackRef.current);
+        simRevealFallbackRef.current = setTimeout(() => {
+          simRevealFallbackRef.current = null;
+          if (activeSimRef.current) merge({ showSimOverlay: true });
+        }, 1000);
       }
     }
 
@@ -937,6 +967,7 @@ export function useProjectPlayer(
       scheduleSimDestroy();
     }
     if (simShowTimerRef.current) { clearTimeout(simShowTimerRef.current); simShowTimerRef.current = null; }
+    if (simRevealFallbackRef.current) { clearTimeout(simRevealFallbackRef.current); simRevealFallbackRef.current = null; }
     desiredSimRef.current = null;
     pendingSimRef.current = null;
     activeSimRef.current = null;
@@ -1254,7 +1285,12 @@ export function useProjectPlayer(
       if (type === 'SIM_READY') {
         simReadyRef.current = true;
         if (simPollRef.current) clearInterval(simPollRef.current);
-        const pending = pendingSimRef.current;
+        // Self-heal: if the pending start was consumed (e.g. the OLD page answered a
+        // ping mid-navigation) but a sim section is active and has a desired script,
+        // start from the desired state anyway — a READY sim inside an active section
+        // must never stay scriptless/hidden. (sim-reliability fix)
+        const pending = pendingSimRef.current ??
+          (activeSimRef.current && desiredSimRef.current ? { ...desiredSimRef.current } : null);
         pendingSimRef.current = null;
         if (pending && (!userPausedRef.current || resumeActionRef.current === 'backToVideo')) {
           // (D2) Unfreeze first — the page may have been simPause'd on a previous leave.
@@ -1263,6 +1299,7 @@ export function useProjectPlayer(
           // Send startScript first so sim applies simpleUi before overlay reveals
           sendToSim({ type: 'startScript', script: pending.script, params: pending.params });
           if (simShowTimerRef.current) clearTimeout(simShowTimerRef.current);
+          if (simRevealFallbackRef.current) { clearTimeout(simRevealFallbackRef.current); simRevealFallbackRef.current = null; }
           simShowTimerRef.current = setTimeout(() => { simShowTimerRef.current = null; merge({ showSimOverlay: true }); }, 50);
         }
       }
@@ -1324,21 +1361,17 @@ export function useProjectPlayer(
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.showSimOverlay]);
 
-  // ── iframe load listener — reset ready state + RE-ARM startScript when src changes ──
+  // ── iframe load handler — reset ready state + RE-ARM startScript when src changes ──
   // Re-arming from desiredSimRef heals the stale-SIM_READY race: the OLD page can answer a
   // ping mid-navigation and consume pendingSimRef, which left the NEW page visible but
-  // scriptless. On load the freshly loaded page always gets the current desired script. (sim-race fix)
-  useEffect(() => {
-    const frame = refs.simFrame.current;
-    if (!frame) return;
-    const onLoad = () => {
-      simReadyRef.current = false;
-      if (desiredSimRef.current) pendingSimRef.current = { ...desiredSimRef.current };
-      startSimPoll();
-    };
-    frame.addEventListener('load', onLoad);
-    return () => frame.removeEventListener('load', onLoad);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  // scriptless. On load the freshly loaded page always gets the current desired script.
+  // Wired as the iframe's React onLoad (SimOverlayDynamic) — the old addEventListener
+  // effect ran once while the lazily-mounted iframe ref was still null and never
+  // attached, so this heal was dead code. (sim-race + sim-reliability fix)
+  const handleSimFrameLoad = useCallback(() => {
+    simReadyRef.current = false;
+    if (desiredSimRef.current) pendingSimRef.current = { ...desiredSimRef.current };
+    startSimPoll();
   }, [startSimPoll]);
 
   // ── setup effect ──────────────────────────────────────────────────────────
@@ -1391,6 +1424,7 @@ export function useProjectPlayer(
       if (simPollRef.current) clearInterval(simPollRef.current);
       // (D2) Pending destroy grace must not fire into an unmounted tree.
       if (simDestroyTimerRef.current) { clearTimeout(simDestroyTimerRef.current); simDestroyTimerRef.current = null; }
+      if (simRevealFallbackRef.current) { clearTimeout(simRevealFallbackRef.current); simRevealFallbackRef.current = null; }
       // Stop any cutaway / guided-narration audio so it doesn't keep playing after
       // the player unmounts (e.g. navigating away mid-cutaway or mid-guidance).
       if (audioCutawayRef.current) { audioCutawayRef.current.pause(); audioCutawayRef.current = null; }
@@ -1419,6 +1453,37 @@ export function useProjectPlayer(
       return Math.max(0, Math.min(1, (cx - r.left) / r.width));
     };
 
+    // While the thumb rests over a sim section (~180ms), mount that sim hidden and
+    // unscripted so it boots DURING the scrub — releasing inside the section then
+    // reveals a warm iframe instead of starting a cold load. No script/reveal state
+    // is touched (activeSimRef stays as-is), so the SIM_READY self-heal cannot
+    // reveal a pre-mount; an unused pre-mount is frozen + grace-freed on release.
+    const premountSimAt = (targetGlobal: number) => {
+      // Never while a sim section is ACTIVE: the shared iframe is live (possibly
+      // visible mid-roll) and navigating it here would destroy that session on
+      // screen — and the onLoad re-arm + SIM_READY heal could then run the old
+      // section's script on the new page. An active section needs no warm-up.
+      if (activeSimRef.current) return;
+      const tl = timelineRef.current;
+      let idx = 0;
+      for (let i = tl.length - 1; i >= 0; i--) { if (tl[i].offset <= targetGlobal) { idx = i; break; } }
+      const seg = segmentsRef.current[idx];
+      if (!seg) return;
+      const local = Math.max(0, targetGlobal - tl[idx].offset);
+      const sec = seg.simulations.find((s) => s.simulation_url && local >= s.start_sec && local < s.end_sec);
+      if (!sec?.simulation_url) return;
+      prefetchSimAssets(sec.simulation_url);
+      cancelSimDestroy();
+      if (activeSimUrlRef.current === sec.simulation_url) return;   // already mounted (warm)
+      simReadyRef.current = false;
+      activeSimUrlRef.current = sec.simulation_url;
+      merge({ activeSimUrl: sec.simulation_url });
+    };
+
+    const clearPremountTimer = () => {
+      if (scrubPremountTimerRef.current) { clearTimeout(scrubPremountTimerRef.current); scrubPremountTimerRef.current = null; }
+    };
+
     const startScrub = (cx: number) => {
       scrubbingRef.current  = true;
       wasPlayingRef.current = !videoRef.current?.paused;
@@ -1430,12 +1495,19 @@ export function useProjectPlayer(
 
     const moveScrub = (cx: number) => {
       if (!scrubbingRef.current) return;
-      setProgress(getPct(cx) * totalDurRef.current);
+      const target = getPct(cx) * totalDurRef.current;
+      setProgress(target);
+      clearPremountTimer();
+      scrubPremountTimerRef.current = setTimeout(() => {
+        scrubPremountTimerRef.current = null;
+        if (scrubbingRef.current) premountSimAt(target);
+      }, 180);
     };
 
     const endScrub = (cx: number) => {
       if (!scrubbingRef.current) return;
       scrubbingRef.current = false;
+      clearPremountTimer();
       const targetGlobal = getPct(cx) * totalDurRef.current;
       const tl = timelineRef.current;
       setProgress(targetGlobal, totalDurRef.current);
@@ -1477,26 +1549,68 @@ export function useProjectPlayer(
       }
     };
 
-    const onMouseDown  = (e: MouseEvent) => { e.preventDefault(); startScrub(e.clientX); };
-    const onMouseMove  = (e: MouseEvent) => moveScrub(e.clientX);
-    const onMouseUp    = (e: MouseEvent) => endScrub(e.clientX);
-    const onTouchStart = (e: TouchEvent) => { e.preventDefault(); startScrub(e.touches[0].clientX); };
-    const onTouchMove  = (e: TouchEvent) => { e.preventDefault(); moveScrub(e.touches[0].clientX); };
-    const onTouchEnd   = (e: TouchEvent) => endScrub(e.changedTouches[0].clientX);
-    wrap.addEventListener('mousedown',   onMouseDown);
-    wrap.addEventListener('touchstart',  onTouchStart, { passive: false });
-    wrap.addEventListener('touchmove',   onTouchMove,  { passive: false });
-    wrap.addEventListener('touchend',    onTouchEnd);
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup',   onMouseUp);
+    // Pointer Events + pointer capture — YouTube-grade scrubbing. Capturing on
+    // pointerdown routes every subsequent move/up/cancel to the wrap no matter
+    // where the pointer goes: outside the window, over the sim IFRAME (which
+    // otherwise swallows mouse events), or into another element. The old
+    // mouse/touch listeners missed the release in exactly those cases, leaving
+    // scrubbingRef stuck until an extra click. pointercancel (browser gesture
+    // takeover) and lostpointercapture are handled so NO path can strand a drag.
+    let activePointerId: number | null = null;
+    let lastClientX = 0;
+
+    const release = (cx: number) => {
+      if (activePointerId !== null) {
+        try { wrap.releasePointerCapture(activePointerId); } catch { /* already released */ }
+        activePointerId = null;
+      }
+      endScrub(cx);
+    };
+
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;   // primary button only
+      if (activePointerId !== null) return;   // one finger owns the scrub — no mid-drag takeover
+      e.preventDefault();
+      activePointerId = e.pointerId;
+      lastClientX = e.clientX;
+      try { wrap.setPointerCapture(e.pointerId); } catch { /* capture unsupported */ }
+      startScrub(e.clientX);
+    };
+    const onPointerMove = (e: PointerEvent) => {
+      if (activePointerId !== e.pointerId) return;
+      lastClientX = e.clientX;
+      moveScrub(e.clientX);
+    };
+    const onPointerUp = (e: PointerEvent) => {
+      if (activePointerId !== e.pointerId) return;
+      release(e.clientX);
+    };
+    const onPointerCancel = (e: PointerEvent) => {
+      if (activePointerId !== e.pointerId) return;
+      release(lastClientX);   // commit the last known position, like YouTube
+    };
+    // Ultimate safety net: capture lost without an up/cancel we saw (e.g. the
+    // element was detached mid-drag) — finish the scrub at the last position.
+    const onLostCapture = () => { if (scrubbingRef.current) release(lastClientX); };
+    // Belt-and-braces for browsers that drop capture silently: a window-level
+    // pointerup always ends an in-flight scrub (endScrub self-guards).
+    const onWindowPointerUp = (e: PointerEvent) => { if (scrubbingRef.current) release(e.clientX); };
+
+    wrap.addEventListener('pointerdown',        onPointerDown);
+    wrap.addEventListener('pointermove',        onPointerMove);
+    wrap.addEventListener('pointerup',          onPointerUp);
+    wrap.addEventListener('pointercancel',      onPointerCancel);
+    wrap.addEventListener('lostpointercapture', onLostCapture);
+    window.addEventListener('pointerup',        onWindowPointerUp);
 
     return () => {
-      wrap.removeEventListener('mousedown',  onMouseDown);
-      wrap.removeEventListener('touchstart', onTouchStart);
-      wrap.removeEventListener('touchmove',  onTouchMove);
-      wrap.removeEventListener('touchend',   onTouchEnd);
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup',   onMouseUp);
+      wrap.removeEventListener('pointerdown',        onPointerDown);
+      wrap.removeEventListener('pointermove',        onPointerMove);
+      wrap.removeEventListener('pointerup',          onPointerUp);
+      wrap.removeEventListener('pointercancel',      onPointerCancel);
+      wrap.removeEventListener('lostpointercapture', onLostCapture);
+      window.removeEventListener('pointerup',        onWindowPointerUp);
+      clearPremountTimer();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1644,11 +1758,15 @@ export function useProjectPlayer(
 
       sendToSim({ type: 'stopScript' });
       // (D2) Overlay hides right below — freeze the sim and arm the destroy grace.
+      // SHORT grace here: "back to video" is an explicit "I'm done with this sim",
+      // so the iframe is dropped quickly and any later re-entry is a fresh mount in
+      // its initial state (the user's in-sim changes are discarded, by design).
       // (If the return point lands inside another sim section, updateSimOverlay /
       // loadSegment below re-enters and cancels the grace.)
       sendToSim({ type: 'simPause' });
-      scheduleSimDestroy();
+      scheduleSimDestroy(1500);
       if (simShowTimerRef.current) { clearTimeout(simShowTimerRef.current); simShowTimerRef.current = null; }
+      if (simRevealFallbackRef.current) { clearTimeout(simRevealFallbackRef.current); simRevealFallbackRef.current = null; }
       desiredSimRef.current = null;
       pendingSimRef.current = null;
       activeSimRef.current = null;
@@ -1672,8 +1790,13 @@ export function useProjectPlayer(
     userPausedRef.current = false;
     resumeActionRef.current = 'resume';
     merge({ showResumeBtn: false, resumeAction: 'resume' });
-    // Restart the animation script that was paused on userInteraction
+    // Restart the animation script that was paused on userInteraction.
+    // stopScript FIRST: it cancels the running script and clears the bridge's
+    // _lastSig, so the identical startScript below is NOT deduped and the sim
+    // returns to its auto-script/default initial state — the user's manual
+    // changes (sliders etc.) are discarded on "resume video", by design.
     if (activeSimRef.current) {
+      sendToSim({ type: 'stopScript' });
       sendToSim({
         type: 'startScript',
         script: activeSimRef.current.sim_script ?? 'main',
@@ -1689,6 +1812,6 @@ export function useProjectPlayer(
 
   return {
     state,
-    actions: { startPlayback, togglePlay, handleVideoClick, resumeFromSim, setVolume, toggleMute, revealControls: showControls, selectEdge, goBack },
+    actions: { startPlayback, togglePlay, handleVideoClick, resumeFromSim, simFrameLoaded: handleSimFrameLoad, setVolume, toggleMute, revealControls: showControls, selectEdge, goBack },
   };
 }

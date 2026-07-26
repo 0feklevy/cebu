@@ -465,6 +465,7 @@ export function HLSPlayerShell({
         simulationUrl={state.activeSimUrl}
         visible={state.showSimOverlay}
         iframeRef={simFrameRef}
+        onLoad={actions.simFrameLoaded}
       />
 
       {state.guidanceCaption && (
