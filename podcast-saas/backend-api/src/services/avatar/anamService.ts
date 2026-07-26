@@ -281,6 +281,36 @@ export function isAnamConfigured(): boolean {
   );
 }
 
+// A stale personaId (deleted/recreated in the Anam dashboard, or created under a
+// different key) makes /auth/session-token fail with 400 invalid_persona_configuration.
+// Ephemeral fallback: drop the dead persona reference and rebuild the SAME brain
+// (system prompt, knowledge, greeting, language) on top of a live avatar+voice —
+// cfg's choice first, then the env defaults. The session starts instead of the
+// viewer hitting a dead "avatar unavailable" wall; the warn log names the stale id
+// so an operator can repair the env/config.
+function buildEphemeralFallback(characterId: string, cfg?: AvatarPersonaConfig): Record<string, unknown> | null {
+  const avatarId = cfg?.avatarId?.trim() || ANAM_ENV.ANAM_AVATAR_ID;
+  const voiceId = cfg?.voiceId?.trim() || ANAM_ENV.ANAM_VOICE_ID;
+  if (!avatarId || !voiceId) return null;
+  const withoutPersona: AvatarPersonaConfig = { ...(cfg ?? {}), personaId: undefined, avatarId, voiceId };
+  const pc = buildPersonaConfig(characterId, withoutPersona);
+  return pc.avatarId && pc.voiceId ? pc : null;
+}
+
+async function mintSessionToken(key: string, personaConfig: Record<string, unknown>): Promise<{ ok: true; token: string } | { ok: false; status: number; detail: string }> {
+  const res = await fetch(`${ANAM_BASE}/auth/session-token`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ clientLabel: 'podcast-saas-avatar', personaConfig }),
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    return { ok: false, status: res.status, detail };
+  }
+  const data = (await res.json()) as { sessionToken: string };
+  return { ok: true, token: data.sessionToken };
+}
+
 export async function getSessionToken(characterId: string, cfg?: AvatarPersonaConfig, apiKey?: string): Promise<SessionInfo> {
   const id = CHARACTERS[characterId] ? characterId : DEFAULT_CHARACTER_ID;
   const voiceSensitivity = cfg?.voiceSensitivity ?? CHARACTERS[id]?.endOfSpeechSensitivity ?? 0.5;
@@ -308,22 +338,30 @@ export async function getSessionToken(characterId: string, cfg?: AvatarPersonaCo
     return { token: cached.token, characterId: id, voiceSensitivity };
   }
 
-  const res = await fetch(`${ANAM_BASE}/auth/session-token`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ clientLabel: 'podcast-saas-avatar', personaConfig }),
-  });
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '');
-    logger.warn({ status: res.status, detail }, '[Anam] session-token request failed');
-    const err = new Error(`Anam API error (${res.status})${detail ? `: ${detail.slice(0, 200)}` : ''}`) as Error & { status: number };
-    err.status = res.status;
+  let minted = await mintSessionToken(key, personaConfig);
+
+  // Stale persona reference → one ephemeral retry with the same brain.
+  if (!minted.ok && minted.status === 400 && personaConfig.personaId &&
+      /invalid_persona_configuration|persona not found/i.test(minted.detail)) {
+    const fallback = buildEphemeralFallback(id, cfg);
+    if (fallback) {
+      logger.warn(
+        { characterId: id, stalePersonaId: personaConfig.personaId, detail: minted.detail.slice(0, 200) },
+        '[Anam] persona rejected as stale — retrying with an ephemeral avatar+voice persona (same brain). Repair the saved personaId / ANAM_PERSONA_ID_* env.',
+      );
+      minted = await mintSessionToken(key, fallback);
+    }
+  }
+
+  if (!minted.ok) {
+    logger.warn({ status: minted.status, detail: minted.detail }, '[Anam] session-token request failed');
+    const err = new Error(`Anam API error (${minted.status})${minted.detail ? `: ${minted.detail.slice(0, 200)}` : ''}`) as Error & { status: number };
+    err.status = minted.status;
     throw err;
   }
 
-  const data = (await res.json()) as { sessionToken: string };
-  tokenCache.set(cacheKey, { token: data.sessionToken, issuedAt: Date.now() });
-  return { token: data.sessionToken, characterId: id, voiceSensitivity };
+  tokenCache.set(cacheKey, { token: minted.token, issuedAt: Date.now() });
+  return { token: minted.token, characterId: id, voiceSensitivity };
 }
 
 interface AnamPersona { id?: string; avatarId?: string; voiceId?: string; llmId?: string; avatar?: { id?: string }; voice?: { id?: string }; llm?: { id?: string }; }

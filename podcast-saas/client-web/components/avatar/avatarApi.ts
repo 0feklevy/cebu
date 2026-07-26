@@ -202,11 +202,16 @@ export const saveMyAnamKey = (apiKey: string) =>
 // ── Public conversation endpoints ───────────────────────────────────────────
 
 // characterId optional — when omitted, the video's saved config (or the server
-// default) decides which character to use.
+// default) decides which character to use. withAuth=true so an owner (or invited
+// collaborator) can start the avatar on their own PRIVATE project — the server's
+// optional-auth visibility gate masks private projects as 404 for anonymous
+// callers, and without the token the owner IS anonymous here. Anonymous viewers
+// of public/unlisted projects are unaffected (no token → no header).
 export const startAvatarSession = (characterId?: string, projectId?: string) =>
   jsonFetch<{ provider: string; sessionToken: string; characterId: string; voiceSensitivity?: number; avatarDisplay?: AvatarDisplay }>(
     '/api/v1/avatar/start',
     { method: 'POST', body: JSON.stringify({ character_id: characterId, projectId }) },
+    true,
   );
 
 export const endAvatarSession = (characterId: string): void => {
@@ -255,7 +260,10 @@ export const getPublicLibrary = (projectId: string, opts?: { scope?: string; typ
   const p = new URLSearchParams();
   if (opts?.scope) p.set('scope', opts.scope);
   if (opts?.type) p.set('type', opts.type);
-  return jsonFetch<LibraryPage>(`/api/v1/avatar/projects/${projectId}/library?${p}`).catch(() => ({ items: [], total: 0, typeCounts: {} }));
+  // withAuth=true for the same reason as startAvatarSession: a private project's
+  // library is owner/collaborator-only, and the .catch below silently turned the
+  // masked 404 into an empty library for the project's own owner.
+  return jsonFetch<LibraryPage>(`/api/v1/avatar/projects/${projectId}/library?${p}`, {}, true).catch(() => ({ items: [], total: 0, typeCounts: {} }));
 };
 
 // ── Authenticated editor library management ─────────────────────────────────
