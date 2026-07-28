@@ -16,7 +16,8 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { ImageCropEditor } from './ImageCropEditor';
 import { ExtendedLibraryModal } from './avatar/ExtendedLibraryModal';
 import { BranchingModal } from './branching/BranchingModal';
-import { getAvatarCircles, type AvatarCirclesConfig } from './avatar/avatarApi';
+import { getAvatarCircles, saveAvatarCircles, type AvatarCirclesConfig } from './avatar/avatarApi';
+import { normalizeCircleSections, type CircleSection } from '../lib/circleSections';
 import type { VideoFile, TimelineSection, TimelineMarker, Simulation, VideoGenerationJob, ImageFile, AudioFile } from 'shared/src/generated/client-v1';
 
 type ToolMode = 'video' | 'simulation' | 'broll';
@@ -920,27 +921,71 @@ export function VideoEditor({ projectId }: Props) {
   // two full-timeline overlays never fight for clicks. (duplicate-section)
   const [duplicateMode, setDuplicateMode] = useState(false);
   const [duplicateSourceId, setDuplicateSourceId] = useState<string | null>(null);
+  // Manual avatar-circle sections picking (entered from Settings → Avatar circles →
+  // "Edit sections on timeline"): the working ranges while the CIRCLES lane is open,
+  // or null when the mode is off. Saved back into avatarCircles.manualSections on Done.
+  const [circlesPicking, setCirclesPicking] = useState<CircleSection[] | null>(null);
+  const [circlesSaving, setCirclesSaving] = useState(false);
   const playheadRef = useRef(0);
   playheadRef.current = playheadSec;
+
+  // Enter circle-section picking when the settings screen hands off (it saves the
+  // config first, then dispatches; ProjectSettingsPanel closes itself on the same
+  // event). Other full-timeline modes are dropped so the lane owns the timeline.
+  useEffect(() => {
+    const enter = (e: Event) => {
+      const detail = (e as CustomEvent<{ projectId?: string }>).detail;
+      if (detail?.projectId && detail.projectId !== projectId) return;
+      setFlagMode(false);
+      setDuplicateMode(false);
+      setDuplicateSourceId(null);
+      getAvatarCircles(projectId)
+        .then((r) => setCirclesPicking((r.config?.manualSections ?? []).map((s) => ({ ...s }))))
+        // Don't enter picking on a failed fetch: an empty lane would let Done
+        // persist manualSections: [] and silently wipe the saved sections.
+        .catch(() => alert('Could not load the saved circle sections — try again.'));
+    };
+    window.addEventListener('circles-manual-pick', enter);
+    return () => window.removeEventListener('circles-manual-pick', enter);
+  }, [projectId]);
+
+  const finishCirclesPicking = async () => {
+    if (!circlesPicking) return;
+    setCirclesSaving(true);
+    try {
+      const { config } = await getAvatarCircles(projectId);
+      if (!config) throw new Error('Avatar circles are not configured yet — open Settings → Avatar circles first.');
+      await saveAvatarCircles(projectId, { ...config, manualSections: normalizeCircleSections(circlesPicking) });
+      // Same event the settings Save uses — refreshes the editor preview config.
+      window.dispatchEvent(new CustomEvent('avatar-circles-saved', { detail: { projectId } }));
+      setCirclesPicking(null);
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setCirclesSaving(false);
+    }
+  };
   const markersRef = useRef<TimelineMarker[]>([]);
   markersRef.current = markers;
 
   const handleToggleFlagMode = useCallback(() => {
+    if (circlesPicking !== null) return;   // circles picking owns the timeline — no mode overlays
     setFlagMode(v => {
       const next = !v;
       if (next) { setDuplicateMode(false); setDuplicateSourceId(null); }
       return next;
     });
-  }, []);
+  }, [circlesPicking]);
 
   const handleToggleDuplicateMode = useCallback(() => {
+    if (circlesPicking !== null) return;   // circles picking owns the timeline — no mode overlays
     setDuplicateMode(v => {
       const next = !v;
       if (next) setFlagMode(false);
       return next;
     });
     setDuplicateSourceId(null);
-  }, []);
+  }, [circlesPicking]);
 
   const handlePickDuplicateSource = useCallback((id: string | null) => setDuplicateSourceId(id), []);
 
@@ -1067,7 +1112,8 @@ export function VideoEditor({ projectId }: Props) {
     TIMELINE_AUDIO_TRACK_H +
     TIMELINE_SCROLLBAR_H +
     (showBrollTrack ? TIMELINE_BROLL_TRACK_H : 0) +
-    (showAudioTrack ? TIMELINE_AUDIO_TRACK_H : 0);
+    (showAudioTrack ? TIMELINE_AUDIO_TRACK_H : 0) +
+    (circlesPicking !== null ? 26 : 0);   // CIRCLES lane strip while picking
   const timelinePanelHeight = `min(${tlHeight}px, ${showBrollTrack || showAudioTrack ? 44 : 38}dvh)`;
 
   return (
@@ -1633,6 +1679,12 @@ export function VideoEditor({ projectId }: Props) {
             onBrollMarkComplete={setBrollMark}
             onAudioCutawayInserted={section => commitSections([...sections, section])}
             onSimulationUpdate={sim => setSimulations(prev => prev.map(s => s.id === sim.id ? sim : s))}
+            circlesMode={circlesPicking !== null}
+            circleRanges={circlesPicking ?? []}
+            onCircleRangesChange={setCirclesPicking}
+            onCirclesDone={finishCirclesPicking}
+            onCirclesCancel={() => setCirclesPicking(null)}
+            circlesSaving={circlesSaving}
           />
         </div>
       </div>

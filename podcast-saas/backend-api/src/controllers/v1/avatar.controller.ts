@@ -662,7 +662,14 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
     toolIds: z.array(z.string().max(80)).max(20).optional(),
     avatarCircles: z.object({
       enabled: z.boolean(),
-      visibility: z.enum(['broll', 'always', 'none']).optional(),
+      // 'manual' / 'broll+manual' show the circles inside user-marked timeline
+      // ranges (manualSections) — alone or merged with the b-roll windows.
+      visibility: z.enum(['broll', 'always', 'none', 'manual', 'broll+manual']).optional(),
+      manualSections: z.array(z.object({
+        id: z.string().max(64),
+        start_sec: z.number().min(0).max(360000),
+        end_sec: z.number().min(0).max(360000),
+      }).refine((s) => s.end_sec > s.start_sec, { message: 'end_sec must be greater than start_sec' })).max(200).optional(),
       count: z.union([z.literal(1), z.literal(2)]),
       faces: z.array(z.object({
         speaker: z.enum(['host_a', 'host_b']),

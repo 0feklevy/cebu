@@ -40,7 +40,10 @@ export interface AvatarCircleFace {
 // animated bars (Phase 1 renders static circles during b-roll).
 export interface AvatarCirclesConfig {
   enabled: boolean;
-  visibility?: 'broll' | 'always' | 'none'; // when circles appear (default 'broll')
+  // when circles appear (default 'broll'); 'manual' / 'broll+manual' use the
+  // user-marked manualSections ranges — alone or merged with b-roll windows
+  visibility?: 'broll' | 'always' | 'none' | 'manual' | 'broll+manual';
+  manualSections?: Array<{ id: string; start_sec: number; end_sec: number }>;
   count: 1 | 2;
   faces?: AvatarCircleFace[];
   // radial visualizer frame style

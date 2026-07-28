@@ -14,6 +14,7 @@ import {
   type AvatarCirclesConfig, type AvatarCircleFace,
 } from './avatarApi';
 import { AvatarCircleViz, type CircleFrame } from '../viewer/AvatarCircleViz';
+import { circlesLayers } from '../../lib/circleSections';
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
 
@@ -63,6 +64,7 @@ interface Props { projectId: string; duration: number; onClose: () => void; }
 export function AvatarCirclesSettings({ projectId, duration, onClose }: Props) {
   const [cfg, setCfg] = useState<AvatarCirclesConfig>(DEFAULT_CONFIG);
   const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [capturing, setCapturing] = useState<'left' | 'right' | null>(null);
@@ -70,11 +72,18 @@ export function AvatarCirclesSettings({ projectId, duration, onClose }: Props) {
   const [playing, setPlaying] = useState(true);   // preview animates by default (fake audio)
   const [isCompactPanel, setIsCompactPanel] = useState(false);
 
-  useEffect(() => {
+  // Load the saved config; on failure flag it (and block Save) so a form showing
+  // DEFAULT_CONFIG can't silently clobber the whole saved config on Save.
+  const loadConfig = useCallback(() => {
+    setLoading(true);
+    setLoadFailed(false);
     getAvatarCircles(projectId)
       .then((r) => { if (r.config) setCfg({ ...DEFAULT_CONFIG, ...r.config, faces: r.config.faces ?? DEFAULT_CONFIG.faces }); })
+      .catch(() => setLoadFailed(true))
       .finally(() => setLoading(false));
   }, [projectId]);
+
+  useEffect(() => { loadConfig(); }, [loadConfig]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -104,7 +113,10 @@ export function AvatarCirclesSettings({ projectId, duration, onClose }: Props) {
     finally { setUploadingSide(null); setCapturing(null); }
   };
 
-  const save = async () => {
+  // Returns true when the config was persisted — callers that hand off to another
+  // mode (e.g. "Edit sections on timeline") must not proceed on false.
+  const save = async (): Promise<boolean> => {
+    if (loadFailed) return false;   // never save a DEFAULT_CONFIG form over an unread saved config
     setSaving(true);
     try {
       await saveAvatarCircles(projectId, { ...cfg, faces: facesFor(cfg) });
@@ -114,8 +126,9 @@ export function AvatarCirclesSettings({ projectId, duration, onClose }: Props) {
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('avatar-circles-saved', { detail: { projectId } }));
       }
+      return true;
     }
-    catch (e) { alert((e as Error).message); }
+    catch (e) { alert((e as Error).message); return false; }
     finally { setSaving(false); }
   };
 
@@ -127,9 +140,15 @@ export function AvatarCirclesSettings({ projectId, duration, onClose }: Props) {
       <div style={{ flexShrink: 0, padding: '14px 20px', borderBottom: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', gap: 10 }}>
         <button onClick={onClose} style={iconBtn} title="Back"><ArrowLeft size={16} /></button>
         <span style={{ fontSize: 15, fontWeight: 700, color: '#0f172a' }}>Avatar circles</span>
-        <span style={{ fontSize: 11, color: '#94a3b8' }}>shown in the bottom corners during b-roll</span>
+        <span style={{ fontSize: 11, color: '#94a3b8' }}>shown in the corners during b-roll and/or your marked timeline sections</span>
         <div style={{ flex: 1 }} />
-        <button onClick={save} disabled={saving} style={{ ...primaryBtn, opacity: saving ? 0.7 : 1 }}>
+        {loadFailed && (
+          <span style={{ fontSize: 11, color: '#dc2626', fontWeight: 600 }}>
+            Couldn&apos;t load the saved settings —{' '}
+            <button onClick={loadConfig} style={{ border: 'none', background: 'none', padding: 0, fontSize: 11, color: '#dc2626', fontWeight: 700, textDecoration: 'underline', cursor: 'pointer' }}>Retry</button>
+          </span>
+        )}
+        <button onClick={save} disabled={saving || loadFailed} style={{ ...primaryBtn, opacity: saving || loadFailed ? 0.7 : 1, cursor: loadFailed ? 'not-allowed' : 'pointer' }}>
           {saving ? <Loader2 size={14} className="animate-spin" /> : saved ? <Check size={14} /> : null}
           {saving ? 'Saving…' : saved ? 'Saved' : 'Save'}
         </button>
@@ -141,19 +160,70 @@ export function AvatarCirclesSettings({ projectId, duration, onClose }: Props) {
         <div style={settingsShell(isCompactPanel)}>
           <aside style={settingsAside(isCompactPanel)}>
             <section style={sectionPanel}>
-              <div style={rowBetween}>
-                <span style={labelStrong}>Show avatar circles</span>
-                <div style={segmented}>
-                  {(() => {
-                    const mode = !cfg.enabled ? 'none' : (cfg.visibility ?? 'broll');
-                    return ([['broll', 'During b-roll'], ['always', 'Always'], ['none', 'None']] as const).map(([m, txt]) => (
-                      <button key={m}
-                        onClick={() => patch(m === 'none' ? { enabled: false } : { enabled: true, visibility: m })}
-                        style={{ ...pill, ...(mode === m ? pillActive : {}) }}>{txt}</button>
-                    ));
-                  })()}
-                </div>
-              </div>
+              {(() => {
+                // Combinable layer chips: "During b-roll" and "Manual sections" toggle
+                // independently (union when both are on); "Always" and "Off" are
+                // exclusive states. Legacy configs ('broll'/'always'/enabled:false)
+                // map onto the same controls unchanged.
+                const layers = circlesLayers(cfg.visibility);
+                const on = cfg.enabled;
+                const brollOn = on && !layers.always && layers.broll;
+                const manualOn = on && !layers.always && layers.manual;
+                // Off is also the truth for enabled:true with no active layer (e.g. an
+                // API-written visibility:'none') — exactly one state chip stays lit.
+                const offActive = !on || (!layers.always && !layers.broll && !layers.manual);
+                const toggleLayer = (which: 'broll' | 'manual') => {
+                  const base = { broll: brollOn, manual: manualOn };
+                  base[which] = !base[which];
+                  if (!base.broll && !base.manual) { patch({ enabled: false }); return; }
+                  patch({
+                    enabled: true,
+                    visibility: base.broll && base.manual ? 'broll+manual' : base.broll ? 'broll' : 'manual',
+                  });
+                };
+                const manualCount = cfg.manualSections?.length ?? 0;
+                return (
+                  <>
+                    <div style={rowBetween}>
+                      <span style={labelStrong}>Show avatar circles</span>
+                      <div style={segmented}>
+                        <button onClick={() => toggleLayer('broll')}
+                          title="Show the circles while a b-roll or image overlay is on screen"
+                          style={{ ...pill, ...(brollOn ? pillActive : {}) }}>During b-roll</button>
+                        <button onClick={() => toggleLayer('manual')}
+                          title="Show the circles inside sections you mark on the timeline"
+                          style={{ ...pill, ...(manualOn ? pillActive : {}) }}>Manual</button>
+                        <button onClick={() => patch({ enabled: true, visibility: 'always' })}
+                          style={{ ...pill, ...(on && layers.always ? pillActive : {}) }}>Always</button>
+                        <button onClick={() => patch({ enabled: false })}
+                          style={{ ...pill, ...(offActive ? pillActive : {}) }}>Off</button>
+                      </div>
+                    </div>
+                    {manualOn && (
+                      <div style={{ ...rowBetween, background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 10, padding: '10px 12px' }}>
+                        <span style={{ ...label, color: '#5b21b6' }}>
+                          {manualCount === 0
+                            ? 'No sections marked yet'
+                            : `${manualCount} section${manualCount === 1 ? '' : 's'} marked on the timeline`}
+                        </span>
+                        <button
+                          onClick={async () => {
+                            // Persist the current settings first, then hand off to the
+                            // timeline picking mode (the editor listens for this event,
+                            // closes the settings panel and opens the CIRCLES lane).
+                            // A failed save (e.g. 'manual' never reached the server) must
+                            // not hand off — picking would edit a config that isn't saved.
+                            if (!(await save())) return;
+                            window.dispatchEvent(new CustomEvent('circles-manual-pick', { detail: { projectId } }));
+                          }}
+                          style={{ ...pill, background: '#7c3aed', borderColor: '#7c3aed', color: '#fff', fontWeight: 600 }}>
+                          Edit sections on timeline →
+                        </button>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
 
               <div style={rowBetween}>
                 <span style={labelStrong}>Number of circles</span>
