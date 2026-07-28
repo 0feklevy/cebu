@@ -18,11 +18,33 @@ interface NavigatorWithHints extends Navigator {
   connection?: { saveData?: boolean };
 }
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
+
+/**
+ * Stored sim URLs are denormalized at save time with whatever API origin the
+ * backend ran under (e.g. a section saved against production carries
+ * https://api.flowvidco.com/sim-public/...). The keys live in the one shared
+ * Supabase bucket, so any /sim-public/ URL is valid on the CURRENT origin —
+ * and framing a foreign origin is blocked by CSP (frame-src). Rebase every
+ * /sim-public/ URL onto this environment's API origin.
+ */
+function rebaseSimPublicOrigin(u: URL): URL {
+  if (!u.pathname.startsWith('/sim-public/') || !API_BASE) return u;
+  try {
+    const base = new URL(API_BASE, window.location.href);
+    if (u.origin === base.origin) return u;
+    const rebased = new URL(u.pathname + u.search + u.hash, base.origin);
+    return rebased;
+  } catch {
+    return u;
+  }
+}
+
 export function resolveSimUrl(url: string): string {
   // SSR-safe: no window → no device to hint about; return unchanged.
   if (typeof window === 'undefined') return url;
   try {
-    const u = new URL(url, window.location.href);
+    const u = rebaseSimPublicOrigin(new URL(url, window.location.href));
     const nav = navigator as NavigatorWithHints;
 
     const mem = nav.deviceMemory;

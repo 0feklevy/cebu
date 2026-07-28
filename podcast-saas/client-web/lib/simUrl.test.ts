@@ -20,6 +20,27 @@ function params(href: string): URLSearchParams {
   return new URL(href).searchParams;
 }
 
+describe('resolveSimUrl origin rebase', () => {
+  // NEXT_PUBLIC_API_URL is unset in tests → dev fallback http://localhost:8080.
+  it('rebases a /sim-public/ URL saved under a FOREIGN origin onto the current API origin', () => {
+    const out = new URL(resolveSimUrl('https://api.flowvidco.com/sim-public/simulations/p1/s1/index.html?section=abc&v=9'));
+    expect(out.origin).toBe('http://localhost:8080');
+    expect(out.pathname).toBe('/sim-public/simulations/p1/s1/index.html');
+    expect(out.searchParams.get('section')).toBe('abc');
+    expect(out.searchParams.get('v')).toBe('9');
+  });
+
+  it('leaves same-origin /sim-public/ URLs on their origin', () => {
+    const out = new URL(resolveSimUrl('http://localhost:8080/sim-public/simulations/p1/s1/index.html'));
+    expect(out.origin).toBe('http://localhost:8080');
+  });
+
+  it('never rebases non-sim-public paths', () => {
+    const out = new URL(resolveSimUrl('https://cdn.example.com/sims/abc/index.html'));
+    expect(out.origin).toBe('https://cdn.example.com');
+  });
+});
+
 describe('resolveSimUrl', () => {
   it('always appends dpr and preserves existing query params', () => {
     stub(window, 'devicePixelRatio', 2);
@@ -67,11 +88,11 @@ describe('resolveSimUrl', () => {
     expect(params(resolveSimUrl('https://x.test/a.html')).get('lowend')).toBe('1');
   });
 
-  it('resolves relative URLs against window.location', () => {
+  it('resolves relative /sim-public/ URLs onto the API origin (the app origin does not serve them)', () => {
     stub(navigator, 'hardwareConcurrency', 8);
     const href = resolveSimUrl('/sim-public/abc/index.html?v=2');
     const u = new URL(href);
-    expect(u.origin).toBe(window.location.origin);
+    expect(u.origin).toBe('http://localhost:8080');
     expect(u.pathname).toBe('/sim-public/abc/index.html');
     expect(u.searchParams.get('v')).toBe('2');
     expect(u.searchParams.get('dpr')).not.toBeNull();
