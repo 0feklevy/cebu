@@ -19,6 +19,7 @@ import {
   GuidanceService,
   type GuidanceEntryStored,
 } from '../../services/simulation/GuidanceService.js';
+import { scanSimUiControls } from '../../services/simulation/SimUiControls.js';
 import { LLMService } from '../../services/llm/LLMService.js';
 import { ApiKeyService } from '../../services/secrets/ApiKeyService.js';
 import { UsageTrackingService } from '../../services/usage/UsageTrackingService.js';
@@ -531,6 +532,46 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
       return reply
         .header('Content-Type', getSimulationContentType(key))
         .send(buf.toString('utf-8'));
+    },
+  );
+
+  // GET /api/v1/projects/:id/simulations/:simId/ui-controls
+  // Static control scan for the Minimal-UI picker: parses the stored entry HTML (system-
+  // injected gate/bridge blocks stripped) into { selector, kind, label } controls. The
+  // runtime layer (rAF-gate v2 answering listSimControls in the live preview iframe)
+  // supersedes this when available — the editor falls back here. Same collabAccess gate
+  // as the upload/replace endpoints.
+  app.get<{ Params: { id: string; simId: string } }>(
+    '/api/v1/projects/:id/simulations/:simId/ui-controls',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const project = await editableProject(request.params.id, user);
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+
+      const sim = await db.query.simulations.findFirst({
+        where: and(eq(simulations.id, request.params.simId), eq(simulations.project_id, project.id)),
+      });
+      if (!sim) return reply.code(404).send({ message: 'Simulation not found' });
+
+      const entryRelPath = deriveEntryRelPath(sim.entry_file, sim.storage_prefix);
+      if (!entryRelPath) {
+        return reply.code(404).send({ message: 'Simulation has no readable entry file' });
+      }
+      const entryKey = `${sim.storage_prefix}/${entryRelPath}`;
+
+      // Read via the storage API; fall back to the public URL when the storage token
+      // denies GetObject (write-only R2 token) — same path the file-content route uses.
+      let html: string;
+      try {
+        html = (await storage.readObject(entryKey)).toString('utf-8');
+      } catch {
+        const res = await fetch(storage.getSimPublicUrl(entryKey)).catch(() => null);
+        if (!res || !res.ok) return reply.code(404).send({ message: 'Simulation entry file not found' });
+        html = await res.text();
+      }
+
+      return reply.send({ controls: scanSimUiControls(html), source: 'static' });
     },
   );
 

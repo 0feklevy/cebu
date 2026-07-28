@@ -6,6 +6,7 @@ import type { PlayerConfig, PlayerSegment, SimulationOverlay, TimelineSeg, Broll
 import { releaseAvatarElement } from '../../lib/avatarAudioGraph';
 import { resolveAssetUrl } from '../../lib/assetUrl';
 import { simDestroyGraceMs } from '../../lib/simLifecycle';
+import type { SimStartScriptParams } from '../../lib/simUiControls';
 import { resolveSimUrl } from '../../lib/simUrl';
 
 const BRANCH_API = process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
@@ -256,12 +257,12 @@ export function useProjectPlayer(
   const userPausedRef   = useRef(false);
   const simReadyRef     = useRef(false);
   const simPollRef      = useRef<ReturnType<typeof setInterval> | null>(null);
-  const pendingSimRef   = useRef<{ script: string; params: Record<string, boolean> } | null>(null);
+  const pendingSimRef   = useRef<{ script: string; params: SimStartScriptParams } | null>(null);
   // The CURRENT desired sim script+params while a sim section is active (null outside one).
   // The iframe 'load' listener re-arms pendingSimRef from this — heals the stale-SIM_READY race
   // where the OLD page answers a ping during navigation and consumes the pending startScript,
   // leaving the NEW page visible but scriptless (no autoScript / wrong simpleUi). (sim-race fix)
-  const desiredSimRef   = useRef<{ script: string; params: Record<string, boolean> } | null>(null);
+  const desiredSimRef   = useRef<{ script: string; params: SimStartScriptParams } | null>(null);
   // Cancellable 50ms reveal timer — a fast scrub out of a section right after entering must not
   // strand the overlay visible over plain video. (sim-race fix)
   const simShowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -595,7 +596,12 @@ export function useProjectPlayer(
       // (D2) Entered a sim section before a pending destroy grace fired — keep the iframe.
       cancelSimDestroy();
       const script  = simSection.sim_script ?? 'main';
-      const params  = { simpleUi: simSection.simple_ui ?? false, autoScript: simSection.auto_script ?? true };
+      const params: SimStartScriptParams = {
+        simpleUi:   simSection.simple_ui ?? false,
+        autoScript: simSection.auto_script ?? true,
+        // Minimal-UI control picker: mechanical hides (wrap template) while simpleUi is on.
+        ...(simSection.ui_hide?.length ? { hideSelectors: simSection.ui_hide } : {}),
+      };
       const sameUrl = simSection.simulation_url === activeSimUrlRef.current;
       activeSimUrlRef.current = simSection.simulation_url;
       desiredSimRef.current = { script, params };   // what the loaded sim SHOULD be running now
@@ -1803,7 +1809,8 @@ export function useProjectPlayer(
         params: {
           simpleUi:   activeSimRef.current.simple_ui   ?? false,
           autoScript: activeSimRef.current.auto_script ?? true,
-        },
+          ...(activeSimRef.current.ui_hide?.length ? { hideSelectors: activeSimRef.current.ui_hide } : {}),
+        } satisfies SimStartScriptParams,
       });
     }
     safePlay(videoRef.current!);

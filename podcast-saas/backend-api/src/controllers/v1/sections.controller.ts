@@ -6,6 +6,14 @@ import { eq, and, asc } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { editableProject } from '../../services/collabAccess.js';
 import { SimulationService, type ConversationMessage } from '../../services/simulation/SimulationService.js';
+import {
+  SIM_UI_CONTROLS_PARAM_MAX_CHARS,
+  SimUiSelectionSchema,
+  normalizeSimUiSelection,
+  readStoredUiControls,
+  simUiSelectionsEqual,
+  type SimUiSelection,
+} from '../../services/simulation/SimUiControls.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { LLMService } from '../../services/llm/LLMService.js';
 import { ApiKeyService } from '../../services/secrets/ApiKeyService.js';
@@ -301,7 +309,7 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
   // SSE streaming endpoint — auth via ?token= query param (EventSource limitation)
   app.get<{
     Params:      { id: string; sid: string };
-    Querystring: { prompt?: string; simple_ui?: string; auto_script?: string };
+    Querystring: { prompt?: string; simple_ui?: string; auto_script?: string; ui_controls?: string };
   }>(
     '/api/v1/projects/:id/sections/:sid/generate-sim-script/stream',
     { preHandler: [firebaseAuthMiddleware] },
@@ -326,6 +334,25 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       }
       const simpleUi   = request.query.simple_ui   === 'true';
       const autoScript = request.query.auto_script  !== 'false';
+
+      // Optional Minimal-UI selection (JSON in ?ui_controls=). Validated + normalized here,
+      // BEFORE switching to SSE mode, so a bad selection is a clean HTTP 400. Absent/empty
+      // param ⇒ undefined — the current no-selection behavior is untouched.
+      let uiControls: SimUiSelection | undefined;
+      const rawUiControls = request.query.ui_controls;
+      if (typeof rawUiControls === 'string' && rawUiControls.length > 0) {
+        if (rawUiControls.length > SIM_UI_CONTROLS_PARAM_MAX_CHARS) {
+          return reply.code(400).send({ message: `ui_controls is too large (max ${SIM_UI_CONTROLS_PARAM_MAX_CHARS} chars)` });
+        }
+        let parsedJson: unknown;
+        try { parsedJson = JSON.parse(rawUiControls); }
+        catch { return reply.code(400).send({ message: 'ui_controls must be valid JSON' }); }
+        const parsed = SimUiSelectionSchema.safeParse(parsedJson);
+        if (!parsed.success) {
+          return reply.code(400).send({ message: 'ui_controls has an invalid shape' });
+        }
+        uiControls = normalizeSimUiSelection(parsed.data);
+      }
 
       // ── All validation done — switch to SSE mode ──────────────────────────────
       // Must set CORS header manually — reply.raw bypasses the @fastify/cors plugin
@@ -391,10 +418,18 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
         // ?section=<sourceId> URL, and a sim switch leaves a raw entry URL — both must regenerate
         // their own bridge entry instead of silently reusing someone else's. (sim-persistence fix)
         const urlIsOwn = !!section.simulation_url?.includes(`section=${section.id}`);
+        // The Minimal-UI selection is part of the bridge contract: the stored selection (the one
+        // the current bridge was generated under) must deep-equal the incoming one. Both-absent
+        // is equal; a presence mismatch (selection added or removed) regenerates. (minimal-ui)
+        const uiSelectionUnchanged = simUiSelectionsEqual(
+          readStoredUiControls(storedMeta?.uiControls),
+          uiControls,
+        );
         const canReuse =
           builtPrompt === rawPrompt &&
           urlIsOwn &&
-          supportsRuntimeParams;
+          supportsRuntimeParams &&
+          uiSelectionUnchanged;
 
         const savedHistory = (storedMeta?.conversationHistory as ConversationMessage[] | undefined) ?? [];
 
@@ -417,6 +452,7 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
             prompt:              rawPrompt,
             simpleUi,
             autoScript,
+            uiControls,
             entryKey:            simRow?.entry_file && !simRow.entry_file.startsWith('http') ? simRow.entry_file : undefined,
             storedSourceHash:    storedMeta?.sourceHash,   // service owns hash invalidation
             conversationHistory: savedHistory.length > 0 ? savedHistory : undefined,
@@ -427,14 +463,18 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
           patch.sim_prompt = rawPrompt;
           // Build sim_meta from typed result — no recomputation needed
           patch.sim_meta = {
-            // '6' = generated under the sim-raf-gate regime (head rAF gate ensured in entry HTML).
-            // canReuse is NOT affected: it keys on supportsRuntimeParams (always true here);
-            // the legacy `planVersion === '5'` fallback only matters for old stored rows.
-            planVersion:        '6',
+            // '7' = Minimal-UI control-picker regime (sim_meta.uiControls persisted; the prompt
+            // gains the MINIMAL-UI CONTRACT block; the wrap applies params.hideSelectors
+            // mechanically). canReuse is NOT affected: it keys on supportsRuntimeParams (always
+            // true here); the legacy `planVersion === '5'` fallback only matters for old rows.
+            planVersion:        '7',
             generatedBy:        'llm',
             // The prompt this bridge was built from — canReuse compares against THIS (not the
             // user-editable sim_prompt) so a saved-but-not-generated prompt edit still regenerates.
             prompt:             rawPrompt,
+            // The normalized Minimal-UI selection this bridge was generated under (undefined ⇒
+            // key omitted) — canReuse deep-equals the next request's selection against THIS.
+            uiControls,
             sourceHash:         result.sourceHash,
             bridgeHash:         result.bridgeHash,
             generatedAt:        new Date().toISOString(),
@@ -494,6 +534,10 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
     prompt:      z.string().min(1).max(1000),
     simple_ui:   z.boolean(),
     auto_script: z.boolean(),
+    // Optional Minimal-UI selection — threaded identically to the SSE route's ?ui_controls=
+    // (canReuse equality + sim_meta persistence + prompt block). Without it, any call
+    // through this route would read as "selection removed" and wipe sim_meta.uiControls.
+    ui_controls: SimUiSelectionSchema.optional(),
   });
 
   app.post<{ Params: { id: string; sid: string } }>(
@@ -517,6 +561,9 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       const body = GenerateSimScriptSchema.safeParse(request.body);
       if (!body.success) return reply.code(400).send({ message: body.error.message });
       const { prompt, simple_ui, auto_script } = body.data;
+      // Normalized (sorted show/hide) — same form the SSE route compares and persists.
+      const uiControls2: SimUiSelection | undefined =
+        body.data.ui_controls ? normalizeSimUiSelection(body.data.ui_controls) : undefined;
 
       // Same per-section serialization as the SSE path. The lock is released in
       // `finally` — a 'finish'-only listener never fires on a client disconnect
@@ -549,10 +596,18 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       // (a duplicate carries the source's ?section= URL; a sim switch leaves a raw entry URL).
       const builtPrompt2 = (typeof storedMeta2?.prompt === 'string' ? storedMeta2.prompt : undefined) ?? section.sim_prompt;
       const urlIsOwn2 = !!section.simulation_url?.includes(`section=${section.id}`);
+      // Mirror the SSE sibling: the stored selection (the one the current bridge was
+      // generated under) must equal the incoming one — both-absent equal; a presence
+      // mismatch (selection added or removed) regenerates. (minimal-ui)
+      const uiSelectionUnchanged2 = simUiSelectionsEqual(
+        readStoredUiControls(storedMeta2?.uiControls),
+        uiControls2,
+      );
       const canReuse =
         builtPrompt2 === prompt &&
         urlIsOwn2 &&
-        supportsRuntimeParams2;
+        supportsRuntimeParams2 &&
+        uiSelectionUnchanged2;
 
       let sectionUrl: string;
       const patch: Record<string, unknown> = { simple_ui, auto_script, sim_script: 'main' };
@@ -573,6 +628,7 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
           prompt,
           simpleUi:         simple_ui,
           autoScript:       auto_script,
+          uiControls:       uiControls2,
           entryKey:         simRow2?.entry_file && !simRow2.entry_file.startsWith('http') ? simRow2.entry_file : undefined,
           storedSourceHash: storedMeta2?.sourceHash,
           conversationHistory: savedHistory2.length > 0 ? savedHistory2 : undefined,
@@ -581,10 +637,14 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
         sectionUrl = result2.sectionUrl;
         patch.sim_prompt = prompt;
         patch.sim_meta = {
-          // '6' = sim-raf-gate regime — see the streaming route above; canReuse unaffected.
-          planVersion:        '6',
+          // '7' = Minimal-UI control-picker regime — see the streaming route above; canReuse
+          // unaffected (keys on supportsRuntimeParams, never the planVersion string).
+          planVersion:        '7',
           generatedBy:        'llm',
           prompt,   // the prompt this bridge was built from — canReuse compares against this
+          // The normalized Minimal-UI selection this bridge was generated under (undefined ⇒
+          // key omitted, so the next request's equality check sees "absent").
+          uiControls:         uiControls2,
           sourceHash:         result2.sourceHash,
           bridgeHash:         result2.bridgeHash,
           generatedAt:        new Date().toISOString(),

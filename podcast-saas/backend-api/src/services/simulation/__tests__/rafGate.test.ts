@@ -18,7 +18,7 @@ import {
 } from '../SimulationService.js';
 import { wrapGuidanceCombined, type GuidanceEntryStored } from '../GuidanceService.js';
 
-const GATE_MARKER = '<!-- sim-raf-gate v1 -->';
+const GATE_MARKER = '<!-- sim-raf-gate v2 -->';
 const NO_FNS: BridgeFunction[] = [];
 
 const count = (haystack: string, needle: string): number => haystack.split(needle).length - 1;
@@ -86,8 +86,17 @@ describe('injection idempotency', () => {
     const once = injectRafGate(SIM_HTML);
     const twice = injectRafGate(once);
     expect(count(twice, GATE_MARKER)).toBe(1);
-    expect(count(twice, 'sim-raf-gate v1 — auto-injected')).toBe(1);
+    expect(count(twice, 'sim-raf-gate v2 — auto-injected')).toBe(1);
     expect(twice).toBe(once);
+  });
+
+  it('replaces a stale v1 gate block with exactly one v2 block (version bump path)', () => {
+    const withV1 = injectRafGate(SIM_HTML).replace(/sim-raf-gate v2/g, 'sim-raf-gate v1');
+    expect(count(withV1, '<!-- sim-raf-gate v1 -->')).toBe(1);
+    const upgraded = injectRafGate(withV1);
+    expect(count(upgraded, GATE_MARKER)).toBe(1);
+    expect(upgraded).not.toContain('sim-raf-gate v1');
+    expect(upgraded).toBe(injectRafGate(SIM_HTML));
   });
 
   it('collapses accidental duplicate gate blocks into one', () => {
@@ -194,6 +203,66 @@ describe('rAF gate snippet content', () => {
 
   it('adds no visibilitychange logic (strictly message-driven)', () => {
     expect(out).not.toContain('visibilitychange');
+  });
+
+  it('v2: answers listSimControls with a simControlsList postMessage', () => {
+    expect(out).toContain("d.type === 'listSimControls'");
+    expect(out).toContain("postMessage({ type: 'simControlsList', controls: out }, '*')");
+  });
+
+  it('v2: runtime scan targets interactive elements, filters to visible, dedupes and caps at 100', () => {
+    expect(out).toContain(
+      "querySelectorAll('button, input, select, textarea, [role=\"button\"], [role=\"slider\"], [role=\"switch\"]')",
+    );
+    expect(out).toContain('el.offsetParent === null && !fixed');           // visible-only filter
+    expect(out).toContain("getComputedStyle(el).position === 'fixed'");
+    expect(out).toContain('out.length < 100');                             // cap
+    expect(out).toContain("seen['s:' + selector]");                        // dedupe by selector
+    expect(out).toContain("'hidden'");                                     // skips type=hidden inputs
+  });
+
+  it('v2: mirrors the static kind/label derivation (self-contained)', () => {
+    // kind mapping
+    for (const needle of [
+      "if (type === 'range') return 'slider'",
+      "if (type === 'checkbox' || type === 'radio') return 'toggle'",
+      "if (role === 'switch') return 'toggle'",
+      "if (tag === 'button' || role === 'button') return 'button'",
+      "if (tag === 'select') return 'select'",
+    ]) expect(out).toContain(needle);
+    // label preference chain: aria-label → label[for] → text (buttons) → title → placeholder → name → id
+    expect(out).toContain("el.getAttribute('aria-label')");
+    expect(out).toContain('label[for=');
+    expect(out).toContain("el.getAttribute('title')");
+    expect(out).toContain("el.getAttribute('placeholder')");
+  });
+
+  it('v2: selector preference #id → [name] → unambiguous CHILD-combinator nth-of-type path', () => {
+    expect(out).toContain("if (el.id) return '#' + el.id;");
+    expect(out).toContain('[name=');
+    // Child-path builder: per-level tag:nth-of-type(i) (i counted among same-TAG siblings),
+    // joined with ' > ', anchored at the nearest #id ancestor (or body/html fallback).
+    // A descendant-scoped fallback ('#anc button:nth-of-type(2)') is ambiguous and must
+    // not be emitted — every structural hop uses the child combinator.
+    expect(out).toContain("':nth-of-type(' + n + ')'");
+    expect(out).toContain("if (sib.tagName === el.tagName) n++;");
+    expect(out).toContain("parts.join(' > ')");
+    expect(out).toContain("anchor = '#' + parent.id;");
+    expect(out).toContain("else if (parent === document.body) anchor = 'body';");
+    expect(out).toContain("(anchor ? anchor + ' > ' : '') + parts.join(' > ')");
+    expect(out).toContain('parts.unshift(nthOfType(node));');
+  });
+
+  it('v2: never emits selectors containing { } < or backslash (or over 300 chars)', () => {
+    // The emitted regex is /[{}<\\]/ — an escaped backslash inside the char class.
+    expect(out).toContain('/[{}<\\\\]/.test(selector) || selector.length > 300');
+  });
+
+  it('emits a syntactically valid script (v2 runtime scanner included)', () => {
+    const m = /<script>\n([\s\S]*?)\n<\/script>/.exec(out);
+    expect(m).not.toBeNull();
+    expect(() => new Function(m![1])).not.toThrow();
+    expect(m![1]).toContain('listSimControls');
   });
 
   it('is not matched by the legacy inline-bridge cleanup regexes', () => {

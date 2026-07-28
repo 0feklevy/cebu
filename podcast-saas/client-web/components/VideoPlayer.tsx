@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useCallback, useMemo, forwardRef, useImper
 import { useEditorPlayback } from '../hooks/useEditorPlayback';
 import { HLS_OPTS } from '../hooks/useSegmentedPlaybackCore';
 import { simDestroyGraceMs } from '../lib/simLifecycle';
+import { getStoredSelection, type SimStartScriptParams } from '../lib/simUiControls';
 import { resolveSimUrl } from '../lib/simUrl';
 import type { Clip } from '../hooks/useClipSequence';
 import type { TimelineSection, ImageFile } from 'shared/src/generated/client-v1';
@@ -87,13 +88,13 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
   const simFrameRef     = useRef<HTMLIFrameElement>(null);
   const simReadyRef     = useRef(false);
   const simPollRef      = useRef<ReturnType<typeof setInterval> | null>(null);
-  const pendingSimRef   = useRef<{ script: string; params: Record<string, boolean> } | null>(null);
+  const pendingSimRef   = useRef<{ script: string; params: SimStartScriptParams } | null>(null);
   // The CURRENT desired sim script+params while a sim section is active (null outside one).
   // The iframe 'load' listener re-arms pendingSimRef from this, which heals the stale-SIM_READY
   // race: when the iframe navigates to a new sim URL, the OLD page can answer a ping first and
   // consume the pending startScript — leaving the NEW page visible but scriptless (no autoScript,
   // wrong simpleUi). Re-arming on load guarantees the freshly loaded page gets startScript. (sim-race fix)
-  const desiredSimRef   = useRef<{ script: string; params: Record<string, boolean> } | null>(null);
+  const desiredSimRef   = useRef<{ script: string; params: SimStartScriptParams } | null>(null);
   // The 50ms reveal timers must be cancellable: leaving a section within that window otherwise
   // strands the overlay visible over plain video during fast scrubbing. (sim-race fix)
   const simShowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -294,10 +295,15 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
   useEffect(() => {
     const newUrl = activeSimSection?.simulation_url ?? null;
     const script  = activeSimSection?.sim_script ?? 'main';
+    // Minimal-UI control picker: selectors hidden mechanically while simpleUi is on.
+    // Editor sections carry the full sim_meta, so read the persisted uiControls.hide
+    // (the viewer gets the same list pre-flattened as ui_hide in its player config).
+    const uiHide = getStoredSelection(activeSimSection?.sim_meta)?.hide;
     // Pass the section's toggle values so the bridge can apply simpleUi / autoScript
-    const params  = {
+    const params: SimStartScriptParams = {
       simpleUi:   activeSimSection?.simple_ui   ?? false,
       autoScript: activeSimSection?.auto_script  ?? true,
+      ...(uiHide?.length ? { hideSelectors: uiHide } : {}),
     };
     if (!newUrl) {
       if (activeSimUrlRef.current) {
@@ -352,9 +358,10 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
       simRevealTimerRef.current = setTimeout(() => setShowSim(true), 800);
     }
   // Params/script deps: a regeneration that keeps the URL (canReuse) must still re-apply
-  // the new simple_ui / auto_script / sim_script to the live iframe. (sim-race fix)
+  // the new simple_ui / auto_script / sim_script — and a changed sim_meta.uiControls
+  // selection (hideSelectors) — to the live iframe. (sim-race fix)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSimSection?.id, activeSimSection?.simulation_url, activeSimSection?.simple_ui, activeSimSection?.auto_script, activeSimSection?.sim_script]);
+  }, [activeSimSection?.id, activeSimSection?.simulation_url, activeSimSection?.simple_ui, activeSimSection?.auto_script, activeSimSection?.sim_script, activeSimSection?.sim_meta]);
 
   // ── playback speed ────────────────────────────────────────────────────────
   useEffect(() => {

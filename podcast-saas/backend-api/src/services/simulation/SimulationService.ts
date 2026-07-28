@@ -7,6 +7,7 @@ import { db } from '../../db/index.js';
 import { system_prompts } from '../../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { logger } from '../../lib/logger.js';
+import { buildUiControlsPromptBlock, type SimUiSelection } from './SimUiControls.js';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -240,11 +241,19 @@ const BRIDGE_TEMPLATE = /* js */ `;(function(){
 //  - Accepts any origin, matching the existing bridge listener pattern.
 //  - Exposes window.__SIM_ENV parsed once from the iframe's own URL query params
 //    (lowend / dpr / mem / section) — an enabler sims may consult later.
+//  - v2: answers {type:'listSimControls'} with {type:'simControlsList', controls} — a runtime
+//    scan of the LIVE DOM's visible interactive controls for the Minimal-UI picker. It
+//    duplicates the tiny kind/label derivation from SimUiControls.ts inline so the gate
+//    stays fully self-contained; keep the two in sync. Selectors: #id → [name] → an
+//    unambiguous CHILD-combinator nth-of-type path anchored at the nearest #id ancestor
+//    (or body) — only THIS live-DOM scanner may emit structural paths; the static scanner
+//    emits #id/[name] only. Version bumps replace v1 blocks via the existing marker
+//    machinery (RAF_GATE_BLOCK_RE strips any version).
 //
 // IMPORTANT: the script body must NOT start with `(function` and must not contain the string
 // "sim-bridge v1"/"sim-bridge v2" — the legacy cleanup regexes in this file strip such blocks.
 
-const RAF_GATE_VERSION = 1;
+const RAF_GATE_VERSION = 2;
 const RAF_GATE_MARKER_START = `<!-- sim-raf-gate v${RAF_GATE_VERSION} -->`;
 const RAF_GATE_MARKER_END   = '<!-- /sim-raf-gate -->';
 // Strips any version of the gate block (plus the '\n' separator injectRafGate adds before it)
@@ -287,10 +296,103 @@ const RAF_GATE_TEMPLATE = /* js */ `;(function () {
       nativeRaf(pending[i].cb);
     }
   }
+  // ── Minimal-UI control picker: runtime scan (v2) ────────────────────────────
+  // Mirrors the static scanner's kind/label/selector derivation (SimUiControls.ts) —
+  // duplicated inline because the gate must stay self-contained. Keep in sync.
+  function prettyName(raw) {
+    return String(raw).replace(/[-_]+/g, ' ').replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/\\s+/g, ' ').trim().toLowerCase()
+      .replace(/(^|\\s)\\S/g, function (c) { return c.toUpperCase(); });
+  }
+  function controlKind(el) {
+    var tag = el.tagName.toLowerCase();
+    var role = (el.getAttribute('role') || '').toLowerCase();
+    var type = (el.getAttribute('type') || '').toLowerCase();
+    if (tag === 'input') {
+      if (type === 'range') return 'slider';
+      if (type === 'checkbox' || type === 'radio') return 'toggle';
+      if (type === 'button' || type === 'submit' || type === 'reset') return 'button';
+    }
+    if (role === 'slider') return 'slider';
+    if (role === 'switch') return 'toggle';
+    if (tag === 'button' || role === 'button') return 'button';
+    if (tag === 'select') return 'select';
+    if (tag === 'input' || tag === 'textarea') return 'input';
+    return 'other';
+  }
+  function controlLabel(el, kind) {
+    var v = el.getAttribute('aria-label');
+    if (v && v.trim()) return v.trim().slice(0, 200);
+    if (el.id) {
+      var lab = null;
+      try { lab = document.querySelector('label[for="' + el.id + '"]'); } catch (err) { /* odd id */ }
+      if (lab && lab.textContent && lab.textContent.trim()) return lab.textContent.trim().slice(0, 200);
+    }
+    if (kind === 'button' && el.textContent && el.textContent.trim()) return el.textContent.trim().slice(0, 200);
+    v = el.getAttribute('title');
+    if (v && v.trim()) return v.trim().slice(0, 200);
+    v = el.getAttribute('placeholder');
+    if (v && v.trim()) return v.trim().slice(0, 200);
+    v = el.getAttribute('name');
+    if (v && v.trim()) return prettyName(v).slice(0, 200);
+    if (el.id) return prettyName(el.id).slice(0, 200);
+    return prettyName(el.tagName.toLowerCase());
+  }
+  function nthOfType(el) {
+    var n = 1, sib = el.previousElementSibling;
+    while (sib) { if (sib.tagName === el.tagName) n++; sib = sib.previousElementSibling; }
+    return el.tagName.toLowerCase() + ':nth-of-type(' + n + ')';
+  }
+  function controlSelector(el) {
+    if (el.id) return '#' + el.id;
+    var name = el.getAttribute('name');
+    if (name) return '[name="' + name + '"]';
+    // Unambiguous structural path: CHILD-combinator hops from the nearest ancestor WITH
+    // an id (or document.body) down to the element — tag:nth-of-type(i) per level, i
+    // counted among same-TAG siblings. A descendant-scoped fallback
+    // ('#anc button:nth-of-type(2)') is ambiguous: it can collapse distinct controls into
+    // one selector (and hide siblings too); the child path matches exactly one element.
+    var parts = [];
+    var node = el;
+    var anchor = null;
+    while (node && !anchor) {
+      parts.unshift(nthOfType(node));
+      var parent = node.parentElement;
+      if (!parent) break;
+      if (parent.id) anchor = '#' + parent.id;
+      else if (parent === document.body) anchor = 'body';
+      else if (parent === document.documentElement) anchor = 'html';
+      else node = parent;
+    }
+    return (anchor ? anchor + ' > ' : '') + parts.join(' > ');
+  }
+  function listSimControls() {
+    var out = [];
+    var seen = {};
+    var nodes = document.querySelectorAll('button, input, select, textarea, [role="button"], [role="slider"], [role="switch"]');
+    for (var i = 0; i < nodes.length && out.length < 100; i++) {
+      var el = nodes[i];
+      if (el.tagName.toLowerCase() === 'input' && (el.getAttribute('type') || '').toLowerCase() === 'hidden') continue;
+      var fixed = false;
+      try { fixed = getComputedStyle(el).position === 'fixed'; } catch (err) { /* detached */ }
+      if (el.offsetParent === null && !fixed) continue;   // visible controls only
+      var selector = controlSelector(el);
+      // The wrap templates (and the backend schema) reject selectors containing { } <
+      // or backslash — never emit them. Cap length to the schema's selector max (300).
+      // '>' is allowed: it is the child combinator the structural paths above rely on.
+      if (/[{}<\\\\]/.test(selector) || selector.length > 300) continue;
+      if (seen['s:' + selector]) continue;                // dedupe by selector
+      seen['s:' + selector] = true;
+      var kind = controlKind(el);
+      out.push({ selector: selector, kind: kind, label: controlLabel(el, kind) });
+    }
+    window.parent && window.parent.postMessage({ type: 'simControlsList', controls: out }, '*');
+  }
   window.addEventListener('message', function (e) {
     var d = (e && e.data) || {};
     if (d.type === 'simPause') { paused = true; }
     else if (d.type === 'simResume') { if (paused) { paused = false; flush(); } }
+    else if (d.type === 'listSimControls') { listSimControls(); }
   });
   var env = { lowend: null, dpr: null, mem: null, section: null };
   try {
@@ -830,15 +932,45 @@ export function wrapBridgeMainBody(mainBody: string): string {
     '',
     '  // ── STANDARD LISTENER — system-owned, guaranteed correct ─────────────────────',
     '  let _lastSig = null;',
+    '  // Minimal-UI mechanical hide: while params.simpleUi is on, params.hideSelectors are',
+    '  // hidden via ONE <style id="__simHideUi"> (display:none !important), refreshed on every',
+    '  // startScript and removed on stopScript / when simpleUi is falsy. hideSelectors take',
+    '  // part in _lastSig naturally (the sig JSON.stringifies params), so a changed selection',
+    '  // re-posts through startScript and refreshes the style. Selectors containing { } <',
+    '  // or backslash are rejected (no style/markup breakouts); the > child combinator the',
+    '  // runtime-scanned structural paths use is allowed.',
+    '  function applyHideUi(params) {',
+    "    let st = document.getElementById('__simHideUi');",
+    '    if (params && params.simpleUi && Array.isArray(params.hideSelectors)) {',
+    '      const rules = [];',
+    '      for (const sel of params.hideSelectors) {',
+    "        if (typeof sel !== 'string' || /[{}<\\\\]/.test(sel)) continue;",
+    "        rules.push(sel + '{display:none !important}');",
+    '      }',
+    '      if (rules.length > 0) {',
+    '        if (!st) {',
+    "          st = document.createElement('style');",
+    "          st.id = '__simHideUi';",
+    '          (document.head || document.documentElement).appendChild(st);',
+    '        }',
+    "        st.textContent = rules.join('\\n');",
+    '        return;',
+    '      }',
+    '    }',
+    '    if (st) st.remove();',
+    '  }',
     '  function stopScript() {',
     '    if (_cancelFn) { _cancelFn(); _cancelFn = null; }',
     '    _lastSig = null;',
+    "    const st = document.getElementById('__simHideUi');",
+    '    if (st) st.remove();',
     '  }',
     '  function startScript(name, params) {',
     "    const sig = (name || 'main') + ':' + JSON.stringify(params || {});",
     '    if (_cancelFn && sig === _lastSig) return;   // identical re-post — keep the script running',
     '    stopScript();',
     '    _lastSig = sig;',
+    '    applyHideUi(params);   // mechanical Minimal-UI hide — refreshed on every (re)start',
     '    const fn = SCRIPTS[name] ?? SCRIPTS.main;',
     '    if (fn) _cancelFn = fn(params ?? {}) ?? null;',
     '  }',
@@ -943,15 +1075,46 @@ export function wrapBridgeCombined(entries: Map<string, string>): string {
     '    },',
     '  };',
     '  var _lastSig = null;',
+    '  // Minimal-UI mechanical hide: while params.simpleUi is on, params.hideSelectors are',
+    '  // hidden via ONE <style id="__simHideUi"> (display:none !important), refreshed on every',
+    '  // startScript and removed on stopScript / when simpleUi is falsy. hideSelectors take',
+    '  // part in _lastSig naturally (the sig JSON.stringifies params), so a changed selection',
+    '  // re-posts through startScript and refreshes the style. Selectors containing { } <',
+    '  // or backslash are rejected (no style/markup breakouts); the > child combinator the',
+    '  // runtime-scanned structural paths use is allowed.',
+    '  function applyHideUi(params) {',
+    "    var st = document.getElementById('__simHideUi');",
+    '    if (params && params.simpleUi && Array.isArray(params.hideSelectors)) {',
+    '      var rules = [];',
+    '      for (var i = 0; i < params.hideSelectors.length; i++) {',
+    '        var sel = params.hideSelectors[i];',
+    "        if (typeof sel !== 'string' || /[{}<\\\\]/.test(sel)) continue;",
+    "        rules.push(sel + '{display:none !important}');",
+    '      }',
+    '      if (rules.length > 0) {',
+    '        if (!st) {',
+    "          st = document.createElement('style');",
+    "          st.id = '__simHideUi';",
+    '          (document.head || document.documentElement).appendChild(st);',
+    '        }',
+    "        st.textContent = rules.join('\\n');",
+    '        return;',
+    '      }',
+    '    }',
+    '    if (st && st.remove) st.remove();',
+    '  }',
     '  function stopScript() {',
     '    if (_cancelFn) { _cancelFn(); _cancelFn = null; }',
     '    _lastSig = null;',
+    "    var st = document.getElementById('__simHideUi');",
+    '    if (st && st.remove) st.remove();',
     '  }',
     '  function startScript(name, params) {',
     "    var sig = (name || 'main') + ':' + JSON.stringify(params || {});",
     '    if (_cancelFn && sig === _lastSig) return;   // identical re-post — keep the script running',
     '    stopScript();',
     '    _lastSig = sig;',
+    '    applyHideUi(params);   // mechanical Minimal-UI hide — refreshed on every (re)start',
     '    var fn = SCRIPTS[name] || SCRIPTS.main;',
     '    if (fn) _cancelFn = fn(params || {}) || null;',
     '  }',
@@ -1675,6 +1838,7 @@ export class SimulationService {
     prompt:            string;
     simpleUi:          boolean;
     autoScript:        boolean;
+    uiControls?:       SimUiSelection;  // normalized Minimal-UI selection — adds ONE compact prompt block
     entryKey?:         string;           // storage key for the entry HTML (from DB) — used when listing is denied
     storedSourceHash?: string;          // from sim_meta — service owns invalidation
     conversationHistory?: ConversationMessage[];
@@ -1799,6 +1963,7 @@ export class SimulationService {
 
     let { bridge, conversationHistory: updatedHistory, provider: llmProvider, model: llmModel } = await this.callLLMForBridge({
       contextPrompt, manifest, prompt, simpleUi, autoScript,
+      uiControls: opts.uiControls,
       userId, projectId, conversationHistory, signal,
       onTokenChunk: tokenHeartbeat,
     });
@@ -1847,6 +2012,7 @@ export class SimulationService {
       const retryResult = await this.callLLMForBridge({
         contextPrompt, manifest,
         prompt: retryPrompt, simpleUi, autoScript,
+        uiControls: opts.uiControls,   // the MINIMAL-UI CONTRACT still binds the retry
         userId, projectId, conversationHistory: updatedHistory, signal,
         onTokenChunk: tokenHeartbeat,
       });
@@ -1982,6 +2148,7 @@ export class SimulationService {
     prompt:               string;
     simpleUi:             boolean;
     autoScript:           boolean;
+    uiControls?:          SimUiSelection;
     userId:               string;
     projectId:            string;
     conversationHistory?: ConversationMessage[];
@@ -1992,10 +2159,14 @@ export class SimulationService {
     const conversationHistory = opts.conversationHistory ?? [];
     const hasHistory = conversationHistory.length > 0;
 
-    // User message is tiny — source files stay in contextPrompt (system prompt)
+    // User message is tiny — source files stay in contextPrompt (system prompt).
+    // A Minimal-UI selection adds exactly ONE compact contract block ('' when absent) —
+    // no source duplication, zero overhead for the no-selection path.
+    const uiBlock = buildUiControlsPromptBlock(opts.uiControls);
+    const uiSuffix = uiBlock ? `\n\n${uiBlock}` : '';
     const userContent = hasHistory
-      ? `REFINEMENT PROMPT: ${prompt}\n\nsimpleUi = ${simpleUi}\nautoScript = ${autoScript}\n\nUpdate the bridge script.`
-      : `SECTION PROMPT: ${prompt}\n\nsimpleUi = ${simpleUi}\nautoScript = ${autoScript}\n\nGenerate the bridge script now.`;
+      ? `REFINEMENT PROMPT: ${prompt}\n\nsimpleUi = ${simpleUi}\nautoScript = ${autoScript}${uiSuffix}\n\nUpdate the bridge script.`
+      : `SECTION PROMPT: ${prompt}\n\nsimpleUi = ${simpleUi}\nautoScript = ${autoScript}${uiSuffix}\n\nGenerate the bridge script now.`;
 
     const abortController = new AbortController();
     const signalListener = () => abortController.abort();

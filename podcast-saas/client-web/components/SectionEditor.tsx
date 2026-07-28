@@ -6,6 +6,11 @@ import { getAuth } from 'firebase/auth';
 import { Archive, Check, ChevronDown, ChevronUp, Copy, Download, Maximize2, Minimize2, Play, Square } from 'lucide-react';
 import type { TimelineSection, Simulation, VideoFile, VideoGenerationJob, SimFile, SimMeta, ImageFile, GuidanceEntry, GuidanceMeta, GuidanceStatus } from 'shared/src/generated/client-v1';
 import { api } from '../lib/api';
+import {
+  SIM_UI_CONTROLS_PARAM_MAX_CHARS,
+  getStoredSelection, kindLabel, mergeScans, normalizeSelection, sanitizeControls,
+  type SimUiControl, type SimUiControlKind, type SimStartScriptParams,
+} from '../lib/simUiControls';
 import { resolveSimUrl } from '../lib/simUrl';
 import { GuidedTour, type TourStep } from './GuidedTour';
 import { TourButton } from './TourButton';
@@ -115,6 +120,16 @@ async function copyTextToClipboard(text: string): Promise<void> {
   textarea.remove();
 }
 
+// Kind-chip palette for the Minimal-UI control picker rows
+const UI_KIND_CHIP: Record<SimUiControlKind, { bg: string; fg: string }> = {
+  slider: { bg: '#e0f2fe', fg: '#0369a1' },
+  toggle: { bg: '#f3e8ff', fg: '#7c3aed' },
+  button: { bg: '#fef3c7', fg: '#b45309' },
+  select: { bg: '#dcfce7', fg: '#15803d' },
+  input:  { bg: '#e0e7ff', fg: '#4338ca' },
+  other:  { bg: '#f3f4f6', fg: '#6b7280' },
+};
+
 const CAMERA_MOVEMENTS = [
   { value: 'zoom_in',   label: 'Zoom In'     },
   { value: 'zoom_out',  label: 'Zoom Out'    },
@@ -161,6 +176,37 @@ export function SectionEditor({
   const [generationStatus, setGenerationStatus] = useState<string | null>(null);
   const [simGenError, setSimGenError] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+
+  // ── Minimal-UI control picker (Advanced · UI controls) ────────────────────
+  const [uiPanelOpen, setUiPanelOpen]   = useState(false);
+  const [uiControls, setUiControls]     = useState<SimUiControl[]>([]);
+  // Unchecked = HIDDEN in Minimal UI. Tracking the unchecked set means controls that are
+  // new to a rescan default to checked (visible) without any bookkeeping.
+  const [uiUnchecked, setUiUnchecked]   = useState<Set<string>>(new Set());
+  // Untouched panel (never changed) ⇒ generation sends NOTHING and the AI decides —
+  // exactly the pre-picker behavior. Only user picks (checkbox/All/None) set this.
+  const [uiDirty, setUiDirty]           = useState(false);
+  const [uiScanBusy, setUiScanBusy]     = useState(false);
+  const [uiScanSource, setUiScanSource] = useState<'runtime' | 'static' | 'stored' | null>(null);
+  const [uiScanEmpty, setUiScanEmpty]   = useState(false);  // last scan ran and found nothing
+  const uiScannedRef = useRef(false);                       // auto-scan once per panel open
+
+  // Checked selectors = stays-visible set (fed to normalizeSelection on Generate).
+  const uiCheckedSelectors = useMemo(
+    () => new Set(uiControls.filter(c => !uiUnchecked.has(c.selector)).map(c => c.selector)),
+    [uiControls, uiUnchecked],
+  );
+
+  // hideSelectors for every startScript this editor posts: the live panel picks once
+  // customized (an empty array is meaningful — it clears previous hides), else the
+  // selection persisted by the last generation (omitted when absent/empty).
+  const effectiveHideSelectors = useMemo<string[] | null>(() => {
+    if (uiDirty && uiControls.length > 0) {
+      return uiControls.filter(c => uiUnchecked.has(c.selector)).map(c => c.selector);
+    }
+    const storedHide = getStoredSelection(section.sim_meta)?.hide;
+    return storedHide && storedHide.length > 0 ? storedHide : null;
+  }, [uiDirty, uiControls, uiUnchecked, section.sim_meta]);
 
   // ── Guided Simulation (mother-sim-level voice guidance) ───────────────────
   const [guidanceLang, setGuidanceLang]         = useState('en');
@@ -281,6 +327,26 @@ export function SectionEditor({
     setTimeout(() => labelRef.current?.focus(), 80);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [section.id]);
+
+  // Reset + restore the Minimal-UI control picker whenever the section or the attached
+  // simulation changes. A selection persisted by a previous generation renders
+  // immediately (source 'stored'); the first panel open refreshes it with a live scan.
+  // Intentionally NOT keyed on sim_meta: a generation that persists the current picks
+  // must not clobber the user's in-flight panel state.
+  useEffect(() => {
+    uiScannedRef.current = false;
+    setUiPanelOpen(false);
+    setUiScanBusy(false);
+    setUiScanEmpty(false);
+    setUiDirty(false);
+    const stored = simId && simId === (section.simulation_id ?? '')
+      ? getStoredSelection(section.sim_meta)
+      : null;
+    setUiControls(stored?.controls ?? []);
+    setUiUnchecked(new Set(stored?.hide ?? []));
+    setUiScanSource(stored ? 'stored' : null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [section.id, simId]);
 
   // Sync localVideos whenever the parent videos prop changes (e.g., new uploads or status changes).
   // Merge: locally uploaded clips take precedence; prop additions are appended.
@@ -442,8 +508,12 @@ export function SectionEditor({
         const script = section.sim_script ?? 'main';
         // Use the live toggle state, not the saved props, so the preview reflects what the
         // viewer just toggled (and what Save will persist) — frontend-005.
+        const params: SimStartScriptParams = {
+          simpleUi, autoScript,
+          ...(effectiveHideSelectors ? { hideSelectors: effectiveHideSelectors } : {}),
+        };
         previewIframeRef.current.contentWindow?.postMessage(
-          { type: 'startScript', script, params: { simpleUi, autoScript } },
+          { type: 'startScript', script, params },
           '*',
         );
         setPreviewRunning(true);
@@ -451,30 +521,60 @@ export function SectionEditor({
     };
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [section.sim_script, simpleUi, autoScript]);
+  }, [section.sim_script, simpleUi, autoScript, effectiveHideSelectors]);
 
   const sendToPreview = useCallback((type: string) => {
     const msg: Record<string, unknown> = { type };
     // Pass current toggle state as runtime params so the bridge responds without re-generation
-    if (type === 'startScript') msg.params = { simpleUi, autoScript };
+    if (type === 'startScript') {
+      msg.params = {
+        simpleUi, autoScript,
+        ...(effectiveHideSelectors ? { hideSelectors: effectiveHideSelectors } : {}),
+      } satisfies SimStartScriptParams;
+    }
     previewIframeRef.current?.contentWindow?.postMessage(msg, '*');
     if (type === 'stopScript') setPreviewRunning(false);
     if (type === 'startScript') setPreviewRunning(true);
-  }, [simpleUi, autoScript]);
+  }, [simpleUi, autoScript, effectiveHideSelectors]);
 
   // Live-apply toggle flips to a RUNNING preview. Toggles are runtime params (planVersion 5+),
   // so no regeneration or reload is needed — but without this, flipping a toggle changed nothing
   // on screen until the next Generate/Run click. (sim-preview fix)
   useEffect(() => {
     if (!previewRunning) return;
+    const params: SimStartScriptParams = {
+      simpleUi, autoScript,
+      ...(effectiveHideSelectors ? { hideSelectors: effectiveHideSelectors } : {}),
+    };
     previewIframeRef.current?.contentWindow?.postMessage(
-      { type: 'startScript', script: section.sim_script ?? 'main', params: { simpleUi, autoScript } },
+      { type: 'startScript', script: section.sim_script ?? 'main', params },
       '*',
     );
-  // Only re-fire on toggle changes — previewRunning/sim_script are read fresh but must not retrigger.
+  // Only re-fire on toggle changes — previewRunning/sim_script/hideSelectors are read fresh but
+  // must not retrigger here (the debounced picker effect below owns hide-selection changes).
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [simpleUi, autoScript]);
+
+  // Live-preview the picker: when the checked set changes (debounced ~150ms), re-post the
+  // CURRENT params startScript with hideSelectors so the user sees hides apply/clear
+  // immediately where the bridge's wrap template supports it. Only meaningful while the
+  // preview is running and Minimal UI is on; old bridges ignore the param harmlessly.
+  useEffect(() => {
+    if (!uiDirty || !previewRunning || !simpleUi) return;
+    const timer = window.setTimeout(() => {
+      const params: SimStartScriptParams = {
+        simpleUi, autoScript,
+        hideSelectors: effectiveHideSelectors ?? [],
+      };
+      previewIframeRef.current?.contentWindow?.postMessage(
+        { type: 'startScript', script: section.sim_script ?? 'main', params },
+        '*',
+      );
+    }, 150);
+    return () => window.clearTimeout(timer);
+  // Re-fire only when the picks change — everything else is read fresh at post time.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uiUnchecked]);
 
   const [isSimFullscreen, setIsSimFullscreen] = useState(false);
 
@@ -563,6 +663,28 @@ export function SectionEditor({
     url.searchParams.set('prompt', simPrompt.trim());
     url.searchParams.set('simple_ui', String(simpleUi));
     url.searchParams.set('auto_script', String(autoScript));
+    // Minimal-UI control picker: a CUSTOMIZED panel sends the live picks; an untouched
+    // panel RE-SENDS the stored selection (sim_meta.uiControls) so the backend keeps it —
+    // sending nothing would read as "selection removed", wiping the stored picks and
+    // busting canReuse on every fresh editor session. Only a never-generated-with-picks
+    // section sends nothing (the AI decides — pre-picker behavior). The stored selection
+    // is only trusted when it belongs to the CURRENTLY attached sim (mirrors the restore
+    // effect above — a sim switch must not leak the old sim's contract).
+    const sel = (uiDirty && uiControls.length > 0)
+      ? normalizeSelection(uiControls, uiCheckedSelectors)
+      : ((section.simulation_id ?? '') === simId ? getStoredSelection(section.sim_meta) : null);
+    if (sel && (sel.show.length || sel.hide.length)) {
+      const selJson = JSON.stringify(sel);
+      // Backend cap: an oversized ?ui_controls= is a pre-SSE HTTP 400, which EventSource
+      // can only surface as a generic connection error — fail here with a clear message.
+      if (selJson.length > SIM_UI_CONTROLS_PARAM_MAX_CHARS) {
+        setSimGenError('Too many UI controls selected for generation — uncheck some in Advanced.');
+        setGenerating(false);
+        setGenerationStatus(null);
+        return;
+      }
+      url.searchParams.set('ui_controls', selJson);
+    }
     if (idToken) url.searchParams.set('token', idToken);
 
     const es = new EventSource(url.toString());
@@ -593,8 +715,16 @@ export function SectionEditor({
       // On a real regeneration the URL changes, the iframe remounts, and its own SIM_READY
       // re-posts; this early message is harmlessly lost to the reloading frame. (sim-preview fix)
       const s = data.section;
+      // hideSelectors: prefer the selection the generation just persisted (authoritative);
+      // fall back to the customized panel state while the backend half isn't emitting it.
+      const doneHide = getStoredSelection(s.sim_meta)?.hide ?? (uiDirty ? effectiveHideSelectors : null);
+      const doneParams: SimStartScriptParams = {
+        simpleUi:   s.simple_ui ?? false,
+        autoScript: s.auto_script ?? true,
+        ...(doneHide ? { hideSelectors: doneHide } : {}),
+      };
       previewIframeRef.current?.contentWindow?.postMessage(
-        { type: 'startScript', script: s.sim_script ?? 'main', params: { simpleUi: s.simple_ui ?? false, autoScript: s.auto_script ?? true } },
+        { type: 'startScript', script: s.sim_script ?? 'main', params: doneParams },
         '*',
       );
       setPreviewRunning(true);
@@ -624,7 +754,7 @@ export function SectionEditor({
       es.close();
       eventSourceRef.current = null;
     };
-  }, [projectId, section, simId, simPrompt, simpleUi, autoScript, onUpdate]);
+  }, [projectId, section, simId, simPrompt, simpleUi, autoScript, uiDirty, uiControls, uiCheckedSelectors, effectiveHideSelectors, onUpdate]);
 
   const handleCancelGeneration = useCallback(() => {
     eventSourceRef.current?.close();
@@ -914,6 +1044,91 @@ export function SectionEditor({
       window.dispatchEvent(new CustomEvent('sim-preview-active', { detail: { active: false } }));
     };
   }, [previewSimMounted]);
+
+  // ── Minimal-UI control picker: scanning ───────────────────────────────────
+  // Runtime scan (exact — catches JS-built panels): ask the live preview iframe.
+  // Gate v2 answers {type:'listSimControls'} with {type:'simControlsList', controls};
+  // old gates never answer, so a 2s timeout resolves null and we fall back to static.
+  const requestRuntimeControls = useCallback((): Promise<SimUiControl[] | null> => {
+    return new Promise(resolve => {
+      const win = previewIframeRef.current?.contentWindow;
+      if (!win) { resolve(null); return; }
+      let settled = false;
+      let timer = 0;
+      const onMsg = (e: MessageEvent) => {
+        if (e.source !== previewIframeRef.current?.contentWindow) return;
+        const data = e.data as { type?: string; controls?: unknown } | null;
+        if (!data || typeof data !== 'object' || data.type !== 'simControlsList') return;
+        finish(sanitizeControls(data.controls));
+      };
+      const finish = (result: SimUiControl[] | null) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        window.removeEventListener('message', onMsg);
+        resolve(result);
+      };
+      timer = window.setTimeout(() => finish(null), 2000);
+      window.addEventListener('message', onMsg);
+      try { win.postMessage({ type: 'listSimControls' }, '*'); } catch { finish(null); }
+    });
+  }, []);
+
+  // Static scan (always available once the backend half ships): the server parses the
+  // stored entry HTML. 404 / network errors resolve null — the picker degrades to its
+  // "No controls detected" empty state instead of erroring while the endpoint isn't there.
+  const fetchStaticControls = useCallback(async (): Promise<SimUiControl[] | null> => {
+    if (!simId) return null;
+    try {
+      const idToken = await getAuth().currentUser?.getIdToken();
+      const res = await fetch(
+        `${API_URL}/api/v1/projects/${projectId}/simulations/${simId}/ui-controls`,
+        { headers: idToken ? { Authorization: `Bearer ${idToken}` } : undefined },
+      );
+      if (!res.ok) return null;
+      const body = await res.json() as unknown;
+      const raw = Array.isArray(body) ? body : (body as { controls?: unknown } | null)?.controls;
+      return sanitizeControls(raw);
+    } catch {
+      return null;
+    }
+  }, [projectId, simId]);
+
+  // Full scan: runtime (preferred, when the preview iframe is mounted) merged with
+  // static — runtime wins on selector collisions. Preserves the user's unchecked set;
+  // controls new to this scan default to checked (visible).
+  const runUiScan = useCallback(async () => {
+    if (!simId) return;
+    setUiScanBusy(true);
+    setUiScanEmpty(false);
+    try {
+      const previewLive = rightTab === 'preview' && !!simPreviewUrl;
+      const [runtime, staticControls] = await Promise.all([
+        previewLive ? requestRuntimeControls() : Promise.resolve(null),
+        fetchStaticControls(),
+      ]);
+      const merged = mergeScans(staticControls, runtime);
+      if (merged.length > 0) {
+        setUiControls(merged);
+        setUiScanSource(runtime && runtime.length > 0 ? 'runtime' : 'static');
+      } else {
+        // Keep any stored controls rendered; just surface that the scan came up empty.
+        setUiScanEmpty(true);
+      }
+    } finally {
+      setUiScanBusy(false);
+    }
+  }, [simId, rightTab, simPreviewUrl, requestRuntimeControls, fetchStaticControls]);
+
+  // Auto-scan once per panel OPEN (Rescan re-runs it manually). Closing the panel
+  // re-arms the ref so each reopen triggers one fresh auto-scan — without the reset,
+  // the ref only cleared on section/sim change and a reopen never rescanned.
+  useEffect(() => {
+    if (!uiPanelOpen) { uiScannedRef.current = false; return; }
+    if (uiScannedRef.current || !simId) return;
+    uiScannedRef.current = true;
+    void runUiScan();
+  }, [uiPanelOpen, simId, runUiScan]);
 
   // Clip trimmer derived values
   const clipSourceVideo  = localVideos.find(v => v.id === clipSourceVideoId) ?? null;
@@ -1424,6 +1639,154 @@ export function SectionEditor({
                         onBlur={e => { e.currentTarget.style.borderColor = '#fcd34d'; }}
                       />
                       <p style={{ fontSize: 10, color: '#b45309', textAlign: 'right', margin: '3px 0 0', opacity: 0.7 }}>{simPrompt.length}/1000</p>
+                    </div>
+
+                    {/* ── Advanced · UI controls (Minimal-UI control picker) ── */}
+                    <div style={{ marginTop: -6 }}>
+                      <button
+                        type="button"
+                        onClick={() => setUiPanelOpen(v => !v)}
+                        aria-expanded={uiPanelOpen}
+                        style={{
+                          display: 'inline-flex', alignItems: 'center', gap: 5,
+                          background: 'none', border: 'none', padding: '2px 0',
+                          cursor: 'pointer', color: '#9ca3af', fontSize: 11, fontWeight: 600,
+                        }}
+                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = '#6b7280'; }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = '#9ca3af'; }}
+                      >
+                        <ChevronDown
+                          size={13}
+                          strokeWidth={2}
+                          aria-hidden
+                          style={{ transform: uiPanelOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }}
+                        />
+                        Advanced · UI controls
+                      </button>
+
+                      {uiPanelOpen && (
+                        <div style={{
+                          marginTop: 6, border: '1px solid #e5e7eb', borderRadius: 10,
+                          backgroundColor: '#f9fafb', padding: '10px 12px',
+                          display: 'flex', flexDirection: 'column', gap: 8,
+                          maxHeight: 260, boxSizing: 'border-box',
+                        }}>
+                          {/* Header: scan-source note + Rescan + All/None */}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', flexShrink: 0 }}>
+                            <span style={{ fontSize: 10, color: '#9ca3af', minWidth: 0 }}>
+                              {uiScanBusy
+                                ? 'Scanning controls…'
+                                : uiScanSource === 'runtime'
+                                ? 'Scanned from the live preview'
+                                : uiScanSource === 'static'
+                                ? 'Scanned from the sim’s HTML'
+                                : uiScanSource === 'stored'
+                                ? 'Restored from the last generation'
+                                : 'Not scanned yet'}
+                              {uiScanEmpty && uiControls.length > 0 ? ' · rescan found none' : ''}
+                            </span>
+                            <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                              <button
+                                type="button"
+                                onClick={() => { void runUiScan(); }}
+                                disabled={uiScanBusy}
+                                style={{
+                                  height: 22, padding: '0 8px', borderRadius: 6,
+                                  border: '1px solid #e5e7eb', backgroundColor: 'hsl(var(--card))',
+                                  color: '#6b7280', fontSize: 10, fontWeight: 700,
+                                  cursor: uiScanBusy ? 'not-allowed' : 'pointer', opacity: uiScanBusy ? 0.6 : 1,
+                                }}
+                              >
+                                {uiScanBusy ? 'Scanning…' : '⟳ Rescan'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => { setUiUnchecked(new Set()); setUiDirty(true); }}
+                                style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: '#b45309', fontSize: 10, fontWeight: 700, textDecoration: 'underline' }}
+                              >
+                                All
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => { setUiUnchecked(new Set(uiControls.map(c => c.selector))); setUiDirty(true); }}
+                                style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: '#b45309', fontSize: 10, fontWeight: 700, textDecoration: 'underline' }}
+                              >
+                                None
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Control rows: [checkbox] [kind chip] [label] — checked = stays visible */}
+                          {uiControls.length === 0 ? (
+                            <div style={{ padding: '10px 0 4px' }}>
+                              <p style={{ fontSize: 11, color: '#9ca3af', margin: 0 }}>
+                                {uiScanBusy ? 'Scanning…' : 'No controls detected'}
+                              </p>
+                              {!uiScanBusy && (
+                                <p style={{ fontSize: 10, color: '#c4c9d2', margin: '3px 0 0' }}>
+                                  Open the Preview tab and Rescan — or the control scanner may not be available yet.
+                                </p>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="fine-scrollbar" style={{ flex: '1 1 auto', minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2 }}>
+                              {uiControls.map(c => {
+                                const checked = !uiUnchecked.has(c.selector);
+                                const chip = UI_KIND_CHIP[c.kind] ?? UI_KIND_CHIP.other;
+                                return (
+                                  <label
+                                    key={c.selector}
+                                    title={c.selector}
+                                    style={{
+                                      display: 'flex', alignItems: 'center', gap: 8,
+                                      padding: '4px 6px', borderRadius: 6, cursor: 'pointer',
+                                      backgroundColor: checked ? 'transparent' : 'rgba(0,0,0,0.03)',
+                                    }}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={checked}
+                                      onChange={() => {
+                                        setUiUnchecked(prev => {
+                                          const next = new Set(prev);
+                                          if (next.has(c.selector)) next.delete(c.selector);
+                                          else next.add(c.selector);
+                                          return next;
+                                        });
+                                        setUiDirty(true);
+                                      }}
+                                      style={{ accentColor: '#f59e0b', cursor: 'pointer', flexShrink: 0 }}
+                                    />
+                                    <span style={{
+                                      fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 4,
+                                      backgroundColor: chip.bg, color: chip.fg, flexShrink: 0,
+                                    }}>
+                                      {kindLabel(c.kind)}
+                                    </span>
+                                    <span style={{
+                                      fontSize: 11.5, color: checked ? '#374151' : '#9ca3af',
+                                      textDecoration: checked ? 'none' : 'line-through',
+                                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                    }}>
+                                      {c.label}
+                                    </span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          )}
+
+                          {!simpleUi && (
+                            <p style={{ fontSize: 10, color: '#b45309', margin: 0, flexShrink: 0 }}>
+                              Minimal UI is off — your picks are saved and apply when it&rsquo;s on.
+                            </p>
+                          )}
+
+                          <p style={{ fontSize: 9.5, color: '#9ca3af', margin: 0, lineHeight: 1.5, flexShrink: 0 }}>
+                            Your picks are applied when you Generate — unchecked controls are hidden mechanically and the AI is told exactly what to keep.
+                          </p>
+                        </div>
+                      )}
                     </div>
 
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
