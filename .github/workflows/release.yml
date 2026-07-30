@@ -400,6 +400,17 @@ jobs:
           pnpm --filter ops-release release-cli endpoint-audit --out "$ART/endpoints.json"
           pnpm --filter ops-release release-cli csp-audit --app client-web --out "$ART/csp-client-web.json"
           pnpm --filter ops-release release-cli csp-audit --app admin-web --out "$ART/csp-admin-web.json"
+      # Delete any prior browser evidence BEFORE the run so a stale results.json /
+      # playwright-summary.json (e.g. one that rode in with the downloaded
+      # release-artifacts) can never satisfy the new post-deploy gate. The gate
+      # requires FRESH, current-run evidence — see the require/expect flags below.
+      - name: Reset browser evidence (no stale artifact may satisfy the gate)
+        if: steps.remote_deploy.outcome == 'success'
+        working-directory: podcast-saas/client-web
+        run: |
+          rm -rf e2e-results
+          rm -f "$ART/playwright-summary.json" "$ART/browser-findings.json" "$ART/browser-audit.json"
+          mkdir -p e2e-results
       - name: Browser verification (Playwright against production)
         if: steps.remote_deploy.outcome == 'success'
         continue-on-error: true
@@ -415,13 +426,29 @@ jobs:
           PLAYWRIGHT_AUDIT_OUT: ${{ env.ART }}/browser-audit.json
         run: |
           npx playwright install --with-deps chromium
+          # continue-on-error is intentional: a browser-test FAILURE must not abort the
+          # job here — the JSON reporter still writes e2e-results/results.json, the
+          # summary turns any failure into a CRITICAL finding, and the gate below rolls
+          # back. Aborting here would skip the gate and leave production un-rolled-back.
           npx playwright test
+      # NOTE: --report is an ABSOLUTE path. `pnpm --filter ops-release` runs the CLI
+      # with cwd = ops/release, so a relative `client-web/…` path resolved to
+      # ops/release/client-web/… → ENOENT (the v0.1.5 incident: the summary silently
+      # failed and the gate ignored the missing file). --run-id/--git-sha stamp the
+      # summary so the gate can prove it belongs to THIS run.
       - name: Summarize browser results
         if: steps.remote_deploy.outcome == 'success'
         continue-on-error: true
         run: |
-          pnpm --filter ops-release release-cli playwright-summary --report client-web/e2e-results/results.json --out "$ART/playwright-summary.json"
+          pnpm --filter ops-release release-cli playwright-summary \
+            --report "${{ github.workspace }}/podcast-saas/client-web/e2e-results/results.json" \
+            --run-id "$RUN_ID" --git-sha "${{ needs.plan.outputs.git_sha }}" \
+            --out "$ART/playwright-summary.json"
           pnpm --filter ops-release release-cli browser-audit --report "$ART/browser-audit.json" --out "$ART/browser-findings.json"
+      # Fail closed: --require makes a MISSING or unreadable evidence file a CRITICAL
+      # finding, and --expect-run-id/--expect-git-sha reject a summary from another run
+      # or commit. The gate — not continue-on-error swallowing — is the sole authority
+      # on whether the deployment is verified.
       - name: Post-deploy gate (CRITICAL ⇒ rollback)
         id: gate
         if: steps.remote_deploy.outcome == 'success'
@@ -429,6 +456,9 @@ jobs:
         run: |
           pnpm --filter ops-release release-cli gate --phase post-deploy \
             --findings "$ART/vm-findings.json,$ART/endpoints.json,$ART/csp-client-web.json,$ART/csp-admin-web.json,$ART/browser-findings.json,$ART/playwright-summary.json" \
+            --require "$ART/vm-findings.json,$ART/endpoints.json,$ART/csp-client-web.json,$ART/csp-admin-web.json,$ART/browser-findings.json,$ART/playwright-summary.json" \
+            --identity-bearing playwright-summary.json \
+            --expect-run-id "$RUN_ID" --expect-git-sha "${{ needs.plan.outputs.git_sha }}" \
             ${{ inputs.approve_high && '--approve-high' || '' }} \
             --out "$ART/gate.json"
       - name: Automatic rollback (post-deploy CRITICAL)

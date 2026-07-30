@@ -97,7 +97,7 @@ jobs:
         id: gate
         continue-on-error: true
         run: |
-          pnpm --filter ops-release release-cli playwright-summary --report client-web/e2e-results/results.json --out "$ART/playwright-summary.json" || true
+          pnpm --filter ops-release release-cli playwright-summary --report "${{ github.workspace }}/podcast-saas/client-web/e2e-results/results.json" --out "$ART/playwright-summary.json" || true
           pnpm --filter ops-release release-cli browser-audit --report "$ART/browser-audit.json" --out "$ART/browser-findings.json" || true
           pnpm --filter ops-release release-cli gate --phase post-deploy \
             --findings "$ART/vm-findings.json,$ART/endpoints.json,$ART/csp-client-web.json,$ART/csp-admin-web.json,$ART/browser-findings.json,$ART/playwright-summary.json" \

@@ -8,7 +8,7 @@
  *   - nothing here calls an AI model, reads a .env file, or prints a secret.
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { auditBrowserReport, parseBrowserAudit } from './asset-audit.js';
 import { RELEASE_CONFIG, type ReleaseConfig } from './config.js';
 import { auditCspHeader, auditLiveCsp, type CspExpectation } from './csp-audit.js';
@@ -354,6 +354,16 @@ export interface PlaywrightSummary {
   failures: string[];
 }
 
+/** The on-disk playwright-summary.json — counts plus the run identity that proves
+ *  the evidence belongs to THIS release (guards against a stale downloaded summary). */
+export interface PlaywrightSummaryArtifact extends PlaywrightSummary {
+  schema: 'flowvid.playwright-summary/v1';
+  runId?: string;
+  gitSha?: string;
+  generatedAt: string;
+  findings: Finding[];
+}
+
 export function summarizePlaywrightReport(json: string): PlaywrightSummary {
   const report = JSON.parse(json) as { suites?: PwSuite[] };
   const summary: PlaywrightSummary = { total: 0, passed: 0, failed: 0, skipped: 0, failures: [] };
@@ -375,7 +385,19 @@ export function summarizePlaywrightReport(json: string): PlaywrightSummary {
   return summary;
 }
 
-export function cmdPlaywrightSummary(ctx: CommandContext, opts: { reportFile: string; out?: string }): { summary: PlaywrightSummary; findings: Finding[]; exitCode: number } {
+export function cmdPlaywrightSummary(
+  ctx: CommandContext,
+  opts: { reportFile: string; out?: string; runId?: string; gitSha?: string },
+): { summary: PlaywrightSummary; findings: Finding[]; exitCode: number } {
+  // Fail closed: a missing Playwright JSON report is NOT a summary of "0 failures".
+  // It means browser verification produced no machine-readable evidence — refuse to
+  // fabricate a clean summary (the post-deploy gate then blocks on the absent file).
+  if (!existsSync(opts.reportFile)) {
+    throw new Error(
+      `Playwright JSON report not found at ${opts.reportFile} — browser verification produced no ` +
+        `machine-readable result. Refusing to summarize (fail closed); the release gate will block.`,
+    );
+  }
   const summary = summarizePlaywrightReport(readFileSync(opts.reportFile, 'utf8'));
   const findings: Finding[] =
     summary.failed > 0
@@ -385,8 +407,18 @@ export function cmdPlaywrightSummary(ctx: CommandContext, opts: { reportFile: st
           }),
         ]
       : [];
-  if (opts.out) writeJsonFile(opts.out, { ...summary, findings });
-  ctx.log(`playwright: ${summary.passed}/${summary.total} passed, ${summary.failed} failed`);
+  if (opts.out) {
+    const artifact: PlaywrightSummaryArtifact = {
+      schema: 'flowvid.playwright-summary/v1',
+      ...(opts.runId ? { runId: opts.runId } : {}),
+      ...(opts.gitSha ? { gitSha: opts.gitSha } : {}),
+      generatedAt: new Date().toISOString(),
+      ...summary,
+      findings,
+    };
+    writeJsonFile(opts.out, artifact);
+  }
+  ctx.log(`playwright: ${summary.passed}/${summary.total} passed, ${summary.failed} failed, ${summary.skipped} skipped`);
   return { summary, findings, exitCode: summary.failed > 0 ? 1 : 0 };
 }
 
@@ -403,11 +435,97 @@ export function collectFindingsFromFiles(files: string[]): Finding[] {
   return findings;
 }
 
+/** Run identity the post-deploy evidence must match to count as current. */
+export interface EvidenceExpectation {
+  runId?: string;
+  gitSha?: string;
+}
+
+/**
+ * Require each named evidence file to be present, parseable, and — for files that
+ * carry a run identity — belonging to the CURRENT run/commit. A missing, corrupt,
+ * or stale required file yields a CRITICAL finding so the gate blocks (fail closed).
+ * This is what stops a downloaded stale playwright-summary.json (or a silently
+ * absent findings file) from being treated as current verification evidence.
+ */
+export function checkRequiredEvidence(
+  files: string[],
+  expect: EvidenceExpectation = {},
+  identityBearing: readonly string[] = [],
+): Finding[] {
+  const findings: Finding[] = [];
+  for (const file of files) {
+    const name = basename(file);
+    if (!existsSync(file)) {
+      findings.push(
+        finding('evidence.missing', 'CRITICAL', 'evidence', `Required post-deploy evidence "${name}" is missing — the release cannot be verified.`, {
+          detail: file,
+          remediation: 'Ensure the producing step ran and wrote this artifact before the gate; do not publish without it.',
+        }),
+      );
+      continue;
+    }
+    let doc: Record<string, unknown>;
+    try {
+      doc = readJson<Record<string, unknown>>(file);
+    } catch {
+      findings.push(
+        finding('evidence.unreadable', 'CRITICAL', 'evidence', `Required evidence "${name}" is not valid JSON — it cannot be trusted as verification.`, { detail: file }),
+      );
+      continue;
+    }
+    const seenRun = (doc.runId ?? doc.expectedRunId) as string | undefined;
+    const seenSha = (doc.gitSha ?? doc.expectedGitSha) as string | undefined;
+    const mustHaveIdentity = identityBearing.includes(name);
+
+    if (expect.runId !== undefined) {
+      if (seenRun === undefined) {
+        if (mustHaveIdentity) {
+          findings.push(
+            finding('evidence.no-identity', 'CRITICAL', 'evidence', `Evidence "${name}" carries no run id — cannot confirm it belongs to the current run ${expect.runId}.`, { detail: file }),
+          );
+        }
+      } else if (seenRun !== expect.runId) {
+        findings.push(
+          finding('evidence.stale-run', 'CRITICAL', 'evidence', `Evidence "${name}" was produced by run ${seenRun}, not the current run ${expect.runId} — refusing stale evidence.`, { detail: file }),
+        );
+      }
+    }
+    if (expect.gitSha !== undefined) {
+      if (seenSha === undefined) {
+        if (mustHaveIdentity) {
+          findings.push(
+            finding('evidence.no-commit', 'CRITICAL', 'evidence', `Evidence "${name}" carries no git sha — cannot confirm it belongs to release commit ${expect.gitSha}.`, { detail: file }),
+          );
+        }
+      } else if (seenSha !== expect.gitSha) {
+        findings.push(
+          finding('evidence.stale-commit', 'CRITICAL', 'evidence', `Evidence "${name}" was produced for commit ${seenSha}, not the release commit ${expect.gitSha} — refusing stale evidence.`, { detail: file }),
+        );
+      }
+    }
+  }
+  return findings;
+}
+
 export function cmdGate(
   ctx: CommandContext,
-  opts: { findingsFiles: string[]; phase: Phase; policy?: GatePolicy; out?: string },
+  opts: {
+    findingsFiles: string[];
+    phase: Phase;
+    policy?: GatePolicy;
+    /** Files that MUST exist / be current for the gate to pass (missing ⇒ CRITICAL). */
+    requiredFiles?: string[];
+    /** Basenames within requiredFiles that MUST carry a matching run identity. */
+    identityBearing?: readonly string[];
+    /** The current run/commit the required evidence must belong to. */
+    expect?: EvidenceExpectation;
+    out?: string;
+  },
 ): { decision: GateDecision; findings: Finding[]; exitCode: number } {
-  const findings = collectFindingsFromFiles(opts.findingsFiles);
+  const collected = collectFindingsFromFiles(opts.findingsFiles);
+  const evidence = checkRequiredEvidence(opts.requiredFiles ?? [], opts.expect ?? {}, opts.identityBearing ?? []);
+  const findings = [...collected, ...evidence];
   const decision = evaluateGate(findings, opts.phase, opts.policy ?? {});
   if (opts.out) writeJsonFile(opts.out, { decision, findings });
   setOutput('gate_blocked', String(decision.blocked));

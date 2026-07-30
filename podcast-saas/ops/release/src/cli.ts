@@ -69,9 +69,10 @@ const USAGE = `Usage: release-cli <command> [flags]
   vm-audit            --file vm-audit.json --policy report-only|allow-safe|require-approval [--out file]
   db-url-audit        --report backfill.json --policy … [--max-affected N] [--out file]
   browser-audit       --report browser-audit.json [--out file]
-  playwright-summary  --report playwright.json [--out file]
+  playwright-summary  --report playwright.json [--run-id ID] [--git-sha SHA] [--out file]
   endpoint-audit      [--out endpoints.json]
-  gate                --phase pre-deploy|post-deploy --findings f1.json,f2.json [--approve-high] [--block-on-warning] [--out gate.json]
+  gate                --phase pre-deploy|post-deploy --findings f1.json,f2.json [--approve-high] [--block-on-warning]
+                      [--require f1.json,f2.json] [--identity-bearing name.json,…] [--expect-run-id ID] [--expect-git-sha SHA] [--out gate.json]
   state-init          --file state.json --run-id ID [--version V] [--git-sha SHA] [--bump B]
   state-transition    --file state.json --to STATE [--note TEXT]
   report              --dir artifacts/ --run-id ID --out-json report.json --out-md report.md
@@ -129,7 +130,12 @@ async function main(): Promise<number> {
     case 'browser-audit':
       return cmdBrowserAudit(ctx, { reportFile: need('report'), out: flags.get('out') }).exitCode;
     case 'playwright-summary':
-      return cmdPlaywrightSummary(ctx, { reportFile: need('report'), out: flags.get('out') }).exitCode;
+      return cmdPlaywrightSummary(ctx, {
+        reportFile: need('report'),
+        out: flags.get('out'),
+        runId: flags.get('run-id'),
+        gitSha: flags.get('git-sha'),
+      }).exitCode;
     case 'endpoint-audit':
       return (await cmdEndpointAudit(ctx, { out: flags.get('out') })).exitCode;
     case 'gate':
@@ -137,6 +143,12 @@ async function main(): Promise<number> {
         findingsFiles: need('findings').split(','),
         phase: need('phase') as Phase,
         policy: { approveHigh: bools.has('approve-high'), blockOnWarning: bools.has('block-on-warning') },
+        ...(flags.has('require') ? { requiredFiles: flags.get('require')!.split(',') } : {}),
+        ...(flags.has('identity-bearing') ? { identityBearing: flags.get('identity-bearing')!.split(',') } : {}),
+        expect: {
+          ...(flags.has('expect-run-id') ? { runId: flags.get('expect-run-id') } : {}),
+          ...(flags.has('expect-git-sha') ? { gitSha: flags.get('expect-git-sha') } : {}),
+        },
         out: flags.get('out'),
       }).exitCode;
     case 'state-init':
