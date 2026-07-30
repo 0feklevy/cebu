@@ -131,28 +131,39 @@ export function readStoredUiControls(value: unknown): SimUiSelection | undefined
 // ── Generation prompt block ───────────────────────────────────────────────────
 
 /** ONE compact, token-cheap block appended to the generation user prompt when a selection
- *  with show/hide entries exists. No selection ⇒ '' (zero prompt overhead). */
+ *  with show/hide entries exists. No selection ⇒ '' (zero prompt overhead).
+ *
+ *  Deliberately LEAN (owner direction 2026-07-30, "reduce tokens to the ai"): only the
+ *  KEEP-VISIBLE controls are listed (label + kind + selector — the few controls a
+ *  minimal UI keeps). Hidden controls are summarized as a COUNT, never itemized: their
+ *  selectors already live in the source files in the system prompt, and hiding is
+ *  mechanical (params.hideSelectors) — repeating up to 100 structural selectors here
+ *  only burned prompt tokens. */
 export function buildUiControlsPromptBlock(sel: SimUiSelection | undefined): string {
   if (!sel || (sel.show.length === 0 && sel.hide.length === 0)) return '';
   const bySelector = new Map(sel.controls.map(c => [c.selector, c]));
-  const line = (selector: string): string => {
-    const c = bySelector.get(selector);
-    return `- ${c?.label ?? selector} (${c?.kind ?? 'other'}) \`${selector}\``;
-  };
   const lines: string[] = ['MINIMAL-UI CONTRACT (user-selected, authoritative):'];
   if (sel.show.length > 0) {
-    lines.push('KEEP VISIBLE:');
-    for (const s of sel.show) lines.push(line(s));
+    lines.push('KEEP VISIBLE (the only controls the user sees while simpleUi is on):');
+    for (const s of sel.show) {
+      const c = bySelector.get(s);
+      lines.push(`- ${c?.label ?? s} (${c?.kind ?? 'other'}) \`${s}\``);
+    }
+    lines.push(
+      `All ${sel.hide.length} other scanned control(s) are hidden mechanically at runtime via ` +
+      'params.hideSelectors — do NOT write code that hides or shows any controls; never hide ' +
+      'the KEEP-VISIBLE controls; avoid showcasing hidden controls in the demo (prefer the ' +
+      "sim's functions/APIs when their behavior is needed); when simpleUi is off all controls " +
+      'stay untouched.',
+    );
+  } else {
+    lines.push(
+      `ALL ${sel.hide.length} scanned UI control(s) are hidden mechanically at runtime while ` +
+      'simpleUi is on — the user wants a chrome-free view. Do NOT write code that hides or ' +
+      "shows any controls; drive the simulation through its functions/APIs instead of its UI " +
+      'where possible; when simpleUi is off all controls stay untouched.',
+    );
   }
-  if (sel.hide.length > 0) {
-    lines.push('HIDE (mechanical):');
-    for (const s of sel.hide) lines.push(line(s));
-  }
-  lines.push(
-    'The hidden controls are removed by the runtime via params.hideSelectors — do NOT write ' +
-    'code that hides or shows them; never hide the KEEP-VISIBLE controls; when simpleUi is ' +
-    'off all controls stay untouched.',
-  );
   return lines.join('\n');
 }
 

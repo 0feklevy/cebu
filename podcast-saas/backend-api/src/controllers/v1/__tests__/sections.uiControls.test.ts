@@ -34,8 +34,9 @@ const mocks = vi.hoisted(() => {
     mockSimulations: { findFirst: vi.fn() },
     mockVideoFiles:  { findFirst: vi.fn() },
     mockUpdate, mockUpdateSet, mockUpdateWhere, mockUpdateReturning,
-    mockGenerate: vi.fn(),
-    mockReuse:    vi.fn(),
+    mockGenerate:  vi.fn(),
+    mockReuse:     vi.fn(),
+    mockMechanical: vi.fn(),
   };
 });
 
@@ -81,6 +82,7 @@ vi.mock('../../../services/simulation/SimulationService.js', () => ({
   SimulationService: class {
     generateBridgeScript = mocks.mockGenerate;
     reuseBridgeScript    = mocks.mockReuse;
+    applyMinimalUiOnly   = mocks.mockMechanical;
   },
 }));
 
@@ -93,7 +95,7 @@ vi.mock('../../../services/usage/UsageTrackingService.js', () => ({ UsageTrackin
 
 const {
   mockProjects, mockSections, mockSimulations,
-  mockUpdateSet, mockUpdateReturning, mockGenerate, mockReuse,
+  mockUpdateSet, mockUpdateReturning, mockGenerate, mockReuse, mockMechanical,
 } = mocks;
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -162,6 +164,7 @@ beforeEach(async () => {
   });
   mockGenerate.mockResolvedValue(GEN_RESULT);
   mockReuse.mockImplementation((url: string) => ({ sectionUrl: url }));
+  mockMechanical.mockResolvedValue({ sectionUrl: OWN_URL.replace('abc123', 'mech01'), bridgeHash: 'mech01' });
   mockUpdateReturning.mockResolvedValue([makeSection(META_BASE)]);
   app = await makeApp();
 });
@@ -187,10 +190,12 @@ describe('ui_controls query param validation', () => {
   });
 
   it('rejects garbage shapes with 400', async () => {
+    // The unified GenerateSimScriptSchema now validates ui_controls, so the 400 body carries
+    // the precise Zod issue (field-prefixed) rather than the old bespoke "invalid shape".
     for (const bad of ['42', '"str"', '{"controls":"x","show":[],"hide":[]}', '{"show":[],"hide":[]}']) {
       const res = await app.inject({ method: 'GET', url: streamUrl(bad) });
       expect(res.statusCode).toBe(400);
-      expect(res.json().message).toMatch(/invalid shape/);
+      expect(res.json().message).toMatch(/ui_controls|Expected|Required|Invalid/i);
     }
   });
 
@@ -395,5 +400,102 @@ describe('POST /generate-sim-script — ui_controls parity with the SSE route', 
     expect(res.statusCode).toBe(200);
     expect(mockReuse).toHaveBeenCalledWith(OWN_URL);
     expect(mockGenerate).not.toHaveBeenCalled();
+  });
+});
+
+// ── (e) No-prompt mechanical Minimal-UI path — zero LLM ───────────────────────
+
+describe('generate without a prompt → mechanical minimize-UI (no LLM)', () => {
+  const POST_URL = `/api/v1/projects/${PROJECT_ID}/sections/${SECTION_ID}/generate-sim-script`;
+
+  it('empty prompt + a selection ⇒ applyMinimalUiOnly, NOT the LLM; updates only the UI selection', async () => {
+    mockSections.findFirst.mockResolvedValue(makeSection(META_BASE));
+    const res = await app.inject({
+      method: 'POST', url: POST_URL,
+      payload: { prompt: '', simple_ui: true, auto_script: true, ui_controls: SELECTION },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(mockMechanical).toHaveBeenCalledTimes(1);
+    expect(mockGenerate).not.toHaveBeenCalled();
+    expect(mockReuse).not.toHaveBeenCalled();
+    const setArg = mockUpdateSet.mock.calls[0][0] as { sim_meta: Record<string, unknown>; sim_prompt?: unknown };
+    // Provenance PRESERVED (the bridge body is unchanged) — the section stays LLM-authored,
+    // keeps its built prompt, and sim_prompt is not touched; only the selection changed.
+    expect(setArg.sim_meta.generatedBy).toBe('llm');
+    expect(setArg.sim_meta.prompt).toBe(PROMPT);
+    expect(setArg.sim_meta.planVersion).toBe('7');
+    expect(setArg.sim_meta.uiControls).toEqual(SELECTION);
+    expect('sim_prompt' in setArg).toBe(false);   // authoring prompt preserved (not nulled)
+  });
+
+  it('a FRESH section (no prior bridge) minimized with no prompt is labeled generatedBy:mechanical', async () => {
+    mockSections.findFirst.mockResolvedValue(makeSection(null));
+    const res = await app.inject({
+      method: 'POST', url: POST_URL,
+      payload: { prompt: '', simple_ui: true, auto_script: true, ui_controls: SELECTION },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(mockMechanical).toHaveBeenCalledTimes(1);
+    const setArg = mockUpdateSet.mock.calls[0][0] as { sim_meta: Record<string, unknown> };
+    expect(setArg.sim_meta.generatedBy).toBe('mechanical');
+    expect(setArg.sim_meta.uiControls).toEqual(SELECTION);
+  });
+
+  it('a "hide ALL" (None) selection with no prompt is valid and runs mechanically', async () => {
+    mockSections.findFirst.mockResolvedValue(makeSection(META_BASE));
+    const hideAll = { controls: SELECTION.controls, show: [], hide: ['#a', '#b'] };
+    const res = await app.inject({
+      method: 'POST', url: POST_URL,
+      payload: { prompt: '', simple_ui: true, auto_script: true, ui_controls: hideAll },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(mockMechanical).toHaveBeenCalledTimes(1);
+    expect(mockGenerate).not.toHaveBeenCalled();
+  });
+
+  it('empty prompt AND no selection ⇒ 400 (nothing to do)', async () => {
+    mockSections.findFirst.mockResolvedValue(makeSection(META_BASE));
+    const res = await app.inject({
+      method: 'POST', url: POST_URL,
+      payload: { prompt: '', simple_ui: false, auto_script: true },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(mockMechanical).not.toHaveBeenCalled();
+    expect(mockGenerate).not.toHaveBeenCalled();
+  });
+});
+
+// ── (f) POST stream route — body-carried selection, no URL-size cap ────────────
+
+describe('POST /generate-sim-script/stream — SSE over a JSON body (no ui_controls cap)', () => {
+  const STREAM_URL = `/api/v1/projects/${PROJECT_ID}/sections/${SECTION_ID}/generate-sim-script/stream`;
+
+  it('accepts a ui_controls body far larger than the old 8192-char URL cap and streams done', async () => {
+    mockSections.findFirst.mockResolvedValue(makeSection(META_BASE));
+    // ~100 controls with long structural selectors — would blow the legacy URL cap.
+    const controls = Array.from({ length: 100 }, (_, i) => ({
+      selector: `#controls > div:nth-of-type(${i}) > section > label:nth-of-type(2) > input#field_${i}`,
+      kind: 'toggle' as const, label: `Control number ${i} with a fairly long human label`,
+    }));
+    const big = { controls, show: [controls[0].selector], hide: controls.slice(1).map(c => c.selector) };
+    expect(JSON.stringify(big).length).toBeGreaterThan(8192);
+
+    const res = await app.inject({
+      method: 'POST', url: STREAM_URL,
+      payload: { prompt: PROMPT, simple_ui: true, auto_script: true, ui_controls: big },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain('event: done');
+    expect(mockGenerate).toHaveBeenCalledTimes(1);
+  });
+
+  it('a bad body is a clean 400 BEFORE the stream opens', async () => {
+    mockSections.findFirst.mockResolvedValue(makeSection(META_BASE));
+    const res = await app.inject({
+      method: 'POST', url: STREAM_URL,
+      payload: { prompt: PROMPT, simple_ui: 'yes', auto_script: true },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.headers['content-type'] ?? '').not.toContain('event-stream');
   });
 });

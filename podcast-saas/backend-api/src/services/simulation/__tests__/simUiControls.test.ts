@@ -394,20 +394,32 @@ describe('buildUiControlsPromptBlock', () => {
     expect(buildUiControlsPromptBlock({ controls: VALID_SELECTION.controls, show: [], hide: [] })).toBe('');
   });
 
-  it('emits ONE compact block with per-line label (kind) `selector` entries', () => {
+  it('lists ONLY the KEEP-VISIBLE controls; hidden controls are a token-cheap COUNT (lean block)', () => {
     const block = buildUiControlsPromptBlock(VALID_SELECTION);
     expect(block.startsWith('MINIMAL-UI CONTRACT (user-selected, authoritative):')).toBe(true);
-    expect(block).toContain('KEEP VISIBLE:\n- A (button) `#a`');
-    expect(block).toContain('HIDE (mechanical):\n- B (slider) `#b`');
-    expect(block).toContain('removed by the runtime via params.hideSelectors');
+    // Shown controls are itemized (label (kind) `selector`)…
+    expect(block).toContain('KEEP VISIBLE');
+    expect(block).toContain('- A (button) `#a`');
+    // …hidden controls are NOT itemized (no selector dump) — only summarized as a count.
+    expect(block).not.toContain('- B (slider) `#b`');
+    expect(block).toContain('1 other scanned control');
+    expect(block).toContain('params.hideSelectors');
     expect(block).toContain('never hide the KEEP-VISIBLE controls');
     expect(block).toContain('when simpleUi is off all controls stay untouched');
   });
 
-  it('falls back to the selector itself for entries missing from controls', () => {
-    const block = buildUiControlsPromptBlock({ controls: [], show: [], hide: ['#mystery'] });
-    expect(block).toContain('- #mystery (other) `#mystery`');
-    expect(block).not.toContain('KEEP VISIBLE:');
+  it('hide-only selection (None) emits a chrome-free block that names no selectors', () => {
+    const block = buildUiControlsPromptBlock({
+      controls: [{ selector: '#a', kind: 'button', label: 'A' }, { selector: '#b', kind: 'slider', label: 'B' }],
+      show: [],
+      hide: ['#a', '#b'],
+    });
+    expect(block.startsWith('MINIMAL-UI CONTRACT (user-selected, authoritative):')).toBe(true);
+    expect(block).toContain('ALL 2 scanned UI control(s) are hidden');
+    expect(block).not.toContain('KEEP VISIBLE');
+    // No individual selectors are dumped into the prompt (token savings + the user's intent).
+    expect(block).not.toContain('`#a`');
+    expect(block).not.toContain('`#b`');
   });
 });
 

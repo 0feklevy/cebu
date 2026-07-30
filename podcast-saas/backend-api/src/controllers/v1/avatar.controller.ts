@@ -31,6 +31,7 @@ import {
 } from '../../services/avatar/anamService.js';
 import { encryptKey } from '../../services/secrets/ApiKeyService.js';
 import { resolveAnamKeyForProject } from '../../services/avatar/anamKey.js';
+import { normalizeAvatarCircles, type AvatarCirclesLike } from '../../services/avatarCircles/normalizeAvatarCircles.js';
 import { analyzeVisual, generateLibrarySimulation, editLibrarySimulation } from '../../services/avatar/visualService.js';
 import { analyzeAndGenerateImage, generateLibraryImage } from '../../services/avatar/imageService.js';
 import { insertVisual, listVisuals, updateVisual, deleteVisual, syncBasicLibrary, storeImageBuffer, storeSimulationHtml } from '../../services/avatar/libraryService.js';
@@ -720,12 +721,18 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
       // Server/feature-managed fields carry over from the saved config (the PUT
       // rebuilds avatar_config from the form, so anything not in the form must be
       // preserved explicitly); user fields come from `incoming`.
+      // Normalize circles on save so a degenerate faces mapping (both circles → the same
+      // speaker/side) can never be stored — that mis-mapping is what breaks "his wave / her
+      // wave". Mirrors the read-path self-heal in buildPlayerConfig. (avatar-circles-fix)
+      const savedCircles = incoming.avatarCircles ?? existing.avatarCircles;
       const effectiveBase: AvatarPersonaConfig = {
         ...incoming,
         knowledgeGroupId: existing.knowledgeGroupId,
         knowledgeToolId: existing.knowledgeToolId,
         transcriptDocId: existing.transcriptDocId,
-        avatarCircles: incoming.avatarCircles ?? existing.avatarCircles,
+        avatarCircles: savedCircles
+          ? (normalizeAvatarCircles(savedCircles as unknown as AvatarCirclesLike) as unknown as AvatarPersonaConfig['avatarCircles'])
+          : savedCircles,
       };
       const effective = await enrichAvatarConfigFromAnam(effectiveBase, apiKey, {
         forceDefaultVoice: staleExistingVoice || !effectiveBase.voiceId,

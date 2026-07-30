@@ -1955,35 +1955,7 @@ export class SimulationService {
 
     // Try to list objects; when the storage token lacks ListBucket permission
     // (e.g. R2 write-only token) fall back to probing the public entry HTML.
-    let allKeys: string[] = [];
-    try {
-      allKeys = await this.storage.listObjects(prefix);
-    } catch {
-      logger.warn({ prefix }, 'listObjects failed in generateBridgeScript — falling back to entry-HTML probe');
-    }
-    if (allKeys.length === 0 && opts.entryKey && !opts.entryKey.startsWith('http')) {
-      const entryKey = opts.entryKey;
-      const entryDir = entryKey.slice(0, entryKey.lastIndexOf('/') + 1);
-      const found = new Set<string>([entryKey]);
-      try {
-        const res = await fetch(this.storage.getSimPublicUrl(entryKey));
-        if (res.ok) {
-          const html = await res.text();
-          const refs = [...html.matchAll(/(?:href|src)\s*=\s*["']([^"']+)["']/gi)]
-            .map(m => m[1])
-            .filter(r => !/^(https?:)?\/\//i.test(r) && !r.startsWith('data:') && !r.startsWith('#'));
-          for (const ref of refs) {
-            const clean = ref.split('?')[0].split('#')[0].trim();
-            if (!clean) continue;
-            try {
-              const resolved = new URL(clean, `http://x/${entryDir}`).pathname.slice(1);
-              if (resolved.startsWith(prefix)) found.add(resolved);
-            } catch { /* skip invalid refs */ }
-          }
-        }
-      } catch { /* entry unreachable */ }
-      allKeys = [...found];
-    }
+    const allKeys = await this.listSimKeys(prefix, opts.entryKey);
 
     // Read all candidate text files (skip section-specific generated files).
     // For each file, prefer storage.readObject; fall back to public URL read
@@ -2161,60 +2133,13 @@ export class SimulationService {
       retryCount, retryReason,
     }, 'Bridge script ready');
 
-    // Validate sectionId before touching storage
-    if (!SAFE_SECTION_ID_RE.test(sectionId))
-      throw new Error(`Unsafe sectionId: "${sectionId}"`);
-
-    // 8. Locate entry HTML — prefer opts.entryKey (authoritative from DB), then probe allKeys
-    const passedEntryKey = opts.entryKey && !opts.entryKey.startsWith('http') ? opts.entryKey : undefined;
-    const entryKey = passedEntryKey
-      ?? allKeys.find(k => /\/(index|main)\.(html|htm)$/.test(k))
-      ?? allKeys.find(k => (k.endsWith('.html') || k.endsWith('.htm')) && !isSectionFile(k));
-    if (!entryKey) throw new Error('No HTML entry file found in simulation');
-
-    const entryDir = entryKey.substring(0, entryKey.lastIndexOf('/'));
-    const relativeDepth = entryDir === prefix
-      ? 0
-      : entryDir.slice(prefix.length).split('/').filter(Boolean).length;
-    const bridgeRelPath = (relativeDepth > 0 ? '../'.repeat(relativeDepth) : './') + 'bridge.js';
-    const bridgeJsKey   = `${prefix}/bridge.js`;
-
-    onEvent?.('status', { status: 'Uploading files…', type: 'progress' });
-
-    // 9. Read-modify-write bridge.js under a per-simulation lock (concurrency safety)
-    const { sectionUrl, bridgeHash } = await this.withBridgeLock(bridgeJsKey, async () => {
-      // Read existing bridge.js (may not exist on first generation)
-      let existingBridgeJs = '';
-      try { existingBridgeJs = (await this.storage.readObject(bridgeJsKey)).toString('utf-8'); }
-      catch { /* first generation — start fresh */ }
-
-      // Merge: parse existing sections, add/replace current section
-      const sectionEntries = parseSectionEntries(existingBridgeJs);
-      sectionEntries.set(sectionId, bridge.mainBody);
-      const combinedBridge = wrapBridgeCombined(sectionEntries);
-      const hash = computeBridgeHash(combinedBridge);
-
-      await this.storage.uploadFile(bridgeJsKey, Buffer.from(combinedBridge, 'utf-8'), 'application/javascript');
-
-      // 10. Update index.html in place (stable marker approach).
-      // Fall back to public URL read when storage GetObject is denied.
-      let rawHtml: string;
-      try {
-        rawHtml = (await this.storage.readObject(entryKey)).toString('utf-8');
-      } catch {
-        const res = await fetch(this.storage.getSimPublicUrl(entryKey));
-        if (!res.ok) throw new Error(`Could not read entry HTML for bridge injection (${res.status})`);
-        rawHtml = await res.text();
-      }
-      // Ensure the head rAF gate too: entry HTML uploaded before the gate existed gains it
-      // on the next generation (injectRafGate is marker-guarded and idempotent).
-      const updatedHtml = injectBridgeScriptTag(injectRafGate(rawHtml), bridgeRelPath, hash);
-      await this.storage.uploadFile(entryKey, Buffer.from(updatedHtml, 'utf-8'), 'text/html; charset=utf-8');
-
-      // sectionUrl encodes which section to run + busts the iframe cache on every generation
-      const url = `${this.storage.getSimPublicUrl(entryKey)}?section=${sectionId}&v=${hash}`;
-      logger.info({ simId, sectionId, projectId, url, sections: sectionEntries.size }, 'Bridge script uploaded');
-      return { sectionUrl: url, bridgeHash: hash };
+    // 8-10. Locate entry HTML + read-modify-write bridge.js under the per-sim lock —
+    // shared with applyMechanicalBridge (the zero-LLM Minimal-UI path).
+    const { sectionUrl, bridgeHash } = await this.uploadSectionBridge({
+      simId, sectionId, projectId, prefix, allKeys,
+      entryKey: opts.entryKey,
+      mainBody: () => bridge.mainBody,   // LLM path overwrites the section body
+      onEvent,
     });
 
     // Return typed BridgeGenerationResult — controller builds sim_meta from this
@@ -2239,6 +2164,150 @@ export class SimulationService {
 
   reuseBridgeScript(existingUrl: string): { sectionUrl: string } {
     return { sectionUrl: existingUrl };
+  }
+
+  /**
+   * List a simulation's storage keys, falling back to an entry-HTML ref probe when the
+   * storage token lacks ListBucket (write-only R2). Shared by generateBridgeScript and the
+   * zero-LLM mechanical Minimal-UI path.
+   */
+  private async listSimKeys(prefix: string, entryKeyOpt?: string): Promise<string[]> {
+    let allKeys: string[] = [];
+    try {
+      allKeys = await this.storage.listObjects(prefix);
+    } catch {
+      logger.warn({ prefix }, 'listObjects failed in generateBridgeScript — falling back to entry-HTML probe');
+    }
+    if (allKeys.length === 0 && entryKeyOpt && !entryKeyOpt.startsWith('http')) {
+      const entryKey = entryKeyOpt;
+      const entryDir = entryKey.slice(0, entryKey.lastIndexOf('/') + 1);
+      const found = new Set<string>([entryKey]);
+      try {
+        const res = await fetch(this.storage.getSimPublicUrl(entryKey));
+        if (res.ok) {
+          const html = await res.text();
+          const refs = [...html.matchAll(/(?:href|src)\s*=\s*["']([^"']+)["']/gi)]
+            .map(m => m[1])
+            .filter(r => !/^(https?:)?\/\//i.test(r) && !r.startsWith('data:') && !r.startsWith('#'));
+          for (const ref of refs) {
+            const clean = ref.split('?')[0].split('#')[0].trim();
+            if (!clean) continue;
+            try {
+              const resolved = new URL(clean, `http://x/${entryDir}`).pathname.slice(1);
+              if (resolved.startsWith(prefix)) found.add(resolved);
+            } catch { /* skip invalid refs */ }
+          }
+        }
+      } catch { /* entry unreachable */ }
+      allKeys = [...found];
+    }
+    return allKeys;
+  }
+
+  /**
+   * Locate the entry HTML and read-modify-write bridge.js under the per-simulation lock,
+   * then re-inject the bridge tag into the entry HTML. Extracted from generateBridgeScript
+   * so the zero-LLM mechanical path (applyMinimalUiOnly) shares the EXACT upload contract.
+   *
+   * `mainBody` is a resolver over the CURRENTLY-stored body for this section: the LLM path
+   * overwrites (returns its fresh body ignoring the argument), while the mechanical path
+   * PRESERVES an existing demonstration (returns the existing body, or a no-op when absent).
+   */
+  private async uploadSectionBridge(opts: {
+    simId:      string;
+    sectionId:  string;
+    projectId:  string;
+    prefix:     string;
+    allKeys:    string[];
+    entryKey?:  string;
+    mainBody:   (existing: string | undefined) => string;
+    onEvent?:   (event: string, data: object) => void;
+  }): Promise<{ sectionUrl: string; bridgeHash: string }> {
+    const { simId, sectionId, projectId, prefix, allKeys, mainBody, onEvent } = opts;
+    if (!SAFE_SECTION_ID_RE.test(sectionId)) throw new Error(`Unsafe sectionId: "${sectionId}"`);
+    const isSectionFile = (k: string) => /section_[^/]+\.(html|js)$/.test(k) || /\/bridge\.js$/.test(k);
+
+    // Prefer opts.entryKey (authoritative from DB), then probe allKeys.
+    const passedEntryKey = opts.entryKey && !opts.entryKey.startsWith('http') ? opts.entryKey : undefined;
+    const entryKey = passedEntryKey
+      ?? allKeys.find(k => /\/(index|main)\.(html|htm)$/.test(k))
+      ?? allKeys.find(k => (k.endsWith('.html') || k.endsWith('.htm')) && !isSectionFile(k));
+    if (!entryKey) throw new Error('No HTML entry file found in simulation');
+
+    const entryDir = entryKey.substring(0, entryKey.lastIndexOf('/'));
+    const relativeDepth = entryDir === prefix
+      ? 0
+      : entryDir.slice(prefix.length).split('/').filter(Boolean).length;
+    const bridgeRelPath = (relativeDepth > 0 ? '../'.repeat(relativeDepth) : './') + 'bridge.js';
+    const bridgeJsKey   = `${prefix}/bridge.js`;
+
+    onEvent?.('status', { status: 'Uploading files…', type: 'progress' });
+
+    // Read-modify-write bridge.js under a per-simulation lock (concurrency safety).
+    return this.withBridgeLock(bridgeJsKey, async () => {
+      // Read existing bridge.js (may not exist on first generation).
+      let existingBridgeJs = '';
+      try { existingBridgeJs = (await this.storage.readObject(bridgeJsKey)).toString('utf-8'); }
+      catch { /* first generation — start fresh */ }
+
+      // Merge: parse existing sections, add/replace the current section's body.
+      const sectionEntries = parseSectionEntries(existingBridgeJs);
+      sectionEntries.set(sectionId, mainBody(sectionEntries.get(sectionId)));
+      const combinedBridge = wrapBridgeCombined(sectionEntries);
+      const hash = computeBridgeHash(combinedBridge);
+
+      await this.storage.uploadFile(bridgeJsKey, Buffer.from(combinedBridge, 'utf-8'), 'application/javascript');
+
+      // Update index.html in place (stable marker approach). Fall back to public URL read
+      // when storage GetObject is denied.
+      let rawHtml: string;
+      try {
+        rawHtml = (await this.storage.readObject(entryKey)).toString('utf-8');
+      } catch {
+        const res = await fetch(this.storage.getSimPublicUrl(entryKey));
+        if (!res.ok) throw new Error(`Could not read entry HTML for bridge injection (${res.status})`);
+        rawHtml = await res.text();
+      }
+      // Ensure the head rAF gate too: entry HTML uploaded before the gate existed gains it
+      // on the next generation (injectRafGate is marker-guarded and idempotent).
+      const updatedHtml = injectBridgeScriptTag(injectRafGate(rawHtml), bridgeRelPath, hash);
+      await this.storage.uploadFile(entryKey, Buffer.from(updatedHtml, 'utf-8'), 'text/html; charset=utf-8');
+
+      // sectionUrl encodes which section to run + busts the iframe cache on every generation.
+      const url = `${this.storage.getSimPublicUrl(entryKey)}?section=${sectionId}&v=${hash}`;
+      logger.info({ simId, sectionId, projectId, url, sections: sectionEntries.size }, 'Bridge script uploaded');
+      return { sectionUrl: url, bridgeHash: hash };
+    });
+  }
+
+  /**
+   * Zero-LLM Minimal-UI path (owner direction 2026-07-30): when the user changes only the
+   * Advanced-UI selection and generates WITHOUT a prompt, we don't burn any tokens — the
+   * control hiding is entirely mechanical (params.hideSelectors, applied at runtime by the
+   * bridge). We ensure a bridge exists for the section (PRESERVING any prior demonstration
+   * body; a no-op when none), re-inject it, and let the persisted selection drive the hide.
+   * Returns the fresh section URL + hash so the controller can persist sim_meta.
+   */
+  async applyMinimalUiOnly(opts: {
+    simId:      string;
+    sectionId:  string;
+    projectId:  string;
+    entryKey?:  string;
+    onEvent?:   (event: string, data: object) => void;
+  }): Promise<{ sectionUrl: string; bridgeHash: string }> {
+    const { simId, sectionId, projectId, onEvent } = opts;
+    const prefix = `simulations/${projectId}/${simId}`;
+    onEvent?.('status', { status: 'Applying minimal UI…', type: 'progress' });
+    const allKeys = await this.listSimKeys(prefix, opts.entryKey);
+    // No-op main body: SIM_READY + the mechanical hide (in the wrap template) do all the work;
+    // an existing demonstration for this section is preserved untouched.
+    const NOOP_MAIN_BODY = '// minimal-UI only (no scripted demo) — controls are hidden mechanically\nreturn function cleanup() {};';
+    return this.uploadSectionBridge({
+      simId, sectionId, projectId, prefix, allKeys,
+      entryKey: opts.entryKey,
+      mainBody: (existing) => (existing && existing.trim() ? existing : NOOP_MAIN_BODY),
+      onEvent,
+    });
   }
 
   private async callLLMForBridge(opts: {
