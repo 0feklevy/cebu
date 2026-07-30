@@ -20,19 +20,26 @@ function params(href: string): URLSearchParams {
   return new URL(href).searchParams;
 }
 
+// Mirror of the module's API_BASE resolution — release verification runs these
+// tests under production-like env (NEXT_PUBLIC_API_URL set), so expectations
+// must derive the origin the same way instead of hard-coding localhost.
+const EXPECTED_API_ORIGIN = new URL(
+  process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080',
+  'http://localhost:3000/',
+).origin;
+
 describe('resolveSimUrl origin rebase', () => {
-  // NEXT_PUBLIC_API_URL is unset in tests → dev fallback http://localhost:8080.
   it('rebases a /sim-public/ URL saved under a FOREIGN origin onto the current API origin', () => {
-    const out = new URL(resolveSimUrl('https://api.flowvidco.com/sim-public/simulations/p1/s1/index.html?section=abc&v=9'));
-    expect(out.origin).toBe('http://localhost:8080');
+    const out = new URL(resolveSimUrl('https://foreign-env.example.com/sim-public/simulations/p1/s1/index.html?section=abc&v=9'));
+    expect(out.origin).toBe(EXPECTED_API_ORIGIN);
     expect(out.pathname).toBe('/sim-public/simulations/p1/s1/index.html');
     expect(out.searchParams.get('section')).toBe('abc');
     expect(out.searchParams.get('v')).toBe('9');
   });
 
   it('leaves same-origin /sim-public/ URLs on their origin', () => {
-    const out = new URL(resolveSimUrl('http://localhost:8080/sim-public/simulations/p1/s1/index.html'));
-    expect(out.origin).toBe('http://localhost:8080');
+    const out = new URL(resolveSimUrl(`${EXPECTED_API_ORIGIN}/sim-public/simulations/p1/s1/index.html`));
+    expect(out.origin).toBe(EXPECTED_API_ORIGIN);
   });
 
   it('never rebases non-sim-public paths', () => {
@@ -92,7 +99,7 @@ describe('resolveSimUrl', () => {
     stub(navigator, 'hardwareConcurrency', 8);
     const href = resolveSimUrl('/sim-public/abc/index.html?v=2');
     const u = new URL(href);
-    expect(u.origin).toBe('http://localhost:8080');
+    expect(u.origin).toBe(EXPECTED_API_ORIGIN);
     expect(u.pathname).toBe('/sim-public/abc/index.html');
     expect(u.searchParams.get('v')).toBe('2');
     expect(u.searchParams.get('dpr')).not.toBeNull();
