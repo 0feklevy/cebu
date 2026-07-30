@@ -12,25 +12,23 @@ interface Props {
   onLoad?:       () => void;   // fires per document load — re-arms the player's start/ready machinery
   /** Minimal-UI selectors the sim should boot with already hidden (fragment hint). */
   bootHide?:     string[] | null;
-  /** True while the overlay is revealed but the sim hasn't handshaken yet — shows a spinner. */
-  booting?:      boolean;
+  /** A genuinely broken sim that never painted (≥5s) — the ONLY routine loading affordance. */
+  stalled?:      boolean;
+  /** Sim-first entry with no video frame underneath to hold — a brief loader is correct here. */
+  coldCover?:    boolean;
 }
 
-// Keep iframe mounted while simulationUrl is set so the sim doesn't reload
-// when the overlay briefly hides between sections. Visibility is CSS-driven
-// via the .sim-overlay.visible class (opacity fade). The black background
-// lives ON the fading layer (.sim-overlay { background:#0e0e0e }) so that when
-// the sim is hidden the video shows through — a true video↔sim crossfade.
-// (A separate always-opaque backdrop would stay black forever because
-// simulationUrl is never cleared mid-fade — the player only clears it after a
-// destroy-grace well past the 200ms fade → the overlay is long invisible.)
-export function SimOverlayDynamic({ simulationUrl, visible, iframeRef, onLoad, bootHide, booting = false }: Props) {
-  // Resolve once per URL: resolveSimUrl appends device hints (dpr/mem/lowend)
-  // and the minimal-UI boot hint (#simboot=…, so the sim paints already-minimal).
-  // Memoizing keeps the src stable across re-renders so a mid-session
-  // devicePixelRatio change (e.g. browser zoom) can't rewrite src and reload a
-  // live sim. The RAW url stays the identity everywhere else (state/compares).
-  // bootKey is a serialized dep: a hash-only src change never reloads the doc.
+// Keep iframe mounted while simulationUrl is set so the sim doesn't reload when the overlay
+// briefly hides between sections. Visibility is CSS-driven via .sim-overlay.visible (opacity
+// fade). The wrapper is TRANSPARENT: a revealed sim composites over the outgoing content
+// (still-playing video / frozen last frame) — no black backdrop, so the crossfade never flashes.
+// The overlay is only ever revealed once the sim has actually painted (paint-gated in the
+// player), so there is no loading state in normal operation; the spinner shows solely for a
+// genuine 5s stall or a sim-first entry with nothing to hold underneath.
+export function SimOverlayDynamic({ simulationUrl, visible, iframeRef, onLoad, bootHide, stalled = false, coldCover = false }: Props) {
+  // Resolve once per URL: resolveSimUrl appends device hints (dpr/mem/lowend) and the minimal-UI
+  // boot hint (#simboot=…, painted already-minimal). bootKey serializes the dep — a hash-only src
+  // change never reloads the document.
   const bootKey = bootHide?.length ? JSON.stringify(bootHide) : null;
   const src = useMemo(
     () => (simulationUrl
@@ -50,15 +48,14 @@ export function SimOverlayDynamic({ simulationUrl, visible, iframeRef, onLoad, b
         ref={iframeRef}
         src={src}
         onLoad={onLoad}
-        loading="lazy"
+        // Eager: this iframe is deliberately pre-mounted off-screen to warm the sim; lazy would
+        // defer the fetch on intersection distance and defeat the preload.
+        loading="eager"
         className="w-full h-full border-0"
         sandbox="allow-scripts allow-same-origin allow-forms"
         title="Interactive simulation"
       />
-      {/* Boot spinner: only when the overlay is revealed before the sim is ready
-          (slow handshake fallback) — the black layer reads as intentional loading
-          instead of a dead screen. */}
-      {visible && booting && (
+      {(stalled || coldCover) && (
         <div className="sim-overlay-boot" aria-hidden>
           <div className="sim-overlay-spinner" />
         </div>

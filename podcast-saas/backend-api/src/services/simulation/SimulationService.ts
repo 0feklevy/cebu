@@ -259,7 +259,7 @@ const BRIDGE_TEMPLATE = /* js */ `;(function(){
 // IMPORTANT: the script body must NOT start with `(function` and must not contain the string
 // "sim-bridge v1"/"sim-bridge v2" — the legacy cleanup regexes in this file strip such blocks.
 
-const RAF_GATE_VERSION = 3;
+const RAF_GATE_VERSION = 4;
 const RAF_GATE_MARKER_START = `<!-- sim-raf-gate v${RAF_GATE_VERSION} -->`;
 const RAF_GATE_MARKER_END   = '<!-- /sim-raf-gate -->';
 // Strips any version of the gate block (plus the '\n' separator injectRafGate adds before it)
@@ -274,8 +274,25 @@ const RAF_GATE_TEMPLATE = /* js */ `;(function () {
   var paused = false;
   var queued = [];        // callbacks requested while paused — each queued once, replayed once
   var nextQueuedId = -1;  // synthetic negative ids never collide with native (positive) handles
+  // First-real-frame ack: the sim paints its scene inside its OWN rAF callback at page load
+  // (independent of the bridge's startScript). The player pre-mounts the iframe hidden and
+  // UNPAUSED so it actually runs frames; the instant one of those frames executes we tell the
+  // player {type:'SIM_PAINTED'}. That — not SIM_READY (which fires before any frame draws) — is
+  // when the sim is safe to reveal, so the crossfade never shows a blank/loading frame. Posted
+  // exactly once, from a callback that ACTUALLY RAN while un-paused (a paused sim never paints).
+  var painted = false;
+  function firstPaintWrap(cb) {
+    if (painted) return cb;
+    return function (ts) {
+      cb(ts);
+      if (!painted) {
+        painted = true;
+        try { window.parent && window.parent.postMessage({ type: 'SIM_PAINTED', v: ${RAF_GATE_VERSION} }, '*'); } catch (e) {}
+      }
+    };
+  }
   window.requestAnimationFrame = function (cb) {
-    if (!paused || typeof cb !== 'function') return nativeRaf ? nativeRaf(cb) : 0;
+    if (!paused || typeof cb !== 'function') return nativeRaf ? nativeRaf(firstPaintWrap(cb)) : 0;
     for (var i = 0; i < queued.length; i++) {
       if (queued[i].cb === cb) return queued[i].id;   // each callback queued once
     }
@@ -299,7 +316,8 @@ const RAF_GATE_TEMPLATE = /* js */ `;(function () {
     for (var i = 0; i < pending.length; i++) {
       // Re-schedule via the NATIVE rAF: each callback runs once and receives the native
       // timestamp of the resumed frame. Timestamps are never fabricated here.
-      nativeRaf(pending[i].cb);
+      // firstPaintWrap so a sim first unpaused via simResume (rather than warmed) still acks.
+      nativeRaf(firstPaintWrap(pending[i].cb));
     }
   }
   // ── Minimal-UI control picker: runtime scan (v3) ────────────────────────────
@@ -487,11 +505,38 @@ const RAF_GATE_TEMPLATE = /* js */ `;(function () {
     var out = vis.concat(hid).slice(0, 100);              // visible first, then hidden, capped
     window.parent && window.parent.postMessage({ type: 'simControlsList', controls: out }, '*');
   }
+  // ── Parent-controlled mute (belt-and-suspenders for warmed-while-hidden sims) ──
+  // A sim is pre-mounted hidden and un-paused so it can paint; if such a sim autoplayed
+  // audio it would leak sound before the section is on screen. Cross-origin autoplay is
+  // already blocked without a gesture, but we also let the player force-mute the frame:
+  // while muted, HTMLMediaElement.play() forces .muted=true first. Unmuted at reveal.
+  var simMuted = false;
+  try {
+    var _mediaPlay = window.HTMLMediaElement && window.HTMLMediaElement.prototype.play;
+    if (_mediaPlay) {
+      window.HTMLMediaElement.prototype.play = function () {
+        if (simMuted) { try { this.muted = true; } catch (e) {} }
+        return _mediaPlay.apply(this, arguments);
+      };
+    }
+  } catch (e) { /* environment without HTMLMediaElement — no media to mute */ }
+  function applyMuteAll(on) {
+    simMuted = on;
+    try {
+      var media = document.querySelectorAll('video, audio');
+      for (var i = 0; i < media.length; i++) { try { media[i].muted = on; } catch (e) {} }
+    } catch (e) { /* pre-DOM */ }
+  }
   window.addEventListener('message', function (e) {
     var d = (e && e.data) || {};
     if (d.type === 'simPause') { paused = true; }
     else if (d.type === 'simResume') { if (paused) { paused = false; flush(); } }
     else if (d.type === 'listSimControls') { listSimControls(); }
+    else if (d.type === 'simMute') { applyMuteAll(true); }
+    else if (d.type === 'simUnmute') { applyMuteAll(false); }
+    // Re-sync a canvas/WebGL sim to the current container size/DPR after an opacity-only
+    // reveal (which fires no native resize): dispatch a synthetic resize the sim listens for.
+    else if (d.type === 'simRelayout') { try { window.dispatchEvent(new Event('resize')); } catch (e) {} }
   });
   var env = { lowend: null, dpr: null, mem: null, section: null };
   try {

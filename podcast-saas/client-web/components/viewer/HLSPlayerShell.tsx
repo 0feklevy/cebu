@@ -467,7 +467,8 @@ export function HLSPlayerShell({
         iframeRef={simFrameRef}
         onLoad={actions.simFrameLoaded}
         bootHide={state.activeSimBootHide}
-        booting={state.showSimOverlay && !state.simReady}
+        stalled={state.simBootStalled}
+        coldCover={state.simColdCover}
       />
 
       {state.guidanceCaption && (

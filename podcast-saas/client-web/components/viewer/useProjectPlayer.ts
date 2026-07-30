@@ -8,6 +8,15 @@ import { resolveAssetUrl } from '../../lib/assetUrl';
 import { simDestroyGraceMs } from '../../lib/simLifecycle';
 import type { SimStartScriptParams } from '../../lib/simUiControls';
 import { resolveSimUrl } from '../../lib/simUrl';
+import { canWarmUnpaused } from '../../lib/simCapability';
+
+// Seamless sim preload tuning. A sim's scene paints inside its OWN load-time rAF (independent
+// of startScript), so the player pre-mounts the iframe hidden + UNPAUSED ahead of the boundary,
+// waits for the bridge's SIM_PAINTED first-frame ack, freezes it, and only then crossfades — the
+// reveal is gated on real paint, never a timer, so no loading/black frame is ever shown.
+const SIM_PREMOUNT_LEAD_SEC = 12;   // start warming this far before a sim section
+const SIM_PAINT_DEADLINE_MS = 1200; // bounded HOLD ceiling: best-effort reveal if SIM_PAINTED never comes
+const SIM_BOOT_STALLED_MS   = 5000; // only after this does a genuine-failure loading affordance show
 
 const BRANCH_API = process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
 
@@ -65,8 +74,12 @@ export interface ProjectPlayerState {
   // Minimal-UI selectors baked into the iframe src fragment (#simboot=…) so the sim
   // paints already-minimal — no full-UI flash while startScript is still in flight.
   activeSimBootHide: string[] | null;
-  // SIM_READY handshake state for the CURRENT iframe document — false while booting.
-  simReady:        boolean;
+  // Genuine-failure affordance: a sim that never paints within SIM_BOOT_STALLED_MS.
+  // NOT routine loading — the normal path holds the video/last frame until the sim paints.
+  simBootStalled:  boolean;
+  // Sim-first entry (t=0 sim / post-branch first sim) with no video frame underneath to
+  // hold — the one case a brief loading affordance is correct instead of a blank hold.
+  simColdCover:    boolean;
   currentSegIdx:   number;
   activeSegmentId: string;          // id of the playing segment (stable across branching)
   timeline:        TimelineSeg[];
@@ -219,7 +232,8 @@ export function useProjectPlayer(
     globalTime:       0,
     activeSimUrl:     null,
     activeSimBootHide: null,
-    simReady:         false,
+    simBootStalled:   false,
+    simColdCover:     false,
     currentSegIdx:    0,
     activeSegmentId:  initialSegments[0]?.id ?? '',
     timeline:         initialSegs,
@@ -286,6 +300,20 @@ export function useProjectPlayer(
   // SIM_READY handshake is slow (heavy sim still booting) or lost — like the editor's
   // 800ms fallback. Cleared on every leave and whenever the normal reveal fires.
   const simRevealFallbackRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // ── Paint-gated reveal (seamless preload) ────────────────────────────────────
+  // The URL whose CURRENTLY-MOUNTED iframe document has posted SIM_PAINTED (rendered ≥1 real
+  // frame). This — not simReadyRef (which fires before the scene draws) — is the reveal gate:
+  // showSimOverlay only flips true once simPaintedUrlRef === activeSimUrlRef.
+  const simPaintedUrlRef = useRef<string | null>(null);
+  // Section id waiting on a paint ack to reveal (set on cold/at-boundary entry).
+  const awaitingPaintSimIdRef = useRef<string | null>(null);
+  // Bounded HOLD ceiling: reveals best-effort if SIM_PAINTED never arrives (throttled/legacy sim).
+  const simPaintDeadlineRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Genuine-stall (5s) → the only path that ever shows a loading affordance in normal flows.
+  const simBootStalledRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Bumped on every section change / seek / sequence load; a reveal scheduled under an old
+  // generation is dropped, so a stale async paint can never reveal the wrong sim.
+  const warmGenRef = useRef(0);
   // Scrub pre-mount: while the thumb rests over a sim section, mount its iframe
   // hidden+unscripted so the boot happens DURING the scrub, not after release.
   const scrubPremountTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -418,6 +446,31 @@ export function useProjectPlayer(
     try { refs.simFrame.current?.contentWindow?.postMessage(msg, '*'); } catch (_) {}
   };
 
+  // ── Paint-gated reveal — the ONLY writer of showSimOverlay:true ───────────
+  // Clears every reveal/hold timer, then on a double-rAF (so the opacity flip composites on a
+  // real frame) flips the overlay visible — but only if the section is still active, the sim
+  // has actually painted for the current URL, and the generation hasn't moved under us. `force`
+  // is the bounded-deadline / cold-cover escape hatch: reveal best-effort when SIM_PAINTED never
+  // came (throttled or not-yet-backfilled sim), holding the underlying content until then.
+  const clearRevealTimers = () => {
+    if (simShowTimerRef.current) { clearTimeout(simShowTimerRef.current); simShowTimerRef.current = null; }
+    if (simRevealFallbackRef.current) { clearTimeout(simRevealFallbackRef.current); simRevealFallbackRef.current = null; }
+    if (simPaintDeadlineRef.current) { clearTimeout(simPaintDeadlineRef.current); simPaintDeadlineRef.current = null; }
+    if (simBootStalledRef.current) { clearTimeout(simBootStalledRef.current); simBootStalledRef.current = null; }
+  };
+  const revealSim = (opts?: { force?: boolean }) => {
+    const gen = warmGenRef.current;
+    clearRevealTimers();
+    awaitingPaintSimIdRef.current = null;
+    const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (cb: FrameRequestCallback) => setTimeout(() => cb(0), 16);
+    raf(() => raf(() => {
+      if (warmGenRef.current !== gen) return;                  // seek/branch moved on — drop stale reveal
+      if (!activeSimRef.current) return;                       // no longer a sim section
+      if (!opts?.force && simPaintedUrlRef.current !== activeSimUrlRef.current) return;  // not painted yet
+      merge({ showSimOverlay: true, simBootStalled: false, simColdCover: false });
+    }));
+  };
+
   // ── (D2) sim overlay lifecycle: pause on hide, destroy after grace ────────
   const cancelSimDestroy = () => {
     if (simDestroyTimerRef.current) { clearTimeout(simDestroyTimerRef.current); simDestroyTimerRef.current = null; }
@@ -435,7 +488,10 @@ export function useProjectPlayer(
       // (PING_SIM_READY poll → SIM_READY → startScript) against a brand-new iframe.
       activeSimUrlRef.current = null;
       simReadyRef.current = false;
-      merge({ activeSimUrl: null, activeSimBootHide: null, simReady: false });  // unmounts the iframe → frees the WebGL context
+      simPaintedUrlRef.current = null;          // freed context — its painted frame is gone
+      awaitingPaintSimIdRef.current = null;
+      clearRevealTimers();
+      merge({ activeSimUrl: null, activeSimBootHide: null, simBootStalled: false, simColdCover: false });  // unmounts the iframe → frees the WebGL context
     }, Math.max(700, graceOverrideMs ?? simDestroyGraceMs()));
   };
 
@@ -484,10 +540,11 @@ export function useProjectPlayer(
   const bootHideFor = (sec: SimulationOverlay | null | undefined): string[] | null =>
     sec?.simple_ui && sec.ui_hide?.length ? sec.ui_hide : null;
 
-  // Mount an upcoming sim's iframe hidden + unscripted so it boots BEFORE the
-  // boundary (used by the scrub warm-up AND the playing-path warm-up). No script,
-  // reveal or activeSimRef state is touched — SIM_READY on a pre-mount just parks
-  // the sim (frozen via simPause in the SIM_READY handler) until a section enters.
+  // Mount an upcoming sim's iframe hidden BEFORE the boundary (playing-path + scrub warm-up).
+  // No activeSimRef/reveal state is touched. On SIM_READY, a capable device leaves the hidden
+  // sim RUNNING (un-paused) so it paints its scene while off-screen; the bridge posts
+  // SIM_PAINTED and we freeze it — so the boundary reveals an already-painted frame with no
+  // load. Low-end/Data-Saver devices park it cold at SIM_READY instead (see the SIM_READY handler).
   const premountSim = (sec: SimulationOverlay | null | undefined) => {
     if (activeSimRef.current) return;   // live iframe (possibly on screen) — never navigate it
     if (!sec?.simulation_url) return;
@@ -495,8 +552,9 @@ export function useProjectPlayer(
     cancelSimDestroy();
     if (activeSimUrlRef.current === sec.simulation_url) return;   // already mounted (warm)
     simReadyRef.current = false;
+    simPaintedUrlRef.current = null;
     activeSimUrlRef.current = sec.simulation_url;
-    merge({ activeSimUrl: sec.simulation_url, activeSimBootHide: bootHideFor(sec), simReady: false });
+    merge({ activeSimUrl: sec.simulation_url, activeSimBootHide: bootHideFor(sec) });
   };
 
   // ── Guided Simulation narration playback (serialized queue, ducks the video) ──
@@ -564,9 +622,10 @@ export function useProjectPlayer(
     const seg = segmentsRef.current[segmentIdx];
     if (!seg) {
       if (activeSimRef.current) {
+        warmGenRef.current++;                    // invalidate any pending reveal
         sendToSim({ type: 'stopScript' });
         // Fade out immediately at the boundary; CSS opacity transition smooths it.
-        merge({ showSimOverlay: false });
+        merge({ showSimOverlay: false, simBootStalled: false, simColdCover: false });
         // (D2) After the existing messages: freeze the hidden sim's rAF loop, then arm the
         // destroy grace (>= 700ms, so the unmount can never land inside the 200ms fade).
         sendToSim({ type: 'simPause' });
@@ -576,8 +635,8 @@ export function useProjectPlayer(
         sendToSim({ type: 'simPause' });
         scheduleSimDestroy();
       }
-      if (simShowTimerRef.current) { clearTimeout(simShowTimerRef.current); simShowTimerRef.current = null; }
-      if (simRevealFallbackRef.current) { clearTimeout(simRevealFallbackRef.current); simRevealFallbackRef.current = null; }
+      clearRevealTimers();
+      awaitingPaintSimIdRef.current = null;
       desiredSimRef.current = null;
       pendingSimRef.current = null;
       activeSimRef.current = null;
@@ -594,10 +653,12 @@ export function useProjectPlayer(
 
     if (simSection !== null && simSection?.id === activeSimRef.current?.id) return;
 
+    // Section is CHANGING — invalidate any reveal scheduled for the previous section.
+    warmGenRef.current++;
     if (activeSimRef.current) {
       sendToSim({ type: 'stopScript' });
       // Fade out immediately at the boundary; CSS opacity transition smooths it.
-      merge({ showSimOverlay: false });
+      merge({ showSimOverlay: false, simBootStalled: false, simColdCover: false });
       // (D2) Existing messages first, then freeze the hidden sim + arm the destroy grace.
       // On a sim→sim change the enter branch below cancels the grace synchronously.
       sendToSim({ type: 'simPause' });
@@ -608,8 +669,8 @@ export function useProjectPlayer(
       scheduleSimDestroy();
     }
     // A section change (into another sim OR out of sims) invalidates any queued reveal/start.
-    if (simShowTimerRef.current) { clearTimeout(simShowTimerRef.current); simShowTimerRef.current = null; }
-    if (simRevealFallbackRef.current) { clearTimeout(simRevealFallbackRef.current); simRevealFallbackRef.current = null; }
+    clearRevealTimers();
+    awaitingPaintSimIdRef.current = null;
     if (!simSection) { desiredSimRef.current = null; pendingSimRef.current = null; }
     activeSimRef.current = simSection;
 
@@ -645,29 +706,59 @@ export function useProjectPlayer(
         stopHlsForSim();
       }
 
-      if (sameUrl && simReadyRef.current) {
-        // (D2) Unfreeze the rAF loop paused on leave BEFORE startScript + reveal.
+      // Apply the REAL params to the mounted sim and drive it toward its first painted frame.
+      // Reveal is NEVER on a timer — it happens only when the sim has actually painted (the
+      // SIM_PAINTED ack sets simPaintedUrlRef, and the SIM_PAINTED / bounded-deadline handlers
+      // call revealSim). Until then the underlying content stays: the video keeps PLAYING under
+      // a mid-roll sim, or the frozen last frame is held under a paused post-roll sim — so a
+      // black/loading frame is structurally unreachable.
+      const gen = warmGenRef.current;
+      const warmPainted = sameUrl && simReadyRef.current && simPaintedUrlRef.current === simSection.simulation_url;
+      awaitingPaintSimIdRef.current = simSection.id;
+      if (warmPainted) {
+        // The warmed sim already painted its scene while hidden — resume + script + reveal now.
         sendToSim({ type: 'simResume' });
-        // Send startScript first so sim applies simpleUi, then reveal
         sendToSim({ type: 'startScript', script, params });
-        // The definitive __simHideUi style is applied by startScript above; drop the
-        // boot-time style so a section with a DIFFERENT hide set isn't over-hidden.
-        sendToSim({ type: 'clearBootHide' });
-        if (simShowTimerRef.current) clearTimeout(simShowTimerRef.current);
-        simShowTimerRef.current = setTimeout(() => { simShowTimerRef.current = null; merge({ showSimOverlay: true }); }, 50);
+        sendToSim({ type: 'clearBootHide' });   // startScript's __simHideUi supersedes the boot style
+        sendToSim({ type: 'simRelayout' });     // re-sync canvas to the container/DPR at reveal
+        sendToSim({ type: 'simUnmute' });
+        revealSim();
       } else {
-        simReadyRef.current   = false;
-        pendingSimRef.current = { script, params };
-        startSimPoll();
-        // Reveal fallback: a sim section is part of the video — if the handshake is
-        // slow (heavy sim booting) the overlay must still come up, visibly loading,
-        // instead of silently playing video over the section. SIM_READY still sends
-        // simResume + startScript when it eventually arrives.
-        if (simRevealFallbackRef.current) clearTimeout(simRevealFallbackRef.current);
-        simRevealFallbackRef.current = setTimeout(() => {
-          simRevealFallbackRef.current = null;
-          if (activeSimRef.current) merge({ showSimOverlay: true });
-        }, 1000);
+        // Cold, or warmed-but-not-yet-painted.
+        if (sameUrl && simReadyRef.current) {
+          // Same mounted doc, ready but not painted yet (warm still in flight) — drive it now.
+          sendToSim({ type: 'simResume' });
+          sendToSim({ type: 'simUnmute' });
+          sendToSim({ type: 'startScript', script, params });
+          sendToSim({ type: 'clearBootHide' });
+          sendToSim({ type: 'simRelayout' });
+        } else {
+          // Different URL (the iframe is navigating) or not ready yet: arm the pending start;
+          // handleSimFrameLoad + the SIM_READY handler drive startScript against the new doc.
+          if (!sameUrl) simReadyRef.current = false;
+          pendingSimRef.current = { script, params };
+          startSimPoll();
+        }
+        // Bounded HOLD ceiling: if SIM_PAINTED never comes (throttled/legacy sim), reveal
+        // best-effort within the section's own lifetime — but hold the video/last frame until then.
+        const sectionMs = Math.max(0, simSection.end_sec - simSection.start_sec) * 1000;
+        const holdMs = Math.min(SIM_PAINT_DEADLINE_MS, sectionMs || SIM_PAINT_DEADLINE_MS);
+        simPaintDeadlineRef.current = setTimeout(() => {
+          simPaintDeadlineRef.current = null;
+          if (warmGenRef.current !== gen || awaitingPaintSimIdRef.current !== simSection.id) return;
+          simPaintedUrlRef.current = simSection.simulation_url;   // waited long enough — best-effort
+          revealSim({ force: true });
+        }, holdMs);
+        // Sim-first with no video frame underneath to hold → show a brief loader (the one place
+        // routine loading UI is correct); otherwise the video/last frame covers the wait silently.
+        if ((videoRef.current?.readyState ?? 0) < 2) merge({ simColdCover: true });
+        // Genuine-stall error affordance — only fires on a truly broken sim that never paints.
+        simBootStalledRef.current = setTimeout(() => {
+          simBootStalledRef.current = null;
+          if (warmGenRef.current === gen && !showSimOverlayRef.current && activeSimRef.current?.id === simSection.id) {
+            merge({ simBootStalled: true });
+          }
+        }, SIM_BOOT_STALLED_MS);
       }
     }
 
@@ -993,17 +1084,18 @@ export function useProjectPlayer(
       refs.progressBuf.current.style.width = '0%';
     }
 
+    warmGenRef.current++;                    // sequence change invalidates any pending reveal
     if (activeSimRef.current) {
       sendToSim({ type: 'stopScript' });
-      merge({ showSimOverlay: false });
+      merge({ showSimOverlay: false, simBootStalled: false, simColdCover: false });
       // (D2) Existing messages first, then freeze the hidden sim + arm the destroy grace.
       // If the new segment starts inside a sim section, finishSwap → updateSimOverlay
       // re-enters and cancels the grace.
       sendToSim({ type: 'simPause' });
       scheduleSimDestroy();
     }
-    if (simShowTimerRef.current) { clearTimeout(simShowTimerRef.current); simShowTimerRef.current = null; }
-    if (simRevealFallbackRef.current) { clearTimeout(simRevealFallbackRef.current); simRevealFallbackRef.current = null; }
+    clearRevealTimers();
+    awaitingPaintSimIdRef.current = null;
     desiredSimRef.current = null;
     pendingSimRef.current = null;
     activeSimRef.current = null;
@@ -1210,20 +1302,26 @@ export function useProjectPlayer(
         }
       }
 
-      // (D4) Sim prefetch: while playing, if a sim section in THIS segment starts within
-      // the next 15s, warm the HTTP cache for its entry (+ bridge.js) so the iframe boots
-      // from cache at the boundary. Sim sections are segment-local → branching-safe.
-      // Within 8s, go further: pre-MOUNT the iframe hidden so the sim's document parses,
-      // boots and handshakes behind the video — the boundary then takes the warm
-      // (sameUrl + ready) path and the crossfade reveals an already-painted, already-
-      // minimal sim instead of a black/white loading frame.
-      if (!videoRef.current?.paused) {
-        const upcomingSim = segmentsRef.current[idx]?.simulations.find((s) =>
+      // (D4) Sim prefetch + warm: while playing, warm the HTTP cache 15s ahead, then within
+      // SIM_PREMOUNT_LEAD_SEC (12s) pre-MOUNT the iframe hidden so it parses, boots AND paints
+      // its scene behind the video — the boundary then reveals an already-painted, already-
+      // minimal sim with no load. Covers the in-segment case and, when the current segment is
+      // ending, the FIRST sim of the next segment (cross-segment lead, ~0 today).
+      if (!videoRef.current?.paused && !activeSimRef.current) {
+        const segDur = timelineRef.current[idx]?.duration ?? segmentsRef.current[idx]?.duration_sec ?? Infinity;
+        const inSeg = segmentsRef.current[idx]?.simulations.find((s) =>
           !!s.simulation_url && t < s.start_sec && s.start_sec - t <= 15,
         ) ?? null;
+        // Next segment's opening sim, when this segment is within the lead window of its end.
+        const nextOpener = (segDur - t <= SIM_PREMOUNT_LEAD_SEC)
+          ? (segmentsRef.current[idx + 1]?.simulations.find((s) =>
+              !!s.simulation_url && s.start_sec <= 0.05) ?? null)
+          : null;
+        const upcomingSim = inSeg ?? nextOpener;
         if (upcomingSim?.simulation_url) {
           prefetchSimAssets(upcomingSim.simulation_url);
-          if (upcomingSim.start_sec - t <= 8) premountSim(upcomingSim);
+          const lead = inSeg ? inSeg.start_sec - t : segDur - t;
+          if (lead <= SIM_PREMOUNT_LEAD_SEC) premountSim(upcomingSim);
         }
       }
     }
@@ -1327,7 +1425,6 @@ export function useProjectPlayer(
       const { type } = (e.data as { type?: string }) ?? {};
       if (type === 'SIM_READY') {
         simReadyRef.current = true;
-        merge({ simReady: true });
         if (simPollRef.current) clearInterval(simPollRef.current);
         // Self-heal: if the pending start was consumed (e.g. the OLD page answered a
         // ping mid-navigation) but a sim section is active and has a desired script,
@@ -1337,21 +1434,40 @@ export function useProjectPlayer(
           (activeSimRef.current && desiredSimRef.current ? { ...desiredSimRef.current } : null);
         pendingSimRef.current = null;
         if (pending && (!userPausedRef.current || resumeActionRef.current === 'backToVideo')) {
-          // (D2) Unfreeze first — the page may have been simPause'd on a previous leave.
-          // Harmless no-op on a freshly loaded sim.
+          // Active section is waiting: drive the sim to paint. Reveal is NOT scheduled here —
+          // it is gated on the SIM_PAINTED ack (or the bounded deadline armed in updateSimOverlay).
           sendToSim({ type: 'simResume' });
-          // Send startScript first so sim applies simpleUi before overlay reveals
+          sendToSim({ type: 'simUnmute' });
           sendToSim({ type: 'startScript', script: pending.script, params: pending.params });
-          // Definitive hides applied by startScript — drop the boot-time style.
           sendToSim({ type: 'clearBootHide' });
-          if (simShowTimerRef.current) clearTimeout(simShowTimerRef.current);
-          if (simRevealFallbackRef.current) { clearTimeout(simRevealFallbackRef.current); simRevealFallbackRef.current = null; }
-          simShowTimerRef.current = setTimeout(() => { simShowTimerRef.current = null; merge({ showSimOverlay: true }); }, 50);
+          sendToSim({ type: 'simRelayout' });
         } else if (!pending && !activeSimRef.current) {
-          // A pre-mounted (scrub or playing-path) sim finished booting while no sim
-          // section is active: freeze its rAF loop so a hidden sim never competes with
-          // video playback for CPU/GPU. Entry unfreezes via the warm path's simResume.
-          sendToSim({ type: 'simPause' });
+          // A pre-mounted (scrub / playing-path) sim finished loading while no section is active.
+          if (canWarmUnpaused()) {
+            // Keep it RUNNING (un-paused) so it paints its scene while hidden; mute it and gate
+            // guidance off. SIM_PAINTED will freeze it; if it never paints, the ceiling below does.
+            sendToSim({ type: 'simMute' });
+            sendToSim({ type: 'guidanceGate', active: false });
+            if (simPaintDeadlineRef.current) clearTimeout(simPaintDeadlineRef.current);
+            simPaintDeadlineRef.current = setTimeout(() => {
+              simPaintDeadlineRef.current = null;
+              if (!activeSimRef.current) sendToSim({ type: 'simPause' });   // park un-acked (not marked painted)
+            }, SIM_PAINT_DEADLINE_MS);
+          } else {
+            // Low-end / Data-Saver: don't spend GPU warming a hidden sim — park it cold.
+            sendToSim({ type: 'simPause' });
+          }
+        }
+      }
+      if (type === 'SIM_PAINTED') {
+        // The sim rendered its first real frame (from the v4 rAF gate). This — not SIM_READY —
+        // is when it's safe to show. Freeze a still-hidden premount; reveal an awaited section.
+        if (simPaintDeadlineRef.current) { clearTimeout(simPaintDeadlineRef.current); simPaintDeadlineRef.current = null; }
+        simPaintedUrlRef.current = activeSimUrlRef.current;
+        if (!activeSimRef.current) {
+          sendToSim({ type: 'simPause' });   // painted + frozen, ready for an instant reveal later
+        } else if (awaitingPaintSimIdRef.current === activeSimRef.current.id) {
+          revealSim();
         }
       }
       if (type === 'userInteraction') {
@@ -1421,7 +1537,7 @@ export function useProjectPlayer(
   // attached, so this heal was dead code. (sim-race + sim-reliability fix)
   const handleSimFrameLoad = useCallback(() => {
     simReadyRef.current = false;
-    merge({ simReady: false });
+    simPaintedUrlRef.current = null;   // a fresh document has painted nothing yet
     if (desiredSimRef.current) pendingSimRef.current = { ...desiredSimRef.current };
     startSimPoll();
   }, [startSimPoll]);
@@ -1685,6 +1801,12 @@ export function useProjectPlayer(
     applyMediaVolume();
     safePlay(videoRef.current!);
     scheduleHide();
+    // If the very first section is a sim (sim-first video / no leading video), warm it during
+    // this click gesture so it paints before it's needed instead of cold-loading on screen.
+    const firstSim = segmentsRef.current[curIdxRef.current]?.simulations.find(
+      (s) => !!s.simulation_url && s.start_sec <= 0.05,
+    );
+    if (firstSim && !activeSimRef.current) premountSim(firstSim);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scheduleHide, applyMediaVolume]);
 

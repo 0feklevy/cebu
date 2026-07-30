@@ -18,7 +18,7 @@ import {
 } from '../SimulationService.js';
 import { wrapGuidanceCombined, type GuidanceEntryStored } from '../GuidanceService.js';
 
-const GATE_MARKER = '<!-- sim-raf-gate v3 -->';
+const GATE_MARKER = '<!-- sim-raf-gate v4 -->';
 const NO_FNS: BridgeFunction[] = [];
 
 const count = (haystack: string, needle: string): number => haystack.split(needle).length - 1;
@@ -86,13 +86,13 @@ describe('injection idempotency', () => {
     const once = injectRafGate(SIM_HTML);
     const twice = injectRafGate(once);
     expect(count(twice, GATE_MARKER)).toBe(1);
-    expect(count(twice, 'sim-raf-gate v3 — auto-injected')).toBe(1);
+    expect(count(twice, 'sim-raf-gate v4 — auto-injected')).toBe(1);
     expect(twice).toBe(once);
   });
 
-  it('replaces a stale v1/v2 gate block with exactly one v3 block (version bump path)', () => {
-    for (const stale of ['sim-raf-gate v1', 'sim-raf-gate v2']) {
-      const withStale = injectRafGate(SIM_HTML).replace(/sim-raf-gate v3/g, stale);
+  it('replaces a stale v1/v2/v3 gate block with exactly one v4 block (version bump path)', () => {
+    for (const stale of ['sim-raf-gate v1', 'sim-raf-gate v2', 'sim-raf-gate v3']) {
+      const withStale = injectRafGate(SIM_HTML).replace(/sim-raf-gate v4/g, stale);
       expect(count(withStale, `<!-- ${stale} -->`)).toBe(1);
       const upgraded = injectRafGate(withStale);
       expect(count(upgraded, GATE_MARKER)).toBe(1);
@@ -187,7 +187,9 @@ describe('rAF gate snippet content', () => {
   });
 
   it('replays queued callbacks via the NATIVE rAF (no fabricated timestamps)', () => {
-    expect(out).toContain('nativeRaf(pending[i].cb)');
+    // v4 wraps the replayed callback in firstPaintWrap (first-frame ack) but still uses the
+    // NATIVE rAF underneath — no synthetic timestamps.
+    expect(out).toContain('nativeRaf(firstPaintWrap(pending[i].cb))');
     expect(out).not.toContain('performance.now');
     expect(out).not.toContain('Date.now');
   });
@@ -205,6 +207,24 @@ describe('rAF gate snippet content', () => {
 
   it('adds no visibilitychange logic (strictly message-driven)', () => {
     expect(out).not.toContain('visibilitychange');
+  });
+
+  it('v4: posts SIM_PAINTED exactly once from the first real (unpaused) rAF frame', () => {
+    expect(out).toContain("postMessage({ type: 'SIM_PAINTED', v: 4 }, '*')");
+    expect(out).toContain('function firstPaintWrap(cb)');
+    // Both the live rAF path and the resume-flush path route through firstPaintWrap so a sim
+    // first driven unpaused via simResume (not a hidden warm) still acks its first frame.
+    expect(out).toContain('nativeRaf(firstPaintWrap(cb))');
+    expect(out).toContain('nativeRaf(firstPaintWrap(pending[i].cb))');
+  });
+
+  it('v4: handles parent-controlled mute/unmute and relayout messages', () => {
+    expect(out).toContain("d.type === 'simMute'");
+    expect(out).toContain("d.type === 'simUnmute'");
+    expect(out).toContain("d.type === 'simRelayout'");
+    // Mute forces .muted before delegating to native play(); relayout dispatches a resize.
+    expect(out).toContain('HTMLMediaElement.prototype.play');
+    expect(out).toContain("window.dispatchEvent(new Event('resize'))");
   });
 
   it('v3: answers listSimControls with a simControlsList postMessage', () => {

@@ -279,19 +279,24 @@
 }
 
 /* ── Simulation overlay ───────────────────────────────── */
+/* TRANSPARENT wrapper: the sim is revealed (paint-gated) over the outgoing content — the
+   still-playing video for a mid-roll sim, or the frozen last frame for a post-roll one — so
+   the opacity crossfade never flashes a black/#0e0e0e backdrop while the iframe composits.
+   will-change:opacity keeps the fade on the compositor. */
 .sim-overlay {
-  backdrop-filter: blur(2px);
   position: absolute;
   inset: 0;
   z-index: 20;
   opacity: 0;
   pointer-events: none;
   transition: opacity .2s ease;
-  background: #0e0e0e;
+  background: transparent;
+  will-change: opacity;
 }
 .sim-overlay.visible {
   opacity: 1;
   pointer-events: auto;
+  backdrop-filter: blur(2px);   /* only once visible — a hidden layer must not composite a blur */
 }
 .sim-overlay iframe {
   width: 100%;
@@ -299,8 +304,9 @@
   border: none;
   display: block;
 }
-/* Boot state: shown only when the overlay revealed before the sim handshake —
-   the dark layer reads as intentional loading, not a dead black screen. */
+/* Loading affordance — shown ONLY for a genuine 5s stall (stalled) or a sim-first entry with
+   no video underneath to hold (coldCover). Normal transitions never show this: the sim is
+   revealed only once it has actually painted. The dark backdrop here reads as intentional. */
 .sim-overlay-boot {
   position: absolute;
   inset: 0;
