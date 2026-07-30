@@ -406,7 +406,6 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
     '/api/v1/projects/:id/avatar/library/upload',
     {
       preHandler: [firebaseAuthMiddleware],
-      config: { rawBody: false },
     },
     async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
       const project = await requireOwnedProject(request, reply);

@@ -119,7 +119,6 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
     '/api/v1/projects/:id/simulations/upload',
     {
       preHandler: [firebaseAuthMiddleware],
-      config: { rawBody: false },
     },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
