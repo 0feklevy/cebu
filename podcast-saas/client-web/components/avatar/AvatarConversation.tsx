@@ -175,6 +175,11 @@ export function AvatarConversation({ characterId, projectId, sessionToken, displ
     // pre-warm finishes, so the throwaway first mount never starts a session.
     let cancelled = false;
     leftRef.current = false;
+    // v4 non-legacy construction: the persona is baked into the session token by the backend
+    // (anamService.getSessionToken), so NEVER pass a personaConfig here — the SDK would then
+    // error "This session token already contains a persona configuration". The "Legacy session
+    // tokens are no longer supported" error is a BACKEND token-shape problem (a persona without
+    // an llmId), fixed server-side — not here.
     const client = createClient(sessionToken, { voiceDetection: { endOfSpeechSensitivity: character.voiceSensitivity } });
     clientRef.current = client;
     attachListeners(client);
