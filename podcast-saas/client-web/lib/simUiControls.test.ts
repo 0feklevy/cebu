@@ -71,6 +71,22 @@ describe('sanitizeControls', () => {
   it('exports the 8 KB ui_controls param cap the generate call pre-checks', () => {
     expect(SIM_UI_CONTROLS_PARAM_MAX_CHARS).toBe(8192);
   });
+
+  it('passes hidden through as true (truthy coerced) and OMITS the key when false/absent', () => {
+    const out = sanitizeControls([
+      { selector: '#h', kind: 'slider', label: 'Wind', hidden: true },
+      { selector: '#t', kind: 'button', label: 'View', hidden: 1 },     // truthy → true
+      { selector: '#f', kind: 'button', label: 'Play', hidden: false }, // false → omitted
+      { selector: '#a', kind: 'toggle', label: 'Wings' },               // absent → omitted
+    ]);
+    // toStrictEqual distinguishes a missing key from hidden: undefined — the key must be GONE.
+    expect(out).toStrictEqual([
+      { selector: '#h', kind: 'slider', label: 'Wind', hidden: true },
+      { selector: '#t', kind: 'button', label: 'View', hidden: true },
+      { selector: '#f', kind: 'button', label: 'Play' },
+      { selector: '#a', kind: 'toggle', label: 'Wings' },
+    ]);
+  });
 });
 
 describe('normalizeSelection', () => {
@@ -113,6 +129,12 @@ describe('selectionsEqual', () => {
     expect(selectionsEqual(a, b)).toBe(true);
   });
 
+  it('ignores hidden-flag drift (scan metadata — the same control can flip hidden between scans)', () => {
+    const a = { controls: [{ ...ctl('#a'), hidden: true }, ctl('#b')], show: ['#a'], hide: ['#b'] };
+    const b = { controls: [ctl('#a'), { ...ctl('#b'), hidden: true }], show: ['#a'], hide: ['#b'] };
+    expect(selectionsEqual(a, b)).toBe(true);
+  });
+
   it('detects a moved selector', () => {
     const a = { controls: [], show: ['#a', '#b'], hide: ['#c'] };
     const b = { controls: [], show: ['#a'], hide: ['#b', '#c'] };
@@ -141,6 +163,14 @@ describe('mergeScans', () => {
     const stat = Array.from({ length: 80 }, (_, i) => ctl(`#s${i}`));
     const runtime = Array.from({ length: 80 }, (_, i) => ctl(`#r${i}`));
     expect(mergeScans(stat, runtime)).toHaveLength(MAX_UI_CONTROLS);
+  });
+
+  it("runtime's hidden flag survives a collision (runtime wins — static scans can't see visibility)", () => {
+    const stat = [ctl('#adv', 'slider', 'static Wind')];
+    const runtime = [{ ...ctl('#adv', 'slider', 'Wind'), hidden: true }];
+    expect(mergeScans(stat, runtime)).toStrictEqual([
+      { selector: '#adv', kind: 'slider', label: 'Wind', hidden: true },
+    ]);
   });
 });
 
@@ -182,6 +212,23 @@ describe('getStoredSelection', () => {
   it('filters non-string selectors out of show/hide', () => {
     const sel = getStoredSelection({ uiControls: { controls: null, show: ['#a', 7, ''], hide: [null, '#b'] } });
     expect(sel).toEqual({ controls: [], show: ['#a'], hide: ['#b'] });
+  });
+
+  it('round-trips the hidden flag on stored controls (picker regrouping after restore)', () => {
+    const sel = getStoredSelection({
+      uiControls: {
+        controls: [
+          { selector: '#adv', kind: 'slider', label: 'Wind', hidden: true },
+          { selector: '#play', kind: 'button', label: 'Play' },
+        ],
+        show: ['#play'],
+        hide: ['#adv'],
+      },
+    });
+    expect(sel?.controls).toStrictEqual([
+      { selector: '#adv', kind: 'slider', label: 'Wind', hidden: true },
+      { selector: '#play', kind: 'button', label: 'Play' },
+    ]);
   });
 
   it('returns the FULL selection (controls+show+hide) so re-sending it round-trips the backend equality', () => {

@@ -10,6 +10,11 @@ export interface SimUiControl {
   selector: string;
   kind: SimUiControlKind;
   label: string;
+  /** Scan METADATA (runtime gate v3): the control exists but is display:none until the
+   *  sim's own menus are opened (e.g. an "Advanced Mode" disclosure). Used only to group
+   *  picker rows; IGNORED by selectionsEqual — hidden-flag drift must never count as a
+   *  selection change. Absent/false = visible (absent preferred — saves payload bytes). */
+  hidden?: boolean;
 }
 
 /** Persisted server-side in sim_meta.uiControls; sent to generation as ?ui_controls=<JSON>. */
@@ -58,7 +63,8 @@ export function sanitizeControls(raw: unknown): SimUiControl[] | null {
   for (const item of raw) {
     if (out.length >= MAX_UI_CONTROLS) break;
     if (!item || typeof item !== 'object') continue;
-    const { selector, kind, label } = item as { selector?: unknown; kind?: unknown; label?: unknown };
+    const { selector, kind, label, hidden } =
+      item as { selector?: unknown; kind?: unknown; label?: unknown; hidden?: unknown };
     if (typeof selector !== 'string' || !selector.trim()) continue;
     const sel = selector.trim();
     // Backend caps: a selector over 300 chars would fail SimUiSelectionSchema, and
@@ -67,11 +73,14 @@ export function sanitizeControls(raw: unknown): SimUiControl[] | null {
     if (seen.has(sel)) continue;
     seen.add(sel);
     const rawLabel = typeof label === 'string' && label.trim() ? label.trim() : sel;
-    out.push({
+    const clean: SimUiControl = {
       selector: sel,
       kind: typeof kind === 'string' && KINDS.includes(kind) ? (kind as SimUiControlKind) : 'other',
       label: rawLabel.slice(0, SIM_UI_LABEL_MAX_CHARS),
-    });
+    };
+    // Truthy → true; false/absent → key OMITTED (canonical "visible", keeps payloads lean).
+    if (hidden) clean.hidden = true;
+    out.push(clean);
   }
   return out.length > 0 ? out : null;
 }
@@ -109,8 +118,9 @@ function eqSorted(a: string[], b: string[]): boolean {
 
 /**
  * Normalized deep-equality of two selections; absent == absent. Compares the semantic
- * selection (sorted show + hide selector sets) — control labels/order/kinds may drift
- * between scans of the same sim and must not count as a change.
+ * selection (sorted show + hide selector sets) — control labels/order/kinds and the
+ * `hidden` scan-metadata flag may drift between scans of the same sim and must not
+ * count as a change.
  */
 export function selectionsEqual(a?: SimUiSelection | null, b?: SimUiSelection | null): boolean {
   if (!a && !b) return true;
@@ -120,7 +130,8 @@ export function selectionsEqual(a?: SimUiSelection | null, b?: SimUiSelection | 
 
 /**
  * Merge a static (HTML-parse) scan with a runtime (live DOM) scan.
- * Runtime wins on selector collision; otherwise union, runtime order first.
+ * Runtime wins on selector collision (so its `hidden` flag survives — the static scan
+ * cannot know visibility); otherwise union, runtime order first.
  */
 export function mergeScans(
   staticControls: SimUiControl[] | null | undefined,

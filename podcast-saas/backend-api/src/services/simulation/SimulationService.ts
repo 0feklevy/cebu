@@ -241,19 +241,25 @@ const BRIDGE_TEMPLATE = /* js */ `;(function(){
 //  - Accepts any origin, matching the existing bridge listener pattern.
 //  - Exposes window.__SIM_ENV parsed once from the iframe's own URL query params
 //    (lowend / dpr / mem / section) — an enabler sims may consult later.
-//  - v2: answers {type:'listSimControls'} with {type:'simControlsList', controls} — a runtime
-//    scan of the LIVE DOM's visible interactive controls for the Minimal-UI picker. It
-//    duplicates the tiny kind/label derivation from SimUiControls.ts inline so the gate
-//    stays fully self-contained; keep the two in sync. Selectors: #id → [name] → an
-//    unambiguous CHILD-combinator nth-of-type path anchored at the nearest #id ancestor
-//    (or body) — only THIS live-DOM scanner may emit structural paths; the static scanner
-//    emits #id/[name] only. Version bumps replace v1 blocks via the existing marker
-//    machinery (RAF_GATE_BLOCK_RE strips any version).
+//  - v3: answers {type:'listSimControls'} with {type:'simControlsList', controls} — a runtime
+//    scan of the LIVE DOM's interactive controls for the Minimal-UI picker. It scans ALL
+//    matching elements: visible ones fill the 100 cap first, then hidden ones (display:none
+//    menus like an "Advanced Mode" disclosure) are appended flagged hidden:true. Labels come
+//    from an ordered ladder (aria-label → aria-labelledby → label[for] → wrapping label minus
+//    the control's own subtree → sibling label before the control → short previous-sibling
+//    text → parent's direct text → button text → title → placeholder → name → id → "<Kind> N")
+//    so hand-rolled panels (sibling <label>Speed:</label> rows, label-wrapped checkboxes) get
+//    human names — never a bare tag name. Kind/selector policy mirrors SimUiControls.ts (the
+//    gate stays self-contained, so the logic is duplicated inline; keep the two in sync).
+//    Selectors: #id → [name] → an unambiguous CHILD-combinator nth-of-type path anchored at
+//    the nearest #id ancestor (or body) — only THIS live-DOM scanner may emit structural
+//    paths; the static scanner emits #id/[name] only. Version bumps replace older blocks via
+//    the existing marker machinery (RAF_GATE_BLOCK_RE strips any version).
 //
 // IMPORTANT: the script body must NOT start with `(function` and must not contain the string
 // "sim-bridge v1"/"sim-bridge v2" — the legacy cleanup regexes in this file strip such blocks.
 
-const RAF_GATE_VERSION = 2;
+const RAF_GATE_VERSION = 3;
 const RAF_GATE_MARKER_START = `<!-- sim-raf-gate v${RAF_GATE_VERSION} -->`;
 const RAF_GATE_MARKER_END   = '<!-- /sim-raf-gate -->';
 // Strips any version of the gate block (plus the '\n' separator injectRafGate adds before it)
@@ -296,9 +302,10 @@ const RAF_GATE_TEMPLATE = /* js */ `;(function () {
       nativeRaf(pending[i].cb);
     }
   }
-  // ── Minimal-UI control picker: runtime scan (v2) ────────────────────────────
-  // Mirrors the static scanner's kind/label/selector derivation (SimUiControls.ts) —
-  // duplicated inline because the gate must stay self-contained. Keep in sync.
+  // ── Minimal-UI control picker: runtime scan (v3) ────────────────────────────
+  // Mirrors the static scanner's kind/selector derivation (SimUiControls.ts) — duplicated
+  // inline because the gate must stay self-contained. The label LADDER below is richer
+  // than the static one (it sees the live DOM); keep kind/selector policy in sync.
   function prettyName(raw) {
     return String(raw).replace(/[-_]+/g, ' ').replace(/([a-z0-9])([A-Z])/g, '$1 $2')
       .replace(/\\s+/g, ' ').trim().toLowerCase()
@@ -320,23 +327,106 @@ const RAF_GATE_TEMPLATE = /* js */ `;(function () {
     if (tag === 'input' || tag === 'textarea') return 'input';
     return 'other';
   }
-  function controlLabel(el, kind) {
-    var v = el.getAttribute('aria-label');
-    if (v && v.trim()) return v.trim().slice(0, 200);
-    if (el.id) {
+  // Every ladder result goes through cleanLabel: collapsed whitespace, trimmed, ONE
+  // trailing ':' stripped ("Speed:" -> "Speed"), capped at 60 chars.
+  function cleanLabel(raw) {
+    var s = String(raw == null ? '' : raw).replace(/\\s+/g, ' ').trim();
+    s = s.replace(/\\s*:$/, '').trim();
+    if (s.length > 60) s = s.slice(0, 60).replace(/\\s+$/, '');
+    return s;
+  }
+  // Text of root's subtree EXCLUDING one element's subtree — a wrapping <label>'s own
+  // words minus the control (and its value/options) living inside it.
+  function textOutside(root, exclude) {
+    var t = '', kids = root.childNodes;
+    for (var i = 0; i < kids.length; i++) {
+      var n = kids[i];
+      if (n === exclude) continue;
+      if (n.nodeType === 3) t += n.nodeValue + ' ';
+      else if (n.nodeType === 1) t += textOutside(n, exclude) + ' ';
+    }
+    return t;
+  }
+  // A previous sibling that is itself a control (or wraps one) must never donate its
+  // text as OUR label — "Reset" must not inherit the neighbouring "Pause" button's text.
+  function isControlish(node) {
+    var t = node.tagName ? node.tagName.toLowerCase() : '';
+    if (t === 'button' || t === 'input' || t === 'select' || t === 'textarea' || t === 'a') return true;
+    try { return !!node.querySelector('button, input, select, textarea'); } catch (err) { return false; }
+  }
+  function kindName(kind) {
+    if (kind === 'slider') return 'Slider';
+    if (kind === 'toggle') return 'Toggle';
+    if (kind === 'button') return 'Button';
+    if (kind === 'select') return 'Select';
+    if (kind === 'input') return 'Input';
+    return 'Control';
+  }
+  // Label ladder (v3) — first non-empty rung wins:
+  //  (a) aria-label                (b) aria-labelledby (ids resolved, texts joined)
+  //  (c) <label for=ID>            (d) el.closest('label') minus the control's own subtree
+  //  (e) sibling label BEFORE el (a <label> or class*="label") among the parent's children
+  //  (f) previous element sibling's short text (<= 40 chars, non-control)
+  //  (g) parent's direct text nodes joined, when short (<= 40 chars)
+  //  (h) button/link own text      (i) title            (j) placeholder
+  //  (k) name prettified           (l) id prettified
+  //  (m) "<Kind> N" (e.g. "Slider 2") — never the bare tag name.
+  function controlLabel(el, kind, nth) {
+    var v, i, t;
+    v = cleanLabel(el.getAttribute('aria-label'));                              // (a)
+    if (v) return v;
+    t = el.getAttribute('aria-labelledby');                                     // (b)
+    if (t) {
+      var ids = t.replace(/\\s+/g, ' ').trim().split(' ');
+      t = '';
+      for (i = 0; i < ids.length; i++) {
+        var ref = document.getElementById(ids[i]);
+        if (ref && ref.textContent) t += ref.textContent + ' ';
+      }
+      v = cleanLabel(t);
+      if (v) return v;
+    }
+    if (el.id) {                                                                // (c)
       var lab = null;
       try { lab = document.querySelector('label[for="' + el.id + '"]'); } catch (err) { /* odd id */ }
-      if (lab && lab.textContent && lab.textContent.trim()) return lab.textContent.trim().slice(0, 200);
+      if (lab) { v = cleanLabel(lab.textContent); if (v) return v; }
     }
-    if (kind === 'button' && el.textContent && el.textContent.trim()) return el.textContent.trim().slice(0, 200);
-    v = el.getAttribute('title');
-    if (v && v.trim()) return v.trim().slice(0, 200);
-    v = el.getAttribute('placeholder');
-    if (v && v.trim()) return v.trim().slice(0, 200);
-    v = el.getAttribute('name');
-    if (v && v.trim()) return prettyName(v).slice(0, 200);
-    if (el.id) return prettyName(el.id).slice(0, 200);
-    return prettyName(el.tagName.toLowerCase());
+    var wrap = el.closest ? el.closest('label') : null;                         // (d)
+    if (wrap && wrap !== el) { v = cleanLabel(textOutside(wrap, el)); if (v) return v; }
+    if (el.parentElement) {                                                     // (e)
+      var kids = el.parentElement.children;
+      for (i = 0; i < kids.length; i++) {
+        var k = kids[i];
+        if (k === el) break;
+        if (k.tagName.toLowerCase() === 'label' ||
+            (k.getAttribute('class') || '').toLowerCase().indexOf('label') !== -1) {
+          v = cleanLabel(k.textContent);
+          if (v) return v;
+        }
+      }
+    }
+    var prev = el.previousElementSibling;                                       // (f)
+    if (prev && !isControlish(prev)) {
+      v = cleanLabel(prev.textContent);
+      if (v && v.length <= 40) return v;
+    }
+    if (el.parentElement) {                                                     // (g)
+      var pk = el.parentElement.childNodes;
+      t = '';
+      for (i = 0; i < pk.length; i++) { if (pk[i].nodeType === 3) t += pk[i].nodeValue + ' '; }
+      v = cleanLabel(t);
+      if (v && v.length <= 40) return v;
+    }
+    if (kind === 'button') { v = cleanLabel(el.textContent); if (v) return v; } // (h)
+    v = cleanLabel(el.getAttribute('title'));                                   // (i)
+    if (v) return v;
+    v = cleanLabel(el.getAttribute('placeholder'));                             // (j)
+    if (v) return v;
+    v = cleanLabel(prettyName(el.getAttribute('name') || ''));                  // (k)
+    if (v) return v;
+    v = cleanLabel(prettyName(el.id || ''));                                    // (l)
+    if (v) return v;
+    return kindName(kind) + ' ' + nth;                                          // (m)
   }
   function nthOfType(el) {
     var n = 1, sib = el.previousElementSibling;
@@ -367,15 +457,20 @@ const RAF_GATE_TEMPLATE = /* js */ `;(function () {
     return (anchor ? anchor + ' > ' : '') + parts.join(' > ');
   }
   function listSimControls() {
-    var out = [];
+    var vis = [];   // visible controls — these fill the 100 cap FIRST
+    var hid = [];   // hidden controls (collapsed menus / display:none groups) — flagged hidden:true
     var seen = {};
+    var counts = {};
     var nodes = document.querySelectorAll('button, input, select, textarea, [role="button"], [role="slider"], [role="switch"]');
-    for (var i = 0; i < nodes.length && out.length < 100; i++) {
+    for (var i = 0; i < nodes.length; i++) {
+      if (vis.length >= 100) break;   // visible alone can fill the cap — hidden never displaces visible
       var el = nodes[i];
       if (el.tagName.toLowerCase() === 'input' && (el.getAttribute('type') || '').toLowerCase() === 'hidden') continue;
       var fixed = false;
       try { fixed = getComputedStyle(el).position === 'fixed'; } catch (err) { /* detached */ }
-      if (el.offsetParent === null && !fixed) continue;   // visible controls only
+      // hidden = not laid out (display:none subtree) and not position:fixed. Such controls
+      // ARE included — sims hide whole groups behind an "Advanced" toggle — just flagged.
+      var isHidden = !(el.offsetParent !== null || fixed);
       var selector = controlSelector(el);
       // The wrap templates (and the backend schema) reject selectors containing { } <
       // or backslash — never emit them. Cap length to the schema's selector max (300).
@@ -384,8 +479,12 @@ const RAF_GATE_TEMPLATE = /* js */ `;(function () {
       if (seen['s:' + selector]) continue;                // dedupe by selector
       seen['s:' + selector] = true;
       var kind = controlKind(el);
-      out.push({ selector: selector, kind: kind, label: controlLabel(el, kind) });
+      counts[kind] = (counts[kind] || 0) + 1;             // per-kind index for the "<Kind> N" fallback
+      var c = { selector: selector, kind: kind, label: controlLabel(el, kind, counts[kind]) };
+      if (isHidden) { c.hidden = true; if (hid.length < 100) hid.push(c); }
+      else { vis.push(c); }
     }
+    var out = vis.concat(hid).slice(0, 100);              // visible first, then hidden, capped
     window.parent && window.parent.postMessage({ type: 'simControlsList', controls: out }, '*');
   }
   window.addEventListener('message', function (e) {

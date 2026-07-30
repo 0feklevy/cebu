@@ -163,6 +163,37 @@ describe('scanSimUiControls — kinds, labels, selectors', () => {
     expect(prettifyIdentifier('playPauseBtn')).toBe('Play Pause Btn');
     expect(prettifyIdentifier('show-velocity_vectors')).toBe('Show Velocity Vectors');
   });
+
+  it('derives wrapped-label text — <label>TEXT<input></label> AND text-after-control forms', () => {
+    const out = scanSimUiControls([
+      // Text before the control (the plan's canonical form).
+      '<label>Wind speed: <input type="range" id="windSpeed"></label>',
+      // Text AFTER the control — the flagship hand-rolled checkbox pattern
+      // (<label class="checkbox-label"><input><span class=custom-checkbox/> Own wings</label>).
+      '<label class="checkbox-label"><input type="checkbox" id="ownWings"><span class="custom-checkbox"></span> Own wings</label>',
+      // A wrapped <select>: its <option> text must NOT leak into the label.
+      '<label><select name="preset2"><option>Very long option text</option></select> Preset</label>',
+    ].join('\n'));
+    const m = new Map(out.map(c => [c.selector, c]));
+    expect(m.get('#windSpeed')?.label).toBe('Wind speed');       // trailing ':' stripped
+    expect(m.get('#windSpeed')?.kind).toBe('slider');
+    expect(m.get('#ownWings')?.label).toBe('Own wings');
+    expect(m.get('#ownWings')?.kind).toBe('toggle');
+    expect(m.get('[name="preset2"]')?.label).toBe('Preset');
+  });
+
+  it('wrapped-label text loses to aria-label and label[for], but beats title/placeholder/name/id', () => {
+    const out = scanSimUiControls([
+      '<label>Wrapped A <input type="range" id="wa" aria-label="Aria wins"></label>',
+      '<label for="wb">For wins</label>',
+      '<label>Wrapped B <input type="range" id="wb"></label>',
+      '<label>Wrapped C <input type="text" id="wc" title="Title loses" placeholder="Ph loses"></label>',
+    ].join('\n'));
+    const m = new Map(out.map(c => [c.selector, c]));
+    expect(m.get('#wa')?.label).toBe('Aria wins');
+    expect(m.get('#wb')?.label).toBe('For wins');
+    expect(m.get('#wc')?.label).toBe('Wrapped C');
+  });
 });
 
 // ── (b) Zod schema ────────────────────────────────────────────────────────────
@@ -227,6 +258,21 @@ describe('SimUiSelectionSchema', () => {
       hide: ['body > canvas:nth-of-type(1)'],
     }).success).toBe(true);
   });
+
+  it('accepts the optional hidden flag (gate v3 scan metadata) and rejects non-boolean values', () => {
+    expect(SimUiSelectionSchema.safeParse({
+      ...VALID_SELECTION,
+      controls: [
+        { selector: '#a', kind: 'button', label: 'A', hidden: true },
+        { selector: '#b', kind: 'slider', label: 'B', hidden: false },
+        { selector: '#c', kind: 'toggle', label: 'C' },               // absent stays fine
+      ],
+    }).success).toBe(true);
+    expect(SimUiSelectionSchema.safeParse({
+      ...VALID_SELECTION,
+      controls: [{ selector: '#a', kind: 'button', label: 'A', hidden: 'yes' }],
+    }).success).toBe(false);
+  });
 });
 
 // ── (c) Normalization + canReuse equality matrix ──────────────────────────────
@@ -267,6 +313,26 @@ describe('simUiSelectionsEqual — canReuse selection matrix', () => {
     expect(simUiSelectionsEqual(a, b)).toBe(true);
   });
 
+  it('same picks with drifted hidden flags → STILL equal (hidden is scan metadata, never busts canReuse)', () => {
+    // The same control can flip hidden between scans (menu open vs closed at scan time).
+    const a: SimUiSelection = {
+      controls: [
+        { selector: '#a', kind: 'button', label: 'Run' },
+        { selector: '#b', kind: 'slider', label: 'Speed', hidden: true },
+      ],
+      show: ['#a'], hide: ['#b'],
+    };
+    const b: SimUiSelection = {
+      controls: [
+        { selector: '#a', kind: 'button', label: 'Run', hidden: true },
+        { selector: '#b', kind: 'slider', label: 'Speed' },
+      ],
+      show: ['#a'], hide: ['#b'],
+    };
+    expect(simUiSelectionsEqual(a, b)).toBe(true);
+    expect(simUiSelectionsEqual(normalizeSimUiSelection(a), normalizeSimUiSelection(b))).toBe(true);
+  });
+
   it('different selection → not equal (regenerate)', () => {
     expect(simUiSelectionsEqual(sel(['#a'], ['#b']), sel(['#b'], ['#a']))).toBe(false);
   });
@@ -287,6 +353,28 @@ describe('simUiSelectionsEqual — canReuse selection matrix', () => {
     // Unknown selectors are NOT dropped.
     const withUnknown = normalizeSimUiSelection({ ...VALID_SELECTION, hide: ['#not-in-controls'] });
     expect(withUnknown.hide).toEqual(['#not-in-controls']);
+  });
+
+  it('normalize keeps hidden:true and canonicalizes false/absent to the key being ABSENT', () => {
+    const n = normalizeSimUiSelection({
+      controls: [
+        { selector: '#a', kind: 'button', label: 'A', hidden: true },
+        { selector: '#b', kind: 'slider', label: 'B', hidden: false },
+        { selector: '#c', kind: 'toggle', label: 'C' },
+      ],
+      show: [], hide: [],
+    });
+    expect(n.controls[0].hidden).toBe(true);
+    expect('hidden' in n.controls[1]).toBe(false);
+    expect('hidden' in n.controls[2]).toBe(false);
+  });
+
+  it('readStoredUiControls round-trips the hidden flag', () => {
+    const stored: SimUiSelection = {
+      controls: [{ selector: '#adv', kind: 'slider', label: 'Wind', hidden: true }],
+      show: [], hide: ['#adv'],
+    };
+    expect(readStoredUiControls(stored)?.controls[0].hidden).toBe(true);
   });
 
   it('readStoredUiControls tolerates malformed jsonb (→ undefined, i.e. absent)', () => {

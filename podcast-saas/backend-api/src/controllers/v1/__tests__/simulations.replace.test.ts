@@ -235,7 +235,7 @@ describe('POST …/simulations/:simId/replace — happy path', () => {
     // The new entry HTML got the full system re-injection.
     const entryCall = mockStorage.uploadFile.mock.calls.find((c) => c[0] === `${PREFIX}/index.html`)!;
     const entryHtml = (entryCall[1] as Buffer).toString('utf-8');
-    expect(entryHtml.split('<!-- sim-raf-gate v2 -->').length - 1).toBe(1);       // one head gate
+    expect(entryHtml.split('<!-- sim-raf-gate v3 -->').length - 1).toBe(1);       // one head gate
     expect(entryHtml).toContain("d.type === 'simPause'");
     expect(entryHtml).toContain(`bridge.js?v=${bridgeHash}`);                     // current bridge hash
     expect(entryHtml).toContain(`guidance.js?v=${guidanceHash}`);                 // current guidance hash
@@ -263,7 +263,7 @@ describe('POST …/simulations/:simId/replace — happy path', () => {
 
     const entryCall = mockStorage.uploadFile.mock.calls.find((c) => c[0] === `${PREFIX}/index.html`)!;
     const entryHtml = (entryCall[1] as Buffer).toString('utf-8');
-    expect(entryHtml).toContain('<!-- sim-raf-gate v2 -->');
+    expect(entryHtml).toContain('<!-- sim-raf-gate v3 -->');
     expect(entryHtml.split('/* sim-bridge v2').length - 1).toBe(1);   // inline template, once
     expect(entryHtml).not.toContain('SIM_BRIDGE_SCRIPT_START');
   });

@@ -18,7 +18,7 @@ import {
 } from '../SimulationService.js';
 import { wrapGuidanceCombined, type GuidanceEntryStored } from '../GuidanceService.js';
 
-const GATE_MARKER = '<!-- sim-raf-gate v2 -->';
+const GATE_MARKER = '<!-- sim-raf-gate v3 -->';
 const NO_FNS: BridgeFunction[] = [];
 
 const count = (haystack: string, needle: string): number => haystack.split(needle).length - 1;
@@ -86,17 +86,19 @@ describe('injection idempotency', () => {
     const once = injectRafGate(SIM_HTML);
     const twice = injectRafGate(once);
     expect(count(twice, GATE_MARKER)).toBe(1);
-    expect(count(twice, 'sim-raf-gate v2 — auto-injected')).toBe(1);
+    expect(count(twice, 'sim-raf-gate v3 — auto-injected')).toBe(1);
     expect(twice).toBe(once);
   });
 
-  it('replaces a stale v1 gate block with exactly one v2 block (version bump path)', () => {
-    const withV1 = injectRafGate(SIM_HTML).replace(/sim-raf-gate v2/g, 'sim-raf-gate v1');
-    expect(count(withV1, '<!-- sim-raf-gate v1 -->')).toBe(1);
-    const upgraded = injectRafGate(withV1);
-    expect(count(upgraded, GATE_MARKER)).toBe(1);
-    expect(upgraded).not.toContain('sim-raf-gate v1');
-    expect(upgraded).toBe(injectRafGate(SIM_HTML));
+  it('replaces a stale v1/v2 gate block with exactly one v3 block (version bump path)', () => {
+    for (const stale of ['sim-raf-gate v1', 'sim-raf-gate v2']) {
+      const withStale = injectRafGate(SIM_HTML).replace(/sim-raf-gate v3/g, stale);
+      expect(count(withStale, `<!-- ${stale} -->`)).toBe(1);
+      const upgraded = injectRafGate(withStale);
+      expect(count(upgraded, GATE_MARKER)).toBe(1);
+      expect(upgraded).not.toContain(stale);
+      expect(upgraded).toBe(injectRafGate(SIM_HTML));
+    }
   });
 
   it('collapses accidental duplicate gate blocks into one', () => {
@@ -205,24 +207,31 @@ describe('rAF gate snippet content', () => {
     expect(out).not.toContain('visibilitychange');
   });
 
-  it('v2: answers listSimControls with a simControlsList postMessage', () => {
+  it('v3: answers listSimControls with a simControlsList postMessage', () => {
     expect(out).toContain("d.type === 'listSimControls'");
     expect(out).toContain("postMessage({ type: 'simControlsList', controls: out }, '*')");
   });
 
-  it('v2: runtime scan targets interactive elements, filters to visible, dedupes and caps at 100', () => {
+  it('v3: runtime scan targets interactive elements, dedupes, and includes HIDDEN controls flagged hidden:true', () => {
     expect(out).toContain(
       "querySelectorAll('button, input, select, textarea, [role=\"button\"], [role=\"slider\"], [role=\"switch\"]')",
     );
-    expect(out).toContain('el.offsetParent === null && !fixed');           // visible-only filter
+    // Hidden controls are no longer dropped — they are computed and FLAGGED.
+    expect(out).toContain('var isHidden = !(el.offsetParent !== null || fixed);');
     expect(out).toContain("getComputedStyle(el).position === 'fixed'");
-    expect(out).toContain('out.length < 100');                             // cap
+    expect(out).toContain('c.hidden = true;');                             // hidden flag emission
+    expect(out).not.toContain('el.offsetParent === null && !fixed');       // old visible-only skip is gone
     expect(out).toContain("seen['s:' + selector]");                        // dedupe by selector
     expect(out).toContain("'hidden'");                                     // skips type=hidden inputs
   });
 
-  it('v2: mirrors the static kind/label derivation (self-contained)', () => {
-    // kind mapping
+  it('v3: 100 cap is filled with VISIBLE controls first, then hidden ones', () => {
+    expect(out).toContain('if (vis.length >= 100) break;');                // visible alone can fill the cap
+    expect(out).toContain('if (hid.length < 100) hid.push(c);');
+    expect(out).toContain('var out = vis.concat(hid).slice(0, 100);');     // visible first, then hidden
+  });
+
+  it('v3: kind mapping mirrors the static scanner (self-contained)', () => {
     for (const needle of [
       "if (type === 'range') return 'slider'",
       "if (type === 'checkbox' || type === 'radio') return 'toggle'",
@@ -230,14 +239,48 @@ describe('rAF gate snippet content', () => {
       "if (tag === 'button' || role === 'button') return 'button'",
       "if (tag === 'select') return 'select'",
     ]) expect(out).toContain(needle);
-    // label preference chain: aria-label → label[for] → text (buttons) → title → placeholder → name → id
-    expect(out).toContain("el.getAttribute('aria-label')");
-    expect(out).toContain('label[for=');
-    expect(out).toContain("el.getAttribute('title')");
-    expect(out).toContain("el.getAttribute('placeholder')");
   });
 
-  it('v2: selector preference #id → [name] → unambiguous CHILD-combinator nth-of-type path', () => {
+  it('v3: label LADDER — aria-label → aria-labelledby → label[for] → wrapping label → sibling label → prev text → parent text → button text → title → placeholder → name → id → "<Kind> N"', () => {
+    // (a) aria-label
+    expect(out).toContain("el.getAttribute('aria-label')");
+    // (b) aria-labelledby — ids resolved and joined
+    expect(out).toContain("el.getAttribute('aria-labelledby')");
+    expect(out).toContain('document.getElementById(ids[i])');
+    // (c) <label for=ID>
+    expect(out).toContain('label[for=');
+    // (d) wrapping label minus the control's own subtree (wrapped checkboxes → "Own wings")
+    expect(out).toContain("el.closest('label')");
+    expect(out).toContain('textOutside(wrap, el)');
+    // (e) SIBLING label before el — <label> tag or class containing "label" ("Speed:" rows)
+    expect(out).toContain('if (k === el) break;');
+    expect(out).toContain("indexOf('label') !== -1");
+    // (f) previous element sibling's short text — but never a fellow control's text
+    expect(out).toContain('el.previousElementSibling');
+    expect(out).toContain('!isControlish(prev)');
+    expect(out).toContain('v.length <= 40');
+    // (g) parent's direct text nodes joined, when short
+    expect(out).toContain('nodeType === 3');
+    // (h) button own text  (i) title  (j) placeholder
+    expect(out).toContain("if (kind === 'button') { v = cleanLabel(el.textContent); if (v) return v; }");
+    expect(out).toContain("el.getAttribute('title')");
+    expect(out).toContain("el.getAttribute('placeholder')");
+    // (k)/(l) name/id prettified
+    expect(out).toContain("prettyName(el.getAttribute('name') || '')");
+    expect(out).toContain("prettyName(el.id || '')");
+    // (m) numbered kind fallback — NEVER the bare tag name
+    expect(out).toContain("return kindName(kind) + ' ' + nth;");
+    expect(out).toContain("counts[kind] = (counts[kind] || 0) + 1;");
+    expect(out).not.toContain('prettyName(el.tagName');
+  });
+
+  it('v3: every ladder result is cleaned — collapsed whitespace, trailing ":" stripped, 60-char cap', () => {
+    expect(out).toContain('function cleanLabel(raw)');
+    expect(out).toContain(':$/');                    // trailing-colon strip regex
+    expect(out).toContain('s.length > 60');          // ~60-char label cap
+  });
+
+  it('v3: selector preference #id → [name] → unambiguous CHILD-combinator nth-of-type path', () => {
     expect(out).toContain("if (el.id) return '#' + el.id;");
     expect(out).toContain('[name=');
     // Child-path builder: per-level tag:nth-of-type(i) (i counted among same-TAG siblings),
@@ -253,12 +296,12 @@ describe('rAF gate snippet content', () => {
     expect(out).toContain('parts.unshift(nthOfType(node));');
   });
 
-  it('v2: never emits selectors containing { } < or backslash (or over 300 chars)', () => {
+  it('v3: never emits selectors containing { } < or backslash (or over 300 chars)', () => {
     // The emitted regex is /[{}<\\]/ — an escaped backslash inside the char class.
     expect(out).toContain('/[{}<\\\\]/.test(selector) || selector.length > 300');
   });
 
-  it('emits a syntactically valid script (v2 runtime scanner included)', () => {
+  it('emits a syntactically valid script (v3 runtime scanner included)', () => {
     const m = /<script>\n([\s\S]*?)\n<\/script>/.exec(out);
     expect(m).not.toBeNull();
     expect(() => new Function(m![1])).not.toThrow();

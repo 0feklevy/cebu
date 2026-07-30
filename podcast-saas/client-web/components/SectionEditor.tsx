@@ -1730,49 +1730,78 @@ export function SectionEditor({
                             </div>
                           ) : (
                             <div className="fine-scrollbar" style={{ flex: '1 1 auto', minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2 }}>
-                              {uiControls.map(c => {
-                                const checked = !uiUnchecked.has(c.selector);
-                                const chip = UI_KIND_CHIP[c.kind] ?? UI_KIND_CHIP.other;
-                                return (
-                                  <label
-                                    key={c.selector}
-                                    title={c.selector}
-                                    style={{
-                                      display: 'flex', alignItems: 'center', gap: 8,
-                                      padding: '4px 6px', borderRadius: 6, cursor: 'pointer',
-                                      backgroundColor: checked ? 'transparent' : 'rgba(0,0,0,0.03)',
-                                    }}
-                                  >
-                                    <input
-                                      type="checkbox"
-                                      checked={checked}
-                                      onChange={() => {
-                                        setUiUnchecked(prev => {
-                                          const next = new Set(prev);
-                                          if (next.has(c.selector)) next.delete(c.selector);
-                                          else next.add(c.selector);
-                                          return next;
-                                        });
-                                        setUiDirty(true);
+                              {(() => {
+                                // Visible controls first; hidden-by-default ones (runtime scan
+                                // flags collapsed menus) grouped under a subdued header, dimmed.
+                                const renderRow = (c: SimUiControl) => {
+                                  const checked = !uiUnchecked.has(c.selector);
+                                  const chip = UI_KIND_CHIP[c.kind] ?? UI_KIND_CHIP.other;
+                                  return (
+                                    <label
+                                      key={c.selector}
+                                      title={c.selector}
+                                      style={{
+                                        display: 'flex', alignItems: 'center', gap: 8,
+                                        padding: '4px 6px', borderRadius: 6, cursor: 'pointer',
+                                        backgroundColor: checked ? 'transparent' : 'rgba(0,0,0,0.03)',
+                                        opacity: c.hidden ? 0.72 : 1,
                                       }}
-                                      style={{ accentColor: '#f59e0b', cursor: 'pointer', flexShrink: 0 }}
-                                    />
-                                    <span style={{
-                                      fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 4,
-                                      backgroundColor: chip.bg, color: chip.fg, flexShrink: 0,
-                                    }}>
-                                      {kindLabel(c.kind)}
-                                    </span>
-                                    <span style={{
-                                      fontSize: 11.5, color: checked ? '#374151' : '#9ca3af',
-                                      textDecoration: checked ? 'none' : 'line-through',
-                                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                                    }}>
-                                      {c.label}
-                                    </span>
-                                  </label>
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={checked}
+                                        onChange={() => {
+                                          setUiUnchecked(prev => {
+                                            const next = new Set(prev);
+                                            if (next.has(c.selector)) next.delete(c.selector);
+                                            else next.add(c.selector);
+                                            return next;
+                                          });
+                                          setUiDirty(true);
+                                        }}
+                                        style={{ accentColor: '#f59e0b', cursor: 'pointer', flexShrink: 0 }}
+                                      />
+                                      <span style={{
+                                        fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 4,
+                                        backgroundColor: chip.bg, color: chip.fg, flexShrink: 0,
+                                      }}>
+                                        {kindLabel(c.kind)}
+                                      </span>
+                                      <span style={{
+                                        fontSize: 11.5, color: checked ? '#374151' : '#9ca3af',
+                                        textDecoration: checked ? 'none' : 'line-through',
+                                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                        minWidth: 0,
+                                      }}>
+                                        {c.label}
+                                      </span>
+                                      {c.hidden && (
+                                        <span style={{
+                                          marginLeft: 'auto', flexShrink: 0,
+                                          fontSize: 8.5, fontWeight: 700, letterSpacing: '0.04em',
+                                          padding: '1px 5px', borderRadius: 4,
+                                          border: '1px solid #e5e7eb', backgroundColor: '#f3f4f6', color: '#9ca3af',
+                                        }}>
+                                          hidden
+                                        </span>
+                                      )}
+                                    </label>
+                                  );
+                                };
+                                const visibleRows = uiControls.filter(c => !c.hidden);
+                                const hiddenRows = uiControls.filter(c => c.hidden);
+                                return (
+                                  <>
+                                    {visibleRows.map(renderRow)}
+                                    {hiddenRows.length > 0 && (
+                                      <div style={{ margin: '6px 0 1px', padding: '0 6px', fontSize: 9.5, fontWeight: 600, color: '#9ca3af' }}>
+                                        Hidden by default — open the sim&rsquo;s menus to see them in the preview
+                                      </div>
+                                    )}
+                                    {hiddenRows.map(renderRow)}
+                                  </>
                                 );
-                              })}
+                              })()}
                             </div>
                           )}
 

@@ -29,6 +29,11 @@ export interface SimUiControl {
   selector: string;
   kind:     SimUiControlKind;
   label:    string;
+  /** Scan METADATA (runtime scanner, gate v3): the control exists but is display:none until
+   *  the sim's own menus are opened (e.g. an "Advanced Mode" disclosure). Persisted so the
+   *  picker can group such rows; IGNORED by selection equality — a drifting hidden flag must
+   *  never bust canReuse. Absent/false = visible. */
+  hidden?:  boolean;
 }
 
 /** The user's Minimal-UI selection: the scanned control list plus which selectors stay
@@ -62,6 +67,9 @@ export const SimUiControlSchema = z.object({
   selector: SelectorSchema,
   kind:     z.enum(['button', 'slider', 'toggle', 'select', 'input', 'other']),
   label:    z.string().max(SIM_UI_LABEL_MAX_CHARS),
+  // Scan metadata (see SimUiControl.hidden). Optional — adds a few bytes per hidden control
+  // inside the ≤8 KB ui_controls param, which the budget comfortably absorbs.
+  hidden:   z.boolean().optional(),
 });
 
 export const SimUiSelectionSchema = z.object({
@@ -73,12 +81,17 @@ export const SimUiSelectionSchema = z.object({
 // ── Normalization + equality (canReuse) ───────────────────────────────────────
 
 /** Deterministic form for persistence and comparison: show/hide sorted, control objects
- *  rebuilt with a fixed key order. Selectors are deliberately NOT filtered against
- *  `controls` — the client owns coherence; an unknown selector is a harmless no-op
- *  CSS rule at runtime. */
+ *  rebuilt with a fixed key order (`hidden` kept only when true — false/absent both mean
+ *  visible and are normalized to the key being ABSENT). Selectors are deliberately NOT
+ *  filtered against `controls` — the client owns coherence; an unknown selector is a
+ *  harmless no-op CSS rule at runtime. */
 export function normalizeSimUiSelection(sel: SimUiSelection): SimUiSelection {
   return {
-    controls: sel.controls.map(c => ({ selector: c.selector, kind: c.kind, label: c.label })),
+    controls: sel.controls.map(c => {
+      const out: SimUiControl = { selector: c.selector, kind: c.kind, label: c.label };
+      if (c.hidden === true) out.hidden = true;
+      return out;
+    }),
     show:     [...sel.show].sort(),
     hide:     [...sel.hide].sort(),
   };
@@ -94,9 +107,10 @@ function sortedSelectorsEqual(a: string[], b: string[]): boolean {
 /** Selection equality for canReuse: both-absent = equal; a presence mismatch (selection
  *  added or removed) is NOT equal, so the bridge regenerates. Compares ONLY the sorted
  *  show + hide selector sets — the semantic selection, matching the FE contract
- *  (client selectionsEqual). `controls` is scan metadata: labels/kinds/order drift
- *  between scans of the same sim and must NOT force a spurious regeneration. The controls
- *  array is still persisted alongside the selection (for restore + the prompt block). */
+ *  (client selectionsEqual). `controls` is scan metadata: labels/kinds/order — and the
+ *  v3 `hidden` flag — drift between scans of the same sim and must NOT force a spurious
+ *  regeneration. The controls array is still persisted alongside the selection (for
+ *  restore + the prompt block). */
 export function simUiSelectionsEqual(
   a: SimUiSelection | undefined,
   b: SimUiSelection | undefined,
@@ -213,8 +227,9 @@ const BUTTONISH_CLASS_RE = /(?:^|[\s_-])(?:btn|button)(?:$|[\s_-])/i;
  *
  * Extracted: <button>, <input> (all types except hidden), <select>, <textarea>,
  * elements with role="button"|"slider"|"switch", and <a> with a button-ish class.
- * Label preference: aria-label → <label for> → text content (buttons) → title →
- * placeholder → name → id (prettified).
+ * Label preference: aria-label → <label for> → wrapping <label> text (the label's own
+ * words minus embedded controls — covers `<label><input type=checkbox> Own wings</label>`)
+ * → text content (buttons) → title → placeholder → name → id (prettified).
  *
  * Selectors: ONLY unambiguous ones — #id or [name="…"]. Regex parsing cannot see the
  * real DOM tree, so a static structural path (nth-of-type) can collapse distinct
@@ -236,6 +251,34 @@ export function scanSimUiControls(html: string): SimUiControl[] {
 
   const controls: SimUiControl[] = [];
   const seen = new Set<string>();
+
+  // Wrapped-label pass: `<label …>TEXT…<input …>…</label>` (text before OR after the
+  // control) labels the FIRST #id/[name] control inside the label. The label's own text is
+  // what remains after removing embedded control markup — mirrors the runtime ladder's
+  // closest('label')-minus-own-subtree rung. First label wins per selector.
+  const wrappedLabels = new Map<string, string>();
+  {
+    const labelBlockRe = /<label\b(?:"[^"]*"|'[^']*'|[^"'>])*>([\s\S]*?)<\/label\s*>/gi;
+    const innerCtrlRe = /<(input|select|textarea|button)\b((?:"[^"]*"|'[^']*'|[^"'>])*)>/i;
+    let lb: RegExpExecArray | null;
+    while ((lb = labelBlockRe.exec(src)) !== null) {
+      const inner = lb[1];
+      const cm = innerCtrlRe.exec(inner);
+      if (!cm) continue;
+      const cid   = attrValue(cm[2] ?? '', 'id');
+      const cname = attrValue(cm[2] ?? '', 'name');
+      const sel = cid ? `#${cid}` : cname ? `[name="${cname}"]` : null;
+      if (!sel || wrappedLabels.has(sel)) continue;
+      const text = stripInnerTags(
+        inner
+          // Content-bearing controls go entirely (a <select>'s options are not label text)…
+          .replace(/<(select|button|textarea)\b[\s\S]*?<\/\1\s*>/gi, ' ')
+          // …void <input> tags too, so only the label's own words remain.
+          .replace(/<input\b(?:"[^"]*"|'[^']*'|[^"'>])*>/gi, ' '),
+      ).replace(/\s*:$/, '').trim();
+      if (text) wrappedLabels.set(sel, text);
+    }
+  }
 
   const openTagRe = /<([a-zA-Z][a-zA-Z0-9-]*)((?:"[^"]*"|'[^']*'|[^"'>])*)>/g;
   let m: RegExpExecArray | null;
@@ -272,6 +315,7 @@ export function scanSimUiControls(html: string): SimUiControl[] {
       const text = stripInnerTags(labelRe.exec(src)?.[1] ?? '');
       if (text) label = text;
     }
+    if (!label) label = wrappedLabels.get(selector);   // wrapping <label>…<input…>…</label>
     if (!label && kind === 'button' && tag !== 'input') {
       // Element text content — buttons only (a <select>'s text would be all its options).
       const closeRe = new RegExp(`</${tag}\\s*>`, 'ig');
