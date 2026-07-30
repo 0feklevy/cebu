@@ -41,9 +41,15 @@ function getSimService(): SimulationService {
 // that was never persisted. We let only one generation per section proceed at a time (backend-005).
 const activeSimGenerations = new Set<string>();
 
-// Hard ceiling on a single sim-script generation so a hung LLM provider can't pin an open SSE
-// socket + keep-alive forever with the user stuck on "Generating…" (backend-007).
-const SIM_GEN_TIMEOUT_MS = 120_000;
+// Hard BACKSTOP for a single sim-script generation so a hung LLM provider can't pin an open
+// SSE socket forever (backend-007). This is the pathological ceiling, NOT the expected time:
+// bridge_plan runs on claude-opus-4-8 with adaptive thinking (always on) + effort:'high' at
+// max_tokens 32000, streamed — one call alone realistically takes 1.5-6 min, and a generation
+// can make an initial call + one validation-retry call. The old 120s guard fired mid-thought on
+// legitimate generations ("Generation timed out"); 15 min leaves room for the retry path while
+// still killing a truly wedged provider. A stall-aware heartbeat (runSseGeneration) keeps the
+// UI honest in the meantime so the long wait never looks frozen.
+const SIM_GEN_TIMEOUT_MS = 900_000;
 
 /** Resolve a simulation's entry_file (may be a storage key or a legacy full URL) to a public URL. */
 function resolveSimEntryUrl(entryFile: string | null): string | null {
@@ -305,6 +311,234 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
     generation_error: 'Generation failed. Please try again or simplify your prompt.',
   };
 
+  // The generate request body (shared by the POST stream route, the POST non-stream route,
+  // and — parsed from the query string — the legacy GET stream route). `prompt` is OPTIONAL:
+  // an empty prompt WITH a ui_controls selection is the zero-LLM "minimize UI only" path
+  // (owner direction 2026-07-30 — "generate without prompt ⇒ only minimize the ui").
+  const GenerateSimScriptSchema = z
+    .object({
+      prompt:      z.string().max(1000).optional(),
+      simple_ui:   z.boolean(),
+      auto_script: z.boolean(),
+      ui_controls: SimUiSelectionSchema.optional(),
+    })
+    .refine(d => (d.prompt?.trim().length ?? 0) > 0 || !!d.ui_controls, {
+      message: 'Provide a prompt, or select UI controls to minimize.',
+    });
+  type GenerateSimScriptInput = z.infer<typeof GenerateSimScriptSchema>;
+  type SectionRow = typeof timeline_sections.$inferSelect;
+
+  /** Readable first-issue message from a Zod error, prefixed with the field path. */
+  const firstZodMessage = (e: z.ZodError): string => {
+    const i = e.issues[0];
+    return i ? `${i.path.join('.') || 'request'}: ${i.message}` : 'Invalid request';
+  };
+
+  /**
+   * The ONE place sim-script generation decides what to do and persists the result — shared
+   * by every route (GET/POST stream + non-stream POST) so the canReuse / mechanical / LLM
+   * decision, the planVersion-'7' sim_meta shape, and the DB write never drift between them.
+   *
+   * Three outcomes:
+   *   • mechanical  — empty prompt + a selection ⇒ NO LLM: apply the Minimal-UI hide only.
+   *   • reuse       — same prompt + own bridge + runtime-param bridge ⇒ no regeneration.
+   *   • regenerate  — call the LLM (with the lean Minimal-UI contract block).
+   */
+  async function generateOrReuseSection(opts: {
+    section:    SectionRow;
+    project:    { id: string };
+    user:       { id: string };
+    input:      GenerateSimScriptInput;
+    signal:     AbortSignal;
+    onEvent?:   (event: string, data: object) => void;
+  }): Promise<SectionRow> {
+    const { section, project, user, input, signal, onEvent } = opts;
+    const svc = getSimService();
+    const rawPrompt = (input.prompt ?? '').trim();
+    const simpleUi = input.simple_ui;
+    const autoScript = input.auto_script;
+    const uiControls: SimUiSelection | undefined =
+      input.ui_controls ? normalizeSimUiSelection(input.ui_controls) : undefined;
+
+    const storedMeta = section.sim_meta as (Record<string, unknown> & {
+      planVersion?: string; sourceHash?: string; prompt?: string;
+      supportsRuntimeParams?: boolean; generatedBy?: string;
+      conversationHistory?: ConversationMessage[];
+    }) | null;
+
+    const patch: Record<string, unknown> = { simple_ui: simpleUi, auto_script: autoScript, sim_script: 'main' };
+    let sectionUrl: string;
+
+    if (rawPrompt === '') {
+      // ── Mechanical Minimal-UI path — zero LLM ────────────────────────────────
+      // No prompt means "just minimize the UI as chosen": the hide is applied entirely at
+      // runtime via params.hideSelectors; any existing demonstration body is preserved.
+      const simRow = await db.query.simulations.findFirst({
+        where: and(eq(simulations.id, section.simulation_id!), eq(simulations.project_id, project.id)),
+      });
+      const res = await svc.applyMinimalUiOnly({
+        simId:     section.simulation_id!,
+        sectionId: section.id,
+        projectId: project.id,
+        entryKey:  simRow?.entry_file && !simRow.entry_file.startsWith('http') ? simRow.entry_file : undefined,
+        onEvent,
+      });
+      sectionUrl = res.sectionUrl;
+      // Preserve provenance: the bridge BODY is unchanged (uploadSectionBridge kept any existing
+      // demo), so an LLM-authored section stays labeled 'llm' and keeps its prompt + provider/
+      // model/confidence/etc. — only the UI selection changed. We do NOT null sim_prompt, and we
+      // keep sim_meta.prompt so a later identical-prompt Generate can still canReuse. A section
+      // with no prior bridge (fresh) has no provenance to keep ⇒ generatedBy:'mechanical'.
+      patch.sim_meta = {
+        ...(storedMeta ?? {}),
+        planVersion:           '7',
+        generatedBy:           storedMeta?.generatedBy ?? 'mechanical',
+        uiControls,
+        bridgeHash:            res.bridgeHash,
+        generatedAt:           new Date().toISOString(),
+        supportsRuntimeParams: true,
+      };
+    } else {
+      // ── canReuse: prompt unchanged + own bridge + runtime-param bridge + same selection ──
+      const supportsRuntimeParams =
+        storedMeta?.supportsRuntimeParams === true ||
+        (storedMeta?.generatedBy === 'llm' && storedMeta?.planVersion === '5');
+      const builtPrompt = (typeof storedMeta?.prompt === 'string' ? storedMeta.prompt : undefined) ?? section.sim_prompt;
+      const urlIsOwn = !!section.simulation_url?.includes(`section=${section.id}`);
+      const uiSelectionUnchanged = simUiSelectionsEqual(readStoredUiControls(storedMeta?.uiControls), uiControls);
+      const canReuse = builtPrompt === rawPrompt && urlIsOwn && supportsRuntimeParams && uiSelectionUnchanged;
+
+      if (canReuse) {
+        onEvent?.('status', { status: 'Toggle updated — bridge handles it at runtime.', type: 'info' });
+        ({ sectionUrl } = svc.reuseBridgeScript(section.simulation_url!));
+      } else {
+        const simRow = await db.query.simulations.findFirst({
+          where: and(eq(simulations.id, section.simulation_id!), eq(simulations.project_id, project.id)),
+        });
+        const savedHistory = (storedMeta?.conversationHistory as ConversationMessage[] | undefined) ?? [];
+        const result = await svc.generateBridgeScript({
+          simId:               section.simulation_id!,
+          sectionId:           section.id,
+          projectId:           project.id,
+          userId:              user.id,
+          prompt:              rawPrompt,
+          simpleUi,
+          autoScript,
+          uiControls,
+          entryKey:            simRow?.entry_file && !simRow.entry_file.startsWith('http') ? simRow.entry_file : undefined,
+          storedSourceHash:    storedMeta?.sourceHash,
+          conversationHistory: savedHistory.length > 0 ? savedHistory : undefined,
+          onEvent,
+          signal,
+        });
+        sectionUrl = result.sectionUrl;
+        patch.sim_prompt = rawPrompt;
+        patch.sim_meta = {
+          planVersion:        '7',
+          generatedBy:        'llm',
+          prompt:             rawPrompt,
+          uiControls,
+          sourceHash:         result.sourceHash,
+          bridgeHash:         result.bridgeHash,
+          generatedAt:        new Date().toISOString(),
+          provider:           result.provider,
+          model:              result.model,
+          confidence:         result.confidence,
+          confidenceLevel:    result.confidenceLevel,
+          contextTruncated:   result.contextTruncated,
+          retryCount:         result.retryCount,
+          retryReason:        result.retryReason,
+          warnings:           result.warnings,
+          validationErrors:   result.validationErrors,
+          validationWarnings: result.validationWarnings,
+          supportsRuntimeParams: true,
+          runtimeValidated:   false,
+          conversationHistory: result.conversationHistory,
+        };
+      }
+    }
+
+    patch.simulation_url = sectionUrl;
+
+    if (signal.aborted) throw new Error('generation cancelled');
+    const [updated] = await db
+      .update(timeline_sections)
+      .set(patch)
+      .where(eq(timeline_sections.id, section.id))
+      .returning();
+    if (!updated) throw new Error('This section was removed during generation.');
+    return updated;
+  }
+
+  /**
+   * SSE transport wrapper shared by the GET (legacy) and POST stream routes: manifest of
+   * headers, the per-section concurrency lock, the keep-alive, a stall-aware progress
+   * heartbeat, the abort/deadline plumbing, and done/error framing. The route only parses
+   * + validates its input (before any bytes are written) and hands it here.
+   */
+  async function runSseGeneration(
+    request: import('fastify').FastifyRequest,
+    reply: FastifyReply,
+    ctx: { section: SectionRow; project: { id: string }; user: { id: string }; input: GenerateSimScriptInput },
+  ): Promise<void> {
+    const origin = request.headers.origin;
+    reply.raw.setHeader('Access-Control-Allow-Origin', origin ?? '*');
+    reply.raw.setHeader('Access-Control-Allow-Credentials', 'true');
+    reply.raw.setHeader('Content-Type', 'text/event-stream');
+    reply.raw.setHeader('Cache-Control', 'no-cache');
+    reply.raw.setHeader('Connection', 'keep-alive');
+    reply.raw.setHeader('X-Accel-Buffering', 'no');
+
+    let lastActivityMs = Date.now();
+    const sendEvent = (event: string, data: object) => {
+      if (event === 'status' || event === 'token') lastActivityMs = Date.now();
+      try { reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch { /* socket closed */ }
+    };
+
+    sendEvent('connected', {});
+
+    if (activeSimGenerations.has(ctx.section.id)) {
+      sendEvent('error', { error: 'A generation is already running for this section. Please wait for it to finish.', errorType: 'generation_error' });
+      try { reply.raw.end(); } catch { /* already closed */ }
+      return;
+    }
+    activeSimGenerations.add(ctx.section.id);
+
+    const startMs = Date.now();
+    // Keep-alive + a stall-aware progress heartbeat: adaptive-thinking models (Opus 4.8)
+    // stream NO text during the (long) thinking phase, so the visible status would otherwise
+    // freeze for minutes and read as "hung". When the stream has been quiet for >12s we emit
+    // an elapsed-time status so the user can see it is still working (backend-007 follow-up).
+    const keepAlive = setInterval(() => {
+      try { reply.raw.write(': keep-alive\n\n'); } catch { /* socket closed */ }
+      if (Date.now() - lastActivityMs > 12_000) {
+        sendEvent('status', { status: `Still generating… (${Math.round((Date.now() - startMs) / 1000)}s)`, type: 'progress' });
+      }
+    }, 15_000);
+
+    const controller = new AbortController();
+    request.raw.on('close', () => { controller.abort(); clearInterval(keepAlive); });
+    let timedOut = false;
+    const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, SIM_GEN_TIMEOUT_MS);
+
+    try {
+      const updated = await generateOrReuseSection({ ...ctx, signal: controller.signal, onEvent: sendEvent });
+      if (!controller.signal.aborted) sendEvent('done', { section: updated });
+    } catch (err) {
+      if (timedOut) {
+        sendEvent('error', { error: 'Generation timed out. Please try again.', errorType: 'generation_error' });
+      } else if (!controller.signal.aborted) {
+        const errorType = classifySimulationError(err);
+        sendEvent('error', { error: ERROR_MESSAGES[errorType] ?? ERROR_MESSAGES.generation_error, errorType });
+      }
+    } finally {
+      clearTimeout(timeout);
+      clearInterval(keepAlive);
+      activeSimGenerations.delete(ctx.section.id);
+      try { reply.raw.end(); } catch { /* already closed */ }
+    }
+  }
+
   // GET /api/v1/projects/:id/sections/:sid/generate-sim-script/stream
   // SSE streaming endpoint — auth via ?token= query param (EventSource limitation)
   app.get<{
@@ -328,218 +562,68 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       if (section.type !== 'simulation') return reply.code(400).send({ message: 'Section is not a simulation section' });
       if (!section.simulation_id)        return reply.code(400).send({ message: 'Section has no simulation selected' });
 
-      const rawPrompt = String(request.query.prompt ?? '').trim();
-      if (!rawPrompt || rawPrompt.length > 1000) {
-        return reply.code(400).send({ message: 'prompt is required (max 1000 chars)' });
-      }
-      const simpleUi   = request.query.simple_ui   === 'true';
-      const autoScript = request.query.auto_script  !== 'false';
-
-      // Optional Minimal-UI selection (JSON in ?ui_controls=). Validated + normalized here,
-      // BEFORE switching to SSE mode, so a bad selection is a clean HTTP 400. Absent/empty
-      // param ⇒ undefined — the current no-selection behavior is untouched.
-      let uiControls: SimUiSelection | undefined;
+      // Legacy transport: EventSource can't POST, so prompt/toggles/ui_controls ride the
+      // query string (auth via ?token=). New clients use the POST stream route below, which
+      // carries the selection in the request BODY with no URL-size cap (the v0.1.x "Too many
+      // UI controls" 400 was purely this query-length ceiling). Kept so an old editor tab that
+      // is still open across a deploy keeps working.
+      let legacyUiControls: unknown;
       const rawUiControls = request.query.ui_controls;
       if (typeof rawUiControls === 'string' && rawUiControls.length > 0) {
         if (rawUiControls.length > SIM_UI_CONTROLS_PARAM_MAX_CHARS) {
-          return reply.code(400).send({ message: `ui_controls is too large (max ${SIM_UI_CONTROLS_PARAM_MAX_CHARS} chars)` });
+          return reply.code(400).send({ message: `ui_controls is too large for the legacy URL transport (max ${SIM_UI_CONTROLS_PARAM_MAX_CHARS} chars) — reload the editor to use the POST route.` });
         }
-        let parsedJson: unknown;
-        try { parsedJson = JSON.parse(rawUiControls); }
+        try { legacyUiControls = JSON.parse(rawUiControls); }
         catch { return reply.code(400).send({ message: 'ui_controls must be valid JSON' }); }
-        const parsed = SimUiSelectionSchema.safeParse(parsedJson);
-        if (!parsed.success) {
-          return reply.code(400).send({ message: 'ui_controls has an invalid shape' });
-        }
-        uiControls = normalizeSimUiSelection(parsed.data);
       }
-
-      // ── All validation done — switch to SSE mode ──────────────────────────────
-      // Must set CORS header manually — reply.raw bypasses the @fastify/cors plugin
-      const origin = request.headers.origin;
-      reply.raw.setHeader('Access-Control-Allow-Origin', origin ?? '*');
-      reply.raw.setHeader('Access-Control-Allow-Credentials', 'true');
-      reply.raw.setHeader('Content-Type', 'text/event-stream');
-      reply.raw.setHeader('Cache-Control', 'no-cache');
-      reply.raw.setHeader('Connection', 'keep-alive');
-      reply.raw.setHeader('X-Accel-Buffering', 'no');
-
-      const sendEvent = (event: string, data: object) => {
-        try { reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch { /* socket closed */ }
-      };
-
-      sendEvent('connected', {});
-
-      // Reject a concurrent generation on the same section rather than racing the DB write.
-      if (activeSimGenerations.has(section.id)) {
-        sendEvent('error', { error: 'A generation is already running for this section. Please wait for it to finish.', errorType: 'generation_error' });
-        try { reply.raw.end(); } catch { /* already closed */ }
-        return;
-      }
-      activeSimGenerations.add(section.id);
-
-      const keepAlive = setInterval(() => {
-        try { reply.raw.write(': keep-alive\n\n'); } catch { /* socket closed */ }
-      }, 15_000);
-
-      const controller = new AbortController();
-      request.raw.on('close', () => {
-        controller.abort();
-        clearInterval(keepAlive);
+      const parsed = GenerateSimScriptSchema.safeParse({
+        prompt:      request.query.prompt,
+        simple_ui:   request.query.simple_ui === 'true',
+        auto_script: request.query.auto_script !== 'false',
+        ui_controls: legacyUiControls,
       });
-      // Deadline: abort the LLM call if it stalls, and surface a timeout the client can act on.
-      let timedOut = false;
-      const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, SIM_GEN_TIMEOUT_MS);
-
-      try {
-        const svc = getSimService();
-
-        // Read stored metadata safely — handle all planVersions (3, 4, 5, 6) and missing fields
-        const storedMeta = section.sim_meta as (Record<string, unknown> & {
-          planVersion?: string;
-          sourceHash?: string;
-          prompt?: string;
-          supportsRuntimeParams?: boolean;
-          generatedBy?: string;
-          conversationHistory?: ConversationMessage[];
-        }) | null;
-
-        // canReuse: prompt unchanged + bridge exists + bridge was generated by LLM with runtime params.
-        // Old planVersion 3/4 bridges compiled toggles in — they do NOT support runtime params.
-        // Use supportsRuntimeParams (set in planVersion 5+) rather than checking planVersion string.
-        const supportsRuntimeParams =
-          storedMeta?.supportsRuntimeParams === true ||
-          (storedMeta?.generatedBy === 'llm' && storedMeta?.planVersion === '5');
-        // Compare against the prompt that BUILT the current bridge (sim_meta.prompt). sim_prompt is
-        // user-editable via a plain Save now, so it can drift from the bridge; falling back to it
-        // only for legacy rows generated before meta.prompt existed. (sim-persistence fix)
-        const builtPrompt = (typeof storedMeta?.prompt === 'string' ? storedMeta.prompt : undefined) ?? section.sim_prompt;
-        // The stored URL must be scoped to THIS section: a duplicated section carries the SOURCE's
-        // ?section=<sourceId> URL, and a sim switch leaves a raw entry URL — both must regenerate
-        // their own bridge entry instead of silently reusing someone else's. (sim-persistence fix)
-        const urlIsOwn = !!section.simulation_url?.includes(`section=${section.id}`);
-        // The Minimal-UI selection is part of the bridge contract: the stored selection (the one
-        // the current bridge was generated under) must deep-equal the incoming one. Both-absent
-        // is equal; a presence mismatch (selection added or removed) regenerates. (minimal-ui)
-        const uiSelectionUnchanged = simUiSelectionsEqual(
-          readStoredUiControls(storedMeta?.uiControls),
-          uiControls,
-        );
-        const canReuse =
-          builtPrompt === rawPrompt &&
-          urlIsOwn &&
-          supportsRuntimeParams &&
-          uiSelectionUnchanged;
-
-        const savedHistory = (storedMeta?.conversationHistory as ConversationMessage[] | undefined) ?? [];
-
-        const patch: Record<string, unknown> = { simple_ui: simpleUi, auto_script: autoScript, sim_script: 'main' };
-        let sectionUrl: string;
-
-        if (canReuse) {
-          sendEvent('status', { status: 'Toggle updated — bridge handles it at runtime.', type: 'info' });
-          ({ sectionUrl } = svc.reuseBridgeScript(section.simulation_url!));
-        } else {
-          // Look up the simulation row to pass entryKey — used when storage listing is denied
-          const simRow = await db.query.simulations.findFirst({
-            where: and(eq(simulations.id, section.simulation_id), eq(simulations.project_id, project.id)),
-          });
-          const result = await svc.generateBridgeScript({
-            simId:               section.simulation_id,
-            sectionId:           section.id,
-            projectId:           project.id,
-            userId:              user.id,
-            prompt:              rawPrompt,
-            simpleUi,
-            autoScript,
-            uiControls,
-            entryKey:            simRow?.entry_file && !simRow.entry_file.startsWith('http') ? simRow.entry_file : undefined,
-            storedSourceHash:    storedMeta?.sourceHash,   // service owns hash invalidation
-            conversationHistory: savedHistory.length > 0 ? savedHistory : undefined,
-            onEvent:             sendEvent,
-            signal:              controller.signal,
-          });
-          sectionUrl = result.sectionUrl;
-          patch.sim_prompt = rawPrompt;
-          // Build sim_meta from typed result — no recomputation needed
-          patch.sim_meta = {
-            // '7' = Minimal-UI control-picker regime (sim_meta.uiControls persisted; the prompt
-            // gains the MINIMAL-UI CONTRACT block; the wrap applies params.hideSelectors
-            // mechanically). canReuse is NOT affected: it keys on supportsRuntimeParams (always
-            // true here); the legacy `planVersion === '5'` fallback only matters for old rows.
-            planVersion:        '7',
-            generatedBy:        'llm',
-            // The prompt this bridge was built from — canReuse compares against THIS (not the
-            // user-editable sim_prompt) so a saved-but-not-generated prompt edit still regenerates.
-            prompt:             rawPrompt,
-            // The normalized Minimal-UI selection this bridge was generated under (undefined ⇒
-            // key omitted) — canReuse deep-equals the next request's selection against THIS.
-            uiControls,
-            sourceHash:         result.sourceHash,
-            bridgeHash:         result.bridgeHash,
-            generatedAt:        new Date().toISOString(),
-            provider:           result.provider,
-            model:              result.model,
-            confidence:         result.confidence,
-            confidenceLevel:    result.confidenceLevel,
-            contextTruncated:   result.contextTruncated,
-            retryCount:         result.retryCount,
-            retryReason:        result.retryReason,
-            warnings:           result.warnings,
-            validationErrors:   result.validationErrors,
-            validationWarnings: result.validationWarnings,
-            supportsRuntimeParams: true,
-            runtimeValidated:   false,   // Playwright-based runtime validation is Phase 5
-            conversationHistory: result.conversationHistory,
-          };
-        }
-
-        patch.simulation_url = sectionUrl;
-
-        if (!controller.signal.aborted) {
-          const [updated] = await db
-            .update(timeline_sections)
-            .set(patch)
-            .where(eq(timeline_sections.id, section.id))
-            .returning();
-
-          // The section (or project) could have been deleted during the long generation, so
-          // the update can match zero rows — emit an error rather than `done` with undefined
-          // (backend-014).
-          if (updated) sendEvent('done', { section: updated });
-          else sendEvent('error', { error: 'This section was removed during generation.', errorType: 'generation_error' });
-        }
-      } catch (err) {
-        if (timedOut) {
-          // Our own deadline fired — the client is still connected, so tell it to stop.
-          sendEvent('error', { error: 'Generation timed out. Please try again.', errorType: 'generation_error' });
-        } else if (!controller.signal.aborted) {
-          const errorType = classifySimulationError(err);
-          sendEvent('error', {
-            error:     ERROR_MESSAGES[errorType] ?? ERROR_MESSAGES.generation_error,
-            errorType,
-          });
-        }
-      } finally {
-        clearTimeout(timeout);
-        clearInterval(keepAlive);
-        activeSimGenerations.delete(section.id);
-        try { reply.raw.end(); } catch { /* already closed */ }
+      if (!parsed.success) {
+        return reply.code(400).send({ message: firstZodMessage(parsed.error) });
       }
+
+      await runSseGeneration(request, reply, { section, project, user, input: parsed.data });
+    },
+  );
+
+  // POST /api/v1/projects/:id/sections/:sid/generate-sim-script/stream
+  // Same SSE stream as the GET route, but the request BODY carries prompt + toggles + the
+  // (uncapped) Minimal-UI selection, and auth uses the Authorization header. This is the
+  // route the editor uses now: no URL-length limit on ui_controls, real HTTP status codes on
+  // validation failure (EventSource could only surface those as a generic "connection lost").
+  app.post<{ Params: { id: string; sid: string } }>(
+    '/api/v1/projects/:id/sections/:sid/generate-sim-script/stream',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const project = await editableProject(request.params.id, user);
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+
+      const section = await db.query.timeline_sections.findFirst({
+        where: and(eq(timeline_sections.id, request.params.sid), eq(timeline_sections.project_id, project.id)),
+      });
+      if (!section) return reply.code(404).send({ message: 'Section not found' });
+      if (section.type !== 'simulation') return reply.code(400).send({ message: 'Section is not a simulation section' });
+      if (!section.simulation_id)        return reply.code(400).send({ message: 'Section has no simulation selected' });
+
+      // Validate BEFORE hijacking the socket so a bad request is a clean HTTP 400/409.
+      const parsed = GenerateSimScriptSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ message: firstZodMessage(parsed.error) });
+      }
+
+      await runSseGeneration(request, reply, { section, project, user, input: parsed.data });
     },
   );
 
   // POST /api/v1/projects/:id/sections/:sid/generate-sim-script
-  const GenerateSimScriptSchema = z.object({
-    prompt:      z.string().min(1).max(1000),
-    simple_ui:   z.boolean(),
-    auto_script: z.boolean(),
-    // Optional Minimal-UI selection — threaded identically to the SSE route's ?ui_controls=
-    // (canReuse equality + sim_meta persistence + prompt block). Without it, any call
-    // through this route would read as "selection removed" and wipe sim_meta.uiControls.
-    ui_controls: SimUiSelectionSchema.optional(),
-  });
-
+  // Non-stream sibling (used by tests / non-SSE callers). Same decision + persistence as the
+  // stream routes via generateOrReuseSection — it just returns the section JSON instead of
+  // an SSE `done` frame.
   app.post<{ Params: { id: string; sid: string } }>(
     '/api/v1/projects/:id/sections/:sid/generate-sim-script',
     { preHandler: [firebaseAuthMiddleware] },
@@ -559,120 +643,29 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       if (!section.simulation_id) return reply.code(400).send({ message: 'Section has no simulation selected' });
 
       const body = GenerateSimScriptSchema.safeParse(request.body);
-      if (!body.success) return reply.code(400).send({ message: body.error.message });
-      const { prompt, simple_ui, auto_script } = body.data;
-      // Normalized (sorted show/hide) — same form the SSE route compares and persists.
-      const uiControls2: SimUiSelection | undefined =
-        body.data.ui_controls ? normalizeSimUiSelection(body.data.ui_controls) : undefined;
+      if (!body.success) return reply.code(400).send({ message: firstZodMessage(body.error) });
 
-      // Same per-section serialization as the SSE path. The lock is released in
-      // `finally` — a 'finish'-only listener never fires on a client disconnect
-      // mid-generation ('close' is emitted instead), which left the section
-      // permanently 409-locked until restart (backend-004).
+      // Same per-section serialization as the SSE path. The lock is released in `finally` — a
+      // 'finish'-only listener never fires on a client disconnect mid-generation ('close' is
+      // emitted instead), which left the section permanently 409-locked until restart (backend-004).
       if (activeSimGenerations.has(section.id)) {
         return reply.code(409).send({ message: 'A generation is already running for this section. Please wait for it to finish.' });
       }
       activeSimGenerations.add(section.id);
 
-      // Mirror the SSE sibling: stop the (billable) LLM generation when the
-      // client goes away, and enforce the same stall deadline.
       const controller = new AbortController();
       request.raw.on('close', () => controller.abort());
       const timeout = setTimeout(() => controller.abort(), SIM_GEN_TIMEOUT_MS);
 
       try {
-      const svc = getSimService();
-
-      // canReuse: same prompt + bridge exists + supportsRuntimeParams (planVersion 5+)
-      const storedMeta2 = section.sim_meta as (Record<string, unknown> & {
-        planVersion?: string; supportsRuntimeParams?: boolean; generatedBy?: string;
-        sourceHash?: string; prompt?: string; conversationHistory?: ConversationMessage[];
-      }) | null;
-      const supportsRuntimeParams2 =
-        storedMeta2?.supportsRuntimeParams === true ||
-        (storedMeta2?.generatedBy === 'llm' && storedMeta2?.planVersion === '5');
-      // Mirror the SSE sibling: compare against the prompt that BUILT the bridge (meta.prompt,
-      // sim_prompt fallback for legacy rows) and require the URL to be scoped to THIS section
-      // (a duplicate carries the source's ?section= URL; a sim switch leaves a raw entry URL).
-      const builtPrompt2 = (typeof storedMeta2?.prompt === 'string' ? storedMeta2.prompt : undefined) ?? section.sim_prompt;
-      const urlIsOwn2 = !!section.simulation_url?.includes(`section=${section.id}`);
-      // Mirror the SSE sibling: the stored selection (the one the current bridge was
-      // generated under) must equal the incoming one — both-absent equal; a presence
-      // mismatch (selection added or removed) regenerates. (minimal-ui)
-      const uiSelectionUnchanged2 = simUiSelectionsEqual(
-        readStoredUiControls(storedMeta2?.uiControls),
-        uiControls2,
-      );
-      const canReuse =
-        builtPrompt2 === prompt &&
-        urlIsOwn2 &&
-        supportsRuntimeParams2 &&
-        uiSelectionUnchanged2;
-
-      let sectionUrl: string;
-      const patch: Record<string, unknown> = { simple_ui, auto_script, sim_script: 'main' };
-
-      if (canReuse) {
-        ({ sectionUrl } = svc.reuseBridgeScript(section.simulation_url!));
-      } else {
-        // Look up the simulation row to pass entryKey — used when storage listing is denied
-        const simRow2 = await db.query.simulations.findFirst({
-          where: and(eq(simulations.id, section.simulation_id), eq(simulations.project_id, project.id)),
+        const updated = await generateOrReuseSection({
+          section, project, user, input: body.data, signal: controller.signal,
         });
-        const savedHistory2 = (storedMeta2?.conversationHistory as ConversationMessage[] | undefined) ?? [];
-        const result2 = await svc.generateBridgeScript({
-          simId:            section.simulation_id,
-          sectionId:        section.id,
-          projectId:        project.id,
-          userId:           user.id,
-          prompt,
-          simpleUi:         simple_ui,
-          autoScript:       auto_script,
-          uiControls:       uiControls2,
-          entryKey:         simRow2?.entry_file && !simRow2.entry_file.startsWith('http') ? simRow2.entry_file : undefined,
-          storedSourceHash: storedMeta2?.sourceHash,
-          conversationHistory: savedHistory2.length > 0 ? savedHistory2 : undefined,
-          signal:           controller.signal,
-        });
-        sectionUrl = result2.sectionUrl;
-        patch.sim_prompt = prompt;
-        patch.sim_meta = {
-          // '7' = Minimal-UI control-picker regime — see the streaming route above; canReuse
-          // unaffected (keys on supportsRuntimeParams, never the planVersion string).
-          planVersion:        '7',
-          generatedBy:        'llm',
-          prompt,   // the prompt this bridge was built from — canReuse compares against this
-          // The normalized Minimal-UI selection this bridge was generated under (undefined ⇒
-          // key omitted, so the next request's equality check sees "absent").
-          uiControls:         uiControls2,
-          sourceHash:         result2.sourceHash,
-          bridgeHash:         result2.bridgeHash,
-          generatedAt:        new Date().toISOString(),
-          provider:           result2.provider,
-          model:              result2.model,
-          confidence:         result2.confidence,
-          confidenceLevel:    result2.confidenceLevel,
-          contextTruncated:   result2.contextTruncated,
-          retryCount:         result2.retryCount,
-          retryReason:        result2.retryReason,
-          warnings:           result2.warnings,
-          validationErrors:   result2.validationErrors,
-          validationWarnings: result2.validationWarnings,
-          supportsRuntimeParams: true,
-          runtimeValidated:   false,
-          conversationHistory: result2.conversationHistory,
-        };
-      }
-
-      patch.simulation_url = sectionUrl;
-
-      const [updated] = await db
-        .update(timeline_sections)
-        .set(patch)
-        .where(eq(timeline_sections.id, section.id))
-        .returning();
-
-      return reply.send(updated);
+        return reply.send(updated);
+      } catch (err) {
+        const errorType = classifySimulationError(err);
+        const status = errorType === 'not_found' ? 404 : errorType === 'aborted' ? 499 : 500;
+        return reply.code(status).send({ message: ERROR_MESSAGES[errorType] ?? ERROR_MESSAGES.generation_error, errorType });
       } finally {
         clearTimeout(timeout);
         activeSimGenerations.delete(section.id);

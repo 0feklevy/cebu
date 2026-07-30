@@ -7,9 +7,8 @@ import { Archive, Check, ChevronDown, ChevronUp, Copy, Download, Maximize2, Mini
 import type { TimelineSection, Simulation, VideoFile, VideoGenerationJob, SimFile, SimMeta, ImageFile, GuidanceEntry, GuidanceMeta, GuidanceStatus } from 'shared/src/generated/client-v1';
 import { api } from '../lib/api';
 import {
-  SIM_UI_CONTROLS_PARAM_MAX_CHARS,
   getStoredSelection, kindLabel, mergeScans, normalizeSelection, sanitizeControls,
-  type SimUiControl, type SimUiControlKind, type SimStartScriptParams,
+  type SimUiControl, type SimUiControlKind, type SimStartScriptParams, type SimUiSelection,
 } from '../lib/simUiControls';
 import { resolveSimUrl } from '../lib/simUrl';
 import { GuidedTour, type TourStep } from './GuidedTour';
@@ -176,6 +175,9 @@ export function SectionEditor({
   const [generationStatus, setGenerationStatus] = useState<string | null>(null);
   const [simGenError, setSimGenError] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+  // Sim generation now streams over a fetch-POST SSE body (the selection travels in the body,
+  // so there is no URL-length cap); this AbortController is how Cancel stops it.
+  const genAbortRef = useRef<AbortController | null>(null);
 
   // ── Minimal-UI control picker (Advanced · UI controls) ────────────────────
   const [uiPanelOpen, setUiPanelOpen]   = useState(false);
@@ -207,6 +209,19 @@ export function SectionEditor({
     const storedHide = getStoredSelection(section.sim_meta)?.hide;
     return storedHide && storedHide.length > 0 ? storedHide : null;
   }, [uiDirty, uiControls, uiUnchecked, section.sim_meta]);
+
+  // The Minimal-UI selection Generate will send: a customized panel sends live picks; an
+  // untouched panel RE-SENDS the stored selection (so the backend keeps it — sending nothing
+  // reads as "removed" and wipes it); a never-picked section sends nothing (the AI decides).
+  const genSelection = useMemo<SimUiSelection | null>(() => (
+    (uiDirty && uiControls.length > 0)
+      ? normalizeSelection(uiControls, uiCheckedSelectors)
+      : ((section.simulation_id ?? '') === simId ? getStoredSelection(section.sim_meta) : null)
+  ), [uiDirty, uiControls, uiCheckedSelectors, section.simulation_id, section.sim_meta, simId]);
+  const hasGenSelection = !!(genSelection && (genSelection.show.length || genSelection.hide.length));
+  // Generate is allowed with EITHER a prompt (LLM) OR a UI selection (zero-LLM "minimize UI
+  // only" — owner direction: "generate without prompt ⇒ only minimize the ui like what was chosen").
+  const canGenerate = !!simPrompt.trim() || hasGenSelection;
 
   // ── Guided Simulation (mother-sim-level voice guidance) ───────────────────
   const [guidanceLang, setGuidanceLang]         = useState('en');
@@ -382,9 +397,9 @@ export function SectionEditor({
     return () => window.removeEventListener('keydown', handler);
   }, [onClose]);
 
-  // Close SSE stream on unmount
+  // Close SSE stream / abort the in-flight generation on unmount
   useEffect(() => {
-    return () => { eventSourceRef.current?.close(); };
+    return () => { eventSourceRef.current?.close(); genAbortRef.current?.abort(); };
   }, []);
 
   // 'i' key → mark in-point (clip type only)
@@ -634,7 +649,12 @@ export function SectionEditor({
   }, [projectId, simulations, simId]);
 
   const handleGenerateScript = useCallback(async () => {
-    if (!simId || !simPrompt.trim()) return;
+    if (!simId) return;
+    const prompt = simPrompt.trim();
+    const sel = genSelection;
+    const sendSel = !!(sel && (sel.show.length || sel.hide.length));
+    // Generate needs EITHER a prompt (LLM) OR a UI selection (mechanical minimize-UI, no prompt).
+    if (!prompt && !sendSel) return;
 
     // Ensure section is set to simulation type first
     if (section.type !== 'simulation' || section.simulation_id !== simId) {
@@ -650,73 +670,26 @@ export function SectionEditor({
       }
     }
 
-    eventSourceRef.current?.close();
+    genAbortRef.current?.abort();
+    const abort = new AbortController();
+    genAbortRef.current = abort;
     setGenerating(true);
-    setGenerationStatus('Starting…');
+    setGenerationStatus(prompt ? 'Starting…' : 'Applying minimal UI…');
     setSimGenError(null);
 
-    const idToken = await getAuth().currentUser?.getIdToken();
-
-    const url = new URL(
-      `${API_URL}/api/v1/projects/${projectId}/sections/${section.id}/generate-sim-script/stream`,
-    );
-    url.searchParams.set('prompt', simPrompt.trim());
-    url.searchParams.set('simple_ui', String(simpleUi));
-    url.searchParams.set('auto_script', String(autoScript));
-    // Minimal-UI control picker: a CUSTOMIZED panel sends the live picks; an untouched
-    // panel RE-SENDS the stored selection (sim_meta.uiControls) so the backend keeps it —
-    // sending nothing would read as "selection removed", wiping the stored picks and
-    // busting canReuse on every fresh editor session. Only a never-generated-with-picks
-    // section sends nothing (the AI decides — pre-picker behavior). The stored selection
-    // is only trusted when it belongs to the CURRENTLY attached sim (mirrors the restore
-    // effect above — a sim switch must not leak the old sim's contract).
-    const sel = (uiDirty && uiControls.length > 0)
-      ? normalizeSelection(uiControls, uiCheckedSelectors)
-      : ((section.simulation_id ?? '') === simId ? getStoredSelection(section.sim_meta) : null);
-    if (sel && (sel.show.length || sel.hide.length)) {
-      const selJson = JSON.stringify(sel);
-      // Backend cap: an oversized ?ui_controls= is a pre-SSE HTTP 400, which EventSource
-      // can only surface as a generic connection error — fail here with a clear message.
-      if (selJson.length > SIM_UI_CONTROLS_PARAM_MAX_CHARS) {
-        setSimGenError('Too many UI controls selected for generation — uncheck some in Advanced.');
-        setGenerating(false);
-        setGenerationStatus(null);
-        return;
-      }
-      url.searchParams.set('ui_controls', selJson);
-    }
-    if (idToken) url.searchParams.set('token', idToken);
-
-    const es = new EventSource(url.toString());
-    eventSourceRef.current = es;
+    // POST stream: the Minimal-UI selection travels in the request BODY (no URL-length cap —
+    // the old "Too many UI controls" error was purely the ?ui_controls= query ceiling), and
+    // auth uses the Authorization header. Real HTTP status codes surface validation failures
+    // that EventSource could only report as a generic "connection lost".
     let errorHandled = false;
 
-    es.addEventListener('status', (e: MessageEvent) => {
-      const data = JSON.parse(e.data) as { status: string };
-      setGenerationStatus(data.status);
-    });
-
-    // Token heartbeat: LLM is actively generating (no raw JSON shown to user)
-    es.addEventListener('token', (_e: MessageEvent) => {
-      setGenerationStatus(prev =>
-        prev && !prev.endsWith('…') ? prev + '…' : (prev ?? 'Generating bridge script…'),
-      );
-    });
-
-    es.addEventListener('done', (e: MessageEvent) => {
-      // Mark handled BEFORE close(): closing an EventSource fires onerror synchronously in
-      // some browsers, which would otherwise flash "Connection lost" after success — frontend-011.
-      errorHandled = true;
-      const data = JSON.parse(e.data) as { section: TimelineSection };
-      onUpdate(data.section);
-      // On the canReuse path the simulation_url comes back byte-identical, so the iframe
-      // (keyed on that URL) never reloads and no fresh SIM_READY fires — push the persisted
-      // params to the live iframe so the preview reflects the modification immediately.
-      // On a real regeneration the URL changes, the iframe remounts, and its own SIM_READY
-      // re-posts; this early message is harmlessly lost to the reloading frame. (sim-preview fix)
-      const s = data.section;
-      // hideSelectors: prefer the selection the generation just persisted (authoritative);
-      // fall back to the customized panel state while the backend half isn't emitting it.
+    // Apply a `done` section to the editor + live preview (shared by the stream handler).
+    const applyDone = (s: TimelineSection) => {
+      onUpdate(s);
+      // On the canReuse / mechanical path the simulation_url can come back byte-identical, so
+      // the iframe (keyed on that URL) never reloads and no fresh SIM_READY fires — push the
+      // persisted params to the live iframe so the preview reflects the change immediately. On
+      // a real regeneration the URL changes and the iframe's own SIM_READY re-posts.
       const doneHide = getStoredSelection(s.sim_meta)?.hide ?? (uiDirty ? effectiveHideSelectors : null);
       const doneParams: SimStartScriptParams = {
         simpleUi:   s.simple_ui ?? false,
@@ -728,35 +701,93 @@ export function SectionEditor({
         '*',
       );
       setPreviewRunning(true);
-      setGenerating(false);
-      setGenerationStatus(null);
-      es.close();
-      eventSourceRef.current = null;
-    });
-
-    es.addEventListener('error', (e: MessageEvent) => {
-      if (!e.data || errorHandled) return;
-      errorHandled = true;
-      const data = JSON.parse(e.data) as { error: string; errorType?: string };
-      setSimGenError(data.error || 'Generation failed');
-      setGenerating(false);
-      setGenerationStatus(null);
-      es.close();
-      eventSourceRef.current = null;
-    });
-
-    es.onerror = () => {
-      if (errorHandled) return;
-      errorHandled = true;
-      setSimGenError('Connection lost. Please try again.');
-      setGenerating(false);
-      setGenerationStatus(null);
-      es.close();
-      eventSourceRef.current = null;
     };
-  }, [projectId, section, simId, simPrompt, simpleUi, autoScript, uiDirty, uiControls, uiCheckedSelectors, effectiveHideSelectors, onUpdate]);
+
+    const dispatch = (event: string, dataStr: string) => {
+      if (event === 'status') {
+        try { setGenerationStatus((JSON.parse(dataStr) as { status: string }).status); } catch { /* ignore */ }
+      } else if (event === 'token') {
+        setGenerationStatus(prev => (prev && !prev.endsWith('…') ? prev + '…' : (prev ?? 'Generating bridge script…')));
+      } else if (event === 'done') {
+        errorHandled = true;
+        try { applyDone((JSON.parse(dataStr) as { section: TimelineSection }).section); } catch { /* ignore */ }
+      } else if (event === 'error') {
+        errorHandled = true;
+        let msg = 'Generation failed';
+        try { msg = (JSON.parse(dataStr) as { error: string }).error || msg; } catch { /* ignore */ }
+        setSimGenError(msg);
+      }
+    };
+
+    try {
+      // Inside the try so a token-refresh rejection is caught (shows an error + resets the
+      // spinner) instead of escaping with generating stuck true.
+      const idToken = await getAuth().currentUser?.getIdToken();
+      const res = await fetch(
+        `${API_URL}/api/v1/projects/${projectId}/sections/${section.id}/generate-sim-script/stream`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+          },
+          body: JSON.stringify({
+            prompt,
+            simple_ui: simpleUi,
+            auto_script: autoScript,
+            ...(sendSel ? { ui_controls: sel } : {}),
+          }),
+          signal: abort.signal,
+        },
+      );
+      if (!res.ok || !res.body) {
+        let msg = 'Generation failed';
+        try { msg = ((await res.json()) as { message?: string }).message ?? msg; } catch { /* non-JSON */ }
+        throw new Error(msg);
+      }
+
+      // Minimal SSE reader over the fetch body: frames are separated by a blank line; each frame
+      // has optional `event:` + one or more `data:` lines; lines starting with `:` are keep-alives.
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let sep: number;
+        while ((sep = buf.indexOf('\n\n')) !== -1) {
+          const frame = buf.slice(0, sep);
+          buf = buf.slice(sep + 2);
+          let event = 'message';
+          const dataLines: string[] = [];
+          for (const line of frame.split('\n')) {
+            if (!line || line.startsWith(':')) continue;          // keep-alive / comment
+            if (line.startsWith('event:')) event = line.slice(6).trim();
+            else if (line.startsWith('data:')) dataLines.push(line.slice(5).replace(/^ /, ''));
+          }
+          if (dataLines.length || event !== 'message') dispatch(event, dataLines.join('\n'));
+        }
+      }
+    } catch (err) {
+      if (!errorHandled && (err as Error).name !== 'AbortError') {
+        setSimGenError((err as Error).message || 'Connection lost. Please try again.');
+      }
+    } finally {
+      // Only clear UI state if THIS run is still the current one. A superseding Generate
+      // (which aborted `abort` and installed its own controller) must keep the spinner up —
+      // otherwise this aborted run's finally would re-enable the button mid-generation.
+      if (genAbortRef.current === abort) {
+        genAbortRef.current = null;
+        setGenerating(false);
+        setGenerationStatus(null);
+      }
+    }
+  }, [projectId, section, simId, simPrompt, simpleUi, autoScript, uiDirty, genSelection, effectiveHideSelectors, onUpdate]);
 
   const handleCancelGeneration = useCallback(() => {
+    genAbortRef.current?.abort();
+    genAbortRef.current = null;
     eventSourceRef.current?.close();
     eventSourceRef.current = null;
     setGenerating(false);
@@ -1926,24 +1957,25 @@ export function SectionEditor({
                     <button
                       data-tour="sec-sim-generate"
                       onClick={handleGenerateScript}
-                      disabled={generating || !simPrompt.trim()}
+                      disabled={generating || !canGenerate}
+                      title={!canGenerate ? 'Enter a prompt, or pick controls in Advanced to just minimize the UI' : undefined}
                       style={{
                         width: '100%', height: 42, borderRadius: 10, border: 'none',
-                        background: generating || !simPrompt.trim() ? 'linear-gradient(135deg,#fde68a,#fcd34d)' : 'linear-gradient(135deg,#f59e0b,#d97706)',
+                        background: generating || !canGenerate ? 'linear-gradient(135deg,#fde68a,#fcd34d)' : 'linear-gradient(135deg,#f59e0b,#d97706)',
                         color: '#78350f', fontSize: 13, fontWeight: 700,
-                        cursor: generating || !simPrompt.trim() ? 'not-allowed' : 'pointer',
+                        cursor: generating || !canGenerate ? 'not-allowed' : 'pointer',
                         display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
                         transition: 'background-color 0.12s',
                       }}
-                      onMouseEnter={e => { if (!generating && simPrompt.trim()) (e.currentTarget as HTMLElement).style.opacity = '0.88'; }}
-                      onMouseLeave={e => { if (!generating && simPrompt.trim()) (e.currentTarget as HTMLElement).style.opacity = '1'; }}
+                      onMouseEnter={e => { if (!generating && canGenerate) (e.currentTarget as HTMLElement).style.opacity = '0.88'; }}
+                      onMouseLeave={e => { if (!generating && canGenerate) (e.currentTarget as HTMLElement).style.opacity = '1'; }}
                     >
                       {generating ? (
                         <>
                           <span style={{ width: 14, height: 14, borderRadius: '50%', border: '2px solid #92400e44', borderTopColor: '#92400e', display: 'inline-block', animation: 'spin 0.7s linear infinite' }} />
                           {generationStatus ?? 'Generating…'}
                         </>
-                      ) : '✦ Generate with AI'}
+                      ) : (simPrompt.trim() ? '✦ Generate with AI' : '✦ Apply minimal UI (no AI)')}
                     </button>
                     {generating && (
                       <button
