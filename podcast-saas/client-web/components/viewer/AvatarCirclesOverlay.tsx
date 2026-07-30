@@ -3,8 +3,11 @@
 // Audio-reactive avatar circles shown in the bottom corners while a b-roll covers
 // the main video. A shared Web Audio AnalyserNode taps the main <video> audio
 // (volume-preserving — see avatarAudioGraph). The circle whose speaker is active
-// (from the script timeline) animates at full level; the other is damped. When
-// the audio graph can't be tapped, bars fall back to a gentle idle motion.
+// animates at full level; the other is damped. Attribution comes from the script
+// timeline when one exists; otherwise (manual/uploaded projects have no scenes)
+// an FFT/pitch fallback separates the two voices by band — male vs female — so
+// only the talking character's circle waves. When the audio graph can't be
+// tapped, bars fall back to a gentle idle motion.
 
 import { memo, useEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
@@ -12,6 +15,7 @@ import type { AvatarCirclesConfig, AvatarCircleFace } from './types';
 import { circlesLayers, inCircleSection } from '../../lib/circleSections';
 import { activeSpeakerAt, type SpeakerSpan } from '../../lib/avatarCirclesViz';
 import { ensureAvatarAnalyser, syncAvatarGains } from '../../lib/avatarAudioGraph';
+import { estimatePitch, VoiceBandTracker, type VoiceBand } from '../../lib/voicePitch';
 import { AvatarCircleViz, type CircleFrame } from './AvatarCircleViz';
 
 function facesFor(cfg: AvatarCirclesConfig): AvatarCircleFace[] {
@@ -19,6 +23,11 @@ function facesFor(cfg: AvatarCirclesConfig): AvatarCircleFace[] {
   const left = all.find((f) => f.side === 'left') ?? { speaker: 'host_a', side: 'left' };
   const right = all.find((f) => f.side === 'right') ?? { speaker: 'host_b', side: 'right' };
   return cfg.count === 1 ? [left] : [left, right];
+}
+
+/** Voice band a face responds to in the pitch fallback (explicit tag, else host_a=male / host_b=female). */
+function faceVoice(f: AvatarCircleFace): VoiceBand {
+  return f.voice ?? (f.speaker === 'host_a' ? 'male' : 'female');
 }
 
 interface Props {
@@ -55,6 +64,26 @@ function AvatarCirclesOverlayInner({
   const visibleRef = useRef(visible);
   const freqRef = useRef(new Uint8Array(512));
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
+
+  // ── FFT/pitch speaker fallback (no speaker_timeline) ─────────────────────
+  // One tracker + one time-domain snapshot shared by BOTH circles' rAF loops,
+  // throttled to ~30ms so the O(lags·N) autocorrelation runs once per frame,
+  // not once per circle.
+  const timeDataRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
+  const trackerRef = useRef<VoiceBandTracker | null>(null);
+  const bandCacheRef = useRef<{ ts: number; band: VoiceBand | null }>({ ts: -1e9, band: null });
+  const sampleVoiceBand = (analyser: AnalyserNode): VoiceBand | null => {
+    const now = performance.now();
+    const cache = bandCacheRef.current;
+    if (now - cache.ts < 30) return cache.band;
+    cache.ts = now;
+    if (!trackerRef.current) trackerRef.current = new VoiceBandTracker();
+    const size = analyser.fftSize;
+    if (!timeDataRef.current || timeDataRef.current.length !== size) timeDataRef.current = new Uint8Array(size);
+    analyser.getByteTimeDomainData(timeDataRef.current);
+    cache.band = trackerRef.current.sample(estimatePitch(timeDataRef.current, analyser.context.sampleRate), now);
+    return cache.band;
+  };
 
   useEffect(() => {
     const node = rootRef.current;
@@ -114,8 +143,17 @@ function AvatarCirclesOverlayInner({
             analyser.getByteFrequencyData(freqRef.current);
             spectrum = freqRef.current;
           }
+          // Attribution precedence: script timeline → FFT/pitch voice band → everyone.
           const speaking = activeSpeakerAt(speakerTimeline, timeRef.current ?? 0);
-          const level = speaking == null ? 1 : (speaking === f.speaker ? 1 : 0.22);
+          let level: number;
+          if (speaking != null) {
+            level = speaking === f.speaker ? 1 : 0.22;
+          } else if (faces.length === 2 && analyser) {
+            const band = sampleVoiceBand(analyser);
+            level = band == null ? 1 : band === faceVoice(f) ? 1 : 0.22;
+          } else {
+            level = 1;
+          }
           return { spectrum, level, running: true };
         };
 

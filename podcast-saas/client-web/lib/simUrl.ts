@@ -40,7 +40,12 @@ function rebaseSimPublicOrigin(u: URL): URL {
   }
 }
 
-export function resolveSimUrl(url: string): string {
+export interface SimBootParams {
+  /** Minimal-UI selectors to hide from the sim's very first paint (no flash of full UI). */
+  hideSelectors?: string[];
+}
+
+export function resolveSimUrl(url: string, boot?: SimBootParams): string {
   // SSR-safe: no window → no device to hint about; return unchanged.
   if (typeof window === 'undefined') return url;
   try {
@@ -57,6 +62,14 @@ export function resolveSimUrl(url: string): string {
     u.searchParams.set('dpr', String(Math.round(dpr * 100) / 100));
 
     if (typeof mem === 'number') u.searchParams.set('mem', String(mem));
+
+    // Minimal-UI boot hint: carried in the FRAGMENT so it never reaches the server
+    // (proxy caching/ETags unaffected) and a hash-only src change never reloads a
+    // live iframe. The sim-public proxy injects a tiny head bootstrap that reads
+    // this and applies display:none BEFORE first paint — killing the full-UI flash.
+    if (boot?.hideSelectors?.length) {
+      u.hash = 'simboot=' + encodeURIComponent(JSON.stringify({ hide: boot.hideSelectors }));
+    }
 
     return u.href;
   } catch {

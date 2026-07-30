@@ -40,6 +40,7 @@ export interface AvatarCircleFace {
   side: 'left' | 'right';            // which bottom corner
   imageUrl?: string;                 // circular avatar face (uploaded or captured+cropped)
   label?: string;                    // display name
+  voice?: 'male' | 'female';         // voice band — drives the viewer's FFT/pitch speaker fallback
 }
 
 // "Clean podcast-style radial visualizer" config + the 1–2 avatar circles.
@@ -107,7 +108,16 @@ export interface AvatarPersonaConfig {
   toolIds?: string[];                // selected system tools (end_call, change_language, …)
 }
 
-export interface SessionInfo { token: string; characterId: string; voiceSensitivity: number; }
+export interface SessionInfo {
+  token: string;
+  characterId: string;
+  voiceSensitivity: number;
+  /** The avatar the session ACTUALLY uses (ephemeral inline, or the saved persona's) — lets
+   *  the popup show the real face/name instead of a stale hardcoded character default. */
+  avatarId?: string;
+  /** Ephemeral persona display name, when one was minted. */
+  personaName?: string;
+}
 export interface AvatarDisplay {
   displayName?: string;
   nametag?: string;
@@ -284,7 +294,57 @@ function tokenTypeClaim(token: string): string | null {
 }
 
 /** Test/ops seam: forget the resolved-LLM cache (e.g. after rotating the account). */
-export function invalidateAnamLlmCache(): void { _llmIdCache.clear(); }
+export function invalidateAnamLlmCache(): void { _llmIdCache.clear(); _defaultAvatarCache.clear(); }
+
+// Live account defaults: when neither the video config, the base character persona, nor the
+// ANAM_AVATAR_ID/ANAM_VOICE_ID env resolve an avatar/voice, fall back to the FIRST avatar
+// (+ its paired voice) the account offers RIGHT NOW — so defaults track the Anam dashboard
+// (renames, deletions, new avatars) instead of failing on stale env ids. Cached 1h per key.
+interface DefaultAvatarVoice {
+  avatarId: string; voiceId: string;
+  avatarName: string; avatarVariantName: string; avatarImageUrl: string; voiceName: string;
+}
+const _defaultAvatarCache = new Map<string, { v: DefaultAvatarVoice | null; at: number }>();
+export async function resolveDefaultAvatarVoice(apiKey?: string): Promise<DefaultAvatarVoice | null> {
+  const key = apiKey || ANAM_ENV.ANAM_API_KEY;
+  if (!key) return null;
+  const ck = key.slice(-8);
+  const cached = _defaultAvatarCache.get(ck);
+  if (cached && Date.now() - cached.at < LLM_ID_CACHE_MS) return cached.v;
+  const [avatarResult, voiceResult] = await Promise.all([
+    listAnamResource('avatars', key),
+    listAnamResource('voices', key),
+  ]);
+  const avatars = avatarResult.data as AnamAvatarResource[];
+  const voices = voiceResult.data as AnamVoiceResource[];
+  const avatar = avatars.find((a) => a.id && a.imageUrl) ?? avatars.find((a) => a.id);
+  let v: DefaultAvatarVoice | null = null;
+  if (avatar?.id) {
+    const paired = voiceForAvatar(avatar, voices) ?? voices.find((x) => x.id);
+    if (paired?.id) {
+      v = {
+        avatarId: avatar.id, voiceId: paired.id,
+        avatarName: avatar.displayName ?? '', avatarVariantName: avatar.variantName ?? '',
+        avatarImageUrl: avatar.imageUrl ?? '', voiceName: paired.displayName ?? '',
+      };
+    }
+  }
+  if (!v) logger.warn('[Anam] account has no usable avatar+voice pair — sessions will fail until one exists');
+  _defaultAvatarCache.set(ck, { v, at: Date.now() });
+  return v;
+}
+
+/** Look up an avatar's live display identity (name/variant/image) from the account listing. */
+export async function describeAvatar(
+  avatarId: string,
+  apiKey?: string,
+): Promise<{ displayName: string; variantName: string; imageUrl: string } | null> {
+  if (!avatarId) return null;
+  const { data } = await listAnamResource('avatars', apiKey);
+  const avatar = (data as AnamAvatarResource[]).find((a) => a.id === avatarId);
+  if (!avatar) return null;
+  return { displayName: avatar.displayName ?? '', variantName: avatar.variantName ?? '', imageUrl: avatar.imageUrl ?? '' };
+}
 
 // Builds the personaConfig sent to Anam. v4 requires a COMPLETE persona at token time:
 // either a pure stateful { personaId } (referencing a saved persona that itself carries an
@@ -324,12 +384,23 @@ async function buildPersonaConfig(
     baseVoice  = base?.voiceId  ?? base?.voice?.id  ?? '';
     baseLlm    = base?.llmId    ?? base?.llm?.id    ?? '';
   }
-  const avatarId = (cfg?.avatarId?.trim() || baseAvatar || ANAM_ENV.ANAM_AVATAR_ID).trim();
-  const voiceId  = (cfg?.voiceId?.trim()  || baseVoice  || ANAM_ENV.ANAM_VOICE_ID).trim();
+  let avatarId = (cfg?.avatarId?.trim() || baseAvatar || ANAM_ENV.ANAM_AVATAR_ID).trim();
+  let voiceId  = (cfg?.voiceId?.trim()  || baseVoice  || ANAM_ENV.ANAM_VOICE_ID).trim();
   const llmId    = (cfg?.llmId?.trim()    || baseLlm    || defaultLlmId).trim();
 
+  // Live-account fallback: stale/absent character persona ids and no env avatar/voice →
+  // resolve whatever the account offers NOW, so the default avatar always exists.
+  let liveDefaultName = '';
+  if (!avatarId || !voiceId) {
+    const live = await resolveDefaultAvatarVoice(key).catch(() => null);
+    if (live) {
+      if (!avatarId) { avatarId = live.avatarId; liveDefaultName = live.avatarName; }
+      if (!voiceId) voiceId = live.voiceId;
+    }
+  }
+
   if (avatarId && voiceId) {
-    const pc: Record<string, unknown> = { name: cfg?.name?.trim() || entry.name, avatarId, voiceId, maxSessionLengthSeconds };
+    const pc: Record<string, unknown> = { name: cfg?.name?.trim() || liveDefaultName || entry.name, avatarId, voiceId, maxSessionLengthSeconds };
     if (llmId) pc.llmId = llmId;                       // the brain — required for a v4 (non-legacy) token
     if (cfg?.avatarModel) pc.avatarModel = cfg.avatarModel;
     if (systemPrompt) pc.systemPrompt = systemPrompt;
@@ -337,6 +408,12 @@ async function buildPersonaConfig(
     else if (greeting) pc.initialMessage = greeting;
     if (cfg?.uninterruptibleGreeting) pc.uninterruptibleGreeting = true;
     if (cfg?.languageCode) pc.languageCode = cfg.languageCode;
+    // Attach the RAG knowledge tool + selected system tools, mirroring upsertVideoPersona —
+    // the ephemeral path must carry the same knowledge as a saved persona, or the avatar
+    // silently loses the video transcript whenever the stateful persona can't be used
+    // (stale-400 / legacy-token fallback, or a video that never baked a persona).
+    const toolIds = [...new Set([...(cfg?.knowledgeToolId ? [cfg.knowledgeToolId] : []), ...(cfg?.toolIds ?? [])])];
+    if (toolIds.length) pc.toolIds = toolIds;
     return pc;
   }
 
@@ -367,6 +444,20 @@ async function mintSessionToken(key: string, personaConfig: Record<string, unkno
   return { ok: true, token: data.sessionToken };
 }
 
+// Mint, retrying once WITHOUT toolIds on a 400 — if Anam rejects tool attachment on an
+// ephemeral personaConfig, the video knowledge still rides inline in the systemPrompt
+// KNOWLEDGE block (see the /avatar/start transcript default), so a degraded-but-working
+// session beats a hard failure.
+async function mintWithToolFallback(key: string, personaConfig: Record<string, unknown>) {
+  let minted = await mintSessionToken(key, personaConfig);
+  if (!minted.ok && minted.status === 400 && personaConfig.toolIds) {
+    logger.warn({ detail: minted.detail.slice(0, 160) }, '[Anam] session-token 400 with toolIds — retrying without them');
+    const { toolIds: _toolIds, ...rest } = personaConfig;
+    minted = await mintSessionToken(key, rest);
+  }
+  return minted;
+}
+
 export async function getSessionToken(characterId: string, cfg?: AvatarPersonaConfig, apiKey?: string): Promise<SessionInfo> {
   const id = CHARACTERS[characterId] ? characterId : DEFAULT_CHARACTER_ID;
   const voiceSensitivity = cfg?.voiceSensitivity ?? CHARACTERS[id]?.endOfSpeechSensitivity ?? 0.5;
@@ -395,16 +486,22 @@ export async function getSessionToken(characterId: string, cfg?: AvatarPersonaCo
     throw err;
   }
 
+  // The avatar this session will actually show — for the popup's name/portrait. Inline
+  // (ephemeral) configs carry it directly; a stateful-personaId session leaves it to the
+  // caller (the controller resolves the persona's avatar only when it needs the display).
+  let resolvedAvatarId = (typeof personaConfig.avatarId === 'string' ? personaConfig.avatarId : '') || cfg?.avatarId || '';
+  const personaName = typeof personaConfig.name === 'string' ? personaConfig.name : undefined;
+
   // Cache by the exact config + key so identical rapid requests (e.g. React
   // StrictMode double-mount) reuse one token, but different per-video configs
   // (or different BYOK keys) each get their own.
   const cacheKey = createHash('sha1').update(`${key.slice(-8)}:${JSON.stringify(personaConfig)}`).digest('hex');
   const cached = tokenCache.get(cacheKey);
   if (cached && Date.now() - cached.issuedAt < TOKEN_REUSE_MS) {
-    return { token: cached.token, characterId: id, voiceSensitivity };
+    return { token: cached.token, characterId: id, voiceSensitivity, avatarId: resolvedAvatarId || undefined, personaName };
   }
 
-  let minted = await mintSessionToken(key, personaConfig);
+  let minted = await mintWithToolFallback(key, personaConfig);
 
   // Rebuild a full inline ephemeral persona (same brain, via the base character persona's
   // avatar/voice + the resolved llmId) when the stored persona is unusable. Two triggers:
@@ -421,7 +518,8 @@ export async function getSessionToken(characterId: string, cfg?: AvatarPersonaCo
         { characterId: id, personaId: personaConfig.personaId, reason: staleRejected ? 'stale-400' : 'legacy-token' },
         '[Anam] stored persona unusable (stale or brainless/legacy) — retrying with an ephemeral avatar+voice persona carrying a brain. Repair the saved personaId / ANAM_PERSONA_ID_* env, and ensure it has an llmId.',
       );
-      minted = await mintSessionToken(key, fallback);
+      minted = await mintWithToolFallback(key, fallback);
+      if (minted.ok && typeof fallback.avatarId === 'string') resolvedAvatarId = fallback.avatarId;
     }
   }
 
@@ -442,7 +540,7 @@ export async function getSessionToken(characterId: string, cfg?: AvatarPersonaCo
   }
 
   tokenCache.set(cacheKey, { token: minted.token, issuedAt: Date.now() });
-  return { token: minted.token, characterId: id, voiceSensitivity };
+  return { token: minted.token, characterId: id, voiceSensitivity, avatarId: resolvedAvatarId || undefined, personaName };
 }
 
 interface AnamPersona { id?: string; avatarId?: string; voiceId?: string; llmId?: string; avatar?: { id?: string }; voice?: { id?: string }; llm?: { id?: string }; }

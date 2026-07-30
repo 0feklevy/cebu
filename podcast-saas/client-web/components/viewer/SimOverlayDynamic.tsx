@@ -10,6 +10,10 @@ interface Props {
   visible:       boolean;
   iframeRef:     RefObject<HTMLIFrameElement | null>;
   onLoad?:       () => void;   // fires per document load — re-arms the player's start/ready machinery
+  /** Minimal-UI selectors the sim should boot with already hidden (fragment hint). */
+  bootHide?:     string[] | null;
+  /** True while the overlay is revealed but the sim hasn't handshaken yet — shows a spinner. */
+  booting?:      boolean;
 }
 
 // Keep iframe mounted while simulationUrl is set so the sim doesn't reload
@@ -20,14 +24,22 @@ interface Props {
 // (A separate always-opaque backdrop would stay black forever because
 // simulationUrl is never cleared mid-fade — the player only clears it after a
 // destroy-grace well past the 200ms fade → the overlay is long invisible.)
-export function SimOverlayDynamic({ simulationUrl, visible, iframeRef, onLoad }: Props) {
-  // Resolve once per URL: resolveSimUrl appends device hints (dpr/mem/lowend).
+export function SimOverlayDynamic({ simulationUrl, visible, iframeRef, onLoad, bootHide, booting = false }: Props) {
+  // Resolve once per URL: resolveSimUrl appends device hints (dpr/mem/lowend)
+  // and the minimal-UI boot hint (#simboot=…, so the sim paints already-minimal).
   // Memoizing keeps the src stable across re-renders so a mid-session
   // devicePixelRatio change (e.g. browser zoom) can't rewrite src and reload a
   // live sim. The RAW url stays the identity everywhere else (state/compares).
+  // bootKey is a serialized dep: a hash-only src change never reloads the doc.
+  const bootKey = bootHide?.length ? JSON.stringify(bootHide) : null;
   const src = useMemo(
-    () => (simulationUrl ? resolveSimUrl(resolveAssetUrl(simulationUrl) ?? simulationUrl) : null),
-    [simulationUrl],
+    () => (simulationUrl
+      ? resolveSimUrl(
+          resolveAssetUrl(simulationUrl) ?? simulationUrl,
+          bootKey ? { hideSelectors: JSON.parse(bootKey) as string[] } : undefined,
+        )
+      : null),
+    [simulationUrl, bootKey],
   );
 
   if (!src) return null;
@@ -43,6 +55,14 @@ export function SimOverlayDynamic({ simulationUrl, visible, iframeRef, onLoad }:
         sandbox="allow-scripts allow-same-origin allow-forms"
         title="Interactive simulation"
       />
+      {/* Boot spinner: only when the overlay is revealed before the sim is ready
+          (slow handshake fallback) — the black layer reads as intentional loading
+          instead of a dead screen. */}
+      {visible && booting && (
+        <div className="sim-overlay-boot" aria-hidden>
+          <div className="sim-overlay-spinner" />
+        </div>
+      )}
     </div>
   );
 }

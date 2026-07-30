@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Fastify from 'fastify';
 import { createHash } from 'crypto';
 import { gunzipSync, brotliDecompressSync } from 'zlib';
-import { registerSimPublicRoutes } from '../sim-public.controller.js';
+import { registerSimPublicRoutes, injectSimBootSnippet } from '../sim-public.controller.js';
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
@@ -56,6 +56,11 @@ const SMALL_HTML = '<!doctype html><html><body>tiny sim</body></html>';
 
 const IMMUTABLE = 'public, max-age=31536000, immutable';
 
+// Entry HTML is served WITH the minimal-UI boot snippet injected (see
+// injectSimBootSnippet) — the ETag/body/Content-Length all describe those bytes.
+const SMALL_HTML_SERVED = injectSimBootSnippet(SMALL_HTML);
+const BIG_HTML_SERVED = injectSimBootSnippet(BIG_HTML);
+
 function sha1Etag(body: string | Buffer): string {
   return `"${createHash('sha1').update(body).digest('hex')}"`;
 }
@@ -82,7 +87,7 @@ describe('GET /sim-public/* — cloud text path', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toBe('text/html; charset=utf-8');
-    expect(res.headers['etag']).toBe(sha1Etag(SMALL_HTML));
+    expect(res.headers['etag']).toBe(sha1Etag(SMALL_HTML_SERVED));
     // Rewritable entry HTML keeps no-cache — the ETag makes revalidation a 304, not a re-download.
     expect(res.headers['cache-control']).toBe('no-cache');
     expect(res.headers['vary']).toBe('accept-encoding');
@@ -90,8 +95,8 @@ describe('GET /sim-public/* — cloud text path', () => {
     expect(res.headers['x-content-type-options']).toBe('nosniff');
     expect(res.headers['cross-origin-resource-policy']).toBe('cross-origin');
     expect(res.headers['content-security-policy']).toContain('frame-ancestors');
-    expect(res.headers['content-length']).toBe(String(Buffer.byteLength(SMALL_HTML)));
-    expect(res.body).toBe(SMALL_HTML);
+    expect(res.headers['content-length']).toBe(String(Buffer.byteLength(SMALL_HTML_SERVED)));
+    expect(res.body).toBe(SMALL_HTML_SERVED);
   });
 
   it('serves non-rewritable text (.css) with immutable Cache-Control and an ETag', async () => {
@@ -147,7 +152,7 @@ describe('GET /sim-public/* — If-None-Match revalidation', () => {
   it('matches weak validators and comma-separated If-None-Match lists', async () => {
     mockStorage.readObject.mockResolvedValue(Buffer.from(SMALL_HTML));
     const app = await makeApp();
-    const etag = sha1Etag(SMALL_HTML);
+    const etag = sha1Etag(SMALL_HTML_SERVED);
 
     const weak = await app.inject({
       method: 'GET',
@@ -175,8 +180,8 @@ describe('GET /sim-public/* — If-None-Match revalidation', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    expect(res.body).toBe(SMALL_HTML);
-    expect(res.headers['etag']).toBe(sha1Etag(SMALL_HTML));
+    expect(res.body).toBe(SMALL_HTML_SERVED);
+    expect(res.headers['etag']).toBe(sha1Etag(SMALL_HTML_SERVED));
   });
 });
 
@@ -200,8 +205,8 @@ describe('GET /sim-public/* — compression', () => {
     // The compressed stream replaces the buffer: the original length header is dropped.
     expect(res.headers['content-length']).toBeUndefined();
     // ETag stays the sha1 of the UNCOMPRESSED bytes (what If-None-Match round-trips).
-    expect(res.headers['etag']).toBe(sha1Etag(BIG_HTML));
-    expect(brotliDecompressSync(res.rawPayload).toString()).toBe(BIG_HTML);
+    expect(res.headers['etag']).toBe(sha1Etag(BIG_HTML_SERVED));
+    expect(brotliDecompressSync(res.rawPayload).toString()).toBe(BIG_HTML_SERVED);
   });
 
   it('falls back to gzip when the client only accepts gzip', async () => {
@@ -217,7 +222,7 @@ describe('GET /sim-public/* — compression', () => {
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-encoding']).toBe('gzip');
     expect(res.headers['vary']).toBe('accept-encoding');
-    expect(gunzipSync(res.rawPayload).toString()).toBe(BIG_HTML);
+    expect(gunzipSync(res.rawPayload).toString()).toBe(BIG_HTML_SERVED);
   });
 
   it('compresses application/javascript (custom compressible type)', async () => {
@@ -245,8 +250,8 @@ describe('GET /sim-public/* — compression', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-encoding']).toBeUndefined();
-    expect(res.headers['content-length']).toBe(String(Buffer.byteLength(BIG_HTML)));
-    expect(res.body).toBe(BIG_HTML);
+    expect(res.headers['content-length']).toBe(String(Buffer.byteLength(BIG_HTML_SERVED)));
+    expect(res.body).toBe(BIG_HTML_SERVED);
     // Still varies by Accept-Encoding so shared caches key the identity variant correctly.
     expect(res.headers['vary']).toBe('accept-encoding');
   });
@@ -263,7 +268,39 @@ describe('GET /sim-public/* — compression', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-encoding']).toBeUndefined();
-    expect(res.body).toBe(SMALL_HTML);
+    expect(res.body).toBe(SMALL_HTML_SERVED);
+  });
+});
+
+// ── (c2) Minimal-UI boot snippet injection ────────────────────────────────────
+
+describe('injectSimBootSnippet — minimal-UI-from-first-paint bootstrap', () => {
+  it('injects exactly once, right after <head>', () => {
+    const html = '<!doctype html><html><head><title>t</title></head><body></body></html>';
+    const out = injectSimBootSnippet(html);
+    expect(out.indexOf('data-simboot')).toBeGreaterThan(out.indexOf('<head>'));
+    expect(out.indexOf('data-simboot')).toBeLessThan(out.indexOf('<title>'));
+    expect(out.match(/data-simboot/g)).toHaveLength(1);
+  });
+
+  it('is idempotent (re-injection is a no-op)', () => {
+    const once = injectSimBootSnippet(SMALL_HTML);
+    expect(injectSimBootSnippet(once)).toBe(once);
+  });
+
+  it('falls back to <html>, then to prepending, when <head> is absent', () => {
+    const noHead = '<html><body>x</body></html>';
+    expect(injectSimBootSnippet(noHead).startsWith('<html><script data-simboot>')).toBe(true);
+    const bare = '<body>x</body>';
+    expect(injectSimBootSnippet(bare).startsWith('<script data-simboot>')).toBe(true);
+  });
+
+  it('does not touch non-HTML routes (.css keeps its exact stored bytes)', async () => {
+    const css = 'body { background: #000; }';
+    mockStorage.readObject.mockResolvedValue(Buffer.from(css));
+    const app = await makeApp();
+    const res = await app.inject({ method: 'GET', url: `/sim-public/${CSS_KEY}` });
+    expect(res.body).toBe(css);
   });
 });
 
@@ -341,7 +378,7 @@ describe('GET /sim-public/* — coexistence with global helmet (server.ts wiring
     // helmet's X-Frame-Options: SAMEORIGIN would break the cross-origin sim iframe.
     expect(res.headers['x-frame-options']).toBeUndefined();
     expect(res.headers['content-encoding']).toBe('br');
-    expect(res.headers['etag']).toBe(sha1Etag(BIG_HTML));
-    expect(brotliDecompressSync(res.rawPayload).toString()).toBe(BIG_HTML);
+    expect(res.headers['etag']).toBe(sha1Etag(BIG_HTML_SERVED));
+    expect(brotliDecompressSync(res.rawPayload).toString()).toBe(BIG_HTML_SERVED);
   });
 });

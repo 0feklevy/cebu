@@ -25,10 +25,11 @@ import { ApiKeyService } from '../../services/secrets/ApiKeyService.js';
 import { UsageTrackingService } from '../../services/usage/UsageTrackingService.js';
 import {
   getSessionToken, isAnamConfigured, listAnamResource, upsertVideoPersona,
-  enrichAvatarConfigFromAnam, buildAvatarDisplay,
+  enrichAvatarConfigFromAnam, buildAvatarDisplay, describeAvatar, getPersona,
   ensureKnowledgeGroup, ensureKnowledgeTool, uploadKnowledgeDocument, listKnowledgeDocuments, deleteKnowledgeDocument, listSystemTools,
   type AvatarPersonaConfig,
 } from '../../services/avatar/anamService.js';
+import { getProjectTranscript } from '../../services/transcriptPropagation.js';
 import { encryptKey } from '../../services/secrets/ApiKeyService.js';
 import { resolveAnamKeyForProject } from '../../services/avatar/anamKey.js';
 import { normalizeAvatarCircles, type AvatarCirclesLike } from '../../services/avatarCircles/normalizeAvatarCircles.js';
@@ -147,6 +148,10 @@ function zipHasHtml(buffer: Buffer): boolean {
   }
 }
 
+// Cap on the caption transcript inlined into a session's KNOWLEDGE block — bounds the
+// per-session prompt size while covering the full script of typical videos.
+const TRANSCRIPT_KNOWLEDGE_MAX_CHARS = 24_000;
+
 export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> {
   // ── Public: health ─────────────────────────────────────────────────────────
   app.get('/api/v1/avatar/health', async () => ({
@@ -177,16 +182,50 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
       if (cfg?.avatarId && (!cfg.avatarName || !cfg.avatarImageUrl || !cfg.voiceId)) {
         cfg = await enrichAvatarConfigFromAnam(cfg, apiKey).catch(() => cfg);
       }
+      // The video's caption transcript (SEO/CC pipeline) is the avatar's DEFAULT
+      // knowledge: inline it into the session's KNOWLEDGE block (after any user-written
+      // knowledge) so the avatar can answer about the actual spoken content. When the
+      // saved persona was baked WITHOUT the RAG knowledge tool, prefer an ephemeral
+      // session for this start — the stateful persona wouldn't know the video at all.
+      const transcript = await getProjectTranscript(body.projectId).catch(() => null);
+      if (transcript) {
+        const userKnowledge = cfg?.knowledge?.trim();
+        const block =
+          'VIDEO TRANSCRIPT — the exact spoken content of the video the viewer is watching. ' +
+          `Base your answers about the video on it:\n${transcript.slice(0, TRANSCRIPT_KNOWLEDGE_MAX_CHARS)}`;
+        cfg = { ...(cfg ?? {}), knowledge: userKnowledge ? `${userKnowledge}\n\n${block}` : block };
+        if (cfg.personaId && !cfg.knowledgeToolId) cfg = { ...cfg, personaId: undefined };
+      }
     }
     const characterId = body.character_id ?? cfg?.characterId ?? DEFAULT_CHARACTER_ID;
     try {
       const info = await getSessionToken(characterId, cfg, apiKey);
+      // Display identity must describe the avatar the session ACTUALLY uses. When the
+      // config didn't pin one (defaults resolved live from the account), look the
+      // resolved avatar up so the popup shows its real name/portrait — never a stale
+      // hardcoded character (the "pnina but labeled Einstein" mismatch).
+      let displayCfg = cfg;
+      if (!displayCfg?.avatarId) {
+        // A stateful (personaId-only) session doesn't expose its avatar — ask Anam.
+        const sessionAvatarId = info.avatarId ||
+          (cfg?.personaId ? (await getPersona(cfg.personaId, apiKey).catch(() => null))?.avatarId ?? '' : '');
+        if (sessionAvatarId) {
+          const look = await describeAvatar(sessionAvatarId, apiKey).catch(() => null);
+          displayCfg = {
+            ...(displayCfg ?? {}),
+            avatarId: sessionAvatarId,
+            avatarName: look?.displayName || info.personaName || '',
+            avatarVariantName: look?.variantName || '',
+            avatarImageUrl: look?.imageUrl || '',
+          };
+        }
+      }
       return reply.send({
         provider: 'anam',
         sessionToken: info.token,
         characterId: info.characterId,
         voiceSensitivity: info.voiceSensitivity,
-        avatarDisplay: buildAvatarDisplay(info.characterId, cfg, info.voiceSensitivity),
+        avatarDisplay: buildAvatarDisplay(info.characterId, displayCfg, info.voiceSensitivity),
       });
     } catch (err) {
       const status = (err as { status?: number }).status ?? 500;
@@ -676,6 +715,9 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
         side: z.enum(['left', 'right']),
         imageUrl: z.string().max(2048).optional(),
         label: z.string().max(120).optional(),
+        // Voice band of this circle's character — drives the FFT/pitch speaker
+        // fallback in the viewer when the project has no scenes timeline.
+        voice: z.enum(['male', 'female']).optional(),
       })).max(2).optional(),
       barStyle: z.enum(['bars', 'solid', 'gradient']).optional(),
       numberOfBars: z.number().min(8).max(512).optional(),

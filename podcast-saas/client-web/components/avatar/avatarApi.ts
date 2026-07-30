@@ -145,6 +145,9 @@ export interface AvatarCircleFace {
   side: 'left' | 'right';
   imageUrl?: string;
   label?: string;
+  // Voice band of this circle's character — drives the viewer's FFT/pitch speaker
+  // fallback when the project has no scenes timeline. Defaults: host_a=male, host_b=female.
+  voice?: 'male' | 'female';
 }
 
 export interface AvatarCirclesConfig {

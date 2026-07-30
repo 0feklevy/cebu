@@ -23,6 +23,38 @@ const PROXIED_TEXT_EXTS = new Set([
 const IMMUTABLE = 'public, max-age=31536000, immutable';
 
 /**
+ * Head bootstrap injected into every proxied sim entry HTML. It reads the
+ * `#simboot=<urlencoded JSON {hide:[selectors]}>` fragment the player puts on the
+ * iframe src and applies `display:none` DURING document parse — so a minimal-UI
+ * sim paints minimal from its very first frame instead of flashing the full UI
+ * until the postMessage startScript round-trip lands. Selector sanitization
+ * mirrors the bridge's applyHideUi ({ } < \ rejected — no style breakouts).
+ * The style is removed when the parent posts `clearBootHide` (sent right after
+ * every startScript, whose __simHideUi style is the definitive hide set).
+ * Injection happens at serve time, so already-stored sims get it too.
+ */
+const SIM_BOOT_SNIPPET =
+  '<script data-simboot>(function(){try{' +
+  'var m=/[#&]simboot=([^&]*)/.exec(location.hash||"");' +
+  'if(m){var c=JSON.parse(decodeURIComponent(m[1]));var s=(c&&c.hide)||[];var r=[];' +
+  'for(var i=0;i<s.length;i++){var x=s[i];if(typeof x==="string"&&!/[{}<\\\\]/.test(x))r.push(x+"{display:none !important}")}' +
+  'if(r.length){var st=document.createElement("style");st.id="__simBootHide";st.textContent=r.join("\\n");' +
+  '(document.head||document.documentElement).appendChild(st)}}' +
+  'window.addEventListener("message",function(e){var d=e.data||{};' +
+  'if(d&&d.type==="clearBootHide"){var el=document.getElementById("__simBootHide");if(el)el.remove()}});' +
+  '}catch(e){}})()</script>';
+
+/** Inject the boot snippet right after <head> (or <html>, or prepend) in sim entry HTML. */
+export function injectSimBootSnippet(html: string): string {
+  if (html.includes('data-simboot')) return html;
+  const head = /<head[^>]*>/i.exec(html);
+  if (head) return html.slice(0, head.index + head[0].length) + SIM_BOOT_SNIPPET + html.slice(head.index + head[0].length);
+  const root = /<html[^>]*>/i.exec(html);
+  if (root) return html.slice(0, root.index + root[0].length) + SIM_BOOT_SNIPPET + html.slice(root.index + root[0].length);
+  return SIM_BOOT_SNIPPET + html;
+}
+
+/**
  * Weak-comparison If-None-Match check (RFC 9110 §13.1.2): strip any `W/` prefix
  * from the candidates, honor `*`, and compare the opaque tags byte-for-byte.
  * `ifNoneMatch` is the raw request header (possibly a comma-separated list).
@@ -149,7 +181,12 @@ export async function registerSimPublicRoutes(app: FastifyInstance): Promise<voi
       }
 
       try {
-        const buf = await storage.readObject(key);
+        let buf = await storage.readObject(key);
+        // Entry HTML gets the minimal-UI boot bootstrap injected at serve time (see
+        // SIM_BOOT_SNIPPET) — BEFORE the ETag, so the tag matches the served bytes.
+        if (ext === '.html' || ext === '.htm') {
+          buf = Buffer.from(injectSimBootSnippet(buf.toString('utf8')), 'utf8');
+        }
         // Strong ETag = sha1 of the exact bytes. Combined with `no-cache` on the
         // rewritable entry HTML / bridge JS this is the point: the browser still
         // revalidates every load, but an unchanged file costs a 304, not a re-download.

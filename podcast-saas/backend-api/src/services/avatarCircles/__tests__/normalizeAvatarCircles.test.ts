@@ -101,6 +101,17 @@ describe('normalizeFaces — distinct speaker→circle mapping (his wave / her w
       { side: 'right', speaker: 'host_b', label: 'Bob' },
     ]);
   });
+
+  it('preserves the voice band tag (FFT speaker fallback) and drops invalid values', () => {
+    const faces: CircleFace[] = [
+      { speaker: 'host_a', side: 'left', voice: 'male' },
+      { speaker: 'host_b', side: 'right', voice: 'robot' as unknown as CircleFace['voice'] },
+    ];
+    expect(normalizeFaces(faces, 2)).toEqual([
+      { side: 'left', speaker: 'host_a', voice: 'male' },
+      { side: 'right', speaker: 'host_b' },
+    ]);
+  });
 });
 
 describe('facesAreDegenerate', () => {

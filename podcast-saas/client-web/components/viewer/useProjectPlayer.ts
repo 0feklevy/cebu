@@ -62,6 +62,11 @@ export interface ProjectPlayerState {
   controlsVisible: boolean;
   globalTime:       number;
   activeSimUrl:    string | null;
+  // Minimal-UI selectors baked into the iframe src fragment (#simboot=…) so the sim
+  // paints already-minimal — no full-UI flash while startScript is still in flight.
+  activeSimBootHide: string[] | null;
+  // SIM_READY handshake state for the CURRENT iframe document — false while booting.
+  simReady:        boolean;
   currentSegIdx:   number;
   activeSegmentId: string;          // id of the playing segment (stable across branching)
   timeline:        TimelineSeg[];
@@ -213,6 +218,8 @@ export function useProjectPlayer(
     controlsVisible:  true,
     globalTime:       0,
     activeSimUrl:     null,
+    activeSimBootHide: null,
+    simReady:         false,
     currentSegIdx:    0,
     activeSegmentId:  initialSegments[0]?.id ?? '',
     timeline:         initialSegs,
@@ -428,7 +435,7 @@ export function useProjectPlayer(
       // (PING_SIM_READY poll → SIM_READY → startScript) against a brand-new iframe.
       activeSimUrlRef.current = null;
       simReadyRef.current = false;
-      merge({ activeSimUrl: null });      // unmounts the iframe → frees the WebGL context
+      merge({ activeSimUrl: null, activeSimBootHide: null, simReady: false });  // unmounts the iframe → frees the WebGL context
     }, Math.max(700, graceOverrideMs ?? simDestroyGraceMs()));
   };
 
@@ -470,6 +477,26 @@ export function useProjectPlayer(
         fetch(bridge.href, { credentials: 'omit', mode: 'cors' }).catch(() => {});
       }
     } catch { /* best-effort — never surface prefetch failures */ }
+  };
+
+  // Minimal-UI selectors a sim section should BOOT with (fragment hint → painted
+  // already-minimal). Only when simple_ui is on and there are mechanical hides.
+  const bootHideFor = (sec: SimulationOverlay | null | undefined): string[] | null =>
+    sec?.simple_ui && sec.ui_hide?.length ? sec.ui_hide : null;
+
+  // Mount an upcoming sim's iframe hidden + unscripted so it boots BEFORE the
+  // boundary (used by the scrub warm-up AND the playing-path warm-up). No script,
+  // reveal or activeSimRef state is touched — SIM_READY on a pre-mount just parks
+  // the sim (frozen via simPause in the SIM_READY handler) until a section enters.
+  const premountSim = (sec: SimulationOverlay | null | undefined) => {
+    if (activeSimRef.current) return;   // live iframe (possibly on screen) — never navigate it
+    if (!sec?.simulation_url) return;
+    prefetchSimAssets(sec.simulation_url);
+    cancelSimDestroy();
+    if (activeSimUrlRef.current === sec.simulation_url) return;   // already mounted (warm)
+    simReadyRef.current = false;
+    activeSimUrlRef.current = sec.simulation_url;
+    merge({ activeSimUrl: sec.simulation_url, activeSimBootHide: bootHideFor(sec), simReady: false });
   };
 
   // ── Guided Simulation narration playback (serialized queue, ducks the video) ──
@@ -605,7 +632,7 @@ export function useProjectPlayer(
       const sameUrl = simSection.simulation_url === activeSimUrlRef.current;
       activeSimUrlRef.current = simSection.simulation_url;
       desiredSimRef.current = { script, params };   // what the loaded sim SHOULD be running now
-      merge({ activeSimUrl: simSection.simulation_url });
+      merge({ activeSimUrl: simSection.simulation_url, activeSimBootHide: bootHideFor(simSection) });
 
       if (isPostRollSim) {
         videoRef.current?.pause();
@@ -623,6 +650,9 @@ export function useProjectPlayer(
         sendToSim({ type: 'simResume' });
         // Send startScript first so sim applies simpleUi, then reveal
         sendToSim({ type: 'startScript', script, params });
+        // The definitive __simHideUi style is applied by startScript above; drop the
+        // boot-time style so a section with a DIFFERENT hide set isn't over-hidden.
+        sendToSim({ type: 'clearBootHide' });
         if (simShowTimerRef.current) clearTimeout(simShowTimerRef.current);
         simShowTimerRef.current = setTimeout(() => { simShowTimerRef.current = null; merge({ showSimOverlay: true }); }, 50);
       } else {
@@ -1183,11 +1213,18 @@ export function useProjectPlayer(
       // (D4) Sim prefetch: while playing, if a sim section in THIS segment starts within
       // the next 15s, warm the HTTP cache for its entry (+ bridge.js) so the iframe boots
       // from cache at the boundary. Sim sections are segment-local → branching-safe.
+      // Within 8s, go further: pre-MOUNT the iframe hidden so the sim's document parses,
+      // boots and handshakes behind the video — the boundary then takes the warm
+      // (sameUrl + ready) path and the crossfade reveals an already-painted, already-
+      // minimal sim instead of a black/white loading frame.
       if (!videoRef.current?.paused) {
         const upcomingSim = segmentsRef.current[idx]?.simulations.find((s) =>
           !!s.simulation_url && t < s.start_sec && s.start_sec - t <= 15,
         ) ?? null;
-        if (upcomingSim?.simulation_url) prefetchSimAssets(upcomingSim.simulation_url);
+        if (upcomingSim?.simulation_url) {
+          prefetchSimAssets(upcomingSim.simulation_url);
+          if (upcomingSim.start_sec - t <= 8) premountSim(upcomingSim);
+        }
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1290,6 +1327,7 @@ export function useProjectPlayer(
       const { type } = (e.data as { type?: string }) ?? {};
       if (type === 'SIM_READY') {
         simReadyRef.current = true;
+        merge({ simReady: true });
         if (simPollRef.current) clearInterval(simPollRef.current);
         // Self-heal: if the pending start was consumed (e.g. the OLD page answered a
         // ping mid-navigation) but a sim section is active and has a desired script,
@@ -1304,9 +1342,16 @@ export function useProjectPlayer(
           sendToSim({ type: 'simResume' });
           // Send startScript first so sim applies simpleUi before overlay reveals
           sendToSim({ type: 'startScript', script: pending.script, params: pending.params });
+          // Definitive hides applied by startScript — drop the boot-time style.
+          sendToSim({ type: 'clearBootHide' });
           if (simShowTimerRef.current) clearTimeout(simShowTimerRef.current);
           if (simRevealFallbackRef.current) { clearTimeout(simRevealFallbackRef.current); simRevealFallbackRef.current = null; }
           simShowTimerRef.current = setTimeout(() => { simShowTimerRef.current = null; merge({ showSimOverlay: true }); }, 50);
+        } else if (!pending && !activeSimRef.current) {
+          // A pre-mounted (scrub or playing-path) sim finished booting while no sim
+          // section is active: freeze its rAF loop so a hidden sim never competes with
+          // video playback for CPU/GPU. Entry unfreezes via the warm path's simResume.
+          sendToSim({ type: 'simPause' });
         }
       }
       if (type === 'userInteraction') {
@@ -1376,6 +1421,7 @@ export function useProjectPlayer(
   // attached, so this heal was dead code. (sim-race + sim-reliability fix)
   const handleSimFrameLoad = useCallback(() => {
     simReadyRef.current = false;
+    merge({ simReady: false });
     if (desiredSimRef.current) pendingSimRef.current = { ...desiredSimRef.current };
     startSimPoll();
   }, [startSimPoll]);
@@ -1477,13 +1523,7 @@ export function useProjectPlayer(
       if (!seg) return;
       const local = Math.max(0, targetGlobal - tl[idx].offset);
       const sec = seg.simulations.find((s) => s.simulation_url && local >= s.start_sec && local < s.end_sec);
-      if (!sec?.simulation_url) return;
-      prefetchSimAssets(sec.simulation_url);
-      cancelSimDestroy();
-      if (activeSimUrlRef.current === sec.simulation_url) return;   // already mounted (warm)
-      simReadyRef.current = false;
-      activeSimUrlRef.current = sec.simulation_url;
-      merge({ activeSimUrl: sec.simulation_url });
+      premountSim(sec);
     };
 
     const clearPremountTimer = () => {
@@ -1812,6 +1852,7 @@ export function useProjectPlayer(
           ...(activeSimRef.current.ui_hide?.length ? { hideSelectors: activeSimRef.current.ui_hide } : {}),
         } satisfies SimStartScriptParams,
       });
+      sendToSim({ type: 'clearBootHide' });
     }
     safePlay(videoRef.current!);
   // eslint-disable-next-line react-hooks/exhaustive-deps
