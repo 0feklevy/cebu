@@ -274,7 +274,7 @@ export const admin_settings = pgTable('admin_settings', {
   thinking_budget_tokens: integer('thinking_budget_tokens').default(8000).notNull(),
   utility_model: text('utility_model').default('claude-haiku-4-5').notNull(),
   generation_model: text('generation_model').default('gemini-2.0-flash').notNull(),
-  complex_model: text('complex_model').default('gemini-2.0-flash').notNull(),
+  complex_model: text('complex_model').default('claude-opus-4-8').notNull(),
   complex_min_corpus_tokens: integer('complex_min_corpus_tokens').default(50000).notNull(),
   complex_min_retries: integer('complex_min_retries').default(2).notNull(),
   // Audio / TTS settings

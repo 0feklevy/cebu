@@ -2,11 +2,12 @@
 
 import { useRef, useState, useCallback, useEffect, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { Flag, Music, Plus, Trash2, Volume2, X } from 'lucide-react';
+import { CircleDot, Flag, Loader2, Music, Plus, Trash2, Volume2, X } from 'lucide-react';
 import type { VideoFile, TimelineSection, TimelineMarker, Simulation, ImageFile, AudioFile } from 'shared/src/generated/client-v1';
 import { SectionEditor } from './SectionEditor';
 import { A2AudioModal } from './A2AudioModal';
 import { api } from '../lib/api';
+import { MIN_CIRCLE_SECTION_SEC, makeCircleSection, normalizeCircleSections, type CircleSection } from '../lib/circleSections';
 
 // ─── constants ────────────────────────────────────────────────────────────────
 
@@ -28,6 +29,10 @@ const MIN_BROLL_SEC  = 4;   // minimum marked duration for B-roll creation
 const TRIM_ZONE_PX   = 10;
 const MIN_ZOOM       = 2;
 const MAX_ZOOM       = 400;
+// Circles picking lane (avatar-circles) — violet family so it reads as its own layer, consistent
+// with the outro/duplicate-ghost violets in the palette below.
+const CIRCLES_TRACK_H = 26;
+const CIRCLE_EDGE_PX  = 6;   // ≥6px trim hit zones on a circle-range's edges
 
 // ─── section colors ───────────────────────────────────────────────────────────
 
@@ -70,28 +75,41 @@ type Interaction =
   | { kind: 'broll-moving';   section: TimelineSection; dragOffsetSec: number; previewOffset: number }
   | { kind: 'broll-trimming'; section: TimelineSection; edge: 'start' | 'end'; sourceDuration: number; previewStart: number; previewEnd: number };
 
+// Circles picking lane: kept separate from Interaction so the existing V1/V2 drag machinery is
+// untouched — the lane owns its whole gesture via pointer capture. (avatar-circles)
+type CirclesDrag =
+  | { kind: 'circle-creating'; startSec: number; curSec: number }
+  | { kind: 'circle-moving';   id: string; grabOffsetSec: number; dur: number; previewStart: number }
+  | { kind: 'circle-trimming'; id: string; edge: 'start' | 'end'; previewStart: number; previewEnd: number };
+
 // ─── clip model ───────────────────────────────────────────────────────────────
 
 interface ClipWithOffset {
   video: VideoFile;
   offset: number;
+  dur: number;   // effective length (real, transcode-independent): duration_sec or a client-measured value
 }
 
-function buildClips(videos: VideoFile[]): ClipWithOffset[] {
+// durOf resolves each clip's effective length (see effDur() in the component). Threading it in
+// keeps buildClips pure and lets the timeline reflect the real video length before the async HLS
+// transcode worker backfills duration_sec — otherwise a null duration collapses every clip to 0
+// and the whole timeline floors to 50s. (timeline-50s-cap fix)
+function buildClips(videos: VideoFile[], durOf: (v: VideoFile) => number): ClipWithOffset[] {
   const sorted = [...videos].sort(
     (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
   );
   let off = 0;
   return sorted.map(v => {
-    const clip = { video: v, offset: off };
-    off += v.duration_sec ?? 0;
+    const dur = durOf(v);
+    const clip = { video: v, offset: off, dur };
+    off += dur;
     return clip;
   });
 }
 
 function findClipAtGlobalSec(clips: ClipWithOffset[], globalSec: number): ClipWithOffset | null {
   for (const c of clips) {
-    const end = c.offset + (c.video.duration_sec ?? 0);
+    const end = c.offset + c.dur;
     if (globalSec >= c.offset && globalSec < end) return c;
   }
   return clips.length > 0 ? clips[clips.length - 1] : null;
@@ -361,6 +379,45 @@ function getAudioDurationFromUrl(url: string): Promise<number | null> {
   });
 }
 
+// Measure a video's real length straight from its raw URL (mirrors getAudioDurationFromUrl).
+// Used as a transcode-independent fallback for the timeline width so an un-transcoded clip
+// (duration_sec still null) renders at its true length instead of the 50s floor. (timeline-50s-cap fix)
+function getVideoDurationFromUrl(url: string): Promise<number | null> {
+  return new Promise(resolve => {
+    const vid = document.createElement('video');
+    let timer: number | null = null;
+
+    const cleanup = () => {
+      if (timer !== null) window.clearTimeout(timer);
+      vid.onloadedmetadata = null;
+      vid.onerror = null;
+      vid.src = '';
+    };
+
+    // A non-faststart file keeps its moov atom at the end, so metadata can be slow to arrive —
+    // give it a generous window before giving up (the 50s floor still applies meanwhile).
+    timer = window.setTimeout(() => {
+      cleanup();
+      resolve(null);
+    }, 12000);
+
+    vid.preload = 'metadata';
+    vid.crossOrigin = 'anonymous';
+    vid.muted = true;
+    vid.playsInline = true;
+    vid.onloadedmetadata = () => {
+      const duration = Number.isFinite(vid.duration) && vid.duration > 0 ? vid.duration : null;
+      cleanup();
+      resolve(duration);
+    };
+    vid.onerror = () => {
+      cleanup();
+      resolve(null);
+    };
+    vid.src = url;
+  });
+}
+
 function formatDuration(s: number): string {
   return `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`;
 }
@@ -497,6 +554,25 @@ interface Props {
   flagMode?: boolean;
   onPlaceMarker?: (atSec: number) => void;
   onExitFlagMode?: () => void;
+  // Duplicate mode (icon toggle next to the flag): click a section to pick it, then click the
+  // timeline to drop an exact copy. (duplicate-section)
+  duplicateMode?: boolean;
+  duplicateSourceId?: string | null;
+  onPickDuplicateSource?: (id: string | null) => void;
+  onDuplicateSection?: (
+    source: TimelineSection,
+    position: { video_file_id?: string; start_sec: number; end_sec: number; global_offset_sec: number | null },
+  ) => void;
+  onExitDuplicateMode?: () => void;
+  // Avatar-circles picking mode: a dedicated violet lane above the tracks where the user drags
+  // [in,out] ranges (GLOBAL timeline seconds) marking where the circles appear. While on, section
+  // editing is disabled (seeking keeps working); every commit goes through normalizeCircleSections.
+  circlesMode?: boolean;
+  circleRanges?: CircleSection[];
+  onCircleRangesChange?: (next: CircleSection[]) => void;
+  onCirclesDone?: () => void;
+  onCirclesCancel?: () => void;
+  circlesSaving?: boolean;
   onUpdateMarker?: (id: string, patch: { label?: string | null; notes?: string | null; at_sec?: number }) => void;
   onDeleteMarker?: (id: string) => void;
   simulations: Simulation[];
@@ -506,6 +582,9 @@ interface Props {
   activeVideoId: string | null;
   videoUrls: Record<string, string>;
   onSeek: (globalSec: number) => void;
+  // Lift a client-measured duration up so the parent's player coordinate system (offsets, active
+  // clip, VideoPlayer) uses the same length the timeline does, before transcode. (timeline-50s-cap)
+  onMeasuredDuration?: (videoId: string, durationSec: number) => void;
   onSectionsChange: (sections: TimelineSection[]) => void;
   onBrollMarkComplete?: (mark: { start: number; end: number }) => void;
   onAudioCutawayInserted?: (section: TimelineSection) => void;
@@ -521,7 +600,9 @@ interface Props {
 
 export function TimelinePanel({
   projectId, videos, allVideos = [], sections, markers = [], flagMode = false, onPlaceMarker, onExitFlagMode, onUpdateMarker, onDeleteMarker, simulations, images = [], audioFiles = [], playheadSec, activeVideoId, videoUrls,
-  onSeek, onSectionsChange, onBrollMarkComplete, onAudioCutawayInserted, onSimulationUpdate,
+  duplicateMode = false, duplicateSourceId = null, onPickDuplicateSource, onDuplicateSection, onExitDuplicateMode,
+  circlesMode = false, circleRanges, onCircleRangesChange, onCirclesDone, onCirclesCancel, circlesSaving = false,
+  onSeek, onMeasuredDuration, onSectionsChange, onBrollMarkComplete, onAudioCutawayInserted, onSimulationUpdate,
   toolMode, showAllLayers = false, showBrollTrack, showAudioTrack, onAddVideo,
 }: Props) {
   const scrollRef    = useRef<HTMLDivElement>(null);
@@ -547,9 +628,26 @@ export function TimelinePanel({
   const [markerMenuPos, setMarkerMenuPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 }); // portal anchor (viewport)
   const [markerDraft, setMarkerDraft]     = useState('');                    // in-progress note text
   const [flagHoverSec, setFlagHoverSec]   = useState<number | null>(null);   // follow-line position in flag mode
+  const [dupHoverSec, setDupHoverSec]     = useState<number | null>(null);   // follow-line/ghost position in duplicate-drop mode
   const [markerDrag, setMarkerDrag]       = useState<{ id: string; previewSec: number } | null>(null);
   const markerDragCleanupRef = useRef<(() => void) | null>(null); // teardown for in-flight marker-drag listeners (frontend-102)
   const [localAudioFiles, setLocalAudioFiles] = useState<AudioFile[]>(audioFiles);
+  // Circles picking lane state (avatar-circles). The in-flight drag is mirrored in a ref (same
+  // pattern as interRef) so pointerup always sees the latest preview values.
+  const [circlesDrag, setCirclesDrag] = useState<CirclesDrag | null>(null);
+  const circlesDragRef = useRef<CirclesDrag | null>(null);
+  const [selectedCircleId, setSelectedCircleId] = useState<string | null>(null);
+  const [hoverCircleId, setHoverCircleId] = useState<string | null>(null);
+  // Client-measured durations (video id → seconds) for clips whose duration_sec is still null
+  // because the HLS transcode hasn't populated it yet. Keyed by id so a measurement survives
+  // re-renders. `measuringRef` dedupes in-flight probes; `mountedRef` gates writes after unmount.
+  const [measuredDur, setMeasuredDur] = useState<Record<string, number>>({});
+  const measuringRef = useRef<Set<string>>(new Set());
+  const mountedRef = useRef(true);
+  // Set true on (re)mount and false on unmount. Must restore true on mount, or React StrictMode's
+  // dev-only mount→unmount→mount double-invoke leaves it permanently false and every measured
+  // duration is silently dropped. (timeline-50s-cap follow-up)
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
 
   const openMarker = (m: TimelineMarker, clientX: number, clientY: number) => {
     setMarkerMenu(m.id);
@@ -566,8 +664,36 @@ export function TimelinePanel({
   const hasBroll = showBrollTrack ?? (toolMode === 'broll' || showAllLayers);
   const hasAudio = showAudioTrack ?? (audioFiles.length > 0 || audioSections.length > 0 || hasBroll);
 
-  const clipsWithOffset = buildClips(videos);
-  const videoTimelineDuration = clipsWithOffset.reduce((s, c) => s + (c.video.duration_sec ?? 0), 0);
+  // Effective clip length: the persisted duration_sec when present, else a client-measured value,
+  // else 0 (the 50s floor below covers the still-measuring / genuinely-empty case). (timeline-50s-cap fix)
+  const effDur = useCallback((v: VideoFile): number => {
+    if (v.duration_sec != null && v.duration_sec > 0) return v.duration_sec;
+    const m = measuredDur[v.id];
+    return m != null && m > 0 ? m : 0;
+  }, [measuredDur]);
+
+  // For any clip missing a real duration_sec, probe its raw URL once and cache the result so the
+  // timeline reflects the true length without waiting for (or depending on) the transcode worker.
+  useEffect(() => {
+    videos.forEach(v => {
+      if (v.duration_sec != null && v.duration_sec > 0) return;
+      if (measuredDur[v.id] != null && measuredDur[v.id] > 0) return;
+      if (measuringRef.current.has(v.id)) return;
+      const url = videoUrls[v.id];
+      if (!url) return;
+      measuringRef.current.add(v.id);
+      getVideoDurationFromUrl(url).then(d => {
+        measuringRef.current.delete(v.id);
+        if (mountedRef.current && d != null && d > 0) {
+          setMeasuredDur(prev => (prev[v.id] === d ? prev : { ...prev, [v.id]: d }));
+          onMeasuredDuration?.(v.id, d);   // lift to the parent so the player agrees with the timeline
+        }
+      });
+    });
+  }, [videos, videoUrls, measuredDur, onMeasuredDuration]);
+
+  const clipsWithOffset = buildClips(videos, effDur);
+  const videoTimelineDuration = clipsWithOffset.reduce((s, c) => s + c.dur, 0);
   const sectionTimelineEnd = mainSections.reduce((max, s) => {
     const clip = clipsWithOffset.find(c => c.video.id === s.video_file_id);
     return clip ? Math.max(max, clip.offset + s.end_sec) : max;
@@ -577,10 +703,16 @@ export function TimelinePanel({
     return Math.max(max, (s.global_offset_sec ?? 0) + (s.end_sec - s.start_sec));
   }, 0);
   const totalDuration = Math.max(sectionTimelineEnd, overlayTimelineEnd, 50);
+  // Real content end without the 50s display floor: the circles lane clamps gestures and
+  // commits here, so a range can't be drawn into the padded tail (it would be saved but
+  // never fire). Falls back to totalDuration while clips are still measuring (end unknown).
+  const contentEndSec = Math.max(sectionTimelineEnd, overlayTimelineEnd);
+  const circlesMaxSec = contentEndSec > 0 ? contentEndSec : totalDuration;
 
   useEffect(() => { zoomRef.current = zoom; }, [zoom]);
 
   const setInter = useCallback((v: Interaction | null) => { interRef.current = v; setInteraction(v); }, []);
+  const setCirclesDragBoth = useCallback((v: CirclesDrag | null) => { circlesDragRef.current = v; setCirclesDrag(v); }, []);
 
   // ── Fit-to-view on mount ─────────────────────────────────────────────────
   useLayoutEffect(() => {
@@ -643,12 +775,14 @@ export function TimelinePanel({
   // ── V1 track mouse down ──────────────────────────────────────────────────
   const handleTrackMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return;
+    if (duplicateMode) return;         // duplicate mode owns clicks (pick source / drop copy)
+    if (circlesMode) return;           // circles picking: marks go on the lane, tracks are read-only
     if (toolMode === 'broll') return; // handled by V2 track
     const globalSec = pixelsToGlobalSec(e.clientX);
     const clip = findClipAtGlobalSec(clipsWithOffset, globalSec);
     if (!clip) return;
     const localSec = Math.max(0, globalSec - clip.offset);
-    const dur = clip.video.duration_sec ?? totalDuration;
+    const dur = clip.dur > 0 ? clip.dur : totalDuration;
     const gap = findGap(mainSections, clip.video.id, localSec, dur);
     if (!gap) return;
     setInter({
@@ -661,16 +795,18 @@ export function TimelinePanel({
     });
     setSelectedSection(null);
     e.preventDefault();
-  }, [mainSections, clipsWithOffset, totalDuration, pixelsToGlobalSec, setInter, toolMode]);
+  }, [mainSections, clipsWithOffset, totalDuration, pixelsToGlobalSec, setInter, toolMode, duplicateMode, circlesMode]);
 
   // ── V2 broll track mouse down ────────────────────────────────────────────
   const handleBrollTrackMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0 || toolMode !== 'broll') return;
+    if (duplicateMode) return;         // duplicate mode owns clicks
+    if (circlesMode) return;           // circles picking: marks go on the lane, tracks are read-only
     const globalSec = pixelsToGlobalSec(e.clientX);
     setInter({ kind: 'broll-creating', startSec: globalSec, curSec: globalSec });
     setSelectedSection(null);
     e.preventDefault();
-  }, [toolMode, pixelsToGlobalSec, setInter]);
+  }, [toolMode, pixelsToGlobalSec, setInter, duplicateMode, circlesMode]);
 
   // ── V1 section mouse down ────────────────────────────────────────────────
   const handleSectionMouseDown = useCallback((
@@ -680,9 +816,13 @@ export function TimelinePanel({
     mode: 'move' | 'trim-start' | 'trim-end',
   ) => {
     if (e.button !== 0) return;
+    if (duplicateMode) return;         // in duplicate mode a section click picks/places, never drags
+    if (circlesMode) return;           // circles picking: sections are inert context
     const globalSec = pixelsToGlobalSec(e.clientX);
     const localSec  = globalSec - clipOffset;
-    const baseDur = videos.find(v => v.id === s.video_file_id)?.duration_sec ?? totalDuration;
+    const v = videos.find(v => v.id === s.video_file_id);
+    const measured = v ? effDur(v) : 0;
+    const baseDur = measured > 0 ? measured : totalDuration;
     const dur = Math.max(baseDur, s.end_sec);
     didMoveRef.current = false;
     if (mode === 'move') {
@@ -692,7 +832,7 @@ export function TimelinePanel({
       setInter({ kind: 'trimming', section: s, clipOffset, edge: mode === 'trim-start' ? 'start' : 'end', duration: dur, previewStart: s.start_sec, previewEnd: s.end_sec });
     }
     e.preventDefault();
-  }, [videos, totalDuration, pixelsToGlobalSec, setInter]);
+  }, [videos, totalDuration, pixelsToGlobalSec, setInter, effDur, duplicateMode, circlesMode]);
 
   // ── V2 broll section mouse down ──────────────────────────────────────────
   const handleBrollSectionMouseDown = useCallback((
@@ -701,13 +841,16 @@ export function TimelinePanel({
     mode: 'move' | 'trim-start' | 'trim-end',
   ) => {
     if (e.button !== 0) return;
+    if (duplicateMode) return;         // in duplicate mode a section click picks/places, never drags
+    if (circlesMode) return;           // circles picking: sections are inert context
     const globalSec = pixelsToGlobalSec(e.clientX);
     const offset = s.global_offset_sec ?? 0;
     // Real source length so a broll/AI clip can extend up to its full generated duration (not
     // just its current trimmed length). Look through ALL videos incl. broll sources.
-    const sourceDuration = allVideos.find(v => v.id === s.video_file_id || v.id === s.clip_source_video_id)?.duration_sec
-      ?? videos.find(v => v.id === s.video_file_id)?.duration_sec
-      ?? (s.end_sec - s.start_sec);
+    const srcVid = allVideos.find(v => v.id === s.video_file_id || v.id === s.clip_source_video_id)
+      ?? videos.find(v => v.id === s.video_file_id);
+    const measuredSrc = srcVid ? effDur(srcVid) : 0;
+    const sourceDuration = measuredSrc > 0 ? measuredSrc : (s.end_sec - s.start_sec);
     didMoveRef.current = false;
     if (mode === 'move') {
       setInter({ kind: 'broll-moving', section: s, dragOffsetSec: globalSec - offset, previewOffset: offset });
@@ -715,7 +858,7 @@ export function TimelinePanel({
       setInter({ kind: 'broll-trimming', section: s, edge: mode === 'trim-start' ? 'start' : 'end', sourceDuration, previewStart: s.start_sec, previewEnd: s.end_sec });
     }
     e.preventDefault();
-  }, [pixelsToGlobalSec, setInter, videos, allVideos]);
+  }, [pixelsToGlobalSec, setInter, videos, allVideos, effDur, duplicateMode, circlesMode]);
 
   // ── Global mouse move / up ───────────────────────────────────────────────
 
@@ -859,9 +1002,61 @@ export function TimelinePanel({
 
   const handleSectionClick = useCallback((e: React.MouseEvent, s: TimelineSection) => {
     e.stopPropagation();
+    if (circlesMode) return;   // circles picking: a section click must not open the editor
+    // Duplicate mode, phase 1: a section click picks the source instead of opening the editor.
+    if (duplicateMode && !duplicateSourceId) {
+      onPickDuplicateSource?.(s.id);
+      return;
+    }
+    if (duplicateMode) return; // phase 2: clicks are handled by the drop overlay, not the section
     if (didMoveRef.current) return;
     setSelectedSection(s);
-  }, []);
+  }, [duplicateMode, duplicateSourceId, onPickDuplicateSource, circlesMode]);
+
+  // ── Duplicate-drop placement ─────────────────────────────────────────────
+  // Resolve where a dropped copy of the picked source lands. Main sections re-attach to the clip
+  // under the cursor and reuse findGap so they never overlap; broll/audio/image/clip keep their
+  // in/out points and move by global offset (parity with their create paths). Returns null when the
+  // drop is invalid (no clip / no room), which both greys the ghost and cancels the click.
+  const computeDuplicatePlacement = useCallback((dropSec: number): {
+    video_file_id?: string;
+    start_sec: number;
+    end_sec: number;
+    global_offset_sec: number | null;
+  } | null => {
+    const source = sections.find(s => s.id === duplicateSourceId);
+    if (!source) return null;
+    const dur = source.end_sec - source.start_sec;
+    if (dur <= 0) return null;
+    if (isMainSection(source)) {
+      const clip = findClipAtGlobalSec(clipsWithOffset, dropSec);
+      if (!clip) return null;
+      const localSec = Math.max(0, dropSec - clip.offset);
+      const span = clip.dur > 0 ? clip.dur : localSec + dur;
+      const gap = findGap(mainSections, clip.video.id, localSec, span);
+      if (!gap) return null;
+      let start = Math.max(localSec, gap[0]);
+      if (start + dur > gap[1]) start = gap[1] - dur;
+      if (start < gap[0] - 0.001) return null; // the gap is too small to hold the copy
+      return { video_file_id: clip.video.id, start_sec: start, end_sec: start + dur, global_offset_sec: null };
+    }
+    // broll / audio / image / clip: start_sec/end_sec are source in/out points — keep them and
+    // position the copy by its global offset.
+    return { start_sec: source.start_sec, end_sec: source.end_sec, global_offset_sec: Math.max(0, dropSec) };
+  }, [sections, duplicateSourceId, clipsWithOffset, mainSections]);
+
+  const handleDuplicateDrop = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    const source = sections.find(s => s.id === duplicateSourceId);
+    if (!source) return;
+    const placement = computeDuplicatePlacement(Math.max(0, pixelsToGlobalSec(e.clientX)));
+    if (!placement) return; // invalid drop — ignore the click, stay in place-mode
+    onDuplicateSection?.(source, placement);
+  }, [sections, duplicateSourceId, computeDuplicatePlacement, pixelsToGlobalSec, onDuplicateSection]);
+
+  const handleDuplicateOverlayMove = useCallback((e: React.MouseEvent) => {
+    setDupHoverSec(Math.max(0, pixelsToGlobalSec(e.clientX)));
+  }, [pixelsToGlobalSec]);
 
   const handleTrackClick = useCallback((e: React.MouseEvent) => {
     const sec = pixelsToGlobalSec(e.clientX);
@@ -920,17 +1115,129 @@ export function TimelinePanel({
   // Remove any in-flight marker-drag window listeners if the component unmounts mid-drag. (frontend-102)
   useEffect(() => () => { markerDragCleanupRef.current?.(); }, []);
 
-  // Escape closes an open note popover, else exits flag mode.
+  // Escape closes an open note popover; in duplicate mode it steps back (clear picked source →
+  // exit mode); otherwise it exits flag mode.
   useEffect(() => {
-    if (!flagMode && !markerMenu) return;
+    if (!flagMode && !markerMenu && !duplicateMode) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       if (markerMenu) setMarkerMenu(null);
+      else if (duplicateMode) {
+        if (duplicateSourceId) onPickDuplicateSource?.(null); // back to pick phase
+        else onExitDuplicateMode?.();
+      }
       else if (flagMode) onExitFlagMode?.();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [flagMode, markerMenu, onExitFlagMode]);
+  }, [flagMode, markerMenu, duplicateMode, duplicateSourceId, onExitFlagMode, onPickDuplicateSource, onExitDuplicateMode]);
+
+  // ── Circles picking lane (avatar-circles) ────────────────────────────────
+  // The lane owns its whole gesture through pointer capture (same guard style as the viewer
+  // scrubber): every commit runs through normalizeCircleSections, which clamps to the timeline,
+  // merges overlaps and drops ranges under MIN_CIRCLE_SECTION_SEC — live previews only clamp.
+
+  const commitCircleRanges = useCallback((next: CircleSection[]) => {
+    onCircleRangesChange?.(normalizeCircleSections(next, circlesMaxSec));
+  }, [onCircleRangesChange, circlesMaxSec]);
+
+  const deleteCircleRange = useCallback((id: string) => {
+    commitCircleRanges((circleRanges ?? []).filter(r => r.id !== id));
+    setSelectedCircleId(cur => (cur === id ? null : cur));
+  }, [circleRanges, commitCircleRanges]);
+
+  const handleCirclesPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const targetEl = e.target as HTMLElement;
+    const sec = Math.min(circlesMaxSec, pixelsToGlobalSec(e.clientX));
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* capture unsupported */ }
+    const rangeEl = targetEl.closest('[data-circle-id]') as HTMLElement | null;
+    const r = rangeEl ? (circleRanges ?? []).find(x => x.id === rangeEl.dataset.circleId) : undefined;
+    if (r) {
+      setSelectedCircleId(r.id);
+      const edge = targetEl.closest('[data-circle-edge]')?.getAttribute('data-circle-edge');
+      if (edge === 'start' || edge === 'end') {
+        setCirclesDragBoth({ kind: 'circle-trimming', id: r.id, edge, previewStart: r.start_sec, previewEnd: r.end_sec });
+      } else {
+        setCirclesDragBoth({ kind: 'circle-moving', id: r.id, grabOffsetSec: sec - r.start_sec, dur: r.end_sec - r.start_sec, previewStart: r.start_sec });
+      }
+    } else {
+      setSelectedCircleId(null);
+      setCirclesDragBoth({ kind: 'circle-creating', startSec: sec, curSec: sec });
+    }
+    e.preventDefault();
+  }, [circleRanges, circlesMaxSec, pixelsToGlobalSec, setCirclesDragBoth]);
+
+  const handleCirclesPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const drag = circlesDragRef.current;
+    if (!drag) return;
+    const sec = Math.min(circlesMaxSec, pixelsToGlobalSec(e.clientX));   // clamped to [0, circlesMaxSec]
+    if (drag.kind === 'circle-creating') {
+      setCirclesDragBoth({ ...drag, curSec: sec });
+    } else if (drag.kind === 'circle-moving') {
+      const start = Math.max(0, Math.min(circlesMaxSec - drag.dur, sec - drag.grabOffsetSec));
+      setCirclesDragBoth({ ...drag, previewStart: start });
+    } else if (drag.edge === 'start') {
+      setCirclesDragBoth({ ...drag, previewStart: Math.min(drag.previewEnd, sec) });
+    } else {
+      setCirclesDragBoth({ ...drag, previewEnd: Math.max(drag.previewStart, sec) });
+    }
+  }, [pixelsToGlobalSec, circlesMaxSec, setCirclesDragBoth]);
+
+  const handleCirclesPointerUp = useCallback(() => {
+    const drag = circlesDragRef.current;
+    if (!drag) return;
+    setCirclesDragBoth(null);
+    const ranges = circleRanges ?? [];
+    if (drag.kind === 'circle-creating') {
+      const s  = Math.min(drag.startSec, drag.curSec);
+      const en = Math.max(drag.startSec, drag.curSec);
+      if (en - s < MIN_DRAG_PX / zoomRef.current) return;  // a plain click, not a drag
+      commitCircleRanges([...ranges, makeCircleSection(s, en)]);
+    } else if (drag.kind === 'circle-moving') {
+      const r = ranges.find(x => x.id === drag.id);
+      if (!r || Math.abs(drag.previewStart - r.start_sec) < 0.01) return;
+      commitCircleRanges(ranges.map(x => x.id === drag.id ? { ...x, start_sec: drag.previewStart, end_sec: drag.previewStart + drag.dur } : x));
+    } else {
+      const r = ranges.find(x => x.id === drag.id);
+      if (!r || (Math.abs(drag.previewStart - r.start_sec) < 0.01 && Math.abs(drag.previewEnd - r.end_sec) < 0.01)) return;
+      commitCircleRanges(ranges.map(x => x.id === drag.id ? { ...x, start_sec: drag.previewStart, end_sec: drag.previewEnd } : x));
+    }
+  }, [circleRanges, commitCircleRanges, setCirclesDragBoth]);
+
+  const handleCirclesPointerCancel = useCallback(() => {
+    if (circlesDragRef.current) setCirclesDragBoth(null);  // abort without committing
+  }, [setCirclesDragBoth]);
+
+  // Circles-mode keys: Delete/Backspace removes the selected range, Escape cancels the picking
+  // session. Registered only while circlesMode; keys typed into inputs/textareas are left alone.
+  useEffect(() => {
+    if (!circlesMode) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;  // an earlier listener (e.g. the settings panel) claimed the key
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+      if (e.key === 'Escape') {
+        if (markerMenu) return;  // the flag-note popover's own Escape handling wins
+        e.preventDefault();
+        onCirclesCancel?.();
+      } else if ((e.key === 'Delete' || e.key === 'Backspace') && selectedCircleId) {
+        e.preventDefault();
+        deleteCircleRange(selectedCircleId);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [circlesMode, markerMenu, selectedCircleId, deleteCircleRange, onCirclesCancel]);
+
+  // Leaving circles mode drops any in-flight lane gesture/selection.
+  useEffect(() => {
+    if (circlesMode) return;
+    setSelectedCircleId(null);
+    setHoverCircleId(null);
+    circlesDragRef.current = null;
+    setCirclesDrag(null);
+  }, [circlesMode]);
 
   const handleAppendSection = useCallback(async (type: 'simulation' | 'clip') => {
     const anchor = clipsWithOffset[clipsWithOffset.length - 1];
@@ -938,7 +1245,7 @@ export function TimelinePanel({
     setAddBusy(type);
     setAddMenuOpen(false);
     try {
-      const anchorDuration = anchor.video.duration_sec ?? 0;
+      const anchorDuration = anchor.dur;
       const start = Math.max(anchorDuration, sectionTimelineEnd - anchor.offset);
       const section = await api.createSection(projectId, {
         video_file_id: anchor.video.id,
@@ -966,6 +1273,7 @@ export function TimelinePanel({
     e.preventDefault();
     a2DragDepthRef.current = 0;
     setA2DragOver(false);
+    if (circlesMode) return;   // circles picking: audio editing is disabled
     const raw = e.dataTransfer.getData('application/audio-cutaway');
     if (!raw) return;
     let audioData: { id: string; filename: string; url: string; duration_sec: number | null };
@@ -991,7 +1299,7 @@ export function TimelinePanel({
       });
       onAudioCutawayInserted?.(section);
     } catch { /* ignore */ }
-  }, [clipsWithOffset, zoom, projectId, onAudioCutawayInserted, totalDuration]);
+  }, [clipsWithOffset, zoom, projectId, onAudioCutawayInserted, totalDuration, circlesMode]);
 
   // ── Ruler ticks ──────────────────────────────────────────────────────────
 
@@ -1045,6 +1353,20 @@ export function TimelinePanel({
     return { left: `${leftPx}px`, width: `${widthPx}px` };
   };
 
+  // ── Circles range display helper (picking lane) ─────────────────────────
+
+  const circleDisp = (r: CircleSection): { start: number; end: number } => {
+    if (circlesDrag?.kind === 'circle-moving' && circlesDrag.id === r.id) {
+      return { start: circlesDrag.previewStart, end: circlesDrag.previewStart + circlesDrag.dur };
+    }
+    if (circlesDrag?.kind === 'circle-trimming' && circlesDrag.id === r.id) {
+      return { start: circlesDrag.previewStart, end: circlesDrag.previewEnd };
+    }
+    return { start: r.start_sec, end: r.end_sec };
+  };
+
+  const circleRangesSafe = circleRanges ?? [];
+
   const contentWidth = zoom * totalDuration;
 
   // ── section render helper ────────────────────────────────────────────────
@@ -1057,6 +1379,8 @@ export function TimelinePanel({
   ) => {
     const style = TYPE_STYLE[s.type] ?? fallbackStyle;
     const isSelected = selectedSection?.id === s.id;
+    const isDupSource = duplicateMode && duplicateSourceId === s.id;   // picked copy source
+    const isDupPick   = duplicateMode && !duplicateSourceId;           // phase 1: click to pick
     const getSectionMode = (e: React.MouseEvent, el: HTMLElement): 'move' | 'trim-start' | 'trim-end' => {
       const r = el.getBoundingClientRect();
       const x = e.clientX - r.left;
@@ -1073,11 +1397,13 @@ export function TimelinePanel({
           left: pos.left,
           width: pos.width,
           backgroundColor: style.fill,
-          border: `1.5px solid ${style.border}`,
+          border: isDupSource ? '1.5px dashed #7c3aed' : `1.5px solid ${style.border}`,
           borderRadius: 4,
-          boxShadow: isSelected ? `0 0 0 2px ${style.border}` : '0 1px 3px rgba(0,0,0,0.1)',
-          cursor: 'grab',
-          zIndex: 10,
+          boxShadow: isDupSource
+            ? '0 0 0 2px #7c3aed, 0 0 0 5px rgba(124,58,237,0.22)'
+            : isSelected ? `0 0 0 2px ${style.border}` : '0 1px 3px rgba(0,0,0,0.1)',
+          cursor: isDupPick ? 'copy' : 'grab',
+          zIndex: isDupSource ? 12 : 10,
           userSelect: 'none',
           minWidth: 4,
         }}
@@ -1142,6 +1468,16 @@ export function TimelinePanel({
 
         {videos.length > 0 && (
           <>
+            {/* CIRCLES label (avatar-circles picking lane) */}
+            {circlesMode && (
+              <div
+                className="shrink-0 flex items-center px-3 select-none"
+                style={{ height: CIRCLES_TRACK_H, borderBottom: '1px solid #ddd6fe', backgroundColor: '#f5f3ff' }}
+              >
+                <span style={{ fontSize: 9, fontWeight: 700, color: '#7c3aed', letterSpacing: '0.08em', textTransform: 'uppercase' }}>Circles</span>
+              </div>
+            )}
+
             {/* V2 label (broll track) */}
             {hasBroll && (
               <div
@@ -1248,6 +1584,49 @@ export function TimelinePanel({
             </div>
           )}
 
+          {/* ── Duplicate mode: ghost preview + click-to-place overlay ──────── */}
+          {duplicateMode && duplicateSourceId && (() => {
+            const source = sections.find(s => s.id === duplicateSourceId);
+            if (!source) return null;
+            const dur = source.end_sec - source.start_sec;
+            return (
+              <div
+                className="absolute inset-0"
+                style={{ zIndex: 23, cursor: 'copy' }}
+                onMouseMove={handleDuplicateOverlayMove}
+                onMouseLeave={() => setDupHoverSec(null)}
+                onClick={handleDuplicateDrop}
+              >
+                {dupHoverSec != null && (() => {
+                  const placement = computeDuplicatePlacement(dupHoverSec);
+                  const valid = placement != null;
+                  // Snap the ghost to the resolved drop position so the preview matches the result.
+                  let ghostLeftSec = dupHoverSec;
+                  if (placement) {
+                    if (placement.global_offset_sec == null && placement.video_file_id) {
+                      const clip = clipsWithOffset.find(c => c.video.id === placement.video_file_id);
+                      ghostLeftSec = (clip?.offset ?? 0) + placement.start_sec;
+                    } else {
+                      ghostLeftSec = placement.global_offset_sec ?? dupHoverSec;
+                    }
+                  }
+                  return (
+                    <div className="pointer-events-none absolute top-0 bottom-0" style={{ left: ghostLeftSec * zoom, width: Math.max(2, dur * zoom) }}>
+                      <div style={{
+                        position: 'absolute', inset: 0,
+                        background: valid ? 'rgba(124,58,237,0.20)' : 'rgba(239,68,68,0.15)',
+                        border: `1.5px dashed ${valid ? '#7c3aed' : '#ef4444'}`, borderRadius: 4,
+                      }} />
+                      <span style={{ position: 'absolute', top: 2, left: 4, fontSize: 8, fontWeight: 700, color: '#fff', background: valid ? '#7c3aed' : '#ef4444', borderRadius: 3, padding: '1px 4px', whiteSpace: 'nowrap' }}>
+                        {valid ? `copy · ${fmtDur(dur)}` : 'no room here'}
+                      </span>
+                    </div>
+                  );
+                })()}
+              </div>
+            );
+          })()}
+
           {/* ── Editor flags (markers) — draggable, Premiere-style ───────────── */}
           {markers.length > 0 && (
             <div className="pointer-events-none absolute inset-0" style={{ zIndex: 26 }}>
@@ -1338,6 +1717,118 @@ export function TimelinePanel({
             </div>
           ) : (
             <>
+              {/* ── CIRCLES LANE (avatar-circles picking) ────────────────── */}
+              {circlesMode && (
+                <div
+                  className="select-none"
+                  style={{
+                    height: CIRCLES_TRACK_H,
+                    position: 'relative',
+                    backgroundColor: '#f5f3ff',
+                    borderBottom: '1px solid #ddd6fe',
+                    cursor: 'crosshair',
+                    touchAction: 'none',
+                  }}
+                  onPointerDown={handleCirclesPointerDown}
+                  onPointerMove={handleCirclesPointerMove}
+                  onPointerUp={handleCirclesPointerUp}
+                  onPointerCancel={handleCirclesPointerCancel}
+                >
+                  {/* Empty-state hint */}
+                  {circleRangesSafe.length === 0 && circlesDrag?.kind !== 'circle-creating' && (
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none select-none">
+                      <span style={{ fontSize: 9, color: '#7c3aed', fontWeight: 600, letterSpacing: '0.05em', opacity: 0.75 }}>
+                        drag here to add a section
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Circle ranges */}
+                  {circleRangesSafe.map(r => {
+                    const disp = circleDisp(r);
+                    const widthPx = Math.max(4, (disp.end - disp.start) * zoom);
+                    const isSel = selectedCircleId === r.id;
+                    const showX = isSel || hoverCircleId === r.id;
+                    return (
+                      <div
+                        key={r.id}
+                        data-circle-id={r.id}
+                        className="absolute flex items-center overflow-hidden"
+                        style={{
+                          top: 3, bottom: 3,
+                          left: `${disp.start * zoom}px`,
+                          width: `${widthPx}px`,
+                          backgroundColor: isSel ? 'rgba(139,92,246,0.5)' : 'rgba(139,92,246,0.35)',
+                          border: `1.5px solid ${isSel ? '#7c3aed' : '#8b5cf6'}`,
+                          borderRadius: 5,
+                          boxShadow: isSel ? '0 0 0 2px rgba(124,58,237,0.45)' : '0 1px 2px rgba(0,0,0,0.08)',
+                          cursor: 'grab',
+                          zIndex: 10,
+                          userSelect: 'none',
+                        }}
+                        onPointerEnter={() => setHoverCircleId(r.id)}
+                        onPointerLeave={() => setHoverCircleId(cur => (cur === r.id ? null : cur))}
+                      >
+                        <div data-circle-edge="start" className="absolute top-0 bottom-0 flex items-center justify-center" style={{ left: 0, width: CIRCLE_EDGE_PX, cursor: 'ew-resize', zIndex: 2 }}>
+                          <div style={{ width: 2, height: '55%', borderRadius: 1, backgroundColor: '#7c3aed', opacity: 0.75 }} />
+                        </div>
+                        <span style={{ position: 'relative', zIndex: 1, marginLeft: CIRCLE_EDGE_PX + 2, fontSize: 8, fontWeight: 700, color: '#4c1d95', letterSpacing: '0.03em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          circles · {(disp.end - disp.start).toFixed(1)}s
+                        </span>
+                        <div data-circle-edge="end" className="absolute top-0 bottom-0 flex items-center justify-center" style={{ right: 0, width: CIRCLE_EDGE_PX, cursor: 'ew-resize', zIndex: 2 }}>
+                          <div style={{ width: 2, height: '55%', borderRadius: 1, backgroundColor: '#7c3aed', opacity: 0.75 }} />
+                        </div>
+                        {showX && (
+                          <button
+                            type="button"
+                            aria-label="Delete circles section"
+                            title="Delete this circles section"
+                            className="absolute focus-ring"
+                            style={{ top: 2, right: 2, zIndex: 3, width: 13, height: 13, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 3, backgroundColor: '#7c3aed', color: '#fff' }}
+                            onPointerDown={e => e.stopPropagation()}
+                            onClick={e => { e.stopPropagation(); deleteCircleRange(r.id); }}
+                          >
+                            <X size={8} strokeWidth={2.6} aria-hidden />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  {/* Creation preview (Premiere-style in/out drag) */}
+                  {circlesDrag?.kind === 'circle-creating' && (() => {
+                    const cs = Math.min(circlesDrag.startSec, circlesDrag.curSec);
+                    const ce = Math.max(circlesDrag.startSec, circlesDrag.curSec);
+                    const dur = ce - cs;
+                    const isEnough = dur >= MIN_CIRCLE_SECTION_SEC;
+                    return (
+                      <div
+                        className="absolute pointer-events-none"
+                        style={{
+                          top: 3, bottom: 3,
+                          left: `${cs * zoom}px`,
+                          width: `${Math.max(2, dur * zoom)}px`,
+                          backgroundColor: isEnough ? 'rgba(139,92,246,0.28)' : 'rgba(239,68,68,0.15)',
+                          border: `1.5px dashed ${isEnough ? '#8b5cf6' : '#ef4444'}`,
+                          borderRadius: 5,
+                          zIndex: 11,
+                        }}
+                      >
+                        <span style={{ position: 'absolute', top: 1, left: 3, fontSize: 8, fontWeight: 700, color: isEnough ? '#6d28d9' : '#ef4444', whiteSpace: 'nowrap' }}>
+                          {dur.toFixed(1)}s{!isEnough && ' (min 0.5s)'}
+                        </span>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Playhead */}
+                  <div
+                    className="absolute top-0 bottom-0 pointer-events-none"
+                    style={{ left: `${playheadSec * zoom}px`, width: 2, backgroundColor: '#ef4444', opacity: 0.5, zIndex: 20 }}
+                  />
+                </div>
+              )}
+
               {/* ── V2 BROLL TRACK ─────────────────────────────────────── */}
               {hasBroll && (
                 <div
@@ -1424,13 +1915,14 @@ export function TimelinePanel({
               {/* ── A2 AUDIO CHANNEL ───────────────────────────────────── */}
               {hasAudio && (
                 <div
-                  onDragEnter={e => { e.preventDefault(); a2DragDepthRef.current += 1; setA2DragOver(true); }}
-                  onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setA2DragOver(true); }}
+                  onDragEnter={e => { e.preventDefault(); a2DragDepthRef.current += 1; if (!circlesMode) setA2DragOver(true); }}
+                  onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; if (!circlesMode) setA2DragOver(true); }}
                   onDragLeave={() => { a2DragDepthRef.current = Math.max(0, a2DragDepthRef.current - 1); if (a2DragDepthRef.current === 0) setA2DragOver(false); }}
                   onDrop={handleA2Drop}
                   onClick={e => {
                     // click on empty A2 area → open modal
                     handleTrackClick(e);
+                    if (circlesMode) return;   // circles picking: seek only, no audio modal
                     const clickSec = pixelsToGlobalSec(e.clientX);
                     setA2Modal({ clickSec });
                   }}
@@ -1477,6 +1969,7 @@ export function TimelinePanel({
                         onMouseDown={e => e.stopPropagation()}
                         onClick={e => {
                           e.stopPropagation();
+                          if (circlesMode) return;   // circles picking: audio blocks are inert context
                           setSelectedSection(s);
                           setA2Modal({ clickSec: s.global_offset_sec ?? 0, editSection: s });
                         }}
@@ -1523,7 +2016,7 @@ export function TimelinePanel({
                 <div className="absolute inset-0 pointer-events-none" style={{ backgroundImage: 'repeating-linear-gradient(90deg, rgba(0,0,0,0.04) 0px, rgba(0,0,0,0.04) 1px, transparent 1px, transparent 60px)' }} />
 
                 {clipsWithOffset.map(c => {
-                  const wPx = (c.video.duration_sec ?? 0) * zoom;
+                  const wPx = c.dur * zoom;
                   const lPx = c.offset * zoom;
                   return (
                     <div
@@ -1531,7 +2024,7 @@ export function TimelinePanel({
                       className="absolute top-0 bottom-0"
                       style={{ left: `${lPx}px`, width: `${wPx}px`, backgroundColor: activeVideoId === c.video.id ? '#e0f2fe' : '#f0f7ff' }}
                     >
-                      <ClipFilmstrip videoUrl={videoUrls[c.video.id] ?? null} duration={c.video.duration_sec ?? 0} />
+                      <ClipFilmstrip videoUrl={videoUrls[c.video.id] ?? null} duration={c.dur} />
                     </div>
                   );
                 })}
@@ -1603,7 +2096,7 @@ export function TimelinePanel({
               {/* ── A1 AUDIO TRACK ─────────────────────────────────────── */}
               <div style={{ height: AUDIO_TRACK_H, position: 'relative', backgroundColor: '#f0fdf4' }}>
                 {clipsWithOffset.map(c => {
-                  const wPx = (c.video.duration_sec ?? 0) * zoom;
+                  const wPx = c.dur * zoom;
                   const lPx = c.offset * zoom;
                   const peaks = parseWaveformPeaks(c.video.waveform_peaks);
                   return (
@@ -1692,6 +2185,48 @@ export function TimelinePanel({
             </div>
           )}
         </div>
+      )}
+
+      {/* ── Circles-mode action bar — portalled to <body> (like the flag-note popover) and
+             floated above the timeline (AudioGainPopover convention). Gated on videos like
+             the lane/label: with no clips there is nothing to mark. ─────── */}
+      {circlesMode && videos.length > 0 && typeof document !== 'undefined' && createPortal(
+        <div
+          className="fixed rounded-lg border bg-card shadow-xl"
+          style={{ left: '50%', transform: 'translateX(-50%)', bottom: 210, zIndex: 700, borderColor: '#ddd6fe', fontFamily: 'system-ui, -apple-system, sans-serif' }}
+        >
+          <div className="flex items-center gap-3 px-4 py-2.5">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md" style={{ backgroundColor: '#ede9fe', color: '#7c3aed' }}>
+              <CircleDot size={15} strokeWidth={2} aria-hidden />
+            </span>
+            <div className="min-w-0">
+              <p className="text-xs font-semibold text-foreground" style={{ whiteSpace: 'nowrap' }}>
+                Avatar circles — drag on the lane to mark where the circles appear
+              </p>
+              <p className="text-[10px] font-medium" style={{ color: '#7c3aed' }}>
+                {circleRangesSafe.length} section{circleRangesSafe.length === 1 ? '' : 's'} marked · Esc to cancel
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => onCirclesCancel?.()}
+              className="h-8 shrink-0 rounded-md px-2.5 text-[11px] font-semibold text-muted-foreground transition-colors hover:bg-muted/60 focus-ring"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => onCirclesDone?.()}
+              disabled={circlesSaving}
+              className="flex h-8 shrink-0 items-center gap-1.5 rounded-md px-3.5 text-[11px] font-bold text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 focus-ring"
+              style={{ backgroundColor: '#7c3aed' }}
+            >
+              {circlesSaving && <Loader2 size={12} className="animate-spin" aria-hidden />}
+              Done
+            </button>
+          </div>
+        </div>,
+        document.body,
       )}
 
       {/* ── A2 Audio Modal ───────────────────────────────────────────────── */}

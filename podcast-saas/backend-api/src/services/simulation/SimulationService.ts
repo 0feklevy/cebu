@@ -7,6 +7,7 @@ import { db } from '../../db/index.js';
 import { system_prompts } from '../../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { logger } from '../../lib/logger.js';
+import { buildUiControlsPromptBlock, type SimUiSelection } from './SimUiControls.js';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -30,6 +31,11 @@ export interface SimManifest {
   checkboxElements: Array<{ id: string; label: string }>;
   canvasElements:   string[];
   globalObjects:    string[];  // detected global libs: Plotly, d3, THREE, p5, etc.
+  // Modern runtime-built sims: the UI is created in JS and the API is an object on a window global.
+  // These give the LLM verified handles when there are no static HTML ids. (sim-bridge-deepfix)
+  runtimeGlobals:   string[];  // `window.__murmuration = ...` → ["__murmuration"]
+  instanceMethods:  string[];  // method names defined in classes / invoked as <global>.method(): ["toggleExploreExploit", ...]
+  cssControls:      string[];  // control class/id names created via createElement+className / _el('div','controls',…): ["controls", "show-menu-tab", …]
 }
 
 interface SimControl {
@@ -218,9 +224,330 @@ const BRIDGE_TEMPLATE = /* js */ `;(function(){
   },{capture:true});
 })();`;
 
+// ── rAF gate (head-injected, runs BEFORE the sim's own scripts) ───────────────
+// Real pause/freeze protocol for unmodified sims: the player posts {type:'simPause'} /
+// {type:'simResume'} (e.g. when the sim overlay is hidden/shown) and the gate freezes /
+// resumes every requestAnimationFrame-driven loop in the iframe — sim, bridge.js and
+// guidance.js alike — without touching the sim's own code.
+//
+// Design constraints (keep in sync with the tests in __tests__/rafGate.test.ts):
+//  - Injected at the START of <head> so the wrapper is installed before any sim script runs.
+//  - Strictly message-driven: NO extra visibilitychange logic (the browser already throttles
+//    rAF on hidden tabs natively; adding our own would double-pause sims that self-manage
+//    simPause/simResume — the flagship sims stop their own loop, which is harmless here
+//    because a stopped loop simply never requests a frame while paused).
+//  - While paused, callbacks are queued (each function once) instead of scheduled; on resume
+//    they are re-scheduled via the NATIVE rAF, so frame timestamps stay native — never fabricated.
+//  - Accepts any origin, matching the existing bridge listener pattern.
+//  - Exposes window.__SIM_ENV parsed once from the iframe's own URL query params
+//    (lowend / dpr / mem / section) — an enabler sims may consult later.
+//  - v3: answers {type:'listSimControls'} with {type:'simControlsList', controls} — a runtime
+//    scan of the LIVE DOM's interactive controls for the Minimal-UI picker. It scans ALL
+//    matching elements: visible ones fill the 100 cap first, then hidden ones (display:none
+//    menus like an "Advanced Mode" disclosure) are appended flagged hidden:true. Labels come
+//    from an ordered ladder (aria-label → aria-labelledby → label[for] → wrapping label minus
+//    the control's own subtree → sibling label before the control → short previous-sibling
+//    text → parent's direct text → button text → title → placeholder → name → id → "<Kind> N")
+//    so hand-rolled panels (sibling <label>Speed:</label> rows, label-wrapped checkboxes) get
+//    human names — never a bare tag name. Kind/selector policy mirrors SimUiControls.ts (the
+//    gate stays self-contained, so the logic is duplicated inline; keep the two in sync).
+//    Selectors: #id → [name] → an unambiguous CHILD-combinator nth-of-type path anchored at
+//    the nearest #id ancestor (or body) — only THIS live-DOM scanner may emit structural
+//    paths; the static scanner emits #id/[name] only. Version bumps replace older blocks via
+//    the existing marker machinery (RAF_GATE_BLOCK_RE strips any version).
+//
+// IMPORTANT: the script body must NOT start with `(function` and must not contain the string
+// "sim-bridge v1"/"sim-bridge v2" — the legacy cleanup regexes in this file strip such blocks.
+
+const RAF_GATE_VERSION = 3;
+const RAF_GATE_MARKER_START = `<!-- sim-raf-gate v${RAF_GATE_VERSION} -->`;
+const RAF_GATE_MARKER_END   = '<!-- /sim-raf-gate -->';
+// Strips any version of the gate block (plus the '\n' separator injectRafGate adds before it)
+// so strip→re-inject is byte-stable and a version bump replaces the old block cleanly.
+const RAF_GATE_BLOCK_RE = /\n?<!-- sim-raf-gate v\d+ -->[\s\S]*?<!-- \/sim-raf-gate -->/g;
+
+const RAF_GATE_TEMPLATE = /* js */ `;(function () {
+  'use strict';
+  if (window.__SIM_RAF_GATE__) return;
+  var nativeRaf = window.requestAnimationFrame && window.requestAnimationFrame.bind(window);
+  var nativeCancel = window.cancelAnimationFrame && window.cancelAnimationFrame.bind(window);
+  var paused = false;
+  var queued = [];        // callbacks requested while paused — each queued once, replayed once
+  var nextQueuedId = -1;  // synthetic negative ids never collide with native (positive) handles
+  window.requestAnimationFrame = function (cb) {
+    if (!paused || typeof cb !== 'function') return nativeRaf ? nativeRaf(cb) : 0;
+    for (var i = 0; i < queued.length; i++) {
+      if (queued[i].cb === cb) return queued[i].id;   // each callback queued once
+    }
+    var id = nextQueuedId--;
+    queued.push({ id: id, cb: cb });
+    return id;
+  };
+  window.cancelAnimationFrame = function (id) {
+    if (typeof id === 'number' && id < 0) {
+      for (var i = 0; i < queued.length; i++) {
+        if (queued[i].id === id) { queued.splice(i, 1); return; }
+      }
+      return;
+    }
+    if (nativeCancel) nativeCancel(id);
+  };
+  function flush() {
+    var pending = queued;
+    queued = [];
+    if (!nativeRaf) return;
+    for (var i = 0; i < pending.length; i++) {
+      // Re-schedule via the NATIVE rAF: each callback runs once and receives the native
+      // timestamp of the resumed frame. Timestamps are never fabricated here.
+      nativeRaf(pending[i].cb);
+    }
+  }
+  // ── Minimal-UI control picker: runtime scan (v3) ────────────────────────────
+  // Mirrors the static scanner's kind/selector derivation (SimUiControls.ts) — duplicated
+  // inline because the gate must stay self-contained. The label LADDER below is richer
+  // than the static one (it sees the live DOM); keep kind/selector policy in sync.
+  function prettyName(raw) {
+    return String(raw).replace(/[-_]+/g, ' ').replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/\\s+/g, ' ').trim().toLowerCase()
+      .replace(/(^|\\s)\\S/g, function (c) { return c.toUpperCase(); });
+  }
+  function controlKind(el) {
+    var tag = el.tagName.toLowerCase();
+    var role = (el.getAttribute('role') || '').toLowerCase();
+    var type = (el.getAttribute('type') || '').toLowerCase();
+    if (tag === 'input') {
+      if (type === 'range') return 'slider';
+      if (type === 'checkbox' || type === 'radio') return 'toggle';
+      if (type === 'button' || type === 'submit' || type === 'reset') return 'button';
+    }
+    if (role === 'slider') return 'slider';
+    if (role === 'switch') return 'toggle';
+    if (tag === 'button' || role === 'button') return 'button';
+    if (tag === 'select') return 'select';
+    if (tag === 'input' || tag === 'textarea') return 'input';
+    return 'other';
+  }
+  // Every ladder result goes through cleanLabel: collapsed whitespace, trimmed, ONE
+  // trailing ':' stripped ("Speed:" -> "Speed"), capped at 60 chars.
+  function cleanLabel(raw) {
+    var s = String(raw == null ? '' : raw).replace(/\\s+/g, ' ').trim();
+    s = s.replace(/\\s*:$/, '').trim();
+    if (s.length > 60) s = s.slice(0, 60).replace(/\\s+$/, '');
+    return s;
+  }
+  // Text of root's subtree EXCLUDING one element's subtree — a wrapping <label>'s own
+  // words minus the control (and its value/options) living inside it.
+  function textOutside(root, exclude) {
+    var t = '', kids = root.childNodes;
+    for (var i = 0; i < kids.length; i++) {
+      var n = kids[i];
+      if (n === exclude) continue;
+      if (n.nodeType === 3) t += n.nodeValue + ' ';
+      else if (n.nodeType === 1) t += textOutside(n, exclude) + ' ';
+    }
+    return t;
+  }
+  // A previous sibling that is itself a control (or wraps one) must never donate its
+  // text as OUR label — "Reset" must not inherit the neighbouring "Pause" button's text.
+  function isControlish(node) {
+    var t = node.tagName ? node.tagName.toLowerCase() : '';
+    if (t === 'button' || t === 'input' || t === 'select' || t === 'textarea' || t === 'a') return true;
+    try { return !!node.querySelector('button, input, select, textarea'); } catch (err) { return false; }
+  }
+  function kindName(kind) {
+    if (kind === 'slider') return 'Slider';
+    if (kind === 'toggle') return 'Toggle';
+    if (kind === 'button') return 'Button';
+    if (kind === 'select') return 'Select';
+    if (kind === 'input') return 'Input';
+    return 'Control';
+  }
+  // Label ladder (v3) — first non-empty rung wins:
+  //  (a) aria-label                (b) aria-labelledby (ids resolved, texts joined)
+  //  (c) <label for=ID>            (d) el.closest('label') minus the control's own subtree
+  //  (e) sibling label BEFORE el (a <label> or class*="label") among the parent's children
+  //  (f) previous element sibling's short text (<= 40 chars, non-control)
+  //  (g) parent's direct text nodes joined, when short (<= 40 chars)
+  //  (h) button/link own text      (i) title            (j) placeholder
+  //  (k) name prettified           (l) id prettified
+  //  (m) "<Kind> N" (e.g. "Slider 2") — never the bare tag name.
+  function controlLabel(el, kind, nth) {
+    var v, i, t;
+    v = cleanLabel(el.getAttribute('aria-label'));                              // (a)
+    if (v) return v;
+    t = el.getAttribute('aria-labelledby');                                     // (b)
+    if (t) {
+      var ids = t.replace(/\\s+/g, ' ').trim().split(' ');
+      t = '';
+      for (i = 0; i < ids.length; i++) {
+        var ref = document.getElementById(ids[i]);
+        if (ref && ref.textContent) t += ref.textContent + ' ';
+      }
+      v = cleanLabel(t);
+      if (v) return v;
+    }
+    if (el.id) {                                                                // (c)
+      var lab = null;
+      try { lab = document.querySelector('label[for="' + el.id + '"]'); } catch (err) { /* odd id */ }
+      if (lab) { v = cleanLabel(lab.textContent); if (v) return v; }
+    }
+    var wrap = el.closest ? el.closest('label') : null;                         // (d)
+    if (wrap && wrap !== el) { v = cleanLabel(textOutside(wrap, el)); if (v) return v; }
+    if (el.parentElement) {                                                     // (e)
+      var kids = el.parentElement.children;
+      for (i = 0; i < kids.length; i++) {
+        var k = kids[i];
+        if (k === el) break;
+        if (k.tagName.toLowerCase() === 'label' ||
+            (k.getAttribute('class') || '').toLowerCase().indexOf('label') !== -1) {
+          v = cleanLabel(k.textContent);
+          if (v) return v;
+        }
+      }
+    }
+    var prev = el.previousElementSibling;                                       // (f)
+    if (prev && !isControlish(prev)) {
+      v = cleanLabel(prev.textContent);
+      if (v && v.length <= 40) return v;
+    }
+    if (el.parentElement) {                                                     // (g)
+      var pk = el.parentElement.childNodes;
+      t = '';
+      for (i = 0; i < pk.length; i++) { if (pk[i].nodeType === 3) t += pk[i].nodeValue + ' '; }
+      v = cleanLabel(t);
+      if (v && v.length <= 40) return v;
+    }
+    if (kind === 'button') { v = cleanLabel(el.textContent); if (v) return v; } // (h)
+    v = cleanLabel(el.getAttribute('title'));                                   // (i)
+    if (v) return v;
+    v = cleanLabel(el.getAttribute('placeholder'));                             // (j)
+    if (v) return v;
+    v = cleanLabel(prettyName(el.getAttribute('name') || ''));                  // (k)
+    if (v) return v;
+    v = cleanLabel(prettyName(el.id || ''));                                    // (l)
+    if (v) return v;
+    return kindName(kind) + ' ' + nth;                                          // (m)
+  }
+  function nthOfType(el) {
+    var n = 1, sib = el.previousElementSibling;
+    while (sib) { if (sib.tagName === el.tagName) n++; sib = sib.previousElementSibling; }
+    return el.tagName.toLowerCase() + ':nth-of-type(' + n + ')';
+  }
+  function controlSelector(el) {
+    if (el.id) return '#' + el.id;
+    var name = el.getAttribute('name');
+    if (name) return '[name="' + name + '"]';
+    // Unambiguous structural path: CHILD-combinator hops from the nearest ancestor WITH
+    // an id (or document.body) down to the element — tag:nth-of-type(i) per level, i
+    // counted among same-TAG siblings. A descendant-scoped fallback
+    // ('#anc button:nth-of-type(2)') is ambiguous: it can collapse distinct controls into
+    // one selector (and hide siblings too); the child path matches exactly one element.
+    var parts = [];
+    var node = el;
+    var anchor = null;
+    while (node && !anchor) {
+      parts.unshift(nthOfType(node));
+      var parent = node.parentElement;
+      if (!parent) break;
+      if (parent.id) anchor = '#' + parent.id;
+      else if (parent === document.body) anchor = 'body';
+      else if (parent === document.documentElement) anchor = 'html';
+      else node = parent;
+    }
+    return (anchor ? anchor + ' > ' : '') + parts.join(' > ');
+  }
+  function listSimControls() {
+    var vis = [];   // visible controls — these fill the 100 cap FIRST
+    var hid = [];   // hidden controls (collapsed menus / display:none groups) — flagged hidden:true
+    var seen = {};
+    var counts = {};
+    var nodes = document.querySelectorAll('button, input, select, textarea, [role="button"], [role="slider"], [role="switch"]');
+    for (var i = 0; i < nodes.length; i++) {
+      if (vis.length >= 100) break;   // visible alone can fill the cap — hidden never displaces visible
+      var el = nodes[i];
+      if (el.tagName.toLowerCase() === 'input' && (el.getAttribute('type') || '').toLowerCase() === 'hidden') continue;
+      var fixed = false;
+      try { fixed = getComputedStyle(el).position === 'fixed'; } catch (err) { /* detached */ }
+      // hidden = not laid out (display:none subtree) and not position:fixed. Such controls
+      // ARE included — sims hide whole groups behind an "Advanced" toggle — just flagged.
+      var isHidden = !(el.offsetParent !== null || fixed);
+      var selector = controlSelector(el);
+      // The wrap templates (and the backend schema) reject selectors containing { } <
+      // or backslash — never emit them. Cap length to the schema's selector max (300).
+      // '>' is allowed: it is the child combinator the structural paths above rely on.
+      if (/[{}<\\\\]/.test(selector) || selector.length > 300) continue;
+      if (seen['s:' + selector]) continue;                // dedupe by selector
+      seen['s:' + selector] = true;
+      var kind = controlKind(el);
+      counts[kind] = (counts[kind] || 0) + 1;             // per-kind index for the "<Kind> N" fallback
+      var c = { selector: selector, kind: kind, label: controlLabel(el, kind, counts[kind]) };
+      if (isHidden) { c.hidden = true; if (hid.length < 100) hid.push(c); }
+      else { vis.push(c); }
+    }
+    var out = vis.concat(hid).slice(0, 100);              // visible first, then hidden, capped
+    window.parent && window.parent.postMessage({ type: 'simControlsList', controls: out }, '*');
+  }
+  window.addEventListener('message', function (e) {
+    var d = (e && e.data) || {};
+    if (d.type === 'simPause') { paused = true; }
+    else if (d.type === 'simResume') { if (paused) { paused = false; flush(); } }
+    else if (d.type === 'listSimControls') { listSimControls(); }
+  });
+  var env = { lowend: null, dpr: null, mem: null, section: null };
+  try {
+    var q = new URLSearchParams(window.location.search);
+    env.lowend = q.get('lowend');
+    env.dpr = q.get('dpr');
+    env.mem = q.get('mem');
+    env.section = q.get('section');
+  } catch (err) { /* keep nulls */ }
+  window.__SIM_ENV = env;
+  window.__SIM_RAF_GATE__ = {
+    version: ${RAF_GATE_VERSION},
+    isPaused: function () { return paused; },
+    queuedCount: function () { return queued.length; }
+  };
+})();`;
+
+/** Remove every sim-raf-gate block (any version) from an HTML string. Used both for
+ *  idempotent re-injection and to keep the gate out of LLM source context / sourceHash. */
+export function stripRafGate(html: string): string {
+  return html.replace(RAF_GATE_BLOCK_RE, '');
+}
+
+/** Idempotently inject the rAF gate at the START of <head> (marker-guarded — re-injection
+ *  replaces the existing block, never duplicates). Fallback order when <head> is missing:
+ *  before the first <script>, then top of <body>, then prepended to the document. */
+export function injectRafGate(html: string): string {
+  const tag = `<script>\n/* sim-raf-gate v${RAF_GATE_VERSION} — auto-injected by podcast-saas — do not edit */\n${RAF_GATE_TEMPLATE}\n</script>`;
+  const block = `${RAF_GATE_MARKER_START}\n${tag}\n${RAF_GATE_MARKER_END}`;
+
+  // Strip any existing gate first: collapses accidental duplicates and refreshes stale versions.
+  const cleaned = stripRafGate(html);
+
+  // `(\s[^>]*)?` keeps <header>/<body …> lookalikes from matching a bare <head>/<body> probe.
+  const headMatch = /<head(\s[^>]*)?>/i.exec(cleaned);
+  if (headMatch) {
+    const at = headMatch.index + headMatch[0].length;
+    return cleaned.slice(0, at) + '\n' + block + cleaned.slice(at);
+  }
+  const scriptIdx = cleaned.search(/<script\b/i);
+  if (scriptIdx !== -1) {
+    return cleaned.slice(0, scriptIdx) + block + '\n' + cleaned.slice(scriptIdx);
+  }
+  const bodyMatch = /<body(\s[^>]*)?>/i.exec(cleaned);
+  if (bodyMatch) {
+    const at = bodyMatch.index + bodyMatch[0].length;
+    return cleaned.slice(0, at) + '\n' + block + cleaned.slice(at);
+  }
+  return block + '\n' + cleaned;
+}
+
 // ── BRIDGE_GENERATION_SYSTEM_PROMPT ─────────────────────────────────────────────
 // The selected LLM provider receives the full simulation source + manifest and writes the bridge script.
-// The prompt is stored in DB (key: bridge_plan) and admin-editable.
+// THIS CONSTANT IS THE LIVE DEFAULT — generateBridgeScript uses it unless an admin has customized the
+// system_prompts row (key: bridge_plan, is_customized = true). The old shared/src/prompts/bridge-plan.txt
+// was never loaded by anything and has been deleted; edit THIS constant. (sim-bridge-deepfix)
 
 const BRIDGE_GENERATION_SYSTEM_PROMPT = `You generate a JavaScript bridge script for a science/physics simulation embedded in an iframe.
 The bridge communicates with the parent player via postMessage.
@@ -291,11 +618,16 @@ You only write the body of SCRIPTS.main.
   };
 
   // ── STANDARD LISTENER — DO NOT MODIFY — copy exactly ─────────────────────────
+  let _lastSig = null;
   function stopScript() {
     if (_cancelFn) { _cancelFn(); _cancelFn = null; }
+    _lastSig = null;
   }
   function startScript(name, params) {
+    const sig = (name || 'main') + ':' + JSON.stringify(params || {});
+    if (_cancelFn && sig === _lastSig) return;   // identical re-post — keep the script running
     stopScript();
+    _lastSig = sig;
     const fn = SCRIPTS[name] ?? SCRIPTS.main;
     if (fn) _cancelFn = fn(params ?? {}) ?? null;
   }
@@ -350,29 +682,109 @@ End the mainBody with: return function cleanup() { ... };
 15. Do not read or write parent DOM.
 16. Do not exfiltrate any data outside of the established postMessage protocol.
 
-### DOM Access
-17. ONLY access DOM elements whose IDs appear in the MANIFEST or are visible in the HTML source.
-18. ONLY call functions from the MANIFEST or clearly visible in the source files.
-19. Use optional chaining (?.): document.getElementById('x')?.style may not exist.
+### DOM access & APIs — the manifest is a HELP, not a WHITELIST
+17. Access a control by its manifest ID when it has one. When a control has NO id, target it by a CSS
+    class or selector that is clearly visible in the source — e.g. document.querySelectorAll('.controls'),
+    matching a class assigned via createElement/className/class="…" or a helper like _el('div','controls',…).
+    A source-visible selector is VALID even if it is not in the manifest. Do not refuse to act just
+    because the manifest is empty — many sims build their whole UI at runtime with no static ids.
+18. Call functions from the manifest, OR methods on a runtime global that is visible in the source
+    (e.g. window.__murmuration.toggleExploreExploit()), OR functions/classes defined anywhere in the
+    source — even if absent from the manifest's function lists. If the source shows it, you may use it.
+19. Use optional chaining (?.) and existence checks — an element, global, or method may not exist yet.
 
-### Parameters
-20. When params.simpleUi = true: hide all irrelevant controls AND their labels. Show only the target.
-21. When params.autoScript = true: animate the target control. Stop animation in cleanup.
-22. Use _hide() for hiding: it records originals automatically for restoration.
+### Runtime timing — async init()
+20. Many sims build their UI and controller objects inside an async init() that finishes AFTER SIM_READY
+    fires. If what you need (an element, a window global like window.__murmuration, a method) is not
+    present immediately, POLL for it with a ~200ms setInterval (pushed to _ivs, cleared in cleanup) until
+    it exists, then act. ALSO run one synchronous attempt up front so a re-fired startScript on an
+    already-initialised sim takes effect immediately.
+21. Prefer inline style.setProperty('display','none') over toggling CSS classes: runtime class churn (a
+    later resize / collapse / setCollapsed) can otherwise resurrect a panel you hid. Re-apply the hide on
+    each poll tick (guard it so you record each element's original display only once).
+
+### Parameters & idempotency
+22. When params.simpleUi = true (or the user prompt asks to hide the controls): hide ALL irrelevant
+    controls AND their labels — by ID, or by CSS selector when they have no id. Show only the target.
+23. When params.autoScript = true: animate the target control (setInterval). Stop the animation in cleanup.
+24. TOGGLE methods that flip internal state (e.g. app.exploreExploit.toggle(), app.toggleExploreExploit(),
+    app.togglePlay()) are NOT idempotent. Read the state boolean FIRST (e.g. app.exploreExploit.active) and
+    only call the toggle when it is not already in the desired state. Make cleanup equally guarded so it
+    only reverses what you actually changed — a re-fired startScript must NEVER bounce the state off/on.
+25. Use _hide() for hiding: it records originals automatically for restoration.
 
 ### Animation
-23. Use setInterval for animation: step 0.1–0.3, intervalMs 30–150ms. Pingpong at min/max.
-24. Push every interval ID into _ivs so cleanup clears it.
-25. Push every listener into _listeners so cleanup removes it.
+26. Use setInterval for animation: step 0.1–0.3, intervalMs 30–150ms. Pingpong at min/max.
+27. Push every interval ID into _ivs and every listener into _listeners so cleanup clears/removes them.
 
 ### Render functions
-26. Call updateDerivedPhysics before render functions if it exists in the manifest.
-27. Call render functions via window.fn?.() — they may not always be defined.
+28. Call updateDerivedPhysics before render functions if it exists. Call render functions defensively
+    (fn?.()) — they may not always be defined.
 
 ### Confidence scoring
-28. confidence >= 0.9: all IDs/functions verified in manifest, no guesses
-29. confidence 0.6–0.89: some assumptions made (guessed selectors, assumed functions)
-30. confidence < 0.6: significant uncertainty — explain in warnings
+29. A reference is "verified" if it is in the manifest OR appears verbatim in the source (a class selector,
+    a window-global method, a defined function/class). Count source-visible references as verified.
+30. confidence >= 0.9: all references verified (manifest or source); 0.6–0.89: some guessed selectors/
+    functions; < 0.6: significant uncertainty — explain in warnings.
+
+## WORKED EXAMPLE — runtime-built UI + object-method global
+When a sim builds its panel at runtime (no static ids) and exposes itself as a window global, follow this
+shape: target controls by source-visible CSS selectors, poll for the async-built global, and toggle state
+IDEMPOTENTLY. (This mainBody is self-contained — it declares its own tracking arrays.)
+
+\`\`\`javascript
+// Request: "hide all the controls of the menu totally + enable explore-exploit mode."
+var _hidden = [], _ivs = [], _listeners = [], _injected = [];
+var CONTROL_SELECTORS = ['.controls', '.show-menu-tab', '.collapse-menu-btn', '#hud'];
+var HIDDEN_FLAG = '__bridgeHidden';
+var _enabledByUs = false;
+
+function hideControls() {
+  for (var s = 0; s < CONTROL_SELECTORS.length; s++) {
+    var nodes = document.querySelectorAll(CONTROL_SELECTORS[s]);
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      if (el[HIDDEN_FLAG]) continue;                    // record original display only once
+      el[HIDDEN_FLAG] = true;
+      _hidden.push([el, el.style.getPropertyValue('display') || '']);
+      el.style.setProperty('display', 'none');          // inline none beats class toggles
+    }
+  }
+}
+function appReady() {
+  var app = window.__murmuration;
+  return !!(app && app.exploreExploit && app.menu);
+}
+function enableExploreExploit() {
+  var app = window.__murmuration;
+  if (app && app.exploreExploit && app.exploreExploit.active === false) { // idempotent
+    app.toggleExploreExploit();
+    _enabledByUs = true;
+  }
+}
+
+hideControls();                                          // one synchronous attempt (re-fired startScript)
+if (appReady()) enableExploreExploit();
+_ivs.push(setInterval(function () {                      // async init(): poll until ready, keep re-hiding
+  hideControls();
+  if (appReady()) enableExploreExploit();
+}, 200));
+
+return function cleanup() {
+  _ivs.forEach(function (id) { clearInterval(id); });
+  _listeners.forEach(function (l) { l[0].removeEventListener(l[1], l[2]); });
+  _injected.forEach(function (el) { el.remove && el.remove(); });
+  _hidden.forEach(function (h) {
+    if (h[1]) h[0].style.setProperty('display', h[1]); else h[0].style.removeProperty('display');
+    try { delete h[0][HIDDEN_FLAG]; } catch (e) { h[0][HIDDEN_FLAG] = false; }
+  });
+  var app = window.__murmuration;                        // only reverse what we changed
+  if (_enabledByUs && app && app.exploreExploit && app.exploreExploit.active === true) {
+    app.toggleExploreExploit();
+  }
+  _enabledByUs = false;
+};
+\`\`\`
 `;
 
 // ── Manifest builder ──────────────────────────────────────────────────────────
@@ -401,6 +813,7 @@ export function buildManifest(sourceMap: Map<string, string>): SimManifest {
     controls: [], buttons: [], sections: [],
     renderFunctions: [], updateFunctions: [], hasSetSimSection: false,
     selectElements: [], checkboxElements: [], canvasElements: [], globalObjects: [],
+    runtimeGlobals: [], instanceMethods: [], cssControls: [],
   };
 
   for (const [key, content] of sourceMap) {
@@ -532,8 +945,45 @@ export function buildManifest(sourceMap: Map<string, string>): SimManifest {
           manifest.globalObjects.push(lib);
         }
       }
+
+      // ── Modern runtime-built sims (sim-bridge-deepfix) ────────────────────────
+      // Runtime globals: `window.__murmuration = app`, `window.sim = ...` etc. These are the API
+      // surface for sims that expose an app object instead of top-level functions.
+      let rg: RegExpExecArray | null;
+      const globalRe = /window\.([A-Za-z_$][\w$]*)\s*=/g;
+      while ((rg = globalRe.exec(content)) !== null) {
+        const g = rg[1];
+        // Skip DOM/lifecycle assignments that aren't an app API (onload, addEventListener via = etc.)
+        if (/^(on\w+|location|name|status|open|close|top|self|parent|length)$/.test(g)) continue;
+        if (!manifest.runtimeGlobals.includes(g)) manifest.runtimeGlobals.push(g);
+      }
+      // Instance / API methods the LLM can DRIVE — action-named methods, captured whether they are
+      // defined as a class method (`  toggleExploreExploit() {`) or invoked as `obj.toggleX(`. We filter
+      // to action verbs (toggle/set/reset/play/…) so this stays high-signal and doesn't fill up with
+      // generic helpers or THREE vector `.set()` noise. (sim-bridge-deepfix)
+      let mm: RegExpExecArray | null;
+      const ACTION_RE = /^(toggle[A-Z]|set[A-Z]|reset$|play$|pause$|start$|stop$|enable|disable|mute$|unmute$|show[A-Z]|hide[A-Z]|next[A-Z]?$|prev[A-Z]?$|select[A-Z]|step$|seek$|activate|deactivate)/;
+      const methodRe = /(?:(?:^|\n)\s{2,}|\.)([A-Za-z_$][\w$]*)\s*\(/g;
+      while ((mm = methodRe.exec(content)) !== null) {
+        const name = mm[1];
+        if (name.length < 3 || !ACTION_RE.test(name)) continue;
+        if (!manifest.instanceMethods.includes(name)) manifest.instanceMethods.push(name);
+      }
+      // CSS controls: classes/ids assigned to created elements — className='controls',
+      // class="show-menu-tab", or the _el('div','controls',…) helper. These are how the bridge hides
+      // a runtime-built panel that has no static id.
+      let cc: RegExpExecArray | null;
+      const cssRe = /(?:className\s*=\s*|class\s*=\s*|_el\(\s*['"][\w-]+['"]\s*,\s*)['"]([\w][\w\s-]*)['"]/g;
+      while ((cc = cssRe.exec(content)) !== null) {
+        for (const cls of cc[1].trim().split(/\s+/)) {
+          if (cls && !manifest.cssControls.includes(cls)) manifest.cssControls.push(cls);
+        }
+      }
     }
   }
+  // Bound the runtime lists so a huge sim can't bloat the prompt.
+  manifest.instanceMethods = manifest.instanceMethods.slice(0, 60);
+  manifest.cssControls     = manifest.cssControls.slice(0, 60);
 
   return manifest;
 }
@@ -580,11 +1030,46 @@ export function wrapBridgeMainBody(mainBody: string): string {
     '  };',
     '',
     '  // ── STANDARD LISTENER — system-owned, guaranteed correct ─────────────────────',
+    '  let _lastSig = null;',
+    '  // Minimal-UI mechanical hide: while params.simpleUi is on, params.hideSelectors are',
+    '  // hidden via ONE <style id="__simHideUi"> (display:none !important), refreshed on every',
+    '  // startScript and removed on stopScript / when simpleUi is falsy. hideSelectors take',
+    '  // part in _lastSig naturally (the sig JSON.stringifies params), so a changed selection',
+    '  // re-posts through startScript and refreshes the style. Selectors containing { } <',
+    '  // or backslash are rejected (no style/markup breakouts); the > child combinator the',
+    '  // runtime-scanned structural paths use is allowed.',
+    '  function applyHideUi(params) {',
+    "    let st = document.getElementById('__simHideUi');",
+    '    if (params && params.simpleUi && Array.isArray(params.hideSelectors)) {',
+    '      const rules = [];',
+    '      for (const sel of params.hideSelectors) {',
+    "        if (typeof sel !== 'string' || /[{}<\\\\]/.test(sel)) continue;",
+    "        rules.push(sel + '{display:none !important}');",
+    '      }',
+    '      if (rules.length > 0) {',
+    '        if (!st) {',
+    "          st = document.createElement('style');",
+    "          st.id = '__simHideUi';",
+    '          (document.head || document.documentElement).appendChild(st);',
+    '        }',
+    "        st.textContent = rules.join('\\n');",
+    '        return;',
+    '      }',
+    '    }',
+    '    if (st) st.remove();',
+    '  }',
     '  function stopScript() {',
     '    if (_cancelFn) { _cancelFn(); _cancelFn = null; }',
+    '    _lastSig = null;',
+    "    const st = document.getElementById('__simHideUi');",
+    '    if (st) st.remove();',
     '  }',
     '  function startScript(name, params) {',
+    "    const sig = (name || 'main') + ':' + JSON.stringify(params || {});",
+    '    if (_cancelFn && sig === _lastSig) return;   // identical re-post — keep the script running',
     '    stopScript();',
+    '    _lastSig = sig;',
+    '    applyHideUi(params);   // mechanical Minimal-UI hide — refreshed on every (re)start',
     '    const fn = SCRIPTS[name] ?? SCRIPTS.main;',
     '    if (fn) _cancelFn = fn(params ?? {}) ?? null;',
     '  }',
@@ -688,11 +1173,47 @@ export function wrapBridgeCombined(entries: Map<string, string>): string {
     '      return _mainBodyFn(params);',
     '    },',
     '  };',
+    '  var _lastSig = null;',
+    '  // Minimal-UI mechanical hide: while params.simpleUi is on, params.hideSelectors are',
+    '  // hidden via ONE <style id="__simHideUi"> (display:none !important), refreshed on every',
+    '  // startScript and removed on stopScript / when simpleUi is falsy. hideSelectors take',
+    '  // part in _lastSig naturally (the sig JSON.stringifies params), so a changed selection',
+    '  // re-posts through startScript and refreshes the style. Selectors containing { } <',
+    '  // or backslash are rejected (no style/markup breakouts); the > child combinator the',
+    '  // runtime-scanned structural paths use is allowed.',
+    '  function applyHideUi(params) {',
+    "    var st = document.getElementById('__simHideUi');",
+    '    if (params && params.simpleUi && Array.isArray(params.hideSelectors)) {',
+    '      var rules = [];',
+    '      for (var i = 0; i < params.hideSelectors.length; i++) {',
+    '        var sel = params.hideSelectors[i];',
+    "        if (typeof sel !== 'string' || /[{}<\\\\]/.test(sel)) continue;",
+    "        rules.push(sel + '{display:none !important}');",
+    '      }',
+    '      if (rules.length > 0) {',
+    '        if (!st) {',
+    "          st = document.createElement('style');",
+    "          st.id = '__simHideUi';",
+    '          (document.head || document.documentElement).appendChild(st);',
+    '        }',
+    "        st.textContent = rules.join('\\n');",
+    '        return;',
+    '      }',
+    '    }',
+    '    if (st && st.remove) st.remove();',
+    '  }',
     '  function stopScript() {',
     '    if (_cancelFn) { _cancelFn(); _cancelFn = null; }',
+    '    _lastSig = null;',
+    "    var st = document.getElementById('__simHideUi');",
+    '    if (st && st.remove) st.remove();',
     '  }',
     '  function startScript(name, params) {',
+    "    var sig = (name || 'main') + ':' + JSON.stringify(params || {});",
+    '    if (_cancelFn && sig === _lastSig) return;   // identical re-post — keep the script running',
     '    stopScript();',
+    '    _lastSig = sig;',
+    '    applyHideUi(params);   // mechanical Minimal-UI hide — refreshed on every (re)start',
     '    var fn = SCRIPTS[name] || SCRIPTS.main;',
     '    if (fn) _cancelFn = fn(params || {}) || null;',
     '  }',
@@ -754,9 +1275,24 @@ export function computeSourceHash(sourceMap: Map<string, string>): string {
   return createHash('sha256').update(combined).digest('hex').slice(0, 12);
 }
 
-/** Compute a short hash of the generated bridge script */
-function computeBridgeHash(code: string): string {
+/** Compute a short hash of the generated bridge script.
+ *  Exported so the replace flow can re-derive the CURRENT ?v= hash of a preserved
+ *  bridge.js when re-injecting its script tag into a fresh entry HTML. */
+export function computeBridgeHash(code: string): string {
   return createHash('sha256').update(code).digest('hex').slice(0, 12);
+}
+
+/** Derive the entry HTML path relative to the sim's storage prefix.
+ *  entry_file is a storage key on new rows (`simulations/<p>/<s>/index.html`) and a full
+ *  public URL on legacy rows — handle both; returns null when underivable. */
+export function deriveEntryRelPath(entryFile: string | null | undefined, storagePrefix: string): string | null {
+  if (!entryFile) return null;
+  const noQuery = entryFile.split('?')[0];
+  const marker = `${storagePrefix}/`;
+  if (noQuery.startsWith(marker)) return noQuery.slice(marker.length) || null;
+  const idx = noQuery.indexOf(`/${marker}`);
+  if (idx !== -1) return noQuery.slice(idx + 1 + marker.length) || null;
+  return null;
 }
 
 // ── Full bridge validation (fatal / strong warnings / weak) ──────────────────
@@ -778,11 +1314,15 @@ function computeBridgeHash(code: string): string {
  * structural protocol checks are now just sanity assertions on the assembled output.
  * Security and cleanup checks run on mainBody to focus on what the LLM wrote.
  */
-export function validateGeneratedBridge(code: string, manifest: SimManifest, mainBody?: string): ValidationResult {
+export function validateGeneratedBridge(code: string, manifest: SimManifest, mainBody?: string, sourceText?: string): ValidationResult {
   const fatal: string[] = [];
   const warnings: string[] = [];
   const weak: string[] = [];
   const checkBody = mainBody ?? code;  // prefer checking mainBody when available
+  // A reference is legitimate if it appears verbatim in the sim source — a runtime-built sim has no
+  // static ids, so class selectors / instance methods / window globals live only in the JS/CSS.
+  // Such refs must NOT be strong-warned (which triggers a wasteful retry/downgrade). (sim-bridge-deepfix)
+  const inSource = (needle: string): boolean => !!sourceText && sourceText.includes(needle);
 
   // ── FATAL: Syntax check on the fully assembled script ────────────────────────
   try { new Function(code); } catch (e) { fatal.push(`Syntax error: ${(e as Error).message}`); }
@@ -835,18 +1375,29 @@ export function validateGeneratedBridge(code: string, manifest: SimManifest, mai
     'addEventListener', 'removeEventListener', 'postMessage',
   ]);
 
-  // getElementById references: both 'id' and "id" forms
+  // getElementById references: both 'id' and "id" forms. An id in the manifest OR visible in the
+  // source (e.g. an id set at runtime) is fine; only a truly-invented id is a strong warning.
   const getByIdRe = /document\.getElementById\(\s*['"`]([\w-]+)['"`]\s*\)/g;
   let m: RegExpExecArray | null;
   while ((m = getByIdRe.exec(checkBody)) !== null) {
-    if (!allManifestIds.has(m[1])) warnings.push(`getElementById('${m[1]}') — ID not found in manifest`);
+    if (allManifestIds.has(m[1])) continue;
+    if (inSource(`"${m[1]}"`) || inSource(`'${m[1]}'`) || inSource(`id="${m[1]}"`)) {
+      weak.push(`getElementById('${m[1]}') — not in manifest but present in source`);
+    } else {
+      warnings.push(`getElementById('${m[1]}') — ID not found in manifest`);
+    }
   }
 
-  // window.fn() and window.fn?.() calls — detect both patterns
+  // window.fn() and window.fn?.() calls — detect both patterns. (Note: window.__x.method() is NOT
+  // matched here — the regex needs a call right after window.<name> — so runtime-global method calls
+  // like window.__murmuration.toggleExploreExploit() correctly do not warn.)
   const windowFnRe = /window\.([\w]+)\s*\(|window\.([\w]+)\?\.\s*\(/g;
   while ((m = windowFnRe.exec(checkBody)) !== null) {
     const fn = m[1] ?? m[2];
-    if (fn && !allFns.has(fn) && !ignoredWindowProps.has(fn)) {
+    if (!fn || allFns.has(fn) || ignoredWindowProps.has(fn)) continue;
+    if ((manifest.runtimeGlobals ?? []).includes(fn) || (manifest.instanceMethods ?? []).includes(fn) || inSource(fn)) {
+      weak.push(`window.${fn}() — not in manifest but present in source`);
+    } else {
       warnings.push(`window.${fn}() — not found in manifest functions`);
     }
   }
@@ -878,10 +1429,14 @@ export function validateGeneratedBridge(code: string, manifest: SimManifest, mai
   }
 
   // ── WEAK: Informational ────────────────────────────────────────────────────────
-  if (!checkBody.includes('params.simpleUi') && !checkBody.includes('simpleUi')) {
+  // A selector-based hide (querySelectorAll + display:none) fulfils "hide the controls" without
+  // referencing params.simpleUi, so don't flag it — the user prompt drives it directly. (sim-bridge-deepfix)
+  const hidesBySelector = /querySelector(?:All)?\([^)]*\)/.test(checkBody) && /style[^\n]*display/.test(checkBody);
+  if (!checkBody.includes('simpleUi') && !hidesBySelector) {
     weak.push('params.simpleUi not referenced — simpleUi toggle may have no effect');
   }
-  if (!checkBody.includes('params.autoScript') && !checkBody.includes('autoScript')) {
+  const animates = checkBody.includes('setInterval');
+  if (!checkBody.includes('autoScript') && !animates) {
     weak.push('params.autoScript not referenced — autoScript toggle may have no effect');
   }
 
@@ -1108,6 +1663,7 @@ export function buildContextPrompt(
   const manifestSummary = JSON.stringify({
     controls:         manifest.controls.map(c => ({ id: c.id, type: c.type, label: c.label, min: c.min, max: c.max })),
     buttons:          manifest.buttons,
+    sections:         manifest.sections.map(s => s.id),
     selectElements:   manifest.selectElements,
     checkboxElements: manifest.checkboxElements,
     canvasElements:   manifest.canvasElements,
@@ -1115,6 +1671,10 @@ export function buildContextPrompt(
     renderFunctions:  manifest.renderFunctions,
     updateFunctions:  manifest.updateFunctions,
     hasSetSimSection: manifest.hasSetSimSection,
+    // Handles for runtime-built sims (empty for classic static-HTML sims). (sim-bridge-deepfix)
+    runtimeGlobals:   manifest.runtimeGlobals,   // e.g. ["__murmuration"] → window.__murmuration
+    instanceMethods:  manifest.instanceMethods,  // e.g. ["toggleExploreExploit"] → app.<method>()
+    cssControls:      manifest.cssControls,       // e.g. ["controls","show-menu-tab"] → querySelectorAll('.controls')
   }, null, 2);
 
   const contextMeta = [
@@ -1232,6 +1792,141 @@ export class SimulationService {
     return { entryUrl, entryKey: entryStoragePath, bridgeFunctions };
   }
 
+  /** Normalize an upload (one ZIP or a file bundle) into a relPath→Buffer map.
+   *  Public so the replace endpoint can validate the entry file BEFORE responding 202. */
+  buildUploadFileMap(opts: { zipBuffer?: Buffer | null; files?: UploadedSimulationFile[] }): Map<string, Buffer> {
+    if (opts.zipBuffer && opts.zipBuffer.length > 0) return this.extractZip(opts.zipBuffer);
+    return this.normalizeUploadedFiles(opts.files ?? []);
+  }
+
+  /** In-place file swap for an existing simulation (same simId + storage prefix).
+   *
+   *  - New files are uploaded over the old keys; stale keys (present before, absent now)
+   *    are deleted EXCEPT generated artifacts: bridge.js, guidance.js, guidance/* (audio +
+   *    understanding.md) and legacy section_*.html/js files.
+   *  - The new entry HTML gets the head rAF gate re-injected, plus either the existing
+   *    combined bridge.js script tag (with its CURRENT content hash) or — when no bridge.js
+   *    was ever generated — the inline bridge v2 template, and the guidance.js tag when a
+   *    published guidance.js exists.
+   *  - The new bundle MUST contain an HTML file at `entryRelPath` (the previous entry path):
+   *    sections' stored simulation_url embeds that exact path, so renaming the entry would
+   *    break them. Callers reject mismatches up front; this re-checks defensively.
+   *  - Sections' simulation_url / sim_meta are intentionally NOT touched — the generate flow
+   *    detects stale sources via sourceHash on the next generation.
+   */
+  async processReplace(opts: {
+    projectId:    string;
+    simId:        string;
+    files:        Map<string, Buffer>;
+    entryRelPath: string;
+  }): Promise<{
+    entryUrl:           string;
+    entryKey:           string;
+    bridgeFunctions:    BridgeFunction[];
+    uploadedCount:      number;
+    deletedStale:       string[];
+    preservedGenerated: string[];
+  }> {
+    const { projectId, simId, files, entryRelPath } = opts;
+    const prefix = `simulations/${projectId}/${simId}`;
+
+    if (files.size === 0) throw new Error('Replacement bundle appears to be empty');
+    if (!files.has(entryRelPath)) {
+      throw new Error(
+        `Replacement bundle must contain the entry file "${entryRelPath}" — upload with the same entry HTML name`,
+      );
+    }
+
+    // Current keys — needed to compute stale files. Listing can be denied on restricted
+    // tokens; then we do an overwrite-only replace (no stale deletion) instead of failing.
+    let existingKeys: string[] = [];
+    let listingAvailable = true;
+    try {
+      existingKeys = await this.storage.listObjects(prefix);
+    } catch {
+      listingAvailable = false;
+      logger.warn({ prefix }, 'listObjects failed during replace — stale files will not be deleted');
+    }
+
+    // Generated artifacts must survive the swap (they are system-owned, not part of the upload).
+    const isGeneratedKey = (k: string): boolean =>
+      /\/(bridge|guidance)\.js$/.test(k) ||
+      k.startsWith(`${prefix}/guidance/`) ||
+      /\/section_[^/]+\.(html|js)$/.test(k);
+
+    // Read the current generated artifacts so their script tags can be re-wired into the
+    // fresh entry HTML with their CURRENT hashes (section URLs keep working unchanged).
+    let bridgeJs: string | null = null;
+    try { bridgeJs = (await this.storage.readObject(`${prefix}/bridge.js`)).toString('utf-8'); }
+    catch { /* no combined bridge generated yet */ }
+    let guidanceJs: string | null = null;
+    try { guidanceJs = (await this.storage.readObject(`${prefix}/guidance.js`)).toString('utf-8'); }
+    catch { /* no guidance published yet */ }
+
+    const bridgeFunctions: BridgeFunction[] = [];
+    const entryKey = `${prefix}/${entryRelPath}`;
+    const entryDir = entryKey.substring(0, entryKey.lastIndexOf('/'));
+    const relativeDepth = entryDir === prefix
+      ? 0
+      : entryDir.slice(prefix.length).split('/').filter(Boolean).length;
+    const relPrefix = relativeDepth > 0 ? '../'.repeat(relativeDepth) : './';
+
+    let html = injectRafGate(files.get(entryRelPath)!.toString('utf-8'));
+    if (bridgeJs !== null) {
+      html = injectBridgeScriptTag(html, `${relPrefix}bridge.js`, computeBridgeHash(bridgeJs));
+    } else {
+      html = injectInlineBridge(html, bridgeFunctions);
+    }
+    if (guidanceJs !== null) {
+      // Lazy import — a static SimulationService⇄GuidanceService import would be circular.
+      const { injectGuidanceScriptTag, computeGuidanceHash } = await import('./GuidanceService.js');
+      html = injectGuidanceScriptTag(html, `${relPrefix}guidance.js`, computeGuidanceHash(guidanceJs));
+    }
+    files.set(entryRelPath, Buffer.from(html, 'utf-8'));
+
+    // Upload in fixed-size waves — same concurrency cap as the initial upload (backend-010).
+    // Unlike the initial upload, NOTHING is marked immutable here: replaced assets reuse
+    // their old keys, so immutable metadata would pin stale content at the bucket edge.
+    const entries = [...files.entries()];
+    const UPLOAD_CONCURRENCY = 12;
+    logger.info({ simId, projectId, fileCount: entries.length }, 'Replacing simulation files in storage');
+    for (let i = 0; i < entries.length; i += UPLOAD_CONCURRENCY) {
+      await Promise.all(
+        entries.slice(i, i + UPLOAD_CONCURRENCY).map(([relPath, buf]) =>
+          this.storage
+            .uploadFile(`${prefix}/${relPath}`, buf, getSimulationContentType(relPath))
+            .then(() => undefined),
+        ),
+      );
+    }
+
+    // Delete stale files AFTER the uploads so a viewer never sees a half-missing sim.
+    // Best-effort: a failed delete leaves a harmless orphan and must not fail the swap.
+    const newKeySet = new Set(entries.map(([relPath]) => `${prefix}/${relPath}`));
+    const staleKeys = listingAvailable
+      ? existingKeys.filter(k => k.startsWith(`${prefix}/`) && !newKeySet.has(k) && !isGeneratedKey(k))
+      : [];
+    const deletedStale: string[] = [];
+    for (const key of staleKeys) {
+      try {
+        await this.storage.deleteFile(key);
+        deletedStale.push(key);
+      } catch (err) {
+        logger.warn({ err, key }, 'Could not delete stale simulation file during replace');
+      }
+    }
+    const preservedGenerated = listingAvailable
+      ? existingKeys.filter(k => k.startsWith(`${prefix}/`) && isGeneratedKey(k))
+      : [];
+
+    const entryUrl = this.storage.getSimPublicUrl(entryKey);
+    logger.info(
+      { simId, projectId, entryRelPath, uploaded: entries.length, deletedStale: deletedStale.length, preservedGenerated: preservedGenerated.length },
+      'Simulation files replaced',
+    );
+    return { entryUrl, entryKey, bridgeFunctions, uploadedCount: entries.length, deletedStale, preservedGenerated };
+  }
+
   // ── AI-powered per-section bridge generation ──────────────────────────────────
 
   async generateBridgeScript(opts: {
@@ -1242,6 +1937,7 @@ export class SimulationService {
     prompt:            string;
     simpleUi:          boolean;
     autoScript:        boolean;
+    uiControls?:       SimUiSelection;  // normalized Minimal-UI selection — adds ONE compact prompt block
     entryKey?:         string;           // storage key for the entry HTML (from DB) — used when listing is denied
     storedSourceHash?: string;          // from sim_meta — service owns invalidation
     conversationHistory?: ConversationMessage[];
@@ -1305,7 +2001,9 @@ export class SimulationService {
             if (!res.ok) return;
             raw = await res.text();
           }
-          raw = raw
+          // Strip system-injected blocks (rAF gate + inline bridge) so the LLM context and
+          // the deterministic sourceHash stay stable across gate/bridge (re-)injection.
+          raw = stripRafGate(raw)
             .replace(/<script[^>]*>\s*\/\* sim-bridge[\s\S]*?<\/script>/gi, '')
             .replace(/<script[^>]*>\s*;?\s*\(function[\s\S]*?sim-bridge v[12][\s\S]*?<\/script>/gi, '');
           rawMap.set(key, raw);
@@ -1364,6 +2062,7 @@ export class SimulationService {
 
     let { bridge, conversationHistory: updatedHistory, provider: llmProvider, model: llmModel } = await this.callLLMForBridge({
       contextPrompt, manifest, prompt, simpleUi, autoScript,
+      uiControls: opts.uiControls,
       userId, projectId, conversationHistory, signal,
       onTokenChunk: tokenHeartbeat,
     });
@@ -1372,7 +2071,10 @@ export class SimulationService {
     // System wraps LLM-generated mainBody into the deterministic bridge template.
     // This guarantees SIM_READY, startScript, stopScript, and message listener are ALWAYS correct.
     const assembledBridgeScript = wrapBridgeMainBody(bridge.mainBody);
-    let validation = validateGeneratedBridge(assembledBridgeScript, manifest, bridge.mainBody);
+    // Concatenated source so validation can recognise refs that are legitimate-but-not-in-manifest
+    // (class selectors, instance methods, runtime globals in a dynamically-built sim). (sim-bridge-deepfix)
+    const sourceText = [...sourceMap.values()].join('\n');
+    let validation = validateGeneratedBridge(assembledBridgeScript, manifest, bridge.mainBody, sourceText);
 
     // ── Unified retry budget ──────────────────────────────────────────────────
     // Retry policy (in priority order):
@@ -1409,6 +2111,7 @@ export class SimulationService {
       const retryResult = await this.callLLMForBridge({
         contextPrompt, manifest,
         prompt: retryPrompt, simpleUi, autoScript,
+        uiControls: opts.uiControls,   // the MINIMAL-UI CONTRACT still binds the retry
         userId, projectId, conversationHistory: updatedHistory, signal,
         onTokenChunk: tokenHeartbeat,
       });
@@ -1419,7 +2122,7 @@ export class SimulationService {
 
       onEvent?.('status', { status: 'Validating fix...', type: 'progress' });
       const assembledBridgeScriptRetry = wrapBridgeMainBody(bridge.mainBody);
-      validation = validateGeneratedBridge(assembledBridgeScriptRetry, manifest, bridge.mainBody);
+      validation = validateGeneratedBridge(assembledBridgeScriptRetry, manifest, bridge.mainBody, sourceText);
       logger.info({ sectionId, retryReason, fatalAfterRetry: validation.fatal.length }, 'Bridge retry completed');
     }
 
@@ -1503,7 +2206,9 @@ export class SimulationService {
         if (!res.ok) throw new Error(`Could not read entry HTML for bridge injection (${res.status})`);
         rawHtml = await res.text();
       }
-      const updatedHtml = injectBridgeScriptTag(rawHtml, bridgeRelPath, hash);
+      // Ensure the head rAF gate too: entry HTML uploaded before the gate existed gains it
+      // on the next generation (injectRafGate is marker-guarded and idempotent).
+      const updatedHtml = injectBridgeScriptTag(injectRafGate(rawHtml), bridgeRelPath, hash);
       await this.storage.uploadFile(entryKey, Buffer.from(updatedHtml, 'utf-8'), 'text/html; charset=utf-8');
 
       // sectionUrl encodes which section to run + busts the iframe cache on every generation
@@ -1542,6 +2247,7 @@ export class SimulationService {
     prompt:               string;
     simpleUi:             boolean;
     autoScript:           boolean;
+    uiControls?:          SimUiSelection;
     userId:               string;
     projectId:            string;
     conversationHistory?: ConversationMessage[];
@@ -1552,10 +2258,14 @@ export class SimulationService {
     const conversationHistory = opts.conversationHistory ?? [];
     const hasHistory = conversationHistory.length > 0;
 
-    // User message is tiny — source files stay in contextPrompt (system prompt)
+    // User message is tiny — source files stay in contextPrompt (system prompt).
+    // A Minimal-UI selection adds exactly ONE compact contract block ('' when absent) —
+    // no source duplication, zero overhead for the no-selection path.
+    const uiBlock = buildUiControlsPromptBlock(opts.uiControls);
+    const uiSuffix = uiBlock ? `\n\n${uiBlock}` : '';
     const userContent = hasHistory
-      ? `REFINEMENT PROMPT: ${prompt}\n\nsimpleUi = ${simpleUi}\nautoScript = ${autoScript}\n\nUpdate the bridge script.`
-      : `SECTION PROMPT: ${prompt}\n\nsimpleUi = ${simpleUi}\nautoScript = ${autoScript}\n\nGenerate the bridge script now.`;
+      ? `REFINEMENT PROMPT: ${prompt}\n\nsimpleUi = ${simpleUi}\nautoScript = ${autoScript}${uiSuffix}\n\nUpdate the bridge script.`
+      : `SECTION PROMPT: ${prompt}\n\nsimpleUi = ${simpleUi}\nautoScript = ${autoScript}${uiSuffix}\n\nGenerate the bridge script now.`;
 
     const abortController = new AbortController();
     const signalListener = () => abortController.abort();
@@ -1625,11 +2335,26 @@ export class SimulationService {
     return htmlFiles.sort((a, b) => a.split('/').length - b.split('/').length)[0];
   }
 
+  /** Upload-time entry-HTML injection: head rAF gate + inline bridge v2 template.
+   *  Idempotent — re-running on already-injected HTML yields one gate and one bridge. */
   private injectBridge(html: string, fns: BridgeFunction[]): string {
-    const fnJson  = JSON.stringify(fns);
-    const script  = BRIDGE_TEMPLATE.replace('__SIM_BRIDGE_FUNCTIONS__', fnJson);
-    const tag     = `<script>\n/* sim-bridge v2 — auto-injected by podcast-saas */\n${script}\n</script>`;
-    if (html.includes('</body>')) return html.replace('</body>', `${tag}\n</body>`);
-    return html + '\n' + tag;
+    return injectInlineBridge(injectRafGate(html), fns);
   }
+}
+
+/** Idempotently inject the inline "sim-bridge v2" template before </body>.
+ *  - An existing inline v2 block is refreshed in place (never duplicated).
+ *  - When the combined bridge.js marker block is present the inline template is superseded
+ *    and must NOT be reintroduced (generateBridgeScript stripped it on first generation). */
+export function injectInlineBridge(html: string, fns: BridgeFunction[]): string {
+  const fnJson  = JSON.stringify(fns);
+  const script  = BRIDGE_TEMPLATE.replace('__SIM_BRIDGE_FUNCTIONS__', fnJson);
+  const tag     = `<script>\n/* sim-bridge v2 — auto-injected by podcast-saas */\n${script}\n</script>`;
+
+  const existingInline = /<script[^>]*>\s*\/\* sim-bridge v2[\s\S]*?<\/script>/i;
+  if (existingInline.test(html)) return html.replace(existingInline, tag);
+  if (html.includes('SIM_BRIDGE_SCRIPT_START')) return html;
+
+  if (html.includes('</body>')) return html.replace('</body>', `${tag}\n</body>`);
+  return html + '\n' + tag;
 }

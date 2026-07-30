@@ -9,6 +9,7 @@
 import { memo, useEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import type { AvatarCirclesConfig, AvatarCircleFace } from './types';
+import { circlesLayers, inCircleSection } from '../../lib/circleSections';
 import { activeSpeakerAt, type SpeakerSpan } from '../../lib/avatarCirclesViz';
 import { ensureAvatarAnalyser, syncAvatarGains } from '../../lib/avatarAudioGraph';
 import { AvatarCircleViz, type CircleFrame } from './AvatarCircleViz';
@@ -69,12 +70,16 @@ function AvatarCirclesOverlayInner({
   }, [config?.enabled, config?.visibility]);
 
   if (!config?.enabled) return null;
-  // Visibility mode: 'broll' = only while a b-roll/image overlay covers the main
-  // video (the parent-supplied `visible`); 'always' = whenever enabled; 'none' = off.
-  // Defaults to 'broll' for configs saved before this option existed.
-  const mode = config.visibility ?? 'broll';
-  if (mode === 'none') return null;
-  const effectiveVisible = mode === 'always' ? true : visible;
+  // Visibility layers: 'broll' = while a b-roll/image overlay covers the main
+  // video (the parent-supplied `visible`); 'manual' = inside the user-marked
+  // timeline ranges (manualSections, global seconds); 'broll+manual' = union;
+  // 'always' = whenever enabled; 'none' = off. Defaults to 'broll' for configs
+  // saved before these options existed.
+  const layers = circlesLayers(config.visibility);
+  if (!layers.always && !layers.broll && !layers.manual) return null;
+  const effectiveVisible = layers.always
+    ? true
+    : ((layers.broll && visible) || (layers.manual && inCircleSection(config.manualSections, globalTime)));
   visibleRef.current = effectiveVisible;
 
   const faces = facesFor(config);  // render configured circles even before a face image is set
@@ -135,11 +140,18 @@ function AvatarCirclesOverlayInner({
 // The canvas animation runs on its own rAF loop and reads live time via timeRef inside
 // getFrame, so this component only needs to re-render when its *layout* inputs change —
 // not on every ~250ms globalTime tick from the parent. The custom comparator below
-// deliberately EXCLUDES globalTime from the equality check so those ticks don't re-run
-// the layout math; timeRef.current is still assigned from globalTime in the render body
-// whenever the component does re-render for another reason, and getFrame reads it live
-// inside the rAF loop regardless of React timing, so speaker detection stays fresh.
+// deliberately EXCLUDES the raw globalTime from the equality check so those ticks don't
+// re-run the layout math; timeRef.current is still assigned from globalTime in the render
+// body whenever the component does re-render for another reason, and getFrame reads it
+// live inside the rAF loop regardless of React timing, so speaker detection stays fresh.
+// Manual sections DO depend on time, so the comparator compares the DERIVED membership
+// (inside-a-manual-range or not) — the component re-renders exactly when that flips.
 // (perf-013 / frontend-202 / perf-015)
+const manualVisibleAt = (config: AvatarCirclesConfig | null | undefined, t: number | undefined) =>
+  !!config?.enabled &&
+  circlesLayers(config.visibility).manual &&
+  inCircleSection(config.manualSections, t ?? 0);
+
 export const AvatarCirclesOverlay = memo(AvatarCirclesOverlayInner, (prev, next) =>
   prev.config === next.config &&
   prev.visible === next.visible &&
@@ -147,5 +159,6 @@ export const AvatarCirclesOverlay = memo(AvatarCirclesOverlayInner, (prev, next)
   prev.videoBRef === next.videoBRef &&
   prev.speakerTimeline === next.speakerTimeline &&
   prev.controlsVisible === next.controlsVisible &&
-  prev.avoidAskButton === next.avoidAskButton,
+  prev.avoidAskButton === next.avoidAskButton &&
+  manualVisibleAt(prev.config, prev.globalTime) === manualVisibleAt(next.config, next.globalTime),
 );

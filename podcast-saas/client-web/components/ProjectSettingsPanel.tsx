@@ -149,10 +149,19 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
   // Reset to the main page whenever the panel closes
   useEffect(() => { if (!open) setPage('main'); }, [open]);
 
+  // Manual circle-section picking takes over the editor timeline — get out of the way.
+  useEffect(() => {
+    const close = () => setOpen(false);
+    window.addEventListener('circles-manual-pick', close);
+    return () => window.removeEventListener('circles-manual-pick', close);
+  }, []);
+
   // Escape: on the avatar wizard page go back to main; otherwise close the panel
   useEffect(() => {
     if (!open) return;
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') { if (page === 'avatar' || page === 'circles') setPage('main'); else setOpen(false); } };
+    // preventDefault marks the Escape as consumed so later listeners (e.g. the timeline's
+    // circles-picking handler, registered after this one) don't also act on the same press.
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); if (page === 'avatar' || page === 'circles') setPage('main'); else setOpen(false); } };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [open, page]);

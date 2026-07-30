@@ -172,12 +172,23 @@ export class LLMService {
     // Thinking is wanted for complex + creative work on Claude. On adaptive-only
     // models we signal adaptive thinking (no token budget); on older Claude models
     // we pass the classic thinking budget.
+    // Bridge/guidance (complex) is reasoning-heavy code generation — always think on Claude so it
+    // runs "high-level" (adaptive thinking on Opus/Fable, classic budget on older Claude),
+    // independent of the global toggle. Podcast (creative) thinking stays admin-gated.
     const wantThinking =
-      settings.extended_thinking_enabled && isClaude && (tier === 'complex' || tier === 'creative');
+      isClaude && (
+        tier === 'complex' ||
+        (tier === 'creative' && settings.extended_thinking_enabled)
+      );
     const thinkingBudget = wantThinking && !isAdaptiveModel ? settings.thinking_budget_tokens : undefined;
     const adaptiveThinking = wantThinking && isAdaptiveModel ? true : undefined;
+    // creative → admin-selected effort; complex (bridge/guidance code generation) → high on
+    // effort-capable Claude models so simulation bridge scripts get the strongest reasoning
+    // (was implicitly the API default; make it explicit and independent of provider defaults).
     const effort: EffortLevel | undefined =
-      tier === 'creative' ? (settings.podcast_effort as EffortLevel) : undefined;
+      tier === 'creative' ? (settings.podcast_effort as EffortLevel)
+      : (tier === 'complex' && isAdaptiveModel) ? 'high'
+      : undefined;
     // Give creative passes generous headroom (streamed) so thinking + a full script fit.
     const maxTokens = tier === 'creative' ? Math.max(settings.max_tokens, 64000) : settings.max_tokens;
 

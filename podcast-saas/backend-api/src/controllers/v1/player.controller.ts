@@ -15,8 +15,9 @@ import type { AccessProject } from '../../services/projectAccess.js';
 async function projectReadable(
   project: AccessProject & { id: string },
   dbUser: { id: string; email: string | null } | undefined,
+  shareToken?: string | null,
 ): Promise<boolean> {
-  if (requireProjectAccess(project, dbUser?.id ?? null)) return true;
+  if (requireProjectAccess(project, dbUser?.id ?? null, shareToken)) return true;
   if (!dbUser) return false;
   return isCollaborator('project', project.id, dbUser);
 }
@@ -65,14 +66,17 @@ export async function registerPlayerRoutes(app: FastifyInstance): Promise<void> 
     },
   );
 
-  app.get<{ Params: { id: string } }>(
+  // ?share=<token> lets unlisted share-link viewers read caption status too — the shell's
+  // status poll runs without Firebase auth, and without the token a private/unlisted
+  // project 404s here and the CC button never lights up. (cc fix)
+  app.get<{ Params: { id: string }; Querystring: { share?: string } }>(
     '/api/v1/projects/:id/captions',
     { preHandler: [firebaseAuthOptionalMiddleware] },
     async (request, reply: FastifyReply) => {
       const projectId = request.params.id;
       const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
       if (!project) return reply.code(404).send({ message: 'Project not found' });
-      if (!(await projectReadable(project, request.dbUser))) {
+      if (!(await projectReadable(project, request.dbUser, request.query.share ?? null))) {
         return reply.code(404).send({ message: 'Project not found' });
       }
 
@@ -96,7 +100,7 @@ export async function registerPlayerRoutes(app: FastifyInstance): Promise<void> 
 
   // Serve a video's DB-stored caption WebVTT (no object storage dependency).
   // Public for free videos; gated for paid content via the project's access.
-  app.get<{ Params: { videoId: string } }>(
+  app.get<{ Params: { videoId: string }; Querystring: { share?: string } }>(
     '/api/v1/videos/:videoId/captions.vtt',
     { preHandler: [firebaseAuthOptionalMiddleware] },
     async (request, reply: FastifyReply) => {
@@ -109,9 +113,10 @@ export async function registerPlayerRoutes(app: FastifyInstance): Promise<void> 
       }
       // Visibility gate (mirror player-config): a private/draft project's caption transcript
       // must not be readable by video id alone, only its paid status was checked before
-      // (security-105). 404 so existence isn't revealed.
+      // (security-105). 404 so existence isn't revealed. ?share=<token> mirrors the status
+      // route so unlisted share-link viewers can read the VTT. (cc fix)
       const project = await db.query.projects.findFirst({ where: eq(projects.id, video.project_id) });
-      if (!project || !(await projectReadable(project, request.dbUser))) {
+      if (!project || !(await projectReadable(project, request.dbUser, request.query.share ?? null))) {
         return reply.code(404).send({ message: 'Captions not available' });
       }
       const pricing = await BillingService.getPricing('project', video.project_id);

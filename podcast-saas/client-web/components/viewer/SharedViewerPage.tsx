@@ -130,6 +130,7 @@ export function SharedViewerPage({ shareToken, permalinkSlug }: Props) {
         config={config}
         onNavigate={branchNavigate}
         onCaptionMenuOpenChange={setCaptionMenuOpen}
+        shareToken={shareToken ?? null}
         bottomRightOverlay={!captionMenuOpen ? <AskAvatarButton onClick={() => setAvatarOpen(true)} label="Ask!" /> : null}
       />
 

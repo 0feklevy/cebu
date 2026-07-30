@@ -6,6 +6,14 @@ import { eq, and, asc } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { editableProject } from '../../services/collabAccess.js';
 import { SimulationService, type ConversationMessage } from '../../services/simulation/SimulationService.js';
+import {
+  SIM_UI_CONTROLS_PARAM_MAX_CHARS,
+  SimUiSelectionSchema,
+  normalizeSimUiSelection,
+  readStoredUiControls,
+  simUiSelectionsEqual,
+  type SimUiSelection,
+} from '../../services/simulation/SimUiControls.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { LLMService } from '../../services/llm/LLMService.js';
 import { ApiKeyService } from '../../services/secrets/ApiKeyService.js';
@@ -77,6 +85,8 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       simulation_url?: string;
       simulation_id?: string;
       sim_script?: string;
+      sim_prompt?: string | null;
+      sim_meta?: unknown;
       track?: 'main' | 'broll' | 'audio';
       global_offset_sec?: number | null;
       clip_source_video_id?: string | null;
@@ -107,6 +117,8 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
         simulation_url,
         simulation_id,
         sim_script,
+        sim_prompt,
+        sim_meta,
         track,
         global_offset_sec,
         clip_source_video_id,
@@ -153,6 +165,10 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
           simulation_url: resolvedSimUrl,
           simulation_id: simulation_id ?? null,
           sim_script: sim_script ?? null,
+          // sim_prompt/sim_meta carry the simulation's generation prompt + bridge plan so a
+          // duplicated simulation section keeps its full config instead of losing it. (duplicate-section)
+          sim_prompt: sim_prompt ?? null,
+          sim_meta: sim_meta ?? null,
           track: track ?? 'main',
           global_offset_sec: global_offset_sec ?? null,
           clip_source_video_id: clip_source_video_id ?? null,
@@ -183,6 +199,8 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       simulation_url: string;
       simulation_id: string;
       sim_script: string;
+      sim_prompt: string | null;
+      sim_meta: unknown;
       global_offset_sec: number;
       clip_source_video_id: string | null;
       clip_in_sec: number;
@@ -210,7 +228,7 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       });
       if (!existing) return reply.code(404).send({ message: 'Section not found' });
 
-      const { simulation_id, sim_script, clip_source_video_id, clip_in_sec, broll_volume, clip_source_image_id, camera_movement, clip_source_audio_id, ...rest } = request.body;
+      const { simulation_id, sim_script, sim_prompt, sim_meta, clip_source_video_id, clip_in_sec, broll_volume, clip_source_image_id, camera_movement, clip_source_audio_id, ...rest } = request.body;
 
       if (rest.start_sec != null && rest.end_sec != null && rest.start_sec >= rest.end_sec) {
         return reply.code(400).send({ message: 'start_sec must be less than end_sec' });
@@ -219,8 +237,10 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       // When simulation_id is provided AND changed, denormalize entry_file → simulation_url.
       // If simulation_id is unchanged, leave simulation_url alone — this preserves the
       // generated bridge URL (section_id.html?v=hash) set by the SSE generation endpoint.
+      // An EXPLICIT simulation_url in the same request (undo/redo restore) wins over the
+      // recompute — the restore is putting back a known-good bridge URL. (sim-persistence fix)
       let resolvedSimUrl: string | null | undefined = rest.simulation_url;
-      if (simulation_id !== undefined && simulation_id !== existing.simulation_id) {
+      if (simulation_id !== undefined && simulation_id !== existing.simulation_id && rest.simulation_url === undefined) {
         if (simulation_id) {
           const sim = await db.query.simulations.findFirst({
             where: and(eq(simulations.id, simulation_id), eq(simulations.project_id, project.id)),
@@ -233,7 +253,17 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
 
       const patch: Record<string, unknown> = { ...rest };
       if (simulation_id !== undefined)       patch.simulation_id        = simulation_id || null;
+      // A CHANGED simulation invalidates the previously generated bridge: clear the stale
+      // sim_meta/sim_script so the UI stops claiming a bridge exists and the next Generate
+      // can't wrongly short-circuit through canReuse. Explicit values below (undo restore)
+      // still win over this clear. (sim-persistence fix)
+      if (simulation_id !== undefined && (simulation_id || null) !== existing.simulation_id) {
+        patch.sim_meta = null;
+        patch.sim_script = null;
+      }
       if (sim_script !== undefined)          patch.sim_script           = sim_script || null;
+      if (sim_prompt !== undefined)          patch.sim_prompt           = sim_prompt || null;
+      if (sim_meta !== undefined)            patch.sim_meta             = sim_meta ?? null;
       if (resolvedSimUrl !== undefined)      patch.simulation_url       = resolvedSimUrl;
       if (clip_source_video_id !== undefined) patch.clip_source_video_id = clip_source_video_id ?? null;
       if (clip_in_sec !== undefined)         patch.clip_in_sec          = clip_in_sec;
@@ -279,7 +309,7 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
   // SSE streaming endpoint — auth via ?token= query param (EventSource limitation)
   app.get<{
     Params:      { id: string; sid: string };
-    Querystring: { prompt?: string; simple_ui?: string; auto_script?: string };
+    Querystring: { prompt?: string; simple_ui?: string; auto_script?: string; ui_controls?: string };
   }>(
     '/api/v1/projects/:id/sections/:sid/generate-sim-script/stream',
     { preHandler: [firebaseAuthMiddleware] },
@@ -304,6 +334,25 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       }
       const simpleUi   = request.query.simple_ui   === 'true';
       const autoScript = request.query.auto_script  !== 'false';
+
+      // Optional Minimal-UI selection (JSON in ?ui_controls=). Validated + normalized here,
+      // BEFORE switching to SSE mode, so a bad selection is a clean HTTP 400. Absent/empty
+      // param ⇒ undefined — the current no-selection behavior is untouched.
+      let uiControls: SimUiSelection | undefined;
+      const rawUiControls = request.query.ui_controls;
+      if (typeof rawUiControls === 'string' && rawUiControls.length > 0) {
+        if (rawUiControls.length > SIM_UI_CONTROLS_PARAM_MAX_CHARS) {
+          return reply.code(400).send({ message: `ui_controls is too large (max ${SIM_UI_CONTROLS_PARAM_MAX_CHARS} chars)` });
+        }
+        let parsedJson: unknown;
+        try { parsedJson = JSON.parse(rawUiControls); }
+        catch { return reply.code(400).send({ message: 'ui_controls must be valid JSON' }); }
+        const parsed = SimUiSelectionSchema.safeParse(parsedJson);
+        if (!parsed.success) {
+          return reply.code(400).send({ message: 'ui_controls has an invalid shape' });
+        }
+        uiControls = normalizeSimUiSelection(parsed.data);
+      }
 
       // ── All validation done — switch to SSE mode ──────────────────────────────
       // Must set CORS header manually — reply.raw bypasses the @fastify/cors plugin
@@ -345,10 +394,11 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       try {
         const svc = getSimService();
 
-        // Read stored metadata safely — handle all planVersions (3, 4, 5) and missing fields
+        // Read stored metadata safely — handle all planVersions (3, 4, 5, 6) and missing fields
         const storedMeta = section.sim_meta as (Record<string, unknown> & {
           planVersion?: string;
           sourceHash?: string;
+          prompt?: string;
           supportsRuntimeParams?: boolean;
           generatedBy?: string;
           conversationHistory?: ConversationMessage[];
@@ -360,10 +410,26 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
         const supportsRuntimeParams =
           storedMeta?.supportsRuntimeParams === true ||
           (storedMeta?.generatedBy === 'llm' && storedMeta?.planVersion === '5');
+        // Compare against the prompt that BUILT the current bridge (sim_meta.prompt). sim_prompt is
+        // user-editable via a plain Save now, so it can drift from the bridge; falling back to it
+        // only for legacy rows generated before meta.prompt existed. (sim-persistence fix)
+        const builtPrompt = (typeof storedMeta?.prompt === 'string' ? storedMeta.prompt : undefined) ?? section.sim_prompt;
+        // The stored URL must be scoped to THIS section: a duplicated section carries the SOURCE's
+        // ?section=<sourceId> URL, and a sim switch leaves a raw entry URL — both must regenerate
+        // their own bridge entry instead of silently reusing someone else's. (sim-persistence fix)
+        const urlIsOwn = !!section.simulation_url?.includes(`section=${section.id}`);
+        // The Minimal-UI selection is part of the bridge contract: the stored selection (the one
+        // the current bridge was generated under) must deep-equal the incoming one. Both-absent
+        // is equal; a presence mismatch (selection added or removed) regenerates. (minimal-ui)
+        const uiSelectionUnchanged = simUiSelectionsEqual(
+          readStoredUiControls(storedMeta?.uiControls),
+          uiControls,
+        );
         const canReuse =
-          section.sim_prompt === rawPrompt &&
-          !!section.simulation_url &&
-          supportsRuntimeParams;
+          builtPrompt === rawPrompt &&
+          urlIsOwn &&
+          supportsRuntimeParams &&
+          uiSelectionUnchanged;
 
         const savedHistory = (storedMeta?.conversationHistory as ConversationMessage[] | undefined) ?? [];
 
@@ -386,6 +452,7 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
             prompt:              rawPrompt,
             simpleUi,
             autoScript,
+            uiControls,
             entryKey:            simRow?.entry_file && !simRow.entry_file.startsWith('http') ? simRow.entry_file : undefined,
             storedSourceHash:    storedMeta?.sourceHash,   // service owns hash invalidation
             conversationHistory: savedHistory.length > 0 ? savedHistory : undefined,
@@ -396,8 +463,18 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
           patch.sim_prompt = rawPrompt;
           // Build sim_meta from typed result — no recomputation needed
           patch.sim_meta = {
-            planVersion:        '5',
+            // '7' = Minimal-UI control-picker regime (sim_meta.uiControls persisted; the prompt
+            // gains the MINIMAL-UI CONTRACT block; the wrap applies params.hideSelectors
+            // mechanically). canReuse is NOT affected: it keys on supportsRuntimeParams (always
+            // true here); the legacy `planVersion === '5'` fallback only matters for old rows.
+            planVersion:        '7',
             generatedBy:        'llm',
+            // The prompt this bridge was built from — canReuse compares against THIS (not the
+            // user-editable sim_prompt) so a saved-but-not-generated prompt edit still regenerates.
+            prompt:             rawPrompt,
+            // The normalized Minimal-UI selection this bridge was generated under (undefined ⇒
+            // key omitted) — canReuse deep-equals the next request's selection against THIS.
+            uiControls,
             sourceHash:         result.sourceHash,
             bridgeHash:         result.bridgeHash,
             generatedAt:        new Date().toISOString(),
@@ -457,6 +534,10 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
     prompt:      z.string().min(1).max(1000),
     simple_ui:   z.boolean(),
     auto_script: z.boolean(),
+    // Optional Minimal-UI selection — threaded identically to the SSE route's ?ui_controls=
+    // (canReuse equality + sim_meta persistence + prompt block). Without it, any call
+    // through this route would read as "selection removed" and wipe sim_meta.uiControls.
+    ui_controls: SimUiSelectionSchema.optional(),
   });
 
   app.post<{ Params: { id: string; sid: string } }>(
@@ -480,6 +561,9 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       const body = GenerateSimScriptSchema.safeParse(request.body);
       if (!body.success) return reply.code(400).send({ message: body.error.message });
       const { prompt, simple_ui, auto_script } = body.data;
+      // Normalized (sorted show/hide) — same form the SSE route compares and persists.
+      const uiControls2: SimUiSelection | undefined =
+        body.data.ui_controls ? normalizeSimUiSelection(body.data.ui_controls) : undefined;
 
       // Same per-section serialization as the SSE path. The lock is released in
       // `finally` — a 'finish'-only listener never fires on a client disconnect
@@ -502,15 +586,28 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       // canReuse: same prompt + bridge exists + supportsRuntimeParams (planVersion 5+)
       const storedMeta2 = section.sim_meta as (Record<string, unknown> & {
         planVersion?: string; supportsRuntimeParams?: boolean; generatedBy?: string;
-        sourceHash?: string; conversationHistory?: ConversationMessage[];
+        sourceHash?: string; prompt?: string; conversationHistory?: ConversationMessage[];
       }) | null;
       const supportsRuntimeParams2 =
         storedMeta2?.supportsRuntimeParams === true ||
         (storedMeta2?.generatedBy === 'llm' && storedMeta2?.planVersion === '5');
+      // Mirror the SSE sibling: compare against the prompt that BUILT the bridge (meta.prompt,
+      // sim_prompt fallback for legacy rows) and require the URL to be scoped to THIS section
+      // (a duplicate carries the source's ?section= URL; a sim switch leaves a raw entry URL).
+      const builtPrompt2 = (typeof storedMeta2?.prompt === 'string' ? storedMeta2.prompt : undefined) ?? section.sim_prompt;
+      const urlIsOwn2 = !!section.simulation_url?.includes(`section=${section.id}`);
+      // Mirror the SSE sibling: the stored selection (the one the current bridge was
+      // generated under) must equal the incoming one — both-absent equal; a presence
+      // mismatch (selection added or removed) regenerates. (minimal-ui)
+      const uiSelectionUnchanged2 = simUiSelectionsEqual(
+        readStoredUiControls(storedMeta2?.uiControls),
+        uiControls2,
+      );
       const canReuse =
-        section.sim_prompt === prompt &&
-        !!section.simulation_url &&
-        supportsRuntimeParams2;
+        builtPrompt2 === prompt &&
+        urlIsOwn2 &&
+        supportsRuntimeParams2 &&
+        uiSelectionUnchanged2;
 
       let sectionUrl: string;
       const patch: Record<string, unknown> = { simple_ui, auto_script, sim_script: 'main' };
@@ -531,6 +628,7 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
           prompt,
           simpleUi:         simple_ui,
           autoScript:       auto_script,
+          uiControls:       uiControls2,
           entryKey:         simRow2?.entry_file && !simRow2.entry_file.startsWith('http') ? simRow2.entry_file : undefined,
           storedSourceHash: storedMeta2?.sourceHash,
           conversationHistory: savedHistory2.length > 0 ? savedHistory2 : undefined,
@@ -539,8 +637,14 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
         sectionUrl = result2.sectionUrl;
         patch.sim_prompt = prompt;
         patch.sim_meta = {
-          planVersion:        '5',
+          // '7' = Minimal-UI control-picker regime — see the streaming route above; canReuse
+          // unaffected (keys on supportsRuntimeParams, never the planVersion string).
+          planVersion:        '7',
           generatedBy:        'llm',
+          prompt,   // the prompt this bridge was built from — canReuse compares against this
+          // The normalized Minimal-UI selection this bridge was generated under (undefined ⇒
+          // key omitted, so the next request's equality check sees "absent").
+          uiControls:         uiControls2,
           sourceHash:         result2.sourceHash,
           bridgeHash:         result2.bridgeHash,
           generatedAt:        new Date().toISOString(),

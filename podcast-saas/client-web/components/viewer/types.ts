@@ -9,6 +9,10 @@ export interface SimulationOverlay {
   sim_script:     string | null;
   simple_ui:      boolean | null;
   auto_script:    boolean | null;
+  // Minimal-UI control picker: selectors hidden mechanically while simple_ui is on.
+  // Emitted by buildPlayerConfig from sim_meta.uiControls.hide; passed to the sim
+  // bridge as startScript.params.hideSelectors (old bridges ignore it harmlessly).
+  ui_hide?:       string[];
   label:          string | null;
   type:           string;
 }
@@ -81,7 +85,10 @@ export interface AvatarCircleFace {
 
 export interface AvatarCirclesConfig {
   enabled: boolean;
-  visibility?: 'broll' | 'always' | 'none'; // when circles appear (default 'broll')
+  // when circles appear (default 'broll'); 'manual' / 'broll+manual' use the
+  // user-marked manualSections ranges — alone or merged with b-roll windows
+  visibility?: 'broll' | 'always' | 'none' | 'manual' | 'broll+manual';
+  manualSections?: Array<{ id: string; start_sec: number; end_sec: number }>;
   count: 1 | 2;
   faces?: AvatarCircleFace[];
   barStyle?: 'bars' | 'solid' | 'gradient';

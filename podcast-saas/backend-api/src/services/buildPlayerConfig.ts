@@ -111,6 +111,10 @@ export async function buildPlayerConfig(
         sim_script:     s.sim_script     ?? null,
         simple_ui:      s.simple_ui      ?? false,
         auto_script:    s.auto_script    ?? true,
+        // Minimal-UI mechanical hide list (sim_meta.uiControls.hide) — the player passes
+        // these as startScript params.hideSelectors while simple_ui is on. Omitted when
+        // absent/empty so the no-selection payload is byte-identical to before.
+        ui_hide:        uiHideFromMeta(s.sim_meta),
         label:          s.label,
         type:           s.type,
       }));
@@ -456,4 +460,13 @@ export async function buildPlayerConfig(
 
 function videoCaptionStatus(status: string | null | undefined): 'none' | 'processing' | 'ready' | 'failed' {
   return status === 'processing' || status === 'ready' || status === 'failed' ? status : 'none';
+}
+
+/** sim_meta.uiControls.hide as a clean string[] — undefined (key omitted in JSON) when the
+ *  section has no Minimal-UI selection, an empty hide list, or malformed jsonb. */
+function uiHideFromMeta(simMeta: unknown): string[] | undefined {
+  const hide = (simMeta as { uiControls?: { hide?: unknown } } | null | undefined)?.uiControls?.hide;
+  if (!Array.isArray(hide)) return undefined;
+  const clean = hide.filter((s): s is string => typeof s === 'string' && s.length > 0);
+  return clean.length > 0 ? clean : undefined;
 }
