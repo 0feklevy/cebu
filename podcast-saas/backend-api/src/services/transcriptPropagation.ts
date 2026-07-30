@@ -35,6 +35,26 @@ const MIN_TRANSCRIPT_CHARS = 40;
 const SEO_PROMPT_MAX_CHARS = 8000;   // bound the tokens sent to the LLM
 const DOC_MAX_CHARS = 200_000;       // safety bound on the uploaded transcript doc
 
+/**
+ * The project's caption transcript as plain text (longest non-broll transcript wins),
+ * or null when captions aren't ready. This is the avatar's DEFAULT knowledge source:
+ * /avatar/start inlines it so the avatar knows the video even when the RAG document
+ * pipeline hasn't run (or its persona was baked without the knowledge tool).
+ */
+export async function getProjectTranscript(projectId: string): Promise<string | null> {
+  const rows = await db.query.video_files.findMany({
+    where: eq(video_files.project_id, projectId),
+    columns: { captions_vtt: true, is_broll: true },
+  });
+  let best = '';
+  for (const r of rows) {
+    if (r.is_broll || !r.captions_vtt) continue;
+    const text = vttToPlainText(r.captions_vtt);
+    if (text.length > best.length) best = text;
+  }
+  return best.length >= MIN_TRANSCRIPT_CHARS ? best : null;
+}
+
 /** Entry point: forward a freshly-ready transcript. Fire-and-forget; never throws. */
 export function propagateTranscript(video: Pick<VideoRow, 'id' | 'project_id' | 'is_broll'>, vtt: string): void {
   if (video.is_broll || !video.project_id) return;

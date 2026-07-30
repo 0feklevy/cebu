@@ -168,6 +168,8 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
           sendToSim({ type: 'simResume' });
           // Send startScript first so sim applies simpleUi, then reveal
           sendToSim({ type: 'startScript', script: pending.script, params: pending.params });
+          // Definitive __simHideUi applied by startScript — drop the boot-time hide.
+          sendToSim({ type: 'clearBootHide' });
           if (simRevealTimerRef.current) { clearTimeout(simRevealTimerRef.current); simRevealTimerRef.current = null; }
           if (simShowTimerRef.current) clearTimeout(simShowTimerRef.current);
           simShowTimerRef.current = setTimeout(() => { simShowTimerRef.current = null; setShowSim(true); }, 50);
@@ -340,6 +342,8 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
       // Re-running on params/script changes (deps below) is what makes a canReuse
       // regeneration — same URL, new toggles — show up live in the editor preview.
       sendToSim({ type: 'startScript', script, params });
+      // Definitive __simHideUi applied by startScript — drop the boot-time hide.
+      sendToSim({ type: 'clearBootHide' });
       if (simShowTimerRef.current) clearTimeout(simShowTimerRef.current);
       simShowTimerRef.current = setTimeout(() => { simShowTimerRef.current = null; setShowSim(true); }, 50);
     } else {
@@ -380,8 +384,18 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
   const totalDuration = Math.max(hook.totalDuration, timelineDuration ?? 0);
   // (D6) Device-hint params for the iframe src ONLY — simUrl (raw) stays the identity used
   // for mount/compare logic. Memoized per raw URL so a devicePixelRatio change (browser
-  // zoom) can't rewrite src and reload a live sim.
-  const resolvedSimSrc = useMemo(() => (simUrl ? resolveSimUrl(simUrl) : null), [simUrl]);
+  // zoom) can't rewrite src and reload a live sim. The minimal-UI boot hint rides in the
+  // FRAGMENT (#simboot=…) so the sim paints already-minimal; a hash-only src change never
+  // reloads the document, so bootHide flipping when the section changes is safe.
+  const simBootHide = useMemo(() => {
+    if (!activeSimSection?.simple_ui) return null;
+    const hide = getStoredSelection(activeSimSection?.sim_meta)?.hide;
+    return hide?.length ? hide : null;
+  }, [activeSimSection]);
+  const resolvedSimSrc = useMemo(
+    () => (simUrl ? resolveSimUrl(simUrl, simBootHide ? { hideSelectors: simBootHide } : undefined) : null),
+    [simUrl, simBootHide],
+  );
   const simulationBadgeText = activeSimSection
     ? (activeSimSection.label?.trim() || 'Simulation')
     : null;

@@ -19,7 +19,10 @@ export type CircleSide = 'left' | 'right';
 export interface SceneRow { speaker: string; start_ms: number; end_ms: number; script_version: number }
 export interface SpeakerSpan { speaker: string; start_sec: number; end_sec: number }
 
-export interface CircleFace { speaker: CircleSpeaker; side: CircleSide; imageUrl?: string; label?: string }
+/** Voice band of the character in a circle — drives the FFT (pitch) speaker fallback when
+ *  no scenes-derived speaker_timeline exists (manual/uploaded projects have zero scenes). */
+export type CircleVoice = 'male' | 'female';
+export interface CircleFace { speaker: CircleSpeaker; side: CircleSide; imageUrl?: string; label?: string; voice?: CircleVoice }
 export interface CircleSection { id: string; start_sec: number; end_sec: number }
 
 export interface AvatarCirclesLike {
@@ -88,7 +91,8 @@ export function facesAreDegenerate(faces: CircleFace[] | undefined, count: 1 | 2
 export function normalizeFaces(faces: CircleFace[] | undefined, count: 1 | 2): CircleFace[] {
   const list = Array.isArray(faces) ? faces : [];
   const bySide = (side: CircleSide) => list.find((f) => f && f.side === side);
-  const carry = (f: CircleFace | undefined): Partial<CircleFace> => (f ? { ...(f.imageUrl ? { imageUrl: f.imageUrl } : {}), ...(f.label ? { label: f.label } : {}) } : {});
+  const isVoice = (v: unknown): v is CircleVoice => v === 'male' || v === 'female';
+  const carry = (f: CircleFace | undefined): Partial<CircleFace> => (f ? { ...(f.imageUrl ? { imageUrl: f.imageUrl } : {}), ...(f.label ? { label: f.label } : {}), ...(isVoice(f.voice) ? { voice: f.voice } : {}) } : {});
 
   // One circle: prefer the stored left entry, else ANY stored face (so a legacy right-only
   // config keeps its image/label instead of being dropped) — always pinned to the left slot.

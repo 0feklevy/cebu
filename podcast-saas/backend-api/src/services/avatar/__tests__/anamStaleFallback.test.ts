@@ -86,13 +86,15 @@ describe('getSessionToken — stale persona ephemeral fallback', () => {
     expect(calls).toHaveLength(1);
   });
 
-  it('does not retry when no avatar/voice fallback exists', async () => {
+  it('does not retry when no avatar/voice fallback exists (env unset AND the account listing offers none)', async () => {
     ANAM_ENV.ANAM_AVATAR_ID = '';
     ANAM_ENV.ANAM_VOICE_ID = '';
+    // The 400 body is reused for the GET /avatars + /voices live-default probes too,
+    // so the account resolves no fallback either. Only ONE mint may happen.
     const calls = mockFetchSequence([STALE_400]);
     await expect(getSessionToken('einstein', { personaId: `dead-${Date.now()}-e` }))
       .rejects.toThrow(/Anam API error \(400\)/);
-    expect(calls).toHaveLength(1);
+    expect(calls.filter((c) => c.url.includes('/auth/session-token'))).toHaveLength(1);
   });
 });
 
@@ -150,6 +152,33 @@ describe('getSessionToken — every ephemeral persona carries a brain (no legacy
     mockFetchSequence([{ status: 200, json: { data: [{ id: 'CUSTOMER_CLIENT_V1' }] } }]);
     await expect(getSessionToken('einstein', { avatarId: 'a1', voiceId: 'v1' }))
       .rejects.toThrow(/No Anam LLM|brain/i);
+  });
+
+  it('attaches the knowledge RAG tool + inline knowledge to ephemeral personas (video knowledge survives the fallback)', async () => {
+    ANAM_ENV.ANAM_LLM_ID = 'llm-pinned-9';
+    const calls = mockFetchSequence([TOKEN_200]);
+    await getSessionToken('einstein', {
+      avatarId: 'a-k1', voiceId: 'v-k1',
+      knowledge: 'VIDEO TRANSCRIPT TEXT', knowledgeToolId: 'tool-rag-1', toolIds: ['tool-end-call'],
+    });
+    const pc = calls.at(-1)!.body.personaConfig as Record<string, unknown>;
+    expect(pc.toolIds).toEqual(['tool-rag-1', 'tool-end-call']);
+    expect(String(pc.systemPrompt)).toContain('VIDEO TRANSCRIPT TEXT');
+  });
+
+  it('retries a 400 mint once WITHOUT toolIds (knowledge still rides inline in the prompt)', async () => {
+    ANAM_ENV.ANAM_LLM_ID = 'llm-pinned-9';
+    const calls = mockFetchSequence([
+      { status: 400, json: { error: 'bad_request', message: 'toolIds not allowed here' } },
+      TOKEN_200,
+    ]);
+    const info = await getSessionToken('einstein', { avatarId: 'a-k2', voiceId: 'v-k2', knowledge: 'K', knowledgeToolId: 'tool-rag-2' });
+    expect(info.token).toBe('tok-live');
+    const mints = calls.filter((c) => c.url.includes('/auth/session-token'));
+    expect(mints).toHaveLength(2);
+    const retry = mints[1].body.personaConfig as Record<string, unknown>;
+    expect(retry.toolIds).toBeUndefined();
+    expect(String(retry.systemPrompt)).toContain('K');
   });
 
   it('an ephemeral persona with no resolvable brain throws a config error (never mints a legacy token)', async () => {

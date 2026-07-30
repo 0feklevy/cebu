@@ -299,6 +299,28 @@
   border: none;
   display: block;
 }
+/* Boot state: shown only when the overlay revealed before the sim handshake —
+   the dark layer reads as intentional loading, not a dead black screen. */
+.sim-overlay-boot {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0e0e0e;
+  pointer-events: none;
+}
+.sim-overlay-spinner {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, 0.18);
+  border-top-color: rgba(255, 255, 255, 0.85);
+  animation: sim-overlay-spin 0.9s linear infinite;
+}
+@keyframes sim-overlay-spin {
+  to { transform: rotate(360deg); }
+}
 
 /* Bottom hover strip that reveals the controls bar over a simulation. Sits above the
    sim overlay (z 20) but below the controls bar (z 55); pointer-events are toggled in

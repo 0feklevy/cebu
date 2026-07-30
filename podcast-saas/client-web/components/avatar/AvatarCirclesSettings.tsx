@@ -311,6 +311,17 @@ export function AvatarCirclesSettings({ projectId, duration, onClose }: Props) {
                         <option value="host_b">Speaker B</option>
                       </select>
                     </div>
+                    {/* Voice band: drives the pitch-based "who is talking" wave when the
+                        project has no script timeline (uploaded videos + manual circles). */}
+                    <select
+                      value={f.voice ?? (f.speaker === 'host_a' ? 'male' : 'female')}
+                      onChange={(e) => patchFace(f.side, { voice: e.target.value as 'male' | 'female' })}
+                      style={faceSelect}
+                      title="Voice of this character — used to match the wave to whoever is talking"
+                    >
+                      <option value="male">Male voice</option>
+                      <option value="female">Female voice</option>
+                    </select>
                     <div style={faceActionRow}>
                       <label style={{ ...faceActionBtn, position: 'relative' }}>
                         {uploadingSide === f.side ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />} Upload image
