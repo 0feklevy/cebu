@@ -39,6 +39,7 @@ type PlayerChoicePoint = {
 };
 import { getStorageAdapter } from './storage/getStorageAdapter.js';
 import { captionUrlForVideo } from './captions/CaptionService.js';
+import { normalizeAvatarCircles, normalizeSpeakerTimeline, type AvatarCirclesLike } from './avatarCircles/normalizeAvatarCircles.js';
 
 /**
  * Build the PlayerConfig for a single project — the dynamic equivalent of
@@ -259,22 +260,20 @@ export async function buildPlayerConfig(
     if (typeof v === 'string') { try { const o = JSON.parse(v); return o && typeof o === 'object' ? o : null; } catch { return null; } }
     return null;
   })();
-  const avatarCircles = avatarConfigObj?.avatarCircles ?? null;
+  // Self-heal a stored circles config on read: canonical faces (distinct speaker→circle so
+  // "his wave / her wave" always maps correctly) + clean manual sections. A degenerate faces
+  // mapping was the likely cause of the reported broken circles-waves data. (avatar-circles-fix)
+  const avatarCircles = avatarConfigObj?.avatarCircles
+    ? normalizeAvatarCircles(avatarConfigObj.avatarCircles as AvatarCirclesLike)
+    : null;
 
-  // Speaker timeline (from the latest script version) so the viewer can animate
-  // whichever avatar is speaking. Empty for uploaded videos with no script —
-  // the viewer then animates all circles to the audio.
-  let speakerTimeline: Array<{ speaker: string; start_sec: number; end_sec: number }> = [];
-  if (avatarCircles) {
-    // allScenes was fetched in the opening Promise.all (loadperf-002/backend-110).
-    if (allScenes.length > 0) {
-      const latestVersion = Math.max(...allScenes.map((s) => s.script_version));
-      speakerTimeline = allScenes
-        .filter((s) => s.script_version === latestVersion)
-        .sort((a, b) => a.start_ms - b.start_ms)
-        .map((s) => ({ speaker: s.speaker, start_sec: s.start_ms / 1000, end_sec: s.end_ms / 1000 }));
-    }
-  }
+  // Speaker timeline (from the latest script version) so the viewer can animate whichever
+  // avatar is speaking. GAP-FILLED so a manual circle-section placed in a between-turn pause
+  // still resolves to the speaker who just spoke, instead of activeSpeakerAt → null → BOTH
+  // circles waving equally (the manual-mode "doesn't know who says what" bug). Empty for
+  // uploaded videos with no script — the viewer then animates all circles to the audio.
+  const speakerTimeline: Array<{ speaker: string; start_sec: number; end_sec: number }> =
+    avatarCircles ? normalizeSpeakerTimeline(allScenes) : [];
 
   // ── Branching (migration 037) ────────────────────────────────────────────────
   // Emit a graph block only when the project has been split into sequences. Projects
