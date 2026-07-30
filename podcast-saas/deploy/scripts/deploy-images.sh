@@ -68,11 +68,19 @@ IMAGE_COUNT="$(sed -n 5p <<<"${SCALARS}")"
 [ "${IMAGE_COUNT}" -ge 3 ] || die "Manifest must contain backend, client-web and admin-web images."
 
 # Image lines: "service<TAB>repository<TAB>digest".
+# NOTE: the Python source lives inside a bash single-quoted string, so it must not
+# contain single quotes or backslash-escaped double quotes (an escaped f-string here
+# once reached python3 as literal backslashes and broke the release with a
+# SyntaxError). Stick to plain double quotes + str.format.
 IMAGES="$(printf '%s' "${ENVELOPE}" | python3 -c '
 import json, sys
-for i in json.load(sys.stdin)["manifest"]["images"]:
-    print(f"{i[\"service\"]}\t{i[\"repository\"]}\t{i[\"digest\"]}")
-')"
+for item in json.load(sys.stdin)["manifest"]["images"]:
+    print("{}\t{}\t{}".format(
+        item["service"],
+        item["repository"],
+        item["digest"],
+    ))
+')" || die "Manifest image list is invalid."
 
 # The registry token never touches disk or argv; keep it in this function only.
 ghcr_login() {
