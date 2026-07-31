@@ -463,6 +463,7 @@ export function HLSPlayerShell({
         frames={state.simPool}
         activeUrl={state.activeSimUrl}
         visible={state.showSimOverlay}
+        armGate={state.simPoolArm}
         stalled={state.simBootStalled}
         coldCover={state.simColdCover}
         registerFrame={actions.registerSimFrame}

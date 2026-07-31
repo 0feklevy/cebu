@@ -23,22 +23,26 @@ interface FrameProps {
   spec: SimPoolFrameSpec;
   active: boolean;                // this frame is the current section's sim
   visible: boolean;               // the overlay as a whole is revealed
-  delayMs: number;                // staggered boot offset
+  delayMs: number;                // staggered boot offset (counted from armGate)
+  armGate: boolean;               // false until the VIDEO's own boot is out of the way
   registerFrame: (url: string, el: HTMLIFrameElement | null) => void;
   onFrameLoad: (url: string) => void;
 }
 
-function SimPoolFrame({ spec, active, visible, delayMs, registerFrame, onFrameLoad }: FrameProps) {
-  // Stagger: render the iframe (i.e. start its fetch/boot) only after this frame's slot delay,
-  // so three sims don't all slam the network/GPU at t=0 alongside the video's own startup.
-  const [armed, setArmed] = useState(delayMs <= 0);
+function SimPoolFrame({ spec, active, visible, delayMs, armGate, registerFrame, onFrameLoad }: FrameProps) {
+  // Boot scheduling: frames start their fetch/boot only once the gate opens (the main video
+  // reached loadeddata, a fallback timer fired, or the video is sim-first), then staggered so
+  // several sims don't slam the network/GPU at once. A frame that becomes ACTIVE arms
+  // immediately regardless — a seek must never wait on the stagger. Initial false also keeps
+  // SSR/hydration DOM identical (no iframes server-side).
+  const [armed, setArmed] = useState(false);
   useEffect(() => {
     if (armed) return;
+    if (active) { setArmed(true); return; }
+    if (!armGate) return;
     const t = setTimeout(() => setArmed(true), delayMs);
     return () => clearTimeout(t);
-  }, [armed, delayMs]);
-  // Boot immediately when this frame becomes the active section's sim — a seek can outrun the stagger.
-  useEffect(() => { if (active) setArmed(true); }, [active]);
+  }, [armed, active, armGate, delayMs]);
 
   const src = useMemo(
     () => resolveSimUrl(
@@ -69,6 +73,8 @@ interface Props {
   frames: SimPoolFrameSpec[];
   activeUrl: string | null;
   visible: boolean;
+  /** Opens when the main video's own boot is out of the way (loadeddata / fallback / sim-first). */
+  armGate: boolean;
   /** Genuinely broken sim that never painted (≥5s) — the only routine loading affordance. */
   stalled?: boolean;
   /** Sim-first entry with no video frame underneath to hold — a brief loader is correct here. */
@@ -77,10 +83,10 @@ interface Props {
   onFrameLoad: (url: string) => void;
 }
 
-// Boot stagger between pool frames. The first frame starts immediately.
+// Boot stagger between pool frames (counted from the arm gate opening).
 const POOL_STAGGER_MS = 1200;
 
-function SimPoolOverlayInner({ frames, activeUrl, visible, stalled = false, coldCover = false, registerFrame, onFrameLoad }: Props) {
+function SimPoolOverlayInner({ frames, activeUrl, visible, armGate, stalled = false, coldCover = false, registerFrame, onFrameLoad }: Props) {
   if (frames.length === 0) return null;
   return (
     <div className={`sim-overlay${visible ? ' visible' : ''}`}>
@@ -91,6 +97,7 @@ function SimPoolOverlayInner({ frames, activeUrl, visible, stalled = false, cold
           active={spec.url === activeUrl}
           visible={visible}
           delayMs={i * POOL_STAGGER_MS}
+          armGate={armGate}
           registerFrame={registerFrame}
           onFrameLoad={onFrameLoad}
         />

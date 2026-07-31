@@ -527,6 +527,10 @@ const RAF_GATE_TEMPLATE = /* js */ `;(function () {
       for (var i = 0; i < media.length; i++) { try { media[i].muted = on; } catch (e) {} }
     } catch (e) { /* pre-DOM */ }
   }
+  // KNOWN GAP: simPause freezes only requestAnimationFrame-driven loops. A sim whose loop
+  // runs on setInterval/setTimeout, a Web Worker, or a WebAudio graph keeps running while
+  // "paused" (and applyMuteAll below only mutes <video>/<audio> elements, not AudioContext
+  // output). Generated sims are rAF-driven by construction; uploaded sims should be too.
   window.addEventListener('message', function (e) {
     var d = (e && e.data) || {};
     if (d.type === 'simPause') { paused = true; }
