@@ -284,9 +284,6 @@ export function useProjectPlayer(
   // where the OLD page answers a ping during navigation and consumes the pending startScript,
   // leaving the NEW page visible but scriptless (no autoScript / wrong simpleUi). (sim-race fix)
   const desiredSimRef   = useRef<{ script: string; params: SimStartScriptParams } | null>(null);
-  // Cancellable 50ms reveal timer — a fast scrub out of a section right after entering must not
-  // strand the overlay visible over plain video. (sim-race fix)
-  const simShowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // (D2) Destroy-on-leave: after the overlay hides, keep the simPause'd iframe mounted for a
   // grace window (45s desktop / 700ms touch-or-low-memory), then clear activeSimUrl so
   // SimOverlayDynamic unmounts it and the WebGL context is truly freed. Cancelled on re-entry.
@@ -296,10 +293,6 @@ export function useProjectPlayer(
   const simHlsStoppedRef = useRef(false);
   // (D4) Sim entry URLs already prefetched this mount — warm the HTTP cache once per URL.
   const prefetchedSimUrlsRef = useRef<Set<string>>(new Set());
-  // Reveal fallback: a freshly entered sim section must become visible even if the
-  // SIM_READY handshake is slow (heavy sim still booting) or lost — like the editor's
-  // 800ms fallback. Cleared on every leave and whenever the normal reveal fires.
-  const simRevealFallbackRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // ── Paint-gated reveal (seamless preload) ────────────────────────────────────
   // The URL whose CURRENTLY-MOUNTED iframe document has posted SIM_PAINTED (rendered ≥1 real
   // frame). This — not simReadyRef (which fires before the scene draws) — is the reveal gate:
@@ -453,8 +446,6 @@ export function useProjectPlayer(
   // is the bounded-deadline / cold-cover escape hatch: reveal best-effort when SIM_PAINTED never
   // came (throttled or not-yet-backfilled sim), holding the underlying content until then.
   const clearRevealTimers = () => {
-    if (simShowTimerRef.current) { clearTimeout(simShowTimerRef.current); simShowTimerRef.current = null; }
-    if (simRevealFallbackRef.current) { clearTimeout(simRevealFallbackRef.current); simRevealFallbackRef.current = null; }
     if (simPaintDeadlineRef.current) { clearTimeout(simPaintDeadlineRef.current); simPaintDeadlineRef.current = null; }
     if (simBootStalledRef.current) { clearTimeout(simBootStalledRef.current); simBootStalledRef.current = null; }
   };
@@ -551,6 +542,10 @@ export function useProjectPlayer(
     prefetchSimAssets(sec.simulation_url);
     cancelSimDestroy();
     if (activeSimUrlRef.current === sec.simulation_url) return;   // already mounted (warm)
+    // Re-targeting a still-warm iframe to a DIFFERENT url: freeze the outgoing document's rAF
+    // so it can't post a late SIM_PAINTED that would be mis-attributed to the new target, and
+    // bump the generation so any reveal scheduled against the old warm is dropped.
+    if (activeSimUrlRef.current) { sendToSim({ type: 'simPause' }); warmGenRef.current++; }
     simReadyRef.current = false;
     simPaintedUrlRef.current = null;
     activeSimUrlRef.current = sec.simulation_url;
@@ -740,9 +735,13 @@ export function useProjectPlayer(
           startSimPoll();
         }
         // Bounded HOLD ceiling: if SIM_PAINTED never comes (throttled/legacy sim), reveal
-        // best-effort within the section's own lifetime — but hold the video/last frame until then.
-        const sectionMs = Math.max(0, simSection.end_sec - simSection.start_sec) * 1000;
-        const holdMs = Math.min(SIM_PAINT_DEADLINE_MS, sectionMs || SIM_PAINT_DEADLINE_MS);
+        // best-effort — but hold the video/last frame until then. Base the ceiling on the time
+        // REMAINING from the actual entry point (localTime), not the section's full span: a
+        // mid-roll sim entered partway through (seek/scrub) leaves the video PLAYING, so a
+        // ceiling longer than the remaining play time would be cancelled by the leave branch
+        // before it fires and the sim would never appear.
+        const remainingMs = Math.max(0, simSection.end_sec - localTime) * 1000;
+        const holdMs = Math.min(SIM_PAINT_DEADLINE_MS, remainingMs || SIM_PAINT_DEADLINE_MS);
         simPaintDeadlineRef.current = setTimeout(() => {
           simPaintDeadlineRef.current = null;
           if (warmGenRef.current !== gen || awaitingPaintSimIdRef.current !== simSection.id) return;
@@ -1462,6 +1461,11 @@ export function useProjectPlayer(
       if (type === 'SIM_PAINTED') {
         // The sim rendered its first real frame (from the v4 rAF gate). This — not SIM_READY —
         // is when it's safe to show. Freeze a still-hidden premount; reveal an awaited section.
+        // Require the CURRENT document to have handshaked (SIM_READY precedes its SIM_PAINTED from
+        // the same frame): a paint arriving while simReadyRef is false is a stale ack from an
+        // abandoned document (in-place iframe navigation reuses the same source window), so
+        // attributing it to activeSimUrlRef would falsely mark a not-yet-painted target painted.
+        if (!simReadyRef.current) return;
         if (simPaintDeadlineRef.current) { clearTimeout(simPaintDeadlineRef.current); simPaintDeadlineRef.current = null; }
         simPaintedUrlRef.current = activeSimUrlRef.current;
         if (!activeSimRef.current) {
@@ -1592,7 +1596,7 @@ export function useProjectPlayer(
       if (simPollRef.current) clearInterval(simPollRef.current);
       // (D2) Pending destroy grace must not fire into an unmounted tree.
       if (simDestroyTimerRef.current) { clearTimeout(simDestroyTimerRef.current); simDestroyTimerRef.current = null; }
-      if (simRevealFallbackRef.current) { clearTimeout(simRevealFallbackRef.current); simRevealFallbackRef.current = null; }
+      clearRevealTimers();
       // Stop any cutaway / guided-narration audio so it doesn't keep playing after
       // the player unmounts (e.g. navigating away mid-cutaway or mid-guidance).
       if (audioCutawayRef.current) { audioCutawayRef.current.pause(); audioCutawayRef.current = null; }
@@ -1933,14 +1937,15 @@ export function useProjectPlayer(
       // loadSegment below re-enters and cancels the grace.)
       sendToSim({ type: 'simPause' });
       scheduleSimDestroy(1500);
-      if (simShowTimerRef.current) { clearTimeout(simShowTimerRef.current); simShowTimerRef.current = null; }
-      if (simRevealFallbackRef.current) { clearTimeout(simRevealFallbackRef.current); simRevealFallbackRef.current = null; }
+      warmGenRef.current++;
+      clearRevealTimers();
+      awaitingPaintSimIdRef.current = null;
       desiredSimRef.current = null;
       pendingSimRef.current = null;
       activeSimRef.current = null;
       userPausedRef.current = false;
       resumeActionRef.current = 'resume';
-      merge({ showResumeBtn: false, showSimOverlay: false, resumeAction: 'resume', controlsVisible: true, globalTime: targetGlobal });
+      merge({ showResumeBtn: false, showSimOverlay: false, simBootStalled: false, simColdCover: false, resumeAction: 'resume', controlsVisible: true, globalTime: targetGlobal });
       setProgress(targetGlobal);
       updateBrollOverlay(targetGlobal); updateImageOverlay(targetGlobal);
       updateAudioCutaway(targetGlobal, wasPlayingRef.current);
