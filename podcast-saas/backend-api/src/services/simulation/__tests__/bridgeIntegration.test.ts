@@ -150,16 +150,23 @@ describe('Bridge integration — acceptance criteria', () => {
     expect(isSectionFile(`${PREFIX}/index.html`)).toBe(false);
   });
 
-  it('[7] index.html standalone — bridge exits early, SIM_READY still fires', async () => {
+  it('[7] index.html standalone — SIM_READY fires before the empty-bridge guard; v2 dynamic dispatch advertised', async () => {
     await generateSection(storage, { prefix: PREFIX, entryKey: ENTRY_KEY, sectionId: SEC_A, mainBody: BODY_A });
     const bridge = storage.get(`${PREFIX}/bridge.js`);
 
-    // Guard present
-    expect(bridge).toContain('if (!_mainBodyFn) return;');
-    // SIM_READY fires before the guard
-    const guardIdx    = bridge.indexOf('if (!_mainBodyFn) return;');
+    // v2: listeners are wired whenever the bridge carries ANY sections (no load-time
+    // section lock); the only early-exit is a bridge with zero sections.
+    expect(bridge).toContain('if (!_hasAny) return;');
+    expect(bridge).not.toContain('if (!_mainBodyFn) return;');
+    // SIM_READY fires before the guard and advertises dynamic dispatch + the section list.
+    const guardIdx    = bridge.indexOf('if (!_hasAny) return;');
     const simReadyIdx = bridge.indexOf('SIM_READY');
     expect(simReadyIdx).toBeLessThan(guardIdx);
+    expect(bridge).toContain("dispatch: 'dynamic'");
+    // Call-time resolution with a prototype-safe lookup (message input is untrusted).
+    expect(bridge).toContain('function _sectionBody(name)');
+    expect(bridge).toContain('Object.prototype.hasOwnProperty.call(__SECTIONS__, name)');
+    expect(bridge).toContain('var fn = SCRIPTS[name] || _sectionBody(name) || SCRIPTS.main;');
     // Valid syntax
     expect(() => new Function(bridge)).not.toThrow();
   });

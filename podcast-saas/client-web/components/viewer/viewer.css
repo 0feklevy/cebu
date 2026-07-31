@@ -279,19 +279,24 @@
 }
 
 /* ── Simulation overlay ───────────────────────────────── */
+/* TRANSPARENT wrapper: the sim is revealed (paint-gated) over the outgoing content — the
+   still-playing video for a mid-roll sim, or the frozen last frame for a post-roll one — so
+   the opacity crossfade never flashes a black/#0e0e0e backdrop while the iframe composits.
+   will-change:opacity keeps the fade on the compositor. */
 .sim-overlay {
-  backdrop-filter: blur(2px);
   position: absolute;
   inset: 0;
   z-index: 20;
   opacity: 0;
   pointer-events: none;
   transition: opacity .2s ease;
-  background: #0e0e0e;
+  background: transparent;
+  will-change: opacity;
 }
 .sim-overlay.visible {
   opacity: 1;
   pointer-events: auto;
+  backdrop-filter: blur(2px);   /* only once visible — a hidden layer must not composite a blur */
 }
 .sim-overlay iframe {
   width: 100%;
@@ -299,16 +304,37 @@
   border: none;
   display: block;
 }
-/* Boot state: shown only when the overlay revealed before the sim handshake —
-   the dark layer reads as intentional loading, not a dead black screen. */
-.sim-overlay-boot {
+/* Resident pool frames: every sim in the video stays mounted here for the whole session,
+   absolutely stacked; per-frame opacity picks WHICH sim shows (sim→sim crossfade), the
+   container's opacity crossfades sim↔video. opacity:0 (never display:none) keeps a hidden
+   frame's rAF running so it can boot + paint off-screen. */
+.sim-pool-frame {
   position: absolute;
   inset: 0;
+  width: 100%;
+  height: 100%;
+  border: none;
+  display: block;
+  background: transparent;
+  transition: opacity .2s ease;
+}
+/* Wait/stall affordance — a SIBLING of the fading sim overlay so it can show while the
+   overlay is still hidden (the player holds the video until the sim actually paints).
+   Shown only when: waiting past the bounded hold with nothing/last-frame underneath
+   (coldCover), or a genuine 5s stall (stalled). Never captures pointer events — the
+   controls stay usable. Subtle scrim, not a black screen. */
+.sim-wait-affordance {
+  position: absolute;
+  inset: 0;
+  z-index: 21;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #0e0e0e;
+  background: rgba(8, 8, 12, 0.35);
   pointer-events: none;
+}
+.sim-wait-affordance.stalled {
+  background: rgba(8, 8, 12, 0.6);
 }
 .sim-overlay-spinner {
   width: 34px;

@@ -8,7 +8,7 @@ import type { PlayerConfig, PlayerSegment, SimulationOverlay } from './types';
 import { useProjectPlayer } from './useProjectPlayer';
 import { useCropOverlay } from './useCropOverlay';
 import { VideoLayer } from './VideoLayer';
-import { SimOverlayDynamic } from './SimOverlayDynamic';
+import { SimPoolOverlay } from './SimPoolOverlay';
 import { ControlsBar, type CaptionStyle } from './ControlsBar';
 import { ImageOverlay } from '../ImageOverlay';
 import { AvatarCirclesOverlay } from './AvatarCirclesOverlay';
@@ -158,7 +158,6 @@ export function HLSPlayerShell({
   const curTime        = useRef<HTMLSpanElement>(null);
   const totTime        = useRef<HTMLSpanElement>(null);
   const rootRef        = useRef<HTMLDivElement>(null);
-  const simFrameRef    = useRef<HTMLIFrameElement>(null);
   const [captionState, setCaptionState] = useState<Record<string, SegmentCaptionState>>(() =>
     Object.fromEntries(config.segments.map((seg) => [seg.id, seg.captions ?? { status: 'none' as const, vtt_url: null }])),
   );
@@ -180,7 +179,6 @@ export function HLSPlayerShell({
     curTime,
     totTime,
     root: rootRef,
-    simFrame: simFrameRef,
   }, { onProjectComplete, autoStart, onNavigate });
 
   // Smart portrait crop — no-op in landscape, follows the active speaker in portrait.
@@ -461,13 +459,15 @@ export function HLSPlayerShell({
         />
       )}
 
-      <SimOverlayDynamic
-        simulationUrl={state.activeSimUrl}
+      <SimPoolOverlay
+        frames={state.simPool}
+        activeKey={state.activeSimUrl}
         visible={state.showSimOverlay}
-        iframeRef={simFrameRef}
-        onLoad={actions.simFrameLoaded}
-        bootHide={state.activeSimBootHide}
-        booting={state.showSimOverlay && !state.simReady}
+        armGate={state.simPoolArm}
+        stalled={state.simBootStalled}
+        coldCover={state.simColdCover}
+        registerFrame={actions.registerSimFrame}
+        onFrameLoad={actions.simFrameLoaded}
       />
 
       {state.guidanceCaption && (

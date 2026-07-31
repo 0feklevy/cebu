@@ -185,6 +185,9 @@ export interface PlayerConfig {
   avatar_circles?: AvatarCirclesConfig | null;
   speaker_timeline?: SpeakerSpan[];
   branching?: PlayerBranchingConfig | null;
+  // Kill switch (admin_settings / SIM_POOL_MODE): 'adaptive' = package-identity resident pool;
+  // 'single' = conservative one-frame-on-activation fallback. A ?simpool= URL param overrides it.
+  sim_pool_mode?: 'adaptive' | 'single';
 }
 
 export interface TimelineSeg {

@@ -259,7 +259,7 @@ const BRIDGE_TEMPLATE = /* js */ `;(function(){
 // IMPORTANT: the script body must NOT start with `(function` and must not contain the string
 // "sim-bridge v1"/"sim-bridge v2" — the legacy cleanup regexes in this file strip such blocks.
 
-const RAF_GATE_VERSION = 3;
+const RAF_GATE_VERSION = 4;
 const RAF_GATE_MARKER_START = `<!-- sim-raf-gate v${RAF_GATE_VERSION} -->`;
 const RAF_GATE_MARKER_END   = '<!-- /sim-raf-gate -->';
 // Strips any version of the gate block (plus the '\n' separator injectRafGate adds before it)
@@ -274,8 +274,25 @@ const RAF_GATE_TEMPLATE = /* js */ `;(function () {
   var paused = false;
   var queued = [];        // callbacks requested while paused — each queued once, replayed once
   var nextQueuedId = -1;  // synthetic negative ids never collide with native (positive) handles
+  // First-real-frame ack: the sim paints its scene inside its OWN rAF callback at page load
+  // (independent of the bridge's startScript). The player pre-mounts the iframe hidden and
+  // UNPAUSED so it actually runs frames; the instant one of those frames executes we tell the
+  // player {type:'SIM_PAINTED'}. That — not SIM_READY (which fires before any frame draws) — is
+  // when the sim is safe to reveal, so the crossfade never shows a blank/loading frame. Posted
+  // exactly once, from a callback that ACTUALLY RAN while un-paused (a paused sim never paints).
+  var painted = false;
+  function firstPaintWrap(cb) {
+    if (painted) return cb;
+    return function (ts) {
+      cb(ts);
+      if (!painted) {
+        painted = true;
+        try { window.parent && window.parent.postMessage({ type: 'SIM_PAINTED', v: ${RAF_GATE_VERSION} }, '*'); } catch (e) {}
+      }
+    };
+  }
   window.requestAnimationFrame = function (cb) {
-    if (!paused || typeof cb !== 'function') return nativeRaf ? nativeRaf(cb) : 0;
+    if (!paused || typeof cb !== 'function') return nativeRaf ? nativeRaf(firstPaintWrap(cb)) : 0;
     for (var i = 0; i < queued.length; i++) {
       if (queued[i].cb === cb) return queued[i].id;   // each callback queued once
     }
@@ -299,7 +316,8 @@ const RAF_GATE_TEMPLATE = /* js */ `;(function () {
     for (var i = 0; i < pending.length; i++) {
       // Re-schedule via the NATIVE rAF: each callback runs once and receives the native
       // timestamp of the resumed frame. Timestamps are never fabricated here.
-      nativeRaf(pending[i].cb);
+      // firstPaintWrap so a sim first unpaused via simResume (rather than warmed) still acks.
+      nativeRaf(firstPaintWrap(pending[i].cb));
     }
   }
   // ── Minimal-UI control picker: runtime scan (v3) ────────────────────────────
@@ -487,11 +505,47 @@ const RAF_GATE_TEMPLATE = /* js */ `;(function () {
     var out = vis.concat(hid).slice(0, 100);              // visible first, then hidden, capped
     window.parent && window.parent.postMessage({ type: 'simControlsList', controls: out }, '*');
   }
+  // ── Parent-controlled mute (belt-and-suspenders for warmed-while-hidden sims) ──
+  // A sim is pre-mounted hidden and un-paused so it can paint; if such a sim autoplayed
+  // audio it would leak sound before the section is on screen. Cross-origin autoplay is
+  // already blocked without a gesture, but we also let the player force-mute the frame:
+  // while muted, HTMLMediaElement.play() forces .muted=true first. Unmuted at reveal.
+  var simMuted = false;
+  try {
+    var _mediaPlay = window.HTMLMediaElement && window.HTMLMediaElement.prototype.play;
+    if (_mediaPlay) {
+      window.HTMLMediaElement.prototype.play = function () {
+        if (simMuted) { try { this.muted = true; } catch (e) {} }
+        return _mediaPlay.apply(this, arguments);
+      };
+    }
+  } catch (e) { /* environment without HTMLMediaElement — no media to mute */ }
+  function applyMuteAll(on) {
+    simMuted = on;
+    try {
+      var media = document.querySelectorAll('video, audio');
+      for (var i = 0; i < media.length; i++) { try { media[i].muted = on; } catch (e) {} }
+    } catch (e) { /* pre-DOM */ }
+  }
+  // KNOWN GAP: simPause freezes only requestAnimationFrame-driven loops. A sim whose loop
+  // runs on setInterval/setTimeout, a Web Worker, or a WebAudio graph keeps running while
+  // "paused" (and applyMuteAll below only mutes <video>/<audio> elements, not AudioContext
+  // output). Generated sims are rAF-driven by construction; uploaded sims should be too.
   window.addEventListener('message', function (e) {
     var d = (e && e.data) || {};
     if (d.type === 'simPause') { paused = true; }
     else if (d.type === 'simResume') { if (paused) { paused = false; flush(); } }
     else if (d.type === 'listSimControls') { listSimControls(); }
+    else if (d.type === 'simMute') { applyMuteAll(true); }
+    else if (d.type === 'simUnmute') { applyMuteAll(false); }
+    // Re-sync a canvas/WebGL sim to the current container size/DPR after an opacity-only
+    // reveal (which fires no native resize): dispatch a synthetic resize the sim listens for.
+    else if (d.type === 'simRelayout') { try { window.dispatchEvent(new Event('resize')); } catch (e) {} }
+    // The broadcast SIM_PAINTED can beat the player's listener (a sim animating during
+    // document load paints before SIM_READY) — let the player re-query at any time.
+    else if (d.type === 'PING_SIM_PAINTED') {
+      if (painted) { try { window.parent && window.parent.postMessage({ type: 'SIM_PAINTED', v: ${RAF_GATE_VERSION} }, '*'); } catch (err) {} }
+    }
   });
   var env = { lowend: null, dpr: null, mem: null, section: null };
   try {
@@ -1153,26 +1207,42 @@ export function wrapBridgeCombined(entries: Map<string, string>): string {
     '  };',
     '',
     '  // ── SIM_READY — fires unconditionally (simulation runs standalone too) ──────',
+    '  // The payload advertises DYNAMIC section dispatch (v2): one loaded document can run',
+    '  // ANY of its sections via startScript(sectionId). Players feature-detect on this —',
+    '  // absence means an old load-time-locked bridge that needs a per-section URL.',
     '  var _ready = false;',
     '  function _fireReady() {',
     "    if (_ready) return; _ready = true; window._simReadyFired = true;",
-    "    window.parent?.postMessage({ type: 'SIM_READY' }, '*');",
+    "    var ids = []; for (var k in __SECTIONS__) { if (Object.prototype.hasOwnProperty.call(__SECTIONS__, k)) ids.push(k); }",
+    "    window.parent?.postMessage({ type: 'SIM_READY', dispatch: 'dynamic', sections: ids }, '*');",
     '  }',
     "  if (document.readyState === 'loading')",
     "    document.addEventListener('DOMContentLoaded', function() { requestAnimationFrame(_fireReady); });",
     '  else requestAnimationFrame(_fireReady);',
     '  setTimeout(_fireReady, 3000);',
     '',
-    '  // ── Dispatch — only wire listeners when a valid section param exists ─────────',
-    "  var _sectionId = new URLSearchParams(location.search).get('section');",
-    '  var _mainBodyFn = _sectionId ? __SECTIONS__[_sectionId] : null;',
-    '  if (!_mainBodyFn) return;',
+    '  // ── Dispatch — DYNAMIC (v2): the ?section= param is only the DEFAULT. startScript',
+    '  // resolves the body at call time, so one resident document serves every section of',
+    '  // the package (the player switches sections via postMessage instead of navigating,',
+    '  // keeping ONE scene/WebGL context per package). Wire listeners whenever the bridge',
+    '  // carries any sections at all.',
+    "  var _defaultSectionId = new URLSearchParams(location.search).get('section');",
+    '  var _hasAny = false;',
+    '  for (var _k in __SECTIONS__) { if (Object.prototype.hasOwnProperty.call(__SECTIONS__, _k)) { _hasAny = true; break; } }',
+    '  if (!_hasAny) return;',
     '',
     '  // ── Standard Listener — system-owned, guaranteed correct ────────────────────',
     '  var _cancelFn = null;',
+    '  // hasOwnProperty guards are load-bearing: script names arrive via an origin-unchecked',
+    '  // message listener, and a bare __SECTIONS__[name] would resolve prototype keys',
+    "  // ('constructor', …) to callable functions.",
+    '  function _sectionBody(name) {',
+    '    return (name && Object.prototype.hasOwnProperty.call(__SECTIONS__, name)) ? __SECTIONS__[name] : null;',
+    '  }',
     '  var SCRIPTS = {',
     '    main: function (params) {',
-    '      return _mainBodyFn(params);',
+    '      var body = _sectionBody(_defaultSectionId);',
+    '      return body ? body(params) : null;',
     '    },',
     '  };',
     '  var _lastSig = null;',
@@ -1218,7 +1288,9 @@ export function wrapBridgeCombined(entries: Map<string, string>): string {
     '    applyHideUi(params);   // mechanical Minimal-UI hide — refreshed on every (re)start',
     "    var _bh = document.getElementById('__simBootHide');",
     '    if (_bh && _bh.remove) _bh.remove();   // __simHideUi above is definitive — drop the boot-time hide',
-    '    var fn = SCRIPTS[name] || SCRIPTS.main;',
+    '    // Dynamic dispatch: a section id resolves its own body; unknown names fall back to',
+    "    // the ?section= default so old players sending 'main' behave exactly as before.",
+    '    var fn = SCRIPTS[name] || _sectionBody(name) || SCRIPTS.main;',
     '    if (fn) _cancelFn = fn(params || {}) || null;',
     '  }',
     '  window.SimAPI = { start: startScript, stop: stopScript };',
