@@ -304,6 +304,20 @@
   border: none;
   display: block;
 }
+/* Resident pool frames: every sim in the video stays mounted here for the whole session,
+   absolutely stacked; per-frame opacity picks WHICH sim shows (sim→sim crossfade), the
+   container's opacity crossfades sim↔video. opacity:0 (never display:none) keeps a hidden
+   frame's rAF running so it can boot + paint off-screen. */
+.sim-pool-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: none;
+  display: block;
+  background: transparent;
+  transition: opacity .2s ease;
+}
 /* Loading affordance — shown ONLY for a genuine 5s stall (stalled) or a sim-first entry with
    no video underneath to hold (coldCover). Normal transitions never show this: the sim is
    revealed only once it has actually painted. The dark backdrop here reads as intentional. */

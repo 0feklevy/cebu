@@ -537,6 +537,11 @@ const RAF_GATE_TEMPLATE = /* js */ `;(function () {
     // Re-sync a canvas/WebGL sim to the current container size/DPR after an opacity-only
     // reveal (which fires no native resize): dispatch a synthetic resize the sim listens for.
     else if (d.type === 'simRelayout') { try { window.dispatchEvent(new Event('resize')); } catch (e) {} }
+    // The broadcast SIM_PAINTED can beat the player's listener (a sim animating during
+    // document load paints before SIM_READY) — let the player re-query at any time.
+    else if (d.type === 'PING_SIM_PAINTED') {
+      if (painted) { try { window.parent && window.parent.postMessage({ type: 'SIM_PAINTED', v: ${RAF_GATE_VERSION} }, '*'); } catch (err) {} }
+    }
   });
   var env = { lowend: null, dpr: null, mem: null, section: null };
   try {

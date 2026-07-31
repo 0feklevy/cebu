@@ -218,6 +218,12 @@ describe('rAF gate snippet content', () => {
     expect(out).toContain('nativeRaf(firstPaintWrap(pending[i].cb))');
   });
 
+  it('v4: answers PING_SIM_PAINTED with a SIM_PAINTED re-post once painted (recoverable ack)', () => {
+    expect(out).toContain("d.type === 'PING_SIM_PAINTED'");
+    // Two post sites: the one-shot broadcast from the first frame + the ping re-post.
+    expect(count(out, "postMessage({ type: 'SIM_PAINTED', v: 4 }, '*')")).toBe(2);
+  });
+
   it('v4: handles parent-controlled mute/unmute and relayout messages', () => {
     expect(out).toContain("d.type === 'simMute'");
     expect(out).toContain("d.type === 'simUnmute'");
