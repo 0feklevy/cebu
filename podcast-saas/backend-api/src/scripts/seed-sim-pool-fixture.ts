@@ -18,8 +18,13 @@
  * Package C lives ONLY on the branch, so a viewer on the main path must NOT pool it until the
  * branch is entered — the "branching paths don't preload unrelated sims" test.
  *
- *   Run: tsx --env-file=../.env src/scripts/seed-sim-pool-fixture.ts
- *   URL: /projects/00000000-0000-4000-a000-0000000f1x7e/view   (printed on success)
+ * This is a MANUAL test tool — it is never invoked by the app/production path. It creates a
+ * PUBLIC project so a phone can reach it without auth during device testing; DELETE it from
+ * any shared database when done.
+ *
+ *   Seed:   tsx --env-file=../.env src/scripts/seed-sim-pool-fixture.ts
+ *   Delete: tsx --env-file=../.env src/scripts/seed-sim-pool-fixture.ts --delete
+ *   URL:    /projects/00000000-0000-4000-a000-0000000f1c7e/view   (printed on success)
  */
 import { db } from '../db/index.js';
 import {
@@ -33,6 +38,14 @@ const FIXTURE_ID = '00000000-0000-4000-a000-0000000f1x7e'.replace('x', 'c'); // 
 const SOURCE_PROJECT = 'd8e7557a-6efd-4458-ab20-a391a0ee6b52';   // Edge of Chaos (real sim URLs + video)
 
 async function main() {
+  // Teardown: remove the fixture from the (shared) database. Cascades to its videos/sections/
+  // branching. Safe to run even if the fixture doesn't exist.
+  if (process.argv.includes('--delete')) {
+    const del = await db.delete(projects).where(eq(projects.id, FIXTURE_ID)).returning({ id: projects.id });
+    console.log(del.length ? `🗑  Fixture ${FIXTURE_ID} deleted.` : `Fixture ${FIXTURE_ID} not present — nothing to delete.`);
+    process.exit(0);
+  }
+
   const storage = getStorageAdapter();
 
   // Reuse two DIFFERENT boids section URLs + one murmuration section URL from the real project.
