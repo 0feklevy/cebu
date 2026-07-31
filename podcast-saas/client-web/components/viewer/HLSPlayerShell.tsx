@@ -461,7 +461,7 @@ export function HLSPlayerShell({
 
       <SimPoolOverlay
         frames={state.simPool}
-        activeUrl={state.activeSimUrl}
+        activeKey={state.activeSimUrl}
         visible={state.showSimOverlay}
         armGate={state.simPoolArm}
         stalled={state.simBootStalled}

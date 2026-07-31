@@ -1,40 +1,37 @@
 'use client';
 
-// Resident simulation pool — ALL of a video's sims (max ~3) are mounted ONCE, up front, in
-// persistent hidden iframes that live for the whole viewing session. Each frame boots muted +
-// guidance-gated, paints its scene while hidden, then freezes. Entering a sim section is then
-// just an opacity swap of an already-running, already-painted frame — there is nothing left to
-// load at the boundary, so the video↔sim transition is a pure 200ms crossfade.
+// Resident simulation pool — one persistent hidden iframe per sim PACKAGE (not per section
+// URL: a package's combined bridge serves all of its sections via dynamic dispatch). Frames
+// boot muted + guidance-gated, paint off-screen, freeze, and reveal by opacity swap — the
+// video↔sim boundary loads nothing. Membership is adaptive: on strong devices every active-
+// path package mounts up front (staggered, after the video starts playing); on weak devices
+// the player keeps only the active + next package resident (sliding window).
 //
-// Frames NEVER navigate (src is fixed per URL for the session), which also eliminates the
-// stale-document message races of the old single navigated iframe. Boot is staggered so the
-// sims' network/GPU warmup doesn't fight the video's own startup.
+// A frame's src changes ONLY for deliberate navigations (legacy non-dynamic bridges, or a
+// back-to-video pristine reload) — the player marks those with an expected-reload epoch so a
+// late native `load` event (which fires after subresources, often AFTER the bridge handshake)
+// can never reset a live frame's lifecycle flags.
 
-import { memo, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useState } from 'react';
+import type { SimPoolFrameSpec } from '../../lib/simPool';
 import { resolveAssetUrl } from '../../lib/assetUrl';
 import { resolveSimUrl } from '../../lib/simUrl';
 
-export interface SimPoolFrameSpec {
-  url: string;                    // RAW simulation_url — the identity key everywhere
-  bootHide: string[] | null;      // minimal-UI selectors for the #simboot first-paint hint
-}
-
 interface FrameProps {
   spec: SimPoolFrameSpec;
-  active: boolean;                // this frame is the current section's sim
+  active: boolean;                // this frame is the current section's package
   visible: boolean;               // the overlay as a whole is revealed
   delayMs: number;                // staggered boot offset (counted from armGate)
   armGate: boolean;               // false until the VIDEO's own boot is out of the way
-  registerFrame: (url: string, el: HTMLIFrameElement | null) => void;
-  onFrameLoad: (url: string) => void;
+  registerFrame: (key: string, el: HTMLIFrameElement | null) => void;
+  onFrameLoad: (key: string) => void;
 }
 
 function SimPoolFrame({ spec, active, visible, delayMs, armGate, registerFrame, onFrameLoad }: FrameProps) {
-  // Boot scheduling: frames start their fetch/boot only once the gate opens (the main video
-  // reached loadeddata, a fallback timer fired, or the video is sim-first), then staggered so
-  // several sims don't slam the network/GPU at once. A frame that becomes ACTIVE arms
-  // immediately regardless — a seek must never wait on the stagger. Initial false also keeps
-  // SSR/hydration DOM identical (no iframes server-side).
+  // Boot scheduling: fetch/boot starts once the gate opens (video reached 'playing', fallback
+  // timer, or sim-first), staggered so several packages don't slam the network/GPU at once.
+  // A frame that becomes ACTIVE arms immediately — a seek must never wait on the stagger.
+  // Initial false keeps SSR/hydration DOM identical (no iframes server-side).
   const [armed, setArmed] = useState(false);
   useEffect(() => {
     if (armed) return;
@@ -44,22 +41,25 @@ function SimPoolFrame({ spec, active, visible, delayMs, armGate, registerFrame, 
     return () => clearTimeout(t);
   }, [armed, active, armGate, delayMs]);
 
-  const src = useMemo(
-    () => resolveSimUrl(
-      resolveAssetUrl(spec.url) ?? spec.url,
-      spec.bootHide?.length ? { hideSelectors: spec.bootHide } : undefined,
-    ),
-    [spec.url, spec.bootHide],
-  );
+  // STABLE callback ref — an inline ref would detach/re-register this frame in the player's
+  // routing map on EVERY re-render, and any SIM_READY/SIM_PAINTED landing in that window
+  // would be dropped (the measured cause of painted frames still hitting the bounded hold).
+  const refCb = useCallback((el: HTMLIFrameElement | null) => registerFrame(spec.key, el), [registerFrame, spec.key]);
+  const loadCb = useCallback(() => onFrameLoad(spec.key), [onFrameLoad, spec.key]);
 
   if (!armed) return null;
+
+  const src = resolveSimUrl(
+    resolveAssetUrl(spec.src) ?? spec.src,
+    spec.bootHide?.length ? { hideSelectors: spec.bootHide } : undefined,
+  );
 
   const shown = active && visible;
   return (
     <iframe
-      ref={(el) => registerFrame(spec.url, el)}
+      ref={refCb}
       src={src}
-      onLoad={() => onFrameLoad(spec.url)}
+      onLoad={loadCb}
       loading="eager"
       className="sim-pool-frame"
       style={{ opacity: shown ? 1 : 0, pointerEvents: shown ? 'auto' : 'none', zIndex: shown ? 2 : 1 }}
@@ -71,43 +71,49 @@ function SimPoolFrame({ spec, active, visible, delayMs, armGate, registerFrame, 
 
 interface Props {
   frames: SimPoolFrameSpec[];
-  activeUrl: string | null;
+  activeKey: string | null;
   visible: boolean;
-  /** Opens when the main video's own boot is out of the way (loadeddata / fallback / sim-first). */
+  /** Opens when the main video's own boot is out of the way (playing / fallback / sim-first). */
   armGate: boolean;
-  /** Genuinely broken sim that never painted (≥5s) — the only routine loading affordance. */
+  /** Genuinely broken sim that never painted (≥5s) — honest failure affordance. */
   stalled?: boolean;
-  /** Sim-first entry with no video frame underneath to hold — a brief loader is correct here. */
+  /** Waiting for a not-yet-painted sim with no video frame underneath to hold. */
   coldCover?: boolean;
-  registerFrame: (url: string, el: HTMLIFrameElement | null) => void;
-  onFrameLoad: (url: string) => void;
+  registerFrame: (key: string, el: HTMLIFrameElement | null) => void;
+  onFrameLoad: (key: string) => void;
 }
 
 // Boot stagger between pool frames (counted from the arm gate opening).
 const POOL_STAGGER_MS = 1200;
 
-function SimPoolOverlayInner({ frames, activeUrl, visible, armGate, stalled = false, coldCover = false, registerFrame, onFrameLoad }: Props) {
+function SimPoolOverlayInner({ frames, activeKey, visible, armGate, stalled = false, coldCover = false, registerFrame, onFrameLoad }: Props) {
   if (frames.length === 0) return null;
+  // The wait/stall affordance is a SIBLING of the fading overlay, not a child: the player
+  // holds the video (overlay opacity 0) while a sim hasn't painted, and the spinner must be
+  // able to show during that hold. It never captures pointer events — controls stay usable.
+  const affordance = stalled || coldCover;
   return (
-    <div className={`sim-overlay${visible ? ' visible' : ''}`}>
-      {frames.map((spec, i) => (
-        <SimPoolFrame
-          key={spec.url}
-          spec={spec}
-          active={spec.url === activeUrl}
-          visible={visible}
-          delayMs={i * POOL_STAGGER_MS}
-          armGate={armGate}
-          registerFrame={registerFrame}
-          onFrameLoad={onFrameLoad}
-        />
-      ))}
-      {visible && (stalled || coldCover) && (
-        <div className="sim-overlay-boot" aria-hidden>
+    <>
+      <div className={`sim-overlay${visible ? ' visible' : ''}`}>
+        {frames.map((spec, i) => (
+          <SimPoolFrame
+            key={spec.key}
+            spec={spec}
+            active={spec.key === activeKey}
+            visible={visible}
+            delayMs={i * POOL_STAGGER_MS}
+            armGate={armGate}
+            registerFrame={registerFrame}
+            onFrameLoad={onFrameLoad}
+          />
+        ))}
+      </div>
+      {affordance && (
+        <div className={`sim-wait-affordance${stalled ? ' stalled' : ''}`} aria-hidden>
           <div className="sim-overlay-spinner" />
         </div>
       )}
-    </div>
+    </>
   );
 }
 
