@@ -6,7 +6,7 @@ import type { PlayerConfig, PlayerSegment, SimulationOverlay, TimelineSeg, Broll
 import { releaseAvatarElement } from '../../lib/avatarAudioGraph';
 import type { SimStartScriptParams } from '../../lib/simUiControls';
 import { canWarmUnpaused } from '../../lib/simCapability';
-import { collectSimPool, bootHideFor, packageKeyOf, SIM_POOL_CAP, type SimPoolFrameSpec } from '../../lib/simPool';
+import { collectSimPool, bootHideFor, dynamicScriptFor, packageKeyOf, SIM_POOL_CAP, type SimPoolFrameSpec } from '../../lib/simPool';
 import { simTelemetry } from '../../lib/simTelemetry';
 
 // Resident sim pool tuning. Every sim in the video is mounted ONCE up front in a persistent
@@ -754,9 +754,12 @@ export function useProjectPlayer(
       };
       // Section-specific config is reapplied on EVERY activation via startScript params —
       // package identity never lets the first section's simple_ui/ui_hide define later ones.
-      // dynScript: v2 bridges dispatch the section's own body; legacy bridges only run their
-      // URL's ?section default, so they must NAVIGATE when the frame's src is another section.
-      const dynScript = simSection.sim_script ?? simSection.id;
+      // dynScript: v2 bridges dispatch the section's own body, keyed by the section URL's
+      // ?section= param (dynamicScriptFor — NEVER the stored 'main', which a pooled document
+      // resolves to its boot URL's default, i.e. the first-pooled section's body). Legacy
+      // bridges only run their URL's ?section default, so they must NAVIGATE when the
+      // frame's src is another section.
+      const dynScript = dynamicScriptFor(simSection);
       const legacyScript = simSection.sim_script ?? 'main';
       activeSimUrlRef.current = key;
       desiredSimRef.current = { sectionUrl, dynScript, legacyScript, params };
@@ -1550,8 +1553,14 @@ export function useProjectPlayer(
         meta.ready = true;
         // v2 capability handshake: dynamic bridges advertise startScript(sectionId) dispatch.
         // A dynamic bridge implies the rebuilt package (v4 gate) — paint acks WILL come.
+        // Classify only from a payload that CARRIES the field (or on first contact): the
+        // bridge's PING_SIM_READY reply re-posts a bare {type:'SIM_READY'}, and letting it
+        // overwrite would DOWNGRADE a known-dynamic frame to legacy → spurious per-section
+        // document navigations of a perfectly pooled frame.
         const payload = e.data as { dispatch?: string };
-        meta.dynamic = payload.dispatch === 'dynamic';
+        if (payload.dispatch !== undefined || meta.dynamic === null) {
+          meta.dynamic = payload.dispatch === 'dynamic';
+        }
         if (meta.dynamic) meta.v4 = true;
         simTelemetry('sim-ready', { key: frameUrl, dynamic: meta.dynamic });
         if (isActive) {
@@ -2132,7 +2141,9 @@ export function useProjectPlayer(
         type: 'startScript',
         // Dynamic bridges must be re-pointed at the ACTIVE section's body — 'main' would
         // restart the frame URL's ?section default, which may be a different section.
-        script: sec.sim_script ?? (dynamic ? sec.id : 'main'),
+        // dynamicScriptFor keys off the section URL's ?section= param (sim_script is the
+        // literal 'main' on every generated row, so it must never win here).
+        script: dynamic ? dynamicScriptFor(sec) : (sec.sim_script ?? 'main'),
         params: {
           simpleUi:   sec.simple_ui   ?? false,
           autoScript: sec.auto_script ?? true,

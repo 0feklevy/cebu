@@ -33,6 +33,37 @@ export function packageKeyOf(url: string): string {
   }
 }
 
+/** Sub-simulation key of a sim section URL: its `?section=` param (null when absent). */
+export function sectionKeyOf(url: string): string | null {
+  try {
+    return new URL(url, 'http://x').searchParams.get('section');
+  } catch {
+    const m = /[?&]section=([^&#]+)/.exec(url);
+    return m ? decodeURIComponent(m[1]) : null;
+  }
+}
+
+/**
+ * The script id a DYNAMIC (v2) bridge must receive to run this section's own body.
+ *
+ * The URL's `?section=` param — not the row id, and never the stored sim_script — is the
+ * authoritative key: bridge bodies are keyed by the section id the URL was minted with
+ * (`?section=<id>&v=<hash>` at bridge-upload time), and DUPLICATED sections keep the
+ * ORIGINAL's URL/param while their own row id has no body in the bridge. The persisted
+ * sim_script is the literal 'main' on every generated row (the legacy entry-point name,
+ * not a section identity); a v2 bridge resolves 'main' to the LOADED URL's ?section
+ * default — in a pooled document that is the first-pooled section, so sending it ran one
+ * variation in every section of the package (the sub-simulation regression).
+ */
+export function dynamicScriptFor(sec: Pick<SimulationOverlay, 'id' | 'simulation_url' | 'sim_script'>): string {
+  const urlKey = sec.simulation_url ? sectionKeyOf(sec.simulation_url) : null;
+  if (urlKey) return urlKey;
+  // No ?section= on the URL (single-section/legacy-shaped packages): a real named script
+  // still wins; the meaningless literal 'main' falls through to the section id.
+  if (sec.sim_script && sec.sim_script !== 'main') return sec.sim_script;
+  return sec.id;
+}
+
 /** Minimal-UI selectors a sim section should BOOT with (only when simple_ui + mechanical hides). */
 export function bootHideFor(sec: Pick<SimulationOverlay, 'simple_ui' | 'ui_hide'> | null | undefined): string[] | null {
   return sec?.simple_ui && sec.ui_hide?.length ? sec.ui_hide : null;
