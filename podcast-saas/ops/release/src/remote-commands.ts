@@ -46,9 +46,20 @@ export async function cmdRemoteSync(
   makeExecutor: ExecutorFactory = executorFor,
 ): Promise<number> {
   const res = await syncRemoteCheckout(makeExecutor(flags), flags.repoDir, flags.gitSha);
-  ctx.log(`remote-sync: ${res.ok ? 'ok' : 'FAILED'}`);
-  if (!res.ok) ctx.log(res.result.stderr.slice(-2000));
-  return res.ok ? 0 : 1;
+  // Echo the VM's stage trail (secret-free) so the workflow console shows exactly how far
+  // the sync got — a stall is pinned to a named stage rather than a blind 5-minute wait.
+  const trail = res.result.stdout.trim();
+  if (trail) ctx.log(trail);
+  if (res.ok) {
+    ctx.log('remote-sync: ok');
+    return 0;
+  }
+  if (!res.connected) {
+    ctx.log('SSH_CONNECT: FAILED — could not establish an SSH connection to the VM (nothing on the VM was touched).');
+  }
+  ctx.log(`remote-sync: FAILED${res.lastStage ? ` at stage ${res.lastStage}` : ''}`);
+  if (res.result.stderr) ctx.log(res.result.stderr.slice(-2000));
+  return 1;
 }
 
 export async function cmdRemoteDeploy(

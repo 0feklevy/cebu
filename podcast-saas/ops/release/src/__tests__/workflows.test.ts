@@ -141,3 +141,36 @@ describe('release artifacts never dirty the release checkout (run 29602969853 fi
     expect(releasePlan).toMatch(/needs: \[plan, verify, build-images\]/);
   });
 });
+
+describe('a failed remote-sync never touches containers and never stays stuck in DEPLOYING', () => {
+  /** Text of one job in release.yml (two-space-indented job keys delimit sections). */
+  function releaseJob(name: string): string {
+    const m = wf['release.yml'].match(new RegExp(`\\n  ${name}:\\n[\\s\\S]*?(?=\\n  [a-z][a-z-]*:\\n|$)`));
+    if (!m) throw new Error(`job ${name} not found in release.yml`);
+    return m[0];
+  }
+  const deploy = releaseJob('deploy');
+
+  it('remote-sync is a gated, non-fatal step with an explicit id', () => {
+    expect(deploy).toMatch(/id: remote_sync\n\s+continue-on-error: true/);
+  });
+
+  it('remote-deploy (the only step that touches containers) runs ONLY when remote-sync succeeded', () => {
+    // The single remote-deploy step is gated on the sync outcome, so a sync failure can
+    // never reach the pull/retag/migrate/recreate path.
+    const deployStep = deploy.match(/- name: Deploy exact digests[\s\S]*?run: pnpm[^\n]*remote-deploy[^\n]*/);
+    expect(deployStep, 'remote-deploy step not found').toBeTruthy();
+    expect(deployStep![0]).toContain("if: steps.remote_sync.outcome == 'success'");
+  });
+
+  it('a failed remote-sync transitions the release to FAILED before remote-deploy (no stuck DEPLOYING)', () => {
+    const iFailHandler = deploy.indexOf("if: steps.remote_sync.outcome != 'success'");
+    const iDeployCmd = deploy.indexOf('remote-deploy $REMOTE'); // the actual container-touching call
+    expect(iFailHandler).toBeGreaterThan(-1);
+    expect(iDeployCmd).toBeGreaterThan(iFailHandler); // the guard runs before the deploy call
+    // …and the guard is what records FAILED.
+    const guard = deploy.slice(iFailHandler, iDeployCmd);
+    expect(guard).toMatch(/state-transition[\s\S]*--to FAILED/);
+    expect(guard).toMatch(/exit 1/);
+  });
+});
