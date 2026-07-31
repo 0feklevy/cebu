@@ -288,6 +288,9 @@ export const admin_settings = pgTable('admin_settings', {
   // Podcast Studio writers'-room model + effort (migration 044).
   podcast_model:  text('podcast_model').default('claude-opus-4-8').notNull(),
   podcast_effort: text('podcast_effort').default('max').notNull(),
+  // Viewer simulation-pool kill switch (migration 048): 'adaptive' = package-identity
+  // resident pool; 'single' = conservative one-frame-on-activation fallback.
+  sim_pool_mode: text('sim_pool_mode').default('adaptive').notNull(),
   updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 

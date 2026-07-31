@@ -4,6 +4,23 @@ import {
   branch_sequences, branch_choice_points, branch_edges, playlists, simulations,
 } from '../db/schema.js';
 import { eq, asc, inArray } from 'drizzle-orm';
+
+export type SimPoolMode = 'adaptive' | 'single';
+
+/** Kill switch for the adaptive simulation pool. Env SIM_POOL_MODE overrides the admin
+ *  setting per-process (staging); otherwise admin_settings.sim_pool_mode (default 'adaptive').
+ *  'single' makes the viewer mount one sim frame on activation with per-URL navigation — the
+ *  conservative pre-pool behavior — without reverting the deployment. */
+export async function resolveSimPoolMode(): Promise<SimPoolMode> {
+  const env = (process.env.SIM_POOL_MODE ?? '').trim().toLowerCase();
+  if (env === 'single' || env === 'adaptive') return env;
+  try {
+    const s = await db.query.admin_settings.findFirst({ columns: { sim_pool_mode: true } });
+    return s?.sim_pool_mode === 'single' ? 'single' : 'adaptive';
+  } catch {
+    return 'adaptive';   // column not migrated yet, or DB hiccup → safe default
+  }
+}
 import { requireProjectAccess } from './projectAccess.js';
 import { collaboratorContentIds } from './collabAccess.js';
 
@@ -70,7 +87,7 @@ export async function buildPlayerConfig(
   // player-config / share / playlist-item / course render), so the serial waits added up
   // (perf-003; scenes+branch_sequences folded in per loadperf-002/backend-110). Scenes and
   // sequences are filtered/used in memory below exactly as before.
-  const [allVideos, sections, imageRows, audioRows, allScenes, sequenceRows] = await Promise.all([
+  const [allVideos, sections, imageRows, audioRows, allScenes, sequenceRows, simPoolMode] = await Promise.all([
     db.query.video_files.findMany({
       where: eq(video_files.project_id, project.id),
       orderBy: [asc(video_files.created_at)],
@@ -86,6 +103,7 @@ export async function buildPlayerConfig(
       where: eq(branch_sequences.project_id, project.id),
       orderBy: [asc(branch_sequences.sort_order), asc(branch_sequences.created_at)],
     }),
+    resolveSimPoolMode(),
   ]);
 
   // Main video segments (uploaded by user, not AI-generated broll sources)
@@ -454,6 +472,7 @@ export async function buildPlayerConfig(
     avatar_circles: avatarCircles,
     speaker_timeline: speakerTimeline,
     branching,
+    sim_pool_mode: simPoolMode,   // kill switch: 'adaptive' (pool) | 'single' (conservative)
   };
 }
 

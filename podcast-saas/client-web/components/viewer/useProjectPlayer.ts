@@ -232,15 +232,30 @@ export function useProjectPlayer(
     } catch { /* ignore */ }
   };
 
+  // Kill switch: 'single' mode (admin_settings.sim_pool_mode / SIM_POOL_MODE env, overridable
+  // per-session with ?simpool=single|adaptive) reverts to the conservative pre-pool behavior —
+  // ONE sim frame, mounted on activation, no residency/warm — without a deploy rollback.
+  const simPoolModeRef = useRef<'adaptive' | 'single' | null>(null);
+  if (simPoolModeRef.current === null) {
+    let mode: 'adaptive' | 'single' = config.sim_pool_mode === 'single' ? 'single' : 'adaptive';
+    if (typeof window !== 'undefined') {
+      const q = new URLSearchParams(window.location.search).get('simpool');
+      if (q === 'single' || q === 'adaptive') mode = q;
+    }
+    simPoolModeRef.current = mode;
+  }
   // Residency tier, decided once per mount. 'all': every active-path PACKAGE mounts up front
-  // (strong devices; ≤SIM_POOL_CAP, typically 1–3 packages). 'window': only the active + next
-  // package stay resident (weak/touch/Data-Saver — per-instance cost is ~50-100MB of WebGL
-  // scene, and iOS's practical page budget is ~300-450MB shared with the video elements).
-  const poolTierRef = useRef<'all' | 'window' | null>(null);
-  if (poolTierRef.current === null) poolTierRef.current = canWarmUnpaused() ? 'all' : 'window';
+  // (strong devices; ≤SIM_POOL_CAP). 'window': only active + next package resident (weak/touch/
+  // Data-Saver). 'single': kill-switch — nothing up front; only the active package is ever
+  // mounted, dropped on leave (approximates the pre-pool single navigating iframe).
+  const poolTierRef = useRef<'all' | 'window' | 'single' | null>(null);
+  if (poolTierRef.current === null) {
+    poolTierRef.current = simPoolModeRef.current === 'single' ? 'single' : canWarmUnpaused() ? 'all' : 'window';
+  }
   const initialSimPoolRef = useRef<SimPoolFrameSpec[] | null>(null);
   if (initialSimPoolRef.current === null) {
-    initialSimPoolRef.current = collectSimPool(config, poolTierRef.current === 'all' ? SIM_POOL_CAP : 1);
+    const cap = poolTierRef.current === 'all' ? SIM_POOL_CAP : poolTierRef.current === 'window' ? 1 : 0;
+    initialSimPoolRef.current = collectSimPool(config, cap);
   }
   // Does the timeline OPEN on a sim (no leading video)? Then pool frames must arm immediately —
   // there is no video boot to protect.
@@ -541,6 +556,12 @@ export function useProjectPlayer(
     if (!url) return;
     const key = packageKeyOf(url);
     if (simPoolSpecsRef.current.some((s) => s.key === key)) return;
+    // Single mode: strictly one resident frame — evict every non-active package before adding.
+    if (poolTierRef.current === 'single') {
+      for (const s of [...simPoolSpecsRef.current]) {
+        if (s.key !== activeSimUrlRef.current) dropPooled(s.key, 'single-mode');
+      }
+    }
     if (simPoolSpecsRef.current.length + 1 > SIM_POOL_HARD_CAP) {
       const evict = simPoolSpecsRef.current.find((s) =>
         s.key !== key && s.key !== activeSimUrlRef.current && s.key !== warmingSimUrlRef.current)
@@ -1367,6 +1388,14 @@ export function useProjectPlayer(
         }
       }
 
+      // Residency. 'single' tier (kill switch): keep ONLY the active package's frame; drop
+      // everything else each tick, so at most one sim document ever lives (approximates the
+      // pre-pool navigating iframe). The active frame mounts on activation via ensurePooled.
+      if (poolTierRef.current === 'single') {
+        for (const spec of [...simPoolSpecsRef.current]) {
+          if (spec.key !== activeSimUrlRef.current) dropPooled(spec.key, 'single-mode');
+        }
+      }
       // Residency. 'all' tier: every active-path package mounted at start — nothing to do.
       // 'window' tier (weak devices): keep only the ACTIVE package + the NEXT upcoming one
       // (first sim section within SIM_WINDOW_LEAD_SEC, looking across this segment and the
@@ -1718,9 +1747,7 @@ export function useProjectPlayer(
     initAsync();
     if (branching && entrySequence) recordBranchEvent('sequence_enter', { sequence_id: entrySequence.id });
 
-    // Open the sim pool's boot gate once the main video has its first data (its startup no
-    // longer competes with sim fetch/parse/GPU-init), with a short fallback so a stalled HLS
-    // manifest can't postpone sim warming indefinitely. Sim-first videos opened it at init.
+    simTelemetry('pool-init', { mode: simPoolModeRef.current, tier: poolTierRef.current, packages: initialSimPoolRef.current?.length ?? 0 });
     // Open the pool's boot gate only once the video is actually PLAYING (measured: arming at
     // loadeddata still cost the video 1-4s of startup — sim fetch/parse competed with the
     // first HLS segment). A long fallback covers a permanently-stalled video; sim-first
