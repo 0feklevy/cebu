@@ -351,10 +351,23 @@ jobs:
           printf '%s\n' "${{ secrets.PRODUCTION_SSH_KNOWN_HOSTS }}" > "$KNOWN_HOSTS_FILE"
       - name: State → DEPLOYING
         run: pnpm --filter ops-release release-cli state-transition --file "$ART/state.json" --to DEPLOYING
-      - name: Pin VM checkout to the release commit
+      - name: Pin VM checkout to the release commit (git-only; never touches containers)
+        id: remote_sync
+        continue-on-error: true
         run: pnpm --filter ops-release release-cli remote-sync $REMOTE --git-sha "${{ needs.plan.outputs.git_sha }}"
+      - name: Fail fast if the VM checkout could not be pinned (containers left untouched)
+        # remote-sync only fetches + checks out git; it never runs docker/compose. If it
+        # fails we STOP before remote-deploy, so the running containers stay on the previous
+        # version, and we mark the release FAILED so it never appears stuck in DEPLOYING.
+        if: steps.remote_sync.outcome != 'success'
+        run: |
+          pnpm --filter ops-release release-cli state-transition --file "$ART/state.json" --to FAILED \
+            --note "remote-sync failed before any container change — production left on the previous version"
+          echo "::error::remote-sync FAILED — the running production containers were NOT modified (no image was pulled, retagged, migrated, or recreated). See the stage markers above for the exact point of failure."
+          exit 1
       - name: Deploy exact digests (pull → verify → retag → migrate → recreate → health-gate)
         id: remote_deploy
+        if: steps.remote_sync.outcome == 'success'
         continue-on-error: true
         env:
           GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
