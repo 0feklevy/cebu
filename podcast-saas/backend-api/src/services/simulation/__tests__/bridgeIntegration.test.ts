@@ -234,3 +234,99 @@ describe('Bridge integration — acceptance criteria', () => {
     expect(true).toBe(true);
   });
 });
+
+// ── Round-trip: the REAL combined bridge executes and dispatches dynamically ──────────
+//
+// Regression net for the sim-pool "one variation everywhere" bug: a pooled document loads
+// ONCE with the first section's ?section= URL; every other section must still be reachable
+// at runtime via startScript(sectionId). These tests run the generated bridge.js in-process
+// against a minimal window/document and drive it over its postMessage contract.
+
+interface Posted { type?: string; dispatch?: string; sections?: string[] }
+
+function bootBridge(bridge: string, search: string) {
+  const posted: Posted[] = [];
+  const messageListeners: ((e: { data: unknown }) => void)[] = [];
+  const runs: string[] = [];
+
+  const fakeDocument = {
+    readyState: 'complete',
+    addEventListener: (_t: string, _fn: unknown) => {},
+    getElementById: (_id: string) => null,
+    createElement: (_tag: string) => ({ id: '', textContent: '', remove() {} }),
+    head: { appendChild(_el: unknown) {} },
+    documentElement: { appendChild(_el: unknown) {} },
+  };
+  const fakeWindow: Record<string, unknown> = {
+    parent: { postMessage: (msg: Posted, _origin: string) => posted.push(msg) },
+    addEventListener: (t: string, fn: (e: { data: unknown }) => void) => {
+      if (t === 'message') messageListeners.push(fn);
+    },
+    __RUNS__: runs,
+  };
+  const raf = (fn: () => void) => { fn(); return 0; };
+  const noopTimer = (_fn: () => void, _ms?: number) => 0 as unknown as ReturnType<typeof setTimeout>;
+
+  // The bridge is an IIFE over free globals — bind them to our fakes.
+  const run = new Function(
+    'window', 'document', 'location', 'requestAnimationFrame', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval',
+    bridge,
+  );
+  run(fakeWindow, fakeDocument, { search }, raf, noopTimer, () => {}, noopTimer, () => {});
+
+  const post = (data: unknown) => messageListeners.forEach((fn) => fn({ data }));
+  return { posted, post, runs };
+}
+
+describe('Bridge round-trip — dynamic dispatch on one loaded document', () => {
+  let storage: MemStorage;
+  let bridge: string;
+
+  const RUN_A = "window.__RUNS__.push('run:A:' + ((params && params.simpleUi) || false));\nreturn function () { window.__RUNS__.push('cleanup:A'); };";
+  const RUN_B = "window.__RUNS__.push('run:B:' + ((params && params.simpleUi) || false));\nreturn function () { window.__RUNS__.push('cleanup:B'); };";
+
+  beforeEach(async () => {
+    storage = new MemStorage();
+    await storage.uploadFile(ENTRY_KEY, Buffer.from(SEED_HTML, 'utf-8'));
+    await generateSection(storage, { prefix: PREFIX, entryKey: ENTRY_KEY, sectionId: SEC_A, mainBody: RUN_A });
+    await generateSection(storage, { prefix: PREFIX, entryKey: ENTRY_KEY, sectionId: SEC_B, mainBody: RUN_B });
+    bridge = storage.get(`${PREFIX}/bridge.js`);
+  });
+
+  it('[13] SIM_READY advertises dynamic dispatch + the full section list', () => {
+    const { posted } = bootBridge(bridge, `?section=${SEC_A}`);
+    const ready = posted.find((p) => p.type === 'SIM_READY');
+    expect(ready).toBeTruthy();
+    expect(ready!.dispatch).toBe('dynamic');
+    expect(ready!.sections).toEqual(expect.arrayContaining([SEC_A, SEC_B]));
+  });
+
+  it("[14] REGRESSION: a document loaded with ?section=A runs SECTION B's body via startScript(B)", () => {
+    const { post, runs } = bootBridge(bridge, `?section=${SEC_A}`);
+    // Old players / 'main' → the URL default (A).
+    post({ type: 'startScript', script: 'main', params: { simpleUi: false } });
+    expect(runs).toEqual(['run:A:false']);
+    // The pooled player posts the OTHER section's id — same document, B's body runs (A cleaned up).
+    post({ type: 'startScript', script: SEC_B, params: { simpleUi: true } });
+    expect(runs).toEqual(['run:A:false', 'cleanup:A', 'run:B:true']);
+    // And back to A — dynamic dispatch is symmetric, no reload needed.
+    post({ type: 'startScript', script: SEC_A, params: { simpleUi: false } });
+    expect(runs).toEqual(['run:A:false', 'cleanup:A', 'run:B:true', 'cleanup:B', 'run:A:false']);
+  });
+
+  it("[15] 'main' (unknown/legacy name) still maps to the LOADED URL's default — the exact mechanism that made pooled sections collapse", () => {
+    const { post, runs } = bootBridge(bridge, `?section=${SEC_B}`);
+    post({ type: 'startScript', script: 'main', params: {} });
+    expect(runs).toEqual(['run:B:false']);   // NOT A — the boot URL decides for 'main'
+  });
+
+  it('[16] PING_SIM_READY re-fire carries the SAME capability payload (no silent legacy downgrade)', () => {
+    const { posted, post } = bootBridge(bridge, `?section=${SEC_A}`);
+    const before = posted.length;
+    post({ type: 'PING_SIM_READY' });
+    const refire = posted.slice(before).find((p) => p.type === 'SIM_READY');
+    expect(refire).toBeTruthy();
+    expect(refire!.dispatch).toBe('dynamic');
+    expect(refire!.sections).toEqual(expect.arrayContaining([SEC_A, SEC_B]));
+  });
+});
