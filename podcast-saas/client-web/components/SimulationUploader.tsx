@@ -122,21 +122,41 @@ async function collectDroppedItems(dataTransfer: DataTransfer): Promise<UploadIt
   return nested.flat();
 }
 
+/** Per-section verdict from the backend's bridge-compatibility gate (409 body). */
+interface SimCompatibilitySection {
+  sectionId: string;
+  status: 'ok' | 'broken';
+  missing: { kind: string; token: string; atom?: string }[];
+}
+interface SimCompatibilityReport {
+  compatible: boolean;
+  sections: SimCompatibilitySection[];
+  structural: string[];
+  summary: { sectionsTotal: number; sectionsOk: number; sectionsBroken: number };
+}
+
 interface Props {
   projectId: string;
   onUploaded: (sim: Simulation) => void;
+  /**
+   * Replace mode: swap the FILES of this existing simulation instead of creating a new one.
+   * The generated bridge (and every section's Minimal-UI / auto-script setup) is preserved, so
+   * the backend refuses the swap when the new files no longer satisfy it.
+   */
+  replaceSimId?: string;
   /** Files routed in from the Library-panel dropzone — uploaded once, then reported consumed. */
   autoFiles?: File[] | null;
   onAutoFilesConsumed?: () => void;
 }
 
-export function SimulationUploader({ projectId, onUploaded, autoFiles, onAutoFilesConsumed }: Props) {
+export function SimulationUploader({ projectId, onUploaded, replaceSimId, autoFiles, onAutoFilesConsumed }: Props) {
   const [dragging, setDragging]   = useState(false);
   const [name, setName]           = useState('');
   const [percent, setPercent]     = useState(0);
   const [uploading, setUploading] = useState(false);
   const [speed, setSpeed]         = useState('');
   const [error, setError]         = useState<string | null>(null);
+  const [incompatible, setIncompatible] = useState<SimCompatibilityReport | null>(null);
   const [done, setDone]           = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
@@ -188,6 +208,7 @@ export function SimulationUploader({ projectId, onUploaded, autoFiles, onAutoFil
     const simName = name.trim() || inferBundleName(items);
     setUploading(true);
     setError(null);
+    setIncompatible(null);
     setPercent(0);
     setDone(false);
     try {
@@ -195,7 +216,8 @@ export function SimulationUploader({ projectId, onUploaded, autoFiles, onAutoFil
       if (!token) throw new Error('Not authenticated');
 
       const formData = new FormData();
-      formData.append('name', simName);
+      // Replace mode swaps files in place; the existing simulation keeps its name.
+      if (!replaceSimId) formData.append('name', simName);
       if (isZip) {
         formData.append('file', items[0].file, items[0].file.name);
       } else {
@@ -225,13 +247,24 @@ export function SimulationUploader({ projectId, onUploaded, autoFiles, onAutoFil
           if (xhr.status >= 200 && xhr.status < 300) {
             try { resolve(JSON.parse(xhr.responseText) as Simulation); }
             catch { reject(new Error('Upload succeeded but response could not be parsed')); }
-          } else {
-            reject(new Error(`Upload failed: ${xhr.status} ${xhr.responseText}`));
+            return;
           }
+          // The bridge-compatibility gate refuses with 409 + a per-section report. Surface it
+          // structurally so the user sees exactly which sections and anchors would break.
+          let parsed: { message?: string; compatibility?: SimCompatibilityReport } | null = null;
+          try { parsed = JSON.parse(xhr.responseText); } catch { /* non-JSON error body */ }
+          if (xhr.status === 409 && parsed?.compatibility) {
+            setIncompatible(parsed.compatibility);
+            reject(new Error(parsed.message ?? 'This replacement is not compatible with the existing bridge.'));
+            return;
+          }
+          reject(new Error(parsed?.message ?? `Upload failed: ${xhr.status} ${xhr.responseText}`));
         });
         xhr.addEventListener('error', () => reject(new Error('Network error')));
 
-        xhr.open('POST', `${API_URL}/api/v1/projects/${projectId}/simulations/upload`);
+        xhr.open('POST', replaceSimId
+          ? `${API_URL}/api/v1/projects/${projectId}/simulations/${replaceSimId}/replace`
+          : `${API_URL}/api/v1/projects/${projectId}/simulations/upload`);
         xhr.setRequestHeader('Authorization', `Bearer ${token}`);
         xhr.send(formData);
       });
@@ -356,6 +389,46 @@ export function SimulationUploader({ projectId, onUploaded, autoFiles, onAutoFil
               />
             </div>
           )}
+        </div>
+      )}
+
+      {/* Bridge-compatibility refusal — names every section and anchor that would break, so the
+          fix is obvious: keep those names in the new version, or upload it as a NEW simulation. */}
+      {incompatible && (
+        <div className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2.5" role="alert">
+          <p className="text-xs font-semibold text-destructive">
+            Can&apos;t replace: the new files would break this simulation&apos;s bridge
+          </p>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            {incompatible.summary.sectionsBroken} of {incompatible.summary.sectionsTotal} section
+            {incompatible.summary.sectionsTotal === 1 ? '' : 's'} would stop working, so nothing was changed.
+          </p>
+          {incompatible.structural.length > 0 && (
+            <ul className="mt-1.5 space-y-0.5">
+              {incompatible.structural.map((s, i) => (
+                <li key={i} className="text-[11px] text-destructive">• {s}</li>
+              ))}
+            </ul>
+          )}
+          {incompatible.sections.filter(s => s.status === 'broken').map(s => (
+            <div key={s.sectionId} className="mt-1.5">
+              <p className="text-[10px] font-medium text-foreground">Section {s.sectionId.slice(0, 8)}… no longer finds:</p>
+              <ul className="mt-0.5 flex flex-wrap gap-1">
+                {s.missing.slice(0, 8).map((m, i) => (
+                  <li key={i} className="rounded bg-destructive/10 px-1.5 py-0.5 font-mono text-[10px] text-destructive">
+                    {m.kind === 'text' ? `text "${m.token}"` : m.atom ?? m.token}
+                  </li>
+                ))}
+                {s.missing.length > 8 && (
+                  <li className="px-1 py-0.5 text-[10px] text-muted-foreground">+{s.missing.length - 8} more</li>
+                )}
+              </ul>
+            </div>
+          ))}
+          <p className="mt-2 text-[11px] text-muted-foreground">
+            Keep those names unchanged in your new version, or upload it as a <strong>new simulation</strong> and
+            point the sections at it (that regenerates the bridge from scratch).
+          </p>
         </div>
       )}
     </div>

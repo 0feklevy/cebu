@@ -261,6 +261,7 @@ export function VideoEditor({ projectId }: Props) {
   const [videos, setVideos]   = useState<VideoFile[]>([]);     // main videos only (is_broll=false)
   const [allVideos, setAllVideos] = useState<VideoFile[]>([]);  // all videos incl. broll sources
   const [replacingVideoId, setReplacingVideoId] = useState<string | null>(null); // Library "Replace" target
+  const [replacingSimId, setReplacingSimId] = useState<string | null>(null);     // Library "Replace simulation" target
   const [avatarCircles, setAvatarCircles] = useState<AvatarCirclesConfig | null>(null);
   const [sections, setSections] = useState<TimelineSection[]>([]);
   const [markers, setMarkers] = useState<TimelineMarker[]>([]);
@@ -1387,7 +1388,7 @@ export function VideoEditor({ projectId }: Props) {
                       key={sim.id}
                       className="relative rounded-xl border border-border/60 bg-card/90 hover:border-amber-400/50 transition-all card-interactive"
                     >
-                      <div className="w-full text-left px-3 py-2.5 pr-[76px]">
+                      <div className="w-full text-left px-3 py-2.5 pr-[108px]">
                         {renamingSimId === sim.id ? (
                           <input
                             autoFocus
@@ -1414,6 +1415,15 @@ export function VideoEditor({ projectId }: Props) {
                           )}
                         </div>
                       </div>
+                      <button
+                        onClick={() => setReplacingSimId(sim.id)}
+                        disabled={sim.status !== 'ready' && sim.status !== 'failed'}
+                        title="Replace simulation files with a new version (keeps the bridge, Minimal UI and auto-scripts)"
+                        aria-label="Replace simulation"
+                        className="absolute right-[72px] top-2 flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary disabled:opacity-40 focus-ring"
+                      >
+                        <RefreshCw size={13} strokeWidth={1.9} aria-hidden />
+                      </button>
                       <button
                         onClick={() => startRenameSim(sim)}
                         title="Rename simulation"
@@ -1747,6 +1757,34 @@ export function VideoEditor({ projectId }: Props) {
               if (video.raw_url) setRawUrls(prev => ({ ...prev, [video.id]: video.raw_url! }));
               loadData();
               setReplacingVideoId(null);
+            }}
+          />
+        </div>
+      </div>
+    )}
+    {replacingSimId && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
+        <div className="w-full max-w-md rounded-xl bg-card p-4 shadow-lg">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-foreground">Replace simulation</h3>
+            <button onClick={() => setReplacingSimId(null)} aria-label="Cancel" className="text-muted-foreground hover:text-foreground">✕</button>
+          </div>
+          <p className="mb-3 text-xs text-muted-foreground">
+            Upload a newer version of the same simulation. The files are overwritten in place and
+            everything you configured is kept — the generated bridge, each section&apos;s demo script,
+            Minimal UI and auto-script settings.
+          </p>
+          <p className="mb-3 text-xs text-muted-foreground">
+            Your new version must keep the same entry file name and the element names its section
+            scripts drive. If a change is too big to keep the bridge working, the upload is refused
+            and nothing changes.
+          </p>
+          <SimulationUploader
+            projectId={projectId}
+            replaceSimId={replacingSimId}
+            onUploaded={() => {
+              loadData();
+              setReplacingSimId(null);
             }}
           />
         </div>
