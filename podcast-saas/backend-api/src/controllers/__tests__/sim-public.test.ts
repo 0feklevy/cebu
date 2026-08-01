@@ -54,7 +54,6 @@ const BIG_HTML = `<!doctype html><html><body>${'sim '.repeat(1000)}</body></html
 // Under the threshold — served identity even when the client accepts encodings.
 const SMALL_HTML = '<!doctype html><html><body>tiny sim</body></html>';
 
-const IMMUTABLE = 'public, max-age=31536000, immutable';
 
 // Entry HTML is served WITH the minimal-UI boot snippet injected (see
 // injectSimBootSnippet) — the ETag/body/Content-Length all describe those bytes.
@@ -99,7 +98,9 @@ describe('GET /sim-public/* — cloud text path', () => {
     expect(res.body).toBe(SMALL_HTML_SERVED);
   });
 
-  it('serves non-rewritable text (.css) with immutable Cache-Control and an ETag', async () => {
+  it('serves .css with no-cache + a strong ETag — NEVER year-long immutable (audited stale-after-replace)', async () => {
+    // "Replace simulation" overwrites every key in place, so `immutable` pinned year-stale
+    // stylesheets against freshly-replaced HTML/JS. Text now revalidates (cheap 304s).
     const css = 'body { background: #000; }';
     mockStorage.readObject.mockResolvedValue(Buffer.from(css));
     const app = await makeApp();
@@ -108,7 +109,7 @@ describe('GET /sim-public/* — cloud text path', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toBe('text/css');
-    expect(res.headers['cache-control']).toBe(IMMUTABLE);
+    expect(res.headers['cache-control']).toBe('no-cache');
     expect(res.headers['etag']).toBe(sha1Etag(css));
   });
 
@@ -283,6 +284,12 @@ describe('injectSimBootSnippet — minimal-UI-from-first-paint bootstrap', () =>
     expect(out.match(/data-simboot/g)).toHaveLength(1);
   });
 
+  it('a sim merely MENTIONING data-simboot (comment/string) still gets the snippet (audited substring false-positive)', () => {
+    const html = '<html><head><!-- docs: data-simboot is our marker --></head><body></body></html>';
+    const out = injectSimBootSnippet(html);
+    expect(out).toContain('<script data-simboot>');
+  });
+
   it('is idempotent (re-injection is a no-op)', () => {
     const once = injectSimBootSnippet(SMALL_HTML);
     expect(injectSimBootSnippet(once)).toBe(once);
@@ -307,16 +314,19 @@ describe('injectSimBootSnippet — minimal-UI-from-first-paint bootstrap', () =>
 // ── (d) Binary assets: 308 permanent redirect to the bucket CDN ───────────────
 
 describe('GET /sim-public/* — binary asset redirect', () => {
-  it('308-redirects non-text assets to the public bucket URL with immutable caching', async () => {
+  it('302-redirects non-text assets with BOUNDED caching — a replace overwrites these keys (audited)', async () => {
+    // Was 308 + immutable: a permanently-cached redirect pinned to an immutable response has
+    // no revalidation path at all, so replaced textures/audio could stay stale for a year.
+    // Bounded max-age keeps CDN offload; worst case after a replace is one hour.
     const app = await makeApp();
 
     const res = await app.inject({ method: 'GET', url: `/sim-public/${PNG_KEY}` });
 
-    expect(res.statusCode).toBe(308);
+    expect(res.statusCode).toBe(302);
     expect(res.headers['location']).toBe(
       `https://cdn.example.com/storage/v1/object/public/media/${PNG_KEY}`,
     );
-    expect(res.headers['cache-control']).toBe(IMMUTABLE);
+    expect(res.headers['cache-control']).toBe('public, max-age=3600');
     expect(res.headers['access-control-allow-origin']).toBe('*');
     // The proxy never buffers binary assets.
     expect(mockStorage.readObject).not.toHaveBeenCalled();

@@ -300,6 +300,20 @@ const RAF_GATE_TEMPLATE = /* js */ `;(function () {
     queued.push({ id: id, cb: cb });
     return id;
   };
+  // System rAF for the injected bridge/guidance scripts: pause-coupled EXACTLY like the
+  // wrapped rAF (queues while paused, replays on resume) but NEVER counts as the sim's
+  // first paint — a bookkeeping callback draws nothing, and letting it ack SIM_PAINTED
+  // reported "painted" for scenes that had rendered nothing (audited false-paint source).
+  function sysRaf(cb) {
+    if (typeof cb !== 'function') return 0;
+    if (!paused) return nativeRaf ? nativeRaf(cb) : 0;
+    for (var i = 0; i < queued.length; i++) {
+      if (queued[i].cb === cb) return queued[i].id;
+    }
+    var id = nextQueuedId--;
+    queued.push({ id: id, cb: cb, sys: true });
+    return id;
+  }
   window.cancelAnimationFrame = function (id) {
     if (typeof id === 'number' && id < 0) {
       for (var i = 0; i < queued.length; i++) {
@@ -317,7 +331,8 @@ const RAF_GATE_TEMPLATE = /* js */ `;(function () {
       // Re-schedule via the NATIVE rAF: each callback runs once and receives the native
       // timestamp of the resumed frame. Timestamps are never fabricated here.
       // firstPaintWrap so a sim first unpaused via simResume (rather than warmed) still acks.
-      nativeRaf(firstPaintWrap(pending[i].cb));
+      // System callbacks (sys flag) replay unwrapped — they must never ack a paint.
+      nativeRaf(pending[i].sys ? pending[i].cb : firstPaintWrap(pending[i].cb));
     }
   }
   // ── Minimal-UI control picker: runtime scan (v3) ────────────────────────────
@@ -559,7 +574,16 @@ const RAF_GATE_TEMPLATE = /* js */ `;(function () {
   window.__SIM_RAF_GATE__ = {
     version: ${RAF_GATE_VERSION},
     isPaused: function () { return paused; },
-    queuedCount: function () { return queued.length; }
+    queuedCount: function () { return queued.length; },
+    // The UNWRAPPED requestAnimationFrame. System scripts (bridge/guidance) schedule their
+    // own bookkeeping through this so it can never count as the sim's first paint — the
+    // wrapped rAF acks SIM_PAINTED on the first callback that completes, and a bookkeeping
+    // callback (the bridge's _fireReady, guidance's poll loop) draws nothing (audited
+    // false-paint source). Sims keep using the wrapped window.requestAnimationFrame.
+    raw: nativeRaf || null,
+    // Pause-coupled system rAF (queues while paused like the wrapped one, but paint-neutral).
+    // Guidance's poll loop runs on this: it must freeze with simPause yet never ack a paint.
+    sys: sysRaf
   };
 })();`;
 
@@ -1222,9 +1246,13 @@ export function wrapBridgeCombined(entries: Map<string, string>): string {
     "    if (_ready) return; _ready = true; window._simReadyFired = true;",
     "    window.parent?.postMessage(_readyMsg(), '*');",
     '  }',
+    '  // Scheduled through the gate\'s RAW (unwrapped) rAF: the wrapped one acks SIM_PAINTED on',
+    '  // the first completed callback, and _fireReady draws nothing — with the wrapped handle a',
+    '  // sim that failed to render still reported "painted" (audited false-paint source).',
+    "  var _sysRaf = (window.__SIM_RAF_GATE__ && window.__SIM_RAF_GATE__.raw) || window.requestAnimationFrame.bind(window);",
     "  if (document.readyState === 'loading')",
-    "    document.addEventListener('DOMContentLoaded', function() { requestAnimationFrame(_fireReady); });",
-    '  else requestAnimationFrame(_fireReady);',
+    "    document.addEventListener('DOMContentLoaded', function() { _sysRaf(_fireReady); });",
+    '  else _sysRaf(_fireReady);',
     '  setTimeout(_fireReady, 3000);',
     '',
     '  // ── Dispatch — DYNAMIC (v2): the ?section= param is only the DEFAULT. startScript',
@@ -1280,8 +1308,16 @@ export function wrapBridgeCombined(entries: Map<string, string>): string {
     '    }',
     '    if (st && st.remove) st.remove();',
     '  }',
+    "  function _post(msg) { try { window.parent && window.parent.postMessage(msg, '*'); } catch (e) {} }",
     '  function stopScript() {',
-    '    if (_cancelFn) { _cancelFn(); _cancelFn = null; }',
+    '    // A throwing cleanup must NEVER wedge dispatch: without the try/finally, _cancelFn kept',
+    '    // pointing at the throwing cleanup and EVERY later section switch re-threw — the',
+    '    '  + "// document was permanently broken (audited; the oldest template got this right).",
+    '    if (_cancelFn) {',
+    '      var fn = _cancelFn; _cancelFn = null;',
+    "      try { if (typeof fn === 'function') fn(); }",
+    "      catch (err) { _post({ type: 'SCRIPT_ERROR', phase: 'cleanup', message: String(err && err.message || err) }); }",
+    '    }',
     '    _lastSig = null;',
     "    var st = document.getElementById('__simHideUi');",
     '    if (st && st.remove) st.remove();',
@@ -1294,10 +1330,26 @@ export function wrapBridgeCombined(entries: Map<string, string>): string {
     '    applyHideUi(params);   // mechanical Minimal-UI hide — refreshed on every (re)start',
     "    var _bh = document.getElementById('__simBootHide');",
     '    if (_bh && _bh.remove) _bh.remove();   // __simHideUi above is definitive — drop the boot-time hide',
-    '    // Dynamic dispatch: a section id resolves its own body; unknown names fall back to',
-    "    // the ?section= default so old players sending 'main' behave exactly as before.",
-    '    var fn = SCRIPTS[name] || _sectionBody(name) || SCRIPTS.main;',
-    '    if (fn) _cancelFn = fn(params || {}) || null;',
+    "    // Dynamic dispatch: a section id resolves its own body; the literal 'main' (old players)",
+    "    // falls back to the ?section= default. An UNKNOWN modern name runs NOTHING and reports",
+    '    // SCRIPT_MISSING — silently running another section\'s body is the "same variation',
+    '    '  + '// everywhere" bug resurfacing (audited). Own-property guard on BOTH maps: prototype',
+    "    // names ('constructor', …) arrive via an origin-unchecked listener and previously",
+    '    // resolved to inherited functions, wedging the document (audited).',
+    '    var own = Object.prototype.hasOwnProperty;',
+    '    var fn = (name && own.call(SCRIPTS, name)) ? SCRIPTS[name] : _sectionBody(name);',
+    "    if (!fn && (!name || name === 'main')) fn = SCRIPTS.main;",
+    '    if (!fn) {',
+    "      _post({ type: 'SCRIPT_MISSING', script: name });",
+    '      return;',
+    '    }',
+    '    try {',
+    '      _cancelFn = fn(params || {}) || null;',
+    "      _post({ type: 'SCRIPT_APPLIED', script: name || 'main' });",
+    '    } catch (err) {',
+    '      _cancelFn = null;',
+    "      _post({ type: 'SCRIPT_ERROR', phase: 'start', script: name || 'main', message: String(err && err.message || err) });",
+    '    }',
     '  }',
     '  window.SimAPI = { start: startScript, stop: stopScript };',
     "  window.addEventListener('message', function(e) {",

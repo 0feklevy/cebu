@@ -45,6 +45,17 @@ export interface SimBootParams {
   hideSelectors?: string[];
 }
 
+// DPR is SNAPSHOTTED once per page: it is a query param, so a live value would change the
+// iframe src whenever devicePixelRatio changes (browser zoom, moving to another monitor) and
+// silently RELOAD every resident sim at the next overlay re-render — typically a section
+// boundary, and the resulting `load` event was misread as a late same-document event, leaving
+// stale ready/painted flags on an unloaded document (audited). A monitor change now keeps the
+// boot-time hint; render quality follows the sim's own resize handling.
+let dprSnapshot: number | null = null;
+
+/** Test-only: reset the per-page DPR snapshot. */
+export function __resetDprSnapshotForTests(): void { dprSnapshot = null; }
+
 export function resolveSimUrl(url: string, boot?: SimBootParams): string {
   // SSR-safe: no window → no device to hint about; return unchanged.
   if (typeof window === 'undefined') return url;
@@ -58,8 +69,8 @@ export function resolveSimUrl(url: string, boot?: SimBootParams): string {
     const saveData = nav.connection?.saveData === true;
     if (lowMem || lowCores || saveData) u.searchParams.set('lowend', '1');
 
-    const dpr = Math.min(window.devicePixelRatio || 1, 3);
-    u.searchParams.set('dpr', String(Math.round(dpr * 100) / 100));
+    if (dprSnapshot === null) dprSnapshot = Math.min(window.devicePixelRatio || 1, 3);
+    u.searchParams.set('dpr', String(Math.round(dprSnapshot * 100) / 100));
 
     if (typeof mem === 'number') u.searchParams.set('mem', String(mem));
 
@@ -67,8 +78,13 @@ export function resolveSimUrl(url: string, boot?: SimBootParams): string {
     // (proxy caching/ETags unaffected) and a hash-only src change never reloads a
     // live iframe. The sim-public proxy injects a tiny head bootstrap that reads
     // this and applies display:none BEFORE first paint — killing the full-UI flash.
+    // An AUTHOR fragment (hash-routed sims, deep links) is PRESERVED by appending —
+    // the boot snippet's reader (`/[#&]simboot=/`) was already written for that form.
     if (boot?.hideSelectors?.length) {
-      u.hash = 'simboot=' + encodeURIComponent(JSON.stringify({ hide: boot.hideSelectors }));
+      const simboot = 'simboot=' + encodeURIComponent(JSON.stringify({ hide: boot.hideSelectors }));
+      const author = u.hash.replace(/^#/, '');
+      const withoutOld = author.replace(/(^|&)simboot=[^&]*/g, '$1').replace(/^&|&$/g, '');
+      u.hash = withoutOld ? `${withoutOld}&${simboot}` : simboot;
     }
 
     return u.href;

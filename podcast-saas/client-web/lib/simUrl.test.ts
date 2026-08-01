@@ -1,7 +1,7 @@
 // jsdom (vitest default env per vitest.config.ts) — SSR behavior is covered in
 // simUrl.ssr.test.ts under the node environment.
-import { afterEach, describe, expect, it } from 'vitest';
-import { resolveSimUrl } from './simUrl';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { resolveSimUrl, __resetDprSnapshotForTests } from './simUrl';
 import { SIM_DESTROY_GRACE_DESKTOP_MS, SIM_DESTROY_GRACE_LOW_MS, simDestroyGraceMs } from './simLifecycle';
 
 const touched: Array<{ target: object; key: string }> = [];
@@ -11,9 +11,16 @@ function stub(target: object, key: string, value: unknown) {
   touched.push({ target, key });
 }
 
+beforeEach(() => {
+  // dpr is SNAPSHOTTED once per page (a live value silently reloaded resident iframes on
+  // zoom/monitor changes — audited); tests reset the snapshot to observe their own stub.
+  __resetDprSnapshotForTests();
+});
+
 afterEach(() => {
   // Deleting the own property restores any prototype-provided value (jsdom defaults).
   for (const { target, key } of touched.splice(0)) Reflect.deleteProperty(target, key);
+  __resetDprSnapshotForTests();
 });
 
 function params(href: string): URLSearchParams {
@@ -61,8 +68,16 @@ describe('resolveSimUrl', () => {
     stub(window, 'devicePixelRatio', 3.75);
     expect(params(resolveSimUrl('https://x.test/a.html')).get('dpr')).toBe('3');
 
+    __resetDprSnapshotForTests();          // snapshot-per-page: a later live change is ignored
     stub(window, 'devicePixelRatio', 1.33333);
     expect(params(resolveSimUrl('https://x.test/a.html')).get('dpr')).toBe('1.33');
+  });
+
+  it('SNAPSHOTS dpr per page — a mid-session devicePixelRatio change never changes the src', () => {
+    stub(window, 'devicePixelRatio', 2);
+    const first = resolveSimUrl('https://x.test/a.html');
+    stub(window, 'devicePixelRatio', 3);   // zoom / monitor move
+    expect(resolveSimUrl('https://x.test/a.html')).toBe(first);   // no iframe reload
   });
 
   it('omits lowend and mem on a capable device', () => {

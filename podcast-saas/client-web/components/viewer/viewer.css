@@ -296,7 +296,9 @@
 .sim-overlay.visible {
   opacity: 1;
   pointer-events: auto;
-  backdrop-filter: blur(2px);   /* only once visible — a hidden layer must not composite a blur */
+  /* No backdrop-filter here: a full-frame blur composited during the exact opacity
+     transition we optimize measurably costs GPU time at the boundary, and the sim iframes
+     are opaque in practice (audited — removed per the pipeline optimization brief). */
 }
 .sim-overlay iframe {
   width: 100%;

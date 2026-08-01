@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import fastifyCompress from '@fastify/compress';
 import { createHash } from 'crypto';
+import { readFile } from 'node:fs/promises';
 import { extname } from 'path';
 import { constants as zlibConstants } from 'zlib';
 import { logger } from '../lib/logger.js';
@@ -20,7 +21,9 @@ const PROXIED_TEXT_EXTS = new Set([
   '.html', '.htm', '.js', '.mjs', '.css', '.json', '.txt', '.md', '.xml', '.svg', '.vtt', '.csv',
 ]);
 
-const IMMUTABLE = 'public, max-age=31536000, immutable';
+// NOTE: year-long `immutable` caching was removed (audited): replace/regeneration overwrite
+// keys in place, so immutable pinned stale CSS/JSON/binaries against new HTML/JS. Restore it
+// only for content-addressed revision prefixes (roadmap).
 
 /**
  * Head bootstrap injected into every proxied sim entry HTML. It reads the
@@ -46,7 +49,10 @@ const SIM_BOOT_SNIPPET =
 
 /** Inject the boot snippet right after <head> (or <html>, or prepend) in sim entry HTML. */
 export function injectSimBootSnippet(html: string): string {
-  if (html.includes('data-simboot')) return html;
+  // Idempotency check matches the exact injected OPEN TAG, never a bare substring — a sim
+  // whose own source merely mentions "data-simboot" (a comment, a docs string) must not
+  // silently lose the minimal-UI boot cloak (audited false-positive suppression).
+  if (/<script\s+data-simboot[\s>]/i.test(html)) return html;
   const head = /<head[^>]*>/i.exec(html);
   if (head) return html.slice(0, head.index + head[0].length) + SIM_BOOT_SNIPPET + html.slice(head.index + head[0].length);
   const root = /<html[^>]*>/i.exec(html);
@@ -149,6 +155,27 @@ export async function registerSimPublicRoutes(app: FastifyInstance): Promise<voi
       if (storage instanceof LocalStorageAdapter) {
         const filePath = safeLocalPath(LOCAL_STORAGE_BASE_DIR, key);
         if (!filePath) return reply.code(403).send({ message: 'Forbidden' });
+        const localExt = extname(key).toLowerCase();
+        // PARITY (audited divergence): entry HTML must get the same serve-time boot-snippet
+        // transform as the cloud path — the local early-return skipped it, so minimal-UI
+        // sims flashed their full UI ONLY in local dev, hiding the exact bug the snippet
+        // exists to kill. HTML is small; buffering it here is fine (no Range use case).
+        if (localExt === '.html' || localExt === '.htm') {
+          try {
+            const raw = await readFile(filePath, 'utf8');
+            const html = injectSimBootSnippet(raw);
+            return reply
+              .header('X-Content-Type-Options', 'nosniff')
+              .header('Cross-Origin-Resource-Policy', 'cross-origin')
+              .header('Access-Control-Allow-Origin', '*')
+              .header('Content-Security-Policy', simCsp)
+              .header('Cache-Control', 'no-cache')
+              .header('Content-Type', contentType)
+              .send(html);
+          } catch {
+            return reply.code(404).send({ message: 'Not found' });
+          }
+        }
         return serveLocalFile(request, reply, filePath, contentType, {
           extraHeaders: {
             'X-Content-Type-Options': 'nosniff',
@@ -160,24 +187,22 @@ export async function registerSimPublicRoutes(app: FastifyInstance): Promise<voi
       }
 
       const ext = extname(key).toLowerCase();
-      // Keys are simId-scoped and write-once — EXCEPT the entry HTML and bridge JS,
-      // which bridge (re)generation overwrites in place. Those must revalidate every
-      // load (the old max-age=300 could serve a stale bridge right after regeneration);
-      // everything else is safe to cache forever.
-      const isRewritable = ext === '.html' || ext === '.htm' || ext === '.js' || ext === '.mjs';
-
+      // NO key under a sim prefix is truly write-once anymore: "Replace simulation" overwrites
+      // EVERY user file in place (same keys, new bytes), and bridge (re)generation rewrites the
+      // entry HTML + bridge JS. Year-long `immutable` caching therefore served stale CSS/JSON/
+      // binaries against freshly-replaced HTML/JS (audited). Until content-addressed revision
+      // prefixes exist (roadmap), text revalidates (cheap 304s via strong ETags) and binary
+      // redirects cache for a bounded hour — the worst case after a replace is one hour of a
+      // stale texture, not a year of a broken package.
       if (!PROXIED_TEXT_EXTS.has(ext)) {
         // Binary assets redirect to the bucket CDN: those types serve with correct MIME,
         // and the browser then loads them straight from the CDN — parallel over HTTP/2
         // and edge/browser-cached — rather than serializing through this proxy (one full
         // readObject per request), which made image-heavy sims crawl.
-        // 308 Permanent Redirect (not 302): these keys are write-once, and a permanent,
-        // method-preserving status lets browsers/CDNs actually cache the redirect per
-        // the immutable Cache-Control instead of re-asking on every load.
         return reply
-          .header('Cache-Control', IMMUTABLE)
+          .header('Cache-Control', 'public, max-age=3600')
           .header('Access-Control-Allow-Origin', '*')
-          .redirect(storage.getPublicUrl(key), 308);
+          .redirect(storage.getPublicUrl(key), 302);
       }
 
       try {
@@ -197,7 +222,7 @@ export async function registerSimPublicRoutes(app: FastifyInstance): Promise<voi
           .header('Cross-Origin-Resource-Policy', 'cross-origin')
           .header('Access-Control-Allow-Origin', '*')
           .header('Content-Security-Policy', simCsp)
-          .header('Cache-Control', isRewritable ? 'no-cache' : IMMUTABLE)
+          .header('Cache-Control', 'no-cache')
           .header('ETag', etag)
           // The representation varies by Accept-Encoding whether or not THIS reply ends
           // up compressed — set Vary unconditionally so shared caches key correctly.

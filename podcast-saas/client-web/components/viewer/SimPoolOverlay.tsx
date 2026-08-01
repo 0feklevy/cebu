@@ -65,6 +65,11 @@ function SimPoolFrame({ spec, active, visible, delayMs, armGate, registerFrame, 
       style={{ opacity: shown ? 1 : 0, pointerEvents: shown ? 'auto' : 'none', zIndex: shown ? 2 : 1 }}
       sandbox="allow-scripts allow-same-origin allow-forms"
       title="Interactive simulation"
+      // opacity:0 removes nothing from the a11y tree and pointer-events doesn't block Tab —
+      // a hidden resident frame must be unreachable to keyboard and assistive tech (audited).
+      inert={!shown}
+      aria-hidden={!shown}
+      tabIndex={shown ? 0 : -1}
     />
   );
 }
