@@ -20,6 +20,10 @@ import {
   type GuidanceEntryStored,
 } from '../../services/simulation/GuidanceService.js';
 import { scanSimUiControls } from '../../services/simulation/SimUiControls.js';
+import {
+  checkReplaceCompatibility,
+  describeIncompatibility,
+} from '../../services/simulation/SimBridgeContract.js';
 import { LLMService } from '../../services/llm/LLMService.js';
 import { ApiKeyService } from '../../services/secrets/ApiKeyService.js';
 import { UsageTrackingService } from '../../services/usage/UsageTrackingService.js';
@@ -252,7 +256,11 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
   //     entry HTML (bridge.js keeps its current ?v= hash, guidance.js its current hash)
   //   - sections' simulation_url / sim_meta are NOT touched — the next generate call
   //     detects the changed sources via sourceHash
-  app.post<{ Params: { id: string; simId: string } }>(
+  //   - BRIDGE-COMPATIBILITY GATE: because bridge.js is preserved, the new files must still
+  //     provide every DOM/JS anchor its section bodies bind to. Verified on the decoded upload
+  //     BEFORE any mutation; a single broken section refuses the whole replace with 409 +
+  //     a per-section report. `?dry_run=true` returns that report without replacing anything.
+  app.post<{ Params: { id: string; simId: string }; Querystring: { dry_run?: string } }>(
     '/api/v1/projects/:id/simulations/:simId/replace',
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
@@ -359,6 +367,48 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
             `but it was not found. Rename your entry HTML to "${entryRelPath}" and re-upload — existing ` +
             'video sections reference this exact file, so a renamed entry would break them.',
           expectedEntryFile: entryRelPath,
+        });
+      }
+
+      // ── Bridge-compatibility gate ───────────────────────────────────────────────────
+      // A replace keeps bridge.js (and with it every section's Minimal-UI / auto-script
+      // configuration) — that is the whole point of the feature. So the new files must still
+      // provide the DOM and JS-API anchors those section bodies bind to; otherwise the
+      // sub-simulations silently no-op in production with no error anywhere.
+      //
+      // This runs on the DECODED UPLOAD BEFORE the CAS claim and before processReplace, so a
+      // refusal cannot touch storage, the DB row, or the live simulation in any way.
+      const bridgeJs = await storage
+        .readObject(`${sim.storage_prefix}/bridge.js`)
+        .then((b) => b.toString('utf-8'))
+        .catch(() => '');   // no bridge generated yet ⇒ nothing to preserve ⇒ always compatible
+
+      const pkgSections = await db.query.timeline_sections.findMany({
+        where: eq(timeline_sections.simulation_id, sim.id),
+        columns: { id: true, sim_meta: true },
+      });
+
+      const compatibility = checkReplaceCompatibility({
+        bridgeJs,
+        bundle: { files: fileMap, entryRelPath },
+        sections: pkgSections.map((s) => ({ id: s.id, simMeta: s.sim_meta })),
+      });
+
+      // Preflight: report only, mutate nothing.
+      if (request.query?.dry_run === 'true') {
+        return reply.code(200).send({ compatibility, message: describeIncompatibility(compatibility) });
+      }
+
+      if (!compatibility.compatible) {
+        // Owner policy: ANY broken section refuses the WHOLE replace (no partial swap, no
+        // override) — production must never be left with a silently dead sub-simulation.
+        logger.info(
+          { simId: sim.id, broken: compatibility.summary.sectionsBroken, total: compatibility.summary.sectionsTotal },
+          'Simulation replace refused — incompatible with the existing bridge',
+        );
+        return reply.code(409).send({
+          message: describeIncompatibility(compatibility),
+          compatibility,
         });
       }
 

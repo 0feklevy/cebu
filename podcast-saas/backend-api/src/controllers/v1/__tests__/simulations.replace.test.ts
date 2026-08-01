@@ -30,6 +30,8 @@ const mocks = vi.hoisted(() => {
     mockProjects:    { findFirst: vi.fn() },
     mockSimulations: { findFirst: vi.fn() },
     mockSystemPrompts: { findFirst: vi.fn() },
+    // The bridge-compatibility gate reads this package's sections for their Minimal-UI selection.
+    mockTimelineSections: { findMany: vi.fn() },
     mockUpdate, mockUpdateSet, mockUpdateWhere, mockUpdateReturning,
     mockStorage: {
       uploadFile:      vi.fn(),
@@ -45,9 +47,10 @@ const mocks = vi.hoisted(() => {
 vi.mock('../../../db/index.js', () => ({
   db: {
     query: {
-      simulations:    mocks.mockSimulations,
-      projects:       mocks.mockProjects,
-      system_prompts: mocks.mockSystemPrompts,
+      simulations:       mocks.mockSimulations,
+      projects:          mocks.mockProjects,
+      system_prompts:    mocks.mockSystemPrompts,
+      timeline_sections: mocks.mockTimelineSections,
     },
     update: mocks.mockUpdate,
   },
@@ -98,7 +101,7 @@ vi.mock('../../../lib/logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-const { mockProjects, mockSimulations, mockUpdate, mockUpdateSet, mockUpdateReturning, mockStorage } = mocks;
+const { mockProjects, mockSimulations, mockTimelineSections, mockUpdate, mockUpdateSet, mockUpdateReturning, mockStorage } = mocks;
 
 // ── Fixtures & helpers ────────────────────────────────────────────────────────
 
@@ -196,6 +199,7 @@ beforeEach(() => {
 
   mockProjects.findFirst.mockResolvedValue(FAKE_PROJECT);
   mockSimulations.findFirst.mockResolvedValue({ ...FAKE_SIM });
+  mockTimelineSections.findMany.mockResolvedValue([]);
   // CAS claim succeeds by default.
   mockUpdateReturning.mockResolvedValue([{ ...FAKE_SIM, status: 'processing' }]);
   primeStorage();
@@ -253,7 +257,9 @@ describe('POST …/simulations/:simId/replace — happy path', () => {
     mockStorage.readObject.mockRejectedValue(new Error('NoSuchKey'));
 
     const app = await makeApp();
-    const { payload, headers } = zipRequest({ 'index.html': NEW_INDEX_HTML });
+    // app.js ships with the bundle: the entry references it, and the structural gate refuses an
+    // upload whose entry points at a file the replacement would delete.
+    const { payload, headers } = zipRequest({ 'index.html': NEW_INDEX_HTML, 'app.js': 'var v2 = true;' });
     const res = await app.inject({ method: 'POST', url: URL_PATH, payload, headers });
 
     expect(res.statusCode).toBe(202);
@@ -334,5 +340,147 @@ describe('POST …/replace — guards', () => {
     const res = await app.inject({ method: 'POST', url: URL_PATH, payload, headers });
 
     expect(res.statusCode).toBe(400);
+  });
+});
+
+// ── Bridge-compatibility gate ─────────────────────────────────────────────────
+//
+// A replace PRESERVES bridge.js, so the new files must keep providing the DOM/JS anchors its
+// section bodies bind to. The gate runs on the decoded upload BEFORE the CAS claim, so a refusal
+// leaves the live simulation completely untouched.
+
+const SECTION_ID = 'sec-aaaa-1111';
+/** A combined bridge whose one section drives the sim through a class + a window global. */
+const REAL_BRIDGE = `(function(){ var __SECTIONS__ = {
+/* @@SIM_BRIDGE:${SECTION_ID}@@ */
+'${SECTION_ID}': function (params) {
+  var panel = document.querySelector('.controls-scroll');
+  if (window.app && window.app.rig) window.app.setMode(2);
+  return function cleanup() {};
+},
+/* @@/SIM_BRIDGE:${SECTION_ID}@@ */
+}; })();`;
+
+/** Files that still satisfy the bridge (the anchors live in app.js, built at runtime). */
+const COMPATIBLE_APP_JS = `
+  window.app = { rig: {}, setMode: function (n) { this.mode = n; } };
+  var el = document.createElement('div'); el.className = 'controls-scroll';
+`;
+/** The "change was too big" version: the panel class and the API method were renamed. */
+const BROKEN_APP_JS = `
+  window.app = { camera: {}, applyMode: function (n) { this.mode = n; } };
+  var el = document.createElement('div'); el.className = 'panel-scroll';
+`;
+
+function primeBridge(bridgeJs: string) {
+  mockStorage.readObject.mockImplementation(async (key: string) => {
+    if (key === `${PREFIX}/bridge.js`)   return Buffer.from(bridgeJs);
+    if (key === `${PREFIX}/guidance.js`) return Buffer.from(GUIDANCE_CONTENT);
+    throw new Error(`NoSuchKey: ${key}`);
+  });
+}
+
+describe('POST …/replace — bridge-compatibility gate', () => {
+  it('allows a slightly-edited simulation that still satisfies the bridge', async () => {
+    primeBridge(REAL_BRIDGE);
+    const app = await makeApp();
+    const { payload, headers } = zipRequest({
+      'index.html': NEW_INDEX_HTML,
+      'app.js': `${COMPATIBLE_APP_JS}\n// v2: retuned constants\nvar SPEED = 1.25;\n`,
+    });
+
+    const res = await app.inject({ method: 'POST', url: URL_PATH, payload, headers });
+
+    expect(res.statusCode).toBe(202);
+    expect(mockUpdateSet).toHaveBeenCalledWith({ status: 'processing', error: null });
+  });
+
+  it('REFUSES a replacement that would break the bridge — and touches nothing', async () => {
+    primeBridge(REAL_BRIDGE);
+    const app = await makeApp();
+    const { payload, headers } = zipRequest({ 'index.html': NEW_INDEX_HTML, 'app.js': BROKEN_APP_JS });
+
+    const res = await app.inject({ method: 'POST', url: URL_PATH, payload, headers });
+
+    expect(res.statusCode).toBe(409);
+    const body = res.json();
+    expect(body.message).toContain('the existing bridge would stop working');
+    expect(body.compatibility.compatible).toBe(false);
+    expect(body.compatibility.summary).toMatchObject({ sectionsTotal: 1, sectionsBroken: 1 });
+    // The refusal names the section and exactly what disappeared.
+    const broken = body.compatibility.sections.find((s: { status: string }) => s.status === 'broken');
+    expect(broken.sectionId).toBe(SECTION_ID);
+    expect(JSON.stringify(broken.missing)).toContain('controls-scroll');
+
+    // NOTHING was claimed, uploaded, or deleted — production is untouched.
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(mockStorage.uploadFile).not.toHaveBeenCalled();
+    expect(mockStorage.deleteFile).not.toHaveBeenCalled();
+  });
+
+  it('ONE broken section refuses the whole replace even when other sections are fine', async () => {
+    const OTHER = 'sec-bbbb-2222';
+    primeBridge(
+      REAL_BRIDGE.replace(
+        '}; })();',
+        `/* @@SIM_BRIDGE:${OTHER}@@ */\n'${OTHER}': function (params) { return function () {}; },\n/* @@/SIM_BRIDGE:${OTHER}@@ */\n}; })();`,
+      ),
+    );
+    const app = await makeApp();
+    const { payload, headers } = zipRequest({ 'index.html': NEW_INDEX_HTML, 'app.js': BROKEN_APP_JS });
+
+    const res = await app.inject({ method: 'POST', url: URL_PATH, payload, headers });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().compatibility.summary).toMatchObject({ sectionsTotal: 2, sectionsOk: 1, sectionsBroken: 1 });
+    expect(mockStorage.uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('?dry_run=true reports compatibility without replacing anything', async () => {
+    primeBridge(REAL_BRIDGE);
+    const app = await makeApp();
+    const { payload, headers } = zipRequest({ 'index.html': NEW_INDEX_HTML, 'app.js': COMPATIBLE_APP_JS });
+
+    const res = await app.inject({ method: 'POST', url: `${URL_PATH}?dry_run=true`, payload, headers });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().compatibility.compatible).toBe(true);
+    // Preflight is read-only.
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(mockStorage.uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('?dry_run=true surfaces the refusal without a 409 (so the UI can preview it)', async () => {
+    primeBridge(REAL_BRIDGE);
+    const app = await makeApp();
+    const { payload, headers } = zipRequest({ 'index.html': NEW_INDEX_HTML, 'app.js': BROKEN_APP_JS });
+
+    const res = await app.inject({ method: 'POST', url: `${URL_PATH}?dry_run=true`, payload, headers });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().compatibility.compatible).toBe(false);
+    expect(mockStorage.uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('a package with no generated bridge is always compatible (nothing to preserve)', async () => {
+    mockStorage.readObject.mockRejectedValue(new Error('NoSuchKey'));
+    const app = await makeApp();
+    const { payload, headers } = zipRequest({ 'index.html': NEW_INDEX_HTML, 'app.js': BROKEN_APP_JS });
+
+    const res = await app.inject({ method: 'POST', url: URL_PATH, payload, headers });
+
+    expect(res.statusCode).toBe(202);
+  });
+
+  it('refuses an upload whose entry references a file the bundle does not contain', async () => {
+    primeBridge(REAL_BRIDGE);
+    const app = await makeApp();
+    const { payload, headers } = zipRequest({ 'index.html': NEW_INDEX_HTML });   // app.js missing
+
+    const res = await app.inject({ method: 'POST', url: URL_PATH, payload, headers });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().compatibility.structural.join(' ')).toContain('app.js');
+    expect(mockStorage.uploadFile).not.toHaveBeenCalled();
   });
 });
