@@ -25,7 +25,6 @@ import { createHash } from 'node:crypto';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { db } from '../db/index.js';
-import { simulations } from '../db/schema.js';
 import { getStorageAdapter } from '../services/storage/getStorageAdapter.js';
 import {
   deriveEntryRelPath,
@@ -104,8 +103,8 @@ export async function proveAll(dumpDir?: string): Promise<ProofResult[]> {
     const entryKey = `${sim.storage_prefix}/${entryRel}`;
     const bridgeKey = `${sim.storage_prefix}/bridge.js`;
 
-    let bridgeJs = '';
-    let rawHtml = '';
+    let bridgeJs: string;
+    let rawHtml: string;
     try { bridgeJs = (await storage.readObject(bridgeKey)).toString('utf-8'); } catch { continue; }
     try { rawHtml = (await storage.readObject(entryKey)).toString('utf-8'); } catch { continue; }
 

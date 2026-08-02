@@ -49,7 +49,7 @@ const sqlLit = (s: string): string => `'${s.replace(/'/g, "''")}'`;
 
 async function main(): Promise<number> {
   const { db } = await import('../db/index.js');
-  const { simulations, timeline_sections } = await import('../db/schema.js');
+  const { timeline_sections } = await import('../db/schema.js');
   const { eq } = await import('drizzle-orm');
   const { getStorageAdapter } = await import('../services/storage/getStorageAdapter.js');
   const { deriveEntryRelPath, parseSectionEntries } = await import('../services/simulation/SimulationService.js');
@@ -71,8 +71,8 @@ async function main(): Promise<number> {
     };
     const bridgeJs = await read(`${sim.storage_prefix}/bridge.js`);
     const entryHtml = entryRel ? await read(`${sim.storage_prefix}/${entryRel}`) : null;
-    let ids: string[] = [];
-    if (bridgeJs) { try { ids = [...parseSectionEntries(bridgeJs).keys()]; } catch { ids = []; } }
+    let ids: string[];
+    try { ids = bridgeJs ? [...parseSectionEntries(bridgeJs).keys()] : []; } catch { ids = []; }
     pkg.set(sim.storage_prefix, {
       name: sim.name, prefix: sim.storage_prefix,
       bridge: bridgeJs !== null, entry: entryHtml !== null, ids,
@@ -83,7 +83,7 @@ async function main(): Promise<number> {
   for (const s of sectionRows) {
     const url = (s as { simulation_url?: string | null }).simulation_url ?? null;
     if (!url) continue;
-    let hasSection = false;
+    let hasSection: boolean;
     try { hasSection = !!new URL(url, 'http://x.invalid').searchParams.get('section'); } catch { hasSection = false; }
     if (hasSection) continue;
 
