@@ -313,6 +313,29 @@ async function seekTo(page: Page, t: number): Promise<void> {
   }, t);
 }
 
+
+/**
+ * Wait until the sim actually shows `section` at a real opacity, instead of guessing with a fixed
+ * timeout. A fixed wait is a silent flake source under load: when the machine is busy the
+ * transition simply has not happened yet, and the test then samples the PREVIOUS state and fails
+ * for a reason that has nothing to do with the code. This waits for the condition the test is
+ * about to assert on — it never weakens the assertion, it only stops sampling too early.
+ */
+async function waitForSection(page: Page, section: string, timeout = 20_000): Promise<void> {
+  await page.waitForFunction((want) => {
+    const map = (window as unknown as { __CHILD?: Map<Window, { section: string | null }> }).__CHILD;
+    if (!map) return false;
+    const frames = [...document.querySelectorAll('iframe')] as HTMLIFrameElement[];
+    return frames.some((el) => {
+      if (!/index\.html/.test(el.src)) return false;
+      let op = parseFloat(getComputedStyle(el).opacity) || 0;
+      let n: HTMLElement | null = el.parentElement;
+      for (let i = 0; n && i < 4; i++, n = n.parentElement) op *= parseFloat(getComputedStyle(n).opacity) || 0;
+      return op > 0.5 && map.get(el.contentWindow as Window)?.section === want;
+    });
+  }, section, { timeout });
+}
+
 interface Sample { t: number; frames: { op: number; section: string | null; controls: boolean; src: string }[] }
 
 /**
@@ -429,7 +452,8 @@ test.describe('real React viewer — simulation transitions', () => {
     await bootViewer(page, makeConfig([{ id: 's1', start: 5, end: 15, section: S.A }]));
     await startPlayback(page);
     await seekTo(page, 6);
-    const samples = await sampleFrames(page, 1500);
+    await waitForSection(page, 'A');
+    const samples = await sampleFrames(page, 1200);
     assertVisibleFramesAreCorrect(samples, { expect: 'A' });
     expect(realErrors(page)).toEqual([]);
   });
@@ -441,7 +465,7 @@ test.describe('real React viewer — simulation transitions', () => {
     ]));
     await startPlayback(page);
     await seekTo(page, 4);
-    await page.waitForTimeout(800);
+    await waitForSection(page, 'A');
     const move = sampleFrames(page, 1600);
     await seekTo(page, 9);
     const samples = await move;
@@ -462,7 +486,7 @@ test.describe('real React viewer — simulation transitions', () => {
       await seekTo(page, 10); await page.waitForTimeout(400);
     }
     await seekTo(page, 4);
-    await page.waitForTimeout(1200);
+    await waitForSection(page, 'A');
     const samples = await sampleFrames(page, 600);
     assertVisibleFramesAreCorrect(samples, { expect: 'A' });
     expect(realErrors(page)).toEqual([]);
@@ -474,7 +498,8 @@ test.describe('real React viewer — simulation transitions', () => {
     ]));
     await startPlayback(page);
     await seekTo(page, 4);
-    const samples = await sampleFrames(page, 1800);
+    await waitForSection(page, 'A');
+    const samples = await sampleFrames(page, 1200);
     assertVisibleFramesAreCorrect(samples, { expect: 'A', minimalUi: true });
     expect(realErrors(page)).toEqual([]);
   });
@@ -485,7 +510,7 @@ test.describe('real React viewer — simulation transitions', () => {
     ]));
     await startPlayback(page);
     await seekTo(page, 4);
-    await page.waitForTimeout(1000);
+    await waitForSection(page, 'A');
     const exiting = sampleFrames(page, 1200);
     await seekTo(page, 12);                       // leave the sim section
     const samples = await exiting;
@@ -526,7 +551,7 @@ test.describe('real React viewer — simulation transitions', () => {
     await seekTo(page, 4);
     await page.waitForTimeout(900);
     await seekTo(page, 10);
-    await page.waitForTimeout(1500);
+    await waitForSection(page, 'B');
     const samples = await sampleFrames(page, 600);
     assertVisibleFramesAreCorrect(samples, { expect: 'B' });
   });
@@ -550,7 +575,7 @@ test.describe('real React viewer — simulation transitions', () => {
     await bootViewer(page, makeConfig([{ id: 's1', start: 10, end: 20, section: S.B }]));
     await startPlayback(page);
     await seekTo(page, 12);                       // straight in, no lead-in
-    await page.waitForTimeout(1800);
+    await waitForSection(page, 'B');
     const samples = await sampleFrames(page, 600);
     assertVisibleFramesAreCorrect(samples, { expect: 'B' });
     expect(realErrors(page)).toEqual([]);
@@ -567,7 +592,7 @@ test.describe('real React viewer — simulation transitions', () => {
     for (const t of [4, 9, 14, 4, 14, 9, 4]) { await seekTo(page, t); await page.waitForTimeout(120); }
     await sampling;
     await seekTo(page, 4);
-    await page.waitForTimeout(1400);
+    await waitForSection(page, 'A');
     const settled = await sampleFrames(page, 500);
     assertVisibleFramesAreCorrect(settled, { expect: 'A' });
     expect(realErrors(page)).toEqual([]);
@@ -576,7 +601,7 @@ test.describe('real React viewer — simulation transitions', () => {
   test('11. sim-first project (timeline OPENS on a simulation)', async ({ page }) => {
     await bootViewer(page, makeConfig([{ id: 's1', start: 0, end: 10, section: S.A }]));
     await startPlayback(page);
-    await page.waitForTimeout(1800);
+    await waitForSection(page, 'A');
     const samples = await sampleFrames(page, 700);
     assertVisibleFramesAreCorrect(samples, { expect: 'A' });
     expect(realErrors(page)).toEqual([]);
@@ -586,7 +611,7 @@ test.describe('real React viewer — simulation transitions', () => {
     await bootViewer(page, makeConfig([{ id: 's1', start: 25, end: 30, section: S.B }], { segDuration: 30 }));
     await startPlayback(page);
     await seekTo(page, 26);
-    await page.waitForTimeout(1800);
+    await waitForSection(page, 'B');
     const samples = await sampleFrames(page, 700);
     // A post-roll sim must not be able to hold a parked spinner: either it is applied and shown,
     // or the underlying content stays. Never a wrong section.
@@ -663,7 +688,7 @@ test.describe('real React viewer — simulation transitions', () => {
       Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
       document.dispatchEvent(new Event('visibilitychange'));
     });
-    await page.waitForTimeout(800);
+    await waitForSection(page, 'A');
     const samples = await sampleFrames(page, 600);
     assertVisibleFramesAreCorrect(samples, { expect: 'A' });
   });
@@ -676,7 +701,7 @@ test.describe('real React viewer — simulation transitions', () => {
     await page.setViewportSize({ width: 480, height: 900 });   // portrait
     await page.waitForTimeout(500);
     await page.setViewportSize({ width: 1280, height: 720 });  // back to landscape
-    await page.waitForTimeout(700);
+    await waitForSection(page, 'A');
     const samples = await sampleFrames(page, 600);
     assertVisibleFramesAreCorrect(samples, { expect: 'A' });
     expect(realErrors(page)).toEqual([]);

@@ -249,7 +249,7 @@ export class SimRuntimeClient {
     if (!msg) return;
 
     switch (msg.type) {
-      case SIM_READY:      return this.onReady(msg.v);
+      case SIM_READY:      return this.onReady(msg);
       case SIM_PAINTED:    return this.onPainted();
       case SCRIPT_APPLIED: return this.onApplied(msg.script ?? null, msg.token);
       case SCRIPT_MISSING: return this.onMissing(msg.script ?? null, msg.token);
@@ -260,12 +260,20 @@ export class SimRuntimeClient {
     }
   }
 
-  private onReady(v?: number): void {
-    // `dynamic` is how the document tells us it can switch sections in place. A v2 bridge reports
-    // its version; anything else is treated as a legacy navigate-per-section document.
-    const dynamic = typeof v === 'number' ? v >= 2 : this.state.dynamic;
-    this.set({ ready: true, dynamic: dynamic ?? null, phase: this.state.painted ? 'painted' : 'ready' });
-    this.tel('sim-ready', { dynamic });
+  private onReady(msg: { dispatch?: string; sections?: string[] }): void {
+    // `dynamic` is how the document tells us it can switch sections IN PLACE. The shipping v2
+    // bridge advertises `dispatch: 'dynamic'`; anything else is a load-time-locked document that
+    // needs a per-section URL. Classify ONLY from that field — an earlier version keyed off a
+    // numeric `v` that no bridge has ever sent, which would have left every real document
+    // classified `null` and, since the gate only holds for proven-dynamic documents, silently
+    // disabled the apply gate in production while every test still passed.
+    //
+    // Never DOWNGRADE on a re-fire: PING_SIM_READY is answered with the same builder, but a
+    // hand-rolled or partial re-post without `dispatch` must not demote a proven dynamic frame.
+    const advertised = msg.dispatch === 'dynamic' ? true : msg.dispatch ? false : null;
+    const dynamic = advertised ?? this.state.dynamic;
+    this.set({ ready: true, dynamic, phase: this.state.painted ? 'painted' : 'ready' });
+    this.tel('sim-ready', { dynamic, dispatch: msg.dispatch ?? null });
   }
 
   private onPainted(): void {
@@ -522,6 +530,19 @@ export class SimRuntimeClient {
     if (this.disposed) return;
     this.post({ type: SIM_RESUME });
     this.set({ phase: this.state.painted ? 'painted' : 'ready' });
+  }
+
+  /**
+   * Give back a presentation the OWNER took away — the editor's `sim-preview-active` pact
+   * suspends the timeline sim while the section-editor's own iframe is live, and must restore it
+   * exactly as it was when the preview closes. Deliberately NOT gated on `painted`: it restores a
+   * presentation that was already granted, and a legacy document revealed at the bounded ceiling
+   * never paints, so requiring a paint here would hide it forever. It still refuses while an
+   * activation is holding — a gated switch is never presented from here.
+   */
+  present(): void {
+    if (this.disposed || this.holding) return;
+    this.reveal(true);
   }
 
   mute(): void { this.post({ type: SIM_MUTE }); this.set({ muted: true }); }

@@ -1,119 +1,158 @@
 /**
- * SOURCE INVARIANTS for the player-side transition ORDERING.
+ * MIGRATION INVARIANTS — every simulation surface delegates its lifecycle to the shared runtime.
  *
- * The browser suite (e2e/sim-transitions.spec.ts) proves the CHILD side: given a message
- * sequence, the sim behaves. It replays those sequences from its own fixtures, so it cannot
- * prove the player still EMITS them — the flagship atomic-exit fix had no test anywhere that
- * failed if it regressed, while the suite's control test made it look regression-proof (audited).
+ * These used to grep the players' own source for the orderings they implemented by hand. That
+ * machinery now lives in `lib/sim/SimRuntimeClient.ts`, and its behaviour is pinned properly (by
+ * execution, not by string match) in `simRuntimeClient.test.ts`. What still needs pinning is the
+ * thing a behavioural test of the runtime cannot see: that each SURFACE actually routes through it
+ * and has not quietly regrown a private copy.
  *
- * These tests read the real hook/component sources and assert the orderings that carry the
- * user-visible guarantees. They are deliberately structural: a unit test cannot run the hook
- * (it owns iframes, rAF and cross-origin postMessage), but the ORDER of these statements is
- * exactly what broke before, twice.
+ * That regression is the whole reason the runtime exists — three consecutive audits each found a
+ * defect that existed only because one surface implemented a rule the others did not. A surface
+ * that reintroduces its own message listener, its own paint latch or its own reveal timer would
+ * pass every behavioural suite in the repo while recreating exactly that class of bug.
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const viewer = readFileSync(join(__dirname, '../components/viewer/useProjectPlayer.ts'), 'utf8');
-const editor = readFileSync(join(__dirname, '../components/VideoPlayer.tsx'), 'utf8');
+const read = (rel: string): string => readFileSync(join(__dirname, '..', rel), 'utf8');
 
-/** Index of the first match, asserted to exist. */
-const at = (src: string, needle: string, label: string): number => {
-  const i = src.indexOf(needle);
-  expect(i, `${label}: not found — ${needle}`).toBeGreaterThan(-1);
-  return i;
-};
+/** Every shipping surface that hosts a simulation iframe. */
+const SURFACES = {
+  viewer: 'components/viewer/useProjectPlayer.ts',
+  editor: 'components/VideoPlayer.tsx',
+  sectionEditor: 'components/SectionEditor.tsx',
+  avatar: 'components/avatar/SimulationOverlay.tsx',
+} as const;
 
-describe('atomic exit — the fade must complete BEFORE the section is torn down', () => {
-  // stopScript restores the controls the section had hidden. Posting it at the boundary rendered
-  // the full UI for the whole 200ms fade — a deterministic Minimal-UI flash on every exit.
-  it('viewer: deactivateSim freezes and mutes, and defers stopScript rather than posting it', () => {
-    const body = viewer.slice(at(viewer, 'const deactivateSim', 'viewer deactivateSim'));
-    const block = body.slice(0, body.indexOf('\n  };'));
-    expect(block, 'exit must freeze the frame').toContain("simPause");
-    expect(block, 'a hidden frame must never keep sounding').toContain("simMute");
-    expect(block, 'stopScript must be DEFERRED past the fade').toContain('scheduleDeferredStop');
-    expect(block, 'stopScript must not be posted synchronously at the boundary')
-      .not.toMatch(/type:\s*'stopScript'/);
+/**
+ * Strip comments before scanning. Otherwise a doc comment mentioning a forbidden token — and these
+ * files explain the rules at length — reads as a violation, and the tests become unmaintainable
+ * noise that gets deleted rather than trusted.
+ */
+const code = (src: string): string =>
+  src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+
+describe('every simulation surface routes through the shared runtime', () => {
+  for (const [name, rel] of Object.entries(SURFACES)) {
+    it(`${name} imports the shared runtime`, () => {
+      expect(read(rel)).toMatch(/from\s+['"][^'"]*lib\/sim\/(SimRuntimeClient|useSimRuntime|SimSurface)['"]/);
+    });
+  }
+});
+
+describe('no surface keeps a private simulation message listener', () => {
+  // The runtime scopes every event to its OWN document by e.source. A second, unscoped listener is
+  // how the section editor once answered the timeline player's handshake as if it were its own.
+  const SIM_EVENTS = /SIM_READY|SIM_PAINTED|SCRIPT_APPLIED|SCRIPT_MISSING|SCRIPT_ERROR/;
+
+  for (const [name, rel] of Object.entries(SURFACES)) {
+    it(`${name} does not handle sim lifecycle messages itself`, () => {
+      const src = code(read(rel));
+      const listens = /addEventListener\(\s*['"]message['"]/.test(src);
+      if (!listens) return;                       // no listener at all — nothing to check
+      if (name === 'viewer') return;              // documented partial delegation, pinned below
+      // A surface may still listen for NON-lifecycle messages (guidance cues, the Minimal-UI
+      // control scan, branching). It must not interpret the lifecycle protocol.
+      expect(SIM_EVENTS.test(src), `${name} still handles a lifecycle message itself`).toBe(false);
+    });
+  }
+});
+
+describe('no surface reimplements the reveal or cleanup machinery', () => {
+  const FORBIDDEN: { token: RegExp; why: string }[] = [
+    { token: /simPaintedRef/, why: 'a private paint latch — the runtime owns `painted`' },
+    { token: /pendingApplyRef/, why: 'a private ack hold — the runtime owns the apply gate' },
+    { token: /simActivationTokenRef/, why: 'private activation tokens — the runtime mints them' },
+    { token: /PING_SIM_PAINTED|PING_SIM_READY/, why: 'a private paint poll — use startPaintRecovery()' },
+    { token: /type:\s*['"]startScript['"]/, why: 'a raw startScript post — use runtime.activate()' },
+    { token: /type:\s*['"]stopScript['"]/, why: 'a raw stopScript post — use deactivate()/stopNow()' },
+    { token: /type:\s*['"]simMute['"]|type:\s*['"]simUnmute['"]/, why: 'raw mute posts — the runtime latches mute' },
+  ];
+
+  for (const [name, rel] of Object.entries(SURFACES)) {
+    for (const { token, why } of FORBIDDEN) {
+      it(`${name} has no ${token.source}`, () => {
+        // The viewer still owns the apply-gate HOLD (pendingApplyRef); see the documented-gap
+        // block below, which pins its exact size so it cannot silently grow.
+        if (name === 'viewer' && /pendingApplyRef/.test(token.source)) return;
+        expect(token.test(code(read(rel))), `${name} reintroduced ${why}`).toBe(false);
+      });
+    }
+  }
+});
+
+describe('surface-specific behaviour that must SURVIVE the migration', () => {
+  // These have no counterpart in the runtime by design. Losing them silently would be a
+  // regression the runtime's own tests cannot detect.
+  it('the editor keeps its destroy grace — the runtime never unmounts a frame', () => {
+    const src = code(read(SURFACES.editor));
+    expect(src).toMatch(/simDestroyGraceMs/);
+    expect(src, 'the grace must still clear the URL so the WebGL context is freed').toMatch(/setSimUrl\(null\)/);
   });
 
-  it('viewer: the deferred stop is registered in the map the planner and unmount both read', () => {
-    // A bare setTimeout is invisible to the planner's mid-fade keep-set and to unmount cleanup:
-    // the frame could be evicted mid-fade (hard cut) and the timer fire into a detached iframe.
-    const sched = viewer.slice(at(viewer, 'const scheduleDeferredStop', 'scheduleDeferredStop'));
-    expect(sched.slice(0, 400)).toContain('simDeferredStopRef.current.set');
-    // The legacy back-to-video reload path must use the same registry.
-    const legacy = viewer.slice(at(viewer, 'reset-reload-legacy', 'legacy reload path'));
-    expect(legacy.slice(0, 600), 'legacy reload timer must be registered, not bare')
-      .toContain('simDeferredStopRef.current.set');
+  it('the editor keeps the preview coordination pact with the section editor', () => {
+    expect(code(read(SURFACES.editor))).toMatch(/sim-preview-active/);
+    expect(code(read(SURFACES.sectionEditor))).toMatch(/sim-preview-active/);
   });
 
-  it('editor: the deferred stop survives the block that arms it', () => {
-    // It armed the timer and then unconditionally cleared it 12 lines later, in the same
-    // synchronous block — so stopScript was never sent on exit at all (audited dead code).
-    const exit = editor.slice(at(editor, 'const stopTarget = activeSimUrlRef.current', 'editor exit'));
-    const block = exit.slice(0, exit.indexOf('return;'));
-    const armed = at(block, 'simStopTimerRef.current = setTimeout', 'editor arm');
-    const cleared = block.indexOf('simStopTimerRef.current = null', armed + 1);
-    // Only the clear INSIDE the timer callback may follow; no second unconditional clear.
-    const strayClear = block.indexOf('if (simStopTimerRef.current) { clearTimeout', armed);
-    expect(strayClear, 'the exit block must not cancel the stop it just armed').toBe(-1);
-    expect(cleared, 'the timer callback should null its own ref').toBeGreaterThan(armed);
+  it('the section editor keeps the Minimal-UI control scan (a DIFFERENT protocol)', () => {
+    expect(code(read(SURFACES.sectionEditor))).toMatch(/simControlsList/);
+  });
+
+  it('the viewer keeps pooling, warming and residency planning', () => {
+    const src = code(read(SURFACES.viewer));
+    for (const token of ['dropPooled', 'planWindowResidency', 'navigateFrame']) {
+      expect(src, `the viewer lost ${token}`).toMatch(new RegExp(token));
+    }
+  });
+
+  it('the viewer keeps guidance gating and branching', () => {
+    const src = code(read(SURFACES.viewer));
+    expect(src).toMatch(/guidance/i);
+    expect(src).toMatch(/branch/i);
   });
 });
 
-describe('reveal ordering — never present an unacknowledged or torn-down frame', () => {
-  it('viewer: the gate decision is taken before lastScript is overwritten', () => {
-    // Duplicated from simApplyGate.test.ts on purpose: this is the ordering that silently
-    // disabled the entire ack mechanism, and it should fail loudly from more than one place.
-    expect(at(viewer, 'applyGateFor(meta, script)', 'gate call'))
-      .toBeLessThan(at(viewer, 'meta.lastScript = script;', 'lastScript write'));
+describe('the runtime is the single authority for the presentation gate', () => {
+  it('the runtime consumes applyGateFor, and only the viewer still also does', () => {
+    const consumers = Object.entries(SURFACES)
+      .filter(([, rel]) => /applyGateFor/.test(code(read(rel))))
+      .map(([n]) => n);
+    // KNOWN GAP, deliberately pinned rather than hidden: the viewer delegates activation,
+    // deactivation, paint recovery, readiness and frame-load to the runtime, but still owns the
+    // apply-gate hold itself because its hold is entangled with pool-manager state (the residency
+    // planner's mid-fade keep-set and the section-aware bounded hold). Any OTHER surface calling
+    // the gate directly is a regression. If the viewer's own call disappears, tighten this to [].
+    expect(consumers, `unexpected direct applyGateFor consumers: ${consumers.join(', ')}`).toEqual(['viewer']);
+    expect(code(read('lib/sim/SimRuntimeClient.ts'))).toMatch(/applyGateFor/);
   });
 
-  it('viewer: a deferred stop marks the document stopped, not merely script-less', () => {
-    // lastScript=null alone reads as a genuine FIRST activation, which the gate reveals
-    // immediately — so nulling it GUARANTEED the no-wait path over a document showing the old
-    // frozen frame with its full UI restored.
-    const sched = viewer.slice(at(viewer, 'const scheduleDeferredStop', 'scheduleDeferredStop'));
-    const block = sched.slice(0, sched.indexOf('const cancelPendingApply'));
-    expect(block, 'the teardown must be recorded as stopped').toMatch(/stopped\s*=\s*true/);
+  it('the viewer delegates the bulk of its lifecycle to the runtime', () => {
+    const src = code(read(SURFACES.viewer));
+    // Positive proof of delegation, so the "known gap" above cannot quietly become "no migration".
+    expect(src).toMatch(/new SimRuntimeClient/);
+    for (const call of ['.activate(', '.deactivate(', '.startPaintRecovery(', '.handleFrameLoad(']) {
+      expect(src, `the viewer no longer delegates ${call}`).toContain(call);
+    }
+    // The things it must NOT have taken back.
+    expect(src).not.toMatch(/simActivationTokenRef/);
+    expect(src).not.toMatch(/PING_SIM_PAINTED/);
+    expect(src).not.toMatch(/type:\s*['"]startScript['"]/);
   });
 
-  it('viewer: every activation path clears the stopped flag', () => {
-    // If an activation forgot this, the package would wait for an ack on every later entry.
-    expect((viewer.match(/\.stopped\s*=\s*false/g) ?? []).length,
-      'each activation/fresh-document path must clear stopped').toBeGreaterThanOrEqual(4);
-  });
-
-  it('viewer: the awaited apply always has a terminal reveal', () => {
-    const awaitBlock = viewer.slice(at(viewer, "=== 'await-ack'", 'await branch'));
-    expect(awaitBlock.slice(0, 1200)).toContain('revealSim({ force: true })');
-  });
-
-  it('editor: SIM_PAINTED latches, so the reveal poll can early-exit', () => {
-    const painted = editor.slice(at(editor, "type === 'SIM_PAINTED'", 'SIM_PAINTED handler'));
-    expect(painted.slice(0, 300)).toContain('simPaintedRef.current = true');
-  });
-
-  it('editor: a fresh document resets the paint latch', () => {
-    const load = editor.slice(at(editor, 'const handleSimFrameLoad', 'handleSimFrameLoad'));
-    expect(load.slice(0, 400)).toContain('simPaintedRef.current = false');
-  });
-});
-
-describe('mute ordering — a frame muted on exit must be unmuted on every re-entry', () => {
-  // The gate LATCHES mute (it patches play() to force muted until an explicit simUnmute), so a
-  // path that activates without unmuting brings the sim back permanently silent.
-  it('editor: the SIM_READY activation path unmutes', () => {
-    const ready = editor.slice(at(editor, "type === 'SIM_READY'", 'editor SIM_READY'));
-    const block = ready.slice(0, ready.indexOf("type === 'SIM_PAINTED'"));
-    expect(block, 'the pending-start path must unmute').toContain('simUnmute');
-  });
-
-  it('viewer: every startScript send is accompanied by an unmute in the same block', () => {
-    // Cheap structural proxy: the viewer has an unmute for each of its activation paths.
-    const unmutes = (viewer.match(/type:\s*'simUnmute'/g) ?? []).length;
-    expect(unmutes, 'each activation path needs its own unmute').toBeGreaterThanOrEqual(3);
+  it('the timings are defined once, in the protocol module', () => {
+    const protocol = read('lib/sim/protocol.ts');
+    for (const c of ['SIM_FADE_MS', 'SIM_EXIT_STOP_MS', 'SIM_APPLY_STALL_MS', 'SIM_LEGACY_REVEAL_MS']) {
+      expect(protocol, `${c} missing from protocol.ts`).toMatch(new RegExp(`export const ${c}`));
+    }
+    // No surface may redefine them — divergent literals are how the exit fade and the deferred
+    // teardown drifted apart in the first place.
+    for (const [name, rel] of Object.entries(SURFACES)) {
+      for (const c of ['SIM_EXIT_STOP_MS', 'SIM_APPLY_STALL_MS']) {
+        expect(code(read(rel)), `${name} redefines ${c}`).not.toMatch(new RegExp(`const ${c}\\s*=`));
+      }
+    }
   });
 });

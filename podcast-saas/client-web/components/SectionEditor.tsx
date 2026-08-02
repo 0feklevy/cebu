@@ -10,7 +10,8 @@ import {
   getStoredSelection, kindLabel, mergeScans, normalizeSelection, sanitizeControls,
   type SimUiControl, type SimUiControlKind, type SimStartScriptParams, type SimUiSelection,
 } from '../lib/simUiControls';
-import { resolveSimUrl } from '../lib/simUrl';
+import { SimSurface } from '../lib/sim/SimSurface';
+import { useSimRuntime } from '../lib/sim/useSimRuntime';
 import { GuidedTour, type TourStep } from './GuidedTour';
 import { TourButton } from './TourButton';
 
@@ -127,6 +128,14 @@ const UI_KIND_CHIP: Record<SimUiControlKind, { bg: string; fg: string }> = {
   select: { bg: '#dcfce7', fg: '#15803d' },
   input:  { bg: '#e0e7ff', fg: '#4338ca' },
   other:  { bg: '#f3f4f6', fg: '#6b7280' },
+};
+
+// Stable identities for the memoized SimSurface: it resolves the src from `src` + `bootHide` on
+// every render it is not memoized through, so a fresh [] / style object each render would re-run
+// resolveSimUrl needlessly. NO_BOOT_HIDE is "cloak nothing" (still emits the #simboot fragment).
+const NO_BOOT_HIDE: string[] = [];
+const SIM_PREVIEW_FRAME_STYLE: React.CSSProperties = {
+  border: 'none', width: '100%', height: '100%', backgroundColor: 'hsl(var(--card))',
 };
 
 const CAMERA_MOVEMENTS = [
@@ -248,9 +257,38 @@ export function SectionEditor({
   const [genJob, setGenJob]         = useState<VideoGenerationJob | null>(null);
 
   // Preview iframe control (simulation)
-  const previewIframeRef = useRef<HTMLIFrameElement>(null);
+  //
+  // Hoisted above the runtime binding (it used to sit with the other derived values further
+  // down): useSimRuntime needs the document identity, and hooks must be declared before the
+  // effects that drive them. `readySims`/`activeSim` depend only on the `simulations` prop and
+  // the `simId` state, both of which are already in scope here.
+  const readySims = simulations.filter(s => s.status === 'ready');
+  const activeSim = readySims.find(s => s.id === simId) ?? null;
+  const simPreviewUrl = section.simulation_url ?? activeSim?.entry_file ?? null;
+
+  const previewIframeRef = useRef<HTMLIFrameElement | null>(null);
   const simPreviewShellRef = useRef<HTMLDivElement>(null);
   const rightVideoRef = useRef<HTMLVideoElement>(null);
+
+  // The shared simulation runtime owns this preview's lifecycle: the message listener (with its
+  // e.source check, so the timeline player's frame can never drive this one), readiness, ack
+  // matching, and disposal. The document key is the RAW stored URL — the same value the iframe is
+  // keyed on; SimSurface does the resolveSimUrl/#simboot resolution internally.
+  const { state: simState, runtime: simRuntime, frameRef: simFrameRef, onFrameLoad: simOnFrameLoad } =
+    useSimRuntime(simPreviewUrl);
+
+  // The Minimal-UI control scanner (requestRuntimeControls, further down) speaks a DIFFERENT
+  // protocol on its own listener and needs the element, so keep the element ref alongside the
+  // runtime's ref callback.
+  const previewFrameRef = useCallback((el: HTMLIFrameElement | null) => {
+    previewIframeRef.current = el;
+    simFrameRef(el);
+  }, [simFrameRef]);
+
+  // Kept as component state rather than derived from simState.currentScript: the section-change
+  // reset effect below clears it even when the document itself does NOT change (two sections can
+  // point at the same simulation_url), and the runtime has no notion of that. Every transition it
+  // had before is preserved — set on activate, cleared on stop, on frame load, and on reset.
   const [previewRunning, setPreviewRunning] = useState(false);
 
   // Right-panel tabs (simulation only)
@@ -515,83 +553,78 @@ export function SectionEditor({
     }
   }, [projectId, section, videos, genPrompt, genModel, genEnhance]);
 
-  // SIM_READY listener — passes simpleUi/autoScript as runtime params so toggle changes take effect immediately
-  useEffect(() => {
-    const handler = (e: MessageEvent) => {
-      if (!e.data || typeof e.data !== 'object') return;
-      // Only THIS preview's iframe may drive it. The timeline player mounts its own sim frame at
-      // the same time (that is exactly what the sim-preview-active coordination below exists
-      // for), and its SIM_READY was being answered by restarting the preview sim (audited).
-      if (e.source !== previewIframeRef.current?.contentWindow) return;
-      if (e.data.type === 'SIM_READY' && previewIframeRef.current) {
-        const script = section.sim_script ?? 'main';
-        // Use the live toggle state, not the saved props, so the preview reflects what the
-        // viewer just toggled (and what Save will persist) — frontend-005.
-        const params: SimStartScriptParams = {
-          simpleUi, autoScript,
-          ...(effectiveHideSelectors ? { hideSelectors: effectiveHideSelectors } : {}),
-        };
-        previewIframeRef.current.contentWindow?.postMessage(
-          { type: 'startScript', script, params },
-          '*',
-        );
-        setPreviewRunning(true);
-      }
-    };
-    window.addEventListener('message', handler);
-    return () => window.removeEventListener('message', handler);
-  }, [section.sim_script, simpleUi, autoScript, effectiveHideSelectors]);
+  // The params every "run this section now" activation carries. Identical to the object the old
+  // hand-rolled startScript posts built: the LIVE toggle state (not the saved props, so the
+  // preview reflects what the viewer just toggled and what Save will persist — frontend-005),
+  // plus the hide set only when there is one.
+  const livePreviewParams = useCallback((): SimStartScriptParams => ({
+    simpleUi, autoScript,
+    ...(effectiveHideSelectors ? { hideSelectors: effectiveHideSelectors } : {}),
+  }), [simpleUi, autoScript, effectiveHideSelectors]);
 
-  const sendToPreview = useCallback((type: string) => {
-    const msg: Record<string, unknown> = { type };
-    // Pass current toggle state as runtime params so the bridge responds without re-generation
-    if (type === 'startScript') {
-      msg.params = {
-        simpleUi, autoScript,
-        ...(effectiveHideSelectors ? { hideSelectors: effectiveHideSelectors } : {}),
-      } satisfies SimStartScriptParams;
-    }
-    previewIframeRef.current?.contentWindow?.postMessage(msg, '*');
-    if (type === 'stopScript') setPreviewRunning(false);
-    if (type === 'startScript') setPreviewRunning(true);
-  }, [simpleUi, autoScript, effectiveHideSelectors]);
+  // "Run this section now" — one activation + the Run/Stop chrome flag, shared by the handshake,
+  // the toggle re-apply and the Run button. `sim_script` identity is unchanged: 'main' fallback.
+  const runPreview = useCallback(() => {
+    simRuntime.activate({ script: section.sim_script ?? 'main', params: livePreviewParams() });
+    setPreviewRunning(true);
+  }, [simRuntime, section.sim_script, livePreviewParams]);
+
+  const stopPreview = useCallback(() => {
+    // Immediate teardown: this surface has no fade, so there is nothing to defer the stopScript
+    // behind (deactivate's deferral exists precisely for surfaces that do fade).
+    simRuntime.stopNow();
+    setPreviewRunning(false);
+  }, [simRuntime]);
+
+  // The runtime resets every per-document flag on a native load; the local chrome flag follows,
+  // exactly as the old `onLoad={() => setPreviewRunning(false)}` did.
+  const handlePreviewFrameLoad = useCallback(() => {
+    simOnFrameLoad();
+    setPreviewRunning(false);
+  }, [simOnFrameLoad]);
+
+  // Auto-run on handshake. The runtime owns the 'message' listener (and its e.source check — the
+  // timeline player mounts its own sim frame at the same time, and its SIM_READY used to be
+  // answered by restarting the preview sim (audited)); this effect is the same rule expressed
+  // against runtime state: when THIS document handshakes, start the section script.
+  useEffect(() => {
+    if (!simState.ready) return;
+    runPreview();
+  // Fires once per handshake, exactly like the old SIM_READY message handler. The params are
+  // read fresh from this render's values — the closure is rebuilt every render, only the *firing*
+  // is gated on `ready`. Adding the param deps here would restart the sim on every toggle, which
+  // is the next effect's job.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [simState.ready]);
 
   // Live-apply toggle flips to a RUNNING preview. Toggles are runtime params (planVersion 5+),
   // so no regeneration or reload is needed — but without this, flipping a toggle changed nothing
   // on screen until the next Generate/Run click. (sim-preview fix)
   useEffect(() => {
     if (!previewRunning) return;
-    const params: SimStartScriptParams = {
-      simpleUi, autoScript,
-      ...(effectiveHideSelectors ? { hideSelectors: effectiveHideSelectors } : {}),
-    };
-    previewIframeRef.current?.contentWindow?.postMessage(
-      { type: 'startScript', script: section.sim_script ?? 'main', params },
-      '*',
-    );
+    runPreview();
   // Only re-fire on toggle changes — previewRunning/sim_script/hideSelectors are read fresh but
   // must not retrigger here (the debounced picker effect below owns hide-selection changes).
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [simpleUi, autoScript]);
 
-  // Live-preview the picker: when the checked set changes (debounced ~150ms), re-post the
-  // CURRENT params startScript with hideSelectors so the user sees hides apply/clear
+  // Live-preview the picker: when the checked set changes (debounced ~150ms), re-apply the
+  // CURRENT params with hideSelectors so the user sees hides apply/clear
   // immediately where the bridge's wrap template supports it. Only meaningful while the
   // preview is running and Minimal UI is on; old bridges ignore the param harmlessly.
   useEffect(() => {
     if (!uiDirty || !previewRunning || !simpleUi) return;
     const timer = window.setTimeout(() => {
+      // hideSelectors is ALWAYS sent here (unlike livePreviewParams): an empty array is the
+      // meaningful "clear every hide" instruction when the user re-checks every control.
       const params: SimStartScriptParams = {
         simpleUi, autoScript,
         hideSelectors: effectiveHideSelectors ?? [],
       };
-      previewIframeRef.current?.contentWindow?.postMessage(
-        { type: 'startScript', script: section.sim_script ?? 'main', params },
-        '*',
-      );
+      simRuntime.activate({ script: section.sim_script ?? 'main', params });
     }, 150);
     return () => window.clearTimeout(timer);
-  // Re-fire only when the picks change — everything else is read fresh at post time.
+  // Re-fire only when the picks change — everything else is read fresh at activation time.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uiUnchecked]);
 
@@ -700,10 +733,7 @@ export function SectionEditor({
         autoScript: s.auto_script ?? true,
         ...(doneHide ? { hideSelectors: doneHide } : {}),
       };
-      previewIframeRef.current?.contentWindow?.postMessage(
-        { type: 'startScript', script: s.sim_script ?? 'main', params: doneParams },
-        '*',
-      );
+      simRuntime.activate({ script: s.sim_script ?? 'main', params: doneParams });
       setPreviewRunning(true);
     };
 
@@ -787,7 +817,7 @@ export function SectionEditor({
         setGenerationStatus(null);
       }
     }
-  }, [projectId, section, simId, simPrompt, simpleUi, autoScript, uiDirty, genSelection, effectiveHideSelectors, onUpdate]);
+  }, [projectId, section, simId, simPrompt, simpleUi, autoScript, uiDirty, genSelection, effectiveHideSelectors, onUpdate, simRuntime]);
 
   const handleCancelGeneration = useCallback(() => {
     genAbortRef.current?.abort();
@@ -1051,28 +1081,25 @@ export function SectionEditor({
 
   // 'clip' is a sub-mode of 'video' — use video colors in the switcher
   const activeTypeDef = TYPES.find(t => t.value === (type === 'clip' ? 'video' : type)) ?? TYPES[0];
-  const readySims = simulations.filter(s => s.status === 'ready');
-  const activeSim = readySims.find(s => s.id === simId) ?? null;
+  // readySims / activeSim / simPreviewUrl are declared with the preview refs above — the runtime
+  // binding needs the document identity before the effects that drive it.
   const activeSimFile = simFiles.find(f => f.key === activeFileKey) ?? null;
   const videoUrl = videoUrls[section.video_file_id] ?? null;
-  const simPreviewUrl = section.simulation_url ?? activeSim?.entry_file ?? null;
   const simMeta = section.sim_meta as SimMeta | null | undefined ?? null;
 
-  // (D6) Device-hint params for the preview iframe ONLY. The iframe `key` and every
-  // canReuse/save comparison keep using the RAW simPreviewUrl / section.simulation_url —
-  // the resolved URL is never persisted or compared. Memoized per raw URL so a
-  // devicePixelRatio change (browser zoom) can't rewrite src and reload a live preview.
-  const resolvedSimPreviewSrc = useMemo(
-    () => (simPreviewUrl
-      ? resolveSimUrl(simPreviewUrl, {
-          hideSelectors: simpleUi && effectiveHideSelectors?.length ? effectiveHideSelectors : [],
-        })
-      : null),
-    // hideSelectors ride the URL FRAGMENT (see simUrl.ts), so a selection change never reloads a
-    // live preview — it only affects the first-paint cloak of a freshly mounted iframe. The
-    // fragment is emitted even when nothing is hidden: REMOVING it (Simple-UI toggled off, or
-    // every control re-checked) is a full navigation, which hard-reloaded the live preview.
-    [simPreviewUrl, simpleUi, effectiveHideSelectors],
+  // (D6) The first-paint Minimal-UI cloak for the preview frame. SimSurface turns this into the
+  // resolved src (origin rebase + device hints + the always-present #simboot fragment); the
+  // iframe `key` and every canReuse/save comparison keep using the RAW simPreviewUrl /
+  // section.simulation_url — the resolved URL is never persisted or compared.
+  //
+  // hideSelectors ride the URL FRAGMENT (see simUrl.ts), so a selection change never reloads a
+  // live preview — it only affects the first-paint cloak of a freshly mounted iframe. The
+  // fragment is emitted even when nothing is hidden (SimSurface guarantees that): REMOVING it
+  // (Simple-UI toggled off, or every control re-checked) is a full navigation, which hard-reloaded
+  // the live preview. Memoized so the memoized surface is not handed a new array every render.
+  const previewBootHide = useMemo(
+    () => (simpleUi && effectiveHideSelectors?.length ? effectiveHideSelectors : NO_BOOT_HIDE),
+    [simpleUi, effectiveHideSelectors],
   );
 
   // (D2b) Broadcast whether the preview-tab sim iframe is mounted so the timeline
@@ -2635,7 +2662,7 @@ export function SectionEditor({
                     {rightTab === 'preview' && simPreviewUrl && (
                       <>
                         <button
-                          onClick={() => sendToPreview('startScript')}
+                          onClick={runPreview}
                           style={{
                             height: 30, padding: '0 10px', borderRadius: 7, border: '1px solid #bbf7d0',
                             backgroundColor: previewRunning ? '#dcfce7' : '#f0fdf4',
@@ -2647,7 +2674,7 @@ export function SectionEditor({
                           Run
                         </button>
                         <button
-                          onClick={() => sendToPreview('stopScript')}
+                          onClick={stopPreview}
                           style={{
                             height: 30, padding: '0 10px', borderRadius: 7, border: '1px solid #e5e7eb',
                             backgroundColor: 'hsl(var(--card))', color: '#475569', fontSize: 11, fontWeight: 700, cursor: 'pointer',
@@ -2724,14 +2751,23 @@ export function SectionEditor({
                 {rightTab === 'preview' ? (
                   simPreviewUrl ? (
                     <div ref={simPreviewShellRef} style={{ flex: 1, minHeight: 0, backgroundColor: 'hsl(var(--card))', overflow: 'hidden', position: 'relative' }}>
-                      <iframe
+                      <SimSurface
+                        // Remount on a real document change, exactly as before.
                         key={simPreviewUrl}
-                        ref={previewIframeRef}
-                        src={resolvedSimPreviewSrc ?? simPreviewUrl}
-                        style={{ border: 'none', width: '100%', height: '100%', backgroundColor: 'hsl(var(--card))' }}
+                        src={simPreviewUrl}
+                        bootHide={previewBootHide}
+                        // NO reveal policy on this surface. The editor preview has never faded:
+                        // the frame is simply visible the whole time the Preview tab is open, and
+                        // gating it on runtime visibility (which holds a reveal until a paint or
+                        // an ack) could leave a working sim hidden behind a blank panel.
+                        visible
+                        frameRef={previewFrameRef}
+                        onLoad={handlePreviewFrameLoad}
                         title={activeSim?.name ?? 'Simulation preview'}
+                        // allow-pointer-lock is why this surface passes its own sandbox: sims
+                        // driven with a dragged camera need it, and the default set omits it.
                         sandbox="allow-scripts allow-same-origin allow-forms allow-pointer-lock"
-                        onLoad={() => setPreviewRunning(false)}
+                        style={SIM_PREVIEW_FRAME_STYLE}
                       />
                       {/* Fullscreen toggle — always visible, uses fixed when in fullscreen */}
                       <button

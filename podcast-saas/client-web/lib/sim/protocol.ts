@@ -58,6 +58,13 @@ export interface SimStartParams {
 
 export interface SimInboundMessage {
   type: string;
+  /**
+   * SIM_READY capability advertisement. The SHIPPING v2 bridge sends `dispatch: 'dynamic'` plus
+   * the section id list; its absence means an old load-time-locked bridge that needs a per-section
+   * URL. Feature-detect on this — never on a version number, which no bridge sends.
+   */
+  dispatch?: string;
+  sections?: string[];
   script?: string;
   /** Echoed activation token — present only on acks from a v2.1+ bridge. */
   token?: number;

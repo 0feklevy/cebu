@@ -1,9 +1,9 @@
 'use client';
 
-import { useRef, useEffect, useState, useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { injectViewportFill } from './injectViewportFill';
-import { resolveSimUrl } from '../../lib/simUrl';
-import { SIM_READY, STOP_SCRIPT, asInbound } from '../../lib/sim/protocol';
+import { SimSurface } from '../../lib/sim/SimSurface';
+import { useSimRuntime } from '../../lib/sim/useSimRuntime';
 
 interface Props {
   html?: string;
@@ -15,24 +15,29 @@ interface Props {
 
 // Ported from darwin-avatar/client/src/components/SimulationOverlay.tsx
 export function SimulationOverlay({ html, src, caption, visible, onDismiss }: Props) {
-  const iframeRef = useRef<HTMLIFrameElement>(null);
-  const [loading, setLoading] = useState(true);
-
   const processedHtml = useMemo(() => (html ? injectViewportFill(html) : ''), [html]);
+  // Identity of the hosted document — a change means a genuinely new document, which is exactly
+  // what the runtime keys its per-document state on.
   const simKey = src ?? processedHtml;
 
+  // The shared runtime owns readiness, the reveal decision, disposal and listener cleanup. This
+  // surface previously kept its own SIM_READY listener plus an 8s reveal fallback, and posted its
+  // own teardown on unmount — four separate re-implementations of rules that now live in one place.
+  const { state, runtime, frameRef, onFrameLoad } = useSimRuntime(simKey || null);
+
+  // Drive the document to readiness and arm the bounded ceiling. This overlay has no section to
+  // apply — the generated document IS the content — so it reveals on paint (or at the ceiling for
+  // a package that can never ack one), never on a blind timer.
   useEffect(() => {
-    setLoading(true);
-    const handler = (e: MessageEvent) => {
-      // Only THIS overlay's frame may clear its spinner: the pooled viewer hosts simulations at
-      // the same time, and an unscoped listener answers their handshakes as if they were ours.
-      if (e.source !== iframeRef.current?.contentWindow) return;
-      if (asInbound(e.data)?.type === SIM_READY) setLoading(false);
-    };
-    window.addEventListener('message', handler);
-    const fallback = setTimeout(() => setLoading(false), 8000);
-    return () => { window.removeEventListener('message', handler); clearTimeout(fallback); };
-  }, [simKey]);
+    if (!simKey) return;
+    runtime.startPaintRecovery({ legacyCeilingMs: 8_000 });
+  }, [runtime, simKey]);
+
+  // Tear the script down when the overlay closes, so a dismissed simulation stops computing and
+  // sounding even while the modal element lingers.
+  useEffect(() => {
+    if (!visible && state.currentScript) runtime.stopNow();
+  }, [visible, state.currentScript, runtime]);
 
   useEffect(() => {
     if (!visible) return;
@@ -41,17 +46,8 @@ export function SimulationOverlay({ html, src, caption, visible, onDismiss }: Pr
     return () => document.removeEventListener('keydown', handler);
   }, [visible, onDismiss]);
 
-  useEffect(() => () => {
-    try {
-      const frame = iframeRef.current;
-      if (!frame?.contentWindow) return;
-      // Target the iframe's real origin for a cross-origin (src) sim; srcDoc iframes are opaque
-      // ('null' origin) so they still need '*' (frontend-011).
-      let targetOrigin = '*';
-      try { if (frame.src) targetOrigin = new URL(frame.src).origin; } catch { /* opaque → '*' */ }
-      frame.contentWindow.postMessage({ type: STOP_SCRIPT }, targetOrigin);
-    } catch { /* noop */ }
-  }, []);
+  // Until the document has painted, the spinner covers it (the runtime reports the paint).
+  const loading = !state.visible;
 
   return (
     <div
@@ -67,15 +63,21 @@ export function SimulationOverlay({ html, src, caption, visible, onDismiss }: Pr
             <span>{src ? 'Loading simulation…' : 'Generating simulation…'}</span>
           </div>
         )}
-        {src ? (
-          // resolveSimUrl rebases /sim-public/ URLs onto THIS environment's API origin: a stored
-          // sim_entry_url minted under another origin (a row promoted from staging, or any row
-          // predating an API domain change) is otherwise blocked outright by the frame-src CSP
-          // in the end user's browser — this is a shipping viewer surface (audited).
-          <iframe ref={iframeRef} src={resolveSimUrl(src)} title="Interactive simulation" sandbox="allow-scripts allow-same-origin" className="avatar-simulation-overlay__iframe" style={{ opacity: loading ? 0 : 1 }} />
-        ) : processedHtml ? (
-          <iframe ref={iframeRef} srcDoc={processedHtml} title="Interactive simulation" sandbox="allow-scripts" className="avatar-simulation-overlay__iframe" style={{ opacity: loading ? 0 : 1 }} />
-        ) : null}
+        {/*
+          SimSurface applies the origin rebase (a stored sim_entry_url minted under another origin
+          is otherwise blocked outright by the frame-src CSP), the boot-hide fragment, and the
+          hidden-frame accessibility state this surface never had.
+          srcDoc covers the generated-on-the-fly case: that document has an opaque origin.
+        */}
+        <SimSurface
+          src={src ?? null}
+          srcDoc={src ? null : (processedHtml || null)}
+          visible={state.visible}
+          frameRef={frameRef}
+          onLoad={onFrameLoad}
+          sandbox={src ? 'allow-scripts allow-same-origin' : 'allow-scripts'}
+          className="avatar-simulation-overlay__iframe"
+        />
       </div>
     </div>
   );

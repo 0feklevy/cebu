@@ -56,7 +56,7 @@ function bootModern(firstScript = 'A'): { c: SimRuntimeClient; win: object; stat
   const c = new SimRuntimeClient({ onState: (s) => states.push(s) });
   const { el, win } = makeFrame();
   c.attach(el, 'doc-1');
-  fromChild(win, { type: 'SIM_READY', v: 2 });
+  fromChild(win, { type: 'SIM_READY', dispatch: 'dynamic' });
   fromChild(win, { type: 'SIM_PAINTED' });
   c.activate({ script: firstScript });
   // First activation reveals immediately (nothing to switch away from), and the ack that follows
@@ -126,7 +126,7 @@ describe('legacy documents are never made to wait on silence', () => {
     const c = new SimRuntimeClient({ onState: (s) => states.push(s) });
     const { el, win } = makeFrame();
     c.attach(el, 'doc-legacy');
-    fromChild(win, { type: 'SIM_READY', v: 2 });   // dynamic, but it will never acknowledge
+    fromChild(win, { type: 'SIM_READY', dispatch: 'dynamic' });   // dynamic, but it will never acknowledge
     fromChild(win, { type: 'SIM_PAINTED' });
     c.activate({ script: 'A' });
     c.activate({ script: 'B' });
@@ -134,11 +134,15 @@ describe('legacy documents are never made to wait on silence', () => {
     expect(c.getState().visible, 'waiting on a bridge that cannot answer makes it undisplayable').toBe(true);
   });
 
-  it('a non-dynamic (navigating) bridge never uses the in-place gate', () => {
+  it('a bridge that advertises NO dispatch is legacy and never uses the in-place gate', () => {
+    // The real wire format: a v2 bridge sends `dispatch: 'dynamic'`; an old load-time-locked one
+    // sends a bare SIM_READY. There is no version number in this protocol — classifying on one
+    // (as an earlier draft of the runtime did) leaves every real document `null` and silently
+    // disables the gate in production while every test still passes.
     const c = new SimRuntimeClient();
     const { el, win } = makeFrame();
     c.attach(el, 'doc-v1');
-    fromChild(win, { type: 'SIM_READY', v: 1 });
+    fromChild(win, { type: 'SIM_READY' });
     fromChild(win, { type: 'SIM_PAINTED' });
     c.activate({ script: 'A' });
     c.activate({ script: 'B' });
@@ -238,9 +242,9 @@ describe('late and out-of-order events', () => {
     c.attach(first.el, 'doc-1');
     const second = makeFrame();
     c.attach(second.el, 'doc-2');
-    fromChild(first.win, { type: 'SIM_READY', v: 2 });   // stale source
+    fromChild(first.win, { type: 'SIM_READY', dispatch: 'dynamic' });   // stale source
     expect(c.getState().ready, 'events must be scoped to the bound document').toBe(false);
-    fromChild(second.win, { type: 'SIM_READY', v: 2 });
+    fromChild(second.win, { type: 'SIM_READY', dispatch: 'dynamic' });
     expect(c.getState().ready).toBe(true);
   });
 
@@ -259,7 +263,7 @@ describe('rapid enter/exit and navigation races', () => {
     const c = new SimRuntimeClient();
     const first = makeFrame();
     c.attach(first.el, 'doc-1');
-    fromChild(first.win, { type: 'SIM_READY', v: 2 });
+    fromChild(first.win, { type: 'SIM_READY', dispatch: 'dynamic' });
     fromChild(first.win, { type: 'SIM_PAINTED' });
     c.activate({ script: 'A' });
     c.deactivate();                                 // arms the deferred stop
@@ -362,7 +366,7 @@ describe('paint recovery for packages that can never ack a paint', () => {
     const c = new SimRuntimeClient();
     const { el, win } = makeFrame();
     c.attach(el, 'doc-noraf');
-    fromChild(win, { type: 'SIM_READY', v: 2 });
+    fromChild(win, { type: 'SIM_READY', dispatch: 'dynamic' });
     c.activate({ script: 'A' });
     c.startPaintRecovery({ legacyCeilingMs: 800 });
     expect(c.getState().visible).toBe(false);
@@ -378,7 +382,7 @@ describe('paint recovery for packages that can never ack a paint', () => {
     const c = new SimRuntimeClient();
     const { el, win } = makeFrame();
     c.attach(el, 'doc-1');
-    fromChild(win, { type: 'SIM_READY', v: 2 });
+    fromChild(win, { type: 'SIM_READY', dispatch: 'dynamic' });
     c.activate({ script: 'A' });
     c.startPaintRecovery({ legacyCeilingMs: 800 });
     fromChild(win, { type: 'SIM_PAINTED' });
@@ -404,5 +408,34 @@ describe('activation message ordering (the child depends on it)', () => {
     expect(start.script).toBe('B');
     expect((start.params as { simpleUi?: boolean }).simpleUi).toBe(true);
     expect(typeof start.token).toBe('number');
+  });
+});
+
+describe('capability classification uses the REAL wire format', () => {
+  it("classifies dispatch:'dynamic' as in-place capable", () => {
+    const c = new SimRuntimeClient();
+    const { el, win } = makeFrame();
+    c.attach(el, 'doc-1');
+    fromChild(win, { type: 'SIM_READY', dispatch: 'dynamic', sections: ['A', 'B'] });
+    expect(c.getState().dynamic).toBe(true);
+  });
+
+  it('classifies a bare SIM_READY as legacy', () => {
+    const c = new SimRuntimeClient();
+    const { el, win } = makeFrame();
+    c.attach(el, 'doc-1');
+    fromChild(win, { type: 'SIM_READY' });
+    expect(c.getState().dynamic).toBeNull();
+  });
+
+  it('a re-fire without dispatch never DOWNGRADES a proven dynamic document', () => {
+    // PING_SIM_READY is answered with the same builder, but a partial re-post must not demote a
+    // frame that already proved it dispatches in place — that would drop it to the no-wait path.
+    const c = new SimRuntimeClient();
+    const { el, win } = makeFrame();
+    c.attach(el, 'doc-1');
+    fromChild(win, { type: 'SIM_READY', dispatch: 'dynamic' });
+    fromChild(win, { type: 'SIM_READY' });
+    expect(c.getState().dynamic).toBe(true);
   });
 });
