@@ -1208,7 +1208,9 @@ export function parseSectionEntries(bridgeJs: string): Map<string, string> {
         .map(l => l.startsWith('      ') ? l.slice(6) : l)
         .join('\n')
         .replace(/^\n/, '')
-        .replace(/\n$/, '');
+        // Trim ALL trailing whitespace, not one newline: re-wrapping adds indentation, so a
+        // single-newline trim let repeated rebuilds accrete blank lines in every body.
+        .replace(/\s+$/, '');
       entries.set(id, dedented);
     }
   }
@@ -1249,7 +1251,7 @@ export function wrapBridgeCombined(entries: Map<string, string>): string {
     '  // Scheduled through the gate\'s RAW (unwrapped) rAF: the wrapped one acks SIM_PAINTED on',
     '  // the first completed callback, and _fireReady draws nothing — with the wrapped handle a',
     '  // sim that failed to render still reported "painted" (audited false-paint source).',
-    "  var _sysRaf = (window.__SIM_RAF_GATE__ && window.__SIM_RAF_GATE__.raw) || window.requestAnimationFrame.bind(window);",
+    "  var _sysRaf = (window.__SIM_RAF_GATE__ && (window.__SIM_RAF_GATE__.sys || window.__SIM_RAF_GATE__.raw)) || window.requestAnimationFrame.bind(window);",
     "  if (document.readyState === 'loading')",
     "    document.addEventListener('DOMContentLoaded', function() { _sysRaf(_fireReady); });",
     '  else _sysRaf(_fireReady);',
@@ -1309,10 +1311,31 @@ export function wrapBridgeCombined(entries: Map<string, string>): string {
     '    if (st && st.remove) st.remove();',
     '  }',
     "  function _post(msg) { try { window.parent && window.parent.postMessage(msg, '*'); } catch (e) {} }",
+    '  // ── Auto-script timer scope (narrow, no managed-lifecycle rewrite) ──────────',
+    '  // Generated section bodies drive their demo with setInterval/setTimeout (the generation',
+    '  // prompt mandates it), created at body top level. Those handles live in the body closure,',
+    '  // so the player\'s pauseScript had NOTHING it could stop and automation kept fighting the',
+    '  // user after they grabbed a control (audited). Wrapping the timer globals FOR THE DURATION',
+    '  // OF THE BODY CALL captures exactly the section\'s own handles — not the simulation\'s own',
+    '  // engine timers — so they can be cleared while leaving the scene and UI untouched.',
+    '  var _timers = [];',
+    '  function _trackTimers(run) {',
+    '    var ni = window.setInterval, nt = window.setTimeout;',
+    "    window.setInterval = function (f, d) { var id = ni.call(window, f, d); _timers.push([1, id]); return id; };",
+    "    window.setTimeout = function (f, d) { var id = nt.call(window, f, d); _timers.push([0, id]); return id; };",
+    '    try { return run(); } finally { window.setInterval = ni; window.setTimeout = nt; }',
+    '  }',
+    '  function _clearTimers() {',
+    '    for (var i = 0; i < _timers.length; i++) {',
+    '      try { if (_timers[i][0]) clearInterval(_timers[i][1]); else clearTimeout(_timers[i][1]); } catch (e) {}',
+    '    }',
+    '    _timers = [];',
+    '  }',
     '  function stopScript() {',
     '    // A throwing cleanup must NEVER wedge dispatch: without the try/finally, _cancelFn kept',
     '    // pointing at the throwing cleanup and EVERY later section switch re-threw — the',
     '    '  + "// document was permanently broken (audited; the oldest template got this right).",
+    '    _clearTimers();',
     '    if (_cancelFn) {',
     '      var fn = _cancelFn; _cancelFn = null;',
     "      try { if (typeof fn === 'function') fn(); }",
@@ -1322,7 +1345,7 @@ export function wrapBridgeCombined(entries: Map<string, string>): string {
     "    var st = document.getElementById('__simHideUi');",
     '    if (st && st.remove) st.remove();',
     '  }',
-    '  function startScript(name, params) {',
+    '  function startScript(name, params, token) {',
     "    var sig = (name || 'main') + ':' + JSON.stringify(params || {});",
     '    if (_cancelFn && sig === _lastSig) return;   // identical re-post — keep the script running',
     '    stopScript();',
@@ -1340,22 +1363,32 @@ export function wrapBridgeCombined(entries: Map<string, string>): string {
     '    var fn = (name && own.call(SCRIPTS, name)) ? SCRIPTS[name] : _sectionBody(name);',
     "    if (!fn && (!name || name === 'main')) fn = SCRIPTS.main;",
     '    if (!fn) {',
-    "      _post({ type: 'SCRIPT_MISSING', script: name });",
+    "      _post({ type: 'SCRIPT_MISSING', script: name, token: token });",
     '      return;',
     '    }',
     '    try {',
-    '      _cancelFn = fn(params || {}) || null;',
-    "      _post({ type: 'SCRIPT_APPLIED', script: name || 'main' });",
+    '      _cancelFn = _trackTimers(function () { return fn(params || {}) || null; });',
+    '      // Acknowledge only after ONE further frame: the body has returned AND the browser has',
+    '      // had a chance to lay out/paint its changes. Posting synchronously would ack a body',
+    '      // whose visible effect had not landed yet. The SYSTEM rAF is used so this bookkeeping',
+    '      // frame can never itself count as the simulation\'s first paint.',
+    "      var _ack = function () { _post({ type: 'SCRIPT_APPLIED', script: name || 'main', token: token }); };",
+    '      if (_sysRaf) _sysRaf(_ack); else _ack();',
     '    } catch (err) {',
     '      _cancelFn = null;',
-    "      _post({ type: 'SCRIPT_ERROR', phase: 'start', script: name || 'main', message: String(err && err.message || err) });",
+    "      _post({ type: 'SCRIPT_ERROR', phase: 'start', script: name || 'main', token: token, message: String(err && err.message || err) });",
     '    }',
     '  }',
     '  window.SimAPI = { start: startScript, stop: stopScript };',
     "  window.addEventListener('message', function(e) {",
     '    var d = e.data || {}; var type = d.type; var script = d.script; var params = d.params;',
-    "    if (type === 'startScript')  startScript(script || 'main', params);",
+    "    if (type === 'startScript')  startScript(script || 'main', params, d.token);",
     "    if (type === 'stopScript')   stopScript();",
+    '    // Stop the demo WITHOUT tearing the section down: the scene, the applied Minimal-UI',
+    '    // policy and manual interactivity all stay exactly as they are. Reaches the body\'s own',
+    '    // setInterval/setTimeout handles via the tracking scope above (audited: pauseScript',
+    '    // previously had nothing it could stop and automation fought the user).',
+    "    if (type === 'pauseScript')  { _clearTimers(); _post({ type: 'AUTO_PAUSED' }); }",
     "    if (type === 'PING_SIM_READY' && window._simReadyFired)",
     "      window.parent?.postMessage(_readyMsg(), '*');",
     '  });',
@@ -1907,12 +1940,17 @@ export class SimulationService {
           // HTML and bridge.js get overwritten in place by bridge (re)generation, and
           // they're served through the /sim-public proxy with its own cache policy anyway.
           const rewritable = /\.(html?|m?js)$/i.test(relPath);
+          // BOUNDED, never `immutable`: "Replace simulation" overwrites every key in place, and
+          // binary assets are served by a redirect to the bucket object — whose OWN Cache-Control
+          // is what the browser keeps. A year-long immutable value pinned replaced textures/audio
+          // with no revalidation path (audited). Restore long caching only with content-addressed
+          // revision prefixes (roadmap).
           return this.storage
             .uploadFile(
               `${prefix}/${relPath}`,
               buf,
               getSimulationContentType(relPath),
-              rewritable ? undefined : 'public, max-age=31536000, immutable',
+              rewritable ? undefined : 'public, max-age=3600',
             )
             .then(() => undefined);
         }),

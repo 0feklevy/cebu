@@ -126,9 +126,12 @@ describe('processFileUpload', () => {
     });
 
     expect(result.entryKey).toBe('simulations/project-1/sim-1/ising-kid-simu/ising_model.html');
-    // Write-once assets (css/png) upload with immutable cache metadata; the rewritable
-    // entry HTML must NOT (bridge regeneration overwrites it in place).
-    const IMMUTABLE = 'public, max-age=31536000, immutable';
+    // Non-rewritable assets (css/png) upload with BOUNDED cache metadata — never `immutable`:
+    // "Replace simulation" overwrites every key in place, and binaries are served by a redirect
+    // to the bucket object, so the OBJECT's own Cache-Control is what a browser keeps. A year-long
+    // immutable value pinned replaced textures/audio with no revalidation path (audited).
+    // The rewritable entry HTML still passes undefined (proxy sets its own no-cache policy).
+    const IMMUTABLE = 'public, max-age=3600';
     expect(mockStorage.uploadFile).toHaveBeenCalledWith(
       'simulations/project-1/sim-1/ising-kid-simu/ising_model.css',
       css,

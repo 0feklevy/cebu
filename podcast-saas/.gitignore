@@ -32,3 +32,5 @@ deploy/release.env
 
 # Playwright production-audit outputs (reports, traces, screenshots)
 e2e-results/
+# Generated browser-test simulation fixture (gen-sim-fixture.ts) — never committed.
+.sim-fixture/

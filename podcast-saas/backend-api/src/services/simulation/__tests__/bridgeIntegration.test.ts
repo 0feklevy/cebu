@@ -173,8 +173,14 @@ describe('Bridge integration — acceptance criteria', () => {
     // the gate's RAW rAF so the bridge's own bookkeeping can never ack the sim's first paint.
     expect(bridge).toContain("var fn = (name && own.call(SCRIPTS, name)) ? SCRIPTS[name] : _sectionBody(name);");
     expect(bridge).toContain("if (!fn && (!name || name === 'main')) fn = SCRIPTS.main;");
-    expect(bridge).toContain("_post({ type: 'SCRIPT_MISSING', script: name });");
-    expect(bridge).toContain('window.__SIM_RAF_GATE__ && window.__SIM_RAF_GATE__.raw');
+    expect(bridge).toContain("_post({ type: 'SCRIPT_MISSING', script: name, token: token });");
+    // Every ack echoes the ACTIVATION TOKEN so a stale ack from a superseded activation can
+    // never satisfy a newer pending one (audited B→A→B race), and SCRIPT_APPLIED is posted from
+    // a system-rAF callback so it means "body ran AND a frame followed".
+    expect(bridge).toContain('function startScript(name, params, token)');
+    expect(bridge).toContain("startScript(script || 'main', params, d.token)");
+    expect(bridge).toContain('if (_sysRaf) _sysRaf(_ack); else _ack();');
+    expect(bridge).toContain('window.__SIM_RAF_GATE__ && (window.__SIM_RAF_GATE__.sys || window.__SIM_RAF_GATE__.raw)');
     // Valid syntax
     expect(() => new Function(bridge)).not.toThrow();
   });

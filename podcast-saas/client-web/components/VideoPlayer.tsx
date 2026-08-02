@@ -104,6 +104,9 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
   // Without this, the overlay stays hidden for ~3s (or never, on short sections) even though
   // the iframe is already rendering — the player looked "blank" while the preview was fine.
   const simRevealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Deferred teardown: stopScript is posted only AFTER the exit fade has finished (see the
+  // boundary handler) so restored controls are never rendered over a still-visible sim.
+  const simStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // (D2b) Destroy-on-leave: after the overlay hides, keep the paused iframe mounted for a
   // grace window (45s desktop / 700ms touch-or-low-memory), then clear simUrl so the iframe
   // unmounts and its WebGL context is truly freed. Cancelled on re-entry.
@@ -140,7 +143,7 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
         if (simPollRef.current) clearInterval(simPollRef.current);
         return;
       }
-      sendToSim({ type: 'PING_SIM_READY' });
+      sendToSim({ type: simReadyRef.current ? 'PING_SIM_PAINTED' : 'PING_SIM_READY' });
     }, 300);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -174,6 +177,15 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
           if (simShowTimerRef.current) clearTimeout(simShowTimerRef.current);
           simShowTimerRef.current = setTimeout(() => { simShowTimerRef.current = null; setShowSim(true); }, 50);
         }
+      }
+      // Paint-gated reveal (mirrors the final viewer): SIM_PAINTED — not SIM_READY plus a
+      // guess-timer — is the "safe to show" signal. The blind fallbacks below remain only as a
+      // ceiling for pre-v4 packages that can never ack a paint.
+      if (type === 'SIM_PAINTED') {
+        if (simRevealTimerRef.current) { clearTimeout(simRevealTimerRef.current); simRevealTimerRef.current = null; }
+        if (simShowTimerRef.current) { clearTimeout(simShowTimerRef.current); simShowTimerRef.current = null; }
+      if (simStopTimerRef.current) { clearTimeout(simStopTimerRef.current); simStopTimerRef.current = null; }
+        if (activeSimUrlRef.current) setShowSim(true);
       }
       if (type === 'userInteraction') hook.pause();
     };
@@ -309,11 +321,17 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
     };
     if (!newUrl) {
       if (activeSimUrlRef.current) {
-        sendToSim({ type: 'stopScript' });
-        // Start the fade-out immediately at the boundary; the CSS opacity
-        // transition (200ms) does the smoothing. A delayed hide made the sim
-        // linger visibly past its section.
+        // ATOMIC EXIT (same ordering as the final viewer): fade FIRST, tear down after. Posting
+        // stopScript here restored the sim's hidden control panels synchronously and rendered
+        // them for the whole 200ms fade — a deterministic Minimal-UI flash on every exit.
+        const stopTarget = activeSimUrlRef.current;
         setShowSim(false);
+        if (simStopTimerRef.current) clearTimeout(simStopTimerRef.current);
+        simStopTimerRef.current = setTimeout(() => {
+          simStopTimerRef.current = null;
+          if (activeSimUrlRef.current === stopTarget) return;   // re-entered during the fade
+          sendToSim({ type: 'stopScript' });
+        }, 280);
         // (D2b) After the existing messages, freeze the hidden sim's rAF loop so it stops
         // burning CPU/GPU, then arm the destroy grace. simDestroyGraceMs() >= 700ms, so the
         // iframe can never unmount during the 200ms fade.
@@ -324,6 +342,7 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
       // Cancel any in-flight 50ms reveal — otherwise a fast scrub out of the section right after
       // entering leaves the overlay stranded visible over plain video. (sim-race fix)
       if (simShowTimerRef.current) { clearTimeout(simShowTimerRef.current); simShowTimerRef.current = null; }
+      if (simStopTimerRef.current) { clearTimeout(simStopTimerRef.current); simStopTimerRef.current = null; }
       desiredSimRef.current = null;
       pendingSimRef.current = null;
       activeSimUrlRef.current = null;

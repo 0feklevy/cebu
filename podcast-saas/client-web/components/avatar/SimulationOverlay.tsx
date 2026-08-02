@@ -2,6 +2,7 @@
 
 import { useRef, useEffect, useState, useMemo } from 'react';
 import { injectViewportFill } from './injectViewportFill';
+import { resolveSimUrl } from '../../lib/simUrl';
 
 interface Props {
   html?: string;
@@ -63,7 +64,11 @@ export function SimulationOverlay({ html, src, caption, visible, onDismiss }: Pr
           </div>
         )}
         {src ? (
-          <iframe ref={iframeRef} src={src} title="Interactive simulation" sandbox="allow-scripts allow-same-origin" className="avatar-simulation-overlay__iframe" style={{ opacity: loading ? 0 : 1 }} />
+          // resolveSimUrl rebases /sim-public/ URLs onto THIS environment's API origin: a stored
+          // sim_entry_url minted under another origin (a row promoted from staging, or any row
+          // predating an API domain change) is otherwise blocked outright by the frame-src CSP
+          // in the end user's browser — this is a shipping viewer surface (audited).
+          <iframe ref={iframeRef} src={resolveSimUrl(src)} title="Interactive simulation" sandbox="allow-scripts allow-same-origin" className="avatar-simulation-overlay__iframe" style={{ opacity: loading ? 0 : 1 }} />
         ) : processedHtml ? (
           <iframe ref={iframeRef} srcDoc={processedHtml} title="Interactive simulation" sandbox="allow-scripts" className="avatar-simulation-overlay__iframe" style={{ opacity: loading ? 0 : 1 }} />
         ) : null}
