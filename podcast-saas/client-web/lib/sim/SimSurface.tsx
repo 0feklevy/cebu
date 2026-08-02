@@ -22,7 +22,13 @@ import { SIM_FADE_MS } from './protocol';
 
 export interface SimSurfaceProps {
   /** Raw stored sim URL. Resolved (origin rebase + device hints + boot cloak) internally. */
-  src: string | null;
+  src?: string | null;
+  /**
+   * Inline document, for sims generated on the fly rather than stored. Mutually exclusive with
+   * `src`. A srcDoc frame has an opaque ('null') origin, so it can only ever be messaged with
+   * targetOrigin '*' — which is why the runtime posts that way.
+   */
+  srcDoc?: string | null;
   /** Minimal-UI selectors to hide before the first paint. [] is meaningful: "cloak nothing". */
   bootHide?: string[] | null;
   visible: boolean;
@@ -36,6 +42,11 @@ export interface SimSurfaceProps {
   sandbox?: string;
   /** Set false for a frame that must never take pointer input even while visible. */
   interactive?: boolean;
+  /**
+   * Opt out of the fade for surfaces that have no transition (the editor preview is simply
+   * present while its tab is open). Never use this to work around a reveal gate.
+   */
+  fade?: boolean;
   /** Rendered above the frame while it is hidden (spinner, cover). */
   children?: React.ReactNode;
 }
@@ -43,22 +54,22 @@ export interface SimSurfaceProps {
 const DEFAULT_SANDBOX = 'allow-scripts allow-same-origin allow-forms';
 
 function SimSurfaceImpl({
-  src, bootHide, visible, frameRef, onLoad,
+  src, srcDoc, bootHide, visible, frameRef, onLoad,
   title = 'Interactive simulation',
-  className, style, sandbox, interactive = true, children,
+  className, style, sandbox, interactive = true, fade = true, children,
 }: SimSurfaceProps) {
-  if (!src) return null;
+  if (!src && !srcDoc) return null;
 
   // Always boot-aware: an empty hide list still emits `#simboot=`, keeping every src change a
   // same-document fragment navigation. See lib/simUrl.ts for why dropping it reloads the sim.
-  const resolved = resolveSimUrl(src, { hideSelectors: bootHide ?? [] });
+  const resolved = src ? resolveSimUrl(src, { hideSelectors: bootHide ?? [] }) : undefined;
   const shown = visible;
 
   return (
     <>
       <iframe
         ref={frameRef}
-        src={resolved}
+        {...(resolved ? { src: resolved } : { srcDoc: srcDoc ?? undefined })}
         onLoad={onLoad}
         title={title}
         className={className}
@@ -66,7 +77,7 @@ function SimSurfaceImpl({
         sandbox={sandbox ?? DEFAULT_SANDBOX}
         style={{
           opacity: shown ? 1 : 0,
-          transition: `opacity ${SIM_FADE_MS}ms ease`,
+          ...(fade ? { transition: `opacity ${SIM_FADE_MS}ms ease` } : {}),
           pointerEvents: shown && interactive ? 'auto' : 'none',
           ...style,
         }}

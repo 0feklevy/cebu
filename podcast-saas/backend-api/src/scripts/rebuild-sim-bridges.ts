@@ -13,7 +13,7 @@
  * versioning and has no undo of its own:
  *   tsx --env-file=../.env src/scripts/backup-sim-packages.ts backup ./sim-backup-<date>
  *
- * The pure helpers below are exported and unit-tested (src/scripts/lib/__tests__/
+ * The pure helpers below are exported and unit-tested (src/scripts/__tests__/
  * simRolloutTooling.test.ts); the db/storage imports load lazily inside main() so importing
  * this module never opens a database client.
  */

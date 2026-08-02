@@ -26,7 +26,7 @@
  * no longer describes the bytes being served. Every user asset is left alone by both tools.
  *
  * Everything above `main()` is pure or dependency-injected so it can be unit-tested without any
- * database, storage or filesystem (see src/scripts/lib/__tests__/simRolloutTooling.test.ts). The
+ * database, storage or filesystem (see src/scripts/__tests__/simRolloutTooling.test.ts). The
  * db/storage/SimulationService imports are deliberately loaded lazily INSIDE main() so importing
  * this module never opens a database client.
  */
