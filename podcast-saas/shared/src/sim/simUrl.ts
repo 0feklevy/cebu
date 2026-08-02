@@ -25,6 +25,13 @@ interface NavigatorWithHints extends Navigator {
 }
 
 // Both Next apps inline NEXT_PUBLIC_* at build time, so reading it here resolves per-app.
+//
+// The reference MUST stay written literally as `process.env.NEXT_PUBLIC_API_URL`: Next performs a
+// textual substitution, so reading it through a variable or a destructured alias defeats the
+// inlining and leaves the API origin undefined in the browser. This package targets the DOM and
+// does not carry Node types, so the shape is declared locally rather than pulling in @types/node.
+declare const process: { env: Record<string, string | undefined> };
+
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
 
 /**
