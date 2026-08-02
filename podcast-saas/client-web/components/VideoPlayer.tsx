@@ -107,6 +107,9 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
   // Deferred teardown: stopScript is posted only AFTER the exit fade has finished (see the
   // boundary handler) so restored controls are never rendered over a still-visible sim.
   const simStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // True once the CURRENT document acked SIM_PAINTED. The 50ms/800ms timers are pre-v4
+  // ceilings only: a painted-capable document reveals on the ack, not on a guess.
+  const simPaintedRef = useRef(false);
   // (D2b) Destroy-on-leave: after the overlay hides, keep the paused iframe mounted for a
   // grace window (45s desktop / 700ms touch-or-low-memory), then clear simUrl so the iframe
   // unmounts and its WebGL context is truly freed. Cancelled on re-entry.
@@ -139,7 +142,7 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
     if (simPollRef.current) clearInterval(simPollRef.current);
     let attempts = 0;
     simPollRef.current = setInterval(() => {
-      if (simReadyRef.current || ++attempts > 40) {
+      if ((simReadyRef.current && simPaintedRef.current) || ++attempts > 40) {
         if (simPollRef.current) clearInterval(simPollRef.current);
         return;
       }
@@ -336,6 +339,7 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
         // burning CPU/GPU, then arm the destroy grace. simDestroyGraceMs() >= 700ms, so the
         // iframe can never unmount during the 200ms fade.
         sendToSim({ type: 'simPause' });
+        sendToSim({ type: 'simMute' });   // hidden frames must never keep sounding
         scheduleSimDestroy();
       }
       if (simRevealTimerRef.current) { clearTimeout(simRevealTimerRef.current); simRevealTimerRef.current = null; }
@@ -351,6 +355,12 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
     // (D2b) Re-entered a sim section before the destroy grace fired — keep the live iframe.
     cancelSimDestroy();
     const sameUrl = newUrl === activeSimUrlRef.current;
+    if (!sameUrl && activeSimUrlRef.current) {
+      // Different section incoming: never leave the outgoing section on screen while the frame
+      // navigates and the new configuration is applied. The paint/ready path reveals the new one.
+      setShowSim(false);
+      simPaintedRef.current = false;
+    }
     activeSimUrlRef.current = newUrl;
     desiredSimRef.current = { script, params };   // what the loaded sim SHOULD be running now
     setSimUrl(newUrl);
@@ -363,14 +373,25 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
       sendToSim({ type: 'startScript', script, params });
       // Definitive __simHideUi applied by startScript — drop the boot-time hide.
       sendToSim({ type: 'clearBootHide' });
+      sendToSim({ type: 'simUnmute' });
       if (simShowTimerRef.current) clearTimeout(simShowTimerRef.current);
-      simShowTimerRef.current = setTimeout(() => { simShowTimerRef.current = null; setShowSim(true); }, 50);
+      if (simPaintedRef.current) {
+        // Already painted this document — the 50ms settle keeps the old cadence, then reveal.
+        simShowTimerRef.current = setTimeout(() => { simShowTimerRef.current = null; setShowSim(true); }, 50);
+      } else {
+        // Not painted yet: ask for the ack and hold; the SIM_PAINTED handler reveals. The
+        // bounded ceiling below stays as the pre-v4 terminal fallback (mirrors the viewer).
+        sendToSim({ type: 'PING_SIM_PAINTED' });
+        if (simRevealTimerRef.current) clearTimeout(simRevealTimerRef.current);
+        simRevealTimerRef.current = setTimeout(() => setShowSim(true), 800);
+      }
     } else {
       // (D2b) Same URL but not ready (e.g. simPause'd mid-boot on a fast leave): unfreeze so
       // the bridge can finish booting and answer the ping. Harmless when the iframe is about
       // to navigate to a different URL — the old page discards it.
       sendToSim({ type: 'simResume' });
       simReadyRef.current   = false;
+      simPaintedRef.current = false;
       pendingSimRef.current = { script, params };
       // Always poll when not ready — fixes seek-to-sim-section not showing
       startSimPoll();

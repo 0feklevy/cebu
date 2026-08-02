@@ -34,3 +34,4 @@ deploy/release.env
 e2e-results/
 # Generated browser-test simulation fixture (gen-sim-fixture.ts) — never committed.
 .sim-fixture/
+test-results/

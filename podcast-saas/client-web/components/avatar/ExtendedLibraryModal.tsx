@@ -12,6 +12,7 @@ import { ChartRenderer } from './renderers/ChartRenderer';
 import { DiagramRenderer } from './renderers/DiagramRenderer';
 import './avatar.css';
 import { GuidedTour, type TourStep } from '../GuidedTour';
+import { resolveSimUrl } from '../../lib/simUrl';
 
 interface Props { open: boolean; onClose: () => void; projectId: string; characterId?: string; }
 
@@ -322,7 +323,7 @@ function MiniPreview({ item }: { item: LibraryItem }) {
     return <div className="avatar-gc__preview"><DiagramRenderer html={spec.html as string} iframeHeight={150} /></div>;
   }
   if (t === 'simulation') {
-    if (item.sim_entry_url) return <div className="avatar-gc__preview"><LazyIframe src={item.sim_entry_url} /></div>;
+    if (item.sim_entry_url) return <div className="avatar-gc__preview"><LazyIframe src={resolveSimUrl(item.sim_entry_url)} /></div>;
     if (typeof spec?.html === 'string') return <div className="avatar-gc__preview"><LazyIframe srcDoc={spec.html as string} /></div>;
     return <div className="avatar-gc__preview avatar-gc__preview--sim"><span>▶ Interactive</span></div>;
   }
@@ -338,7 +339,7 @@ function FullScreen({ item, onClose }: { item: LibraryItem; onClose: () => void 
       <button className="avatar-gfs__close" onClick={onClose}><X size={18} /></button>
       {item.visual_type === 'image' && item.image_url && <img src={item.image_url} alt={item.alt_text ?? ''} className="avatar-gfs__img" />}
       {item.visual_type === 'simulation' && (item.sim_entry_url
-        ? <iframe src={item.sim_entry_url} title="sim" sandbox="allow-scripts allow-same-origin" className="avatar-gfs__frame" />
+        ? <iframe src={resolveSimUrl(item.sim_entry_url)} title="sim" sandbox="allow-scripts allow-same-origin" className="avatar-gfs__frame" />
         : typeof spec?.html === 'string' ? <iframe srcDoc={spec.html as string} title="sim" sandbox="allow-scripts" className="avatar-gfs__frame" /> : null)}
       {item.visual_type === 'equation' && !!spec?.latex && <div className="avatar-gfs__dark"><EquationRenderer latex={spec.latex as string} />{item.caption && <p className="avatar-gfs__cap">{item.caption}</p>}</div>}
       {item.visual_type === 'chart' && !!spec?.labels && <div className="avatar-gfs__dark avatar-gfs__chart"><ChartRenderer chartType={(spec.chartType as 'bar' | 'line' | 'pie') ?? 'bar'} title={(spec.title as string) ?? ''} labels={spec.labels as string[]} datasets={(spec.datasets as never[]) ?? []} height="100%" />{item.caption && <p className="avatar-gfs__cap">{item.caption}</p>}</div>}

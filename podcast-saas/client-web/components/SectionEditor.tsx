@@ -1059,8 +1059,12 @@ export function SectionEditor({
   // the resolved URL is never persisted or compared. Memoized per raw URL so a
   // devicePixelRatio change (browser zoom) can't rewrite src and reload a live preview.
   const resolvedSimPreviewSrc = useMemo(
-    () => (simPreviewUrl ? resolveSimUrl(simPreviewUrl) : null),
-    [simPreviewUrl],
+    () => (simPreviewUrl
+      ? resolveSimUrl(simPreviewUrl, simpleUi && effectiveHideSelectors?.length ? { hideSelectors: effectiveHideSelectors } : undefined)
+      : null),
+    // hideSelectors ride the URL FRAGMENT (see simUrl.ts), so a selection change never reloads a
+    // live preview — it only affects the first-paint cloak of a freshly mounted iframe.
+    [simPreviewUrl, simpleUi, effectiveHideSelectors],
   );
 
   // (D2b) Broadcast whether the preview-tab sim iframe is mounted so the timeline
