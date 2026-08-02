@@ -7,6 +7,8 @@
  * PREVIOUS section's frozen frame while the new body was still being applied.
  */
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { applyGateFor, type ApplyGateMeta } from '../lib/simApplyGate';
 
 const meta = (over: Partial<ApplyGateMeta> = {}): ApplyGateMeta => ({
@@ -55,5 +57,50 @@ describe('applyGateFor — LEGACY / unknown documents are never made to wait on 
     // A modern body may legitimately take >200ms (the generation prompt tells bodies to poll for
     // async-built controls). The decision must not depend on elapsed time at all.
     expect(applyGateFor(meta({ ackCapable: true }), 'slow-section')).toBe('await-ack');
+  });
+});
+
+describe('call-site ordering — the gate decision must be taken BEFORE lastScript is updated', () => {
+  // The extraction bug (audited RELEASE_BLOCKER): the player set meta.lastScript = script and
+  // THEN called applyGateFor(meta, script), so lastScript === nextScript always held and the
+  // gate always returned 'reveal-now' — the whole ack machinery was dead code. This pins the
+  // ordering contract the player must honour.
+  it('deciding AFTER the write always yields reveal-now (the bug) — proving order matters', () => {
+    const m = meta({ lastScript: 'A' });
+    // BUG ORDER: write then decide.
+    m.lastScript = 'B';
+    expect(applyGateFor(m, 'B')).toBe('reveal-now');   // wrong for a real A→B switch
+  });
+
+  it('deciding BEFORE the write yields await-ack for a genuine switch (the fix)', () => {
+    const m = meta({ lastScript: 'A' });
+    // FIX ORDER: decide first, then write.
+    const decision = applyGateFor(m, 'B');
+    m.lastScript = 'B';
+    expect(decision).toBe('await-ack');
+  });
+});
+
+
+describe('SOURCE INVARIANT — the player computes the gate decision before writing lastScript', () => {
+  // A pure-function test cannot catch the real bug (the player wrote meta.lastScript = script and
+  // THEN called applyGateFor). Assert against the actual hook source that, in the painted-path
+  // activation, the applyGateFor(...) call precedes the `meta.lastScript = script` write — the
+  // ONLY ordering under which the gate is live.
+  const src = readFileSync(join(__dirname, '../components/viewer/useProjectPlayer.ts'), 'utf8');
+
+  it('applyGateFor is called before the lastScript assignment in the activation block', () => {
+    const iDecision = src.indexOf('applyGateFor(meta, script)');
+    const iWrite = src.indexOf('meta.lastScript = script;');
+    expect(iDecision, 'applyGateFor(meta, script) call not found').toBeGreaterThan(-1);
+    expect(iWrite, 'meta.lastScript = script write not found').toBeGreaterThan(-1);
+    expect(iDecision, 'the gate decision MUST be taken before lastScript is updated').toBeLessThan(iWrite);
+  });
+
+  it('the awaited pending apply has a terminal reveal (never a permanent hold)', () => {
+    // The await-ack timer must call revealSim, not merely log — otherwise a post-roll sim whose
+    // bridge never acks holds a paused frame forever (audited HIGH).
+    const block = src.slice(src.indexOf('await-ack'), src.indexOf('await-ack') + 1200);
+    expect(block).toContain('revealSim({ force: true })');
   });
 });

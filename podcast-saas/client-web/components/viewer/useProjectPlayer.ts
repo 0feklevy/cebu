@@ -894,25 +894,32 @@ export function useProjectPlayer(
         // (possibly the PREVIOUS section's frozen frame), so a proven-modern bridge holds the
         // swap until its SCRIPT_APPLIED ack — never a timer. See lib/simApplyGate.ts for why
         // this is safe for both bridge generations.
-        // Record what the child was actually SENT, immediately — not when it acks. An
-        // abandoned switch (seek/branch mid-flight) otherwise left lastScript pointing at the
-        // previous section, and re-entering it would take the no-wait path over a document that
-        // had already been told to run something else (audited).
+        // Decide BEFORE recording the new script: applyGateFor compares meta.lastScript to the
+        // incoming script, so writing lastScript first would make them equal and always return
+        // 'reveal-now' — defeating the whole gate (audited: the fix's own extraction bug).
+        const applyDecision = applyGateFor(meta, script);
+        // Record what the child was actually SENT, immediately — not when it acks. An abandoned
+        // switch (seek/branch mid-flight) otherwise left lastScript pointing at the previous
+        // section, and re-entering it would take the no-wait path over a document that had
+        // already been told to run something else.
         meta.lastScript = script;
-        if (applyGateFor(meta, script) === 'await-ack') {
+        if (applyDecision === 'await-ack') {
           cancelPendingApply();
           const gen = warmGenRef.current;
           pendingApplyRef.current = {
             key, script, token,
-            // NOT a reveal timer: an unacknowledged frame is NEVER presented. The video (or the
-            // outgoing last frame) keeps holding; after this bound we surface the honest failure
-            // affordance and keep holding. SCRIPT_APPLIED / _MISSING / _ERROR release the wait.
+            // The outgoing content (video, or the last frame) HOLDS while we wait — an
+            // unacknowledged frame is never presented early. SCRIPT_APPLIED / _MISSING / _ERROR
+            // release the wait immediately. This bound is the TERMINAL fallback: after it, the
+            // child has almost certainly applied the switch (startScript is synchronous once
+            // delivered), and holding forever — especially a post-roll sim with the video paused
+            // — is worse than a best-effort reveal. So release and show. Never a permanent hold.
             timer: setTimeout(() => {
               if (pendingApplyRef.current?.token !== token) return;
               if (warmGenRef.current !== gen) return;
-              // Hold the outgoing content (the video keeps playing) — but never park a
-              // permanent spinner on it. Revealing here would present the PREVIOUS section.
-              simTelemetry('apply-ack-stalled', { key, script });
+              pendingApplyRef.current = null;
+              simTelemetry('apply-ack-timeout-reveal', { key, script });
+              revealSim({ force: true });
             }, SIM_APPLY_STALL_MS),
           };
         } else {

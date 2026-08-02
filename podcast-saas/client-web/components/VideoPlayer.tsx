@@ -185,9 +185,9 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
       // guess-timer — is the "safe to show" signal. The blind fallbacks below remain only as a
       // ceiling for pre-v4 packages that can never ack a paint.
       if (type === 'SIM_PAINTED') {
+        simPaintedRef.current = true;   // latch: lets the poll early-exit + the fast re-entry reveal work
         if (simRevealTimerRef.current) { clearTimeout(simRevealTimerRef.current); simRevealTimerRef.current = null; }
         if (simShowTimerRef.current) { clearTimeout(simShowTimerRef.current); simShowTimerRef.current = null; }
-      if (simStopTimerRef.current) { clearTimeout(simStopTimerRef.current); simStopTimerRef.current = null; }
         if (activeSimUrlRef.current) setShowSim(true);
       }
       if (type === 'userInteraction') hook.pause();
@@ -354,6 +354,9 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
     }
     // (D2b) Re-entered a sim section before the destroy grace fired — keep the live iframe.
     cancelSimDestroy();
+    // Any new activation supersedes a pending deferred stopScript: the single editor iframe is
+    // about to (re)apply/navigate, and a late stop would tear down the NEW document (audited).
+    if (simStopTimerRef.current) { clearTimeout(simStopTimerRef.current); simStopTimerRef.current = null; }
     const sameUrl = newUrl === activeSimUrlRef.current;
     if (!sameUrl && activeSimUrlRef.current) {
       // Different section incoming: never leave the outgoing section on screen while the frame
