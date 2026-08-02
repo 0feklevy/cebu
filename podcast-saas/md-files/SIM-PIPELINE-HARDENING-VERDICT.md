@@ -33,6 +33,26 @@ These are player-side or serve-time and work against **stored, un-rebuilt** pack
 | **Serving** | Local path injects the boot snippet (dev first-paint now matches prod); marker detection is exact-tag, not substring; text is `no-cache` + strong ETag; binary redirects are `302` + `max-age=3600` **and the uploaded object's own `Cache-Control` is bounded** (the redirect alone did not bound staleness — the object metadata is what a browser keeps). |
 | **`#simboot`** | Appends after an author fragment instead of overwriting it. |
 
+## 2b. Second adversarial review — one RELEASE BLOCKER found and fixed (commit 5e43900)
+
+A focused adversarial review of the full diff caught a blocker **the branch itself introduced**:
+the apply-ack gate (§3, the headline safety mechanism) was **dead code**. The activation path set
+`meta.lastScript = script` one line *before* calling `applyGateFor(meta, script)`, so
+`lastScript === nextScript` always held and the gate always returned `reveal-now` — every
+proven-modern same-document switch revealed immediately and could present the previous section's
+frozen frame. The pure unit test passed (it passed the *old* `lastScript`); the e2e harness replays
+messages and never runs the hook — the bug lived in the gap. **Fixed:** compute the decision before
+writing `lastScript`. Guarded by a new **source-invariant test** asserting the real hook orders the
+call correctly, plus a terminal-reveal assertion.
+
+The fix exposed a latent **HIGH** (the `await-ack` path had no terminal reveal — a post-roll sim
+whose bridge never acks would hold a paused frame forever); the wait timer now force-reveals
+best-effort at its bound. Two **MEDIUM** editor issues were also fixed: `VideoPlayer`'s
+`simPaintedRef` was never latched true (poll never early-exited; fast-reveal path dead), and a
+deferred `stopScript` could fire into a newly-navigated document (now cancelled on any new
+activation). Everything else the review checked (window planner, bridge timer-scope + `_sysRaf`
+hoisting, `simUrl` fragment append, unmount leak paths) it found **clean**.
+
 ## 2a. Release-completion round (multi-engine, rebuilt packages, remaining surfaces)
 
 A second execution pass added:

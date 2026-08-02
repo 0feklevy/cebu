@@ -80,8 +80,15 @@ export function resolveSimUrl(url: string, boot?: SimBootParams): string {
     // this and applies display:none BEFORE first paint — killing the full-UI flash.
     // An AUTHOR fragment (hash-routed sims, deep links) is PRESERVED by appending —
     // the boot snippet's reader (`/[#&]simboot=/`) was already written for that form.
-    if (boot?.hideSelectors?.length) {
-      const simboot = 'simboot=' + encodeURIComponent(JSON.stringify({ hide: boot.hideSelectors }));
+    //
+    // The fragment is emitted whenever the caller is boot-aware — INCLUDING for an empty hide
+    // list (the snippet then builds no rules and does nothing). "Hash-only changes never
+    // reload" only holds while the fragment stays present: per the HTML navigation spec a src
+    // change is same-document only when the NEW fragment is non-null, so REMOVING it (Simple-UI
+    // toggled off, every control re-checked, or the section going null during the destroy grace)
+    // is a full navigation that hard-reloads a live sim (audited).
+    if (boot) {
+      const simboot = 'simboot=' + encodeURIComponent(JSON.stringify({ hide: boot.hideSelectors ?? [] }));
       const author = u.hash.replace(/^#/, '');
       const withoutOld = author.replace(/(^|&)simboot=[^&]*/g, '$1').replace(/^&|&$/g, '');
       u.hash = withoutOld ? `${withoutOld}&${simboot}` : simboot;

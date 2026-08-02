@@ -123,6 +123,36 @@ describe('resolveSimUrl', () => {
   it('returns the input unchanged when the URL cannot be parsed', () => {
     expect(resolveSimUrl('http://')).toBe('http://');
   });
+
+  // The Minimal-UI cloak rides the FRAGMENT so a hide-list change never reloads a live iframe.
+  // That only holds while the fragment STAYS PRESENT: per the HTML navigation spec a src change
+  // is same-document only when the NEW fragment is non-null, so dropping it (Simple-UI toggled
+  // off, all controls re-checked, or the section going null during the destroy grace) is a FULL
+  // navigation that hard-reloads the sim (audited).
+  describe('boot fragment stability', () => {
+    const hash = (url: string, boot?: { hideSelectors?: string[] }) => new URL(resolveSimUrl(url, boot)).hash;
+
+    it('emits a simboot fragment even when nothing is hidden', () => {
+      expect(hash('https://x.test/a.html', { hideSelectors: [] })).toMatch(/^#simboot=/);
+    });
+
+    it('toggling the hide list on and off is always a fragment-only change', () => {
+      const on  = new URL(resolveSimUrl('https://x.test/a.html', { hideSelectors: ['#panel'] }));
+      const off = new URL(resolveSimUrl('https://x.test/a.html', { hideSelectors: [] }));
+      expect(off.hash, 'removing the fragment would full-navigate').not.toBe('');
+      expect(on.hash).not.toBe(off.hash);
+      // Everything BUT the fragment must be identical, or it is a real navigation.
+      expect(off.href.slice(0, off.href.indexOf('#'))).toBe(on.href.slice(0, on.href.indexOf('#')));
+    });
+
+    it('a boot-unaware caller still gets no fragment at all', () => {
+      expect(hash('https://x.test/a.html')).toBe('');
+    });
+
+    it('an author fragment is preserved alongside the cloak', () => {
+      expect(hash('https://x.test/a.html#/route/7', { hideSelectors: [] })).toMatch(/^#\/route\/7&simboot=/);
+    });
+  });
 });
 
 describe('simDestroyGraceMs', () => {

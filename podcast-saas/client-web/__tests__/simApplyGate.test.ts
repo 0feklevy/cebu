@@ -29,6 +29,29 @@ describe('applyGateFor — MODERN (proven-acking) documents', () => {
   });
 });
 
+describe('applyGateFor — a TORN-DOWN document is not a fresh one', () => {
+  // The deferred exit stop runs the section's cleanup: whatever it hid is restored (full UI back)
+  // while the canvas still holds that section's frozen frame. The player recorded that by nulling
+  // lastScript — which reads as a genuine first activation and therefore reveals IMMEDIATELY,
+  // guaranteeing the exact wrong-frame reveal the gate exists to prevent (audited).
+  it('a stopped document waits for the ack even though lastScript is null', () => {
+    expect(applyGateFor(meta({ lastScript: null, stopped: true }), 'section-A')).toBe('await-ack');
+  });
+
+  it('re-entering the SAME section after a teardown still waits — the body must re-apply', () => {
+    expect(applyGateFor(meta({ lastScript: null, stopped: true }), 'section-B')).toBe('await-ack');
+  });
+
+  it('a stopped LEGACY document still reveals immediately (it can never ack)', () => {
+    expect(applyGateFor(meta({ ackCapable: null, stopped: true }), 'section-A')).toBe('reveal-now');
+    expect(applyGateFor(meta({ dynamic: false, stopped: true }), 'section-A')).toBe('reveal-now');
+  });
+
+  it('a genuine first activation is still immediate — stopped is what distinguishes them', () => {
+    expect(applyGateFor(meta({ lastScript: null, stopped: false }), 'section-A')).toBe('reveal-now');
+  });
+});
+
 describe('applyGateFor — LEGACY / unknown documents are never made to wait on silence', () => {
   it('a bridge that has never acked reveals immediately (stored pre-ack bridge)', () => {
     // ackCapable stays null because the package's FIRST activation produced no SCRIPT_APPLIED —

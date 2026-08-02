@@ -19,12 +19,15 @@
  *
  * SCOPE — read honestly: this validates the CHILD-side protocol and the transition ORDERING
  * (including the exact timings the player uses) in a real browser. The harness below replays the
- * player's message sequences; that the player actually emits them is pinned separately by the
- * unit suites and by transitionOrder.test.ts. It is not a full end-to-end run of the React viewer.
+ * player's message sequences from its OWN fixtures, so on its own it cannot prove the player
+ * still emits them — a player-side regression would leave every test here green. The emitting
+ * side is pinned separately, by source invariants in __tests__/transitionOrder.test.ts (atomic
+ * exit, deferred-stop registration, gate ordering, mute/paint latches). Neither is a full
+ * end-to-end run of the React viewer; that gap is still open.
  */
 import { test, expect, type Page } from '@playwright/test';
 import { createServer, type Server } from 'node:http';
-import { readFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, statSync } from 'node:fs';
 import { join, extname, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import type { AddressInfo } from 'node:net';
@@ -49,7 +52,20 @@ const EXIT_STOP_MS = 280;         // SIM_EXIT_STOP_MS — deferred stopScript, >
 const APPLY_ACK_MS = 200;         // SIM_APPLY_ACK_MS — legacy compatibility ceiling
 
 function ensureFixture(): void {
-  if (existsSync(join(FIXTURE_DIR, 'modern', 'index.html'))) return;
+  // The fixture is BUILT BY the production transforms (bridge template + rAF gate). A cached copy
+  // from before a template change would quietly test the old bridge and pass — the suite would
+  // certify code that no longer exists. Regenerate whenever the generator or the service that
+  // feeds it is newer than the fixture. SIM_FIXTURE_FORCE=1 forces it.
+  const stamp = join(FIXTURE_DIR, 'modern', 'index.html');
+  if (existsSync(stamp) && !process.env.SIM_FIXTURE_FORCE) {
+    const built = statSync(stamp).mtimeMs;
+    const sources = [
+      join(BACKEND, 'src', 'scripts', 'gen-sim-fixture.ts'),
+      join(BACKEND, 'src', 'services', 'simulation', 'SimulationService.ts'),
+    ];
+    const stale = sources.some((s) => existsSync(s) && statSync(s).mtimeMs > built);
+    if (!stale) return;
+  }
   mkdirSync(FIXTURE_DIR, { recursive: true });
   const r = spawnSync('npx', ['tsx', 'src/scripts/gen-sim-fixture.ts', FIXTURE_DIR], { cwd: BACKEND, encoding: 'utf8' });
   if (r.status !== 0) throw new Error(`fixture generation failed: ${r.stderr || r.stdout}`);
@@ -364,6 +380,18 @@ test.describe('sim transitions — rendered frame sequence', () => {
 
     expect(afterPause, 'automation must be genuinely stopped, not merely gated').toBe(atPause);
     expect((await events(page)).some((e) => e.type === 'AUTO_PAUSED')).toBe(true);
+
+    // …while the simulation's OWN loop keeps running. The body-call timer capture cannot tell a
+    // demo timer from an engine timer a synchronous SIM call scheduled (the generation prompt
+    // specifies 30-150ms demo intervals — exactly engine-loop rates, so delay proves nothing),
+    // and clearing the engine would FREEZE the scene: strictly worse than the automation it was
+    // meant to stop. Only handles the body registered via simDemoTimer may be cleared (audited).
+    const engineAtPause = await page.evaluate(() =>
+      ((document.getElementById('f') as HTMLIFrameElement).contentWindow as unknown as { __ENGINE__?: number }).__ENGINE__ ?? -1);
+    await page.waitForTimeout(200);
+    const engineLater = await page.evaluate(() =>
+      ((document.getElementById('f') as HTMLIFrameElement).contentWindow as unknown as { __ENGINE__?: number }).__ENGINE__ ?? -1);
+    expect(engineLater, 'an UNREGISTERED (engine) timer must survive pauseScript').toBeGreaterThan(engineAtPause);
 
     // …and the section is STILL applied, still Minimal-UI, still visible: pausing is not a teardown.
     const state = await page.evaluate(() => {

@@ -49,7 +49,6 @@ async function main(): Promise<void> {
       if (entries.size === 0) { skipped++; console.log(`  SKIP     ${label} — no section entries parsed`); continue; }
 
       const combined = wrapBridgeCombined(entries);
-      if (combined === bridgeJs) { skipped++; console.log(`  UNCHANGED ${label}`); continue; }
       const hash = computeBridgeHash(combined);
 
       let rawHtml: string;
@@ -64,7 +63,28 @@ async function main(): Promise<void> {
       const rel = (depth > 0 ? '../'.repeat(depth) : './') + 'bridge.js';
       const updatedHtml = injectBridgeScriptTag(injectRafGate(rawHtml), rel, hash);
 
+      // BOTH files must already be current to skip. Comparing only bridge.js made a partially
+      // applied package (new bridge written, entry upload then failed) report UNCHANGED forever:
+      // the tool could never repair the state it had itself created, while calling it healthy.
+      if (combined === bridgeJs && updatedHtml === rawHtml) { skipped++; console.log(`  UNCHANGED ${label}`); continue; }
+
       if (APPLY) {
+        // Optimistic-concurrency check. The live generation path does this same read-modify-write
+        // under an in-process bridge lock (uploadSectionBridge/withBridgeLock) precisely because
+        // concurrent merges lose sections; a separate process cannot join that lock, so re-read
+        // immediately before the PUT and abort if the bytes moved under us. Without this, a user
+        // generation landing between our read and write is silently reverted.
+        let current = '';
+        try { current = (await storage.readObject(bridgeKey)).toString('utf-8'); }
+        catch {
+          const res = await fetch(storage.getSimPublicUrl(bridgeKey));
+          current = res.ok ? await res.text() : '';
+        }
+        if (current !== bridgeJs) {
+          failed++;
+          console.log(`  CONFLICT ${label} — bridge.js changed during the rebuild (generation in flight); re-run`);
+          continue;
+        }
         await storage.uploadFile(bridgeKey, Buffer.from(combined, 'utf-8'), 'application/javascript');
         await storage.uploadFile(entryKey, Buffer.from(updatedHtml, 'utf-8'), 'text/html; charset=utf-8');
         console.log(`  UPDATED  ${label} — ${entries.size} section(s), v=${hash}`);
@@ -78,7 +98,12 @@ async function main(): Promise<void> {
     }
   }
   console.log(`\nSummary: updated: ${updated}, skipped/unchanged: ${skipped}, failed: ${failed}`);
-  process.exit(0);
+  if (failed > 0) {
+    // The exit code is the ONLY signal a scripted rollout reads. Exiting 0 with failures told
+    // `backup && rebuild --apply && deploy` chains that the storage rollout had completed.
+    console.error(`\n${failed} package(s) failed — storage rollout is INCOMPLETE. Do not proceed.`);
+  }
+  process.exit(failed > 0 ? 1 : 0);
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

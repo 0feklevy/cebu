@@ -172,6 +172,10 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
           // (D2b) Unfreeze first — the sim may have been simPause'd on a previous leave.
           // Harmless no-op on a freshly loaded page.
           sendToSim({ type: 'simResume' });
+          // Exit mutes the frame and the gate LATCHES that (it patches play() to force muted
+          // until an explicit simUnmute), so every activation path must unmute or a retained
+          // document comes back permanently silent (audited — this path had no unmute).
+          sendToSim({ type: 'simUnmute' });
           // Send startScript first so sim applies simpleUi, then reveal
           sendToSim({ type: 'startScript', script: pending.script, params: pending.params });
           // Definitive __simHideUi applied by startScript — drop the boot-time hide.
@@ -205,14 +209,16 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
   // null and never attached. (sim-race + sim-reliability fix)
   const handleSimFrameLoad = useCallback(() => {
     simReadyRef.current = false;
+    simPaintedRef.current = false;   // a freshly loaded document has painted nothing yet
     if (desiredSimRef.current) pendingSimRef.current = { ...desiredSimRef.current };
     startSimPoll();
   }, [startSimPoll]);
 
-  // poll + destroy-timer cleanup on unmount
+  // poll + destroy-timer + deferred-stop cleanup on unmount
   useEffect(() => () => {
     if (simPollRef.current) clearInterval(simPollRef.current);
     if (simDestroyTimerRef.current) { clearTimeout(simDestroyTimerRef.current); simDestroyTimerRef.current = null; }
+    if (simStopTimerRef.current) { clearTimeout(simStopTimerRef.current); simStopTimerRef.current = null; }
   }, []);
 
   // (D2b) SectionEditor coordination: while its preview-tab sim iframe is live, freeze the
@@ -346,7 +352,6 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
       // Cancel any in-flight 50ms reveal — otherwise a fast scrub out of the section right after
       // entering leaves the overlay stranded visible over plain video. (sim-race fix)
       if (simShowTimerRef.current) { clearTimeout(simShowTimerRef.current); simShowTimerRef.current = null; }
-      if (simStopTimerRef.current) { clearTimeout(simStopTimerRef.current); simStopTimerRef.current = null; }
       desiredSimRef.current = null;
       pendingSimRef.current = null;
       activeSimUrlRef.current = null;
@@ -436,7 +441,9 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
     return hide?.length ? hide : null;
   }, [activeSimSection]);
   const resolvedSimSrc = useMemo(
-    () => (simUrl ? resolveSimUrl(simUrl, simBootHide ? { hideSelectors: simBootHide } : undefined) : null),
+    // Always boot-aware (empty list when not cloaking): dropping the #simboot fragment when the
+    // section goes null would full-navigate — reloading the very iframe the destroy grace retains.
+    () => (simUrl ? resolveSimUrl(simUrl, { hideSelectors: simBootHide ?? [] }) : null),
     [simUrl, simBootHide],
   );
   const simulationBadgeText = activeSimSection

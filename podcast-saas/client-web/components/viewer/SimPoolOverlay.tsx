@@ -49,9 +49,12 @@ function SimPoolFrame({ spec, active, visible, delayMs, armGate, registerFrame, 
 
   if (!armed) return null;
 
+  // Boot-aware unconditionally (empty list = no cloak): the #simboot fragment must stay present
+  // across bootHide changes, or dropping it turns a hash-only src change into a full navigation
+  // that reloads a resident frame (audited).
   const src = resolveSimUrl(
     resolveAssetUrl(spec.src) ?? spec.src,
-    spec.bootHide?.length ? { hideSelectors: spec.bootHide } : undefined,
+    { hideSelectors: spec.bootHide ?? [] },
   );
 
   const shown = active && visible;

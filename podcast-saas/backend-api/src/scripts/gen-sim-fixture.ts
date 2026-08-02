@@ -64,8 +64,18 @@ const SECTION_BODIES: Record<string, string> = {
     el.style.background = '#0000ff';
     el.setAttribute('data-section', 'AUTO');
     window.__TICKS__ = 0;
-    var iv = setInterval(function () { window.__TICKS__++; }, 20);
-    return function cleanup() { clearInterval(iv); el.setAttribute('data-section', 'none'); };
+    window.__ENGINE__ = 0;
+    // The DEMO timer, registered exactly as the generation prompt now mandates. Only registered
+    // handles are stopped by pauseScript.
+    var iv = simDemoTimer(setInterval(function () { window.__TICKS__++; }, 20));
+    // An UNREGISTERED timer standing in for the simulation's OWN engine loop — a body that calls
+    // into the sim synchronously schedules these too. pauseScript must NOT touch it: clearing it
+    // would freeze the scene, which is strictly worse than the automation it meant to stop.
+    var engine = setInterval(function () { window.__ENGINE__++; }, 20);
+    return function cleanup() {
+      clearInterval(iv); clearInterval(engine);
+      el.setAttribute('data-section', 'none');
+    };
   `,
   [FIXTURE_SECTIONS.THROWS]: `
     var el = document.getElementById('marker');

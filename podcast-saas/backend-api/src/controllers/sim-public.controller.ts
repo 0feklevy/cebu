@@ -53,9 +53,13 @@ export function injectSimBootSnippet(html: string): string {
   // whose own source merely mentions "data-simboot" (a comment, a docs string) must not
   // silently lose the minimal-UI boot cloak (audited false-positive suppression).
   if (/<script\s+data-simboot[\s>]/i.test(html)) return html;
-  const head = /<head[^>]*>/i.exec(html);
+  // `(\s[^>]*)?` — never a bare `<head[^>]*>` probe, which also matches `<header …>` (including
+  // one inside an inline script's string literal, where splicing a `</script>`-bearing snippet
+  // terminates the sim's own script element and destroys the document). Same hardening as
+  // injectRafGate, which was fixed for exactly this (audited parity gap).
+  const head = /<head(\s[^>]*)?>/i.exec(html);
   if (head) return html.slice(0, head.index + head[0].length) + SIM_BOOT_SNIPPET + html.slice(head.index + head[0].length);
-  const root = /<html[^>]*>/i.exec(html);
+  const root = /<html(\s[^>]*)?>/i.exec(html);
   if (root) return html.slice(0, root.index + root[0].length) + SIM_BOOT_SNIPPET + html.slice(root.index + root[0].length);
   return SIM_BOOT_SNIPPET + html;
 }

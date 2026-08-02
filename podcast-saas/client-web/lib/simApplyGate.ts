@@ -28,11 +28,22 @@ export interface ApplyGateMeta {
   ackCapable: boolean | null;
   /** The script this document last applied (or was last sent). */
   lastScript: string | null;
+  /**
+   * True once a deferred `stopScript` tore the last section down. Such a document is NOT a fresh
+   * one: its cleanup ran and restored whatever the section had hidden (full UI back), while the
+   * canvas still holds that section's frozen frame. Tracked separately because `lastScript: null`
+   * means "nothing applied yet" — a genuine first activation, which reveals immediately.
+   */
+  stopped?: boolean;
 }
 
 export function applyGateFor(meta: ApplyGateMeta, nextScript: string): ApplyGateDecision {
   if (meta.dynamic !== true) return 'reveal-now';        // legacy dispatch: navigates, never switches in place
   if (meta.ackCapable !== true) return 'reveal-now';     // never proven to ack — do not wait on silence
+  // A torn-down document shows the previous section's frozen frame with its full UI restored.
+  // Revealing that before the new body applies is the exact defect this gate exists to prevent,
+  // so it must be checked BEFORE the first-activation shortcut below (audited).
+  if (meta.stopped) return 'await-ack';
   if (meta.lastScript === null) return 'reveal-now';     // first activation on this document
   if (meta.lastScript === nextScript) return 'reveal-now'; // re-entering the SAME section: already applied
   return 'await-ack';

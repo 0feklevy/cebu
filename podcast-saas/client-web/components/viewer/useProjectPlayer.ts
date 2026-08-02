@@ -272,7 +272,11 @@ export function useProjectPlayer(
     // OPENS on a simulation: there is no lead time to plan with, so its package must be seeded or
     // a weak device is guaranteed a cold boot at t=0 (the arm gate already opens immediately for
     // sim-first). 'single' never pre-mounts.
-    const opensOnSim = (config.segments?.[0]?.simulations ?? []).some((sec) => !!sec.simulation_url && sec.start_sec <= 0.05);
+    // `initialSegments` — the sequence that actually plays — NOT config.segments, which
+    // buildPlayerConfig fills with every main video flat in created_at order, so for a branching
+    // project its [0] is unrelated to the entry sequence and this decision disagreed with the
+    // `simFirst` arm gate below on the very same config (audited).
+    const opensOnSim = (initialSegments[0]?.simulations ?? []).some((sec) => !!sec.simulation_url && sec.start_sec <= 0.05);
     const simFirstSeed = poolTierRef.current === 'window' && opensOnSim ? 1 : 0;
     const cap = poolTierRef.current === 'all' ? SIM_POOL_CAP : simFirstSeed;
     initialSimPoolRef.current = collectSimPool(config, cap);
@@ -371,6 +375,8 @@ export function useProjectPlayer(
     ready: boolean; painted: boolean; dynamic: boolean | null; v4: boolean;
     expectReload: boolean; warmCeil: ReturnType<typeof setTimeout> | null;
     lastScript: string | null; ackCapable: boolean | null;
+    /** A deferred stopScript has torn the last section down (frozen frame + restored full UI). */
+    stopped: boolean;
   }
   const simPoolMetaRef = useRef<Map<string, PoolMeta>>(new Map());
   // Deferred exit stops: key → timer posting stopScript AFTER the fade completes. Cancelled if
@@ -534,7 +540,7 @@ export function useProjectPlayer(
   const poolMeta = (key: string): PoolMeta => {
     let m = simPoolMetaRef.current.get(key);
     if (!m) {
-      m = { ready: false, painted: false, dynamic: null, v4: false, expectReload: false, warmCeil: null, lastScript: null, ackCapable: null };
+      m = { ready: false, painted: false, dynamic: null, v4: false, expectReload: false, warmCeil: null, lastScript: null, ackCapable: null, stopped: false };
       simPoolMetaRef.current.set(key, m);
     }
     return m;
@@ -629,7 +635,14 @@ export function useProjectPlayer(
       // The section is now torn down (its cleanup restored whatever it had hidden), so the
       // document no longer has it applied. Forget it, or re-entering the SAME section would take
       // the no-wait path and reveal a document showing restored full UI (audited).
-      poolMeta(key).lastScript = null;
+      //
+      // `stopped` is what makes that hold real: on its own, lastScript=null reads as a genuine
+      // FIRST activation, which applyGateFor deliberately reveals immediately — so nulling alone
+      // guaranteed the very no-wait path this is meant to close, for every section of the package
+      // (audited: the gate was inert on every exit→re-entry gap > SIM_EXIT_STOP_MS).
+      const stoppedMeta = poolMeta(key);
+      stoppedMeta.lastScript = null;
+      stoppedMeta.stopped = true;
       simTelemetry('deferred-stop', { key });
     }, SIM_EXIT_STOP_MS));
   };
@@ -645,7 +658,7 @@ export function useProjectPlayer(
   const navigateFrame = (key: string, src: string, bootHide?: string[] | null) => {
     const meta = poolMeta(key);
     meta.ready = false; meta.painted = false; meta.expectReload = true;
-    meta.lastScript = null; meta.ackCapable = null;   // fresh document — fresh contract
+    meta.lastScript = null; meta.ackCapable = null; meta.stopped = false;   // fresh document — fresh contract
     cancelDeferredStop(key);                          // a deferred stop must not hit the new doc
     clearWarmCeil(meta);
     warmQueueRef.current = warmQueueRef.current.filter((k) => k !== key);
@@ -903,6 +916,7 @@ export function useProjectPlayer(
         // section, and re-entering it would take the no-wait path over a document that had
         // already been told to run something else.
         meta.lastScript = script;
+        meta.stopped = false;   // this activation supersedes any earlier teardown
         if (applyDecision === 'await-ack') {
           cancelPendingApply();
           const gen = warmGenRef.current;
@@ -929,6 +943,7 @@ export function useProjectPlayer(
         // Frame is alive but hasn't acked a painted frame yet — drive it and poll the paint ack.
         clearWarmCeil(meta);
         meta.lastScript = meta.dynamic ? dynScript : legacyScript;
+        meta.stopped = false;
         sendToFrame(key, { type: 'simResume' });
         sendToFrame(key, { type: 'simUnmute' });
         sendToFrame(key, { type: 'startScript', script: meta.lastScript, params });
@@ -1715,6 +1730,7 @@ export function useProjectPlayer(
             }
             // Drive the frame to paint. Reveal stays gated on SIM_PAINTED / the bounded ceiling.
             meta.lastScript = meta.dynamic ? pending.dynScript : pending.legacyScript;
+            meta.stopped = false;
             sendToFrame(frameUrl, { type: 'simResume' });
             sendToFrame(frameUrl, { type: 'simUnmute' });
             sendToFrame(frameUrl, { type: 'startScript', script: meta.lastScript, params: pending.params });
@@ -1892,6 +1908,7 @@ export function useProjectPlayer(
     meta.dynamic = null;
     meta.lastScript = null;
     meta.ackCapable = null;
+    meta.stopped = false;   // a freshly loaded document has nothing torn down
     clearWarmCeil(meta);
     warmQueueRef.current = warmQueueRef.current.filter((k) => k !== key);
     finishWarm(key);   // a reloading frame gives up its warm slot
@@ -2292,15 +2309,21 @@ export function useProjectPlayer(
         if (m.dynamic !== true) {
           cancelDeferredStop(doneKey);
           simTelemetry('reset-reload-legacy', { key: doneKey });
-          setTimeout(() => {
+          // Registered in the deferred-stop map rather than run as a bare timer: that map is what
+          // the window planner's mid-fade guard reads to keep a fading frame resident, and what
+          // the unmount cleanup cancels. A bare timer here was invisible to both — the planner
+          // could evict the frame mid-fade (hard cut instead of a fade) and the timer then fired
+          // against a detached iframe and an orphaned meta object (audited).
+          simDeferredStopRef.current.set(doneKey, setTimeout(() => {
+            simDeferredStopRef.current.delete(doneKey);
             if (doneKey === activeSimUrlRef.current) return;   // re-entered during the fade
             m.ready = false; m.painted = false; m.expectReload = true; m.dynamic = null;
-            m.lastScript = null; m.ackCapable = null;
+            m.lastScript = null; m.ackCapable = null; m.stopped = false;
             clearWarmCeil(m);
             // Re-assigning src reloads the (cross-origin) document — location.reload() throws.
             const src = doneFrame.src;
             try { doneFrame.src = src; } catch { /* frame detached */ }
-          }, SIM_EXIT_STOP_MS);
+          }, SIM_EXIT_STOP_MS));
         } else {
           simTelemetry('reset-stopscript', { key: doneKey });
           scheduleDeferredStop(doneKey);
@@ -2346,7 +2369,7 @@ export function useProjectPlayer(
       const key = activeSimUrlRef.current;
       const dynamic = key ? poolMeta(key).dynamic === true : false;
       const script = dynamic ? dynamicScriptFor(sec) : (sec.sim_script ?? 'main');
-      if (key) poolMeta(key).lastScript = script;
+      if (key) { const m = poolMeta(key); m.lastScript = script; m.stopped = false; }
       sendToSim({ type: 'stopScript' });
       sendToSim({
         type: 'startScript',

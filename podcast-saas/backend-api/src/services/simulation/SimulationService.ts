@@ -683,6 +683,7 @@ You only write the body of SCRIPTS.main.
       // [YOUR IMPLEMENTATION HERE]
       // Use _hide() to hide elements.
       // Push intervals: _ivs.push(setInterval(..., ms));
+      // Automation/demo intervals ONLY: _ivs.push(simDemoTimer(setInterval(..., ms)));
       // Push listeners: _listeners.push([el, event, handler]); el.addEventListener(event, handler);
       // Push injected: const el = document.createElement('div'); document.body.appendChild(el); _injected.push(el);
 
@@ -794,6 +795,12 @@ End the mainBody with: return function cleanup() { ... };
 ### Animation
 26. Use setInterval for animation: step 0.1–0.3, intervalMs 30–150ms. Pingpong at min/max.
 27. Push every interval ID into _ivs and every listener into _listeners so cleanup clears/removes them.
+27b. Wrap EVERY automation/demo interval in simDemoTimer(...) when pushing it:
+    _ivs.push(simDemoTimer(setInterval(step, 120)));
+    It returns the id unchanged (cleanup still clears it normally) and is what lets the player stop
+    the demo when the user grabs a control WITHOUT tearing your section down. Wrap ONLY automation
+    timers — never a timer that drives the simulation's own engine or a control-polling loop.
+    If simDemoTimer is undefined (older host), fall back: _ivs.push(setInterval(step, 120)).
 
 ### Render functions
 28. Call updateDerivedPhysics before render functions if it exists. Call render functions defensively
@@ -1312,24 +1319,48 @@ export function wrapBridgeCombined(entries: Map<string, string>): string {
     '  }',
     "  function _post(msg) { try { window.parent && window.parent.postMessage(msg, '*'); } catch (e) {} }",
     '  // ── Auto-script timer scope (narrow, no managed-lifecycle rewrite) ──────────',
-    '  // Generated section bodies drive their demo with setInterval/setTimeout (the generation',
-    '  // prompt mandates it), created at body top level. Those handles live in the body closure,',
-    '  // so the player\'s pauseScript had NOTHING it could stop and automation kept fighting the',
-    '  // user after they grabbed a control (audited). Wrapping the timer globals FOR THE DURATION',
-    '  // OF THE BODY CALL captures exactly the section\'s own handles — not the simulation\'s own',
-    '  // engine timers — so they can be cleared while leaving the scene and UI untouched.',
+    '  // Generated section bodies drive their demo with setInterval/setTimeout created at body top',
+    '  // level. Those handles live in the body closure, so the player\'s pauseScript had NOTHING it',
+    '  // could stop and automation kept fighting the user after they grabbed a control (audited).',
+    '  //',
+    '  // TWO scopes, because they need DIFFERENT precision:',
+    '  //  • _timers — every timer scheduled during the synchronous body call. Cleared on TEARDOWN',
+    '  //    only. This window unavoidably also catches timers scheduled by the simulation\'s OWN',
+    '  //    engine when the body calls into it synchronously (the prompt mandates one up-front',
+    '  //    attempt, e.g. togglePlay()), which is harmless when everything is being torn down.',
+    '  //  • _demoTimers — handles the body EXPLICITLY registered as automation. Only these are',
+    '  //    cleared on pauseScript. Attribution must be exact there: pauseScript keeps the scene',
+    '  //    running, so clearing an engine timer by mistake FREEZES the simulation — strictly',
+    '  //    worse than the automation it was meant to stop. Delay cannot discriminate (the',
+    '  //    generation prompt specifies 30-150ms demo intervals, i.e. exactly engine-loop rates),',
+    '  //    so guessing is not an option and unregistered timers are deliberately left alone.',
     '  var _timers = [];',
+    '  var _demoTimers = [];',
     '  function _trackTimers(run) {',
     '    var ni = window.setInterval, nt = window.setTimeout;',
-    "    window.setInterval = function (f, d) { var id = ni.call(window, f, d); _timers.push([1, id]); return id; };",
-    "    window.setTimeout = function (f, d) { var id = nt.call(window, f, d); _timers.push([0, id]); return id; };",
+    '    // .apply(window, arguments) — the (fn, delay, ...args) form must keep forwarding its',
+    '    // extra callback arguments; a (f, d) shim silently dropped them for the body window.',
+    "    window.setInterval = function (f, d) { var id = ni.apply(window, arguments); _timers.push([1, id]); return id; };",
+    "    window.setTimeout = function (f, d) { var id = nt.apply(window, arguments); _timers.push([0, id]); return id; };",
     '    try { return run(); } finally { window.setInterval = ni; window.setTimeout = nt; }',
+    '  }',
+    '  // Bodies opt a handle in: _ivs.push(simDemoTimer(setInterval(step, 120))). Returns the id',
+    '  // unchanged, so it stays a normal handle the body\'s own cleanup still clears.',
+    '  window.simDemoTimer = function (id) { _demoTimers.push(id); return id; };',
+    '  function _clearDemoTimers() {',
+    '    for (var i = 0; i < _demoTimers.length; i++) {',
+    '      // clearTimeout/clearInterval share one active-timer list per the HTML spec, so both',
+    '      // calls are safe regardless of which primitive created the handle.',
+    '      try { clearInterval(_demoTimers[i]); clearTimeout(_demoTimers[i]); } catch (e) {}',
+    '    }',
+    '    _demoTimers = [];',
     '  }',
     '  function _clearTimers() {',
     '    for (var i = 0; i < _timers.length; i++) {',
     '      try { if (_timers[i][0]) clearInterval(_timers[i][1]); else clearTimeout(_timers[i][1]); } catch (e) {}',
     '    }',
     '    _timers = [];',
+    '    _clearDemoTimers();',
     '  }',
     '  function stopScript() {',
     '    // A throwing cleanup must NEVER wedge dispatch: without the try/finally, _cancelFn kept',
@@ -1385,10 +1416,11 @@ export function wrapBridgeCombined(entries: Map<string, string>): string {
     "    if (type === 'startScript')  startScript(script || 'main', params, d.token);",
     "    if (type === 'stopScript')   stopScript();",
     '    // Stop the demo WITHOUT tearing the section down: the scene, the applied Minimal-UI',
-    '    // policy and manual interactivity all stay exactly as they are. Reaches the body\'s own',
-    '    // setInterval/setTimeout handles via the tracking scope above (audited: pauseScript',
-    '    // previously had nothing it could stop and automation fought the user).',
-    "    if (type === 'pauseScript')  { _clearTimers(); _post({ type: 'AUTO_PAUSED' }); }",
+    '    // policy and manual interactivity all stay exactly as they are. Clears ONLY handles the',
+    '    // body registered via simDemoTimer — never the broad body-call capture, which cannot be',
+    '    // told apart from the simulation\'s own engine timers (see the two scopes above). A body',
+    '    // that registers nothing is simply not pausable: a no-op, never a frozen scene.',
+    "    if (type === 'pauseScript')  { _clearDemoTimers(); _post({ type: 'AUTO_PAUSED' }); }",
     "    if (type === 'PING_SIM_READY' && window._simReadyFired)",
     "      window.parent?.postMessage(_readyMsg(), '*');",
     '  });',

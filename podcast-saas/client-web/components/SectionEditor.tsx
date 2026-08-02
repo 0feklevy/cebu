@@ -519,6 +519,10 @@ export function SectionEditor({
   useEffect(() => {
     const handler = (e: MessageEvent) => {
       if (!e.data || typeof e.data !== 'object') return;
+      // Only THIS preview's iframe may drive it. The timeline player mounts its own sim frame at
+      // the same time (that is exactly what the sim-preview-active coordination below exists
+      // for), and its SIM_READY was being answered by restarting the preview sim (audited).
+      if (e.source !== previewIframeRef.current?.contentWindow) return;
       if (e.data.type === 'SIM_READY' && previewIframeRef.current) {
         const script = section.sim_script ?? 'main';
         // Use the live toggle state, not the saved props, so the preview reflects what the
@@ -1060,10 +1064,14 @@ export function SectionEditor({
   // devicePixelRatio change (browser zoom) can't rewrite src and reload a live preview.
   const resolvedSimPreviewSrc = useMemo(
     () => (simPreviewUrl
-      ? resolveSimUrl(simPreviewUrl, simpleUi && effectiveHideSelectors?.length ? { hideSelectors: effectiveHideSelectors } : undefined)
+      ? resolveSimUrl(simPreviewUrl, {
+          hideSelectors: simpleUi && effectiveHideSelectors?.length ? effectiveHideSelectors : [],
+        })
       : null),
     // hideSelectors ride the URL FRAGMENT (see simUrl.ts), so a selection change never reloads a
-    // live preview — it only affects the first-paint cloak of a freshly mounted iframe.
+    // live preview — it only affects the first-paint cloak of a freshly mounted iframe. The
+    // fragment is emitted even when nothing is hidden: REMOVING it (Simple-UI toggled off, or
+    // every control re-checked) is a full navigation, which hard-reloaded the live preview.
     [simPreviewUrl, simpleUi, effectiveHideSelectors],
   );
 
