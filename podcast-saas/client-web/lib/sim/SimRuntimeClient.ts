@@ -51,8 +51,10 @@ import {
   START_SCRIPT,
   STOP_SCRIPT,
   USER_INTERACTION,
+  SIM_LEGACY_REVEAL_MS,
   type SimStartParams,
 } from './protocol';
+import { applyGateFor } from '../simApplyGate';
 
 /** Explicit lifecycle phases — replaces the scattered booleans each surface used to keep. */
 export type SimPhase =
@@ -295,16 +297,22 @@ export class SimRuntimeClient {
     // before — degrade to the underlying content instead of a wrong or parked frame.
     this.set({ pendingScript: null, lastError: `missing section: ${script}` });
     this.tel('script-missing', { script });
-    this.hide();
+    this.hideAndSilence();
   }
 
   private onError(message: string, token?: number): void {
-    if (token !== undefined && token !== this.state.activationToken) return;
+    // Must go through the SAME staleness check as the other acks. The bridge's stopScript emits a
+    // TOKENLESS, script-less SCRIPT_ERROR when the outgoing section's cleanup throws — and
+    // startScript runs stopScript FIRST, so that fires in the middle of a switch. Accepting it
+    // failed the document and dropped the pending apply, after which the real SCRIPT_APPLIED for
+    // the incoming section was rejected as stale and the section ran correctly but was never
+    // shown (audited: the shipping viewer matches on key+script+token and is immune).
+    if (!this.matchesPending(null, token)) { this.tel('unscoped-error-ignored', { message }); return; }
     this.clearApplyStall();
     this.holding = false;
     this.set({ phase: 'failed', pendingScript: null, lastError: message });
     this.tel('script-error', { message });
-    this.hide();
+    this.hideAndSilence();
   }
 
   /** An ack satisfies the live activation only if BOTH the script and the token match. */
@@ -331,6 +339,10 @@ export class SimRuntimeClient {
     // first, and a late deferred stop would tear down the LIVE section instead.
     this.cancelDeferredStop();
     this.cancelPendingApply();
+    // The paint-recovery ceiling force-reveals, and force bypasses the hold. Left armed across an
+    // activation it would present the OLD section mid-switch — the exact frame the gate exists to
+    // prevent. The owner re-arms it after this activation if the document still needs it.
+    if (this.legacyRevealTimer) { clearTimeout(this.legacyRevealTimer); this.legacyRevealTimer = null; }
 
     const token = ++this.tokenSeq;
     const priorScript = this.state.currentScript;
@@ -349,7 +361,13 @@ export class SimRuntimeClient {
     // currentScript pointing at a section the document was already told to stop running.
     this.set({ currentScript: script, stopped: false });
 
-    if (opts.reveal === 'never') { this.set({ phase: 'hidden' }); return; }
+    if (opts.reveal === 'never') {
+      // Background warm/preload: never leave it sounding. A hidden frame that keeps audio is the
+      // defect VideoPlayer's exit mute exists for.
+      this.post({ type: SIM_MUTE });
+      this.set({ phase: 'hidden', muted: true, visible: false, interactive: false });
+      return;
+    }
 
     const decision = this.gateFor({ prior: priorScript, next: script, wasStopped });
     if (decision === 'await-ack') {
@@ -381,15 +399,13 @@ export class SimRuntimeClient {
    * surface provably shares it.
    */
   private gateFor(a: { prior: string | null; next: string; wasStopped: boolean }): 'reveal-now' | 'await-ack' {
-    if (this.state.dynamic !== true) return 'reveal-now';    // legacy: navigates, never switches in place
-    if (this.state.ackCapable !== true) return 'reveal-now';  // never proven to ack — do not wait on silence
-    // A torn-down document is NOT a fresh one: its cleanup restored whatever it hid (full UI back)
-    // while the canvas still holds the old frozen frame. Checked BEFORE the first-activation
-    // shortcut, or `prior === null` would read as "nothing to switch away from" and reveal.
-    if (a.wasStopped) return 'await-ack';
-    if (a.prior === null) return 'reveal-now';                // genuine first activation
-    if (a.prior === a.next) return 'reveal-now';              // same section, already applied
-    return 'await-ack';
+    // Delegates to the SHIPPING, separately unit-tested policy. Reimplementing it here would have
+    // recreated the duplication this whole module exists to remove — two copies of the one rule
+    // that decides whether a wrong sub-simulation can be shown (audited).
+    return applyGateFor(
+      { dynamic: this.state.dynamic, ackCapable: this.state.ackCapable, lastScript: a.prior, stopped: a.wasStopped },
+      a.next,
+    );
   }
 
   /** Reveal if — and only if — every precondition still holds. The single writer of visible:true. */
@@ -432,7 +448,7 @@ export class SimRuntimeClient {
       if (this.state.painted) return;
       this.tel('legacy-ceiling-reveal');
       this.reveal(true);
-    }, opts?.legacyCeilingMs ?? 800);
+    }, opts?.legacyCeilingMs ?? SIM_LEGACY_REVEAL_MS);
   }
 
   private stopPaintPoll(): void {
@@ -472,15 +488,31 @@ export class SimRuntimeClient {
     }, opts?.fadeMs ?? SIM_EXIT_STOP_MS);
   }
 
+  /**
+   * Hide AND silence — for the paths where the document is still running something the user must
+   * not hear. activate() resumes and unmutes before the ack arrives, so on SCRIPT_MISSING the
+   * PREVIOUS section is left running, audible, under the video with nothing on screen.
+   */
+  private hideAndSilence(): void {
+    this.post({ type: SIM_PAUSE });
+    this.post({ type: SIM_MUTE });
+    this.set({ muted: true });
+    this.hide();
+  }
+
   /** Hide without tearing down (missing section, error, or an owner-driven hide). */
   hide(): void {
     if (this.disposed) return;
+    // Cancel the apply hold with it: an armed stall timer would fire later and force-reveal a
+    // document the owner has deliberately hidden.
+    this.cancelPendingApply();
     this.set({ visible: false, interactive: false, phase: this.state.phase === 'failed' ? 'failed' : 'hidden' });
   }
 
   /** Freeze a retained background document so it stops burning CPU/GPU. */
   suspend(): void {
     if (this.disposed) return;
+    this.cancelPendingApply();   // a frozen frame must never force-reveal itself at the bound
     this.post({ type: SIM_PAUSE });
     this.post({ type: SIM_MUTE });
     this.set({ phase: 'suspended', muted: true, visible: false, interactive: false });

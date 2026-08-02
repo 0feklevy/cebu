@@ -60,6 +60,8 @@ function ensureFixture(): void {
 // ── local asset server: the sim packages + a tiny real video ───────────────────────────────
 let server: Server;
 let assetBase = '';
+/** Where the fixture bytes really live; never handed to the page. */
+let localOrigin = '';
 
 /**
  * A REAL, decodable 40s H.264 clip, generated once by ffmpeg and cached beside the fixtures.
@@ -124,7 +126,14 @@ test.beforeAll(async () => {
     res.end(readFileSync(file));
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
-  assetBase = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  localOrigin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  // Fixtures are addressed on the APPLICATION's own origin and fulfilled by route interception
+  // below. Serving them from a second origin looks harmless and is not: the app ships a CSP whose
+  // frame-src/media-src allow only 'self' and the API origin, so a foreign fixture origin has its
+  // iframe AND its video refused — and, being cross-origin, iframe.contentDocument reads null, so
+  // every per-frame section assertion silently degrades to a no-op and the suite passes while
+  // proving nothing (audited).
+  assetBase = `${BASE}/__e2e-fixture`;
 
   // Fail loudly rather than silently "passing" when the app is not running.
   const probe = await fetch(BASE).catch(() => null);
@@ -177,6 +186,19 @@ function makeConfig(sims: SimSpec[], opts?: { segDuration?: number }) {
 
 /** Stub ONLY the data layer; every component and hook below it is the real one. */
 async function bootViewer(page: Page, config: object): Promise<void> {
+  // Same-origin fixture delivery — satisfies the app's CSP and keeps contentDocument readable.
+  await page.route(`${BASE}/__e2e-fixture/**`, async (route: Route) => {
+    const path = new URL(route.request().url()).pathname.replace('/__e2e-fixture/', '');
+    const upstream = await fetch(`${localOrigin}/${path}`, {
+      headers: route.request().headers().range ? { range: route.request().headers().range } : {},
+    });
+    const body = Buffer.from(await upstream.arrayBuffer());
+    await route.fulfill({
+      status: upstream.status,
+      headers: Object.fromEntries(upstream.headers.entries()),
+      body,
+    });
+  });
   await page.route(`${API_ORIGIN}/api/v1/projects/**/player-config*`, (route: Route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(config) }));
   // Everything else the page may ask the API for is irrelevant here; answer benignly so a missing
@@ -267,8 +289,23 @@ async function sampleFrames(page: Page, ms: number): Promise<Sample[]> {
   }), ms);
 }
 
-/** The core invariant: nothing visible may show the wrong section or forbidden Full UI. */
-function assertVisibleFramesAreCorrect(samples: Sample[], opts: { expect: string; forbidPrevious?: string; minimalUi?: boolean }): void {
+/**
+ * The core invariant: nothing visible may show the wrong section or forbidden Full UI.
+ *
+ * `requirePresented` (default true) is what stops this from passing vacuously. If no sim frame was
+ * ever sampled — the pool never armed, the URL shape changed, the fixture failed to load — there
+ * are no frames to violate anything and an empty violation list reads as success (audited).
+ */
+function assertVisibleFramesAreCorrect(
+  samples: Sample[],
+  opts: { expect: string; forbidPrevious?: string; minimalUi?: boolean; requirePresented?: boolean },
+): void {
+  if (opts.requirePresented !== false) {
+    const shown = samples.some((s) => s.frames.some((f) => f.op > 0.5));
+    expect(shown, 'no simulation frame was ever presented — the assertions below would be vacuous').toBe(true);
+    const readable = samples.some((s) => s.frames.some((f) => f.section !== null));
+    expect(readable, 'no iframe document was readable — section evidence is unavailable, so this test proves nothing').toBe(true);
+  }
   const violations: string[] = [];
   for (const s of samples) {
     for (const f of s.frames) {
@@ -290,12 +327,37 @@ function assertVisibleFramesAreCorrect(samples: Sample[], opts: { expect: string
 const errorsOf = (page: Page): string[] => (page as Page & { __errors?: string[] }).__errors ?? [];
 
 /** Errors that are environmental (stubbed endpoints, auth, media codec) rather than viewer bugs. */
-const IGNORABLE = /Firebase|auth\/|net::ERR_|Failed to load resource|media|play\(\) request|NotAllowedError|AbortError|X-Frame-Options|Refused to display/i;
+// Deliberately NARROW. An earlier version matched bare `media` and `Failed to load resource`,
+// which in a video player swallows MediaError, matchMedia, HTMLMediaElement crashes and every
+// failed subresource — and since realErrors is often the last surviving assertion, that filter
+// was load-bearing and leaked (audited).
+const IGNORABLE = /Firebase|auth\/(invalid|api-key)|play\(\) request|NotAllowedError|AbortError|X-Frame-Options|Refused to display/i;
 const realErrors = (page: Page): string[] => errorsOf(page).filter((e) => !IGNORABLE.test(e));
 
 // ── the suite ─────────────────────────────────────────────────────────────────────────────
 
-test.describe('real React viewer — simulation transitions', () => {
+// ─────────────────────────────────────────────────────────────────────────────────────────
+// STATUS: THIS SUITE DOES NOT YET DELIVER COVERAGE. It is committed deliberately, marked, and
+// must be finished before it is cited as evidence for anything.
+//
+// The first version of it PASSED 15/18 while proving nothing. Two independent faults combined:
+//   1. the fixture was served from a second origin (127.0.0.1:<ephemeral>), so
+//      iframe.contentDocument read null and every per-frame section/controls assertion silently
+//      degraded to a no-op; and
+//   2. the app's own CSP (frame-src/media-src allow only 'self' and the API origin) refused both
+//      the fixture iframe and the test video — so the media never loaded, video.duration stayed
+//      NaN, and every seekTo() was a silent no-op on a timeline that never moved.
+// Together those made a green suite that asserted nothing about a viewer it never drove.
+//
+// Fixed since: fixtures are addressed on the application's own origin and fulfilled by route
+// interception (satisfies CSP, keeps contentDocument readable); requirePresented asserts a frame
+// was actually shown AND that its document was readable, so the vacuous path now fails loudly;
+// the ignorable-error filter no longer swallows `media` or `Failed to load resource`.
+//
+// REMAINING: with those guards in place the suite fails — no simulation frame is presented under
+// the fixture. Cause not yet established (route-fulfilment of the package's relative asset
+// requests is the first thing to check). Marked fixme so it cannot be mistaken for passing.
+test.describe.fixme('real React viewer — simulation transitions', () => {
   test('1. cold video → simulation: the sim is never presented blank or unapplied', async ({ page }) => {
     await bootViewer(page, makeConfig([{ id: 's1', start: 5, end: 15, section: S.A }]));
     await startPlayback(page);

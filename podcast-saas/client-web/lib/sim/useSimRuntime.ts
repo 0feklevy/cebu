@@ -62,7 +62,13 @@ export function useSimRuntime(documentKey: string | null, cbs: SimRuntimeCallbac
 
   const onFrameLoad = useCallback(() => client.handleFrameLoad(), [client]);
 
-  useEffect(() => () => { client.dispose(); }, [client]);
+  // StrictMode (and <Activity>) run setup → cleanup → setup on the SAME fiber. dispose() is
+  // deliberately irreversible, so without clearing the ref the remount reused a disposed client
+  // and every method silently no-opped — broken in dev, fine in prod (audited).
+  useEffect(() => () => {
+    client.dispose();
+    if (clientRef.current === client) clientRef.current = null;
+  }, [client]);
 
   return { state, runtime: client, frameRef, onFrameLoad };
 }
