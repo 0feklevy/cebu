@@ -53,6 +53,50 @@ deferred `stopScript` could fire into a newly-navigated document (now cancelled 
 activation). Everything else the review checked (window planner, bridge timer-scope + `_sysRaf`
 hoisting, `simUrl` fragment append, unmount leak paths) it found **clean**.
 
+## 2c. Third review — 17 confirmed defects, all fixed (commit f43b264)
+
+A six-dimension adversarial review (54 agents; every finding independently verified by two
+refuters with different lenses; 24 raw → 17 confirmed, 6 split, 1 refuted) found that the
+headline gate was **still** defeated on a path the previous rounds never traced.
+
+**The apply gate was inert after any exit (HIGH).** `scheduleDeferredStop` recorded the teardown
+by nulling `lastScript` — but `applyGateFor` reads `null` as a genuine *first activation* and
+deliberately reveals immediately. Since a deferred stop runs on **every** normal sim exit, every
+exit→re-entry gap longer than the 280 ms fade (the common case — packages host many sections)
+skipped the `SCRIPT_APPLIED` wait entirely, presenting the previous section's frozen frame with
+its full UI restored. Keeping the old value would at least have gated cross-section entries; the
+null removed even that. A torn-down document is now tracked as **`stopped`** — distinct from
+"nothing applied yet" — and every activation path clears it. Legacy documents still never wait.
+
+**`pauseScript` could freeze the simulation (MEDIUM).** The body-call timer capture cannot tell
+the section's demo timer from an engine timer scheduled by a synchronous SIM call, and delay
+proves nothing: the generation prompt specifies **30–150 ms** demo intervals, i.e. exactly
+engine-loop rates. Attribution is now **explicit** — bodies register automation via
+`simDemoTimer()`, and only registered handles are cleared on pause. An unregistered timer is left
+alone: a no-op, never a frozen scene. Teardown still clears everything. **Consequence to be
+honest about:** existing stored bodies register nothing, and the rebuild preserves bodies
+byte-for-byte, so `pauseScript` stays a no-op for existing content until sections are
+**regenerated** — strictly safer than the alternative, but root cause #6 delivers nothing for
+existing content on day 1.
+
+Also fixed: editor sims returned **permanently muted** (the gate latches mute; the only unmute
+sat on a path unreachable after an exit); the rebuild tool **could not repair the half-applied
+state it created** (compared only `bridge.js`, so a failed entry upload reported `UNCHANGED`
+forever) and now also re-reads before writing (the live path holds a lock a separate process
+cannot join) and exits non-zero on failure; dropping the `#simboot` fragment **full-navigated**
+and hard-reloaded live sims; the sim-first seed read `config.segments` instead of the entry
+sequence that plays; the legacy back-to-video reload used a bare timer invisible to the planner's
+mid-fade guard; `SectionEditor` answered the **timeline player's** `SIM_READY` as its own; the
+boot-snippet `<head>` probe matched `<header>` lookalikes *inside script string literals*; and
+the backup tool swallowed read errors as skips, exited 0, and would overwrite the only copy of
+the pre-rebuild bytes.
+
+**Test honesty.** The e2e spec cited a `transitionOrder.test.ts` that **never existed**, so the
+flagship atomic-exit fix had no test anywhere that failed if it regressed — while the suite's
+control test made it look regression-proof. That file now exists and pins the player-side
+orderings; the scope note is corrected; and the fixture regenerates when the generator or the
+service feeding it changes, instead of silently certifying a stale bridge.
+
 ## 2a. Release-completion round (multi-engine, rebuilt packages, remaining surfaces)
 
 A second execution pass added:
