@@ -69,18 +69,41 @@ let localOrigin = '';
  * synthetic byte blob makes video.play() never settle — the whole suite then hangs rather than
  * failing, which is the worst possible outcome for a test.
  */
-const MEDIA_PATH = join(FIXTURE_DIR, 'clip.mp4');
+const MEDIA_DIR = join(FIXTURE_DIR, 'media');
+const HLS_PATH = join(MEDIA_DIR, 'index.m3u8');
+const MEDIA_PATH = join(MEDIA_DIR, 'clip.mp4');
+/**
+ * A REAL 40 s H.264 source, published BOTH as HLS and as a progressive mp4.
+ *
+ * HLS is not optional here. The viewer attaches hls.js whenever the browser supports it and feeds
+ * it `hls_url ?? fallback_url`, so a progressive mp4 in that slot is handed to hls.js and never
+ * decodes: `duration` stays NaN, every `currentTime` assignment is a silent no-op, the `playing`
+ * event never fires — and the simulation pool, which arms on `playing`, never mounts a single
+ * iframe. That is precisely how an earlier version of this suite "passed" while driving nothing.
+ */
 function ensureMedia(): void {
-  if (existsSync(MEDIA_PATH)) return;
-  mkdirSync(FIXTURE_DIR, { recursive: true });
-  const r = spawnSync('ffmpeg', [
+  if (existsSync(HLS_PATH) && existsSync(MEDIA_PATH)) return;
+  mkdirSync(MEDIA_DIR, { recursive: true });
+  const hls = spawnSync('ffmpeg', [
+    '-hide_banner', '-loglevel', 'error',
+    '-f', 'lavfi', '-i', 'color=c=navy:s=320x180:d=40',
+    '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+    '-g', '30', '-keyint_min', '30', '-sc_threshold', '0',
+    '-hls_time', '4', '-hls_playlist_type', 'vod',
+    '-hls_segment_filename', join(MEDIA_DIR, 'seg%03d.ts'),
+    '-y', HLS_PATH,
+  ], { encoding: 'utf8' });
+  if (hls.status !== 0 || !existsSync(HLS_PATH)) {
+    throw new Error(`viewer-e2e: could not generate HLS test media with ffmpeg: ${hls.stderr || hls.stdout}`);
+  }
+  const mp4 = spawnSync('ffmpeg', [
     '-hide_banner', '-loglevel', 'error',
     '-f', 'lavfi', '-i', 'color=c=navy:s=320x180:d=40',
     '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
     '-y', MEDIA_PATH,
   ], { encoding: 'utf8' });
-  if (r.status !== 0 || !existsSync(MEDIA_PATH)) {
-    throw new Error(`viewer-e2e: could not generate test media with ffmpeg: ${r.stderr || r.stdout}`);
+  if (mp4.status !== 0 || !existsSync(MEDIA_PATH)) {
+    throw new Error(`viewer-e2e: could not generate mp4 test media with ffmpeg: ${mp4.stderr || mp4.stdout}`);
   }
 }
 
@@ -88,7 +111,31 @@ const TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'application/javascript; charset=utf-8',
   '.mp4': 'video/mp4',
+  '.m3u8': 'application/vnd.apple.mpegurl',
+  '.ts': 'video/mp2t',
 };
+
+/**
+ * Injected into every fixture entry document. The sim runs cross-origin (as in production), so the
+ * test cannot read its DOM — the document reports its own truth instead, every animation frame:
+ * which section body is applied, and whether the sim's Full-UI control panel is displayed.
+ * This is evidence FROM the rendered document, not an inference from messages the parent sent.
+ */
+const REPORTER = `<script>(function(){
+  function tick(){
+    try {
+      var m = document.getElementById('marker');
+      var c = document.querySelector('.controls');
+      parent.postMessage({
+        type: 'E2E_STATE',
+        section: m ? m.getAttribute('data-section') : null,
+        controls: !!c && getComputedStyle(c).display !== 'none'
+      }, '*');
+    } catch (e) {}
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+})()</script>`;
 
 test.beforeAll(async () => {
   ensureFixture();
@@ -133,7 +180,15 @@ test.beforeAll(async () => {
   // iframe AND its video refused — and, being cross-origin, iframe.contentDocument reads null, so
   // every per-frame section assertion silently degrades to a no-op and the suite passes while
   // proving nothing (audited).
-  assetBase = `${BASE}/__e2e-fixture`;
+  // The API origin with a /sim-public/ path — the EXACT shape production uses. This matters for
+  // three independent reasons, each of which silently broke an earlier version:
+  //   • the app's CSP allows frame-src/media-src only for 'self' and the API origin;
+  //   • resolveAssetUrl rewrites any loopback URL onto the API origin, so a fixture addressed at
+  //     the app origin is rebased anyway and a route registered on the app origin never matches;
+  //   • resolveSimUrl's rebase is a no-op only for /sim-public/ paths.
+  // Production sims are therefore genuinely CROSS-ORIGIN, so iframe.contentDocument is null by
+  // design. Per-frame section evidence comes from inside the sim instead (see REPORTER).
+  assetBase = `${API_ORIGIN}/sim-public/__e2e`;
 
   // Fail loudly rather than silently "passing" when the app is not running.
   const probe = await fetch(BASE).catch(() => null);
@@ -164,7 +219,7 @@ function makeConfig(sims: SimSpec[], opts?: { segDuration?: number }) {
       duration,
       hls_status: 'ready',
       fallback_url: `${assetBase}/media/clip.mp4`,
-      hls_url: null,
+      hls_url: `${assetBase}/media/index.m3u8`,
       sort_order: 0,
       simulations: sims.map((s) => ({
         id: s.id,
@@ -186,18 +241,21 @@ function makeConfig(sims: SimSpec[], opts?: { segDuration?: number }) {
 
 /** Stub ONLY the data layer; every component and hook below it is the real one. */
 async function bootViewer(page: Page, config: object): Promise<void> {
-  // Same-origin fixture delivery — satisfies the app's CSP and keeps contentDocument readable.
-  await page.route(`${BASE}/__e2e-fixture/**`, async (route: Route) => {
-    const path = new URL(route.request().url()).pathname.replace('/__e2e-fixture/', '');
+  // Serve the fixture on the API origin under /sim-public/, exactly as production does.
+  await page.route(`${API_ORIGIN}/sim-public/__e2e/**`, async (route: Route) => {
+    const path = new URL(route.request().url()).pathname.replace('/sim-public/__e2e/', '');
+    const rangeHeader = route.request().headers()['range'];
     const upstream = await fetch(`${localOrigin}/${path}`, {
-      headers: route.request().headers().range ? { range: route.request().headers().range } : {},
+      headers: rangeHeader ? { range: rangeHeader } : {},
     });
-    const body = Buffer.from(await upstream.arrayBuffer());
-    await route.fulfill({
-      status: upstream.status,
-      headers: Object.fromEntries(upstream.headers.entries()),
-      body,
-    });
+    let body = Buffer.from(await upstream.arrayBuffer());
+    const headers = Object.fromEntries(upstream.headers.entries());
+    if (path.endsWith('.html')) {
+      // The reporter is the evidence channel; without it a cross-origin sim is unobservable.
+      body = Buffer.from(body.toString('utf-8').replace('</body>', `${REPORTER}</body>`), 'utf-8');
+      delete headers['content-length'];
+    }
+    await route.fulfill({ status: upstream.status, headers, body });
   });
   await page.route(`${API_ORIGIN}/api/v1/projects/**/player-config*`, (route: Route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(config) }));
@@ -206,6 +264,17 @@ async function bootViewer(page: Page, config: object): Promise<void> {
   await page.route(`${API_ORIGIN}/api/v1/**`, (route: Route) => {
     if (route.request().url().includes('player-config')) return route.fallback();
     return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+  });
+
+  // Bind each E2E_STATE report to the iframe that sent it. contentWindow IS reachable
+  // cross-origin (contentDocument is not), so identity comparison works.
+  await page.addInitScript(() => {
+    const w = window as unknown as { __CHILD?: Map<Window, unknown> };
+    w.__CHILD = new Map();
+    window.addEventListener('message', (e) => {
+      const d = e.data as { type?: string } | null;
+      if (d?.type === 'E2E_STATE' && e.source) w.__CHILD!.set(e.source as Window, d);
+    });
   });
 
   const errors: string[] = [];
@@ -260,16 +329,11 @@ async function sampleFrames(page: Page, ms: number): Promise<Sample[]> {
       document.querySelectorAll('iframe').forEach((f) => {
         const el = f as HTMLIFrameElement;
         if (!/index\.html/.test(el.src)) return;
-        let section: string | null = null;
-        let controls = false;
-        try {
-          const d = el.contentDocument;
-          if (d) {
-            section = d.getElementById('marker')?.getAttribute('data-section') ?? null;
-            const c = d.querySelector('.controls');
-            controls = !!c && getComputedStyle(c as Element).display !== 'none';
-          }
-        } catch { /* cross-origin — leave null */ }
+        // Cross-origin by design: read the document's OWN report rather than its DOM.
+        const rep = (window as unknown as { __CHILD?: Map<Window, { section: string | null; controls: boolean }> })
+          .__CHILD?.get(el.contentWindow as Window);
+        const section: string | null = rep?.section ?? null;
+        const controls = rep?.controls ?? false;
         // The animated opacity may live on the iframe or on a wrapper; take the effective product.
         let op = parseFloat(getComputedStyle(el).opacity) || 0;
         let node: HTMLElement | null = el.parentElement;
@@ -337,7 +401,7 @@ const realErrors = (page: Page): string[] => errorsOf(page).filter((e) => !IGNOR
 // ── the suite ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────────────────
-// STATUS: THIS SUITE DOES NOT YET DELIVER COVERAGE. It is committed deliberately, marked, and
+// HISTORY — why this file is shaped the way it is. It is committed deliberately, marked, and
 // must be finished before it is cited as evidence for anything.
 //
 // The first version of it PASSED 15/18 while proving nothing. Two independent faults combined:
@@ -354,10 +418,13 @@ const realErrors = (page: Page): string[] => errorsOf(page).filter((e) => !IGNOR
 // was actually shown AND that its document was readable, so the vacuous path now fails loudly;
 // the ignorable-error filter no longer swallows `media` or `Failed to load resource`.
 //
-// REMAINING: with those guards in place the suite fails — no simulation frame is presented under
-// the fixture. Cause not yet established (route-fulfilment of the package's relative asset
-// requests is the first thing to check). Marked fixme so it cannot be mistaken for passing.
-test.describe.fixme('real React viewer — simulation transitions', () => {
+// ROOT CAUSE, since established and fixed: the fixture published a progressive mp4 as the
+// segment source. The viewer attaches hls.js whenever the browser supports it and feeds it
+// `hls_url ?? fallback_url`, so the mp4 went to hls.js and never decoded — duration NaN, every
+// seek a no-op, no `playing` event, and the pool (which arms on `playing`) never mounted an
+// iframe. The fixture now publishes real HLS. Separately, sims are cross-origin in production,
+// so per-frame section/controls evidence now comes from a reporter inside the sim document.
+test.describe('real React viewer — simulation transitions', () => {
   test('1. cold video → simulation: the sim is never presented blank or unapplied', async ({ page }) => {
     await bootViewer(page, makeConfig([{ id: 's1', start: 5, end: 15, section: S.A }]));
     await startPlayback(page);
@@ -440,8 +507,13 @@ test.describe.fixme('real React viewer — simulation transitions', () => {
     await seekTo(page, 10);
     const samples = await move;
     const late = samples.slice(Math.floor(samples.length / 2));
-    // The correct outcome is the video playing on — never A's body standing in for the missing one.
-    assertVisibleFramesAreCorrect(late, { expect: 'none', forbidPrevious: 'A' });
+    // The correct outcome is the video playing on, so requirePresented is deliberately OFF here:
+    // demanding a presented frame would demand the very defect this test rejects. What must hold
+    // is that A's body is never shown standing in for the missing section.
+    assertVisibleFramesAreCorrect(late, { expect: 'none', forbidPrevious: 'A', requirePresented: false });
+    // …and the missing section must never have been silently substituted by another body.
+    const wrong = late.flatMap((s) => s.frames).filter((f) => f.op > 0.01 && f.section === 'A');
+    expect(wrong.length, 'the previous section was shown in place of the missing one').toBe(0);
     expect(realErrors(page)).toEqual([]);
   });
 
@@ -521,12 +593,7 @@ test.describe.fixme('real React viewer — simulation transitions', () => {
     assertVisibleFramesAreCorrect(samples, { expect: 'B' });
   });
 
-  // UNRESOLVED — these two fail today and the cause is NOT yet established: it may be a genuine
-  // viewer defect on the legacy/no-rAF path, or the fixture packages (which the child-level suite
-  // drives directly) may not be wired for the viewer's pooled URL shape. They are marked fixme so
-  // they stay visible instead of being deleted or silently passing. Both paths MUST be resolved
-  // before any rollout that depends on legacy packages rendering in the real viewer.
-  test.fixme('13. a LEGACY package (no ack support) is still displayed, never held on silence', async ({ page }) => {
+  test('13. a LEGACY package (no ack support) is still displayed, never held on silence', async ({ page }) => {
     await bootViewer(page, makeConfig([
       { id: 's1', start: 3, end: 10, pkg: 'legacy', section: S.A },
     ]));
@@ -538,7 +605,7 @@ test.describe.fixme('real React viewer — simulation transitions', () => {
     expect(everShown, 'a legacy package must never be made to wait on an ack it cannot send').toBe(true);
   });
 
-  test.fixme('14. a package that never drives rAF stays displayable (no permanent spinner)', async ({ page }) => {
+  test('14. a package that never drives rAF stays displayable (no permanent spinner)', async ({ page }) => {
     await bootViewer(page, makeConfig([
       { id: 's1', start: 3, end: 12, pkg: 'noraf', section: S.A },
     ]));
