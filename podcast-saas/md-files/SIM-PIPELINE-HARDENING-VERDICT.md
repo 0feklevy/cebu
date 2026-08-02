@@ -157,20 +157,36 @@ Dry run (already executed, read-only):
   WOULD UPDATE pluck-boids       — 1 section(s)
 ```
 
-**Procedure (owner-run, after this PR deploys):**
+**Turnkey procedure (owner-run, as part of the coordinated deploy — see §7):**
 
 ```bash
 cd podcast-saas/backend-api
-npx tsx --env-file=../.env src/scripts/rebuild-sim-bridges.ts            # dry run — re-confirm the list
-# BACK UP FIRST: the script has no rollback. Copy each package's bridge.js + entry HTML
-# (simulations/<projectId>/<simId>/) out of the bucket before applying.
+# 1. BACK UP the stored bridge.js + entry HTML of every ready sim (NEW committed helper):
+npx tsx --env-file=../.env src/scripts/backup-sim-packages.ts backup ./sim-backup-$(date -u +%Y%m%dT%H%M%SZ)
+# 2. Dry run — re-confirm exactly which packages change:
+npx tsx --env-file=../.env src/scripts/rebuild-sim-bridges.ts
+# 3. Apply:
 npx tsx --env-file=../.env src/scripts/rebuild-sim-bridges.ts --apply
 ```
 
-It rewrites **all** `status='ready'` simulations (there is no `--only` flag) — with 3 in scope that
-is acceptable; add a filter first if the inventory grows. The `?v=` hash changes in the entry HTML's
-script tag; sections' stored `simulation_url` need no update (the stale `v=` there is only an entry
-cache-buster, and the entry is served `no-cache`).
+It rewrites **all** `status='ready'` simulations (there is no `--only` flag). Verified scope: only
+**3** packages actually have a combined bridge and will change — `boids-3d`, `murmuration-knob`,
+`pluck-boids`. The other three (`ising-kid-simu`, `ising-kid-part2`, `example`) have **no stored
+`bridge.js`** (their objects 404) and are SKIPPED. The `?v=` hash changes in the entry HTML's script
+tag; sections' stored `simulation_url` need no update (that `v=` is only an entry cache-buster, and
+the entry is served `no-cache`).
 
-**Rollback:** restore the backed-up `bridge.js` + entry HTML. Code rollback alone does not revert
-storage.
+**Rollback (proven):**
+
+```bash
+npx tsx --env-file=../.env src/scripts/backup-sim-packages.ts restore ./sim-backup-<the-date-you-used>
+```
+
+This re-uploads the exact pre-rebuild stored bytes. Code rollback alone does not revert storage.
+
+> **Coordination:** the new bridges are backward-compatible with the currently-deployed OLD player
+> (old player ignores the new `SCRIPT_APPLIED`/token; `boids`/`murm`/`pluck` all paint for real so
+> `SIM_PAINTED` still fires). The only behaviour change on the old player is that the two ungenerated
+> placeholder sections (§5.1) show the raw scene instead of a mis-pooled body — an improvement, not a
+> blank. Still, run the rebuild **with the new player deploy** (not days ahead) and keep the
+> `?simpool=single` / `admin_settings.sim_pool_mode='single'` kill switch ready.
