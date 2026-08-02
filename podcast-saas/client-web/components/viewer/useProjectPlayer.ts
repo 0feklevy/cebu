@@ -1776,6 +1776,11 @@ export function useProjectPlayer(
       simPoolFramesRef.current.delete(url);
       simRuntimesRef.current.get(url)?.attach(null, null);
     }
+    // Deliberately dependency-free: SimPoolOverlay relies on this callback ref being STABLE. An
+    // identity change detaches and re-registers every frame on each render, and a handshake
+    // landing in that window is dropped (the measured cause of painted frames still hitting the
+    // bounded hold). Everything it touches is a ref.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleSimFrameLoad = useCallback((key: string) => {

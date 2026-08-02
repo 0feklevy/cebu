@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import { injectViewportFill } from './injectViewportFill';
 import { SimSurface } from '../../lib/sim/SimSurface';
 import { useSimRuntime } from '../../lib/sim/useSimRuntime';
@@ -33,11 +33,24 @@ export function SimulationOverlay({ html, src, caption, visible, onDismiss }: Pr
     runtime.startPaintRecovery({ legacyCeilingMs: 8_000 });
   }, [runtime, simKey]);
 
-  // Tear the script down when the overlay closes, so a dismissed simulation stops computing and
-  // sounding even while the modal element lingers.
+  // Re-arm after the document's own `load`. handleFrameLoad bumps the runtime generation, which
+  // silently aborts a ceiling armed before it — and clears neither the ceiling nor the poll, so
+  // the failure is invisible: a package that never emits SIM_PAINTED stays behind the spinner
+  // forever. Every other surface re-arms on load; this one did not (audited).
+  const armRecovery = useCallback(() => {
+    onFrameLoad();
+    runtime.startPaintRecovery({ legacyCeilingMs: 8_000 });
+  }, [onFrameLoad, runtime]);
+
+  // Tear the script down when the overlay closes. This surface never calls activate(), so
+  // `state.currentScript` is permanently null — guarding on it made this dead code and left a
+  // dismissed simulation running, animating and audible, because the modal's root element stays
+  // mounted (visibility is a CSS class) so dispose() never runs either (audited).
   useEffect(() => {
-    if (!visible && state.currentScript) runtime.stopNow();
-  }, [visible, state.currentScript, runtime]);
+    if (visible) return;
+    runtime.stopNow();
+    runtime.suspend();     // freeze + mute: stopScript alone does not silence a running scene
+  }, [visible, runtime]);
 
   useEffect(() => {
     if (!visible) return;
@@ -74,7 +87,7 @@ export function SimulationOverlay({ html, src, caption, visible, onDismiss }: Pr
           srcDoc={src ? null : (processedHtml || null)}
           visible={state.visible}
           frameRef={frameRef}
-          onLoad={onFrameLoad}
+          onLoad={armRecovery}
           sandbox={src ? 'allow-scripts allow-same-origin' : 'allow-scripts'}
           className="avatar-simulation-overlay__iframe"
         />

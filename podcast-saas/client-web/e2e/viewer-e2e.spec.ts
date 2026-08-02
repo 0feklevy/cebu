@@ -129,7 +129,8 @@ const REPORTER = `<script>(function(){
       parent.postMessage({
         type: 'E2E_STATE',
         section: m ? m.getAttribute('data-section') : null,
-        controls: !!c && getComputedStyle(c).display !== 'none'
+        controls: !!c && getComputedStyle(c).display !== 'none',
+        at: Date.now()
       }, '*');
     } catch (e) {}
     requestAnimationFrame(tick);
@@ -257,6 +258,18 @@ async function bootViewer(page: Page, config: object): Promise<void> {
     }
     await route.fulfill({ status: upstream.status, headers, body });
   });
+  // Firebase anonymous auth is a real network call to Google on every scenario. Its 400 surfaces
+  // as a bare "Failed to load resource" with no Firebase token in the text, so the (correctly)
+  // narrowed IGNORABLE filter does not match it — and ten scenarios assert realErrors(). The suite
+  // was flipping red/green on Google's response rather than on the viewer (audited). Stub it.
+  await page.route('https://identitytoolkit.googleapis.com/**', (route: Route) =>
+    route.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify({ idToken: 'e2e', refreshToken: 'e2e', expiresIn: '3600', localId: 'e2e-user' }),
+    }));
+  await page.route('https://securetoken.googleapis.com/**', (route: Route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id_token: 'e2e', expires_in: '3600' }) }));
+
   await page.route(`${API_ORIGIN}/api/v1/projects/**/player-config*`, (route: Route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(config) }));
   // Everything else the page may ask the API for is irrelevant here; answer benignly so a missing
@@ -273,7 +286,9 @@ async function bootViewer(page: Page, config: object): Promise<void> {
     w.__CHILD = new Map();
     window.addEventListener('message', (e) => {
       const d = e.data as { type?: string } | null;
-      if (d?.type === 'E2E_STATE' && e.source) w.__CHILD!.set(e.source as Window, d);
+      if (d?.type === 'E2E_STATE' && e.source) {
+        w.__CHILD!.set(e.source as Window, { ...(d as object), recvAt: Date.now() });
+      }
     });
   });
 
@@ -321,6 +336,12 @@ async function seekTo(page: Page, t: number): Promise<void> {
  * for a reason that has nothing to do with the code. This waits for the condition the test is
  * about to assert on — it never weakens the assertion, it only stops sampling too early.
  */
+/** Samples at or after `abs` — anchored to a real event, never to an arbitrary fraction. */
+const since = (samples: Sample[], abs: number): Sample[] => samples.filter((s) => s.abs >= abs);
+
+/** The wall-clock instant a switch is requested, read from the page's own clock. */
+const now = (page: Page): Promise<number> => page.evaluate(() => Date.now());
+
 async function waitForSection(page: Page, section: string, timeout = 20_000): Promise<void> {
   await page.waitForFunction((want) => {
     const map = (window as unknown as { __CHILD?: Map<Window, { section: string | null }> }).__CHILD;
@@ -336,7 +357,7 @@ async function waitForSection(page: Page, section: string, timeout = 20_000): Pr
   }, section, { timeout });
 }
 
-interface Sample { t: number; frames: { op: number; section: string | null; controls: boolean; src: string }[] }
+interface Sample { t: number; abs: number; frames: { op: number; section: string | null; controls: boolean; stale: boolean; src: string }[] }
 
 /**
  * Sample every animation frame from inside the page: for each sim iframe, its LIVE animated
@@ -353,19 +374,25 @@ async function sampleFrames(page: Page, ms: number): Promise<Sample[]> {
         const el = f as HTMLIFrameElement;
         if (!/index\.html/.test(el.src)) return;
         // Cross-origin by design: read the document's OWN report rather than its DOM.
-        const rep = (window as unknown as { __CHILD?: Map<Window, { section: string | null; controls: boolean }> })
-          .__CHILD?.get(el.contentWindow as Window);
-        const section: string | null = rep?.section ?? null;
-        const controls = rep?.controls ?? false;
+        const rep = (window as unknown as {
+          __CHILD?: Map<Window, { section: string | null; controls: boolean; recvAt: number }>;
+        }).__CHILD?.get(el.contentWindow as Window);
+        // A report older than a few frames is STALE: the sim's rAF loop is starved (a
+        // synchronously-blocking body does exactly that), so it still names the PREVIOUS section
+        // whether the code is right or wrong. Trusting it is what let a dead apply gate pass.
+        const fresh = !!rep && (Date.now() - rep.recvAt) < 120;
+        const section: string | null = fresh ? (rep!.section ?? null) : null;
+        const controls = fresh ? rep!.controls : false;
+        const stale = !!rep && !fresh;
         // The animated opacity may live on the iframe or on a wrapper; take the effective product.
         let op = parseFloat(getComputedStyle(el).opacity) || 0;
         let node: HTMLElement | null = el.parentElement;
         for (let i = 0; node && i < 4; i++, node = node.parentElement) {
           op *= parseFloat(getComputedStyle(node).opacity) || 0;
         }
-        frames.push({ op, section, controls, src: el.src });
+        frames.push({ op, section, controls, stale, src: el.src });
       });
-      out.push({ t: Math.round(performance.now() - t0), frames });
+      out.push({ t: Math.round(performance.now() - t0), abs: Date.now(), frames });
       if (performance.now() - t0 < duration) requestAnimationFrame(tick);
       else resolve(out);
     };
@@ -392,6 +419,11 @@ function assertVisibleFramesAreCorrect(
     expect(shown, 'no simulation frame was ever presented — the assertions below would be vacuous').toBe(true);
     const readable = samples.some((s) => s.frames.some((f) => f.section !== null));
     expect(readable, 'no iframe document was readable — section evidence is unavailable, so this test proves nothing').toBe(true);
+    // A presented frame whose evidence went stale for a long stretch is not a pass: it is an
+    // unobserved window, and an unobserved window is exactly where a wrong section hides.
+    const staleVisible = samples.filter((s) => s.frames.some((f) => f.op > 0.5 && f.stale)).length;
+    expect(staleVisible, `${staleVisible}/${samples.length} presented samples had STALE evidence`)
+      .toBeLessThan(Math.max(4, samples.length * 0.5));
   }
   const violations: string[] = [];
   for (const s of samples) {
@@ -467,11 +499,15 @@ test.describe('real React viewer — simulation transitions', () => {
     await seekTo(page, 4);
     await waitForSection(page, 'A');
     const move = sampleFrames(page, 1600);
+    const at = await now(page);
     await seekTo(page, 9);
     const samples = await move;
-    // Once B is the active section, A must never be the thing on screen.
-    const late = samples.slice(Math.floor(samples.length / 3));
-    assertVisibleFramesAreCorrect(late, { expect: 'B', forbidPrevious: 'A' });
+    // Anchored to the SEEK, not to a fraction of the window. Slicing the first third away
+    // discarded the transition itself — the switch completes ~12ms in while the slice began
+    // ~537ms in — and a DEAD apply gate passed unchanged (audited mutation). Anchoring keeps the
+    // transition under assertion while excluding the time before B was ever requested, when A is
+    // legitimately on screen.
+    assertVisibleFramesAreCorrect(since(samples, at), { expect: 'B', forbidPrevious: 'A' });
     expect(realErrors(page)).toEqual([]);
   });
 
@@ -565,10 +601,12 @@ test.describe('real React viewer — simulation transitions', () => {
     await seekTo(page, 4);
     await page.waitForTimeout(900);
     const move = sampleFrames(page, 2000);
+    const at = await now(page);
     await seekTo(page, 10);
     const samples = await move;
-    const late = samples.slice(Math.floor(samples.length / 2));
-    assertVisibleFramesAreCorrect(late, { expect: 'SLOW', forbidPrevious: 'A' });
+    // Anchored for the same reason: the violating frame lands ~450ms after the seek and the old
+    // half-slice started ~1224ms in, discarding it.
+    assertVisibleFramesAreCorrect(since(samples, at), { expect: 'SLOW', forbidPrevious: 'A' });
   });
 
   test('9. direct seek INTO a simulation (no warm-up) still applies the right section', async ({ page }) => {
@@ -590,7 +628,13 @@ test.describe('real React viewer — simulation transitions', () => {
     await startPlayback(page);
     const sampling = sampleFrames(page, 2600);
     for (const t of [4, 9, 14, 4, 14, 9, 4]) { await seekTo(page, t); await page.waitForTimeout(120); }
-    await sampling;
+    const during = await sampling;
+    // The rapid-seek window is the point of this test; the old version discarded it entirely and
+    // asserted only on a fresh settled sample afterwards (audited).
+    const wrongDuring = during.flatMap((s) => s.frames)
+      .filter((f) => f.op > 0.5 && !f.stale && f.section !== null && f.section !== 'none'
+                     && f.section !== 'A' && f.section !== 'B');
+    expect(wrongDuring.length, 'a section outside the timeline was presented during rapid seeking').toBe(0);
     await seekTo(page, 4);
     await waitForSection(page, 'A');
     const settled = await sampleFrames(page, 500);
@@ -643,9 +687,12 @@ test.describe('real React viewer — simulation transitions', () => {
   });
 
   test('15. hidden simulation frames are muted, inert and untabbable', async ({ page }) => {
+    // DIFFERENT packages on purpose: two sections of the SAME package share one pooled iframe, so
+    // there is never a hidden frame and the assertions below iterate an empty list and pass
+    // vacuously (audited — the loop body never executed).
     await bootViewer(page, makeConfig([
       { id: 's1', start: 3, end: 8, section: S.A },
-      { id: 's2', start: 8, end: 14, section: S.B },
+      { id: 's2', start: 8, end: 14, pkg: 'legacy', section: S.A },
     ]));
     await startPlayback(page);
     await seekTo(page, 4);
@@ -667,7 +714,10 @@ test.describe('real React viewer — simulation transitions', () => {
       });
       return out;
     });
-    for (const f of state.filter((x) => !x.visible)) {
+    expect(state.length, 'no sim frames were found — the hidden-frame checks would be vacuous').toBeGreaterThan(0);
+    const hidden = state.filter((x) => !x.visible);
+    expect(hidden.length, 'no HIDDEN frame existed, so nothing about hidden frames was asserted').toBeGreaterThan(0);
+    for (const f of hidden) {
       expect(f.inert, 'a hidden sim frame must be inert').toBe(true);
       expect(f.ariaHidden, 'a hidden sim frame must be aria-hidden').toBe(true);
       expect(f.tabbable, 'a hidden sim frame must not be tabbable').toBe(false);
