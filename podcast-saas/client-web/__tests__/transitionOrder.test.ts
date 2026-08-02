@@ -52,7 +52,6 @@ describe('no surface keeps a private simulation message listener', () => {
       const src = code(read(rel));
       const listens = /addEventListener\(\s*['"]message['"]/.test(src);
       if (!listens) return;                       // no listener at all — nothing to check
-      if (name === 'viewer') return;              // documented partial delegation, pinned below
       // A surface may still listen for NON-lifecycle messages (guidance cues, the Minimal-UI
       // control scan, branching). It must not interpret the lifecycle protocol.
       expect(SIM_EVENTS.test(src), `${name} still handles a lifecycle message itself`).toBe(false);
@@ -74,9 +73,6 @@ describe('no surface reimplements the reveal or cleanup machinery', () => {
   for (const [name, rel] of Object.entries(SURFACES)) {
     for (const { token, why } of FORBIDDEN) {
       it(`${name} has no ${token.source}`, () => {
-        // The viewer still owns the apply-gate HOLD (pendingApplyRef); see the documented-gap
-        // block below, which pins its exact size so it cannot silently grow.
-        if (name === 'viewer' && /pendingApplyRef/.test(token.source)) return;
         expect(token.test(code(read(rel))), `${name} reintroduced ${why}`).toBe(false);
       });
     }
@@ -116,16 +112,13 @@ describe('surface-specific behaviour that must SURVIVE the migration', () => {
 });
 
 describe('the runtime is the single authority for the presentation gate', () => {
-  it('the runtime consumes applyGateFor, and only the viewer still also does', () => {
+  it('ONLY the runtime consumes applyGateFor', () => {
+    // Two copies of this rule is precisely the duplication the consolidation removed — and the
+    // rule itself is the one that decides whether a wrong sub-simulation can reach the screen.
     const consumers = Object.entries(SURFACES)
       .filter(([, rel]) => /applyGateFor/.test(code(read(rel))))
       .map(([n]) => n);
-    // KNOWN GAP, deliberately pinned rather than hidden: the viewer delegates activation,
-    // deactivation, paint recovery, readiness and frame-load to the runtime, but still owns the
-    // apply-gate hold itself because its hold is entangled with pool-manager state (the residency
-    // planner's mid-fade keep-set and the section-aware bounded hold). Any OTHER surface calling
-    // the gate directly is a regression. If the viewer's own call disappears, tighten this to [].
-    expect(consumers, `unexpected direct applyGateFor consumers: ${consumers.join(', ')}`).toEqual(['viewer']);
+    expect(consumers, `applyGateFor is called directly by: ${consumers.join(', ')}`).toEqual([]);
     expect(code(read('lib/sim/SimRuntimeClient.ts'))).toMatch(/applyGateFor/);
   });
 

@@ -169,7 +169,7 @@ async function checkFile(
     servedBytes: null, servedSha: null, servedMatchesStored: null, problem: null,
   };
 
-  let stored: Buffer | null = null;
+  let stored: Buffer;
   try {
     stored = await storage.readObject(key);
     check.storedBytes = stored.length;
@@ -179,7 +179,7 @@ async function checkFile(
     return { check, stored: null, served: null };
   }
 
-  let served: Buffer | null = null;
+  let served: Buffer;
   try {
     const res = await fetchBytes(servedUrl);
     if (!res.ok) {
