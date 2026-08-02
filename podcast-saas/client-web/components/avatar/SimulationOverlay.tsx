@@ -3,6 +3,7 @@
 import { useRef, useEffect, useState, useMemo } from 'react';
 import { injectViewportFill } from './injectViewportFill';
 import { resolveSimUrl } from '../../lib/simUrl';
+import { SIM_READY, STOP_SCRIPT, asInbound } from '../../lib/sim/protocol';
 
 interface Props {
   html?: string;
@@ -23,7 +24,10 @@ export function SimulationOverlay({ html, src, caption, visible, onDismiss }: Pr
   useEffect(() => {
     setLoading(true);
     const handler = (e: MessageEvent) => {
-      if (e.source === iframeRef.current?.contentWindow && (e.data as { type?: string })?.type === 'SIM_READY') setLoading(false);
+      // Only THIS overlay's frame may clear its spinner: the pooled viewer hosts simulations at
+      // the same time, and an unscoped listener answers their handshakes as if they were ours.
+      if (e.source !== iframeRef.current?.contentWindow) return;
+      if (asInbound(e.data)?.type === SIM_READY) setLoading(false);
     };
     window.addEventListener('message', handler);
     const fallback = setTimeout(() => setLoading(false), 8000);
@@ -45,7 +49,7 @@ export function SimulationOverlay({ html, src, caption, visible, onDismiss }: Pr
       // ('null' origin) so they still need '*' (frontend-011).
       let targetOrigin = '*';
       try { if (frame.src) targetOrigin = new URL(frame.src).origin; } catch { /* opaque → '*' */ }
-      frame.contentWindow.postMessage({ type: 'stopScript' }, targetOrigin);
+      frame.contentWindow.postMessage({ type: STOP_SCRIPT }, targetOrigin);
     } catch { /* noop */ }
   }, []);
 

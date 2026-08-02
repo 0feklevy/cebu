@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { AdminShell } from '../../components/AdminShell';
+import { resolveSimUrl } from 'shared/src/sim/simUrl';
 import {
   getAvatarConfig, setAvatarByok, getAvatarStats, getAvatarGallery, deleteAvatarVisual, getAvatarConversations,
   type AvatarConfig, type AvatarStats, type AvatarGalleryItem, type AvatarSession,
@@ -209,7 +210,10 @@ function GalleryCard({ item, onDelete }: { item: AvatarGalleryItem; onDelete: ()
           // eslint-disable-next-line @next/next/no-img-element
           <img src={item.image_url} alt={item.alt_text ?? ''} className="w-full h-full object-cover" />
         ) : item.visual_type === 'simulation' && item.sim_entry_url ? (
-          <iframe src={item.sim_entry_url} title="sim" sandbox="allow-scripts allow-same-origin" className="w-full h-full border-0" />
+          /* resolveSimUrl is REQUIRED, not cosmetic: stored sim URLs are denormalised with
+             whatever API origin minted them, and framing a foreign origin is blocked outright by
+             the frame-src CSP — the raw URL rendered a blank frame (audited). */
+          <iframe src={resolveSimUrl(item.sim_entry_url)} title="sim" sandbox="allow-scripts allow-same-origin" className="w-full h-full border-0" />
         ) : item.visual_type === 'diagram' && typeof spec?.html === 'string' ? (
           <iframe srcDoc={spec.html as string} title="diagram" sandbox="allow-scripts" className="w-full h-full border-0" />
         ) : (

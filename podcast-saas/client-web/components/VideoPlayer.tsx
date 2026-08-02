@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useCallback, useMemo, forwardRef, useImper
 import { useEditorPlayback } from '../hooks/useEditorPlayback';
 import { HLS_OPTS } from '../hooks/useSegmentedPlaybackCore';
 import { simDestroyGraceMs } from '../lib/simLifecycle';
+import { SIM_EXIT_STOP_MS, SIM_FADE_MS, SIM_LEGACY_REVEAL_MS } from '../lib/sim/protocol';
 import { getStoredSelection, type SimStartScriptParams } from '../lib/simUiControls';
 import { resolveSimUrl } from '../lib/simUrl';
 import type { Clip } from '../hooks/useClipSequence';
@@ -340,7 +341,7 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
           simStopTimerRef.current = null;
           if (activeSimUrlRef.current === stopTarget) return;   // re-entered during the fade
           sendToSim({ type: 'stopScript' });
-        }, 280);
+        }, SIM_EXIT_STOP_MS);
         // (D2b) After the existing messages, freeze the hidden sim's rAF loop so it stops
         // burning CPU/GPU, then arm the destroy grace. simDestroyGraceMs() >= 700ms, so the
         // iframe can never unmount during the 200ms fade.
@@ -391,7 +392,7 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
         // bounded ceiling below stays as the pre-v4 terminal fallback (mirrors the viewer).
         sendToSim({ type: 'PING_SIM_PAINTED' });
         if (simRevealTimerRef.current) clearTimeout(simRevealTimerRef.current);
-        simRevealTimerRef.current = setTimeout(() => setShowSim(true), 800);
+        simRevealTimerRef.current = setTimeout(() => setShowSim(true), SIM_LEGACY_REVEAL_MS);
       }
     } else {
       // (D2b) Same URL but not ready (e.g. simPause'd mid-boot on a fast leave): unfreeze so
@@ -407,7 +408,7 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
       // 3s timeout), show the overlay anyway so the sim is visible while it finishes booting.
       // SIM_READY still drives startScript when it arrives.
       if (simRevealTimerRef.current) clearTimeout(simRevealTimerRef.current);
-      simRevealTimerRef.current = setTimeout(() => setShowSim(true), 800);
+      simRevealTimerRef.current = setTimeout(() => setShowSim(true), SIM_LEGACY_REVEAL_MS);
     }
   // Params/script deps: a regeneration that keeps the URL (canReuse) must still re-apply
   // the new simple_ui / auto_script / sim_script — and a changed sim_meta.uiControls
@@ -545,7 +546,7 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
             background: '#0e0e0e',
             opacity: showSimOverlay ? 1 : 0,
             pointerEvents: showSimOverlay ? 'auto' : 'none',
-            transition: 'opacity 200ms ease',
+            transition: `opacity ${SIM_FADE_MS}ms ease`,
           }}
         >
           <iframe
@@ -555,6 +556,13 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
             className="w-full h-full border-0"
             sandbox="allow-scripts allow-same-origin allow-forms"
             title="Interactive simulation"
+            // opacity:0 removes nothing from the accessibility tree and pointer-events does not
+            // block Tab. Without these, the hidden sim stayed keyboard- and screen-reader-reachable
+            // for the whole fade AND the entire destroy grace (45s on desktop) — the viewer's
+            // pooled frames were hardened for exactly this; the editor was not (audited).
+            inert={!showSimOverlay}
+            aria-hidden={!showSimOverlay}
+            tabIndex={showSimOverlay ? undefined : -1}
           />
         </div>
       )}
