@@ -253,7 +253,7 @@ export class SimRuntimeClient {
       case SIM_PAINTED:    return this.onPainted();
       case SCRIPT_APPLIED: return this.onApplied(msg.script ?? null, msg.token);
       case SCRIPT_MISSING: return this.onMissing(msg.script ?? null, msg.token);
-      case SCRIPT_ERROR:   return this.onError(msg.message ?? 'script error', msg.token);
+      case SCRIPT_ERROR:   return this.onError(msg.message ?? 'script error', msg.token, msg.phase, msg.script ?? null);
       case AUTO_PAUSED:    this.tel('auto-paused'); return;
       case USER_INTERACTION: this.cbs.onUserInteraction?.(); return;
       default: return;
@@ -308,14 +308,21 @@ export class SimRuntimeClient {
     this.hideAndSilence();
   }
 
-  private onError(message: string, token?: number): void {
-    // Must go through the SAME staleness check as the other acks. The bridge's stopScript emits a
-    // TOKENLESS, script-less SCRIPT_ERROR when the outgoing section's cleanup throws — and
-    // startScript runs stopScript FIRST, so that fires in the middle of a switch. Accepting it
-    // failed the document and dropped the pending apply, after which the real SCRIPT_APPLIED for
-    // the incoming section was rejected as stale and the section ran correctly but was never
-    // shown (audited: the shipping viewer matches on key+script+token and is immune).
-    if (!this.matchesPending(null, token)) { this.tel('unscoped-error-ignored', { message }); return; }
+  private onError(message: string, token?: number, phase?: string, script?: string | null): void {
+    // The bridge's stopScript emits a SCRIPT_ERROR with NO token and NO script when the OUTGOING
+    // section's cleanup throws — and startScript runs stopScript first, so it fires in the middle
+    // of every switch away from a section whose cleanup throws. It describes the section being
+    // torn down, never the one being applied, so it must not touch the live activation: doing so
+    // dropped the pending apply, after which the real SCRIPT_APPLIED was rejected as stale and the
+    // incoming section ran correctly but was never shown. WebKit's timing made this reproducible;
+    // the other engines hid it. Matching on `null` script was not enough — a null script skips the
+    // script comparison, so the unscoped error still matched. Identify it explicitly.
+    const unscoped = token === undefined && !script;
+    if (unscoped || phase === 'cleanup') {
+      this.tel('cleanup-error-ignored', { message, phase: phase ?? null });
+      return;
+    }
+    if (!this.matchesPending(script ?? null, token)) { this.tel('stale-error-ignored', { message }); return; }
     this.clearApplyStall();
     this.holding = false;
     this.set({ phase: 'failed', pendingScript: null, lastError: message });

@@ -939,6 +939,13 @@ export function useProjectPlayer(
       } else {
         // Frame still booting (or just added on-demand): the SIM_READY handler applies the
         // pending start once its bridge answers (and resolves dynamic-vs-legacy then).
+        //
+        // Resume it FIRST. A pool frame is frozen the instant it paints while backgrounded, and a
+        // bridge announces its readiness from inside a requestAnimationFrame — so a document that
+        // painted before it handshook has its OWN readiness callback frozen with it, and would
+        // never answer at all. This is a pool-only race (no single-document surface can freeze a
+        // frame it is about to present) and it is what the boundary handshake poll used to mask.
+        rt.resume();
         pendingSimRef.current = { sectionUrl, dynScript, legacyScript, params };
       }
 
@@ -1759,7 +1766,12 @@ export function useProjectPlayer(
       // is attached, and every event it handles is scoped to THIS frame's contentWindow — which
       // is what makes a pool of documents safe without any reverse source lookup.
       const spec = simPoolSpecsRef.current.find((s) => s.key === url);
-      runtimeFor(url).attach(el, spec?.src ?? url);
+      const rt = runtimeFor(url);
+      rt.attach(el, spec?.src ?? url);
+      // Binding a document resets the client, cancelling any recovery armed for it. A frame added
+      // on demand at a section boundary is polled BEFORE React mounts its element, so without
+      // re-arming here that poll is silently thrown away and a cold entry waits on nothing.
+      if (url === activeSimUrlRef.current && !rt.getState().painted) startSimPoll(url);
     } else {
       simPoolFramesRef.current.delete(url);
       simRuntimesRef.current.get(url)?.attach(null, null);

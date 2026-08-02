@@ -439,3 +439,34 @@ describe('capability classification uses the REAL wire format', () => {
     expect(c.getState().dynamic).toBe(true);
   });
 });
+
+describe("the bridge's cleanup error must not kill the incoming activation", () => {
+  // startScript runs stopScript FIRST, so a section whose cleanup throws emits a SCRIPT_ERROR
+  // with no token and no script IN THE MIDDLE of every switch away from it. That error describes
+  // the OUTGOING section. Treating it as the live activation's failure dropped the pending apply,
+  // after which the real SCRIPT_APPLIED was rejected as stale — the incoming section ran correctly
+  // and was never shown. Reproduced on WebKit; the other engines' timing hid it.
+  it('an unscoped cleanup error is ignored and the switch still completes', () => {
+    const { c, win } = bootModern('A');
+    c.activate({ script: 'B' });
+    expect(c.getState().phase).toBe('awaiting-ack');
+
+    fromChild(win, { type: 'SCRIPT_ERROR', phase: 'cleanup', message: 'fixture cleanup exploded' });
+    expect(c.getState().phase, 'the cleanup error failed the document').not.toBe('failed');
+
+    fromChild(win, { type: 'SCRIPT_APPLIED', script: 'B', token: c.getState().activationToken });
+    expect(c.getState().visible, 'B applied but was never presented').toBe(true);
+    expect(c.getState().currentScript).toBe('B');
+  });
+
+  it('a TOKENED start error for the live activation still fails the document', () => {
+    const { c, win } = bootModern('A');
+    c.activate({ script: 'B' });
+    fromChild(win, {
+      type: 'SCRIPT_ERROR', phase: 'start', script: 'B',
+      token: c.getState().activationToken, message: 'body threw',
+    });
+    expect(c.getState().phase).toBe('failed');
+    expect(c.getState().visible).toBe(false);
+  });
+});
