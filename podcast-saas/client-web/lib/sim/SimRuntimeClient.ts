@@ -390,6 +390,11 @@ export class SimRuntimeClient {
       // leaving it presented while the new body applies is exactly the wrong-sub-simulation
       // frame the gate exists to prevent — holding a reveal is not enough when already visible.
       this.holding = true;
+      // Emitted so the hold is OBSERVABLE. The gate's effect is invisible in rendered frames when
+      // a body applies instantly, and a body that takes real time blocks the shared process — so
+      // without this breadcrumb the single most important safety property has no viewer-level
+      // signal at all (audited: a dead gate passed the whole e2e suite unchanged).
+      this.tel('apply-hold', { script });
       this.set({ phase: 'awaiting-ack', visible: false, interactive: false });
       const gen = this.generation;
       this.applyStallTimer = setTimeout(() => {
