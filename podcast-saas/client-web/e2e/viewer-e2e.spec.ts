@@ -599,12 +599,12 @@ const events = (log: TelemetryEvent[]): string[] => log.map((e) => e.event);
  * on an empty log. Poll for the fact instead of guessing at a duration.
  */
 async function waitForProto(
-  page: Page, type: string, script: string, timeout = 30_000,
+  page: Page, type: string, script: string | null, timeout = 30_000,
 ): Promise<void> {
   await page.waitForFunction(([t, sc]) => {
     const log = (window as unknown as { __PROTO_LOG?: { type: string; script: string | null }[] }).__PROTO_LOG ?? [];
-    return log.some((e) => e.type === t && e.script === sc);
-  }, [type, script], { timeout });
+    return log.some((e) => e.type === t && (sc === null || e.script === sc));
+  }, [type, script] as [string, string | null], { timeout });
 }
 
 /** Which iframe DOCUMENTS claimed a SIM_PAINTED (see the init script above). */
@@ -1092,12 +1092,17 @@ test.describe('stale acknowledgements — supersede, teardown and token mismatch
     await startPlayback(page);
     await seekTo(page, 4);
     await waitForSection(page, 'A');
-    const sampling = await startSampling(page, 20_000);
-    await seekTo(page, 9);                      // request LATE …
-    await page.waitForTimeout(400);
-    await seekTo(page, 15);                     // … and supersede it, before it can acknowledge
-    // The superseded ack is what these scenarios are about — wait for the FACT, not a duration.
-    await waitForProto(page, 'SCRIPT_APPLIED', S.LATE);
+    const sampling = await startSampling(page, 30_000);
+    // Synchronise on the CHILD's evidence at every step. LATE retains its acknowledgement until
+    // the next real lifecycle event, so the supersede itself is what releases it — no parent
+    // command, and no dependence on the viewer reaching B within a guessed number of ms
+    // (measured: it took ~5.8s, which is why a fixed 2400ms delay never produced a stale window).
+    await seekTo(page, 9);
+    await waitForProto(page, 'startScript', S.LATE);    // activation A was issued …
+    await seekTo(page, 15);
+    await waitForProto(page, 'startScript', S.B);       // … the SUPERSEDING activation was issued …
+    await waitForProto(page, 'SCRIPT_APPLIED', S.B);    // … and applied …
+    await waitForProto(page, 'SCRIPT_APPLIED', S.LATE); // … only then does A's stale ack land
     return sampling;
   }
 
@@ -1110,11 +1115,12 @@ test.describe('stale acknowledgements — supersede, teardown and token mismatch
     await startPlayback(page);
     await seekTo(page, 4);
     await waitForSection(page, 'A');
-    const sampling = await startSampling(page, 20_000);
-    await seekTo(page, 9);                      // enter LATE — its ack is 2400ms away
-    await page.waitForTimeout(400);
-    await seekTo(page, 20);                     // leave the simulation entirely
-    await waitForProto(page, 'SCRIPT_APPLIED', S.LATE);
+    const sampling = await startSampling(page, 30_000);
+    await seekTo(page, 9);
+    await waitForProto(page, 'startScript', S.LATE);    // activation A was issued …
+    await seekTo(page, 20);                             // … the viewer left every simulation …
+    await waitForProto(page, 'stopScript', null);       // … and really tore it down …
+    await waitForProto(page, 'SCRIPT_APPLIED', S.LATE); // … only then does A's ack land
     return sampling;
   }
 
@@ -1128,8 +1134,16 @@ test.describe('stale acknowledgements — supersede, teardown and token mismatch
     expect(startB, 'B was never requested — nothing was superseded').toBeTruthy();
     // BOTH acks arrive: production schedules them outside every cancellable scope.
     expect(ackLate, 'the superseded activation was never acknowledged — the fixture is politer than production').toBeTruthy();
-    expect(ackLate!.ackAt!, 'LATE acknowledged before B was requested — no stale window existed')
-      .toBeGreaterThan(startB!.receivedAt);
+    const ackB = proto.find((e) => e.type === 'SCRIPT_APPLIED' && e.script === S.B);
+    expect(ackB, 'B never acknowledged — its applyComplete is unavailable').toBeTruthy();
+    expect(ackB!.applyComplete, 'B has no applyComplete timestamp').toBeTruthy();
+    // THE ORDERING UNDER TEST, entirely from the child's own clock:
+    //   startScript(A) < startScript(B) <= B applyComplete < A ackAt
+    expect(startLate!.receivedAt, 'A was not requested before B').toBeLessThan(startB!.receivedAt);
+    expect(startB!.receivedAt, 'B applied before it was requested')
+      .toBeLessThanOrEqual(ackB!.applyComplete!);
+    expect(ackB!.applyComplete!, 'A acknowledged before B had finished applying — not stale')
+      .toBeLessThan(ackLate!.ackAt!);
     expect(ackLate!.token, 'the late acknowledgement must carry the SUPERSEDED token').toBe(startLate!.token);
     expect(ackLate!.token).not.toBe(startB!.token);
     expect(events(await telemetry(page)), 'the stale acknowledgement was accepted as live')
@@ -1149,8 +1163,10 @@ test.describe('stale acknowledgements — supersede, teardown and token mismatch
     const ackLate = proto.find((e) => e.type === 'SCRIPT_APPLIED' && e.script === S.LATE);
     expect(stop, 'the exit never tore the section down — nothing was exercised').toBeTruthy();
     expect(ackLate, 'the teardown cancelled the pending acknowledgement — production does not').toBeTruthy();
-    expect(ackLate!.ackAt!, 'the acknowledgement did not arrive AFTER the teardown')
-      .toBeGreaterThan(stop!.receivedAt);
+    // startScript(A) < stopScript receivedAt < A ackAt — all from the child's own clock.
+    expect(startLate!.receivedAt, 'the teardown preceded the activation').toBeLessThan(stop!.receivedAt);
+    expect(stop!.receivedAt, 'the acknowledgement did not arrive AFTER the teardown')
+      .toBeLessThan(ackLate!.ackAt!);
     const afterExit = since(samples, stop!.receivedAt + SIM_FADE_MS);
     expect(afterExit.length, 'no samples after the teardown — vacuous').toBeGreaterThan(5);
     const shown = afterExit.flatMap((s) => s.frames).filter((f) => f.op > 0.05);
@@ -1163,9 +1179,21 @@ test.describe('stale acknowledgements — supersede, teardown and token mismatch
     const ackLate = proto.find((e) => e.type === 'SCRIPT_APPLIED' && e.script === S.LATE);
     expect(ackLate, 'the superseded activation never acknowledged — nothing to be stale').toBeTruthy();
     // Straddle the exact instant it arrives, using the CHILD's own clock.
-    const around = samples.filter((s) => s.abs >= ackLate!.ackAt! - 200 && s.abs <= ackLate!.ackAt! + 600);
+    const ackB = proto.find((e) => e.type === 'SCRIPT_APPLIED' && e.script === S.B);
+    expect(ackB, 'B never applied — it cannot be the current section').toBeTruthy();
+    expect(ackB!.applyComplete!, 'B had not applied when the stale acknowledgement arrived')
+      .toBeLessThan(ackLate!.ackAt!);
+    // FROM the acknowledgement onward. Starting before it would include the window in which B had
+    // not yet been applied — where showing the previous section is correct, not a defect.
+    const around = samples.filter((s) => s.abs >= ackLate!.ackAt! && s.abs <= ackLate!.ackAt! + 800);
     expect(around.length, 'no samples straddle the stale acknowledgement — vacuous').toBeGreaterThan(5);
+    // B is current and stays current: the stale ack may not reveal LATE, alter B, or reactivate.
     assertVisibleFramesAreCorrect(around, { expect: 'B', forbidPrevious: 'LATE' });
+    const sectionsAfter = new Set(around.flatMap((x) => x.frames)
+      .filter((f) => f.op > 0.05 && !f.stale && f.section && f.section !== 'none')
+      .map((f) => f.section));
+    expect([...sectionsAfter], 'the stale acknowledgement changed which section was presented')
+      .toEqual(['B']);
   });
 
   test('S4. an acknowledgement arriving after deactivation is ignored and reveals nothing', async ({ page }) => {
@@ -1176,8 +1204,14 @@ test.describe('stale acknowledgements — supersede, teardown and token mismatch
     const iStale = names.findIndex((e, i) => e === 'stale-ack-ignored' && i > iDeact);
     expect(iStale, 'no post-deactivation acknowledgement was ignored — nothing was exercised')
       .toBeGreaterThan(iDeact);
-    const revealsAfter = names.slice(iDeact).filter((e) => e === 'reveal' || e === 'reveal-forced');
-    expect(revealsAfter, 'a post-deactivation acknowledgement revealed the frame').toEqual([]);
+    const after = names.slice(iDeact);
+    expect(after.filter((e) => e === 'reveal' || e === 'reveal-forced'),
+      'a post-deactivation acknowledgement revealed the frame').toEqual([]);
+    // No activation may be recreated, and no audio / paint-polling / guidance state resumed.
+    for (const forbidden of ['activate', 'sim-unmute', 'painted-by-policy']) {
+      expect(after.filter((e) => e === forbidden),
+        `a post-deactivation acknowledgement resumed "${forbidden}"`).toEqual([]);
+    }
   });
 
   test('S5. an acknowledgement whose TOKEN does not match the activation is rejected', async ({ page }) => {

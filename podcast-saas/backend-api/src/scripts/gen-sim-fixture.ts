@@ -81,11 +81,19 @@ const BAD_TOKEN_DELTA = 7777;
  * Per-section acknowledgement behaviour for the `delayedack` bridge. Sections with no entry use
  * the bridge's default delay (500 ms), so A / B / SLOW / THROWS / AUTO behave exactly as before.
  */
-const DELAYED_ACK_POLICY: Record<string, { ackDelayMs?: number; tokenDelta?: number }> = {
+const DELAYED_ACK_POLICY: Record<string, { ackDelayMs?: number; tokenDelta?: number; releaseOnNextLifecycle?: boolean }> = {
   // 2400 ms is chosen against the player's own constants: far longer than the ~300-400 ms a test
   // needs to supersede or leave the section (SIM_EXIT_STOP_MS is 280 ms), and still under
   // SIM_APPLY_STALL_MS (3000 ms) so the runtime's terminal bound is not what ends the wait.
-  [FIXTURE_DELAYED_SECTIONS.LATE]: { ackDelayMs: 2400 },
+  // The acknowledgement is retained until the NEXT REAL LIFECYCLE EVENT on this document — the
+  // next startScript (a supersede) or a stopScript (a teardown) — and only then emitted, after
+  // that event has been fully applied. This is deterministic WITHOUT a parent-controlled command
+  // and without guessing how long the viewer takes to reach the next section: measured, the
+  // viewer issued the superseding activation ~5.8s after the seek, so a fixed 2400ms delay had
+  // already fired and no stale window ever existed. The production property being reproduced is
+  // unchanged — the ack is scheduled outside every tracked/cancellable scope, exactly as the real
+  // bridge's _sysRaf(_ack) is, so supersede and stopScript cannot cancel it.
+  [FIXTURE_DELAYED_SECTIONS.LATE]: { releaseOnNextLifecycle: true },
   // Prompt, but mis-tokened: matchesPending() must reject it, and the ONLY thing that may
   // eventually release the hold is the runtime's SIM_APPLY_STALL_MS terminal bound.
   [FIXTURE_DELAYED_SECTIONS.BADTOKEN]: { ackDelayMs: 400, tokenDelta: BAD_TOKEN_DELTA },
@@ -250,7 +258,7 @@ const ENTRY_HTML = `<!doctype html>
  */
 function delayedAckBridge(
   entries: Map<string, string>,
-  policy: Record<string, { ackDelayMs?: number; tokenDelta?: number }> = {},
+  policy: Record<string, { ackDelayMs?: number; tokenDelta?: number; releaseOnNextLifecycle?: boolean }> = {},
   delayMs = 500,
 ): string {
   const sections = JSON.stringify(Object.fromEntries(
@@ -264,6 +272,9 @@ function delayedAckBridge(
   var DELAY = ${delayMs};
   var PROTO = (window.__PROTO__ = []);
   var _cancel = null;
+  // Acknowledgements retained until the next real lifecycle event. Nothing can cancel these —
+  // the same scope guarantee production gets from _sysRaf(_ack) living outside _trackTimers.
+  var _retained = [];
 
   // Document-wide escape hatches. Secondary to the per-section POLICY above (see the doc comment).
   var _q = null;
@@ -283,7 +294,8 @@ function delayedAckBridge(
     var p = (name && Object.prototype.hasOwnProperty.call(POLICY, name)) ? POLICY[name] : null;
     return {
       ackDelayMs: (p && typeof p.ackDelayMs === 'number') ? p.ackDelayMs : DELAY,
-      tokenDelta: ALL_TOKENS_BAD ? BAD_TOKEN_DELTA : ((p && p.tokenDelta) || 0)
+      tokenDelta: ALL_TOKENS_BAD ? BAD_TOKEN_DELTA : ((p && p.tokenDelta) || 0),
+      releaseOnNextLifecycle: !!(p && p.releaseOnNextLifecycle)
     };
   }
 
@@ -313,16 +325,33 @@ function delayedAckBridge(
     // mirrors production's _sysRaf(_ack), which is scheduled outside _trackTimers and therefore
     // survives every supersede and every stopScript. A late, stale SCRIPT_APPLIED genuinely can
     // arrive — that is the whole point of this package.
-    setTimeout(function () {
+    var fire = function () {
       record({ type: 'SCRIPT_APPLIED', script: name, token: ackToken, requestToken: token,
                receivedAt: receivedAt, applyStart: applyStart, applyComplete: applyComplete,
                ackAt: now() });
       post({ type: 'SCRIPT_APPLIED', script: name, token: ackToken });
+    };
+    // RETAINED: released by the next startScript/stopScript on this document, once that event has
+    // been applied. No parent command, no guessed delay.
+    if (pol.releaseOnNextLifecycle) { _retained.push(fire); return; }
+    setTimeout(function () {
+      fire();
     }, pol.ackDelayMs);
   }
 
   window.addEventListener('message', function (e) {
     var d = e.data || {};
+    // Any retained ack is released by the NEXT lifecycle event, emitted asynchronously AFTER that
+    // event has been fully applied — so a stale SCRIPT_APPLIED provably lands while the newer
+    // section is already current, which is exactly the production ordering under test.
+    // Snapshot BEFORE the new event is applied, release AFTER. Releasing whatever is in the list
+    // afterwards would also fire the ack the new activation itself just retained, so LATE would
+    // acknowledge its own arrival and never be stale at all.
+    var takeRetained = function () { return _retained.splice(0, _retained.length); };
+    var releaseTaken = function (held) {
+      if (!held.length) return;
+      setTimeout(function () { for (var i = 0; i < held.length; i++) held[i](); }, 0);
+    };
     if (d.type === 'startScript') {
       var receivedAt = now();
       record({ type: 'startScript', script: d.script, token: d.token, requestToken: d.token,
@@ -330,7 +359,11 @@ function delayedAckBridge(
       // SYNCHRONOUS, exactly like production. Deliberately WITHOUT production's identical-re-post
       // dedupe (_lastSig): keeping it out means the number of acknowledgements depends only on the
       // number of activations, which is what every assertion here is written against.
+      var carriedOver = takeRetained();          // whatever the PREVIOUS activation retained
       applySection(d.script, d.params, d.token, receivedAt);
+      // The new section is now CURRENT and applied. Only now is the previous activation's ack
+      // emitted — stale by ordering rather than by racing a timer.
+      releaseTaken(carriedOver);
       return;
     }
     if (d.type === 'stopScript') {
@@ -340,7 +373,11 @@ function delayedAckBridge(
       // which only reaches timers scheduled DURING the body call — the acknowledgement above was
       // scheduled outside that scope and survives a teardown. Cancelling it here is precisely the
       // politeness that hid the post-deactivation stale ack from every test.
+      var afterStop = takeRetained();
       if (_cancel) { try { _cancel(); } catch (err) {} _cancel = null; }
+      // The teardown has completed. Only now is the retained ack emitted — reproducing
+      // production's ack surviving stopScript and landing after deactivation.
+      releaseTaken(afterStop);
       return;
     }
     if (d.type === 'PING_SIM_READY') post(readyMsg());
