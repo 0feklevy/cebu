@@ -64,6 +64,8 @@ function ensureFixture(): void {
     const sources = [
       join(BACKEND, 'src', 'scripts', 'gen-sim-fixture.ts'),
       join(BACKEND, 'src', 'services', 'simulation', 'SimulationService.ts'),
+      // injectSimBootSnippet is baked into the fixture bytes too (review LOW-6).
+      join(BACKEND, 'src', 'controllers', 'sim-public.controller.ts'),
     ];
     if (!sources.some((s) => existsSync(s) && statSync(s).mtimeMs > built)) return;
   }
@@ -533,8 +535,8 @@ const errorsOf = (page: Page): string[] => (page as Page & { __errors?: string[]
 const STUBBED_HOSTS = [
   'https://identitytoolkit.googleapis.com/',
   'https://securetoken.googleapis.com/',
-  // WebKit's Firebase auth path additionally loads the gapi iframe shim. Same dependency, same
-  // treatment: stubbed to an empty script so it never reaches the network.
+  // WebKit's Firebase auth path additionally loads the gapi iframe shim. ABORTED, not faked:
+  // fulfilling it with an empty script broke the SDK's init on WebKit's path (audited).
   'https://apis.google.com/',
   'https://www.googleapis.com/',
 ];
@@ -891,6 +893,7 @@ test.describe('real React viewer — simulation transitions', () => {
     expect(events(await telemetry(page)),
       'the bounded-hold force-reveal branch never ran — something else released the hold')
       .toContain('hold-expired-legacy-reveal');
+    expect(externalRequests(page), 'unapproved external requests on the nopaint path').toEqual([]);
   });
 
   test('15. hidden simulation frames are muted, inert and untabbable', async ({ page }) => {
@@ -1158,8 +1161,13 @@ test.describe('stale acknowledgements — supersede, teardown and token mismatch
       .toBeLessThan(ackLate!.ackAt!);
     expect(ackLate!.token, 'the late acknowledgement must carry the SUPERSEDED token').toBe(startLate!.token);
     expect(ackLate!.token).not.toBe(startB!.token);
-    expect(events(await telemetry(page)), 'the stale acknowledgement was accepted as live')
-      .toContain('stale-ack-ignored');
+    {
+      // Anchored to the ack's own timestamp (like S4) so an unrelated stale ack elsewhere in the
+      // run can never satisfy this vacuously.
+      const tl = await telemetry(page);
+      expect(tl.filter((e) => e.event === 'stale-ack-ignored' && e.abs >= ackLate!.ackAt! - 50).length,
+        'the stale acknowledgement was accepted as live').toBeGreaterThan(0);
+    }
     // Bounded on BOTH ends by the child's own timestamps. An open-ended window would extend into
     // the video looping back through the timeline (which legitimately re-presents sections) and
     // fail on behaviour unrelated to the stale acknowledgement.
@@ -1303,8 +1311,11 @@ test.describe('stale acknowledgements — supersede, teardown and token mismatch
     expect(ackBad!.token, 'the fixture echoed a MATCHING token — nothing was exercised')
       .toBe(startBad!.token! + BAD_TOKEN_DELTA);
 
-    expect(events(await telemetry(page)), 'the mis-tokened acknowledgement was accepted as live')
-      .toContain('stale-ack-ignored');
+    {
+      const tl = await telemetry(page);
+      expect(tl.filter((e) => e.event === 'stale-ack-ignored' && e.abs >= ackBad!.ackAt! - 50).length,
+        'the mis-tokened acknowledgement was accepted as live').toBeGreaterThan(0);
+    }
     // Because it was rejected, the hold SURVIVES its arrival: nothing may be presented between the
     // request and, at the earliest, the runtime's terminal bound.
     const held = samples.filter((s) => s.abs > startBad!.receivedAt + SIM_FADE_MS

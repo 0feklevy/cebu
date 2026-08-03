@@ -47,10 +47,18 @@ export function SimulationOverlay({ html, src, caption, visible, onDismiss }: Pr
   // dismissed simulation running, animating and audible, because the modal's root element stays
   // mounted (visibility is a CSS class) so dispose() never runs either (audited).
   useEffect(() => {
-    if (visible) return;
+    if (visible) {
+      // Re-shown with the SAME document (a new trigger landing inside the modal's clear window
+      // reuses simKey, so nothing remounts): the runtime was suspended on dismiss and nothing
+      // else would resume or re-present it — a permanent spinner over a frozen frame (review F3).
+      if (!simKey) return;
+      runtime.resume();
+      runtime.startPaintRecovery({ legacyCeilingMs: 8_000 });
+      return;
+    }
     runtime.stopNow();
     runtime.suspend();     // freeze + mute: stopScript alone does not silence a running scene
-  }, [visible, runtime]);
+  }, [visible, simKey, runtime]);
 
   useEffect(() => {
     if (!visible) return;

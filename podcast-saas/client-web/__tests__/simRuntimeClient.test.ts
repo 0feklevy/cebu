@@ -511,3 +511,26 @@ describe('painted has ONE owner — a policy paint must grant visibility', () =>
     expect(c.getState().visible, 'a policy paint must never bypass the apply gate').toBe(false);
   });
 });
+
+describe('the paint-recovery ceiling must never bypass a live apply hold', () => {
+  // Proven by execution in review: a dynamic, ack-capable, unpainted document with a pending
+  // gated switch was force-revealed by the 800ms legacy ceiling — presented before its
+  // acknowledgement and before the terminal bound. The ceiling now defers to the hold; only the
+  // hold's own terminal bound (which clears the pending apply as it fires) may force through.
+  it('a held switch is NOT revealed at the ceiling', () => {
+    const { c, win } = bootModern('A');       // proven dynamic + ackCapable
+    c.handleFrameLoad();                       // fresh document: unpainted
+    fromChild(win, { type: 'SIM_READY', dispatch: 'dynamic' });
+    c.activate({ script: 'A' });
+    fromChild(win, { type: 'SCRIPT_APPLIED', script: 'A', token: c.getState().activationToken });
+    c.activate({ script: 'B' });               // gated switch — hold armed
+    expect(c.getState().phase).toBe('awaiting-ack');
+
+    c.startPaintRecovery({ legacyCeilingMs: 120 });
+    vi.advanceTimersByTime(200);               // ceiling fires…
+    expect(c.getState().visible, 'the ceiling revealed a held switch').toBe(false);
+
+    vi.advanceTimersByTime(SIM_APPLY_STALL_MS);   // …the hold's own terminal bound releases
+    expect(c.getState().visible, 'the terminal bound must still release the hold').toBe(true);
+  });
+});

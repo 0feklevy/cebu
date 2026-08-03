@@ -88,6 +88,39 @@ const calleeName = (e: ts.Expression): string | null =>
  * wrapper (`sendToFrame`, `post`), so requiring the literal to sit syntactically inside a
  * `postMessage(...)` call would miss exactly the code this rule exists to forbid.
  */
+
+/**
+ * Local names bound to lib/sim/protocol exports in this file (including aliased imports), mapped
+ * to the WIRE VALUE each export carries. `{ type: START_SCRIPT }` and `import { SIM_READY as R }`
+ * are the laundering vectors a literal-only scanner missed (proven by mutation in review F7).
+ */
+const PROTOCOL_WIRE_VALUES: Record<string, string> = {
+  SIM_READY: 'SIM_READY', SIM_PAINTED: 'SIM_PAINTED', SCRIPT_APPLIED: 'SCRIPT_APPLIED',
+  SCRIPT_MISSING: 'SCRIPT_MISSING', SCRIPT_ERROR: 'SCRIPT_ERROR', AUTO_PAUSED: 'AUTO_PAUSED',
+  USER_INTERACTION: 'userInteraction', START_SCRIPT: 'startScript', STOP_SCRIPT: 'stopScript',
+  PAUSE_SCRIPT: 'pauseScript', SIM_PAUSE: 'simPause', SIM_RESUME: 'simResume',
+  SIM_MUTE: 'simMute', SIM_UNMUTE: 'simUnmute', SIM_RELAYOUT: 'simRelayout',
+  CLEAR_BOOT_HIDE: 'clearBootHide', GUIDANCE_GATE: 'guidanceGate',
+  PING_SIM_READY: 'PING_SIM_READY', PING_SIM_PAINTED: 'PING_SIM_PAINTED',
+};
+
+/** localName → wire value, for every protocol import specifier in the file (aliases resolved). */
+function protocolAliases(sf: ts.SourceFile): Map<string, string> {
+  const out = new Map<string, string>();
+  walk(sf, (n) => {
+    if (!ts.isImportDeclaration(n) || !ts.isStringLiteral(n.moduleSpecifier)) return;
+    if (!/lib\/sim\/protocol/.test(n.moduleSpecifier.text)) return;
+    const named = n.importClause?.namedBindings;
+    if (!named || !ts.isNamedImports(named)) return;
+    for (const el of named.elements) {
+      const exported = (el.propertyName ?? el.name).text;
+      const wire = PROTOCOL_WIRE_VALUES[exported];
+      if (wire) out.set(el.name.text, wire);
+    }
+  });
+  return out;
+}
+
 function messagesBuilt(sf: ts.SourceFile, values: readonly string[], root: ts.Node = sf): Hit[] {
   const hits: Hit[] = [];
   walk(root, (n) => {
@@ -97,6 +130,13 @@ function messagesBuilt(sf: ts.SourceFile, values: readonly string[], root: ts.No
       const init = p.initializer;
       if (ts.isStringLiteralLike(init) && values.includes(init.text)) {
         hits.push(hitAt(sf, init, `{ type: '${init.text}' }`));
+      } else if (ts.isIdentifier(init)) {
+        // review F7: a protocol CONSTANT as the type initializer laundered the message past the
+        // literal-only scanner. Resolve the import (aliases included) to its wire value.
+        const wire = protocolAliases(sf).get(init.text);
+        if (wire && values.includes(wire)) {
+          hits.push(hitAt(sf, init, `{ type: ${init.text} /* = '${wire}' */ }`));
+        }
       }
     }
   });
@@ -106,8 +146,13 @@ function messagesBuilt(sf: ts.SourceFile, values: readonly string[], root: ts.No
 /** Identifiers with any of these names (declarations, reads, property names — never comments). */
 function identifiersNamed(sf: ts.SourceFile, names: readonly string[], root: ts.Node = sf): Hit[] {
   const hits: Hit[] = [];
+  const aliases = protocolAliases(sf);
   walk(root, (n) => {
-    if (ts.isIdentifier(n) && names.includes(n.text)) hits.push(hitAt(sf, n, n.text));
+    if (!ts.isIdentifier(n)) return;
+    if (names.includes(n.text)) { hits.push(hitAt(sf, n, n.text)); return; }
+    // review F7: `import { SIM_READY as R }` must still read as SIM_READY.
+    const wire = aliases.get(n.text);
+    if (wire && names.includes(wire)) hits.push(hitAt(sf, n, `${n.text} /* = ${wire} */`));
   });
   return hits;
 }

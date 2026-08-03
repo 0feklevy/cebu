@@ -13,7 +13,7 @@ import { SimRuntimeClient } from '../../lib/sim/SimRuntimeClient';
 // and in the e2e harness, and all of them must agree. Importing (rather than re-declaring) is
 // what keeps this surface from drifting away from the shared runtime again. The same-document
 // apply bound is not needed here at all: the runtime owns that timer.
-import { SIM_EXIT_STOP_MS } from '../../lib/sim/protocol';
+import { SIM_APPLY_STALL_MS, SIM_EXIT_STOP_MS } from '../../lib/sim/protocol';
 
 // Resident sim pool tuning. Every sim in the video is mounted ONCE up front in a persistent
 // hidden iframe (SimPoolOverlay) that boots muted, paints its scene, and freezes — so entering
@@ -25,6 +25,13 @@ import { SIM_EXIT_STOP_MS } from '../../lib/sim/protocol';
 // bounded best-effort ceiling and a genuine-stall affordance only after 5s.
 const SIM_PAINT_DEADLINE_MS = 1200; // bounded HOLD ceiling (see the deadline handler for what it may reveal)
 const SIM_BOOT_STALLED_MS   = 5000; // only after this does a genuine-failure loading affordance show
+// LOAD-BEARING ORDERING (review F6): the 5s stall force path is safe only because every apply
+// hold is armed with the runtime's terminal bound and therefore released FIRST. Inverting these
+// constants would silently let the stall path present a held (unacknowledged) switch, so the
+// ordering is asserted here rather than trusted.
+if (SIM_APPLY_STALL_MS >= SIM_BOOT_STALLED_MS) {
+  throw new Error('SIM_APPLY_STALL_MS must stay below SIM_BOOT_STALLED_MS — see the comment above');
+}
 const SIM_WARM_MAX_MS       = 8000; // hidden un-paused warm budget per frame before force-freezing
 // The atomic-exit bound (SIM_EXIT_STOP_MS) is imported from lib/sim/protocol — see above.
 // Paint-recovery poll budget: 40 pings at 300ms. SimRuntimeClient owns the poll; its own
@@ -225,6 +232,8 @@ export function useProjectPlayer(
   const pathStackRef = useRef<Array<{ sequenceId: string; edgeId: string }>>([]);
   const activeChoiceRef = useRef<PlayerChoicePoint | null>(null);
   const choiceTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // True once the hook's unmount cleanup ran; late timers consult it before touching the pool.
+  const unmountedRef = useRef(false);
   const choiceResolvedRef = useRef(false);  // a selection/timeout already navigated
   const sessionIdRef = useRef<string>('');
   if (!sessionIdRef.current) {
@@ -946,7 +955,8 @@ export function useProjectPlayer(
         // A document the pool LATCHED as painted (the never-drives-rAF escape hatch below) can
         // never produce the runtime's paint-driven reveal, so composite it here. revealSim
         // re-checks the hold, so a gated switch is still never presented early.
-        if (!rt.getState().painted) revealSim();
+  // (removed: dead branch — wasPainted IS runtimeState(key).painted, captured above, and
+      // activate() never clears painted, so this condition could never be true; review F5)
       } else if (wasReady) {
         // Frame is alive but hasn't acked a painted frame yet — drive it and poll the paint ack.
         clearWarmCeil(meta);
@@ -1715,6 +1725,7 @@ export function useProjectPlayer(
         // overlay's actual visible state at fire time (read live, never captured).
         sendToFrame(frameUrl, { type: 'guidanceInit', firedIds: Array.from(firedCueIds.current) });
         setTimeout(() => {
+          if (unmountedRef.current) return;   // review F4: never resurrect a disposed runtime map
           runtimeFor(frameUrl).setGuidance(showSimOverlayRef.current && frameUrl === activeSimUrlRef.current);
         }, 100);
       }
@@ -1995,10 +2006,14 @@ export function useProjectPlayer(
       reloadsAtMount.clear();
       // Disposing each client removes its window listener and makes every timer it owns
       // (deferred stop, apply stall, paint poll, legacy ceiling) inert — irreversibly.
+      unmountedRef.current = true;
       for (const rt of runtimesAtMount.values()) rt.dispose();
       runtimesAtMount.clear();
       // Per-frame warm budgets must not fire into an unmounted tree.
       for (const m of poolMetaAtMount.values()) clearWarmCeil(m);
+      // The branching choice countdown ticks every 250ms and, at zero, follows an edge into
+      // detached video elements — it must never outlive the tree (review F2).
+      if (choiceTimerRef.current) { clearInterval(choiceTimerRef.current); choiceTimerRef.current = null; }
       // Stop any cutaway / guided-narration audio so it doesn't keep playing after
       // the player unmounts (e.g. navigating away mid-cutaway or mid-guidance).
       if (audioCutawayRef.current) { audioCutawayRef.current.pause(); audioCutawayRef.current = null; }

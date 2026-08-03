@@ -466,6 +466,12 @@ export class SimRuntimeClient {
       this.legacyRevealTimer = null;
       if (this.generation !== gen || this.disposed) return;
       if (this.state.painted) return;
+      // NEVER through a live apply hold. reveal(force) deliberately bypasses the hold for the
+      // TERMINAL bound — which clears the pending apply as it fires — but this ceiling is not
+      // terminal for the hold: firing through it presented a section before its acknowledgement
+      // (proven by execution in review). The hold's own 3s bound is the sole terminal release,
+      // so a held document is never parked forever by skipping the ceiling here.
+      if (this.holding) { this.tel('legacy-ceiling-deferred-to-hold'); return; }
       this.tel('legacy-ceiling-reveal');
       this.reveal(true);
     }, opts?.legacyCeilingMs ?? SIM_LEGACY_REVEAL_MS);
