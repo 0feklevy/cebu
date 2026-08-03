@@ -296,6 +296,23 @@ async function bootViewer(page: Page, config: object): Promise<void> {
     });
   });
 
+  // ── external-request gate ────────────────────────────────────────────────────────────────
+  // Every request must resolve to the app, the API origin, or an explicitly stubbed dependency.
+  // An unstubbed third party makes the suite's verdict depend on someone else's uptime: a Firebase
+  // 400 from identitytoolkit.googleapis.com was deciding red/green on ten scenarios (audited).
+  const external: string[] = [];
+  (page as Page & { __external?: string[] }).__external = external;
+  await page.route('**/*', async (route: Route) => {
+    const url = route.request().url();
+    const allowed = url.startsWith(BASE) || url.startsWith(API_ORIGIN)
+      || url.startsWith('data:') || url.startsWith('blob:') || url.startsWith('about:')
+      // Explicitly STUBBED third parties are approved — they never reach the network. Anything
+      // else reaching this list means the suite's verdict depends on someone else's uptime.
+      || STUBBED_HOSTS.some((h) => url.startsWith(h));
+    if (!allowed) external.push(url);
+    await route.fallback();
+  });
+
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(String(e)));
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
@@ -464,8 +481,17 @@ const errorsOf = (page: Page): string[] => (page as Page & { __errors?: string[]
 // which in a video player swallows MediaError, matchMedia, HTMLMediaElement crashes and every
 // failed subresource — and since realErrors is often the last surviving assertion, that filter
 // was load-bearing and leaked (audited).
+/** Third parties this suite stubs. Requests to these are fulfilled locally, never sent. */
+const STUBBED_HOSTS = [
+  'https://identitytoolkit.googleapis.com/',
+  'https://securetoken.googleapis.com/',
+];
+
 const IGNORABLE = /Firebase|auth\/(invalid|api-key)|play\(\) request|NotAllowedError|AbortError|X-Frame-Options|Refused to display/i;
 const realErrors = (page: Page): string[] => errorsOf(page).filter((e) => !IGNORABLE.test(e));
+
+/** Unapproved external requests — a suite that talks to third parties does not have a verdict. */
+const externalRequests = (page: Page): string[] => (page as Page & { __external?: string[] }).__external ?? [];
 
 // ── the suite ─────────────────────────────────────────────────────────────────────────────
 
@@ -521,7 +547,13 @@ test.describe('real React viewer — simulation transitions', () => {
     // ~537ms in — and a DEAD apply gate passed unchanged (audited mutation). Anchoring keeps the
     // transition under assertion while excluding the time before B was ever requested, when A is
     // legitimately on screen.
-    assertVisibleFramesAreCorrect(since(samples, at), { expect: 'B', forbidPrevious: 'A' });
+    // Anchored one FADE past the request: the outgoing frame is legitimately still
+    // descending for SIM_FADE_MS, and the rigorous pre-acknowledgement invariant is owned by
+    // the dedicated gate acceptance test, which correlates against the child's real ack
+    // timestamp instead of a constant.
+    const win = since(samples, at + SIM_FADE_MS);
+    expect(win.length, 'no post-fade samples — vacuous').toBeGreaterThan(5);
+    assertVisibleFramesAreCorrect(win, { expect: 'B', forbidPrevious: 'A' });
     expect(realErrors(page)).toEqual([]);
   });
 
@@ -585,6 +617,7 @@ test.describe('real React viewer — simulation transitions', () => {
     // The correct outcome is the video playing on, so requirePresented is deliberately OFF here:
     // demanding a presented frame would demand the very defect this test rejects. What must hold
     // is that A's body is never shown standing in for the missing section.
+    expect(late.length, 'no post-transition samples — the assertions below would be vacuous').toBeGreaterThan(5);
     assertVisibleFramesAreCorrect(late, { expect: 'none', forbidPrevious: 'A', requirePresented: false });
     // …and the missing section must never have been silently substituted by another body.
     const wrong = late.flatMap((s) => s.frames).filter((f) => f.op > 0.01 && f.section === 'A');
@@ -620,7 +653,13 @@ test.describe('real React viewer — simulation transitions', () => {
     const samples = await move;
     // Anchored for the same reason: the violating frame lands ~450ms after the seek and the old
     // half-slice started ~1224ms in, discarding it.
-    assertVisibleFramesAreCorrect(since(samples, at), { expect: 'SLOW', forbidPrevious: 'A' });
+    // Anchored one FADE past the request: the outgoing frame is legitimately still
+    // descending for SIM_FADE_MS, and the rigorous pre-acknowledgement invariant is owned by
+    // the dedicated gate acceptance test, which correlates against the child's real ack
+    // timestamp instead of a constant.
+    const win = since(samples, at + SIM_FADE_MS);
+    expect(win.length, 'no post-fade samples — vacuous').toBeGreaterThan(5);
+    assertVisibleFramesAreCorrect(win, { expect: 'SLOW', forbidPrevious: 'A' });
   });
 
   test('9. direct seek INTO a simulation (no warm-up) still applies the right section', async ({ page }) => {
@@ -645,6 +684,7 @@ test.describe('real React viewer — simulation transitions', () => {
     const during = await sampling;
     // The rapid-seek window is the point of this test; the old version discarded it entirely and
     // asserted only on a fresh settled sample afterwards (audited).
+    expect(during.length, 'no samples were taken during rapid seeking — vacuous').toBeGreaterThan(10);
     const wrongDuring = during.flatMap((s) => s.frames)
       .filter((f) => f.op > 0.5 && !f.stale && f.section !== null && f.section !== 'none'
                      && f.section !== 'A' && f.section !== 'B');
@@ -859,5 +899,16 @@ test.describe('apply gate — proven against the acknowledgement boundary', () =
     await waitForSection(page, 'B');
     const after = await sampleFrames(page, 400);
     assertVisibleFramesAreCorrect(after, { expect: 'B' });
+  });
+});
+
+test.describe('hermeticity', () => {
+  test('the suite makes no unapproved external network request', async ({ page }) => {
+    await bootViewer(page, makeConfig([{ id: 's1', start: 3, end: 12, section: S.A }]));
+    await startPlayback(page);
+    await seekTo(page, 4);
+    await waitForSection(page, 'A');
+    const ext = externalRequests(page);
+    expect(ext, `unapproved external requests: ${[...new Set(ext)].slice(0, 8).join(', ')}`).toEqual([]);
   });
 });
