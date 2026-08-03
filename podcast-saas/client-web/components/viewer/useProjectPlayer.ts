@@ -5,7 +5,7 @@ import type { RefObject } from 'react';
 import type { PlayerConfig, PlayerSegment, SimulationOverlay, TimelineSeg, BrollClip, ImageOverlayItem, AudioCutaway, PlayerBranchSequence, PlayerChoicePoint, PlayerBranchEdge } from './types';
 import { releaseAvatarElement } from '../../lib/avatarAudioGraph';
 import type { SimStartScriptParams } from '../../lib/simUiControls';
-import { canWarmUnpaused } from '../../lib/simCapability';
+import { canWarmUnpaused, learnCanEmitPaint } from '../../lib/simCapability';
 import { collectSimPool, bootHideFor, dynamicScriptFor, flattenSimOccurrences, packageKeyOf, planWindowResidency, SIM_POOL_CAP, type SimPoolFrameSpec } from '../../lib/simPool';
 import { simTelemetry } from '../../lib/simTelemetry';
 import { SimRuntimeClient } from '../../lib/sim/SimRuntimeClient';
@@ -365,10 +365,19 @@ export function useProjectPlayer(
   // SimRuntimeClient — one client per package, in `simRuntimesRef` below.
   //
   // PoolMeta keeps only what the POOL MANAGER owns and the runtime deliberately has no notion of:
-  //   `v4` — this document's rAF gate can ack paints at all (legacy v3 gates can't, and are the
-  //     only ones the bounded hold below is allowed to force-reveal). Learned from the dispatch
-  //     capability or from a real paint, and deliberately NOT reset by a reload: a package that
-  //     has once proven it paints does not stop being able to.
+  //   `canEmitPaint` — whether this PACKAGE's document can emit SIM_PAINTED at all, i.e. whether
+  //     its injected rAF gate is the v4 one (legacy v3 gates can't ack a paint, and are the only
+  //     frames the bounded hold below is allowed to force-reveal). This is a capability of the
+  //     PAINT channel and is NOT a second classification of anything the runtime owns:
+  //     `dynamic` classifies in-place section dispatch, `ackCapable` classifies SCRIPT_APPLIED
+  //     acks, and both legitimately disagree with it (a DOM/setInterval package acks scripts and
+  //     never paints; a load-time-locked package rebuilt with the v4 gate paints and still needs
+  //     a per-section URL — both pinned in __tests__/simCapability.test.ts). It also differs from
+  //     the runtime's `painted`, a per-DOCUMENT fact every reload resets: capability is a
+  //     per-PACKAGE fact, so it is deliberately monotonic across navigations.
+  //     Folded by learnCanEmitPaint(): proven by a real paint, implied by the RUNTIME's own
+  //     `dynamic` state — read from the runtime, never re-derived here, so dispatch capability is
+  //     classified in exactly one place.
   //   `expectReload` — marks a DELIBERATE src change so a late native `load` event (fires after
   //     subresources, often after the handshake) can never reset a live frame's flags.
   //   `paintedLatch` — the pool's own "treat as painted" latch, set by the bounded-hold escape
@@ -376,7 +385,7 @@ export function useProjectPlayer(
   //     not be written into the runtime's `painted`.
   //   `warmCeil` — the hidden-warm budget timer.
   interface PoolMeta {
-    v4: boolean;
+    canEmitPaint: boolean;
     expectReload: boolean; warmCeil: ReturnType<typeof setTimeout> | null;
     paintedLatch: boolean;
   }
@@ -540,7 +549,7 @@ export function useProjectPlayer(
   const poolMeta = (key: string): PoolMeta => {
     let m = simPoolMetaRef.current.get(key);
     if (!m) {
-      m = { v4: false, expectReload: false, warmCeil: null, paintedLatch: false };
+      m = { canEmitPaint: false, expectReload: false, warmCeil: null, paintedLatch: false };
       simPoolMetaRef.current.set(key, m);
     }
     return m;
@@ -956,10 +965,11 @@ export function useProjectPlayer(
 
       if (!(wasReady && wasPainted) || legacyNeedsNav) {
         startSimPoll(key);
-        // Bounded HOLD ceiling. A paint ack may still land any moment — but a LEGACY frame
-        // (pre-v4 gate) can never ack, so after the ceiling it force-reveals (old behavior,
-        // documented blank risk only for legacy sims). v4 frames keep holding the underlying
-        // content and surface the wait affordance instead of a blank canvas.
+        // Bounded HOLD ceiling. A paint ack may still land any moment — but a frame whose gate
+        // cannot emit one (`canEmitPaint === false`) never will, so after the ceiling it
+        // force-reveals (old behavior, documented blank risk only for those legacy sims).
+        // Paint-capable frames keep holding the underlying content and surface the wait
+        // affordance instead of a blank canvas.
         const remainingMs = Math.max(0, simSection.end_sec - localTime) * 1000;
         const holdMs = Math.min(SIM_PAINT_DEADLINE_MS, remainingMs || SIM_PAINT_DEADLINE_MS);
         simPaintDeadlineRef.current = setTimeout(() => {
@@ -971,14 +981,14 @@ export function useProjectPlayer(
           if (v && !v.paused && simSection.end_sec - v.currentTime < 0.35) return;
           const m = poolMeta(key);
           if (simPainted(key)) { revealSim(); return; }
-          if (runtimeState(key).ready && !m.v4) {
+          if (runtimeState(key).ready && !m.canEmitPaint) {
             // Legacy gate — no paint ack will ever come. Best-effort reveal (old behavior).
             m.paintedLatch = true;
             simTelemetry('hold-expired-legacy-reveal', { key });
             revealSim({ force: true });
             return;
           }
-          // v4 frame, genuinely not painted yet: keep holding the video/last frame and show
+          // Paint-capable frame, genuinely not painted yet: keep holding the video/last frame and show
           // the honest wait affordance. SIM_PAINTED reveals whenever it lands; the 5s stall
           // affordance takes over if it never does.
           simTelemetry('hold-expired-waiting', { key });
@@ -1818,14 +1828,19 @@ export function useProjectPlayer(
   // the activation token / ack matching that decides whether a switch may be presented — and
   // reports the conclusion here. This surface adds only what the runtime deliberately has no
   // notion of: which document is ACTIVE, the warm queue, and how the overlay is composited.
-  runtimeEventRef.current = (key, event, detail) => {
+  // The telemetry `detail` bag is deliberately NOT read here: every fact this surface reacts to is
+  // read back from the runtime's own state, so a classification can never exist in two copies.
+  runtimeEventRef.current = (key, event) => {
     const meta = poolMeta(key);
     const isActive = key === activeSimUrlRef.current;
     switch (event) {
       // ── the bridge answered: it is alive, and it said whether it can switch in place ──
       case 'sim-ready': {
-        // A dynamic bridge implies the rebuilt package (v4 gate) — paint acks WILL come.
-        if (detail?.dynamic === true) meta.v4 = true;
+        // A dynamic bridge implies the rebuilt package (v4 gate) — paint acks WILL come. The
+        // dispatch capability itself is the RUNTIME's classification: read its state rather than
+        // re-classifying from the telemetry payload, so the fact is decided in exactly one place
+        // (the same state the navigate/activate decisions below read).
+        meta.canEmitPaint = learnCanEmitPaint(meta.canEmitPaint, { dynamic: runtimeState(key).dynamic });
         if (isActive) {
           // Self-heal: even if the pending start was consumed, an active section must never
           // stay scriptless — fall back to the desired state. (sim-reliability fix)
@@ -1872,7 +1887,8 @@ export function useProjectPlayer(
       }
       // ── a real frame drew (the rAF gate's honest "safe to show") ──
       case 'sim-painted': {
-        meta.v4 = true;
+        // PROOF (not an implication): the rAF gate ran on this document, so this package can ack.
+        meta.canEmitPaint = learnCanEmitPaint(meta.canEmitPaint, { painted: true });
         clearWarmCeil(meta);
         if (!isActive || !activeSimRef.current) {
           sendToFrame(key, { type: 'simPause' });   // painted + frozen — instant reveal later

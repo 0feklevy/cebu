@@ -19,3 +19,39 @@ export function canWarmUnpaused(): boolean {
   } catch { /* matchMedia unavailable — fall through */ }
   return true;
 }
+
+// ── paint-ack capability ─────────────────────────────────────────────────────────────────────
+/**
+ * Evidence that a PACKAGE's document can emit SIM_PAINTED at all — i.e. that the injected rAF
+ * gate is the v4 one, which drives a real animation frame and answers PING_SIM_PAINTED.
+ *
+ * This is a capability of the paint channel, and it is deliberately NOT a restatement of anything
+ * SimRuntimeClient classifies. The runtime owns two other, genuinely different capabilities:
+ *   • `dynamic`    — can this document switch sections IN PLACE (SIM_READY's dispatch field)?
+ *   • `ackCapable` — has this document ever emitted SCRIPT_APPLIED?
+ * Neither answers "will a paint ack ever arrive", and both legitimately disagree with it:
+ *   • ackCapable === true while canEmitPaint === false — a DOM / setInterval-canvas package
+ *     acknowledges every startScript but never drives requestAnimationFrame.
+ *   • dynamic === false while canEmitPaint === true — a load-time-locked package rebuilt with the
+ *     v4 gate paints honestly but still needs a per-section URL to change section.
+ * It also differs from the runtime's `painted`, which is a per-DOCUMENT fact that every reload
+ * resets. Capability is a per-PACKAGE fact: a package that has once proven it paints does not
+ * stop being able to, so this is monotonic across navigations of the same pooled package.
+ */
+export interface PaintCapabilityEvidence {
+  /** The document emitted a real SIM_PAINTED (proof — the rAF gate ran). */
+  painted?: boolean;
+  /**
+   * The RUNTIME's own `dynamic` classification. Read from SimRuntimeClient state, never
+   * re-derived from the wire: dispatch capability is classified in exactly one place, and this
+   * only draws an implication from it (the dynamic bridge ships with the v4 gate).
+   */
+  dynamic?: boolean | null;
+}
+
+/** Fold new evidence into a package's paint-ack capability. Monotonic: capability is never lost. */
+export function learnCanEmitPaint(prev: boolean, ev: PaintCapabilityEvidence): boolean {
+  if (prev) return true;               // per-PACKAGE and sticky — a reload cannot un-prove it
+  if (ev.painted) return true;         // proof: the rAF gate ran and acked
+  return ev.dynamic === true;          // implication: the dynamic bridge is the rebuilt package
+}
