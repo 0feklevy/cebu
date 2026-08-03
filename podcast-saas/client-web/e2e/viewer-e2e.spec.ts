@@ -598,6 +598,15 @@ const events = (log: TelemetryEvent[]): string[] => log.map((e) => e.event);
  * fixed sampling window silently turns "the ack was slow" into "the ack never came" and asserts
  * on an empty log. Poll for the fact instead of guessing at a duration.
  */
+/**
+ * Section-identity evidence lag. The child's E2E_STATE report travels child-rAF → postMessage →
+ * parent map, and the sampler accepts reports up to 120ms old (the freshness bound) — so a report
+ * GENERATED before an event can be read as "current" for up to ~120ms plus a frame after it.
+ * Windows that assert WHICH section is shown must start this far after their anchoring event.
+ * Windows that assert only opacity need no lag: opacity is read directly from the parent DOM.
+ */
+const EVIDENCE_LAG_MS = 150;
+
 async function waitForProto(
   page: Page, type: string, script: string | null, timeout = 30_000,
 ): Promise<void> {
@@ -1148,9 +1157,13 @@ test.describe('stale acknowledgements — supersede, teardown and token mismatch
     expect(ackLate!.token).not.toBe(startB!.token);
     expect(events(await telemetry(page)), 'the stale acknowledgement was accepted as live')
       .toContain('stale-ack-ignored');
-    const after = since(samples, startB!.receivedAt + SIM_FADE_MS);
+    // Bounded on BOTH ends by the child's own timestamps. An open-ended window would extend into
+    // the video looping back through the timeline (which legitimately re-presents sections) and
+    // fail on behaviour unrelated to the stale acknowledgement.
+    const after = samples.filter((x) => x.abs >= startB!.receivedAt + SIM_FADE_MS
+                                     && x.abs <= ackB!.ackAt! + 2000);
     expect(after.length, 'no samples after the switch — vacuous').toBeGreaterThan(5);
-    const stranded = after.flatMap((s) => s.frames).filter((f) => f.op > 0.05 && f.section === 'LATE');
+    const stranded = after.flatMap((x) => x.frames).filter((f) => f.op > 0.05 && f.section === 'LATE');
     expect(stranded.length, 'the stale acknowledgement presented the superseded section').toBe(0);
   });
 
@@ -1163,13 +1176,21 @@ test.describe('stale acknowledgements — supersede, teardown and token mismatch
     const ackLate = proto.find((e) => e.type === 'SCRIPT_APPLIED' && e.script === S.LATE);
     expect(stop, 'the exit never tore the section down — nothing was exercised').toBeTruthy();
     expect(ackLate, 'the teardown cancelled the pending acknowledgement — production does not').toBeTruthy();
-    // startScript(A) < stopScript receivedAt < A ackAt — all from the child's own clock.
+    // startScript(A) < stopScript < A ack. Order comes from the child's single-threaded record
+    // sequence (the ground truth); clock values may tie at millisecond resolution when the
+    // release fires via setTimeout(0) in the same tick.
     expect(startLate!.receivedAt, 'the teardown preceded the activation').toBeLessThan(stop!.receivedAt);
-    expect(stop!.receivedAt, 'the acknowledgement did not arrive AFTER the teardown')
-      .toBeLessThan(ackLate!.ackAt!);
-    const afterExit = since(samples, stop!.receivedAt + SIM_FADE_MS);
-    expect(afterExit.length, 'no samples after the teardown — vacuous').toBeGreaterThan(5);
-    const shown = afterExit.flatMap((s) => s.frames).filter((f) => f.op > 0.05);
+    expect(proto.indexOf(stop!), 'the acknowledgement was recorded before the teardown')
+      .toBeLessThan(proto.indexOf(ackLate!));
+    expect(stop!.receivedAt, 'the ack timestamp precedes the teardown timestamp')
+      .toBeLessThanOrEqual(ackLate!.ackAt!);
+    // Bounded by the ack itself: the claim is that THIS acknowledgement re-presents nothing —
+    // not a claim about the rest of playback (the video looping back into a sim section later is
+    // legitimate and unrelated).
+    const afterExit = samples.filter((x) => x.abs >= stop!.receivedAt + SIM_FADE_MS
+                                         && x.abs <= ackLate!.ackAt! + 800);
+    expect(afterExit.length, 'no samples between the teardown and past the ack — vacuous').toBeGreaterThan(5);
+    const shown = afterExit.flatMap((x) => x.frames).filter((f) => f.op > 0.05);
     expect(shown.length, 'a post-teardown acknowledgement re-presented the simulation').toBe(0);
   });
 
@@ -1181,36 +1202,79 @@ test.describe('stale acknowledgements — supersede, teardown and token mismatch
     // Straddle the exact instant it arrives, using the CHILD's own clock.
     const ackB = proto.find((e) => e.type === 'SCRIPT_APPLIED' && e.script === S.B);
     expect(ackB, 'B never applied — it cannot be the current section').toBeTruthy();
+    // B applies synchronously on receipt; the retained LATE ack releases just after; B's OWN ack
+    // arrives ~500ms later by fixture policy. The full chain, all from the child's clock:
     expect(ackB!.applyComplete!, 'B had not applied when the stale acknowledgement arrived')
       .toBeLessThan(ackLate!.ackAt!);
-    // FROM the acknowledgement onward. Starting before it would include the window in which B had
-    // not yet been applied — where showing the previous section is correct, not a defect.
-    const around = samples.filter((s) => s.abs >= ackLate!.ackAt! && s.abs <= ackLate!.ackAt! + 800);
-    expect(around.length, 'no samples straddle the stale acknowledgement — vacuous').toBeGreaterThan(5);
-    // B is current and stays current: the stale ack may not reveal LATE, alter B, or reactivate.
-    assertVisibleFramesAreCorrect(around, { expect: 'B', forbidPrevious: 'LATE' });
-    const sectionsAfter = new Set(around.flatMap((x) => x.frames)
-      .filter((f) => f.op > 0.05 && !f.stale && f.section && f.section !== 'none')
-      .map((f) => f.section));
-    expect([...sectionsAfter], 'the stale acknowledgement changed which section was presented')
-      .toEqual(['B']);
+    expect(ackLate!.ackAt!, 'B acknowledged before the stale ack — there is no hold window to test')
+      .toBeLessThan(ackB!.ackAt!);
+
+    // THE DISCRIMINATOR. Between the stale ack and B's own ack, B's apply-hold is in force. A
+    // runtime that ACCEPTED the stale acknowledgement would release that hold and present the
+    // frame early — so any presented frame in this window is the defect. Opacity is read directly
+    // from the parent DOM (no evidence lag); the window starts one fade after the stale ack
+    // because the OUTGOING frame is legitimately still fading when it lands.
+    const holdWindow = samples.filter((x) => x.abs >= ackLate!.ackAt! + SIM_FADE_MS
+                                          && x.abs <= ackB!.ackAt!);
+    expect(holdWindow.length, 'no samples inside the hold window — vacuous').toBeGreaterThan(5);
+    const heldBroken = holdWindow.flatMap((x) => x.frames).filter((f) => f.op > 0.05);
+    expect(heldBroken.length,
+      "the stale acknowledgement released B's hold — the frame was presented before B's own ack")
+      .toBe(0);
+
+    // And after B's own acknowledgement, B — and only B — is presented. The window starts one
+    // evidence lag after the ack: a section report GENERATED before it can arrive up to ~150ms
+    // later and must not be misread as current evidence.
+    const afterB = samples.filter((x) => x.abs >= ackB!.ackAt! + EVIDENCE_LAG_MS
+                                      && x.abs <= ackB!.ackAt! + 1200);
+    expect(afterB.length, 'no samples after B acknowledged — vacuous').toBeGreaterThan(5);
+    expect(afterB.some((x) => x.frames.some((f) => f.op > 0.5)),
+      "B was never presented after its acknowledgement").toBe(true);
+    const wrongAfter = afterB.flatMap((x) => x.frames)
+      .filter((f) => f.op > 0.05 && !f.stale && f.section !== null && f.section !== 'none' && f.section !== 'B');
+    expect(wrongAfter.length, 'a section other than B was presented after B became current').toBe(0);
   });
 
   test('S4. an acknowledgement arriving after deactivation is ignored and reveals nothing', async ({ page }) => {
-    await driveAbandon(page);
-    const names = events(await telemetry(page));
-    const iDeact = names.lastIndexOf('deactivate');
-    expect(iDeact, 'the viewer never deactivated the simulation').toBeGreaterThanOrEqual(0);
-    const iStale = names.findIndex((e, i) => e === 'stale-ack-ignored' && i > iDeact);
-    expect(iStale, 'no post-deactivation acknowledgement was ignored — nothing was exercised')
-      .toBeGreaterThan(iDeact);
-    const after = names.slice(iDeact);
-    expect(after.filter((e) => e === 'reveal' || e === 'reveal-forced'),
-      'a post-deactivation acknowledgement revealed the frame').toEqual([]);
-    // No activation may be recreated, and no audio / paint-polling / guidance state resumed.
-    for (const forbidden of ['activate', 'sim-unmute', 'painted-by-policy']) {
-      expect(after.filter((e) => e === forbidden),
-        `a post-deactivation acknowledgement resumed "${forbidden}"`).toEqual([]);
+    const samples = await driveAbandon(page);
+    const proto = await protoLog(page);
+    const startLate = proto.find((e) => e.type === 'startScript' && e.script === S.LATE);
+    const stop = proto.find((e) => e.type === 'stopScript' && e.receivedAt > startLate!.receivedAt);
+    const ackLate = proto.find((e) => e.type === 'SCRIPT_APPLIED' && e.script === S.LATE);
+    expect(startLate, 'LATE was never requested — nothing was exercised').toBeTruthy();
+    expect(stop, 'the viewer never tore the section down — nothing was exercised').toBeTruthy();
+    expect(ackLate, 'the acknowledgement never arrived — nothing was exercised').toBeTruthy();
+    // deactivation/stop precedes the acknowledgement. ORDER comes from the child's own
+    // single-threaded record sequence — the ground truth; a millisecond clock can tie when the
+    // release fires via setTimeout(0) in the same tick, and a tie is not a violation of order.
+    expect(proto.indexOf(stop!), 'the acknowledgement was recorded before the teardown')
+      .toBeLessThan(proto.indexOf(ackLate!));
+    expect(stop!.receivedAt, 'the ack timestamp precedes the teardown timestamp')
+      .toBeLessThanOrEqual(ackLate!.ackAt!);
+
+    // BEHAVIOUR FIRST: the overlay stays hidden through and past the stale acknowledgement.
+    // Bounded on both ends by child timestamps — the video looping back into a sim section
+    // MUCH later is legitimate and unrelated, so an open-ended window would lie.
+    const window_ = samples.filter((x) => x.abs >= stop!.receivedAt + SIM_FADE_MS
+                                       && x.abs <= ackLate!.ackAt! + 800);
+    expect(window_.length, 'no samples cover the teardown→ack window — vacuous').toBeGreaterThan(5);
+    const presented = window_.flatMap((x) => x.frames).filter((f) => f.op > 0.05);
+    expect(presented.length, 'the post-deactivation acknowledgement re-presented the frame').toBe(0);
+
+    // TELEMETRY SECOND, anchored by TIMESTAMP rather than by event index: an index anchored on
+    // lastIndexOf('deactivate') picked up a deactivate from the video looping back into section A
+    // ~20s later and asserted about the wrong event entirely (audited — that made this test fail
+    // while the product behaved correctly). Small negative slack covers the two clock reads.
+    const log = await telemetry(page);
+    const staleEvents = log.filter((e) => e.event === 'stale-ack-ignored' && e.abs >= stop!.receivedAt - 50);
+    expect(staleEvents.length,
+      'the runtime never classified the post-deactivation acknowledgement as stale').toBeGreaterThan(0);
+    // Nothing may be re-created BY the acknowledgement: no activation, reveal, forced reveal,
+    // policy paint, or unmute in a bounded window around its arrival.
+    const nearAck = log.filter((e) => e.abs >= ackLate!.ackAt! - 50 && e.abs <= ackLate!.ackAt! + 800);
+    for (const forbidden of ['activate', 'reveal', 'reveal-forced', 'painted-by-policy', 'sim-unmute']) {
+      expect(nearAck.filter((e) => e.event === forbidden).map((e) => e.event),
+        `the stale acknowledgement caused "${forbidden}"`).toEqual([]);
     }
   });
 

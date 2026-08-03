@@ -75,13 +75,13 @@ export const FIXTURE_DELAYED_SECTIONS = {
 } as const;
 
 /** Token corruption applied by the BADTOKEN section (and by `?badtoken=1`). */
-const BAD_TOKEN_DELTA = 7777;
+export const BAD_TOKEN_DELTA = 7777;
 
 /**
  * Per-section acknowledgement behaviour for the `delayedack` bridge. Sections with no entry use
  * the bridge's default delay (500 ms), so A / B / SLOW / THROWS / AUTO behave exactly as before.
  */
-const DELAYED_ACK_POLICY: Record<string, { ackDelayMs?: number; tokenDelta?: number; releaseOnNextLifecycle?: boolean }> = {
+export const DELAYED_ACK_POLICY: Record<string, { ackDelayMs?: number; tokenDelta?: number; releaseOnNextLifecycle?: boolean }> = {
   // 2400 ms is chosen against the player's own constants: far longer than the ~300-400 ms a test
   // needs to supersede or leave the section (SIM_EXIT_STOP_MS is 280 ms), and still under
   // SIM_APPLY_STALL_MS (3000 ms) so the runtime's terminal bound is not what ends the wait.
@@ -256,7 +256,7 @@ const ENTRY_HTML = `<!doctype html>
  * `requestToken` is the one the activation carried: they differ exactly when a mis-tokened
  * acknowledgement is being exercised.
  */
-function delayedAckBridge(
+export function delayedAckBridge(
   entries: Map<string, string>,
   policy: Record<string, { ackDelayMs?: number; tokenDelta?: number; releaseOnNextLifecycle?: boolean }> = {},
   delayMs = 500,
@@ -533,4 +533,8 @@ function main(): void {
   }, null, 2));
 }
 
-main();
+// Only run when invoked directly — the emitted-bridge builders are imported by tests, and an
+// import that exits the process kills the whole test run (matches the other scripts' guard).
+if (process.argv[1] && process.argv[1].includes('gen-sim-fixture')) {
+  main();
+}
