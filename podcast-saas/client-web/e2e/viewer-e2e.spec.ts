@@ -270,6 +270,10 @@ async function bootViewer(page: Page, config: object): Promise<void> {
     }));
   await page.route('https://securetoken.googleapis.com/**', (route: Route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id_token: 'e2e', expires_in: '3600' }) }));
+  await page.route('https://apis.google.com/**', (route: Route) =>
+    route.fulfill({ status: 200, contentType: 'application/javascript', body: '/* stubbed gapi */' }));
+  await page.route('https://www.googleapis.com/**', (route: Route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }));
 
   await page.route(`${API_ORIGIN}/api/v1/projects/**/player-config*`, (route: Route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(config) }));
@@ -485,6 +489,10 @@ const errorsOf = (page: Page): string[] => (page as Page & { __errors?: string[]
 const STUBBED_HOSTS = [
   'https://identitytoolkit.googleapis.com/',
   'https://securetoken.googleapis.com/',
+  // WebKit's Firebase auth path additionally loads the gapi iframe shim. Same dependency, same
+  // treatment: stubbed to an empty script so it never reaches the network.
+  'https://apis.google.com/',
+  'https://www.googleapis.com/',
 ];
 
 const IGNORABLE = /Firebase|auth\/(invalid|api-key)|play\(\) request|NotAllowedError|AbortError|X-Frame-Options|Refused to display/i;
@@ -593,7 +601,7 @@ test.describe('real React viewer — simulation transitions', () => {
     await startPlayback(page);
     await seekTo(page, 4);
     await waitForSection(page, 'A');
-    const exiting = sampleFrames(page, 1200);
+    const exiting = await startSampling(page, 1200);
     await seekTo(page, 12);                       // leave the sim section
     const samples = await exiting;
     // The audited defect: stopScript at the boundary restored the hidden controls and rendered
