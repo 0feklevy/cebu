@@ -291,10 +291,13 @@ async function bootViewer(page: Page, config: object, opts?: { simdebug?: boolea
     }));
   await page.route('https://securetoken.googleapis.com/**', (route: Route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id_token: 'e2e', expires_in: '3600' }) }));
-  await page.route('https://apis.google.com/**', (route: Route) =>
-    route.fulfill({ status: 200, contentType: 'application/javascript', body: '/* stubbed gapi */' }));
-  await page.route('https://www.googleapis.com/**', (route: Route) =>
-    route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }));
+  // ABORT, do not fake. WebKit's Firebase build preloads the gapi iframe shim; fulfilling it
+  // with an empty script broke the SDK's init on that path, auth never resolved, and the viewer —
+  // correctly — rendered nothing while authLoading was true, which took WebKit from 25/25 to 0/25
+  // (audited: removing the stub alone made it boot again). A clean network failure is the case
+  // every SDK's fallback path is built for, and it is deterministic and hermetic.
+  await page.route('https://apis.google.com/**', (route: Route) => route.abort('failed'));
+  await page.route('https://www.googleapis.com/**', (route: Route) => route.abort('failed'));
 
   await page.route(`${API_ORIGIN}/api/v1/projects/**/player-config*`, (route: Route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(config) }));
