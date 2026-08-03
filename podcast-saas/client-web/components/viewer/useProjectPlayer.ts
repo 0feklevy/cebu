@@ -705,10 +705,15 @@ export function useProjectPlayer(
       if (!activeSimRef.current) return;                       // no longer a sim section
       const url = activeSimUrlRef.current;
       if (!opts?.force && !(url && simPainted(url))) return;  // not painted yet
-      // CENTRAL GUARD: a proven-modern document awaiting its acknowledgement is never presented,
-      // no matter which path called reveal (a late paint, a hold deadline, a poll). The runtime
-      // owns that hold and announces the release itself, so the guard reads its state.
-      if (!opts?.force && url && runtimeState(url).phase === 'awaiting-ack') return;
+      // CENTRAL GUARD — the runtime's presentation permission is AUTHORITATIVE.
+      //
+      // The viewer still decides which pooled frame is selected, whether it is the active
+      // occurrence, residency, generation validity and the double-rAF composition timing. It may
+      // NOT present a frame the runtime has not granted. Reading `phase === 'awaiting-ack'` was
+      // not enough: it is one symptom of one hold, so a runtime that stopped granting visibility
+      // for any other reason was simply ignored — measured, a dead apply gate changed nothing on
+      // screen because this decision never consulted the runtime at all (audited).
+      if (!opts?.force && url && !runtimeState(url).visible) return;
       merge({ showSimOverlay: true, simBootStalled: false, simColdCover: false });
     }));
   };

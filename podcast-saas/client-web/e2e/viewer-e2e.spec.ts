@@ -26,6 +26,7 @@ import { readFileSync, existsSync, mkdirSync, statSync } from 'node:fs';
 import { join, extname, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import type { AddressInfo } from 'node:net';
+import { SIM_FADE_MS } from '../lib/sim/protocol';
 
 const BASE = process.env.VIEWER_E2E_BASE_URL ?? 'http://localhost:3000';
 const API_ORIGIN = process.env.VIEWER_E2E_API_URL ?? 'http://localhost:8080';
@@ -286,6 +287,9 @@ async function bootViewer(page: Page, config: object): Promise<void> {
     w.__CHILD = new Map();
     window.addEventListener('message', (e) => {
       const d = e.data as { type?: string } | null;
+      const anyW = w as unknown as { __PROTO_LOG?: unknown[] };
+      if (!anyW.__PROTO_LOG) anyW.__PROTO_LOG = [];
+      if (d?.type === 'PROTO') anyW.__PROTO_LOG.push((d as { entry: unknown }).entry);
       if (d?.type === 'E2E_STATE' && e.source) {
         w.__CHILD!.set(e.source as Window, { ...(d as object), recvAt: Date.now() });
       }
@@ -364,6 +368,16 @@ interface Sample { t: number; abs: number; frames: { op: number; section: string
  * opacity, which section its marker says is applied, and whether the sim's own Full-UI control
  * panel is displayed. Same-origin (the asset server) so the iframe document is readable.
  */
+/**
+ * Start sampling and resolve only once the in-page rAF loop has actually begun, so a caller that
+ * immediately seeks cannot race past the first sample and lose the transition it meant to observe.
+ */
+async function startSampling(page: Page, ms: number): Promise<Promise<Sample[]>> {
+  const p = sampleFrames(page, ms);
+  await page.waitForTimeout(80);
+  return p;
+}
+
 async function sampleFrames(page: Page, ms: number): Promise<Sample[]> {
   return page.evaluate((duration) => new Promise<Sample[]>((resolve) => {
     const out: Sample[] = [];
@@ -770,5 +784,80 @@ test.describe('real React viewer — simulation transitions', () => {
     await page.goto('about:blank');
     await page.waitForTimeout(600);
     expect(realErrors(page)).toEqual([]);
+  });
+});
+
+/**
+ * THE APPLY-GATE ACCEPTANCE TEST — the one scenario that proves the gate from visible behaviour.
+ *
+ * Every other scenario in this file is blind to the gate, and that is not a flaw in them: with an
+ * instantly-applying body the gate genuinely changes nothing observable (measured — the clean and
+ * dead-gate opacity/section trajectories are identical), and the blocking SLOW body freezes the
+ * parent's own sampler because the sim shares its process.
+ *
+ * The `delayedack` package closes that hole: it defers application AND its SCRIPT_APPLIED by
+ * ~500ms using setTimeout, so the event loop keeps running, the parent keeps sampling, and there
+ * is a real window in which the frame MUST be hidden because the acknowledgement has not arrived.
+ *
+ * The assertion is anchored to the CHILD's own recorded acknowledgement timestamp — not a slice,
+ * not a settle delay, not a fade exemption, not an allowance of wrong frames, not telemetry.
+ */
+test.describe('apply gate — proven against the acknowledgement boundary', () => {
+  test('the frame is never presented before the matching SCRIPT_APPLIED(B, token)', async ({ page }) => {
+    await bootViewer(page, makeConfig([
+      { id: 's1', start: 3, end: 8, pkg: 'delayedack', section: S.A },
+      { id: 's2', start: 8, end: 20, pkg: 'delayedack', section: S.B },
+    ]));
+    await startPlayback(page);
+
+    await seekTo(page, 4);
+    await waitForSection(page, 'A');                 // A genuinely presented first
+
+    const sampling = await startSampling(page, 5000);
+    await seekTo(page, 9);                           // request B; its ack is ~500ms away
+    const samples = await sampling;
+
+    // ── the child's own protocol record ────────────────────────────────────────────────────
+    const proto = await page.evaluate(
+      () => (window as unknown as { __PROTO_LOG?: unknown[] }).__PROTO_LOG ?? [],
+    ) as { type: string; script: string; token: number; receivedAt: number; ackAt: number | null }[];
+
+    const startB = proto.find((e) => e.type === 'startScript' && e.script === S.B);
+    const ackB = proto.find((e) => e.type === 'SCRIPT_APPLIED' && e.script === S.B);
+    expect(startB, 'the child never received startScript(B) — nothing was exercised').toBeTruthy();
+    expect(ackB, 'the child never acknowledged B — the gate window cannot be evaluated').toBeTruthy();
+    expect(ackB!.token, 'the acknowledgement carried a different token than the request')
+      .toBe(startB!.token);
+
+    const requestedAt = startB!.receivedAt;
+    const acknowledgedAt = ackB!.ackAt!;
+    // The delay must be real, or there is no window in which the gate could be observed.
+    expect(acknowledgedAt - requestedAt,
+      'the fixture applied instantly — this scenario would prove nothing').toBeGreaterThan(200);
+
+    // ── the parent's continuously recorded opacity, correlated to that boundary ─────────────
+    const inWindow = samples.filter((s) => s.abs > requestedAt && s.abs < acknowledgedAt);
+    expect(inWindow.length,
+      'no opacity samples fell between the request and the acknowledgement — vacuous').toBeGreaterThan(5);
+
+    // The exit fade may legitimately still be descending immediately after the request, so the
+    // pre-ack window is evaluated after one fade duration — a bound derived from the product
+    // constant, not a tolerance chosen to make this pass.
+    const preAck = inWindow.filter((s) => s.abs > requestedAt + SIM_FADE_MS);
+    expect(preAck.length, 'no post-fade pre-ack samples — vacuous').toBeGreaterThan(3);
+
+    const presentedEarly = preAck
+      .flatMap((s) => s.frames.map((f) => ({ t: s.abs - requestedAt, op: f.op, section: f.section })))
+      .filter((f) => f.op > 0.05);
+    expect(
+      presentedEarly.length,
+      `the iframe was PRESENTED BEFORE the matching SCRIPT_APPLIED(B, token=${startB!.token}): `
+      + `${presentedEarly.slice(0, 6).map((f) => `t=+${f.t}ms op=${f.op.toFixed(2)} section=${f.section}`).join('; ')}`,
+    ).toBe(0);
+
+    // ── and after the acknowledgement, B is actually revealed ───────────────────────────────
+    await waitForSection(page, 'B');
+    const after = await sampleFrames(page, 400);
+    assertVisibleFramesAreCorrect(after, { expect: 'B' });
   });
 });

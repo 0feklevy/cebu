@@ -116,6 +116,103 @@ const ENTRY_HTML = `<!doctype html>
 </body>
 </html>`;
 
+
+/**
+ * DELAYED-ACK bridge — the fixture that makes the apply gate observable at viewer level.
+ *
+ * WHY IT EXISTS. The gate only changes behaviour when a section takes real time to apply. The
+ * blocking SLOW body cannot demonstrate that: the sim is served from the API origin (the only one
+ * the app's CSP admits, and the one resolveAssetUrl rewrites every loopback URL to), which is
+ * SAME-SITE with the app, so the sim shares the parent's process — a busy loop freezes the parent's
+ * own opacity sampler along with it. Measured: with an instantly-applying body the clean and
+ * dead-gate opacity trajectories are byte-identical, so the suite could not tell them apart.
+ *
+ * This bridge instead defers application with setTimeout: the event loop keeps running, the parent
+ * keeps sampling, and there is a real ~DELAY_MS window in which the frame MUST stay hidden because
+ * the acknowledgement has not arrived. A dead gate reveals inside that window; a live one does not.
+ *
+ * It also records deterministic protocol evidence (type/script/token and four timestamps) on
+ * window.__PROTO__, so the test can correlate the parent's opacity samples with the exact instant
+ * the child acknowledged — no slices, no settle delays, no fixed allowance of wrong frames.
+ */
+function delayedAckBridge(entries: Map<string, string>, delayMs = 500): string {
+  const sections = JSON.stringify(Object.fromEntries(
+    [...entries.entries()].map(([id, body]) => [id, body]),
+  ));
+  return `/* fixture: delayed-ack bridge (non-blocking, ${delayMs}ms) */
+(function () {
+  var SECTIONS = ${sections};
+  var DELAY = ${delayMs};
+  var PROTO = (window.__PROTO__ = []);
+  var _cancel = null;
+  var _pending = null;
+
+  function post(msg) { try { parent.postMessage(msg, '*'); } catch (e) {} }
+  function now() { return Date.now(); }
+  // The parent is CROSS-ORIGIN (the app's CSP admits only the API origin), so it cannot read
+  // window.__PROTO__ directly. Every record is posted as well — that is the evidence channel.
+  function record(e) { PROTO.push(e); post({ type: 'PROTO', entry: e }); }
+
+  function applySection(name, params, token, receivedAt) {
+    var applyStart = now();
+    if (_cancel) { try { _cancel(); } catch (e) {} _cancel = null; }
+    var fn = Object.prototype.hasOwnProperty.call(SECTIONS, name) ? SECTIONS[name] : null;
+    if (!fn) {
+      record({ type: 'SCRIPT_MISSING', script: name, token: token, receivedAt: receivedAt,
+               applyStart: applyStart, applyComplete: null, ackAt: now() });
+      post({ type: 'SCRIPT_MISSING', script: name, token: token });
+      return;
+    }
+    try {
+      _cancel = new Function('params', fn)(params || {}) || null;
+    } catch (err) {
+      record({ type: 'SCRIPT_ERROR', script: name, token: token, receivedAt: receivedAt,
+               applyStart: applyStart, applyComplete: null, ackAt: now() });
+      post({ type: 'SCRIPT_ERROR', phase: 'start', script: name, token: token, message: String(err) });
+      return;
+    }
+    var applyComplete = now();
+    // The acknowledgement is emitted only once the section is genuinely applied — which is the
+    // contract the gate relies on, and the thing a dead gate ignores.
+    var ackAt = now();
+    record({ type: 'SCRIPT_APPLIED', script: name, token: token, receivedAt: receivedAt,
+             applyStart: applyStart, applyComplete: applyComplete, ackAt: ackAt });
+    post({ type: 'SCRIPT_APPLIED', script: name, token: token });
+  }
+
+  window.addEventListener('message', function (e) {
+    var d = e.data || {};
+    if (d.type === 'startScript') {
+      var receivedAt = now();
+      record({ type: 'startScript', script: d.script, token: d.token, receivedAt: receivedAt,
+               applyStart: null, applyComplete: null, ackAt: null });
+      if (_pending) { clearTimeout(_pending); _pending = null; }
+      // NON-BLOCKING delay: the event loop and the parent's sampler keep running throughout.
+      _pending = setTimeout(function () {
+        _pending = null;
+        applySection(d.script, d.params, d.token, receivedAt);
+      }, DELAY);
+      return;
+    }
+    if (d.type === 'stopScript') {
+      record({ type: 'stopScript', script: null, token: null, receivedAt: now(),
+               applyStart: null, applyComplete: null, ackAt: null });
+      if (_pending) { clearTimeout(_pending); _pending = null; }
+      if (_cancel) { try { _cancel(); } catch (err) {} _cancel = null; }
+      return;
+    }
+    if (d.type === 'PING_SIM_READY') post(readyMsg());
+    if (d.type === 'PING_SIM_PAINTED' && window.__SIM_PAINTED_SELF__) post({ type: 'SIM_PAINTED' });
+  });
+
+  function readyMsg() {
+    var ids = []; for (var k in SECTIONS) { if (Object.prototype.hasOwnProperty.call(SECTIONS, k)) ids.push(k); }
+    return { type: 'SIM_READY', dispatch: 'dynamic', sections: ids };
+  }
+  post(readyMsg());
+})();`;
+}
+
 /** The pre-v2.1 bridge: no SCRIPT_APPLIED/MISSING/ERROR, unguarded dispatch + cleanup. */
 function legacyBridge(entries: Map<string, string>): string {
   const bodies = [...entries.entries()]
@@ -192,8 +289,11 @@ function main(): void {
   emit(outDir, 'modern', wrapBridgeCombined(entries));
   emit(outDir, 'legacy', legacyBridge(new Map(Object.entries(SECTION_BODIES))));
   emit(outDir, 'noraf', wrapBridgeCombined(entries), NO_RAF_ENTRY());
+  emit(outDir, 'delayedack', delayedAckBridge(new Map(Object.entries(SECTION_BODIES))));
 
-  console.log(JSON.stringify({ outDir, packages: ['modern', 'legacy', 'noraf'], sections: FIXTURE_SECTIONS }, null, 2));
+  console.log(JSON.stringify({
+    outDir, packages: ['modern', 'legacy', 'noraf', 'delayedack'], sections: FIXTURE_SECTIONS,
+  }, null, 2));
 }
 
 main();

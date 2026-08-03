@@ -16,10 +16,11 @@ export default defineConfig({
   testMatch: 'viewer-e2e.spec.ts',
   timeout: 90_000,
   expect: { timeout: 20_000 },
-  // Browser E2E on a loaded developer machine is genuinely flaky: a transition may simply not
-  // have happened yet. Retries make that visible as `flaky` rather than red, and a flaky result
-  // is REPORTED SEPARATELY — it is never counted as passing coverage.
-  retries: 2,
+  // ZERO retries. This is the release gate: a retry turns a real failure into `flaky` and, worse,
+  // masks a mutation-kill signal — a deliberately broken build passed on retry while the clean one
+  // failed, and the two were indistinguishable (audited). Use `--retries=N` on the command line
+  // for diagnosis only, and report that result as flaky, never as passed.
+  retries: 0,
   fullyParallel: false,
   workers: 1,
   reporter: [['list'], ['json', { outputFile: 'e2e-results/viewer-e2e.json' }]],
