@@ -529,6 +529,27 @@ export class SimRuntimeClient {
     this.set({ visible: false, interactive: false, phase: this.state.phase === 'failed' ? 'failed' : 'hidden' });
   }
 
+  /**
+   * Record that the OWNER has decided to treat this document as painted, even though it never
+   * emitted SIM_PAINTED — the bounded-hold escape used for packages whose gate cannot ack a paint.
+   *
+   * This exists so `painted` has exactly ONE owner. When the pool kept its own "treat as painted"
+   * latch, the runtime never learned of it: `painted` stayed false, so `maybeReveal` never granted
+   * visibility, and once the viewer's reveal became gated on that grant a never-painting package
+   * was permanently invisible on re-entry — no spinner, no timer left armed to release it
+   * (audited: introduced by making the runtime's permission authoritative without giving the
+   * runtime the latch).
+   */
+  markPaintedByPolicy(reason: string): void {
+    if (this.disposed || this.state.painted) return;
+    this.stopPaintPoll();
+    if (this.legacyRevealTimer) { clearTimeout(this.legacyRevealTimer); this.legacyRevealTimer = null; }
+    this.set({ painted: true, phase: this.state.visible ? 'visible' : 'painted' });
+    this.tel('painted-by-policy', { reason });
+    // The hold, if any, still governs: a gated switch is not released by a policy paint.
+    this.maybeReveal();
+  }
+
   /** Freeze a retained background document so it stops burning CPU/GPU. */
   suspend(): void {
     if (this.disposed) return;

@@ -380,14 +380,13 @@ export function useProjectPlayer(
   //     classified in exactly one place.
   //   `expectReload` — marks a DELIBERATE src change so a late native `load` event (fires after
   //     subresources, often after the handshake) can never reset a live frame's flags.
-  //   `paintedLatch` — the pool's own "treat as painted" latch, set by the bounded-hold escape
+  //   (the pool's former `paintedLatch` now lives in the runtime as markPaintedByPolicy, so
   //     hatches for documents that can never ack a paint. It is NOT a document fact, so it must
   //     not be written into the runtime's `painted`.
   //   `warmCeil` — the hidden-warm budget timer.
   interface PoolMeta {
     canEmitPaint: boolean;
     expectReload: boolean; warmCeil: ReturnType<typeof setTimeout> | null;
-    paintedLatch: boolean;
   }
   const simPoolMetaRef = useRef<Map<string, PoolMeta>>(new Map());
   // One SimRuntimeClient per package. SimRuntimeClient is a ONE-DOCUMENT state machine and this
@@ -549,7 +548,7 @@ export function useProjectPlayer(
   const poolMeta = (key: string): PoolMeta => {
     let m = simPoolMetaRef.current.get(key);
     if (!m) {
-      m = { canEmitPaint: false, expectReload: false, warmCeil: null, paintedLatch: false };
+      m = { canEmitPaint: false, expectReload: false, warmCeil: null };
       simPoolMetaRef.current.set(key, m);
     }
     return m;
@@ -580,7 +579,10 @@ export function useProjectPlayer(
   const runtimeState = (key: string) => runtimeFor(key).getState();
   // "Safe to composite" for THIS surface: a real paint, or the pool's own escape-hatch latch for
   // documents that can never ack one.
-  const simPainted = (key: string): boolean => runtimeState(key).painted || poolMeta(key).paintedLatch;
+  // ONE classification of `painted`, owned by the runtime. The pool used to keep a parallel
+  // `paintedLatch`; because the runtime never learned of it, a latched document never received
+  // visibility once the reveal became gated on the runtime's grant (audited).
+  const simPainted = (key: string): boolean => runtimeState(key).painted;
   const clearWarmCeil = (m: { warmCeil: ReturnType<typeof setTimeout> | null }) => {
     if (m.warmCeil) { clearTimeout(m.warmCeil); m.warmCeil = null; }
   };
@@ -679,7 +681,6 @@ export function useProjectPlayer(
   const navigateFrame = (key: string, src: string, bootHide?: string[] | null) => {
     const meta = poolMeta(key);
     meta.expectReload = true;
-    meta.paintedLatch = false;   // fresh document — fresh contract
     // A document IDENTITY change. SimRuntimeClient models ONE document, so re-attach it under the
     // new key: that resets every per-document flag and cancels its in-flight timers (including a
     // deferred stop, which must never hit the new document).
@@ -983,7 +984,7 @@ export function useProjectPlayer(
           if (simPainted(key)) { revealSim(); return; }
           if (runtimeState(key).ready && !m.canEmitPaint) {
             // Legacy gate — no paint ack will ever come. Best-effort reveal (old behavior).
-            m.paintedLatch = true;
+            runtimeFor(key).markPaintedByPolicy('bounded-hold');
             simTelemetry('hold-expired-legacy-reveal', { key });
             revealSim({ force: true });
             return;
@@ -1007,7 +1008,7 @@ export function useProjectPlayer(
           simBootStalledRef.current = null;
           if (warmGenRef.current !== gen || showSimOverlayRef.current || activeSimRef.current?.id !== simSection.id) return;
           if (!simPainted(key)) {
-            poolMeta(key).paintedLatch = true;      // stop re-arming the hold for this document
+            runtimeFor(key).markPaintedByPolicy('boot-stalled');   // stop re-arming the hold
             simTelemetry('stall-force-reveal', { key });
             merge({ simBootStalled: false, simColdCover: false });
             revealSim({ force: true });
@@ -1801,7 +1802,7 @@ export function useProjectPlayer(
   const handleSimFrameLoad = useCallback((key: string) => {
     const meta = poolMeta(key);
     const st = runtimeState(key);
-    const hadHandshake = st.ready || st.painted || meta.paintedLatch;
+    const hadHandshake = st.ready || st.painted;
     simTelemetry('frame-load-routed', { key, expected: meta.expectReload, hadHandshake });
     // The native `load` event fires after ALL subresources — routinely AFTER the bridge's
     // SIM_READY/SIM_PAINTED handshake on the same document. Resetting flags on such a late
@@ -1810,7 +1811,6 @@ export function useProjectPlayer(
     // marked expectReload) or the frame's very first document (no handshake recorded yet).
     if (!meta.expectReload && hadHandshake) return;
     meta.expectReload = false;
-    meta.paintedLatch = false;
     // A freshly loaded document has drawn nothing, applied nothing and torn nothing down.
     runtimeFor(key).handleFrameLoad();
     clearWarmCeil(meta);
@@ -2327,7 +2327,7 @@ export function useProjectPlayer(
             simPristineReloadRef.current.set(doneKey, setTimeout(() => {
               simPristineReloadRef.current.delete(doneKey);
               if (doneKey === activeSimUrlRef.current) return;   // re-entered during the fade
-              m.expectReload = true; m.paintedLatch = false;
+              m.expectReload = true;
               doneRt.handleFrameLoad();   // the document about to load has nothing applied
               clearWarmCeil(m);
               // Re-assigning src reloads the (cross-origin) document — location.reload() throws.

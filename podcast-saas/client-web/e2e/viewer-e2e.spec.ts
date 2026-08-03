@@ -894,6 +894,12 @@ test.describe('apply gate — proven against the acknowledgement boundary', () =
     const preAck = inWindow.filter((s) => s.abs > requestedAt + SIM_FADE_MS);
     expect(preAck.length, 'no post-fade pre-ack samples — vacuous').toBeGreaterThan(3);
 
+    // Without this, `presentedEarly` is a filter over an empty frame list whenever the sampler
+    // failed to find the iframe — it yields 0 and the gate assertion passes having observed
+    // nothing (audited: proved vacuous by blinding the sampler's src filter).
+    expect(preAck.some((s) => s.frames.length > 0),
+      'no simulation frame was observed in the pre-ack window — the gate assertion would be vacuous').toBe(true);
+
     const presentedEarly = preAck
       .flatMap((s) => s.frames.map((f) => ({ t: s.abs - requestedAt, op: f.op, section: f.section })))
       .filter((f) => f.op > 0.05);

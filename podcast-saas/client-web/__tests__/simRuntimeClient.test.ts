@@ -470,3 +470,44 @@ describe("the bridge's cleanup error must not kill the incoming activation", () 
     expect(c.getState().visible).toBe(false);
   });
 });
+
+describe('painted has ONE owner — a policy paint must grant visibility', () => {
+  // The viewer used to keep its own "treat as painted" latch for packages whose gate cannot ack a
+  // paint. The runtime never learned of it, so once the viewer's reveal became gated on the
+  // runtime's grant, such a package was permanently invisible on re-entry: no spinner, and no
+  // timer left armed to release it. This pins the single-owner contract.
+  it('markPaintedByPolicy makes a never-painting document presentable', () => {
+    const c = new SimRuntimeClient();
+    const { el, win } = makeFrame();
+    c.attach(el, 'doc-nopaint');
+    fromChild(win, { type: 'SIM_READY' });        // legacy: will never emit SIM_PAINTED
+    c.activate({ script: 'A' });
+    expect(c.getState().visible, 'nothing has painted yet').toBe(false);
+
+    c.markPaintedByPolicy('bounded-hold');
+    expect(c.getState().painted).toBe(true);
+    expect(c.getState().visible, 'a policy paint must grant visibility').toBe(true);
+  });
+
+  it('re-entering a policy-painted document still reveals', () => {
+    const c = new SimRuntimeClient();
+    const { el, win } = makeFrame();
+    c.attach(el, 'doc-nopaint');
+    fromChild(win, { type: 'SIM_READY' });
+    c.activate({ script: 'A' });
+    c.markPaintedByPolicy('bounded-hold');
+    c.deactivate();
+    vi.advanceTimersByTime(SIM_EXIT_STOP_MS + 10);
+
+    c.activate({ script: 'A' });                  // the re-entry that used to deadlock
+    expect(c.getState().visible, 'the document was permanently invisible on re-entry').toBe(true);
+  });
+
+  it('a policy paint does NOT release a gated switch', () => {
+    const { c } = bootModern('A');                // proven-modern, ack-capable
+    c.activate({ script: 'B' });
+    expect(c.getState().phase).toBe('awaiting-ack');
+    c.markPaintedByPolicy('bounded-hold');
+    expect(c.getState().visible, 'a policy paint must never bypass the apply gate').toBe(false);
+  });
+});
