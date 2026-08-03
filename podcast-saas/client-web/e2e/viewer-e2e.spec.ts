@@ -41,7 +41,21 @@ const S = {
   THROWS: 'dddddddd-4444-4444-8444-dddddddddddd',
   AUTO: 'eeeeeeee-5555-4555-8555-eeeeeeeeeeee',
   MISSING: 'ffffffff-9999-4999-8999-ffffffffffff',
+  // ── delayedack-ONLY sections (FIXTURE_DELAYED_SECTIONS in gen-sim-fixture.ts) ──────────────
+  // They exist in NO other package, and their identity IS their acknowledgement behaviour — the
+  // player dispatches on the URL's ?section= param, so a test selects a stale/mis-tokened ack
+  // deterministically by putting the section on the timeline. No timing race, no URL surgery.
+  /** Acknowledges 2400ms after the request: a supersede or a teardown always wins that race. */
+  LATE: '11111111-6666-4666-8666-111111111111',
+  /** Acknowledges after 400ms echoing token + BAD_TOKEN_DELTA — matchesPending must reject it. */
+  BADTOKEN: '22222222-7777-4777-8777-222222222222',
 } as const;
+
+/**
+ * The corruption the BADTOKEN section applies to the token it echoes (gen-sim-fixture.ts). Kept in
+ * sync by assertion, not by hope: S5 below asserts the acknowledged token IS request + this.
+ */
+const BAD_TOKEN_DELTA = 7777;
 
 function ensureFixture(): void {
   const stamp = join(FIXTURE_DIR, 'modern', 'index.html');
@@ -241,8 +255,15 @@ function makeConfig(sims: SimSpec[], opts?: { segDuration?: number }) {
   };
 }
 
-/** Stub ONLY the data layer; every component and hook below it is the real one. */
-async function bootViewer(page: Page, config: object): Promise<void> {
+/**
+ * Stub ONLY the data layer; every component and hook below it is the real one.
+ *
+ * `opts.simdebug` ARMS lib/simTelemetry, which is inert without `?simdebug=1` in the URL — it is
+ * the shipped breadcrumb trail (SimRuntimeClient's own conclusions plus the player's reveal
+ * decisions) that the stale-acknowledgement scenarios read. Opt-in on purpose: every existing
+ * scenario boots on exactly the URL it always did, so none of them change behaviour here.
+ */
+async function bootViewer(page: Page, config: object, opts?: { simdebug?: boolean }): Promise<void> {
   // Serve the fixture on the API origin under /sim-public/, exactly as production does.
   await page.route(`${API_ORIGIN}/sim-public/__e2e/**`, async (route: Route) => {
     const path = new URL(route.request().url()).pathname.replace('/sim-public/__e2e/', '');
@@ -287,13 +308,27 @@ async function bootViewer(page: Page, config: object): Promise<void> {
   // Bind each E2E_STATE report to the iframe that sent it. contentWindow IS reachable
   // cross-origin (contentDocument is not), so identity comparison works.
   await page.addInitScript(() => {
-    const w = window as unknown as { __CHILD?: Map<Window, unknown> };
+    const w = window as unknown as {
+      __CHILD?: Map<Window, unknown>;
+      __PROTO_LOG?: unknown[];
+      __PAINTED_SRCS?: string[];
+    };
     w.__CHILD = new Map();
+    // WHICH document claimed a paint, not merely that one did. A package the viewer classifies
+    // paint-INCAPABLE (canEmitPaint === false) must never appear here; without recording the
+    // source, a future gate leak that made such a package ack would be invisible and the
+    // scenario that exists to cover the !canEmitPaint branch would quietly stop covering it.
+    w.__PAINTED_SRCS = [];
     window.addEventListener('message', (e) => {
       const d = e.data as { type?: string } | null;
       const anyW = w as unknown as { __PROTO_LOG?: unknown[] };
       if (!anyW.__PROTO_LOG) anyW.__PROTO_LOG = [];
       if (d?.type === 'PROTO') anyW.__PROTO_LOG.push((d as { entry: unknown }).entry);
+      if (d?.type === 'SIM_PAINTED' && e.source) {
+        const own = ([...document.querySelectorAll('iframe')] as HTMLIFrameElement[])
+          .find((el) => el.contentWindow === e.source);
+        if (own) w.__PAINTED_SRCS!.push(own.src);
+      }
       if (d?.type === 'E2E_STATE' && e.source) {
         w.__CHILD!.set(e.source as Window, { ...(d as object), recvAt: Date.now() });
       }
@@ -306,15 +341,18 @@ async function bootViewer(page: Page, config: object): Promise<void> {
   // 400 from identitytoolkit.googleapis.com was deciding red/green on ten scenarios (audited).
   const external: string[] = [];
   (page as Page & { __external?: string[] }).__external = external;
-  await page.route('**/*', async (route: Route) => {
-    const url = route.request().url();
+  // OBSERVE, do not intercept. A catch-all page.route('**/*') that merely falls through still
+  // routes every request through the driver, and WebKit could not boot the app under it at all —
+  // all 20 of its scenarios timed out waiting for the <video> element. Observation cannot change
+  // loading behaviour, which is exactly what a hermeticity check must not do.
+  page.on('request', (req) => {
+    const url = req.url();
     const allowed = url.startsWith(BASE) || url.startsWith(API_ORIGIN)
       || url.startsWith('data:') || url.startsWith('blob:') || url.startsWith('about:')
       // Explicitly STUBBED third parties are approved — they never reach the network. Anything
-      // else reaching this list means the suite's verdict depends on someone else's uptime.
+      // else here means the suite's verdict depends on someone else's uptime.
       || STUBBED_HOSTS.some((h) => url.startsWith(h));
     if (!allowed) external.push(url);
-    await route.fallback();
   });
 
   const errors: string[] = [];
@@ -322,7 +360,10 @@ async function bootViewer(page: Page, config: object): Promise<void> {
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
   (page as Page & { __errors?: string[] }).__errors = errors;
 
-  await page.goto(`${BASE}/projects/e2e-project/view`, { waitUntil: 'domcontentloaded' });
+  await page.goto(
+    `${BASE}/projects/e2e-project/view${opts?.simdebug ? '?simdebug=1' : ''}`,
+    { waitUntil: 'domcontentloaded' },
+  );
 }
 
 /** Start the video (the viewer arms sim pooling only after a real play attempt). */
@@ -497,6 +538,78 @@ const STUBBED_HOSTS = [
 
 const IGNORABLE = /Firebase|auth\/(invalid|api-key)|play\(\) request|NotAllowedError|AbortError|X-Frame-Options|Refused to display/i;
 const realErrors = (page: Page): string[] => errorsOf(page).filter((e) => !IGNORABLE.test(e));
+
+// ── protocol + telemetry evidence ─────────────────────────────────────────────────────────
+
+/**
+ * One record from the `delayedack` bridge's protocol log (gen-sim-fixture.ts). The child is
+ * cross-origin, so it POSTS every record; the init script above collects them on __PROTO_LOG.
+ *
+ * `token` is what went ON THE WIRE. `requestToken` is what the activation carried. They differ
+ * exactly when a mis-tokened acknowledgement is being exercised (the BADTOKEN section), which is
+ * what makes "this ack answers THIS request, but with the wrong token" expressible at all.
+ */
+interface ProtoRecord {
+  type: 'startScript' | 'stopScript' | 'SCRIPT_APPLIED' | 'SCRIPT_MISSING' | 'SCRIPT_ERROR';
+  script: string | null;
+  token: number | null;
+  requestToken: number | null;
+  receivedAt: number;
+  applyStart: number | null;
+  applyComplete: number | null;
+  ackAt: number | null;
+}
+
+async function protoLog(page: Page): Promise<ProtoRecord[]> {
+  const raw = await page.evaluate(() => (window as unknown as { __PROTO_LOG?: unknown[] }).__PROTO_LOG ?? []);
+  return raw as ProtoRecord[];
+}
+
+/**
+ * One record from lib/simTelemetry — VERIFIED against the real module rather than assumed:
+ * `window.__SIM_TELEMETRY__` is `{ events, export(), clear() }`, and `events` IS the live array of
+ * `{ t: Math.round(performance.now()), event, ...detail }` records. `export()` is only a JSON
+ * serialisation of that same array, so reading `.events` is both the direct and the cheaper path
+ * (and is what e2e/sim-pool.spec.ts already does).
+ *
+ * `abs` does not exist in the module — it is computed HERE, inside the page, so a telemetry event
+ * can be correlated with the child's Date.now()-based PROTO timestamps and with the sampler's
+ * `abs`. Without it the three evidence streams cannot be ordered against each other at all.
+ */
+interface TelemetryEvent { t: number; abs: number; event: string; [key: string]: unknown }
+
+async function telemetry(page: Page): Promise<TelemetryEvent[]> {
+  const raw = await page.evaluate(() => {
+    const api = (window as unknown as {
+      __SIM_TELEMETRY__?: { events: Array<{ t: number; event: string }> };
+    }).__SIM_TELEMETRY__;
+    const origin = performance.timeOrigin;
+    return (api?.events ?? []).map((e) => ({ ...e, abs: Math.round(origin + e.t) }));
+  });
+  return raw as TelemetryEvent[];
+}
+
+/** Just the event names, in order — for `toContain` assertions. */
+const events = (log: TelemetryEvent[]): string[] => log.map((e) => e.event);
+
+/**
+ * Wait until the child has recorded a matching protocol entry. A hidden cross-origin iframe has
+ * its timers CLAMPED by the browser, so a fixture's nominal 2400ms ack can land much later — a
+ * fixed sampling window silently turns "the ack was slow" into "the ack never came" and asserts
+ * on an empty log. Poll for the fact instead of guessing at a duration.
+ */
+async function waitForProto(
+  page: Page, type: string, script: string, timeout = 30_000,
+): Promise<void> {
+  await page.waitForFunction(([t, sc]) => {
+    const log = (window as unknown as { __PROTO_LOG?: { type: string; script: string | null }[] }).__PROTO_LOG ?? [];
+    return log.some((e) => e.type === t && e.script === sc);
+  }, [type, script], { timeout });
+}
+
+/** Which iframe DOCUMENTS claimed a SIM_PAINTED (see the init script above). */
+const paintedSrcs = (page: Page): Promise<string[]> =>
+  page.evaluate(() => (window as unknown as { __PAINTED_SRCS?: string[] }).__PAINTED_SRCS ?? []);
 
 /** Unapproved external requests — a suite that talks to third parties does not have a verdict. */
 const externalRequests = (page: Page): string[] => (page as Page & { __external?: string[] }).__external ?? [];
@@ -736,16 +849,36 @@ test.describe('real React viewer — simulation transitions', () => {
     expect(everShown, 'a legacy package must never be made to wait on an ack it cannot send').toBe(true);
   });
 
-  test('14. a package that never drives rAF stays displayable (no permanent spinner)', async ({ page }) => {
+  test('14. a package that can never ack a paint stays displayable (no permanent spinner)', async ({ page }) => {
+    // `nopaint`, NOT `noraf`. Verified in the fixture generator: `noraf` still carries the real v4
+    // rAF gate and still advertises `dispatch: 'dynamic'`, so learnCanEmitPaint() folds it into
+    // canEmitPaint === true and the gate (helped by this suite's own rAF reporter) makes it PAINT.
+    // The viewer's `!m.canEmitPaint` bounded-hold force-reveal branch therefore had zero coverage.
+    // `nopaint` is the one package that is honestly incapable: bare `{type:'SIM_READY'}` (no
+    // dispatch advertisement → dynamic stays null → canEmitPaint stays false) AND emitted with no
+    // rAF gate at all, so nothing in its bytes can post SIM_PAINTED.
     await bootViewer(page, makeConfig([
-      { id: 's1', start: 3, end: 12, pkg: 'noraf', section: S.A },
-    ]));
+      { id: 's1', start: 3, end: 12, pkg: 'nopaint', section: S.A },
+    ]), { simdebug: true });
     await startPlayback(page);
     await seekTo(page, 4);
     await page.waitForTimeout(3000);
     const samples = await sampleFrames(page, 700);
     const everShown = samples.some((s) => s.frames.some((f) => f.op > 0.5));
     expect(everShown, 'the bounded ceiling must terminally release a sim that can never ack a paint').toBe(true);
+    // …and it must have been released WITHOUT a paint acknowledgement. If a future change injects
+    // the gate into this package — or lets anything else stand in for it — this fails loudly
+    // instead of quietly turning the scenario back into a duplicate of the modern one.
+    const leaked = (await paintedSrcs(page)).filter((s) => /\/nopaint\//.test(s));
+    expect(leaked,
+      'a nopaint document claimed SIM_PAINTED — the package is no longer paint-incapable, so the '
+      + 'canEmitPaint === false branch this scenario exists for is not being exercised').toEqual([]);
+    // The reveal came from the viewer's OWN bounded-hold force-reveal branch. This is the event
+    // useProjectPlayer really emits there (`!m.canEmitPaint` → markPaintedByPolicy('bounded-hold')
+    // → revealSim({ force: true })) — the name is read from the code, not assumed.
+    expect(events(await telemetry(page)),
+      'the bounded-hold force-reveal branch never ran — something else released the hold')
+      .toContain('hold-expired-legacy-reveal');
   });
 
   test('15. hidden simulation frames are muted, inert and untabbable', async ({ page }) => {
@@ -843,9 +976,18 @@ test.describe('real React viewer — simulation transitions', () => {
  * dead-gate opacity/section trajectories are identical), and the blocking SLOW body freezes the
  * parent's own sampler because the sim shares its process.
  *
- * The `delayedack` package closes that hole: it defers application AND its SCRIPT_APPLIED by
- * ~500ms using setTimeout, so the event loop keeps running, the parent keeps sampling, and there
- * is a real window in which the frame MUST be hidden because the acknowledgement has not arrived.
+ * The `delayedack` package closes that hole, and it now does so with PRODUCTION PARITY: the
+ * section body is applied SYNCHRONOUSLY on receipt — exactly as the shipping bridge does — and
+ * ONLY the SCRIPT_APPLIED is deferred (~500ms by default), scheduled outside any cancellable
+ * scope just as production's `_sysRaf(_ack)` sits outside `_trackTimers`. The event loop keeps
+ * running, the parent keeps sampling, and there is a real window in which the frame MUST be hidden
+ * because the acknowledgement has not arrived.
+ *
+ * The parity matters beyond this test: because the ack is uncancellable, a SUPERSEDED or
+ * TORN-DOWN activation still acknowledges — late, and stale. An earlier fixture deferred the apply
+ * too and dropped its pending ack on stopScript, which is precisely the politeness that left
+ * matchesPending() — the rule that decides whether a stale ack may present a frame — with no
+ * fixture at all. The stale-acknowledgement suite at the bottom of this file drives that path.
  *
  * The assertion is anchored to the CHILD's own recorded acknowledgement timestamp — not a slice,
  * not a settle delay, not a fade exemption, not an allowance of wrong frames, not telemetry.
@@ -924,5 +1066,151 @@ test.describe('hermeticity', () => {
     await waitForSection(page, 'A');
     const ext = externalRequests(page);
     expect(ext, `unapproved external requests: ${[...new Set(ext)].slice(0, 8).join(', ')}`).toEqual([]);
+  });
+});
+
+/**
+ * STALE / SUPERSEDED ACKNOWLEDGEMENTS — the inputs SimRuntimeClient.matchesPending exists to reject.
+ *
+ * The real bridge applies a section SYNCHRONOUSLY and then schedules its SCRIPT_APPLIED via
+ * `_sysRaf(_ack)` — a call made OUTSIDE `_trackTimers`. Neither `_clearTimers` nor `stopScript` can
+ * reach that callback, so in production a late acknowledgement genuinely survives a supersede and a
+ * teardown. The delayedack fixture now reproduces exactly that (it previously cancelled pending
+ * acks, i.e. it was politer than production and this whole class went untested).
+ *
+ * `LATE` (acks 2400ms after the request) and `BADTOKEN` (acks after 400ms echoing token+7777) select
+ * the behaviour by SECTION ID, so none of these depend on winning a race.
+ */
+test.describe('stale acknowledgements — supersede, teardown and token mismatch', () => {
+  /** A (proves the document acknowledges) → LATE (2400ms away) → superseded by B. */
+  async function driveSupersede(page: Page): Promise<Sample[]> {
+    await bootViewer(page, makeConfig([
+      { id: 's1', start: 3,  end: 8,  pkg: 'delayedack', section: S.A },
+      { id: 's2', start: 8,  end: 14, pkg: 'delayedack', section: S.LATE },
+      { id: 's3', start: 14, end: 28, pkg: 'delayedack', section: S.B },
+    ]), { simdebug: true });
+    await startPlayback(page);
+    await seekTo(page, 4);
+    await waitForSection(page, 'A');
+    const sampling = await startSampling(page, 20_000);
+    await seekTo(page, 9);                      // request LATE …
+    await page.waitForTimeout(400);
+    await seekTo(page, 15);                     // … and supersede it, before it can acknowledge
+    // The superseded ack is what these scenarios are about — wait for the FACT, not a duration.
+    await waitForProto(page, 'SCRIPT_APPLIED', S.LATE);
+    return sampling;
+  }
+
+  /** A → LATE, then leave every simulation before LATE acknowledges. */
+  async function driveAbandon(page: Page): Promise<Sample[]> {
+    await bootViewer(page, makeConfig([
+      { id: 's1', start: 3, end: 8,  pkg: 'delayedack', section: S.A },
+      { id: 's2', start: 8, end: 14, pkg: 'delayedack', section: S.LATE },
+    ]), { simdebug: true });
+    await startPlayback(page);
+    await seekTo(page, 4);
+    await waitForSection(page, 'A');
+    const sampling = await startSampling(page, 20_000);
+    await seekTo(page, 9);                      // enter LATE — its ack is 2400ms away
+    await page.waitForTimeout(400);
+    await seekTo(page, 20);                     // leave the simulation entirely
+    await waitForProto(page, 'SCRIPT_APPLIED', S.LATE);
+    return sampling;
+  }
+
+  test('S1. a SUPERSEDED activation still acknowledges — late, and carrying the stale token', async ({ page }) => {
+    const samples = await driveSupersede(page);
+    const proto = await protoLog(page);
+    const startLate = proto.find((e) => e.type === 'startScript' && e.script === S.LATE);
+    const startB    = proto.find((e) => e.type === 'startScript' && e.script === S.B);
+    const ackLate   = proto.find((e) => e.type === 'SCRIPT_APPLIED' && e.script === S.LATE);
+    expect(startLate, 'LATE was never requested — nothing was exercised').toBeTruthy();
+    expect(startB, 'B was never requested — nothing was superseded').toBeTruthy();
+    // BOTH acks arrive: production schedules them outside every cancellable scope.
+    expect(ackLate, 'the superseded activation was never acknowledged — the fixture is politer than production').toBeTruthy();
+    expect(ackLate!.ackAt!, 'LATE acknowledged before B was requested — no stale window existed')
+      .toBeGreaterThan(startB!.receivedAt);
+    expect(ackLate!.token, 'the late acknowledgement must carry the SUPERSEDED token').toBe(startLate!.token);
+    expect(ackLate!.token).not.toBe(startB!.token);
+    expect(events(await telemetry(page)), 'the stale acknowledgement was accepted as live')
+      .toContain('stale-ack-ignored');
+    const after = since(samples, startB!.receivedAt + SIM_FADE_MS);
+    expect(after.length, 'no samples after the switch — vacuous').toBeGreaterThan(5);
+    const stranded = after.flatMap((s) => s.frames).filter((f) => f.op > 0.05 && f.section === 'LATE');
+    expect(stranded.length, 'the stale acknowledgement presented the superseded section').toBe(0);
+  });
+
+  test('S2. leaving the section does NOT cancel the pending acknowledgement', async ({ page }) => {
+    const samples = await driveAbandon(page);
+    const proto = await protoLog(page);
+    const startLate = proto.find((e) => e.type === 'startScript' && e.script === S.LATE);
+    expect(startLate, 'LATE was never requested — nothing was exercised').toBeTruthy();
+    const stop    = proto.find((e) => e.type === 'stopScript' && e.receivedAt > startLate!.receivedAt);
+    const ackLate = proto.find((e) => e.type === 'SCRIPT_APPLIED' && e.script === S.LATE);
+    expect(stop, 'the exit never tore the section down — nothing was exercised').toBeTruthy();
+    expect(ackLate, 'the teardown cancelled the pending acknowledgement — production does not').toBeTruthy();
+    expect(ackLate!.ackAt!, 'the acknowledgement did not arrive AFTER the teardown')
+      .toBeGreaterThan(stop!.receivedAt);
+    const afterExit = since(samples, stop!.receivedAt + SIM_FADE_MS);
+    expect(afterExit.length, 'no samples after the teardown — vacuous').toBeGreaterThan(5);
+    const shown = afterExit.flatMap((s) => s.frames).filter((f) => f.op > 0.05);
+    expect(shown.length, 'a post-teardown acknowledgement re-presented the simulation').toBe(0);
+  });
+
+  test('S3. a stale acknowledgement landing after the switch never disturbs the current section', async ({ page }) => {
+    const samples = await driveSupersede(page);
+    const proto = await protoLog(page);
+    const ackLate = proto.find((e) => e.type === 'SCRIPT_APPLIED' && e.script === S.LATE);
+    expect(ackLate, 'the superseded activation never acknowledged — nothing to be stale').toBeTruthy();
+    // Straddle the exact instant it arrives, using the CHILD's own clock.
+    const around = samples.filter((s) => s.abs >= ackLate!.ackAt! - 200 && s.abs <= ackLate!.ackAt! + 600);
+    expect(around.length, 'no samples straddle the stale acknowledgement — vacuous').toBeGreaterThan(5);
+    assertVisibleFramesAreCorrect(around, { expect: 'B', forbidPrevious: 'LATE' });
+  });
+
+  test('S4. an acknowledgement arriving after deactivation is ignored and reveals nothing', async ({ page }) => {
+    await driveAbandon(page);
+    const names = events(await telemetry(page));
+    const iDeact = names.lastIndexOf('deactivate');
+    expect(iDeact, 'the viewer never deactivated the simulation').toBeGreaterThanOrEqual(0);
+    const iStale = names.findIndex((e, i) => e === 'stale-ack-ignored' && i > iDeact);
+    expect(iStale, 'no post-deactivation acknowledgement was ignored — nothing was exercised')
+      .toBeGreaterThan(iDeact);
+    const revealsAfter = names.slice(iDeact).filter((e) => e === 'reveal' || e === 'reveal-forced');
+    expect(revealsAfter, 'a post-deactivation acknowledgement revealed the frame').toEqual([]);
+  });
+
+  test('S5. an acknowledgement whose TOKEN does not match the activation is rejected', async ({ page }) => {
+    await bootViewer(page, makeConfig([
+      { id: 's1', start: 3, end: 8,  pkg: 'delayedack', section: S.A },
+      { id: 's2', start: 8, end: 28, pkg: 'delayedack', section: S.BADTOKEN },
+    ]), { simdebug: true });
+    await startPlayback(page);
+    await seekTo(page, 4);
+    await waitForSection(page, 'A');
+
+    const sampling = await startSampling(page, 12_000);
+    await seekTo(page, 9);                      // BADTOKEN acks in 400ms — with token+7777
+    await waitForProto(page, 'SCRIPT_APPLIED', S.BADTOKEN);
+    const samples = await sampling;
+
+    const proto = await protoLog(page);
+    const startBad = proto.find((e) => e.type === 'startScript' && e.script === S.BADTOKEN);
+    const ackBad   = proto.find((e) => e.type === 'SCRIPT_APPLIED' && e.script === S.BADTOKEN);
+    expect(startBad, 'BADTOKEN was never requested — nothing was exercised').toBeTruthy();
+    expect(ackBad, 'BADTOKEN never acknowledged — the mismatch cannot be evaluated').toBeTruthy();
+    expect(ackBad!.token, 'the fixture echoed a MATCHING token — nothing was exercised')
+      .toBe(startBad!.token! + BAD_TOKEN_DELTA);
+
+    expect(events(await telemetry(page)), 'the mis-tokened acknowledgement was accepted as live')
+      .toContain('stale-ack-ignored');
+    // Because it was rejected, the hold SURVIVES its arrival: nothing may be presented between the
+    // request and, at the earliest, the runtime's terminal bound.
+    const held = samples.filter((s) => s.abs > startBad!.receivedAt + SIM_FADE_MS
+                                    && s.abs < startBad!.receivedAt + 2500);
+    expect(held.some((s) => s.frames.length > 0),
+      'no frame was observed while the hold should have been in force — vacuous').toBe(true);
+    const presented = held.flatMap((s) => s.frames).filter((f) => f.op > 0.05);
+    expect(presented.length, 'a mis-tokened acknowledgement released the apply hold').toBe(0);
   });
 });
