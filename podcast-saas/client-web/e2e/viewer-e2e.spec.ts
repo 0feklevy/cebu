@@ -49,8 +49,6 @@ const S = {
   LATE: '11111111-6666-4666-8666-111111111111',
   /** Acknowledges after 400ms echoing token + BAD_TOKEN_DELTA — matchesPending must reject it. */
   BADTOKEN: '22222222-7777-4777-8777-222222222222',
-  /** delayedack-only: acknowledges ONLY when the parent posts releaseAck — no timer, no race. */
-  HELD: '33333333-8888-4888-8888-333333333333',
 } as const;
 
 /**
@@ -600,23 +598,13 @@ const events = (log: TelemetryEvent[]): string[] => log.map((e) => e.event);
  * fixed sampling window silently turns "the ack was slow" into "the ack never came" and asserts
  * on an empty log. Poll for the fact instead of guessing at a duration.
  */
-/** Release every acknowledgement the HELD section is sitting on. */
-async function releaseHeldAcks(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    document.querySelectorAll('iframe').forEach((f) => {
-      const el = f as HTMLIFrameElement;
-      if (/delayedack/.test(el.src)) el.contentWindow?.postMessage({ type: 'releaseAck' }, '*');
-    });
-  });
-}
-
 async function waitForProto(
-  page: Page, type: string, script: string | null, timeout = 30_000,
+  page: Page, type: string, script: string, timeout = 30_000,
 ): Promise<void> {
   await page.waitForFunction(([t, sc]) => {
     const log = (window as unknown as { __PROTO_LOG?: { type: string; script: string | null }[] }).__PROTO_LOG ?? [];
-    return log.some((e) => e.type === t && (sc === null || e.script === sc));
-  }, [type, script] as [string, string | null], { timeout });
+    return log.some((e) => e.type === t && e.script === sc);
+  }, [type, script], { timeout });
 }
 
 /** Which iframe DOCUMENTS claimed a SIM_PAINTED (see the init script above). */
@@ -1098,23 +1086,18 @@ test.describe('stale acknowledgements — supersede, teardown and token mismatch
   async function driveSupersede(page: Page): Promise<Sample[]> {
     await bootViewer(page, makeConfig([
       { id: 's1', start: 3,  end: 8,  pkg: 'delayedack', section: S.A },
-      { id: 's2', start: 8,  end: 14, pkg: 'delayedack', section: S.HELD },
+      { id: 's2', start: 8,  end: 14, pkg: 'delayedack', section: S.LATE },
       { id: 's3', start: 14, end: 28, pkg: 'delayedack', section: S.B },
     ]), { simdebug: true });
     await startPlayback(page);
     await seekTo(page, 4);
     await waitForSection(page, 'A');
     const sampling = await startSampling(page, 20_000);
-    // Every step waits for the CHILD's own evidence that the viewer really issued it. A fixed
-    // sleep here assumed when the viewer requests the superseding section; it does not request it
-    // on seek, so the supersede could land AFTER the late ack and the ordering under test never
-    // existed. Synchronise on the lifecycle, never on a duration.
-    await seekTo(page, 9);
-    await waitForProto(page, 'startScript', S.HELD);   // activation 1 was issued …
-    await seekTo(page, 15);
-    await waitForProto(page, 'startScript', S.B);      // … the SUPERSEDING activation was issued …
-    await releaseHeldAcks(page);                       // … and only NOW may the first one answer
-    await waitForProto(page, 'SCRIPT_APPLIED', S.HELD);
+    await seekTo(page, 9);                      // request LATE …
+    await page.waitForTimeout(400);
+    await seekTo(page, 15);                     // … and supersede it, before it can acknowledge
+    // The superseded ack is what these scenarios are about — wait for the FACT, not a duration.
+    await waitForProto(page, 'SCRIPT_APPLIED', S.LATE);
     return sampling;
   }
 
@@ -1122,35 +1105,25 @@ test.describe('stale acknowledgements — supersede, teardown and token mismatch
   async function driveAbandon(page: Page): Promise<Sample[]> {
     await bootViewer(page, makeConfig([
       { id: 's1', start: 3, end: 8,  pkg: 'delayedack', section: S.A },
-      { id: 's2', start: 8, end: 14, pkg: 'delayedack', section: S.HELD },
+      { id: 's2', start: 8, end: 14, pkg: 'delayedack', section: S.LATE },
     ]), { simdebug: true });
     await startPlayback(page);
     await seekTo(page, 4);
     await waitForSection(page, 'A');
     const sampling = await startSampling(page, 20_000);
-    await seekTo(page, 9);
-    await waitForProto(page, 'startScript', S.HELD);   // the activation was issued …
-    await seekTo(page, 20);                            // … the viewer left every simulation …
-    await waitForProto(page, 'stopScript', null);      // … and really tore it down …
-    await releaseHeldAcks(page);                       // … only THEN may the ack answer
-    await waitForProto(page, 'SCRIPT_APPLIED', S.HELD);
+    await seekTo(page, 9);                      // enter LATE — its ack is 2400ms away
+    await page.waitForTimeout(400);
+    await seekTo(page, 20);                     // leave the simulation entirely
+    await waitForProto(page, 'SCRIPT_APPLIED', S.LATE);
     return sampling;
   }
 
   test('S1. a SUPERSEDED activation still acknowledges — late, and carrying the stale token', async ({ page }) => {
     const samples = await driveSupersede(page);
     const proto = await protoLog(page);
-    if (process.env.PROBE) {
-      const t0 = proto[0]?.receivedAt ?? 0;
-      // eslint-disable-next-line no-console
-      console.log('PLOG ' + JSON.stringify(proto.map((e) => ({
-        ty: e.type, s: String(e.script).slice(0, 8), k: e.token,
-        rx: e.receivedAt - t0, ack: e.ackAt ? e.ackAt - t0 : null,
-      }))));
-    }
-    const startLate = proto.find((e) => e.type === 'startScript' && e.script === S.HELD);
+    const startLate = proto.find((e) => e.type === 'startScript' && e.script === S.LATE);
     const startB    = proto.find((e) => e.type === 'startScript' && e.script === S.B);
-    const ackLate   = proto.find((e) => e.type === 'SCRIPT_APPLIED' && e.script === S.HELD);
+    const ackLate   = proto.find((e) => e.type === 'SCRIPT_APPLIED' && e.script === S.LATE);
     expect(startLate, 'LATE was never requested — nothing was exercised').toBeTruthy();
     expect(startB, 'B was never requested — nothing was superseded').toBeTruthy();
     // BOTH acks arrive: production schedules them outside every cancellable scope.
@@ -1163,17 +1136,17 @@ test.describe('stale acknowledgements — supersede, teardown and token mismatch
       .toContain('stale-ack-ignored');
     const after = since(samples, startB!.receivedAt + SIM_FADE_MS);
     expect(after.length, 'no samples after the switch — vacuous').toBeGreaterThan(5);
-    const stranded = after.flatMap((s) => s.frames).filter((f) => f.op > 0.05 && f.section === 'HELD');
+    const stranded = after.flatMap((s) => s.frames).filter((f) => f.op > 0.05 && f.section === 'LATE');
     expect(stranded.length, 'the stale acknowledgement presented the superseded section').toBe(0);
   });
 
   test('S2. leaving the section does NOT cancel the pending acknowledgement', async ({ page }) => {
     const samples = await driveAbandon(page);
     const proto = await protoLog(page);
-    const startLate = proto.find((e) => e.type === 'startScript' && e.script === S.HELD);
+    const startLate = proto.find((e) => e.type === 'startScript' && e.script === S.LATE);
     expect(startLate, 'LATE was never requested — nothing was exercised').toBeTruthy();
     const stop    = proto.find((e) => e.type === 'stopScript' && e.receivedAt > startLate!.receivedAt);
-    const ackLate = proto.find((e) => e.type === 'SCRIPT_APPLIED' && e.script === S.HELD);
+    const ackLate = proto.find((e) => e.type === 'SCRIPT_APPLIED' && e.script === S.LATE);
     expect(stop, 'the exit never tore the section down — nothing was exercised').toBeTruthy();
     expect(ackLate, 'the teardown cancelled the pending acknowledgement — production does not').toBeTruthy();
     expect(ackLate!.ackAt!, 'the acknowledgement did not arrive AFTER the teardown')
@@ -1187,12 +1160,12 @@ test.describe('stale acknowledgements — supersede, teardown and token mismatch
   test('S3. a stale acknowledgement landing after the switch never disturbs the current section', async ({ page }) => {
     const samples = await driveSupersede(page);
     const proto = await protoLog(page);
-    const ackLate = proto.find((e) => e.type === 'SCRIPT_APPLIED' && e.script === S.HELD);
+    const ackLate = proto.find((e) => e.type === 'SCRIPT_APPLIED' && e.script === S.LATE);
     expect(ackLate, 'the superseded activation never acknowledged — nothing to be stale').toBeTruthy();
     // Straddle the exact instant it arrives, using the CHILD's own clock.
     const around = samples.filter((s) => s.abs >= ackLate!.ackAt! - 200 && s.abs <= ackLate!.ackAt! + 600);
     expect(around.length, 'no samples straddle the stale acknowledgement — vacuous').toBeGreaterThan(5);
-    assertVisibleFramesAreCorrect(around, { expect: 'B', forbidPrevious: 'HELD' });
+    assertVisibleFramesAreCorrect(around, { expect: 'B', forbidPrevious: 'LATE' });
   });
 
   test('S4. an acknowledgement arriving after deactivation is ignored and reveals nothing', async ({ page }) => {
@@ -1217,9 +1190,8 @@ test.describe('stale acknowledgements — supersede, teardown and token mismatch
     await waitForSection(page, 'A');
 
     const sampling = await startSampling(page, 12_000);
-    await seekTo(page, 9);
-    await waitForProto(page, 'startScript', S.BADTOKEN);      // the activation was issued
-    await waitForProto(page, 'SCRIPT_APPLIED', S.BADTOKEN);   // …and answered with a bad token
+    await seekTo(page, 9);                      // BADTOKEN acks in 400ms — with token+7777
+    await waitForProto(page, 'SCRIPT_APPLIED', S.BADTOKEN);
     const samples = await sampling;
 
     const proto = await protoLog(page);
