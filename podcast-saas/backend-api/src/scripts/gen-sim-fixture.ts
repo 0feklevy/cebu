@@ -72,6 +72,13 @@ export const FIXTURE_DELAYED_SECTIONS = {
   LATE: '11111111-6666-4666-8666-111111111111',
   /** Acknowledges promptly but echoes a token that does NOT match the activation. */
   BADTOKEN: '22222222-7777-4777-8777-222222222222',
+  /**
+   * Acknowledges ONLY when the parent posts `{type:'releaseAck'}`. A delay long enough to outlast
+   * the viewer's activation latency is a guess — measured, the viewer can take ~5.8s to issue a
+   * superseding activation after a seek, so a 2400ms ack had already landed and no stale window
+   * ever existed. Holding until release makes the acknowledgement stale BY CONSTRUCTION.
+   */
+  HELD: '33333333-8888-4888-8888-333333333333',
 } as const;
 
 /** Token corruption applied by the BADTOKEN section (and by `?badtoken=1`). */
@@ -81,7 +88,7 @@ const BAD_TOKEN_DELTA = 7777;
  * Per-section acknowledgement behaviour for the `delayedack` bridge. Sections with no entry use
  * the bridge's default delay (500 ms), so A / B / SLOW / THROWS / AUTO behave exactly as before.
  */
-const DELAYED_ACK_POLICY: Record<string, { ackDelayMs?: number; tokenDelta?: number }> = {
+const DELAYED_ACK_POLICY: Record<string, { ackDelayMs?: number; tokenDelta?: number; holdUntilRelease?: boolean }> = {
   // 2400 ms is chosen against the player's own constants: far longer than the ~300-400 ms a test
   // needs to supersede or leave the section (SIM_EXIT_STOP_MS is 280 ms), and still under
   // SIM_APPLY_STALL_MS (3000 ms) so the runtime's terminal bound is not what ends the wait.
@@ -89,6 +96,8 @@ const DELAYED_ACK_POLICY: Record<string, { ackDelayMs?: number; tokenDelta?: num
   // Prompt, but mis-tokened: matchesPending() must reject it, and the ONLY thing that may
   // eventually release the hold is the runtime's SIM_APPLY_STALL_MS terminal bound.
   [FIXTURE_DELAYED_SECTIONS.BADTOKEN]: { ackDelayMs: 400, tokenDelta: BAD_TOKEN_DELTA },
+  // No timer at all — the parent decides when this acknowledges.
+  [FIXTURE_DELAYED_SECTIONS.HELD]: { holdUntilRelease: true },
 };
 
 /** Marks the section and paints its colour; cleanup returns to the neutral boot state. */
@@ -146,6 +155,7 @@ const SECTION_BODIES: Record<string, string> = {
 const DELAYED_SECTION_BODIES: Record<string, string> = {
   ...SECTION_BODIES,
   [FIXTURE_DELAYED_SECTIONS.LATE]: bodyFor('LATE', '#ff8000'),
+  [FIXTURE_DELAYED_SECTIONS.HELD]: bodyFor('HELD', '#8000ff'),
   [FIXTURE_DELAYED_SECTIONS.BADTOKEN]: bodyFor('BADTOKEN', '#8000ff'),
 };
 
@@ -250,7 +260,7 @@ const ENTRY_HTML = `<!doctype html>
  */
 function delayedAckBridge(
   entries: Map<string, string>,
-  policy: Record<string, { ackDelayMs?: number; tokenDelta?: number }> = {},
+  policy: Record<string, { ackDelayMs?: number; tokenDelta?: number; holdUntilRelease?: boolean }> = {},
   delayMs = 500,
 ): string {
   const sections = JSON.stringify(Object.fromEntries(
@@ -283,7 +293,8 @@ function delayedAckBridge(
     var p = (name && Object.prototype.hasOwnProperty.call(POLICY, name)) ? POLICY[name] : null;
     return {
       ackDelayMs: (p && typeof p.ackDelayMs === 'number') ? p.ackDelayMs : DELAY,
-      tokenDelta: ALL_TOKENS_BAD ? BAD_TOKEN_DELTA : ((p && p.tokenDelta) || 0)
+      tokenDelta: ALL_TOKENS_BAD ? BAD_TOKEN_DELTA : ((p && p.tokenDelta) || 0),
+      holdUntilRelease: !!(p && p.holdUntilRelease)
     };
   }
 
@@ -313,16 +324,28 @@ function delayedAckBridge(
     // mirrors production's _sysRaf(_ack), which is scheduled outside _trackTimers and therefore
     // survives every supersede and every stopScript. A late, stale SCRIPT_APPLIED genuinely can
     // arrive — that is the whole point of this package.
-    setTimeout(function () {
+    var fire = function () {
       record({ type: 'SCRIPT_APPLIED', script: name, token: ackToken, requestToken: token,
                receivedAt: receivedAt, applyStart: applyStart, applyComplete: applyComplete,
                ackAt: now() });
       post({ type: 'SCRIPT_APPLIED', script: name, token: ackToken });
+    };
+    if (pol.holdUntilRelease) { _heldAcks.push(fire); return; }
+    setTimeout(function () {
+      fire();
     }, pol.ackDelayMs);
   }
 
   window.addEventListener('message', function (e) {
     var d = e.data || {};
+    // PARENT-RELEASED acknowledgement. A delay long enough to outlast the viewer's activation
+    // latency is a guess; this is a fact. The parent supersedes/tears down first, THEN releases,
+    // so the acknowledgement is stale by construction rather than by racing a timer.
+    if (d.type === 'releaseAck') {
+      var held = _heldAcks.splice(0, _heldAcks.length);
+      for (var i = 0; i < held.length; i++) held[i]();
+      return;
+    }
     if (d.type === 'startScript') {
       var receivedAt = now();
       record({ type: 'startScript', script: d.script, token: d.token, requestToken: d.token,
