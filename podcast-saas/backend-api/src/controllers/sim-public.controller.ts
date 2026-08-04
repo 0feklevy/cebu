@@ -9,6 +9,7 @@ import { LOCAL_STORAGE_BASE_DIR } from '../services/storage/localStoragePaths.js
 import { safeLocalPath, keyHasTraversal } from '../services/storage/pathSafety.js';
 import { serveLocalFile } from '../services/storage/serveFile.js';
 import { getStorageAdapter } from '../services/storage/getStorageAdapter.js';
+import { revisionIdFromKey, cacheControlForKey } from 'shared/src/sim/simRevision';
 import { LocalStorageAdapter } from '../services/storage/LocalStorageAdapter.js';
 import { getSimulationContentType } from '../services/simulation/SimulationService.js';
 import { browserOrigins } from '../config/publicOrigins.js';
@@ -124,6 +125,26 @@ export async function registerSimPublicRoutes(app: FastifyInstance): Promise<voi
       const contentType = getSimulationContentType(key);
       const storage = getStorageAdapter();
 
+      // ── Revision-aware cache policy ────────────────────────────────────────────────────────
+      // The blanket `no-cache` below exists because NO key under a sim prefix used to be
+      // write-once: "Replace simulation" overwrites every user file in place. A revision prefix
+      // IS write-once — its path contains a revision id and its bytes are never rewritten — so
+      // those keys, and only those, can finally be cached for a year.
+      //
+      // `revisionIdFromKey` is positional: it requires the segment at exactly the depth
+      // `revisionPrefix` writes it. A legacy package whose own bundle contains a top-level
+      // `revisions/` directory therefore does NOT match, which matters because this route
+      // percent-decodes its wildcard — `%2F` arrives as a real separator, so a crafted key can
+      // otherwise be shaped to look like a revision. Non-matching keys keep today's behaviour
+      // byte for byte.
+      const revisionId = revisionIdFromKey(key);
+      const isEntryDocument = /\.html?$/i.test(key);
+      // The entry document is never immutable even inside a revision: injectSimBootSnippet runs
+      // at SERVE time (below), so served bytes are not stored bytes — and the CSP
+      // `frame-ancestors` list is deploy-dependent, so a year-long cache would freeze it and a
+      // newly-added app origin could never reach an already-cached document.
+      const revisionCacheControl = revisionId ? cacheControlForKey(key, isEntryDocument) : null;
+
       // Restrictive CSP for served sims (security-003). The sim body is arbitrary
       // user-uploaded HTML/JS, so we keep script/style/img/etc. permissive (inline +
       // data/blob) to avoid breaking legit sims, but lock down the ambient surface:
@@ -173,7 +194,7 @@ export async function registerSimPublicRoutes(app: FastifyInstance): Promise<voi
               .header('Cross-Origin-Resource-Policy', 'cross-origin')
               .header('Access-Control-Allow-Origin', '*')
               .header('Content-Security-Policy', simCsp)
-              .header('Cache-Control', 'no-cache')
+              .header('Cache-Control', revisionCacheControl ?? 'no-cache')
               .header('Content-Type', contentType)
               .send(html);
           } catch {
@@ -181,6 +202,8 @@ export async function registerSimPublicRoutes(app: FastifyInstance): Promise<voi
           }
         }
         return serveLocalFile(request, reply, filePath, contentType, {
+          // This branch previously emitted no Cache-Control at all — the only one that did not.
+          ...(revisionCacheControl ? { cacheControl: revisionCacheControl } : {}),
           extraHeaders: {
             'X-Content-Type-Options': 'nosniff',
             'Cross-Origin-Resource-Policy': 'cross-origin',
@@ -203,8 +226,10 @@ export async function registerSimPublicRoutes(app: FastifyInstance): Promise<voi
         // and the browser then loads them straight from the CDN — parallel over HTTP/2
         // and edge/browser-cached — rather than serializing through this proxy (one full
         // readObject per request), which made image-heavy sims crawl.
+        // Still a 302, not a 308: a permanently-cached redirect to an immutable response has no
+        // revalidation path at all. The bounded hour stays the fallback for legacy keys.
         return reply
-          .header('Cache-Control', 'public, max-age=3600')
+          .header('Cache-Control', revisionCacheControl ?? 'public, max-age=3600')
           .header('Access-Control-Allow-Origin', '*')
           .redirect(storage.getPublicUrl(key), 302);
       }
@@ -226,7 +251,7 @@ export async function registerSimPublicRoutes(app: FastifyInstance): Promise<voi
           .header('Cross-Origin-Resource-Policy', 'cross-origin')
           .header('Access-Control-Allow-Origin', '*')
           .header('Content-Security-Policy', simCsp)
-          .header('Cache-Control', 'no-cache')
+          .header('Cache-Control', revisionCacheControl ?? 'no-cache')
           .header('ETag', etag)
           // The representation varies by Accept-Encoding whether or not THIS reply ends
           // up compressed — set Vary unconditionally so shared caches key correctly.
