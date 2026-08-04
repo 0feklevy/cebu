@@ -209,9 +209,15 @@ async function main(): Promise<void> {
     return;
   }
 
+  // MUST match what the canary actually writes: e2e-results/sim-canary-posters/<identity>/<size>.png
+  // (client-web/e2e/sim-canary.spec.ts POSTER_ROOT). The default was `posters/`, a directory nothing
+  // creates — so an operator following the rollout verbatim hit EXIT.POSTERS_MISSING on every
+  // managed-presentable package, making Stage 3's documented outcome unreachable. Nothing in the
+  // repo passes --posters, and the test always passed an explicit tmpdir, so the default was never
+  // exercised by anything.
   const posterRoot = args.posterDir
     ? resolve(args.posterDir)
-    : join(args.reportPath, '..', 'posters');
+    : join(args.reportPath, '..', 'sim-canary-posters');
   const plan = planFromReport(report, posterRoot);
 
   process.stdout.write(`\nPLAN for ${sim.name} (${sim.id})\n`);

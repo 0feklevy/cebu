@@ -110,6 +110,7 @@ import {
 } from 'shared/src/sim/activationMachine';
 import {
   SIM_HANDSHAKE_TIMEOUT_MS,
+  SIM_CONTEXT_RESTORE_TIMEOUT_MS,
   SIM_PREPARE_TIMEOUT_MS,
   SIM_PRESENT_TIMEOUT_MS,
   allowsAggressivePreparation,
@@ -266,6 +267,7 @@ export class SimRuntimeClient {
   private failure: SimFailureState | null = null;
   private prepareTimer: Timer | null = null;
   private presentTimer: Timer | null = null;
+  private contextTimer: Timer | null = null;
   private failureCtx: FailureContext = { hasPoster: false, hasVideo: true, canSkip: true };
   private attempt = 0;
   /**
@@ -274,6 +276,15 @@ export class SimRuntimeClient {
    * never be resurrected onto a document the player has moved on from.
    */
   private pendingActivate: ActivateOptions | null = null;
+  /**
+   * True while an activation is parked waiting for the handshake to settle.
+   *
+   * Separate from `holding` on purpose. The bound below used to read `holding`, which made that
+   * assignment load-bearing for a reason its own comment did not give (it claimed redundancy) and
+   * left `holding` set for the life of the client once the deferral resolved modern — after which a
+   * later transport downgrade could wedge the v2 path permanently. One flag, one meaning.
+   */
+  private handshakeDeferred = false;
 
   constructor(cbs: SimRuntimeCallbacks = {}) {
     this.cbs = cbs;
@@ -545,11 +556,12 @@ export class SimRuntimeClient {
       // a frame with nothing applied to it at all. The deferral is bounded by
       // SIM_BOOTSTRAP_TIMEOUT_MS, and both exits clear the hold: activateModern() installs its own,
       // and the legacy fallback re-enters activate(), whose cancelPendingApply() releases it.
-      // Defence in depth, and knowingly redundant today: the reveal gate above already refuses any
-      // armed-but-not-active reveal, so no test can make this line individually observable (proven
-      // by mutation — see simRuntimeClientModern.test.ts). It is kept because it is what stops
-      // `present()` and the legacy ceiling if the gate is ever narrowed, and because a deferral that
-      // did not hold is what caused the defect this branch exists for.
+      // Blocks the v2 paint path for the duration of the deferral. A regenerated package carries
+      // BOTH listeners, so a SIM_PAINTED arriving here would otherwise reach `maybeReveal` — and
+      // while the reveal gate above independently refuses an armed-but-not-active reveal today,
+      // relying on that would leave this branch correct only by coincidence. `handshakeDeferred`
+      // (not this flag) is what arms the bound below; the two were previously the same field, which
+      // made this assignment load-bearing for a reason its comment did not state.
       this.holding = true;
       this.set({
         phase: 'awaiting-ack',
@@ -563,12 +575,13 @@ export class SimRuntimeClient {
       // goes silent before DOCUMENT_READY would hold the section hidden for the whole session with
       // no failure raised and nothing to recover from. Every wait in this protocol has a bound that
       // leads somewhere; this one leads to the same bounded failure a prepare timeout does.
+      this.handshakeDeferred = true;
       const gen = this.generation;
       this.clearPrepareTimer();
       this.prepareTimer = setTimeout(() => {
         this.prepareTimer = null;
         if (this.generation !== gen || this.disposed) return;
-        if (this.modernActive() || !this.holding) return;   // readiness landed; nothing to do
+        if (this.modernActive() || !this.handshakeDeferred) return;   // readiness landed
         this.failModern('handshake-failed', 'the document adopted a port but never became ready');
       }, SIM_HANDSHAKE_TIMEOUT_MS + SIM_PREPARE_TIMEOUT_MS);
       return;
@@ -809,9 +822,24 @@ export class SimRuntimeClient {
         // user is looking at is now undefined content, and leaving it up is showing a wrong state.
         this.set({ visible: false, interactive: false });
         this.tel('modern-context-lost');
+        // BOUND IT. The present timer has already been cleared by the acknowledgement, so a context
+        // that is lost and never restored left the activation parked in RENDERING with no failure,
+        // no recovery surface and no retry — the section simply ran to its end behind the cover.
+        // SIM_CONTEXT_RESTORE_TIMEOUT_MS existed for exactly this and was referenced by nothing.
+        if (this.contextTimer) clearTimeout(this.contextTimer);
+        {
+          const gen = this.generation;
+          this.contextTimer = setTimeout(() => {
+            this.contextTimer = null;
+            if (this.generation !== gen || this.disposed) return;
+            if (!this.docMachine.contextLost) return;   // restored in the meantime
+            this.failModern('context-lost-unrecovered', 'the rendering context was lost and never restored');
+          }, SIM_CONTEXT_RESTORE_TIMEOUT_MS);
+        }
         return;
       case CONTEXT_RESTORED:
         this.docMachine = documentReducer(this.docMachine, { type: 'CONTEXT_RESTORED' });
+        if (this.contextTimer) { clearTimeout(this.contextTimer); this.contextTimer = null; }
         this.tel('modern-context-restored');
         return;
       case SECTION_APPLIED:
@@ -909,6 +937,11 @@ export class SimRuntimeClient {
 
     this.clearPrepareTimer();
     this.clearPresentTimer();
+    // The deferral, if any, ends here: the modern gate governs from now on. Leaving `holding` set
+    // would outlive the deferral for the life of the client, so a later transport downgrade to
+    // legacy would find `maybeReveal`, `present()` and the legacy ceiling all permanently refusing.
+    this.handshakeDeferred = false;
+    this.holding = false;
     // Release the outgoing activation before preparing the next. One document serves many
     // sections; leaving the previous one registered is how a resident pool grows without bound.
     if (this.actMachine && this.actMachine.state !== 'RELEASED') {
@@ -1009,6 +1042,10 @@ export class SimRuntimeClient {
     if (this.presentTimer) { clearTimeout(this.presentTimer); this.presentTimer = null; }
   }
 
+  private clearContextTimer(): void {
+    if (this.contextTimer) { clearTimeout(this.contextTimer); this.contextTimer = null; }
+  }
+
   private teardownModern(): void {
     // RELEASE THE HOLD. The handshake-window deferral sets `holding` and returns, expecting one of
     // two exits to clear it: activateModern on DOCUMENT_READY, or the legacy fallback in onMode.
@@ -1018,6 +1055,7 @@ export class SimRuntimeClient {
     // by any path. Reachable when enableModern is re-armed with a class below managed-presentable
     // (a canary verdict published between two activations) while a deferral is in flight.
     this.holding = false;
+    this.handshakeDeferred = false;
     this.pendingActivate = null;
     this.clearPrepareTimer();
     this.clearPresentTimer();
@@ -1373,7 +1411,8 @@ export class SimRuntimeClient {
   /** Cancel a pending apply AND its hold, together — never one without the other. */
   cancelPendingApply(): void {
     this.clearApplyStall();
-    this.holding = false;   // never leave a hold armed with no timer able to release it
+    this.holding = false;
+    this.handshakeDeferred = false;   // never leave a hold armed with no timer able to release it
     if (this.state.pendingScript !== null) this.set({ pendingScript: null });
   }
 
@@ -1386,6 +1425,8 @@ export class SimRuntimeClient {
 
   private clearAllTimers(): void {
     this.holding = false;
+    this.handshakeDeferred = false;
+    this.clearContextTimer();
     this.clearPrepareTimer();
     this.clearPresentTimer();
     this.clearApplyStall();

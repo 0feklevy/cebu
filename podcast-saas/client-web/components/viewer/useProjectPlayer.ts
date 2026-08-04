@@ -2076,7 +2076,15 @@ export function useProjectPlayer(
       // It is the single authority on WHETHER (paint arrived, the matching ack released the hold,
       // or the terminal bound expired); this surface still decides HOW and WHEN to composite.
       case 'reveal':
-        if (isActive) { merge({ simBootStalled: false }); revealSim(); }
+        if (isActive) {
+          merge({ simBootStalled: false });
+          // On the modern path this event IS the reveal decision, and it is the only writer of
+          // simPresented:true. `modern-section-presented` fires earlier, before the gate has run,
+          // and the gate can still refuse — compositing on that breadcrumb showed frames the gate
+          // had rejected.
+          mergePresentation({ simPresented: true, simFailure: false });
+          revealSim();
+        }
         return;
       case 'reveal-forced':
         if (isActive) { merge({ simBootStalled: false }); revealSim({ force: true }); }
@@ -2096,7 +2104,18 @@ export function useProjectPlayer(
       // else — not from a paint, not from a load, not from a timer. Each of those has in turn been
       // the thing that authorised a reveal here, and each in turn authorised a wrong one.
       case 'modern-section-presented':
-        if (isActive) mergePresentation({ simPresented: true, simFailure: false });
+        // The ACKNOWLEDGEMENT arrived — that is NOT permission to composite. The client emits this
+        // breadcrumb before `reveal()` runs, and `reveal()` can still refuse (context lost, package
+        // revision or document mismatch). Setting `simPresented` here made `poolVisible` true while
+        // the runtime's own `state.visible` stayed false, so the viewer composited a frame the gate
+        // had just rejected — a dead-context iframe stayed at full opacity for the rest of the
+        // section, with nothing to clear it. Presentation permission has exactly one owner, and it
+        // is the client's reveal decision below.
+        if (isActive) mergePresentation({ simFailure: false });
+        return;
+      case 'modern-reveal-refused':
+        // The gate refused — withdraw any permission a previous decision granted.
+        if (isActive) mergePresentation({ simPresented: false });
         return;
       // A new activation on the same document: whatever was presented belongs to the section being
       // left. (The section change resets this too — this covers a re-activation of the SAME

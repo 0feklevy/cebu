@@ -274,6 +274,35 @@ describe('viewer layer gating: a proven modern package', () => {
     expect(incoming(container)!.querySelector('.sim-overlay')).toBeNull();
   });
 
+  it('does NOT composite on the acknowledgement alone — the gate can still refuse after it', async () => {
+    // The defect this pins: the client emits `modern-section-presented` BEFORE reveal() runs, and
+    // reveal() can still refuse (context lost, package-revision or document mismatch). The viewer
+    // used to set simPresented from that breadcrumb AND to ignore `modern-reveal-refused`
+    // (it fell through to `default: return`), so poolVisible went true while the runtime's own
+    // state.visible stayed false — a frame the gate had just rejected was composited at full
+    // opacity for the rest of the section, with nothing to clear it.
+    //
+    // MUTATION SCOPE, stated honestly: this kills the ORIGINAL pair, not either half alone. The fix
+    // has two parts — composite on the decision, and withdraw on refusal — and either one alone is
+    // sufficient, so neither is individually observable. Reverting both together fails this test;
+    // reverting one does not. Verified by mutation rather than assumed.
+    h.modernActive.value = true;
+    const { container } = await mountAndEnterSim(modernConfig());
+
+    // Acknowledgement arrives, then the gate REFUSES. No 'reveal' event is emitted.
+    await act(async () => {
+      h.instances[0].emit('modern-section-presented', { frames: 1 });
+      h.instances[0].emit('modern-reveal-refused', { refusal: 'package-revision-mismatch' });
+    });
+
+    expect(
+      incoming(container)!.getAttribute('data-visibility'),
+      'the viewer composited a frame the reveal gate refused',
+    ).toBe('hidden');
+    expect(pool(container)!.className, 'the pool overlay was made visible by a refused reveal')
+      .not.toContain('visible');
+  });
+
   it('keeps the SAME pool DOM node across a modern/legacy flip — the warm pool is never rebuilt', async () => {
     h.modernActive.value = true;
     const { container, leaveSimSection } = await mountAndEnterSim(modernConfig());
@@ -304,7 +333,15 @@ describe('viewer layer gating: a proven modern package', () => {
     // The one event that is allowed to authorise a reveal, arriving the way the real client sends
     // it. Nothing else in this test moves — no timer, no paint, no load.
     expect(h.instances).toHaveLength(1);
-    await act(async () => { h.instances[0].emit('modern-section-presented', { frames: 1 }); });
+    await act(async () => {
+      // The real client emits the acknowledgement breadcrumb FIRST and only then, if the reveal
+      // gate allows it, emits 'reveal'. The gate can refuse in between (context lost, package
+      // revision or document mismatch), which is why the viewer composites on the decision and
+      // not on the acknowledgement. The mock must reproduce that order or it would assert a
+      // contract the product does not have.
+      h.instances[0].emit('modern-section-presented', { frames: 1 });
+      h.instances[0].emit('reveal');
+    });
 
     expect(incoming(container)!.getAttribute('data-visibility')).toBe('revealed');
     expect(layered(container)!.getAttribute('data-reason')).toBe('presented-live');
@@ -335,7 +372,15 @@ describe('viewer layer gating: a proven modern package', () => {
   it('raises the recovery surface on a bounded modern failure, and clears it on retry', async () => {
     h.modernActive.value = true;
     const { container } = await mountAndEnterSim(modernConfig());
-    await act(async () => { h.instances[0].emit('modern-section-presented', { frames: 1 }); });
+    await act(async () => {
+      // The real client emits the acknowledgement breadcrumb FIRST and only then, if the reveal
+      // gate allows it, emits 'reveal'. The gate can refuse in between (context lost, package
+      // revision or document mismatch), which is why the viewer composites on the decision and
+      // not on the acknowledgement. The mock must reproduce that order or it would assert a
+      // contract the product does not have.
+      h.instances[0].emit('modern-section-presented', { frames: 1 });
+      h.instances[0].emit('reveal');
+    });
 
     await act(async () => { h.instances[0].emit('modern-failure', { kind: 'present-timeout' }); });
     expect(layered(container)!.getAttribute('data-layer')).toBe('recovery');
@@ -351,7 +396,15 @@ describe('viewer layer gating: a proven modern package', () => {
   it('re-covers a presented frame whose rendering context was lost', async () => {
     h.modernActive.value = true;
     const { container } = await mountAndEnterSim(modernConfig());
-    await act(async () => { h.instances[0].emit('modern-section-presented', { frames: 1 }); });
+    await act(async () => {
+      // The real client emits the acknowledgement breadcrumb FIRST and only then, if the reveal
+      // gate allows it, emits 'reveal'. The gate can refuse in between (context lost, package
+      // revision or document mismatch), which is why the viewer composites on the decision and
+      // not on the acknowledgement. The mock must reproduce that order or it would assert a
+      // contract the product does not have.
+      h.instances[0].emit('modern-section-presented', { frames: 1 });
+      h.instances[0].emit('reveal');
+    });
     expect(incoming(container)!.getAttribute('data-visibility')).toBe('revealed');
 
     await act(async () => { h.instances[0].emit('modern-context-lost'); });

@@ -128,7 +128,7 @@ player that never offers a port — which is every player, because the package i
 # Real browser, every variant and required configuration.
 cd client-web
 npx playwright test --config=playwright.canary.config.ts --retries=0
-# → e2e-results/sim-canary.json  +  e2e-results/posters/<identity>/{standard,compact}.png
+# → e2e-results/sim-canary.json  +  e2e-results/sim-canary-posters/<identity>/{standard,compact}.png
 ```
 
 Then inspect the verdict **without writing anything**:
