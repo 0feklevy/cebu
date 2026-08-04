@@ -49,4 +49,24 @@ export interface StorageService {
   listObjects(prefix: string): Promise<string[]>;
   /** True if an object exists at this key (cheap HEAD; used by the URL backfill migration). */
   objectExists(key: string): Promise<boolean>;
+  /**
+   * The stored object's metadata, or null when it does not exist.
+   *
+   * Exists so a publication can VERIFY what the store accepted rather than record what it asked
+   * for. `objectExists` already sends the same HEAD on both cloud adapters and throws the response
+   * away — so without this, a package manifest's `contentType` and `cacheControl` are claims about
+   * an upload call, not observations of the object, while looking exactly like observations.
+   *
+   * A store that does not report a field returns null for it rather than a guess; a caller must be
+   * able to tell "served as text/plain" from "cannot tell".
+   */
+  headObject(key: string): Promise<StoredObjectHead | null>;
+}
+
+/** What a HEAD can tell us about a stored object. Nulls mean "the store did not report it". */
+export interface StoredObjectHead {
+  contentType: string | null;
+  cacheControl: string | null;
+  size: number | null;
+  etag: string | null;
 }

@@ -1,7 +1,7 @@
 import { writeFile, mkdir, readFile, rm, readdir, stat } from 'fs/promises';
 import { createWriteStream } from 'fs';
 import { join } from 'path';
-import type { CompletedPart, StorageService } from './StorageService.js';
+import type { CompletedPart, StorageService, StoredObjectHead } from './StorageService.js';
 import { LOCAL_STORAGE_BASE_DIR } from './localStoragePaths.js';
 import { mediaKeyScope, mintMediaToken } from './mediaToken.js';
 import { logger } from '../../lib/logger.js';
@@ -117,6 +117,23 @@ export class LocalStorageAdapter implements StorageService {
 
   async objectExists(key: string): Promise<boolean> {
     return stat(join(BASE_DIR, key)).then(() => true).catch(() => false);
+  }
+
+  async headObject(key: string): Promise<StoredObjectHead | null> {
+    // Local disk stores no per-object metadata, so contentType/cacheControl are honestly null: this
+    // adapter CANNOT verify them, and saying so is what lets a caller report "unverified" instead
+    // of inventing a pass. Size and mtime-derived etag are real observations and are returned.
+    try {
+      const st = await stat(join(BASE_DIR, key));
+      return {
+        contentType: null,
+        cacheControl: null,
+        size: st.size,
+        etag: `"${st.size.toString(16)}-${Math.floor(st.mtimeMs).toString(16)}"`,
+      };
+    } catch {
+      return null;
+    }
   }
 
   async readObject(key: string): Promise<Buffer> {
