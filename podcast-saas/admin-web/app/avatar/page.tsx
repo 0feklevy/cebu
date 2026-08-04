@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { AdminShell } from '../../components/AdminShell';
-import { resolveSimUrl } from 'shared/src/sim/simUrl';
+import { AdminSimSurface } from '../../components/AdminSimSurface';
 import {
   getAvatarConfig, setAvatarByok, getAvatarStats, getAvatarGallery, deleteAvatarVisual, getAvatarConversations,
   type AvatarConfig, type AvatarStats, type AvatarGalleryItem, type AvatarSession,
@@ -201,6 +201,10 @@ function Metric({ label, value }: { label: string; value: number }) {
 
 function GalleryCard({ item, onDelete }: { item: AvatarGalleryItem; onDelete: () => void }) {
   const spec = item.visual_spec as Record<string, unknown> | null;
+  // Passive preview: `load` is the whole reveal gate. There is no runtime protocol to wait for
+  // here, and the event fires even for a document the browser refused to render, so a blocked
+  // frame reveals its (blank) self rather than being stranded invisible forever.
+  const [frameLoaded, setFrameLoaded] = useState(false);
   return (
     <div className="rounded-lg border border-border bg-card overflow-hidden">
       <div className="relative aspect-[16/10] bg-muted flex items-center justify-center overflow-hidden">
@@ -210,12 +214,25 @@ function GalleryCard({ item, onDelete }: { item: AvatarGalleryItem; onDelete: ()
           // eslint-disable-next-line @next/next/no-img-element
           <img src={item.image_url} alt={item.alt_text ?? ''} className="w-full h-full object-cover" />
         ) : item.visual_type === 'simulation' && item.sim_entry_url ? (
-          /* resolveSimUrl is REQUIRED, not cosmetic: stored sim URLs are denormalised with
-             whatever API origin minted them, and framing a foreign origin is blocked outright by
-             the frame-src CSP — the raw URL rendered a blank frame (audited). */
-          <iframe src={resolveSimUrl(item.sim_entry_url)} title="sim" sandbox="allow-scripts allow-same-origin" className="w-full h-full border-0" />
+          <AdminSimSurface
+            src={item.sim_entry_url}
+            visible={frameLoaded}
+            onLoad={() => setFrameLoaded(true)}
+            title="sim"
+            sandbox="allow-scripts allow-same-origin"
+            className="w-full h-full border-0"
+          />
         ) : item.visual_type === 'diagram' && typeof spec?.html === 'string' ? (
-          <iframe srcDoc={spec.html as string} title="diagram" sandbox="allow-scripts" className="w-full h-full border-0" />
+          /* srcDoc must NOT get allow-same-origin: a same-origin sandboxed document can strip its
+             own sandbox attribute and reload itself out of the sandbox. */
+          <AdminSimSurface
+            srcDoc={spec.html as string}
+            visible={frameLoaded}
+            onLoad={() => setFrameLoaded(true)}
+            title="diagram"
+            sandbox="allow-scripts"
+            className="w-full h-full border-0"
+          />
         ) : (
           <span className="text-3xl">{item.visual_type === 'equation' ? '∑' : item.visual_type === 'chart' ? '📊' : '🖼️'}</span>
         )}

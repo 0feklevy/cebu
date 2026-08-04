@@ -444,8 +444,46 @@ export const simulations = pgTable('simulations', {
   guidance_status:  text('guidance_status').notNull().default('none'), // none|analyzing|draft|publishing|ready|error
   guidance_meta:    jsonb('guidance_meta'),                         // {provider,model,confidence,sourceHash,mdUrl,guidanceHash,language,generatedAt,entryCount,droppedCount}
   guidance_error:   text('guidance_error'),
+  // ── Publish-time canary verdict (migration 049) ─────────────────────────────
+  // NULL until a canary has run against this package. Nothing may infer "legacy" from a NULL —
+  // it means unclassified, and an unclassified package keeps the pre-v3 behaviour exactly.
+  // Hash of the CURRENT combined bridge.js. The package revision is derived from it, so it must be
+  // package-scoped — see migration 049 for why the per-section `?v=` parameter is not.
+  bridge_hash:      text('bridge_hash'),
+  package_class:    text('package_class'),                          // SimPackageClass | null
+  canary_report:    jsonb('canary_report'),                         // CanaryReport | null
+  canary_at:        timestamp('canary_at', { withTimezone: true }),
   created_at:       timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * Captured poster images, one row per presentation identity (migration 049).
+ *
+ * `identity` is posterIdentityString(key) — the five key fields joined — and is the only part of a
+ * poster that a storage path can be parsed back into, which is what makes the orphan sweep possible.
+ * It is UNIQUE per simulation, so re-capturing the same identity upserts rather than accumulating.
+ */
+export const sim_posters = pgTable(
+  'sim_posters',
+  {
+    id:               uuid('id').primaryKey().defaultRandom(),
+    simulation_id:    uuid('simulation_id').notNull().references(() => simulations.id, { onDelete: 'cascade' }),
+    package_revision: text('package_revision').notNull(),
+    variant_key:      text('variant_key').notNull(),
+    config_hash:      text('config_hash').notNull(),
+    aspect_profile:   text('aspect_profile').notNull(),   // SimAspectProfile
+    quality_profile:  text('quality_profile').notNull(),  // SimQualityProfile
+    identity:         text('identity').notNull(),
+    variants:         jsonb('variants').notNull(),        // PosterVariantRecord[]
+    transparent:      boolean('transparent').notNull().default(false),
+    captured_at:      timestamp('captured_at', { withTimezone: true }).notNull().defaultNow(),
+    created_at:       timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    uniq_sim_identity: unique('uniq_sim_posters_sim_identity').on(t.simulation_id, t.identity),
+    idx_revision: index('idx_sim_posters_revision').on(t.simulation_id, t.package_revision),
+  }),
+);
 
 // Image files uploaded by the user for animated still-image overlays (migration 018)
 export const image_files = pgTable('image_files', {
@@ -1141,6 +1179,8 @@ export type NewCourseLesson = typeof course_lessons.$inferInsert;
 export type CourseCustomDomain = typeof course_custom_domains.$inferSelect;
 export type ProjectRedirectTarget = typeof project_redirect_targets.$inferSelect;
 export type SimulationRow = typeof simulations.$inferSelect;
+export type SimPosterRow = typeof sim_posters.$inferSelect;
+export type NewSimPoster = typeof sim_posters.$inferInsert;
 export type Playlist = typeof playlists.$inferSelect;
 export type Collaborator = typeof collaborators.$inferSelect;
 export type PlaylistItem = typeof playlist_items.$inferSelect;

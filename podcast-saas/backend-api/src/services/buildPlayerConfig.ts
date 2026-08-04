@@ -1,7 +1,7 @@
 import { db } from '../db/index.js';
 import {
   projects, video_files, timeline_sections, image_files, audio_files, scenes,
-  branch_sequences, branch_choice_points, branch_edges, playlists, simulations,
+  branch_sequences, branch_choice_points, branch_edges, playlists, simulations, sim_posters,
 } from '../db/schema.js';
 import { eq, asc, inArray } from 'drizzle-orm';
 
@@ -21,6 +21,14 @@ export async function resolveSimPoolMode(): Promise<SimPoolMode> {
     return 'adaptive';   // column not migrated yet, or DB hiccup → safe default
   }
 }
+import {
+  DEFAULT_PRESENTATION_CONFIG, computeConfigHash, derivePackageRevision, variantKeyFor,
+} from 'shared/src/sim/simIdentity';
+import {
+  parsePosterVariants, posterIdentityString, selectPosterVariant,
+  type PosterFormat, type PosterKey,
+} from 'shared/src/sim/posterIdentity';
+import type { SimPackageClass } from 'shared/src/sim/simFailurePolicy';
 import { requireProjectAccess } from './projectAccess.js';
 import { collaboratorContentIds } from './collabAccess.js';
 
@@ -87,7 +95,7 @@ export async function buildPlayerConfig(
   // player-config / share / playlist-item / course render), so the serial waits added up
   // (perf-003; scenes+branch_sequences folded in per loadperf-002/backend-110). Scenes and
   // sequences are filtered/used in memory below exactly as before.
-  const [allVideos, sections, imageRows, audioRows, allScenes, sequenceRows, simPoolMode] = await Promise.all([
+  const [allVideos, sections, imageRows, audioRows, allScenes, sequenceRows, simPoolMode, projectSimulations] = await Promise.all([
     db.query.video_files.findMany({
       where: eq(video_files.project_id, project.id),
       orderBy: [asc(video_files.created_at)],
@@ -104,11 +112,142 @@ export async function buildPlayerConfig(
       orderBy: [asc(branch_sequences.sort_order), asc(branch_sequences.created_at)],
     }),
     resolveSimPoolMode(),
+    // The package identity + canary verdict for every simulation this project references.
+    //
+    // `columns` is not an optimisation detail: without it Drizzle selects the WHOLE row for every
+    // simulation — `guidance` (a full GuidanceEntry[]), `guidance_meta`, `bridge_functions` and the
+    // new `canary_report` JSONB — on the hottest read path in the product, to read one text field.
+    //
+    // The try/catch matches the precedent set by `resolveSimPoolMode` above: these columns arrive in
+    // migration 049, and an app image that boots before the migration is applied must not 500 EVERY
+    // viewer surface over a feature no stored package can use yet. An empty list reads as
+    // "unclassified", which is exactly the safe default.
+    db.query.simulations
+      .findMany({
+        where: eq(simulations.project_id, project.id),
+        columns: { id: true, package_class: true, bridge_hash: true },
+      })
+      .catch(() => [] as { id: string; package_class: string | null }[]),
   ]);
 
   // Main video segments (uploaded by user, not AI-generated broll sources)
   const mainVideos = allVideos.filter((v) => !v.is_broll);
   const brollVideos = allVideos.filter((v) => v.is_broll);
+
+  const simRows = new Map(projectSimulations.map((r) => [r.id, r]));
+
+  // ── Posters ─────────────────────────────────────────────────────────────────
+  // Not in the Promise.all above because the simulation ids it filters on come out of `sections`.
+  // Skipped entirely for a project with no simulation sections, which is most of them — so the
+  // hottest read path pays for this only when it has something to look up.
+  const posterSimIds = [...new Set(sections.map((s) => s.simulation_id).filter((id): id is string => !!id))];
+  // Same guard, same reason: `sim_posters` does not exist until migration 049 is applied, and a
+  // missing poster table must degrade to "no poster" rather than take down every player surface.
+  const posterRows = posterSimIds.length > 0
+    ? await db.query.sim_posters
+        .findMany({ where: inArray(sim_posters.simulation_id, posterSimIds) })
+        .catch(() => [])
+    : [];
+  // Keyed by simulation AND identity: `identity` is unique only within one simulation
+  // (uniq_sim_posters_sim_identity), and two simulations can legitimately produce the same
+  // identity string when they share a revision, a variant and a configuration. `|` is a safe
+  // joiner — a UUID is hex and dashes, and every component of an identity string is hex, an enum,
+  // or a variant already sanitised to [A-Za-z0-9_-] (posterIdentity.sanitizeVariant).
+  const postersByIdentity = new Map<string, (typeof posterRows)[number]>(
+    posterRows.map((row) => [`${row.simulation_id}|${row.identity}`, row]),
+  );
+
+  /**
+   * Format preference for the emitted URL.
+   *
+   * Every browser this player runs in decodes WebP, and `selectPosterVariant` applies the shared
+   * preference order within this set — so the emitted URL is the cheapest rendition that shows the
+   * right picture. AVIF and PNG stay listed as the fallbacks for identities captured before/without
+   * a WebP rendition (a transparent capture is PNG-only by construction).
+   */
+  const POSTER_FORMATS: readonly PosterFormat[] = ['webp', 'avif', 'png'];
+
+  /**
+   * The poster for ONE section's own presentation identity, or null.
+   *
+   * There is deliberately NO fallback to another identity's poster. A poster is a promise that the
+   * still picture is what the live frame would have shown; the moment it is allowed to come from a
+   * different variant, configuration, aspect or quality it becomes a generic package screenshot,
+   * and the user reads the difference between it and the frame that replaces it as a glitch
+   * (shared/src/sim/posterIdentity.ts). Absent is honest; approximate is not.
+   */
+  const posterFor = (
+    s: (typeof sections)[number],
+    packageRevision: string | null,
+  ): { url: string | null; transparent: boolean } => {
+    const none = { url: null, transparent: false };
+    if (!s.simulation_id || !packageRevision) return none;
+
+    const key: PosterKey = {
+      packageRevision,
+      // The SECTION's dispatch key — the same value the runtime puts on the wire as `variantKey`.
+      variantKey: variantKeyFor(s),
+      configHash: computeConfigHash({
+        ...DEFAULT_PRESENTATION_CONFIG,
+        simpleUi:      s.simple_ui  ?? false,
+        hideSelectors: uiHideFromMeta(s.sim_meta) ?? [],
+        autoScript:    s.auto_script ?? true,
+        // Quality and aspect are hashed here AND named again as key axes below — the same
+        // configuration is legitimately captured more than once at different sizes and quality
+        // profiles, so the key has to distinguish those captures (posterIdentity.ts). Both are
+        // pinned to what the player asks for today: it builds its own config from
+        // DEFAULT_PRESENTATION_CONFIG at quality 'high', and 'wide' is the aspect a full-width
+        // player lays out for.
+        quality: 'high',
+        aspect:  'wide',
+      }),
+      aspectProfile:  'wide',
+      qualityProfile: 'high',
+    };
+
+    const row = postersByIdentity.get(`${s.simulation_id}|${posterIdentityString(key)}`);
+    if (!row) return none;
+    const variant = selectPosterVariant({ variants: parsePosterVariants(row.variants) }, 'standard', POSTER_FORMATS);
+    if (!variant) return none;
+    return { url: storage.getSimPublicUrl(variant.path), transparent: row.transparent };
+  };
+
+  /**
+   * Derive the logical package revision WITHOUT a second round trip.
+   *
+   * The stored section URL already carries `?v=<bridgeHash>` — the hash of the exact bridge.js the
+   * entry document loads — so it is the strongest identity available before immutable publication
+   * exists (Priority 7). Falling back to the raw URL keeps the value defined for a legacy row whose
+   * URL predates the hash, at the cost of a revision that only changes when the URL does; that is
+   * strictly better than emitting null, which would disable identity checking for that section.
+   */
+  const packageRevisionFor = (simId: string | null, url: string | null): string | null => {
+    if (!simId && !url) return null;
+    // THE PACKAGE's bridge hash, not the section URL's.
+    //
+    // Regenerating one section rewrites the shared bridge but stamps the new `?v=` onto only that
+    // section's URL. Deriving from the URL therefore gave two sections of ONE package — which share
+    // a single pooled document and a single runtime client — different revisions, which re-opened
+    // the transport mid-session (wedging the modern path for the rest of it) and made every poster
+    // lookup miss. `simulations.bridge_hash` is written whenever the bridge is regenerated, so
+    // every section of a package derives the same value from it.
+    const row = simId ? (simRows.get(simId) as { bridge_hash?: string | null } | undefined) : undefined;
+    let bridgeHash: string | null = row?.bridge_hash ?? null;
+    if (!bridgeHash && url) {
+      // A package whose bridge predates the column. Falls back to the previous behaviour rather
+      // than emitting null, which would disable identity checking for that section entirely.
+      const m = /[?&]v=([^&#]+)/.exec(url);
+      bridgeHash = m ? m[1] : url;
+    }
+    return derivePackageRevision(simId ?? url ?? '', bridgeHash);
+  };
+
+  const packageClassFor = (simId: string | null): SimPackageClass | null => {
+    if (!simId) return null;
+    const row = simRows.get(simId) as { package_class?: string | null } | undefined;
+    const cls = row?.package_class ?? null;
+    return cls ? (cls as SimPackageClass) : null;
+  };
 
   const buildSegment = (v: (typeof allVideos)[number]) => {
     const hls_url = v.hls_master_key
@@ -121,22 +260,34 @@ export async function buildPlayerConfig(
     // Only non-broll sections for this main video
     const simulations = sections
       .filter((s) => s.video_file_id === v.id && s.track === 'main')
-      .map((s) => ({
-        id:             s.id,
-        start_sec:      s.start_sec,
-        end_sec:        s.end_sec,
-        simulation_url: s.simulation_url ?? null,
-        simulation_id:  s.simulation_id  ?? null,
-        sim_script:     s.sim_script     ?? null,
-        simple_ui:      s.simple_ui      ?? false,
-        auto_script:    s.auto_script    ?? true,
-        // Minimal-UI mechanical hide list (sim_meta.uiControls.hide) — the player passes
-        // these as startScript params.hideSelectors while simple_ui is on. Omitted when
-        // absent/empty so the no-selection payload is byte-identical to before.
-        ui_hide:        uiHideFromMeta(s.sim_meta),
-        label:          s.label,
-        type:           s.type,
-      }));
+      .map((s) => {
+        const package_revision = packageRevisionFor(s.simulation_id, s.simulation_url);
+        const poster = posterFor(s, package_revision);
+        return {
+          id:             s.id,
+          start_sec:      s.start_sec,
+          end_sec:        s.end_sec,
+          simulation_url: s.simulation_url ?? null,
+          simulation_id:  s.simulation_id  ?? null,
+          package_revision,
+          // The LAST CANARY VERDICT, or null when the package has never been canaried. Null is not a
+          // failure and is not 'legacy' — it means unproven, and the player treats unproven exactly
+          // as it treats legacy: v2 path, no aggressive preparation.
+          package_class:  packageClassFor(s.simulation_id),
+          sim_script:     s.sim_script     ?? null,
+          simple_ui:      s.simple_ui      ?? false,
+          auto_script:    s.auto_script    ?? true,
+          // Minimal-UI mechanical hide list (sim_meta.uiControls.hide) — the player passes
+          // these as startScript params.hideSelectors while simple_ui is on. Omitted when
+          // absent/empty so the no-selection payload is byte-identical to before.
+          ui_hide:        uiHideFromMeta(s.sim_meta),
+          // The still picture for THIS section's exact identity, or null when none was captured.
+          poster_url:         poster.url,
+          poster_transparent: poster.transparent,
+          label:          s.label,
+          type:           s.type,
+        };
+      });
 
     const crop_url = v.crop_status === 'ready' && v.crop_key ? storage.getPublicUrl(v.crop_key) : null;
 

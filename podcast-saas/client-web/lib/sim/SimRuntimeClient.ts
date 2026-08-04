@@ -10,9 +10,13 @@
  * document that came back permanently muted, a listener that answered another surface's iframe.
  * Consolidating the rules is the fix; the rules themselves are unchanged.
  *
- * WHAT IT IS NOT
- * Not the activation-scoped protocol redesign. No MessageChannel, no documentId/packageRevision,
- * no PREPARE_SECTION. Same wire messages, same timings, same legacy compatibility — deliberately.
+ * TWO PROTOCOLS, ONE CLIENT
+ * This client speaks BOTH the shipped v2 wire protocol and the activation-scoped v3 protocol
+ * (shared/src/sim/runtimeProtocol.ts). They never mix: v2 rides window.postMessage, v3 rides a
+ * transferred MessagePort, and the v3 path is unreachable unless `enableModern` was given a
+ * canary-proven `managed-presentable` class AND the child adopted a port. Everything below the
+ * `activate()` fork is the v2 path, unchanged — which is what makes the upgrade provably additive
+ * for every package already in storage.
  *
  * THREADING MODEL
  * Framework-free and synchronous. One client instance owns ONE iframe document. It never touches
@@ -55,6 +59,67 @@ import {
   type SimStartParams,
 } from './protocol';
 import { applyGateFor } from '../simApplyGate';
+import { SimTransport } from './SimTransport';
+import {
+  ACTIVATE_SECTION,
+  DISPOSE_DOCUMENT,
+  DOCUMENT_ERROR,
+  DOCUMENT_READY,
+  DOCUMENT_SUSPENDED,
+  DOMAIN_EVENT,
+  CONTEXT_LOST,
+  CONTEXT_RESTORED,
+  INIT_DOCUMENT,
+  PAUSE_AUTOMATION,
+  PREPARE_SECTION,
+  PRESENT_SECTION,
+  RELEASE_SECTION,
+  RESUME_AUTOMATION,
+  RESUME_DOCUMENT,
+  SECTION_APPLIED,
+  SECTION_ERROR,
+  SECTION_PRESENTED,
+  SET_AUDIBLE,
+  SET_QUALITY,
+  SUSPEND_DOCUMENT,
+  type AnySimEnvelope,
+  type DocumentReadyPayload,
+  type SectionPresentedPayload,
+} from 'shared/src/sim/runtimeProtocol';
+import {
+  DEFAULT_PRESENTATION_CONFIG,
+  computeConfigHash,
+  newActivationId,
+  newDocumentId,
+  type PresentationIdentity,
+  type SimPresentationConfig,
+  type SimQualityProfile,
+} from 'shared/src/sim/simIdentity';
+import {
+  acceptsCommands,
+  documentReducer,
+  initialDocumentState,
+  type DocumentMachineState,
+} from 'shared/src/sim/documentMachine';
+import {
+  activationReducer,
+  initialActivationState,
+  mayReveal,
+  type ActivationMachineState,
+} from 'shared/src/sim/activationMachine';
+import {
+  SIM_PREPARE_TIMEOUT_MS,
+  SIM_PRESENT_TIMEOUT_MS,
+  allowsAggressivePreparation,
+  initialBreaker,
+  makeFailure,
+  recordFailure,
+  recordSuccess,
+  type CircuitBreakerState,
+  type FailureContext,
+  type SimFailureState,
+  type SimPackageClass,
+} from 'shared/src/sim/simFailurePolicy';
 
 /** Explicit lifecycle phases — replaces the scattered booleans each surface used to keep. */
 export type SimPhase =
@@ -108,6 +173,38 @@ export interface ActivateOptions {
   params?: SimStartParams;
   /** Reveal policy override. 'auto' (default) applies the two rules above. */
   reveal?: 'auto' | 'never';
+  /**
+   * v3 only. The presentation configuration whose hash becomes part of this activation's identity.
+   * Omitted on the v2 path, where it has nowhere to go — the legacy bridge has no field for it.
+   */
+  config?: SimPresentationConfig;
+}
+
+/**
+ * What the owner must tell the client before it may use the activation-scoped protocol.
+ *
+ * `packageClass` is the CANARY's verdict, not a guess made here. The client refuses to offer a
+ * bootstrap for anything below `managed-presentable`, so a package that can speak v3 but has never
+ * been proven still runs on v2. That is the whole point of the canary: capability is what a
+ * package CAN do, classification is what it has been OBSERVED doing, and only the second one is
+ * allowed to change how the player behaves.
+ */
+export interface ModernSetup {
+  playerSessionId: string;
+  packageRevision: string;
+  packageClass: SimPackageClass;
+  /** Presentation configuration defaults for this document. */
+  quality?: SimQualityProfile;
+}
+
+/** Everything the v3 path exposes that the v2 path has no equivalent for. */
+export interface SimModernState {
+  active: boolean;
+  documentState: DocumentMachineState['state'];
+  activationState: ActivationMachineState['state'] | 'none';
+  contextLost: boolean;
+  failure: SimFailureState | null;
+  breakerOpen: boolean;
 }
 
 type Timer = ReturnType<typeof setTimeout>;
@@ -153,6 +250,28 @@ export class SimRuntimeClient {
   private paintPollTimer: ReturnType<typeof setInterval> | null = null;
   private listener: ((e: MessageEvent) => void) | null = null;
   private disposed = false;
+
+  // ── v3, activation-scoped path ────────────────────────────────────────────────────────────
+  // Every field below is inert until `enableModern` is called with a canary-proven class AND the
+  // child completes the handshake. Until then the v2 path above runs exactly as it always has —
+  // which is what makes this addition provably safe for every stored package.
+  private transport: SimTransport | null = null;
+  private modernSetup: ModernSetup | null = null;
+  private docMachine: DocumentMachineState = initialDocumentState();
+  private actMachine: ActivationMachineState | null = null;
+  private currentDocumentId: string | null = null;
+  private breaker: CircuitBreakerState = initialBreaker();
+  private failure: SimFailureState | null = null;
+  private prepareTimer: Timer | null = null;
+  private presentTimer: Timer | null = null;
+  private failureCtx: FailureContext = { hasPoster: false, hasVideo: true, canSkip: true };
+  private attempt = 0;
+  /**
+   * The activation the owner most recently asked for, retained ONLY so the handshake completing
+   * later can re-drive it (see DOCUMENT_READY). Cleared on deactivate/dispose so a stale intent can
+   * never be resurrected onto a document the player has moved on from.
+   */
+  private pendingActivate: ActivateOptions | null = null;
 
   constructor(cbs: SimRuntimeCallbacks = {}) {
     this.cbs = cbs;
@@ -202,8 +321,24 @@ export class SimRuntimeClient {
         // document change, and a fresh document starts unmuted and hidden.
       });
       this.ensureListener();
+      // A different src is a different DOCUMENT EPOCH. The old epoch is tombstoned inside the
+      // transport before the new offer goes out, so an envelope still in flight from it cannot be
+      // accepted during the changeover — the failure mode `contentWindow` comparison could never
+      // catch, because the element is the same element.
+      //
+      // The activation dies with the epoch. Leaving it would carry a PRESENTED proof earned on the
+      // PREVIOUS document into the new one, where a later reveal could act on it.
+      this.actMachine = null;
+      this.clearPrepareTimer();
+      this.clearPresentTimer();
+      if (this.modernSetup) this.openTransport();
     } else {
       this.ensureListener();
+      // Same document, but the ELEMENT may have arrived only now — the resident pool registers its
+      // frame after the player has already armed the modern path. Without this the handshake would
+      // simply never be offered for that document, and the package would silently run on v2 while
+      // reporting itself as canary-proven.
+      if (this.modernSetup && !this.transport) this.openTransport();
     }
   }
 
@@ -229,6 +364,19 @@ export class SimRuntimeClient {
       lastError: null,
     });
     this.tel('frame-load');
+    // The browser replaced the document under us. Mint a NEW epoch and re-handshake: the previous
+    // documentId is tombstoned by the transport, so nothing the old document still sends can be
+    // mistaken for the new one's answers.
+    if (this.modernSetup) {
+      this.clearPrepareTimer();
+      this.clearPresentTimer();
+      this.actMachine = null;
+      if (this.currentDocumentId) this.transport?.tombstone(this.currentDocumentId);
+      // No id here on purpose: openTransport mints the new epoch and MOUNTs it. Passing one now
+      // would name an epoch no transport is bound to yet.
+      this.docMachine = documentReducer(this.docMachine, { type: 'NAVIGATE' });
+      this.openTransport();
+    }
   }
 
   private ensureListener(): void {
@@ -348,6 +496,35 @@ export class SimRuntimeClient {
    */
   activate(opts: ActivateOptions): void {
     if (this.disposed || !this.frame) return;
+
+    // Remembered BEFORE the branch: the handshake is asynchronous and this call is not, so
+    // DOCUMENT_READY (or the fallback to legacy) needs to know what to drive when it settles. A
+    // background warm (`reveal: 'never'`) is deliberately not remembered — it is not a request to
+    // present anything.
+    if (opts.reveal !== 'never' && this.modernSetup) this.pendingActivate = opts;
+
+    // Modern path first — reachable only for a canary-proven package whose child has adopted a port
+    // and reported DOCUMENT_READY.
+    if (this.modernActive() && opts.reveal !== 'never') {
+      this.activateModern(opts);
+      return;
+    }
+
+    // HANDSHAKE STILL UNDECIDED: defer rather than run v2 now.
+    //
+    // A regenerated package carries BOTH listeners. Running the v2 `startScript` here and then the
+    // v3 `PREPARE_SECTION` when the handshake lands would apply the same section body twice — once
+    // outside the managed scope, where its timers and listeners are untracked. Deferring is bounded
+    // by SIM_BOOTSTRAP_TIMEOUT_MS: the transport settles on `legacy` and `onMode` drives exactly
+    // this activation down the v2 path instead. For a warm resident frame the child has already
+    // sent its hello, so the first offer is adopted in one in-process round trip and the deferral
+    // is imperceptible.
+    if (opts.reveal !== 'never' && this.transport?.getMode() === 'offering') {
+      this.tel('modern-activate-deferred', { variantKey: opts.script });
+      this.set({ phase: 'applying', pendingScript: opts.script, lastError: null });
+      return;
+    }
+
     const { script, params } = opts;
 
     // Any activation supersedes a pending teardown: the bridge's own startScript runs stopScript
@@ -414,6 +591,373 @@ export class SimRuntimeClient {
     }
   }
 
+  // ── v3 activation-scoped protocol ───────────────────────────────────────────────────────
+  // Everything from here to `gateFor` is the modern path. It never runs unless enableModern() was
+  // given a canary-proven class AND the child answered the bootstrap.
+
+  /**
+   * Arm the modern path for this document. Safe to call on every render: it is a no-op unless the
+   * setup actually changed, so a re-render cannot tear down a live transport mid-activation.
+   */
+  enableModern(setup: ModernSetup, opts?: { failureContext?: Partial<FailureContext> }): void {
+    if (this.disposed) return;
+    if (opts?.failureContext) this.failureCtx = { ...this.failureCtx, ...opts.failureContext };
+
+    if (!allowsAggressivePreparation(setup.packageClass)) {
+      // Not canary-proven. Say so once, and stay on v2 — this is the honest outcome, not a
+      // degradation: an unproven package has not earned the guarantees the modern path assumes.
+      if (this.modernSetup) this.teardownModern();
+      this.modernSetup = null;
+      this.tel('modern-declined', { packageClass: setup.packageClass });
+      return;
+    }
+    const same =
+      this.modernSetup?.playerSessionId === setup.playerSessionId &&
+      this.modernSetup?.packageRevision === setup.packageRevision;
+    this.modernSetup = setup;
+    // A transport that settled on `legacy` for a package the canary certified is a FAILED
+    // handshake, not a legacy package — this method already refused everything below
+    // `managed-presentable`, so by construction this document does speak v3. Re-opening mints a new
+    // document epoch, which is the only offer the child will adopt after it has taken one; without
+    // this, a single missed handshake left the modern path dead for the rest of the session.
+    const settledLegacy = this.transport?.getMode() === 'legacy';
+    if (same && this.transport && !settledLegacy) return;
+    if (settledLegacy) this.tel('modern-retry-handshake');
+    this.openTransport();
+  }
+
+  /** True once the child has adopted a port AND reported DOCUMENT_READY. */
+  modernActive(): boolean {
+    return !!this.transport?.isModern() && acceptsCommands(this.docMachine);
+  }
+
+  getModernState(): SimModernState {
+    return {
+      active: this.modernActive(),
+      documentState: this.docMachine.state,
+      activationState: this.actMachine?.state ?? 'none',
+      contextLost: this.docMachine.contextLost,
+      failure: this.failure,
+      breakerOpen: this.breaker.open,
+    };
+  }
+
+  private openTransport(): void {
+    const setup = this.modernSetup;
+    const frame = this.frame;
+    // The FRAME'S OWN src, never the stored documentKey.
+    //
+    // A stored sim URL carries whatever API origin minted it, and `resolveSimUrl` rebases it onto
+    // this environment's origin before assigning it — so on any environment that is not the one the
+    // row was saved under, the two disagree. The offer would then be addressed to an origin the
+    // child is not at, the browser would silently discard it (port and all), and the deadline would
+    // report `transport-legacy-no-answer` — indistinguishable from a package that does not speak
+    // v3 at all. Reading the element is the only source that cannot drift from what was loaded.
+    const src = frame?.src || this.state.documentKey;
+    if (!setup || !frame || !src) return;
+    if (this.breaker.open) { this.tel('modern-breaker-open'); return; }
+
+    if (!this.transport) {
+      this.transport = new SimTransport({
+        onEnvelope: (env) => this.onEnvelope(env),
+        onRejected: (reason, detail) => this.tel('modern-rejected', { reason, detail }),
+        onTelemetry: (event, detail) => this.tel(event, detail),
+        onMode: (mode) => {
+          this.tel('transport-mode', { mode });
+          // A transport that settles on `legacy` is not a failure — it means this document does not
+          // speak v3, and the v2 path is already running underneath. Nothing to recover from.
+          if (mode === 'legacy') {
+            this.docMachine = initialDocumentState();
+            // The deferral above ends here: this document does not speak v3, so the activation it
+            // was holding runs on v2 exactly as it always would have. Without this, an activation
+            // requested during the handshake window would simply never happen.
+            const deferred = this.pendingActivate;
+            this.pendingActivate = null;
+            if (deferred) {
+              this.tel('modern-activate-fallback-legacy', { variantKey: deferred.script });
+              this.activate(deferred);
+            }
+          }
+          // The port being live is NOT readiness. The child stays silent until it is initialised,
+          // so without this the handshake would complete and DOCUMENT_READY would never arrive —
+          // the document would look permanently un-ready while the transport reported success.
+          if (mode === 'modern') this.sendInitDocument();
+        },
+      });
+    }
+    const documentId = newDocumentId();
+    this.currentDocumentId = documentId;
+    this.docMachine = documentReducer(initialDocumentState(), { type: 'MOUNT', documentId });
+    this.transport.open({
+      frame,
+      src,
+      playerSessionId: setup.playerSessionId,
+      packageRevision: setup.packageRevision,
+      documentId,
+    });
+  }
+
+  private sendInitDocument(): void {
+    const setup = this.modernSetup;
+    if (!setup || !this.transport) return;
+    this.transport.send(INIT_DOCUMENT, {}, {
+      parentOrigin: typeof window !== 'undefined' ? window.location.origin : '',
+      quality: setup.quality ?? 'high',
+      // A document is BORN silent and hidden. The owner lifts both explicitly once it has decided
+      // to present — a fresh document that arrives audible is the defect the exit-mute exists for.
+      audible: { muted: true, volume: 0 },
+    });
+  }
+
+  private onEnvelope(env: AnySimEnvelope): void {
+    if (this.disposed) return;
+    switch (env.type) {
+      case DOCUMENT_READY: {
+        const payload = env.payload as DocumentReadyPayload;
+        this.docMachine = documentReducer(this.docMachine, { type: 'READY', capabilities: payload.capabilities });
+        this.tel('modern-document-ready', { variants: payload.variants?.length ?? 0 });
+        // THE HANDSHAKE IS ASYNCHRONOUS AND THE ACTIVATION IS NOT.
+        //
+        // `enableModern()` and `activate()` are called in the same synchronous block by every
+        // surface, and readiness is five message hops away — so the first activation of a package
+        // ALWAYS took the v2 branch, `activateModern` never ran, and no PREPARE_SECTION was ever
+        // sent. The document then reported ready, the player switched to the modern presentation,
+        // and nothing could ever satisfy it: no acknowledgement was possible, and no timer existed
+        // to fail. The section played its whole duration behind a cover with no recovery.
+        //
+        // Re-driving the pending activation here is what makes the modern path reachable at all.
+        if (this.pendingActivate && this.modernActive()) {
+          const opts = this.pendingActivate;
+          this.tel('modern-activate-on-ready', { variantKey: opts.script });
+          this.activateModern(opts);
+        }
+        return;
+      }
+      case DOCUMENT_SUSPENDED:
+        this.docMachine = documentReducer(this.docMachine, { type: 'SUSPENDED' });
+        return;
+      case CONTEXT_LOST:
+        this.docMachine = documentReducer(this.docMachine, { type: 'CONTEXT_LOST' });
+        if (this.actMachine) this.actMachine = activationReducer(this.actMachine, { type: 'CONTEXT_LOST' });
+        // A lost context invalidates the presented frame. Hiding is not optional: the canvas the
+        // user is looking at is now undefined content, and leaving it up is showing a wrong state.
+        this.set({ visible: false, interactive: false });
+        this.tel('modern-context-lost');
+        return;
+      case CONTEXT_RESTORED:
+        this.docMachine = documentReducer(this.docMachine, { type: 'CONTEXT_RESTORED' });
+        this.tel('modern-context-restored');
+        return;
+      case SECTION_APPLIED:
+        if (!this.matchesActivation(env)) { this.tel('modern-stale-applied'); return; }
+        this.clearPrepareTimer();
+        this.actMachine = activationReducer(this.actMachine!, { type: 'APPLIED' });
+        this.tel('modern-section-applied', { variantKey: env.variantKey });
+        this.sendPresent();
+        return;
+      case SECTION_PRESENTED: {
+        if (!this.matchesActivation(env)) { this.tel('modern-stale-presented'); return; }
+        const payload = env.payload as SectionPresentedPayload;
+        // `undefined < 1` is FALSE, so the obvious form of this guard lets an acknowledgement with
+        // no `framesSubmitted` at all fall straight through to the reveal — the precise case the
+        // check exists for, since a conforming child always sends a count.
+        if (!payload || !(payload.framesSubmitted >= 1)) {
+          // An acknowledgement that admits it submitted no frame is not a presentation. Accepting
+          // it would make SECTION_PRESENTED mean "the child got the message", which is the exact
+          // conflation between readiness and presentation this protocol exists to end.
+          this.tel('modern-presented-without-frame');
+          return;
+        }
+        // The identity matched — but the MACHINE may still refuse, and the case that matters is a
+        // released activation: after a deactivate its identity is unchanged, so a late
+        // acknowledgement still matches while the activation is over. `mayReveal` would refuse it
+        // anyway, but reporting success and resetting the breaker for a presentation that was
+        // rejected makes the telemetry describe something that did not happen.
+        // Carry the ACKNOWLEDGEMENT's identity into the machine. Recording the machine's own
+        // identity instead made `mayReveal` compare an object with itself, so every *-mismatch
+        // branch of the five-axis invariant was unreachable from production code — the check
+        // existed, was unit-tested in isolation, and enforced nothing where it was actually called.
+        const advanced = activationReducer(this.actMachine!, {
+          type: 'PRESENTED',
+          ackIdentity: {
+            packageRevision: env.packageRevision,
+            documentId: env.documentId,
+            activationId: env.activationId!,
+            variantKey: env.variantKey!,
+            configHash: env.configHash!,
+          },
+        });
+        if (advanced.state !== 'PRESENTED') {
+          this.tel('modern-presented-refused', { state: this.actMachine!.state });
+          return;
+        }
+        this.clearPresentTimer();
+        this.actMachine = advanced;
+        this.breaker = recordSuccess(this.breaker);
+        this.failure = null;
+        this.tel('modern-section-presented', { variantKey: env.variantKey, frames: payload.framesSubmitted });
+        this.reveal(false);
+        return;
+      }
+      case SECTION_ERROR:
+        if (!this.matchesActivation(env)) return;
+        this.failModern('section-error', String((env.payload as { message?: string })?.message ?? 'section error'));
+        return;
+      case DOCUMENT_ERROR:
+        this.failModern('document-error', String((env.payload as { message?: string })?.message ?? 'document error'));
+        return;
+      case DOMAIN_EVENT: {
+        const payload = env.payload as { event?: string };
+        // Activation-scoped: a domain event from a superseded activation is history, not news.
+        if (!this.matchesActivation(env)) { this.tel('modern-stale-domain-event'); return; }
+        if (payload?.event === 'userInteraction') this.cbs.onUserInteraction?.();
+        this.tel('modern-domain-event', { event: payload?.event ?? null });
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
+  /**
+   * Identity check for an inbound activation-scoped envelope.
+   *
+   * The transport has already proven the envelope belongs to this session, this package revision
+   * and this document epoch. What is left — and what a token could never express — is whether it
+   * belongs to the activation that is live RIGHT NOW.
+   */
+  private matchesActivation(env: AnySimEnvelope): boolean {
+    const act = this.actMachine;
+    if (!act) return false;
+    return (
+      env.activationId === act.identity.activationId &&
+      env.variantKey === act.identity.variantKey &&
+      env.configHash === act.identity.configHash
+    );
+  }
+
+  private activateModern(opts: ActivateOptions): void {
+    const setup = this.modernSetup;
+    const documentId = this.currentDocumentId;
+    if (!setup || !documentId || !this.transport) return;
+
+    this.clearPrepareTimer();
+    this.clearPresentTimer();
+    // Release the outgoing activation before preparing the next. One document serves many
+    // sections; leaving the previous one registered is how a resident pool grows without bound.
+    if (this.actMachine && this.actMachine.state !== 'RELEASED') {
+      this.transport.send(RELEASE_SECTION, this.actMachine.identity, {});
+      this.actMachine = activationReducer(this.actMachine, { type: 'RELEASE' });
+    }
+
+    const config: SimPresentationConfig = opts.config ?? {
+      ...DEFAULT_PRESENTATION_CONFIG,
+      simpleUi: !!opts.params?.simpleUi,
+      hideSelectors: opts.params?.hideSelectors ?? [],
+      autoScript: opts.params?.autoScript !== false,
+      quality: setup.quality ?? 'high',
+    };
+    const identity: PresentationIdentity = {
+      packageRevision: setup.packageRevision,
+      documentId,
+      activationId: newActivationId(),
+      variantKey: opts.script,
+      configHash: computeConfigHash(config),
+    };
+    this.actMachine = initialActivationState(identity);
+    this.attempt += 1;
+
+    // HIDE FIRST. The outgoing section is still on the canvas, and this is one document — leaving
+    // it presented while the incoming body installs is the wrong-sub-simulation frame itself.
+    this.set({
+      phase: 'awaiting-ack',
+      visible: false,
+      interactive: false,
+      currentScript: opts.script,
+      pendingScript: opts.script,
+      stopped: false,
+      lastError: null,
+    });
+    this.tel('modern-prepare', { variantKey: opts.script, activationId: identity.activationId });
+
+    this.actMachine = activationReducer(this.actMachine, { type: 'PREPARE' });
+    this.transport.send(PREPARE_SECTION, identity, { variantKey: identity.variantKey, config });
+
+    const gen = this.generation;
+    const actId = identity.activationId;
+    this.prepareTimer = setTimeout(() => {
+      this.prepareTimer = null;
+      if (this.generation !== gen || this.actMachine?.identity.activationId !== actId) return;
+      this.failModern('prepare-timeout', 'the package did not acknowledge PREPARE_SECTION');
+    }, SIM_PREPARE_TIMEOUT_MS);
+  }
+
+  private sendPresent(): void {
+    const act = this.actMachine;
+    if (!act || !this.transport) return;
+    this.transport.send(PRESENT_SECTION, act.identity, {});
+    this.actMachine = activationReducer(act, { type: 'PRESENT' });
+
+    const gen = this.generation;
+    const actId = act.identity.activationId;
+    this.presentTimer = setTimeout(() => {
+      this.presentTimer = null;
+      if (this.generation !== gen || this.actMachine?.identity.activationId !== actId) return;
+      // NEVER a force-reveal. The package promised SECTION_PRESENTED by completing the handshake;
+      // showing a frame it never vouched for would reintroduce the exact defect the whole protocol
+      // exists to close, and "the user waited long enough" is not evidence about what is on screen.
+      this.failModern('present-timeout', 'the package did not submit a render for this activation');
+    }, SIM_PRESENT_TIMEOUT_MS);
+  }
+
+  private failModern(kind: Parameters<typeof recordFailure>[1], message: string): void {
+    this.clearPrepareTimer();
+    this.clearPresentTimer();
+    if (this.actMachine) this.actMachine = activationReducer(this.actMachine, { type: 'FAIL', reason: message });
+    this.breaker = recordFailure(this.breaker, kind);
+    this.failure = makeFailure(kind, message, this.attempt, this.failureCtx, this.breaker);
+    this.set({ visible: false, interactive: false, phase: 'failed', pendingScript: null, lastError: message });
+    this.tel('modern-failure', { kind, message, attempt: this.attempt, breakerOpen: this.breaker.open });
+    this.hideAndSilence();
+  }
+
+  /** Retry the current activation. Refused once the breaker is open — that is what a breaker is. */
+  retryModern(): boolean {
+    if (this.disposed || this.breaker.open || !this.modernActive()) return false;
+    const act = this.actMachine;
+    if (!act) return false;
+    this.tel('modern-retry', { attempt: this.attempt + 1 });
+    this.activateModern({ script: act.identity.variantKey });
+    return true;
+  }
+
+  private clearPrepareTimer(): void {
+    if (this.prepareTimer) { clearTimeout(this.prepareTimer); this.prepareTimer = null; }
+  }
+
+  private clearPresentTimer(): void {
+    if (this.presentTimer) { clearTimeout(this.presentTimer); this.presentTimer = null; }
+  }
+
+  private teardownModern(): void {
+    this.pendingActivate = null;
+    this.clearPrepareTimer();
+    this.clearPresentTimer();
+    if (this.transport) {
+      if (this.currentDocumentId && this.docMachine.state !== 'EVICTED') {
+        // Best effort: a document that is going away should be told, so it can release GPU memory
+        // now rather than when the browser eventually collects the frame.
+        if (this.actMachine) this.transport.send(RELEASE_SECTION, this.actMachine.identity, {});
+        this.transport.send(DISPOSE_DOCUMENT, {}, {});
+      }
+      this.transport.close();
+      this.transport = null;
+    }
+    this.docMachine = initialDocumentState();
+    this.actMachine = null;
+    this.currentDocumentId = null;
+  }
+
   /**
    * The presentation gate. Kept as a pure method so the policy can be unit-tested and so every
    * surface provably shares it.
@@ -437,6 +981,45 @@ export class SimRuntimeClient {
 
   private reveal(force: boolean): void {
     if (this.disposed) return;
+
+    // ── THE REVEAL INVARIANT ────────────────────────────────────────────────────────────────
+    // On the modern path there is NO force. `force` exists on the v2 path as the escape hatch for
+    // packages that never promised anything; a v3 package promised SECTION_PRESENTED by completing
+    // the handshake, so every reveal must be justified by an acknowledgement whose five identity
+    // axes match the intent the player currently holds. A timeout, a paint, a matching section
+    // name and a matching contentWindow have each in turn been the thing that authorised a reveal
+    // here, and each in turn was shown to authorise a wrong one.
+    if (this.modernActive()) {
+      const act = this.actMachine;
+      if (!act) { this.tel('modern-reveal-refused', { refusal: 'no-activation' }); return; }
+      // `current` is the LIVE intent, rebuilt from what the client wants on screen right now —
+      // not the activation's own stored copy. Passing `act.identity` for both sides is what made
+      // this a tautology.
+      const live: PresentationIdentity = {
+        packageRevision: this.modernSetup!.packageRevision,
+        documentId: this.currentDocumentId!,
+        activationId: act.identity.activationId,
+        variantKey: act.identity.variantKey,
+        configHash: act.identity.configHash,
+      };
+      const decision = mayReveal({
+        activation: act,
+        current: live,
+        documentReady: acceptsCommands(this.docMachine),
+        contextLost: this.docMachine.contextLost,
+      });
+      if (!decision.allowed) {
+        this.tel('modern-reveal-refused', { refusal: decision.refusal, forced: force });
+        return;
+      }
+      this.actMachine = activationReducer(act, { type: 'ACTIVATE' });
+      this.transport?.send(ACTIVATE_SECTION, act.identity, {});
+      this.stopPaintPoll();
+      this.set({ phase: 'visible', visible: true, interactive: true, pendingScript: null });
+      this.tel('reveal');
+      return;
+    }
+
     if (!force && !this.state.painted) return;
     // CENTRAL GUARD: a gated switch is never presented, no matter which path called reveal (a
     // late paint, a poll, an owner nudge). Only the ack handlers and the terminal bound clear it.
@@ -497,6 +1080,19 @@ export class SimRuntimeClient {
     this.post({ type: GUIDANCE_GATE, active: false });
     this.set({ phase: 'fading-out', visible: false, interactive: false, muted: true });
     this.tel('deactivate', { teardown });
+
+    // Modern: releasing is explicit and immediate. It disposes SECTION-owned resources while the
+    // document keeps its renderer and loaded assets, which is exactly the distinction a single
+    // cleanup function could not express — and the reason a resident pool can re-enter a section
+    // without paying the whole document cost again.
+    this.pendingActivate = null;   // the owner left the section; nothing to re-drive
+    if (this.modernActive() && this.actMachine) {
+      this.clearPrepareTimer();
+      this.clearPresentTimer();
+      this.transport?.send(RELEASE_SECTION, this.actMachine.identity, {});
+      this.transport?.send(SET_AUDIBLE, {}, { muted: true, volume: 0 });
+      this.actMachine = activationReducer(this.actMachine, { type: 'RELEASE' });
+    }
 
     if (!teardown) { this.set({ phase: 'hidden' }); return; }
 
@@ -562,13 +1158,31 @@ export class SimRuntimeClient {
     this.cancelPendingApply();   // a frozen frame must never force-reveal itself at the bound
     this.post({ type: SIM_PAUSE });
     this.post({ type: SIM_MUTE });
+    if (this.modernActive()) {
+      this.transport?.send(SUSPEND_DOCUMENT, {}, {});
+      this.docMachine = documentReducer(this.docMachine, { type: 'SUSPEND' });
+    }
     this.set({ phase: 'suspended', muted: true, visible: false, interactive: false });
   }
 
   resume(): void {
     if (this.disposed) return;
     this.post({ type: SIM_RESUME });
+    if (this.transport?.isModern()) {
+      this.transport.send(RESUME_DOCUMENT, {}, {});
+      this.docMachine = documentReducer(this.docMachine, { type: 'RESUME' });
+    }
     this.set({ phase: this.state.painted ? 'painted' : 'ready' });
+  }
+
+  /**
+   * Ask the package to switch quality profile. A package that cannot answers `unsupported`, which
+   * is reported rather than treated as applied — an adaptive-quality policy built on an unverified
+   * assumption that the switch landed would be tuning against a value nothing changed.
+   */
+  setQuality(profile: SimQualityProfile): void {
+    if (this.disposed || !this.modernActive()) return;
+    this.transport?.send(SET_QUALITY, {}, { profile });
   }
 
   /**
@@ -584,13 +1198,66 @@ export class SimRuntimeClient {
     this.reveal(true);
   }
 
-  mute(): void { this.post({ type: SIM_MUTE }); this.set({ muted: true }); }
-  unmute(): void { this.post({ type: SIM_UNMUTE }); this.set({ muted: false }); }
+  /**
+   * Stop a BACKGROUND document burning CPU, without touching presentation state.
+   *
+   * Deliberately narrower than `suspend()`. The resident pool freezes and thaws frames while it
+   * warms them, long before any of them is a candidate for presentation, and it tracks that
+   * progress in its own bookkeeping. Routing those through `suspend()` would additionally mute the
+   * document, mark it hidden and move it to the `suspended` phase — three state changes the pool
+   * neither asked for nor accounts for. Before this existed the pool posted the message itself,
+   * which is exactly the second lifecycle implementation this module was built to eliminate.
+   *
+   * On the modern path a frozen document ALSO goes properly quiescent, because there it can
+   * actually prove it (the child answers with resource counts).
+   */
+  freeze(): void {
+    if (this.disposed) return;
+    this.post({ type: SIM_PAUSE });
+    if (this.modernActive()) {
+      this.transport?.send(SUSPEND_DOCUMENT, {}, {});
+      this.docMachine = documentReducer(this.docMachine, { type: 'SUSPEND' });
+    }
+  }
+
+  /** Undo `freeze()`. Presentation state is untouched, exactly as on the way in. */
+  thaw(): void {
+    if (this.disposed) return;
+    this.post({ type: SIM_RESUME });
+    if (this.transport?.isModern() && this.docMachine.state === 'SUSPENDED') {
+      this.transport.send(RESUME_DOCUMENT, {}, {});
+      this.docMachine = documentReducer(this.docMachine, { type: 'RESUME' });
+    }
+  }
+
+  mute(): void {
+    this.post({ type: SIM_MUTE });
+    this.transport?.send(SET_AUDIBLE, {}, { muted: true, volume: 0 });
+    this.set({ muted: true });
+  }
+
+  unmute(): void {
+    this.post({ type: SIM_UNMUTE });
+    this.transport?.send(SET_AUDIBLE, {}, { muted: false, volume: 1 });
+    this.set({ muted: false });
+  }
   relayout(): void { this.post({ type: SIM_RELAYOUT }); }
   setGuidance(active: boolean): void { this.post({ type: GUIDANCE_GATE, active }); }
 
   /** Stop automation WITHOUT tearing the section down (the user grabbed a control). */
-  pauseAutomation(): void { this.post({ type: PAUSE_SCRIPT }); }
+  pauseAutomation(): void {
+    this.post({ type: PAUSE_SCRIPT });
+    if (this.modernActive() && this.actMachine) {
+      this.transport?.send(PAUSE_AUTOMATION, this.actMachine.identity, {});
+    }
+  }
+
+  /** Resume automation the user's interaction paused. Modern path only — v2 has no such command. */
+  resumeAutomation(): void {
+    if (this.modernActive() && this.actMachine) {
+      this.transport?.send(RESUME_AUTOMATION, this.actMachine.identity, {});
+    }
+  }
 
   /** Immediate teardown — only for owners that are about to unmount the document anyway. */
   stopNow(): void {
@@ -621,6 +1288,8 @@ export class SimRuntimeClient {
 
   private clearAllTimers(): void {
     this.holding = false;
+    this.clearPrepareTimer();
+    this.clearPresentTimer();
     this.clearApplyStall();
     this.cancelDeferredStop();
     if (this.legacyRevealTimer) { clearTimeout(this.legacyRevealTimer); this.legacyRevealTimer = null; }
@@ -630,6 +1299,7 @@ export class SimRuntimeClient {
   /** Idempotent. After this the client is inert: no timer can fire, no message can be handled. */
   dispose(): void {
     if (this.disposed) return;
+    this.teardownModern();
     this.clearAllTimers();
     if (this.listener && typeof window !== 'undefined') window.removeEventListener('message', this.listener);
     this.listener = null;

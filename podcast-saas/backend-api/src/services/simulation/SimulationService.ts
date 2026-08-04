@@ -4,10 +4,11 @@ import { z } from 'zod';
 import type { StorageService } from '../storage/StorageService.js';
 import { LLMService } from '../llm/LLMService.js';
 import { db } from '../../db/index.js';
-import { system_prompts } from '../../db/schema.js';
+import { simulations, system_prompts } from '../../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { logger } from '../../lib/logger.js';
 import { buildUiControlsPromptBlock, type SimUiSelection } from './SimUiControls.js';
+import { buildChildRuntimeSource } from './simRuntimeChild.js';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -1225,10 +1226,34 @@ export function parseSectionEntries(bridgeJs: string): Map<string, string> {
 }
 
 /** Build the full combined bridge.js IIFE from a sectionId→mainBody map. */
-export function wrapBridgeCombined(entries: Map<string, string>): string {
+export interface WrapBridgeOptions {
+  /**
+   * Embed the v3 activation-scoped runtime alongside the v2 listener.
+   *
+   * DEFAULT FALSE, deliberately. Every caller that produces bytes an existing test or a stored
+   * package is compared against — the rebuild tooling, the e2e fixture generator, the rollout
+   * gates — must keep producing exactly what it produced before, or the Priority 1 byte-identity
+   * proof and the Priority 3 acceptance suite are both measuring a different artifact than the one
+   * they were written for. Only the production generation path opts in.
+   */
+  runtimeV3?: boolean;
+  /** Every section body in this package returns a managed lifecycle object. */
+  allManaged?: boolean;
+  /** At least one section implements setQuality. */
+  anyQuality?: boolean;
+}
+
+export function wrapBridgeCombined(entries: Map<string, string>, opts?: WrapBridgeOptions): string {
   const sectionBlocks = [...entries.entries()]
     .map(([id, body]) => buildSectionEntry(id, body))
     .join('\n');
+
+  // Emitted at the END of the IIFE, after __SECTIONS__ exists and after the v2 listener is wired.
+  // Order matters: the v3 runtime reads __SECTIONS__ at install time, and installing it first
+  // would capture an undefined binding.
+  const v3 = opts?.runtimeV3
+    ? buildChildRuntimeSource({ allManaged: !!opts.allManaged, anyQuality: !!opts.anyQuality })
+    : null;
 
   return [
     '(function () {',
@@ -1427,6 +1452,10 @@ export function wrapBridgeCombined(entries: Map<string, string>): string {
     "  document.addEventListener('pointerdown', function() {",
     "    window.parent?.postMessage({ type: 'userInteraction' }, '*');",
     '  }, { capture: true });',
+    // The v3 runtime is ADDITIVE: everything above keeps running untouched, so a player that never
+    // offers a port sees precisely the document it has always seen. That is what makes the upgrade
+    // safe to ship to stored packages one stage at a time.
+    ...(v3 ? ['', v3] : []),
     '})();',
   ].join('\n');
 }
@@ -2457,10 +2486,26 @@ export class SimulationService {
       // Merge: parse existing sections, add/replace the current section's body.
       const sectionEntries = parseSectionEntries(existingBridgeJs);
       sectionEntries.set(sectionId, mainBody(sectionEntries.get(sectionId)));
-      const combinedBridge = wrapBridgeCombined(sectionEntries);
+      // Newly generated bridges CARRY the v3 runtime. Carrying it is not the same as being trusted
+      // with it: the player only takes the modern path for a package the publish-time canary has
+      // classified `managed-presentable`, so a package that can speak v3 but has never proven it
+      // still runs on the v2 path. Emitting the runtime here is what makes that proof possible at
+      // all — a package with no v3 code can never be canaried into the modern class.
+      const combinedBridge = wrapBridgeCombined(sectionEntries, { runtimeV3: true });
       const hash = computeBridgeHash(combinedBridge);
 
       await this.storage.uploadFile(bridgeJsKey, Buffer.from(combinedBridge, 'utf-8'), 'application/javascript');
+
+      // Record the hash on the PACKAGE, not only in the section URL we are about to rewrite.
+      // Every section of this package now derives the same revision from it — which is what makes
+      // the revision an identity of the package rather than of whichever section was saved last.
+      try {
+        await db.update(simulations).set({ bridge_hash: hash }).where(eq(simulations.id, simId));
+      } catch (err) {
+        // Pre-migration image: the column does not exist yet. The revision then falls back to the
+        // section URL, which is the behaviour that shipped before this column — degraded, not broken.
+        logger.warn({ err, simId }, 'sim: could not record bridge_hash (migration 049 not applied?)');
+      }
 
       // Update index.html in place (stable marker approach). Fall back to public URL read
       // when storage GetObject is denied.

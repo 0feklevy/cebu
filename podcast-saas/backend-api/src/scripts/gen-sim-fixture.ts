@@ -23,6 +23,10 @@
  *   noraf       — modern bridge, entry document that draws OUTSIDE requestAnimationFrame.
  *   nopaint     — the honest never-acks-a-paint document (see below).
  *   delayedack  — production-parity late acknowledgements (see delayedAckBridge).
+ *   v3managed   — the REAL v3 child runtime (buildChildRuntimeSource) over a recorded transport,
+ *                 carrying both managed sections and deliberately legacy-bodied ones.
+ *   v3allmanaged— the same runtime with ONLY managed sections, so its honest capability report can
+ *                 reach `managed-presentable` (see V3_ALL_MANAGED_DESCRIPTOR).
  *
  * WHY `nopaint` EXISTS. `legacy`, `noraf` and `delayedack` all advertise
  * `{type:'SIM_READY', dispatch:'dynamic'}`, and emit() injects the real v4 rAF gate into every
@@ -46,8 +50,10 @@ import {
   injectBridgeScriptTag,
   injectRafGate,
   wrapBridgeCombined,
+  SAFE_SECTION_ID_RE,
 } from '../services/simulation/SimulationService.js';
 import { injectSimBootSnippet } from '../controllers/sim-public.controller.js';
+import { buildChildRuntimeSource } from '../services/simulation/simRuntimeChild.js';
 
 export const FIXTURE_SECTIONS = {
   A: 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa',
@@ -392,6 +398,372 @@ export function delayedAckBridge(
 })();`;
 }
 
+// ── v3 package ────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Sections that exist ONLY in the v3 packages. New ids, deliberately: the modern / legacy / noraf /
+ * nopaint / delayedack bytes are pinned by the e2e suites and must not move, and a section id is
+ * part of those bytes.
+ *
+ * FIXTURE_SECTIONS.A and .B are ALSO carried by `v3managed` — unchanged, byte-for-byte the same
+ * bodies the v2 packages use. That reuse is the point: those bodies return a cleanup FUNCTION, so
+ * they exercise the runtime's legacy wrapper while keeping the colour contract (BLUE = A,
+ * YELLOW = B) that every existing browser assertion is written against.
+ */
+export const FIXTURE_V3_SECTIONS = {
+  /** Managed. BLUE-violet marker. The default subject of the protocol and leak tests. */
+  V3A: '33333333-a111-4a11-8a11-333333333333',
+  /** Managed. ORANGE marker. The other half of every A → B → A cycle. */
+  V3B: '44444444-b222-4b22-8b22-444444444444',
+  /** Returns a plain cleanup FUNCTION — the legacy wrapper path, inside a v3 document. */
+  V3LEGACYBODY: '55555555-c333-4c33-8c33-555555555555',
+  /** Managed, but `present()` never calls markPresented. The parent must bound its own wait. */
+  V3NOPRESENT: '66666666-d444-4d44-8d44-666666666666',
+  /** Managed. `prepare()` returns a promise that resolves after V3_SLOW_PREPARE_MS. */
+  V3SLOWPREPARE: '77777777-e555-4e55-8e55-777777777777',
+  /** Managed. `prepare()` throws synchronously — SECTION_ERROR, and never SECTION_APPLIED. */
+  V3THROWPREPARE: '88888888-f666-4f66-8f66-888888888888',
+} as const;
+
+/** How long V3SLOWPREPARE's prepare promise takes to settle. */
+export const V3_SLOW_PREPARE_MS = 300;
+
+/**
+ * Two behaviours a managed section only performs when the ACTIVATION CONFIG asks for it, read from
+ * `config.initialState`.
+ *
+ * They are knobs rather than dedicated sections because both are properties of ONE activation, not
+ * of a package: a section that always double-acked could not also serve the ordinary
+ * present-exactly-once case, and the leak test needs V3A and V3B to stay interchangeable twins.
+ * `config.initialState` is the right carrier because it is already part of the config hash, so an
+ * activation that turns a knob on is a genuinely different presentation and hashes as one.
+ */
+export const V3_DOUBLE_ACK_KNOB = 'doubleAck';
+export const V3_DEFER_ACK_KNOB = 'deferAck';
+
+/**
+ * Where a deferred `markPresented` is parked. The parent calls it LATER — after the activation has
+ * been superseded — which is the only way to drive the stale-closure refusal deliberately rather
+ * than by winning a race.
+ */
+export const V3_DEFERRED_ACK_GLOBAL = '__V3_DEFERRED_ACK__';
+
+/** The recorded protocol log the v3 packages expose. */
+export const V3_PROTO_GLOBAL = '__PROTO_V3__';
+
+/** Per-section observable state, keyed by section LABEL. */
+export const V3_STATE_GLOBAL = '__V3_STATE__';
+
+/**
+ * A managed section: a real ManagedSectionLifecycle whose every allocation goes through `ctx.scope`.
+ *
+ * WHY IT ALLOCATES SO MUCH. The leak tests count what the scope reports, so a fixture that
+ * allocated nothing would report a clean dispose no matter how broken the scope was. One resource
+ * of each mechanically distinct kind is taken deliberately: a self-rescheduling rAF loop (cancelled
+ * by handle), an interval registered as AUTOMATION (the only thing pauseAuto may stop), a listener
+ * on a real target, an AbortController (aborted at dispose), an object URL (revoked at dispose) and
+ * an explicitly TRACKED resource standing in for a GPU texture the scope cannot see by itself.
+ */
+const v3ManagedBody = (label: string, colour: string) => `
+  var scope = ctx.scope;
+  var doc = window.document;
+  var marker = doc.getElementById('marker');
+  var canvas = doc.getElementsByTagName('canvas')[0] || null;
+  var state = {
+    label: ${JSON.stringify(label)},
+    prepared: false, presented: 0, activated: false, autoPaused: false,
+    suspended: false, released: false, disposed: false,
+    frames: 0, ticks: 0, pings: 0, draws: 0, aborted: false,
+    quality: null, audible: null, objectUrl: null, texture: null
+  };
+  window[${JSON.stringify(V3_STATE_GLOBAL)}] = window[${JSON.stringify(V3_STATE_GLOBAL)}] || {};
+  window[${JSON.stringify(V3_STATE_GLOBAL)}][${JSON.stringify(label)}] = state;
+
+  var loop = function () { state.frames++; state.rafId = scope.requestAnimationFrame(loop); };
+  state.rafId = scope.requestAnimationFrame(loop);
+
+  state.autoId = scope.registerAutomation(scope.setInterval(function () { state.ticks++; }, 40), 'interval');
+
+  state.onPing = function () { state.pings++; };
+  scope.addEventListener(doc, 'v3fixture:ping', state.onPing);
+
+  state.aborter = scope.abortController();
+  if (state.aborter.signal && state.aborter.signal.addEventListener) {
+    // NOT registered with the scope: this listener lives on a controller the scope already owns and
+    // dies with it, so registering it would count one resource twice and make the plateau lie.
+    state.aborter.signal.addEventListener('abort', function () { state.aborted = true; });
+  }
+
+  state.objectUrl = scope.createObjectURL(new Blob([${JSON.stringify(label)}], { type: 'text/plain' }));
+
+  state.texture = scope.track('glTextures', { label: ${JSON.stringify(label)}, disposed: false }, function (t) { t.disposed = true; });
+
+  function canvasSize() { return canvas ? { width: canvas.width, height: canvas.height } : null; }
+  function draw() {
+    if (!canvas || !canvas.getContext) return;
+    var g = null;
+    try { g = canvas.getContext('2d'); } catch (e) { g = null; }
+    if (!g) return;
+    g.fillStyle = ${JSON.stringify(colour)};
+    g.fillRect(0, 0, canvas.width, canvas.height);
+    state.draws++;
+  }
+  function knob(c, name) {
+    var init = c && c.config && c.config.initialState;
+    return !!(init && init[name]);
+  }
+
+  // Kept, rather than returned inline, so a test can read the __managed flag the runtime stamps ON
+  // THIS OBJECT. That stamp is the only place the managed/legacy decision is directly observable
+  // from inside the document — after INIT_DOCUMENT the wire carries capabilities for the PACKAGE,
+  // never for the section currently installed.
+  state.lifecycle = {
+    prepare: function (c) {
+      // COVERED work only. The marker colour is what lets a screenshot name the applied section;
+      // nothing public starts moving until activate().
+      if (marker) {
+        marker.style.background = ${JSON.stringify(colour)};
+        marker.setAttribute('data-section', ${JSON.stringify(label)});
+      }
+      state.prepared = true;
+    },
+    present: function (c) {
+      // The acknowledgement is posted from INSIDE the frame that drew, never before it: an ack
+      // that merely schedules a render is the unverified reveal this protocol exists to remove.
+      c.scope.requestAnimationFrame(function () {
+        draw();
+        state.presented++;
+        if (knob(c, ${JSON.stringify(V3_DEFER_ACK_KNOB)})) {
+          window[${JSON.stringify(V3_DEFERRED_ACK_GLOBAL)}] = function () { c.markPresented({ canvas: canvasSize() }); };
+          return;
+        }
+        c.markPresented({ canvas: canvasSize() });
+        // A second call is a BUG in the section and the runtime's exactly-once guard is what
+        // absorbs it. A fixture that never makes the mistake cannot prove the guard works.
+        if (knob(c, ${JSON.stringify(V3_DOUBLE_ACK_KNOB)})) c.markPresented({ canvas: canvasSize() });
+      });
+    },
+    activate: function (c) { state.activated = true; },
+    pauseAuto: function () { state.autoPaused = true; },
+    resumeAuto: function () { state.autoPaused = false; },
+    setAudible: function (s) { state.audible = { muted: !!s.muted, volume: s.volume }; },
+    setQuality: function (p) { state.quality = p; },
+    suspend: function () { state.suspended = true; },
+    release: function () { state.released = true; },
+    dispose: function () {
+      state.disposed = true;
+      if (marker) marker.setAttribute('data-section', 'none');
+    }
+  };
+  return state.lifecycle;
+`;
+
+/** Returns a cleanup FUNCTION — a pre-managed body, running unchanged inside a v3 document. */
+const V3_LEGACY_BODY = `
+  var doc = window.document;
+  var marker = doc.getElementById('marker');
+  window[${JSON.stringify(V3_STATE_GLOBAL)}] = window[${JSON.stringify(V3_STATE_GLOBAL)}] || {};
+  var state = window[${JSON.stringify(V3_STATE_GLOBAL)}]['V3LEGACYBODY'] = { ticks: 0, cleaned: false };
+  if (marker) { marker.style.background = '#00a0a0'; marker.setAttribute('data-section', 'V3LEGACYBODY'); }
+  // Deliberately the GLOBAL setInterval, not ctx.scope. A body written before the managed contract
+  // existed knows nothing about the scope, and the bounded global swap runLegacy performs around
+  // this synchronous call is the only thing that can capture it — allocating through ctx.scope here
+  // would prove nothing about that swap.
+  var iv = setInterval(function () { state.ticks++; }, 40);
+  // Kept for the same reason the managed bodies keep their lifecycle object: a test reads it to
+  // confirm the runtime never stamped __managed onto a legacy return value.
+  state.cleanup = function cleanup() {
+    clearInterval(iv);
+    state.cleaned = true;
+    if (marker) marker.setAttribute('data-section', 'none');
+  };
+  return state.cleanup;
+`;
+
+/** Managed, and NEVER acknowledges a presentation. The parent's own bound is what must end the wait. */
+const V3_NO_PRESENT_BODY = `
+  window[${JSON.stringify(V3_STATE_GLOBAL)}] = window[${JSON.stringify(V3_STATE_GLOBAL)}] || {};
+  var state = window[${JSON.stringify(V3_STATE_GLOBAL)}]['V3NOPRESENT'] = { presentCalls: 0, disposed: false };
+  return {
+    prepare: function () {},
+    // Renders nothing and says nothing. Silence has to be DELIBERATE here: a fixture that merely
+    // forgot to acknowledge would one day be "fixed", and the parent's present-timeout would
+    // silently lose its only coverage.
+    present: function () { state.presentCalls++; },
+    dispose: function () { state.disposed = true; }
+  };
+`;
+
+const V3_SLOW_PREPARE_BODY = `
+  window[${JSON.stringify(V3_STATE_GLOBAL)}] = window[${JSON.stringify(V3_STATE_GLOBAL)}] || {};
+  var state = window[${JSON.stringify(V3_STATE_GLOBAL)}]['V3SLOWPREPARE'] = { resolved: false, disposed: false };
+  return {
+    prepare: function (c) {
+      return new Promise(function (resolve) {
+        // Through the SCOPE, not a raw setTimeout: a prepare still pending when its activation is
+        // superseded must die with everything else the activation allocated. A raw timer would
+        // resolve into a disposed scope and acknowledge a section that no longer exists.
+        c.scope.setTimeout(function () { state.resolved = true; resolve(); }, ${V3_SLOW_PREPARE_MS});
+      });
+    },
+    present: function (c) { c.scope.requestAnimationFrame(function () { c.markPresented(); }); },
+    dispose: function () { state.disposed = true; }
+  };
+`;
+
+const V3_THROW_PREPARE_BODY = `
+  window[${JSON.stringify(V3_STATE_GLOBAL)}] = window[${JSON.stringify(V3_STATE_GLOBAL)}] || {};
+  var state = window[${JSON.stringify(V3_STATE_GLOBAL)}]['V3THROWPREPARE'] = { attempts: 0, disposed: false };
+  return {
+    prepare: function () { state.attempts++; throw new Error('fixture prepare exploded'); },
+    present: function (c) { c.markPresented(); },
+    dispose: function () { state.disposed = true; }
+  };
+`;
+
+/**
+ * The protocol recorder.
+ *
+ * IT MUST BE INSTALLED BEFORE THE RUNTIME. Its `message` listener is registered first so it runs
+ * first, which is what makes __PROTO_V3__ the order the runtime actually saw and — more
+ * importantly — what lets it wrap the offered MessagePort's `postMessage` before the runtime has a
+ * chance to adopt and use it. A recorder installed afterwards records everything one step late and
+ * cannot see the bootstrap accept at all.
+ *
+ * IT RECORDS EVERY OFFERED PORT, not just the adopted one. Whether an offer is adopted is exactly
+ * what the refusal tests are asking about, so the recorder must not pre-judge it; wrapping a port
+ * that is then refused and closed is inert.
+ */
+const V3_RECORDER_SOURCE = `
+  // ── protocol recorder ───────────────────────────────────────────────────────
+  var __proto = (window[${JSON.stringify(V3_PROTO_GLOBAL)}] = []);
+  var __portSeen = 0;
+  function __rec(dir, channel, portIndex, msg) {
+    var m = (msg && typeof msg === 'object') ? msg : {};
+    var e = {
+      dir: dir, channel: channel, port: portIndex, at: Date.now(),
+      kind: m.kind || null,
+      type: m.type || null,
+      seq: (typeof m.seq === 'number') ? m.seq : null,
+      playerSessionId: m.playerSessionId || null,
+      packageRevision: m.packageRevision || null,
+      documentId: m.documentId || null,
+      activationId: m.activationId || null,
+      variantKey: m.variantKey || null,
+      configHash: m.configHash || null,
+      payload: m.payload || null
+    };
+    __proto.push(e);
+    // The parent is CROSS-ORIGIN in every real deployment, so it cannot read __PROTO_V3__
+    // directly. Every record is posted as well — the same evidence channel the delayedack
+    // fixture uses. This is v2-shaped window traffic on purpose: it must never be mistaken for
+    // protocol traffic, which lives exclusively on the port.
+    try { if (window.parent && window.parent !== window) window.parent.postMessage({ type: 'PROTO_V3', entry: e }, '*'); } catch (err) {}
+    return e;
+  }
+  window.addEventListener('message', function (ev) {
+    var d = ev.data;
+    if (!d || typeof d !== 'object' || d.kind !== 'flowvid.sim.bootstrap') return;
+    __rec('in', 'window', null, d);
+    var ports = ev.ports || [];
+    for (var i = 0; i < ports.length; i++) {
+      (function (p, idx) {
+        var origPost = p.postMessage;
+        p.postMessage = function (m) { __rec('out', 'port', idx, m); return origPost.call(p, m); };
+        if (p.addEventListener) {
+          p.addEventListener('message', function (e2) { __rec('in', 'port', idx, e2.data); });
+        }
+      })(ports[i], ++__portSeen);
+    }
+  }, false);
+`;
+
+/**
+ * The generation-time capability descriptor. It describes the PACKAGE — see the comment on
+ * `sectionsAllManaged` in simRuntimeChild.ts for why the runtime cannot derive it by probing.
+ */
+export interface V3PackageDescriptor {
+  /** EVERY section body in the package returns a managed lifecycle. */
+  allManaged: boolean;
+  /** At least one section implements setQuality. */
+  anyQuality: boolean;
+}
+
+/**
+ * `v3managed` deliberately carries legacy-bodied sections (A, B, V3LEGACYBODY), so `allManaged` is
+ * FALSE and its honest DOCUMENT_READY reports `suspendable: false` — classifyFromCapabilities
+ * therefore calls it `managed-partial`. That is not a defect in the fixture, it is the truth about
+ * a mixed package, and it is why `v3allmanaged` exists alongside it.
+ */
+export const V3_MANAGED_DESCRIPTOR: V3PackageDescriptor = { allManaged: false, anyQuality: true };
+
+/** Only managed bodies — the one package whose capability report can reach `managed-presentable`. */
+export const V3_ALL_MANAGED_DESCRIPTOR: V3PackageDescriptor = { allManaged: true, anyQuality: true };
+
+/** Section table for `v3managed`. Insertion order IS the order DOCUMENT_READY reports variants in. */
+export const V3_MANAGED_SECTION_BODIES: Record<string, string> = {
+  [FIXTURE_SECTIONS.A]: SECTION_BODIES[FIXTURE_SECTIONS.A],
+  [FIXTURE_SECTIONS.B]: SECTION_BODIES[FIXTURE_SECTIONS.B],
+  [FIXTURE_V3_SECTIONS.V3A]: v3ManagedBody('V3A', '#4040ff'),
+  [FIXTURE_V3_SECTIONS.V3B]: v3ManagedBody('V3B', '#ff8000'),
+  [FIXTURE_V3_SECTIONS.V3LEGACYBODY]: V3_LEGACY_BODY,
+  [FIXTURE_V3_SECTIONS.V3NOPRESENT]: V3_NO_PRESENT_BODY,
+  [FIXTURE_V3_SECTIONS.V3SLOWPREPARE]: V3_SLOW_PREPARE_BODY,
+  [FIXTURE_V3_SECTIONS.V3THROWPREPARE]: V3_THROW_PREPARE_BODY,
+};
+
+/** Section table for `v3allmanaged` — every body here returns a ManagedSectionLifecycle. */
+export const V3_ALL_MANAGED_SECTION_BODIES: Record<string, string> = {
+  [FIXTURE_V3_SECTIONS.V3A]: V3_MANAGED_SECTION_BODIES[FIXTURE_V3_SECTIONS.V3A],
+  [FIXTURE_V3_SECTIONS.V3B]: V3_MANAGED_SECTION_BODIES[FIXTURE_V3_SECTIONS.V3B],
+  [FIXTURE_V3_SECTIONS.V3NOPRESENT]: V3_NO_PRESENT_BODY,
+  [FIXTURE_V3_SECTIONS.V3SLOWPREPARE]: V3_SLOW_PREPARE_BODY,
+  [FIXTURE_V3_SECTIONS.V3THROWPREPARE]: V3_THROW_PREPARE_BODY,
+};
+
+/**
+ * Build the v3 bridge: a `__SECTIONS__` table, the recorder, then the REAL emitted child runtime.
+ *
+ * The runtime source is concatenated verbatim from `buildChildRuntimeSource` — including the
+ * install call it emits — so these bytes exercise the shipping runtime rather than a
+ * hand-maintained imitation of it. That is the entire value of this fixture: a divergence between
+ * fixture and production is a divergence a test can no longer detect.
+ *
+ * NO v2 LISTENER IS EMITTED, on purpose. A v2 `SIM_READY` advertising `dispatch: 'dynamic'` next to
+ * a `startScript` handler that could not actually run these bodies (they return lifecycle OBJECTS,
+ * which the v2 bridge would call as a cleanup function) would be a package lying about itself —
+ * and a fixture that lies is worse than no fixture. A player that never offers a port simply sees
+ * a document that never becomes ready, which is the honest report for a v3-only package.
+ */
+export function v3ManagedBridge(entries: Map<string, string>, descriptor: V3PackageDescriptor): string {
+  const bodies = [...entries.entries()]
+    .map(([id, body]) => {
+      // Same guard the production section table uses: these ids become JS object keys.
+      if (!SAFE_SECTION_ID_RE.test(id)) throw new Error(`Unsafe sectionId: "${id}"`);
+      const indented = body.split('\n').map((l) => (l.trim() === '' ? '' : '      ' + l)).join('\n');
+      // `function (params, ctx)` — the v3 runtime hands the body its activation context as the
+      // second argument, which is where ctx.scope (and therefore every tracked allocation) comes
+      // from. Deliberately NOT wrapped in the v2 @@SIM_BRIDGE@@ markers: parseSectionEntries only
+      // recognises the one-argument v2 signature, and emitting markers it cannot parse would
+      // advertise a round-trip that does not exist.
+      return `    ${JSON.stringify(id)}: function (params, ctx) {\n${indented}\n    },`;
+    })
+    .join('\n');
+
+  return [
+    '/* fixture: v3 package — the REAL child runtime (simRuntimeChild.ts) over a recorded transport */',
+    '(function () {',
+    "  'use strict';",
+    '',
+    '  var __SECTIONS__ = {',
+    bodies,
+    '  };',
+    V3_RECORDER_SOURCE,
+    buildChildRuntimeSource(descriptor),
+    '})();',
+  ].join('\n');
+}
+
 interface LegacyBridgeOptions {
   /**
    * The SIM_READY capability advertisement.
@@ -523,13 +895,27 @@ function main(): void {
     'delayedack',
     delayedAckBridge(new Map(Object.entries(DELAYED_SECTION_BODIES)), DELAYED_ACK_POLICY),
   );
+  // Same entry document and the same rAF gate as every other package — only bridge.js differs.
+  emit(
+    outDir,
+    'v3managed',
+    v3ManagedBridge(new Map(Object.entries(V3_MANAGED_SECTION_BODIES)), V3_MANAGED_DESCRIPTOR),
+  );
+  emit(
+    outDir,
+    'v3allmanaged',
+    v3ManagedBridge(new Map(Object.entries(V3_ALL_MANAGED_SECTION_BODIES)), V3_ALL_MANAGED_DESCRIPTOR),
+  );
 
   console.log(JSON.stringify({
     outDir,
-    packages: ['modern', 'legacy', 'noraf', 'nopaint', 'delayedack'],
+    packages: ['modern', 'legacy', 'noraf', 'nopaint', 'delayedack', 'v3managed', 'v3allmanaged'],
     sections: FIXTURE_SECTIONS,
     delayedOnlySections: FIXTURE_DELAYED_SECTIONS,
     delayedAckPolicy: DELAYED_ACK_POLICY,
+    v3Sections: FIXTURE_V3_SECTIONS,
+    v3Descriptors: { v3managed: V3_MANAGED_DESCRIPTOR, v3allmanaged: V3_ALL_MANAGED_DESCRIPTOR },
+    v3SlowPrepareMs: V3_SLOW_PREPARE_MS,
   }, null, 2));
 }
 

@@ -26,6 +26,7 @@ import { readFileSync, existsSync, mkdirSync, statSync } from 'node:fs';
 import { join, extname, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import type { AddressInfo } from 'node:net';
+import { fixtureIsFresh } from './fixtureSources';
 import { SIM_FADE_MS } from '../lib/sim/protocol';
 
 const BASE = process.env.VIEWER_E2E_BASE_URL ?? 'http://localhost:3000';
@@ -60,14 +61,10 @@ const BAD_TOKEN_DELTA = 7777;
 function ensureFixture(): void {
   const stamp = join(FIXTURE_DIR, 'modern', 'index.html');
   if (existsSync(stamp) && !process.env.SIM_FIXTURE_FORCE) {
-    const built = statSync(stamp).mtimeMs;
-    const sources = [
-      join(BACKEND, 'src', 'scripts', 'gen-sim-fixture.ts'),
-      join(BACKEND, 'src', 'services', 'simulation', 'SimulationService.ts'),
-      // injectSimBootSnippet is baked into the fixture bytes too (review LOW-6).
-      join(BACKEND, 'src', 'controllers', 'sim-public.controller.ts'),
-    ];
-    if (!sources.some((s) => existsSync(s) && statSync(s).mtimeMs > built)) return;
+    // The source list is SHARED (e2e/fixtureSources.ts). When each spec kept its own, they drifted:
+    // three of them never stat'd simRuntimeChild.ts, so a child-runtime change left the fixture
+    // "fresh" and the suite exercised the previous runtime.
+    if (fixtureIsFresh(BACKEND, stamp)) return;
   }
   mkdirSync(FIXTURE_DIR, { recursive: true });
   const r = spawnSync('npx', ['tsx', 'src/scripts/gen-sim-fixture.ts', FIXTURE_DIR], { cwd: BACKEND, encoding: 'utf8' });

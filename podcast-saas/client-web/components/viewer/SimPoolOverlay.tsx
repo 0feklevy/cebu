@@ -15,7 +15,7 @@
 import { memo, useCallback, useEffect, useState } from 'react';
 import type { SimPoolFrameSpec } from '../../lib/simPool';
 import { resolveAssetUrl } from '../../lib/assetUrl';
-import { resolveSimUrl } from '../../lib/simUrl';
+import { SimSurface } from '../../lib/sim/SimSurface';
 
 interface FrameProps {
   spec: SimPoolFrameSpec;
@@ -49,30 +49,25 @@ function SimPoolFrame({ spec, active, visible, delayMs, armGate, registerFrame, 
 
   if (!armed) return null;
 
-  // Boot-aware unconditionally (empty list = no cloak): the #simboot fragment must stay present
-  // across bootHide changes, or dropping it turns a hash-only src change into a full navigation
-  // that reloads a resident frame (audited).
-  const src = resolveSimUrl(
-    resolveAssetUrl(spec.src) ?? spec.src,
-    { hideSelectors: spec.bootHide ?? [] },
-  );
-
   const shown = active && visible;
+  // SimSurface owns every rule that must hold for ANY hosted simulation frame: the boot-hide
+  // fragment (dropping it turns a hash-only src change into a full navigation that reloads a
+  // resident frame — audited), the origin rebase, and the inert/aria-hidden/tabIndex policy that
+  // keeps a hidden frame out of the keyboard and assistive-tech tree. This surface used to
+  // re-implement all three; the pool-specific part is only the z-order swap below.
+  //
+  // `fade={false}` because `.sim-pool-frame` already carries the opacity transition in CSS — one
+  // owner for the duration, not an inline literal racing a stylesheet.
   return (
-    <iframe
-      ref={refCb}
-      src={src}
+    <SimSurface
+      src={resolveAssetUrl(spec.src) ?? spec.src}
+      bootHide={spec.bootHide ?? []}
+      visible={shown}
+      frameRef={refCb}
       onLoad={loadCb}
-      loading="eager"
+      fade={false}
       className="sim-pool-frame"
-      style={{ opacity: shown ? 1 : 0, pointerEvents: shown ? 'auto' : 'none', zIndex: shown ? 2 : 1 }}
-      sandbox="allow-scripts allow-same-origin allow-forms"
-      title="Interactive simulation"
-      // opacity:0 removes nothing from the a11y tree and pointer-events doesn't block Tab —
-      // a hidden resident frame must be unreachable to keyboard and assistive tech (audited).
-      inert={!shown}
-      aria-hidden={!shown}
-      tabIndex={shown ? 0 : -1}
+      style={{ zIndex: shown ? 2 : 1 }}
     />
   );
 }

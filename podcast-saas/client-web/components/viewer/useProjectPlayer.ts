@@ -7,6 +7,7 @@ import { releaseAvatarElement } from '../../lib/avatarAudioGraph';
 import type { SimStartScriptParams } from '../../lib/simUiControls';
 import { canWarmUnpaused, learnCanEmitPaint } from '../../lib/simCapability';
 import { collectSimPool, bootHideFor, dynamicScriptFor, flattenSimOccurrences, packageKeyOf, planWindowResidency, SIM_POOL_CAP, type SimPoolFrameSpec } from '../../lib/simPool';
+import { newPlayerSessionId } from 'shared/src/sim/simIdentity';
 import { simTelemetry } from '../../lib/simTelemetry';
 import { SimRuntimeClient } from '../../lib/sim/SimRuntimeClient';
 // The atomic-exit bound lives in the shared protocol module — it is duplicated in the CSS fade
@@ -107,6 +108,31 @@ export interface ProjectPlayerState {
   // Sim-first entry (t=0 sim / post-branch first sim) with no video frame underneath to
   // hold — the one case a brief loading affordance is correct instead of a blank hold.
   simColdCover:    boolean;
+  // ── Layered presentation (Priority 5) ──
+  // These describe the ACTIVE section only, and every one of them resets when it is left. They are
+  // the inputs the layered presentation surface needs and the viewer has no other way to know; see
+  // SimPresentationLayers / presentationPolicy for what each one is allowed to change.
+  //
+  // `simModern` is THE GATE. It is true only while the active package is BOTH classified
+  // `managed-presentable` by the publish-time canary AND actually running the activation-scoped
+  // protocol. Everything else — an unproven package, a legacy bridge, a modern-capable package
+  // whose handshake has not completed — renders exactly what it rendered before, because the
+  // layered surface refuses to present anything that has not reported PRESENTED, and no v2 package
+  // ever reports it.
+  simModern:       boolean;
+  simPresented:    boolean;
+  // A bounded modern failure is live for this activation (the package did not honour the
+  // presentation it promised). Never set on the v2 path, which promised nothing.
+  simFailure:      boolean;
+  simPosterUrl:    string | null;
+  simPosterTransparent: boolean;
+  // Are the pixels BENEATH the sim still valid content to show? False only until a video frame has
+  // decoded at all (sim-first entry, cold seek) — monotonic after that, because the video element
+  // retains its last frame for the rest of the session.
+  simOutgoingValid: boolean;
+  // Absolute (global-timeline) end of the active sim section, so the surface can compute how much
+  // of it is left. Null outside a sim section.
+  simSectionEndSec: number | null;
   currentSegIdx:   number;
   activeSegmentId: string;          // id of the playing segment (stable across branching)
   timeline:        TimelineSeg[];
@@ -307,6 +333,13 @@ export function useProjectPlayer(
     simPoolArm:       simFirst,
     simBootStalled:   false,
     simColdCover:     false,
+    simModern:            false,
+    simPresented:         false,
+    simFailure:           false,
+    simPosterUrl:         null,
+    simPosterTransparent: false,
+    simOutgoingValid:     false,
+    simSectionEndSec:     null,
     currentSegIdx:    0,
     activeSegmentId:  initialSegments[0]?.id ?? '',
     timeline:         initialSegs,
@@ -325,6 +358,59 @@ export function useProjectPlayer(
 
   const merge = (patch: Partial<ProjectPlayerState>) =>
     setState((s) => ({ ...s, ...patch }));
+
+  // ── Layered-presentation state, written through a change filter ────────────
+  // `merge` always allocates a new state object, so it always renders. That is fine for the fields
+  // it is used for, which only change at real events — but the presentation fields are RESET on
+  // every call to deactivateSim, and deactivateSim runs on EVERY tick outside a sim section
+  // (updateSimOverlay only early-returns while a section is active). Merging them unconditionally
+  // would therefore re-render the whole player about four times a second for the entire video.
+  // The mirror makes the no-op case free while keeping `merge` the single state writer.
+  type SimPresentationFields = Pick<
+    ProjectPlayerState,
+    'simModern' | 'simPresented' | 'simFailure' | 'simPosterUrl' | 'simPosterTransparent'
+    | 'simOutgoingValid' | 'simSectionEndSec'
+  >;
+  const simPresentationRef = useRef<SimPresentationFields>({
+    simModern: false,
+    simPresented: false,
+    simFailure: false,
+    simPosterUrl: null,
+    simPosterTransparent: false,
+    simOutgoingValid: false,
+    simSectionEndSec: null,
+  });
+  const mergePresentation = (patch: Partial<SimPresentationFields>) => {
+    const cur = simPresentationRef.current;
+    const next = { ...cur, ...patch };
+    if (
+      next.simModern === cur.simModern &&
+      next.simPresented === cur.simPresented &&
+      next.simFailure === cur.simFailure &&
+      next.simPosterUrl === cur.simPosterUrl &&
+      next.simPosterTransparent === cur.simPosterTransparent &&
+      next.simOutgoingValid === cur.simOutgoingValid &&
+      next.simSectionEndSec === cur.simSectionEndSec
+    ) return;
+    simPresentationRef.current = next;
+    merge(patch);
+  };
+  /**
+   * Everything the layered surface knows about the ACTIVE SECTION, forgotten.
+   *
+   * `simOutgoingValid` is deliberately absent: whether a video frame has ever decoded is a fact
+   * about the player, not about the section being left, and unlearning it would make the next
+   * section's cover paint opaque black over a video that is demonstrably there.
+   */
+  const resetPresentation = () =>
+    mergePresentation({
+      simModern: false,
+      simPresented: false,
+      simFailure: false,
+      simPosterUrl: null,
+      simPosterTransparent: false,
+      simSectionEndSec: null,
+    });
 
   const videoRef      = useRef<HTMLVideoElement | null>(null);
   const standbyRef    = useRef<HTMLVideoElement | null>(null);
@@ -402,6 +488,12 @@ export function useProjectPlayer(
   // hook manages a POOL of documents, so the map is owned here: created on demand, re-attached on
   // a document IDENTITY change (navigateFrame), disposed on dropPooled and on unmount.
   const simRuntimesRef = useRef<Map<string, SimRuntimeClient>>(new Map());
+  // ONE player session for the whole viewer lifetime. It scopes every identity below it, and it is
+  // minted per HOOK INSTANCE rather than per module: two players on one page (the editor timeline
+  // and the section-editor preview do this by design) must not share a session id, because a
+  // shared one would make a message from the other player's document pass the session check.
+  const playerSessionIdRef = useRef<string>('');
+  if (!playerSessionIdRef.current) playerSessionIdRef.current = newPlayerSessionId();
   // Back-to-video PRISTINE RELOADS: key → timer re-assigning a legacy frame's src AFTER the fade.
   // A navigation, not a stopScript, so it cannot be the runtime's deferred stop — but the
   // residency planner and the unmount cleanup must still see it (audited: a bare timer let the
@@ -547,7 +639,12 @@ export function useProjectPlayer(
     scheduleHide();
   }, [scheduleHide]);
 
-  // ── postMessage helpers (pool-frame routed; KEYS are package identities) ──
+  // ── GUIDANCE postMessage helper (pool-frame routed; KEYS are package identities) ──
+  // NOT the simulation lifecycle. Every lifecycle message this once carried (simPause/simResume)
+  // now goes through SimRuntimeClient.freeze()/thaw(), so the runtime is the single owner of the
+  // sim protocol. What is left is the guidance channel, which is a different protocol with its own
+  // vocabulary and no lifecycle meaning — routing it through the runtime would put messages the
+  // runtime has no model for into the runtime's mouth.
   const sendToFrame = (key: string | null, msg: object) => {
     if (!key) return;
     try { simPoolFramesRef.current.get(key)?.contentWindow?.postMessage(msg, '*'); } catch (_) {}
@@ -592,6 +689,24 @@ export function useProjectPlayer(
   // `paintedLatch`; because the runtime never learned of it, a latched document never received
   // visibility once the reveal became gated on the runtime's grant (audited).
   const simPainted = (key: string): boolean => runtimeState(key).painted;
+  /**
+   * Re-read the two presentation facts that can change WITHOUT a section change.
+   *
+   * `simModern` is the runtime's own verdict, not a guess made here: the canary's class says what a
+   * package proved at publish time, `modernActive()` says whether THIS document has actually
+   * adopted the port and reported itself ready. Both are required, and the second one flips
+   * mid-activation (the handshake completes after the section is already entered), so it has to be
+   * re-read rather than captured once. `simOutgoingValid` latches: once a video frame has decoded,
+   * the element keeps its last frame for the rest of the session.
+   */
+  const syncSimPresentation = () => {
+    const key = activeSimUrlRef.current;
+    const sec = activeSimRef.current;
+    mergePresentation({
+      simModern: !!key && sec?.package_class === 'managed-presentable' && runtimeFor(key).modernActive(),
+      simOutgoingValid: simPresentationRef.current.simOutgoingValid || (videoRef.current?.readyState ?? 0) >= 2,
+    });
+  };
   const clearWarmCeil = (m: { warmCeil: ReturnType<typeof setTimeout> | null }) => {
     if (m.warmCeil) { clearTimeout(m.warmCeil); m.warmCeil = null; }
   };
@@ -605,7 +720,7 @@ export function useProjectPlayer(
     simTelemetry('warm-begin', { key });
     meta.warmCeil = setTimeout(() => {
       meta.warmCeil = null;
-      if (key !== activeSimUrlRef.current) sendToFrame(key, { type: 'simPause' });
+      if (key !== activeSimUrlRef.current) runtimeFor(key).freeze();
       simTelemetry('warm-budget-expired', { key });
       finishWarm(key);
     }, SIM_WARM_MAX_MS);
@@ -616,7 +731,7 @@ export function useProjectPlayer(
     while (warmQueueRef.current.length) {
       const next = warmQueueRef.current.shift()!;
       if (next === activeSimUrlRef.current || simPainted(next) || !runtimeState(next).ready) continue;
-      sendToFrame(next, { type: 'simResume' });
+      runtimeFor(next).thaw();
       beginWarm(next);
       return;
     }
@@ -835,6 +950,9 @@ export function useProjectPlayer(
       merge({ showSimOverlay: false, simBootStalled: false, simColdCover: false });
     }
     clearRevealTimers();
+    // The layered surface describes ONE activation. Carrying any of it into the next section is how
+    // a poster of the section just left ends up covering the section just entered.
+    resetPresentation();
     awaitingPaintSimIdRef.current = null;
     desiredSimRef.current = null;
     pendingSimRef.current = null;
@@ -915,6 +1033,45 @@ export function useProjectPlayer(
       const gen = warmGenRef.current;
       const meta = poolMeta(key);
       const rt = runtimeFor(key);
+
+      // Arm the activation-scoped path — but only for a package the publish-time canary has
+      // classified `managed-presentable`. enableModern itself enforces that, so passing an
+      // unproven or null class here is a no-op that leaves the v2 path in charge; the call is made
+      // unconditionally so there is exactly ONE place that decides, rather than a condition here
+      // and another inside the client that could drift apart.
+      if (simSection.package_revision) {
+        rt.enableModern(
+          {
+            playerSessionId: playerSessionIdRef.current,
+            packageRevision: simSection.package_revision,
+            packageClass: simSection.package_class ?? 'legacy-opaque',
+          },
+          {
+            failureContext: {
+              // The recovery surface offers "keep the poster" ONLY when one actually exists for
+              // this exact identity — offering it with nothing to show would be a dead end.
+              hasPoster: !!simSection.poster_url,
+              hasVideo: !isPostRollSim,
+              canSkip: true,
+            },
+          },
+        );
+      }
+      // What the layered surface may know about THIS activation. Nothing is presented yet and no
+      // failure is live: both are facts the runtime has to report, and assuming either would be
+      // exactly the "presentation derived from something cheaper" this whole layer exists to end.
+      mergePresentation({
+        simModern: simSection.package_class === 'managed-presentable' && rt.modernActive(),
+        simPresented: false,
+        simFailure: false,
+        simPosterUrl: simSection.poster_url ?? null,
+        // The poster's transparency IS the section's: a capture over a transparent background is
+        // made only for a section that composites over the video, so it is the observed form of the
+        // same fact rather than a second, separately-stored one that could disagree.
+        simPosterTransparent: !!simSection.poster_transparent,
+        simOutgoingValid: simPresentationRef.current.simOutgoingValid || (videoRef.current?.readyState ?? 0) >= 2,
+        simSectionEndSec: (timelineRef.current[segmentIdx]?.offset ?? 0) + simSection.end_sec,
+      });
       // Snapshot BEFORE activating: rt.activate() records the new script and takes the gate
       // decision, and the branch conditions below describe the document as it was on entry.
       const was = rt.getState();
@@ -1844,6 +2001,11 @@ export function useProjectPlayer(
   runtimeEventRef.current = (key, event) => {
     const meta = poolMeta(key);
     const isActive = key === activeSimUrlRef.current;
+    // Whether the active document is on the activation-scoped path is re-read from the runtime on
+    // every one of its events rather than tracked per event type: the handshake, a navigation, a
+    // transport falling back to legacy and a disposal all change the answer, and enumerating them
+    // here would be a second copy of the runtime's own condition — free to drift, and silently.
+    if (isActive) syncSimPresentation();
     switch (event) {
       // ── the bridge answered: it is alive, and it said whether it can switch in place ──
       case 'sim-ready': {
@@ -1885,13 +2047,13 @@ export function useProjectPlayer(
           runtimeFor(key).setGuidance(false);
           if (canWarmUnpaused()) {
             if (warmingSimUrlRef.current && warmingSimUrlRef.current !== key) {
-              sendToFrame(key, { type: 'simPause' });
+              runtimeFor(key).freeze();
               if (!warmQueueRef.current.includes(key)) warmQueueRef.current.push(key);
             } else {
               beginWarm(key);
             }
           } else {
-            sendToFrame(key, { type: 'simPause' });
+            runtimeFor(key).freeze();
           }
         }
         return;
@@ -1902,7 +2064,7 @@ export function useProjectPlayer(
         meta.canEmitPaint = learnCanEmitPaint(meta.canEmitPaint, { painted: true });
         clearWarmCeil(meta);
         if (!isActive || !activeSimRef.current) {
-          sendToFrame(key, { type: 'simPause' });   // painted + frozen — instant reveal later
+          runtimeFor(key).freeze();   // painted + frozen — instant reveal later
         } else if (awaitingPaintSimIdRef.current === activeSimRef.current.id) {
           if (simPaintDeadlineRef.current) { clearTimeout(simPaintDeadlineRef.current); simPaintDeadlineRef.current = null; }
           merge({ simColdCover: false });
@@ -1928,6 +2090,31 @@ export function useProjectPlayer(
       case 'script-missing':
       case 'script-error':
         if (isActive) merge({ simBootStalled: false, simColdCover: false });
+        return;
+      // ── activation-scoped (v3) presentation ───────────────────────────────────────────────
+      // THE gate the layered surface opens on. `presented` is set from this event and from nothing
+      // else — not from a paint, not from a load, not from a timer. Each of those has in turn been
+      // the thing that authorised a reveal here, and each in turn authorised a wrong one.
+      case 'modern-section-presented':
+        if (isActive) mergePresentation({ simPresented: true, simFailure: false });
+        return;
+      // A new activation on the same document: whatever was presented belongs to the section being
+      // left. (The section change resets this too — this covers a re-activation of the SAME
+      // section, e.g. a retry or a seek back into it, which no section change accompanies.)
+      case 'modern-prepare':
+        if (isActive) mergePresentation({ simPresented: false });
+        return;
+      case 'modern-failure':
+        if (isActive) mergePresentation({ simPresented: false, simFailure: true });
+        return;
+      case 'modern-retry':
+        if (isActive) mergePresentation({ simPresented: false, simFailure: false });
+        return;
+      // The presented frame's rendering context is gone, so its pixels are no longer what was
+      // vouched for. The runtime has already hidden it; dropping `presented` is what brings the
+      // cover back over it instead of leaving a half-composited scene on screen.
+      case 'modern-context-lost':
+        if (isActive) mergePresentation({ simPresented: false });
         return;
       default:
         return;

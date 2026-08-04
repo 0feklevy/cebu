@@ -31,6 +31,7 @@ import { readFileSync, existsSync, mkdirSync, statSync } from 'node:fs';
 import { join, extname, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import type { AddressInfo } from 'node:net';
+import { fixtureIsFresh } from './fixtureSources';
 
 // ── Fixture package (generated from the REAL production generators) ──────────────────────
 
@@ -56,16 +57,10 @@ function ensureFixture(): void {
   // from before a template change would quietly test the old bridge and pass — the suite would
   // certify code that no longer exists. Regenerate whenever the generator or the service that
   // feeds it is newer than the fixture. SIM_FIXTURE_FORCE=1 forces it.
+  // The source list is SHARED (e2e/fixtureSources.ts) precisely so it cannot drift per-spec — the
+  // drift that let three suites certify a child runtime that was no longer what shipped.
   const stamp = join(FIXTURE_DIR, 'modern', 'index.html');
-  if (existsSync(stamp) && !process.env.SIM_FIXTURE_FORCE) {
-    const built = statSync(stamp).mtimeMs;
-    const sources = [
-      join(BACKEND, 'src', 'scripts', 'gen-sim-fixture.ts'),
-      join(BACKEND, 'src', 'services', 'simulation', 'SimulationService.ts'),
-    ];
-    const stale = sources.some((s) => existsSync(s) && statSync(s).mtimeMs > built);
-    if (!stale) return;
-  }
+  if (fixtureIsFresh(BACKEND, stamp)) return;
   mkdirSync(FIXTURE_DIR, { recursive: true });
   const r = spawnSync('npx', ['tsx', 'src/scripts/gen-sim-fixture.ts', FIXTURE_DIR], { cwd: BACKEND, encoding: 'utf8' });
   if (r.status !== 0) throw new Error(`fixture generation failed: ${r.stderr || r.stdout}`);

@@ -10,6 +10,7 @@
 // Only the ACTIVE PATH is collected for branching projects (entry sequence): other
 // branches' sims are pooled on demand when their sequence loads — never speculatively.
 
+import { variantKeyFor, variantParamOf } from 'shared/src/sim/simIdentity';
 import type { PlayerConfig, SimulationOverlay } from '../components/viewer/types';
 
 export interface SimPoolFrameSpec {
@@ -34,35 +35,19 @@ export function packageKeyOf(url: string): string {
 }
 
 /** Sub-simulation key of a sim section URL: its `?section=` param (null when absent). */
-export function sectionKeyOf(url: string): string | null {
-  try {
-    return new URL(url, 'http://x').searchParams.get('section');
-  } catch {
-    const m = /[?&]section=([^&#]+)/.exec(url);
-    return m ? decodeURIComponent(m[1]) : null;
-  }
-}
+export const sectionKeyOf = variantParamOf;
 
 /**
- * The script id a DYNAMIC (v2) bridge must receive to run this section's own body.
+ * The script id a DYNAMIC (v2) bridge must receive to run this section's own body — and, on the
+ * activation-scoped path, the `variantKey` axis of the presentation identity.
  *
- * The URL's `?section=` param — not the row id, and never the stored sim_script — is the
- * authoritative key: bridge bodies are keyed by the section id the URL was minted with
- * (`?section=<id>&v=<hash>` at bridge-upload time), and DUPLICATED sections keep the
- * ORIGINAL's URL/param while their own row id has no body in the bridge. The persisted
- * sim_script is the literal 'main' on every generated row (the legacy entry-point name,
- * not a section identity); a v2 bridge resolves 'main' to the LOADED URL's ?section
- * default — in a pooled document that is the first-pooled section, so sending it ran one
- * variation in every section of the package (the sub-simulation regression).
+ * Delegated to `shared/src/sim/simIdentity` because the BACKEND keys posters on the same value
+ * (buildPlayerConfig). A second implementation here would let the two drift, and a drifted variant
+ * key means a poster captured for one sub-simulation being shown in place of another — precisely
+ * the "one generic screenshot for different variants" failure posterIdentity.ts forbids.
  */
-export function dynamicScriptFor(sec: Pick<SimulationOverlay, 'id' | 'simulation_url' | 'sim_script'>): string {
-  const urlKey = sec.simulation_url ? sectionKeyOf(sec.simulation_url) : null;
-  if (urlKey) return urlKey;
-  // No ?section= on the URL (single-section/legacy-shaped packages): a real named script
-  // still wins; the meaningless literal 'main' falls through to the section id.
-  if (sec.sim_script && sec.sim_script !== 'main') return sec.sim_script;
-  return sec.id;
-}
+export const dynamicScriptFor: (sec: Pick<SimulationOverlay, 'id' | 'simulation_url' | 'sim_script'>) => string =
+  variantKeyFor;
 
 /** Minimal-UI selectors a sim section should BOOT with (only when simple_ui + mechanical hides). */
 export function bootHideFor(sec: Pick<SimulationOverlay, 'simple_ui' | 'ui_hide'> | null | undefined): string[] | null {
