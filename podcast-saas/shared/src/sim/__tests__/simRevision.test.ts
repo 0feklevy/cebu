@@ -18,6 +18,7 @@ import {
   revisionManifestKey,
   revisionFileKey,
   revisionIdFromKey,
+  revisionIdForPrefix,
   isImmutableRevisionKey,
   cacheControlForKey,
   IMMUTABLE_CACHE_CONTROL,
@@ -152,21 +153,52 @@ describe('storage layout', () => {
   });
 });
 
-describe('revisionIdFromKey', () => {
-  it('parses what revisionPrefix actually emits', () => {
+describe('revisionIdFromKey — positional, not first-match', () => {
+  it('parses what revisionPrefix emits under a canonical prefix', () => {
     expect(revisionIdFromKey(revisionFileKey(PREFIX, REV, 'package/a.js'))).toBe(REV);
+    expect(revisionIdFromKey(revisionManifestKey(PREFIX, REV))).toBe(REV);
   });
 
-  it('parses a NON-canonical storage_prefix', () => {
-    // The regression: the parser used to require simulations/<proj>/<sim>/ and would return null —
-    // silently downgrading immutable bytes to revalidate-every-time — for any other prefix shape.
-    expect(revisionIdFromKey(revisionFileKey('sims/tenant-a/x/y/z', REV, 'package/a.js'))).toBe(REV);
-    expect(revisionIdFromKey(revisionFileKey('flat', REV, 'a.js'))).toBe(REV);
+  it('REFUSES a legacy customer directory named `revisions` at the same depth', () => {
+    // THE BUG THIS REPLACED. A pre-revision package whose bundle has a top-level `revisions/` dir
+    // sits at exactly this shape. A first-match scan returned an id, and the serving layer would
+    // pin a MUTABLE object with a year of immutable caching and no revalidation path.
+    expect(revisionIdFromKey('simulations/proj-1/sim-1/revisions/customerdir/app.js')).toBe('customerdir');
+    // ...which is indistinguishable from a real revision by shape alone. What makes it safe is that
+    // a legacy package is never WRITTEN there — revisionPrefix is the only writer of this segment.
+    // The guard that matters is depth: anything deeper cannot masquerade.
+    expect(revisionIdFromKey('simulations/proj-1/sim-1/package/revisions/customerdir/app.js')).toBeNull();
+    expect(revisionIdFromKey('simulations/proj-1/sim-1/a/b/revisions/customerdir/app.js')).toBeNull();
   });
 
-  it('prefers the FIRST segment so a customer directory named revisions cannot win', () => {
-    const key = revisionFileKey(PREFIX, REV, 'package/revisions/deadbeef99/evil.js');
-    expect(revisionIdFromKey(key)).toBe(REV);
+  it('refuses a percent-decoded key that re-parents itself into a revision prefix', () => {
+    // The route percent-decodes, so `%2F` arrives as a real separator. A scan-based parser matched
+    // the injected segment at any depth; the positional parser requires depth 3 exactly.
+    expect(revisionIdFromKey('simulations/a/b/c/revisions/abcdefgh/x.css')).toBeNull();
+    expect(revisionIdFromKey('simulations/a/revisions/abcdefgh/x.css')).toBeNull();
+  });
+
+  it('refuses a key rooted outside simulations/', () => {
+    // The serving layer guards this too, but an untested branch is an unjustified branch — and a
+    // second bucket root reaching this helper must not be able to mint immutable headers.
+    expect(revisionIdFromKey('other/proj-1/sim-1/revisions/abcdefgh/x.js')).toBeNull();
+    expect(revisionIdFromKey('/simulations/proj-1/sim-1/revisions/abcdefgh/x.js')).toBeNull();
+  });
+
+  it('refuses a non-canonical storage prefix rather than guessing', () => {
+    // Never immutable is a latency cost. Wrongly immutable is a year-long incident.
+    expect(revisionIdFromKey(revisionFileKey('sims/tenant-a/x/y/z', REV, 'a.js'))).toBeNull();
+    expect(revisionIdFromKey(revisionFileKey('flat', REV, 'a.js'))).toBeNull();
+  });
+
+  it('requires a path segment below the revision id', () => {
+    expect(revisionIdFromKey(`${PREFIX}/revisions/${REV}`)).toBeNull();
+    expect(revisionIdFromKey(`${PREFIX}/revisions/${REV}/`)).toBeNull();
+  });
+
+  it('rejects an illegal revision id', () => {
+    expect(revisionIdFromKey(`${PREFIX}/revisions/short/a.js`)).toBeNull();
+    expect(revisionIdFromKey(`${PREFIX}/revisions/has.dots.here/a.js`)).toBeNull();
   });
 
   it('returns null for a legacy mutable key — unfamiliar means mutable', () => {
@@ -174,14 +206,32 @@ describe('revisionIdFromKey', () => {
     expect(revisionIdFromKey('')).toBeNull();
     expect(isImmutableRevisionKey(`${PREFIX}/index.html`)).toBe(false);
   });
+});
 
-  it('rejects a revision-shaped segment with an illegal id', () => {
-    expect(revisionIdFromKey(`${PREFIX}/revisions/short/a.js`)).toBeNull();
-    expect(revisionIdFromKey(`${PREFIX}/revisions/has.dots.here/a.js`)).toBeNull();
+describe('revisionIdForPrefix — exact, when the prefix is known', () => {
+  it('parses a NON-canonical prefix that the positional parser must refuse', () => {
+    // This is why both exist: with the row in hand there is nothing to guess.
+    const key = revisionFileKey('sims/tenant-a/x/y/z', REV, 'package/a.js');
+    expect(revisionIdForPrefix(key, 'sims/tenant-a/x/y/z')).toBe(REV);
+    expect(revisionIdFromKey(key)).toBeNull();
   });
 
-  it('requires a trailing slash — the prefix itself is not a file in the revision', () => {
-    expect(revisionIdFromKey(`${PREFIX}/revisions/${REV}`)).toBeNull();
+  it('refuses a key belonging to a different simulation', () => {
+    const key = revisionFileKey(PREFIX, REV, 'package/a.js');
+    expect(revisionIdForPrefix(key, 'simulations/proj-1/sim-2')).toBeNull();
+  });
+
+  it('refuses a customer directory named revisions below the prefix', () => {
+    expect(revisionIdForPrefix(`${PREFIX}/package/revisions/customerdir/a.js`, PREFIX)).toBeNull();
+  });
+
+  it('tolerates a trailing slash on the prefix', () => {
+    const key = revisionFileKey(PREFIX, REV, 'a.js');
+    expect(revisionIdForPrefix(key, `${PREFIX}/`)).toBe(REV);
+  });
+
+  it('requires a path segment below the revision id', () => {
+    expect(revisionIdForPrefix(`${PREFIX}/revisions/${REV}`, PREFIX)).toBeNull();
   });
 });
 
