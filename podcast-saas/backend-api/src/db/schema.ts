@@ -453,8 +453,56 @@ export const simulations = pgTable('simulations', {
   package_class:    text('package_class'),                          // SimPackageClass | null
   canary_report:    jsonb('canary_report'),                         // CanaryReport | null
   canary_at:        timestamp('canary_at', { withTimezone: true }),
+  // ── The revision pointer (migration 050) ────────────────────────────────────
+  // The ONLY mutable thing about a published revision. NULLABLE and it must stay that way: every
+  // simulation that predates 050 has no revision and is served from its legacy mutable prefix, so
+  // NULL means "never published as a revision", not "broken".
+  //
+  // The FK (simulation_revisions.id, ON DELETE SET NULL) is declared in migration 050 rather than
+  // here: `simulation_revisions.simulation_id` already points back at this table, and expressing
+  // both directions in drizzle makes each table's type depend on the other's. The database is the
+  // enforcement point either way — this file is only a query surface, DDL is hand-written SQL.
+  active_revision_id: text('active_revision_id'),
   created_at:       timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * Immutable package revisions (migration 050, Priority 7.1/7.2).
+ *
+ * One row per published (or attempted) build of a simulation package. The bytes of a revision are
+ * never rewritten — a new build is a new revision id and therefore a new set of storage paths — so
+ * everything here except `status`/`activated_at`/`retired_at` is a record of what was built, not a
+ * mutable description of what is live.
+ *
+ * `uniq_sim_revisions_one_active` (a PARTIAL unique index, declared in the migration and NOT
+ * expressible in drizzle 0.31) is what makes the pointer switch safe: the database refuses a second
+ * active revision for one simulation, so two concurrent activations cannot both believe they won.
+ * The state machine, the storage layout and rollbackTargetFor live in shared/src/sim/simRevision.ts.
+ */
+export const simulation_revisions = pgTable(
+  'simulation_revisions',
+  {
+    // Opaque and URL-safe (isValidRevisionId), because it appears in immutable storage paths.
+    id:                       text('id').primaryKey(),
+    simulation_id:            uuid('simulation_id').notNull().references(() => simulations.id, { onDelete: 'cascade' }),
+    revision_number:          integer('revision_number').notNull(),
+    status:                   text('status').notNull(),   // SimRevisionStatus
+    manifest_hash:            text('manifest_hash'),       // computeManifestHash of the canonical manifest
+    bridge_protocol_version:  integer('bridge_protocol_version'),
+    runtime_protocol_version: integer('runtime_protocol_version'),
+    created_at:               timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    activated_at:             timestamp('activated_at', { withTimezone: true }),
+    retired_at:               timestamp('retired_at', { withTimezone: true }),
+    // Self-FK declared in the migration for the same reason as `active_revision_id` above.
+    rollback_of_revision_id:  text('rollback_of_revision_id'),
+    metadata:                 jsonb('metadata'),
+  },
+  (t) => ({
+    uniq_number:   unique('uniq_sim_revisions_number').on(t.simulation_id, t.revision_number),
+    idx_number:    index('idx_sim_revisions_sim_number').on(t.simulation_id, t.revision_number),
+    idx_activated: index('idx_sim_revisions_activated').on(t.simulation_id, t.activated_at),
+  }),
+);
 
 /**
  * Captured poster images, one row per presentation identity (migration 049).
@@ -1181,6 +1229,8 @@ export type ProjectRedirectTarget = typeof project_redirect_targets.$inferSelect
 export type SimulationRow = typeof simulations.$inferSelect;
 export type SimPosterRow = typeof sim_posters.$inferSelect;
 export type NewSimPoster = typeof sim_posters.$inferInsert;
+export type SimRevisionRow = typeof simulation_revisions.$inferSelect;
+export type NewSimRevision = typeof simulation_revisions.$inferInsert;
 export type Playlist = typeof playlists.$inferSelect;
 export type Collaborator = typeof collaborators.$inferSelect;
 export type PlaylistItem = typeof playlist_items.$inferSelect;

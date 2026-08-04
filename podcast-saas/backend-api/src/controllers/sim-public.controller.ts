@@ -1,9 +1,14 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import fastifyCompress from '@fastify/compress';
 import { createHash } from 'crypto';
 import { readFile } from 'node:fs/promises';
 import { extname } from 'path';
 import { constants as zlibConstants } from 'zlib';
+import {
+  IMMUTABLE_CACHE_CONTROL,
+  cacheControlForKey,
+  isImmutableRevisionKey,
+} from 'shared/src/sim/simRevision';
 import { logger } from '../lib/logger.js';
 import { LOCAL_STORAGE_BASE_DIR } from '../services/storage/localStoragePaths.js';
 import { safeLocalPath, keyHasTraversal } from '../services/storage/pathSafety.js';
@@ -21,9 +26,12 @@ const PROXIED_TEXT_EXTS = new Set([
   '.html', '.htm', '.js', '.mjs', '.css', '.json', '.txt', '.md', '.xml', '.svg', '.vtt', '.csv',
 ]);
 
-// NOTE: year-long `immutable` caching was removed (audited): replace/regeneration overwrite
-// keys in place, so immutable pinned stale CSS/JSON/binaries against new HTML/JS. Restore it
-// only for content-addressed revision prefixes (roadmap).
+// NOTE: year-long `immutable` caching was removed (audited) for MUTABLE keys: replace/
+// regeneration overwrite them in place, so immutable pinned stale CSS/JSON/binaries against new
+// HTML/JS. It is restored for — and only for — keys inside an immutable revision prefix
+// (`simulations/<project>/<sim>/revisions/<revisionId>/…`), where a new publication is a new set
+// of paths and a URL therefore cannot come to mean different bytes. `cacheControlForKey` in
+// shared/src/sim/simRevision is the single decision point; see simCacheControl below.
 
 /**
  * Head bootstrap injected into every proxied sim entry HTML. It reads the
@@ -78,6 +86,124 @@ function etagMatches(ifNoneMatch: string | undefined, etag: string): boolean {
 }
 
 /**
+ * The `Cache-Control` for one sim key: shared policy for revision paths, today's behaviour for
+ * everything else.
+ *
+ * `cacheControlForKey` answers with exactly two policies — IMMUTABLE for a key inside a revision
+ * prefix, POINTER (`no-cache, must-revalidate`) for anything else. Only the first is adopted here.
+ * POINTER is written for the document that RESOLVES a pointer, and this route serves no such
+ * document; the legacy mutable package files it does serve already revalidate on every request
+ * under plain `no-cache`, which is the same contract (`must-revalidate` only governs what a cache
+ * may do with an ALREADY-stale entry, and `no-cache` never lets one become usable without
+ * revalidation). Rewriting the header string would therefore change what every existing client
+ * sees — and what the Priority 1-6 suites pin — while buying nothing.
+ *
+ * Deliberately NOT hardened further here: whether a key counts as a revision key is
+ * `isImmutableRevisionKey`'s decision alone, because the publisher stamps each manifest entry's
+ * `cacheControl` from the same function. A second, stricter opinion in the serving layer would let
+ * a manifest attest `immutable` for an object this route revalidates — an inconsistency the
+ * manifest exists to make impossible. (Residual hazard, owned by the write side: a customer bundle
+ * containing a top-level `revisions/<8+ chars>/` directory lands on keys shaped exactly like
+ * published revision files. The fix is to reserve that segment in the upload path normalizer, not
+ * to second-guess it at serve time.)
+ */
+function simCacheControl(key: string, mutableDefault: string): string {
+  const policy = cacheControlForKey(key);
+  return policy === IMMUTABLE_CACHE_CONTROL ? policy : mutableDefault;
+}
+
+/**
+ * May an immutable response be answered with a redirect to `target`?
+ *
+ * A redirect cached for a year is a promise about a LOCATION, not about bytes. The promise only
+ * holds if the location is itself revision-scoped — i.e. it addresses this exact immutable key —
+ * because a location that resolves to a mutable alias would hand the client a year-long pin on
+ * an object that regeneration is free to overwrite: precisely the stale-package failure immutable
+ * revisions exist to eliminate, reintroduced one hop away where no ETag can catch it.
+ *
+ * Every adapter today builds its public URL by appending the full key (Supabase's bucket origin,
+ * R2's proxy route, local's serve route — proven in storageAdapterParity.test.ts), so this holds.
+ * An adapter that mapped keys onto some alias would not, and its immutability cannot be proven
+ * from here, so this fails closed and the caller proxies the bytes instead — slower, always right.
+ */
+export function redirectPreservesKey(key: string, target: string): boolean {
+  let pathname: string;
+  try {
+    // decode first: a key with a space/# is percent-encoded into the URL, and comparing the
+    // encoded form against the raw key would reject a redirect that is in fact key-scoped.
+    pathname = decodeURIComponent(new URL(target).pathname);
+  } catch {
+    return false; // relative, unparseable, or malformed %-escape → unprovable → refuse
+  }
+  return pathname.endsWith(`/${key}`);
+}
+
+type ByteRange = { start: number; end: number };
+
+/**
+ * Parse a single-range `Range` header against a known body size.
+ *
+ * Returns null when there is no range to honour (absent header, or a form this handler chooses to
+ * ignore — RFC 9110 §14.2 explicitly permits ignoring a Range, and answering 200-with-everything
+ * is always a valid response), `'unsatisfiable'` when the client named a range that cannot exist
+ * (which must be a 416, never a silent full body), or the resolved byte offsets.
+ *
+ * Multi-range requests are ignored rather than half-served: a multipart/byteranges response this
+ * route has no reason to produce is worse than the complete body no client can misread.
+ */
+function parseSingleRange(header: string | undefined, size: number): ByteRange | 'unsatisfiable' | null {
+  if (!header) return null;
+  const m = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (!m) return null;
+  const [, startStr, endStr] = m;
+  if (startStr === '' && endStr === '') return 'unsatisfiable';
+
+  let start: number;
+  let end: number;
+  if (startStr === '') {
+    const suffixLength = Number(endStr);
+    if (suffixLength === 0) return 'unsatisfiable'; // "bytes=-0" names an empty tail
+    start = Math.max(0, size - suffixLength);
+    end = size - 1;
+  } else {
+    start = Number(startStr);
+    end = endStr === '' ? size - 1 : Math.min(Number(endStr), size - 1);
+  }
+  if (start >= size || start > end) return 'unsatisfiable';
+  return { start, end };
+}
+
+/**
+ * Send an in-memory body, honouring `Range`.
+ *
+ * Binary sim assets include audio and video, which browsers fetch with `Range` — so range support
+ * has to travel with the BODY, not with the transport that happened to deliver it. The cloud path
+ * normally redirects binaries to the CDN (which ranges for us); when it cannot (see
+ * redirectPreservesKey) the bytes come through here, and dropping range support at that point
+ * would break seeking in exactly the packages that were careful enough to be published immutably.
+ */
+function sendBufferMaybeRanged(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  buf: Buffer,
+  contentType: string,
+): FastifyReply {
+  reply.header('Content-Type', contentType).header('Accept-Ranges', 'bytes');
+  const range = parseSingleRange(request.headers['range'], buf.length);
+  if (range === 'unsatisfiable') {
+    return reply.code(416).header('Content-Range', `bytes */${buf.length}`).send();
+  }
+  if (range) {
+    return reply
+      .code(206)
+      .header('Content-Range', `bytes ${range.start}-${range.end}/${buf.length}`)
+      .header('Content-Length', range.end - range.start + 1)
+      .send(buf.subarray(range.start, range.end + 1));
+  }
+  return reply.header('Content-Length', buf.length).send(buf);
+}
+
+/**
  * Public simulation file serving (no auth) — serves the simulations/ prefix with the
  * CORRECT Content-Type. This must be a backend proxy, not a direct bucket link:
  * Supabase's public bucket force-downgrades text/html → text/plain (anti-phishing),
@@ -123,6 +249,10 @@ export async function registerSimPublicRoutes(app: FastifyInstance): Promise<voi
       }
       const contentType = getSimulationContentType(key);
       const storage = getStorageAdapter();
+      // Inside a revision prefix nothing is ever rewritten, so this key's bytes are fixed for as
+      // long as the key exists. That single fact is what licenses BOTH the year-long header below
+      // and the refusal to transform the body at serve time (see the entry-HTML branches).
+      const immutable = isImmutableRevisionKey(key);
 
       // Restrictive CSP for served sims (security-003). The sim body is arbitrary
       // user-uploaded HTML/JS, so we keep script/style/img/etc. permissive (inline +
@@ -164,7 +294,11 @@ export async function registerSimPublicRoutes(app: FastifyInstance): Promise<voi
         // transform as the cloud path — the local early-return skipped it, so minimal-UI
         // sims flashed their full UI ONLY in local dev, hiding the exact bug the snippet
         // exists to kill. HTML is small; buffering it here is fine (no Range use case).
-        if (localExt === '.html' || localExt === '.htm') {
+        // Revision HTML is exempt: its bytes were hashed into the manifest at publication, so a
+        // serve-time rewrite would make every viewer's copy differ from what the manifest attests
+        // — and the publisher already bakes the snippet in (injectSimBootSnippet is exported for
+        // exactly that). Such HTML streams below like any other immutable file.
+        if (!immutable && (localExt === '.html' || localExt === '.htm')) {
           try {
             const raw = await readFile(filePath, 'utf8');
             const html = injectSimBootSnippet(raw);
@@ -173,7 +307,7 @@ export async function registerSimPublicRoutes(app: FastifyInstance): Promise<voi
               .header('Cross-Origin-Resource-Policy', 'cross-origin')
               .header('Access-Control-Allow-Origin', '*')
               .header('Content-Security-Policy', simCsp)
-              .header('Cache-Control', 'no-cache')
+              .header('Cache-Control', simCacheControl(key, 'no-cache'))
               .header('Content-Type', contentType)
               .send(html);
           } catch {
@@ -181,6 +315,9 @@ export async function registerSimPublicRoutes(app: FastifyInstance): Promise<voi
           }
         }
         return serveLocalFile(request, reply, filePath, contentType, {
+          // Legacy keys keep getting no Cache-Control at all from this branch (unchanged); only a
+          // revision key adds one, and only the immutable one.
+          ...(immutable ? { cacheControl: IMMUTABLE_CACHE_CONTROL } : {}),
           extraHeaders: {
             'X-Content-Type-Options': 'nosniff',
             'Cross-Origin-Resource-Policy': 'cross-origin',
@@ -191,52 +328,72 @@ export async function registerSimPublicRoutes(app: FastifyInstance): Promise<voi
       }
 
       const ext = extname(key).toLowerCase();
-      // NO key under a sim prefix is truly write-once anymore: "Replace simulation" overwrites
-      // EVERY user file in place (same keys, new bytes), and bridge (re)generation rewrites the
-      // entry HTML + bridge JS. Year-long `immutable` caching therefore served stale CSS/JSON/
-      // binaries against freshly-replaced HTML/JS (audited). Until content-addressed revision
-      // prefixes exist (roadmap), text revalidates (cheap 304s via strong ETags) and binary
-      // redirects cache for a bounded hour — the worst case after a replace is one hour of a
-      // stale texture, not a year of a broken package.
-      if (!PROXIED_TEXT_EXTS.has(ext)) {
+      // NO key OUTSIDE a revision prefix is write-once: "Replace simulation" overwrites EVERY user
+      // file in place (same keys, new bytes), and bridge (re)generation rewrites the entry HTML +
+      // bridge JS. Year-long `immutable` caching therefore served stale CSS/JSON/binaries against
+      // freshly-replaced HTML/JS (audited). So legacy text revalidates (cheap 304s via strong
+      // ETags) and legacy binary redirects cache for a bounded hour — the worst case after a
+      // replace is one hour of a stale texture, not a year of a broken package. Revision keys are
+      // the exception the audit called for, and only because their bytes cannot be replaced at all.
+      const isProxiedText = PROXIED_TEXT_EXTS.has(ext);
+      if (!isProxiedText) {
         // Binary assets redirect to the bucket CDN: those types serve with correct MIME,
         // and the browser then loads them straight from the CDN — parallel over HTTP/2
         // and edge/browser-cached — rather than serializing through this proxy (one full
         // readObject per request), which made image-heavy sims crawl.
-        return reply
-          .header('Cache-Control', 'public, max-age=3600')
-          .header('Access-Control-Allow-Origin', '*')
-          .redirect(storage.getPublicUrl(key), 302);
+        const target = storage.getPublicUrl(key);
+        if (!immutable || redirectPreservesKey(key, target)) {
+          return reply
+            .header('Cache-Control', simCacheControl(key, 'public, max-age=3600'))
+            .header('Access-Control-Allow-Origin', '*')
+            .redirect(target, 302);
+        }
+        // The adapter's public URL does not address this key, so a year-long redirect to it
+        // cannot be shown to be immutable. Fall through and serve the bytes from here instead.
       }
 
       try {
         let buf = await storage.readObject(key);
         // Entry HTML gets the minimal-UI boot bootstrap injected at serve time (see
         // SIM_BOOT_SNIPPET) — BEFORE the ETag, so the tag matches the served bytes.
-        if (ext === '.html' || ext === '.htm') {
+        // Revision HTML is served byte-for-byte as published instead: see the local branch above
+        // for why an immutable object must never be transformed on the way out.
+        if (!immutable && (ext === '.html' || ext === '.htm')) {
           buf = Buffer.from(injectSimBootSnippet(buf.toString('utf8')), 'utf8');
         }
-        // Strong ETag = sha1 of the exact bytes. Combined with `no-cache` on the
+        // Strong ETag = a hash of the exact bytes being sent. Combined with `no-cache` on the
         // rewritable entry HTML / bridge JS this is the point: the browser still
         // revalidates every load, but an unchanged file costs a 304, not a re-download.
-        const etag = `"${createHash('sha1').update(buf).digest('hex')}"`;
+        //
+        // Revision files use SHA-256 of the untransformed stored bytes, which is BY CONSTRUCTION
+        // the same digest the manifest records for this path (simManifest: "hash is the SHA-256 of
+        // the exact bytes stored at path"). So the ETag a client holds is directly comparable to
+        // the manifest entry — "is the CDN serving what was published" becomes a string compare
+        // instead of an act of faith. A different algorithm here would leave that unanswerable.
+        const etag = immutable
+          ? `"${createHash('sha256').update(buf).digest('hex')}"`
+          : `"${createHash('sha1').update(buf).digest('hex')}"`;
 
         reply
           .header('X-Content-Type-Options', 'nosniff')
           .header('Cross-Origin-Resource-Policy', 'cross-origin')
           .header('Access-Control-Allow-Origin', '*')
           .header('Content-Security-Policy', simCsp)
-          .header('Cache-Control', 'no-cache')
-          .header('ETag', etag)
-          // The representation varies by Accept-Encoding whether or not THIS reply ends
-          // up compressed — set Vary unconditionally so shared caches key correctly.
-          // (lowercase to match @fastify/compress's own value, so it never appends a dup)
-          .header('Vary', 'accept-encoding');
+          .header('Cache-Control', simCacheControl(key, 'no-cache'))
+          .header('ETag', etag);
+
+        // The representation varies by Accept-Encoding whether or not THIS reply ends
+        // up compressed — set Vary unconditionally so shared caches key correctly.
+        // (lowercase to match @fastify/compress's own value, so it never appends a dup)
+        // Binaries never reach reply.compress(), so their representation does not vary.
+        if (isProxiedText) reply.header('Vary', 'accept-encoding');
 
         if (etagMatches(request.headers['if-none-match'], etag)) {
           // 304 keeps the cache headers above; Fastify strips body/Content-Length/Type.
           return reply.code(304).send();
         }
+
+        if (!isProxiedText) return sendBufferMaybeRanged(request, reply, buf, contentType);
 
         reply.header('Content-Type', contentType).header('Content-Length', buf.length);
         // reply.compress(): negotiates Accept-Encoding (br > gzip > deflate), compresses
