@@ -1,3 +1,4 @@
+import { packageRevisionFor as revisionIdentityFor } from 'shared/src/sim/simRevision';
 import { db } from '../db/index.js';
 import {
   projects, video_files, timeline_sections, image_files, audio_files, scenes,
@@ -65,6 +66,16 @@ type PlayerChoicePoint = {
 import { getStorageAdapter } from './storage/getStorageAdapter.js';
 import { captionUrlForVideo } from './captions/CaptionService.js';
 import { normalizeAvatarCircles, normalizeSpeakerTimeline, type AvatarCirclesLike } from './avatarCircles/normalizeAvatarCircles.js';
+import { logger } from '../lib/logger.js';
+
+/** The simulation columns this file reads. Named so the degraded-read catch cannot drift from it. */
+interface SimRowShape {
+  id: string;
+  package_class: string | null;
+  bridge_hash: string | null;
+  active_revision_id: string | null;
+  active_revision_entry_key: string | null;
+}
 
 /**
  * Build the PlayerConfig for a single project — the dynamic equivalent of
@@ -125,9 +136,22 @@ export async function buildPlayerConfig(
     db.query.simulations
       .findMany({
         where: eq(simulations.project_id, project.id),
-        columns: { id: true, package_class: true, bridge_hash: true },
+        columns: {
+          id: true, package_class: true, bridge_hash: true,
+          // The pointer (migration 050). Two cheap scalars, deliberately denormalised onto this row
+          // so resolving which bytes are live costs no join on the hottest read path.
+          active_revision_id: true, active_revision_entry_key: true,
+        },
       })
-      .catch(() => [] as { id: string; package_class: string | null }[]),
+      // A degraded read here is NOT harmless. An empty list makes every simulation look
+      // revision-less, so `simulationUrlOf` falls back to the stored legacy URL and the identity
+      // axis falls back to the pre-revision derivation — correct-looking output, entirely wrong
+      // bytes, with nothing surfaced. It still must not 500 the viewer, so the catch stays; but a
+      // project with sim sections and no simulation rows is an incident, not a degradation.
+      .catch((err: unknown) => {
+        logger.error({ err, projectId: project.id }, 'buildPlayerConfig: simulation rows unavailable — every sim degrades to the legacy package');
+        return [] as SimRowShape[];
+      }),
   ]);
 
   // Main video segments (uploaded by user, not AI-generated broll sources)
@@ -223,15 +247,14 @@ export async function buildPlayerConfig(
    */
   const packageRevisionFor = (simId: string | null, url: string | null): string | null => {
     if (!simId && !url) return null;
+    const row = simId ? simRows.get(simId) : undefined;
+
     // THE PACKAGE's bridge hash, not the section URL's.
     //
     // Regenerating one section rewrites the shared bridge but stamps the new `?v=` onto only that
-    // section's URL. Deriving from the URL therefore gave two sections of ONE package — which share
-    // a single pooled document and a single runtime client — different revisions, which re-opened
-    // the transport mid-session (wedging the modern path for the rest of it) and made every poster
-    // lookup miss. `simulations.bridge_hash` is written whenever the bridge is regenerated, so
-    // every section of a package derives the same value from it.
-    const row = simId ? (simRows.get(simId) as { bridge_hash?: string | null } | undefined) : undefined;
+    // section's URL. Deriving from the URL gave two sections of ONE package — which share a single
+    // pooled document and a single runtime client — different revisions, which re-opened the
+    // transport mid-session and made every poster lookup miss.
     let bridgeHash: string | null = row?.bridge_hash ?? null;
     if (!bridgeHash && url) {
       // A package whose bridge predates the column. Falls back to the previous behaviour rather
@@ -239,7 +262,33 @@ export async function buildPlayerConfig(
       const m = /[?&]v=([^&#]+)/.exec(url);
       bridgeHash = m ? m[1] : url;
     }
-    return derivePackageRevision(simId ?? url ?? '', bridgeHash);
+
+    // ONE resolver. `simRevision.packageRevisionFor` decides whether identity comes from the active
+    // revision (immutable bytes) or from the pre-revision derivation, and this file must not make
+    // that decision a second time — a forked identity axis costs every poster (the lookup has no
+    // fallback) and leaves the canary verdict describing bytes that are no longer served.
+    return revisionIdentityFor(
+      { id: simId ?? url ?? '', bridge_hash: bridgeHash, active_revision_id: row?.active_revision_id ?? null },
+      derivePackageRevision,
+    );
+  };
+
+  /**
+   * The URL a section's simulation is actually served from — the pointer flip made visible.
+   *
+   * The STORED `simulation_url` is never rewritten. Putting the revision id into stored URLs would
+   * make activation an N-row un-transacted rewrite and break the "single pointer update" promise
+   * outright; it would also break sim-script reuse, which compares against the raw stored value.
+   * So the pointer is resolved HERE, on the way out, and nowhere else.
+   */
+  const simulationUrlOf = (simId: string | null, url: string | null): string | null => {
+    const row = simId ? simRows.get(simId) : undefined;
+    if (!row?.active_revision_entry_key || !url) return url ?? null;
+    // `?section=` and `?v=` are preserved exactly: the pool dispatches on `?section=`, and the
+    // poster/variant identity axis reads it. Dropping the query here would collapse every section
+    // of a package onto one variant key.
+    const q = url.includes('?') ? url.slice(url.indexOf('?')) : '';
+    return storage.getSimPublicUrl(row.active_revision_entry_key) + q;
   };
 
   const packageClassFor = (simId: string | null): SimPackageClass | null => {
@@ -267,7 +316,7 @@ export async function buildPlayerConfig(
           id:             s.id,
           start_sec:      s.start_sec,
           end_sec:        s.end_sec,
-          simulation_url: s.simulation_url ?? null,
+          simulation_url: simulationUrlOf(s.simulation_id, s.simulation_url),
           simulation_id:  s.simulation_id  ?? null,
           package_revision,
           // The LAST CANARY VERDICT, or null when the package has never been canaried. Null is not a
