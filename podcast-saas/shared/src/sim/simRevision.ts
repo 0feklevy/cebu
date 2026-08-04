@@ -172,27 +172,54 @@ export const POSTERS_SUBDIR = 'posters';
 export const CANARY_SUBDIR = 'canary';
 
 /**
- * Recover the revision id from a storage key, or null.
+ * The canonical simulation-prefix depth: `simulations/<projectId>/<simulationId>`.
  *
- * Anchored on the `/revisions/<id>/` segment ALONE, deliberately.
+ * `storage_prefix` is a free-form column, so `revisionPrefix` takes it verbatim. But a key parser
+ * that runs WITHOUT the prefix in hand cannot know where the prefix ends — and guessing is not a
+ * neutral mistake here, because guessing "yes, revision" grants a year of immutable caching.
+ */
+const CANONICAL_PREFIX_SEGMENTS = 3;
+export const REVISIONS_SEGMENT = 'revisions';
+
+/**
+ * Recover the revision id from a key whose storage prefix is KNOWN. Exact, no guessing.
  *
- * This regex used to require `simulations/<projectId>/<simulationId>/revisions/<id>/` — it re-derived
- * the prefix shape instead of parsing what `revisionPrefix` actually emits. That was already the
- * "two constructions of one path" bug, and changing `revisionPrefix` to take the simulation's own
- * `storage_prefix` (a free-form column, not a composed path) made it live: any simulation whose
- * prefix is not exactly that three-segment form would fail to match, and the serving layer would
- * quietly downgrade genuinely immutable bytes to revalidate-every-time. Silent, and in the direction
- * that only costs latency — which is how it would have shipped unnoticed.
+ * Prefer this wherever the simulation row is already loaded.
+ */
+export function revisionIdForPrefix(key: string, storagePrefix: string): string | null {
+  const base = `${storagePrefix.replace(/\/+$/, '')}/${REVISIONS_SEGMENT}/`;
+  if (!key.startsWith(base)) return null;
+  const id = key.slice(base.length).split('/')[0];
+  return id && isValidRevisionId(id) && key.length > base.length + id.length ? id : null;
+}
+
+/**
+ * Recover the revision id from a key WITHOUT knowing its storage prefix — positionally.
  *
- * The FIRST match is the right one: `revisionPrefix` places the segment immediately after the
- * storage prefix, and customer bytes live under `package/` BELOW it. A customer directory that
- * happens to be named `revisions` is therefore found second and cannot win.
+ * POSITIONAL, NOT "FIRST MATCH". This was a scan for the first `/revisions/<id>/` anywhere in the
+ * key, justified by "customer bytes live under `package/` below the real segment, so the real one is
+ * found first". That reasoning holds only for keys that ARE revisions. For a LEGACY key it inverts:
+ * a pre-revision package whose bundle contains a top-level `revisions/` directory sits at
+ * `simulations/<p>/<s>/revisions/<8+ chars>/…`, the scan matches the CUSTOMER's directory, and a
+ * mutable object is handed a year of immutable caching with no revalidation path. Requests can
+ * reach that shape directly: the route percent-decodes, so `%2F` arrives as a real separator.
  *
- * Returning null for anything unrecognised keeps an unfamiliar key mutable — the safe direction.
+ * So the segment must sit at exactly the depth `revisionPrefix` puts it, under the canonical
+ * three-segment simulation prefix. Any other shape returns null and stays mutable — the safe
+ * direction, and the reason a non-canonical `storage_prefix` simply never gets immutable caching
+ * rather than getting it wrongly.
  */
 export function revisionIdFromKey(key: string): string | null {
-  const m = /(?:^|\/)revisions\/([A-Za-z0-9_-]{8,64})\//.exec(key);
-  return m ? m[1]! : null;
+  const seg = key.split('/');
+  // prefix(3) + 'revisions' + id + at least one path segment below it
+  if (seg.length < CANONICAL_PREFIX_SEGMENTS + 3) return null;
+  if (seg[0] !== 'simulations') return null;
+  if (seg[CANONICAL_PREFIX_SEGMENTS] !== REVISIONS_SEGMENT) return null;
+  const id = seg[CANONICAL_PREFIX_SEGMENTS + 1];
+  if (!id || !isValidRevisionId(id)) return null;
+  // The segment below the id must be non-empty. A trailing slash splits to a final '' segment, so a
+  // length check alone accepts `…/revisions/<id>/` — a directory marker, not a file in the revision.
+  return seg.slice(CANONICAL_PREFIX_SEGMENTS + 2).some((p) => p.length > 0) ? id : null;
 }
 
 /** Is this key inside ANY immutable revision? */
