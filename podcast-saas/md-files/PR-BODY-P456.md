@@ -145,6 +145,21 @@ unreachable-by-construction — code that was tested, passing, and enforcing not
 | `enableModern()` starts a 5-hop async handshake; `activate()` ran synchronously after it | the modern path never activated on first entry, then nothing could satisfy it and no timer was armed to fail |
 | `DISPOSED.leaked` could never be non-empty | a reviewer replaced the payload with a hardcoded `[]` and nothing failed |
 
+An independent release-readiness review by two reviewers who did not author the work then found four
+more, from a clean checkout:
+
+| Defect | Consequence had it shipped |
+|---|---|
+| the viewer composited on `modern-section-presented`, emitted *before* the reveal gate runs, and ignored `modern-reveal-refused` | a context lost before `markPresented` left a dead-context iframe at full opacity for the rest of the section, with nothing to clear it |
+| `sim-canary-publish` defaulted to a poster directory the canary never writes | the documented Stage 2→3 rollout hit `EXIT.POSTERS_MISSING` on every `managed-presentable` package — Stage 3's outcome was unreachable |
+| a context lost *after* reveal had no bound | the activation parked in `RENDERING` with no failure, no recovery surface and no retry; `SIM_CONTEXT_RESTORE_TIMEOUT_MS` existed and was referenced by nothing |
+| `shared`'s typecheck passed only because TypeScript's `@types` walk escaped the repository into the developer's home directory | `pnpm --filter shared typecheck` would have failed on CI's first run |
+
+Two genuine flakes were also found by rerunning the gates from a clean worktree several times
+(2-in-5 and 1-in-6): both were real races on asynchronous render pipelines, both now wait for the
+condition with a bounded timeout that still fails if it never arrives. Neither assertion was
+weakened. Confirmed by eight consecutive clean full-suite runs.
+
 Also fixed: the port offer was addressed to the pre-rebase origin (silently discarded on any
 environment but the one the row was saved under); `packageRevision` split *within* one package;
 `undefined < 1` let a frameless acknowledgement authorise a reveal; the child accepted an array
@@ -197,7 +212,7 @@ Every number below is a real exit code from a run against a frozen tree (no conc
 | `eslint` — backend / client / admin | 0,0,0 | 0 errors |
 | **shared** vitest (new runner) | 0 | **547** |
 | **backend-api** vitest | 0 | **1125** |
-| **client-web** vitest | 0 | **699** |
+| **client-web** vitest | 0 | **700** |
 | **admin-web** vitest (new runner) | 0 | **34** |
 | ops/release vitest | 0 | **237** |
 | `sim-transport` — the REAL SimTransport, ×3 engines | 0 | **27** |
@@ -222,12 +237,20 @@ protecting suite run, and the file restored byte-for-byte (verified by sha256 an
 | `SimTransport` (real module, in-browser) | 4 | 4 |
 | `SimRuntimeClient` v3 integration | 6 | 6 |
 | reveal gate · `DOCUMENT_RESUMED` handler | 2 | 2 |
-| migration 049 SQL | 2 | 2 |
+| migration 049 SQL | 4 | 4 |
+| poster/canary destructive guards | 4 | 4 |
+| viewer compositing authority | 1 | 1 |
 
-One mutation deliberately **not** claimed as killed: deleting `holding = true` from the handshake
-deferral. It survives because the reveal gate already refuses every armed-but-not-active reveal, so
-the hold is redundant behind it. It is kept as defence in depth and recorded as unpinned in both the
-source and the test, rather than covered by an assertion that would only look like coverage.
+Two scopes stated honestly rather than rounded up:
+
+- Deleting `holding = true` from the handshake deferral kills no test. An independent reviewer
+  showed my original explanation for this was **wrong** — I had called it redundant, but the
+  deferral's own bound read that same field, so it was load-bearing for a reason its comment denied.
+  The bound now has its own flag (`handshakeDeferred`), which is what made the line genuinely
+  narrow in scope, and the comments say what is true.
+- The viewer-compositing regression kills the original **pair** (composite on the acknowledgement
+  *and* ignore the refusal), not either half alone — either half is sufficient to fix it, so neither
+  is individually observable. Verified by mutation rather than assumed.
 
 ### Migration 049 — verified without touching the shared database
 
