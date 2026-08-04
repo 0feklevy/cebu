@@ -1,125 +1,121 @@
 # Simulation pipeline — Priorities 4–6
 
-Continues the Priority 1–3 work already on this branch. Nothing here changes how any package
-behaves in production until an explicit, reversible rollout step is taken (see
-`md-files/SIM-P456-ROLLOUT.md`).
+Scope of this PR is **Priorities 4, 5 and 6 only**. Priorities 7–8 (immutable revisions, atomic
+publication, predictive scheduling, RUM, adaptive quality, package optimisation) are **not** in this
+branch and are not claimed anywhere below.
 
-- **Priority 4** — a full activation-scoped runtime protocol (v3): explicit identities, a private
+Builds on the Priority 1–3 work already on this branch.
+
+- **Priority 4** — an activation-scoped runtime protocol (v3): explicit identities, a private
   `MessageChannel` transport, document and activation state machines, and a reveal invariant.
-- **Priority 5** — posters keyed by presentation identity, a safe layered presentation surface, and
-  a publish-time browser canary that classifies packages.
+- **Priority 5** — posters keyed by presentation identity, a layered presentation surface, and a
+  publish-time browser canary that classifies packages.
 - **Priority 6** — a managed section lifecycle in the generated child bridge, with a real resource
   scope and honest automation, audio, WebGL and suspension contracts.
 
-Specification: **`md-files/SIM-RUNTIME-PROTOCOL-V3.md`**.
-Rollout and rollback: **`md-files/SIM-P456-ROLLOUT.md`**.
+Specification: `md-files/SIM-RUNTIME-PROTOCOL-V3.md` · Rollout and rollback:
+`md-files/SIM-P456-ROLLOUT.md`
+
+**Nothing here changes how any package behaves in production until an explicit, reversible rollout
+step is taken.** A package must be regenerated *and* classified `managed-presentable` by a real
+browser canary before the player will use the modern path. Every package in storage today has a
+null classification, which is treated exactly as legacy.
+
+### The v3 reveal path is not yet reachable for a generated package — stated up front
+
+The generation prompt produces **cleanup-closure** section bodies. The child runtime wraps those as
+legacy (`toLifecycle`), so `capabilities()` honestly reports `managedLifecycle: false` and
+`onDemandRender: false`, `classifyCanaryReport` caps the package at **`managed-partial`**, and
+`enableModern` declines. Following the rollout in `SIM-P456-ROLLOUT.md` end to end therefore lands a
+real package on `managed-partial` and leaves it on the v2 path.
+
+That is the protocol refusing to accept a promise the package cannot keep — the behaviour is
+correct — but it means **Priority 4's reveal path and Priority 5's layered presentation are, today,
+exercised only by the v3 fixture packages and not by any customer package.** Reaching
+`managed-presentable` requires teaching the generator to emit `ManagedSectionLifecycle` bodies that
+call `markPresented()` and allocate through `ctx.scope`. That work is **not in this PR** and is
+named as the next step in the rollout doc.
+
+What this PR does deliver for real packages: the v3 runtime is embedded in every regenerated bridge
+(so a package can be canaried at all), the canary classifies honestly, the v2 path is unchanged, and
+the whole modern path is proven end to end against fixture packages in three browsers.
 
 ---
 
-## Why a second protocol at all
+## Why a second protocol
 
-Every wrong-frame incident in this pipeline's history has the same shape: a message that was *true
-about some past state* arrived and was applied to the present. Three successive attempts to close
-that by narrowing the comparison each left a hole:
+Every wrong-frame incident in this pipeline has the same shape: a message that was *true about some
+past state* arrived and was applied to the present. Three successive attempts to close that by
+narrowing the comparison each left a hole:
 
 | Attempt | Compared | Why it was insufficient |
 |---|---|---|
 | section name | `SCRIPT_APPLIED.script === pendingScript` | A → B → A produces two activations with the same name |
 | + activation token | `token === activationToken` | Unique only within one parent's lifetime; meaningless after a reload |
-| + `contentWindow` | `e.source === frame.contentWindow` | `contentWindow` belongs to the **element**, and survives navigation |
+| + `contentWindow` | `e.source === frame.contentWindow` | `contentWindow` belongs to the **element** and survives navigation |
 
 A name is not an identity, a counter is not an identity, and an element is not a document. v3 puts
 an explicit identity on every message and moves protocol traffic onto a transport a dead document
-cannot reach.
-
-**v2 is not removed.** It still ships, still works, and is still what every stored package speaks.
+cannot reach. **v2 is not removed** — it still ships and is what every stored package speaks.
 
 ---
 
 ## Priority 4 — the protocol
 
-### Identity model
+**Identity.** Six axes, each independently able to go stale: `playerSessionId`, `packageRevision`,
+`documentId`, `activationId`, `variantKey`, `configHash`. `seq` is transport bookkeeping, not
+identity. `documentId` is deliberately not the iframe element identity — that is precisely the
+mistake `contentWindow` comparison made. `activationId` is what makes A → B → A safe.
 
-Six axes, each independently able to go stale: `playerSessionId`, `packageRevision`, `documentId`,
-`activationId`, `variantKey`, `configHash`. `seq` is transport bookkeeping, not identity.
+`configHash` uses a pure-TypeScript SHA-256 because the same hash must be computed in three places
+that share no crypto API: the backend (`node:crypto`), the browser player (WebCrypto, but async —
+and the hash is needed synchronously inside an activation) and the generated child bridge (neither).
+Verified against the FIPS 180-4 vectors and differentially against `node:crypto`.
 
-`documentId` is deliberately **not** the iframe element identity — that is exactly the mistake
-`contentWindow` comparison made. `activationId` is what makes A → B → A safe: the two A activations
-agree on package, document, variant and config and differ only there.
-
-`configHash` uses a pure-TypeScript SHA-256 (`shared/src/sim/sha256.ts`) because the same hash must
-be computed in three places that share no crypto API: the backend (has `node:crypto`), the browser
-player (has WebCrypto, but only asynchronously, and the hash is needed synchronously inside an
-activation) and the generated child bridge (has neither). Verified against the FIPS 180-4 vectors
-and differentially against `node:crypto`.
-
-### Transport
-
-```
-child boot ──hello('*')──▶ parent
-parent ──offer + MessagePort (targetOrigin = exact child origin)──▶ child
-child validates ──▶ adopts port ──▶ accept ON THE PORT
-                                    everything after this is port-only
-```
-
-The child refuses an offer unless *all* hold: `event.source === window.parent`;
-`event.origin === offer.parentOrigin`; correct kind and protocol version; all three identity fields
-present; exactly one port.
-
-A later **valid** offer from the real parent *replaces* the current port and closes the old one; it
-is not refused. Latching permanently on the first adoption was a wedge, not a defence: the parent
-gives up after a bounded deadline, so a package whose listener installs after that would latch onto
-a port the parent had already abandoned, post into a dead channel forever, and refuse every
-re-offer — running v2 for its whole life while certified modern, with no signal in either direction.
-Only `window.parent` can reach that path, so replacing is exactly as private as latching was, and it
-is the only recovery.
+**Transport.** `child hello → parent offer + MessagePort (exact origin) → child validates → adopts →
+accept on the port`. Everything after bootstrap is port-only. The child refuses an offer unless all
+hold: `event.source === window.parent`; `event.origin === offer.parentOrigin`; correct kind and
+version; all three identity fields; exactly one port. A later valid offer carrying a **new document
+epoch** replaces the port (the only recovery from an abandoned handshake); a repeat offer for the
+epoch already adopted is refused and its port closed, because adopting it would race the parent's
+own offer loop.
 
 A `srcDoc` frame, or one sandboxed without `allow-same-origin`, has an opaque origin — there is no
-exact origin to address, so the offer would have to go to `'*'`. Those surfaces stay on v2 and are
-classified legacy. That is an honest outcome, not a security exception carved out for convenience.
+exact origin to address, so those surfaces stay on v2 and are classified legacy. That is an honest
+outcome, not a security exception.
 
-### The reveal invariant
+**The reveal invariant.** A live iframe may have effective visible opacity only when the
+acknowledgement matches on all five identity axes. The comparison is written as separate statements,
+not a loop over field names — a loop reads fields dynamically, so adding a sixth axis and forgetting
+to compare it would still typecheck *and* still pass a loop-based test.
 
-A live iframe may have effective visible opacity only when the acknowledgement matches on all five
-axes. `identityRefusal` compares them as **separate statements**, not a loop over field names — a
-loop reads fields dynamically, so adding a sixth axis and forgetting to compare it would still
-typecheck *and* still pass a loop-based test.
-
-On the modern path **there is no `force`**. A v3 package promised `SECTION_PRESENTED` by completing
+On the modern path **there is no force**. A v3 package promised `SECTION_PRESENTED` by completing
 the handshake, so a timeout produces a bounded failure, never a frame nothing vouched for.
-
-`SECTION_PRESENTED` carries `framesSubmitted`, and the parent refuses any acknowledgement claiming
-zero — accepting one would make the message mean "the child got the message".
-
-### Classification gates the protocol
-
-Capability is what a package **can** do (its `DOCUMENT_READY` report). Classification is what it has
-been **observed** doing (the canary verdict). Only classification changes player behaviour:
-`enableModern` refuses to offer a bootstrap below `managed-presentable`, and a `null` class (never
-canaried — i.e. every package in production today) is treated exactly as legacy.
+`SECTION_PRESENTED` carries `framesSubmitted` and the parent refuses any acknowledgement claiming
+zero. Every wait on this path is bounded and every bound leads somewhere: prepare and present have
+their own timeouts, and the handshake window — including the gap between a child adopting the port
+and reporting readiness — is bounded into the same failure rather than held open.
 
 ---
 
 ## Priority 5 — posters, layers, canaries
 
-Posters are keyed by `packageRevision + variantKey + configHash + aspectProfile + qualityProfile`
-and stored under the simulation's own prefix, so deleting a simulation removes its posters with it.
-There is **no** fallback to another identity's poster — a generic package screenshot shown for a
-specific variant is worse than no poster, because the user sees one picture and then a visibly
-different one.
+Posters are keyed by `packageRevision + variantKey + configHash + aspectProfile + qualityProfile`,
+stored under the simulation's own prefix so deleting a simulation removes them with it. There is no
+fallback to another identity's poster.
 
 The layered surface is `top: poster/cover/recovery · middle: incoming · bottom: outgoing`. The
-incoming frame is reachable only from a matched `SECTION_PRESENTED`; there is no timer in either
-the policy or the component.
+incoming frame is reachable only from a matched `SECTION_PRESENTED`; there is no timer in either the
+policy or the component. The resident pool is rendered in one fixed slot and never re-parented —
+React rebuilds a subtree whose parent changes, which would destroy every warm iframe on each
+hand-back to video.
 
 The canary drives a staged package through the full protocol in a real browser, captures posters at
 each size, and classifies. An aborted run yields `failed`, never a downgrade to a legacy class —
 `legacy-cooperative` is a statement that the package was *observed* behaving cooperatively, and an
-aborted run observed nothing.
-
-`sim-canary-publish.ts` is the gate. Dry-run by default; refuses an incomplete report, a stamped
-classification the report's own steps do not support, and a modern grant whose posters are missing
-(a modern package's failure policy offers `poster-only` as its *first* recovery action).
+aborted run observed nothing. `sim-canary-publish.ts` is the gate: dry-run by default, refusing an
+incomplete report, a stamped classification the report's own steps do not support, and a modern
+grant whose posters are missing.
 
 ---
 
@@ -132,124 +128,134 @@ some point been answered by the player *guessing*.
 
 The managed scope tracks rAF, timers, listeners, AbortControllers, fetches, Workers, ports, media,
 Web Animations, AudioContexts/nodes, object URLs, ImageBitmaps, observers and Three.js resources,
-with pause / resume / release / dispose, real counters and a leak report.
-
-A body returning a plain cleanup function is wrapped and classified **legacy** — `__managed` stays
-false, so the capability report and the classification both tell the truth about it.
+with pause / resume / release / dispose, real counters and a leak report that can genuinely be
+non-empty. A body returning a plain cleanup function is wrapped and classified **legacy**.
 
 ---
 
-## Defects found and fixed during this work
+## Defects found and fixed
 
-Every one of these was found by a test or an independent reviewer, not by inspection.
+Every one was found by a test or an independent reviewer, not by inspection. Four were
+unreachable-by-construction — code that was tested, passing, and enforcing nothing:
 
-| # | Defect | How it was found | Fix |
-|---|---|---|---|
-| 1 | `capabilities()` derived the report from the *installed* lifecycle, which is necessarily `null` at `INIT_DOCUMENT` — so `managedLifecycle` and `onDemandRender` were **false for every package that could ever exist**. The modern path would have been dead code in production while every test passed. | canary track review | derive from the static generation-time descriptor; added the assertion that would have caught it |
-| 2 | `DISPOSED.leaked` could never be non-empty — `disposeAll` zeroed every counter unconditionally, so the message meant to *prove* no leak proved nothing (a reviewer replaced the payload with a hardcoded `[]` and every test still passed) | fixture track review | release per-resource; an entry stays counted and named when its dispose throws |
-| 3 | **`resume()` never re-requested animation frames.** A suspended-then-resumed document's render loop was permanently dead — and the stranded record was silently dropped at dispose, so the leak report could not reveal it either. Reached directly by the resident pool's own `freeze()`/`thaw()`. | leak suite, all 3 engines | retain the wrapped callback and re-schedule exactly one frame on resume |
-| 4 | **`AUTOMATION_PAUSED` was acknowledged for automation that kept running.** `registerAutomation` stored the native handle; `pause`/`resume`/`resumeAutomation` all re-assign it, so after one round trip the lookup found nothing, cleared nothing, and acknowledged anyway. | leak suite, all 3 engines | track the record, not the handle; report how many were actually stopped |
-| 5 | The fixture freshness check stat'd only `gen-sim-fixture.ts`, but the emitted bridge embeds the child runtime — so a child-runtime change silently tested **stale bytes**. Two real fixes were re-run against pre-fix bytes and reported as still-failing. | investigating #3/#4 | freshness considers every source the bytes come from |
-| 6 | Wrapping the resident pool in the layered surface re-parents it, and React rebuilds a subtree whose parent changes — **every warm iframe destroyed on each hand-back to video**, the exact cost the pool exists to avoid | wiring agent flagged it | pool stays in one fixed slot; layers render as a sibling and drive visibility through `onDecision`. Pinned by a DOM node-identity assertion across a real flip |
-| 7 | A frame attached *after* `enableModern` under the same document key never opened a transport — the package would silently run v2 while reporting itself canary-proven | self-review | open the transport when the element arrives |
-| 8 | A late `SECTION_PRESENTED` for a *released* activation still matched identity, and reported success and reset the breaker even though the machine refused it | self-review | only report success when the reducer actually advanced |
-| 9 | `pause()` cannot stop a Worker (only terminate can, which would destroy the state being returned to), yet `unstoppable` never mentioned one — a document could report quiescence with a Worker computing | leak suite inspection | a tracked Worker is reported as unstoppable |
-| 10 | The scope's leak callback discarded `where` and hardcoded `stage: 'automation'`, so a throwing *dispose* surfaced as an automation error with no resource name | leak suite inspection | carry the location and the correct stage |
+| Defect | Consequence had it shipped |
+|---|---|
+| `capabilities()` read the *installed* lifecycle, necessarily null at `INIT_DOCUMENT` | `managedLifecycle`/`onDemandRender` false for **every package that could exist** — the modern path dead code in production while every test passed |
+| `mayReveal` compared the same object on both sides | all five mismatch branches unreachable from production |
+| `enableModern()` starts a 5-hop async handshake; `activate()` ran synchronously after it | the modern path never activated on first entry, then nothing could satisfy it and no timer was armed to fail |
+| `DISPOSED.leaked` could never be non-empty | a reviewer replaced the payload with a hardcoded `[]` and nothing failed |
+
+Also fixed: the port offer was addressed to the pre-rebase origin (silently discarded on any
+environment but the one the row was saved under); `packageRevision` split *within* one package;
+`undefined < 1` let a frameless acknowledgement authorise a reveal; the child accepted an array
+payload the parent rejects; suspended documents never resumed their render loop;
+`AUTOMATION_PAUSED` was acknowledged for automation that kept ticking; a leaked `MessagePort` pair
+per navigation; and wrapping the resident pool in the layered surface destroyed every warm iframe on
+each exit to video.
+
+Four were introduced by earlier fixes **in this same change** and caught before merge: a
+port-replacement rule that raced the parent's own offer loop; an opaque cover that painted over the
+frame it was meant to stand in for; a deferral that returned without holding, leaving the v2 paint
+path free to present a document with nothing applied; and a reveal gate keyed on `modernActive()`,
+which goes false on a confirmed suspend — so the entire five-axis invariant was bypassable via the
+legacy branch, and the fix for it initially left a legitimately-legacy package permanently invisible.
+
+The last of those exposed a **blocking** defect underneath: `DOCUMENT_RESUMED` had no handler at
+all. The child sends it, the protocol accepts it, and the document machine's only edge out of
+`SUSPENDED` is `RESUMED` — but nothing dispatched it, so one confirmed suspend left the document
+suspended for the rest of the session. The resident pool suspends frames routinely while warming
+them, so an ordinary scrub-away-and-return reached it.
+
+---
+
+## Corrections to earlier claims in this PR's history
+
+Stated plainly because they were reported as green and were not:
+
+- **"lint ×3: 0 errors"** was false — real exit codes were `1, 1, 0`. The measurement piped ESLint
+  through `tail` and counted summary lines instead of reading the exit code. Backend had 567 parse
+  errors from ESLint reading `.local-storage/hls/**/*.ts` — MPEG-TS **video segments**, not
+  TypeScript. Fixed by ignoring that gitignored dev-only path; client had two genuine
+  `no-useless-assignment` errors, fixed by asserting the discarded transitions.
+- **"rebuilt-package 12/12 ×3 engines"** was stale — the suite had regressed to **12 skipped**
+  because it depended on a dump that required production storage.
+- **"all shared tests / all admin tests"** were never run — neither package had a test runner.
+- **Protocol browser coverage** was overstated: `sim-protocol`, `sim-canary` and `sim-leak`
+  *re-express* `SimTransport` rather than importing it, so the shipping parent transport had no
+  browser coverage at all. `e2e/sim-transport.spec.ts` now bundles and drives the real module.
 
 ---
 
 ## Verification
 
-All numbers below were produced by running the command, not inferred.
+Every number below is a real exit code from a run against a frozen tree (no concurrent edits,
+`--retries=0`, `--workers=1`). Zero failed, zero flaky, zero skipped, zero `fixme` anywhere.
 
-### Unit and static
-
-| Suite | Result |
-|---|---|
-| `shared` typecheck | clean |
-| `backend-api` typecheck | clean |
-| `client-web` typecheck | clean |
-| `admin-web` typecheck | clean |
-| backend vitest | **1076 passed**, 69 files |
-| client vitest | **657 passed**, 24 files (stable across 3 consecutive runs) |
-| ops/release vitest | **237 passed**, 21 files |
-| eslint × 3 packages | 0 errors |
-
-### Browser, all with `--retries=0`
-
-| Suite | Chromium | Firefox | WebKit |
-|---|---|---|---|
-| `viewer-e2e` (the Priority 1–3 regression gate) | 25 | 25 | 25 — **75 total, 0 failed, 0 flaky, 0 skipped** |
-| `sim-leak` (100× A→B→A = 300 activations, 100× suspend/resume, 20 document epochs) | 12 | 12 | 12 — **36 total** |
-| `sim-canary` | 11 | — | — (all-engine mode behind `CANARY_ALL_ENGINES`) |
-
-Leak plateaus, identical in all three engines, every kind `ok` with **zero drift**: `rafCallbacks`
-1/4, `intervals` 1/4, `listeners` 1/64 (7/64 on the independent native observer), `abortControllers`
-1/4, `objectUrls` 1/2, `glTextures` 1/256.
-
-### The canary actually discriminates
-
-Run for real, not listed:
-
-| Package | Verdict | Why |
+| Gate | Exit | Result |
 |---|---|---|
-| `v3allmanaged` | **`managed-presentable`** — modern path granted | every case passed every step, full capabilities, no leaks |
-| `v3managed` | **`managed-partial`** — withheld | carries one legacy-bodied section, so it cannot honestly claim the suspension guarantee for every variant |
+| `tsc --noEmit` — shared / backend / client / admin | 0,0,0,0 | 0 errors |
+| `eslint` — backend / client / admin | 0,0,0 | 0 errors |
+| **shared** vitest (new runner) | 0 | **547** |
+| **backend-api** vitest | 0 | **1125** |
+| **client-web** vitest | 0 | **699** |
+| **admin-web** vitest (new runner) | 0 | **34** |
+| ops/release vitest | 0 | **237** |
+| `sim-transport` — the REAL SimTransport, ×3 engines | 0 | **27** |
+| `sim-protocol` ×3 engines | 0 | **48** |
+| `sim-leak` ×3 engines | 0 | **36** |
+| `sim-canary` | 0 | **11** |
+| `sim-transitions` ×3 engines | 0 | **36** |
+| `rebuilt-packages` ×3 engines | 0 | **12** (previously 12 *skipped*) |
+| `viewer-e2e` chromium / firefox / webkit | 0,0,0 | **25 / 25 / 25** |
 
-16 poster renditions captured (4 identities × 2 sizes × 2 packages). A gate only ever observed
-saying *yes* has not been observed working.
+Isolated production builds (copied tree, symlinked `node_modules`, so no dev server's `.next` is
+touched): shared, backend-api, client-web, admin-web — all exit 0.
 
-### Production builds
+### Mutation testing
 
-`shared`, `backend-api`, `client-web`, `admin-web` — **4/4 exit 0**. Viewer route
-`/projects/[id]/view`: 2.5 kB route, 364 kB First Load JS.
+Protections are proven load-bearing, not assumed. Every mutation was applied to the real source, the
+protecting suite run, and the file restored byte-for-byte (verified by sha256 and `git diff`).
 
-### Additivity, checked at the byte level
+| Target | Mutations | Killed |
+|---|---|---|
+| protocol / poster / canary modules | 10 | 10 |
+| `SimTransport` (real module, in-browser) | 4 | 4 |
+| `SimRuntimeClient` v3 integration | 6 | 6 |
+| reveal gate · `DOCUMENT_RESUMED` handler | 2 | 2 |
+| migration 049 SQL | 2 | 2 |
 
-The generated fixtures for `modern`, `legacy`, `nopaint`, `delayedack` and `noraf` contain **zero**
-occurrences of the v3 runtime marker; only `v3managed` and `v3allmanaged` carry it. `wrapBridgeCombined`
-emits it only when explicitly asked, and only the production generation path asks.
+One mutation deliberately **not** claimed as killed: deleting `holding = true` from the handshake
+deferral. It survives because the reveal gate already refuses every armed-but-not-active reveal, so
+the hold is redundant behind it. It is kept as defence in depth and recorded as unpinned in both the
+source and the test, rather than covered by an assertion that would only look like coverage.
+
+### Migration 049 — verified without touching the shared database
+
+`backend-api/src/db/__tests__/migration049.test.ts` replays the real migrations 001–048 into PGlite
+(an in-process Postgres), then applies the real 049 on top — replay rather than hand-built ancestor
+tables, because a hand-written `simulations` would inevitably be written from the post-049 schema,
+which is the assumption under test. **23 tests**: applies cleanly, idempotent, pre-existing rows
+survive with the four new columns NULL, the real Drizzle query shapes work afterwards, every
+constraint and the CASCADE hold, and the rollback round-trip restores the exact pre-049 catalog.
+
+It also asserts the **failure mode**: before the migration those same queries raise `42703`
+(`42P01` for `sim_posters`). That is the regression test for the deployment-ordering hazard — the
+one thing that would have caught it.
 
 ---
 
-## Remaining work for Priorities 7–8
+## Data safety
 
-Not implemented here, deliberately:
-
-- **immutable revisions** — `packageRevision` is currently *derived* from the simulation id plus the
-  bridge hash in the section URL. That invalidates posters and canary verdicts correctly whenever a
-  bridge changes, but it is derivation, not publication.
-- **atomic publication** and **rollback pointers** — publication is currently per-object with an
-  ordering discipline (objects before rows), not an atomic pointer switch.
-- **manifest serving** — no canonical manifest exists yet; the bridge hash stands in for one.
-- **predictive scheduling** — preparation is still driven by the existing pool warm/stagger logic,
-  not by measured stage latency.
-- **video-frame clock** — section boundaries still come from `timeupdate`, not
-  `requestVideoFrameCallback`.
-- **production RUM** — telemetry events exist and are named, but there is no correlated pipeline,
-  sampling policy, retention policy or dashboard.
-- **adaptive quality** — `SET_QUALITY`/`QUALITY_APPLIED` are implemented end to end, but nothing
-  decides *when* to change profile.
-- **package-level performance optimization** — no package has been profiled or optimised.
-- **physical-device validation** — untested; no device access. WebKit is the closest available
-  proxy and runs on every gate. This remains a prerequisite for a broad rollout.
-
+No production database, storage, rebuild or merge occurred at any point. Migration 049 was **not**
+applied to the shared preview/production database (per `CLAUDE.md`, preview and production share
+one). It is proven instead against an isolated PGlite database, including the pre-migration `42703`
+failure mode that makes the deployment ordering explicit.
 
 ---
 
-## One known test sensitivity, stated rather than hidden
+## Remaining rollout requirement
 
-`viewer-e2e` S5 failed once across four full runs, on the slowest (13.6 min vs a 10.9–11.2 min
-baseline — i.e. the run competing with other work). It passes 3/3 in isolation on WebKit and the
-other three full runs were 75/75.
-
-The mechanism is in the test, not the product: S5 samples from `startBad.receivedAt + SIM_FADE_MS`
-— a **child** clock timestamp — to `+2500 ms`, while the runtime's terminal apply-stall bound is
-`SIM_APPLY_STALL_MS = 3000 ms` measured from the **parent's** activate. Those are two clocks with a
-500 ms margin between them. Under saturation the skew can exceed it, letting the terminal bound —
-correct, designed behaviour — land inside the window the test asserts nothing may be presented in.
-
-The `delayedack` package is byte-identical (10306 bytes, no v3 runtime, `BADTOKEN` and `tokenDelta`
-intact), so nothing in this change reaches it. The fix is to re-anchor the window to the parent's
-activate plus the real constant; it is deliberately **not** done here, because changing a Priority 3
-acceptance test to make a red run green is the wrong move to take on a hunch mid-verification.
+**Physical-device validation is outstanding and is not claimed anywhere in this PR.** Safari on a
+physical iPhone, at least one constrained Android device, and one older/integrated-GPU desktop
+remain prerequisites for a broad rollout. Desktop WebKit is the closest available proxy and runs on
+every gate, but it is not a substitute and is not reported as one.

@@ -235,5 +235,5 @@ export function __resetIdCounterForTests(): void {
  * an opaque string.
  */
 export function derivePackageRevision(simulationId: string, bridgeHash: string | null | undefined): PackageRevision {
-  return sha256Hex(`${simulationId} ${bridgeHash ?? 'no-bridge'}`).slice(0, 16);
+  return sha256Hex(`${simulationId}\u0000${bridgeHash ?? 'no-bridge'}`).slice(0, 16);
 }

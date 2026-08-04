@@ -65,6 +65,7 @@ import {
   DISPOSE_DOCUMENT,
   DOCUMENT_ERROR,
   DOCUMENT_READY,
+  DOCUMENT_RESUMED,
   DOCUMENT_SUSPENDED,
   DOMAIN_EVENT,
   CONTEXT_LOST,
@@ -108,6 +109,7 @@ import {
   type ActivationMachineState,
 } from 'shared/src/sim/activationMachine';
 import {
+  SIM_HANDSHAKE_TIMEOUT_MS,
   SIM_PREPARE_TIMEOUT_MS,
   SIM_PRESENT_TIMEOUT_MS,
   allowsAggressivePreparation,
@@ -519,9 +521,56 @@ export class SimRuntimeClient {
     // this activation down the v2 path instead. For a warm resident frame the child has already
     // sent its hello, so the first offer is adopted in one in-process round trip and the deferral
     // is imperceptible.
-    if (opts.reveal !== 'never' && this.transport?.getMode() === 'offering') {
+    // The window is "armed but not yet ready", not merely "still offering". Between the child
+    // adopting the port and DOCUMENT_READY arriving there are two more hops, and an activation
+    // landing in that gap took the v2 path — after which `pendingActivate` re-drove the SAME
+    // section as PREPARE_SECTION on readiness. That is the double-apply this deferral exists to
+    // prevent: the body would run once outside the managed scope, where its timers and listeners
+    // are untracked.
+    if (
+      opts.reveal !== 'never' &&
+      this.modernSetup !== null &&
+      !this.modernActive() &&
+      this.transport !== null &&
+      this.transport.getMode() !== 'legacy' &&
+      this.transport.getMode() !== 'closed'
+    ) {
       this.tel('modern-activate-deferred', { variantKey: opts.script });
-      this.set({ phase: 'applying', pendingScript: opts.script, lastError: null });
+      // HOLD, and hide, for the whole deferral.
+      //
+      // Returning without setting the hold left the v2 reveal path live: a SIM_PAINTED arriving
+      // during the handshake window reached maybeReveal with `holding` false, and because the
+      // transport had not settled yet `modernActive()` was still false, so reveal() took the LEGACY
+      // branch and presented a document that had been sent no startScript and no PREPARE_SECTION —
+      // a frame with nothing applied to it at all. The deferral is bounded by
+      // SIM_BOOTSTRAP_TIMEOUT_MS, and both exits clear the hold: activateModern() installs its own,
+      // and the legacy fallback re-enters activate(), whose cancelPendingApply() releases it.
+      // Defence in depth, and knowingly redundant today: the reveal gate above already refuses any
+      // armed-but-not-active reveal, so no test can make this line individually observable (proven
+      // by mutation — see simRuntimeClientModern.test.ts). It is kept because it is what stops
+      // `present()` and the legacy ceiling if the gate is ever narrowed, and because a deferral that
+      // did not hold is what caused the defect this branch exists for.
+      this.holding = true;
+      this.set({
+        phase: 'awaiting-ack',
+        pendingScript: opts.script,
+        lastError: null,
+        visible: false,
+        interactive: false,
+      });
+      // BOUND IT. While the transport is still `offering` its own deadline settles the matter, but
+      // once it has adopted a port there is no timer anywhere: a child that takes the port and then
+      // goes silent before DOCUMENT_READY would hold the section hidden for the whole session with
+      // no failure raised and nothing to recover from. Every wait in this protocol has a bound that
+      // leads somewhere; this one leads to the same bounded failure a prepare timeout does.
+      const gen = this.generation;
+      this.clearPrepareTimer();
+      this.prepareTimer = setTimeout(() => {
+        this.prepareTimer = null;
+        if (this.generation !== gen || this.disposed) return;
+        if (this.modernActive() || !this.holding) return;   // readiness landed; nothing to do
+        this.failModern('handshake-failed', 'the document adopted a port but never became ready');
+      }, SIM_HANDSHAKE_TIMEOUT_MS + SIM_PREPARE_TIMEOUT_MS);
       return;
     }
 
@@ -736,6 +785,23 @@ export class SimRuntimeClient {
       case DOCUMENT_SUSPENDED:
         this.docMachine = documentReducer(this.docMachine, { type: 'SUSPENDED' });
         return;
+      case DOCUMENT_RESUMED:
+        // WITHOUT THIS THE DOCUMENT NEVER COMES BACK. The child sends DOCUMENT_RESUMED, the
+        // protocol accepts it, and the machine's only edge out of SUSPENDED is `RESUMED` — but
+        // nothing dispatched it, so a document that confirmed one suspend stayed SUSPENDED for the
+        // rest of the session. `modernActive()` then read false forever, which the reveal gate and
+        // the handshake deferral both treat as "not ready yet": the section was held, hidden, with
+        // no timer able to release it. The resident pool suspends frames routinely while warming
+        // them, so this was reachable on an ordinary scrub-away-and-return.
+        this.docMachine = documentReducer(this.docMachine, { type: 'RESUMED' });
+        this.tel('modern-document-resumed');
+        // A hold that was waiting on readiness can now proceed.
+        if (this.pendingActivate && this.modernActive()) {
+          const opts = this.pendingActivate;
+          this.tel('modern-activate-on-resume', { variantKey: opts.script });
+          this.activateModern(opts);
+        }
+        return;
       case CONTEXT_LOST:
         this.docMachine = documentReducer(this.docMachine, { type: 'CONTEXT_LOST' });
         if (this.actMachine) this.actMachine = activationReducer(this.actMachine, { type: 'CONTEXT_LOST' });
@@ -913,6 +979,10 @@ export class SimRuntimeClient {
   private failModern(kind: Parameters<typeof recordFailure>[1], message: string): void {
     this.clearPrepareTimer();
     this.clearPresentTimer();
+    // A failure ends the hold. Leaving it set would make the bounded failure unbounded in practice:
+    // the recovery surface would be offered over a document nothing could ever reveal.
+    this.holding = false;
+    this.pendingActivate = null;
     if (this.actMachine) this.actMachine = activationReducer(this.actMachine, { type: 'FAIL', reason: message });
     this.breaker = recordFailure(this.breaker, kind);
     this.failure = makeFailure(kind, message, this.attempt, this.failureCtx, this.breaker);
@@ -940,6 +1010,14 @@ export class SimRuntimeClient {
   }
 
   private teardownModern(): void {
+    // RELEASE THE HOLD. The handshake-window deferral sets `holding` and returns, expecting one of
+    // two exits to clear it: activateModern on DOCUMENT_READY, or the legacy fallback in onMode.
+    // Tearing the modern path down takes neither — it drops `pendingActivate` on the floor — so a
+    // deferral interrupted by a teardown left `holding` true with nothing able to clear it, and
+    // `maybeReveal` returns early while it is set. The document would then never be shown again,
+    // by any path. Reachable when enableModern is re-armed with a class below managed-presentable
+    // (a canary verdict published between two activations) while a deferral is in flight.
+    this.holding = false;
     this.pendingActivate = null;
     this.clearPrepareTimer();
     this.clearPresentTimer();
@@ -989,7 +1067,27 @@ export class SimRuntimeClient {
     // axes match the intent the player currently holds. A timeout, a paint, a matching section
     // name and a matching contentWindow have each in turn been the thing that authorised a reveal
     // here, and each in turn was shown to authorise a wrong one.
-    if (this.modernActive()) {
+    // ARMED, not ACTIVE. Gating on `modernActive()` left a hole big enough to drive the whole
+    // invariant through: `modernActive()` requires `acceptsCommands(docMachine)`, which goes FALSE
+    // the moment the child confirms DOCUMENT_SUSPENDED — and the resident pool suspends frames
+    // routinely while it warms them (freeze()/thaw()). With it false, reveal() fell through to the
+    // LEGACY branch, whose only conditions are `painted` and `holding`. A regenerated package
+    // carries both listeners, so a v2 SIM_PAINTED then revealed it — and it revealed even for an
+    // acknowledgement carrying a DIFFERENT packageRevision, because mayReveal was never consulted
+    // at all. Once a client has armed the modern path, the modern gate is the only gate.
+    // ARMED AND VIABLE. Not simply "armed": a transport that settled on `legacy` means this
+    // document does not speak v3 after all, and the v2 path is then the correct and only way it can
+    // ever be shown — gating on `modernSetup` alone left such a package permanently invisible.
+    const modernArmed =
+      this.modernSetup !== null &&
+      this.transport !== null &&
+      this.transport.getMode() !== 'legacy' &&
+      this.transport.getMode() !== 'closed';
+    if (modernArmed) {
+      if (!this.modernActive()) {
+        this.tel('modern-reveal-refused', { refusal: 'document-not-ready' });
+        return;
+      }
       const act = this.actMachine;
       if (!act) { this.tel('modern-reveal-refused', { refusal: 'no-activation' }); return; }
       // `current` is the LIVE intent, rebuilt from what the client wants on screen right now —

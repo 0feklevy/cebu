@@ -5,7 +5,7 @@ import type { StorageService } from '../storage/StorageService.js';
 import { LLMService } from '../llm/LLMService.js';
 import { db } from '../../db/index.js';
 import { simulations, system_prompts } from '../../db/schema.js';
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull, ne, or } from 'drizzle-orm';
 import { logger } from '../../lib/logger.js';
 import { buildUiControlsPromptBlock, type SimUiSelection } from './SimUiControls.js';
 import { buildChildRuntimeSource } from './simRuntimeChild.js';
@@ -2491,6 +2491,15 @@ export class SimulationService {
       // classified `managed-presentable`, so a package that can speak v3 but has never proven it
       // still runs on the v2 path. Emitting the runtime here is what makes that proof possible at
       // all — a package with no v3 code can never be canaried into the modern class.
+      //
+      // `allManaged` / `anyQuality` are deliberately LEFT FALSE, and that is not an oversight: the
+      // generation prompt produces cleanup-closure bodies, which `toLifecycle` wraps as legacy. A
+      // package whose bodies cannot suspend or render on demand must not claim it can — so
+      // `capabilities()` reports those false, `classifyCanaryReport` caps the package at
+      // `managed-partial`, and `enableModern` declines. The consequence, stated plainly because it
+      // is easy to miss: a package generated today CANNOT reach `managed-presentable`, so the v3
+      // reveal path is not yet reachable for it. Closing that requires teaching the generator to
+      // emit ManagedSectionLifecycle bodies — see md-files/SIM-P456-ROLLOUT.md.
       const combinedBridge = wrapBridgeCombined(sectionEntries, { runtimeV3: true });
       const hash = computeBridgeHash(combinedBridge);
 
@@ -2500,11 +2509,28 @@ export class SimulationService {
       // Every section of this package now derives the same revision from it — which is what makes
       // the revision an identity of the package rather than of whichever section was saved last.
       try {
-        await db.update(simulations).set({ bridge_hash: hash }).where(eq(simulations.id, simId));
+        // Regenerating the bridge INVALIDATES the canary verdict, so clear it with the hash.
+        //
+        // The verdict is a statement about specific bytes. Leaving it in place while the bytes
+        // change grants the modern path to a package no canary ever ran — and every poster lookup
+        // then misses, because poster identities carry the OLD revision. That is exactly the state
+        // sim-canary-publish refuses to publish (EXIT.POSTERS_MISSING), reached through the back
+        // door. The WHERE means an idempotent regeneration that produces the identical hash keeps
+        // its verdict; only a genuine change clears it.
+        await db.update(simulations)
+          .set({ bridge_hash: hash, package_class: null, canary_report: null, canary_at: null })
+          .where(and(
+            eq(simulations.id, simId),
+            or(isNull(simulations.bridge_hash), ne(simulations.bridge_hash, hash)),
+          ));
       } catch (err) {
-        // Pre-migration image: the column does not exist yet. The revision then falls back to the
-        // section URL, which is the behaviour that shipped before this column — degraded, not broken.
-        logger.warn({ err, simId }, 'sim: could not record bridge_hash (migration 049 not applied?)');
+        // ONLY the pre-migration case may be swallowed. The bridge bytes were uploaded a few lines
+        // above, so any other failure here leaves the NEW bytes live under the OLD bridge_hash and
+        // the OLD canary verdict — precisely the "a verdict is a statement about specific bytes"
+        // back door this write exists to close. Demoting that to a warn log would hide it.
+        const code = (err as { code?: string } | null)?.code;
+        if (code !== '42703') throw err;
+        logger.warn({ err, simId }, 'sim: bridge_hash column absent — migration 049 not applied yet');
       }
 
       // Update index.html in place (stable marker approach). Fall back to public URL read

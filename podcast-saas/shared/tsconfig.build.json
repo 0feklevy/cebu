@@ -1,0 +1,13 @@
+{
+  // The EMITTING project. `tsconfig.json` deliberately still includes `src/**/__tests__/**` so that
+  // a bare `tsc --noEmit` (and `pnpm typecheck`) typechecks the test suite; this one excludes it so
+  // the published `dist/` does not.
+  //
+  // Two reasons the build must not see the tests. First, they `import … from 'vitest'`, which is a
+  // devDependency — a production install (`npm install --production`, per the hosting docs) would
+  // fail the build on an unresolvable module in a file nothing ships. Second, emitting
+  // `dist/sim/__tests__/*.js` puts test code inside the package's own `exports` surface, where a
+  // consumer could import it.
+  "extends": "./tsconfig.json",
+  "exclude": ["node_modules", "dist", "src/_archive/**", "src/**/__tests__/**"]
+}
