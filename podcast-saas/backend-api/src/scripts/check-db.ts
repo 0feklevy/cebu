@@ -63,6 +63,11 @@ const MIGRATION_FILES = [
   '043_permalink_slugs.sql',
   '044_podcast_studio.sql',
   '045_podcast_audio_studio.sql',
+  '046_token_usage_cost_precision.sql',
+  '047_complex_model_opus.sql',
+  '048_sim_pool_mode.sql',
+  '049_sim_posters.sql',
+  '050_sim_revisions.sql',
 ];
 
 type Row = Record<string, unknown>;

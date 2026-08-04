@@ -453,8 +453,67 @@ export const simulations = pgTable('simulations', {
   package_class:    text('package_class'),                          // SimPackageClass | null
   canary_report:    jsonb('canary_report'),                         // CanaryReport | null
   canary_at:        timestamp('canary_at', { withTimezone: true }),
+  // ── Immutable package revisions (migration 050) ─────────────────────────────
+  // THE POINTER. The only mutable thing about a revisioned package: everything it points at lives
+  // under a path containing the revision id and is never rewritten. NULL means this simulation has
+  // no revisions and serves from its legacy mutable prefix — packageRevisionFor() falls back to the
+  // pre-revision derivation for exactly that case, which is what makes 050 strictly additive.
+  //
+  // No .references() here: the FK is declared in 050 and adding it to the Drizzle table would make
+  // simulations and sim_revisions mutually recursive at module scope. It is enforced in the DB.
+  active_revision_id:        uuid('active_revision_id'),
+  // Full storage key of the active revision's entry document. Denormalised so buildPlayerConfig —
+  // the hottest read path — resolves the pointer without joining. Written in the SAME UPDATE as
+  // active_revision_id; simulations_active_revision_pair_chk forbids them from disagreeing.
+  active_revision_entry_key: text('active_revision_entry_key'),
+  // Monotonic allocator for revision_number, incremented under the row lock. Never max()+1.
+  revision_counter:          integer('revision_counter').notNull().default(0),
   created_at:       timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * One immutable published package revision (migration 050).
+ *
+ * A revision's bytes are written once, under a prefix containing its id, and never rewritten.
+ * Switching which revision is live is a single pointer update on `simulations`, so a viewer holding
+ * the old pointer keeps receiving a complete, self-consistent old package rather than a mix.
+ *
+ * The canary verdict lives HERE and not only on the simulation row because activation and rollback
+ * change which bytes are served WITHOUT touching bridge_hash — and bridge_hash is what currently
+ * clears the row-level verdict. A verdict that survived a rollback would grant the modern runtime
+ * path to bytes no canary ever ran against.
+ */
+export const sim_revisions = pgTable(
+  'sim_revisions',
+  {
+    id:                       uuid('id').primaryKey().defaultRandom(),
+    simulation_id:            uuid('simulation_id').notNull().references(() => simulations.id, { onDelete: 'cascade' }),
+    revision_number:          integer('revision_number').notNull(),
+    status:                   text('status').notNull().default('draft'),   // SimRevisionStatus
+    manifest_hash:            text('manifest_hash'),
+    entry_path:               text('entry_path'),                          // prefix-relative, inside the revision
+    bridge_protocol_version:  integer('bridge_protocol_version'),
+    runtime_protocol_version: integer('runtime_protocol_version'),
+    package_class:            text('package_class'),                       // SimPackageClass | null
+    canary_report:            jsonb('canary_report'),
+    canary_at:                timestamp('canary_at', { withTimezone: true }),
+    rollback_of_revision_id:  uuid('rollback_of_revision_id'),             // FK declared in 050
+    created_by:               text('created_by'),                          // may be a script, so no FK
+    metadata:                 jsonb('metadata'),
+    created_at:               timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    activated_at:             timestamp('activated_at', { withTimezone: true }),
+    retired_at:               timestamp('retired_at', { withTimezone: true }),
+  },
+  (t) => ({
+    uniq_sim_number: unique('uniq_sim_revisions_sim_number').on(t.simulation_id, t.revision_number),
+    idx_sim_activated: index('idx_sim_revisions_sim_activated').on(t.simulation_id, t.activated_at),
+    idx_status_created: index('idx_sim_revisions_status_created').on(t.status, t.created_at),
+    // uniq_sim_revisions_active — the partial unique index enforcing at most one active revision
+    // per simulation — is declared in 050 only. Drizzle's index builder has no WHERE clause, so
+    // expressing it here would silently create a TOTAL unique index and forbid a simulation from
+    // ever having a second revision.
+  }),
+);
 
 /**
  * Captured poster images, one row per presentation identity (migration 049).
@@ -1179,6 +1238,8 @@ export type NewCourseLesson = typeof course_lessons.$inferInsert;
 export type CourseCustomDomain = typeof course_custom_domains.$inferSelect;
 export type ProjectRedirectTarget = typeof project_redirect_targets.$inferSelect;
 export type SimulationRow = typeof simulations.$inferSelect;
+export type SimRevisionRow = typeof sim_revisions.$inferSelect;
+export type NewSimRevision = typeof sim_revisions.$inferInsert;
 export type SimPosterRow = typeof sim_posters.$inferSelect;
 export type NewSimPoster = typeof sim_posters.$inferInsert;
 export type Playlist = typeof playlists.$inferSelect;
