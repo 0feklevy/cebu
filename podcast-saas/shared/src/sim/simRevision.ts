@@ -174,13 +174,25 @@ export const CANARY_SUBDIR = 'canary';
 /**
  * Recover the revision id from a storage key, or null.
  *
- * The serving layer needs this to decide whether a key is inside a revision (cacheable forever) or
- * on a legacy mutable path (must revalidate). Returning null for anything unrecognised means an
- * unfamiliar key is treated as mutable — the safe direction.
+ * Anchored on the `/revisions/<id>/` segment ALONE, deliberately.
+ *
+ * This regex used to require `simulations/<projectId>/<simulationId>/revisions/<id>/` — it re-derived
+ * the prefix shape instead of parsing what `revisionPrefix` actually emits. That was already the
+ * "two constructions of one path" bug, and changing `revisionPrefix` to take the simulation's own
+ * `storage_prefix` (a free-form column, not a composed path) made it live: any simulation whose
+ * prefix is not exactly that three-segment form would fail to match, and the serving layer would
+ * quietly downgrade genuinely immutable bytes to revalidate-every-time. Silent, and in the direction
+ * that only costs latency — which is how it would have shipped unnoticed.
+ *
+ * The FIRST match is the right one: `revisionPrefix` places the segment immediately after the
+ * storage prefix, and customer bytes live under `package/` BELOW it. A customer directory that
+ * happens to be named `revisions` is therefore found second and cannot win.
+ *
+ * Returning null for anything unrecognised keeps an unfamiliar key mutable — the safe direction.
  */
 export function revisionIdFromKey(key: string): string | null {
-  const m = /^simulations\/[^/]+\/[^/]+\/revisions\/([A-Za-z0-9_-]{8,64})\//.exec(key);
-  return m ? m[1] : null;
+  const m = /(?:^|\/)revisions\/([A-Za-z0-9_-]{8,64})\//.exec(key);
+  return m ? m[1]! : null;
 }
 
 /** Is this key inside ANY immutable revision? */
@@ -204,7 +216,19 @@ export const IMMUTABLE_CACHE_CONTROL = 'public, max-age=31536000, immutable';
  */
 export const POINTER_CACHE_CONTROL = 'no-cache, must-revalidate';
 
-export function cacheControlForKey(key: string): string {
+/**
+ * The entry document is NOT immutable, even inside a revision.
+ *
+ * `injectSimBootSnippet` runs at SERVE time, so the bytes a viewer receives for the entry HTML are
+ * not the bytes stored at that key. A year-long immutable header would pin whichever snippet was
+ * live when the response was first cached, so a later snippet fix could never reach those viewers —
+ * while the manifest, which hashes STORED bytes, went on reporting perfect agreement.
+ *
+ * This is the one place where "the path contains the revision id" does not justify caching forever,
+ * because the transform is applied downstream of the path.
+ */
+export function cacheControlForKey(key: string, isEntryDocument = false): string {
+  if (isEntryDocument) return POINTER_CACHE_CONTROL;
   return isImmutableRevisionKey(key) ? IMMUTABLE_CACHE_CONTROL : POINTER_CACHE_CONTROL;
 }
 
@@ -224,6 +248,15 @@ export interface SimRevisionRecord {
   /** Set when this revision was created BY a rollback, naming what it restored. */
   rollbackOfRevisionId: string | null;
   metadata: Record<string, unknown> | null;
+}
+
+/**
+ * `activatedAt` as epoch ms. An unparseable value sorts LAST rather than throwing: a malformed
+ * timestamp must not make rollback impossible, but it must never be chosen as the target either.
+ */
+function activatedAtMs(r: SimRevisionRecord): number {
+  const t = Date.parse(String(r.activatedAt));
+  return Number.isNaN(t) ? -Infinity : t;
 }
 
 /**
@@ -247,6 +280,11 @@ export function rollbackTargetFor(
       r.status !== 'active' &&
       r.activatedAt !== null &&
       mustRetainBytes(r.status))
-    .sort((a, b) => (a.activatedAt! < b.activatedAt! ? 1 : a.activatedAt! > b.activatedAt! ? -1 : 0));
+    // Compared as epoch milliseconds, not as strings. `activatedAt` is documented as an ISO-8601 UTC
+    // string, but lexicographic order only agrees with chronological order when every value shares
+    // one format — '...+00:00' sorts before '...Z' for the same instant — and Drizzle returns a Date
+    // for `timestamp(..., {withTimezone: true})` unless `mode: 'string'` is set. Date.parse accepts
+    // both, so the ordering cannot silently invert on a shape change in the data layer.
+    .sort((a, b) => activatedAtMs(b) - activatedAtMs(a));
   return candidates[0] ?? null;
 }
