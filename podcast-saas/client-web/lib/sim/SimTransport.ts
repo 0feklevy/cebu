@@ -178,6 +178,14 @@ export class SimTransport {
     if (this.target && this.target.documentId !== target.documentId) {
       this.tombstoned.add(this.target.documentId);
       this.teardownChannels();
+      // Close the previously ADOPTED port too, not just the pending losers.
+      //
+      // Overwriting `this.port` when the child answers the new offer leaves the old port1 open with
+      // its handler still bound. Nothing wrong is ever ACCEPTED from it — the tombstone above sees
+      // to that — but it is reclaimed only by GC, while every other channel this transport gives up
+      // on is closed deterministically. A port pair per navigation is exactly the kind of slow leak
+      // a resident pool accumulates over a long session.
+      this.closePort();
     }
 
     this.target = target;
