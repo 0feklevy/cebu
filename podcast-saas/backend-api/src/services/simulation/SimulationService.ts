@@ -2522,6 +2522,17 @@ export class SimulationService {
           .where(and(
             eq(simulations.id, simId),
             or(isNull(simulations.bridge_hash), ne(simulations.bridge_hash, hash)),
+            // NEVER stomp a projected verdict (migration 050).
+            //
+            // On a revisioned simulation these three columns are a PROJECTION of the active
+            // revision's own verdict, written inside the activation transaction. This statement
+            // fires on the legacy mutable prefix, which still exists and is still reachable — so
+            // without this predicate, regenerating one section's bridge nulls package_class on the
+            // row while sim_revisions still holds a valid verdict for the bytes actually being
+            // served. The row and the revision then disagree, and the row is what the player reads:
+            // every viewer silently drops to the legacy runtime path and every poster lookup misses.
+            // Nothing errors.
+            isNull(simulations.active_revision_id),
           ));
       } catch (err) {
         // ONLY the pre-migration case may be swallowed. The bridge bytes were uploaded a few lines
