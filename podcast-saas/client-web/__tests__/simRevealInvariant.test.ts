@@ -259,7 +259,10 @@ describe('A → B → A: two activations of the same section, differing only in 
     a1 = activationReducer(a1, { type: 'ACTIVATE' });
 
     // Leave A for B. A1 is released; B runs its own activation.
+    // Asserted rather than discarded: the release is part of the cycle under test, and an
+    // unchecked assignment here would let a broken RELEASE edge pass unnoticed.
     a1 = activationReducer(a1, { type: 'RELEASE' });
+    expect(a1.state).toBe('RELEASED');
     let b = initialActivationState(idB);
     for (const type of ['PREPARE', 'APPLIED', 'PRESENT'] as const) b = activationReducer(b, { type });
     // A1's acknowledgement, delayed by a slow port, arrives while B is the intent. It differs from
@@ -270,7 +273,9 @@ describe('A → B → A: two activations of the same section, differing only in 
     b = deliverPresented(b, presentedEnvelope(idB, 3), idB).machine;
     record('B', b, idB);
     b = activationReducer(b, { type: 'ACTIVATE' });
+    expect(b.state).toBe('VISIBLE');
     b = activationReducer(b, { type: 'RELEASE' });
+    expect(b.state).toBe('RELEASED');
 
     // Return to A. Same section, same configuration, same document, same package — new activation.
     let a2 = initialActivationState(idA2);

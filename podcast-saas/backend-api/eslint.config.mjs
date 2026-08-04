@@ -11,6 +11,11 @@ export default tseslint.config(
   {
     ignores: [
       'src/_archive/**',   // retired v1 podcast pipeline — dead code, not part of the active suite
+      // Dev-only local media, gitignored. HLS SEGMENTS are `.ts` files — MPEG-TS, not TypeScript —
+      // so ESLint tried to parse every one of them and `eslint .` exited 1 with 567 parsing errors
+      // that had nothing to do with the source. A lint gate that is red for a reason nobody can act
+      // on is a gate everyone learns to ignore.
+      '.local-storage/**',
       'dist/**',
       'node_modules/**',
       '*.config.mjs',
