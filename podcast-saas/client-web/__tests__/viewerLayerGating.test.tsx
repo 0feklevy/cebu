@@ -405,9 +405,27 @@ describe('viewer layer gating: a proven modern package', () => {
       h.instances[0].emit('modern-section-presented', { frames: 1 });
       h.instances[0].emit('reveal');
     });
-    expect(incoming(container)!.getAttribute('data-visibility')).toBe('revealed');
+    // AWAIT THE PIPELINE, DO NOT ASSUME IT SETTLED. `revealSim` schedules its merge behind a DOUBLE
+    // rAF, and SimPresentationLayers publishes its decision through a passive effect — so the
+    // attribute this asserts is reached asynchronously. Reading it immediately passed most of the
+    // time and failed about twice in five full-suite runs, diagnosed by printing the policy branch:
+    // `reason=awaiting-presentation-poster`, i.e. simPresented had not propagated yet.
+    //
+    // waitFor still FAILS if the frame is never revealed — it bounds the wait, it does not weaken
+    // the assertion — and the exact policy branch is reported on timeout so a real regression is
+    // diagnosable rather than a bare 'hidden'.
+    await vi.waitFor(
+      () => {
+        expect(
+          incoming(container)!.getAttribute('data-visibility'),
+          `layer=${layered(container)?.getAttribute('data-layer')} reason=${layered(container)?.getAttribute('data-reason')}`,
+        ).toBe('revealed');
+      },
+      { timeout: 2000, interval: 10 },
+    );
 
     await act(async () => { h.instances[0].emit('modern-context-lost'); });
+    await act(async () => { await Promise.resolve(); });
     // The canvas now holds undefined content. Leaving it up is showing a state nothing vouches for.
     expect(incoming(container)!.getAttribute('data-visibility')).toBe('hidden');
   });

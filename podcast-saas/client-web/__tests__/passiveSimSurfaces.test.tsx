@@ -63,6 +63,23 @@ interface ObserverRecord {
 }
 const observers: ObserverRecord[] = [];
 
+/**
+ * The first observer, once the component has actually created it.
+ *
+ * `observers[0]` was read directly, which assumed the lazy-mount effect had already run by the time
+ * the item's text rendered. Usually true; under full-suite load, not always — the failure surfaced
+ * as `Cannot read properties of undefined (reading 'fire')` about once in six runs. Waiting makes
+ * the ordering explicit, and a component that never observes now fails with a sentence rather than
+ * a TypeError.
+ */
+async function firstObserver(): Promise<ObserverRecord> {
+  await vi.waitFor(
+    () => { expect(observers.length, 'the component never created an IntersectionObserver').toBeGreaterThan(0); },
+    { timeout: 2000, interval: 10 },
+  );
+  return observers[0];
+}
+
 class FakeIntersectionObserver {
   constructor(cb: IntersectionObserverCallback, options?: IntersectionObserverInit) {
     observers.push({
@@ -140,9 +157,9 @@ describe('client-web avatar Library — lazy simulation preview', () => {
     expect(container.querySelector('iframe')).toBeNull();
     expect(observers).toHaveLength(1);
     // The prefetch window is part of the performance property, not an arbitrary literal.
-    expect(observers[0].options?.rootMargin).toBe('120px');
+    expect((await firstObserver()).options?.rootMargin).toBe('120px');
 
-    observers[0].fire(true);
+    (await firstObserver()).fire(true);
     expect(container.querySelector('iframe')).not.toBeNull();
   });
 
@@ -153,9 +170,9 @@ describe('client-web avatar Library — lazy simulation preview', () => {
     );
     await screen.findByText('a pendulum');
 
-    observers[0].fire(true);
+    (await firstObserver()).fire(true);
     expect(container.querySelector('iframe')).not.toBeNull();
-    observers[0].fire(false);
+    (await firstObserver()).fire(false);
     expect(container.querySelector('iframe')).toBeNull();
   });
 
@@ -165,7 +182,7 @@ describe('client-web avatar Library — lazy simulation preview', () => {
       <ExtendedLibraryModal open onClose={() => {}} projectId="proj-1" />,
     );
     await screen.findByText('a pendulum');
-    observers[0].fire(true);
+    (await firstObserver()).fire(true);
 
     const frame = container.querySelector('iframe') as HTMLIFrameElement;
     expect(frame.hasAttribute('inert')).toBe(true);
@@ -191,12 +208,12 @@ describe('client-web avatar Library — lazy simulation preview', () => {
     );
     await screen.findByText('a pendulum');
 
-    observers[0].fire(true);
+    (await firstObserver()).fire(true);
     act(() => { fireEvent.load(container.querySelector('iframe') as HTMLIFrameElement); });
     expect((container.querySelector('iframe') as HTMLIFrameElement).style.opacity).toBe('1');
 
-    observers[0].fire(false);
-    observers[0].fire(true);
+    (await firstObserver()).fire(false);
+    (await firstObserver()).fire(true);
 
     const remounted = container.querySelector('iframe') as HTMLIFrameElement;
     expect(remounted.style.opacity).toBe('0');
@@ -209,7 +226,7 @@ describe('client-web avatar Library — lazy simulation preview', () => {
       <ExtendedLibraryModal open onClose={() => {}} projectId="proj-1" />,
     );
     await screen.findByText('a pendulum');
-    observers[0].fire(true);
+    (await firstObserver()).fire(true);
 
     const src = (container.querySelector('iframe') as HTMLIFrameElement).getAttribute('src')!;
     const u = new URL(src);
@@ -232,7 +249,7 @@ describe('client-web avatar Library — lazy simulation preview', () => {
       <ExtendedLibraryModal open onClose={() => {}} projectId="proj-1" />,
     );
     await screen.findByText('a pendulum');
-    observers[0].fire(true);
+    (await firstObserver()).fire(true);
 
     const frame = container.querySelector('iframe') as HTMLIFrameElement;
     expect(frame.getAttribute('sandbox')).toBe('allow-scripts');
