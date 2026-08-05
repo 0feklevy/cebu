@@ -60,11 +60,13 @@ const rum = vi.hoisted(() => ({
   sampleRate: 0,
   flags: { schedulerMode: 'off' as const, adaptiveQuality: false, boundarySentinel: false },
   aggregates: new Map<string, unknown>(),
+  /** The keys the server actually grouped field measurements by, for the identity-axis test. */
+  lastRequestedRevisions: [] as string[],
 }));
 vi.mock('../simulation/RumService.js', () => ({
   resolveRumSampleRate: async () => rum.sampleRate,
   resolveSimRuntimeFlags: async () => rum.flags,
-  fieldAggregates: async () => rum.aggregates,
+  fieldAggregates: async (revs: string[]) => { rum.lastRequestedRevisions = revs; return rum.aggregates; },
 }));
 
 vi.mock('../../lib/logger.js', () => ({
@@ -108,6 +110,7 @@ beforeEach(() => {
   rum.sampleRate = 0;
   rum.flags = { schedulerMode: 'off', adaptiveQuality: false, boundarySentinel: false };
   rum.aggregates = new Map();
+  rum.lastRequestedRevisions = [];
   mocks.projects.findFirst.mockResolvedValue(PROJECT);
   mocks.video_files.findMany.mockResolvedValue([VIDEO]);
   mocks.timeline_sections.findMany.mockResolvedValue([section()]);
@@ -351,5 +354,28 @@ describe('the runtime kill switches reach the player config', () => {
     expect(cfg.sim_scheduler_mode).toBe('predictive');
     expect(cfg.sim_adaptive_quality).toBe(true);
     expect(cfg.sim_boundary_sentinel).toBe(true);
+  });
+});
+
+describe('the field-lookup key and the client key are the SAME axis', () => {
+  it('finds field data for a LEGACY package, whose revision comes from the URL', async () => {
+    // The two derivations forked here: the field lookup omitted the `?v=` fallback that the client
+    // key applies when bridge_hash is NULL. Legacy packages were therefore aggregated under a key
+    // no client ever reports under, so their field data was never found — silently, and forever,
+    // for exactly the packages most likely to be slow.
+    mocks.simulations.findMany.mockResolvedValue([
+      simRow({ id: 'sim-1', bridge_hash: null, active_revision_id: null, prepare_budget_ms: 800 }),
+    ]);
+    mocks.timeline_sections.findMany.mockResolvedValue([
+      section({ simulation_id: 'sim-1', simulation_url: 'https://cdn.test/pkg/index.html?v=legacyhash' }),
+    ]);
+
+    const clientKey = (await firstSim()).package_revision as string | null;
+    expect(clientKey, 'the client reports no revision at all').toBeTruthy();
+
+    // The key the server grouped field measurements by must be the one the client reports under.
+    const asked = rum.lastRequestedRevisions ?? [];
+    expect(asked, `field data was looked up under ${JSON.stringify(asked)}, client reports ${clientKey}`)
+      .toContain(clientKey);
   });
 });
