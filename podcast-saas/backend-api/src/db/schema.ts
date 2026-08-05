@@ -291,6 +291,11 @@ export const admin_settings = pgTable('admin_settings', {
   // Viewer simulation-pool kill switch (migration 048): 'adaptive' = package-identity
   // resident pool; 'single' = conservative one-frame-on-activation fallback.
   sim_pool_mode: text('sim_pool_mode').default('adaptive').notNull(),
+  // ── RUM kill switch (migration 051) ─────────────────────────────────────────
+  // 0 = collect nothing. Flippable at runtime with no deploy. The reader treats a missing column as
+  // 0, so an image that boots before 051 is applied simply collects nothing.
+  rum_sample_rate: real('rum_sample_rate').default(0).notNull(),
+  rum_retention_days: integer('rum_retention_days').default(30).notNull(),
   updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
@@ -1238,6 +1243,46 @@ export type NewCourseLesson = typeof course_lessons.$inferInsert;
 export type CourseCustomDomain = typeof course_custom_domains.$inferSelect;
 export type ProjectRedirectTarget = typeof project_redirect_targets.$inferSelect;
 export type SimulationRow = typeof simulations.$inferSelect;
+/**
+ * Sampled field measurements of the simulation pipeline (migration 051).
+ *
+ * Nothing identifying is stored: `session_id` is random per page load and never persisted on the
+ * client, device fields are coarse buckets, and `t_ms` is an offset from session start rather than a
+ * wall-clock time so two rows cannot be correlated against an external log.
+ */
+export const sim_rum_events = pgTable(
+  'sim_rum_events',
+  {
+    id:               uuid('id').primaryKey().defaultRandom(),
+    session_id:       text('session_id').notNull(),
+    // No FK: a revision may be garbage-collected while its measurements remain useful, and a FK
+    // would either block that collection or delete the history explaining why it was withdrawn.
+    package_revision: text('package_revision').notNull(),
+    kind:             text('kind').notNull(),
+    t_ms:             integer('t_ms').notNull(),
+    total_ms:         integer('total_ms'),
+    prepare_ms:       integer('prepare_ms'),
+    present_ms:       integer('present_ms'),
+    apply_ms:         integer('apply_ms'),
+    furthest_stage:   text('furthest_stage'),
+    failure_code:     text('failure_code'),
+    device_memory_gb: integer('device_memory_gb'),
+    device_cores:     integer('device_cores'),
+    coarse_pointer:   boolean('coarse_pointer'),
+    save_data:        boolean('save_data'),
+    dpr:              real('dpr'),
+    pool_tier:        text('pool_tier'),
+    created_at:       timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    idx_created: index('idx_sim_rum_created').on(t.created_at),
+    idx_package: index('idx_sim_rum_package').on(t.package_revision, t.kind, t.created_at),
+  }),
+);
+
+export type SimRumEventRow = typeof sim_rum_events.$inferSelect;
+export type NewSimRumEvent = typeof sim_rum_events.$inferInsert;
+
 export type SimRevisionRow = typeof sim_revisions.$inferSelect;
 export type NewSimRevision = typeof sim_revisions.$inferInsert;
 export type SimPosterRow = typeof sim_posters.$inferSelect;
