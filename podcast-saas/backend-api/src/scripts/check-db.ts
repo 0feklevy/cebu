@@ -68,6 +68,7 @@ const MIGRATION_FILES = [
   '048_sim_pool_mode.sql',
   '049_sim_posters.sql',
   '050_sim_revisions.sql',
+  '051_sim_rum.sql',
 ];
 
 type Row = Record<string, unknown>;
