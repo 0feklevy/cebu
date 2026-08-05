@@ -29,7 +29,11 @@ test.skip(!BASE, 'Set SIM_POOL_E2E_BASE_URL to run the sim-pool fixture suite');
 // Serial so a shared browser isn't thrashed; retries absorb real-HLS-over-network seek jitter
 // (backward seeks can re-buffer, which briefly stalls timeupdate — an environmental factor,
 // not a pool bug). These assert BEHAVIOR, not timing budgets (see sim-pool-audit-report.md).
-test.describe.configure({ mode: 'serial', retries: 2 });
+// RETRIES OFF. The file previously configured `retries: 2` to absorb real-HLS-over-network seek
+// jitter, but a suite that needs a second attempt has not proven anything — the same standard the
+// canary config already applies. Serial is kept: a shared browser thrashed by parallel WebGL
+// documents is a genuine environmental problem, not a flaky assertion.
+test.describe.configure({ mode: 'serial', retries: 0 });
 
 const viewUrl = (q = '') => `${BASE}/projects/${FIXTURE}/view?simdebug=1${q}`;
 
@@ -44,7 +48,16 @@ async function openAndPlay(page: Page, q = '') {
 const seek = (page: Page, s: number) => page.evaluate((sec) => {
   for (const v of document.querySelectorAll('video')) if ((v as HTMLVideoElement).duration > 60) (v as HTMLVideoElement).currentTime = sec;
 }, s);
-const iframeCount = (page: Page) => page.evaluate(() => document.querySelectorAll('iframe').length);
+/**
+ * SIM frames only.
+ *
+ * This counted every `iframe` on the page, which silently included the Firebase auth SDK's hidden
+ * RPC helper. That helper is present on WebKit at moments it is not on Chromium, so the kill-switch
+ * assertion failed there with 2 — and the sim pool held exactly one frame the whole time. A count
+ * that includes documents the player does not own cannot say anything about the pool.
+ */
+const iframeCount = (page: Page) => page.evaluate(() =>
+  document.querySelectorAll('iframe.sim-pool-frame').length);
 const overlayVisible = (page: Page) => page.evaluate(() => !!document.querySelector('.sim-overlay.visible'));
 const telemetry = (page: Page) => page.evaluate(() => (window as unknown as { __SIM_TELEMETRY__?: { events: Array<Record<string, unknown>> } }).__SIM_TELEMETRY__?.events ?? []);
 

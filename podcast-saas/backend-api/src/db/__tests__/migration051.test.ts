@@ -220,7 +220,7 @@ describe('051 — the DDL bounds what an unauthenticated endpoint can store', ()
     expect(cols).toEqual([
       'apply_ms', 'coarse_pointer', 'created_at', 'device_cores', 'device_memory_gb', 'dpr',
       'failure_code', 'furthest_stage', 'id', 'kind', 'package_revision', 'pool_tier',
-      'prepare_ms', 'present_ms', 'save_data', 'session_id', 't_ms', 'total_ms', 'dropped',
+      'prepare_ms', 'present_ms', 'save_data', 'session_id', 't_ms', 'total_ms',
     ].sort());
   });
 });

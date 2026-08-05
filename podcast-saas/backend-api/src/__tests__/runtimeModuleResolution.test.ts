@@ -44,8 +44,16 @@ describe('runtime module resolution', () => {
     ).toBe('');
   });
 
-  it('every shared specifier a production file uses actually resolves in node', async () => {
-    // The positive control. The rule above is a proxy; this is the property itself.
+  it('every shared specifier a production file uses resolves in a REAL node process', () => {
+    // Deliberately a CHILD PROCESS, not `await import` in this one.
+    //
+    // vitest aliases shared/sim/* to source (see vitest.config.ts) so unit tests are not run
+    // against a stale build. That alias would also make this check resolve to source — proving
+    // nothing about the dist mapping production actually uses. It has already bitten once: adding
+    // shared/src/sim/closedLoop.ts without rebuilding left the backend unable to boot while this
+    // very test passed.
+    //
+    // A child node process has no vitest resolver, so this exercises the real exports map.
     const specs = new Set<string>();
     for (const f of sourceFiles()) {
       const body = readFileSync(join(ROOT, f), 'utf-8');
@@ -53,11 +61,15 @@ describe('runtime module resolution', () => {
     }
     expect(specs.size, 'no shared imports found — this test would be vacuous').toBeGreaterThan(0);
 
-    const failures: string[] = [];
-    for (const spec of specs) {
-      try { await import(/* @vite-ignore */ spec); }
-      catch (err) { failures.push(`${spec}: ${(err as { code?: string }).code ?? String(err).slice(0, 80)}`); }
-    }
-    expect(failures.join('\n'), 'node cannot resolve these at runtime').toBe('');
+    const script = [...specs]
+      .map((s) => `import(${JSON.stringify(s)}).catch(e => { console.log(${JSON.stringify(s)} + ': ' + (e.code || e.message)); process.exitCode = 1; })`)
+      .join(';');
+    const res = execFileSync('node', ['--input-type=module', '-e', script], {
+      cwd: ROOT, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    expect(
+      res.trim(),
+      'node cannot resolve these at runtime — is shared built? (pnpm --filter shared build)',
+    ).toBe('');
   });
 });

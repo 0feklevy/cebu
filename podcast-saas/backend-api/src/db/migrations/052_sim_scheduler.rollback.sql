@@ -6,6 +6,9 @@
 --
 -- Safe in the other direction at any time: every resolver treats a missing column as the OFF value.
 
+ALTER TABLE sim_rum_events DROP CONSTRAINT IF EXISTS sim_rum_events_dropped_chk;
+ALTER TABLE sim_rum_events DROP COLUMN IF EXISTS dropped;
+
 ALTER TABLE admin_settings DROP COLUMN IF EXISTS sim_boundary_sentinel;
 ALTER TABLE admin_settings DROP COLUMN IF EXISTS sim_adaptive_quality;
 ALTER TABLE admin_settings DROP CONSTRAINT IF EXISTS admin_settings_sim_scheduler_mode_chk;

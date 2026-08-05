@@ -126,3 +126,29 @@ describe('052 — registration', () => {
     expect(readdirSync(MIGRATIONS_DIR)).toContain(ROLLBACK);
   });
 });
+
+describe('052 — the dropped column that could not go in an applied 051', () => {
+  beforeEach(applyForward);
+
+  it('adds sim_rum_events.dropped, defaulting to 0', async () => {
+    // 051 was already applied when this column was needed. The runner records a migration by
+    // filename and never re-runs it, so a column added to an applied file exists on fresh databases
+    // and is silently absent on every existing one — surfacing only as a 42703 in production.
+    const [c] = await rows<{ column_default: string; is_nullable: string }>(
+      `SELECT column_default, is_nullable FROM information_schema.columns
+        WHERE table_name='sim_rum_events' AND column_name='dropped'`);
+    expect(c).toBeDefined();
+    expect(c!.is_nullable).toBe('NO');
+    await pg.query(`INSERT INTO sim_rum_events (session_id, package_revision, kind, t_ms)
+                    VALUES ('session-abcdef', 'pkg', 'transition', 1)`);
+    const [r] = await rows<{ dropped: number }>(`SELECT dropped FROM sim_rum_events LIMIT 1`);
+    expect(Number(r!.dropped)).toBe(0);
+  });
+
+  it('refuses a negative drop count', async () => {
+    await pg.query(`INSERT INTO sim_rum_events (session_id, package_revision, kind, t_ms)
+                    VALUES ('session-abcdef', 'pkg', 'transition', 1)`);
+    await expect(pg.query(`UPDATE sim_rum_events SET dropped = -1`))
+      .rejects.toMatchObject({ code: '23514' });
+  });
+});

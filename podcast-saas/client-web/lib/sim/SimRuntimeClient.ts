@@ -685,6 +685,17 @@ export class SimRuntimeClient {
     const priorScript = this.state.currentScript;
     const wasStopped = this.state.stopped;
 
+    // MEASURE THE v2 PATH TOO.
+    //
+    // The marks were originally only on the v3 modern path, which no stored package uses yet — so
+    // in the field the measurement layer produced nothing at all, and a perf run reported zero
+    // transitions while the viewer was plainly performing them. v2 has no PREPARE/PRESENT split, so
+    // `requested` -> `revealed` is the whole observable span, which is exactly the number a viewer
+    // experiences.
+    this.rollTransition();
+    this.mark('requested');
+    this.mark('prepare-sent');
+
     this.pendingPresentAsLoaded = presentAsLoaded;
     this.set({ activationToken: token, pendingScript: script, phase: 'applying', lastError: null });
 
@@ -1278,7 +1289,11 @@ export class SimRuntimeClient {
     if (this.legacyRevealTimer) { clearTimeout(this.legacyRevealTimer); this.legacyRevealTimer = null; }
     this.stopPaintPoll();
     this.set({ phase: 'visible', visible: true, interactive: true });
-    this.tel(force ? 'reveal-forced' : 'reveal');
+    this.mark('presented');
+    this.mark('revealed');
+    this.tel(force ? 'reveal-forced' : 'reveal',
+      computeDurations(this.tmarks) as unknown as Record<string, unknown>);
+    this.rollTransition();
   }
 
   /**
