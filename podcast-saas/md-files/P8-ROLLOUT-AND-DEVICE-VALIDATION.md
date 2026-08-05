@@ -12,18 +12,23 @@ should be enabled, and — importantly — what has **not** been validated and c
 | RUM ingestion endpoint | **Registered, refuses writes** | Always registered — see §2. Ingestion is gated on the same rate, so at 0 nothing is stored even by a hostile caller. |
 | RUM retention sweep | **Running** | Started at boot; hourly, `unref`'d. |
 | Prepare budgets in the player config | **Emitted for newly canaried packages** | Derived when a canary verdict is recorded. Absent for every package canaried BEFORE this change — the column is only populated going forward, so existing packages need a re-canary to gain one. |
-| Occurrence planner / predictive admission | **Library only** | Not yet wired into `useProjectPlayer`. |
-| rVFC boundary sentinel | **Library only** | Not yet wired into `useProjectPlayer`. |
-| Adaptive quality | **Library only** | Not yet wired. |
-| Package weight analysis | **Library only** | Not yet called at publication. |
+| Occurrence planner / predictive admission | **Wired, OFF** | `admin_settings.sim_scheduler_mode = 'predictive'` (default `'off'`). |
+| rVFC boundary sentinel | **Wired, OFF** | `admin_settings.sim_boundary_sentinel = true` (default `false`). |
+| Adaptive quality | **Wired, OFF** | `admin_settings.sim_adaptive_quality = true` (default `false`). |
+| Package weight analysis | **Active** | Recorded at publication; advisory, never blocks. |
 
-The last four are deliberately not wired. They are pure, tested modules with no caller, which means
-merging this branch changes viewer behaviour in exactly two ways: transition timings are recorded in
-memory, and the player config carries two new fields. Everything else is opt-in work for a follow-up
-change that can be reviewed on its own.
+The first three reach a real viewer only when their switch is turned on, and **migration 052 defaults
+every one of them to today's behaviour** — so applying it changes nothing for anybody. With all
+switches at their defaults, merging this branch changes viewer behaviour in exactly two ways:
+transition timings are recorded in memory, and the player config carries the new fields.
 
-**This is the honest reading of "shipped": the mechanisms exist and are proven in isolation; the
-integration that would make them affect a viewer has not been written or tested.**
+**What "wired" is allowed to mean here:** each call site emits its own evidence, and an e2e test
+asserts on that evidence with the switch on (`P8a`–`P8e` in `viewer-e2e.spec.ts`). Deleting any one
+call site turns its test red — verified by mutation, one mutation per call site, all five killed.
+That is the difference between this and the previous state of this document, when these were tested
+libraries that nothing called.
+
+**Still true:** proven on desktop Chromium, Firefox and WebKit only. See §5.
 
 ## 2. Why the RUM route is always registered
 
@@ -83,9 +88,10 @@ Each step is independently reversible and observable before the next.
 - **No physical device has run any of this.** Desktop WebKit is not Safari on iOS: it differs in
   media autoplay policy, memory pressure behaviour, WebGL context-loss frequency, and background-tab
   throttling. Every one of those is directly relevant to the sim pool, and none is exercised here.
-- **`requestVideoFrameCallback` support in the field is unknown.** There is no browserslist config
-  and no analytics in this repo, so the fraction of viewers that would get the frame-accurate
-  boundary path rather than the timer fallback cannot be stated. Step 4 answers this.
+- **`requestVideoFrameCallback` support in the field is unknown** — but it is now *measurable* rather
+  than requiring a separate study. The sentinel reports which mechanism armed (`boundary-armed`,
+  `mode` = `rvfc` / `timeout` / `none`), so enabling the sentinel on a sample answers it directly.
+  Nothing has been enabled, so the fraction is still unstated.
 - **The WebKit build is frozen** on this host: Playwright reports it no longer receives updates on
   `mac14-arm64`. So WebKit results describe a *pinned* engine, not current Safari.
 - **No low-memory device** has been exercised. `deviceMemory <= 4` already changes pool tier and
@@ -102,7 +108,7 @@ answering them requires field data that only step 3 produces.
 - What is the p90 transition total, by pool tier and device bucket?
 - Is same-package switching slow enough to justify a new child protocol? (The design dropped that
   work pending exactly this number; re-open only above roughly 150 ms.)
-- What fraction of sessions have rVFC?
+- What fraction of sessions have rVFC? (Now instrumented — see §5 — but not yet collected.)
 - Which packages are heaviest, and does weight correlate with the measured p90?
 
 ## 7. Rollback
@@ -119,4 +125,6 @@ Every piece reverses independently:
 - Migration 050: run the rollback file. **Read its header first.** Any simulation already activated
   onto a revision reverts to whatever its legacy mutable prefix last held, which is a data-visible
   regression rather than a crash if a newer package was only ever published as a revision.
-- The unwired modules: nothing to roll back — they have no callers.
+- Migration 052: set `sim_scheduler_mode = 'off'`, `sim_adaptive_quality = false`,
+  `sim_boundary_sentinel = false`. Instant, no deploy — which is the whole reason each one is a
+  column rather than a constant. Dropping the columns needs the same deploy-first ordering as 051.
