@@ -262,11 +262,42 @@ export async function buildPlayerConfig(
    * Absent for a package that has never been canaried, and the client treats absence as "no lab
    * data" rather than as zero — a package with no measurement must not be budgeted as instantaneous.
    */
-  /** The identity axis for one simulation ROW — the key field measurements are grouped by. */
+  /**
+   * A stored `simulation_url` per simulation id, for the legacy `?v=` fallback below.
+   *
+   * First one wins: every section of a package shares one pooled document and one runtime client,
+   * so they must resolve to ONE revision — which is the same reason `packageRevisionFor` derives
+   * from the bridge hash rather than from each section's own URL.
+   */
+  const urlForSim = new Map<string, string>();
+  for (const sec of sections) {
+    if (sec.simulation_id && sec.simulation_url && !urlForSim.has(sec.simulation_id)) {
+      urlForSim.set(sec.simulation_id, sec.simulation_url);
+    }
+  }
+
+  /**
+   * The identity axis for one simulation ROW — the key field measurements are grouped by.
+   *
+   * MUST MATCH `packageRevisionFor` EXACTLY, including its `?v=` fallback for a package whose
+   * bridge predates the column. Omitting the fallback here forked the identity axis: legacy
+   * packages were looked up under a key the client never reports under, so their field data was
+   * silently never found — the closed loop reported "no samples" forever for exactly the packages
+   * most likely to be slow. This file's own comment warns that a forked axis is what costs every
+   * poster; the same fork cost every field measurement.
+   */
   const packageRevisionForRow = (row: SimRowShape): string | null => {
     try {
+      let bridgeHash: string | null = row.bridge_hash;
+      if (!bridgeHash) {
+        const url = urlForSim.get(row.id);
+        if (url) {
+          const m = /[?&]v=([^&#]+)/.exec(url);
+          bridgeHash = m ? m[1] : url;
+        }
+      }
       return revisionIdentityFor(
-        { id: row.id, bridge_hash: row.bridge_hash, active_revision_id: row.active_revision_id },
+        { id: row.id, bridge_hash: bridgeHash, active_revision_id: row.active_revision_id },
         derivePackageRevision,
       );
     } catch { return null; }
