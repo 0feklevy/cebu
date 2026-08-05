@@ -43,7 +43,7 @@ import {
   buildLegacyManifest,
 } from '../RevisionMigration.js';
 import { RevisionService } from '../RevisionService.js';
-import { IMMUTABLE_CACHE_CONTROL, POINTER_CACHE_CONTROL } from 'shared/src/sim/simRevision';
+import { IMMUTABLE_CACHE_CONTROL, POINTER_CACHE_CONTROL } from 'shared/sim/simRevision';
 
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'db', 'migrations');
 const PREFIX = 'simulations/proj-1/sim-1';

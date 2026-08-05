@@ -20,8 +20,8 @@
  */
 import { describe, it, expect } from 'vitest';
 import vm from 'node:vm';
-import type { SimRuntimeCapabilities } from 'shared/src/sim/runtimeProtocol';
-import { allowsAggressivePreparation, classifyFromCapabilities } from 'shared/src/sim/simFailurePolicy';
+import type { SimRuntimeCapabilities } from 'shared/sim/runtimeProtocol';
+import { allowsAggressivePreparation, classifyFromCapabilities } from 'shared/sim/simFailurePolicy';
 import {
   FIXTURE_SECTIONS,
   FIXTURE_V3_SECTIONS,
@@ -54,12 +54,12 @@ import {
   SUSPEND_DOCUMENT,
   ZERO_RESOURCE_COUNTS,
   makeEnvelope,
-} from 'shared/src/sim/runtimeProtocol';
+} from 'shared/sim/runtimeProtocol';
 import {
   DEFAULT_PRESENTATION_CONFIG,
   computeConfigHash,
   type SimPresentationConfig,
-} from 'shared/src/sim/simIdentity';
+} from 'shared/sim/simIdentity';
 
 const PARENT_ORIGIN = 'https://player.test';
 const PLAYER_SESSION = 'ps-fixture-1';

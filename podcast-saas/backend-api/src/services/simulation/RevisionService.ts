@@ -50,7 +50,7 @@ import {
   MANIFEST_FILENAME,
   type SimRevisionRecord,
   type SimRevisionStatus,
-} from 'shared/src/sim/simRevision';
+} from 'shared/sim/simRevision';
 import {
   computeManifestHash,
   normalizeManifestPath,
@@ -59,7 +59,7 @@ import {
   type SimManifest,
   type SimManifestFile,
   type SimFileRole,
-} from 'shared/src/sim/simManifest';
+} from 'shared/sim/simManifest';
 
 /**
  * A mutation lost a compare-and-set.

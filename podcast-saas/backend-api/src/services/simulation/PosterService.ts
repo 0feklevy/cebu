@@ -50,8 +50,8 @@ import {
   type PosterRecord,
   type PosterSizeName,
   type PosterVariantRecord,
-} from 'shared/src/sim/posterIdentity';
-import type { SimAspectProfile, SimQualityProfile } from 'shared/src/sim/simIdentity';
+} from 'shared/sim/posterIdentity';
+import type { SimAspectProfile, SimQualityProfile } from 'shared/sim/simIdentity';
 
 // ─── Inputs / results ─────────────────────────────────────────────────────────────────────────
 

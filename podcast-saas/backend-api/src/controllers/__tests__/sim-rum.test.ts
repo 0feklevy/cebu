@@ -25,7 +25,7 @@ vi.mock('../../lib/rateLimit.js', () => ({
 }));
 
 import { registerSimRumRoutes } from '../sim-rum.controller.js';
-import { SIM_RUM_VERSION } from 'shared/src/sim/rumEvents';
+import { SIM_RUM_VERSION } from 'shared/sim/rumEvents';
 
 async function app() {
   const f = Fastify();
