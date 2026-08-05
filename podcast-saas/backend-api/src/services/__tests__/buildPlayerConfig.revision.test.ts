@@ -82,7 +82,7 @@ const section = (over: Record<string, unknown> = {}) => ({
 
 const simRow = (over: Record<string, unknown> = {}) => ({
   id: 'sim-1', package_class: null, bridge_hash: 'H1',
-  active_revision_id: null, active_revision_entry_key: null, canary_report: null, ...over,
+  active_revision_id: null, active_revision_entry_key: null, prepare_budget_ms: null, ...over,
 });
 
 async function firstSim(): Promise<Record<string, unknown>> {
@@ -218,22 +218,11 @@ describe('sim_rum_sample_rate', () => {
 });
 
 describe('sim_prepare_budget_ms', () => {
-  it('emits the package own lab cost, summed across the sequential prepare steps', async () => {
-    mocks.simulations.findMany.mockResolvedValue([simRow({
-      canary_report: {
-        steps: [
-          { step: 'load', ms: 100, status: 'pass' },
-          { step: 'handshake', ms: 50, status: 'pass' },
-          { step: 'prepare', ms: 200, status: 'pass' },
-          { step: 'section-applied', ms: 30, status: 'pass' },
-          { step: 'poster-captured', ms: 9000, status: 'pass' },
-        ],
-      },
-    })]);
+  it('emits the derived scalar the canary stored', async () => {
+    mocks.simulations.findMany.mockResolvedValue([simRow({ prepare_budget_ms: 380 })]);
     const cfg = await buildPlayerConfig('proj-1', 'user-1') as {
       sim_prepare_budget_ms: Record<string, number>;
     };
-    // 380, not 9380: poster capture is not part of reaching a usable section.
     expect(cfg.sim_prepare_budget_ms['sim-1']).toBe(380);
   });
 
@@ -245,26 +234,36 @@ describe('sim_prepare_budget_ms', () => {
     expect(cfg.sim_prepare_budget_ms['sim-1']).toBeUndefined();
   });
 
-  it('omits a package whose canary report is malformed', async () => {
-    mocks.simulations.findMany.mockResolvedValue([simRow({ canary_report: { steps: 'nope' } })]);
-    const cfg = await buildPlayerConfig('proj-1', 'user-1') as {
-      sim_prepare_budget_ms: Record<string, number>;
-    };
-    expect(cfg.sim_prepare_budget_ms['sim-1']).toBeUndefined();
+  it('omits a nonsensical stored value rather than propagating it', async () => {
+    for (const bad of [0, -5, NaN]) {
+      mocks.simulations.findMany.mockResolvedValue([simRow({ prepare_budget_ms: bad })]);
+      const cfg = await buildPlayerConfig('proj-1', 'user-1') as {
+        sim_prepare_budget_ms: Record<string, number>;
+      };
+      expect(cfg.sim_prepare_budget_ms['sim-1']).toBeUndefined();
+    }
   });
 
-  it('is keyed by package, not by section', async () => {
-    // A package's cost is a property of its bytes, not of where it appears on a timeline, and one
-    // package commonly appears in many sections.
+  it('does NOT pull canary_report on the hottest read path', async () => {
+    // The `columns` list exists to keep this query narrow; canary_report carries per-case steps,
+    // errors, capabilities and resource counts for every simulation in the project.
+    await buildPlayerConfig('proj-1', 'user-1');
+    const args = mocks.simulations.findMany.mock.calls[0]?.[0] as
+      { columns?: Record<string, boolean> } | undefined;
+    expect(args?.columns).toBeDefined();
+    expect(args!.columns!.canary_report).toBeUndefined();
+    expect(args!.columns!.prepare_budget_ms).toBe(true);
+  });
+
+  it('emits one entry per simulation row', async () => {
     mocks.timeline_sections.findMany.mockResolvedValue([
       section({ id: 'sec-1' }), section({ id: 'sec-2' }),
     ]);
-    mocks.simulations.findMany.mockResolvedValue([simRow({
-      canary_report: { steps: [{ step: 'load', ms: 300, status: 'pass' }] },
-    })]);
+    mocks.simulations.findMany.mockResolvedValue([simRow({ prepare_budget_ms: 300 })]);
     const cfg = await buildPlayerConfig('proj-1', 'user-1') as {
       sim_prepare_budget_ms: Record<string, number>;
     };
+    // Two sections sharing one simulation row collapse to one entry.
     expect(Object.keys(cfg.sim_prepare_budget_ms)).toEqual(['sim-1']);
   });
 });

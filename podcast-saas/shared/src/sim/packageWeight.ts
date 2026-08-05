@@ -52,7 +52,7 @@ export interface WeightReport {
 }
 
 export interface WeightFinding {
-  code: 'oversized-package' | 'oversized-image' | 'uncompressed-image' | 'duplicate-bytes'
+  code: 'oversized-package' | 'oversized-image' | 'duplicate-bytes'
       | 'many-files' | 'external-dependency';
   detail: string;
   /** Bytes this finding could plausibly recover, when that is knowable. Never a guess. */

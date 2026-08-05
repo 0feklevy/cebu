@@ -1350,8 +1350,14 @@ describe('transition measurement', () => {
     const s = c.timingSummary();
     expect(s.samples).toBe(1);
     expect(s.completed).toBe(1);
-    expect(s.p50TotalMs).not.toBeNull();
-    expect(s.p50TotalMs!).toBeGreaterThanOrEqual(0);
+    // ORDER, not merely presence. Asserting `p50TotalMs >= 0` cannot fail — clamp is Math.max(0,…)
+    // and diff() already drops negatives — and an implementation that never marked `applied`,
+    // `present-sent` or `presented` would satisfy every other line here.
+    expect(s.p50PrepareMs, 'prepare was never measured').not.toBeNull();
+    expect(s.p50TotalMs, 'total was never measured').not.toBeNull();
+    // Each stage is a strict sub-span of the total, so a total that did not include them is wrong.
+    expect(s.p50TotalMs!).toBeGreaterThanOrEqual(s.p50PrepareMs!);
+    expect(s.abandonedAt).toEqual({});
   });
 
   it('captures the child applyMs that used to be read off the wire and dropped', async () => {
@@ -1492,8 +1498,10 @@ describe('transition measurement', () => {
       await flush();
     }
     const s = c.timingSummary();
-    expect(s.samples).toBeLessThanOrEqual(50);
-    expect(s.dropped).toBeGreaterThan(0);
+    // Exactly the cap, not merely "at most" — an implementation that dropped everything would
+    // satisfy a <= assertion.
+    expect(s.samples).toBe(50);
+    expect(s.dropped).toBe(60 - 50);
     void child;
   });
 
@@ -1508,7 +1516,9 @@ describe('transition measurement', () => {
     }
     const derived = c.leadMs(800);
     expect(derived.source).toBe('measured');
-    expect(derived.leadMs).toBeGreaterThanOrEqual(0);
+    // Not `>= 0`, which clamp makes unfalsifiable: a measured lead must differ from the fallback it
+    // replaced, or nothing was actually derived.
+    expect(derived.leadMs).not.toBe(800);
   });
 
   it('measurement changes nothing a viewer sees', async () => {

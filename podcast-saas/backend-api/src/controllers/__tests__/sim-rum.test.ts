@@ -19,6 +19,10 @@ vi.mock('../../services/simulation/RumService.js', () => ({ ingestBatch: h.inges
 vi.mock('../../lib/logger.js', () => ({
   logger: { info: vi.fn(), warn: h.warn, error: h.error, debug: vi.fn() },
 }));
+const rl = vi.hoisted(() => ({ allow: true, calls: [] as string[] }));
+vi.mock('../../lib/rateLimit.js', () => ({
+  rateLimit: (key: string) => { rl.calls.push(key); return rl.allow; },
+}));
 
 import { registerSimRumRoutes } from '../sim-rum.controller.js';
 import { SIM_RUM_VERSION } from 'shared/src/sim/rumEvents';
@@ -37,7 +41,7 @@ const body = () => ({
   dropped: 0,
 });
 
-beforeEach(() => { vi.clearAllMocks(); h.ingest.mockResolvedValue({ stored: 1 }); });
+beforeEach(() => { vi.clearAllMocks(); h.ingest.mockResolvedValue({ stored: 1 }); rl.allow = true; rl.calls.length = 0; });
 
 describe('POST /sim-rum', () => {
   it('accepts a batch and returns 204 with no body', async () => {
@@ -113,5 +117,25 @@ describe('POST /sim-rum', () => {
     const f = await app();
     await f.inject({ method: 'POST', url: '/sim-rum', payload: body() });
     expect(h.ingest).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-abcdef' }));
+  });
+});
+
+
+describe('rate limiting', () => {
+  it('is rate limited per IP', async () => {
+    // Unauthenticated, wildcard CORS: without a limit, any page on the internet could drive
+    // unbounded durable growth in the same Postgres the player reads from.
+    const f = await app();
+    await f.inject({ method: 'POST', url: '/sim-rum', payload: body() });
+    expect(rl.calls[0]).toMatch(/^sim-rum:/);
+  });
+
+  it('drops the batch when the limit is exceeded, still answering 204', async () => {
+    // 204 either way: the response must not become a probe for the limiter's shape.
+    rl.allow = false;
+    const f = await app();
+    const res = await f.inject({ method: 'POST', url: '/sim-rum', payload: body() });
+    expect(res.statusCode).toBe(204);
+    expect(h.ingest).not.toHaveBeenCalled();
   });
 });

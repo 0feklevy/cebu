@@ -9,6 +9,9 @@
 -- Rolling back is SAFE at any time: the client sends nothing when rum_sample_rate is absent, because
 -- resolveRumSampleRate treats a missing column as 0 rather than as a default-on value.
 
+ALTER TABLE simulations DROP CONSTRAINT IF EXISTS simulations_prepare_budget_chk;
+ALTER TABLE simulations DROP COLUMN IF EXISTS prepare_budget_ms;
+
 ALTER TABLE admin_settings DROP CONSTRAINT IF EXISTS admin_settings_rum_retention_chk;
 ALTER TABLE admin_settings DROP CONSTRAINT IF EXISTS admin_settings_rum_sample_rate_chk;
 ALTER TABLE admin_settings DROP COLUMN IF EXISTS rum_retention_days;

@@ -182,13 +182,18 @@ describe('051 — the DDL bounds what an unauthenticated endpoint can store', ()
     expect(i!.indexdef).toMatch(/package_revision/);
   });
 
-  it('stores no column that could identify a person', async () => {
+  it('stores ONLY the columns this design allows', async () => {
+    // An allowlist, not a denylist. Checking a list of names the author chose not to use passes
+    // against a schema storing `client_addr` or `fingerprint`; this fails the moment ANY new column
+    // appears, which is when someone should have to justify it.
     const cols = (await rows<{ column_name: string }>(
       `SELECT column_name FROM information_schema.columns WHERE table_name = 'sim_rum_events'`))
-      .map((c) => c.column_name);
-    for (const forbidden of ['user_id', 'ip', 'ip_address', 'url', 'title', 'email', 'project_id']) {
-      expect(cols).not.toContain(forbidden);
-    }
+      .map((c) => c.column_name).sort();
+    expect(cols).toEqual([
+      'apply_ms', 'coarse_pointer', 'created_at', 'device_cores', 'device_memory_gb', 'dpr',
+      'failure_code', 'furthest_stage', 'id', 'kind', 'package_revision', 'pool_tier',
+      'prepare_ms', 'present_ms', 'save_data', 'session_id', 't_ms', 'total_ms',
+    ].sort());
   });
 });
 

@@ -229,3 +229,38 @@ describe('privacy', () => {
     expect(ids[0]).not.toBe(ids[1]);
   });
 });
+
+// ── Review findings ──────────────────────────────────────────────────────────────────────────────
+
+describe('disposal is complete', () => {
+  it('removes the visibilitychange listener, not only pagehide', () => {
+    // An anonymous listener leaked on every mount: this viewer mounts per navigation, so each
+    // disposed recorder kept a closure over its ring alive for the document lifetime.
+    const r = rec();
+    r.record(EV);
+    r.dispose();
+    beacon.mockClear();
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+    window.dispatchEvent(new Event('visibilitychange'));
+    expect(beacon).not.toHaveBeenCalled();
+  });
+
+  it('a disposed recorder is DONE and records nothing further', () => {
+    const r = rec();
+    r.dispose();
+    beacon.mockClear();
+    r.record(EV);
+    r.flush('manual');
+    expect(r.active).toBe(false);
+    expect(beacon).not.toHaveBeenCalled();
+  });
+
+  it('flushes on visibilitychange while alive', () => {
+    const r = rec();
+    r.record(EV);
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+    window.dispatchEvent(new Event('visibilitychange'));
+    expect(beacon).toHaveBeenCalledOnce();
+    void r;
+  });
+});

@@ -63,6 +63,22 @@ async function applyPrior(): Promise<void> {
 }
 
 const applyForward = (): Promise<unknown> => pg.exec(forwardSql);
+
+/**
+ * Apply 050 AND every migration after it.
+ *
+ * Needed by the Drizzle-shape assertions only. `schema.ts` always describes the HEAD of the
+ * migration list and Drizzle emits every declared column in a full-row select, so a test that stops
+ * at 050 and then drives a full-row read asserts against a database the current schema.ts no longer
+ * describes. That is the very hazard this file documents, reaching its own harness. The catalog
+ * assertions below deliberately do NOT use this — they must keep testing 050 in isolation.
+ */
+const applyForwardToHead = async (): Promise<void> => {
+  await applyForward();
+  for (const f of ALL.slice(ALL.indexOf(TARGET) + 1)) {
+    await pg.exec(readFileSync(join(MIGRATIONS_DIR, f), 'utf-8'));
+  }
+};
 const applyRollback = (): Promise<unknown> => pg.exec(rollbackSql);
 
 /**
@@ -142,7 +158,7 @@ describe('050 — the ordering hazard it exists to prevent', () => {
   });
 
   it('the same read succeeds after 050', async () => {
-    await applyForward();
+    await applyForwardToHead();
     const sim = await db.query.simulations.findFirst({ where: eq(schema.simulations.id, simId) });
     expect(sim).toBeTruthy();
     expect(sim!.active_revision_id).toBeNull();
@@ -152,7 +168,7 @@ describe('050 — the ordering hazard it exists to prevent', () => {
 
   it('a Drizzle sim_revisions read fails with 42P01 before and succeeds after', async () => {
     await expect(db.query.sim_revisions.findMany()).rejects.toMatchObject({ code: '42P01' });
-    await applyForward();
+    await applyForwardToHead();
     await expect(db.query.sim_revisions.findMany()).resolves.toEqual([]);
   });
 });

@@ -22,6 +22,7 @@
 import type { FastifyInstance } from 'fastify';
 import { ingestBatch } from '../services/simulation/RumService.js';
 import { logger } from '../lib/logger.js';
+import { rateLimit } from '../lib/rateLimit.js';
 import { RUM_MAX_EVENTS_PER_BATCH } from 'shared/src/sim/rumEvents';
 
 /** Refuse an oversized body before parsing it, so a hostile caller cannot make us allocate it. */
@@ -42,6 +43,15 @@ export function registerSimRumRoutes(app: FastifyInstance): void {
         .header('Access-Control-Allow-Origin', '*')
         .header('Cache-Control', 'no-store')
         .code(204);
+
+      // Rate limited per IP. The route is unauthenticated with a wildcard CORS origin, so without
+      // this any page on the internet could drive unbounded durable growth in the same Postgres the
+      // player reads from. Generous enough that an honest client — which flushes at most every 30s
+      // — never approaches it.
+      if (!rateLimit(`sim-rum:${request.ip}`, 20, 60_000)) {
+        // Still 204: the response must not become a probe for the limiter's shape either.
+        return reply.send();
+      }
 
       try {
         const result = await ingestBatch(request.body);

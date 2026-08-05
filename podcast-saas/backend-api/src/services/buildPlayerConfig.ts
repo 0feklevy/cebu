@@ -68,7 +68,6 @@ import { captionUrlForVideo } from './captions/CaptionService.js';
 import { normalizeAvatarCircles, normalizeSpeakerTimeline, type AvatarCirclesLike } from './avatarCircles/normalizeAvatarCircles.js';
 import { logger } from '../lib/logger.js';
 import { resolveRumSampleRate } from './simulation/RumService.js';
-import { canaryPrepareMs } from 'shared/src/sim/prepareBudget';
 
 /** The simulation columns this file reads. Named so the degraded-read catch cannot drift from it. */
 interface SimRowShape {
@@ -77,7 +76,7 @@ interface SimRowShape {
   bridge_hash: string | null;
   active_revision_id: string | null;
   active_revision_entry_key: string | null;
-  canary_report: unknown;
+  prepare_budget_ms: number | null;
 }
 
 /**
@@ -145,11 +144,12 @@ export async function buildPlayerConfig(
           // The pointer (migration 050). Two cheap scalars, deliberately denormalised onto this row
           // so resolving which bytes are live costs no join on the hottest read path.
           active_revision_id: true, active_revision_entry_key: true,
-          // The publish-time canary already records per-step ms for exactly these bytes. It is the
-          // only real number available on a FIRST view, when nothing has been measured yet and a
-          // compiled-in constant would be at its least defensible. Read here rather than in a
-          // second query because this row is already being fetched.
-          canary_report: true,
+          // The package's own publish-time preparation cost, derived once when the canary verdict
+          // was recorded. A scalar, deliberately: canary_report is large (per-case steps, errors,
+          // capabilities, resource counts) and this is the read path the `columns` list exists to
+          // keep narrow. It is the only real number available on a FIRST view, when nothing has
+          // been measured yet and a compiled-in constant is least defensible.
+          prepare_budget_ms: true,
         },
       })
       // A degraded read here is NOT harmless. An empty list makes every simulation look
@@ -262,9 +262,8 @@ export async function buildPlayerConfig(
    */
   const simPrepareBudgets: Record<string, number> = {};
   for (const [simId, row] of simRows) {
-    const report = row.canary_report as { steps?: { step: string; ms?: number | null; status?: string }[] } | null;
-    const ms = canaryPrepareMs(report?.steps ?? null);
-    if (ms !== null) simPrepareBudgets[simId] = ms;
+    const ms = row.prepare_budget_ms;
+    if (typeof ms === 'number' && Number.isFinite(ms) && ms > 0) simPrepareBudgets[simId] = ms;
   }
 
   const packageRevisionFor = (simId: string | null, url: string | null): string | null => {

@@ -246,7 +246,7 @@ export class RevisionService {
   /**
    * THE ONLY WRITE PATH into a revision prefix.
    *
-   * Everything — customer bytes, generated runtime, posters, canary evidence, the manifest itself —
+   * Everything a caller supplies — customer bytes, generated runtime, posters, canary evidence —
    * goes through here, so the immutability invariant has exactly one chokepoint to defend. That
    * matters more than it might look: the object store has no versioning, no object lock and no
    * conditional writes, so a stray `uploadFile` to a revision key would silently succeed and
@@ -446,9 +446,13 @@ export class RevisionService {
       .where(and(
         eq(sim_revisions.id, revisionId),
         eq(sim_revisions.simulation_id, simulationId),
+        // CAS, for the same reason every other mutation here has one. Without it a late canary can
+        // overwrite the verdict of a revision that has since been activated or failed — and a later
+        // rollback would then project that stale verdict onto the simulations row.
+        inArray(sim_revisions.status, ['uploading', 'validating', 'canary_passed']),
       ))
       .returning({ id: sim_revisions.id });
-    if (!row) throw new RevisionConflict('recordCanary', 'revision not found');
+    if (!row) throw new RevisionConflict('recordCanary', 'revision is not accepting a verdict');
   }
 
   // ── Activation ─────────────────────────────────────────────────────────────────────────────────
@@ -632,7 +636,12 @@ export class RevisionService {
     // the active revision always has the newest activated_at and so is always the first element of
     // `retained`. Unreachable defensive code that no test can falsify is a liability, not a
     // safeguard — it invites a future reader to weaken `keep` believing the guard still covers it.
-    const keep = new Set(retained.slice(0, Math.max(1, opts.keepLastN)).map((r) => r.id));
+    // `Math.max(1, NaN)` is NaN, and `slice(0, NaN)` is empty — which made `keep` empty and the
+    // ACTIVE revision collectable. A keepLastN arriving from a query string is exactly how that
+    // happens, so a non-integer is refused rather than coerced.
+    const rawKeep = Number(opts.keepLastN);
+    const keepN = Number.isFinite(rawKeep) ? Math.max(1, Math.floor(rawKeep)) : 1;
+    const keep = new Set(retained.slice(0, keepN).map((r) => r.id));
 
     const deleted: string[] = [];
     for (const r of records) {
@@ -642,11 +651,22 @@ export class RevisionService {
         logger.error({ prefix, revisionId: r.id }, 'gc refused: prefix does not resolve to revision');
         continue;
       }
-      await this.storage.deleteWithPrefix(prefix);
-      await db.delete(sim_revisions).where(and(
+      // ROW FIRST, then bytes. The reverse order leaves a window where a crash produces a retained
+      // row whose bytes are gone — and `rollbackTargetFor` would then select it and `activate()`
+      // would flip the pointer to a dead prefix, so the simulation serves nothing. Deleting the row
+      // first can only orphan bytes, which the next sweep reclaims and which nothing reads.
+      const [gone] = await db.delete(sim_revisions).where(and(
         eq(sim_revisions.id, r.id),
         eq(sim_revisions.simulation_id, opts.simulationId),
-      ));
+        // CAS: the status must still be what was read. A revision activated between the read and
+        // this delete must not be collected out from under the pointer.
+        eq(sim_revisions.status, r.status),
+      )).returning({ id: sim_revisions.id });
+      if (!gone) {
+        logger.warn({ revisionId: r.id }, 'gc skipped: revision changed status during the sweep');
+        continue;
+      }
+      await this.storage.deleteWithPrefix(prefix);
       deleted.push(r.id);
     }
     return { deleted };

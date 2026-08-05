@@ -473,6 +473,9 @@ export const simulations = pgTable('simulations', {
   active_revision_entry_key: text('active_revision_entry_key'),
   // Monotonic allocator for revision_number, incremented under the row lock. Never max()+1.
   revision_counter:          integer('revision_counter').notNull().default(0),
+  // Derived from this package's canary report at publication (migration 051). A scalar, so the
+  // hottest read path never pulls canary_report JSONB to learn one number.
+  prepare_budget_ms:         integer('prepare_budget_ms'),
   created_at:       timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 

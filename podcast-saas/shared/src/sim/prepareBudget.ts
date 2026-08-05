@@ -21,8 +21,18 @@
  * measurement's clothes.
  */
 
-/** The canary already records `ms` per step; these are the steps that make up a preparation. */
-export const BUDGET_STEPS = ['load', 'handshake', 'prepare', 'section-applied'] as const;
+/**
+ * The canary steps that make up a preparation, chosen to span EXACTLY what the field measurement
+ * spans.
+ *
+ * `load` and `handshake` are deliberately excluded. The client's `requested` mark is stamped inside
+ * `activateModern`, which only runs once a document exists and has handshaked — so a measured
+ * `totalMs` covers prepare→reveal and nothing before it. Including document load in the lab number
+ * made the two incomparable: the budget would SHRINK the moment enough field samples arrived, at
+ * the exact point `planResidency` uses it as the lead window for loading a package. Two numbers
+ * that are used interchangeably have to measure the same span.
+ */
+export const BUDGET_STEPS = ['prepare', 'section-applied', 'present', 'section-presented'] as const;
 export type BudgetStep = (typeof BUDGET_STEPS)[number];
 
 /** No package prepares faster than this in the field, whatever a CI machine managed. */
@@ -37,7 +47,7 @@ export interface CanaryStepLike {
 }
 
 /**
- * Sum the preparation-relevant canary steps.
+ * Sum the preparation-relevant canary steps of ONE case.
  *
  * Steps are summed rather than maximised because they are SEQUENTIAL — the document loads, then
  * handshakes, then prepares, then applies — so the cost of getting to a usable section is their
@@ -123,4 +133,34 @@ export function isDueForPrepare(opts: {
   const leadSec = Math.max(0, opts.budgetMs) / 1000;
   const until = opts.sectionStartSec - opts.nowSec;
   return until > 0 && until <= leadSec;
+}
+
+
+/** The shape `assembleCanaryReport` actually produces. Steps live per CASE, never at the top level. */
+export interface CanaryReportLike {
+  cases?: readonly { steps?: readonly CanaryStepLike[] }[];
+}
+
+/**
+ * The preparation cost of a whole canary report.
+ *
+ * THE STEPS ARE PER CASE. An earlier version of this read `report.steps`, which does not exist on
+ * any report this system stores — `CanaryReport` has `cases[]`, and each case carries its own
+ * `steps[]`. That read returned `undefined` for every real report, so the budget was silently empty
+ * everywhere while looking implemented. A `as` cast on the call site was what let it compile.
+ *
+ * The MAXIMUM across cases, not the mean: each case is a full run of the same package in a
+ * different variant, and a lead time that covers only the average variant is too short for the
+ * others exactly when it matters. Cases with no usable steps contribute nothing rather than zero.
+ */
+export function canaryReportPrepareMs(report: CanaryReportLike | null | undefined): number | null {
+  const cases = report?.cases;
+  if (!Array.isArray(cases) || cases.length === 0) return null;
+  let worst: number | null = null;
+  for (const c of cases) {
+    const ms = canaryPrepareMs(c?.steps ?? null);
+    if (ms === null) continue;
+    if (worst === null || ms > worst) worst = ms;
+  }
+  return worst;
 }

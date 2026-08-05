@@ -47,6 +47,7 @@ import {
   type PosterSizeName,
 } from 'shared/src/sim/posterIdentity';
 import { computeConfigHash } from 'shared/src/sim/simIdentity';
+import { canaryReportPrepareMs } from 'shared/src/sim/prepareBudget';
 
 /** Exit codes, so a rollout script can branch without parsing text. */
 export const EXIT = {
@@ -274,6 +275,10 @@ async function main(): Promise<void> {
       package_class: report.classification,
       canary_report: report as unknown as Record<string, unknown>,
       canary_at: new Date(),
+      // Derived ONCE, here, so the player's hottest read path reads an integer instead of parsing
+      // this report. Null when the run produced no usable preparation steps, which the client reads
+      // as "no lab data" rather than as "instantaneous".
+      prepare_budget_ms: canaryReportPrepareMs(report),
     }).where(eq(simulations.id, sim.id));
     process.stdout.write(`  recorded verdict ${report.classification}\n`);
 

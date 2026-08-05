@@ -115,8 +115,14 @@ export function normalizeSampleRate(raw: unknown): number {
 
 const bucket = (n: unknown, steps: readonly number[]): number | null => {
   if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) return null;
-  // Round DOWN to the nearest bucket so a value never lands in a bucket above its true capability —
-  // an over-reported device would make a slow measurement look like it came from a fast machine.
+  // Round DOWN so a value never lands in a bucket above its true capability — an over-reported
+  // device makes a slow measurement look like it came from a fast machine.
+  //
+  // A value BELOW the smallest bucket returns 0 rather than that bucket. navigator.deviceMemory
+  // legitimately reports 0.25 and 0.5, and hardwareConcurrency can be 1; snapping those up to the
+  // first bucket systematically over-reported the weakest devices, which are exactly the ones whose
+  // measurements matter most.
+  if (n < steps[0]!) return 0;
   let out = steps[0]!;
   for (const s of steps) if (n >= s) out = s;
   return out;
@@ -208,6 +214,19 @@ export function validateBatch(raw: unknown): { ok: true; batch: RumBatch } | { o
   }
   if (!Array.isArray(b.events) || b.events.length === 0) return { ok: false, reason: 'no-events' };
   if (b.events.length > RUM_MAX_EVENTS_PER_BATCH) return { ok: false, reason: 'too-many-events' };
+
+  // The device profile is validated too. `poolTier` reaches a column with a CHECK constraint, and
+  // one unrecognised value made the single multi-row INSERT throw — losing the WHOLE batch,
+  // silently, because the endpoint always answers 204. A field this layer does not recognise is
+  // dropped rather than allowed to destroy every measurement beside it.
+  if (b.device !== undefined && b.device !== null) {
+    if (typeof b.device !== 'object') return { ok: false, reason: 'bad-event' };
+    const tier = (b.device as { poolTier?: unknown }).poolTier;
+    if (tier !== undefined && tier !== null
+        && tier !== 'single' && tier !== 'window' && tier !== 'all') {
+      (b.device as { poolTier?: unknown }).poolTier = null;
+    }
+  }
 
   for (const e of b.events) {
     if (!e || typeof e !== 'object') return { ok: false, reason: 'bad-event' };
