@@ -439,7 +439,11 @@ export function useProjectPlayer(
   // dynamic bridges run it directly); `legacyScript` = what an old bridge understands
   // ('main' → its URL's ?section default); `sectionUrl` lets the SIM_READY handler detect a
   // legacy frame parked on the WRONG section (→ navigate).
-  interface PendingSimStart { sectionUrl: string; dynScript: string; legacyScript: string; params: SimStartScriptParams }
+  interface PendingSimStart {
+    sectionUrl: string; dynScript: string; legacyScript: string; params: SimStartScriptParams;
+    /** True when this activation dispatches NO body (raw package — full simulation). */
+    raw: boolean;
+  }
   const pendingSimRef   = useRef<PendingSimStart | null>(null);
   // The CURRENT desired sim script+params while a sim section is active (null outside one).
   // A pool frame's 'load' listener re-arms pendingSimRef from this so a freshly (re)loaded
@@ -482,6 +486,16 @@ export function useProjectPlayer(
   interface PoolMeta {
     canEmitPaint: boolean;
     expectReload: boolean; warmCeil: ReturnType<typeof setTimeout> | null;
+    /**
+     * Whether THIS document has ever run a section body. Load-bearing for RAW activations (a
+     * section with no ?section= and no named script — "show the full simulation"): those dispatch
+     * NO body, so nothing repairs whatever imperative UI state the previous body left behind.
+     * The mechanical __simHideUi hide is reversed by stopScript, but generated bodies also hide
+     * controls imperatively when params.simpleUi is on, and their cleanups cannot be trusted to
+     * restore it — the bytes are baked into published bridges. A raw activation on a scripted
+     * document therefore needs a fresh document, and this flag is how it knows.
+     */
+    scriptedEver: boolean;
   }
   const simPoolMetaRef = useRef<Map<string, PoolMeta>>(new Map());
   // One SimRuntimeClient per package. SimRuntimeClient is a ONE-DOCUMENT state machine and this
@@ -654,7 +668,7 @@ export function useProjectPlayer(
   const poolMeta = (key: string): PoolMeta => {
     let m = simPoolMetaRef.current.get(key);
     if (!m) {
-      m = { canEmitPaint: false, expectReload: false, warmCeil: null };
+      m = { canEmitPaint: false, expectReload: false, warmCeil: null, scriptedEver: false };
       simPoolMetaRef.current.set(key, m);
     }
     return m;
@@ -805,6 +819,8 @@ export function useProjectPlayer(
   const navigateFrame = (key: string, src: string, bootHide?: string[] | null) => {
     const meta = poolMeta(key);
     meta.expectReload = true;
+    // A new document identity has run nothing — the raw-activation dirtiness starts over.
+    meta.scriptedEver = false;
     // A document IDENTITY change. SimRuntimeClient models ONE document, so re-attach it under the
     // new key: that resets every per-document flag and cancels its in-flight timers (including a
     // deferred stop, which must never hit the new document).
@@ -1007,9 +1023,14 @@ export function useProjectPlayer(
       // bridges only run their URL's ?section default, so they must NAVIGATE when the
       // frame's src is another section.
       const dynScript = dynamicScriptFor(simSection);
+      // RAW activation: dynamicScriptFor fell through to the section's own row id, which no bridge
+      // has a body for — by design, this means "present the package as-is" (SCRIPT_MISSING runs
+      // nothing). The Edge-of-Chaos shape: a full-simulation finale sharing its package with
+      // scripted minimal-UI sections.
+      const rawActivation = dynScript === simSection.id;
       const legacyScript = simSection.sim_script ?? 'main';
       activeSimUrlRef.current = key;
-      desiredSimRef.current = { sectionUrl, dynScript, legacyScript, params };
+      desiredSimRef.current = { sectionUrl, dynScript, legacyScript, params, raw: rawActivation };
       merge({ activeSimUrl: key });
       simTelemetry('activate', { key, section: simSection.id });
 
@@ -1093,11 +1114,21 @@ export function useProjectPlayer(
       // A document that HANDSHOOK and did not advertise in-place dispatch is load-time-locked:
       // its SCRIPTS.main is its own URL's ?section default, so a postMessage cannot switch it.
       const legacyNeedsNav = wasReady && !wasDynamic && spec && spec.src !== sectionUrl;
-      if (legacyNeedsNav) {
-        // Old load-time-locked bridge showing a different section — reload it on this URL,
-        // re-cloaked with the TARGET section's Minimal-UI selectors (not the first-user's).
+      // A RAW activation must present the package AS LOADED. On a document that has run a section
+      // body, "as loaded" no longer exists: the body applied its own imperative changes (Minimal-UI
+      // hiding among them, when ui_hide is empty and the mechanical path never engaged), stopScript
+      // reverses only the mechanical hide, and a raw dispatch runs nothing that could repair the
+      // rest. The v2-dynamic assumption — "the next startScript re-runs the body from its initial
+      // state" — holds for every scripted section and fails for exactly this one, so the raw case
+      // reloads the document instead of trusting it.
+      const rawNeedsNav = wasReady && wasDynamic && rawActivation && meta.scriptedEver;
+      if (legacyNeedsNav || rawNeedsNav) {
+        if (rawNeedsNav) simTelemetry('raw-reset-reload', { key });
+        // Reload on this URL, re-cloaked with the TARGET section's Minimal-UI selectors (not the
+        // first-user's). For the raw case the target URL carries no ?section=, so the fresh
+        // document boots with no default body — the full simulation, exactly as published.
         navigateFrame(key, sectionUrl, bootHideFor(simSection));
-        pendingSimRef.current = { sectionUrl, dynScript, legacyScript, params };
+        pendingSimRef.current = { sectionUrl, dynScript, legacyScript, params, raw: rawActivation };
       } else if (wasReady && wasPainted) {
         clearWarmCeil(meta);
         // Same-document switch: `painted` only certifies the document once drew SOMETHING
@@ -1108,7 +1139,9 @@ export function useProjectPlayer(
         // echoes on every ack, and either holds or announces the reveal. The terminal bound that
         // guarantees a wedged bridge can never hold the screen forever is its SIM_APPLY_STALL_MS
         // timer, which reports `reveal-forced`.
-        rt.activate({ script: wasDynamic ? dynScript : legacyScript, params });
+        if (!(wasDynamic && rawActivation)) meta.scriptedEver = true;
+        rt.activate({ script: wasDynamic ? dynScript : legacyScript, params,
+          presentAsLoaded: wasDynamic && rawActivation });
         // A document the pool LATCHED as painted (the never-drives-rAF escape hatch below) can
         // never produce the runtime's paint-driven reveal, so composite it here. revealSim
         // re-checks the hold, so a gated switch is still never presented early.
@@ -1117,7 +1150,9 @@ export function useProjectPlayer(
       } else if (wasReady) {
         // Frame is alive but hasn't acked a painted frame yet — drive it and poll the paint ack.
         clearWarmCeil(meta);
-        rt.activate({ script: wasDynamic ? dynScript : legacyScript, params });
+        if (!(wasDynamic && rawActivation)) meta.scriptedEver = true;
+        rt.activate({ script: wasDynamic ? dynScript : legacyScript, params,
+          presentAsLoaded: wasDynamic && rawActivation });
       } else {
         // Frame still booting (or just added on-demand): the SIM_READY handler applies the
         // pending start once its bridge answers (and resolves dynamic-vs-legacy then).
@@ -1128,7 +1163,7 @@ export function useProjectPlayer(
         // never answer at all. This is a pool-only race (no single-document surface can freeze a
         // frame it is about to present) and it is what the boundary handshake poll used to mask.
         rt.resume();
-        pendingSimRef.current = { sectionUrl, dynScript, legacyScript, params };
+        pendingSimRef.current = { sectionUrl, dynScript, legacyScript, params, raw: rawActivation };
       }
 
       if (!(wasReady && wasPainted) || legacyNeedsNav) {
@@ -2033,9 +2068,11 @@ export function useProjectPlayer(
               return;
             }
             // Drive the frame to paint. Reveal stays gated on the paint / the bounded ceiling.
+            if (!(isDynamic && pending.raw)) poolMeta(key).scriptedEver = true;
             runtimeFor(key).activate({
               script: isDynamic ? pending.dynScript : pending.legacyScript,
               params: pending.params,
+              presentAsLoaded: isDynamic && pending.raw,
             });
           }
         } else {

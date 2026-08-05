@@ -218,7 +218,12 @@ test.afterAll(async () => { await new Promise<void>((r) => server.close(() => r(
 
 // ── fixture project builder ───────────────────────────────────────────────────────────────
 
-interface SimSpec { id: string; start: number; end: number; pkg?: string; section?: string; simpleUi?: boolean; hide?: string[]; auto?: boolean }
+interface SimSpec {
+  id: string; start: number; end: number; pkg?: string; section?: string;
+  simpleUi?: boolean; hide?: string[]; auto?: boolean;
+  /** Bare entry URL with NO ?section= — the RAW "full simulation" shape (dispatches no body). */
+  rawUrl?: boolean;
+}
 
 /**
  * Build a player-config exactly in the shape the real backend returns, so the real viewer parses
@@ -242,7 +247,9 @@ function makeConfig(sims: SimSpec[], opts?: { segDuration?: number }) {
         type: 'simulation',
         start_sec: s.start,
         end_sec: s.end,
-        simulation_url: `${assetBase}/${s.pkg ?? 'modern'}/index.html?section=${s.section ?? S.A}&v=1`,
+        simulation_url: s.rawUrl
+          ? `${assetBase}/${s.pkg ?? 'modern'}/index.html`
+          : `${assetBase}/${s.pkg ?? 'modern'}/index.html?section=${s.section ?? S.A}&v=1`,
         sim_script: 'main',
         simple_ui: s.simpleUi ?? false,
         auto_script: s.auto ?? false,
@@ -874,6 +881,65 @@ test.describe('real React viewer — simulation transitions', () => {
     const everShown = samples.some((s) => s.frames.some((f) => f.op > 0.5));
     expect(everShown, 'the post-roll sim was not on screen after the video ended').toBe(true);
     assertVisibleFramesAreCorrect(samples, { expect: 'B' });
+  });
+
+  test('12c. a full-UI post-roll section restores the UI a minimal-UI sibling hid', async ({ page }) => {
+    // The Edge-of-Chaos shape: one package, several minimal-UI sections mid-video, and a FULL
+    // simulation as the post-roll. The pool keeps ONE document per package, so the post-roll
+    // activation happens in a document whose last applied state was minimal — and it must restore
+    // the full UI, not inherit the hidden one.
+    await bootViewer(page, makeConfig([
+      { id: 's1', start: 3, end: 8, section: S.A, simpleUi: true, hide: ['.controls'] },
+      { id: 's2', start: 25, end: 60, section: S.B, simpleUi: false },
+    ], { segDuration: 30 }));
+    await startPlayback(page);
+    await seekTo(page, 4);
+    await waitForSection(page, 'A');
+
+    await seekTo(page, 26);
+    await waitForSection(page, 'B');
+    await page.evaluate(() => {
+      const v = document.querySelector('video');
+      if (v) v.currentTime = Math.max(0, (v.duration || 30) - 0.05);
+    });
+    await page.waitForTimeout(2500);
+
+    const samples = await sampleFrames(page, 900);
+    assertVisibleFramesAreCorrect(samples, { expect: 'B' });
+    // THE claim: the full UI is back. A frame visibly presenting B with its controls still hidden
+    // is the minimal-UI state leaking across sections of one pooled document.
+    const controlsSeen = samples.some((s) => s.frames.some((f) => f.op > 0.5 && f.controls));
+    expect(controlsSeen, 'the post-roll FULL simulation is still wearing the minimal-UI state').toBe(true);
+  });
+
+  test('12d. a RAW full-simulation finale never inherits a sibling section\'s minimal UI', async ({ page }) => {
+    // The Edge-of-Chaos bug, reproduced with the SHIPPING bridge: the dirtyui bodies hide the
+    // full-UI chrome imperatively when simpleUi is on (ui_hide empty — the mechanical path never
+    // engages) and their cleanups do not restore it, exactly like real generated bodies. The
+    // finale is the RAW package URL (no ?section=): it dispatches NO body, so before the
+    // raw-activation reset nothing could repair the hidden chrome and the full simulation
+    // presented wearing the previous section's minimal UI.
+    await bootViewer(page, makeConfig([
+      { id: 's1', start: 3, end: 8, pkg: 'dirtyui', section: S.A, simpleUi: true },
+      { id: 's2', start: 25, end: 60, pkg: 'dirtyui', rawUrl: true, simpleUi: false },
+    ], { segDuration: 30 }));
+    await startPlayback(page);
+    await seekTo(page, 4);
+    await waitForSection(page, 'A');
+
+    await seekTo(page, 26);
+    await page.waitForTimeout(2500);
+    await page.evaluate(() => {
+      const v = document.querySelector('video');
+      if (v) v.currentTime = Math.max(0, (v.duration || 30) - 0.05);
+    });
+    await page.waitForTimeout(2500);
+
+    const samples = await sampleFrames(page, 900);
+    const shown = samples.some((s) => s.frames.some((f) => f.op > 0.5));
+    expect(shown, 'the raw finale was never presented at all').toBe(true);
+    const controlsSeen = samples.some((s) => s.frames.some((f) => f.op > 0.5 && f.controls));
+    expect(controlsSeen, 'the RAW full simulation is wearing a sibling section\'s minimal UI').toBe(true);
   });
 
   test('13. a LEGACY package (no ack support) is still displayed, never held on silence', async ({ page }) => {

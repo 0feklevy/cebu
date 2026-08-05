@@ -118,6 +118,36 @@ const bodyFor = (label: string, colour: string, extra = '') => `
   };
 `;
 
+/**
+ * A body that hides the full-UI chrome ITSELF when params.simpleUi is on — imperatively, not via
+ * hideSelectors — and whose cleanup does NOT restore it.
+ *
+ * This mirrors real generated bodies (the generation prompt tells them to hide irrelevant controls
+ * when simpleUi is set, and their cleanups are of uneven quality; Edge-of-Chaos ships exactly this
+ * shape with ui_hide empty everywhere). The mechanical __simHideUi path never engages, so nothing
+ * the system owns reverses the hide — which is precisely the state a RAW activation must not
+ * inherit.
+ */
+const dirtyBodyFor = (label: string, colour: string) => `
+  var el = document.getElementById('marker');
+  el.style.background = ${JSON.stringify(colour)};
+  el.setAttribute('data-section', ${JSON.stringify(label)});
+  if (params && params.simpleUi) {
+    var c = document.querySelector('.controls');
+    if (c) c.style.display = 'none';
+  }
+  return function cleanup() {
+    el.style.background = '#808080';
+    el.setAttribute('data-section', 'none');
+    /* deliberately does NOT restore .controls */
+  };
+`;
+
+const DIRTY_SECTION_BODIES: Record<string, string> = {
+  [FIXTURE_SECTIONS.A]: dirtyBodyFor('A', '#0000ff'),
+  [FIXTURE_SECTIONS.B]: dirtyBodyFor('B', '#ffff00'),
+};
+
 const SECTION_BODIES: Record<string, string> = {
   [FIXTURE_SECTIONS.A]: bodyFor('A', '#0000ff'),
   [FIXTURE_SECTIONS.B]: bodyFor('B', '#ffff00'),
@@ -879,6 +909,10 @@ function main(): void {
   const entries = new Map<string, string>(Object.entries(SECTION_BODIES));
 
   emit(outDir, 'modern', wrapBridgeCombined(entries));
+  // Bodies that hide the full UI imperatively and never restore it — the raw-activation reset's
+  // reason to exist. Runs the SHIPPING combined bridge, so what this package proves is about the
+  // real dispatch path, not a fixture-only one.
+  emit(outDir, 'dirtyui', wrapBridgeCombined(new Map(Object.entries(DIRTY_SECTION_BODIES))));
   emit(outDir, 'legacy', legacyBridge(new Map(Object.entries(SECTION_BODIES))));
   emit(outDir, 'noraf', wrapBridgeCombined(entries), NO_RAF_ENTRY());
   // The honest no-paint / load-time-locked package: bare SIM_READY *and* no rAF gate. Both halves
@@ -909,7 +943,7 @@ function main(): void {
 
   console.log(JSON.stringify({
     outDir,
-    packages: ['modern', 'legacy', 'noraf', 'nopaint', 'delayedack', 'v3managed', 'v3allmanaged'],
+    packages: ['modern', 'legacy', 'noraf', 'nopaint', 'delayedack', 'v3managed', 'v3allmanaged', 'dirtyui'],
     sections: FIXTURE_SECTIONS,
     delayedOnlySections: FIXTURE_DELAYED_SECTIONS,
     delayedAckPolicy: DELAYED_ACK_POLICY,
