@@ -181,6 +181,14 @@ export interface ActivateOptions {
   /** Reveal policy override. 'auto' (default) applies the two rules above. */
   reveal?: 'auto' | 'never';
   /**
+   * v2 only. This activation dispatches a key the caller KNOWS no body exists for — a raw package
+   * presentation ("show the full simulation"). SCRIPT_MISSING is then the expected outcome and the
+   * document must present AS LOADED, not be hidden: the hide exists to stop a wrong-section frame,
+   * and for a raw activation the as-loaded document IS the right frame. The caller is responsible
+   * for the document actually being pristine (the pool reloads a scripted document first).
+   */
+  presentAsLoaded?: boolean;
+  /**
    * v3 only. The presentation configuration whose hash becomes part of this activation's identity.
    * Omitted on the v2 path, where it has nowhere to go — the legacy bridge has no field for it.
    */
@@ -308,6 +316,8 @@ export class SimRuntimeClient {
   // framesSubmitted, canvas — were computed, put on the wire and dropped here. Every stage below is
   // recorded but NOTHING reads a duration to make a decision: this is measurement only, so it
   // cannot change what the viewer sees. What reads it is the lead-time derivation, later.
+  /** v2: the pending activation expects SCRIPT_MISSING and must present the document as loaded. */
+  private pendingPresentAsLoaded = false;
   private tmarks: TransitionMarks = { marks: {} };
   private tHistory: TransitionMarks[] = [];
   /** Bounded, with the drop counted. A silent cap makes a truncated sample look like a complete one. */
@@ -522,8 +532,20 @@ export class SimRuntimeClient {
     if (!this.matchesPending(script, token)) return;
     this.clearApplyStall();
     this.holding = false;
-    // The bridge deliberately ran NOTHING. Presenting the document would show whatever was on it
-    // before — degrade to the underlying content instead of a wrong or parked frame.
+    if (this.pendingPresentAsLoaded) {
+      // The caller DISPATCHED a no-body key on purpose: a raw package presentation. Missing is the
+      // expected outcome, and the as-loaded document is the right frame — hiding it here is what
+      // made the full-simulation finale vanish. The pool guarantees the document is pristine (a
+      // scripted document is reloaded before a raw activation reaches it), so presenting cannot
+      // show another section's leftovers.
+      this.set({ currentScript: null, pendingScript: null, stopped: false });
+      this.tel('script-missing', { script, presentedAsLoaded: true });
+      this.maybeReveal();
+      return;
+    }
+    // The bridge deliberately ran NOTHING and the caller expected a body. Presenting the document
+    // would show whatever was on it before — degrade to the underlying content instead of a wrong
+    // or parked frame.
     this.set({ pendingScript: null, lastError: `missing section: ${script}` });
     this.tel('script-missing', { script });
     this.hideAndSilence();
@@ -648,6 +670,7 @@ export class SimRuntimeClient {
     }
 
     const { script, params } = opts;
+    const presentAsLoaded = opts.presentAsLoaded === true;
 
     // Any activation supersedes a pending teardown: the bridge's own startScript runs stopScript
     // first, and a late deferred stop would tear down the LIVE section instead.
@@ -662,6 +685,7 @@ export class SimRuntimeClient {
     const priorScript = this.state.currentScript;
     const wasStopped = this.state.stopped;
 
+    this.pendingPresentAsLoaded = presentAsLoaded;
     this.set({ activationToken: token, pendingScript: script, phase: 'applying', lastError: null });
 
     this.post({ type: SIM_RESUME });
