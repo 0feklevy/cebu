@@ -51,8 +51,8 @@ vi.mock('../../storage/getStorageAdapter.js', () => ({
 import { RevisionService, RevisionConflict, cacheControlForRole } from '../RevisionService.js';
 import {
   IMMUTABLE_CACHE_CONTROL, POINTER_CACHE_CONTROL, revisionFileKey,
-} from 'shared/src/sim/simRevision';
-import { SIM_MANIFEST_VERSION, type SimManifest } from 'shared/src/sim/simManifest';
+} from 'shared/sim/simRevision';
+import { SIM_MANIFEST_VERSION, type SimManifest } from 'shared/sim/simManifest';
 
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'db', 'migrations');
 const PREFIX = 'simulations/proj/sim';

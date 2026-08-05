@@ -18,10 +18,10 @@ import {
   type CanaryReport,
   type CanaryStep,
   type CanaryStepResult,
-} from 'shared/src/sim/canaryContract';
-import type { SimRuntimeCapabilities, SimResourceCounts } from 'shared/src/sim/runtimeProtocol';
-import { ZERO_RESOURCE_COUNTS } from 'shared/src/sim/runtimeProtocol';
-import { DEFAULT_PRESENTATION_CONFIG } from 'shared/src/sim/simIdentity';
+} from 'shared/sim/canaryContract';
+import type { SimRuntimeCapabilities, SimResourceCounts } from 'shared/sim/runtimeProtocol';
+import { ZERO_RESOURCE_COUNTS } from 'shared/sim/runtimeProtocol';
+import { DEFAULT_PRESENTATION_CONFIG } from 'shared/sim/simIdentity';
 import {
   assembleCanaryReport,
   caseLabel,

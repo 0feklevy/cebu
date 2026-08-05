@@ -9,7 +9,7 @@ import { LOCAL_STORAGE_BASE_DIR } from '../services/storage/localStoragePaths.js
 import { safeLocalPath, keyHasTraversal } from '../services/storage/pathSafety.js';
 import { serveLocalFile } from '../services/storage/serveFile.js';
 import { getStorageAdapter } from '../services/storage/getStorageAdapter.js';
-import { revisionIdFromKey, cacheControlForKey } from 'shared/src/sim/simRevision';
+import { revisionIdFromKey, cacheControlForKey } from 'shared/sim/simRevision';
 import { LocalStorageAdapter } from '../services/storage/LocalStorageAdapter.js';
 import { getSimulationContentType } from '../services/simulation/SimulationService.js';
 import { browserOrigins } from '../config/publicOrigins.js';

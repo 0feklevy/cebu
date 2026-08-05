@@ -38,8 +38,8 @@ import {
   type CanaryCaseResult,
   type CanaryReport,
   type CanaryStep,
-} from 'shared/src/sim/canaryContract';
-import type { SimPackageClass } from 'shared/src/sim/simFailurePolicy';
+} from 'shared/sim/canaryContract';
+import type { SimPackageClass } from 'shared/sim/simFailurePolicy';
 
 /** One entry of `CanaryReport['assets']`, named so callers can build the list without an index type. */
 export type CanaryAssetResult = CanaryReport['assets'][number];

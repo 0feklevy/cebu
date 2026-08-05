@@ -1,4 +1,4 @@
-import { packageRevisionFor as revisionIdentityFor } from 'shared/src/sim/simRevision';
+import { packageRevisionFor as revisionIdentityFor } from 'shared/sim/simRevision';
 import { db } from '../db/index.js';
 import {
   projects, video_files, timeline_sections, image_files, audio_files, scenes,
@@ -24,12 +24,12 @@ export async function resolveSimPoolMode(): Promise<SimPoolMode> {
 }
 import {
   DEFAULT_PRESENTATION_CONFIG, computeConfigHash, derivePackageRevision, variantKeyFor,
-} from 'shared/src/sim/simIdentity';
+} from 'shared/sim/simIdentity';
 import {
   parsePosterVariants, posterIdentityString, selectPosterVariant,
   type PosterFormat, type PosterKey,
-} from 'shared/src/sim/posterIdentity';
-import type { SimPackageClass } from 'shared/src/sim/simFailurePolicy';
+} from 'shared/sim/posterIdentity';
+import type { SimPackageClass } from 'shared/sim/simFailurePolicy';
 import { requireProjectAccess } from './projectAccess.js';
 import { collaboratorContentIds } from './collabAccess.js';
 

@@ -38,8 +38,8 @@ import {
   type SimFileRole,
   type SimManifest,
   type SimManifestFile,
-} from 'shared/src/sim/simManifest';
-import { revisionIdFromKey } from 'shared/src/sim/simRevision';
+} from 'shared/sim/simManifest';
+import { revisionIdFromKey } from 'shared/sim/simRevision';
 
 export interface MigrationResult {
   simulationId: string;

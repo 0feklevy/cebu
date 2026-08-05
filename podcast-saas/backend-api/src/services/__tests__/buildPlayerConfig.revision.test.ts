@@ -15,8 +15,8 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { buildPlayerConfig } from '../buildPlayerConfig.js';
-import { derivePackageRevision } from 'shared/src/sim/simIdentity';
-import { packageRevisionFor } from 'shared/src/sim/simRevision';
+import { derivePackageRevision } from 'shared/sim/simIdentity';
+import { packageRevisionFor } from 'shared/sim/simRevision';
 
 const mocks = vi.hoisted(() => ({
   projects:           { findFirst: vi.fn() },

@@ -6,7 +6,7 @@ import type { PlayerConfig, PlayerSegment, SimulationOverlay, TimelineSeg, Broll
 import { releaseAvatarElement } from '../../lib/avatarAudioGraph';
 import type { SimStartScriptParams } from '../../lib/simUiControls';
 import { canWarmUnpaused, learnCanEmitPaint } from '../../lib/simCapability';
-import { collectSimPool, bootHideFor, dynamicScriptFor, flattenSimOccurrences, packageKeyOf, planWindowResidency, SIM_POOL_CAP, type SimPoolFrameSpec } from '../../lib/simPool';
+import { collectSimPool, bootHideFor, dynamicScriptFor, flattenSimOccurrences, packageKeyOf, planWindowResidency, sectionKeyOf, SIM_POOL_CAP, type SimPoolFrameSpec } from '../../lib/simPool';
 import { newPlayerSessionId } from 'shared/src/sim/simIdentity';
 import { simTelemetry } from '../../lib/simTelemetry';
 import { SimRuntimeClient } from '../../lib/sim/SimRuntimeClient';
@@ -498,6 +498,8 @@ export function useProjectPlayer(
     scriptedEver: boolean;
   }
   const simPoolMetaRef = useRef<Map<string, PoolMeta>>(new Map());
+  /** Monotonic nonce for forced same-URL reloads — see navigateFrame. */
+  const simResetSeqRef = useRef(0);
   // One SimRuntimeClient per package. SimRuntimeClient is a ONE-DOCUMENT state machine and this
   // hook manages a POOL of documents, so the map is owned here: created on demand, re-attached on
   // a document IDENTITY change (navigateFrame), disposed on dropPooled and on unmount.
@@ -818,21 +820,37 @@ export function useProjectPlayer(
   // package's first-using section — audited: a legacy Minimal-UI target navigated uncloaked).
   const navigateFrame = (key: string, src: string, bootHide?: string[] | null) => {
     const meta = poolMeta(key);
+    // A RELOAD ONTO THE SAME URL NEEDS A DISTINCT SRC.
+    //
+    // When the frame is already on this URL — which happens whenever the raw section was entered
+    // before the one that dirtied the document — React re-renders an identical `src` prop and
+    // nothing navigates. Worse, `attach(frame, src)` then takes its SAME-DOCUMENT branch and keeps
+    // `ready`/`painted` alive, so the SIM_READY that would apply the pending activation never
+    // fires again and the frame sits undispatched with no paint poll and no stall bound.
+    //
+    // A nonce makes it a genuine new document identity: the spec really changes, the browser really
+    // navigates, and `attach` really resets. It does not disturb dispatch or residency — the nonce
+    // is not a `section` param, so `variantParamOf` still returns null, and `packageKeyOf` keys on
+    // origin+pathname, so the package stays one pool entry.
+    const prev = simPoolSpecsRef.current.find((s) => s.key === key);
+    const finalSrc = prev?.src === src
+      ? `${src}${src.includes('?') ? '&' : '?'}__simreset=${++simResetSeqRef.current}`
+      : src;
     meta.expectReload = true;
     // A new document identity has run nothing — the raw-activation dirtiness starts over.
     meta.scriptedEver = false;
     // A document IDENTITY change. SimRuntimeClient models ONE document, so re-attach it under the
     // new key: that resets every per-document flag and cancels its in-flight timers (including a
     // deferred stop, which must never hit the new document).
-    runtimeFor(key).attach(simPoolFramesRef.current.get(key) ?? null, src);
+    runtimeFor(key).attach(simPoolFramesRef.current.get(key) ?? null, finalSrc);
     cancelPristineReload(key);
     clearWarmCeil(meta);
     warmQueueRef.current = warmQueueRef.current.filter((k) => k !== key);
     finishWarm(key);
     simPoolSpecsRef.current = simPoolSpecsRef.current.map((s) =>
-      (s.key === key ? { ...s, src, ...(bootHide !== undefined ? { bootHide } : {}) } : s));
+      (s.key === key ? { ...s, src: finalSrc, ...(bootHide !== undefined ? { bootHide } : {}) } : s));
     merge({ simPool: simPoolSpecsRef.current });   // spec.src change → iframe src prop → navigation
-    simTelemetry('navigate', { key, src: src.slice(-80) });
+    simTelemetry('navigate', { key, src: finalSrc.slice(-80), forced: finalSrc !== src });
   };
 
   // ── Paint-gated reveal — the ONLY writer of showSimOverlay:true ───────────
@@ -1023,11 +1041,19 @@ export function useProjectPlayer(
       // bridges only run their URL's ?section default, so they must NAVIGATE when the
       // frame's src is another section.
       const dynScript = dynamicScriptFor(simSection);
-      // RAW activation: dynamicScriptFor fell through to the section's own row id, which no bridge
-      // has a body for — by design, this means "present the package as-is" (SCRIPT_MISSING runs
-      // nothing). The Edge-of-Chaos shape: a full-simulation finale sharing its package with
-      // scripted minimal-UI sections.
-      const rawActivation = dynScript === simSection.id;
+      // RAW activation: the URL carries NO ?section= and no real named script, so nothing selects a
+      // body — by design this means "present the package as-is" (SCRIPT_MISSING runs nothing). The
+      // Edge-of-Chaos shape: a full-simulation finale sharing its package with scripted sections.
+      //
+      // STRUCTURAL, not `dynScript === simSection.id`. That comparison looked equivalent and is a
+      // string coincidence: SimulationService mints `?section=${sectionId}` using the section's OWN
+      // row id, so variantKeyFor returns that id for every normally generated section and the
+      // comparison was TRUE for almost all of them. Two things broke as a result — scripted
+      // siblings never marked the document dirty (so the reset this exists for rarely fired), and
+      // `presentAsLoaded` was passed on nearly every activation, disabling the SCRIPT_MISSING
+      // protection product-wide. Only a section that genuinely selects no body is raw.
+      const rawActivation = sectionKeyOf(sectionUrl) === null
+        && (!simSection.sim_script || simSection.sim_script === 'main');
       const legacyScript = simSection.sim_script ?? 'main';
       activeSimUrlRef.current = key;
       desiredSimRef.current = { sectionUrl, dynScript, legacyScript, params, raw: rawActivation };

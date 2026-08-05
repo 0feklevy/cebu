@@ -23,7 +23,7 @@ import type { FastifyInstance } from 'fastify';
 import { ingestBatch } from '../services/simulation/RumService.js';
 import { logger } from '../lib/logger.js';
 import { rateLimit } from '../lib/rateLimit.js';
-import { RUM_MAX_EVENTS_PER_BATCH } from 'shared/src/sim/rumEvents';
+import { RUM_MAX_EVENTS_PER_BATCH } from 'shared/sim/rumEvents';
 
 /** Refuse an oversized body before parsing it, so a hostile caller cannot make us allocate it. */
 const MAX_BODY_BYTES = 256 * 1024;

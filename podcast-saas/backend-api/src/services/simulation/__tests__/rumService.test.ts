@@ -34,7 +34,7 @@ import {
   startRumRetentionSweep,
   RUM_RETENTION_DEFAULT_DAYS,
 } from '../RumService.js';
-import { SIM_RUM_VERSION, bucketDevice, type RumEvent } from 'shared/src/sim/rumEvents';
+import { SIM_RUM_VERSION, bucketDevice, type RumEvent } from 'shared/sim/rumEvents';
 
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'db', 'migrations');
 

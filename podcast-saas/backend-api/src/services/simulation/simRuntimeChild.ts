@@ -29,7 +29,7 @@
 import {
   SIM_PROTOCOL_NAMESPACE,
   SIM_PROTOCOL_VERSION,
-} from 'shared/src/sim/runtimeProtocol';
+} from 'shared/sim/runtimeProtocol';
 
 /** Bumped whenever the emitted child source changes in a way a stored package must be rebuilt for. */
 export const SIM_CHILD_RUNTIME_VERSION = 1;

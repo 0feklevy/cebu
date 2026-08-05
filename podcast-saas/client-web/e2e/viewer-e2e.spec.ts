@@ -223,6 +223,12 @@ interface SimSpec {
   simpleUi?: boolean; hide?: string[]; auto?: boolean;
   /** Bare entry URL with NO ?section= — the RAW "full simulation" shape (dispatches no body). */
   rawUrl?: boolean;
+  /**
+   * Emit `?section=<the section's OWN row id>` — what SimulationService actually mints for every
+   * generated section. Every other fixture uses an id that differs from the section param, a shape
+   * production never produces, which is how a predicate comparing the two slipped through.
+   */
+  sectionIsOwnId?: boolean;
 }
 
 /**
@@ -249,7 +255,7 @@ function makeConfig(sims: SimSpec[], opts?: { segDuration?: number }) {
         end_sec: s.end,
         simulation_url: s.rawUrl
           ? `${assetBase}/${s.pkg ?? 'modern'}/index.html`
-          : `${assetBase}/${s.pkg ?? 'modern'}/index.html?section=${s.section ?? S.A}&v=1`,
+          : `${assetBase}/${s.pkg ?? 'modern'}/index.html?section=${s.sectionIsOwnId ? s.id : (s.section ?? S.A)}&v=1`,
         sim_script: 'main',
         simple_ui: s.simpleUi ?? false,
         auto_script: s.auto ?? false,
@@ -998,6 +1004,87 @@ test.describe('real React viewer — simulation transitions', () => {
       ((window as unknown as { __SIM_TELEMETRY__?: { events: ({ event: string })[] } })
         .__SIM_TELEMETRY__?.events ?? []).filter((e) => e.event === 'raw-reset-reload').length);
     expect(reloads, 'the reset fired more than once — a reloaded document was still marked dirty').toBe(1);
+  });
+
+  test('12g. PRODUCTION url shape: a scripted section marks the document dirty', async ({ page }) => {
+    // SimulationService mints `?section=<the section's own row id>`, so a predicate comparing the
+    // dispatch key to the row id calls EVERY generated section "raw". Consequences: scripted
+    // siblings never mark the document dirty (the reset never fires), and presentAsLoaded is passed
+    // on nearly every activation (the SCRIPT_MISSING protection is disabled product-wide). Every
+    // other fixture uses a section param that differs from the row id — a shape production never
+    // produces — so nothing caught it.
+    //
+    // Here section A's id IS its section param, exactly as production emits.
+    await bootViewer(page, makeConfig([
+      { id: S.A, start: 3, end: 8, pkg: 'dirtyui', sectionIsOwnId: true, simpleUi: true },
+      { id: 's2', start: 20, end: 60, pkg: 'dirtyui', rawUrl: true },
+    ], { segDuration: 30 }), { simdebug: true });
+    await startPlayback(page);
+    await seekTo(page, 4);
+    await waitForSection(page, 'A');
+    await seekTo(page, 21);
+    await page.waitForTimeout(2500);
+
+    const reloads = await page.evaluate(() =>
+      ((window as unknown as { __SIM_TELEMETRY__?: { events: ({ event: string })[] } })
+        .__SIM_TELEMETRY__?.events ?? []).filter((e) => e.event === 'raw-reset-reload').length);
+    expect(reloads, 'a production-shaped scripted section did not mark the document dirty').toBe(1);
+
+    const samples = await sampleFrames(page, 900);
+    const controlsSeen = samples.some((s) => s.frames.some((f) => f.op > 0.5 && f.controls));
+    expect(controlsSeen, 'the raw finale inherited the minimal UI under the production url shape').toBe(true);
+  });
+
+  test('12h. a missing section is still HIDDEN under the production url shape', async ({ page }) => {
+    // The other half: presentAsLoaded must stay false for a section that genuinely selects a body.
+    // With the string-coincidence predicate this section was "raw", so a missing body presented the
+    // pooled document instead of degrading to video.
+    await bootViewer(page, makeConfig([
+      { id: S.A, start: 3, end: 8, sectionIsOwnId: true },
+      { id: S.MISSING, start: 8, end: 14, sectionIsOwnId: true },
+    ]));
+    await startPlayback(page);
+    await seekTo(page, 4);
+    await page.waitForTimeout(900);
+    const move = sampleFrames(page, 1500);
+    await seekTo(page, 10);
+    const late = (await move).slice(6);
+    expect(late.length, 'no post-transition samples — the assertion below would be vacuous').toBeGreaterThan(5);
+    const presented = late.flatMap((s) => s.frames).filter((f) => f.op > 0.5);
+    expect(presented.length, 'a missing section was presented instead of degrading to video').toBe(0);
+  });
+
+  test('12i. the raw reset really reloads when the frame is already on that URL', async ({ page }) => {
+    // The reset navigates to the section URL. When the pool frame is ALREADY on that URL — which
+    // happens whenever the raw section was entered first — React re-renders an identical `src`
+    // prop and nothing navigates: no load event, no new document, and `attach` keeps every
+    // per-document flag alive. The frame would then sit undispatched with no paint poll and no
+    // stall bound, i.e. a permanent hang rather than a reload.
+    //
+    // Sequence: raw finale (spec.src becomes the bare URL) -> a NON-raw section (dispatches a body,
+    // marks the document dirty, leaves spec.src alone) -> the raw finale again.
+    await bootViewer(page, makeConfig([
+      { id: 's1', start: 3, end: 8, pkg: 'dirtyui', rawUrl: true },
+      { id: 's2', start: 12, end: 17, pkg: 'dirtyui', section: S.A, simpleUi: true },
+      { id: 's3', start: 21, end: 60, pkg: 'dirtyui', rawUrl: true },
+    ], { segDuration: 30 }), { simdebug: true });
+    await startPlayback(page);
+    await seekTo(page, 4);
+    await page.waitForTimeout(1800);
+    await seekTo(page, 13);
+    await waitForSection(page, 'A');
+    await seekTo(page, 22);
+    await page.waitForTimeout(3000);
+
+    const ev = await page.evaluate(() =>
+      ((window as unknown as { __SIM_TELEMETRY__?: { events: ({ event: string })[] } })
+        .__SIM_TELEMETRY__?.events ?? []).map((e) => e.event));
+    expect(ev.filter((e) => e === 'raw-reset-reload').length,
+      'the reset never fired — this test would prove nothing about the reload').toBe(1);
+
+    const samples = await sampleFrames(page, 900);
+    const shown = samples.some((s) => s.frames.some((f) => f.op > 0.5));
+    expect(shown, 'the raw finale was never presented — the reset navigated to the URL it was already on').toBe(true);
   });
 
   test('13. a LEGACY package (no ack support) is still displayed, never held on silence', async ({ page }) => {

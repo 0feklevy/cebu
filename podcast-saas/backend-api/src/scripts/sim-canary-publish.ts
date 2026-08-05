@@ -38,16 +38,16 @@ import {
   judgeCanaryReport,
   summarizeCanary,
 } from '../services/simulation/canaryJudge.js';
-import type { CanaryReport } from 'shared/src/sim/canaryContract';
+import type { CanaryReport } from 'shared/sim/canaryContract';
 import {
   POSTER_SIZES,
   formatsFor,
   type PosterFormat,
   type PosterKey,
   type PosterSizeName,
-} from 'shared/src/sim/posterIdentity';
-import { computeConfigHash } from 'shared/src/sim/simIdentity';
-import { canaryReportPrepareMs } from 'shared/src/sim/prepareBudget';
+} from 'shared/sim/posterIdentity';
+import { computeConfigHash } from 'shared/sim/simIdentity';
+import { canaryReportPrepareMs } from 'shared/sim/prepareBudget';
 
 /** Exit codes, so a rollout script can branch without parsing text. */
 export const EXIT = {

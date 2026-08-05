@@ -15,10 +15,10 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { collectRenditions, parseArgs, planFromReport } from '../sim-canary-publish.js';
-import { CANARY_STEPS, type CanaryCaseResult, type CanaryReport } from 'shared/src/sim/canaryContract';
-import { DEFAULT_PRESENTATION_CONFIG, computeConfigHash } from 'shared/src/sim/simIdentity';
-import { posterIdentityString, type PosterKey } from 'shared/src/sim/posterIdentity';
-import { NO_CAPABILITIES, type SimRuntimeCapabilities } from 'shared/src/sim/runtimeProtocol';
+import { CANARY_STEPS, type CanaryCaseResult, type CanaryReport } from 'shared/sim/canaryContract';
+import { DEFAULT_PRESENTATION_CONFIG, computeConfigHash } from 'shared/sim/simIdentity';
+import { posterIdentityString, type PosterKey } from 'shared/sim/posterIdentity';
+import { NO_CAPABILITIES, type SimRuntimeCapabilities } from 'shared/sim/runtimeProtocol';
 
 const FULL_CAPS: SimRuntimeCapabilities = {
   activationScoped: true, managedLifecycle: true, onDemandRender: true,

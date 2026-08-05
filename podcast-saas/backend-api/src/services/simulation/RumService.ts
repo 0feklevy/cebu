@@ -21,7 +21,7 @@ import { logger } from '../../lib/logger.js';
 import {
   normalizeSampleRate, validateBatch,
   type RumBatch, type RumRejection,
-} from 'shared/src/sim/rumEvents';
+} from 'shared/sim/rumEvents';
 
 /** Bounds on retention, mirroring the CHECK in migration 051 so both refuse the same values. */
 export const RUM_RETENTION_MIN_DAYS = 1;

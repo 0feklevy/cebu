@@ -15,6 +15,11 @@
       "types": "./src/*.ts",
       "import": "./src/*.ts",
       "default": "./src/*.ts"
+    },
+    "./sim/*": {
+      "types": "./src/sim/*.ts",
+      "import": "./dist/sim/*.js",
+      "default": "./dist/sim/*.js"
     }
   },
   "scripts": {
