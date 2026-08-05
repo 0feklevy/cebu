@@ -235,7 +235,14 @@ interface SimSpec {
  * Build a player-config exactly in the shape the real backend returns, so the real viewer parses
  * it with no special-casing. `simulations` carry the ?section= identity the player dispatches on.
  */
-function makeConfig(sims: SimSpec[], opts?: { segDuration?: number }) {
+function makeConfig(sims: SimSpec[], opts?: {
+  segDuration?: number;
+  /** Priority 8 runtime switches (migration 052). Absent = the production default, all OFF. */
+  scheduler?: 'off' | 'predictive';
+  adaptiveQuality?: boolean;
+  boundarySentinel?: boolean;
+  prepareBudgetMs?: Record<string, number>;
+}) {
   const duration = opts?.segDuration ?? 30;
   return {
     project: { id: 'e2e-project', title: 'E2E fixture' },
@@ -263,6 +270,11 @@ function makeConfig(sims: SimSpec[], opts?: { segDuration?: number }) {
       })),
       broll: [], images: [], audio: [],
     }],
+    sim_scheduler_mode: opts?.scheduler ?? 'off',
+    sim_adaptive_quality: opts?.adaptiveQuality ?? false,
+    sim_boundary_sentinel: opts?.boundarySentinel ?? false,
+    sim_prepare_budget_ms: opts?.prepareBudgetMs ?? {},
+    sim_rum_sample_rate: 0,
     sequences: [], branching: null, avatar: null, captions: [],
   };
 }
@@ -1085,6 +1097,109 @@ test.describe('real React viewer — simulation transitions', () => {
     const samples = await sampleFrames(page, 900);
     const shown = samples.some((s) => s.frames.some((f) => f.op > 0.5));
     expect(shown, 'the raw finale was never presented — the reset navigated to the URL it was already on').toBe(true);
+  });
+
+  // ══ PRIORITY 8 WIRING — the call sites must genuinely execute ═══════════════════════════════
+  //
+  // These modules were previously shipped as tested libraries with NO production caller. A unit test
+  // proving a library correct says nothing about whether the player ever reaches it, so each test
+  // below drives the REAL viewer with the switch on and asserts the runtime evidence.
+
+  const telEvents = (page: import('@playwright/test').Page) => page.evaluate(() =>
+    ((window as unknown as { __SIM_TELEMETRY__?: { events: Array<Record<string, unknown>> } })
+      .__SIM_TELEMETRY__?.events ?? []).map((e) => String(e.event)));
+
+  test('P8a. the occurrence planner runs and prepares a package ahead of its boundary', async ({ page }) => {
+    await bootViewer(page, makeConfig([
+      { id: 's1', start: 3, end: 8, section: S.A },
+      { id: 's2', start: 22, end: 28, pkg: 'legacy', section: S.B },
+    ], { scheduler: 'predictive', prepareBudgetMs: { 'sim-1': 8000 } }), { simdebug: true });
+    await startPlayback(page);
+    await seekTo(page, 16);
+    await page.waitForTimeout(3000);
+    const ev = await telEvents(page);
+    // The call site EXECUTED. At the 'all' tier every package is resident from video start, so a
+    // plan with nothing left to mount is the normal outcome — asserting only on a mount could not
+    // tell that apart from never running.
+    expect(ev, 'the planner never ran — the call site is unreachable').toContain('predictive-plan');
+    expect(ev, 'the planner threw').not.toContain('predictive-error');
+
+    // …and it produced a real plan rather than an empty one.
+    const plans = await page.evaluate(() =>
+      ((window as unknown as { __SIM_TELEMETRY__?: { events: Array<Record<string, unknown>> } })
+        .__SIM_TELEMETRY__?.events ?? []).filter((e) => e.event === 'predictive-plan'));
+    expect(plans.some((p) => Number(p.admit) > 0), 'every plan was empty').toBe(true);
+  });
+
+  test('P8b. the planner stays OFF by default — no early mount without the switch', async ({ page }) => {
+    await bootViewer(page, makeConfig([
+      { id: 's1', start: 3, end: 8, section: S.A },
+      { id: 's2', start: 22, end: 28, pkg: 'legacy', section: S.B },
+    ]), { simdebug: true });
+    await startPlayback(page);
+    await seekTo(page, 16);
+    await page.waitForTimeout(3000);
+    expect(await telEvents(page), 'the scheduler ran with its kill switch off')
+      .not.toContain('predictive-plan');
+  });
+
+  test('P8c. the boundary sentinel arms and still reveals the correct section', async ({ page }) => {
+    // timeupdate remains the safety net, so the observable claim is that enabling the sentinel does
+    // not change WHAT is shown.
+    await bootViewer(page, makeConfig([{ id: 's1', start: 6, end: 12, section: S.A }],
+      { boundarySentinel: true }), { simdebug: true });
+    await startPlayback(page);
+    await seekTo(page, 4);
+    await page.waitForTimeout(1500);
+    await waitForSection(page, 'A');
+
+    // The sentinel ARMED — with the mechanism it chose on this engine recorded. Without this the
+    // test would pass with the whole call site deleted, since timeupdate alone already reveals A.
+    const armed = await page.evaluate(() =>
+      ((window as unknown as { __SIM_TELEMETRY__?: { events: Array<Record<string, unknown>> } })
+        .__SIM_TELEMETRY__?.events ?? []).filter((e) => e.event === 'boundary-armed'));
+    expect(armed.length, 'the sentinel never armed — the call site is unreachable').toBeGreaterThan(0);
+    expect(['rvfc', 'timeout', 'none']).toContain(String(armed[armed.length - 1].mode));
+
+    // …and the safety net still governs WHAT is shown.
+    assertVisibleFramesAreCorrect(await sampleFrames(page, 900), { expect: 'A' });
+    expect(realErrors(page)).toEqual([]);
+  });
+
+  test('P8d. adaptive quality is consulted without disturbing what is shown', async ({ page }) => {
+    await bootViewer(page, makeConfig([{ id: 's1', start: 3, end: 10, section: S.A }],
+      { adaptiveQuality: true, prepareBudgetMs: { 'sim-1': 500 } }), { simdebug: true });
+    await startPlayback(page);
+    await seekTo(page, 4);
+    await waitForSection(page, 'A');
+    await page.waitForTimeout(1200);
+    const ev = await telEvents(page);
+    expect(ev, 'the adaptive-quality controller threw').not.toContain('adaptive-quality-error');
+    // The controller was CONSULTED and produced a decision that reached the activation.
+    const q = await page.evaluate(() =>
+      ((window as unknown as { __SIM_TELEMETRY__?: { events: Array<Record<string, unknown>> } })
+        .__SIM_TELEMETRY__?.events ?? []).filter((e) => e.event === 'adaptive-quality'));
+    expect(q.length, 'adaptive quality was never consulted — the call site is unreachable')
+      .toBeGreaterThan(0);
+    expect(['high', 'balanced', 'low']).toContain(String(q[0].next));
+    assertVisibleFramesAreCorrect(await sampleFrames(page, 700), { expect: 'A' });
+  });
+
+  test('P8e. transition timings are MEASURED on the path packages actually use today', async ({ page }) => {
+    // The marks were originally only on the v3 modern path, which no stored package uses — so in the
+    // field the measurement layer produced nothing at all.
+    await bootViewer(page, makeConfig([{ id: 's1', start: 3, end: 10, section: S.A }]),
+      { simdebug: true });
+    await startPlayback(page);
+    await seekTo(page, 4);
+    await waitForSection(page, 'A');
+    await page.waitForTimeout(1200);
+    const reveals = await page.evaluate(() =>
+      ((window as unknown as { __SIM_TELEMETRY__?: { events: Array<Record<string, unknown>> } })
+        .__SIM_TELEMETRY__?.events ?? []).filter((e) => e.event === 'reveal').map((e) => e.totalMs));
+    expect(reveals.length, 'no reveal was recorded at all').toBeGreaterThan(0);
+    expect(reveals.some((t) => typeof t === 'number'),
+      'a reveal carried no measurement — RUM would report nothing').toBe(true);
   });
 
   test('13. a LEGACY package (no ack support) is still displayed, never held on silence', async ({ page }) => {
