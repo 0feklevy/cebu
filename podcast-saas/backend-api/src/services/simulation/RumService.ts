@@ -139,6 +139,8 @@ export async function ingestBatch(raw: unknown): Promise<IngestResult> {
     apply_ms: clampInt(e.durations?.applyMs, 0, 2 ** 31 - 1),
     furthest_stage: trunc(e.furthestStage, 32),
     failure_code: trunc(e.code, 64),
+    // Carried through, not dropped. A truncated sample must never look like a complete one.
+    dropped: clampInt(b.dropped, 0, 2 ** 31 - 1) ?? 0,
     device_memory_gb: clampInt(b.device?.memoryGb, 0, 1024),
     device_cores: clampInt(b.device?.cores, 0, 1024),
     coarse_pointer: typeof b.device?.coarsePointer === 'boolean' ? b.device.coarsePointer : null,

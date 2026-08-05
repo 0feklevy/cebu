@@ -19,9 +19,13 @@ vi.mock('../../services/simulation/RumService.js', () => ({ ingestBatch: h.inges
 vi.mock('../../lib/logger.js', () => ({
   logger: { info: vi.fn(), warn: h.warn, error: h.error, debug: vi.fn() },
 }));
-const rl = vi.hoisted(() => ({ allow: true, calls: [] as string[] }));
+const rl = vi.hoisted(() => ({ allow: true, calls: [] as string[], args: [] as { max: number; windowMs: number }[] }));
 vi.mock('../../lib/rateLimit.js', () => ({
-  rateLimit: (key: string) => { rl.calls.push(key); return rl.allow; },
+  // The full signature is captured, so a production call with an effectively-infinite limit is
+  // visible to the assertions rather than swallowed by a one-argument stub.
+  rateLimit: (key: string, max: number, windowMs: number) => {
+    rl.calls.push(key); rl.args.push({ max, windowMs }); return rl.allow;
+  },
 }));
 
 import { registerSimRumRoutes } from '../sim-rum.controller.js';
@@ -41,7 +45,7 @@ const body = () => ({
   dropped: 0,
 });
 
-beforeEach(() => { vi.clearAllMocks(); h.ingest.mockResolvedValue({ stored: 1 }); rl.allow = true; rl.calls.length = 0; });
+beforeEach(() => { vi.clearAllMocks(); h.ingest.mockResolvedValue({ stored: 1 }); rl.allow = true; rl.calls.length = 0; rl.args.length = 0; });
 
 describe('POST /sim-rum', () => {
   it('accepts a batch and returns 204 with no body', async () => {
@@ -122,12 +126,23 @@ describe('POST /sim-rum', () => {
 
 
 describe('rate limiting', () => {
-  it('is rate limited per IP', async () => {
+  it('is rate limited PER IP, with a real bound', async () => {
     // Unauthenticated, wildcard CORS: without a limit, any page on the internet could drive
     // unbounded durable growth in the same Postgres the player reads from.
+    //
+    // Asserting only the key PREFIX would pass for one shared global bucket, where a single
+    // attacker starves every honest client and nobody is individually limited. Two different
+    // callers must produce two different keys.
     const f = await app();
-    await f.inject({ method: 'POST', url: '/sim-rum', payload: body() });
+    await f.inject({ method: 'POST', url: '/sim-rum', payload: body(), remoteAddress: '10.0.0.1' });
+    await f.inject({ method: 'POST', url: '/sim-rum', payload: body(), remoteAddress: '10.0.0.2' });
+    expect(rl.calls).toHaveLength(2);
     expect(rl.calls[0]).toMatch(/^sim-rum:/);
+    expect(rl.calls[0], 'one shared bucket for the whole internet').not.toBe(rl.calls[1]);
+    // …and the bound is a real one, not an effectively-infinite placeholder.
+    expect(rl.args[0]!.max).toBeGreaterThan(0);
+    expect(rl.args[0]!.max).toBeLessThan(1000);
+    expect(rl.args[0]!.windowMs).toBeGreaterThanOrEqual(1000);
   });
 
   it('drops the batch when the limit is exceeded, still answering 204', async () => {

@@ -1269,6 +1269,7 @@ export const sim_rum_events = pgTable(
     apply_ms:         integer('apply_ms'),
     furthest_stage:   text('furthest_stage'),
     failure_code:     text('failure_code'),
+    dropped:          integer('dropped').notNull().default(0),
     device_memory_gb: integer('device_memory_gb'),
     device_cores:     integer('device_cores'),
     coarse_pointer:   boolean('coarse_pointer'),
