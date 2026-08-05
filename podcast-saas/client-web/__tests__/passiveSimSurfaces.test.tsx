@@ -155,12 +155,20 @@ describe('client-web avatar Library — lazy simulation preview', () => {
     await screen.findByText('a pendulum');
 
     expect(container.querySelector('iframe')).toBeNull();
-    expect(observers).toHaveLength(1);
+    // Await the observer through the helper BEFORE counting. Registration happens in an effect, so
+    // reading `observers` synchronously after findByText raced it — observed ~1 in 20 full-suite
+    // runs as `expected [] to have a length of 1`. `firstObserver()` already bounds this wait; the
+    // count assertion just has to come after it rather than before.
+    const observer = await firstObserver();
+    expect(observers, 'exactly one observer per lazy surface').toHaveLength(1);
     // The prefetch window is part of the performance property, not an arbitrary literal.
-    expect((await firstObserver()).options?.rootMargin).toBe('120px');
+    expect(observer.options?.rootMargin).toBe('120px');
 
-    (await firstObserver()).fire(true);
-    expect(container.querySelector('iframe')).not.toBeNull();
+    observer.fire(true);
+    await vi.waitFor(
+      () => { expect(container.querySelector('iframe')).not.toBeNull(); },
+      { timeout: 2000, interval: 10 },
+    );
   });
 
   it('unmounts the frame again when it scrolls out of view', async () => {
