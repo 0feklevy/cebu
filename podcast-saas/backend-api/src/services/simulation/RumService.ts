@@ -14,7 +14,7 @@
  * There is no code path that turns collection on by accident.
  */
 
-import { lt, sql } from 'drizzle-orm';
+import { inArray, lt, sql } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { sim_rum_events } from '../../db/schema.js';
 import { logger } from '../../lib/logger.js';
@@ -25,6 +25,15 @@ import {
 } from 'shared/sim/rumEvents';
 
 /** Bounds on retention, mirroring the CHECK in migration 051 so both refuse the same values. */
+/**
+ * Upper bound on a single batch's reported drop count.
+ *
+ * An honest client cannot exceed its ring capacity, so anything near this is already a misbehaving
+ * or hostile sender. Bounding it here — rather than at int4 — is what keeps the SUM in
+ * `fieldAggregates` from being driveable toward an overflow by a caller.
+ */
+export const RUM_MAX_DROPPED_PER_BATCH = 100_000;
+
 export const RUM_RETENTION_MIN_DAYS = 1;
 export const RUM_RETENTION_MAX_DAYS = 365;
 export const RUM_RETENTION_DEFAULT_DAYS = 30;
@@ -37,6 +46,19 @@ export const RUM_RETENTION_DEFAULT_DAYS = 30;
  * migration lands. The difference is the default: pool mode defaults to its useful value, this
  * defaults to OFF.
  */
+/**
+ * How long a resolved sample rate is reused before the column is read again.
+ *
+ * The switch is an incident control, so this is the delay between an operator's UPDATE and the
+ * fleet obeying it — short enough to still be "no deploy", long enough that the read cannot be
+ * used as a lever. Ten seconds.
+ */
+export const RUM_RATE_CACHE_MS = 10_000;
+let rateCache: { at: number; value: number } | null = null;
+
+/** Test seam; also called when a setting is written so an operator sees the change immediately. */
+export function invalidateRumSampleRateCache(): void { rateCache = null; }
+
 export async function resolveRumSampleRate(): Promise<number> {
   const env = process.env.SIM_RUM_SAMPLE_RATE;
   if (env !== undefined && env.trim() !== '') {
@@ -44,11 +66,23 @@ export async function resolveRumSampleRate(): Promise<number> {
     // someone who set it meant to control this, and the safe reading of a malformed intent is off.
     return normalizeSampleRate(env.trim());
   }
+  // CACHED, because this is on the write path of an UNAUTHENTICATED endpoint.
+  //
+  // The kill switch gates ingestion server-side, which is right — but the gate itself was a
+  // database round trip, so a caller could force one query per request against a pool of 10 and
+  // starve every other query in the API, including the player's own config build. That is a denial
+  // of service delivered through the mechanism meant to make the endpoint safe when it is OFF.
+  const now = Date.now();
+  if (rateCache && now - rateCache.at < RUM_RATE_CACHE_MS) return rateCache.value;
   try {
     const s = await db.query.admin_settings.findFirst({ columns: { rum_sample_rate: true } });
-    return normalizeSampleRate(s?.rum_sample_rate ?? 0);
+    const value = normalizeSampleRate(s?.rum_sample_rate ?? 0);
+    rateCache = { at: now, value };
+    return value;
   } catch {
     // Column not migrated yet, or a DB hiccup. Collect nothing; never surface this to the player.
+    // Cached as 0 too: a database in trouble must not also be asked once per inbound request.
+    rateCache = { at: now, value: 0 };
     return 0;
   }
 }
@@ -103,7 +137,13 @@ export function startRumRetentionSweep(intervalMs = RUM_REAP_INTERVAL_MS): () =>
   };
   const timer = setInterval(run, intervalMs);
   if (typeof timer.unref === 'function') timer.unref();
-  return () => clearInterval(timer);
+  // RUN ONCE AT START. With only the interval, the first sweep was an hour away — and on a platform
+  // that redeploys or recycles instances more often than hourly, retention would never execute at
+  // all, which is the one outcome the bounded retention window exists to prevent. Deferred a tick
+  // so startup is not blocked on it.
+  const kick = setTimeout(run, 0);
+  if (typeof kick.unref === 'function') kick.unref();
+  return () => { clearInterval(timer); clearTimeout(kick); };
 }
 
 /**
@@ -127,7 +167,7 @@ export async function ingestBatch(raw: unknown): Promise<IngestResult> {
   if (!parsed.ok) return { stored: 0, rejected: parsed.reason };
 
   const b: RumBatch = parsed.batch;
-  const rows = b.events.map((e) => ({
+  const rows = b.events.map((e, i) => ({
     session_id: b.sessionId,
     package_revision: e.packageRevision,
     kind: e.kind,
@@ -140,8 +180,15 @@ export async function ingestBatch(raw: unknown): Promise<IngestResult> {
     apply_ms: clampInt(e.durations?.applyMs, 0, 2 ** 31 - 1),
     furthest_stage: trunc(e.furthestStage, 32),
     failure_code: trunc(e.code, 64),
-    // Carried through, not dropped. A truncated sample must never look like a complete one.
-    dropped: clampInt(b.dropped, 0, 2 ** 31 - 1) ?? 0,
+    // BATCH-LEVEL, SO RECORDED ONCE.
+    //
+    // `dropped` counts events the client could not send; it describes the BATCH, not each event in
+    // it. Writing it on every row made `sum(dropped)` report `dropped x eventCount`: one dropped
+    // event in a batch of 100 read back as 100 drops, and `decideBudget` refuses anything past half
+    // the sample as 'truncated' — so a single drop disabled field budgets for that package for the
+    // entire retention window. The upper bound is far above any honest client (whose ring caps at
+    // RUM_RING_CAP) and low enough that no volume of batches can overflow the aggregate.
+    dropped: i === 0 ? (clampInt(b.dropped, 0, RUM_MAX_DROPPED_PER_BATCH) ?? 0) : 0,
     device_memory_gb: clampInt(b.device?.memoryGb, 0, 1024),
     device_cores: clampInt(b.device?.cores, 0, 1024),
     coarse_pointer: typeof b.device?.coarsePointer === 'boolean' ? b.device.coarsePointer : null,
@@ -300,12 +347,12 @@ export async function fieldAggregates(
              count(*)::int                                        AS samples,
              percentile_disc(0.5) WITHIN GROUP (ORDER BY total_ms) AS p50,
              percentile_disc(0.9) WITHIN GROUP (ORDER BY total_ms) AS p90,
-             COALESCE(sum(dropped), 0)::int                        AS dropped
+             COALESCE(sum(dropped), 0)::bigint                     AS dropped
         FROM ${sim_rum_events}
        WHERE kind = 'transition'
          AND total_ms IS NOT NULL
          AND created_at >= ${cutoff}
-         AND package_revision = ANY(${wanted})
+         AND ${inArray(sim_rum_events.package_revision, wanted)}
        GROUP BY package_revision
     `);
     const rows = ((res as unknown as { rows?: unknown[] }).rows ?? (res as unknown as unknown[])) as {
@@ -319,9 +366,15 @@ export async function fieldAggregates(
         dropped: Number(r.dropped ?? 0),
       });
     }
-  } catch {
+  } catch (err) {
     // Table not migrated, or a DB hiccup. An empty map means "no field data", and the loop then
     // uses the lab number — never an error the player has to handle.
+    //
+    // LOGGED, because silence here is indistinguishable from "no samples yet". A malformed query
+    // shipped in this exact catch and disabled field refinement for every project that has a
+    // simulation, and nothing anywhere reported it: the viewer was fine, the lab budget was still
+    // served, and the only symptom was a feature quietly never doing anything.
+    logger.warn({ err, revisions: wanted.length }, 'sim RUM field aggregates unavailable');
     return new Map();
   }
   return out;

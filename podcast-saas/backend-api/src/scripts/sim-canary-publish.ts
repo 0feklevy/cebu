@@ -26,7 +26,7 @@
 
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { simulations } from '../db/schema.js';
 import { logger } from '../lib/logger.js';
@@ -271,7 +271,15 @@ async function main(): Promise<void> {
       process.stdout.write(`  stored poster ${c.posterIdentity}\n`);
     }
 
-    await db.update(simulations).set({
+    // NEVER STOMP A PROJECTED VERDICT (migration 050).
+    //
+    // On a revisioned simulation these four columns are a PROJECTION of the active revision's own
+    // verdict, written inside the pointer-flip transaction. Writing them from here would describe
+    // whichever bytes this run happened to canary while the pointer still names another revision —
+    // and the next rollback would silently restore the projection, so the divergence would appear
+    // to heal itself. `SimulationService` carries the same guard for the same reason; this script
+    // is the only other writer.
+    const [projected] = await db.update(simulations).set({
       package_class: report.classification,
       canary_report: report as unknown as Record<string, unknown>,
       canary_at: new Date(),
@@ -279,8 +287,18 @@ async function main(): Promise<void> {
       // this report. Null when the run produced no usable preparation steps, which the client reads
       // as "no lab data" rather than as "instantaneous".
       prepare_budget_ms: canaryReportPrepareMs(report),
-    }).where(eq(simulations.id, sim.id));
-    process.stdout.write(`  recorded verdict ${report.classification}\n`);
+    }).where(and(
+      eq(simulations.id, sim.id),
+      isNull(simulations.active_revision_id),
+    )).returning({ id: simulations.id });
+
+    if (!projected) {
+      process.stdout.write(
+        `  SKIPPED verdict write: this simulation serves a revision, whose verdict is projected\n`
+        + `  from the revision row on activation. Record it with RevisionService.recordCanary.\n`);
+    } else {
+      process.stdout.write(`  recorded verdict ${report.classification}\n`);
+    }
 
     if (args.prune) {
       // Only AFTER the new verdict is durable. Pruning first would leave a live section resolving

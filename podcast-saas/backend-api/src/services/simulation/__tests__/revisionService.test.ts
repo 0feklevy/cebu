@@ -742,7 +742,7 @@ describe('gc', () => {
     const { id } = await publish();
     await svc.activate({ simulationId: simId, revisionId: id, storagePrefix: PREFIX,
       expectedActiveRevisionId: null, supersede: 'retired' });
-    const res = await svc.gc({ simulationId: simId, storagePrefix: PREFIX, keepLastN: 1 });
+    const res = await svc.gc({ simulationId: simId, storagePrefix: PREFIX, keepLastN: 1, minAgeMs: 0 });
     expect(res.deleted).not.toContain(id);
     expect(adapter.objects.has(revisionFileKey(PREFIX, id, 'package/index.html'))).toBe(true);
   });
@@ -754,7 +754,7 @@ describe('gc', () => {
       manifestPath: 'a.js', bytes: JS, contentType: 'application/javascript', role: 'asset' });
     await svc.markFailed(simId, d.id, 'uploading', 'boom');
 
-    const res = await svc.gc({ simulationId: simId, storagePrefix: PREFIX, keepLastN: 2 });
+    const res = await svc.gc({ simulationId: simId, storagePrefix: PREFIX, keepLastN: 2, minAgeMs: 0 });
     expect(res.deleted).toContain(d.id);
     expect(adapter.objects.has(revisionFileKey(PREFIX, d.id, 'a.js'))).toBe(false);
   });
@@ -767,7 +767,7 @@ describe('gc', () => {
     await svc.activate({ simulationId: simId, revisionId: second.id, storagePrefix: PREFIX,
       expectedActiveRevisionId: first.id, supersede: 'retired' });
 
-    const res = await svc.gc({ simulationId: simId, storagePrefix: PREFIX, keepLastN: 2 });
+    const res = await svc.gc({ simulationId: simId, storagePrefix: PREFIX, keepLastN: 2, minAgeMs: 0 });
     expect(res.deleted).toEqual([]);
     // Both are reachable by rollback, so both must keep their bytes.
     expect(adapter.objects.has(revisionFileKey(PREFIX, first.id, 'package/index.html'))).toBe(true);
@@ -779,7 +779,7 @@ describe('gc', () => {
     adapter.objects.set(`${PREFIX}/index.html`, { bytes: HTML, contentType: 'text/html' });
     const d = await svc.createDraft({ simulationId: simId });
     await svc.markFailed(simId, d.id, 'draft', 'x');
-    await svc.gc({ simulationId: simId, storagePrefix: PREFIX, keepLastN: 1 });
+    await svc.gc({ simulationId: simId, storagePrefix: PREFIX, keepLastN: 1, minAgeMs: 0 });
     expect(adapter.objects.has(`${PREFIX}/index.html`)).toBe(true);
     for (const call of adapter.deleteWithPrefix.mock.calls) {
       expect(String(call[0])).toContain('/revisions/');
@@ -799,7 +799,7 @@ describe('gc — the active revision is never collectable', () => {
       expectedActiveRevisionId: null, supersede: 'retired' });
 
     for (const bad of [NaN, undefined as unknown as number, 'x' as unknown as number]) {
-      const res = await svc.gc({ simulationId: simId, storagePrefix: PREFIX, keepLastN: bad });
+      const res = await svc.gc({ simulationId: simId, storagePrefix: PREFIX, keepLastN: bad, minAgeMs: 0 });
       expect(res.deleted, `keepLastN ${String(bad)} collected the live revision`).not.toContain(id);
     }
     expect(adapter.objects.has(revisionFileKey(PREFIX, id, 'package/index.html'))).toBe(true);
@@ -836,7 +836,7 @@ describe('gc — the active revision is never collectable', () => {
       for (const k of [...adapter.objects.keys()]) if (k.startsWith(prefix)) adapter.objects.delete(k);
     });
 
-    const res = await svc.gc({ simulationId: simId, storagePrefix: PREFIX, keepLastN: 1 });
+    const res = await svc.gc({ simulationId: simId, storagePrefix: PREFIX, keepLastN: 1, minAgeMs: 0 });
     expect(res.deleted, 'a revision that moved mid-sweep was collected anyway').not.toContain(b.id);
     expect(adapter.objects.has(revisionFileKey(PREFIX, b.id, 'b.js'))).toBe(true);
   });
@@ -861,7 +861,7 @@ describe('gc — the active revision is never collectable', () => {
       observed.push(n);
     });
 
-    await svc.gc({ simulationId: simId, storagePrefix: PREFIX, keepLastN: 1 });
+    await svc.gc({ simulationId: simId, storagePrefix: PREFIX, keepLastN: 1, minAgeMs: 0 });
     expect(observed.length).toBeGreaterThan(0);
     expect(observed[0], 'bytes were deleted while the row still existed').toBe(0);
   });
@@ -968,5 +968,78 @@ describe('weight is recorded at publication, so an optimisation claim is checkab
     const [row] = await rows<{ metadata: { weight?: { findings: { code: string }[] } } }>(
       `SELECT metadata FROM sim_revisions WHERE id = $1`, [draft.id]);
     expect(row!.metadata.weight!.findings.map((f) => f.code)).toContain('oversized-image');
+  });
+});
+
+describe('gc — the age guard', () => {
+  it('refuses to collect a revision younger than the grace period', async () => {
+    // A publication in flight has a row and a partly-written prefix and is not retained by status,
+    // so an age-blind sweep deletes both while the publisher is still writing into it. The
+    // publisher checks its own in-memory record and never re-reads the row, so it keeps writing —
+    // and those files are permanent orphans, because nothing lists storage.
+    const d = await svc.createDraft({ simulationId: simId });
+    const up = await svc.beginUpload(simId, d.id);
+    await svc.writeFile(up, PREFIX, {
+      manifestPath: 'a.js', bytes: JS, contentType: 'application/javascript', role: 'asset' });
+
+    const res = await svc.gc({ simulationId: simId, storagePrefix: PREFIX, keepLastN: 2 });
+    expect(res.deleted, 'an in-flight publication was collected').not.toContain(d.id);
+    expect(adapter.objects.has(revisionFileKey(PREFIX, d.id, 'a.js'))).toBe(true);
+  });
+
+  it('collects the same revision once it is past the grace period', async () => {
+    // The guard must delay collection, not prevent it — otherwise abandoned drafts accumulate.
+    const d = await svc.createDraft({ simulationId: simId });
+    const up = await svc.beginUpload(simId, d.id);
+    await svc.writeFile(up, PREFIX, {
+      manifestPath: 'a.js', bytes: JS, contentType: 'application/javascript', role: 'asset' });
+    await svc.markFailed(simId, d.id, 'uploading', 'boom');
+
+    const res = await svc.gc({ simulationId: simId, storagePrefix: PREFIX, keepLastN: 2, minAgeMs: 0 });
+    expect(res.deleted).toContain(d.id);
+  });
+});
+
+describe('gc — keepLastN cannot annihilate the rollback path', () => {
+  it('keeps a rollback target even when asked to keep only one', async () => {
+    // `retained` is newest-first and its head is always the ACTIVE revision, so keepLastN:1 keeps
+    // only what is being served and collects every revision rollback could return to — reporting
+    // success while removing the recovery path. 1 was also what a non-finite value coerced to.
+    const first = await publish();
+    await svc.activate({ simulationId: simId, revisionId: first.id, storagePrefix: PREFIX,
+      expectedActiveRevisionId: null, supersede: 'retired' });
+    const second = await publish();
+    await svc.activate({ simulationId: simId, revisionId: second.id, storagePrefix: PREFIX,
+      expectedActiveRevisionId: first.id, supersede: 'retired' });
+
+    const res = await svc.gc({ simulationId: simId, storagePrefix: PREFIX, keepLastN: 1, minAgeMs: 0 });
+    expect(res.deleted, 'the only rollback target was collected').not.toContain(first.id);
+    expect(adapter.objects.has(revisionFileKey(PREFIX, first.id, 'package/index.html'))).toBe(true);
+  });
+});
+
+describe('markFailed cannot wedge a live simulation', () => {
+  it('refuses to fail the ACTIVE revision in place', async () => {
+    // The pointer would keep naming it — the player reads the pointer, never the status — while
+    // every later activation and rollback CAS expects an incumbent that no longer exists in that
+    // state. There is no repair path, so the only safe answer is to refuse.
+    const { id } = await publish();
+    await svc.activate({ simulationId: simId, revisionId: id, storagePrefix: PREFIX,
+      expectedActiveRevisionId: null, supersede: 'retired' });
+
+    await expect(svc.markFailed(simId, id, 'active', 'boom')).rejects.toThrow(RevisionConflict);
+
+    const [row] = await rows<{ status: string }>(
+      `SELECT status FROM sim_revisions WHERE id = $1`, [id]);
+    expect(row!.status).toBe('active');
+    const [sim] = await rows<{ active_revision_id: string | null }>(
+      `SELECT active_revision_id FROM simulations WHERE id = $1`, [simId]);
+    expect(sim!.active_revision_id).toBe(id);
+  });
+
+  it('still fails a revision that is not live', async () => {
+    const d = await svc.createDraft({ simulationId: simId });
+    const r = await svc.markFailed(simId, d.id, 'draft', 'boom');
+    expect(r.status).toBe('failed');
   });
 });

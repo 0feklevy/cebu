@@ -1159,7 +1159,10 @@ test.describe('real React viewer — simulation transitions', () => {
       ((window as unknown as { __SIM_TELEMETRY__?: { events: Array<Record<string, unknown>> } })
         .__SIM_TELEMETRY__?.events ?? []).filter((e) => e.event === 'boundary-armed'));
     expect(armed.length, 'the sentinel never armed — the call site is unreachable').toBeGreaterThan(0);
-    expect(['rvfc', 'timeout', 'none']).toContain(String(armed[armed.length - 1].mode));
+    // 'none' is NOT acceptable. It means armBoundarySentinel REFUSED — the boundary was outside its
+    // horizon — so accepting it here let the test pass while the sentinel never once armed during
+    // ordinary playback. The assertion is that a real mechanism engaged.
+    expect(['rvfc', 'timeout']).toContain(String(armed[armed.length - 1].mode));
 
     // …and the safety net still governs WHAT is shown.
     assertVisibleFramesAreCorrect(await sampleFrames(page, 900), { expect: 'A' });
