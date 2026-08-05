@@ -112,7 +112,9 @@ function manifestFor(files: Array<{ path: string; bytes: Buffer; contentType: st
     simulationId: simId, projectId: 'proj', revisionId: 'r', revisionNumber: 1,
     bridgeProtocolVersion: 3, runtimeProtocolVersion: 3,
     entry: 'package/index.html',
-    runtime: ['runtime/bridge.js'],
+    // DERIVED from the files, not hard-coded: a fixture naming a runtime file the list does not
+    // contain fails validation for a reason that has nothing to do with the test.
+    runtime: files.filter((f) => f.role === 'runtime').map((f) => f.path),
     files: files.map((f) => ({
       path: f.path, role: f.role as never, hash: sha(f.bytes), bytes: f.bytes.length,
       contentType: f.contentType, cacheControl: cacheControlForRole(f.role as never, f.path),
@@ -895,5 +897,76 @@ describe('recordCanary is compare-and-set, like every other mutation here', () =
     await expect(svc.recordCanary(simId, id, {
       classification: 'managed-presentable', report: { ok: true }, ranAt: new Date(),
     })).resolves.toBeUndefined();
+  });
+});
+
+// ══ PACKAGE WEIGHT — before/after evidence (P8.11) ═══════════════════════════════════════════
+
+describe('weight is recorded at publication, so an optimisation claim is checkable', () => {
+  it('records the measured weight on the revision', async () => {
+    const { id } = await publish();
+    const [row] = await rows<{ metadata: { weight?: { totalBytes: number; fileCount: number } } }>(
+      `SELECT metadata FROM sim_revisions WHERE id = $1`, [id]);
+    expect(row!.metadata.weight).toBeDefined();
+    // The bytes actually published, not an estimate.
+    expect(row!.metadata.weight!.totalBytes).toBe(HTML.length + JS.length);
+    expect(row!.metadata.weight!.fileCount).toBe(2);
+  });
+
+  it('compares two revisions as a delta of MEASUREMENTS', async () => {
+    const before = await publish();
+
+    // Publish a lighter revision: same entry, a smaller runtime.
+    const small = Buffer.from('x', 'utf8');
+    const draft = await svc.createDraft({ simulationId: simId });
+    const up = await svc.beginUpload(simId, draft.id);
+    const files = [
+      { path: 'package/index.html', bytes: HTML, contentType: 'text/html; charset=utf-8', role: 'entry' },
+      { path: 'runtime/bridge.js', bytes: small, contentType: 'application/javascript', role: 'runtime' },
+    ];
+    for (const f of files) {
+      await svc.writeFile(up, PREFIX, {
+        manifestPath: f.path, bytes: f.bytes, contentType: f.contentType, role: f.role as never });
+    }
+    const validating = await svc.finishUpload(simId, draft.id);
+    await svc.validate(simId, validating, PREFIX, { manifest: manifestFor(files) });
+
+    const cmp = await svc.compareRevisionWeight(simId, before.id, draft.id);
+    expect(cmp).not.toBeNull();
+    // Negative = a saving, the way an engineer reads it.
+    expect(cmp!.deltaBytes).toBe(small.length - JS.length);
+    expect(cmp!.improved).toBe(true);
+    expect(cmp!.percentChange).toBeLessThan(0);
+  });
+
+  it('returns null rather than 0 when a revision predates weight recording', async () => {
+    // A zero would read as "no change" for a comparison that cannot be made at all.
+    const a = await publish();
+    const b = await publish();
+    await pg.query(`UPDATE sim_revisions SET metadata = '{}'::jsonb WHERE id = $1`, [a.id]);
+    expect(await svc.compareRevisionWeight(simId, a.id, b.id)).toBeNull();
+  });
+
+  it('is ADVISORY — a package with findings still publishes', async () => {
+    // These are the customer's own files; refusing to publish would fail real content over a
+    // threshold this code chose.
+    const huge = Buffer.alloc(600 * 1024, 0x41);
+    const draft = await svc.createDraft({ simulationId: simId });
+    const up = await svc.beginUpload(simId, draft.id);
+    const files = [
+      { path: 'package/index.html', bytes: HTML, contentType: 'text/html; charset=utf-8', role: 'entry' },
+      { path: 'package/big.png', bytes: huge, contentType: 'image/png', role: 'asset' },
+    ];
+    for (const f of files) {
+      await svc.writeFile(up, PREFIX, {
+        manifestPath: f.path, bytes: f.bytes, contentType: f.contentType, role: f.role as never });
+    }
+    const validating = await svc.finishUpload(simId, draft.id);
+    const res = await svc.validate(simId, validating, PREFIX, { manifest: manifestFor(files) });
+    expect(res.ok, 'a heavy package was refused publication').toBe(true);
+
+    const [row] = await rows<{ metadata: { weight?: { findings: { code: string }[] } } }>(
+      `SELECT metadata FROM sim_revisions WHERE id = $1`, [draft.id]);
+    expect(row!.metadata.weight!.findings.map((f) => f.code)).toContain('oversized-image');
   });
 });
