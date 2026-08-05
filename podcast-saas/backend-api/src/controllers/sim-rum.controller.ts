@@ -8,11 +8,17 @@
  * is looked at, every field is length- or range-capped, batch size is capped, and the response
  * carries no information back.
  *
- * IT ALWAYS RETURNS 204
+ * THE HANDLER ALWAYS RETURNS 204
  * Even for a rejected batch. A client cannot act on a rejection — it has already discarded the
  * events — and distinguishing "stored" from "rejected" in the response would hand an attacker a
  * probe for the validator's shape. Rejections are counted in the logs, where operators can see
  * them and viewers cannot.
+ *
+ * "The ROUTE always returns 204" would be false, and was: Fastify answers 400 for malformed JSON,
+ * 413 past the body limit and 415 for a missing content-type, all decided by the parser before this
+ * handler runs. Those are not probes for the validator — they describe the HTTP envelope, which the
+ * caller already knows it got wrong — but the distinction is worth stating exactly, because the
+ * property being claimed is a security property.
  *
  * IT NEVER THROWS
  * A measurement endpoint that can 500 is a measurement endpoint that can page someone at 3am about

@@ -144,8 +144,16 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- ON DELETE SET NULL, not RESTRICT and not CASCADE. RESTRICT would deadlock a simulation delete
 -- against its own cascade into sim_revisions (both rows are removed by the same statement, and FK
--- checks fire at end of statement). SET NULL degrades a dangling pointer to "no revision", which
--- the whole design already handles as the legacy path — the safe direction.
+-- checks fire at end of statement).
+--
+-- IN PRACTICE THIS BEHAVES AS RESTRICT, and that is the intended outcome rather than a defect.
+-- The action clears only active_revision_id, and it can only fire when that column was non-NULL —
+-- which by simulations_active_revision_pair_chk above means active_revision_entry_key was too. So
+-- the CHECK fails and the delete raises 23514. An earlier version of this comment claimed SET NULL
+-- "degrades a dangling pointer to no revision, the safe direction"; that never happens, and the
+-- claim is corrected here rather than left to mislead the next reader. Deleting a revision that a
+-- simulation is actively serving is refused outright, which is the behaviour worth having — but a
+-- caller sees a CHECK violation, not a foreign-key one, so error handling must not key on 23503.
 DO $$ BEGIN
   ALTER TABLE simulations ADD CONSTRAINT simulations_active_revision_fk
     FOREIGN KEY (active_revision_id) REFERENCES sim_revisions(id) ON DELETE SET NULL;

@@ -15,8 +15,16 @@ const ENDPOINT = 'https://api.test/sim-rum';
 let beacon: ReturnType<typeof vi.fn>;
 let fetchMock: ReturnType<typeof vi.fn>;
 
+/**
+ * What actually went on the wire.
+ *
+ * Reads the FETCH calls, because keepalive fetch is the primary transport: sendBeacon's credentials
+ * mode is fixed at `include`, and the ingest endpoint answers `Access-Control-Allow-Origin: *`,
+ * which the Fetch CORS check rejects for a credentialed request. Beacons therefore failed that
+ * check in every real browser while the rows still arrived, so the suite could not see it.
+ */
 const sent = (): Record<string, unknown>[] =>
-  beacon.mock.calls.map((c) => JSON.parse((c[1] as { __body?: string }).__body ?? '{}'));
+  fetchMock.mock.calls.map((c) => JSON.parse(String((c[1] as { body?: string }).body ?? '{}')));
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -53,7 +61,7 @@ describe('collection is off unless explicitly enabled', () => {
     const r = rec({ sampleRate: 0 });
     expect(r.active).toBe(false);
     r.record(EV); r.flush('manual');
-    expect(beacon).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('is inert for an unparseable rate', () => {
@@ -84,7 +92,7 @@ describe('collection is off unless explicitly enabled', () => {
     });
     expect(r.active).toBe(false);
     r.record(EV); r.flush('manual');
-    expect(beacon).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('collects when the session wins its roll', () => {
@@ -93,10 +101,24 @@ describe('collection is off unless explicitly enabled', () => {
 });
 
 describe('transport', () => {
-  it('prefers sendBeacon, which survives the unload', () => {
+  it('prefers keepalive fetch, and never sends credentials', () => {
+    // sendBeacon's credentials mode is fixed at `include`, and the endpoint answers
+    // `Access-Control-Allow-Origin: *`. The Fetch CORS check rejects a credentialed request against
+    // a wildcard origin, so every beacon failed that check in a real browser — the rows still
+    // arrived, which is why it looked like it worked. keepalive fetch survives page unload the same
+    // way and can omit credentials, which the wildcard does allow.
+    const r = rec(); r.record(EV); r.flush('manual');
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(beacon).not.toHaveBeenCalled();
+    const init = fetchMock.mock.calls[0]![1] as RequestInit;
+    expect(init.keepalive).toBe(true);
+    expect(init.credentials).toBe('omit');
+  });
+
+  it('falls back to sendBeacon only where fetch does not exist', () => {
+    vi.stubGlobal('fetch', undefined);
     const r = rec(); r.record(EV); r.flush('manual');
     expect(beacon).toHaveBeenCalledOnce();
-    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('sends a well-formed batch', () => {
@@ -122,55 +144,77 @@ describe('transport', () => {
     expect(init.credentials).toBe('omit');
   });
 
-  it('DROPS a batch sendBeacon refuses rather than double-sending it', () => {
+  it('DROPS a batch sendBeacon refuses rather than double-sending it — and COUNTS the loss', () => {
+    // Sending twice silently biases a percentile, so the batch is dropped. But the ring had already
+    // been drained, so without counting it the next batch reported `dropped: 0` and a truncated
+    // sample was indistinguishable from a complete one — the exact invariant the column exists for.
+    vi.stubGlobal('fetch', undefined);
     beacon.mockReturnValue(false);
     const r = rec(); r.record(EV); r.flush('manual');
     expect(beacon).toHaveBeenCalledOnce();
-    expect(fetchMock).not.toHaveBeenCalled();
+
+    beacon.mockReturnValue(true);
+    r.record(EV); r.flush('manual');
+    const body = JSON.parse((beacon.mock.calls[1]![1] as { __body?: string }).__body ?? '{}');
+    expect(body.dropped, 'a refused batch vanished without a trace').toBeGreaterThan(0);
+  });
+
+  it('DISABLES on a 4xx, which resolves rather than rejecting', async () => {
+    // Only a network-level failure rejects, so a `.catch` alone left the client posting into an
+    // endpoint that was refusing every batch.
+    fetchMock.mockResolvedValue(new Response(null, { status: 400 }));
+    const r = rec(); r.record(EV); r.flush('manual');
+    await vi.waitFor(() => expect(r.active).toBe(false));
+  });
+
+  it('stays alive on a 429, which is the endpoint working as intended', async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 429 }));
+    const r = rec(); r.record(EV); r.flush('manual');
+    await Promise.resolve(); await Promise.resolve();
+    expect(r.active).toBe(true);
   });
 
   it('sends nothing when there is nothing buffered', () => {
     rec().flush('manual');
-    expect(beacon).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('flushes on an interval', () => {
     const r = rec({ flushIntervalMs: 5000 });
     r.record(EV);
-    expect(beacon).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
     vi.advanceTimersByTime(5000);
-    expect(beacon).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it('flushes early once the ring is half full', () => {
     const r = rec();
     for (let i = 0; i < RUM_FLUSH_AT; i += 1) r.record(EV);
-    expect(beacon).toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalled();
   });
 
   it('flushes on pagehide — the last batch is the most valuable one', () => {
     const r = rec(); r.record(EV);
     window.dispatchEvent(new Event('pagehide'));
-    expect(beacon).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledOnce();
     // And a second pagehide sends nothing, because the ring is now empty.
     window.dispatchEvent(new Event('pagehide'));
-    expect(beacon).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledOnce();
     void r;
   });
 });
 
 describe('failure isolation', () => {
   it('DISABLES the session when the transport throws, rather than retrying', () => {
-    beacon.mockImplementation(() => { throw new Error('nope'); });
+    fetchMock.mockImplementation(() => { throw new Error('nope'); });
     const r = rec(); r.record(EV); r.flush('manual');
     expect(r.active).toBe(false);
-    beacon.mockImplementation(() => true);
+    fetchMock.mockImplementation(async () => new Response(null, { status: 204 }));
     r.record(EV); r.flush('manual');
-    expect(beacon).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it('disables on a rejected fetch', async () => {
-    Object.defineProperty(navigator, 'sendBeacon', { value: undefined, configurable: true });
     fetchMock.mockRejectedValue(new Error('offline'));
     const r = rec(); r.record(EV); r.flush('manual');
     await vi.runAllTimersAsync();
@@ -187,15 +231,15 @@ describe('failure isolation', () => {
     beacon.mockImplementation(() => { throw new Error('boom'); });
     const r = rec({ flushIntervalMs: 1000 });
     r.record(EV); r.flush('manual');
-    const after = beacon.mock.calls.length;
+    const after = fetchMock.mock.calls.length;
     vi.advanceTimersByTime(60_000);
-    expect(beacon.mock.calls.length).toBe(after);
+    expect(fetchMock.mock.calls.length).toBe(after);
   });
 
   it('dispose flushes what remains and never throws', () => {
     const r = rec(); r.record(EV);
     expect(() => r.dispose()).not.toThrow();
-    expect(beacon).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 });
 
@@ -239,20 +283,20 @@ describe('disposal is complete', () => {
     const r = rec();
     r.record(EV);
     r.dispose();
-    beacon.mockClear();
+    fetchMock.mockClear(); beacon.mockClear();
     Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
     window.dispatchEvent(new Event('visibilitychange'));
-    expect(beacon).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('a disposed recorder is DONE and records nothing further', () => {
     const r = rec();
     r.dispose();
-    beacon.mockClear();
+    fetchMock.mockClear(); beacon.mockClear();
     r.record(EV);
     r.flush('manual');
     expect(r.active).toBe(false);
-    expect(beacon).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('flushes on visibilitychange while alive', () => {
@@ -260,7 +304,7 @@ describe('disposal is complete', () => {
     r.record(EV);
     Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
     window.dispatchEvent(new Event('visibilitychange'));
-    expect(beacon).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledOnce();
     void r;
   });
 });

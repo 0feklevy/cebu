@@ -22,11 +22,23 @@ every one of them to today's behaviour** — so applying it changes nothing for 
 switches at their defaults, merging this branch changes viewer behaviour in exactly two ways:
 transition timings are recorded in memory, and the player config carries the new fields.
 
-**What "wired" is allowed to mean here:** each call site emits its own evidence, and an e2e test
+**What "wired" means, and what it does not.** Each call site emits its own evidence, and an e2e test
 asserts on that evidence with the switch on (`P8a`–`P8e` in `viewer-e2e.spec.ts`). Deleting any one
-call site turns its test red — verified by mutation, one mutation per call site, all five killed.
-That is the difference between this and the previous state of this document, when these were tested
-libraries that nothing called.
+call site turns its test red — one mutation per call site, all five killed. That establishes the
+call sites are REACHED.
+
+It does not establish that each feature changes what a viewer sees, and for two of them it does not:
+
+| Feature | With its switch ON, today |
+|---|---|
+| Boundary sentinel | Detects the boundary up to ~250 ms earlier. Real, and bounded by what the pool has already prepared. |
+| Predictive prepare | Mounts a package early **only** when nothing else already has. At the `'all'` tier every active-path package is resident from video start, so this is usually nothing; it matters for packages off the active path. |
+| Adaptive quality | Computes a decision that reaches the activation identity — but the child runtime never applies it. Observable effect today is a changed `configHash`, i.e. poster invalidation. **Do not enable it.** |
+
+Adaptive quality is the honest exception: the controller is correct and tested, the decision reaches
+the identity, and the runtime that would act on it does not read it. Making it real means the child
+applying `quality` at prepare, which means republishing packages. Until then its switch exists to
+stay off, and that is stated here rather than discovered later.
 
 **Still true:** proven on desktop Chromium, Firefox and WebKit only. See §5.
 
@@ -62,9 +74,22 @@ retention and let the table grow without bound; no upper bound would let one car
 
 Each step is independently reversible and observable before the next.
 
-1. **Apply 050 and 051.** Both are strictly additive. Every simulation gets
+0. **MIGRATE BEFORE DEPLOYING. This ordering is mandatory and is not automatic.**
+
+   Nothing applies migrations at boot and no deploy script runs `db:migrate`, so the order is a
+   human decision. `schema.ts` declares the five new `admin_settings` columns, and eight call sites
+   read that table with no explicit `columns` list — including `rate-limit.ts`, which is on
+   rate-limited API traffic, and `platform.controller.ts`, which is **public and unauthenticated**.
+   Drizzle selects every declared column for those, so an image deployed against a database missing
+   them raises Postgres `42703` on each: a 500 on a public route until the migration lands. This
+   already happened once on the development database.
+
+   Deploy direction: **migrate, then deploy.** Rollback direction is the reverse — see §7.
+
+1. **Apply 050, 051 and 052.** All three are strictly additive. Every simulation gets
    `active_revision_id = NULL`, which is precisely the state `packageRevisionFor` falls back for, so
-   identity, posters and canary verdicts are unchanged. Nothing serves differently.
+   identity, posters and canary verdicts are unchanged. 052's three switches all default to today's
+   behaviour. Nothing serves differently. Confirm with `npm run db:migrate && npm run db:check`.
 2. **Raise `rum_sample_rate` to 0.01** for a day. Confirm rows arrive, confirm the reaper runs,
    confirm no client-side errors. One percent of sessions is enough to detect a broken transport and
    too few to matter if it is.
@@ -88,10 +113,12 @@ Each step is independently reversible and observable before the next.
 - **No physical device has run any of this.** Desktop WebKit is not Safari on iOS: it differs in
   media autoplay policy, memory pressure behaviour, WebGL context-loss frequency, and background-tab
   throttling. Every one of those is directly relevant to the sim pool, and none is exercised here.
-- **`requestVideoFrameCallback` support in the field is unknown** — but it is now *measurable* rather
-  than requiring a separate study. The sentinel reports which mechanism armed (`boundary-armed`,
-  `mode` = `rvfc` / `timeout` / `none`), so enabling the sentinel on a sample answers it directly.
-  Nothing has been enabled, so the fraction is still unstated.
+- **`requestVideoFrameCallback` support in the field is unknown, and this branch does NOT measure
+  it.** The sentinel records which mechanism armed, but through `simTelemetry`, which is inert
+  unless the URL carries `?simdebug=1` and which transmits nothing anywhere. So that record is a
+  debugging aid, not field data. An earlier version of this document claimed enabling the sentinel
+  would answer the question directly; it would not. Answering it means routing `mode` through the
+  RUM path, which is a follow-up change.
 - **The WebKit build is frozen** on this host: Playwright reports it no longer receives updates on
   `mac14-arm64`. So WebKit results describe a *pinned* engine, not current Safari.
 - **No low-memory device** has been exercised. `deviceMemory <= 4` already changes pool tier and
@@ -108,7 +135,8 @@ answering them requires field data that only step 3 produces.
 - What is the p90 transition total, by pool tier and device bucket?
 - Is same-package switching slow enough to justify a new child protocol? (The design dropped that
   work pending exactly this number; re-open only above roughly 150 ms.)
-- What fraction of sessions have rVFC? (Now instrumented — see §5 — but not yet collected.)
+- What fraction of sessions have rVFC? (Recorded locally under `?simdebug=1`; NOT collected in the
+  field — the sentinel's mode does not go through RUM. See §5.)
 - Which packages are heaviest, and does weight correlate with the measured p90?
 
 ## 7. Rollback
@@ -128,3 +156,7 @@ Every piece reverses independently:
 - Migration 052: set `sim_scheduler_mode = 'off'`, `sim_adaptive_quality = false`,
   `sim_boundary_sentinel = false`. Instant, no deploy — which is the whole reason each one is a
   column rather than a constant. Dropping the columns needs the same deploy-first ordering as 051.
+- **051 and 052 are coupled on rollback.** 052 adds `sim_rum_events.dropped`, to a table 051
+  creates. Rolling back 051 alone drops the table; re-applying 051 recreates it WITHOUT `dropped`,
+  because the runner records 052 as already applied and never re-runs it — every ingest then fails
+  with `42703`. Roll back 052 first, or re-apply both.
