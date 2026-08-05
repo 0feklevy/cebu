@@ -82,7 +82,7 @@ const section = (over: Record<string, unknown> = {}) => ({
 
 const simRow = (over: Record<string, unknown> = {}) => ({
   id: 'sim-1', package_class: null, bridge_hash: 'H1',
-  active_revision_id: null, active_revision_entry_key: null, ...over,
+  active_revision_id: null, active_revision_entry_key: null, canary_report: null, ...over,
 });
 
 async function firstSim(): Promise<Record<string, unknown>> {
@@ -205,5 +205,66 @@ describe('when the simulation rows cannot be read', () => {
     const sim = await firstSim();
     expect(sim.simulation_url).toBe(STORED_URL);
     expect(logged.error).toHaveBeenCalled();
+  });
+});
+
+// ══ RUM + PREPARE BUDGETS (Priority 8.7 / 8.9) ═══════════════════════════════════════════════
+
+describe('sim_rum_sample_rate', () => {
+  it('is 0 by default, so no existing deployment starts collecting', async () => {
+    const cfg = await buildPlayerConfig('proj-1', 'user-1') as { sim_rum_sample_rate: number };
+    expect(cfg.sim_rum_sample_rate).toBe(0);
+  });
+});
+
+describe('sim_prepare_budget_ms', () => {
+  it('emits the package own lab cost, summed across the sequential prepare steps', async () => {
+    mocks.simulations.findMany.mockResolvedValue([simRow({
+      canary_report: {
+        steps: [
+          { step: 'load', ms: 100, status: 'pass' },
+          { step: 'handshake', ms: 50, status: 'pass' },
+          { step: 'prepare', ms: 200, status: 'pass' },
+          { step: 'section-applied', ms: 30, status: 'pass' },
+          { step: 'poster-captured', ms: 9000, status: 'pass' },
+        ],
+      },
+    })]);
+    const cfg = await buildPlayerConfig('proj-1', 'user-1') as {
+      sim_prepare_budget_ms: Record<string, number>;
+    };
+    // 380, not 9380: poster capture is not part of reaching a usable section.
+    expect(cfg.sim_prepare_budget_ms['sim-1']).toBe(380);
+  });
+
+  it('omits a package that has never been canaried', async () => {
+    // Absent means "no lab data". Emitting 0 would budget an unmeasured package as instantaneous.
+    const cfg = await buildPlayerConfig('proj-1', 'user-1') as {
+      sim_prepare_budget_ms: Record<string, number>;
+    };
+    expect(cfg.sim_prepare_budget_ms['sim-1']).toBeUndefined();
+  });
+
+  it('omits a package whose canary report is malformed', async () => {
+    mocks.simulations.findMany.mockResolvedValue([simRow({ canary_report: { steps: 'nope' } })]);
+    const cfg = await buildPlayerConfig('proj-1', 'user-1') as {
+      sim_prepare_budget_ms: Record<string, number>;
+    };
+    expect(cfg.sim_prepare_budget_ms['sim-1']).toBeUndefined();
+  });
+
+  it('is keyed by package, not by section', async () => {
+    // A package's cost is a property of its bytes, not of where it appears on a timeline, and one
+    // package commonly appears in many sections.
+    mocks.timeline_sections.findMany.mockResolvedValue([
+      section({ id: 'sec-1' }), section({ id: 'sec-2' }),
+    ]);
+    mocks.simulations.findMany.mockResolvedValue([simRow({
+      canary_report: { steps: [{ step: 'load', ms: 300, status: 'pass' }] },
+    })]);
+    const cfg = await buildPlayerConfig('proj-1', 'user-1') as {
+      sim_prepare_budget_ms: Record<string, number>;
+    };
+    expect(Object.keys(cfg.sim_prepare_budget_ms)).toEqual(['sim-1']);
   });
 });
