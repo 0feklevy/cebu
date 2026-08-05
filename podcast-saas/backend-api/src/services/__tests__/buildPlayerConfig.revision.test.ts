@@ -329,8 +329,8 @@ describe('field aggregates refine the emitted budget — and only when credible'
 
   it('survives a field-aggregate query failure without failing the config', async () => {
     mocks.simulations.findMany.mockResolvedValue([simRow({ prepare_budget_ms: 800 })]);
-    const { fieldAggregates } = await import('../simulation/RumService.js');
-    (fieldAggregates as unknown as { mockRejectedValueOnce?: unknown });
+    // The failure is injected through the module mock's own state; the import above was a leftover
+    // from an earlier approach and the expression that followed it did nothing at all.
     rum.aggregates = new Map();
     const cfg = await buildPlayerConfig('proj-1', 'user-1') as { sim_prepare_budget_ms: Record<string, number> };
     expect(cfg.sim_prepare_budget_ms['sim-1']).toBe(800);

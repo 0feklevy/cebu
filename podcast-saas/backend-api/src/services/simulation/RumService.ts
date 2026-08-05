@@ -294,7 +294,9 @@ export async function resolveSimRuntimeFlags(): Promise<SimRuntimeFlags> {
   const envAdaptive = (process.env.SIM_ADAPTIVE_QUALITY ?? '').trim().toLowerCase();
   const envSentinel = (process.env.SIM_BOUNDARY_SENTINEL ?? '').trim().toLowerCase();
 
-  let fromDb: Partial<SimRuntimeFlags> = {};
+  // Declared without an initializer: both branches below assign it, so an initial `{}` is dead and
+  // reads as a third possible state that does not exist.
+  let fromDb: Partial<SimRuntimeFlags>;
   try {
     const s = await db.query.admin_settings.findFirst({
       columns: { sim_scheduler_mode: true, sim_adaptive_quality: true, sim_boundary_sentinel: true },
