@@ -30,3 +30,18 @@ ALTER TABLE admin_settings ADD COLUMN IF NOT EXISTS sim_adaptive_quality BOOLEAN
 -- different: it touches the section-transition clock, and requestVideoFrameCallback support varies
 -- by engine. `timeupdate` remains the master clock and the safety net in both states.
 ALTER TABLE admin_settings ADD COLUMN IF NOT EXISTS sim_boundary_sentinel BOOLEAN NOT NULL DEFAULT false;
+
+-- ── The client's dropped-event count ─────────────────────────────────────────────────────────────
+--
+-- Belongs here rather than in 051 because 051 HAS ALREADY BEEN APPLIED. The runner records a
+-- migration by filename and never re-runs it, so a column added to an applied file is created on
+-- fresh databases and silently absent on every existing one — a divergence that only shows up as a
+-- 42703 in production. An applied migration is immutable; corrections go in a new file.
+--
+-- Without this the client's drop count is validated, drained, transmitted and then discarded, and a
+-- truncated sample is indistinguishable from a complete one.
+ALTER TABLE sim_rum_events ADD COLUMN IF NOT EXISTS dropped INTEGER NOT NULL DEFAULT 0;
+
+DO $$ BEGIN
+  ALTER TABLE sim_rum_events ADD CONSTRAINT sim_rum_events_dropped_chk CHECK (dropped >= 0);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;

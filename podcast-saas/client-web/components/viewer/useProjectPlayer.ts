@@ -1067,6 +1067,19 @@ export function useProjectPlayer(
       const sectionUrl = simSection.simulation_url;
       const key = packageKeyOf(sectionUrl);
       ensurePooled(simSection);
+      // SINGLE MODE IS ENFORCED HERE, not only on the tick.
+      //
+      // The kill switch promises at most one resident document. Leaving that to the tick made the
+      // promise depend on `timeupdate`, whose cadence after a seek is engine-specific — WebKit
+      // held two frames where Chromium and Firefox held one. A kill switch whose guarantee varies
+      // by browser is not a kill switch, so the section change (which is deterministic) enforces
+      // it too. `ensurePooledSpec` already evicts when it ADDS a spec; this covers the case where
+      // the incoming package was already resident and it returns early.
+      if (poolTierRef.current === 'single') {
+        for (const sp of [...simPoolSpecsRef.current]) {
+          if (sp.key !== key) dropPooled(sp.key, 'single-mode-switch');
+        }
+      }
       // ADAPTIVE QUALITY (migration 052 kill switch, default off).
       //
       // Decided BEFORE the identity is minted, which is the only safe place: `quality` is inside
