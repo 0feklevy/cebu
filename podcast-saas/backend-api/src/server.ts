@@ -24,6 +24,7 @@ import { drainInlineJobs } from './queue/inlineDriver.js';
 // Controllers
 import { registerSimPublicRoutes } from './controllers/sim-public.controller.js';
 import { registerSimRumRoutes } from './controllers/sim-rum.controller.js';
+import { startRumRetentionSweep } from './services/simulation/RumService.js';
 import { registerPlatformRoutes } from './controllers/v1/platform.controller.js';
 import { registerProjectRoutes } from './controllers/v1/projects.controller.js';
 import { registerCorpusRoutes } from './controllers/v1/corpus.controller.js';
@@ -443,6 +444,10 @@ async function build() {
   // config tells it to. Gating the ROUTE on the flag would mean flipping the switch requires a
   // deploy, which is the property the switch exists to avoid.
   registerSimRumRoutes(app);
+  // Retention is enforced, not intended. Without a caller the migration's own promise that "the
+  // reaper is part of this change rather than a follow-up" would be false and the table would grow
+  // without bound.
+  startRumRetentionSweep();
 
   // Local upload endpoint — receives PUT from client for large video files in dev
   app.put<{ Params: { '*': string } }>(

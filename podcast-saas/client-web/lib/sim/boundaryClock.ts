@@ -44,6 +44,11 @@ export interface BoundarySentinel {
 const NOOP: BoundarySentinel = { mode: 'none', cancel: () => {} };
 
 export const DEFAULT_HORIZON_SEC = 0.35;
+/**
+ * Re-arm ceiling. At 60fps this is ~2s of frames — comfortably more than the 0.35s horizon needs,
+ * and finite, so a backward seek cannot leave a self-rescheduling loop running forever.
+ */
+export const MAX_REARM_FRAMES = 120;
 
 type VideoWithRvfc = HTMLVideoElement & {
   requestVideoFrameCallback?: (cb: (now: number, meta: { mediaTime: number }) => void) => number;
@@ -80,6 +85,7 @@ export function armBoundarySentinel(opts: BoundarySentinelOptions): BoundarySent
   if (until > horizon) return NOOP;
 
   let done = false;
+  let frames = 0;
   /**
    * Fire once.
    *
@@ -102,8 +108,12 @@ export function armBoundarySentinel(opts: BoundarySentinelOptions): BoundarySent
         fire(meta.mediaTime);
         return;
       }
-      // Re-arm. Each callback re-reads the true media time, so a seek or rate change during the
-      // wait is absorbed rather than producing a boundary at the wrong moment.
+      // Re-arm, but BOUNDED. Each callback re-reads the true media time, so a seek or rate change
+      // during the wait is absorbed rather than producing a boundary at the wrong moment — however
+      // a backward seek moves the target permanently out of reach, and an unbounded loop would then
+      // burn one callback per presented frame until something else cancelled it.
+      frames += 1;
+      if (frames > MAX_REARM_FRAMES) { done = true; return; }
       handle = v.requestVideoFrameCallback!(step);
     };
     handle = v.requestVideoFrameCallback(step);
@@ -124,6 +134,11 @@ export function armBoundarySentinel(opts: BoundarySentinelOptions): BoundarySent
   const rate = Number.isFinite(video.playbackRate) && video.playbackRate > 0 ? video.playbackRate : 1;
   const timer = setTimeout(() => {
     const t = safeCurrentTime(video);
+    // The boundary must have ACTUALLY been reached. The delay is computed once from the rate at arm
+    // time, so a pause or a rate drop inside the horizon leaves the video short of the target — and
+    // firing anyway would report a boundary that has not happened. `timeupdate` remains the safety
+    // net for a LATE boundary; nothing catches an early one, which is why this branch checks.
+    if (typeof t === 'number' && t < targetSec) return;
     fire(typeof t === 'number' ? t : targetSec);
   }, Math.max(0, (until / rate) * 1000));
 

@@ -65,7 +65,35 @@ export async function resolveRumRetentionDays(): Promise<number> {
 
 export interface IngestResult {
   stored: number;
-  rejected?: RumRejection;
+  rejected?: RumRejection | 'collection-disabled';
+}
+
+/**
+ * How often the retention sweep runs while the process is alive.
+ *
+ * Retention is stated in the migration as part of the schema rather than an intention, so the
+ * sweeper has to actually exist. An hour is far more often than a day-granularity window needs,
+ * and cheap: the predicate is a single indexed range delete.
+ */
+export const RUM_REAP_INTERVAL_MS = 60 * 60 * 1000;
+
+/**
+ * Start the retention sweep. Returns a stop function.
+ *
+ * `unref` so a pending timer never holds the process open — a measurement sweep must not be the
+ * reason a deploy fails to drain.
+ */
+export function startRumRetentionSweep(intervalMs = RUM_REAP_INTERVAL_MS): () => void {
+  const run = (): void => {
+    void reapRumEvents().catch((err: unknown) => {
+      // Swallowed: nothing downstream waits on this, and a failing sweep must not take a process
+      // down over data nobody is reading yet.
+      logger.error({ err }, 'sim RUM retention sweep failed');
+    });
+  };
+  const timer = setInterval(run, intervalMs);
+  if (typeof timer.unref === 'function') timer.unref();
+  return () => clearInterval(timer);
 }
 
 /**
@@ -76,6 +104,15 @@ export interface IngestResult {
  * reason the database is busy.
  */
 export async function ingestBatch(raw: unknown): Promise<IngestResult> {
+  // THE KILL SWITCH GATES THE WRITE PATH, not only the client.
+  //
+  // The route is registered unconditionally so the switch needs no deploy, and the client sends
+  // nothing at rate 0 — but the endpoint is unauthenticated, so "no honest client sends" is not the
+  // same as "nothing is stored". Without this, any caller could persist rows on every deployment
+  // (all of which sit at rate 0) and poison the per-package percentiles the rest of Priority 8 is
+  // designed to consume.
+  if ((await resolveRumSampleRate()) <= 0) return { stored: 0, rejected: 'collection-disabled' };
+
   const parsed = validateBatch(raw);
   if (!parsed.ok) return { stored: 0, rejected: parsed.reason };
 
@@ -152,8 +189,12 @@ export async function packagePercentiles(packageRevision: string): Promise<{
   };
 }
 
-const numOrNull = (v: unknown): number | null =>
-  typeof v === 'number' && Number.isFinite(v) ? v : v == null ? null : Number(v) || null;
+/** A genuine 0 must survive: `Number(v) || null` turned it into null when the driver returned text. */
+const numOrNull = (v: unknown): number | null => {
+  if (v == null) return null;
+  const n = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
+};
 
 function clampInt(v: unknown, lo: number, hi: number): number | null {
   if (typeof v !== 'number' || !Number.isFinite(v)) return null;

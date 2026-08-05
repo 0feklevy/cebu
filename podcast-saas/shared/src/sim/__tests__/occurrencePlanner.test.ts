@@ -212,3 +212,47 @@ describe('degenerate input', () => {
     expect(plan([occ('a', 'P1', 0, 5)], 100).admit).toEqual([]);
   });
 });
+
+// ── Review findings ──────────────────────────────────────────────────────────────────────────────
+
+describe('the active package is never evicted, at ANY capacity', () => {
+  it('keeps the on-screen package even at capacity 0', () => {
+    // slice(0, 0) put it in the overflow, so a caller following the plan would drop the document
+    // that is on screen — the one mistake this planner must never make.
+    const p = plan([occ('a', 'P1', 0, 100)], 50, { capacity: 0 });
+    expect(p.admit.map((e) => e.packageKey)).toEqual(['P1']);
+    expect(p.evict).not.toContain('P1');
+  });
+
+  it('keeps it for a nonsensical capacity too', () => {
+    for (const cap of [NaN, -3, undefined as unknown as number]) {
+      const p = plan([occ('a', 'P1', 0, 100)], 50, { capacity: cap });
+      expect(p.evict, `capacity ${cap} evicted the live package`).not.toContain('P1');
+    }
+  });
+});
+
+describe('evict names everything that should be dropped', () => {
+  it('evicts a resident package whose occurrences are all in the past', () => {
+    // Such a package never enters `candidates`, so before `resident` was passed in it could never be
+    // evicted — a caller would hold that document forever after a forward seek.
+    const p = plan([occ('a', 'P2', 200, 210)], 100, { resident: ['P1', 'P2'] });
+    expect(p.evict).toContain('P1');
+    expect(p.evict).not.toContain('P2');
+  });
+
+  it('never evicts something it is also admitting', () => {
+    const p = plan([occ('a', 'P1', 0, 100)], 50, { resident: ['P1'] });
+    expect(p.evict).not.toContain('P1');
+  });
+
+  it('does not list the same package twice', () => {
+    const o = [occ('a', 'P1', 10, 20), occ('b', 'P2', 12, 22)];
+    const p = plan(o, 0, { capacity: 1, resident: ['P2', 'P2'] });
+    expect(new Set(p.evict).size).toBe(p.evict.length);
+  });
+
+  it('evicts nothing when nothing is resident and everything fits', () => {
+    expect(plan([occ('a', 'P1', 10, 20)], 0, { capacity: 5, resident: [] }).evict).toEqual([]);
+  });
+});

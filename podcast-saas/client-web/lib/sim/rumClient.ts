@@ -113,6 +113,12 @@ export function createRumRecorder(opts: RumOptions): RumRecorder {
     const body = JSON.stringify(batch);
     try {
       if (typeof navigator.sendBeacon === 'function') {
+        // NOTE ON CREDENTIALS: sendBeacon's credentials mode is `include` and cannot be changed, so
+        // a beacon to a same-site endpoint carries the viewer's cookies. That is a property of the
+        // API, not a choice made here, and it is why the server stores nothing derived from the
+        // request identity — no user id, no IP, no session linkage. The `credentials: 'omit'` on the
+        // fetch fallback below is therefore a floor, not a guarantee that covers both paths.
+        //
         // A `false` return means the browser refused to queue it — usually the payload exceeded its
         // beacon budget. Falling through to fetch would send it twice on some browsers, so the
         // batch is dropped instead: a duplicated measurement is worse than a missing one, because
@@ -161,13 +167,17 @@ export function createRumRecorder(opts: RumOptions): RumRecorder {
   };
 
   const onHide = (): void => flush('pagehide');
+  // NAMED, so it can actually be removed. An anonymous listener here leaked on every mount: this
+  // viewer mounts and unmounts per navigation, so each disposed recorder kept a closure over its
+  // ring alive for the lifetime of the document.
+  const onVisibility = (): void => {
+    if (document.visibilityState === 'hidden') flush('pagehide');
+  };
   try {
     // `pagehide` and not `unload`: `unload` is not fired on mobile Safari and blocks the bfcache
     // everywhere else, which would make measurement cost the viewer a fast back-navigation.
     window.addEventListener('pagehide', onHide);
-    window.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'hidden') flush('pagehide');
-    });
+    window.addEventListener('visibilitychange', onVisibility);
     timer = setInterval(() => flush('interval'), opts.flushIntervalMs ?? RUM_FLUSH_INTERVAL_MS);
   } catch {
     return NOOP;
@@ -181,8 +191,12 @@ export function createRumRecorder(opts: RumOptions): RumRecorder {
       try {
         flush('manual');
         window.removeEventListener('pagehide', onHide);
+        window.removeEventListener('visibilitychange', onVisibility);
       } catch { /* disposal must never throw into the caller's unmount path */ }
       if (timer !== null) { clearInterval(timer); timer = null; }
+      // A disposed recorder is DONE. Without this a later record() still buffered into a ring
+      // nothing would ever flush, and a stray flush could still send after the timer was gone.
+      disabled = true;
     },
   };
 }

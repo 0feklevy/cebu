@@ -8,7 +8,9 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { armBoundarySentinel, supportsRvfc, DEFAULT_HORIZON_SEC } from '../lib/sim/boundaryClock.js';
+import {
+  armBoundarySentinel, supportsRvfc, DEFAULT_HORIZON_SEC, MAX_REARM_FRAMES,
+} from '../lib/sim/boundaryClock.js';
 
 type Cb = (now: number, meta: { mediaTime: number }) => void;
 
@@ -133,20 +135,23 @@ describe('firing', () => {
     const v = makeVideo({ rvfc: false, rate: 2 });
     const seen: number[] = [];
     armBoundarySentinel({ video: v, targetSec: 0.2, onBoundary: (t) => seen.push(t) });
-    // 0.2s of media at 2x = 100ms of wall clock.
+    // 0.2s of media at 2x = 100ms of wall clock. The element really advances, as it would when
+    // playing — the sentinel now refuses to fire on a video that fell short.
     vi.advanceTimersByTime(99);
     expect(seen).toEqual([]);
+    (v as unknown as { currentTime: number }).currentTime = 0.21;
     vi.advanceTimersByTime(2);
     expect(seen).toHaveLength(1);
   });
 
   it('treats a non-positive playback rate as 1 rather than dividing by it', () => {
     // Dividing by zero yields an Infinite delay, which Node coerces to ~1ms — so the boundary would
-    // fire almost immediately instead of at the right time. Asserting only that it eventually fires
-    // would pass for that bug, so the early check is the one that matters.
+    // fire almost immediately instead of at the right time. The video is held AT the target so the
+    // reached-target check cannot mask the timing claim.
     const v = makeVideo({ rvfc: false, rate: 0 });
     const seen: number[] = [];
     armBoundarySentinel({ video: v, targetSec: 0.2, onBoundary: (t) => seen.push(t) });
+    (v as unknown as { currentTime: number }).currentTime = 0.2;
     vi.advanceTimersByTime(199);
     expect(seen, 'the boundary fired far too early').toEqual([]);
     vi.advanceTimersByTime(2);
@@ -214,5 +219,43 @@ describe('cancellation', () => {
   it('cancelling an unarmed sentinel is safe', () => {
     const s = armBoundarySentinel({ video: makeVideo(), targetSec: 999, onBoundary: () => {} });
     expect(() => s.cancel()).not.toThrow();
+  });
+});
+
+// ── Review findings ──────────────────────────────────────────────────────────────────────────────
+
+describe('the fallback never reports a boundary that has not happened', () => {
+  it('does not fire when the video fell short of the target', () => {
+    // The delay is computed once from the rate at arm time, so a pause inside the horizon leaves
+    // the video short. timeupdate is the safety net for a LATE boundary; nothing catches an early
+    // one, so this branch has to check.
+    const v = makeVideo({ rvfc: false });
+    const seen: number[] = [];
+    armBoundarySentinel({ video: v, targetSec: 0.3, onBoundary: (t) => seen.push(t) });
+    (v as unknown as { currentTime: number }).currentTime = 0.1;  // paused / throttled
+    vi.advanceTimersByTime(1000);
+    expect(seen).toEqual([]);
+  });
+
+  it('fires when the video did reach the target', () => {
+    const v = makeVideo({ rvfc: false });
+    const seen: number[] = [];
+    armBoundarySentinel({ video: v, targetSec: 0.3, onBoundary: (t) => seen.push(t) });
+    (v as unknown as { currentTime: number }).currentTime = 0.31;
+    vi.advanceTimersByTime(1000);
+    expect(seen).toHaveLength(1);
+  });
+});
+
+describe('the rVFC re-arm is bounded', () => {
+  it('gives up rather than looping forever when the target moves out of reach', () => {
+    // A backward seek moves the boundary permanently away; an unbounded loop would burn one
+    // callback per presented frame until something else cancelled it.
+    const v = makeVideo();
+    const seen: number[] = [];
+    armBoundarySentinel({ video: v, targetSec: 0.3, onBoundary: (t) => seen.push(t) });
+    for (let i = 0; i < MAX_REARM_FRAMES + 5; i += 1) v.__fire(0);
+    expect(v.__pending()).toBe(0);
+    expect(seen).toEqual([]);
   });
 });

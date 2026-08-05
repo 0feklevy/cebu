@@ -31,6 +31,7 @@ vi.mock('../../../lib/logger.js', () => ({
 
 import {
   resolveRumSampleRate, resolveRumRetentionDays, ingestBatch, reapRumEvents, packagePercentiles,
+  startRumRetentionSweep,
   RUM_RETENTION_DEFAULT_DAYS,
 } from '../RumService.js';
 import { SIM_RUM_VERSION, bucketDevice, type RumEvent } from 'shared/src/sim/rumEvents';
@@ -52,6 +53,11 @@ const batch = (over: Record<string, unknown> = {}) => ({
   device: bucketDevice({ deviceMemory: 8, hardwareConcurrency: 8, poolTier: 'all', dpr: 2 }),
   events: [ev()], dropped: 0, ...over,
 });
+
+/** Ingestion is gated on the kill switch, so every ingest test must turn collection on. */
+async function enableCollection(): Promise<void> {
+  await pg.query(`UPDATE admin_settings SET rum_sample_rate = 1`);
+}
 
 beforeEach(async () => {
   pg = new PGlite();
@@ -135,6 +141,7 @@ describe('resolveRumRetentionDays', () => {
 // ── Ingestion ────────────────────────────────────────────────────────────────────────────────────
 
 describe('ingestBatch', () => {
+  beforeEach(enableCollection);
   it('stores a valid batch in ONE statement', async () => {
     const r = await ingestBatch(batch({ events: [ev(), ev({ t: 20 }), ev({ t: 30 })] }));
     expect(r.stored).toBe(3);
@@ -186,9 +193,11 @@ describe('ingestBatch', () => {
     expect(row!.t_ms).toBeLessThanOrEqual(2 ** 31 - 1);
   });
 
-  it('truncates an over-long code rather than failing the insert', async () => {
+  it('refuses an over-long code at the validator, before any truncation is needed', async () => {
+    // Named for what it actually asserts. The validator rejects >64 first, so the service-level
+    // truncation is never reached for this input — claiming otherwise described a code path the
+    // test does not exercise.
     const r = await ingestBatch(batch({ events: [ev({ kind: 'failure', code: 'x'.repeat(200) })] }));
-    // The validator refuses >64 first; this asserts the two layers agree rather than fight.
     expect(r.stored).toBe(0);
     expect(r.rejected).toBe('bad-event');
   });
@@ -197,6 +206,7 @@ describe('ingestBatch', () => {
 // ── Retention ────────────────────────────────────────────────────────────────────────────────────
 
 describe('reapRumEvents', () => {
+  beforeEach(enableCollection);
   it('deletes only what is past the window', async () => {
     await ingestBatch(batch());
     await pg.query(`UPDATE sim_rum_events SET created_at = now() - interval '90 days'`);
@@ -224,17 +234,24 @@ describe('reapRumEvents', () => {
 // ── Analysis ─────────────────────────────────────────────────────────────────────────────────────
 
 describe('packagePercentiles', () => {
+  beforeEach(enableCollection);
   it('returns percentiles that actually occurred', async () => {
     // percentile_disc, not percentile_cont: an interpolated p90 is a number no transition ever took,
     // and the client-side summary uses nearest-rank, so two definitions would disagree.
-    const events = [50, 60, 70, 80, 500].map((ms, i) =>
-      ev({ t: i, durations: { totalMs: ms, prepareMs: ms - 10, presentMs: null, applyMs: null } }));
+    // Ten values, so p50 and p90 are DIFFERENT members of the set. With five values both landed on
+    // 70 and a p90 mutated to p50 survived — the assertion could not tell them apart.
+    const vals = [10, 20, 30, 40, 50, 60, 70, 80, 90, 1000];
+    const events = vals.map((ms, i) =>
+      ev({ t: i, durations: { totalMs: ms, prepareMs: ms - 5, presentMs: null, applyMs: null } }));
     await ingestBatch(batch({ events }));
     const p = await packagePercentiles('pkg-abc');
-    expect(p.samples).toBe(5);
-    expect([50, 60, 70, 80, 500]).toContain(p.p50TotalMs);
-    expect([50, 60, 70, 80, 500]).toContain(p.p90TotalMs);
-    expect(p.p90TotalMs!).toBeGreaterThanOrEqual(p.p50TotalMs!);
+    expect(p.samples).toBe(10);
+    // Every reported percentile is a value that actually occurred (percentile_disc, not _cont).
+    expect(vals).toContain(p.p50TotalMs);
+    expect(vals).toContain(p.p90TotalMs);
+    expect(p.p50TotalMs).toBe(50);
+    expect(p.p90TotalMs, 'p90 collapsed onto p50').toBe(90);
+    expect(p.p90TotalMs).not.toBe(p.p50TotalMs);
   });
 
   it('ignores transitions with no total', async () => {
@@ -254,5 +271,90 @@ describe('packagePercentiles', () => {
     await ingestBatch(batch({ events: [ev({ packageRevision: 'pkg-a' })] }));
     await ingestBatch(batch({ events: [ev({ packageRevision: 'pkg-b' })] }));
     expect((await packagePercentiles('pkg-a')).samples).toBe(1);
+  });
+});
+
+
+// ── Review findings ──────────────────────────────────────────────────────────────────────────────
+
+describe('the kill switch gates the WRITE path, not only the client', () => {
+  it('stores nothing while collection is disabled', async () => {
+    // The endpoint is unauthenticated, so "no honest client sends" is not "nothing is stored". Every
+    // existing deployment sits at rate 0; without this gate any caller could poison the per-package
+    // percentiles the rest of Priority 8 consumes.
+    const r = await ingestBatch(batch());
+    expect(r.stored).toBe(0);
+    expect(r.rejected).toBe('collection-disabled');
+    const [{ n }] = await rows<{ n: number }>(`SELECT count(*)::int AS n FROM sim_rum_events`);
+    expect(n).toBe(0);
+  });
+
+  it('stores once collection is enabled', async () => {
+    await enableCollection();
+    expect((await ingestBatch(batch())).stored).toBe(1);
+  });
+
+  it('stops storing again the moment the switch goes back to 0', async () => {
+    await enableCollection();
+    expect((await ingestBatch(batch())).stored).toBe(1);
+    await pg.query(`UPDATE admin_settings SET rum_sample_rate = 0`);
+    expect((await ingestBatch(batch())).stored).toBe(0);
+  });
+});
+
+describe('a single bad device field cannot destroy a whole batch', () => {
+  beforeEach(enableCollection);
+
+  it('drops an unrecognised pool tier and keeps every measurement beside it', async () => {
+    // pool_tier reaches a CHECK constraint; one unknown value made the multi-row INSERT throw and
+    // lost the entire batch, silently, because the endpoint always answers 204. Realistic trigger:
+    // a new tier added client-side before the DDL.
+    const r = await ingestBatch(batch({
+      device: { ...bucketDevice({}), poolTier: 'turbo' },
+      events: [ev(), ev({ t: 20 })],
+    }));
+    expect(r.stored).toBe(2);
+    const [row] = await rows<{ pool_tier: string | null }>(`SELECT pool_tier FROM sim_rum_events`);
+    expect(row!.pool_tier).toBeNull();
+  });
+});
+
+describe('the retention sweep has a caller', () => {
+  it('starts, runs and can be stopped', async () => {
+    await enableCollection();
+    await ingestBatch(batch());
+    await pg.query(`UPDATE sim_rum_events SET created_at = now() - interval '90 days'`);
+
+    const stop = startRumRetentionSweep(20);
+    try {
+      // Poll for the effect rather than sleeping a guessed amount: a fixed sleep either flakes or
+      // is needlessly slow, and this suite closes its PGlite in afterEach — an interval still
+      // in flight when that happens would fire against a dead database.
+      for (let i = 0; i < 100; i += 1) {
+        const [{ n }] = await rows<{ n: number }>(`SELECT count(*)::int AS n FROM sim_rum_events`);
+        if (n === 0) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+    } finally {
+      stop();
+      // Let any sweep already dispatched settle before the database goes away.
+      await new Promise((r) => setTimeout(r, 30));
+    }
+
+    const [{ n }] = await rows<{ n: number }>(`SELECT count(*)::int AS n FROM sim_rum_events`);
+    expect(n, 'the sweep never ran — retention is stated as enforced, not intended').toBe(0);
+  });
+});
+
+describe('numOrNull', () => {
+  it('preserves a genuine zero', async () => {
+    // `Number(v) || null` turned a real 0 into null whenever the driver returned text.
+    await enableCollection();
+    await ingestBatch(batch({
+      events: [ev({ durations: { totalMs: 0, prepareMs: 0, presentMs: 0, applyMs: 0 } })],
+    }));
+    const p = await packagePercentiles('pkg-abc');
+    expect(p.samples).toBe(1);
+    expect(p.p50TotalMs).toBe(0);
   });
 });

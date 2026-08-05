@@ -38,6 +38,15 @@ export interface PlanInput {
   /** Per-package preparation budget in ms. Absent means "unknown", never "free". */
   budgetMsFor: (packageKey: string) => number;
   /**
+   * Packages currently resident, so `evict` can name everything that should be dropped.
+   *
+   * Without this the plan can only evict candidates it just considered — so a resident package
+   * whose occurrences are ALL in the past never appears in `candidates` and is therefore never
+   * evicted, and a caller following the plan holds that document forever against the residency cap
+   * after a forward seek.
+   */
+  resident?: readonly string[];
+  /**
    * How far ahead the video is buffered, in seconds. Speculative work is admitted only when the
    * viewer can actually reach the section — preparing a document the network cannot yet deliver
    * competes with the segment fetches that would make it reachable.
@@ -147,8 +156,20 @@ export function planResidency(input: PlanInput): Plan {
   // exactly once, so the overflow slice cannot contain an admitted key. A defensive filter here was
   // unkillable by any mutation for that reason, and an unfalsifiable guard invites a later reader to
   // weaken the de-duplication believing this still covers it.
+  // The ACTIVE package is never evicted, even at capacity 0. `slice(0, cap)` alone put it in the
+  // overflow at cap 0 (and at NaN), which is the one mistake this planner must never make — the
+  // caller would drop the document that is on screen.
   const admit = candidates.slice(0, cap);
-  const evict = candidates.slice(cap).map((e) => e.packageKey);
+  if (active && !admit.some((e) => e.packageKey === active.packageKey)) {
+    admit.unshift({ packageKey: active.packageKey, dueAtSec: nowSec, reason: 'active' });
+  }
+  const admitted = new Set(admit.map((e) => e.packageKey));
+
+  // Everything considered but not admitted, PLUS anything resident that the plan no longer wants.
+  const evict = [
+    ...candidates.slice(cap).map((e) => e.packageKey),
+    ...(input.resident ?? []),
+  ].filter((k, i, all) => !admitted.has(k) && all.indexOf(k) === i);
 
   // Preparation is admitted only for entries inside their lead window AND reachable in the buffer.
   // Speculative residency is cheap (an idle document); speculative PREPARATION is not, because it

@@ -9,8 +9,9 @@ should be enabled, and — importantly — what has **not** been validated and c
 |---|---|---|
 | Transition measurement (`SimRuntimeClient` marks) | **Active** | Always on. In-memory only; nothing leaves the browser. |
 | RUM collection | **Inert** | `admin_settings.rum_sample_rate` (default `0`), or `SIM_RUM_SAMPLE_RATE`. |
-| RUM ingestion endpoint | **Registered, unused** | Always registered — see §2. |
-| Prepare budgets in the player config | **Emitted** | Always emitted; absent for un-canaried packages. |
+| RUM ingestion endpoint | **Registered, refuses writes** | Always registered — see §2. Ingestion is gated on the same rate, so at 0 nothing is stored even by a hostile caller. |
+| RUM retention sweep | **Running** | Started at boot; hourly, `unref`'d. |
+| Prepare budgets in the player config | **Emitted for newly canaried packages** | Derived when a canary verdict is recorded. Absent for every package canaried BEFORE this change — the column is only populated going forward, so existing packages need a re-canary to gain one. |
 | Occurrence planner / predictive admission | **Library only** | Not yet wired into `useProjectPlayer`. |
 | rVFC boundary sentinel | **Library only** | Not yet wired into `useProjectPlayer`. |
 | Adaptive quality | **Library only** | Not yet wired. |
@@ -27,8 +28,14 @@ integration that would make them affect a viewer has not been written or tested.
 ## 2. Why the RUM route is always registered
 
 Gating the *route* on the sample rate would mean flipping the switch requires a deploy, which is the
-property the switch exists to avoid. The route is registered unconditionally and is inert because no
-client sends to it until `sim_rum_sample_rate > 0` reaches the player config.
+property the switch exists to avoid. So the route is registered unconditionally — and **ingestion
+checks the same rate before storing anything**.
+
+Both halves are needed. "No honest client sends at rate 0" is not the same as "nothing is stored":
+the endpoint is unauthenticated with a wildcard CORS origin, so without the server-side gate any
+caller could persist rows on every deployment (all of which sit at 0) and poison the per-package
+percentiles the rest of Priority 8 is built to consume. The route is additionally rate-limited per
+IP.
 
 ## 3. Kill switches
 
@@ -37,7 +44,7 @@ client sends to it until `sim_rum_sample_rate > 0` reaches the player config.
 | `admin_settings.rum_sample_rate = 0` | All viewers | No RUM events are recorded or sent | No |
 | `SIM_RUM_SAMPLE_RATE` env | Per instance | Overrides the column, including to 0 | Restart only |
 | `admin_settings.sim_pool_mode = 'single'` | All viewers | Existing pool kill switch, unchanged | No |
-| Migration 051 rollback | Everything RUM | Column absent → resolver returns 0 | No |
+| Migration 051 rollback | Everything RUM | Column absent → resolver returns 0 | **Yes — see below** |
 
 Every layer fails **closed**. An unparseable env var is 0, a missing column is 0, a database error is
 0. There is no path that enables collection by accident.
@@ -103,8 +110,12 @@ answering them requires field data that only step 3 produces.
 Every piece reverses independently:
 
 - RUM: set the sample rate to 0. Instant, no deploy.
-- Migration 051: run the rollback file. Safe at any time — the resolver treats the missing column
-  as 0.
+- Migration 051: **deploy first, then run the rollback file.** The RUM resolvers tolerate the
+  missing columns, but four other call sites read `admin_settings` with no explicit `columns` list
+  (`rate-limit.ts`, `platform.controller.ts` — which is public and unauthenticated —
+  `settings.controller.ts`, `llm-config.controller.ts`). Drizzle selects every column declared in
+  `schema.ts` for those, so dropping the columns under an image that still declares them raises
+  `42703` on each. The rollback file's own header states this order.
 - Migration 050: run the rollback file. **Read its header first.** Any simulation already activated
   onto a revision reverts to whatever its legacy mutable prefix last held, which is a data-visible
   regression rather than a crash if a newer package was only ever published as a revision.

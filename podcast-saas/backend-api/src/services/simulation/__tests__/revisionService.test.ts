@@ -784,3 +784,116 @@ describe('gc', () => {
     }
   });
 });
+
+// ══ REVIEW FINDINGS ══════════════════════════════════════════════════════════════════════════
+
+describe('gc — the active revision is never collectable', () => {
+  it('survives a nonsensical keepLastN', async () => {
+    // Math.max(1, NaN) is NaN and slice(0, NaN) is empty, which emptied `keep` and made the ACTIVE
+    // revision's bytes AND row collectable. A keepLastN arriving from a query string is exactly how
+    // that happens.
+    const { id } = await publish();
+    await svc.activate({ simulationId: simId, revisionId: id, storagePrefix: PREFIX,
+      expectedActiveRevisionId: null, supersede: 'retired' });
+
+    for (const bad of [NaN, undefined as unknown as number, 'x' as unknown as number]) {
+      const res = await svc.gc({ simulationId: simId, storagePrefix: PREFIX, keepLastN: bad });
+      expect(res.deleted, `keepLastN ${String(bad)} collected the live revision`).not.toContain(id);
+    }
+    expect(adapter.objects.has(revisionFileKey(PREFIX, id, 'package/index.html'))).toBe(true);
+    const [{ n }] = await rows<{ n: number }>(
+      `SELECT count(*)::int AS n FROM sim_revisions WHERE status = 'active'`);
+    expect(n).toBe(1);
+  });
+
+  it('skips a revision whose status changed DURING the sweep, keeping its bytes', async () => {
+    // The row delete carries a CAS on the status that was read. Isolating it needs the status to
+    // move between the read and the delete, so the change is made from inside the byte-delete of an
+    // EARLIER revision in the same sweep — which is exactly the interleaving the CAS defends
+    // against, and the only way to reach it without a fake clock.
+    const a = await svc.createDraft({ simulationId: simId });
+    const upA = await svc.beginUpload(simId, a.id);
+    await svc.writeFile(upA, PREFIX, {
+      manifestPath: 'a.js', bytes: JS, contentType: 'application/javascript', role: 'asset' });
+    await svc.markFailed(simId, a.id, 'uploading', 'boom');
+
+    const b = await svc.createDraft({ simulationId: simId });
+    const upB = await svc.beginUpload(simId, b.id);
+    await svc.writeFile(upB, PREFIX, {
+      manifestPath: 'b.js', bytes: JS, contentType: 'application/javascript', role: 'asset' });
+    await svc.markFailed(simId, b.id, 'uploading', 'boom');
+
+    let moved = false;
+    adapter.deleteWithPrefix.mockImplementation(async (prefix: string) => {
+      if (!moved) {
+        moved = true;
+        // B is retained now — its status no longer matches what the sweep read.
+        await pg.query(
+          `UPDATE sim_revisions SET status='retired', activated_at=now() WHERE id=$1`, [b.id]);
+      }
+      for (const k of [...adapter.objects.keys()]) if (k.startsWith(prefix)) adapter.objects.delete(k);
+    });
+
+    const res = await svc.gc({ simulationId: simId, storagePrefix: PREFIX, keepLastN: 1 });
+    expect(res.deleted, 'a revision that moved mid-sweep was collected anyway').not.toContain(b.id);
+    expect(adapter.objects.has(revisionFileKey(PREFIX, b.id, 'b.js'))).toBe(true);
+  });
+
+  it('deletes the ROW before the bytes, so a crash cannot strand a pointer target', async () => {
+    // The reverse order leaves a window where a retained row's bytes are gone; rollbackTargetFor
+    // would then select it and activate() would flip the pointer to a dead prefix, so the
+    // simulation serves nothing. Asserted directly: at the moment the bytes go, the row must
+    // already be gone.
+    const d = await svc.createDraft({ simulationId: simId });
+    const up = await svc.beginUpload(simId, d.id);
+    await svc.writeFile(up, PREFIX, {
+      manifestPath: 'a.js', bytes: JS, contentType: 'application/javascript', role: 'asset' });
+    await svc.markFailed(simId, d.id, 'uploading', 'boom');
+
+    // Record EVERY observation, and assert on the FIRST. Keeping only the last would pass for an
+    // implementation that deletes bytes first and then again after the row.
+    const observed: number[] = [];
+    adapter.deleteWithPrefix.mockImplementation(async () => {
+      const [{ n }] = await rows<{ n: number }>(
+        `SELECT count(*)::int AS n FROM sim_revisions WHERE id = $1`, [d.id]);
+      observed.push(n);
+    });
+
+    await svc.gc({ simulationId: simId, storagePrefix: PREFIX, keepLastN: 1 });
+    expect(observed.length).toBeGreaterThan(0);
+    expect(observed[0], 'bytes were deleted while the row still existed').toBe(0);
+  });
+});
+
+describe('recordCanary is compare-and-set, like every other mutation here', () => {
+  it('refuses a verdict for a revision that is already active', async () => {
+    // A late canary overwriting the verdict of an activated revision would be projected onto the
+    // simulations row by the next rollback — a stale verdict describing bytes it never ran against.
+    const { id } = await publish();
+    await svc.activate({ simulationId: simId, revisionId: id, storagePrefix: PREFIX,
+      expectedActiveRevisionId: null, supersede: 'retired' });
+
+    await expect(svc.recordCanary(simId, id, {
+      classification: 'managed-presentable', report: { late: true }, ranAt: new Date(),
+    })).rejects.toThrow(RevisionConflict);
+
+    const [rev] = await rows<{ package_class: string | null }>(
+      `SELECT package_class FROM sim_revisions WHERE id = $1`, [id]);
+    expect(rev!.package_class).toBeNull();
+  });
+
+  it('refuses a verdict for a failed revision', async () => {
+    const d = await svc.createDraft({ simulationId: simId });
+    await svc.markFailed(simId, d.id, 'draft', 'boom');
+    await expect(svc.recordCanary(simId, d.id, {
+      classification: 'failed', report: {}, ranAt: new Date(),
+    })).rejects.toThrow(RevisionConflict);
+  });
+
+  it('accepts a verdict while the revision is still being published', async () => {
+    const { id } = await publish();
+    await expect(svc.recordCanary(simId, id, {
+      classification: 'managed-presentable', report: { ok: true }, ranAt: new Date(),
+    })).resolves.toBeUndefined();
+  });
+});

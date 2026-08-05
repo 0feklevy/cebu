@@ -97,3 +97,18 @@ DO $$ BEGIN
   ALTER TABLE admin_settings ADD CONSTRAINT admin_settings_rum_retention_chk
     CHECK (rum_retention_days >= 1 AND rum_retention_days <= 365);
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- ── Derived preparation budget (Priority 8.7) ────────────────────────────────────────────────────
+-- The package's own publish-time preparation cost, in ms, derived from its canary report when the
+-- verdict is recorded.
+--
+-- Stored as a SCALAR rather than recomputed from canary_report on read. buildPlayerConfig is the
+-- hottest read path in the product and selects an explicit `columns` list precisely to avoid
+-- pulling JSONB — and canary_report is large (per-case steps, errors, capabilities, resource
+-- counts). Deriving once at publication and reading one integer keeps that property.
+ALTER TABLE simulations ADD COLUMN IF NOT EXISTS prepare_budget_ms INTEGER;
+
+DO $$ BEGIN
+  ALTER TABLE simulations ADD CONSTRAINT simulations_prepare_budget_chk
+    CHECK (prepare_budget_ms IS NULL OR prepare_budget_ms >= 0);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;

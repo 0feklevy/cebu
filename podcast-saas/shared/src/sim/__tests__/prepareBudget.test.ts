@@ -9,7 +9,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   BUDGET_STEPS, MIN_BUDGET_MS, MAX_BUDGET_MS,
-  canaryPrepareMs, resolveBudget, isDueForPrepare,
+  canaryPrepareMs, canaryReportPrepareMs, resolveBudget, isDueForPrepare,
 } from '../prepareBudget.js';
 
 const step = (s: string, ms: number | null, status = 'pass') => ({ step: s, ms, status });
@@ -20,26 +20,31 @@ describe('canaryPrepareMs', () => {
     // Taking the maximum would describe the slowest hop and under-budget every package with
     // several moderate steps.
     const ms = canaryPrepareMs([
-      step('load', 100), step('handshake', 50), step('prepare', 200), step('section-applied', 30),
+      step('prepare', 200), step('section-applied', 30),
+      step('present', 100), step('section-presented', 50),
     ]);
     expect(ms).toBe(380);
   });
 
-  it('ignores steps that are not part of preparation', () => {
+  it('ignores steps outside the measured span', () => {
+    // `load` and `handshake` are excluded on purpose: the field measurement starts inside
+    // activateModern, after the document exists and has handshaked, so including them here would
+    // make the lab number and the field number describe different spans.
     expect(canaryPrepareMs([
-      step('load', 100), step('poster-captured', 5000), step('ab-cycles', 9000),
+      step('prepare', 100), step('load', 5000), step('handshake', 3000),
+      step('poster-captured', 9000), step('ab-cycles', 7000),
     ])).toBe(100);
   });
 
   it('ignores a FAILED step — its duration is how long the failure took', () => {
     // Including it would budget for a path this package does not have.
-    expect(canaryPrepareMs([step('load', 100), step('prepare', 5000, 'fail')])).toBe(100);
+    expect(canaryPrepareMs([step('prepare', 100), step('present', 5000, 'fail')])).toBe(100);
   });
 
   it('ignores a missing, negative or non-finite duration', () => {
-    expect(canaryPrepareMs([step('load', 100), step('prepare', null)])).toBe(100);
-    expect(canaryPrepareMs([step('load', 100), step('prepare', -5)])).toBe(100);
-    expect(canaryPrepareMs([step('load', 100), step('prepare', NaN)])).toBe(100);
+    expect(canaryPrepareMs([step('prepare', 100), step('present', null)])).toBe(100);
+    expect(canaryPrepareMs([step('prepare', 100), step('present', -5)])).toBe(100);
+    expect(canaryPrepareMs([step('prepare', 100), step('present', NaN)])).toBe(100);
   });
 
   it('returns null when there is nothing usable, so "no data" differs from "fast"', () => {
@@ -51,11 +56,15 @@ describe('canaryPrepareMs', () => {
   });
 
   it('accepts a step with no explicit status', () => {
-    expect(canaryPrepareMs([{ step: 'load', ms: 100 }])).toBe(100);
+    expect(canaryPrepareMs([{ step: 'prepare', ms: 100 }])).toBe(100);
   });
 
-  it('names exactly the sequential preparation steps', () => {
-    expect([...BUDGET_STEPS]).toEqual(['load', 'handshake', 'prepare', 'section-applied']);
+  it('spans exactly what the field measurement spans', () => {
+    // The client's `requested` mark is inside activateModern, so a measured totalMs covers
+    // prepare -> reveal. Two numbers used interchangeably must measure the same thing.
+    expect([...BUDGET_STEPS]).toEqual(['prepare', 'section-applied', 'present', 'section-presented']);
+    expect(BUDGET_STEPS).not.toContain('load');
+    expect(BUDGET_STEPS).not.toContain('handshake');
   });
 });
 
@@ -134,5 +143,52 @@ describe('isDueForPrepare', () => {
   it('scales with the budget', () => {
     expect(isDueForPrepare({ nowSec: 5, sectionStartSec: 10, budgetMs: 6000 })).toBe(true);
     expect(isDueForPrepare({ nowSec: 5, sectionStartSec: 10, budgetMs: 4000 })).toBe(false);
+  });
+});
+
+// ── The REAL report shape ────────────────────────────────────────────────────────────────────────
+
+describe('canaryReportPrepareMs — steps live per CASE', () => {
+  const caseWith = (ms: number[]) => ({
+    steps: [
+      { step: 'prepare', ms: ms[0], status: 'pass' },
+      { step: 'section-applied', ms: ms[1], status: 'pass' },
+      { step: 'present', ms: ms[2], status: 'pass' },
+      { step: 'section-presented', ms: ms[3], status: 'pass' },
+    ],
+  });
+
+  it('reads cases[].steps, which is where the report actually puts them', () => {
+    // The original implementation read report.steps — a field CanaryReport does not have — so the
+    // budget was empty for every real report while looking implemented.
+    expect(canaryReportPrepareMs({ cases: [caseWith([200, 30, 100, 50])] })).toBe(380);
+  });
+
+  it('takes the WORST case, not the average', () => {
+    // Each case is the same package in a different variant; a lead time covering only the average
+    // variant is too short for the others exactly when it matters.
+    expect(canaryReportPrepareMs({
+      cases: [caseWith([10, 10, 10, 10]), caseWith([100, 100, 100, 100])],
+    })).toBe(400);
+  });
+
+  it('returns null for a report with no usable cases', () => {
+    expect(canaryReportPrepareMs({ cases: [] })).toBeNull();
+    expect(canaryReportPrepareMs({})).toBeNull();
+    expect(canaryReportPrepareMs(null)).toBeNull();
+    expect(canaryReportPrepareMs({ cases: [{ steps: [] }] })).toBeNull();
+  });
+
+  it('ignores a case with no usable steps rather than counting it as zero', () => {
+    expect(canaryReportPrepareMs({
+      cases: [{ steps: [] }, caseWith([100, 0, 0, 0])],
+    })).toBe(100);
+  });
+
+  it('does NOT read a top-level steps field, which no report has', () => {
+    // Guards the exact regression: a shape that looks plausible must not silently work.
+    expect(canaryReportPrepareMs({
+      steps: [{ step: 'prepare', ms: 999, status: 'pass' }],
+    } as never)).toBeNull();
   });
 });
