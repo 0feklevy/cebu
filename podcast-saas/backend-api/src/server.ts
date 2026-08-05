@@ -137,7 +137,39 @@ async function recoverStuckCrops(): Promise<void> {
 async function build() {
   const app = Fastify({
     logger: false, // use pino directly
-    trustProxy: true,
+    /**
+     * EXACTLY ONE TRUSTED HOP, not `true`.
+     *
+     * `true` trusts the whole X-Forwarded-For chain and takes the LEFTMOST entry — which the caller
+     * writes. Every IP-keyed rate limit in this app was therefore keyed on a value the caller
+     * chooses: one forged header per request means every request is the first in its own bucket,
+     * which is not a weaker bound but no bound at all. That affects `/sim-rum` (unauthenticated)
+     * and the two avatar routes.
+     *
+     * The production topology is a single VM where nginx terminates TLS and is the ONLY hop in
+     * front of this process (deploy/docker-compose.yml — nginx alone binds 80/443; the API is
+     * reachable only on a private Docker network). nginx forwards
+     * `X-Forwarded-For: $proxy_add_x_forwarded_for`, which APPENDS the real peer to whatever the
+     * caller sent. So the true client is always the entry nginx appended, and `1` — trust one hop
+     * from this server — selects exactly that and ignores everything to its left.
+     *
+     * Measured, all against a real Fastify instance:
+     *
+     *   XFF "1.2.3.4, 203.0.113.9" from peer 172.18.0.5
+     *     trustProxy: true -> req.ip = 1.2.3.4       (the spoof)
+     *     trustProxy: 1    -> req.ip = 203.0.113.9   (the real client)
+     *
+     * `X-Forwarded-Proto` and `X-Forwarded-Host` are unaffected — verified: protocol still resolves
+     * to https and hostname to the forwarded host under `1`.
+     *
+     * NOT `socket.remoteAddress`: behind nginx that is the proxy's container address, identical for
+     * every viewer, so it would collapse the entire internet into one shared bucket — trading a
+     * spoofable limit for a denial of service against honest users.
+     *
+     * IF A SECOND PROXY IS EVER PUT IN FRONT (a CDN, an ALB), THIS NUMBER MUST CHANGE TO MATCH THE
+     * HOP COUNT, or req.ip becomes spoofable again.
+     */
+    trustProxy: 1,
   });
 
   await app.register(cors, {
