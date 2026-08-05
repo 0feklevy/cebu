@@ -98,7 +98,38 @@ all three.
 
 ## Verification
 
-See the Verification section below for the exact final numbers.
+Every gate below was run from a **clean `git worktree` checkout of the final commit** — no build
+artefacts, no stale `node_modules`, nothing the working tree could be hiding.
+
+| | shared | backend-api | client-web | admin-web |
+|---|---|---|---|---|
+| `tsc --noEmit` | ✅ | ✅ | ✅ | ✅ |
+| lint errors | — | **0** | ✅ | ✅ |
+| unit tests | 783 | 1368 | 766 | 34 |
+
+`backend-api` also reports 43 lint **warnings**, so `--max-warnings=0` exits non-zero. None of them
+are in a file this branch touched — verified by intersecting the warning list with
+`git diff --name-only feat/sim-pipeline-hardening..HEAD`, which yields **0**. Two lint *errors* were
+introduced by this branch and are fixed; the warnings are pre-existing and are left alone rather
+than swept up in a change that is already large.
+
+**Browser matrix — chromium, firefox and webkit**, `workers=1`, `retries=0`, `deviceScaleFactor`
+pinned to 1:
+
+| engine | sim-transport + sim-protocol + sim-leak + sim-canary + sim-transitions + rebuilt-packages + viewer-e2e | sim-pool (live app) |
+|---|---|---|
+| chromium | 102 | 6 |
+| firefox | 102 | 6 |
+| webkit | 102 | 6 |
+
+**324 browser assertions, zero skips, zero flakes.** `sim-pool` is environment-gated and had been
+**skipped in every previous verification report on this branch**; it is run here against a live app
+stack on all three engines.
+
+**The check a green pipeline never made:** the emitted backend JavaScript is built and imported, so
+`dist` module resolution is exercised rather than assumed. This gate caught a real defect earlier —
+ten files importing `shared/src/sim/*`, which resolves to raw TypeScript, so `node dist/server.js`
+died with `ERR_MODULE_NOT_FOUND` while `vitest` and `tsc --noEmit` were both green.
 
 **On the mutation claim:** mutations here are run by hand — applying a change, running the targeted
 suite, reverting — with no config or artifact in the tree, so the count is a process assertion and
