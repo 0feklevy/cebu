@@ -1050,3 +1050,30 @@ describe('markFailed cannot wedge a live simulation', () => {
     expect(r.status).toBe('failed');
   });
 });
+
+describe('activation cannot point at a prefix that is not the simulation\'s own', () => {
+  it('refuses a storagePrefix that does not match the simulation row', async () => {
+    // `active_revision_entry_key` is composed from the caller's prefix and `sim_revisions` has no
+    // prefix column, so nothing else in the transaction can notice. The pointer would name bytes
+    // that were never written, and the read path has no fallback for that — the simulation serves
+    // nothing, with no error recorded anywhere.
+    const { id } = await publish();
+    await expect(svc.activate({
+      simulationId: simId, revisionId: id, storagePrefix: 'simulations/other/sim',
+      expectedActiveRevisionId: null, supersede: 'retired',
+    })).rejects.toThrow(RevisionConflict);
+
+    const [sim] = await rows<{ active_revision_id: string | null }>(
+      `SELECT active_revision_id FROM simulations WHERE id = $1`, [simId]);
+    expect(sim!.active_revision_id, 'the pointer moved despite the refusal').toBeNull();
+  });
+
+  it('still activates with the simulation\'s real prefix', async () => {
+    const { id } = await publish();
+    const res = await svc.activate({
+      simulationId: simId, revisionId: id, storagePrefix: PREFIX,
+      expectedActiveRevisionId: null, supersede: 'retired',
+    });
+    expect(res.activated.id).toBe(id);
+  });
+});

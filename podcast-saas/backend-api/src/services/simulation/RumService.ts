@@ -222,10 +222,19 @@ export async function reapRumEvents(now: Date = new Date()): Promise<number> {
  * occurred, matching the nearest-rank choice the client-side summary makes. Two percentile
  * definitions over one dataset is the same class of mistake as two derivations of one identity.
  */
+/**
+ * NO PRODUCTION CALLER TODAY. `fieldAggregates` is what the player path uses, because it answers
+ * for a whole project in one grouped query rather than one round trip per package.
+ *
+ * Kept for operational inspection of a single package, and given the same `catch` as its sibling:
+ * without it, wiring this up later would propagate `42P01` (table not migrated) or a numeric
+ * overflow straight to the caller, which is exactly the failure mode the sibling exists to avoid.
+ */
 export async function packagePercentiles(packageRevision: string): Promise<{
   samples: number; p50TotalMs: number | null; p90TotalMs: number | null; p90PrepareMs: number | null;
   dropped: number;
 }> {
+  try {
   const rows = await db.execute<{
     samples: number; p50: number | null; p90: number | null; p90prep: number | null;
   }>(sql`
@@ -250,7 +259,14 @@ export async function packagePercentiles(packageRevision: string): Promise<{
     p90PrepareMs: numOrNull(first?.p90prep),
     dropped: Number(first?.dropped ?? 0),
   };
+  } catch (err) {
+    logger.warn({ err, packageRevision }, 'sim RUM package percentiles unavailable');
+    return { ...EMPTY_PERCENTILES };
+  }
 }
+const EMPTY_PERCENTILES = {
+  samples: 0, p50TotalMs: null, p90TotalMs: null, p90PrepareMs: null, dropped: 0,
+} as const;
 
 /** A genuine 0 must survive: `Number(v) || null` turned it into null when the driver returned text. */
 const numOrNull = (v: unknown): number | null => {
