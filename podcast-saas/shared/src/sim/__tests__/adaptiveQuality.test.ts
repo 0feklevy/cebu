@@ -7,6 +7,7 @@
  * device, slow to re-expand a recovering one.
  */
 
+import { resolveBudget } from '../prepareBudget.js';
 import { describe, it, expect } from 'vitest';
 import {
   QUALITY_LADDER, INITIAL_QUALITY_STATE, MIN_SAMPLES, DOWN_STREAK, UP_STREAK,
@@ -160,5 +161,44 @@ describe('the dead band prevents oscillation', () => {
     st = decideQuality(st, sig({ p90TotalMs: 3000 })).state;
     expect(st.direction).toBe('down');
     expect(st.streak).toBe(1);
+  });
+});
+
+/**
+ * THE CIRCULARITY REGRESSION.
+ *
+ * These pin the relationship between the two modules as the PLAYER composes them, because each is
+ * individually correct and the defect lived only in how they were wired together. `resolveBudget`
+ * prefers a measured p90 and returns p90 x 1.25; feeding the same p90 in as the measurement made
+ * every comparison `p90 > 1.25 x p90` and `p90 < 0.625 x p90` — both false for every input inside
+ * the clamp. A unit test of either module alone passes happily.
+ */
+describe('composed with resolveBudget, as the player composes them', () => {
+  const run = (p90: number, feedMeasuredIntoBudget: boolean, activations = 6) => {
+    let state = INITIAL_QUALITY_STATE;
+    const seq: string[] = [];
+    for (let i = 0; i < activations; i += 1) {
+      const budget = resolveBudget({
+        measuredP90Ms: feedMeasuredIntoBudget ? p90 : null, canaryMs: 500,
+      });
+      const d = decideQuality(state, { p90TotalMs: p90, samples: 50, budgetMs: budget.ms });
+      state = d.state; seq.push(d.next);
+    }
+    return seq;
+  };
+
+  it('degrades a device running well over its lab budget', () => {
+    // 3000ms against a 500ms lab budget is a device in genuine trouble.
+    expect(run(3000, false)).toEqual(['high', 'balanced', 'balanced', 'low', 'low', 'low']);
+  });
+
+  it('never degrades when the budget is derived from the measurement it judges', () => {
+    // The defect, pinned. If someone re-introduces `measuredP90Ms: summary.p90` at the call site,
+    // the test above keeps passing and only this one records that the controller went inert.
+    expect(new Set(run(3000, true))).toEqual(new Set(['high']));
+  });
+
+  it('leaves a healthy device alone', () => {
+    expect(new Set(run(120, false))).toEqual(new Set(['high']));
   });
 });

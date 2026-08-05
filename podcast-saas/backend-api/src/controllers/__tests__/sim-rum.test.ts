@@ -38,6 +38,20 @@ async function app() {
   return f;
 }
 
+/**
+ * The app as PRODUCTION builds it.
+ *
+ * `server.ts` sets `trustProxy: true`, which makes `request.ip` the leftmost X-Forwarded-For entry
+ * — written by the caller. A bare `Fastify()` has it off, so `request.ip` is the socket address and
+ * a limiter keyed on it looks perfectly sound. Every spoofing assertion has to run on this one.
+ */
+async function trustProxyApp() {
+  const f = Fastify({ trustProxy: true });
+  registerSimRumRoutes(f);
+  await f.ready();
+  return f;
+}
+
 const body = () => ({
   v: SIM_RUM_VERSION, sessionId: 'session-abcdef',
   device: { memoryGb: 8, cores: 8, coarsePointer: false, saveData: false, dpr: 2, poolTier: 'all' },
@@ -143,6 +157,38 @@ describe('rate limiting', () => {
     expect(rl.args[0]!.max).toBeGreaterThan(0);
     expect(rl.args[0]!.max).toBeLessThan(1000);
     expect(rl.args[0]!.windowMs).toBeGreaterThanOrEqual(1000);
+  });
+
+  it('cannot be given a fresh bucket by forging X-Forwarded-For', async () => {
+    // THE REGRESSION. With `trustProxy: true` the caller controls `request.ip`, so a limiter keyed
+    // on it is not a weaker bound — it is no bound at all: one forged header per request means
+    // every request is the first in its own bucket. And every request past the limiter reaches the
+    // ingestion gate, which is a database round trip against a pool of ten.
+    const f = await trustProxyApp();
+    for (const xff of ['203.0.113.1', '203.0.113.2', '203.0.113.3']) {
+      await f.inject({
+        method: 'POST', url: '/sim-rum', payload: body(),
+        remoteAddress: '10.0.0.9', headers: { 'x-forwarded-for': xff },
+      });
+    }
+    expect(rl.calls).toHaveLength(3);
+    expect(new Set(rl.calls).size, 'a forged header minted a new rate-limit bucket').toBe(1);
+  });
+
+  it('still separates two genuinely different peers behind a proxy', async () => {
+    // The other direction: keying on something constant (a fixed string, the proxy's own address)
+    // would pass the test above while collapsing the whole internet into one bucket, where a single
+    // caller starves every honest client.
+    const f = await trustProxyApp();
+    await f.inject({
+      method: 'POST', url: '/sim-rum', payload: body(),
+      remoteAddress: '10.0.0.1', headers: { 'x-forwarded-for': '203.0.113.1' },
+    });
+    await f.inject({
+      method: 'POST', url: '/sim-rum', payload: body(),
+      remoteAddress: '10.0.0.2', headers: { 'x-forwarded-for': '203.0.113.1' },
+    });
+    expect(new Set(rl.calls).size).toBe(2);
   });
 
   it('drops the batch when the limit is exceeded, still answering 204', async () => {

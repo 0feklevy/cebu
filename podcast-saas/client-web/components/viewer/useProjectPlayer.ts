@@ -719,6 +719,20 @@ export function useProjectPlayer(
   // ── SimRuntimeClient ownership ────────────────────────────────────────────
   // Lifecycle reactions are dispatched through a ref so the client can be created before the
   // handlers below are declared (they close over revealSim / merge, which come later in the body).
+  /**
+   * The package identity a field measurement is filed under, or null when there isn't one.
+   *
+   * NEVER the pool key as a fallback. That key is a full origin + pathname, so it is always past
+   * the validator's 64-character bound — and the validator rejects the whole BATCH on one bad
+   * event, not just that event. A single unrevisioned section therefore discarded every
+   * measurement sitting beside it in the ring. An unfiled measurement is worth nothing anyway:
+   * there is no package to attribute it to, which is exactly why the validator refuses it.
+   */
+  const rumPackageKey = (): string | null => {
+    const rev = activeSimRef.current?.package_revision;
+    return typeof rev === 'string' && rev.length > 0 && rev.length <= 64 ? rev : null;
+  };
+
   const runtimeEventRef = useRef<(key: string, event: string, detail?: Record<string, unknown>) => void>(() => {});
   // Get-or-create the client for a package. It registers NO window listener until a frame is
   // attached, so this is safe to call for a package that has no iframe yet.
@@ -1098,9 +1112,18 @@ export function useProjectPlayer(
           const summary = rt0?.timingSummary();
           const lab = simSection.simulation_id
             ? prepareBudgetsRef.current[simSection.simulation_id] : undefined;
-          const budget = resolveBudget({
-            measuredP90Ms: summary?.p90TotalMs ?? null, canaryMs: lab ?? null,
-          });
+          // ANCHORED ON THE LAB NUMBER, never on the measurement being judged.
+          //
+          // `resolveBudget` prefers a measured p90 and returns p90 x 1.25. Feeding this site's own
+          // p90 in therefore compared p90 against 1.25 x p90 — false for every input inside the
+          // clamp — and the controller pinned itself to 'high' for every p90 from 50 ms to 9 s,
+          // including a device running six times over its budget. Measured: as-wired
+          // `high high high high high high`; lab-anchored `high balanced balanced low low low`.
+          //
+          // The budget is the STANDARD and the p90 is what is being judged against it, so the two
+          // must not come from the same number. The predictive site next door passes null for the
+          // same reason.
+          const budget = resolveBudget({ measuredP90Ms: null, canaryMs: lab ?? null });
           const prior = qualityStateRef.current.get(pkgKey) ?? INITIAL_QUALITY_STATE;
           const decision = decideQuality(prior, {
             p90TotalMs: summary?.p90TotalMs ?? null,
@@ -1916,34 +1939,50 @@ export function useProjectPlayer(
         }
         if (nextStart !== null && nextStart !== boundaryTargetRef.current) {
           boundarySentinelHandleRef.current?.cancel();
-          boundaryTargetRef.current = nextStart;
+          boundarySentinelHandleRef.current = null;
           const target = nextStart;
-          const gen = warmGenRef.current;
+          const armIdx = idx;
           const v = videoRef.current;
-          boundarySentinelHandleRef.current = v
-            ? armBoundarySentinel({
-              video: v,
-              targetSec: target,
-              onBoundary: (mediaTime) => {
-                boundarySentinelHandleRef.current = null;
-                boundaryTargetRef.current = null;
-                simTelemetry('boundary-fired', { target, mediaTime });
-                // Every guard the tick applies, applied again: the element may have been swapped,
-                // the generation may have moved (seek/branch), or the user may be scrubbing.
-                if (v !== videoRef.current || warmGenRef.current !== gen) return;
-                if (scrubbingRef.current) return;
-                updateSimOverlay(curIdxRef.current, mediaTime);
-                setProgress(segOff + mediaTime);
-              },
-            })
-            : null;
-          // `mode` records WHICH mechanism armed — rvfc, timeout, or none because the boundary was
-          // outside the horizon. This is the direct field answer to "what fraction of sessions get
-          // the frame-accurate path", which the rollout document previously listed as unknowable
-          // without a separate study.
-          simTelemetry('boundary-armed', {
-            target, mode: boundarySentinelHandleRef.current?.mode ?? 'none',
-          });
+          const sentinel = v ? armBoundarySentinel({
+            video: v,
+            targetSec: target,
+            onBoundary: (mediaTime) => {
+              boundarySentinelHandleRef.current = null;
+              boundaryTargetRef.current = null;
+              simTelemetry('boundary-fired', { target, mediaTime });
+              // Guards appropriate to a sentinel: the element may have been swapped, the segment
+              // may have changed under the wait, or the user may be scrubbing.
+              //
+              // NOT `warmGenRef`. That counter is incremented by `deactivateSim`, which runs on
+              // every tick where no section is active — about four times a second, in exactly the
+              // video-only stretch this sentinel waits through. A generation that invalidates
+              // itself 4x/s cannot guard a 350 ms window; it can only ever refuse.
+              if (v !== videoRef.current || curIdxRef.current !== armIdx) return;
+              if (scrubbingRef.current) return;
+              updateSimOverlay(curIdxRef.current, mediaTime);
+              setProgress(segOff + mediaTime);
+            },
+          }) : null;
+          // LATCH ONLY ON A REAL ARM.
+          //
+          // `armBoundarySentinel` refuses (mode 'none') when the boundary is beyond its 0.35s
+          // horizon — which, for a section 30s away, is every tick but the last. Latching the
+          // target regardless spent the single arming attempt on that first refusal, and no later
+          // tick could retry because the target had stopped changing. The sentinel therefore never
+          // armed once during ordinary linear playback: it only ever ran when a seek happened to
+          // land inside the horizon. Leaving the target null re-attempts each tick, which costs a
+          // rejected call and gains the arm that the feature exists for.
+          if (sentinel && sentinel.mode !== 'none') {
+            boundarySentinelHandleRef.current = sentinel;
+            boundaryTargetRef.current = target;
+            // `mode` records WHICH mechanism armed. This is the direct field answer to "what
+            // fraction of sessions get the frame-accurate path", which the rollout document
+            // previously listed as unknowable without a separate study.
+            simTelemetry('boundary-armed', { target, mode: sentinel.mode });
+          } else {
+            sentinel?.cancel();
+            boundaryTargetRef.current = null;
+          }
         } else if (nextStart === null && boundaryTargetRef.current !== null) {
           boundarySentinelHandleRef.current?.cancel();
           boundarySentinelHandleRef.current = null;
@@ -1960,7 +1999,16 @@ export function useProjectPlayer(
       //
       // The lead window comes from each package's own publish-time canary, never a constant. A
       // package with no lab measurement gets the floor rather than being treated as instantaneous.
-      if (schedulerModeRef.current === 'predictive' && poolTierRef.current !== 'single') {
+      // 'all' ONLY — never at the 'window' tier.
+      //
+      // At 'window' the planner ~40 lines below owns residency with a 45s lead and evicts anything
+      // outside its keep set. Predictive's lead is a prepare budget capped at 10s, so it can never
+      // mount something that planner has not already mounted — but it CAN mount a second package
+      // (its capacity is 2) that the window planner then drops on the same tick. That repeats every
+      // timeupdate: iframe and WebGL context created and destroyed at ~4 Hz, which is worse than
+      // the feature is good. Restricting it to the tier where nothing else evicts removes the fight
+      // entirely rather than trying to keep two planners in agreement.
+      if (schedulerModeRef.current === 'predictive' && poolTierRef.current === 'all') {
         try {
           const occ: SimOccurrence[] = [];
           for (let i = 0; i < segmentsRef.current.length; i += 1) {
@@ -2388,9 +2436,10 @@ export function useProjectPlayer(
           try {
             const d = (detail ?? {}) as { totalMs?: number | null; prepareMs?: number | null;
               presentMs?: number | null; applyMs?: number | null };
-            rum().record({
+            const pkgRev = rumPackageKey();
+            if (pkgRev) rum().record({
               kind: 'transition',
-              packageRevision: activeSimRef.current?.package_revision ?? key,
+              packageRevision: pkgRev,
               durations: {
                 totalMs: d.totalMs ?? null, prepareMs: d.prepareMs ?? null,
                 presentMs: d.presentMs ?? null, applyMs: d.applyMs ?? null,
@@ -2419,9 +2468,10 @@ export function useProjectPlayer(
         if (isActive) {
           merge({ simBootStalled: false, simColdCover: false });
           try {
-            rum().record({
+            const pkgRev = rumPackageKey();
+            if (pkgRev) rum().record({
               kind: 'failure',
-              packageRevision: activeSimRef.current?.package_revision ?? key,
+              packageRevision: pkgRev,
               code: event,
             });
           } catch { /* never affect the viewer */ }

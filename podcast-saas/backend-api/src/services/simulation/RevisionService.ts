@@ -36,6 +36,7 @@ import { simulations, sim_revisions } from '../../db/schema.js';
 import type { StorageService, StoredObjectHead } from '../storage/StorageService.js';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import { logger } from '../../lib/logger.js';
+import { canaryReportPrepareMs } from 'shared/sim/prepareBudget';
 import { createHash } from 'node:crypto';
 import {
   canTransition,
@@ -100,6 +101,39 @@ export interface VerificationReport {
 const ACTIVATABLE_FROM: readonly SimRevisionStatus[] = ['canary_passed', 'retired', 'rolled_back'];
 
 /** Row → the shared record shape. Timestamps become ISO strings; Drizzle hands back Date objects. */
+/**
+ * Smallest `keepLastN` that leaves a rollback possible.
+ *
+ * The newest retained revision is the one being served, so keeping one keeps only the present.
+ * Two is the first value that also keeps a past to return to.
+ */
+export const GC_MIN_KEEP = 2;
+
+/**
+ * Default grace before an uncollected revision may be swept.
+ *
+ * Long enough that no realistic publication is still writing when it expires, and short enough that
+ * abandoned drafts do not accumulate for a day. A publication that genuinely takes longer than this
+ * is already failing for other reasons.
+ */
+export const GC_MIN_AGE_MS = 60 * 60 * 1000;
+
+/**
+ * Is this revision old enough to collect?
+ *
+ * Age is measured from `created_at`, which every revision has from the moment its row is written —
+ * `activated_at` is null for exactly the in-flight rows this guard exists to protect.
+ */
+export function isCollectableByAge(
+  r: { createdAt: string }, minAgeMs: number = GC_MIN_AGE_MS, now: number = Date.now(),
+): boolean {
+  const created = Date.parse(r.createdAt);
+  // An unparseable timestamp is treated as TOO YOUNG. Refusing to collect costs storage; collecting
+  // something in flight costs a publication.
+  if (!Number.isFinite(created)) return false;
+  return now - created >= Math.max(0, minAgeMs);
+}
+
 function toRecord(r: typeof sim_revisions.$inferSelect): SimRevisionRecord {
   const iso = (d: Date | null): string | null => (d ? new Date(d).toISOString() : null);
   return {
@@ -231,12 +265,29 @@ export class RevisionService {
     return this.transition(simulationId, revisionId, 'uploading', 'validating');
   }
 
-  markFailed(
+  // `async` so the refusal below arrives as a REJECTION. A synchronous throw from a method whose
+  // signature promises a Promise escapes the caller's `.catch()` and surfaces as an unhandled
+  // exception in whatever happens to be on the stack.
+  async markFailed(
     simulationId: string,
     revisionId: string,
     from: SimRevisionStatus,
     error: string,
   ): Promise<SimRevisionRecord> {
+    // THE ACTIVE REVISION CANNOT BE FAILED IN PLACE.
+    //
+    // `canTransition('active','failed')` is true, and this method touches only `sim_revisions` —
+    // so a type-checked call left the simulation's pointer naming a `failed` revision. The player
+    // reads the pointer and never the status, so it kept serving those bytes, while every future
+    // activation and rollback was wedged permanently: the demote CAS expects the incumbent to be
+    // `active` and it no longer is, and the pointer CAS expects NULL and it is not. Nothing detects
+    // the divergence and the service has no repair path.
+    //
+    // Taking a live revision out of service means moving the pointer, which is what `rollback` is.
+    if (from === 'active') {
+      throw new RevisionConflict('active→failed',
+        'the active revision cannot be failed in place — roll back to move the pointer first');
+    }
     return this.transition(simulationId, revisionId, from, 'failed', {
       metadata: { error },
     });
@@ -572,6 +623,16 @@ export class RevisionService {
           package_class: promoted.package_class,
           canary_report: promoted.canary_report,
           canary_at: promoted.canary_at,
+          // DERIVED from the same report in the same statement, not left behind.
+          //
+          // `prepare_budget_ms` is read on the hot path as the lab anchor for this package. It has
+          // no column on `sim_revisions`, so re-projecting the report while leaving the budget
+          // alone produced exactly the split the per-revision verdict exists to prevent: after a
+          // rollback the report described revision A while the budget still described B. Deriving
+          // it here needs no new column, because the report it comes from is already being copied.
+          prepare_budget_ms: canaryReportPrepareMs(
+            promoted.canary_report as Parameters<typeof canaryReportPrepareMs>[0],
+          ),
         })
         .where(and(
           eq(simulations.id, simulationId),
@@ -637,6 +698,8 @@ export class RevisionService {
     simulationId: string;
     storagePrefix: string;
     keepLastN: number;
+    /** Grace period before an uncollected revision may be swept. Defaults to `GC_MIN_AGE_MS`. */
+    minAgeMs?: number;
   }): Promise<{ deleted: string[] }> {
     const rows = await db
       .select()
@@ -655,8 +718,13 @@ export class RevisionService {
     // `Math.max(1, NaN)` is NaN, and `slice(0, NaN)` is empty — which made `keep` empty and the
     // ACTIVE revision collectable. A keepLastN arriving from a query string is exactly how that
     // happens, so a non-integer is refused rather than coerced.
+    // The floor is TWO, not one. `retained` is sorted newest-first and its first element is always
+    // the ACTIVE revision, so `keepLastN: 1` keeps only what is currently served and collects every
+    // retired revision — which is precisely the set `rollbackTargetFor` chooses from. A sweep with
+    // the floor at 1 therefore made rollback permanently impossible while reporting success, and 1
+    // was also what a non-finite value coerced to: the default annihilated the recovery path.
     const rawKeep = Number(opts.keepLastN);
-    const keepN = Number.isFinite(rawKeep) ? Math.max(1, Math.floor(rawKeep)) : 1;
+    const keepN = Number.isFinite(rawKeep) ? Math.max(GC_MIN_KEEP, Math.floor(rawKeep)) : GC_MIN_KEEP;
     const keep = new Set(retained.slice(0, keepN).map((r) => r.id));
 
     const deleted: string[] = [];
@@ -665,6 +733,16 @@ export class RevisionService {
       const prefix = revisionFileKey(opts.storagePrefix, r.id, '').replace(/\/$/, '');
       if (revisionIdForPrefix(`${prefix}/${MANIFEST_FILENAME}`, opts.storagePrefix) !== r.id) {
         logger.error({ prefix, revisionId: r.id }, 'gc refused: prefix does not resolve to revision');
+        continue;
+      }
+      // AGE GUARD. A revision still being uploaded has no `activated_at` and is not retained, so a
+      // sweep running against a live publisher would delete its row and its prefix mid-write: the
+      // publisher's own guard reads its in-memory record and never re-reads the row, so it keeps
+      // writing files into a prefix with no row and fails only at the end. Nothing lists storage,
+      // so those files are permanent orphans — the "next sweep reclaims" note below is true only of
+      // bytes whose row this sweep itself deleted.
+      if (!isCollectableByAge(r, opts.minAgeMs)) {
+        logger.debug({ revisionId: r.id, status: r.status }, 'gc skipped: too young to collect');
         continue;
       }
       // ROW FIRST, then bytes. The reverse order leaves a window where a crash produces a retained

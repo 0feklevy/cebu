@@ -31,7 +31,7 @@ vi.mock('../../../lib/logger.js', () => ({
 
 import {
   resolveRumSampleRate, resolveRumRetentionDays, ingestBatch, reapRumEvents, packagePercentiles,
-  startRumRetentionSweep,
+  startRumRetentionSweep, invalidateRumSampleRateCache,
   RUM_RETENTION_DEFAULT_DAYS,
 } from '../RumService.js';
 import { SIM_RUM_VERSION, bucketDevice, type RumEvent } from 'shared/sim/rumEvents';
@@ -54,10 +54,18 @@ const batch = (over: Record<string, unknown> = {}) => ({
   events: [ev()], dropped: 0, ...over,
 });
 
-/** Ingestion is gated on the kill switch, so every ingest test must turn collection on. */
-async function enableCollection(): Promise<void> {
-  await pg.query(`UPDATE admin_settings SET rum_sample_rate = 1`);
+/**
+ * Ingestion is gated on the kill switch, so every ingest test must turn collection on.
+ *
+ * The resolved rate is cached in-process — it is read on an unauthenticated write path, and a
+ * database round trip per inbound request is a denial-of-service lever. Production invalidates on
+ * the settings write; these tests write the column directly, so they invalidate here.
+ */
+async function setRate(rate: number): Promise<void> {
+  await pg.query(`UPDATE admin_settings SET rum_sample_rate = $1`, [rate]);
+  invalidateRumSampleRateCache();
 }
+async function enableCollection(): Promise<void> { await setRate(1); }
 
 beforeEach(async () => {
   pg = new PGlite();
@@ -66,6 +74,9 @@ beforeEach(async () => {
   }
   h.dbRef.current = drizzle(pg, { schema }) as unknown as Record<string, unknown>;
   delete process.env.SIM_RUM_SAMPLE_RATE;
+  // Each test gets a fresh database; the rate cache is module state and would otherwise carry a
+  // previous test's value into it.
+  invalidateRumSampleRateCache();
 });
 afterEach(async () => { await pg.close(); delete process.env.SIM_RUM_SAMPLE_RATE; vi.clearAllMocks(); });
 
@@ -77,7 +88,7 @@ describe('resolveRumSampleRate — every layer fails closed', () => {
   });
 
   it('reads the admin_settings column when it is set', async () => {
-    await pg.query(`UPDATE admin_settings SET rum_sample_rate = 0.25`);
+    await setRate(0.25);
     expect(await resolveRumSampleRate()).toBe(0.25);
   });
 
@@ -89,7 +100,7 @@ describe('resolveRumSampleRate — every layer fails closed', () => {
 
   it('treats an UNPARSEABLE env var as off, not as "fall through to the database"', async () => {
     // Someone who set it meant to control this; the safe reading of a malformed intent is off.
-    await pg.query(`UPDATE admin_settings SET rum_sample_rate = 1`);
+    await setRate(1);
     process.env.SIM_RUM_SAMPLE_RATE = 'yes-please';
     expect(await resolveRumSampleRate()).toBe(0);
   });
@@ -317,7 +328,7 @@ describe('the kill switch gates the WRITE path, not only the client', () => {
   it('stops storing again the moment the switch goes back to 0', async () => {
     await enableCollection();
     expect((await ingestBatch(batch())).stored).toBe(1);
-    await pg.query(`UPDATE admin_settings SET rum_sample_rate = 0`);
+    await setRate(0);
     expect((await ingestBatch(batch())).stored).toBe(0);
   });
 });

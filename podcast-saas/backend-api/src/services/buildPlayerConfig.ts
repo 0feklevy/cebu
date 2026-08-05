@@ -284,7 +284,14 @@ export async function buildPlayerConfig(
   const revisionsForField = [...simRows.values()]
     .map((r) => packageRevisionForRow(r))
     .filter((r): r is string => typeof r === 'string' && r.length > 0);
-  const field = await fieldAggregates(revisionsForField).catch(() => new Map());
+  // NOT GATED ON `rumSampleRate`. Gating it there was tried and reverted: the rate controls
+  // COLLECTION, not USE, so an operator who samples for a week and then turns collection back off
+  // would silently lose every budget the week produced — at the exact moment the data became
+  // complete. The cost is one grouped, indexed query, skipped entirely when no package on the
+  // project has a revision to look up.
+  const field = revisionsForField.length > 0
+    ? await fieldAggregates(revisionsForField).catch(() => new Map())
+    : new Map();
   for (const [simId, row] of simRows) {
     const lab = typeof row.prepare_budget_ms === 'number' && Number.isFinite(row.prepare_budget_ms)
       && row.prepare_budget_ms > 0 ? row.prepare_budget_ms : null;

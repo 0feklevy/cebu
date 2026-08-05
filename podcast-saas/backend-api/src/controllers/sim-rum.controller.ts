@@ -44,11 +44,20 @@ export function registerSimRumRoutes(app: FastifyInstance): void {
         .header('Cache-Control', 'no-store')
         .code(204);
 
-      // Rate limited per IP. The route is unauthenticated with a wildcard CORS origin, so without
-      // this any page on the internet could drive unbounded durable growth in the same Postgres the
-      // player reads from. Generous enough that an honest client — which flushes at most every 30s
-      // — never approaches it.
-      if (!rateLimit(`sim-rum:${request.ip}`, 20, 60_000)) {
+      // Rate limited per PEER, not per `request.ip`. The route is unauthenticated with a wildcard
+      // CORS origin, so without this any page on the internet could drive unbounded durable growth
+      // in the same Postgres the player reads from. Generous enough that an honest client — which
+      // flushes at most every 30s — never approaches it.
+      //
+      // `request.ip` IS NOT USABLE AS A LIMITER KEY HERE. The app runs with `trustProxy: true`, so
+      // it is the leftmost X-Forwarded-For entry — a value the caller writes. A limiter keyed on it
+      // hands out a fresh bucket for every forged header, which is not a weaker bound but no bound
+      // at all. The socket address is the one thing the peer cannot choose.
+      //
+      // The cost of being wrong here is not just row growth: every request past the limiter reaches
+      // the ingestion gate, and a connection pool of ten is a small target.
+      const peer = request.socket.remoteAddress ?? 'unknown';
+      if (!rateLimit(`sim-rum:${peer}`, 20, 60_000)) {
         // Still 204: the response must not become a probe for the limiter's shape either.
         return reply.send();
       }
