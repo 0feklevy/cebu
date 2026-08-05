@@ -39,18 +39,29 @@ async function app() {
 }
 
 /**
- * The app as PRODUCTION builds it.
+ * The app as PRODUCTION builds it — `trustProxy: 1`, mirroring `server.ts`.
  *
- * `server.ts` sets `trustProxy: true`, which makes `request.ip` the leftmost X-Forwarded-For entry
- * — written by the caller. A bare `Fastify()` has it off, so `request.ip` is the socket address and
- * a limiter keyed on it looks perfectly sound. Every spoofing assertion has to run on this one.
+ * A bare `Fastify()` has trustProxy OFF, so `request.ip` is the socket address and a limiter keyed
+ * on it looks perfectly sound. Every claim about forwarded headers has to run on this one.
+ *
+ * The production topology is a single VM where nginx is the ONLY hop in front of this process, and
+ * it forwards `X-Forwarded-For: $proxy_add_x_forwarded_for` — which APPENDS the real peer to
+ * whatever the caller sent. So in these tests the LAST entry of the header is the real client and
+ * anything to its left is what a caller tried to inject.
  */
+const PROD_TRUST_PROXY = 1;
 async function trustProxyApp() {
-  const f = Fastify({ trustProxy: true });
+  const f = Fastify({ trustProxy: PROD_TRUST_PROXY });
   registerSimRumRoutes(f);
   await f.ready();
   return f;
 }
+
+/** As nginx would present it: the caller's chain (if any) with the real peer appended. */
+const viaNginx = (realClient: string, spoofed?: string) => ({
+  remoteAddress: '172.18.0.5',
+  headers: { 'x-forwarded-for': spoofed ? `${spoofed}, ${realClient}` : realClient },
+});
 
 const body = () => ({
   v: SIM_RUM_VERSION, sessionId: 'session-abcdef',
@@ -159,16 +170,58 @@ describe('rate limiting', () => {
     expect(rl.args[0]!.windowMs).toBeGreaterThanOrEqual(1000);
   });
 
+  it('DIRECT connection (no proxy) is keyed on the peer address', async () => {
+    const f = await trustProxyApp();
+    for (const ip of ['203.0.113.1', '203.0.113.2']) {
+      await f.inject({ method: 'POST', url: '/sim-rum', payload: body(), remoteAddress: ip });
+    }
+    expect(new Set(rl.calls).size, 'two direct callers shared a bucket').toBe(2);
+    expect(rl.calls[0]).toContain('203.0.113.1');
+  });
+
+  it('BEHIND THE TRUSTED PROXY, the key is the real client nginx appended', async () => {
+    const f = await trustProxyApp();
+    await f.inject({ method: 'POST', url: '/sim-rum', payload: body(), ...viaNginx('203.0.113.9') });
+    expect(rl.calls[0], 'keyed on the proxy instead of the client').toContain('203.0.113.9');
+    expect(rl.calls[0], 'keyed on the proxy address').not.toContain('172.18.0.5');
+  });
+
+  it('MULTIPLE USERS BEHIND ONE PROXY get separate buckets', async () => {
+    // The failure this guards against is a denial of service against honest users: keying on the
+    // socket address behind nginx puts every viewer on earth in one shared 20/60s bucket, so one
+    // caller starves everybody. That was a real (and rejected) attempt at fixing the spoofing.
+    const f = await trustProxyApp();
+    for (const ip of ['203.0.113.9', '203.0.113.77', '198.51.100.4']) {
+      await f.inject({ method: 'POST', url: '/sim-rum', payload: body(), ...viaNginx(ip) });
+    }
+    expect(new Set(rl.calls).size, 'viewers behind one proxy were collapsed into one bucket').toBe(3);
+  });
+
+  it('an UNTRUSTED forwarded header cannot mint a bucket or impersonate another client', async () => {
+    // nginx appends the true peer, so a caller-supplied chain sits to its LEFT and must be ignored
+    // entirely — both as a way to get a fresh bucket and as a way to burn someone else's.
+    const f = await trustProxyApp();
+    for (const spoof of ['1.2.3.4', '5.6.7.8', '9.9.9.9, 8.8.8.8']) {
+      await f.inject({
+        method: 'POST', url: '/sim-rum', payload: body(), ...viaNginx('203.0.113.9', spoof),
+      });
+    }
+    expect(new Set(rl.calls).size, 'a forged header minted a new rate-limit bucket').toBe(1);
+    expect(rl.calls[0]).toContain('203.0.113.9');
+    for (const k of rl.calls) {
+      expect(k, 'a forged address reached the limiter key').not.toMatch(/1\.2\.3\.4|5\.6\.7\.8|9\.9\.9\.9/);
+    }
+  });
+
   it('cannot be given a fresh bucket by forging X-Forwarded-For', async () => {
     // THE REGRESSION. With `trustProxy: true` the caller controls `request.ip`, so a limiter keyed
     // on it is not a weaker bound — it is no bound at all: one forged header per request means
     // every request is the first in its own bucket. And every request past the limiter reaches the
     // ingestion gate, which is a database round trip against a pool of ten.
     const f = await trustProxyApp();
-    for (const xff of ['203.0.113.1', '203.0.113.2', '203.0.113.3']) {
+    for (const spoof of ['203.0.113.1', '203.0.113.2', '203.0.113.3']) {
       await f.inject({
-        method: 'POST', url: '/sim-rum', payload: body(),
-        remoteAddress: '10.0.0.9', headers: { 'x-forwarded-for': xff },
+        method: 'POST', url: '/sim-rum', payload: body(), ...viaNginx('198.51.100.20', spoof),
       });
     }
     expect(rl.calls).toHaveLength(3);
@@ -180,14 +233,8 @@ describe('rate limiting', () => {
     // would pass the test above while collapsing the whole internet into one bucket, where a single
     // caller starves every honest client.
     const f = await trustProxyApp();
-    await f.inject({
-      method: 'POST', url: '/sim-rum', payload: body(),
-      remoteAddress: '10.0.0.1', headers: { 'x-forwarded-for': '203.0.113.1' },
-    });
-    await f.inject({
-      method: 'POST', url: '/sim-rum', payload: body(),
-      remoteAddress: '10.0.0.2', headers: { 'x-forwarded-for': '203.0.113.1' },
-    });
+    await f.inject({ method: 'POST', url: '/sim-rum', payload: body(), ...viaNginx('203.0.113.1') });
+    await f.inject({ method: 'POST', url: '/sim-rum', payload: body(), ...viaNginx('203.0.113.2') });
     expect(new Set(rl.calls).size).toBe(2);
   });
 
