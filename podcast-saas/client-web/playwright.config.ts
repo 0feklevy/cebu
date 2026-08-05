@@ -29,5 +29,23 @@ export default defineConfig({
     screenshot: 'only-on-failure',
     ignoreHTTPSErrors: false,
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  // Three engines, because the sim runtime's riskiest surfaces diverge between them:
+  // requestVideoFrameCallback shipped years apart across engines, WebKit and Gecko differ on
+  // MessageChannel/transferable timing, and WebGL context-loss behaviour is engine-specific. A
+  // single-engine matrix cannot see any of that.
+  //
+  // Chromium stays first so the common case fails fastest.
+  //
+  // deviceScaleFactor is PINNED TO 1 on every project, overriding the device presets.
+  // `devices['Desktop Safari']` is a Retina profile (DSR 2) while `Desktop Chrome` is not, so
+  // without this the matrix compares device profiles rather than engines — and the difference is
+  // not cosmetic. Poster capture is DPR-dependent, and `posterIdentity` has NO dpr axis: at DSR 2
+  // the canary captures 2560x1440 where it expects 1280x720, i.e. one poster identity mapping to
+  // images four times the size depending on which machine ran the capture. Pinning it makes the
+  // captured bytes a property of the package, which is what the identity claims they are.
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'], deviceScaleFactor: 1 } },
+    { name: 'firefox', use: { ...devices['Desktop Firefox'], deviceScaleFactor: 1 } },
+    { name: 'webkit', use: { ...devices['Desktop Safari'], deviceScaleFactor: 1 } },
+  ],
 });
