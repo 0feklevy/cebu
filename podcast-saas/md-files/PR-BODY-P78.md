@@ -62,9 +62,18 @@ and ingestion checks the rate server-side, because on an unauthenticated endpoin
 sends" is not "nothing is stored". Rate-limited per IP, retention enforced by a running reaper,
 nothing identifying stored.
 
-**Four modules ship as libraries with no caller** — planner, rVFC sentinel, adaptive quality, weight
-analysis. Merging changes viewer behaviour in exactly two ways: timings recorded in memory, and two
-new config fields. See `md-files/P8-ROLLOUT-AND-DEVICE-VALIDATION.md`.
+**Every module has a production caller, and every caller is off by default.** The planner, the rVFC
+sentinel and adaptive quality are wired into `useProjectPlayer` behind the migration-052 switches,
+which all default to today's behaviour; weight analysis runs at publication and is advisory. With
+the defaults, merging changes viewer behaviour in exactly two ways: timings recorded in memory, and
+new config fields.
+
+**"Wired" is a checkable claim here.** Each call site emits its own evidence and `P8a`–`P8e` assert
+on that evidence with the switch on. Two of those call sites were originally unobservable — the
+sentinel emitted nothing, and adaptive quality spoke only when its decision *changed*, which at zero
+samples never happens — so both tests would have passed with the call deleted. They now report on
+every arm and every decision, and one mutation per call site (five, all killed) proves deleting any
+one turns its test red. See `md-files/P8-ROLLOUT-AND-DEVICE-VALIDATION.md`.
 
 ## Bugs found and fixed in review
 
@@ -105,10 +114,14 @@ defended.
 ## Not done, and not claimed
 
 - **No physical device has run any of this.** Desktop WebKit is not Safari on iOS, and the WebKit
-  build on this host is frozen for `mac14-arm64`.
-- **rVFC field support is unknown** — no browserslist, no analytics. That is why it is not wired.
-- The planner, sentinel, adaptive quality and weight analysis have **no callers** in the viewer.
-- Closed-loop adaptation is a tested controller with no RUM feeding it.
+  build on this host is frozen for `mac14-arm64`. This is the one blocker to a rollout that no
+  amount of further work in this repository can clear.
+- **rVFC field support is unknown.** It is now *instrumented* — the sentinel reports which mechanism
+  armed — but nothing has been enabled, so no fraction can be stated.
+- **No feature here has run with its switch on outside the test suite.** Every switch defaults off,
+  and staged enablement is the rollout plan's job, not this PR's.
+- **No GPU or per-simulation CPU attribution.** Neither is exposed in a way attributable to one
+  iframe; resident-document count is reported instead. See `md-files/P8-MEASURED-EVIDENCE.md`.
 
 ## Operational
 
