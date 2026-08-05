@@ -60,6 +60,7 @@ import {
   type SimManifestFile,
   type SimFileRole,
 } from 'shared/sim/simManifest';
+import { analyzeWeight, compareWeight, type WeightReport } from 'shared/sim/packageWeight';
 
 /**
  * A mutation lost a compare-and-set.
@@ -333,7 +334,22 @@ export class RevisionService {
       IMMUTABLE_CACHE_CONTROL,
     );
 
+    // Weight analysis is recorded WITH the revision, so an optimisation claim is a comparison of
+    // two measurements taken by the same code over the same manifest — not two estimates. It is
+    // advisory: these are the customer's own files, and a finding never blocks a publication.
+    const weight = analyzeWeight(opts.manifest);
+
     await this.transition(simulationId, rev.id, 'validating', 'canary_passed', {
+      metadata: {
+        ...(rev.metadata ?? {}),
+        weight: {
+          totalBytes: weight.totalBytes,
+          fileCount: weight.fileCount,
+          byCategory: weight.byCategory,
+          largest: weight.largest.slice(0, 5),
+          findings: weight.findings,
+        },
+      },
       manifest_hash: manifestHash,
       entry_path: opts.manifest.entry,
       bridge_protocol_version: opts.manifest.bridgeProtocolVersion,
@@ -670,6 +686,33 @@ export class RevisionService {
       deleted.push(r.id);
     }
     return { deleted };
+  }
+
+  /**
+   * Compare the weight of two revisions of one simulation.
+   *
+   * The point of recording weight at publication: an optimisation claim becomes checkable. Both
+   * numbers were produced by the same analysis over a verified manifest, so the delta is a
+   * comparison of measurements rather than of estimates.
+   *
+   * Returns null when either revision predates weight recording — an honest "cannot compare" beats
+   * a zero that reads as "no change".
+   */
+  async compareRevisionWeight(simulationId: string, beforeId: string, afterId: string): Promise<
+    { deltaBytes: number; deltaFiles: number; percentChange: number; improved: boolean } | null
+  > {
+    const rows = await db
+      .select({ id: sim_revisions.id, metadata: sim_revisions.metadata })
+      .from(sim_revisions)
+      .where(eq(sim_revisions.simulation_id, simulationId));
+    const weightOf = (id: string): WeightReport | null => {
+      const m = rows.find((r) => r.id === id)?.metadata as { weight?: WeightReport } | null;
+      return m?.weight && typeof m.weight.totalBytes === 'number' ? m.weight : null;
+    };
+    const before = weightOf(beforeId);
+    const after = weightOf(afterId);
+    if (!before || !after) return null;
+    return compareWeight(before, after);
   }
 
   // ── Reads ──────────────────────────────────────────────────────────────────────────────────────
