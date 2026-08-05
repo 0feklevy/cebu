@@ -9,7 +9,7 @@ import { canWarmUnpaused, learnCanEmitPaint } from '../../lib/simCapability';
 import { collectSimPool, bootHideFor, dynamicScriptFor, flattenSimOccurrences, packageKeyOf, planWindowResidency, sectionKeyOf, SIM_POOL_CAP, type SimPoolFrameSpec } from '../../lib/simPool';
 import { planResidency, type SimOccurrence } from 'shared/src/sim/occurrencePlanner';
 import { resolveBudget } from 'shared/src/sim/prepareBudget';
-import { decideQuality, INITIAL_QUALITY_STATE, type QualityState } from 'shared/src/sim/adaptiveQuality';
+import { nextQualityFor, INITIAL_QUALITY_STATE, type QualityState } from 'shared/src/sim/adaptiveQuality';
 import { armBoundarySentinel, type BoundarySentinel } from '../../lib/sim/boundaryClock';
 import { createRumRecorder, type RumRecorder } from '../../lib/sim/rumClient';
 import { newPlayerSessionId } from 'shared/src/sim/simIdentity';
@@ -1112,23 +1112,18 @@ export function useProjectPlayer(
           const summary = rt0?.timingSummary();
           const lab = simSection.simulation_id
             ? prepareBudgetsRef.current[simSection.simulation_id] : undefined;
-          // ANCHORED ON THE LAB NUMBER, never on the measurement being judged.
+          // ONE tested composition, not two calls joined here.
           //
-          // `resolveBudget` prefers a measured p90 and returns p90 x 1.25. Feeding this site's own
-          // p90 in therefore compared p90 against 1.25 x p90 — false for every input inside the
-          // clamp — and the controller pinned itself to 'high' for every p90 from 50 ms to 9 s,
-          // including a device running six times over its budget. Measured: as-wired
-          // `high high high high high high`; lab-anchored `high balanced balanced low low low`.
-          //
-          // The budget is the STANDARD and the p90 is what is being judged against it, so the two
-          // must not come from the same number. The predictive site next door passes null for the
-          // same reason.
-          const budget = resolveBudget({ measuredP90Ms: null, canaryMs: lab ?? null });
+          // Joining them at this call site is what produced the defect: passing the measured p90
+          // into `resolveBudget` made the budget `p90 x 1.25`, so the controller then asked whether
+          // `p90 > 1.25 x p90` and pinned itself to 'high' for a device six times over its budget.
+          // `nextQualityFor` takes the lab number and the field p90 as separate arguments, so
+          // there is no longer a second place to put the p90.
           const prior = qualityStateRef.current.get(pkgKey) ?? INITIAL_QUALITY_STATE;
-          const decision = decideQuality(prior, {
-            p90TotalMs: summary?.p90TotalMs ?? null,
+          const decision = nextQualityFor(prior, {
+            measuredP90Ms: summary?.p90TotalMs ?? null,
             samples: summary?.completed ?? 0,
-            budgetMs: budget.ms,
+            labBudgetMs: lab ?? null,
           });
           qualityStateRef.current.set(pkgKey, decision.state);
           adaptiveQuality = decision.next;
@@ -1138,7 +1133,7 @@ export function useProjectPlayer(
           // the confusion that let four of these modules ship with no caller.
           simTelemetry('adaptive-quality', {
             key: pkgKey, next: decision.next, changed: decision.changed,
-            reason: decision.reason, budgetSource: budget.source,
+            reason: decision.reason, budgetSource: decision.budgetSource,
           });
         } catch (err) {
           // A controller fault must never change what is shown. Leaving `adaptiveQuality`

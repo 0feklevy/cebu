@@ -16,6 +16,8 @@
  * device, slow to re-expand a recovering one.
  */
 
+import { resolveBudget } from './prepareBudget.js';
+
 export type QualityProfile = 'high' | 'balanced' | 'low';
 
 /** Ordered worst → best, so a step is an index move rather than a lookup table. */
@@ -117,4 +119,31 @@ export function decideQuality(state: QualityState, s: QualitySignals): QualityDe
   // The dead band. Between UNDER_FACTOR and OVER_FACTOR nothing happens and the streak is cleared,
   // so a run of borderline samples cannot accumulate into a change that no single sample justified.
   return keep('dead-band', { ...state, streak: 0, direction: 'none' });
+}
+
+/**
+ * The composition the player performs, in one tested place.
+ *
+ * WHY THIS FUNCTION EXISTS AT ALL
+ * `resolveBudget` and `decideQuality` are each individually correct, and the defect lived entirely
+ * in how a caller joined them: passing the measured p90 as `resolveBudget`'s input made the budget
+ * `p90 x 1.25`, so `decideQuality` then asked whether `p90 > 1.25 x p90` — false for every value in
+ * the clamp. The controller reported "high" for a device six times over its budget, and no unit
+ * test of either module could see it, because neither module was wrong.
+ *
+ * So the join is no longer something a call site can get wrong: the budget is derived from the LAB
+ * measurement, and the field p90 is the thing judged against it. A caller cannot supply the p90
+ * twice, because there is only one place to put it.
+ */
+export function nextQualityFor(
+  prior: QualityState,
+  input: { measuredP90Ms: number | null; samples: number; labBudgetMs: number | null },
+): QualityDecision & { budgetMs: number; budgetSource: string } {
+  const budget = resolveBudget({ measuredP90Ms: null, canaryMs: input.labBudgetMs });
+  const decision = decideQuality(prior, {
+    p90TotalMs: input.measuredP90Ms,
+    samples: input.samples,
+    budgetMs: budget.ms,
+  });
+  return { ...decision, budgetMs: budget.ms, budgetSource: budget.source };
 }

@@ -10,6 +10,7 @@
 import { resolveBudget } from '../prepareBudget.js';
 import { describe, it, expect } from 'vitest';
 import {
+  nextQualityFor,
   QUALITY_LADDER, INITIAL_QUALITY_STATE, MIN_SAMPLES, DOWN_STREAK, UP_STREAK,
   decideQuality, type QualityState, type QualitySignals,
 } from '../adaptiveQuality.js';
@@ -193,9 +194,40 @@ describe('composed with resolveBudget, as the player composes them', () => {
   });
 
   it('never degrades when the budget is derived from the measurement it judges', () => {
-    // The defect, pinned. If someone re-introduces `measuredP90Ms: summary.p90` at the call site,
-    // the test above keeps passing and only this one records that the controller went inert.
+    // The defect, pinned: this is what the broken composition did, kept as the record of why
+    // `nextQualityFor` exists.
     expect(new Set(run(3000, true))).toEqual(new Set(['high']));
+  });
+
+  it('nextQualityFor composes them correctly, so a call site cannot repeat the mistake', () => {
+    // The player calls THIS, not the two functions separately — there is no second place to put
+    // the p90, so the circular wiring is no longer expressible.
+    let state = INITIAL_QUALITY_STATE;
+    const seq: string[] = [];
+    for (let i = 0; i < 6; i += 1) {
+      const d = nextQualityFor(state, { measuredP90Ms: 3000, samples: 50, labBudgetMs: 500 });
+      state = d.state; seq.push(d.next);
+    }
+    expect(seq).toEqual(['high', 'balanced', 'balanced', 'low', 'low', 'low']);
+  });
+
+  it('nextQualityFor holds a healthy device at high', () => {
+    let state = INITIAL_QUALITY_STATE;
+    const seq: string[] = [];
+    for (let i = 0; i < 6; i += 1) {
+      const d = nextQualityFor(state, { measuredP90Ms: 120, samples: 50, labBudgetMs: 500 });
+      state = d.state; seq.push(d.next);
+    }
+    expect(new Set(seq)).toEqual(new Set(['high']));
+  });
+
+  it('nextQualityFor with no lab number still uses a real budget, never zero', () => {
+    // A package with no canary must not be treated as having a budget of 0, which would read as
+    // "every transition is over budget" and pin every device to low.
+    const d = nextQualityFor(INITIAL_QUALITY_STATE,
+      { measuredP90Ms: 100, samples: 50, labBudgetMs: null });
+    expect(d.budgetMs).toBeGreaterThan(0);
+    expect(d.next).toBe('high');
   });
 
   it('leaves a healthy device alone', () => {
