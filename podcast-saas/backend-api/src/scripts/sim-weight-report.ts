@@ -8,6 +8,8 @@
  *   pnpm tsx --env-file=../.env src/scripts/sim-weight-report.ts <simulationId> [<simulationId2>]
  */
 
+import { createHash } from 'node:crypto';
+import { gzipSync } from 'node:zlib';
 import { eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { simulations } from '../db/schema.js';
@@ -50,10 +52,15 @@ async function manifestFromStorage(simId: string): Promise<{ manifest: SimManife
     files.push({
       path: rel,
       role: isEntry ? 'entry' : /^(runtime\/)?(bridge|guidance)\.js$/i.test(rel) ? 'runtime' : 'asset',
-      // Hashes are not needed for a weight report and reading every byte to compute them would make
-      // this script far more expensive than the question deserves. Duplicate detection is therefore
-      // skipped here and is available at publication, where the hashes already exist.
-      hash: '0'.repeat(64),
+      // A DISTINCT synthetic hash per path.
+      //
+      // Duplicate detection compares hashes, so a shared placeholder made every file look identical
+      // and produced a confident, entirely false "27 paths share identical bytes". Real duplicate
+      // detection needs real content hashes, which exist at publication (RevisionService verifies
+      // them) and are deliberately not recomputed here — reading every byte to answer a question
+      // about SIZE would cost far more than the answer is worth. A path-derived hash keeps the size
+      // and category numbers exact while making the duplicate check honestly inert.
+      hash: createHash('sha256').update(key).digest('hex'),
       bytes,
       contentType,
       cacheControl: '',
@@ -76,7 +83,66 @@ async function manifestFromStorage(simId: string): Promise<{ manifest: SimManife
 const fmt = (n: number): string =>
   n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(2)} MB`;
 
+/**
+ * BEFORE/AFTER for a real optimisation, measured rather than estimated.
+ *
+ * Downloads the package, applies a transformation LOCALLY, and re-measures. Nothing is uploaded and
+ * no stored object is touched — the point is to prove a saving is real before anyone commits to it.
+ *
+ * The transformation here is `gzip`, chosen because it is exactly what a CDN would apply and
+ * because it is lossless: the saving is available with no change to what the package does. Findings
+ * that require judgement (dropping an unused model, re-encoding audio) are reported for a human,
+ * never applied automatically to a customer's own files.
+ */
+async function optimizedComparison(simId: string): Promise<void> {
+  const first = await manifestFromStorage(simId);
+  if (!first) { console.error(`simulation ${simId} not found`); process.exit(1); }
+  const storage = getStorageAdapter();
+  const before = analyzeWeight(first.manifest);
+
+  const after: SimManifestFile[] = [];
+  let compressible = 0;
+  for (const f of first.manifest.files) {
+    const key = `${first.prefix}/${f.path}`;
+    let bytes = f.bytes;
+    try {
+      const raw = await storage.readObject(key);
+      // Only text-shaped assets benefit; already-compressed media does not, and claiming a saving
+      // there would be the kind of number that evaporates in production.
+      if (/\.(js|mjs|css|html?|json|svg|md|txt)$/i.test(f.path)) {
+        bytes = gzipSync(raw, { level: 9 }).length;
+        compressible += 1;
+      } else {
+        bytes = raw.length;
+      }
+    } catch { /* unreadable object keeps its reported size */ }
+    after.push({ ...f, bytes });
+  }
+
+  const afterReport = analyzeWeight({ ...first.manifest, files: after });
+  const c = compareWeight(before, afterReport);
+  console.log(`\nBEFORE / AFTER — gzip on ${compressible} text assets (measured, nothing uploaded)`);
+  console.log(`  before     ${fmt(before.totalBytes)}`);
+  console.log(`  after      ${fmt(afterReport.totalBytes)}`);
+  console.log(`  delta      ${c.deltaBytes >= 0 ? '+' : '-'}${fmt(Math.abs(c.deltaBytes))} (${c.percentChange}%)`);
+  console.log(`  improved   ${c.improved}`);
+  console.log('  by category:');
+  for (const cat of Object.keys(before.byCategory) as (keyof typeof before.byCategory)[]) {
+    const b = before.byCategory[cat]; const a = afterReport.byCategory[cat];
+    if (b.count === 0) continue;
+    const d = a.bytes - b.bytes;
+    console.log(`    ${String(cat).padEnd(8)} ${fmt(b.bytes).padStart(10)} -> ${fmt(a.bytes).padStart(10)}`
+      + `  ${d === 0 ? '(no change)' : `${d < 0 ? '-' : '+'}${fmt(Math.abs(d))}`}`);
+  }
+}
+
 async function main(): Promise<void> {
+  if (process.argv.includes('--optimize')) {
+    const id = process.argv.slice(2).find((x) => !x.startsWith('--'));
+    if (!id) { console.error('usage: --optimize <simulationId>'); process.exit(1); }
+    await optimizedComparison(id);
+    process.exit(0);
+  }
   const [a, b] = process.argv.slice(2);
   if (!a) { console.error('usage: sim-weight-report.ts <simulationId> [<simulationId2>]'); process.exit(1); }
 
@@ -92,6 +158,8 @@ async function main(): Promise<void> {
   }
   console.log('  largest:');
   for (const e of ra.largest.slice(0, 8)) console.log(`    ${fmt(e.bytes).padStart(10)}  ${e.path}`);
+  console.log('  NOTE duplicate detection is inert here (see manifestFromStorage) — it runs at');
+  console.log('       publication, where verified content hashes already exist.');
   if (ra.findings.length) {
     console.log('  findings (advisory — never blocks a publication):');
     for (const f of ra.findings) {
