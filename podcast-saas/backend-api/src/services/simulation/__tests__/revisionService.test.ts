@@ -11,8 +11,15 @@
  * constraints, and no connection to DATABASE_URL, which points at the database preview and
  * production SHARE.
  *
- * The concurrency tests are written as genuine races — two promises started before either is
- * awaited — rather than as sequential calls that merely look concurrent.
+ * ON THE CONCURRENCY TESTS, PRECISELY
+ * They are written as two promises started before either is awaited. That is not the same as a
+ * genuine race, and this file previously claimed it was. PGlite holds an exclusive mutex across a
+ * transaction, so the first runs to completion before the second's BEGIN — verified directly. What
+ * these tests therefore prove is that the SQL is correct when the two orderings are serialised:
+ * the CAS predicates, the demote-before-promote ordering, and that the partial unique index rejects
+ * a second active row. What they do NOT exercise is row-lock blocking, EvalPlanQual re-evaluation,
+ * or unique-index waiter behaviour under true concurrency. Those rest on the design argument in
+ * RevisionService, not on anything that runs here.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';

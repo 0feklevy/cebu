@@ -68,12 +68,16 @@ which all default to today's behaviour; weight analysis runs at publication and 
 the defaults, merging changes viewer behaviour in exactly two ways: timings recorded in memory, and
 new config fields.
 
-**"Wired" is a checkable claim here.** Each call site emits its own evidence and `P8a`–`P8e` assert
-on that evidence with the switch on. Two of those call sites were originally unobservable — the
-sentinel emitted nothing, and adaptive quality spoke only when its decision *changed*, which at zero
-samples never happens — so both tests would have passed with the call deleted. They now report on
-every arm and every decision, and one mutation per call site (five, all killed) proves deleting any
-one turns its test red. See `md-files/P8-ROLLOUT-AND-DEVICE-VALIDATION.md`.
+**"Wired" is a checkable claim, and it claims reachability — not effect.** Each call site emits its
+own evidence, `P8a`–`P8e` assert on that evidence with the switch on, and one mutation per call site
+(five, all killed) proves deleting any one turns its test red.
+
+What that does *not* prove is that each feature changes what a viewer sees, and for adaptive quality
+it does not: the decision reaches the activation identity, but the child runtime never reads
+`quality`, so the only observable effect is a changed `configHash` — poster invalidation for no
+benefit. Its switch exists to stay off until the child applies it, which means republishing
+packages. The per-feature table in `md-files/P8-ROLLOUT-AND-DEVICE-VALIDATION.md` §1 states this for
+all three.
 
 ## Bugs found and fixed in review
 
@@ -94,38 +98,71 @@ one turns its test red. See `md-files/P8-ROLLOUT-AND-DEVICE-VALIDATION.md`.
 
 ## Verification
 
-Clean worktree at `32691ce`, all exit codes `0`:
+See the Verification section below for the exact final numbers.
 
-| | shared | backend | client-web | admin-web |
-|---|---|---|---|---|
-| tsc | 0 | 0 | 0 | 0 |
-| lint errors | — | 0 | 0 | 0 |
-| unit tests | 762 | 1333 | 763 | 34 |
+**On the mutation claim:** mutations here are run by hand — applying a change, running the targeted
+suite, reverting — with no config or artifact in the tree, so the count is a process assertion and
+nothing in CI reproduces it. Treat the specific mutations named in this document as the checkable
+part; the total is not independently verifiable and is stated as such.
 
-**2,892 unit tests.** Browser matrix on **chromium, firefox and webkit** (`workers=1`, `retries=0`):
-sim-transport 9, sim-protocol 16, sim-leak 12, sim-canary 11, sim-transitions 12, rebuilt-packages 4,
-viewer-e2e 33 — each, per engine. `sim-pool` 6 skipped (env-gated, needs a live app).
+That method also produced a false result once, worth recording: the harness restored files with
+`git checkout --`, which discarded uncommitted edits along with each mutation, so four mutations
+reported as "killed" by tests that were failing for an unrelated reason. The harness now snapshots
+the working tree.
 
-**~130 mutations across Priorities 7–8, all killed.** Several survived a first pass and each one
-taught something: predicates that killed only pairs, a refused-reveal test whose distortion never
-reached the mutated line, guards that were genuinely unreachable and were deleted rather than
-defended.
+## What an independent review found, after the work looked finished
+
+An adversarial review of the complete diff ran after this branch was believed done. It found real
+defects, and the pattern in them is worth stating: **every one was invisible to a green test suite,
+because the tests were structurally unable to see it.**
+
+- **Field refinement had never worked.** `= ANY(${array})` renders as `= ANY(($1,$2))`, which
+  Postgres refuses. `tsc` was happy, the caller's test mocked the function wholesale, and its own
+  `catch` returned an empty map — which is exactly what "no samples yet" looks like. The new suite
+  EXECUTES the statement against a real engine; all 7 of its tests fail against the old query.
+- **Adaptive quality was fed by its own output.** `resolveBudget` prefers a measured p90 and returns
+  `p90 x 1.25`, so the controller asked whether `p90 > 1.25 x p90` — false always. Pinned to `high`
+  for a device six times over budget. Both modules were individually correct; only the join was
+  wrong, which is why nothing caught it. The join now lives in one tested function.
+- **The boundary sentinel never armed.** It latched its target before arming, and arming refuses
+  beyond a 0.35 s horizon — every tick but the last. Its own test accepted `mode: 'none'`, so it
+  passed while the feature had never run once.
+- **The RUM rate limit was keyed on `request.ip`** under `trustProxy: true` — the caller's own
+  header. Its test built a bare Fastify with no `trustProxy`, so it passed on a stack that does not
+  exist in production.
+- **`dropped` fanned out across every row of a batch and was then summed**, so one drop in a hundred
+  read back as a hundred and disabled field budgets for that package for the whole window.
+
+Full list, and the two findings declined with reasons, in the commit
+`fix: close the confirmed findings from the independent review`.
 
 ## Not done, and not claimed
 
 - **No physical device has run any of this.** Desktop WebKit is not Safari on iOS, and the WebKit
   build on this host is frozen for `mac14-arm64`. This is the one blocker to a rollout that no
   amount of further work in this repository can clear.
-- **rVFC field support is unknown.** It is now *instrumented* — the sentinel reports which mechanism
-  armed — but nothing has been enabled, so no fraction can be stated.
+- **rVFC field support is unknown, and this branch does not measure it.** The sentinel records which
+  mechanism armed, but through `simTelemetry` — inert without `?simdebug=1`, and transmitted
+  nowhere. Routing it through RUM is a follow-up.
 - **No feature here has run with its switch on outside the test suite.** Every switch defaults off,
   and staged enablement is the rollout plan's job, not this PR's.
 - **No GPU or per-simulation CPU attribution.** Neither is exposed in a way attributable to one
   iframe; resident-document count is reported instead. See `md-files/P8-MEASURED-EVIDENCE.md`.
+- **The concurrency tests are not races.** PGlite serialises transactions, so they prove the SQL is
+  correct under both serial orderings — not row-lock blocking or unique-index waiter behaviour under
+  true concurrency. That rests on the design argument, not on anything that runs.
+- **`RevisionService.activate` / `rollback` / `gc` / `recordCanary` have no production callers yet.**
+  The read side IS wired, so anything that sets the pointer is served immediately.
 
 ## Operational
 
 Nothing merged. No production storage, publication, rebuild or rollout performed. Migrations 049,
-050 and 051 were applied to the **development** database at the owner's explicit request after the
-missing-migration `42703` failures were reported; all three are additive and idempotent, and
-`db:check` reports OK.
+050, 051 and **052** were applied to the **development** database at the owner's explicit request
+after the missing-migration `42703` failures were reported; all are additive and idempotent, and
+`db:check` reports OK on all four.
+
+**Deploy ordering is mandatory and not automatic: migrate, then deploy.** Nothing applies migrations
+at boot, and eight call sites read `admin_settings` with no explicit `columns` list — two of them on
+public or rate-limited paths — so an image deployed ahead of its migration raises `42703` there.
+Rollback is the reverse, and 051/052 are coupled. Both directions are written out in
+`md-files/P8-ROLLOUT-AND-DEVICE-VALIDATION.md` §4 and §7.

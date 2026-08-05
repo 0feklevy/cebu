@@ -111,36 +111,50 @@ export function createRumRecorder(opts: RumOptions): RumRecorder {
 
   const send = (batch: RumBatch): void => {
     const body = JSON.stringify(batch);
+    const lost = batch.events.length + batch.dropped;
     try {
-      if (typeof navigator.sendBeacon === 'function') {
-        // NOTE ON CREDENTIALS: sendBeacon's credentials mode is `include` and cannot be changed, so
-        // a beacon to a same-site endpoint carries the viewer's cookies. That is a property of the
-        // API, not a choice made here, and it is why the server stores nothing derived from the
-        // request identity — no user id, no IP, no session linkage. The `credentials: 'omit'` on the
-        // fetch fallback below is therefore a floor, not a guarantee that covers both paths.
-        //
-        // A `false` return means the browser refused to queue it — usually the payload exceeded its
-        // beacon budget. Falling through to fetch would send it twice on some browsers, so the
-        // batch is dropped instead: a duplicated measurement is worse than a missing one, because
-        // it silently biases a percentile.
-        const blob = new Blob([body], { type: 'application/json' });
-        if (navigator.sendBeacon(opts.endpoint, blob)) return;
+      // KEEPALIVE FETCH IS THE PRIMARY TRANSPORT, NOT sendBeacon.
+      //
+      // `sendBeacon`'s credentials mode is fixed at `include`, and the ingest endpoint answers
+      // `Access-Control-Allow-Origin: *`. The Fetch CORS check fails a credentialed request against
+      // a wildcard origin, so every beacon flush failed the check in a real browser — rows still
+      // arrived, which is why it looked like it worked, while each viewer logged a CORS error.
+      // `keepalive` gives the same survives-page-unload property with `credentials: 'omit'`, which
+      // the wildcard does allow, and it also means measurement never carries ambient authority.
+      if (typeof fetch === 'function') {
+        void fetch(opts.endpoint, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body,
+          keepalive: true,
+          credentials: 'omit',
+          mode: 'cors',
+        }).then((res) => {
+          // A 4xx RESOLVES. Only a network-level failure rejects, so a `.catch` alone left the
+          // client posting into an endpoint that was refusing every batch. A 429 is the endpoint
+          // working as intended — back off by counting the loss, not by disabling.
+          if (res.ok || res.status === 429) { if (!res.ok) ring.noteDropped(lost); return; }
+          ring.noteDropped(lost);
+          if (res.status >= 400 && res.status < 500) disable();
+        }).catch(() => { ring.noteDropped(lost); disable(); });
         return;
       }
-      void fetch(opts.endpoint, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body,
-        keepalive: true,
-        // Measurement must never carry ambient authority.
-        credentials: 'omit',
-        mode: 'cors',
-      }).catch(() => disable());
+      if (typeof navigator.sendBeacon === 'function') {
+        // Fallback only. A `false` return means the browser refused to queue it — usually the
+        // payload exceeded its beacon budget. Falling through would send it twice on some browsers,
+        // so the batch is dropped instead: a duplicated measurement is worse than a missing one,
+        // because it silently biases a percentile. The loss is COUNTED, so the next batch says so.
+        const blob = new Blob([body], { type: 'application/json' });
+        if (!navigator.sendBeacon(opts.endpoint, blob)) ring.noteDropped(lost);
+        return;
+      }
+      ring.noteDropped(lost);
     } catch {
       // Layered with the catch in `flush`, which is this function's only caller. A mutation removing
       // THIS catch survives the suite for that reason — recorded as an equivalent mutant rather than
       // pretended otherwise, and kept because the disable point is more precise here and because
       // deleting error handling to raise a mutation score optimises the wrong thing.
+      ring.noteDropped(lost);
       disable();
     }
   };

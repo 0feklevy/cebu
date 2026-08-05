@@ -748,7 +748,9 @@ export class RevisionService {
       // ROW FIRST, then bytes. The reverse order leaves a window where a crash produces a retained
       // row whose bytes are gone — and `rollbackTargetFor` would then select it and `activate()`
       // would flip the pointer to a dead prefix, so the simulation serves nothing. Deleting the row
-      // first can only orphan bytes, which the next sweep reclaims and which nothing reads.
+      // first can only orphan bytes, which nothing reads. Note they are NOT reclaimed later: no
+      // sweep lists storage, so a crash between these two statements leaks that prefix permanently.
+      // Deliberate — leaked bytes cost money, a stranded pointer costs a working simulation.
       const [gone] = await db.delete(sim_revisions).where(and(
         eq(sim_revisions.id, r.id),
         eq(sim_revisions.simulation_id, opts.simulationId),

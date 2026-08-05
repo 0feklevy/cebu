@@ -183,6 +183,18 @@ export class RumRing {
   get dropped(): number { return this.droppedCount; }
 
   /** Take everything and reset. The drop count travels WITH the batch it describes. */
+  /**
+   * Record events lost AFTER draining — a batch the transport refused to send.
+   *
+   * Without this a failed send was indistinguishable from a successful one: the ring had already
+   * been drained, so the next batch reported `dropped: 0` and the sample looked complete. That is
+   * exactly the invariant the `dropped` column exists to protect, violated on the client side of
+   * the same wire.
+   */
+  noteDropped(n: number): void {
+    if (Number.isFinite(n) && n > 0) this.droppedCount += Math.floor(n);
+  }
+
   drain(): { events: RumEvent[]; dropped: number } {
     const out = { events: this.events, dropped: this.droppedCount };
     this.events = [];
