@@ -515,6 +515,11 @@ export function HLSPlayerShell({
         armGate={state.simPoolArm}
         stalled={state.simModern ? false : state.simBootStalled}
         coldCover={state.simModern ? false : state.simColdCover}
+        // The captured poster, on the LEGACY path too. `SimPresentationLayers` below already does
+        // this, but it mounts only when `simModern` is true — which is no package in storage — so
+        // in practice every cold seek showed a bare spinner while the poster went unused.
+        posterSrc={state.simModern ? null : state.simPosterUrl}
+        posterTransparent={state.simPosterTransparent}
         registerFrame={actions.registerSimFrame}
         onFrameLoad={actions.simFrameLoaded}
       />
