@@ -761,6 +761,13 @@ test.describe('real React viewer — simulation transitions', () => {
     // …and the missing section must never have been silently substituted by another body.
     const wrong = late.flatMap((s) => s.frames).filter((f) => f.op > 0.01 && f.section === 'A');
     expect(wrong.length, 'the previous section was shown in place of the missing one').toBe(0);
+    // …and NOTHING was presented at all. Forbidding only the previous section is too weak: after
+    // the outgoing cleanup runs, a document presented for a missing section shows a blank grey
+    // marker rather than 'A', so a runtime that revealed it would slip past every check above
+    // while covering the video with an empty frame. A non-raw missing section must degrade to the
+    // underlying content, not to a blank sim.
+    const presented = late.flatMap((s) => s.frames).filter((f) => f.op > 0.5);
+    expect(presented.length, 'a missing section was presented as a blank frame over the video').toBe(0);
     expect(realErrors(page)).toEqual([]);
   });
 
@@ -940,6 +947,57 @@ test.describe('real React viewer — simulation transitions', () => {
     expect(shown, 'the raw finale was never presented at all').toBe(true);
     const controlsSeen = samples.some((s) => s.frames.some((f) => f.op > 0.5 && f.controls));
     expect(controlsSeen, 'the RAW full simulation is wearing a sibling section\'s minimal UI').toBe(true);
+  });
+
+  test('12e. a single-section RAW package never reloads on re-entry', async ({ page }) => {
+    // EVERY single-section package is "raw": no ?section= on the URL, and sim_script 'main' falls
+    // through to the section id, which no bridge has a body for. If the raw-activation reset fired
+    // for those, the commonest package shape in the product would reload its document on every
+    // entry — a serious regression. It must reload ONLY when a scripted section dirtied the
+    // document first, which for a single-section package never happens.
+    await bootViewer(page, makeConfig([
+      { id: 's1', start: 3, end: 8, pkg: 'dirtyui', rawUrl: true },
+      { id: 's2', start: 20, end: 26, pkg: 'dirtyui', rawUrl: true },
+    ]), { simdebug: true });
+    await startPlayback(page);
+    await seekTo(page, 4);
+    await page.waitForTimeout(1500);
+    await seekTo(page, 12);            // leave the sim
+    await page.waitForTimeout(800);
+    await seekTo(page, 21);            // re-enter the same raw package
+    await page.waitForTimeout(1500);
+
+    const reloads = await page.evaluate(() =>
+      ((window as unknown as { __SIM_TELEMETRY__?: { events: ({ event: string })[] } })
+        .__SIM_TELEMETRY__?.events ?? []).filter((e) => e.event === 'raw-reset-reload').length);
+    expect(reloads, 'a single-section raw package reloaded — every such package would').toBe(0);
+
+    const samples = await sampleFrames(page, 700);
+    const shown = samples.some((s) => s.frames.some((f) => f.op > 0.5));
+    expect(shown, 'the raw package was never presented on re-entry').toBe(true);
+  });
+
+  test('12f. a reloaded document is clean again — a raw re-entry does not reload twice', async ({ page }) => {
+    // navigateFrame gives the package a NEW document identity, which has run no body. If
+    // scriptedEver survived that, every later raw activation would reload again even though the
+    // document is already pristine — an unnecessary reload on every entry to the finale.
+    await bootViewer(page, makeConfig([
+      { id: 's1', start: 3, end: 8, pkg: 'dirtyui', section: S.A, simpleUi: true },
+      { id: 's2', start: 12, end: 18, pkg: 'dirtyui', rawUrl: true },
+      { id: 's3', start: 22, end: 28, pkg: 'dirtyui', rawUrl: true },
+    ]), { simdebug: true });
+    await startPlayback(page);
+    await seekTo(page, 4);
+    await waitForSection(page, 'A');
+    await seekTo(page, 13);                 // first raw entry — SHOULD reload (document is dirty)
+    await page.waitForTimeout(2000);
+    await seekTo(page, 23);                 // second raw entry — document is clean, must NOT reload
+    await page.waitForTimeout(2000);
+
+    const reloads = await page.evaluate(() =>
+      ((window as unknown as { __SIM_TELEMETRY__?: { events: ({ event: string })[] } })
+        .__SIM_TELEMETRY__?.events ?? []).filter((e) => e.event === 'raw-reset-reload').length);
+    expect(reloads, 'the reset fired more than once — a reloaded document was still marked dirty').toBe(1);
   });
 
   test('13. a LEGACY package (no ack support) is still displayed, never held on silence', async ({ page }) => {
