@@ -209,6 +209,28 @@ afterEach(cleanup);
 
 // ── the legacy path is untouched ──────────────────────────────────────────────────────────────
 
+/**
+ * Drive the pipeline until `check` holds, INSIDE act().
+ *
+ * `vi.waitFor` is the wrong tool for this file. Its callback runs outside React's `act()`, so a
+ * state update arriving from `revealSim`'s double rAF is not guaranteed to have been flushed to the
+ * DOM when the assertion reads an attribute — the poll can therefore spin for its whole timeout
+ * against a React tree that has the update queued but not applied. Advancing real time inside
+ * `act()` is what lets both the rAF callbacks and the passive effects run and commit.
+ *
+ * This bounds the wait without weakening the claim: the final assertion still runs, and still
+ * fails, if the condition never becomes true.
+ */
+async function settleUntil(check: () => void, timeoutMs = 2000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try { check(); return; } catch (err) {
+      if (Date.now() >= deadline) throw err;
+    }
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+  }
+}
+
 describe('viewer layer gating: packages that are not proven modern', () => {
   it('renders the pool overlay directly — no layered surface — when the package was never canaried', async () => {
     const { container } = await mountAndEnterSim(configWith({ package_class: null }));
@@ -372,6 +394,13 @@ describe('viewer layer gating: a proven modern package', () => {
   it('raises the recovery surface on a bounded modern failure, and clears it on retry', async () => {
     h.modernActive.value = true;
     const { container } = await mountAndEnterSim(modernConfig());
+    // LET THE MOUNT FINISH BEFORE EMITTING. `revealSim` captures `warmGenRef` when it schedules and
+    // drops the reveal if that generation moved by the time its double rAF runs
+    // (useProjectPlayer.ts:838) — and nothing retries a dropped reveal. Emitting while the mount is
+    // still settling let a warm-generation bump land inside that window, so the reveal was
+    // discarded and `simPresented` never propagated: the observed failure was the poll timing out
+    // with `reason=awaiting-presentation-poster`, ~1 in 12 full-suite runs and never in isolation.
+    await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
     await act(async () => {
       // The real client emits the acknowledgement breadcrumb FIRST and only then, if the reveal
       // gate allows it, emits 'reveal'. The gate can refuse in between (context lost, package
@@ -383,19 +412,37 @@ describe('viewer layer gating: a proven modern package', () => {
     });
 
     await act(async () => { h.instances[0].emit('modern-failure', { kind: 'present-timeout' }); });
-    expect(layered(container)!.getAttribute('data-layer')).toBe('recovery');
+    // Same asynchronous route as every other assertion in this file: SimPresentationLayers
+    // publishes its decision through a passive effect, so a synchronous read after `act` is a race.
+    // Observed failing ~1 in 20 full-suite runs as `expected 'poster' to be 'recovery'` — the
+    // intermediate branch, caught mid-propagation.
+    await settleUntil(() => {
+      expect(
+          layered(container)!.getAttribute('data-layer'),
+          `reason=${layered(container)?.getAttribute('data-reason')}`,
+        ).toBe('recovery');
+    });
     // A failure the viewer cannot leave is the one thing a failure surface must never be.
     expect(container.querySelector('[data-testid="sim-recovery"] button')).not.toBeNull();
     // And the frame it could not vouch for is off screen again.
     expect(incoming(container)!.getAttribute('data-visibility')).toBe('hidden');
 
     await act(async () => { h.instances[0].emit('modern-retry', { attempt: 2 }); });
-    expect(layered(container)!.getAttribute('data-layer')).not.toBe('recovery');
+    await settleUntil(() => {
+      expect(layered(container)!.getAttribute('data-layer')).not.toBe('recovery');
+    });
   });
 
   it('re-covers a presented frame whose rendering context was lost', async () => {
     h.modernActive.value = true;
     const { container } = await mountAndEnterSim(modernConfig());
+    // LET THE MOUNT FINISH BEFORE EMITTING. `revealSim` captures `warmGenRef` when it schedules and
+    // drops the reveal if that generation moved by the time its double rAF runs
+    // (useProjectPlayer.ts:838) — and nothing retries a dropped reveal. Emitting while the mount is
+    // still settling let a warm-generation bump land inside that window, so the reveal was
+    // discarded and `simPresented` never propagated: the observed failure was the poll timing out
+    // with `reason=awaiting-presentation-poster`, ~1 in 12 full-suite runs and never in isolation.
+    await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
     await act(async () => {
       // The real client emits the acknowledgement breadcrumb FIRST and only then, if the reveal
       // gate allows it, emits 'reveal'. The gate can refuse in between (context lost, package
@@ -414,20 +461,29 @@ describe('viewer layer gating: a proven modern package', () => {
     // waitFor still FAILS if the frame is never revealed — it bounds the wait, it does not weaken
     // the assertion — and the exact policy branch is reported on timeout so a real regression is
     // diagnosable rather than a bare 'hidden'.
-    await vi.waitFor(
-      () => {
-        expect(
+    await settleUntil(() => {
+      expect(
           incoming(container)!.getAttribute('data-visibility'),
           `layer=${layered(container)?.getAttribute('data-layer')} reason=${layered(container)?.getAttribute('data-reason')}`,
         ).toBe('revealed');
-      },
-      { timeout: 2000, interval: 10 },
-    );
+    });
 
     await act(async () => { h.instances[0].emit('modern-context-lost'); });
-    await act(async () => { await Promise.resolve(); });
-    // The canvas now holds undefined content. Leaving it up is showing a state nothing vouches for.
-    expect(incoming(container)!.getAttribute('data-visibility')).toBe('hidden');
+    // AWAIT THE PIPELINE HERE TOO. The re-cover reaches the DOM by the same asynchronous route as
+    // the reveal above — SimPresentationLayers publishes through a passive effect — so reading the
+    // attribute after a fixed number of microtask turns is a race, not a settle. It failed roughly
+    // 1 in 8 FULL-SUITE runs (never when the file ran alone, which is what makes it look like a
+    // product bug rather than a test one) and was confirmed pre-existing by reproducing it on a
+    // clean worktree at HEAD.
+    //
+    // waitFor bounds the wait without weakening the claim: if the frame is never re-covered this
+    // still fails, and the policy branch is reported so a real regression stays diagnosable.
+    await settleUntil(() => {
+      expect(
+          incoming(container)!.getAttribute('data-visibility'),
+          `layer=${layered(container)?.getAttribute('data-layer')} reason=${layered(container)?.getAttribute('data-reason')}`,
+        ).toBe('hidden');
+    });
   });
 });
 

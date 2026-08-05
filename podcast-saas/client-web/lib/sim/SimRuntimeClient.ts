@@ -61,6 +61,10 @@ import {
 import { applyGateFor } from '../simApplyGate';
 import { SimTransport } from './SimTransport';
 import {
+  computeDurations, summarize, deriveLeadMs,
+  type TransitionMarks, type TransitionStage, type TransitionSummary,
+} from 'shared/src/sim/transitionTiming';
+import {
   ACTIVATE_SECTION,
   DISPOSE_DOCUMENT,
   DOCUMENT_ERROR,
@@ -296,6 +300,62 @@ export class SimRuntimeClient {
     if (this.disposed && patch.phase !== 'disposed') return;
     this.state = { ...this.state, ...patch };
     this.cbs.onState?.(this.state);
+  }
+
+  // ── Transition measurement (Priority 8.1) ────────────────────────────────────────────────────
+  //
+  // Nothing in this pipeline has ever measured a transition, and the child's own numbers — applyMs,
+  // framesSubmitted, canvas — were computed, put on the wire and dropped here. Every stage below is
+  // recorded but NOTHING reads a duration to make a decision: this is measurement only, so it
+  // cannot change what the viewer sees. What reads it is the lead-time derivation, later.
+  private tmarks: TransitionMarks = { marks: {} };
+  private tHistory: TransitionMarks[] = [];
+  /** Bounded, with the drop counted. A silent cap makes a truncated sample look like a complete one. */
+  private tDropped = 0;
+  private static readonly T_HISTORY_CAP = 50;
+
+  /** The clock, in one place, so a non-browser host cannot crash the runtime by lacking one. */
+  private now(): number {
+    return typeof performance !== 'undefined' && typeof performance.now === 'function'
+      ? performance.now()
+      : Date.now();
+  }
+
+  /**
+   * Record a stage. First write wins per activation: a retried PREPARE must not re-stamp the
+   * original request time, or the total would silently exclude everything before the retry — which
+   * is exactly the slow case worth seeing.
+   */
+  private mark(stage: TransitionStage): void {
+    if (this.tmarks.marks[stage] === undefined) this.tmarks.marks[stage] = this.now();
+  }
+
+  /** Close the current transition and start a fresh one. */
+  private rollTransition(): void {
+    if (Object.keys(this.tmarks.marks).length > 0) {
+      if (this.tHistory.length >= SimRuntimeClient.T_HISTORY_CAP) {
+        this.tHistory.shift();
+        this.tDropped += 1;
+      }
+      this.tHistory.push(this.tmarks);
+    }
+    this.tmarks = { marks: {} };
+  }
+
+  /** What has been measured so far. Read by tests and, later, by the lead-time derivation. */
+  timingSummary(): TransitionSummary & { dropped: number } {
+    return { ...summarize(this.tHistory), dropped: this.tDropped };
+  }
+
+  /**
+   * The lead time preparation should use, derived from what THIS session measured.
+   *
+   * `fallbackMs` is the caller's prior — best sourced from the package's publish-time canary, which
+   * already records per-step ms for these exact bytes, and which is a far better guess than any
+   * constant compiled into the client.
+   */
+  leadMs(fallbackMs: number): { leadMs: number; source: 'measured' | 'fallback' } {
+    return deriveLeadMs({ summary: summarize(this.tHistory), fallbackMs });
   }
 
   private tel(event: string, detail?: Record<string, unknown>): void {
@@ -846,8 +906,17 @@ export class SimRuntimeClient {
         if (!this.matchesActivation(env)) { this.tel('modern-stale-applied'); return; }
         this.clearPrepareTimer();
         this.actMachine = activationReducer(this.actMachine!, { type: 'APPLIED' });
-        this.tel('modern-section-applied', { variantKey: env.variantKey });
+        this.mark('applied');
+        // The child measured its own body cost and has been sending it since the protocol shipped;
+        // it was read off the wire and discarded here. Kept separate from our prepareMs, which
+        // includes two postMessage hops the child's number does not.
+        {
+          const ap = (env.payload as { applyMs?: number } | undefined)?.applyMs;
+          if (typeof ap === 'number') this.tmarks.applyMs = ap;
+        }
+        this.tel('modern-section-applied', { variantKey: env.variantKey, applyMs: this.tmarks.applyMs ?? null });
         this.sendPresent();
+        this.mark('present-sent');
         return;
       case SECTION_PRESENTED: {
         if (!this.matchesActivation(env)) { this.tel('modern-stale-presented'); return; }
@@ -889,7 +958,16 @@ export class SimRuntimeClient {
         this.actMachine = advanced;
         this.breaker = recordSuccess(this.breaker);
         this.failure = null;
-        this.tel('modern-section-presented', { variantKey: env.variantKey, frames: payload.framesSubmitted });
+        this.mark('presented');
+        this.tmarks.framesSubmitted = payload.framesSubmitted;
+        // `canvas` proves something real was sized and drawn. It was validated on arrival and then
+        // dropped; it is the only signal that distinguishes a presented frame from a presented
+        // nothing, which is what an adaptive-quality controller would need first.
+        if (payload.canvas) this.tmarks.canvas = payload.canvas;
+        this.tel('modern-section-presented', {
+          variantKey: env.variantKey, frames: payload.framesSubmitted,
+          canvas: payload.canvas ?? null,
+        });
         this.reveal(false);
         return;
       }
@@ -937,6 +1015,12 @@ export class SimRuntimeClient {
 
     this.clearPrepareTimer();
     this.clearPresentTimer();
+    // A new activation ends the previous transition, whatever stage it reached. Rolling it here is
+    // what makes an ABANDONED transition visible: without this the next `mark('requested')` would
+    // be discarded by the first-write-wins rule and the two would silently merge into one bogus
+    // measurement spanning both. Where transitions die is data — a package that always stops at
+    // `applied` is failing differently from one that stops at `prepare-sent`.
+    this.rollTransition();
     // The deferral, if any, ends here: the modern gate governs from now on. Leaving `holding` set
     // would outlive the deferral for the life of the client, so a later transport downgrade to
     // legacy would find `maybeReveal`, `present()` and the legacy ceiling all permanently refusing.
@@ -980,7 +1064,9 @@ export class SimRuntimeClient {
     this.tel('modern-prepare', { variantKey: opts.script, activationId: identity.activationId });
 
     this.actMachine = activationReducer(this.actMachine, { type: 'PREPARE' });
+    this.mark('requested');
     this.transport.send(PREPARE_SECTION, identity, { variantKey: identity.variantKey, config });
+    this.mark('prepare-sent');
 
     const gen = this.generation;
     const actId = identity.activationId;
@@ -1152,7 +1238,12 @@ export class SimRuntimeClient {
       this.transport?.send(ACTIVATE_SECTION, act.identity, {});
       this.stopPaintPoll();
       this.set({ phase: 'visible', visible: true, interactive: true, pendingScript: null });
-      this.tel('reveal');
+      // The only stage a human perceives. Marked AFTER the reveal is authorised and committed, so a
+      // refused reveal can never contribute a total — a transition that was rejected did not
+      // complete, and counting it would make the p90 describe frames nobody saw.
+      this.mark('revealed');
+      this.tel('reveal', computeDurations(this.tmarks) as unknown as Record<string, unknown>);
+      this.rollTransition();
       return;
     }
 

@@ -1327,3 +1327,204 @@ describe('disposal', () => {
     expect(c.getState().phase).toBe('disposed');
   });
 });
+
+// ══ TRANSITION MEASUREMENT (Priority 8.1) ════════════════════════════════════════════════════
+//
+// Measurement only: nothing here may change what the viewer sees. The claims are that the stages
+// are recorded in protocol order, that the child's own numbers stop being discarded, and that an
+// abandoned or refused transition never contributes a total — a p90 built from frames nobody saw
+// would be worse than no measurement at all.
+
+describe('transition measurement', () => {
+  it('records every stage of a completed transition, in order', async () => {
+    const { c, child } = await boot({ child: { autoApplied: false, autoPresented: false } });
+    c.activate({ script: 'A' });
+    await flush();
+    vi.advanceTimersByTime(5);
+    child.sectionApplied(child.last(PREPARE_SECTION));
+    await flush();
+    vi.advanceTimersByTime(5);
+    child.sectionPresented(child.last(PRESENT_SECTION));
+    await flush();
+
+    const s = c.timingSummary();
+    expect(s.samples).toBe(1);
+    expect(s.completed).toBe(1);
+    expect(s.p50TotalMs).not.toBeNull();
+    expect(s.p50TotalMs!).toBeGreaterThanOrEqual(0);
+  });
+
+  it('captures the child applyMs that used to be read off the wire and dropped', async () => {
+    const { c, child, tel } = await boot({ child: { autoApplied: false, autoPresented: false } });
+    c.activate({ script: 'A' });
+    await flush();
+    child.sectionApplied(child.last(PREPARE_SECTION));
+    await flush();
+    // The FakeChild sends applyMs: 3, exactly as the real child has since the protocol shipped.
+    expect(lastTel(tel, 'modern-section-applied')?.detail.applyMs).toBe(3);
+    child.sectionPresented(child.last(PRESENT_SECTION));
+    await flush();
+    expect(c.timingSummary().p50ApplyMs).toBe(3);
+  });
+
+  it('keeps the child applyMs distinct from our own prepare measurement', async () => {
+    // prepareMs spans two postMessage hops applyMs does not. Conflating them would hide whether a
+    // slow prepare is the package's fault or the transport's.
+    const { c, child } = await boot({ child: { autoApplied: false, autoPresented: false } });
+    c.activate({ script: 'A' });
+    await flush();
+    vi.advanceTimersByTime(50);
+    child.sectionApplied(child.last(PREPARE_SECTION));
+    await flush();
+    child.sectionPresented(child.last(PRESENT_SECTION));
+    await flush();
+    const s = c.timingSummary();
+    expect(s.p50ApplyMs).toBe(3);
+    expect(s.p50PrepareMs).not.toBe(3);
+  });
+
+  it('emits the durations on the reveal breadcrumb', async () => {
+    const { c, tel } = await boot();
+    c.activate({ script: 'A' });
+    await flush();
+    const rev = lastTel(tel, 'reveal');
+    expect(rev).toBeDefined();
+    expect(rev!.detail).toHaveProperty('totalMs');
+    expect(rev!.detail).toHaveProperty('prepareMs');
+  });
+
+  it('records an ABANDONED transition rather than merging it into the next', async () => {
+    // Without the roll on re-activation, the next mark('requested') is swallowed by first-write-wins
+    // and one bogus measurement spans both sections.
+    const { c, child } = await boot({ child: { autoApplied: false, autoPresented: false } });
+    c.activate({ script: 'A' });
+    await flush();
+    c.activate({ script: 'B' });
+    await flush();
+    child.sectionApplied(child.last(PREPARE_SECTION));
+    await flush();
+    child.sectionPresented(child.last(PRESENT_SECTION));
+    await flush();
+
+    const s = c.timingSummary();
+    expect(s.samples).toBe(2);
+    expect(s.completed).toBe(1);
+    // A that never got past its prepare is counted where it died, not ignored.
+    expect(s.abandonedAt['prepare-sent']).toBe(1);
+  });
+
+  it('a REFUSED reveal contributes no total', async () => {
+    // A p90 that included rejected activations would describe frames no viewer ever saw.
+    const { c, child } = await boot({ child: { autoPresented: false } });
+    c.activate({ script: 'A' });
+    await flush();
+    // Acknowledge with a distorted variantKey: the five-axis invariant refuses it.
+    child.sectionPresented(child.last(PRESENT_SECTION), { distort: { variantKey: 'WRONG' } });
+    await flush();
+    expect(c.getState().visible).toBe(false);
+    expect(c.timingSummary().completed).toBe(0);
+  });
+
+  it('a refused reveal is still not counted once the transition is rolled', async () => {
+    // The subtler half of the previous test: an in-flight transition is not in the history yet, so
+    // "completed === 0" can hold for the wrong reason. Starting a NEW activation rolls the refused
+    // one into the history — and only a `revealed` mark placed AFTER the invariant check keeps it
+    // out of the completed count there.
+    // The distortion must be one that reaches `reveal()`. `matchesActivation` covers only
+    // activationId/variantKey/configHash, so a wrong packageRevision passes it, PRESENTS the
+    // activation, and is refused by the five-axis invariant inside reveal — which is the only place
+    // a `revealed` mark could be wrongly stamped.
+    const { c, child, tel } = await boot({ child: { autoPresented: false } });
+    c.activate({ script: 'A' });
+    await flush();
+    child.sectionPresented(child.last(PRESENT_SECTION),
+      { distort: { packageRevision: 'rev-from-a-republished-package' } });
+    await flush();
+    expect(c.getState().visible).toBe(false);
+    expect(lastTel(tel, 'modern-reveal-refused')?.detail.refusal).toBe('package-revision-mismatch');
+
+    c.activate({ script: 'B' });
+    await flush();
+
+    const s = c.timingSummary();
+    expect(s.samples).toBeGreaterThanOrEqual(1);
+    expect(s.completed, 'a reveal the invariant refused was counted as a completed transition').toBe(0);
+    expect(s.p50TotalMs).toBeNull();
+  });
+
+  it('the first mark of a stage wins, so a repeat cannot shorten the measurement', async () => {
+    // A duplicate SECTION_APPLIED (or a retried PREPARE) must not re-stamp the stage: overwriting
+    // discards everything before the repeat, which is exactly the slow case worth seeing.
+    const { c, child } = await boot({ child: { autoApplied: false, autoPresented: false } });
+    c.activate({ script: 'A' });
+    await flush();
+    const prepare = child.last(PREPARE_SECTION);
+    vi.advanceTimersByTime(10);
+    child.sectionApplied(prepare);
+    await flush();
+    vi.advanceTimersByTime(500);
+    child.sectionApplied(prepare);       // a repeat for the same activation
+    await flush();
+    child.sectionPresented(child.last(PRESENT_SECTION));
+    await flush();
+
+    const s = c.timingSummary();
+    expect(s.completed).toBe(1);
+    // Overwriting would move `applied` 500ms later and report a prepare that took ~510ms.
+    expect(s.p50PrepareMs!, 'a repeated stage re-stamped the mark').toBeLessThan(500);
+  });
+
+  it('an acknowledgement claiming no frame contributes no total', async () => {
+    const { c, child } = await boot({ child: { autoPresented: false } });
+    c.activate({ script: 'A' });
+    await flush();
+    child.sectionPresented(child.last(PRESENT_SECTION), { frames: 0 });
+    await flush();
+    expect(c.getState().visible).toBe(false);
+    expect(c.timingSummary().completed).toBe(0);
+  });
+
+  it('bounds the history and COUNTS what it dropped', async () => {
+    // A silent cap makes a truncated sample look like a complete one.
+    const { c, child } = await boot();
+    for (let i = 0; i < 60; i += 1) {
+      c.activate({ script: `S${i}` });
+      await flush();
+    }
+    const s = c.timingSummary();
+    expect(s.samples).toBeLessThanOrEqual(50);
+    expect(s.dropped).toBeGreaterThan(0);
+    void child;
+  });
+
+  it('derives a lead time from measurement once there are enough samples, and says so', async () => {
+    const { c } = await boot();
+    expect(c.leadMs(800).source, 'a single sample is not a measurement').toBe('fallback');
+    expect(c.leadMs(800).leadMs).toBe(800);
+
+    for (let i = 0; i < 8; i += 1) {
+      c.activate({ script: `S${i}` });
+      await flush();
+    }
+    const derived = c.leadMs(800);
+    expect(derived.source).toBe('measured');
+    expect(derived.leadMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('measurement changes nothing a viewer sees', async () => {
+    // The whole step is instrumentation. If any assertion about visibility or protocol order moved,
+    // this stopped being measurement.
+    const { c, child, tel } = await boot({ child: { autoApplied: false, autoPresented: false } });
+    c.activate({ script: 'A' });
+    await flush();
+    expect(c.getState().visible).toBe(false);
+    child.sectionApplied(child.last(PREPARE_SECTION));
+    await flush();
+    expect(c.getState().visible).toBe(false);
+    child.sectionPresented(child.last(PRESENT_SECTION));
+    await flush();
+    expect(c.getState().visible).toBe(true);
+    expect(child.types()).toEqual([INIT_DOCUMENT, PREPARE_SECTION, PRESENT_SECTION, ACTIVATE_SECTION]);
+    expect(countTel(tel, 'reveal')).toBe(1);
+  });
+});
