@@ -66,7 +66,8 @@ export interface QualityDecision {
   next: QualityProfile;
   state: QualityState;
   changed: boolean;
-  reason: 'insufficient-samples' | 'over-budget' | 'comfortable' | 'dead-band' | 'at-limit';
+  reason: 'insufficient-samples' | 'over-budget' | 'comfortable' | 'dead-band' | 'at-limit'
+    | 'no-lab-budget';
 }
 
 /**
@@ -139,6 +140,22 @@ export function nextQualityFor(
   prior: QualityState,
   input: { measuredP90Ms: number | null; samples: number; labBudgetMs: number | null },
 ): QualityDecision & { budgetMs: number; budgetSource: string } {
+  // NO LAB NUMBER MEANS NO JUDGEMENT.
+  //
+  // `resolveBudget` answers MIN_BUDGET_MS (250ms) when it has nothing to go on — a floor, not a
+  // measurement. Judging against it degrades any package whose p90 exceeds 250ms, which is an
+  // ordinary transition, so every never-canaried package (most of them) would be walked down to
+  // 'low' on healthy hardware. That is the same error as budgeting an unmeasured package at zero,
+  // which this pipeline refuses to do everywhere else.
+  //
+  // Holding the prior profile is the conservative answer: adaptation resumes the moment the
+  // package has a canary to be judged against.
+  if (input.labBudgetMs === null || !Number.isFinite(input.labBudgetMs) || input.labBudgetMs <= 0) {
+    return {
+      next: prior.current, state: prior, changed: false, reason: 'no-lab-budget',
+      budgetMs: 0, budgetSource: 'none',
+    };
+  }
   const budget = resolveBudget({ measuredP90Ms: null, canaryMs: input.labBudgetMs });
   const decision = decideQuality(prior, {
     p90TotalMs: input.measuredP90Ms,

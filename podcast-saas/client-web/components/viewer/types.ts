@@ -214,6 +214,15 @@ export interface PlayerConfig {
   sim_rum_sample_rate?: number;
   /** Per-simulation publish-time preparation cost, keyed by simulation id. */
   sim_prepare_budget_ms?: Record<string, number>;
+  /**
+   * The canary-derived budget alone, never refined by field data.
+   *
+   * Separate from `sim_prepare_budget_ms` because the two answer different questions. That one is
+   * a LEAD TIME and is rightly refined by what the fleet actually measures; this one is a STANDARD
+   * for adaptive quality to judge a device against, and a standard derived from the same
+   * measurement it judges is not a standard at all.
+   */
+  sim_lab_budget_ms?: Record<string, number>;
 }
 
 export interface TimelineSeg {

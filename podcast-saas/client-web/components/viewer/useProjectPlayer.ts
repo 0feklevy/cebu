@@ -295,6 +295,7 @@ export function useProjectPlayer(
   const adaptiveQualityRef = useRef<boolean>(config.sim_adaptive_quality === true);
   const boundarySentinelRef = useRef<boolean>(config.sim_boundary_sentinel === true);
   /** Per-simulation lab preparation cost, from the package's own canary. */
+  const labBudgetsRef = useRef<Record<string, number>>(config.sim_lab_budget_ms ?? {});
   const prepareBudgetsRef = useRef<Record<string, number>>(config.sim_prepare_budget_ms ?? {});
   /** Adaptive-quality state per PACKAGE — quality is a property of the bytes, not of a section. */
   const qualityStateRef = useRef<Map<string, QualityState>>(new Map());
@@ -830,9 +831,16 @@ export function useProjectPlayer(
   const ensurePooledSpec = (spec: SimPoolFrameSpec) => {
     if (simPoolSpecsRef.current.some((s) => s.key === spec.key)) return;
     // Single mode: strictly one resident frame — evict every non-active package before adding.
+    //
+    // A frame still inside its EXIT FADE is spared, exactly as the window planner spares it.
+    // `deactivateSim` clears `activeSimUrlRef` BEFORE this runs, so the outgoing frame is no longer
+    // "active" and was dropped here while still being animated: the simulation cut to video instead
+    // of fading, and the deferred stopScript fired into a dead frame. The guard added at the
+    // section-change site could not prevent it, because this is the eviction that actually happens.
+    // It is evicted on the next tick, once the fade is done.
     if (poolTierRef.current === 'single') {
       for (const s of [...simPoolSpecsRef.current]) {
-        if (s.key !== activeSimUrlRef.current) dropPooled(s.key, 'single-mode');
+        if (s.key !== activeSimUrlRef.current && !isFadingOut(s.key)) dropPooled(s.key, 'single-mode');
       }
     }
     if (simPoolSpecsRef.current.length + 1 > SIM_POOL_HARD_CAP) {
@@ -1116,8 +1124,15 @@ export function useProjectPlayer(
           const pkgKey = packageKeyOf(sectionUrl);
           const rt0 = simRuntimesRef.current.get(pkgKey);
           const summary = rt0?.timingSummary();
+          // THE LAB NUMBER, not the refined lead time. `sim_prepare_budget_ms` is refined by field
+          // data once enough samples exist, so judging a device's p90 against it reintroduces the
+          // circularity this call site was fixed to remove — just sourced from the server. Falls
+          // back to the lead time only when no canary number was emitted, which is the pre-existing
+          // behaviour for a package that has one but no field data (there the two are equal).
           const lab = simSection.simulation_id
-            ? prepareBudgetsRef.current[simSection.simulation_id] : undefined;
+            ? (labBudgetsRef.current[simSection.simulation_id]
+               ?? prepareBudgetsRef.current[simSection.simulation_id])
+            : undefined;
           // ONE tested composition, not two calls joined here.
           //
           // Joining them at this call site is what produced the defect: passing the measured p90
@@ -1976,9 +1991,13 @@ export function useProjectPlayer(
           if (sentinel && sentinel.mode !== 'none') {
             boundarySentinelHandleRef.current = sentinel;
             boundaryTargetRef.current = target;
-            // `mode` records WHICH mechanism armed. This is the direct field answer to "what
-            // fraction of sessions get the frame-accurate path", which the rollout document
-            // previously listed as unknowable without a separate study.
+            // `mode` records WHICH mechanism armed — rvfc, timeout, or none.
+            //
+            // THIS IS NOT FIELD DATA. `simTelemetry` is inert unless the URL carries `?simdebug=1`
+            // and its only sink is an in-memory array; nothing transmits it. So this answers "which
+            // path did THIS session take" for someone debugging, and does NOT answer "what fraction
+            // of sessions get the frame-accurate path" — an earlier version of this comment claimed
+            // it did. Answering that needs `mode` routed through the RUM path.
             simTelemetry('boundary-armed', { target, mode: sentinel.mode });
           } else {
             sentinel?.cancel();

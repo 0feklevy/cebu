@@ -585,7 +585,11 @@ export class RevisionService {
         .from(simulations)
         .where(eq(simulations.id, simulationId));
       if (!ownRow) throw new RevisionConflict('activate', 'no such simulation');
-      if (ownRow.storage_prefix !== storagePrefix) {
+      // Trailing slashes normalised on both sides: `simulations/p/s` and `simulations/p/s/` name the
+      // same prefix, and refusing a legitimate activation over a slash would be a failure invented
+      // by this guard rather than prevented by it.
+      const norm = (v: string): string => v.replace(/\/+$/, '');
+      if (norm(ownRow.storage_prefix ?? '') !== norm(storagePrefix)) {
         throw new RevisionConflict('activate',
           `storagePrefix does not match the simulation (${storagePrefix} vs ${ownRow.storage_prefix})`);
       }
