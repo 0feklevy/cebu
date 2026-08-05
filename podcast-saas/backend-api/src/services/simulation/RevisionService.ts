@@ -572,6 +572,24 @@ export class RevisionService {
     return db.transaction(async (tx) => {
       const now = new Date();
 
+      // (0) THE PREFIX MUST BE THE SIMULATION'S OWN.
+      //
+      // `active_revision_entry_key` is composed from a caller-supplied prefix and `sim_revisions`
+      // has no prefix column, so nothing else in this transaction can notice a mismatch. A caller
+      // passing the wrong prefix writes a pointer to bytes that were never written, with no error
+      // anywhere — and the read path has no fallback for a pointer that resolves to nothing, so
+      // the simulation serves nothing at all. Checked inside the transaction so it is checked
+      // against the same row the pointer is about to be written to.
+      const [ownRow] = await tx
+        .select({ storage_prefix: simulations.storage_prefix })
+        .from(simulations)
+        .where(eq(simulations.id, simulationId));
+      if (!ownRow) throw new RevisionConflict('activate', 'no such simulation');
+      if (ownRow.storage_prefix !== storagePrefix) {
+        throw new RevisionConflict('activate',
+          `storagePrefix does not match the simulation (${storagePrefix} vs ${ownRow.storage_prefix})`);
+      }
+
       // (a) DEMOTE the incumbent.
       let superseded: string | null = null;
       if (expectedActiveRevisionId !== null && expectedActiveRevisionId !== revisionId) {
