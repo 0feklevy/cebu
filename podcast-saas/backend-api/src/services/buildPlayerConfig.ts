@@ -67,7 +67,8 @@ import { getStorageAdapter } from './storage/getStorageAdapter.js';
 import { captionUrlForVideo } from './captions/CaptionService.js';
 import { normalizeAvatarCircles, normalizeSpeakerTimeline, type AvatarCirclesLike } from './avatarCircles/normalizeAvatarCircles.js';
 import { logger } from '../lib/logger.js';
-import { resolveRumSampleRate } from './simulation/RumService.js';
+import { resolveRumSampleRate, resolveSimRuntimeFlags, fieldAggregates } from './simulation/RumService.js';
+import { decideBudget } from 'shared/sim/closedLoop';
 
 /** The simulation columns this file reads. Named so the degraded-read catch cannot drift from it. */
 interface SimRowShape {
@@ -108,7 +109,7 @@ export async function buildPlayerConfig(
   // player-config / share / playlist-item / course render), so the serial waits added up
   // (perf-003; scenes+branch_sequences folded in per loadperf-002/backend-110). Scenes and
   // sequences are filtered/used in memory below exactly as before.
-  const [allVideos, sections, imageRows, audioRows, allScenes, sequenceRows, simPoolMode, rumSampleRate, projectSimulations] = await Promise.all([
+  const [allVideos, sections, imageRows, audioRows, allScenes, sequenceRows, simPoolMode, rumSampleRate, simRuntimeFlags, projectSimulations] = await Promise.all([
     db.query.video_files.findMany({
       where: eq(video_files.project_id, project.id),
       orderBy: [asc(video_files.created_at)],
@@ -126,6 +127,7 @@ export async function buildPlayerConfig(
     }),
     resolveSimPoolMode(),
     resolveRumSampleRate(),
+    resolveSimRuntimeFlags(),
     // The package identity + canary verdict for every simulation this project references.
     //
     // `columns` is not an optimisation detail: without it Drizzle selects the WHOLE row for every
@@ -260,10 +262,39 @@ export async function buildPlayerConfig(
    * Absent for a package that has never been canaried, and the client treats absence as "no lab
    * data" rather than as zero — a package with no measurement must not be budgeted as instantaneous.
    */
+  /** The identity axis for one simulation ROW — the key field measurements are grouped by. */
+  const packageRevisionForRow = (row: SimRowShape): string | null => {
+    try {
+      return revisionIdentityFor(
+        { id: row.id, bridge_hash: row.bridge_hash, active_revision_id: row.active_revision_id },
+        derivePackageRevision,
+      );
+    } catch { return null; }
+  };
+
+  //
+  // CLOSED LOOP. The lab number is the anchor; a FIELD aggregate may refine it, and only if it
+  // survives every credibility check in `decideBudget`. That input derives from an unauthenticated
+  // endpoint, so a refused aggregate must leave exactly the value the lab alone would produce —
+  // which is what makes a hostile feed achieve nothing rather than something small.
+  //
+  // Field data is looked up in ONE grouped query for the whole project, and a failure returns an
+  // empty map rather than throwing: no field data is the state every deployment is in today.
   const simPrepareBudgets: Record<string, number> = {};
+  const revisionsForField = [...simRows.values()]
+    .map((r) => packageRevisionForRow(r))
+    .filter((r): r is string => typeof r === 'string' && r.length > 0);
+  const field = await fieldAggregates(revisionsForField).catch(() => new Map());
   for (const [simId, row] of simRows) {
-    const ms = row.prepare_budget_ms;
-    if (typeof ms === 'number' && Number.isFinite(ms) && ms > 0) simPrepareBudgets[simId] = ms;
+    const lab = typeof row.prepare_budget_ms === 'number' && Number.isFinite(row.prepare_budget_ms)
+      && row.prepare_budget_ms > 0 ? row.prepare_budget_ms : null;
+    const rev = packageRevisionForRow(row);
+    const agg = rev ? field.get(rev) ?? null : null;
+    if (lab === null && agg === null) continue;   // absent means "no data", never "instantaneous"
+    const decision = decideBudget({ canaryMs: lab, field: agg });
+    // The floor is emitted only when something real produced it; a package with neither a lab
+    // number nor field data stays absent so the client treats it as unmeasured.
+    if (lab !== null || decision.source === 'measured') simPrepareBudgets[simId] = decision.ms;
   }
 
   const packageRevisionFor = (simId: string | null, url: string | null): string | null => {
@@ -697,6 +728,11 @@ export async function buildPlayerConfig(
     // Sampled field measurement (migration 051). 0 means the viewer sends nothing, which is the
     // default and the state every existing deployment is in until an operator changes it.
     sim_rum_sample_rate: rumSampleRate,
+    // Priority 8 runtime switches (migration 052). All default OFF, so a player that receives them
+    // behaves exactly as it does today until an operator changes one.
+    sim_scheduler_mode: simRuntimeFlags.schedulerMode,
+    sim_adaptive_quality: simRuntimeFlags.adaptiveQuality,
+    sim_boundary_sentinel: simRuntimeFlags.boundarySentinel,
     // Per-package preparation budgets from each package's own publish-time canary. Emitted as a map
     // rather than per section because a package's cost is a property of its BYTES, not of where it
     // happens to appear on a timeline — and one package commonly appears in many sections.

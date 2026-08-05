@@ -296,6 +296,11 @@ export const admin_settings = pgTable('admin_settings', {
   // 0, so an image that boots before 051 is applied simply collects nothing.
   rum_sample_rate: real('rum_sample_rate').default(0).notNull(),
   rum_retention_days: integer('rum_retention_days').default(30).notNull(),
+  // ── Priority 8 runtime kill switches (migration 052) ────────────────────────
+  // All default to today's behaviour; each is flippable at runtime with no deploy.
+  sim_scheduler_mode: text('sim_scheduler_mode').default('off').notNull(),
+  sim_adaptive_quality: boolean('sim_adaptive_quality').default(false).notNull(),
+  sim_boundary_sentinel: boolean('sim_boundary_sentinel').default(false).notNull(),
   updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
