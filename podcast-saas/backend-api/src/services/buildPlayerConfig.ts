@@ -312,6 +312,8 @@ export async function buildPlayerConfig(
   // Field data is looked up in ONE grouped query for the whole project, and a failure returns an
   // empty map rather than throwing: no field data is the state every deployment is in today.
   const simPrepareBudgets: Record<string, number> = {};
+  /** Canary-derived only — never refined by field data. See the note at the emit site below. */
+  const simLabBudgets: Record<string, number> = {};
   const revisionsForField = [...simRows.values()]
     .map((r) => packageRevisionForRow(r))
     .filter((r): r is string => typeof r === 'string' && r.length > 0);
@@ -333,6 +335,16 @@ export async function buildPlayerConfig(
     // The floor is emitted only when something real produced it; a package with neither a lab
     // number nor field data stays absent so the client treats it as unmeasured.
     if (lab !== null || decision.source === 'measured') simPrepareBudgets[simId] = decision.ms;
+    // THE LAB NUMBER, UNREFINED, emitted separately.
+    //
+    // `sim_prepare_budget_ms` above is the LEAD TIME, and refining it with field data is exactly
+    // right for deciding how early to prepare. It is the wrong input for adaptive quality, which
+    // judges a device's p90 against a standard: once >=30 credible rows exist the emitted budget IS
+    // the fleet p90 x 1.25, so a device that dominates its own package's aggregate would be judged
+    // against 1.25x its own p90 — the same tautology the client-side fix removed, arriving from the
+    // server instead. The canary number is a property of the PACKAGE and of nobody's device, which
+    // is what a standard has to be.
+    if (lab !== null) simLabBudgets[simId] = lab;
   }
 
   const packageRevisionFor = (simId: string | null, url: string | null): string | null => {
@@ -775,6 +787,9 @@ export async function buildPlayerConfig(
     // rather than per section because a package's cost is a property of its BYTES, not of where it
     // happens to appear on a timeline — and one package commonly appears in many sections.
     sim_prepare_budget_ms: simPrepareBudgets,
+    // The canary number alone. Adaptive quality judges against this, never against the refined
+    // lead time above — see the note at the emit site.
+    sim_lab_budget_ms: simLabBudgets,
   };
 }
 

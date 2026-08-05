@@ -162,8 +162,12 @@ export function createRumRecorder(opts: RumOptions): RumRecorder {
   const flush = (_reason: 'interval' | 'pagehide' | 'manual'): void => {
     if (disabled) return;
     try {
+      // CHECKED BEFORE DRAINING. `drain()` zeroes the drop count as it empties the ring, so
+      // draining an empty ring and returning early THREW AWAY a count carried over from a failed
+      // send — destroying the very record `noteDropped` exists to keep. An idle flush must leave
+      // the ring untouched so the next real batch still reports the loss.
+      if (ring.size === 0) return;
       const { events, dropped } = ring.drain();
-      if (events.length === 0) return;
       send({ v: SIM_RUM_VERSION, sessionId, device, events, dropped });
     } catch {
       disable();

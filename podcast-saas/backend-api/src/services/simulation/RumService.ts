@@ -167,6 +167,17 @@ export async function ingestBatch(raw: unknown): Promise<IngestResult> {
   if (!parsed.ok) return { stored: 0, rejected: parsed.reason };
 
   const b: RumBatch = parsed.batch;
+  // WHICH ROW CARRIES THE BATCH'S DROP COUNT.
+  //
+  // Not simply `events[0]`. Both aggregates filter `kind = 'transition' AND total_ms IS NOT NULL`,
+  // so filing the count on a failure event — which this player genuinely records — put it on a row
+  // no aggregate ever reads, and the count vanished exactly as it did when it was never stored.
+  // It goes on the first row that will be counted; if the batch has no countable row the aggregate
+  // has no samples for it anyway, and index 0 keeps it visible to any other reader.
+  const countableIdx = b.events.findIndex(
+    (e) => e.kind === 'transition' && typeof e.durations?.totalMs === 'number',
+  );
+  const dropIdx = countableIdx >= 0 ? countableIdx : 0;
   const rows = b.events.map((e, i) => ({
     session_id: b.sessionId,
     package_revision: e.packageRevision,
@@ -188,7 +199,7 @@ export async function ingestBatch(raw: unknown): Promise<IngestResult> {
     // the sample as 'truncated' — so a single drop disabled field budgets for that package for the
     // entire retention window. The upper bound is far above any honest client (whose ring caps at
     // RUM_RING_CAP) and low enough that no volume of batches can overflow the aggregate.
-    dropped: i === 0 ? (clampInt(b.dropped, 0, RUM_MAX_DROPPED_PER_BATCH) ?? 0) : 0,
+    dropped: i === dropIdx ? (clampInt(b.dropped, 0, RUM_MAX_DROPPED_PER_BATCH) ?? 0) : 0,
     device_memory_gb: clampInt(b.device?.memoryGb, 0, 1024),
     device_cores: clampInt(b.device?.cores, 0, 1024),
     coarse_pointer: typeof b.device?.coarsePointer === 'boolean' ? b.device.coarsePointer : null,
@@ -242,7 +253,7 @@ export async function packagePercentiles(packageRevision: string): Promise<{
            percentile_disc(0.5) WITHIN GROUP (ORDER BY total_ms)   AS p50,
            percentile_disc(0.9) WITHIN GROUP (ORDER BY total_ms)   AS p90,
            percentile_disc(0.9) WITHIN GROUP (ORDER BY prepare_ms) AS p90prep,
-           COALESCE(sum(dropped), 0)::int                          AS dropped
+           COALESCE(sum(dropped), 0)::bigint                       AS dropped
       FROM ${sim_rum_events}
      WHERE package_revision = ${packageRevision}
        AND kind = 'transition'

@@ -221,13 +221,36 @@ describe('composed with resolveBudget, as the player composes them', () => {
     expect(new Set(seq)).toEqual(new Set(['high']));
   });
 
-  it('nextQualityFor with no lab number still uses a real budget, never zero', () => {
-    // A package with no canary must not be treated as having a budget of 0, which would read as
-    // "every transition is over budget" and pin every device to low.
+  it('nextQualityFor DOES NOT ADAPT when there is no lab budget', () => {
+    // resolveBudget answers a 250ms FLOOR when it has nothing to go on. Judged against that, an
+    // ordinary 600ms transition is "over budget", so every never-canaried package — most of them —
+    // would be walked down to 'low' on healthy hardware. Measured before the fix:
+    // `high balanced balanced low low low`.
+    let state = INITIAL_QUALITY_STATE;
+    const seq: string[] = [];
+    for (let i = 0; i < 6; i += 1) {
+      const d = nextQualityFor(state, { measuredP90Ms: 600, samples: 50, labBudgetMs: null });
+      state = d.state; seq.push(d.next);
+    }
+    expect(seq, 'an un-canaried package was degraded against a floor').toEqual(
+      ['high', 'high', 'high', 'high', 'high', 'high']);
+  });
+
+  it('reports why it is not adapting, rather than looking like a healthy dead-band', () => {
     const d = nextQualityFor(INITIAL_QUALITY_STATE,
-      { measuredP90Ms: 100, samples: 50, labBudgetMs: null });
-    expect(d.budgetMs).toBeGreaterThan(0);
-    expect(d.next).toBe('high');
+      { measuredP90Ms: 5000, samples: 50, labBudgetMs: null });
+    expect(d.reason).toBe('no-lab-budget');
+    expect(d.changed).toBe(false);
+  });
+
+  it('resumes adapting the moment the package HAS a lab budget', () => {
+    let state = INITIAL_QUALITY_STATE;
+    const seq: string[] = [];
+    for (let i = 0; i < 6; i += 1) {
+      const d = nextQualityFor(state, { measuredP90Ms: 3000, samples: 50, labBudgetMs: 500 });
+      state = d.state; seq.push(d.next);
+    }
+    expect(seq).toEqual(['high', 'balanced', 'balanced', 'low', 'low', 'low']);
   });
 
   it('leaves a healthy device alone', () => {

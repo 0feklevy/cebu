@@ -31,7 +31,7 @@ vi.mock('../../../lib/logger.js', () => ({
 
 import {
   resolveRumSampleRate, resolveRumRetentionDays, ingestBatch, reapRumEvents, packagePercentiles,
-  startRumRetentionSweep, invalidateRumSampleRateCache,
+  startRumRetentionSweep, invalidateRumSampleRateCache, fieldAggregates,
   RUM_RETENTION_DEFAULT_DAYS,
 } from '../RumService.js';
 import { SIM_RUM_VERSION, bucketDevice, type RumEvent } from 'shared/sim/rumEvents';
@@ -425,5 +425,123 @@ describe('the retention sweep is quiet before its migration is applied', () => {
     } finally {
       target.delete = original;
     }
+  });
+});
+
+describe('the drop count is filed where the aggregate can actually see it', () => {
+  beforeEach(enableCollection);
+
+  // These use MULTI-EVENT batches on purpose. Both existing drop-count tests take the one-event
+  // default, where the row index is always 0 — so they pass identically against the old
+  // write-it-on-every-row code AND against a naive `i === 0`, and pin neither fix.
+
+  it('does not multiply the count by the number of events', () => {
+    // The original defect: a batch-level scalar written to every row, then summed.
+    return ingestBatch(batch({ dropped: 3, events: [ev(), ev(), ev(), ev(), ev()] })).then(async () => {
+      const [r] = await rows<{ total: number; rowsWith: number }>(
+        `SELECT COALESCE(sum(dropped),0)::int AS total,
+                count(*) FILTER (WHERE dropped > 0)::int AS "rowsWith"
+           FROM sim_rum_events`);
+      expect(r!.total, 'the count was multiplied across the batch').toBe(3);
+      expect(r!.rowsWith, 'more than one row carried the batch count').toBe(1);
+    });
+  });
+
+  it('files it on a row the aggregate COUNTS, not merely on the first row', async () => {
+    // Both aggregates filter `kind = 'transition' AND total_ms IS NOT NULL`. A batch whose first
+    // event is a failure — which this player genuinely records — put the count on a row no
+    // aggregate reads, so it vanished exactly as it did when it was never stored.
+    await ingestBatch(batch({
+      dropped: 9,
+      events: [
+        { kind: 'failure', t: 1, packageRevision: 'pkg-abc', code: 'script-missing' } as RumEvent,
+        ev(),
+      ],
+    }));
+    const [r] = await rows<{ dropped: number }>(
+      `SELECT COALESCE(sum(dropped),0)::int AS dropped FROM sim_rum_events
+        WHERE kind = 'transition' AND total_ms IS NOT NULL`);
+    expect(r!.dropped, 'the drop count was invisible to the aggregate').toBe(9);
+  });
+
+  it('still records the count when NO event is countable', async () => {
+    // Nothing to attribute it to, but it must not be silently discarded either.
+    await ingestBatch(batch({
+      dropped: 4,
+      events: [{ kind: 'failure', t: 1, packageRevision: 'pkg-abc', code: 'x' } as RumEvent],
+    }));
+    const [r] = await rows<{ dropped: number }>(
+      `SELECT COALESCE(sum(dropped),0)::int AS dropped FROM sim_rum_events`);
+    expect(r!.dropped).toBe(4);
+  });
+});
+
+/**
+ * `fieldAggregates` — THE REAL FUNCTION, against a real Postgres engine.
+ *
+ * WHY IT LIVES HERE RATHER THAN IN ITS OWN FILE
+ * The first version of these tests pinned a hand-copied duplicate of the query. That proves the SQL
+ * text is valid; it proves nothing about the function, because reverting the production query would
+ * leave the copy — and the suite — green. This file already binds RumService's own `db` import to
+ * PGlite, so calling the exported function exercises the statement that actually ships.
+ *
+ * The defect being pinned: `= ANY(${array})` renders as `= ANY(($1,$2))`, which Postgres refuses
+ * with "op ANY/ALL (array) requires array on right side" — and with one element, "malformed array
+ * literal". The bare catch turned both into an empty map, which is indistinguishable from "no
+ * samples yet", so field refinement had never once worked.
+ */
+describe('fieldAggregates — the shipped function, executed', () => {
+  beforeEach(enableCollection);
+
+  const seed = async (rev: string, totals: number[], dropped = 0) => {
+    for (const ms of totals) {
+      await pg.query(
+        `INSERT INTO sim_rum_events (session_id, kind, package_revision, t_ms, total_ms, dropped)
+         VALUES ('session-abcdef', 'transition', $1, 0, $2, $3)`, [rev, ms, dropped]);
+    }
+  };
+
+  it('returns a row for a SINGLE revision (the "malformed array literal" shape)', async () => {
+    await seed('rev-a', [100, 200, 300]);
+    const m = await fieldAggregates(['rev-a']);
+    expect(m.get('rev-a')?.samples).toBe(3);
+  });
+
+  it('returns one row per revision for SEVERAL (the "requires array on right side" shape)', async () => {
+    await seed('rev-a', [100, 200]);
+    await seed('rev-b', [50]);
+    await seed('rev-c', [999]);
+    const m = await fieldAggregates(['rev-a', 'rev-b']);
+    expect([...m.keys()].sort()).toEqual(['rev-a', 'rev-b']);
+    expect(m.get('rev-c')).toBeUndefined();
+  });
+
+  it('asks the database nothing when there are no revisions', async () => {
+    // drizzle's inArray throws on an empty list, so the early return is load-bearing, not tidiness.
+    await expect(fieldAggregates([])).resolves.toEqual(new Map());
+  });
+
+  it('reports nearest-rank percentiles, so every value reported actually occurred', async () => {
+    await seed('rev-a', [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]);
+    const a = (await fieldAggregates(['rev-a'])).get('rev-a')!;
+    expect([10, 20, 30, 40, 50, 60, 70, 80, 90, 100]).toContain(a.p90TotalMs);
+    expect([10, 20, 30, 40, 50, 60, 70, 80, 90, 100]).toContain(a.p50TotalMs);
+  });
+
+  it('sums the drop count across rows without overflowing the aggregate', async () => {
+    // The ::int cast raised 22003 on a large sum, and the catch turned that into an empty map for
+    // EVERY package at once — one hostile batch disabling field budgets product-wide.
+    await pg.query(
+      `INSERT INTO sim_rum_events (session_id, kind, package_revision, t_ms, total_ms, dropped)
+       VALUES ('session-abcdef','transition','rev-a',0,100,2000000000),
+              ('session-abcdef','transition','rev-a',0,120,2000000000)`);
+    const a = (await fieldAggregates(['rev-a'])).get('rev-a')!;
+    expect(a.samples).toBe(2);
+    expect(Number(a.dropped)).toBe(4000000000);
+  });
+
+  it('returns an empty map instead of throwing when the table is missing', async () => {
+    await pg.exec('DROP TABLE sim_rum_events');
+    await expect(fieldAggregates(['rev-a'])).resolves.toEqual(new Map());
   });
 });
