@@ -42,10 +42,14 @@ async function snapshot(): Promise<unknown> {
   const cols = await rows(
     `SELECT table_name, column_name, data_type, is_nullable, column_default
        FROM information_schema.columns
-      WHERE table_name IN ('sim_rum_events','admin_settings') ORDER BY table_name, column_name`);
+      WHERE table_name IN ('sim_rum_events','admin_settings')
+         OR (table_name = 'simulations' AND column_name = 'prepare_budget_ms')
+      ORDER BY table_name, column_name`);
   const cons = await rows(
     `SELECT conname, pg_get_constraintdef(oid) AS def FROM pg_constraint
-      WHERE conrelid IN ('sim_rum_events'::regclass, 'admin_settings'::regclass) ORDER BY conname`);
+      WHERE conrelid IN ('sim_rum_events'::regclass, 'admin_settings'::regclass, 'simulations'::regclass)
+        AND conname LIKE '%prepare_budget%' OR conrelid IN ('sim_rum_events'::regclass, 'admin_settings'::regclass)
+      ORDER BY conname`);
   const idx = await rows(
     `SELECT indexname, indexdef FROM pg_indexes
       WHERE tablename IN ('sim_rum_events','admin_settings') ORDER BY indexname`);
@@ -99,8 +103,12 @@ describe('051 — the kill switch defaults to collecting nothing', () => {
       `SELECT column_default, is_nullable FROM information_schema.columns
         WHERE table_name = 'admin_settings' AND column_name = 'rum_sample_rate'`);
     // A viewer must send nothing until an operator deliberately turns it on.
-    expect(c!.column_default).toContain('0');
+    // `toContain('0')` would pass for DEFAULT 0.5 — the text of the default contains a '0'. The
+    // claim is that collection is OFF, so the VALUE is what must be asserted.
     expect(c!.is_nullable).toBe('NO');
+    const [row] = await rows<{ rum_sample_rate: number }>(
+      `SELECT rum_sample_rate FROM admin_settings LIMIT 1`);
+    expect(Number(row!.rum_sample_rate), 'collection is not off by default').toBe(0);
   });
 
   it('refuses a sample rate outside [0,1]', async () => {
@@ -127,7 +135,11 @@ describe('051 — the kill switch defaults to collecting nothing', () => {
     const [c] = await rows<{ column_default: string }>(
       `SELECT column_default FROM information_schema.columns
         WHERE table_name = 'admin_settings' AND column_name = 'rum_retention_days'`);
-    expect(c!.column_default).toContain('30');
+    // Same reasoning as the sample rate: assert the VALUE, not the text of the default.
+    const [row] = await rows<{ rum_retention_days: number }>(
+      `SELECT rum_retention_days FROM admin_settings LIMIT 1`);
+    expect(Number(row!.rum_retention_days)).toBe(30);
+    void c;
   });
 });
 
@@ -192,7 +204,7 @@ describe('051 — the DDL bounds what an unauthenticated endpoint can store', ()
     expect(cols).toEqual([
       'apply_ms', 'coarse_pointer', 'created_at', 'device_cores', 'device_memory_gb', 'dpr',
       'failure_code', 'furthest_stage', 'id', 'kind', 'package_revision', 'pool_tier',
-      'prepare_ms', 'present_ms', 'save_data', 'session_id', 't_ms', 'total_ms',
+      'prepare_ms', 'present_ms', 'save_data', 'session_id', 't_ms', 'total_ms', 'dropped',
     ].sort());
   });
 });
@@ -227,6 +239,11 @@ describe('051 — idempotency and rollback', () => {
       .map((c) => c.column_name);
     expect(cols).not.toContain('rum_sample_rate');
     expect(cols).toContain('sim_pool_mode');
+    // 051 also touches `simulations`; a rollback that left that half behind used to pass.
+    const simCols = (await rows<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns WHERE table_name = 'simulations'`))
+      .map((c) => c.column_name);
+    expect(simCols, 'the simulations half of 051 was left behind').not.toContain('prepare_budget_ms');
   });
 
   it('forward → rollback → forward reaches the same catalog state', async () => {

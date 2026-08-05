@@ -190,7 +190,8 @@ describe('ingestBatch', () => {
     const r = await ingestBatch(batch({ events: [ev({ t: 1e18 })] }));
     expect(r.stored).toBe(1);
     const [row] = await rows<{ t_ms: number }>(`SELECT t_ms FROM sim_rum_events`);
-    expect(row!.t_ms).toBeLessThanOrEqual(2 ** 31 - 1);
+    // Clamped TO THE CEILING. `<=` passes for a clamp with swapped bounds or a hardcoded 0.
+    expect(row!.t_ms).toBe(2 ** 31 - 1);
   });
 
   it('refuses an over-long code at the validator, before any truncation is needed', async () => {
@@ -276,6 +277,25 @@ describe('packagePercentiles', () => {
 
 
 // ── Review findings ──────────────────────────────────────────────────────────────────────────────
+
+describe('the drop count survives the round trip', () => {
+  beforeEach(enableCollection);
+
+  it('stores what the client ring discarded', async () => {
+    // The client validates, drains and transmits `dropped` precisely so a truncated sample cannot
+    // masquerade as a complete one. Discarding it on arrival made that invariant false end to end
+    // while every client-side test still passed.
+    await ingestBatch(batch({ dropped: 17 }));
+    const [row] = await rows<{ dropped: number }>(`SELECT dropped FROM sim_rum_events`);
+    expect(row!.dropped).toBe(17);
+  });
+
+  it('defaults to 0 for a batch that dropped nothing', async () => {
+    await ingestBatch(batch());
+    const [row] = await rows<{ dropped: number }>(`SELECT dropped FROM sim_rum_events`);
+    expect(row!.dropped).toBe(0);
+  });
+});
 
 describe('the kill switch gates the WRITE path, not only the client', () => {
   it('stores nothing while collection is disabled', async () => {
@@ -370,6 +390,8 @@ describe('the retention sweep is quiet before its migration is applied', () => {
     stop();
     await new Promise((r) => setTimeout(r, 30));
     expect(logger.error).not.toHaveBeenCalled();
+    // POSITIVE CONTROL: without this, a sweep that never ran at all would also pass.
+    expect(logger.debug, 'the sweep never ran — the quiet-branch claim is untested').toHaveBeenCalled();
   });
 
   it('STILL shouts about any other failure', async () => {

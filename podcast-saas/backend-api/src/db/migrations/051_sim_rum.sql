@@ -47,6 +47,10 @@ CREATE TABLE IF NOT EXISTS sim_rum_events (
   -- differently from one that dies at another, and counting only completions would hide both.
   furthest_stage    TEXT,
   failure_code      TEXT,
+  -- Events the client's ring discarded before this batch was sent. Without it a truncated sample is
+  -- indistinguishable from a complete one, which is the whole reason the client counts drops — the
+  -- field was validated, drained and transmitted, and then thrown away on arrival.
+  dropped           INTEGER NOT NULL DEFAULT 0 CHECK (dropped >= 0),
 
   -- Coarse device buckets. Every duration has to be read against these — comparing a transition on
   -- a 2 GB phone at 'window' tier with one on a desktop at 'all' tier is meaningless.
