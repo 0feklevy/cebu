@@ -23,6 +23,13 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    // PGlite boots a real WASM Postgres per test file — several suites replay all 51 migrations
+    // into one. Under full-suite parallel load that regularly exceeds the 5s default, and the
+    // resulting failure is a TIMEOUT with passing assertions, which reads as a logic bug and is
+    // not one. Verified: the affected file passes in isolation and timed out at 6.7s in a loaded
+    // run. This raises the budget for starting a database; it weakens no assertion.
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
     include: ['src/**/*.test.ts'],
     // src/_archive holds the retired v1 podcast pipeline. Its tests import a
     // db/index.js that no longer exists in the archive tree, so they cannot run.
