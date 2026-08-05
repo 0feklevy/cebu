@@ -1109,11 +1109,14 @@ export function useProjectPlayer(
           });
           qualityStateRef.current.set(pkgKey, decision.state);
           adaptiveQuality = decision.next;
-          if (decision.changed) {
-            simTelemetry('adaptive-quality', {
-              key: pkgKey, next: decision.next, reason: decision.reason, budgetSource: budget.source,
-            });
-          }
+          // Reported on EVERY decision, not only on a change. A controller that has decided
+          // "stay at high" is doing its job; telemetry that spoke only on transitions could not
+          // distinguish that from a controller that was never consulted at all — which is exactly
+          // the confusion that let four of these modules ship with no caller.
+          simTelemetry('adaptive-quality', {
+            key: pkgKey, next: decision.next, changed: decision.changed,
+            reason: decision.reason, budgetSource: budget.source,
+          });
         } catch (err) {
           // A controller fault must never change what is shown. Leaving `adaptiveQuality`
           // undefined is exactly the pre-feature behaviour.
@@ -1924,6 +1927,7 @@ export function useProjectPlayer(
               onBoundary: (mediaTime) => {
                 boundarySentinelHandleRef.current = null;
                 boundaryTargetRef.current = null;
+                simTelemetry('boundary-fired', { target, mediaTime });
                 // Every guard the tick applies, applied again: the element may have been swapped,
                 // the generation may have moved (seek/branch), or the user may be scrubbing.
                 if (v !== videoRef.current || warmGenRef.current !== gen) return;
@@ -1933,6 +1937,13 @@ export function useProjectPlayer(
               },
             })
             : null;
+          // `mode` records WHICH mechanism armed — rvfc, timeout, or none because the boundary was
+          // outside the horizon. This is the direct field answer to "what fraction of sessions get
+          // the frame-accurate path", which the rollout document previously listed as unknowable
+          // without a separate study.
+          simTelemetry('boundary-armed', {
+            target, mode: boundarySentinelHandleRef.current?.mode ?? 'none',
+          });
         } else if (nextStart === null && boundaryTargetRef.current !== null) {
           boundarySentinelHandleRef.current?.cancel();
           boundarySentinelHandleRef.current = null;
@@ -1994,6 +2005,13 @@ export function useProjectPlayer(
               const lab = secRow?.simulation_id ? prepareBudgetsRef.current[secRow.simulation_id] : undefined;
               return resolveBudget({ measuredP90Ms: null, canaryMs: lab ?? null }).ms;
             },
+          });
+          // Emitted whenever the planner RUNS, not only when it mounts something. At the 'all' tier
+          // every package is already resident from video start, so a plan with nothing to do is the
+          // normal case — and telemetry that only appeared on a mount could not distinguish
+          // "planned, nothing needed" from "never ran at all".
+          simTelemetry('predictive-plan', {
+            admit: plan.admit.length, prepare: plan.prepare.length, evict: plan.evict.length,
           });
           // MOUNT ONLY. `plan.evict` is deliberately ignored: eviction stays with the tier logic
           // below, which already understands exit fades and the never-drop-the-live-frame rule.
