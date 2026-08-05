@@ -88,6 +88,15 @@ export function startRumRetentionSweep(intervalMs = RUM_REAP_INTERVAL_MS): () =>
     void reapRumEvents().catch((err: unknown) => {
       // Swallowed: nothing downstream waits on this, and a failing sweep must not take a process
       // down over data nobody is reading yet.
+      //
+      // A MISSING TABLE IS NOT AN ERROR. An image that boots before migration 051 is applied has
+      // nothing to reap, and logging that hourly at error level trains operators to ignore this
+      // line — so the one case where it matters gets missed. Every other failure still shouts.
+      const code = (err as { code?: string } | null)?.code;
+      if (code === '42P01') {
+        logger.debug('sim RUM retention sweep: table not migrated yet, nothing to reap');
+        return;
+      }
       logger.error({ err }, 'sim RUM retention sweep failed');
     });
   };
