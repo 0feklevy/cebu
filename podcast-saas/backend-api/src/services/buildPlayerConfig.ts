@@ -67,6 +67,8 @@ import { getStorageAdapter } from './storage/getStorageAdapter.js';
 import { captionUrlForVideo } from './captions/CaptionService.js';
 import { normalizeAvatarCircles, normalizeSpeakerTimeline, type AvatarCirclesLike } from './avatarCircles/normalizeAvatarCircles.js';
 import { logger } from '../lib/logger.js';
+import { resolveRumSampleRate } from './simulation/RumService.js';
+import { canaryPrepareMs } from 'shared/src/sim/prepareBudget';
 
 /** The simulation columns this file reads. Named so the degraded-read catch cannot drift from it. */
 interface SimRowShape {
@@ -75,6 +77,7 @@ interface SimRowShape {
   bridge_hash: string | null;
   active_revision_id: string | null;
   active_revision_entry_key: string | null;
+  canary_report: unknown;
 }
 
 /**
@@ -106,7 +109,7 @@ export async function buildPlayerConfig(
   // player-config / share / playlist-item / course render), so the serial waits added up
   // (perf-003; scenes+branch_sequences folded in per loadperf-002/backend-110). Scenes and
   // sequences are filtered/used in memory below exactly as before.
-  const [allVideos, sections, imageRows, audioRows, allScenes, sequenceRows, simPoolMode, projectSimulations] = await Promise.all([
+  const [allVideos, sections, imageRows, audioRows, allScenes, sequenceRows, simPoolMode, rumSampleRate, projectSimulations] = await Promise.all([
     db.query.video_files.findMany({
       where: eq(video_files.project_id, project.id),
       orderBy: [asc(video_files.created_at)],
@@ -123,6 +126,7 @@ export async function buildPlayerConfig(
       orderBy: [asc(branch_sequences.sort_order), asc(branch_sequences.created_at)],
     }),
     resolveSimPoolMode(),
+    resolveRumSampleRate(),
     // The package identity + canary verdict for every simulation this project references.
     //
     // `columns` is not an optimisation detail: without it Drizzle selects the WHOLE row for every
@@ -141,6 +145,11 @@ export async function buildPlayerConfig(
           // The pointer (migration 050). Two cheap scalars, deliberately denormalised onto this row
           // so resolving which bytes are live costs no join on the hottest read path.
           active_revision_id: true, active_revision_entry_key: true,
+          // The publish-time canary already records per-step ms for exactly these bytes. It is the
+          // only real number available on a FIRST view, when nothing has been measured yet and a
+          // compiled-in constant would be at its least defensible. Read here rather than in a
+          // second query because this row is already being fetched.
+          canary_report: true,
         },
       })
       // A degraded read here is NOT harmless. An empty list makes every simulation look
@@ -245,6 +254,19 @@ export async function buildPlayerConfig(
    * URL predates the hash, at the cost of a revision that only changes when the URL does; that is
    * strictly better than emitting null, which would disable identity checking for that section.
    */
+  /**
+   * Lab preparation cost per simulation, from that package's own canary report.
+   *
+   * Absent for a package that has never been canaried, and the client treats absence as "no lab
+   * data" rather than as zero — a package with no measurement must not be budgeted as instantaneous.
+   */
+  const simPrepareBudgets: Record<string, number> = {};
+  for (const [simId, row] of simRows) {
+    const report = row.canary_report as { steps?: { step: string; ms?: number | null; status?: string }[] } | null;
+    const ms = canaryPrepareMs(report?.steps ?? null);
+    if (ms !== null) simPrepareBudgets[simId] = ms;
+  }
+
   const packageRevisionFor = (simId: string | null, url: string | null): string | null => {
     if (!simId && !url) return null;
     const row = simId ? simRows.get(simId) : undefined;
@@ -673,6 +695,13 @@ export async function buildPlayerConfig(
     speaker_timeline: speakerTimeline,
     branching,
     sim_pool_mode: simPoolMode,   // kill switch: 'adaptive' (pool) | 'single' (conservative)
+    // Sampled field measurement (migration 051). 0 means the viewer sends nothing, which is the
+    // default and the state every existing deployment is in until an operator changes it.
+    sim_rum_sample_rate: rumSampleRate,
+    // Per-package preparation budgets from each package's own publish-time canary. Emitted as a map
+    // rather than per section because a package's cost is a property of its BYTES, not of where it
+    // happens to appear on a timeline — and one package commonly appears in many sections.
+    sim_prepare_budget_ms: simPrepareBudgets,
   };
 }
 
