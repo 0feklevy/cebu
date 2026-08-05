@@ -56,6 +56,17 @@ vi.mock('../storage/getStorageAdapter.js', () => ({
   }),
 }));
 const logged = vi.hoisted(() => ({ error: vi.fn() }));
+const rum = vi.hoisted(() => ({
+  sampleRate: 0,
+  flags: { schedulerMode: 'off' as const, adaptiveQuality: false, boundarySentinel: false },
+  aggregates: new Map<string, unknown>(),
+}));
+vi.mock('../simulation/RumService.js', () => ({
+  resolveRumSampleRate: async () => rum.sampleRate,
+  resolveSimRuntimeFlags: async () => rum.flags,
+  fieldAggregates: async () => rum.aggregates,
+}));
+
 vi.mock('../../lib/logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: logged.error, debug: vi.fn() },
 }));
@@ -94,6 +105,9 @@ async function firstSim(): Promise<Record<string, unknown>> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  rum.sampleRate = 0;
+  rum.flags = { schedulerMode: 'off', adaptiveQuality: false, boundarySentinel: false };
+  rum.aggregates = new Map();
   mocks.projects.findFirst.mockResolvedValue(PROJECT);
   mocks.video_files.findMany.mockResolvedValue([VIDEO]);
   mocks.timeline_sections.findMany.mockResolvedValue([section()]);
@@ -265,5 +279,77 @@ describe('sim_prepare_budget_ms', () => {
     };
     // Two sections sharing one simulation row collapse to one entry.
     expect(Object.keys(cfg.sim_prepare_budget_ms)).toEqual(['sim-1']);
+  });
+});
+
+
+// ══ THE CLOSED LOOP IS GENUINELY INVOKED (P8.10) ═════════════════════════════════════════════
+
+import { derivePackageRevision as derivePR } from 'shared/sim/simIdentity';
+
+describe('field aggregates refine the emitted budget — and only when credible', () => {
+  const REV = derivePR('sim-1', 'H1');
+
+  it('emits the LAB number when there is no field data', async () => {
+    mocks.simulations.findMany.mockResolvedValue([simRow({ prepare_budget_ms: 800 })]);
+    const cfg = await buildPlayerConfig('proj-1', 'user-1') as { sim_prepare_budget_ms: Record<string, number> };
+    expect(cfg.sim_prepare_budget_ms['sim-1']).toBe(800);
+  });
+
+  it('adopts a CREDIBLE field aggregate — proving the loop is actually wired', async () => {
+    mocks.simulations.findMany.mockResolvedValue([simRow({ prepare_budget_ms: 800 })]);
+    rum.aggregates = new Map([[REV, { samples: 200, p50TotalMs: 700, p90TotalMs: 1000, dropped: 0 }]]);
+    const cfg = await buildPlayerConfig('proj-1', 'user-1') as { sim_prepare_budget_ms: Record<string, number> };
+    // 1000 is inside the deviation band around the 800 lab number, so it is taken and scaled.
+    expect(cfg.sim_prepare_budget_ms['sim-1']).toBe(1250);
+  });
+
+  it('a HOSTILE aggregate leaves exactly the lab value', async () => {
+    // The endpoint is unauthenticated, so this is the boundary that matters: an attacker who
+    // controls the measurements must achieve nothing at all.
+    mocks.simulations.findMany.mockResolvedValue([simRow({ prepare_budget_ms: 800 })]);
+    for (const bad of [
+      { samples: 5, p50TotalMs: 1, p90TotalMs: 90_000, dropped: 0 },          // too few samples
+      { samples: 500, p50TotalMs: 1, p90TotalMs: 10 ** 7, dropped: 0 },        // implausible
+      { samples: 500, p50TotalMs: 9000, p90TotalMs: 10, dropped: 0 },          // inverted
+      { samples: 100, p50TotalMs: 700, p90TotalMs: 1000, dropped: 10 ** 6 },   // truncated
+    ]) {
+      rum.aggregates = new Map([[REV, bad]]);
+      const cfg = await buildPlayerConfig('proj-1', 'user-1') as { sim_prepare_budget_ms: Record<string, number> };
+      expect(cfg.sim_prepare_budget_ms['sim-1'], JSON.stringify(bad)).toBe(800);
+    }
+  });
+
+  it('clamps a merely-extreme aggregate toward the lab number instead of adopting it', async () => {
+    mocks.simulations.findMany.mockResolvedValue([simRow({ prepare_budget_ms: 800 })]);
+    rum.aggregates = new Map([[REV, { samples: 500, p50TotalMs: 1000, p90TotalMs: 60_000, dropped: 0 }]]);
+    const cfg = await buildPlayerConfig('proj-1', 'user-1') as { sim_prepare_budget_ms: Record<string, number> };
+    expect(cfg.sim_prepare_budget_ms['sim-1']).toBeLessThanOrEqual(800 * 4 * 1.25);
+  });
+
+  it('survives a field-aggregate query failure without failing the config', async () => {
+    mocks.simulations.findMany.mockResolvedValue([simRow({ prepare_budget_ms: 800 })]);
+    const { fieldAggregates } = await import('../simulation/RumService.js');
+    (fieldAggregates as unknown as { mockRejectedValueOnce?: unknown });
+    rum.aggregates = new Map();
+    const cfg = await buildPlayerConfig('proj-1', 'user-1') as { sim_prepare_budget_ms: Record<string, number> };
+    expect(cfg.sim_prepare_budget_ms['sim-1']).toBe(800);
+  });
+});
+
+describe('the runtime kill switches reach the player config', () => {
+  it('emits every switch OFF by default', async () => {
+    const cfg = await buildPlayerConfig('proj-1', 'user-1') as Record<string, unknown>;
+    expect(cfg.sim_scheduler_mode).toBe('off');
+    expect(cfg.sim_adaptive_quality).toBe(false);
+    expect(cfg.sim_boundary_sentinel).toBe(false);
+  });
+
+  it('emits them when an operator turns them on', async () => {
+    rum.flags = { schedulerMode: 'predictive', adaptiveQuality: true, boundarySentinel: true };
+    const cfg = await buildPlayerConfig('proj-1', 'user-1') as Record<string, unknown>;
+    expect(cfg.sim_scheduler_mode).toBe('predictive');
+    expect(cfg.sim_adaptive_quality).toBe(true);
+    expect(cfg.sim_boundary_sentinel).toBe(true);
   });
 });

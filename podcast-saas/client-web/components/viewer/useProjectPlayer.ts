@@ -7,6 +7,11 @@ import { releaseAvatarElement } from '../../lib/avatarAudioGraph';
 import type { SimStartScriptParams } from '../../lib/simUiControls';
 import { canWarmUnpaused, learnCanEmitPaint } from '../../lib/simCapability';
 import { collectSimPool, bootHideFor, dynamicScriptFor, flattenSimOccurrences, packageKeyOf, planWindowResidency, sectionKeyOf, SIM_POOL_CAP, type SimPoolFrameSpec } from '../../lib/simPool';
+import { planResidency, type SimOccurrence } from 'shared/src/sim/occurrencePlanner';
+import { resolveBudget } from 'shared/src/sim/prepareBudget';
+import { decideQuality, INITIAL_QUALITY_STATE, type QualityState } from 'shared/src/sim/adaptiveQuality';
+import { armBoundarySentinel, type BoundarySentinel } from '../../lib/sim/boundaryClock';
+import { createRumRecorder, type RumRecorder } from '../../lib/sim/rumClient';
 import { newPlayerSessionId } from 'shared/src/sim/simIdentity';
 import { simTelemetry } from '../../lib/simTelemetry';
 import { SimRuntimeClient } from '../../lib/sim/SimRuntimeClient';
@@ -44,6 +49,8 @@ const SIM_PAINT_POLL_MAX_MS = 12_000;
 const SIM_WINDOW_LEAD_SEC   = 45;
 
 const BRANCH_API = process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
+/** Sampled field measurement (migration 051). Inert until an operator raises the sample rate. */
+const SIM_RUM_ENDPOINT = `${BRANCH_API}/sim-rum`;
 
 // ── HLS.js config (ported from interactive-podcast-react/player/src/constants/index.ts) ──
 const HLS_OPTS = {
@@ -281,6 +288,39 @@ export function useProjectPlayer(
   // Kill switch: 'single' mode (admin_settings.sim_pool_mode / SIM_POOL_MODE env, overridable
   // per-session with ?simpool=single|adaptive) reverts to the conservative pre-pool behavior —
   // ONE sim frame, mounted on activation, no residency/warm — without a deploy rollback.
+  // ── Priority 8 runtime switches. Read ONCE from the config; every one defaults to today's
+  // behaviour, so a config that predates migration 052 is indistinguishable from all-off.
+  const schedulerModeRef = useRef<'off' | 'predictive'>(
+    config.sim_scheduler_mode === 'predictive' ? 'predictive' : 'off');
+  const adaptiveQualityRef = useRef<boolean>(config.sim_adaptive_quality === true);
+  const boundarySentinelRef = useRef<boolean>(config.sim_boundary_sentinel === true);
+  /** Per-simulation lab preparation cost, from the package's own canary. */
+  const prepareBudgetsRef = useRef<Record<string, number>>(config.sim_prepare_budget_ms ?? {});
+  /** Adaptive-quality state per PACKAGE — quality is a property of the bytes, not of a section. */
+  const qualityStateRef = useRef<Map<string, QualityState>>(new Map());
+  /** The armed boundary sentinel, if any. Exactly one at a time. */
+  const boundarySentinelHandleRef = useRef<BoundarySentinel | null>(null);
+  const boundaryTargetRef = useRef<number | null>(null);
+  const rumRef = useRef<RumRecorder | null>(null);
+  /**
+   * The RUM recorder for this session, created once.
+   *
+   * Inert unless an operator has raised the sample rate AND this session wins its single roll, so
+   * on every current deployment `createRumRecorder` returns a no-op the player cannot distinguish
+   * from a live one. That symmetry is deliberate: nothing in the player may branch on whether
+   * measurement is on.
+   */
+  const rum = (): RumRecorder => {
+    if (!rumRef.current) {
+      rumRef.current = createRumRecorder({
+        endpoint: SIM_RUM_ENDPOINT,
+        sampleRate: config.sim_rum_sample_rate ?? 0,
+        poolTier: poolTierRef.current,
+      });
+    }
+    return rumRef.current;
+  };
+
   const simPoolModeRef = useRef<'adaptive' | 'single' | null>(null);
   if (simPoolModeRef.current === null) {
     let mode: 'adaptive' | 'single' = config.sim_pool_mode === 'single' ? 'single' : 'adaptive';
@@ -1027,6 +1067,48 @@ export function useProjectPlayer(
       const sectionUrl = simSection.simulation_url;
       const key = packageKeyOf(sectionUrl);
       ensurePooled(simSection);
+      // ADAPTIVE QUALITY (migration 052 kill switch, default off).
+      //
+      // Decided BEFORE the identity is minted, which is the only safe place: `quality` is inside
+      // configHash and configHash is one of the five axes the reveal invariant compares. A change
+      // here produces a different hash — correctly invalidating the poster keyed on it — and can
+      // never alter a LIVE activation. Nothing here is ever consulted by the reveal gate.
+      //
+      // State is per PACKAGE because cost is a property of the bytes. Hysteresis is asymmetric:
+      // quick to protect a struggling device, slow to re-expand, because each change re-mints an
+      // identity and discards a poster.
+      let adaptiveQuality: 'high' | 'balanced' | 'low' | undefined;
+      if (adaptiveQualityRef.current) {
+        try {
+          const pkgKey = packageKeyOf(sectionUrl);
+          const rt0 = simRuntimesRef.current.get(pkgKey);
+          const summary = rt0?.timingSummary();
+          const lab = simSection.simulation_id
+            ? prepareBudgetsRef.current[simSection.simulation_id] : undefined;
+          const budget = resolveBudget({
+            measuredP90Ms: summary?.p90TotalMs ?? null, canaryMs: lab ?? null,
+          });
+          const prior = qualityStateRef.current.get(pkgKey) ?? INITIAL_QUALITY_STATE;
+          const decision = decideQuality(prior, {
+            p90TotalMs: summary?.p90TotalMs ?? null,
+            samples: summary?.completed ?? 0,
+            budgetMs: budget.ms,
+          });
+          qualityStateRef.current.set(pkgKey, decision.state);
+          adaptiveQuality = decision.next;
+          if (decision.changed) {
+            simTelemetry('adaptive-quality', {
+              key: pkgKey, next: decision.next, reason: decision.reason, budgetSource: budget.source,
+            });
+          }
+        } catch (err) {
+          // A controller fault must never change what is shown. Leaving `adaptiveQuality`
+          // undefined is exactly the pre-feature behaviour.
+          adaptiveQuality = undefined;
+          simTelemetry('adaptive-quality-error', { message: String(err).slice(0, 120) });
+        }
+      }
+
       const params: SimStartScriptParams = {
         simpleUi:   simSection.simple_ui ?? false,
         autoScript: simSection.auto_script ?? true,
@@ -1092,6 +1174,10 @@ export function useProjectPlayer(
             playerSessionId: playerSessionIdRef.current,
             packageRevision: simSection.package_revision,
             packageClass: simSection.package_class ?? 'legacy-opaque',
+            // Pre-identity, so a change here mints a NEW configHash rather than mutating a live
+            // activation. Undefined when the switch is off — the client's own default then applies,
+            // byte-for-byte as before.
+            ...(adaptiveQuality ? { quality: adaptiveQuality } : {}),
           },
           {
             failureContext: {
@@ -1792,6 +1878,129 @@ export function useProjectPlayer(
       // behind short segments — audited). The plan is authoritative: an EMPTY plan evicts every
       // non-active frame, so long sim-free gaps release WebGL contexts (the old `want.size > 0`
       // guard retained them indefinitely — audited).
+      // FRAME-ACCURATE BOUNDARY SENTINEL (migration 052 kill switch, default off).
+      //
+      // `timeupdate` fires at roughly 4Hz, so boundary detection is late by ~125ms on average
+      // before any of the transition work begins. requestVideoFrameCallback fires per PRESENTED
+      // frame and carries the frame's own mediaTime, cutting that to about one frame.
+      //
+      // It is a SENTINEL, not a replacement: this tick remains the master clock and the safety net.
+      // A missed sentinel costs nothing — the next tick re-detects the same boundary — and rVFC
+      // does not fire while paused, which this player does deliberately for post-roll sections.
+      // Where rVFC is absent (Firefox, historically) the sentinel falls back to a rate-scaled
+      // timer, and where neither can arm the behaviour is exactly today's.
+      if (boundarySentinelRef.current && !scrubbingRef.current) {
+        const segOff = timelineRef.current[idx]?.offset ?? 0;
+        let nextStart: number | null = null;
+        for (const sim of segmentsRef.current[idx]?.simulations ?? []) {
+          if (!sim.simulation_url) continue;
+          if (sim.start_sec > t && (nextStart === null || sim.start_sec < nextStart)) {
+            nextStart = sim.start_sec;
+          }
+        }
+        if (nextStart !== null && nextStart !== boundaryTargetRef.current) {
+          boundarySentinelHandleRef.current?.cancel();
+          boundaryTargetRef.current = nextStart;
+          const target = nextStart;
+          const gen = warmGenRef.current;
+          const v = videoRef.current;
+          boundarySentinelHandleRef.current = v
+            ? armBoundarySentinel({
+              video: v,
+              targetSec: target,
+              onBoundary: (mediaTime) => {
+                boundarySentinelHandleRef.current = null;
+                boundaryTargetRef.current = null;
+                // Every guard the tick applies, applied again: the element may have been swapped,
+                // the generation may have moved (seek/branch), or the user may be scrubbing.
+                if (v !== videoRef.current || warmGenRef.current !== gen) return;
+                if (scrubbingRef.current) return;
+                updateSimOverlay(curIdxRef.current, mediaTime);
+                setProgress(segOff + mediaTime);
+              },
+            })
+            : null;
+        } else if (nextStart === null && boundaryTargetRef.current !== null) {
+          boundarySentinelHandleRef.current?.cancel();
+          boundarySentinelHandleRef.current = null;
+          boundaryTargetRef.current = null;
+        }
+      }
+
+      // PREDICTIVE PREPARATION (migration 052 kill switch, default 'off').
+      //
+      // Strictly ADDITIVE: it only ever MOUNTS a package early. The existing tier logic below keeps
+      // full authority over eviction, so a mistake here can waste a mount but can never drop a
+      // document the viewer is about to need — which is why this runs before, and does not replace,
+      // the residency block.
+      //
+      // The lead window comes from each package's own publish-time canary, never a constant. A
+      // package with no lab measurement gets the floor rather than being treated as instantaneous.
+      if (schedulerModeRef.current === 'predictive' && poolTierRef.current !== 'single') {
+        try {
+          const occ: SimOccurrence[] = [];
+          for (let i = 0; i < segmentsRef.current.length; i += 1) {
+            const off = timelineRef.current[i]?.offset ?? 0;
+            for (const sim of segmentsRef.current[i]?.simulations ?? []) {
+              if (!sim.simulation_url) continue;
+              occ.push({
+                sectionId: sim.id,
+                packageKey: packageKeyOf(sim.simulation_url),
+                startSec: off + sim.start_sec,
+                endSec: off + sim.end_sec,
+              });
+            }
+          }
+          const absNow = (timelineRef.current[idx]?.offset ?? 0) + t;
+          const v = videoRef.current;
+          // Buffered-ahead gates SPECULATIVE preparation only: preparing a document the network
+          // cannot yet deliver competes with the segment fetches that would make it reachable.
+          let bufferedAheadSec: number | undefined;
+          try {
+            if (v && v.buffered.length > 0) {
+              for (let i = v.buffered.length - 1; i >= 0; i -= 1) {
+                if (v.buffered.start(i) <= v.currentTime && v.currentTime <= v.buffered.end(i)) {
+                  bufferedAheadSec = v.buffered.end(i) - v.currentTime;
+                  break;
+                }
+              }
+            }
+          } catch { bufferedAheadSec = undefined; }
+
+          const plan = planResidency({
+            occurrences: occ,
+            nowSec: absNow,
+            capacity: poolTierRef.current === 'all' ? SIM_POOL_CAP : 2,
+            resident: simPoolSpecsRef.current.map((sp) => sp.key),
+            bufferedAheadSec,
+            budgetMsFor: (packageKey) => {
+              const sim = occ.find((o) => o.packageKey === packageKey);
+              const secRow = sim
+                ? segmentsRef.current.flatMap((sg) => sg.simulations).find((x) => x.id === sim.sectionId)
+                : undefined;
+              const lab = secRow?.simulation_id ? prepareBudgetsRef.current[secRow.simulation_id] : undefined;
+              return resolveBudget({ measuredP90Ms: null, canaryMs: lab ?? null }).ms;
+            },
+          });
+          // MOUNT ONLY. `plan.evict` is deliberately ignored: eviction stays with the tier logic
+          // below, which already understands exit fades and the never-drop-the-live-frame rule.
+          for (const key of plan.prepare) {
+            if (simPoolSpecsRef.current.some((sp) => sp.key === key)) continue;
+            const o = occ.find((x) => x.packageKey === key);
+            const secRow = o
+              ? segmentsRef.current.flatMap((sg) => sg.simulations).find((x) => x.id === o.sectionId)
+              : undefined;
+            if (!secRow?.simulation_url) continue;
+            ensurePooledSpec({ key, src: secRow.simulation_url, bootHide: bootHideFor(secRow) });
+            simTelemetry('predictive-prepare', { key });
+          }
+        } catch (err) {
+          // A scheduler fault must never take the player down. Falling through leaves the existing
+          // residency behaviour entirely intact, which is the whole reason this is additive.
+          simTelemetry('predictive-error', { message: String(err).slice(0, 120) });
+        }
+      }
+
       if (poolTierRef.current === 'window') {
         const occurrences = flattenSimOccurrences(
           segmentsRef.current.map((s, i) => ({ offset: timelineRef.current[i]?.offset ?? 0, simulations: s.simulations })),
@@ -2059,7 +2268,9 @@ export function useProjectPlayer(
   // notion of: which document is ACTIVE, the warm queue, and how the overlay is composited.
   // The telemetry `detail` bag is deliberately NOT read here: every fact this surface reacts to is
   // read back from the runtime's own state, so a classification can never exist in two copies.
-  runtimeEventRef.current = (key, event) => {
+  // `detail` was previously dropped here. It carries the client's own measurement of the transition
+  // that just completed, which is the only place field timings can be observed.
+  runtimeEventRef.current = (key, event, detail) => {
     const meta = poolMeta(key);
     const isActive = key === activeSimUrlRef.current;
     // Whether the active document is on the activation-scoped path is re-read from the runtime on
@@ -2141,6 +2352,20 @@ export function useProjectPlayer(
       case 'reveal':
         if (isActive) {
           merge({ simBootStalled: false });
+          // FIELD MEASUREMENT. `detail` carries the durations the client computed for this exact
+          // transition; the recorder is a no-op unless collection is enabled.
+          try {
+            const d = (detail ?? {}) as { totalMs?: number | null; prepareMs?: number | null;
+              presentMs?: number | null; applyMs?: number | null };
+            rum().record({
+              kind: 'transition',
+              packageRevision: activeSimRef.current?.package_revision ?? key,
+              durations: {
+                totalMs: d.totalMs ?? null, prepareMs: d.prepareMs ?? null,
+                presentMs: d.presentMs ?? null, applyMs: d.applyMs ?? null,
+              },
+            });
+          } catch { /* measurement must never affect what a viewer sees */ }
           // On the modern path this event IS the reveal decision, and it is the only writer of
           // simPresented:true. `modern-section-presented` fires earlier, before the gate has run,
           // and the gate can still refuse — compositing on that breadcrumb showed frames the gate
@@ -2160,7 +2385,16 @@ export function useProjectPlayer(
       // section, with no spinner parked (a failure the viewer cannot act on).
       case 'script-missing':
       case 'script-error':
-        if (isActive) merge({ simBootStalled: false, simColdCover: false });
+        if (isActive) {
+          merge({ simBootStalled: false, simColdCover: false });
+          try {
+            rum().record({
+              kind: 'failure',
+              packageRevision: activeSimRef.current?.package_revision ?? key,
+              code: event,
+            });
+          } catch { /* never affect the viewer */ }
+        }
         return;
       // ── activation-scoped (v3) presentation ───────────────────────────────────────────────
       // THE gate the layered surface opens on. `presented` is set from this event and from nothing
@@ -2260,7 +2494,15 @@ export function useProjectPlayer(
     const poolMetaAtMount = simPoolMetaRef.current;   // stable Map instance for the cleanup
     const reloadsAtMount = simPristineReloadRef.current;
     const runtimesAtMount = simRuntimesRef.current;
+    const rumAtMount = rumRef;
+    const sentinelAtMount = boundarySentinelHandleRef;
     return () => {
+      // The last batch is the most valuable one, and an armed sentinel must not outlive the tree:
+      // its callback closes over a video element this component is about to release.
+      try { rumAtMount.current?.dispose(); } catch { /* disposal must not throw into unmount */ }
+      rumAtMount.current = null;
+      try { sentinelAtMount.current?.cancel(); } catch { /* already gone */ }
+      sentinelAtMount.current = null;
       hlsRef.current?.destroy();
       hlsStandbyRef.current?.destroy();
       hlsBrollRef.current?.destroy();

@@ -207,6 +207,13 @@ export interface PlayerConfig {
   // Kill switch (admin_settings / SIM_POOL_MODE): 'adaptive' = package-identity resident pool;
   // 'single' = conservative one-frame-on-activation fallback. A ?simpool= URL param overrides it.
   sim_pool_mode?: 'adaptive' | 'single';
+  // ── Priority 8 runtime switches (migration 052). All absent/OFF = today's behaviour. ──
+  sim_scheduler_mode?: 'off' | 'predictive';
+  sim_adaptive_quality?: boolean;
+  sim_boundary_sentinel?: boolean;
+  sim_rum_sample_rate?: number;
+  /** Per-simulation publish-time preparation cost, keyed by simulation id. */
+  sim_prepare_budget_ms?: Record<string, number>;
 }
 
 export interface TimelineSeg {

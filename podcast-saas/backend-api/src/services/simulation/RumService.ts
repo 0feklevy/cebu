@@ -18,6 +18,7 @@ import { lt, sql } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { sim_rum_events } from '../../db/schema.js';
 import { logger } from '../../lib/logger.js';
+import type { FieldAggregate } from 'shared/sim/closedLoop';
 import {
   normalizeSampleRate, validateBatch,
   type RumBatch, type RumRejection,
@@ -176,6 +177,7 @@ export async function reapRumEvents(now: Date = new Date()): Promise<number> {
  */
 export async function packagePercentiles(packageRevision: string): Promise<{
   samples: number; p50TotalMs: number | null; p90TotalMs: number | null; p90PrepareMs: number | null;
+  dropped: number;
 }> {
   const rows = await db.execute<{
     samples: number; p50: number | null; p90: number | null; p90prep: number | null;
@@ -183,7 +185,8 @@ export async function packagePercentiles(packageRevision: string): Promise<{
     SELECT count(*)::int AS samples,
            percentile_disc(0.5) WITHIN GROUP (ORDER BY total_ms)   AS p50,
            percentile_disc(0.9) WITHIN GROUP (ORDER BY total_ms)   AS p90,
-           percentile_disc(0.9) WITHIN GROUP (ORDER BY prepare_ms) AS p90prep
+           percentile_disc(0.9) WITHIN GROUP (ORDER BY prepare_ms) AS p90prep,
+           COALESCE(sum(dropped), 0)::int                          AS dropped
       FROM ${sim_rum_events}
      WHERE package_revision = ${packageRevision}
        AND kind = 'transition'
@@ -191,12 +194,14 @@ export async function packagePercentiles(packageRevision: string): Promise<{
   `);
   const r = (rows as unknown as { rows?: unknown[] }).rows ?? (rows as unknown as unknown[]);
   const first = (Array.isArray(r) ? r[0] : undefined) as
-    { samples?: number; p50?: number | null; p90?: number | null; p90prep?: number | null } | undefined;
+    { samples?: number; p50?: number | null; p90?: number | null; p90prep?: number | null;
+      dropped?: number } | undefined;
   return {
     samples: Number(first?.samples ?? 0),
     p50TotalMs: numOrNull(first?.p50),
     p90TotalMs: numOrNull(first?.p90),
     p90PrepareMs: numOrNull(first?.p90prep),
+    dropped: Number(first?.dropped ?? 0),
   };
 }
 
@@ -214,4 +219,110 @@ function clampInt(v: unknown, lo: number, hi: number): number | null {
 
 function trunc(v: unknown, max: number): string | null {
   return typeof v === 'string' && v.length > 0 ? v.slice(0, max) : null;
+}
+
+
+// ─── Priority 8 runtime feature switches (migration 052) ─────────────────────────────────────────
+
+export interface SimRuntimeFlags {
+  schedulerMode: 'off' | 'predictive';
+  adaptiveQuality: boolean;
+  boundarySentinel: boolean;
+}
+
+/** Every switch OFF. The value returned whenever anything is unreadable. */
+export const SIM_RUNTIME_FLAGS_OFF: SimRuntimeFlags = {
+  schedulerMode: 'off', adaptiveQuality: false, boundarySentinel: false,
+};
+
+/**
+ * Resolve the runtime switches: env override -> admin_settings -> all OFF.
+ *
+ * Same shape and same failure direction as `resolveRumSampleRate` and `resolveSimPoolMode`. A
+ * missing column, an unparseable env var or a database hiccup all resolve to today's behaviour, so
+ * no path can enable a viewer-visible feature by accident.
+ */
+export async function resolveSimRuntimeFlags(): Promise<SimRuntimeFlags> {
+  const envMode = (process.env.SIM_SCHEDULER_MODE ?? '').trim().toLowerCase();
+  const envAdaptive = (process.env.SIM_ADAPTIVE_QUALITY ?? '').trim().toLowerCase();
+  const envSentinel = (process.env.SIM_BOUNDARY_SENTINEL ?? '').trim().toLowerCase();
+
+  let fromDb: Partial<SimRuntimeFlags> = {};
+  try {
+    const s = await db.query.admin_settings.findFirst({
+      columns: { sim_scheduler_mode: true, sim_adaptive_quality: true, sim_boundary_sentinel: true },
+    });
+    fromDb = {
+      schedulerMode: s?.sim_scheduler_mode === 'predictive' ? 'predictive' : 'off',
+      adaptiveQuality: s?.sim_adaptive_quality === true,
+      boundarySentinel: s?.sim_boundary_sentinel === true,
+    };
+  } catch {
+    // Column not migrated yet, or a DB hiccup. Today's behaviour; never surfaced to the player.
+    fromDb = {};
+  }
+
+  return {
+    schedulerMode: envMode === 'predictive' ? 'predictive'
+      : envMode === 'off' ? 'off'
+      : (fromDb.schedulerMode ?? 'off'),
+    adaptiveQuality: envAdaptive === '1' || envAdaptive === 'true' ? true
+      : envAdaptive === '0' || envAdaptive === 'false' ? false
+      : (fromDb.adaptiveQuality ?? false),
+    boundarySentinel: envSentinel === '1' || envSentinel === 'true' ? true
+      : envSentinel === '0' || envSentinel === 'false' ? false
+      : (fromDb.boundarySentinel ?? false),
+  };
+}
+
+
+/**
+ * Field aggregates for a set of package revisions, in ONE query.
+ *
+ * Read on the player's hottest path, so it is a single grouped scan over the indexed
+ * (package_revision, kind, created_at) predicate rather than a query per package. Returns an empty
+ * map — not an error — when the table is absent or the query fails: the closed loop then falls back
+ * to the lab number, which is the behaviour every deployment has today.
+ */
+export async function fieldAggregates(
+  packageRevisions: readonly string[],
+  windowDays = 14,
+): Promise<Map<string, FieldAggregate>> {
+  const out = new Map<string, FieldAggregate>();
+  const wanted = [...new Set(packageRevisions.filter((r) => typeof r === 'string' && r.length > 0))];
+  if (wanted.length === 0) return out;
+  try {
+    const cutoff = new Date(Date.now() - windowDays * 86_400_000);
+    const res = await db.execute<{
+      package_revision: string; samples: number; p50: number | null; p90: number | null; dropped: number;
+    }>(sql`
+      SELECT package_revision,
+             count(*)::int                                        AS samples,
+             percentile_disc(0.5) WITHIN GROUP (ORDER BY total_ms) AS p50,
+             percentile_disc(0.9) WITHIN GROUP (ORDER BY total_ms) AS p90,
+             COALESCE(sum(dropped), 0)::int                        AS dropped
+        FROM ${sim_rum_events}
+       WHERE kind = 'transition'
+         AND total_ms IS NOT NULL
+         AND created_at >= ${cutoff}
+         AND package_revision = ANY(${wanted})
+       GROUP BY package_revision
+    `);
+    const rows = ((res as unknown as { rows?: unknown[] }).rows ?? (res as unknown as unknown[])) as {
+      package_revision: string; samples: number; p50: number | null; p90: number | null; dropped: number;
+    }[];
+    for (const r of Array.isArray(rows) ? rows : []) {
+      out.set(String(r.package_revision), {
+        samples: Number(r.samples ?? 0),
+        p50TotalMs: numOrNull(r.p50),
+        p90TotalMs: numOrNull(r.p90),
+        dropped: Number(r.dropped ?? 0),
+      });
+    }
+  } catch {
+    // Table not migrated, or a DB hiccup. An empty map means "no field data", and the loop then
+    // uses the lab number — never an error the player has to handle.
+    return new Map();
+  }
+  return out;
 }
