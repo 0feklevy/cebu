@@ -1091,7 +1091,13 @@ export function useProjectPlayer(
       // the incoming package was already resident and it returns early.
       if (poolTierRef.current === 'single') {
         for (const sp of [...simPoolSpecsRef.current]) {
-          if (sp.key !== key) dropPooled(sp.key, 'single-mode-switch');
+          // A frame still inside its EXIT FADE survives to the next tick, exactly as the window
+          // planner protects it: unmounting mid-fade removes the element being animated, so the
+          // simulation CUTS to video instead of fading, and the deferred stopScript fires into a
+          // dead frame. The kill switch's promise is at most one resident document in steady
+          // state, not one during a transition — and 'single' is the mode an operator selects
+          // during an incident, which is the worst moment to add a visible glitch.
+          if (sp.key !== key && !isFadingOut(sp.key)) dropPooled(sp.key, 'single-mode-switch');
         }
       }
       // ADAPTIVE QUALITY (migration 052 kill switch, default off).
