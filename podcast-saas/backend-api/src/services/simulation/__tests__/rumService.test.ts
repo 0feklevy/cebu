@@ -358,3 +358,39 @@ describe('numOrNull', () => {
     expect(p.p50TotalMs).toBe(0);
   });
 });
+
+describe('the retention sweep is quiet before its migration is applied', () => {
+  it('does not log an error when the table does not exist yet', async () => {
+    // An image booting before 051 has nothing to reap. Shouting hourly about that trains operators
+    // to ignore the line, so the one case where it matters gets missed.
+    await pg.exec(`DROP TABLE sim_rum_events`);
+    const { logger } = await import('../../../lib/logger.js');
+    const stop = startRumRetentionSweep(10);
+    await new Promise((r) => setTimeout(r, 60));
+    stop();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it('STILL shouts about any other failure', async () => {
+    // The quiet path must be narrow. A sweep that swallowed every error silently would be worse
+    // than one that shouted about everything: retention could stop working and nothing would say so.
+    const { logger } = await import('../../../lib/logger.js');
+    const boom = new Error('permission denied') as Error & { code?: string };
+    boom.code = '42501';
+    // `db` is a Proxy forwarding to this ref, so a spy cannot attach to it — the underlying method
+    // is what has to be replaced.
+    const target = h.dbRef.current as Record<string, unknown>;
+    const original = target.delete;
+    target.delete = () => { throw boom; };
+    try {
+      const stop = startRumRetentionSweep(10);
+      await new Promise((r) => setTimeout(r, 60));
+      stop();
+      await new Promise((r) => setTimeout(r, 30));
+      expect(logger.error).toHaveBeenCalled();
+    } finally {
+      target.delete = original;
+    }
+  });
+});
