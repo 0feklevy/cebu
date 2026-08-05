@@ -848,6 +848,34 @@ test.describe('real React viewer — simulation transitions', () => {
     assertVisibleFramesAreCorrect(samples, { expect: 'B' });
   });
 
+  test('12b. a sim that OUTLIVES the video is still shown after `ended`', async ({ page }) => {
+    // Test 12 uses end_sec === segDuration, so `seg.duration < s.end_sec` is FALSE and onEnded's
+    // post-roll branch never runs — the real case (a section that continues past the last frame)
+    // had no coverage at all.
+    //
+    // NOTE ON DURATIONS: the fixture media is 40s of ffmpeg colour, while `segDuration` only sets
+    // what the CONFIG claims. So end_sec has to clear the MEDIA length, not the config's — a sim
+    // ending at 40 ends exactly when the video does and is not a post-roll at all. (Diagnosed the
+    // hard way: the first version of this test asserted against duration 40 and failed for that
+    // reason rather than for the behaviour under test.)
+    await bootViewer(page, makeConfig([{ id: 's1', start: 25, end: 60, section: S.B }], { segDuration: 30 }));
+    await startPlayback(page);
+    await seekTo(page, 26);
+    await waitForSection(page, 'B');
+
+    // Drive the video to its end and let `ended` fire.
+    await page.evaluate(() => {
+      const v = document.querySelector('video');
+      if (v) v.currentTime = Math.max(0, (v.duration || 30) - 0.05);
+    });
+    await page.waitForTimeout(2500);
+
+    const samples = await sampleFrames(page, 700);
+    const everShown = samples.some((s) => s.frames.some((f) => f.op > 0.5));
+    expect(everShown, 'the post-roll sim was not on screen after the video ended').toBe(true);
+    assertVisibleFramesAreCorrect(samples, { expect: 'B' });
+  });
+
   test('13. a LEGACY package (no ack support) is still displayed, never held on silence', async ({ page }) => {
     await bootViewer(page, makeConfig([
       { id: 's1', start: 3, end: 10, pkg: 'legacy', section: S.A },
