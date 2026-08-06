@@ -23,6 +23,19 @@ describe('isApprovedRequestUrl — the app, the API and stubs', () => {
   it('approves the app and API origins', () => {
     expect(isApprovedRequestUrl(`${BASE}/projects/x/view`, policy())).toBe(true);
     expect(isApprovedRequestUrl(`${API}/api/v1/projects/x/player-config`, policy())).toBe(true);
+    expect(isApprovedRequestUrl(BASE, policy())).toBe(true);           // the bare origin itself
+    expect(isApprovedRequestUrl(`${BASE}?probe=1`, policy())).toBe(true);
+  });
+
+  // REGRESSION: a bare startsWith(origin) also matched these. The app and API allowances must stop
+  // at an origin BOUNDARY, exactly as the emulator allowance always has.
+  it('REJECTS prefix collisions against the app and API origins', () => {
+    for (const u of [
+      'http://localhost:30100/projects/x/view',      // base + extra digit → different port
+      'http://localhost:8080.evil.test/api/v1/x',    // API origin as a hostname prefix
+    ]) {
+      expect(isApprovedRequestUrl(u, policy()), u).toBe(false);
+    }
   });
 
   it('approves non-network schemes', () => {
