@@ -45,16 +45,27 @@ export function isLoopbackOrigin(origin: string | null | undefined): boolean {
   }
 }
 
+/**
+ * True when `url` IS `origin` or continues past it at a real boundary (`/`, `?`, `#`). A bare
+ * `startsWith(origin)` also matches `http://localhost:30100/...` against `http://localhost:3010`
+ * and `http://localhost:8080.evil.test/...` against `http://localhost:8080` — the same prefix
+ * collision the emulator allowance always defended against, applied to every origin here.
+ */
+function atOriginBoundary(url: string, origin: string): boolean {
+  const o = origin.replace(/\/+$/, '');
+  return url === o || url.startsWith(`${o}/`) || url.startsWith(`${o}?`) || url.startsWith(`${o}#`);
+}
+
 export function isApprovedRequestUrl(url: string, policy: HermeticPolicy): boolean {
   if (LOCAL_SCHEMES.some((s) => url.startsWith(s))) return true;
-  if (url.startsWith(policy.base) || url.startsWith(policy.apiOrigin)) return true;
+  if (atOriginBoundary(url, policy.base) || atOriginBoundary(url, policy.apiOrigin)) return true;
+  // Stubbed hosts are deliberate PREFIXES (every entry ends with '/'), not bare origins.
   if (policy.stubbedHosts.some((h) => url.startsWith(h))) return true;
 
   // THE ONLY EXTRA ALLOWANCE, and it is exact: the configured emulator origin, which must itself
   // be loopback. A non-loopback value configured by mistake approves nothing.
   if (policy.authEmulator && isLoopbackOrigin(policy.authEmulator)) {
-    const prefix = policy.authEmulator.replace(/\/+$/, '');
-    if (url === prefix || url.startsWith(`${prefix}/`)) return true;
+    if (atOriginBoundary(url, policy.authEmulator)) return true;
   }
   return false;
 }
