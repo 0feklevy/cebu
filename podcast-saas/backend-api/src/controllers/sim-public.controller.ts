@@ -9,7 +9,8 @@ import { LOCAL_STORAGE_BASE_DIR } from '../services/storage/localStoragePaths.js
 import { safeLocalPath, keyHasTraversal } from '../services/storage/pathSafety.js';
 import { serveLocalFile } from '../services/storage/serveFile.js';
 import { getStorageAdapter } from '../services/storage/getStorageAdapter.js';
-import { revisionIdFromKey, cacheControlForKey } from 'shared/sim/simRevision';
+import { cacheControlForKey } from 'shared/sim/simRevision';
+import { isVerifiedRevisionKey } from '../services/simulation/revisionIdentity.js';
 import { LocalStorageAdapter } from '../services/storage/LocalStorageAdapter.js';
 import { getSimulationContentType } from '../services/simulation/SimulationService.js';
 import { browserOrigins } from '../config/publicOrigins.js';
@@ -131,19 +132,28 @@ export async function registerSimPublicRoutes(app: FastifyInstance): Promise<voi
       // IS write-once — its path contains a revision id and its bytes are never rewritten — so
       // those keys, and only those, can finally be cached for a year.
       //
-      // `revisionIdFromKey` is positional: it requires the segment at exactly the depth
-      // `revisionPrefix` writes it. A legacy package whose own bundle contains a top-level
-      // `revisions/` directory therefore does NOT match, which matters because this route
-      // percent-decodes its wildcard — `%2F` arrives as a real separator, so a crafted key can
-      // otherwise be shaped to look like a revision. Non-matching keys keep today's behaviour
-      // byte for byte.
-      const revisionId = revisionIdFromKey(key);
+      // VERIFIED IDENTITY, NOT PATH RESEMBLANCE.
+      //
+      // `revisionIdFromKey` is positional, which fixed an earlier first-match scan that also
+      // matched `package/revisions/...`. Positional is still not sufficient on its own: it accepts
+      // any id matching `^[A-Za-z0-9_-]{8,64}$`, so a customer package containing a top-level
+      // `revisions/chapter01/` directory sits at exactly the canonical depth and was handed a year
+      // of `immutable` caching for a MUTABLE object — "Replace simulation" overwrites those bytes
+      // in place, and every viewer holding the cached copy keeps it for a year with no
+      // revalidation path. The route percent-decodes its wildcard, so that shape can also be
+      // requested directly.
+      //
+      // `isVerifiedRevisionKey` requires a UUID at the revision position AND a `sim_revisions` row
+      // with that id belonging to the simulation named in the same key. It fails closed on any
+      // doubt, including a database fault, so anything unverified keeps today's `no-cache`
+      // behaviour byte for byte.
+      const isRevision = await isVerifiedRevisionKey(key);
       const isEntryDocument = /\.html?$/i.test(key);
       // The entry document is never immutable even inside a revision: injectSimBootSnippet runs
       // at SERVE time (below), so served bytes are not stored bytes — and the CSP
       // `frame-ancestors` list is deploy-dependent, so a year-long cache would freeze it and a
       // newly-added app origin could never reach an already-cached document.
-      const revisionCacheControl = revisionId ? cacheControlForKey(key, isEntryDocument) : null;
+      const revisionCacheControl = isRevision ? cacheControlForKey(key, isEntryDocument) : null;
 
       // Restrictive CSP for served sims (security-003). The sim body is arbitrary
       // user-uploaded HTML/JS, so we keep script/style/img/etc. permissive (inline +
