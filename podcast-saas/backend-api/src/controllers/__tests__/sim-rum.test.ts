@@ -30,6 +30,7 @@ vi.mock('../../lib/rateLimit.js', () => ({
 
 import { registerSimRumRoutes } from '../sim-rum.controller.js';
 import { SIM_RUM_VERSION } from 'shared/sim/rumEvents';
+import { TRUST_PROXY_HOPS } from '../../config/trustProxy.js';
 
 async function app() {
   const f = Fastify();
@@ -49,7 +50,15 @@ async function app() {
  * whatever the caller sent. So in these tests the LAST entry of the header is the real client and
  * anything to its left is what a caller tried to inject.
  */
-const PROD_TRUST_PROXY = 1;
+/**
+ * IMPORTED, never re-declared. This suite used to define its own `const PROD_TRUST_PROXY = 1`, so
+ * every assertion below proved a property of the TEST FILE rather than of the server: changing
+ * `server.ts` to `trustProxy: true` — the exact vulnerability these tests exist to prevent — left
+ * the whole suite green. `server.ts` cannot be imported here (it opens listeners and a database
+ * connection), so the number lives in its own module and both sides read it.
+ * `trustProxyWiring.test.ts` pins that `server.ts` still passes this constant through.
+ */
+const PROD_TRUST_PROXY = TRUST_PROXY_HOPS;
 async function trustProxyApp() {
   const f = Fastify({ trustProxy: PROD_TRUST_PROXY });
   registerSimRumRoutes(f);

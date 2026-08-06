@@ -6,6 +6,7 @@ import { Readable } from 'stream';
 import { dirname, extname } from 'path';
 import { and, eq, lt } from 'drizzle-orm';
 import { logger } from './lib/logger.js';
+import { TRUST_PROXY_HOPS } from './config/trustProxy.js';
 import { LOCAL_STORAGE_BASE_DIR } from './services/storage/localStoragePaths.js';
 import { safeLocalPath, keyHasTraversal } from './services/storage/pathSafety.js';
 import { serveLocalFile } from './services/storage/serveFile.js';
@@ -168,8 +169,12 @@ async function build() {
      *
      * IF A SECOND PROXY IS EVER PUT IN FRONT (a CDN, an ALB), THIS NUMBER MUST CHANGE TO MATCH THE
      * HOP COUNT, or req.ip becomes spoofable again.
+     *
+     * The number itself lives in ./config/trustProxy.ts so the proxy suite builds its Fastify
+     * instance from the SAME constant. When the suite declared its own local copy, reverting this
+     * line to `true` — the precise vulnerability it exists to prevent — left it fully green.
      */
-    trustProxy: 1,
+    trustProxy: TRUST_PROXY_HOPS,
   });
 
   await app.register(cors, {
