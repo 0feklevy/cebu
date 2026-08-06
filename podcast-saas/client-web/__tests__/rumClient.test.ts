@@ -236,7 +236,8 @@ describe('failure isolation', () => {
     fetchMock.mockImplementation(async () => new Response(null, { status: 204 }));
     const r2 = rec();
     expect(() => {
-      r2.record({ ...EV, durations: { totalMs: 1n as unknown as number } } as never);
+      // BigInt(1), not a `1n` literal: the tsconfig target predates BigInt literals.
+      r2.record({ ...EV, durations: { totalMs: BigInt(1) as unknown as number } } as never);
       r2.flush('manual');
     }).not.toThrow();
 
