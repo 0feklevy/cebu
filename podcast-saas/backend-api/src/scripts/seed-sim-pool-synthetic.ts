@@ -33,7 +33,7 @@ import { mkdtempSync, readFileSync, readdirSync, writeFileSync, rmSync, existsSy
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 
 import { db } from '../db/index.js';
@@ -44,6 +44,7 @@ import {
 import { getStorageAdapter } from '../services/storage/getStorageAdapter.js';
 import { LocalStorageAdapter } from '../services/storage/LocalStorageAdapter.js';
 import { getSimulationContentType } from '../services/simulation/SimulationService.js';
+import { SIM_MANIFEST_VERSION } from 'shared/sim/simManifest';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -63,6 +64,17 @@ const SECTION = {
   B: 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb',
   V3A: '33333333-a111-4a11-8a11-333333333333',
 } as const;
+
+/**
+ * A deterministic, VALID UUID per simulation — `revisionIdFromKey`/`isVerifiedRevisionKey` require
+ * a real UUID at the revision position, so a readable slug would be classified as a legacy
+ * customer directory and never receive revision treatment.
+ */
+function revisionIdFor(simId: string): string {
+  const h = createHash('sha256').update(`revision:${simId}`).digest('hex');
+  return [h.slice(0, 8), h.slice(8, 12), '4' + h.slice(13, 16),
+          ((parseInt(h[16]!, 16) & 0x3 | 0x8).toString(16)) + h.slice(17, 20), h.slice(20, 32)].join('-');
+}
 
 const log = (...a: unknown[]) => console.error(...a);   // stdout stays pure JSON manifest
 
@@ -147,42 +159,92 @@ async function main(): Promise<void> {
     { id: IDS.simC, src: 'nopaint', name: 'synthetic-c-nodispatch' },
   ];
   const simUrl: Record<string, string> = {};
+  const revisionOf: Record<string, { id: string; entryKey: string }> = {};
   for (const p of PACKAGES) {
     const prefix = `simulations/${IDS.project}/${p.id}`;
+    // Deterministic revision id: the manifest reports it, so nothing has to guess.
+    const revId = revisionIdFor(p.id);
+    const revPrefix = `${prefix}/revisions/${revId}`;
+
+    // BYTES LIVE ONLY UNDER THE REVISION PREFIX, deliberately.
+    //
+    // Writing a legacy copy too would make the gate unable to tell which path served the document:
+    // both would answer 200. With the bytes only here, a viewer that fell back to the legacy prefix
+    // gets a 404, so "the revision path resolved" is a fact the run demonstrates rather than a claim
+    // the seeder makes. Runtime files sit BESIDE the entry (package/), matching the migration fix —
+    // the entry's relative `<script src="bridge.js">` must still resolve.
     let bridgeHash = '';
+    const files: Array<{ path: string; bytes: Buffer }> = [];
     for (const f of readdirSync(join(pkgDir, p.src))) {
       const bytes = readFileSync(join(pkgDir, p.src, f));
       if (f === 'bridge.js') bridgeHash = createHash('sha256').update(bytes).digest('hex').slice(0, 12);
-      await storage.uploadFile(`${prefix}/${f}`, bytes, getSimulationContentType(f));
+      files.push({ path: `package/${f}`, bytes });
     }
-    await storage.uploadFile(`${prefix}/poster.png`, POSTER_PNG, 'image/png');
-    const entryKey = `${prefix}/index.html`;
+    files.push({ path: 'package/poster.png', bytes: POSTER_PNG });
+    for (const f of files) {
+      await storage.uploadFile(`${revPrefix}/${f.path}`, f.bytes, getSimulationContentType(f.path));
+    }
+    // A real manifest describing exactly those bytes.
+    const manifest = {
+      version: SIM_MANIFEST_VERSION,
+      entry: 'package/index.html',
+      runtime: ['package/bridge.js'],
+      posters: [],
+      files: files.map((f) => ({
+        path: f.path,
+        role: f.path.endsWith('index.html') ? 'entry' : f.path.endsWith('bridge.js') ? 'runtime' : 'asset',
+        hash: createHash('sha256').update(f.bytes).digest('hex'),
+        bytes: f.bytes.length,
+        contentType: getSimulationContentType(f.path),
+        cacheControl: 'public, max-age=31536000, immutable',
+      })),
+    };
+    const manifestBytes = Buffer.from(JSON.stringify(manifest, null, 1), 'utf8');
+    await storage.uploadFile(`${revPrefix}/manifest.json`, manifestBytes, 'application/json');
+
+    const revisionEntryKey = `${revPrefix}/package/index.html`;
+    const legacyEntryKey = `${prefix}/index.html`;   // stored, but intentionally NOT uploaded
     await db.insert(simulations).values({
       id: p.id, project_id: IDS.project, name: p.name,
-      storage_prefix: prefix, entry_file: entryKey, bridge_hash: bridgeHash,
+      storage_prefix: prefix, entry_file: legacyEntryKey, bridge_hash: bridgeHash,
     } as typeof simulations.$inferInsert);
-    // A revision row + active pointer, so the viewer resolves through the REAL revision path.
-    const revId = randomUUID();
     // `activated_at` is required by sim_revisions_activated_at_chk for any terminal status —
     // an 'active' revision that was never activated is exactly the inconsistency it forbids.
     await db.insert(sim_revisions).values({
       id: revId, simulation_id: p.id, revision_number: 1, status: 'active',
       activated_at: new Date('2026-01-01T00:00:00Z'),
-      entry_path: 'package/index.html', manifest_hash: createHash('sha256').update(p.id).digest('hex'),
+      entry_path: 'package/index.html',
+      manifest_hash: createHash('sha256').update(manifestBytes).digest('hex'),
       created_by: 'seed-sim-pool-synthetic',
     } as typeof sim_revisions.$inferInsert);
-    simUrl[p.id] = `${storage.getSimPublicUrl(entryKey)}?v=${bridgeHash}`;
+    // ACTIVATION IS A SEPARATE POINTER UPDATE, and it has to be: `simulations.active_revision_id`
+    // is a FK onto `sim_revisions`, which is a FK back onto `simulations` — the row must exist
+    // before it can be pointed at. This mirrors what real activation does (one pointer update),
+    // rather than pretending the pointer can be written at insert time.
+    await db.update(simulations)
+      .set({ active_revision_id: revId, active_revision_entry_key: revisionEntryKey })
+      .where(eq(simulations.id, p.id));
+    revisionOf[p.id] = { id: revId, entryKey: revisionEntryKey };
+    // The STORED url stays legacy — buildPlayerConfig rewrites it from the active pointer, which is
+    // the behaviour under test. If that rewrite ever stops happening the document 404s.
+    simUrl[p.id] = `${storage.getSimPublicUrl(legacyEntryKey)}?v=${bridgeHash}`;
   }
   rmSync(pkgDir, { recursive: true, force: true });
 
   // ── a tiny locally encoded video, one per sequence ────────────────────────────────────────────
-  const hls = buildHls(95);
-  const hlsPrefix = `hls/${IDS.project}`;
-  for (const f of hls.files) {
-    await storage.uploadFile(`${hlsPrefix}/${f}`, readFileSync(join(hls.dir, f)),
-      f.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : 'video/mp2t');
+  // TWO videos of DIFFERENT length. The entry sequence is 95s; the branch is 60s. The difference is
+  // load-bearing for the browser gate: it is how a test can tell which sequence it is actually on
+  // without reaching into React state. Identical durations made "am I on the branch?" unanswerable.
+  const VIDEO_SEC = { entry: 95, branch: 60 } as const;
+  const hlsPrefixFor = (which: 'entry' | 'branch') => `hls/${IDS.project}/${which}`;
+  for (const which of ['entry', 'branch'] as const) {
+    const hls = buildHls(VIDEO_SEC[which]);
+    for (const f of hls.files) {
+      await storage.uploadFile(`${hlsPrefixFor(which)}/${f}`, readFileSync(join(hls.dir, f)),
+        f.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : 'video/mp2t');
+    }
+    rmSync(hls.dir, { recursive: true, force: true });
   }
-  rmSync(hls.dir, { recursive: true, force: true });
 
   const [entrySeq] = await db.insert(branch_sequences).values({
     project_id: IDS.project, label: 'Main path', is_entry: true, sort_order: 0,
@@ -191,17 +253,17 @@ async function main(): Promise<void> {
     project_id: IDS.project, label: 'Deep dive', is_entry: false, sort_order: 1,
   }).returning();
 
-  const mkVideo = async (seqId: string, order: number) => {
+  const mkVideo = async (seqId: string, order: number, which: 'entry' | 'branch') => {
     const [v] = await db.insert(video_files).values({
-      project_id: IDS.project, filename: 'synthetic.mp4', status: 'ready',
-      duration_sec: 95, hls_status: 'ready',
-      hls_master_key: `${hlsPrefix}/master.m3u8`, is_broll: false,
+      project_id: IDS.project, filename: `synthetic-${which}.mp4`, status: 'ready',
+      duration_sec: VIDEO_SEC[which], hls_status: 'ready',
+      hls_master_key: `${hlsPrefixFor(which)}/master.m3u8`, is_broll: false,
       sequence_id: seqId, sequence_order: order,
     } as typeof video_files.$inferInsert).returning();
     return v!;
   };
-  const entryVid = await mkVideo(entrySeq!.id, 0);
-  const branchVid = await mkVideo(branchSeq!.id, 0);
+  const entryVid = await mkVideo(entrySeq!.id, 0, 'entry');
+  const branchVid = await mkVideo(branchSeq!.id, 0, 'branch');
 
   const mkSim = (
     videoId: string, start: number, end: number, simId: string, section: string,
@@ -221,8 +283,16 @@ async function main(): Promise<void> {
     mkSim(entryVid.id, 50, 62, IDS.simA, SECTION.B, false, 'A2 synthetic-a (full UI)'),
     // A second, distinct package.
     mkSim(entryVid.id, 72, 88, IDS.simB, SECTION.V3A, false, 'B synthetic-b'),
-    // Branch-only legacy package — must NOT be pooled while on the main path.
-    mkSim(branchVid.id, 15, 40, IDS.simC, SECTION.A, false, 'C synthetic-c (legacy bridge)'),
+    // Branch-only load-time-locked package — must NOT be pooled while on the main path.
+    //
+    // TWO occurrences with DIFFERENT section ids, sharing one pooled package identity
+    // (`packageKeyOf` strips the query, so both map to the same key). That is what makes the
+    // per-URL NAVIGATION fallback structurally reachable: the pool spec's `src` is fixed by the
+    // first occurrence, so entering the second gives `spec.src !== sectionUrl` — the condition
+    // `legacyNeedsNav` requires. With a single occurrence the fallback could never fire, and a test
+    // asserting it would have been unfalsifiable.
+    mkSim(branchVid.id, 15, 30, IDS.simC, SECTION.A, false, 'C1 synthetic-c (first occurrence)'),
+    mkSim(branchVid.id, 40, 55, IDS.simC, SECTION.B, false, 'C2 synthetic-c (second occurrence — navigation)'),
   ]);
 
   const [cp] = await db.insert(branch_choice_points).values({
@@ -239,12 +309,26 @@ async function main(): Promise<void> {
     entrySequenceId: entrySeq!.id, branchSequenceId: branchSeq!.id,
     entryVideoId: entryVid.id, branchVideoId: branchVid.id,
     viewPath: `/projects/${IDS.project}/view`,
+    videoSeconds: VIDEO_SEC,
     sections: [
       { label: 'A1', simulationId: IDS.simA, start: 20, end: 35, minimalUi: true },
       { label: 'A2', simulationId: IDS.simA, start: 50, end: 62, minimalUi: false },
       { label: 'B', simulationId: IDS.simB, start: 72, end: 88, minimalUi: false },
-      { label: 'C', simulationId: IDS.simC, start: 15, end: 40, branchOnly: true },
+      { label: 'C1', simulationId: IDS.simC, start: 15, end: 30, branchOnly: true },
+      { label: 'C2', simulationId: IDS.simC, start: 40, end: 55, branchOnly: true, navigatesFrom: 'C1' },
     ],
+    /**
+     * The pool key the viewer will actually use — `packageKeyOf` = origin + pathname of the SERVED
+     * url. buildPlayerConfig rewrites the stored legacy url from the active revision pointer, so
+     * the key is the REVISION entry, not the stored one. Reading it from here is what stops a test
+     * matching a human-readable substring that can never appear in a UUID url.
+     */
+    packageKeys: Object.fromEntries(PACKAGES.map((p) => {
+      const u = new URL(storage.getSimPublicUrl(revisionOf[p.id]!.entryKey));
+      return [p.id, u.origin + u.pathname];
+    })),
+    revisions: Object.fromEntries(Object.entries(revisionOf).map(([k, v]) => [k, v.id])),
+    revisionEntryKeys: Object.fromEntries(Object.entries(revisionOf).map(([k, v]) => [k, v.entryKey])),
     storage: 'local-disk',
     cleanup: 'tsx src/scripts/seed-sim-pool-synthetic.ts --delete',
   };
