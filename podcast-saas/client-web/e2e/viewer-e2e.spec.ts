@@ -21,6 +21,14 @@
  * never be mistaken for "passing" in an environment that never ran it.
  */
 import { test, expect, type Page, type Route } from '@playwright/test';
+import { isApprovedRequestUrl } from './hermeticHosts';
+import { authEmulatorOrigin } from 'shared/src/csp';
+
+/**
+ * The one approved auth-emulator origin for this run, vetted by the SAME validator the app and the
+ * CSP use — so the suite cannot approve an origin the app would refuse, or vice versa.
+ */
+const AUTH_EMULATOR_ORIGIN = authEmulatorOrigin(process.env.NEXT_PUBLIC_FIREBASE_AUTH_EMULATOR_HOST, true) || null;
 import { createServer, type Server } from 'node:http';
 import { readFileSync, existsSync, mkdirSync, statSync } from 'node:fs';
 import { join, extname, resolve } from 'node:path';
@@ -374,11 +382,14 @@ async function bootViewer(page: Page, config: object, opts?: { simdebug?: boolea
   // loading behaviour, which is exactly what a hermeticity check must not do.
   page.on('request', (req) => {
     const url = req.url();
-    const allowed = url.startsWith(BASE) || url.startsWith(API_ORIGIN)
-      || url.startsWith('data:') || url.startsWith('blob:') || url.startsWith('about:')
-      // Explicitly STUBBED third parties are approved — they never reach the network. Anything
-      // else here means the suite's verdict depends on someone else's uptime.
-      || STUBBED_HOSTS.some((h) => url.startsWith(h));
+    // ONE predicate, in e2e/hermeticHosts.ts, so it is unit-testable and mutation-sensitive rather
+    // than an inline boolean no test can reach. The only allowance beyond the app, the API and the
+    // explicitly stubbed third parties is the SPECIFIC configured loopback auth emulator — not
+    // "any loopback host", which would approve every other local service on the machine.
+    const allowed = isApprovedRequestUrl(url, {
+      base: BASE, apiOrigin: API_ORIGIN, stubbedHosts: STUBBED_HOSTS,
+      authEmulator: AUTH_EMULATOR_ORIGIN,
+    });
     if (!allowed) external.push(url);
   });
 
