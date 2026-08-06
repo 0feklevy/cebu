@@ -48,13 +48,17 @@ if (process.env.ALLOW_PRODUCTION_DATA_SEEDER !== 'i-understand-this-reads-real-p
   process.exit(2);
 }
 
-import { db } from '../db/index.js';
-import {
+// DYNAMIC imports, after the gate. Static `import` declarations are hoisted and evaluated before
+// any statement of this module body — including the refusal above — so a static db import would
+// construct the pool (and run that module's env probing) even on a refused run. Nothing below
+// this line is loaded unless the opt-in was given.
+const { db } = await import('../db/index.js');
+const {
   projects, video_files, timeline_sections, simulations,
   branch_sequences, branch_choice_points, branch_edges,
-} from '../db/schema.js';
-import { eq, and, like } from 'drizzle-orm';
-import { getStorageAdapter } from '../services/storage/getStorageAdapter.js';
+} = await import('../db/schema.js');
+const { eq, and, like } = await import('drizzle-orm');
+const { getStorageAdapter } = await import('../services/storage/getStorageAdapter.js');
 
 const FIXTURE_ID = '00000000-0000-4000-a000-0000000f1x7e'.replace('x', 'c'); // valid uuid
 const SOURCE_PROJECT = 'd8e7557a-6efd-4458-ab20-a391a0ee6b52';   // Edge of Chaos (real sim URLs + video)
