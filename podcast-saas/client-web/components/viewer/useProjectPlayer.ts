@@ -13,6 +13,7 @@ import { nextQualityFor, INITIAL_QUALITY_STATE, type QualityState } from 'shared
 import { armBoundarySentinel, type BoundarySentinel } from '../../lib/sim/boundaryClock';
 import { createRumRecorder, type RumRecorder } from '../../lib/sim/rumClient';
 import { labStandardMs } from '../../lib/sim/qualityBudgets';
+import { singleModeEvictions, hardCapEviction } from '../../lib/sim/poolResidency';
 import { newPlayerSessionId } from 'shared/src/sim/simIdentity';
 import { simTelemetry } from '../../lib/simTelemetry';
 import { SimRuntimeClient } from '../../lib/sim/SimRuntimeClient';
@@ -836,20 +837,19 @@ export function useProjectPlayer(
     // A frame still inside its EXIT FADE is spared, exactly as the window planner spares it.
     // `deactivateSim` clears `activeSimUrlRef` BEFORE this runs, so the outgoing frame is no longer
     // "active" and was dropped here while still being animated: the simulation cut to video instead
-    // of fading, and the deferred stopScript fired into a dead frame. The guard added at the
-    // section-change site could not prevent it, because this is the eviction that actually happens.
-    // It is evicted on the next tick, once the fade is done.
+    // of fading, and the deferred stopScript fired into a dead frame. It is collected by a later
+    // residency pass once the fade has resolved — the per-tick loop applies the SAME rule, which it
+    // previously did not, so this sparing was undone within the same tick.
     if (poolTierRef.current === 'single') {
-      for (const s of [...simPoolSpecsRef.current]) {
-        if (s.key !== activeSimUrlRef.current && !isFadingOut(s.key)) dropPooled(s.key, 'single-mode');
+      for (const key of singleModeEvictions([...simPoolSpecsRef.current], activeSimUrlRef.current, isFadingOut)) {
+        dropPooled(key, 'single-mode');
       }
     }
-    if (simPoolSpecsRef.current.length + 1 > SIM_POOL_HARD_CAP) {
-      const evict = simPoolSpecsRef.current.find((s) =>
-        s.key !== spec.key && s.key !== activeSimUrlRef.current && s.key !== warmingSimUrlRef.current)
-        ?? simPoolSpecsRef.current.find((s) => s.key !== spec.key && s.key !== activeSimUrlRef.current);
-      if (evict) dropPooled(evict.key, 'hard-cap');
-    }
+    const capVictim = hardCapEviction(
+      simPoolSpecsRef.current, spec.key, activeSimUrlRef.current, warmingSimUrlRef.current,
+      SIM_POOL_HARD_CAP, isFadingOut,
+    );
+    if (capVictim) dropPooled(capVictim, 'hard-cap');
     simPoolSpecsRef.current = [...simPoolSpecsRef.current, spec];
     merge({ simPool: simPoolSpecsRef.current });
     simTelemetry('pool-spec-add', { key: spec.key });
@@ -1098,15 +1098,15 @@ export function useProjectPlayer(
       // by browser is not a kill switch, so the section change (which is deterministic) enforces
       // it too. `ensurePooledSpec` already evicts when it ADDS a spec; this covers the case where
       // the incoming package was already resident and it returns early.
+      // A frame still inside its EXIT FADE survives to a later pass, exactly as the window planner
+      // protects it: unmounting mid-fade removes the element being animated, so the simulation CUTS
+      // to video instead of fading, and the deferred stopScript fires into a dead frame. The kill
+      // switch's promise is at most one resident document in STEADY STATE, not one during a
+      // transition — and 'single' is the mode an operator selects during an incident, which is the
+      // worst moment to add a visible glitch. Same shared rule as the other two single-mode sites.
       if (poolTierRef.current === 'single') {
-        for (const sp of [...simPoolSpecsRef.current]) {
-          // A frame still inside its EXIT FADE survives to the next tick, exactly as the window
-          // planner protects it: unmounting mid-fade removes the element being animated, so the
-          // simulation CUTS to video instead of fading, and the deferred stopScript fires into a
-          // dead frame. The kill switch's promise is at most one resident document in steady
-          // state, not one during a transition — and 'single' is the mode an operator selects
-          // during an incident, which is the worst moment to add a visible glitch.
-          if (sp.key !== key && !isFadingOut(sp.key)) dropPooled(sp.key, 'single-mode-switch');
+        for (const evictKey of singleModeEvictions([...simPoolSpecsRef.current], key, isFadingOut)) {
+          dropPooled(evictKey, 'single-mode-switch');
         }
       }
       // ADAPTIVE QUALITY (migration 052 kill switch, default off).
@@ -1931,11 +1931,18 @@ export function useProjectPlayer(
       }
 
       // Residency. 'single' tier (kill switch): keep ONLY the active package's frame; drop
-      // everything else each tick, so at most one sim document ever lives (approximates the
-      // pre-pool navigating iframe). The active frame mounts on activation via ensurePooled.
+      // everything else each tick, so at most one sim document ever lives in STEADY STATE
+      // (approximates the pre-pool navigating iframe). The active frame mounts on activation via
+      // ensurePooled.
+      //
+      // THIS is the eviction that actually runs at a section boundary, and it had no fade guard:
+      // `deactivateSim` clears `activeSimUrlRef` first, so the outgoing frame is not "active" here
+      // and was dropped mid-fade on the very next timeupdate — defeating the guards at both
+      // `ensurePooledSpec` and the section-change site within the same tick. It now applies the
+      // same shared rule they do.
       if (poolTierRef.current === 'single') {
-        for (const spec of [...simPoolSpecsRef.current]) {
-          if (spec.key !== activeSimUrlRef.current) dropPooled(spec.key, 'single-mode');
+        for (const key of singleModeEvictions([...simPoolSpecsRef.current], activeSimUrlRef.current, isFadingOut)) {
+          dropPooled(key, 'single-mode');
         }
       }
       // Residency. 'all' tier: every active-path package mounted at start — nothing to do.
