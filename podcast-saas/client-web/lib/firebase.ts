@@ -3,6 +3,7 @@
 import { initializeApp, getApps } from 'firebase/app';
 import {
   getAuth,
+  connectAuthEmulator,
   signInAnonymously,
   signInWithPopup,
   GoogleAuthProvider,
@@ -26,6 +27,31 @@ const firebaseConfig = {
 
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
 export const auth = getAuth(app);
+
+/**
+ * LOCAL AUTH EMULATOR — opt-in, never in a production build.
+ *
+ * `FirebaseAuthProvider` signs guests in anonymously on mount, which is a live call to
+ * `identitytoolkit.googleapis.com`. That makes any "this gate ran entirely on loopback" claim false
+ * by construction — the sim-pool network guard caught exactly this. Pointing the SDK at a local
+ * emulator keeps the production code path identical (the same `signInAnonymously`, the same
+ * `onAuthStateChanged`) while the traffic terminates on 127.0.0.1.
+ *
+ * Guarded three ways so it cannot engage in a deployed build: the variable must be set, NODE_ENV
+ * must not be production, and the host must itself be loopback. A non-loopback value is refused
+ * rather than honoured — failing closed to the real backend beats silently pointing authentication
+ * at someone else's machine.
+ */
+const AUTH_EMULATOR_HOST = process.env.NEXT_PUBLIC_FIREBASE_AUTH_EMULATOR_HOST;
+if (AUTH_EMULATOR_HOST && process.env.NODE_ENV !== 'production') {
+  const host = AUTH_EMULATOR_HOST.split(':')[0];
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') {
+    connectAuthEmulator(auth, `http://${AUTH_EMULATOR_HOST}`, { disableWarnings: true });
+  } else {
+    // eslint-disable-next-line no-console
+    console.error(`[firebase] refusing non-loopback auth emulator host: ${AUTH_EMULATOR_HOST}`);
+  }
+}
 
 export interface AuthContextValue {
   user: User | null;

@@ -26,6 +26,28 @@
  *   Delete: tsx --env-file=../.env src/scripts/seed-sim-pool-fixture.ts --delete
  *   URL:    /projects/00000000-0000-4000-a000-0000000f1c7e/view   (printed on success)
  */
+/**
+ * QUARANTINED — NOT the e2e seeder. See seed-sim-pool-synthetic.ts, which is.
+ *
+ * This script COPIES ROWS OUT OF AN EXISTING PROJECT (SOURCE_PROJECT below) and reuses that
+ * project's real `simulation_url`s and `hls_master_key`. It therefore cannot run against a fresh
+ * database at all, and anything it seeds makes the browser fetch simulation packages and HLS media
+ * from real storage — which the sim-pool gate must never do, because that gate proves no request
+ * left loopback.
+ *
+ * It is kept only for manual operational use against a database that already contains the source
+ * project, and it refuses to start without an explicit opt-in so no harness can invoke it by
+ * accident.
+ */
+if (process.env.ALLOW_PRODUCTION_DATA_SEEDER !== 'i-understand-this-reads-real-project-data') {
+  console.error(
+    'refusing to run: this seeder copies real project rows and real asset URLs.\n' +
+    'The e2e fixture is src/scripts/seed-sim-pool-synthetic.ts (fully synthetic, loopback only).\n' +
+    'To run this one deliberately, set ALLOW_PRODUCTION_DATA_SEEDER=i-understand-this-reads-real-project-data',
+  );
+  process.exit(2);
+}
+
 import { db } from '../db/index.js';
 import {
   projects, video_files, timeline_sections, simulations,
