@@ -12,6 +12,7 @@ import { resolveBudget } from 'shared/src/sim/prepareBudget';
 import { nextQualityFor, INITIAL_QUALITY_STATE, type QualityState } from 'shared/src/sim/adaptiveQuality';
 import { armBoundarySentinel, type BoundarySentinel } from '../../lib/sim/boundaryClock';
 import { createRumRecorder, type RumRecorder } from '../../lib/sim/rumClient';
+import { labStandardMs } from '../../lib/sim/qualityBudgets';
 import { newPlayerSessionId } from 'shared/src/sim/simIdentity';
 import { simTelemetry } from '../../lib/simTelemetry';
 import { SimRuntimeClient } from '../../lib/sim/SimRuntimeClient';
@@ -1124,15 +1125,26 @@ export function useProjectPlayer(
           const pkgKey = packageKeyOf(sectionUrl);
           const rt0 = simRuntimesRef.current.get(pkgKey);
           const summary = rt0?.timingSummary();
-          // THE LAB NUMBER, not the refined lead time. `sim_prepare_budget_ms` is refined by field
-          // data once enough samples exist, so judging a device's p90 against it reintroduces the
-          // circularity this call site was fixed to remove — just sourced from the server. Falls
-          // back to the lead time only when no canary number was emitted, which is the pre-existing
-          // behaviour for a package that has one but no field data (there the two are equal).
-          const lab = simSection.simulation_id
-            ? (labBudgetsRef.current[simSection.simulation_id]
-               ?? prepareBudgetsRef.current[simSection.simulation_id])
-            : undefined;
+          // THE LAB NUMBER, AND ONLY THE LAB NUMBER — no fallback to the lead time.
+          //
+          // `sim_prepare_budget_ms` is the preparation LEAD TIME, refined by field data once >=30
+          // credible rows exist; at that point it IS the fleet p90 x 1.25. Judging a device's p90
+          // against it asks whether `p90 > 1.25 x p90`, which is the circularity this call site was
+          // fixed to remove — and the `??` fallback below reintroduced it for exactly the packages
+          // the fix was written to protect. The old comment justified the fallback with "there the
+          // two are equal", which is true ONLY for a package that has a canary and no field data;
+          // a package with NO canary and plenty of field data is the case that matters, and there
+          // the lead time is pure field data masquerading as a standard.
+          //
+          // The server already emits `sim_lab_budget_ms` only when a real canary number exists
+          // (buildPlayerConfig: `if (lab !== null) simLabBudgets[simId] = lab`), so absent here
+          // means genuinely un-canaried. `nextQualityFor` answers 'no-lab-budget' for that, holding
+          // the prior profile rather than degrading the package against `MIN_BUDGET_MS` (250ms) —
+          // a floor is not a measurement, and an ordinary transition exceeds it.
+          const lab = labStandardMs(
+            { sim_lab_budget_ms: labBudgetsRef.current },
+            simSection.simulation_id,
+          );
           // ONE tested composition, not two calls joined here.
           //
           // Joining them at this call site is what produced the defect: passing the measured p90
@@ -1144,7 +1156,7 @@ export function useProjectPlayer(
           const decision = nextQualityFor(prior, {
             measuredP90Ms: summary?.p90TotalMs ?? null,
             samples: summary?.completed ?? 0,
-            labBudgetMs: lab ?? null,
+            labBudgetMs: lab,
           });
           qualityStateRef.current.set(pkgKey, decision.state);
           adaptiveQuality = decision.next;

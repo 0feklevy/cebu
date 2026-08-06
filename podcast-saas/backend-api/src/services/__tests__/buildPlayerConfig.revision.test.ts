@@ -379,3 +379,59 @@ describe('the field-lookup key and the client key are the SAME axis', () => {
       .toContain(clientKey);
   });
 });
+
+// ══ THE LAB STANDARD IS NOT THE LEAD TIME (adaptive-quality circularity) ══════════════════════
+//
+// `sim_prepare_budget_ms` is the preparation LEAD TIME and is deliberately refined by field data
+// (the block above proves that loop is wired). `sim_lab_budget_ms` is the number adaptive quality
+// judges a device against, and it must be the UNREFINED publish-time canary value or nothing at
+// all — a standard refined by the fleet it is used to judge asks whether `p90 > 1.25 x p90`.
+//
+// The client half of this contract is pinned in
+// client-web/__tests__/adaptiveQualityBudget.integration.test.ts.
+describe('sim_lab_budget_ms — the unrefined canary standard', () => {
+  const REV_ID = derivePR('sim-1', 'H1');
+
+  it('emits the raw canary number, NOT the field-refined lead time', async () => {
+    mocks.simulations.findMany.mockResolvedValue([simRow({ prepare_budget_ms: 800 })]);
+    rum.aggregates = new Map([[REV_ID, { samples: 200, p50TotalMs: 700, p90TotalMs: 1000, dropped: 0 }]]);
+    const cfg = await buildPlayerConfig('proj-1', 'user-1') as {
+      sim_prepare_budget_ms: Record<string, number>;
+      sim_lab_budget_ms: Record<string, number>;
+    };
+    // The lead time was refined by the credible aggregate...
+    expect(cfg.sim_prepare_budget_ms['sim-1']).toBe(1250);
+    // ...and the standard was not.
+    expect(cfg.sim_lab_budget_ms['sim-1'], 'the standard was refined by the fleet it judges').toBe(800);
+  });
+
+  // THE CASE THE CLIENT FALLBACK BROKE: no canary, but plenty of field data. The lead time exists
+  // and is pure field data; the standard must be ABSENT so the viewer reports 'no-lab-budget'
+  // instead of degrading the package.
+  it('omits an UN-CANARIED package even when field data produced a lead time', async () => {
+    mocks.simulations.findMany.mockResolvedValue([simRow({ prepare_budget_ms: null })]);
+    rum.aggregates = new Map([[REV_ID, { samples: 200, p50TotalMs: 700, p90TotalMs: 1000, dropped: 0 }]]);
+    const cfg = await buildPlayerConfig('proj-1', 'user-1') as {
+      sim_prepare_budget_ms: Record<string, number>;
+      sim_lab_budget_ms: Record<string, number>;
+    };
+    expect(cfg.sim_prepare_budget_ms['sim-1'], 'the field loop should still produce a lead time').toBe(1250);
+    expect(cfg.sim_lab_budget_ms['sim-1'], 'field data leaked in as a quality standard').toBeUndefined();
+  });
+
+  it('omits a package with neither a canary nor field data', async () => {
+    mocks.simulations.findMany.mockResolvedValue([simRow({ prepare_budget_ms: null })]);
+    rum.aggregates = new Map();
+    const cfg = await buildPlayerConfig('proj-1', 'user-1') as { sim_lab_budget_ms: Record<string, number> };
+    expect(cfg.sim_lab_budget_ms['sim-1']).toBeUndefined();
+  });
+
+  it('omits a nonsensical stored canary value rather than emitting a bogus standard', async () => {
+    for (const bad of [0, -5, NaN]) {
+      mocks.simulations.findMany.mockResolvedValue([simRow({ prepare_budget_ms: bad })]);
+      rum.aggregates = new Map();
+      const cfg = await buildPlayerConfig('proj-1', 'user-1') as { sim_lab_budget_ms: Record<string, number> };
+      expect(cfg.sim_lab_budget_ms['sim-1'], String(bad)).toBeUndefined();
+    }
+  });
+});
