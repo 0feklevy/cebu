@@ -36,6 +36,28 @@ describe('authEmulatorOrigin', () => {
     }
   });
 
+  // SECURITY REGRESSION. `value.split(':')[0]` is NOT the host: for
+  // `localhost:9099@attacker.example.com` it yields "localhost", so a naive loopback check passes,
+  // while `new URL('http://' + value)` resolves to attacker.example.com because the leading text is
+  // userinfo. A validator that checks a split and then interpolates the RAW value would point
+  // authentication (and connect-src) at a remote host.
+  it('refuses a userinfo bypass that makes a remote host look like loopback', () => {
+    for (const v of [
+      'localhost:9099@attacker.example.com',
+      '127.0.0.1:9099@attacker.example.com',
+      'localhost:9099@127.0.0.1.attacker.example.com:80',
+      'user:pass@localhost:9099',
+      'localhost:9099\\@attacker.example.com',
+    ]) {
+      expect(authEmulatorOrigin(v, true), v).toBe('');
+    }
+  });
+
+  it('re-emits the origin from PARSED parts, never from the caller string', () => {
+    // Any trailing path/query is dropped rather than carried into the emitted source.
+    expect(authEmulatorOrigin('127.0.0.1:9099/evil?x=1', true)).toBe('http://127.0.0.1:9099');
+  });
+
   it('refuses malformed values rather than emitting a broken source', () => {
     for (const v of ['', '127.0.0.1', '127.0.0.1:', ':9099', '127.0.0.1:abc', 'localhost:99 99']) {
       expect(authEmulatorOrigin(v, true), JSON.stringify(v)).toBe('');

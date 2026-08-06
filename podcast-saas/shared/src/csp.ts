@@ -31,14 +31,32 @@ export interface FrontendCspOptions {
   authEmulatorHost?: string;
 }
 
-/** `http://host:port` for a loopback emulator, or '' for anything else. Never widens production. */
+/**
+ * `http://host:port` for a loopback emulator, or '' for anything else. Never widens production.
+ *
+ * PARSED, NOT SPLIT. `hostPort.split(':')[0]` is not the host: for
+ * `localhost:9099@attacker.example.com` it yields "localhost", while a URL built from that string
+ * resolves to `attacker.example.com` — the leading text is userinfo. A naive check therefore
+ * accepts a value that points authentication at a remote host. The authority is parsed with the
+ * URL parser and the RESULT is what gets validated and re-emitted, so the string that is checked
+ * is always the string that is used.
+ */
 export function authEmulatorOrigin(hostPort: string | undefined, dev: boolean): string {
   if (!dev || !hostPort) return '';
   const trimmed = hostPort.trim().replace(/^https?:\/\//i, '').replace(/[/?#].*$/, '');
-  const [host, port] = trimmed.split(':');
-  if (!host || !port || !/^\d+$/.test(port)) return '';
-  if (!['localhost', '127.0.0.1', '::1'].includes(host)) return '';
-  return `http://${host}:${port}`;
+  // Credentials in an authority are never legitimate here and are the exact bypass vector.
+  if (trimmed.includes('@') || trimmed.includes('\\')) return '';
+  let url: URL;
+  try {
+    url = new URL(`http://${trimmed}`);
+  } catch {
+    return '';
+  }
+  if (url.username || url.password) return '';
+  if (!url.port || !/^\d+$/.test(url.port)) return '';
+  if (!['localhost', '127.0.0.1'].includes(url.hostname)) return '';
+  // Rebuilt from the PARSED parts, never from the caller's string.
+  return `http://${url.hostname}:${url.port}`;
 }
 
 const LOOPBACK = /(localhost|127\.0\.0\.1|0\.0\.0\.0|::1)/i;
