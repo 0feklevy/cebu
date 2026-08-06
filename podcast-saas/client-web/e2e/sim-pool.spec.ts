@@ -184,6 +184,9 @@ test('kill switch (?simpool=single) keeps at most one sim iframe resident', asyn
 });
 
 test('the load-time-locked package uses the per-URL NAVIGATION fallback between its two occurrences', async ({ page }) => {
+  // Reaching the branch means playing the entry video to its choice point and waiting out the
+  // auto-advance, which alone exceeds the default per-test budget.
+  test.setTimeout(240_000);
   // Package C advertises a bare SIM_READY, so the viewer cannot dispatch sections into a resident
   // document: moving between its two occurrences must NAVIGATE the frame. The fixture gives C two
   // sections with different section ids sharing one pooled package identity, which is what makes
@@ -200,17 +203,25 @@ test('the load-time-locked package uses the per-URL NAVIGATION fallback between 
     return 0;
   });
   await seek(page, Math.max(0, dur - 8));
-  // The branch video is SHORTER than the entry video, which is how we know we are on it.
-  await expect.poll(async () => page.evaluate(() =>
-    [...document.querySelectorAll('video')].some((v) => (v as HTMLVideoElement).duration > 10 && (v as HTMLVideoElement).duration < 60)),
-    { timeout: 60_000 }).toBe(true);
+  // WE ARE ON THE BRANCH WHEN THE BRANCH VIDEO IS LOADED, identified by a duration BAND centred on
+  // the branch video's 60s, far from the entry video's 95s.
+  //
+  // Two earlier attempts were wrong and are worth recording: `duration > 10 && duration < 60`
+  // excluded the branch video's own 60s at the boundary (chromium happened to round inside the
+  // window, firefox and webkit did not), and `currentSrc.includes('/branch/')` can never match
+  // because hls.js plays through MSE, so `currentSrc` is a `blob:` URL and carries no path at all.
+  const BRANCH_SEC = 60;
+  const onBranch = () => page.evaluate((target) =>
+    [...document.querySelectorAll('video')].some((v) => Math.abs((v as HTMLVideoElement).duration - target) < 10),
+  BRANCH_SEC);
+  await expect.poll(onBranch, { timeout: 90_000 }).toBe(true);
 
-  const seekBranch = (sec: number) => page.evaluate((s) => {
+  const seekBranch = (sec: number) => page.evaluate(([s, target]) => {
     for (const v of document.querySelectorAll('video')) {
       const el = v as HTMLVideoElement;
-      if (el.duration > 10 && el.duration < 60) el.currentTime = s;
+      if (Math.abs(el.duration - target) < 10) el.currentTime = s;
     }
-  }, sec);
+  }, [sec, BRANCH_SEC]);
 
   // First occurrence: the frame mounts on C1's url and reveals.
   await seekBranch(C1.start + 3);
