@@ -534,3 +534,91 @@ describe('the paint-recovery ceiling must never bypass a live apply hold', () =>
     expect(c.getState().visible, 'the terminal bound must still release the hold').toBe(true);
   });
 });
+
+// ── Transition instrumentation on the v2 path ────────────────────────────────────────────────────
+//
+// WHY THIS SUITE EXISTS: a mutation deleting these three lines from `activate()` —
+//
+//     rollTransition(); mark('requested'); mark('prepare-sent');
+//
+// SURVIVED the entire matrix. Nothing asserted the instrumentation, so the measurement layer could
+// be silently deleted. That is not hypothetical for this exact code: the marks originally existed
+// only on the v3 modern path, which no stored package uses, so in the FIELD the layer produced
+// nothing at all and a perf run reported zero transitions while the viewer was plainly performing
+// them. These lines are the fix for that, and this pins them.
+//
+// The observable is the real production one: `computeDurations` published through the `reveal`
+// telemetry callback, plus the public `timingSummary()`. `dispatchMs` is
+// `diff(requested -> prepare-sent)`, so a finite non-negative value proves BOTH marks exist AND
+// that they are ordered; `totalMs` proves the transition was not abandoned.
+describe('transition instrumentation — the v2 activation path is measured', () => {
+  function bootWithTelemetry() {
+    const tel: Array<{ event: string; detail: Record<string, unknown> }> = [];
+    const c = new SimRuntimeClient({
+      onState: () => {},
+      onTelemetry: (event: string, detail?: Record<string, unknown>) => {
+        tel.push({ event, detail: detail ?? {} });
+      },
+    });
+    const { el, win } = makeFrame();
+    c.attach(el, 'doc-marks');
+    fromChild(win, { type: 'SIM_READY', dispatch: 'dynamic' });
+    fromChild(win, { type: 'SIM_PAINTED' });
+    return { c, win, tel };
+  }
+
+  const applyAck = (c: SimRuntimeClient, win: object, script: string) =>
+    fromChild(win, { type: 'SCRIPT_APPLIED', script, token: c.getState().activationToken });
+
+  it('stamps requested and prepare-sent, in order, with finite non-negative timestamps', () => {
+    const { c, win, tel } = bootWithTelemetry();
+    c.activate({ script: 'A' });
+    applyAck(c, win, 'A');
+
+    const reveals = tel.filter((t) => t.event === 'reveal')
+      .map((t) => t.detail as Record<string, number | null>);
+    expect(reveals.length, 'no reveal telemetry at all — nothing was measured').toBeGreaterThan(0);
+
+    // Several reveal paths roll an already-closed transition and legitimately publish nulls. The
+    // contract is that the ACTIVATION's own transition produced a measured dispatch — exactly one
+    // reveal carries it, and with the marks deleted NONE would.
+    const measured = reveals.filter((d) => typeof d.dispatchMs === 'number');
+    expect(measured.length, 'no reveal carried a dispatch measurement — requested and/or prepare-sent is missing')
+      .toBeGreaterThan(0);
+    for (const d of measured) {
+      // requested -> prepare-sent. `diff` returns null when either mark is absent or out of order,
+      // so a number here proves both exist AND that requested precedes prepare-sent.
+      expect(Number.isFinite(d.dispatchMs as number)).toBe(true);
+      expect(d.dispatchMs as number, 'prepare-sent was stamped BEFORE requested').toBeGreaterThanOrEqual(0);
+      // requested -> revealed. Null would mean the transition had no start.
+      expect(typeof d.totalMs, 'totalMs is null — the transition has no requested mark').toBe('number');
+      expect(d.totalMs as number).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it('produces a COMPLETE transition in the summary, not an abandoned or empty one', () => {
+    const { c, win } = bootWithTelemetry();
+    c.activate({ script: 'A' });
+    applyAck(c, win, 'A');
+
+    const s = c.timingSummary();
+    expect(s.samples, 'no transition was rolled into the history at all').toBeGreaterThanOrEqual(1);
+    // `isComplete` requires BOTH `requested` and `revealed`, so this is 0 without the marks.
+    expect(s.completed, 'the activation produced no COMPLETE transition').toBe(1);
+    expect(s.p50TotalMs, 'a completed transition produced no total').not.toBeNull();
+    expect(Number.isFinite(s.p50TotalMs as number)).toBe(true);
+  });
+
+  it('ROLLS a separate transition per activation instead of merging them', () => {
+    const { c, win } = bootWithTelemetry();
+    c.activate({ script: 'A' });
+    applyAck(c, win, 'A');
+    expect(c.timingSummary().completed).toBe(1);
+
+    c.activate({ script: 'B' });
+    applyAck(c, win, 'B');
+    // Without rollTransition the second activation's marks land on the first transition, whose
+    // `requested` is already stamped (first write wins) — one merged sample, not two.
+    expect(c.timingSummary().completed, 'the two activations did not produce two complete transitions').toBe(2);
+  });
+});
