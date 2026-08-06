@@ -39,7 +39,7 @@ import {
   type SimManifest,
   type SimManifestFile,
 } from 'shared/sim/simManifest';
-import { revisionIdFromKey } from 'shared/sim/simRevision';
+import { revisionIdFromKey, PACKAGE_SUBDIR } from 'shared/sim/simRevision';
 
 export interface MigrationResult {
   simulationId: string;
@@ -73,10 +73,24 @@ export function roleForLegacyPath(relPath: string, entryRelPath: string): SimFil
  * Customer bytes are nested under `package/` so a customer file called `manifest.json`, or a
  * customer directory called `runtime`, cannot shadow ours. That has to be structural: a name-based
  * guard would be a denylist, and the customer chooses the names.
+ *
+ * THE PACKAGE MOVES AS ONE, PRESERVING ITS INTERNAL LAYOUT.
+ *
+ * `role` is metadata ABOUT a file, not a location FOR it. Hoisting runtime files into a sibling
+ * `runtime/` directory moved them out from under the entry document's relative resolution: a legacy
+ * package of `index.html` + `bridge.js` became `package/index.html` + `runtime/bridge.js`, so the
+ * entry's `<script src="bridge.js">` resolved to `package/bridge.js` and every migrated package
+ * loaded a 404 bridge. It published and validated green, because nothing in the manifest checks
+ * that a relative reference still resolves. The same break hit any relative reference to
+ * `guidance.js`, and the principle generalises: this migration copies bytes it did not author, so
+ * it must not rearrange what those bytes point at.
+ *
+ * Nothing depended on the `runtime/` location — `manifest.runtime` is built from these very paths,
+ * and `RUNTIME_SUBDIR` has no other consumer — so the role is still carried by the manifest entry
+ * while the path stays faithful to the package the customer uploaded.
  */
-export function revisionPathForLegacy(relPath: string, role: SimFileRole): string {
-  if (role === 'runtime') return relPath.startsWith('runtime/') ? relPath : `runtime/${relPath}`;
-  return `package/${relPath}`;
+export function revisionPathForLegacy(relPath: string, _role: SimFileRole): string {
+  return `${PACKAGE_SUBDIR}/${relPath}`;
 }
 
 export class RevisionMigration {
