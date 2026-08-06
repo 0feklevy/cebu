@@ -179,6 +179,24 @@ describe('transport', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('an idle flush leaves a carried drop count intact for the next real batch', async () => {
+    // A 429 counts the refused batch back into the ring's tally without disabling — leaving the
+    // ring EMPTY but the tally at 1. `drain()` zeroes the tally as it empties, so an idle flush
+    // that drains before checking for emptiness destroys the only record that a batch was ever
+    // lost. The guard must check BEFORE draining; the next real batch still says `dropped: 1`.
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 429 }));
+    const r = rec();
+    r.record(EV); r.flush('manual');
+    await Promise.resolve(); await Promise.resolve();   // let the 429 .then run noteDropped
+
+    r.flush('interval');                                // idle: ring empty, tally carried
+    expect(fetchMock, 'an idle flush must not send an empty batch').toHaveBeenCalledOnce();
+
+    r.record(EV); r.flush('manual');
+    const body = sent().at(-1)!;
+    expect(body.dropped, 'the idle flush destroyed the carried drop count').toBe(1);
+  });
+
   it('flushes on an interval', () => {
     const r = rec({ flushIntervalMs: 5000 });
     r.record(EV);
