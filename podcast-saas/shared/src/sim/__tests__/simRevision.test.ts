@@ -159,14 +159,17 @@ describe('revisionIdFromKey — positional, not first-match', () => {
     expect(revisionIdFromKey(revisionManifestKey(PREFIX, REV))).toBe(REV);
   });
 
-  it('REFUSES a legacy customer directory named `revisions` at the same depth', () => {
-    // THE BUG THIS REPLACED. A pre-revision package whose bundle has a top-level `revisions/` dir
-    // sits at exactly this shape. A first-match scan returned an id, and the serving layer would
-    // pin a MUTABLE object with a year of immutable caching and no revalidation path.
+  // NAMED FOR WHAT IT ASSERTS. This was called "REFUSES a legacy customer directory" while
+  // asserting the opposite — the parser ACCEPTS a customer directory at the canonical depth, and
+  // a reader trusting the name would conclude the shape was handled here. It is not: this function
+  // is positional only, and the thing that actually refuses a customer directory is
+  // `isVerifiedRevisionKey` (backend-api/src/services/simulation/revisionIdentity.ts), which
+  // requires a UUID AND a sim_revisions row for that simulation before any immutable caching.
+  it('is POSITIONAL only — depth decides, and a customer directory at that depth still parses', () => {
+    // A pre-revision package whose bundle has a top-level `revisions/` dir sits at exactly this
+    // shape, and by shape alone it is indistinguishable from a real revision.
     expect(revisionIdFromKey('simulations/proj-1/sim-1/revisions/customerdir/app.js')).toBe('customerdir');
-    // ...which is indistinguishable from a real revision by shape alone. What makes it safe is that
-    // a legacy package is never WRITTEN there — revisionPrefix is the only writer of this segment.
-    // The guard that matters is depth: anything deeper cannot masquerade.
+    // What this function DOES guarantee: anything deeper cannot masquerade.
     expect(revisionIdFromKey('simulations/proj-1/sim-1/package/revisions/customerdir/app.js')).toBeNull();
     expect(revisionIdFromKey('simulations/proj-1/sim-1/a/b/revisions/customerdir/app.js')).toBeNull();
   });

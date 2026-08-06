@@ -28,9 +28,12 @@ import {
 /**
  * Upper bound on a single batch's reported drop count.
  *
- * An honest client cannot exceed its ring capacity, so anything near this is already a misbehaving
- * or hostile sender. Bounding it here — rather than at int4 — is what keeps the SUM in
- * `fieldAggregates` from being driveable toward an overflow by a caller.
+ * NOT a ring-capacity bound. An honest client CAN report far more than its ring holds: the count
+ * accumulates across failed sends (`noteDropped` on every 5xx or rejected flush), so a viewer on a
+ * long session against a failing ingest endpoint legitimately reports thousands. This bound is
+ * therefore about arithmetic safety, not about detecting dishonesty — it keeps the SUM in
+ * `fieldAggregates` from being driveable toward an overflow by a caller, which is why it sits well
+ * below int4 rather than at it.
  */
 export const RUM_MAX_DROPPED_PER_BATCH = 100_000;
 
@@ -174,8 +177,16 @@ export async function ingestBatch(raw: unknown): Promise<IngestResult> {
   // no aggregate ever reads, and the count vanished exactly as it did when it was never stored.
   // It goes on the first row that will be counted; if the batch has no countable row the aggregate
   // has no samples for it anyway, and index 0 keeps it visible to any other reader.
+  //
+  // THE SAME RULE THE WRITER USES, not a second opinion about it. `typeof totalMs === 'number'` is
+  // true for Infinity and NaN — which `JSON.parse` produces for `1e999`, and which `validateBatch`
+  // never inspects — but `clampInt` stores those as NULL. A batch whose first transition carried a
+  // non-finite total therefore selected a row that was then written with `total_ms = NULL`, and
+  // `WHERE kind = 'transition' AND total_ms IS NOT NULL` skipped it: the count vanished again, in
+  // precisely the way this selection exists to prevent. Asking `clampInt` makes the predicate and
+  // the stored value one decision that cannot drift apart.
   const countableIdx = b.events.findIndex(
-    (e) => e.kind === 'transition' && typeof e.durations?.totalMs === 'number',
+    (e) => e.kind === 'transition' && clampInt(e.durations?.totalMs, 0, 2 ** 31 - 1) !== null,
   );
   const dropIdx = countableIdx >= 0 ? countableIdx : 0;
   const rows = b.events.map((e, i) => ({
