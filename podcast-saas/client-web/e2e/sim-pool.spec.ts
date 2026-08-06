@@ -17,8 +17,11 @@
  * ?simdebug=1) — no app instrumentation beyond the shipped telemetry hook.
  */
 import { test, expect, type Page } from '@playwright/test';
+import { installLoopbackGuard, type NetworkGuard } from './networkGuard';
 
 const BASE = process.env.SIM_POOL_E2E_BASE_URL;
+/** Identity of the branch-only, load-time-locked package. Supplied by the fixture manifest. */
+const LEGACY_PACKAGE_KEY = process.env.SIM_POOL_LEGACY_PACKAGE_KEY ?? '0f1c7e01-0000-4000-a000-000000000003';
 const FIXTURE = '00000000-0000-4000-a000-0000000f1c7e';
 // Main-path sim sections (global seconds) — from the fixture seed.
 const A1 = { start: 20, end: 35 };   // boids, minimal UI
@@ -34,6 +37,22 @@ test.skip(!BASE, 'Set SIM_POOL_E2E_BASE_URL to run the sim-pool fixture suite');
 // canary config already applies. Serial is kept: a shared browser thrashed by parallel WebGL
 // documents is a genuine environmental problem, not a flaky assertion.
 test.describe.configure({ mode: 'serial', retries: 0 });
+
+/**
+ * LOOPBACK-ONLY, ENFORCED. This suite runs against a fully synthetic local fixture (synthetic org,
+ * project, sections; locally generated simulation packages carrying the real bridge and child
+ * runtime; a locally encoded HLS ladder; local-disk storage). Pointing the base URL at localhost
+ * does not prove the PAGE stayed local, so every request is intercepted: anything that is not
+ * localhost/127.0.0.1/::1 is aborted and fails the test by name. The hosts actually contacted are
+ * recorded and reported.
+ */
+let guard: NetworkGuard;
+test.beforeEach(async ({ page }, testInfo) => { guard = installLoopbackGuard(page, testInfo); });
+test.afterEach(async () => {
+  guard.assertLoopbackOnly();
+  // eslint-disable-next-line no-console
+  console.log(`[network-guard] hosts contacted: ${guard.hosts().join(', ') || '(none)'}`);
+});
 
 const viewUrl = (q = '') => `${BASE}/projects/${FIXTURE}/view?simdebug=1${q}`;
 
@@ -129,7 +148,10 @@ test('legacy (non-dynamic) bridge package reveals via the navigation fallback on
   // and eventual overlay reveal.
   await expect.poll(async () => {
     const ev = await telemetry(page);
+    // The branch-only package's identity comes from the FIXTURE, not a hard-coded production
+    // package name: with the synthetic seeder there is no 'pluck-boids', so matching on that name
+    // could only ever be satisfied by the old production-data fixture.
     return ev.some((e) => e.event === 'navigate') ||
-           ev.some((e) => e.event === 'activate' && typeof e.key === 'string' && (e.key as string).includes('pluck-boids'));
+           ev.some((e) => e.event === 'activate' && typeof e.key === 'string' && (e.key as string).includes(LEGACY_PACKAGE_KEY));
   }, { timeout: 45_000 }).toBe(true);
 });

@@ -20,6 +20,25 @@ export interface FrontendCspOptions {
   includeStripe?: boolean;
   /** true in development → adds localhost sources. MUST be false for a production policy. */
   dev?: boolean;
+  /**
+   * `host:port` of a LOCAL Firebase Auth emulator, added to connect-src in development only.
+   *
+   * With `connectAuthEmulator` active the SDK posts to `http://<host>:<port>/identitytoolkit…`,
+   * which `connect-src` refused — so anonymous sign-in failed silently inside the provider's catch
+   * and the page ran unauthenticated. Ignored entirely unless `dev` is true AND the value is a
+   * loopback host, so it can never widen a production policy.
+   */
+  authEmulatorHost?: string;
+}
+
+/** `http://host:port` for a loopback emulator, or '' for anything else. Never widens production. */
+export function authEmulatorOrigin(hostPort: string | undefined, dev: boolean): string {
+  if (!dev || !hostPort) return '';
+  const trimmed = hostPort.trim().replace(/^https?:\/\//i, '').replace(/[/?#].*$/, '');
+  const [host, port] = trimmed.split(':');
+  if (!host || !port || !/^\d+$/.test(port)) return '';
+  if (!['localhost', '127.0.0.1', '::1'].includes(host)) return '';
+  return `http://${host}:${port}`;
 }
 
 const LOOPBACK = /(localhost|127\.0\.0\.1|0\.0\.0\.0|::1)/i;
@@ -46,6 +65,8 @@ export function buildFrontendCsp(opts: FrontendCspOptions): string {
   const { apiUrl, firebaseAuthDomain, includeStripe = false, dev = false } = opts;
   const authFrame = firebaseAuthFrameOrigin(firebaseAuthDomain);
   const devApi = dev ? ' http://localhost:8080' : '';
+  const emu = authEmulatorOrigin(opts.authEmulatorHost, dev);
+  const devEmu = emu ? ` ${emu}` : '';
 
   // frame-src — the exact origins whose iframes our pages may load:
   //   the API origin (sims via /sim-public), Stripe checkout (client-web), and the Firebase
@@ -72,6 +93,6 @@ export function buildFrontendCsp(opts: FrontendCspOptions): string {
     "font-src 'self' data: https:",
     `img-src 'self' data: blob: https:${devApi}`,
     `media-src 'self' blob: https:${devApi}`,
-    `connect-src 'self' https: wss:${dev ? ' http://localhost:8080 ws://localhost:8080' : ''}`,
+    `connect-src 'self' https: wss:${dev ? ' http://localhost:8080 ws://localhost:8080' : ''}${devEmu}`,
   ].join('; ');
 }
