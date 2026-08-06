@@ -15,6 +15,7 @@ import {
   onAuthStateChanged,
   type User,
 } from 'firebase/auth';
+import { authEmulatorOrigin } from 'shared/src/csp';
 import { createContext, useContext, useEffect, useState } from 'react';
 import React from 'react';
 
@@ -30,13 +31,18 @@ const firebaseConfig = {
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
 
 const AUTH_EMULATOR_HOST = process.env.NEXT_PUBLIC_FIREBASE_AUTH_EMULATOR_HOST;
-const emulatorHostIsLoopback = (() => {
-  const h = AUTH_EMULATOR_HOST?.split(':')[0];
-  return h === 'localhost' || h === '127.0.0.1' || h === '::1';
-})();
-const useAuthEmulator = Boolean(AUTH_EMULATOR_HOST)
-  && process.env.NODE_ENV !== 'production'
-  && emulatorHostIsLoopback;
+/**
+ * ONE validator, shared with the CSP, and the ORIGIN IT RETURNS is what gets used.
+ *
+ * `AUTH_EMULATOR_HOST.split(':')[0]` is not the host. For `localhost:9099@attacker.example.com` it
+ * yields "localhost" — so a loopback check passes — while `new URL('http://' + value)` resolves to
+ * `attacker.example.com`, because the leading text is userinfo. Interpolating the raw value after
+ * checking a split of it would therefore point anonymous sign-in at a remote host. `authEmulatorOrigin`
+ * parses the authority and rebuilds the origin from the parsed parts, so the string that is
+ * validated is necessarily the string that is connected to.
+ */
+const authEmulatorUrl = authEmulatorOrigin(AUTH_EMULATOR_HOST, process.env.NODE_ENV !== 'production');
+const useAuthEmulator = authEmulatorUrl !== '';
 
 /**
  * `getAuth()` installs the browser popup/redirect resolver, and that resolver loads the gapi
@@ -64,7 +70,7 @@ export const auth = useAuthEmulator
  * at someone else's machine.
  */
 if (useAuthEmulator) {
-  connectAuthEmulator(auth, `http://${AUTH_EMULATOR_HOST}`, { disableWarnings: true });
+  connectAuthEmulator(auth, authEmulatorUrl, { disableWarnings: true });
 } else if (AUTH_EMULATOR_HOST && process.env.NODE_ENV !== 'production') {
   // eslint-disable-next-line no-console
   console.error('[firebase] refusing a non-loopback auth emulator host');

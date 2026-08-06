@@ -609,6 +609,26 @@ describe('transition instrumentation — the v2 activation path is measured', ()
     expect(Number.isFinite(s.p50TotalMs as number)).toBe(true);
   });
 
+  // REGRESSION: reveal() is not idempotent and runs for non-transition reasons (first paint, poll,
+  // owner nudge). Stamping presented/revealed unconditionally manufactured history entries with no
+  // `requested`: never complete, so no percentile moved, but counted in `samples` and tallied into
+  // `abandonedAt.revealed` — the field that answers "where do transitions die".
+  it('does NOT manufacture a transition from a reveal that no activation opened', () => {
+    const { c } = bootWithTelemetry();          // boots + paints, so reveal() runs with no activate()
+    const s = c.timingSummary();
+    expect(s.samples, 'a reveal with no activation was recorded as a transition').toBe(0);
+    expect(s.abandonedAt.revealed ?? 0, 'phantom transitions inflated abandonedAt.revealed').toBe(0);
+  });
+
+  it('still measures a real activation after such a reveal', () => {
+    const { c, win } = bootWithTelemetry();
+    c.activate({ script: 'A' });
+    applyAck(c, win, 'A');
+    const s = c.timingSummary();
+    expect(s.samples).toBe(1);
+    expect(s.completed).toBe(1);
+  });
+
   it('ROLLS a separate transition per activation instead of merging them', () => {
     const { c, win } = bootWithTelemetry();
     c.activate({ script: 'A' });

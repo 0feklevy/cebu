@@ -47,7 +47,7 @@ test.describe.configure({ mode: 'serial', retries: 0 });
  * recorded and reported.
  */
 let guard: NetworkGuard;
-test.beforeEach(async ({ page }, testInfo) => { guard = installLoopbackGuard(page, testInfo); });
+test.beforeEach(async ({ page }, testInfo) => { guard = await installLoopbackGuard(page, testInfo); });
 test.afterEach(async () => {
   guard.assertLoopbackOnly();
   // eslint-disable-next-line no-console

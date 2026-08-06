@@ -25,11 +25,14 @@ export interface NetworkGuard {
   assertLoopbackOnly(): void;
 }
 
-export function installLoopbackGuard(page: Page, testInfo?: TestInfo): NetworkGuard {
+export async function installLoopbackGuard(page: Page, testInfo?: TestInfo): Promise<NetworkGuard> {
   const seen: string[] = [];
   const bad: string[] = [];
 
-  void page.route('**/*', async (route) => {
+  // AWAITED. `page.route` round-trips to the browser to enable interception; returning before it
+  // resolves left a window in which the very first navigation could be dispatched unintercepted —
+  // and the first thing every test does is page.goto.
+  await page.route('**/*', async (route) => {
     const url = route.request().url();
     const scheme = url.slice(0, url.indexOf(':') + 1);
     if (LOCAL_SCHEMES.has(scheme)) return route.continue();
@@ -51,6 +54,20 @@ export function installLoopbackGuard(page: Page, testInfo?: TestInfo): NetworkGu
     // response could change what the rest of the test observes.
     if (testInfo) testInfo.annotations.push({ type: 'network-violation', description: host });
     return route.abort('blockedbyclient');
+  });
+
+  // ROUTE HANDLERS DO NOT SEE REDIRECT HOPS. Playwright calls the handler only for the first URL
+  // when the response is a redirect, so a 302 from a loopback URL to a remote host would be
+  // followed without ever reaching the code above. Responses are therefore observed independently:
+  // anything that RESOLVED off-loopback is recorded as a violation even though it was never routed.
+  page.on('response', (res) => {
+    let host: string;
+    try { host = new URL(res.url()).hostname; } catch { return; }
+    if (!seen.includes(host)) seen.push(host);
+    if (!LOOPBACK.has(host) && !bad.includes(host)) {
+      bad.push(host);
+      if (testInfo) testInfo.annotations.push({ type: 'network-violation-redirect', description: host });
+    }
   });
 
   const guard: NetworkGuard = {

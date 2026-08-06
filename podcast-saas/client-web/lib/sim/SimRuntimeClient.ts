@@ -1289,11 +1289,25 @@ export class SimRuntimeClient {
     if (this.legacyRevealTimer) { clearTimeout(this.legacyRevealTimer); this.legacyRevealTimer = null; }
     this.stopPaintPoll();
     this.set({ phase: 'visible', visible: true, interactive: true });
-    this.mark('presented');
-    this.mark('revealed');
-    this.tel(force ? 'reveal-forced' : 'reveal',
-      computeDurations(this.tmarks) as unknown as Record<string, unknown>);
-    this.rollTransition();
+    // ONLY MEASURE A TRANSITION THAT WAS ACTUALLY OPENED.
+    //
+    // `reveal()` runs for reasons that are not section transitions — a first paint, a poll, an owner
+    // nudge — and it is not idempotent. Stamping presented/revealed unconditionally MANUFACTURED a
+    // transition: `rollTransition` pushes whenever the mark map is non-empty, which those two marks
+    // had just guaranteed, so the history filled with entries that had no `requested`. They can
+    // never be complete, so no percentile moved — but they were counted in `samples` and tallied
+    // into `abandonedAt.revealed`, the field that answers "where do transitions die". It read as a
+    // fleet dying at reveal when nothing had died at all. A transition is open exactly when
+    // `activate()` stamped `requested`.
+    if (this.tmarks.marks.requested !== undefined) {
+      this.mark('presented');
+      this.mark('revealed');
+      this.tel(force ? 'reveal-forced' : 'reveal',
+        computeDurations(this.tmarks) as unknown as Record<string, unknown>);
+      this.rollTransition();
+    } else {
+      this.tel(force ? 'reveal-forced' : 'reveal', { unmeasured: true });
+    }
   }
 
   /**
