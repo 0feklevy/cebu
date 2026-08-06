@@ -141,8 +141,32 @@ describe('classification', () => {
     // A customer file literally called manifest.json must not land beside the real one.
     expect(revisionPathForLegacy('manifest.json', 'asset')).toBe('package/manifest.json');
     expect(revisionPathForLegacy('index.html', 'entry')).toBe('package/index.html');
-    expect(revisionPathForLegacy('bridge.js', 'runtime')).toBe('runtime/bridge.js');
-    expect(revisionPathForLegacy('runtime/bridge.js', 'runtime')).toBe('runtime/bridge.js');
+  });
+
+  // REGRESSION. Runtime files used to be hoisted into a sibling `runtime/` directory, which moved
+  // them OUT from under the entry document's relative resolution: `package/index.html` asking for
+  // `bridge.js` resolved to `package/bridge.js`, so every migrated package loaded a 404 bridge —
+  // and published green, because nothing in the manifest checks that a reference still resolves.
+  // The package moves as ONE: role is metadata ABOUT a file, not a location FOR it.
+  it('keeps every file at its ORIGINAL relative position inside package/, runtime included', () => {
+    expect(revisionPathForLegacy('bridge.js', 'runtime')).toBe('package/bridge.js');
+    expect(revisionPathForLegacy('guidance.js', 'runtime')).toBe('package/guidance.js');
+    // A package that already kept its runtime in a subdirectory keeps that shape too.
+    expect(revisionPathForLegacy('runtime/bridge.js', 'runtime')).toBe('package/runtime/bridge.js');
+  });
+
+  it('preserves relative resolution from the entry document, for every role', () => {
+    // The property that actually matters: resolving each file's ORIGINAL relative reference from
+    // the migrated entry's own directory must land exactly on the migrated file.
+    const entryKey = revisionPathForLegacy('index.html', 'entry');
+    const entryDir = entryKey.slice(0, entryKey.lastIndexOf('/') + 1);
+    for (const [ref, role] of [
+      ['bridge.js', 'runtime'], ['guidance.js', 'runtime'],
+      ['assets/logo.png', 'asset'], ['runtime/bridge.js', 'runtime'],
+    ] as const) {
+      expect(entryDir + ref, `<script src="${ref}"> from ${entryKey} must resolve to the stored file`)
+        .toBe(revisionPathForLegacy(ref, role));
+    }
   });
 
   it('recovers the project id from a canonical prefix and shrugs at anything else', () => {
@@ -177,7 +201,7 @@ describe('publishLegacyAsRevision', () => {
 
     const rev = res.revisionId!;
     expect(adapter.objects.has(`${PREFIX}/revisions/${rev}/package/index.html`)).toBe(true);
-    expect(adapter.objects.has(`${PREFIX}/revisions/${rev}/runtime/bridge.js`)).toBe(true);
+    expect(adapter.objects.has(`${PREFIX}/revisions/${rev}/package/bridge.js`), 'the bridge must stay under the entry document, or its relative <script src> 404s').toBe(true);
     expect(adapter.objects.has(`${PREFIX}/revisions/${rev}/package/assets/logo.png`)).toBe(true);
     expect(adapter.objects.has(`${PREFIX}/revisions/${rev}/manifest.json`)).toBe(true);
   });
@@ -210,7 +234,7 @@ describe('publishLegacyAsRevision', () => {
       .toBe(POINTER_CACHE_CONTROL);
     expect(adapter.objects.get(`${PREFIX}/revisions/${rev}/package/styles.css`)!.cacheControl)
       .toBe(IMMUTABLE_CACHE_CONTROL);
-    expect(adapter.objects.get(`${PREFIX}/revisions/${rev}/runtime/bridge.js`)!.cacheControl)
+    expect(adapter.objects.get(`${PREFIX}/revisions/${rev}/package/bridge.js`)!.cacheControl)
       .toBe(IMMUTABLE_CACHE_CONTROL);
   });
 
@@ -352,5 +376,73 @@ describe('buildLegacyManifest', () => {
       ],
     });
     expect(m.runtime).toEqual(['runtime/bridge.js']);
+  });
+});
+
+// ── Rollback and partially-migrated states ───────────────────────────────────────────────────────
+//
+// Migration 050's rollback reverts every simulation to its legacy path, so the legacy package must
+// remain complete AND self-consistent — not merely present. And a migration interrupted midway
+// (the machine this branch was reconstructed from died mid-run) must not leave a revision whose
+// entry points at files that were never copied.
+describe('rollback safety and partial migration', () => {
+  /** Every relative reference the entry could make, resolved against the migrated entry's dir. */
+  const resolvedFrom = (entryKey: string, ref: string) =>
+    entryKey.slice(0, entryKey.lastIndexOf('/') + 1) + ref;
+
+  it('leaves the LEGACY package complete and self-consistent, so a rollback has something to serve', async () => {
+    const res = await mig.publishLegacyAsRevision({ simulationId: simId });
+    expect(res.revisionId).not.toBeNull();
+    // Every legacy object still present, byte-identical...
+    for (const [key, bytes] of [
+      [`${PREFIX}/index.html`, HTML], [`${PREFIX}/bridge.js`, BRIDGE],
+      [`${PREFIX}/styles.css`, CSS], [`${PREFIX}/assets/logo.png`, PNG],
+    ] as const) {
+      expect(adapter.objects.get(key)?.bytes, `${key} was moved or rewritten`).toEqual(bytes);
+    }
+    // ...and the entry's own relative references still resolve AT THE LEGACY PREFIX, which is the
+    // layout a rollback actually serves.
+    for (const ref of ['bridge.js', 'styles.css', 'assets/logo.png']) {
+      expect(adapter.objects.has(resolvedFrom(`${PREFIX}/index.html`, ref)), `legacy ${ref} unresolvable`)
+        .toBe(true);
+    }
+  });
+
+  it('a migrated revision resolves every one of the entry document’s relative references', async () => {
+    const res = await mig.publishLegacyAsRevision({ simulationId: simId });
+    const entryKey = `${PREFIX}/revisions/${res.revisionId}/${res.entryPath}`;
+    for (const ref of ['bridge.js', 'styles.css', 'assets/logo.png']) {
+      const resolved = resolvedFrom(entryKey, ref);
+      expect(adapter.objects.has(resolved), `<script/link src="${ref}"> resolves to ${resolved}, which was not written`)
+        .toBe(true);
+    }
+  });
+
+  it('refuses a second migration by default, so a partial state is never silently re-copied over', async () => {
+    const first = await mig.publishLegacyAsRevision({ simulationId: simId });
+    expect(first.revisionId).not.toBeNull();
+    const again = await mig.publishLegacyAsRevision({ simulationId: simId });
+    // Either it declines outright, or it produces a DISTINCT revision — never a partial overwrite
+    // of the first one's immutable bytes.
+    if (again.revisionId) expect(again.revisionId).not.toBe(first.revisionId);
+    else expect(again.skipped ?? again.error).toBeTruthy();
+  });
+
+  it('a re-run after an INTERRUPTED copy produces a complete revision, not a half one', async () => {
+    // Simulate the interrupted state: stray objects under a revision-shaped prefix that no
+    // completed migration produced.
+    const orphan = `${PREFIX}/revisions/${'0'.repeat(8)}-dead-4dea-8dea-deaddeaddead/package/index.html`;
+    adapter.objects.set(orphan, { bytes: HTML, contentType: 'text/html; charset=utf-8' });
+
+    const res = await mig.publishLegacyAsRevision({ simulationId: simId, force: true });
+    expect(res.revisionId, res.error ?? 'no revision produced').not.toBeNull();
+    const entryKey = `${PREFIX}/revisions/${res.revisionId}/${res.entryPath}`;
+    expect(adapter.objects.has(entryKey)).toBe(true);
+    for (const ref of ['bridge.js', 'styles.css', 'assets/logo.png']) {
+      expect(adapter.objects.has(resolvedFrom(entryKey, ref)), `${ref} missing from the re-run revision`)
+        .toBe(true);
+    }
+    // The orphan is untouched — the migration never deletes bytes it did not write in this run.
+    expect(adapter.objects.has(orphan)).toBe(true);
   });
 });
