@@ -358,7 +358,14 @@
 .sim-cold-poster.transparent {
   background: transparent;
 }
+/* POSITIONED, and above the poster. `.sim-cold-poster` is absolutely positioned with an opaque
+   `background:#000`, so it paints in a later stacking layer than a statically-positioned sibling:
+   a static spinner is rendered into the DOM and then painted UNDERNEATH the poster. That is
+   exactly how the "retain a motion cue when the sim genuinely stalls" requirement was lost while
+   its test — which asserts DOM presence only — stayed green. */
 .sim-overlay-spinner {
+  position: relative;
+  z-index: 1;
   width: 34px;
   height: 34px;
   border-radius: 50%;
