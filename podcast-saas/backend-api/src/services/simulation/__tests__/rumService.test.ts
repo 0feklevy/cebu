@@ -25,8 +25,9 @@ vi.mock('../../../db/index.js', () => ({
     },
   }),
 }));
+const logged = vi.hoisted(() => ({ warn: vi.fn(), error: vi.fn() }));
 vi.mock('../../../lib/logger.js', () => ({
-  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  logger: { info: vi.fn(), warn: logged.warn, error: logged.error, debug: vi.fn() },
 }));
 
 import {
@@ -464,6 +465,40 @@ describe('the drop count is filed where the aggregate can actually see it', () =
     expect(r!.dropped, 'the drop count was invisible to the aggregate').toBe(9);
   });
 
+  // REGRESSION: `typeof totalMs === 'number'` is TRUE for Infinity and NaN, but `clampInt` stores
+  // those as NULL — so the "countable" row it picked was written with total_ms = NULL and both
+  // aggregates skipped it. JSON.parse produces Infinity for `1e999` and validateBatch never
+  // inspects durations, so this arrives from the wire.
+  it('does not treat a NON-FINITE total as countable — the row it picks must survive the filter', async () => {
+    await ingestBatch(batch({
+      dropped: 40,
+      events: [
+        { kind: 'transition', t: 1, packageRevision: 'pkg-abc',
+          durations: { totalMs: Number.POSITIVE_INFINITY } } as unknown as RumEvent,
+        ev(),
+      ],
+    }));
+    const [r] = await rows<{ dropped: number }>(
+      `SELECT COALESCE(sum(dropped),0)::int AS dropped FROM sim_rum_events
+        WHERE kind = 'transition' AND total_ms IS NOT NULL`);
+    expect(r!.dropped, 'the count landed on a row the aggregate excludes').toBe(40);
+  });
+
+  it('treats a NaN total the same way', async () => {
+    await ingestBatch(batch({
+      dropped: 7,
+      events: [
+        { kind: 'transition', t: 1, packageRevision: 'pkg-abc',
+          durations: { totalMs: Number.NaN } } as unknown as RumEvent,
+        ev(),
+      ],
+    }));
+    const [r] = await rows<{ dropped: number }>(
+      `SELECT COALESCE(sum(dropped),0)::int AS dropped FROM sim_rum_events
+        WHERE kind = 'transition' AND total_ms IS NOT NULL`);
+    expect(r!.dropped).toBe(7);
+  });
+
   it('still records the count when NO event is countable', async () => {
     // Nothing to attribute it to, but it must not be silently discarded either.
     await ingestBatch(batch({
@@ -518,7 +553,17 @@ describe('fieldAggregates — the shipped function, executed', () => {
 
   it('asks the database nothing when there are no revisions', async () => {
     // drizzle's inArray throws on an empty list, so the early return is load-bearing, not tidiness.
+    //
+    // The empty-map assertion ALONE cannot see that: delete the early return and `inArray(col, [])`
+    // throws inside the try, the catch logs a warning and returns an empty map — identical result,
+    // green test. What separates the two is that the early return reaches no query and logs
+    // nothing, so that is what is asserted.
+    logged.warn.mockClear();
+    logged.error.mockClear();
     await expect(fieldAggregates([])).resolves.toEqual(new Map());
+    expect(logged.warn, 'the query was attempted and failed into the catch, not short-circuited')
+      .not.toHaveBeenCalled();
+    expect(logged.error).not.toHaveBeenCalled();
   });
 
   it('reports nearest-rank percentiles, so every value reported actually occurred', async () => {

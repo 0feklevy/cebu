@@ -31,7 +31,15 @@ export type SimRevisionStatus =
   | 'uploading'
   /** All files written; hashes and manifest being verified against stored bytes. */
   | 'validating'
-  /** Verified and canary-proven. Eligible to become active. */
+  /**
+   * Bytes verified against the manifest, and ELIGIBLE to become active.
+   *
+   * NOT proof that a canary ran. `validate()` moves a revision here on byte verification alone,
+   * and the legacy migration publishes straight into this state, so a migrated package can sit in
+   * `canary_passed` having never been canaried. The name is historical; treating it as a
+   * canary gate would activate unproven bytes. A canary result lives in `canary_report`/`canary_at`
+   * — check those if that is the question being asked.
+   */
   | 'canary_passed'
   /** The pointer points here. Exactly one per simulation. */
   | 'active'
