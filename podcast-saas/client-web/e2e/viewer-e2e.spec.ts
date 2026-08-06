@@ -1071,7 +1071,14 @@ test.describe('real React viewer — simulation transitions', () => {
     await page.waitForTimeout(900);
     const move = sampleFrames(page, 1500);
     await seekTo(page, 10);
-    const late = (await move).slice(6);
+    // SKIP BY TIME, NOT BY FRAME COUNT. `sampleFrames` ticks once per rAF, so `.slice(6)` skipped
+    // roughly 100ms — far less than the exit fade. The outgoing section's frame is still fading
+    // through that window, and on Firefox one sample landed just above the 0.5 threshold while
+    // Chromium's cadence happened to miss it. That made the test engine-dependent while saying
+    // nothing about the invariant, which is that a MISSING section must not be left presented once
+    // the fade has finished.
+    const AFTER_FADE_MS = 600;
+    const late = (await move).filter((smp) => smp.t >= AFTER_FADE_MS);
     expect(late.length, 'no post-transition samples — the assertion below would be vacuous').toBeGreaterThan(5);
     const presented = late.flatMap((s) => s.frames).filter((f) => f.op > 0.5);
     expect(presented.length, 'a missing section was presented instead of degrading to video').toBe(0);
