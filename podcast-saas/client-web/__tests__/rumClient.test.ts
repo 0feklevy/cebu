@@ -221,17 +221,57 @@ describe('failure isolation', () => {
     expect(r.active).toBe(false);
   });
 
+  // These two used to inject their fault into `navigator.sendBeacon`. `send` returns inside the
+  // `typeof fetch === 'function'` branch and never reaches the beacon fallback, so the fault landed
+  // in an unreachable transport: both tests ran an entirely happy path and passed regardless of
+  // what the code did. The faults now go into the transport the code actually takes.
+
   it('never lets a throw escape into the caller', () => {
-    beacon.mockImplementation(() => { throw new Error('boom'); });
+    // 1. The transport throws SYNCHRONOUSLY — reaches the try/catch in `send`.
+    fetchMock.mockImplementation(() => { throw new Error('boom'); });
     const r = rec();
-    expect(() => { r.record(EV); r.flush('manual'); r.record(EV); r.dispose(); }).not.toThrow();
+    expect(() => { r.record(EV); r.flush('manual'); r.dispose(); }).not.toThrow();
+
+    // 2. Serialising the batch throws — a BigInt makes JSON.stringify throw inside `send`.
+    fetchMock.mockImplementation(async () => new Response(null, { status: 204 }));
+    const r2 = rec();
+    expect(() => {
+      r2.record({ ...EV, durations: { totalMs: 1n as unknown as number } } as never);
+      r2.flush('manual');
+    }).not.toThrow();
+
+    // 3. Building the event throws — a throwing getter makes the spread inside `record` throw,
+    //    which is the only externally reachable way into that catch.
+    const r3 = rec();
+    expect(() => {
+      r3.record({ get kind(): never { throw new Error('getter'); } } as never);
+    }).not.toThrow();
+    expect(r3.active, 'a throw inside record must disable the session, not vanish silently')
+      .toBe(false);
   });
 
-  it('stops its timer when disabled, so a dead session costs nothing', () => {
-    beacon.mockImplementation(() => { throw new Error('boom'); });
+  it('stops its timer when disabled, so a dead session costs nothing', async () => {
+    // The interval must be proven to WORK first, or "no further sends" proves nothing at all.
+    const live = rec({ flushIntervalMs: 1000 });
+    live.record(EV);
+    vi.advanceTimersByTime(1000);
+    expect(fetchMock.mock.calls.length, 'the interval never fired even while enabled').toBe(1);
+    live.dispose();
+    fetchMock.mockClear();
+
+    // Now disable through the REAL transport: a rejected fetch runs `.catch(... disable())`.
+    fetchMock.mockRejectedValue(new Error('offline'));
     const r = rec({ flushIntervalMs: 1000 });
     r.record(EV); r.flush('manual');
+    await vi.runAllTimersAsync();
+    expect(r.active, 'the recorder never actually disabled — the rest of this test would be vacuous')
+      .toBe(false);
+
     const after = fetchMock.mock.calls.length;
+    vi.advanceTimersByTime(60_000);
+    expect(fetchMock.mock.calls.length, 'a disabled session kept its interval alive').toBe(after);
+    // And not merely because the ring is empty: recording again must not resurrect the session.
+    r.record(EV);
     vi.advanceTimersByTime(60_000);
     expect(fetchMock.mock.calls.length).toBe(after);
   });
