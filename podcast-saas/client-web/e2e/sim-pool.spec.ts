@@ -61,9 +61,19 @@ test.describe.configure({ mode: 'serial', retries: 0 });
  * recorded and reported.
  */
 let guard: NetworkGuard;
-test.beforeEach(async ({ page }, testInfo) => { guard = await installLoopbackGuard(page, testInfo); });
+/** Set ONLY by the guard self-test, which fires one deliberate (non-routable) violation. */
+let guardSelfTestExpectedViolation = false;
+test.beforeEach(async ({ page }, testInfo) => {
+  guardSelfTestExpectedViolation = false;
+  guard = await installLoopbackGuard(page, testInfo);
+});
 test.afterEach(async () => {
-  guard.assertLoopbackOnly();
+  if (guardSelfTestExpectedViolation) {
+    expect(guard.violations(), 'the self-test expected exactly its own deliberate violation')
+      .toEqual(['198.51.100.1']);
+  } else {
+    guard.assertLoopbackOnly();
+  }
   // eslint-disable-next-line no-console
   console.log(`[network-guard] hosts contacted: ${guard.hosts().join(', ') || '(none)'}`);
 });
@@ -239,4 +249,26 @@ test('the load-time-locked package uses the per-URL NAVIGATION fallback between 
 
   // And it must still end up presented — a fallback that navigates but never reveals is a failure.
   await expect.poll(() => overlayVisible(page), { timeout: 45_000 }).toBe(true);
+});
+
+/**
+ * SELF-TEST of the loopback guard's WIRING (its policy is unit-tested in networkGuard.test.ts).
+ *
+ * Every other test in this suite passes when the guard blocks nothing — which is also exactly what
+ * a disabled guard reports. This is the one test a no-op guard cannot pass: it fires a deliberate
+ * non-loopback request and requires the guard to have both BLOCKED and RECORDED it.
+ *
+ * The target is 198.51.100.1 (RFC 5737 TEST-NET-2): guaranteed non-routable and DNS-free, so even
+ * if the guard were broken the request could not actually reach a live endpoint — the self-test
+ * never becomes the leak it exists to prevent.
+ */
+test('the guard itself blocks and records a non-loopback request (self-test)', async ({ page }) => {
+  await page.goto(viewUrl(), { waitUntil: 'domcontentloaded' });
+  await page.evaluate(() =>
+    fetch('https://198.51.100.1/guard-selftest', { mode: 'no-cors' }).catch(() => undefined));
+  await expect.poll(() => guard.violations(), { timeout: 10_000 }).toContain('198.51.100.1');
+  expect(() => guard.assertLoopbackOnly(),
+    'a blocked request must fail the run, not merely be counted').toThrow(/198\.51\.100\.1/);
+  // Consume the violation so afterEach's assertLoopbackOnly reflects the REAL traffic of this test.
+  guardSelfTestExpectedViolation = true;
 });

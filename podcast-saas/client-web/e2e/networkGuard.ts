@@ -25,6 +25,33 @@ export interface NetworkGuard {
   assertLoopbackOnly(): void;
 }
 
+/** Why one URL was admitted or refused. `host` is null exactly when no hostname was parsed. */
+export type GuardVerdict =
+  | { allow: true; why: 'local-scheme'; host: null }
+  | { allow: true; why: 'loopback'; host: string }
+  | { allow: false; why: 'non-loopback'; host: string }
+  | { allow: false; why: 'unparseable'; host: null };
+
+/**
+ * The guard's entire admission rule, as a pure function. It lived inline in the route closure,
+ * where no unit test could reach it and no mutation could be cheaply killed — the same defect the
+ * hermeticity predicate had before `hermeticHosts.ts`. The route handler below applies this
+ * verdict verbatim; it adds recording and abortion, never policy.
+ */
+export function classifyGuardUrl(url: string): GuardVerdict {
+  const scheme = url.slice(0, url.indexOf(':') + 1);
+  if (LOCAL_SCHEMES.has(scheme)) return { allow: true, why: 'local-scheme', host: null };
+  let host: string;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    // An unparseable URL is not something a loopback-only run should be issuing.
+    return { allow: false, why: 'unparseable', host: null };
+  }
+  if (LOOPBACK.has(host)) return { allow: true, why: 'loopback', host };
+  return { allow: false, why: 'non-loopback', host };
+}
+
 export async function installLoopbackGuard(page: Page, testInfo?: TestInfo): Promise<NetworkGuard> {
   const seen: string[] = [];
   const bad: string[] = [];
@@ -34,25 +61,18 @@ export async function installLoopbackGuard(page: Page, testInfo?: TestInfo): Pro
   // and the first thing every test does is page.goto.
   await page.route('**/*', async (route) => {
     const url = route.request().url();
-    const scheme = url.slice(0, url.indexOf(':') + 1);
-    if (LOCAL_SCHEMES.has(scheme)) return route.continue();
+    const verdict = classifyGuardUrl(url);
+    if (verdict.why === 'local-scheme') return route.continue();
+    if (verdict.host !== null && !seen.includes(verdict.host)) seen.push(verdict.host);
+    if (verdict.allow) return route.continue();
 
-    let host: string;
-    try {
-      host = new URL(url).hostname;
-    } catch {
-      // An unparseable URL is not something a loopback-only run should be issuing.
-      if (!bad.includes(url)) bad.push(url);
-      return route.abort('blockedbyclient');
-    }
-
-    if (!seen.includes(host)) seen.push(host);
-    if (LOOPBACK.has(host)) return route.continue();
-
-    if (!bad.includes(host)) bad.push(host);
+    // The marker recorded for an unparseable URL is sanitized to scheme+path, never a query
+    // string, which could carry a token into a diagnostic line.
+    const marker = verdict.host ?? url.split('?')[0]!.slice(0, 100);
+    if (!bad.includes(marker)) bad.push(marker);
     // Aborted, not continued: a violation must not be able to succeed even once, because the
     // response could change what the rest of the test observes.
-    if (testInfo) testInfo.annotations.push({ type: 'network-violation', description: host });
+    if (testInfo) testInfo.annotations.push({ type: 'network-violation', description: marker });
     return route.abort('blockedbyclient');
   });
 

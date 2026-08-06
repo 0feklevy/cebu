@@ -42,7 +42,7 @@ import {
   branch_sequences, branch_choice_points, branch_edges, sim_revisions,
 } from '../db/schema.js';
 import { getStorageAdapter } from '../services/storage/getStorageAdapter.js';
-import { LocalStorageAdapter } from '../services/storage/LocalStorageAdapter.js';
+import { assertLocalStorageOnly } from './seedGuards.js';
 import { getSimulationContentType } from '../services/simulation/SimulationService.js';
 import { SIM_MANIFEST_VERSION } from 'shared/sim/simManifest';
 
@@ -121,10 +121,7 @@ const POSTER_PNG = Buffer.from(
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const storage = getStorageAdapter();
-  if (!(storage instanceof LocalStorageAdapter)) {
-    throw new Error('refusing to run: STORAGE_BACKEND must resolve to the LOCAL disk adapter — '
-      + 'this fixture must never write into a cloud bucket');
-  }
+  assertLocalStorageOnly(storage);
   if (argv.includes('--delete')) {
     await wipe();
     log('🗑  synthetic sim-pool fixture deleted (storage objects left in place — local disk only)');
