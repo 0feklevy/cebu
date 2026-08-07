@@ -192,6 +192,11 @@ was verified against the source before being fixed; the list is what survived th
 - **Three guards were unfalsifiable**: the seeder's storage refusal, the network guard's admission
   rule, and the bridge-write predicate were each pinned only as isolated behaviour, so deleting the
   *call site* left the repo green. All three now have wiring tests.
+- **A test pinned a hand-copied transcription of production SQL.** `bridgeVerdictClear.test.ts`
+  drove its own `UPDATE` string and never imported `SimulationService`, so dropping
+  `isNull(simulations.active_revision_id)` from the real predicate left every assertion green while
+  production stomped the projected canary verdict of every revisioned simulation — demoting proven
+  packages to the legacy path. The suite now also asserts against the production statement itself.
 
 Corrected claims from earlier revisions of this document are listed under "Not done, and not
 claimed" below rather than deleted.
@@ -208,6 +213,14 @@ claimed" below rather than deleted.
 - **An earlier browser matrix was discarded** for running without `PUBLIC_SITE_URL`/
   `NEXT_PUBLIC_APP_URL`, so CORS blocked the app origin. A later matrix was discarded for running
   against a tree I had since modified. Neither is counted.
+- **Every browser measurement taken before the machine was rebuilt is void.** The development Mac
+  was running an XMRig cryptominer at a load average near 190; any timing, cadence or resource
+  figure recorded under that load says nothing about this code, and none of it is reported here.
+  Every number in this document comes from the rebuilt machine at the final commit.
+- **One mutation is recorded as an equivalent mutant, not as killed.** Removing the inner `catch` in
+  the RUM transport's `send()` survives the suite because the `catch` in its only caller already
+  covers it. Kept because the disable point is more precise there, and deleting error handling to
+  raise a mutation score optimises the wrong thing.
 - **`currentSrc.includes('/branch/')` can never match** — hls.js plays through MSE, so `currentSrc`
   is a `blob:` URL. Recorded because it was a wrong intermediate fix, not silently dropped.
 - **rVFC field support is unknown**; the sentinel records which mechanism armed, but through
