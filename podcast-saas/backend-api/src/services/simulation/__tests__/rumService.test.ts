@@ -33,7 +33,7 @@ vi.mock('../../../lib/logger.js', () => ({
 import {
   resolveRumSampleRate, resolveRumRetentionDays, ingestBatch, reapRumEvents, packagePercentiles,
   startRumRetentionSweep, invalidateRumSampleRateCache, fieldAggregates,
-  RUM_RETENTION_DEFAULT_DAYS,
+  RUM_RETENTION_DEFAULT_DAYS, RUM_REAP_BATCH,
 } from '../RumService.js';
 import { SIM_RUM_VERSION, bucketDevice, type RumEvent } from 'shared/sim/rumEvents';
 
@@ -241,6 +241,26 @@ describe('reapRumEvents', () => {
   it('deletes nothing when everything is inside the window', async () => {
     await ingestBatch(batch());
     expect(await reapRumEvents()).toBe(0);
+  });
+
+  it('drains a backlog LARGER than one batch, in bounded statements', async () => {
+    // The sweep used to be one unbounded `DELETE … RETURNING` across the whole retention backlog,
+    // running inside the web process and materialising every deleted id in its heap purely to
+    // produce a count. `rum_retention_days` is operator-writable from 1 to 365, so lowering it is
+    // by itself enough to make that a year-sized transaction. It is bounded now — which is only
+    // worth anything if the loop still drains a backlog bigger than one batch.
+    const OVER = RUM_REAP_BATCH + 25;
+    await pg.query(`
+      INSERT INTO sim_rum_events (session_id, package_revision, kind, t_ms, total_ms, created_at)
+      SELECT 'session-old-' || lpad(g::text, 6, '0'), 'pkg-old', 'transition', 1, 10,
+             now() - interval '90 days'
+        FROM generate_series(1, ${OVER}) AS g
+    `);
+    await ingestBatch(batch({ sessionId: 'session-fresh1' }));   // inside the window: must survive
+
+    expect(await reapRumEvents(), 'the loop stopped before the backlog was drained').toBe(OVER);
+    const [{ n }] = await rows<{ n: number }>(`SELECT count(*)::int AS n FROM sim_rum_events`);
+    expect(n, 'the sweep deleted a row that was inside the retention window').toBe(1);
   });
 });
 

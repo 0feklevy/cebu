@@ -223,18 +223,42 @@ export async function ingestBatch(raw: unknown): Promise<IngestResult> {
   return { stored: rows.length };
 }
 
-/** Delete measurements past the retention window. Returns how many rows went. */
+/**
+ * How many rows one DELETE statement may remove. The sweep loops until the window is clear.
+ *
+ * The single unbounded `DELETE … RETURNING` this replaces was described as cheap because the
+ * predicate is an indexed range — true of the SCAN, and silent about the volume. `rum_retention_days`
+ * is operator-writable from 1 to 365, so lowering it from 365 to 1 makes the next sweep delete a
+ * year of rows in ONE transaction, inside the web process that is concurrently building player
+ * configs; `.returning()` then materialised every deleted UUID in that process's heap purely to
+ * produce a count.
+ */
+export const RUM_REAP_BATCH = 5_000;
+
+/** Delete measurements past the retention window, in bounded batches. Returns how many rows went. */
 export async function reapRumEvents(now: Date = new Date()): Promise<number> {
   const days = await resolveRumRetentionDays();
   const cutoff = new Date(now.getTime() - days * 86_400_000);
-  const deleted = await db
-    .delete(sim_rum_events)
-    .where(lt(sim_rum_events.created_at, cutoff))
-    .returning({ id: sim_rum_events.id });
-  if (deleted.length > 0) {
-    logger.info({ deleted: deleted.length, days }, 'sim RUM retention sweep');
+  let total = 0;
+  // Bounded per statement AND bounded in iterations: a sweep that somehow fails to drain must not
+  // become an infinite loop inside the process that serves players.
+  for (let pass = 0; pass < 1_000; pass += 1) {
+    // The `ctid IN (… LIMIT n)` subquery is what bounds the statement; `.returning()` is kept
+    // because it is the driver-independent way to count exactly what went, and it is now bounded
+    // by the same n rather than by the size of the retention backlog.
+    const deleted = await db
+      .delete(sim_rum_events)
+      .where(sql`ctid IN (
+        SELECT ctid FROM sim_rum_events WHERE created_at < ${cutoff} LIMIT ${RUM_REAP_BATCH}
+      )`)
+      .returning({ id: sim_rum_events.id });
+    total += deleted.length;
+    if (deleted.length < RUM_REAP_BATCH) break;
   }
-  return deleted.length;
+  if (total > 0) {
+    logger.info({ deleted: total, days }, 'sim RUM retention sweep');
+  }
+  return total;
 }
 
 /**
