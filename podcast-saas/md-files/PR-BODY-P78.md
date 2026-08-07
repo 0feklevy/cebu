@@ -98,7 +98,7 @@ all three.
 
 ## Verification
 
-Final commit: `8d9b7c0` on `feat/sim-immutable-revisions`. Prompt 1 (`8eeea47`) is an ancestor.
+Final commit: `feat/sim-immutable-revisions` HEAD (see the PR's commit list). Prompt 1 (`8eeea47`) is an ancestor.
 
 ### Local gates (clean `git worktree` checkout of the final commit)
 
@@ -106,7 +106,7 @@ Final commit: `8d9b7c0` on `feat/sim-immutable-revisions`. Prompt 1 (`8eeea47`) 
 |---|---|---|---|
 | `tsc --noEmit` | ✅ | ✅ | ✅ |
 | lint errors | 0 | 0 | 0 |
-| unit + integration tests | 824 | 1420 | 805 |
+| unit + integration tests | 805 | 1420 | 827 |
 
 (`admin-web` typechecks and lints clean; it has no tests in this area.)
 
@@ -146,7 +146,12 @@ no-op guard reports the same empty violation list as a passing run.
 
 ### Mutation matrix
 
-56 mutations at the final commit, 56 KILLED, **0 SURVIVED**. Harness rules: a private byte
+**59 mutations at the final commit: 56 individually KILLED; 3 formally classified as
+equivalent/redundant, with the combined-removal mutation KILLED.** That is deliberately not written
+as "59/59 killed", because it is not literally true — three mutants cannot be killed individually,
+and the reason is a property of the code, not a gap in the tests. Each is documented below.
+
+Harness rules: a private byte
 snapshot per mutated file, SHA-256 verified byte-identical restoration, a *named* expected assertion
 (a suite that fails for any other reason is AMBIGUOUS, never KILLED), a transform/syntax failure is
 AMBIGUOUS, and the working tree is verified clean after every mutation.
@@ -166,6 +171,43 @@ Three process notes, recorded rather than smoothed over:
 - Three specs initially reported AMBIGUOUS ("original snippet not found") because they were written
   against an older HEAD, and one reported AMBIGUOUS because the mutation was killed by a *different*
   named assertion than predicted. All four were re-anchored and re-run rather than counted.
+
+### The three equivalent/redundant mutants, in full
+
+All three target the refused-activation fix. They share one root cause: that fix deliberately places
+the same invariant behind **two independent guards**, so removing either one alone leaves the other
+enforcing it. No production code was changed to make these die — changing code to kill an equivalent
+mutant would be optimising the score rather than the software.
+
+The two guards:
+
+- **Guard A** — `SimRuntimeClient.ts`, `SECTION_APPLIED`: reduces first and returns if the reducer
+  refused (`applied.state !== 'APPLIED'`), so `sendPresent()` is never reached in a refused state.
+- **Guard B** — `SimRuntimeClient.ts`, `sendPresent()`: reduces first and returns if the reducer
+  refused (`advanced.state !== 'RENDERING'`), so `PRESENT_SECTION` is never posted and the terminal
+  present bound is never armed in a refused state.
+
+| # | Mutation | Removes | Redundant because | Made redundant by |
+|---|---|---|---|---|
+| 1 | `present-arms-behind-refusal` | Guard B | `sendPresent()` has exactly **one** call site, and Guard A returns before it whenever the reducer refused. The mutated line is therefore unreachable in a refused state. | Guard A |
+| 2 | `present-timer-not-cleared` | The leading `clearPresentTimer()` in `sendPresent()` | `APPLIED` is legal only from `PREPARING`. After the first entry the state is `RENDERING`, so a repeat `SECTION_APPLIED` is refused by Guard A and never re-enters `sendPresent()`. There is never a stale timer to clear. | Guard A |
+| 3 | `presented-refusal-leaks-timer` | `clearPresentTimer()` on the `SECTION_PRESENTED` refusal path | The bound is armed only in `RENDERING` (Guard B). Every edge out of `RENDERING` already clears it: `PRESENTED` is legal (no refusal), `RELEASE` runs through `deactivate()` which clears before releasing, and `FAIL` runs through `failModern()` which clears first. When a refusal is reached the timer is already `null`. | Guard B + the clears in `deactivate()` / `failModern()` |
+
+**Proof that this is redundancy and not uncovered behaviour.** Removing all three targets in one
+mutation — the true pre-fix state — fails all three named regression tests:
+
+```
+× FAILED: one real fault is not counted twice, and keeps its true failure kind
+× RELEASED: scrubbing away mid-apply does not fail the package afterwards
+× VISIBLE: a re-ack cannot hide a simulation that is already on screen
+Tests  3 failed | 55 passed (58)
+```
+
+Restoration verified byte-identical by SHA-256, working tree clean afterwards. The behaviour is
+therefore covered; only the individual mutants are unkillable, which is the definition of an
+equivalent mutant. Guard B and the two `clearPresentTimer()` calls are kept as defence in depth: the
+reducer's edge table is the kind of thing a future change edits, and the cost of keeping them is a
+branch that never fires.
 
 ## What the independent review found — after the work looked finished
 
@@ -238,12 +280,10 @@ claimed" below rather than deleted.
   was running an XMRig cryptominer at a load average near 190; any timing, cadence or resource
   figure recorded under that load says nothing about this code, and none of it is reported here.
   Every number in this document comes from the rebuilt machine at the final commit.
-- **Three mutations of the final fix survived individually, and that is recorded rather than
-  smoothed over.** The guard in `SECTION_APPLIED` and the guard in `sendPresent` are deliberately
-  redundant, so removing either alone leaves the other catching the same envelope. Reverting *both*
-  — the true pre-fix state — fails the regression test. The same investigation found the test could
-  not tell "the guard refused the envelope" from "the harness dropped it", so it now asserts the
-  refusal telemetry is actually emitted.
+- **Three mutations of the final fix survived individually**, and are formally classified as
+  equivalent/redundant in "The three equivalent/redundant mutants" above rather than counted as
+  kills. The same investigation found the test could not tell "the guard refused the envelope" from
+  "the harness dropped it", so it now asserts the refusal telemetry is actually emitted.
 - **One mutation is recorded as an equivalent mutant, not as killed.** Removing the inner `catch` in
   the RUM transport's `send()` survives the suite because the `catch` in its only caller already
   covers it. Kept because the disable point is more precise there, and deleting error handling to
