@@ -101,6 +101,7 @@ jobs:
       - name: Public endpoints + live CSP (semantic)
         run: |
           started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          set -o pipefail
           set +e
           pnpm --filter ops-release release-cli endpoint-audit \
             --run-id "$RUN_ID" --git-sha "$GIT_SHA" --out "$ART/endpoints.json"
@@ -114,6 +115,7 @@ jobs:
 
           for app in client-web admin-web; do
             started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            set -o pipefail
             set +e
             pnpm --filter ops-release release-cli csp-audit --app "$app" --out "$ART/csp-$app.json"
             code=$?
@@ -139,6 +141,7 @@ jobs:
       - name: VM snapshot (containers, /health, worker, certs, DB URL audit — read-only)
         run: |
           started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          set -o pipefail
           set +e
           pnpm --filter ops-release release-cli remote-audit $REMOTE --out "$ART/vm-audit.json"
           ra=$?
@@ -162,6 +165,7 @@ jobs:
         working-directory: podcast-saas/client-web
         run: |
           started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          set -o pipefail
           set +e
           npx playwright test --config=playwright.production.config.ts --list
           pf=$?
@@ -187,6 +191,7 @@ jobs:
           PLAYWRIGHT_AUDIT_OUT: ${{ env.ART }}/browser-audit.json
         run: |
           started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          set -o pipefail
           set +e
           npx playwright install --with-deps chromium
           npx playwright test --config=playwright.production.config.ts
@@ -214,6 +219,7 @@ jobs:
         id: gate
         run: |
           started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          set -o pipefail
           set +e
           pnpm --filter ops-release release-cli playwright-summary --report "$PW_RESULTS" \
             --run-id "$RUN_ID" --git-sha "$GIT_SHA" --out "$ART/playwright-summary.json"
@@ -226,6 +232,7 @@ jobs:
             --log "$ART/collectors.json" --run-id "$RUN_ID" --git-sha "$GIT_SHA"
 
           started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          set -o pipefail
           set +e
           pnpm --filter ops-release release-cli browser-audit --report "$ART/browser-audit.json" --out "$ART/browser-findings.json"
           ba=$?
@@ -239,6 +246,7 @@ jobs:
           # --require makes absence a CRITICAL finding instead of silence; --identity-bearing
           # additionally demands that the named artifacts prove they belong to THIS run, so a
           # stale summary that rode in with a re-run cannot satisfy the gate.
+          set -o pipefail
           set +e
           pnpm --filter ops-release release-cli gate --phase post-deploy \
             --findings "$ART/vm-findings.json,$ART/endpoints.json,$ART/csp-client-web.json,$ART/csp-admin-web.json,$ART/browser-findings.json,$ART/playwright-summary.json" \
@@ -254,6 +262,7 @@ jobs:
         id: verdict
         if: always()
         run: |
+          set -o pipefail
           set +e
           pnpm --filter ops-release release-cli audit-verdict \
             --log "$ART/collectors.json" --gate "$ART/gate.json" --coverage "$ART/coverage.json" \

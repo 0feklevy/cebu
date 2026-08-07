@@ -88,6 +88,18 @@ describe('collector status is never erased', () => {
     expect(AUDIT_CODE).not.toContain('|| true');
   });
 
+  it('every exit-code capture is pipefail-protected', () => {
+    // GitHub Actions runs `run:` blocks under `bash -e`, which does NOT set pipefail. If a
+    // collector command is ever piped (`cmd | tee log`), `$?` yields the LAST command's
+    // status — so a collector that exited 1 with a CRITICAL production finding would be
+    // recorded as PASS. Found by piping a collector during a local dry run of this very
+    // workflow, which reported PASS for the live api-health 503.
+    const captures = (AUDIT_CODE.match(/^\s*set \+e$/gm) ?? []).length;
+    const pipefails = (AUDIT_CODE.match(/^\s*set -o pipefail$/gm) ?? []).length;
+    expect(captures).toBeGreaterThan(0);
+    expect(pipefails, 'every `set +e` capture block must be preceded by `set -o pipefail`').toBe(captures);
+  });
+
   it('every collector step records an explicit outcome', () => {
     const collectors = ['endpoint-audit', 'csp-audit', 'remote-audit', 'playwright-preflight', 'browser-tests', 'playwright-summary', 'browser-audit'];
     for (const name of collectors) {
