@@ -192,6 +192,27 @@ was verified against the source before being fixed; the list is what survived th
 - **Three guards were unfalsifiable**: the seeder's storage refusal, the network guard's admission
   rule, and the bridge-write predicate were each pinned only as isolated behaviour, so deleting the
   *call site* left the repo green. All three now have wiring tests.
+- **The retention sweep threw on every tick against the real driver, and no test could see it.**
+  Found by BOOTING the emitted backend against real Postgres — not by any suite. The bounded-reaper
+  change interpolated the cutoff `Date` straight into a raw `sql` fragment, where there is no column
+  for the driver to infer a type from; postgres.js throws `ERR_INVALID_ARG_TYPE` before the
+  statement is sent, so retention silently stopped being enforced while the table grew. PGlite,
+  which the unit suite runs on, serialises a `Date` happily, so all 1,420 backend tests stayed
+  green. Same class as the stale-`dist` and copied-SQL findings below: a test that cannot fail for
+  the reason it claims to cover. The regression test now captures parameters at the driver boundary
+  and asserts no `Date` is ever bound.
+- **A refused activation transition still armed the terminal present bound.** Found by the LAST
+  review, after the branch was believed final. `matchesActivation` compares identity only — never
+  state — so a `SECTION_APPLIED` arriving once the activation is FAILED, RELEASED or VISIBLE is
+  refused by the reducer, which signals that by returning the *same state object*. Both call sites
+  assigned it back unchecked, so the refusal read as success: `sendPresent()` posted
+  `PRESENT_SECTION` for a section that was failed, released or already on screen and armed the
+  terminal bound behind it, guarded only by `(generation, activationId)` — neither changed by a
+  refusal. It then fired `failModern('present-timeout')`: a second breaker failure for one real
+  fault, the true failure kind overwritten by a fabricated one, and in the VISIBLE case a working
+  simulation hidden behind the recovery surface mid-section. The `SECTION_PRESENTED` refusal path
+  also returned one line above `clearPresentTimer()`, leaving the same bound armed on an activation
+  that had in fact rendered.
 - **A test pinned a hand-copied transcription of production SQL.** `bridgeVerdictClear.test.ts`
   drove its own `UPDATE` string and never imported `SimulationService`, so dropping
   `isNull(simulations.active_revision_id)` from the real predicate left every assertion green while
@@ -217,6 +238,12 @@ claimed" below rather than deleted.
   was running an XMRig cryptominer at a load average near 190; any timing, cadence or resource
   figure recorded under that load says nothing about this code, and none of it is reported here.
   Every number in this document comes from the rebuilt machine at the final commit.
+- **Three mutations of the final fix survived individually, and that is recorded rather than
+  smoothed over.** The guard in `SECTION_APPLIED` and the guard in `sendPresent` are deliberately
+  redundant, so removing either alone leaves the other catching the same envelope. Reverting *both*
+  — the true pre-fix state — fails the regression test. The same investigation found the test could
+  not tell "the guard refused the envelope" from "the harness dropped it", so it now asserts the
+  refusal telemetry is actually emitted.
 - **One mutation is recorded as an equivalent mutant, not as killed.** Removing the inner `catch` in
   the RUM transport's `send()` survives the suite because the `catch` in its only caller already
   covers it. Kept because the disable point is more precise there, and deleting error handling to
