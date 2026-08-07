@@ -98,102 +98,139 @@ all three.
 
 ## Verification
 
-Every gate below was run from a **clean `git worktree` checkout of the final commit** — no build
-artefacts, no stale `node_modules`, nothing the working tree could be hiding.
+Final commit: `8d9b7c0` on `feat/sim-immutable-revisions`. Prompt 1 (`8eeea47`) is an ancestor.
 
-| | shared | backend-api | client-web | admin-web |
-|---|---|---|---|---|
-| `tsc --noEmit` | ✅ | ✅ | ✅ | ✅ |
-| lint errors | — | **0** | ✅ | ✅ |
-| unit tests | 783 | 1368 | 766 | 34 |
+### Local gates (clean `git worktree` checkout of the final commit)
 
-`backend-api` also reports 43 lint **warnings**, so `--max-warnings=0` exits non-zero. None of them
-are in a file this branch touched — verified by intersecting the warning list with
-`git diff --name-only feat/sim-pipeline-hardening..HEAD`, which yields **0**. Two lint *errors* were
-introduced by this branch and are fixed; the warnings are pre-existing and are left alone rather
-than swept up in a change that is already large.
+| | shared | backend-api | client-web |
+|---|---|---|---|
+| `tsc --noEmit` | ✅ | ✅ | ✅ |
+| lint errors | 0 | 0 | 0 |
+| unit + integration tests | 824 | 1420 | 805 |
 
-**Browser matrix — chromium, firefox and webkit**, `workers=1`, `retries=0`, `deviceScaleFactor`
-pinned to 1:
+(`admin-web` typechecks and lints clean; it has no tests in this area.)
 
-| engine | sim-transport + sim-protocol + sim-leak + sim-canary + sim-transitions + rebuilt-packages + viewer-e2e | sim-pool (live app) |
-|---|---|---|
-| chromium | 102 | 6 |
-| firefox | 102 | 6 |
-| webkit | 102 | 6 |
+Also run from that clean checkout, each with its real exit code: `pnpm install --frozen-lockfile`;
+`shared` and `backend-api` builds; **the emitted backend booted under plain `node dist/server.js`**
+and answered `/health` 200 (no `tsx`, no vitest aliases); `shared/sim/*` resolved from an emitted
+consumer to `shared/dist/...` and not to source; migrations 049–052 applied to a **fresh** database
+with `sim_revisions` and `sim_rum_events` present afterwards; and the synthetic fixture seeded and
+deleted against that database.
 
-**324 browser assertions, zero skips, zero flakes.** `sim-pool` is environment-gated and had been
-**skipped in every previous verification report on this branch**; it is run here against a live app
-stack on all three engines.
+### Browser matrix
 
-**The check a green pipeline never made:** the emitted backend JavaScript is built and imported, so
-`dist` module resolution is exercised rather than assumed. This gate caught a real defect earlier —
-ten files importing `shared/src/sim/*`, which resolves to raw TypeScript, so `node dist/server.js`
-died with `ERR_MODULE_NOT_FOUND` while `vitest` and `tsc --noEmit` were both green.
+Nine suites × chromium/firefox/webkit, `workers=1`, `retries=0`, **zero skips**, against an isolated
+local stack (local Postgres, local disk storage, locally encoded HLS, local Firebase Auth Emulator).
+CORS was verified returning `http://localhost:3010` *before* the run started — a previous matrix was
+discarded for having run without it, and is not counted here.
 
-**On the mutation claim:** mutations here are run by hand — applying a change, running the targeted
-suite, reverting — with no config or artifact in the tree, so the count is a process assertion and
-nothing in CI reproduces it. Treat the specific mutations named in this document as the checkable
-part; the total is not independently verifiable and is stated as such.
+| suite | chromium | firefox | webkit |
+|---|---|---|---|
+| sim-transport | ✅ | ✅ | ✅ |
+| sim-protocol | ✅ | ✅ | ✅ |
+| sim-leak | ✅ | ✅ | ✅ |
+| sim-canary | ✅ | ✅ | ✅ |
+| sim-transitions | ✅ | ✅ | ✅ |
+| rebuilt-packages | ✅ | ✅ | ✅ |
+| viewer-e2e | ✅ 38 | ✅ 38 | ✅ 38 |
+| sim-pool | ✅ 8 | ✅ 8 | ✅ 8 |
+| sim-perf | ✅ | ✅ | ✅ |
 
-That method also produced a false result once, worth recording: the harness restored files with
-`git checkout --`, which discarded uncommitted edits along with each mutation, so four mutations
-reported as "killed" by tests that were failing for an unrelated reason. The harness now snapshots
-the working tree.
+**27 of 27 suite-engine runs exit 0, zero skips.**
 
-## What an independent review found, after the work looked finished
+Every sim-pool test reports the hosts it contacted. Observed across the whole run: `localhost`,
+`127.0.0.1` — plus `198.51.100.1` in exactly one test, the guard's own self-test, which fires a
+deliberate request at an RFC 5737 TEST-NET address (non-routable, DNS-free) and requires the guard to
+have **blocked and recorded** it. That is the one test a disabled guard cannot pass; without it, a
+no-op guard reports the same empty violation list as a passing run.
 
-An adversarial review of the complete diff ran after this branch was believed done. It found real
-defects, and the pattern in them is worth stating: **every one was invisible to a green test suite,
-because the tests were structurally unable to see it.**
+### Mutation matrix
 
-- **Field refinement had never worked.** `= ANY(${array})` renders as `= ANY(($1,$2))`, which
-  Postgres refuses. `tsc` was happy, the caller's test mocked the function wholesale, and its own
-  `catch` returned an empty map — which is exactly what "no samples yet" looks like. The new suite
-  EXECUTES the statement against a real engine; all 7 of its tests fail against the old query.
-- **Adaptive quality was fed by its own output.** `resolveBudget` prefers a measured p90 and returns
-  `p90 x 1.25`, so the controller asked whether `p90 > 1.25 x p90` — false always. Pinned to `high`
-  for a device six times over budget. Both modules were individually correct; only the join was
-  wrong, which is why nothing caught it. The join now lives in one tested function.
-- **The boundary sentinel never armed.** It latched its target before arming, and arming refuses
-  beyond a 0.35 s horizon — every tick but the last. Its own test accepted `mode: 'none'`, so it
-  passed while the feature had never run once.
-- **The RUM rate limit was keyed on `request.ip`** under `trustProxy: true` — the caller's own
-  header. Its test built a bare Fastify with no `trustProxy`, so it passed on a stack that does not
-  exist in production.
-- **`dropped` fanned out across every row of a batch and was then summed**, so one drop in a hundred
-  read back as a hundred and disabled field budgets for that package for the whole window.
+56 mutations at the final commit, 56 KILLED, **0 SURVIVED**. Harness rules: a private byte
+snapshot per mutated file, SHA-256 verified byte-identical restoration, a *named* expected assertion
+(a suite that fails for any other reason is AMBIGUOUS, never KILLED), a transform/syntax failure is
+AMBIGUOUS, and the working tree is verified clean after every mutation.
 
-Full list, and the two findings declined with reasons, in the commit
-`fix: close the confirmed findings from the independent review`.
+Three process notes, recorded rather than smoothed over:
+
+- **Two mutations SURVIVED the first full run**, and both were my own test-adequacy failures of the
+  same kind: the predicate was pinned, the *call site* was not. Deleting `isSystemOwnedKey(k, prefix)`
+  from the replace sweep left the shared predicate suite green while `processReplace` went back to
+  deleting revisions; and removing the reaper's `LIMIT` still drained the backlog and still totalled
+  correctly, because asserting the total cannot observe a per-statement bound. Both now have killing
+  tests (a source-scrape wiring test, and a `db.delete` wrapper that records each pass), and both
+  re-run KILLED. A survivor is the harness working.
+- One run was **discarded** because I edited a file while it was in flight; the harness's clean-tree
+  check caught it, and the interrupted mutation was restored from its byte snapshot (verified equal
+  to the committed blob) before re-running.
+- Three specs initially reported AMBIGUOUS ("original snippet not found") because they were written
+  against an older HEAD, and one reported AMBIGUOUS because the mutation was killed by a *different*
+  named assertion than predicted. All four were re-anchored and re-run rather than counted.
+
+## What the independent review found — after the work looked finished
+
+Four reviewers read the full `origin/main..HEAD` diff against the frozen commit. Every finding below
+was verified against the source before being fixed; the list is what survived that check.
+
+- **The replace flow deleted published revision bytes.** Revisions live under the simulation prefix
+  and `processReplace` deletes everything under that prefix the new bundle does not contain, so an
+  ordinary "replace simulation" swept every published revision — while the `sim_revisions` row
+  survived and still activated, because the promote CAS checks `manifest_hash`/`entry_path` and never
+  that the bytes exist. The pointer then resolved to nothing and every section 404'd; rollback died
+  with it. Worse than total: a revision's own `bridge.js` matched the existing filename rule and
+  survived while its `index.html` and `manifest.json` did not.
+- **A bundle could write *into* a revision.** `normalizeSimulationPath` rejects traversal but not
+  in-bounds paths, and revision ids are public (they appear in `simulation_url` in every player
+  config) while revision bytes are served `max-age=31536000, immutable`.
+- **The raw-reset reload armed nothing.** `rawNeedsNav` triggers a document reload but was omitted
+  from the guard that arms polling, the paint deadline, the poster/spinner and the stall bound.
+- **A successful raw presentation was reported as a failure**, tearing down the affordance and
+  writing a RUM `failure` row for a working simulation.
+- **`sendPresent` armed a second timer without clearing the first**, so a duplicate `SECTION_APPLIED`
+  could later hide a simulation that had already presented.
+- **The retention sweep was one unbounded `DELETE … RETURNING`** in the web process.
+- **Three guards were unfalsifiable**: the seeder's storage refusal, the network guard's admission
+  rule, and the bridge-write predicate were each pinned only as isolated behaviour, so deleting the
+  *call site* left the repo green. All three now have wiring tests.
+
+Corrected claims from earlier revisions of this document are listed under "Not done, and not
+claimed" below rather than deleted.
 
 ## Not done, and not claimed
 
-- **No physical device has run any of this.** Desktop WebKit is not Safari on iOS, and the WebKit
-  build on this host is frozen for `mac14-arm64`. This is the one blocker to a rollout that no
-  amount of further work in this repository can clear.
-- **rVFC field support is unknown, and this branch does not measure it.** The sentinel records which
-  mechanism armed, but through `simTelemetry` — inert without `?simdebug=1`, and transmitted
-  nowhere. Routing it through RUM is a follow-up.
-- **No feature here has run with its switch on outside the test suite.** Every switch defaults off,
-  and staged enablement is the rollout plan's job, not this PR's.
-- **No GPU or per-simulation CPU attribution.** Neither is exposed in a way attributable to one
-  iframe; resident-document count is reported instead. See `md-files/P8-MEASURED-EVIDENCE.md`.
+- **No physical device has run any of this.** Desktop WebKit is not Safari on iOS. This remains the
+  one blocker to rollout that no further work in this repository can clear.
+- **An earlier `6/6 sim-pool` result was retracted**, not amended: two of those tests were vacuous
+  and the fixture did not exercise revision resolution as its own comment claimed. The fixture was
+  rebuilt revision-backed (bytes written *only* under the revision prefix, active pointer set
+  separately, legacy prefix deliberately empty) and the tests made falsifiable before any result was
+  counted again.
+- **An earlier browser matrix was discarded** for running without `PUBLIC_SITE_URL`/
+  `NEXT_PUBLIC_APP_URL`, so CORS blocked the app origin. A later matrix was discarded for running
+  against a tree I had since modified. Neither is counted.
+- **`currentSrc.includes('/branch/')` can never match** — hls.js plays through MSE, so `currentSrc`
+  is a `blob:` URL. Recorded because it was a wrong intermediate fix, not silently dropped.
+- **rVFC field support is unknown**; the sentinel records which mechanism armed, but through
+  `simTelemetry`, which is inert without `?simdebug=1` and transmitted nowhere.
+- **No feature here has run with its switch on outside the test suite.** Every switch defaults off.
 - **The concurrency tests are not races.** PGlite serialises transactions, so they prove the SQL is
-  correct under both serial orderings — not row-lock blocking or unique-index waiter behaviour under
-  true concurrency. That rests on the design argument, not on anything that runs.
+  correct under both serial orderings — not row-lock behaviour under true concurrency.
 - **`RevisionService.activate` / `rollback` / `gc` / `recordCanary` have no production callers yet.**
   The read side IS wired, so anything that sets the pointer is served immediately.
 
+## Status classification
+
+- **Implemented and invoked:** revision resolution in `buildPlayerConfig`, the legacy→revision
+  migration, pool residency and eviction, transition marks, the hermetic browser gates.
+- **Implemented but default-off:** RUM ingestion (`rum_sample_rate` 0), predictive scheduling,
+  adaptive quality, the boundary sentinel.
+- **Tested locally:** all of the above (unit, integration, PGlite migrations, synthetic fixture).
+- **Verified in desktop browsers:** chromium, firefox, webkit.
+- **Not validated on physical devices:** iPhone, constrained Android, older integrated GPUs.
+- **Rollout-only limitation:** staged enablement of the default-off switches.
+
 ## Operational
 
-Nothing merged. No production storage, publication, rebuild or rollout performed. Migrations 049,
-050, 051 and **052** were applied to the **development** database at the owner's explicit request
-after the missing-migration `42703` failures were reported; all are additive and idempotent, and
-`db:check` reports OK on all four.
-
-**Deploy ordering is mandatory and not automatic: migrate, then deploy.** Nothing applies migrations
-at boot, and eight call sites read `admin_settings` with no explicit `columns` list — two of them on
-public or rate-limited paths — so an image deployed ahead of its migration raises `42703` there.
-Rollback is the reverse, and 051/052 are coupled. Both directions are written out in
-`md-files/P8-ROLLOUT-AND-DEVICE-VALIDATION.md` §4 and §7.
+Nothing merged. No production database, storage, publication, activation, migration, rebuild or
+rollout was touched. All work ran against a disposable local Postgres, local disk storage, locally
+generated packages and media, and a local Firebase Auth Emulator.
