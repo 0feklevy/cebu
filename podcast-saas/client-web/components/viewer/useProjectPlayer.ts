@@ -1345,7 +1345,15 @@ export function useProjectPlayer(
         pendingSimRef.current = { sectionUrl, dynScript, legacyScript, params, raw: rawActivation };
       }
 
-      if (!(wasReady && wasPainted) || legacyNeedsNav) {
+      // `rawNeedsNav` BELONGS HERE for the same reason `legacyNeedsNav` does: both just called
+      // `navigateFrame`, so `wasReady && wasPainted` describes the document that was thrown away,
+      // not the blank one now booting. Omitting it meant a raw-reset reload armed NOTHING: no
+      // `startSimPoll` (no readiness/paint polling, no legacy reveal ceiling), no paint deadline,
+      // no `simColdCover` (so neither poster nor spinner over a blank frame), and no 5s stall
+      // affordance with its terminal force-reveal. The only remaining bound was the iframe's
+      // native `load`, which waits for every subresource — and if one hangs, nothing was armed at
+      // all and the section never revealed for its entire duration.
+      if (!(wasReady && wasPainted) || legacyNeedsNav || rawNeedsNav) {
         startSimPoll(key);
         // Bounded HOLD ceiling. A paint ack may still land any moment — but a frame whose gate
         // cannot emit one (`canEmitPaint === false`) never will, so after the ceiling it
