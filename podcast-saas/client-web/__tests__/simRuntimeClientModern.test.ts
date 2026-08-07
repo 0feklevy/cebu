@@ -1068,6 +1068,10 @@ describe('timeouts are FAILURES, never reveals', () => {
       // The slow package finishes and acks the SAME activation.
       child.sectionApplied(prepare);
       await flush();
+      // THE ENVELOPE MUST ACTUALLY REACH THE REFUSAL. Without this the test would pass for the
+      // wrong reason — a harness that silently drops the late ack proves nothing about the guard.
+      expect(events(tel), 'the late SECTION_APPLIED never reached the handler, so this test would '
+        + 'pass even with the guard removed').toContain('modern-applied-refused');
       expect(child.types().filter((t) => t === PRESENT_SECTION),
         'PRESENT_SECTION was posted for a FAILED activation').toHaveLength(0);
 
