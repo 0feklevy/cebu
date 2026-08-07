@@ -947,7 +947,28 @@ export class SimRuntimeClient {
       case SECTION_APPLIED:
         if (!this.matchesActivation(env)) { this.tel('modern-stale-applied'); return; }
         this.clearPrepareTimer();
-        this.actMachine = activationReducer(this.actMachine!, { type: 'APPLIED' });
+        // THE REDUCER'S REFUSAL IS A DECISION, NOT A NO-OP.
+        //
+        // `matchesActivation` compares identity only — activationId/variantKey/configHash — never
+        // state. APPLIED is legal exclusively from PREPARING, so a SECTION_APPLIED arriving once
+        // the activation is FAILED (a prepare-timeout already fired), RELEASED (the viewer scrubbed
+        // away mid-apply) or VISIBLE (the package re-acked) is refused — and `activationReducer`
+        // signals that by returning the SAME state object with a rejection breadcrumb. Assigning it
+        // back unchecked read as success and fell through to `sendPresent()`, which posted
+        // PRESENT_SECTION for a section that is failed, released or already on screen and armed the
+        // TERMINAL present bound behind it. That bound is guarded only by (generation,
+        // activationId) — neither changed by a refusal — so it later fired
+        // `failModern('present-timeout')`: a second breaker failure for one real fault, a fabricated
+        // failure kind replacing the true one, and in the VISIBLE case a working simulation hidden
+        // behind the recovery surface mid-section.
+        {
+          const applied = activationReducer(this.actMachine!, { type: 'APPLIED' });
+          if (applied.state !== 'APPLIED') {
+            this.tel('modern-applied-refused', { state: this.actMachine!.state });
+            return;
+          }
+          this.actMachine = applied;
+        }
         this.mark('applied');
         // The child measured its own body cost and has been sending it since the protocol shipped;
         // it was read off the wire and discarded here. Kept separate from our prepareMs, which
@@ -993,6 +1014,10 @@ export class SimRuntimeClient {
           },
         });
         if (advanced.state !== 'PRESENTED') {
+          // CLEAR THE BOUND BEFORE RETURNING. This path returned one line above the clear, so a
+          // refused acknowledgement left the terminal present timer armed on an activation that had
+          // in fact rendered — and it later fired `failModern('present-timeout')` against it.
+          this.clearPresentTimer();
           this.tel('modern-presented-refused', { state: this.actMachine!.state });
           return;
         }
@@ -1131,8 +1156,18 @@ export class SimRuntimeClient {
     // activation that had already presented: a working simulation hidden and replaced by the
     // recovery surface.
     this.clearPresentTimer();
+    // REDUCE FIRST, THEN SEND AND ARM. PRESENT is legal only from APPLIED, so if the activation has
+    // moved on this refuses — and posting PRESENT_SECTION for a failed, released or already-visible
+    // section, then arming a terminal bound behind it, is exactly the wrong thing to do. The
+    // SECTION_APPLIED caller already guards this; the check is repeated here so the invariant
+    // belongs to the method that arms the bound rather than to its caller.
+    const advanced = activationReducer(act, { type: 'PRESENT' });
+    if (advanced.state !== 'RENDERING') {
+      this.tel('modern-present-refused', { state: act.state });
+      return;
+    }
     this.transport.send(PRESENT_SECTION, act.identity, {});
-    this.actMachine = activationReducer(act, { type: 'PRESENT' });
+    this.actMachine = advanced;
 
     const gen = this.generation;
     const actId = act.identity.activationId;

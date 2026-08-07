@@ -1041,6 +1041,83 @@ describe('timeouts are FAILURES, never reveals', () => {
     expect(c.getState().visible, 'the presented simulation was hidden by a stale timeout').toBe(true);
   });
 
+  /**
+   * A LATE SECTION_APPLIED FOR AN ACTIVATION THAT HAS MOVED ON.
+   *
+   * `matchesActivation` compares identity only, never state, so a SECTION_APPLIED that arrives
+   * after the activation reached a state where APPLIED is illegal still passes it. The reducer
+   * refuses by returning the SAME state object; treating that as success posted PRESENT_SECTION and
+   * armed the TERMINAL present bound, whose only guard is (generation, activationId) — neither
+   * changed by a refusal. Five seconds later it fired `failModern('present-timeout')`.
+   *
+   * All three reachable shapes are covered because the damage differs in each.
+   */
+  describe('a SECTION_APPLIED the reducer refuses cannot arm the terminal present bound', () => {
+    it('FAILED: one real fault is not counted twice, and keeps its true failure kind', async () => {
+      const { c, child, tel } = await boot({ v2: true, child: { autoApplied: false } });
+      c.activate({ script: 'A' });
+      await flush();
+      const prepare = child.last(PREPARE_SECTION);
+
+      // The prepare bound fires first — this is the ONE real fault.
+      vi.advanceTimersByTime(SIM_PREPARE_TIMEOUT_MS + 10);
+      await flush();
+      expect(c.getModernState().failure?.kind).toBe('prepare-timeout');
+      const failuresAfterRealFault = countTel(tel, 'modern-failure');
+
+      // The slow package finishes and acks the SAME activation.
+      child.sectionApplied(prepare);
+      await flush();
+      expect(child.types().filter((t) => t === PRESENT_SECTION),
+        'PRESENT_SECTION was posted for a FAILED activation').toHaveLength(0);
+
+      vi.advanceTimersByTime(SIM_PRESENT_TIMEOUT_MS * 2 + 10);
+      await flush();
+      expect(countTel(tel, 'modern-failure'),
+        'a fabricated present-timeout was recorded on top of the one real fault')
+        .toBe(failuresAfterRealFault);
+      expect(c.getModernState().failure?.kind,
+        'the true prepare-timeout was overwritten by a fabricated present-timeout')
+        .toBe('prepare-timeout');
+    });
+
+    it('RELEASED: scrubbing away mid-apply does not fail the package afterwards', async () => {
+      const { c, child, tel } = await boot({ v2: true, child: { autoApplied: false } });
+      c.activate({ script: 'A' });
+      await flush();
+      const prepare = child.last(PREPARE_SECTION);
+
+      c.deactivate({ teardown: false });          // viewer moved on while the child was applying
+      await flush();
+
+      child.sectionApplied(prepare);
+      await flush();
+      vi.advanceTimersByTime(SIM_PRESENT_TIMEOUT_MS * 2 + 10);
+      await flush();
+      expect(countTel(tel, 'modern-failure'),
+        'a released activation was failed by a bound armed after its release').toBe(0);
+    });
+
+    it('VISIBLE: a re-ack cannot hide a simulation that is already on screen', async () => {
+      const { c, child, tel } = await boot({ v2: true });
+      c.activate({ script: 'A' });
+      await flush();
+      const prepare = child.last(PREPARE_SECTION);
+      expect(c.getState().visible).toBe(true);
+      const failuresWhileHealthy = countTel(tel, 'modern-failure');
+
+      child.sectionApplied(prepare);              // the package re-acks an activation already shown
+      await flush();
+      vi.advanceTimersByTime(SIM_PRESENT_TIMEOUT_MS * 2 + 10);
+      await flush();
+
+      expect(countTel(tel, 'modern-failure'),
+        'a re-ack armed a bound that then failed a healthy activation').toBe(failuresWhileHealthy);
+      expect(c.getState().visible,
+        'a working, on-screen simulation was hidden behind the recovery surface').toBe(true);
+    });
+  });
+
   it('a superseded activation’s bound cannot fail the one that replaced it', async () => {
     const { c, child } = await boot({ child: { autoApplied: false } });
     c.activate({ script: 'A' });
