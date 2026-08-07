@@ -234,6 +234,18 @@ was verified against the source before being fixed; the list is what survived th
 - **Three guards were unfalsifiable**: the seeder's storage refusal, the network guard's admission
   rule, and the bridge-write predicate were each pinned only as isolated behaviour, so deleting the
   *call site* left the repo green. All three now have wiring tests.
+- **Three tests passed on every developer machine and failed in the project's own release gate.**
+  Found by CI on this PR, after every local gate was green. `shared/src/sim/simUrl` computes
+  `API_BASE` from `NEXT_PUBLIC_API_URL` at module load, falling back to `http://localhost:8080`
+  outside production, and the rebase short-circuits when the stored URL is already on that origin.
+  `release-verify.sh` exports `NEXT_PUBLIC_API_URL=https://api.flowvidco.com` — exactly the origin
+  the fixture is stored under — so nothing was rebased and a hard-coded `localhost:8080` expectation
+  failed. The worse half: in that environment the tests were no longer exercising a rebase *at all*,
+  because the short-circuit returned early. The assertion was pinned to an ambient default rather
+  than to the invariant. The API origin is now pinned in `vitest.config.ts`, which makes the suite
+  hermetic *and* keeps the rebase meaningful, since the fixture origin and the configured origin
+  differ. Verified both directions: 827 client tests pass under the normal env and under the
+  release-gate env, and removing the pin reproduces exactly CI's three failures.
 - **The retention sweep threw on every tick against the real driver, and no test could see it.**
   Found by BOOTING the emitted backend against real Postgres — not by any suite. The bounded-reaper
   change interpolated the cutoff `Date` straight into a raw `sql` fragment, where there is no column
