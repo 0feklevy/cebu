@@ -41,6 +41,20 @@ export interface ImageRecord {
 export type ReportKind = 'release' | 'audit' | 'rollback';
 
 /**
+ * Audit-specific sections.
+ *
+ * These exist so a reader can answer "is production broken?" and "is the auditor broken?"
+ * separately. Run 31199562890 printed one merged verdict for both, which is why its
+ * summary could not be acted on.
+ */
+export interface AuditSections {
+  verdict?: string;
+  verdictReasons?: string[];
+  auditErrors?: Array<{ name: string; reason: string }>;
+  coverage?: Array<{ surface: string; status: string; reason?: string }>;
+}
+
+/**
  * Verdict states for runs that do NOT walk the release state machine.
  * A read-only audit must never pretend a deployment occurred: it ends in an
  * explicit AUDIT_PASSED / AUDIT_FAILED, not a deployment state and not UNKNOWN.
@@ -50,6 +64,7 @@ export type AuditState = 'AUDIT_PASSED' | 'AUDIT_FAILED';
 export interface ReleaseReport {
   schema: 'flowvid.release-report/v1';
   kind?: ReportKind;
+  audit?: AuditSections;
   runId: string;
   workflow?: { runId?: string; runUrl?: string; actor?: string; workflow?: string };
   requested?: { bump?: string; deploy?: boolean; backfillPolicy?: string };
@@ -176,6 +191,39 @@ export function renderMarkdown(report: ReleaseReport): string {
     lines.push('- No gate decision recorded.');
   }
   lines.push('');
+
+  // ── the three categories an operator triages on ────────────────────────────────
+  const a = r.audit;
+  if (a) {
+    if (a.verdict) {
+      lines.push(`## Audit verdict: ${a.verdict}`);
+      lines.push('');
+      lines.push(
+        a.verdict === 'PASS'
+          ? 'Every collector ran and nothing blocking was found.'
+          : a.verdict === 'BLOCKED_BY_FINDINGS'
+            ? '**Production violates policy.** Every collector ran, so this describes production, not the pipeline.'
+            : '**The audit could not be trusted.** A collector failed to produce an answer, so production state is UNKNOWN — fix the auditor before drawing any conclusion about production.',
+      );
+      for (const reason of a.verdictReasons ?? []) lines.push(`- ${reason}`);
+      lines.push('');
+    }
+
+    lines.push('## Audit infrastructure errors');
+    if ((a.auditErrors ?? []).length === 0) lines.push('- None — every collector produced an answer.');
+    else for (const e of a.auditErrors!) lines.push(`- **${e.name}** — ${e.reason}`);
+    lines.push('');
+
+    if ((a.coverage ?? []).length > 0) {
+      lines.push('## Coverage');
+      lines.push(table(['Surface', 'Status', 'Note'], a.coverage!.map((c) => [c.surface, c.status, c.reason ?? '—'])));
+      lines.push('');
+      if (a.coverage!.some((c) => c.status !== 'TESTED')) {
+        lines.push('> Surfaces above that are not TESTED were **not exercised by this run**. A passing verdict says nothing about them.');
+        lines.push('');
+      }
+    }
+  }
 
   if (r.findings.length > 0) {
     lines.push('## Findings (most severe first)');

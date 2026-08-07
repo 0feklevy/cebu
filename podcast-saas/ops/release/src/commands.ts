@@ -8,8 +8,18 @@
  *   - nothing here calls an AI model, reads a .env file, or prints a secret.
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { auditBrowserReport, parseBrowserAudit } from './asset-audit.js';
+import {
+  deriveVerdict,
+  statusFromExit,
+  COLLECTOR_LOG_SCHEMA,
+  type CollectorLog,
+  type CollectorRecord,
+  type CollectorStatus,
+  type CoverageEntry,
+} from './audit-result.js';
+import { checkRequiredEvidence, stampArtifact, type EvidenceExpectation } from './evidence.js';
 import { RELEASE_CONFIG, type ReleaseConfig } from './config.js';
 import { auditCspHeader, auditLiveCsp, type CspExpectation } from './csp-audit.js';
 import { auditDatabaseUrls, parseBackfillReport, type BackfillPolicy, type UrlBackfillReport } from './database-url-audit.js';
@@ -303,33 +313,141 @@ export function cmdBrowserAudit(ctx: CommandContext, opts: { reportFile: string;
 
 // ─── endpoint audit ─────────────────────────────────────────────────────────────
 
-export async function cmdEndpointAudit(ctx: CommandContext, opts: { out?: string }): Promise<{ findings: Finding[]; endpoints: EndpointStatus[]; exitCode: number }> {
+/** Security headers worth recording on every public response. */
+const AUDITED_SECURITY_HEADERS = [
+  'strict-transport-security',
+  'x-content-type-options',
+  'x-frame-options',
+  'referrer-policy',
+  'content-security-policy',
+] as const;
+
+/** A single endpoint probe, rich enough to act on without re-running the audit by hand. */
+export interface EndpointDetail extends EndpointStatus {
+  /** 'https' proves TLS terminated; null when the request never completed. */
+  scheme: string | null;
+  tls: boolean;
+  redirects: string[];
+  finalUrl: string | null;
+  latencyMs: number;
+  securityHeaders: Record<string, string | null>;
+  /** Body-declared health status, when the endpoint speaks the health JSON shape. */
+  reportedStatus?: string;
+  result: CollectorStatus;
+  reason: string;
+}
+
+/**
+ * Probe the public endpoints.
+ *
+ * The previous implementation logged only `endpoint-audit: 2/3 ok`, which is not enough
+ * to act on: it names neither the failing endpoint, nor its status, nor whether the
+ * failure was TLS, DNS, a redirect, or an application-level refusal. Every field below
+ * exists because its absence made a real run ambiguous.
+ *
+ * Redirects are followed but recorded, because a public endpoint that answers 200 only
+ * after an unexpected hop is a finding, not a pass.
+ */
+export async function cmdEndpointAudit(
+  ctx: CommandContext,
+  opts: { out?: string; runId?: string; gitSha?: string },
+): Promise<{ findings: Finding[]; endpoints: EndpointDetail[]; exitCode: number }> {
   const e = ctx.config.endpoints;
   const targets: Array<{ name: string; url: string; critical: boolean }> = [
     { name: 'app', url: e.app, critical: true },
     { name: 'api-health', url: e.apiHealth, critical: true },
     { name: 'admin', url: e.admin, critical: false },
   ];
-  const endpoints: EndpointStatus[] = [];
+  const endpoints: EndpointDetail[] = [];
   const findings: Finding[] = [];
+
   for (const t of targets) {
-    let status: number | null;
+    const startedAt = Date.now();
+    let status: number | null = null;
+    let finalUrl: string | null = null;
+    let headers: Record<string, string | null> = {};
+    let transportError: string | null = null;
+    let reportedStatus: string | undefined;
+    let bodyReason: string | undefined;
+
     try {
       const res = await ctx.fetchImpl(t.url, { method: 'GET', redirect: 'follow' });
       status = res.status;
-    } catch {
-      status = null;
+      finalUrl = res.url || t.url;
+      headers = Object.fromEntries(AUDITED_SECURITY_HEADERS.map((h) => [h, res.headers.get(h)]));
+      // A health endpoint that answers 503 with {"status":"degraded","reason":"…"} is
+      // telling us WHICH dependency is down. Recording that turns "api-health failed"
+      // into an actionable line without a second manual request.
+      const contentType = res.headers.get('content-type') ?? '';
+      if (contentType.includes('application/json')) {
+        try {
+          const body = (await res.json()) as Record<string, unknown>;
+          if (typeof body.status === 'string') reportedStatus = body.status;
+          if (typeof body.reason === 'string') bodyReason = body.reason;
+        } catch {
+          /* a non-JSON body on a JSON content-type is not itself the finding here */
+        }
+      }
+    } catch (err) {
+      transportError = err instanceof Error ? err.message : String(err);
     }
+
+    const latencyMs = Date.now() - startedAt;
     const ok = status !== null && status >= 200 && status < 400;
-    endpoints.push({ name: t.name, url: t.url, httpStatus: status, ok });
+    const scheme = finalUrl ? new URL(finalUrl).protocol.replace(':', '') : null;
+    // The fetch API does not expose the intermediate hop list; `res.url !== requested`
+    // is the portable signal that redirection occurred, so record it as such rather
+    // than claiming a chain we did not observe.
+    const redirects = finalUrl && finalUrl !== t.url ? [t.url, finalUrl] : [];
+
+    const reason = transportError
+      ? `transport failure: ${transportError}`
+      : ok
+        ? `HTTP ${status}${reportedStatus ? ` (reports "${reportedStatus}")` : ''}`
+        : `HTTP ${status}${bodyReason ? ` — ${bodyReason}` : ''}`;
+
+    endpoints.push({
+      name: t.name,
+      url: t.url,
+      httpStatus: status,
+      ok,
+      scheme,
+      tls: scheme === 'https',
+      redirects,
+      finalUrl,
+      latencyMs,
+      securityHeaders: headers,
+      ...(reportedStatus ? { reportedStatus } : {}),
+      result: ok ? 'PASS' : 'FINDING',
+      reason,
+    });
+
     if (!ok) {
       findings.push(
-        finding(`endpoints.${t.name}-down`, t.critical ? 'CRITICAL' : 'HIGH', 'health', `${t.name} (${t.url}) returned ${status ?? 'no response'}.`),
+        finding(
+          `endpoints.${t.name}-down`,
+          t.critical ? 'CRITICAL' : 'HIGH',
+          'health',
+          `${t.name} (${t.url}) returned ${status ?? 'no response'}${bodyReason ? ` — ${bodyReason}` : ''}.`,
+          {
+            detail: reason,
+            remediation:
+              bodyReason === 'db_unavailable'
+                ? 'The API is reachable but reports its database as unavailable — investigate the database/container, not the audit.'
+                : 'Confirm the service is running and reachable from the public internet.',
+          },
+        ),
       );
     }
   }
-  if (opts.out) writeJsonFile(opts.out, { endpoints, findings });
-  ctx.log(`endpoint-audit: ${endpoints.filter((x) => x.ok).length}/${endpoints.length} ok`);
+
+  if (opts.out) {
+    writeJsonFile(opts.out, stampArtifact('flowvid.endpoint-audit/v1', { endpoints, findings }, { runId: opts.runId, gitSha: opts.gitSha }));
+  }
+  const okCount = endpoints.filter((x) => x.ok).length;
+  ctx.log(`endpoint-audit: ${okCount}/${endpoints.length} ok`);
+  // Name every non-ok endpoint on its own line: "2/3 ok" alone cost a manual investigation.
+  for (const ep of endpoints.filter((x) => !x.ok)) ctx.log(`  ${ep.name}: ${ep.reason} (${ep.url})`);
   return { findings, endpoints, exitCode: hasCritical(findings) ? 1 : 0 };
 }
 
@@ -375,8 +493,50 @@ export function summarizePlaywrightReport(json: string): PlaywrightSummary {
   return summary;
 }
 
-export function cmdPlaywrightSummary(ctx: CommandContext, opts: { reportFile: string; out?: string }): { summary: PlaywrightSummary; findings: Finding[]; exitCode: number } {
-  const summary = summarizePlaywrightReport(readFileSync(opts.reportFile, 'utf8'));
+export const PLAYWRIGHT_SUMMARY_SCHEMA = 'flowvid.playwright-summary/v1';
+
+/** The on-disk playwright-summary.json: counts plus the identity that binds it to this run. */
+export interface PlaywrightSummaryArtifact extends PlaywrightSummary {
+  schema: string;
+  runId?: string;
+  gitSha?: string;
+  createdAt: string;
+  findings: Finding[];
+}
+
+/**
+ * Resolve an evidence path that a workflow passed us.
+ *
+ * `pnpm --filter ops-release release-cli …` runs with cwd = ops/release, so a caller
+ * writing `--report client-web/e2e-results/results.json` (the natural repo-relative
+ * spelling, and what all three workflows used) resolved to
+ * `ops/release/client-web/e2e-results/results.json` → ENOENT. Combined with the old
+ * `|| true` and the gate's `if (!existsSync(file)) continue`, a browser suite that never
+ * ran was indistinguishable from one that passed. That is the v0.1.5 shape of failure.
+ *
+ * `ctx.appRoot` is derived from `import.meta.url`, not cwd, so anchoring here makes the
+ * resolution independent of who invoked the CLI and from where. Absolute paths are
+ * returned untouched so callers can keep passing `$ART/...`.
+ */
+export function resolveEvidencePath(ctx: CommandContext, p: string): string {
+  return isAbsolute(p) ? p : resolve(ctx.appRoot, p);
+}
+
+export function cmdPlaywrightSummary(
+  ctx: CommandContext,
+  opts: { reportFile: string; out?: string; runId?: string; gitSha?: string },
+): { summary: PlaywrightSummary; findings: Finding[]; exitCode: number } {
+  const reportFile = resolveEvidencePath(ctx, opts.reportFile);
+  // FAIL CLOSED. A missing Playwright report is not a summary of "0 failures" — it means
+  // browser verification produced no machine-readable result. Fabricating a clean summary
+  // here is exactly how an audit reports green for a suite that never executed.
+  if (!existsSync(reportFile)) {
+    throw new Error(
+      `Playwright JSON report not found at ${reportFile} — browser verification produced no machine-readable ` +
+        `result. Refusing to summarize (fail closed); the gate will block on the absent evidence.`,
+    );
+  }
+  const summary = summarizePlaywrightReport(readFileSync(reportFile, 'utf8'));
   const findings: Finding[] =
     summary.failed > 0
       ? [
@@ -385,8 +545,11 @@ export function cmdPlaywrightSummary(ctx: CommandContext, opts: { reportFile: st
           }),
         ]
       : [];
-  if (opts.out) writeJsonFile(opts.out, { ...summary, findings });
-  ctx.log(`playwright: ${summary.passed}/${summary.total} passed, ${summary.failed} failed`);
+  if (opts.out) {
+    const artifact = stampArtifact(PLAYWRIGHT_SUMMARY_SCHEMA, { ...summary, findings }, { runId: opts.runId, gitSha: opts.gitSha });
+    writeJsonFile(opts.out, artifact satisfies PlaywrightSummaryArtifact);
+  }
+  ctx.log(`playwright: ${summary.passed}/${summary.total} passed, ${summary.failed} failed, ${summary.skipped} skipped`);
   return { summary, findings, exitCode: summary.failed > 0 ? 1 : 0 };
 }
 
@@ -405,9 +568,29 @@ export function collectFindingsFromFiles(files: string[]): Finding[] {
 
 export function cmdGate(
   ctx: CommandContext,
-  opts: { findingsFiles: string[]; phase: Phase; policy?: GatePolicy; out?: string },
+  opts: {
+    findingsFiles: string[];
+    phase: Phase;
+    policy?: GatePolicy;
+    /** Files that MUST exist and be current for the gate to pass (missing ⇒ CRITICAL). */
+    requiredFiles?: string[];
+    /** Basenames within requiredFiles that MUST carry a matching run identity. */
+    identityBearing?: readonly string[];
+    /** The run/commit the required evidence must belong to. */
+    expect?: EvidenceExpectation;
+    out?: string;
+  },
 ): { decision: GateDecision; findings: Finding[]; exitCode: number } {
-  const findings = collectFindingsFromFiles(opts.findingsFiles);
+  const collected = collectFindingsFromFiles(opts.findingsFiles);
+  // Required-evidence findings are appended, not substituted: a run can simultaneously
+  // have a real production finding AND be missing an artifact, and the report must show
+  // both rather than letting one mask the other.
+  const evidence = checkRequiredEvidence(
+    (opts.requiredFiles ?? []).map((f) => resolveEvidencePath(ctx, f)),
+    opts.expect ?? {},
+    { identityBearing: opts.identityBearing ?? [] },
+  );
+  const findings = [...collected, ...evidence];
   const decision = evaluateGate(findings, opts.phase, opts.policy ?? {});
   if (opts.out) writeJsonFile(opts.out, { decision, findings });
   setOutput('gate_blocked', String(decision.blocked));
@@ -416,6 +599,214 @@ export function cmdGate(
     `gate(${opts.phase}): ${decision.blocked ? 'BLOCKED' : 'pass'} — ${decision.counts.CRITICAL}C/${decision.counts.HIGH}H/${decision.counts.WARNING}W`,
   );
   return { decision, findings, exitCode: decision.blocked ? 1 : 0 };
+}
+
+// ─── collector bookkeeping + audit verdict ───────────────────────────────────────
+
+/**
+ * Record one collector's outcome, and guarantee its artifact exists.
+ *
+ * This replaces `|| true`. Suppressing an exit code is legitimate — the audit should keep
+ * gathering evidence after one collector dies — but the old form ALSO erased the status,
+ * so a crashed step and a clean step were indistinguishable downstream. Here the exit code
+ * is preserved in a durable record and the step is still allowed to continue.
+ *
+ * When an ERROR collector left no artifact, a placeholder is written so later steps read
+ * JSON rather than dying on ENOENT (the failure cascade seen in run 31199562890, where a
+ * dead Playwright produced no results.json, which killed playwright-summary, which killed
+ * browser-audit). The placeholder is explicitly marked `auditError` so it can never be
+ * read as a clean result.
+ */
+export function cmdCollectorRecord(
+  ctx: CommandContext,
+  opts: {
+    name: string;
+    command: string;
+    startedAt: string;
+    endedAt: string;
+    exitCode: number | null;
+    artifact?: string;
+    status?: CollectorStatus;
+    reason?: string;
+    log: string;
+    runId?: string;
+    gitSha?: string;
+  },
+): { record: CollectorRecord; exitCode: number } {
+  const artifactPath = opts.artifact ? resolveEvidencePath(ctx, opts.artifact) : undefined;
+  const producedArtifact = artifactPath !== undefined && existsSync(artifactPath);
+  const status = opts.status ?? statusFromExit(opts.exitCode, { producedArtifact });
+
+  const reason =
+    opts.reason ??
+    (status === 'PASS'
+      ? 'completed with no findings'
+      : status === 'FINDING'
+        ? 'completed and reported findings'
+        : status === 'NOT_CONFIGURED'
+          ? 'not attempted — required inputs absent'
+          : `exited ${opts.exitCode ?? 'without running'}${producedArtifact ? '' : ' and produced no artifact'}`);
+
+  const record: CollectorRecord = {
+    name: opts.name,
+    command: redactValue(opts.command),
+    startedAt: opts.startedAt,
+    endedAt: opts.endedAt,
+    exitCode: opts.exitCode,
+    status,
+    reason,
+    ...(opts.artifact ? { artifact: opts.artifact } : {}),
+  };
+
+  if (status === 'ERROR' && artifactPath && !producedArtifact) {
+    writeJsonFile(artifactPath, {
+      schema: 'flowvid.audit-error/v1',
+      auditError: true,
+      collector: opts.name,
+      reason,
+      createdAt: new Date().toISOString(),
+      // Deliberately empty: an audit error is not a statement about production, and must
+      // not inject a production finding. The collector log carries the error instead.
+      findings: [],
+    });
+  }
+
+  const logPath = resolveEvidencePath(ctx, opts.log);
+  const existing: CollectorLog | null = existsSync(logPath) ? readJson<CollectorLog>(logPath) : null;
+  const log: CollectorLog = {
+    schema: COLLECTOR_LOG_SCHEMA,
+    ...(opts.runId ? { runId: opts.runId } : {}),
+    ...(opts.gitSha ? { gitSha: opts.gitSha } : {}),
+    createdAt: existing?.createdAt ?? new Date().toISOString(),
+    collectors: [...(existing?.collectors ?? []).filter((c) => c.name !== opts.name), record],
+  };
+  writeJsonFile(logPath, log);
+
+  ctx.log(`collector ${opts.name}: ${status} — ${reason}`);
+  // Always 0: recording an outcome is bookkeeping and must not itself fail the step.
+  // The verdict command is what turns recorded ERRORs into a red run.
+  return { record, exitCode: 0 };
+}
+
+/**
+ * Which production surfaces this audit is configured to exercise.
+ *
+ * The previous run reported a verdict without saying that the playlist, admin login and
+ * admin simulation surfaces were never visited — their inputs were empty. A verdict that
+ * does not state its own coverage lets "green" be read as "all of production is healthy"
+ * when three surfaces were skipped entirely.
+ *
+ * REQUIRED-but-absent is an audit ERROR (we promised to test it and did not).
+ * OPTIONAL-but-absent is NOT_CONFIGURED (honest, declared, reduced coverage).
+ */
+export const AUDIT_SURFACES: ReadonlyArray<{ surface: string; requires: readonly string[]; required: boolean }> = [
+  { surface: 'Public homepage', requires: ['SMOKE_BASE_URL'], required: true },
+  { surface: 'Public project', requires: ['SMOKE_PUBLIC_PATH'], required: false },
+  { surface: 'Playlist', requires: ['SMOKE_PLAYLIST_PATH'], required: false },
+  { surface: 'Admin login', requires: ['SMOKE_ADMIN_URL', 'SMOKE_ADMIN_EMAIL', 'SMOKE_ADMIN_PASSWORD'], required: false },
+  { surface: 'Admin simulation', requires: ['SMOKE_ADMIN_PREVIEW_PATH', 'SMOKE_ADMIN_EMAIL', 'SMOKE_ADMIN_PASSWORD'], required: false },
+];
+
+export function cmdCoverageReport(
+  ctx: CommandContext,
+  opts: { out?: string; env?: NodeJS.ProcessEnv },
+): { coverage: CoverageEntry[]; exitCode: number } {
+  const env = opts.env ?? process.env;
+  const coverage: CoverageEntry[] = AUDIT_SURFACES.map(({ surface, requires, required }) => {
+    const missing = requires.filter((k) => !env[k]);
+    if (missing.length === 0) return { surface, status: 'TESTED', requires };
+    return {
+      surface,
+      status: required ? 'ERROR' : 'NOT_CONFIGURED',
+      requires,
+      reason: `missing input(s): ${missing.join(', ')}`,
+    };
+  });
+  if (opts.out) writeJsonFile(opts.out, stampArtifact('flowvid.audit-coverage/v1', { coverage }, {}));
+  for (const c of coverage) ctx.log(`coverage ${c.surface}: ${c.status}${c.reason ? ` (${c.reason})` : ''}`);
+  // Never fails the step: coverage is a fact to report, and a required-input gap is
+  // surfaced as an ERROR entry that the verdict command turns into BLOCKED_BY_AUDIT_ERROR.
+  return { coverage, exitCode: 0 };
+}
+
+export interface AuditVerdictArtifact {
+  schema: 'flowvid.audit-verdict/v1';
+  verdict: string;
+  reasons: string[];
+  productionFindings: Finding[];
+  auditErrors: string[];
+  coverage: CoverageEntry[];
+  createdAt: string;
+}
+
+/**
+ * Turn the collector log + gate decision into ONE explicit final state.
+ *
+ * PASS / BLOCKED_BY_FINDINGS / BLOCKED_BY_AUDIT_ERROR are reported separately because
+ * they demand different responses: page the on-call for the first kind, fix the pipeline
+ * for the second. `AUDIT_FAILED` told an operator neither.
+ */
+export function cmdAuditVerdict(
+  ctx: CommandContext,
+  opts: { log: string; gate?: string; coverage?: string; out?: string },
+): { verdict: string; exitCode: number } {
+  const logPath = resolveEvidencePath(ctx, opts.log);
+  const log: CollectorLog = existsSync(logPath)
+    ? readJson<CollectorLog>(logPath)
+    : { schema: COLLECTOR_LOG_SCHEMA, createdAt: new Date().toISOString(), collectors: [] };
+
+  const gatePath = opts.gate ? resolveEvidencePath(ctx, opts.gate) : undefined;
+  const gateDoc = gatePath && existsSync(gatePath) ? readJson<{ decision?: GateDecision; findings?: Finding[] }>(gatePath) : undefined;
+
+  const coveragePath = opts.coverage ? resolveEvidencePath(ctx, opts.coverage) : undefined;
+  const coverage: CoverageEntry[] =
+    coveragePath && existsSync(coveragePath) ? (readJson<{ coverage?: CoverageEntry[] }>(coveragePath).coverage ?? []) : [];
+
+  // A gate artifact that is missing when collectors all succeeded is itself an audit
+  // error: the verdict cannot be derived from evidence that was never written.
+  const collectors = [...log.collectors];
+  if (opts.gate && !gateDoc && !collectors.some((c) => c.status === 'ERROR')) {
+    collectors.push({
+      name: 'gate',
+      command: 'release-cli gate',
+      startedAt: log.createdAt,
+      endedAt: new Date().toISOString(),
+      exitCode: null,
+      status: 'ERROR',
+      reason: 'the gate produced no decision artifact',
+    });
+  }
+
+  // A REQUIRED surface with no inputs is an audit error, not merely reduced coverage:
+  // the run claimed it would test that surface and never did.
+  for (const c of coverage.filter((e) => e.status === 'ERROR')) {
+    collectors.push({
+      name: `coverage:${c.surface}`,
+      command: 'release-cli coverage-report',
+      startedAt: log.createdAt,
+      endedAt: new Date().toISOString(),
+      exitCode: null,
+      status: 'ERROR',
+      reason: c.reason ?? 'required surface was not configured',
+    });
+  }
+
+  const outcome = deriveVerdict({ collectors, gate: gateDoc?.decision, findings: gateDoc?.findings ?? [] });
+  const artifact: AuditVerdictArtifact = {
+    schema: 'flowvid.audit-verdict/v1',
+    verdict: outcome.verdict,
+    reasons: outcome.reasons,
+    productionFindings: sortFindings((gateDoc?.findings ?? []).filter((f) => f.area !== 'evidence')),
+    auditErrors: outcome.erroredCollectors,
+    coverage,
+    createdAt: new Date().toISOString(),
+  };
+  if (opts.out) writeJsonFile(opts.out, artifact);
+
+  setOutput('audit_verdict', outcome.verdict);
+  ctx.log(`audit-verdict: ${outcome.verdict}`);
+  for (const r of outcome.reasons) ctx.log(`  - ${r}`);
+  return { verdict: outcome.verdict, exitCode: outcome.verdict === 'PASS' ? 0 : 1 };
 }
 
 // ─── state ───────────────────────────────────────────────────────────────────────
@@ -499,6 +890,23 @@ export function cmdReport(
   const dbAudit = read<Record<string, unknown>>(ARTIFACTS.dbUrlAudit);
   const playwright = read<PlaywrightSummary>(ARTIFACTS.playwright);
   const endpointsDoc = read<{ endpoints: EndpointStatus[] }>(ARTIFACTS.endpoints);
+  // Audit sections: verdict, infrastructure errors and coverage are read from the
+  // artifacts the audit workflow writes, so the rendered summary can separate
+  // "production is broken" from "the auditor is broken".
+  const verdictDoc = read<{ verdict?: string; reasons?: string[]; auditErrors?: string[] }>('audit-verdict.json');
+  const collectorLog = read<CollectorLog>('collectors.json');
+  const coverageDoc = read<{ coverage?: CoverageEntry[] }>('coverage.json');
+  const auditSections =
+    verdictDoc || collectorLog || coverageDoc
+      ? {
+          ...(verdictDoc?.verdict ? { verdict: verdictDoc.verdict } : {}),
+          ...(verdictDoc?.reasons ? { verdictReasons: verdictDoc.reasons } : {}),
+          auditErrors: (collectorLog?.collectors ?? [])
+            .filter((c) => c.status === 'ERROR')
+            .map((c) => ({ name: c.name, reason: c.reason })),
+          ...(coverageDoc?.coverage ? { coverage: coverageDoc.coverage } : {}),
+        }
+      : undefined;
   // Stage timings: explicit stages.json wins; otherwise derive durations from the
   // persisted state-machine history (time between consecutive transitions).
   let stages = read<StageTiming[]>(ARTIFACTS.stages) ?? [];
@@ -559,6 +967,7 @@ export function cmdReport(
 
   const vm = vmDoc?.vm ?? undefined;
   const report = buildReport({
+    ...(auditSections ? { audit: auditSections } : {}),
     kind,
     runId: opts.meta.runId,
     workflow: {

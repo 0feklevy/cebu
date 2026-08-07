@@ -158,13 +158,31 @@ jobs:
           PLAYWRIGHT_AUDIT_OUT: ${{ env.ART }}/browser-audit.json
         run: |
           npx playwright install --with-deps chromium
-          npx playwright test
+          # Production config only. The DEFAULT config collects all 11 e2e specs across three
+          # engines (363 tests); nine of those are local suites that import backend-api and
+          # shared/sim source, which this job does not install or build — Playwright then dies
+          # during collection before any browser opens. It also declares firefox+webkit while
+          # only chromium is installed here.
+          npx playwright test --config=playwright.production.config.ts
       - name: Post-rollback gate
         run: |
-          pnpm --filter ops-release release-cli playwright-summary --report client-web/e2e-results/results.json --out "$ART/playwright-summary.json" || true
+          # ABSOLUTE path — `pnpm --filter ops-release` runs with cwd = ops/release, so the
+          # old repo-relative spelling resolved to ops/release/client-web/… → ENOENT.
+          #
+          # `|| true` is kept here ON PURPOSE and ONLY here: a rollback must reach its gate
+          # and its report even when post-rollback verification is itself broken, because
+          # abandoning the run would leave production in an unreported state. The status is
+          # no longer erased — --require makes an absent summary a CRITICAL evidence finding,
+          # so the gate blocks instead of reading silence as health.
+          pnpm --filter ops-release release-cli playwright-summary \
+            --report "${{ github.workspace }}/podcast-saas/client-web/e2e-results/results.json" \
+            --run-id "$RUN_ID" --git-sha "${{ github.sha }}" --out "$ART/playwright-summary.json" || true
           pnpm --filter ops-release release-cli browser-audit --report "$ART/browser-audit.json" --out "$ART/browser-findings.json" || true
           pnpm --filter ops-release release-cli gate --phase post-deploy \
             --findings "$ART/vm-findings.json,$ART/endpoints.json,$ART/csp-client-web.json,$ART/csp-admin-web.json,$ART/browser-findings.json,$ART/playwright-summary.json" \
+            --require "$ART/endpoints.json,$ART/playwright-summary.json" \
+            --identity-bearing "endpoints.json,playwright-summary.json" \
+            --expect-run-id "$RUN_ID" --expect-git-sha "${{ github.sha }}" \
             --out "$ART/gate.json"
       - name: Rollback report
         if: always()
