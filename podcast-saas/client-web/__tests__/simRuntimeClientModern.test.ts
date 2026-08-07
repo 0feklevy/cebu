@@ -1010,6 +1010,37 @@ describe('timeouts are FAILURES, never reveals', () => {
     expect(events(tel)).not.toContain('reveal-forced');
   });
 
+  it('a duplicate SECTION_APPLIED does not arm a second present timeout', async () => {
+    // `SECTION_APPLIED` calls `sendPresent()` unconditionally after `matchesActivation`, which
+    // compares only activationId/variantKey/configHash — so a REPEAT of the same envelope with a
+    // fresh `seq` passes both it and `validateEnvelope`. The reducer then refuses the illegal
+    // transition by returning the SAME state object rather than throwing, so nothing upstream
+    // notices. Without clearing first, the second `setTimeout` overwrote the handle: the first
+    // timer became unclearable while its own guard (generation + activationId) still passed, so it
+    // later fired `present-timeout` against an activation that HAD presented — hiding a working
+    // simulation behind the recovery surface.
+    const { c, child, tel } = await boot({ v2: true, child: { autoPresented: false } });
+    c.activate({ script: 'A' });
+    await flush();
+    const prepare = child.last(PREPARE_SECTION);
+
+    child.sectionApplied(prepare);
+    await flush();
+    child.sectionApplied(prepare);          // the duplicate
+    await flush();
+
+    // It DID present — so no timeout may fire for it.
+    child.sectionPresented(child.last(PRESENT_SECTION));
+    await flush();
+    expect(c.getState().visible).toBe(true);
+
+    vi.advanceTimersByTime(SIM_PRESENT_TIMEOUT_MS * 2 + 10);
+    await flush();
+    expect(countTel(tel, 'modern-failure'),
+      'an orphaned present timer fired against an activation that already presented').toBe(0);
+    expect(c.getState().visible, 'the presented simulation was hidden by a stale timeout').toBe(true);
+  });
+
   it('a superseded activation’s bound cannot fail the one that replaced it', async () => {
     const { c, child } = await boot({ child: { autoApplied: false } });
     c.activate({ script: 'A' });
