@@ -1,0 +1,198 @@
+/* ── Safe simulation presentation layers ─────────────────────────────────────────────────────
+ *
+ * WHERE THIS SITS IN THE VIEWER STACK
+ *   1/2  video A / video B          (VideoLayer)
+ *   8    b-roll overlay
+ *   9    still-image overlay
+ *   12   avatar circles
+ *   20   THIS COMPONENT             (same band as the legacy `.sim-overlay` it supersedes)
+ *   21   legacy wait affordance     (retired into this component's `coverFallback` slot)
+ *   24   start-screen thumbnail
+ *   25   start button
+ *   54   sim hover strip
+ *   55   controls bar
+ *
+ * `isolation: isolate` gives the three layers their own stacking context, so their local z values
+ * (1/2/3/4) can never leak into the viewer's numbering. Everything inside this component composites
+ * strictly between 20 and 21 globally — which is why the controls bar (55) and the hover strip (54)
+ * stay reachable even while the recovery surface is up. A component that raised its recovery UI to
+ * a global z above the controls would trap the user on a broken section with no way to seek out of
+ * it, which is the one thing a failure surface must never do.
+ *
+ * The ROOT is pointer-transparent. Only two things opt back in: the revealed live frame (so the
+ * simulation is interactive) and the recovery surface (so its actions are clickable). A cover never
+ * takes pointer events — the user must be able to scrub through a section that is still covered.
+ */
+
+.sim-presentation {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  isolation: isolate;
+  pointer-events: none;
+}
+
+.sim-layer {
+  position: absolute;
+  inset: 0;
+}
+
+/* ── Bottom: the outgoing valid content ───────────────────────────────────────────────────── */
+/* Usually EMPTY and transparent: the outgoing content for a mid-roll section is the viewer's own
+   video element at z 1/2, which shows through. It holds children only for a sim → sim handover
+   where the outgoing document is a distinct frame. `data-fill="opaque"` is the case where nothing
+   beneath is valid — a cold seek, a sim-first project before any video decoded — and the black
+   there is deliberate: it hides whatever the compositor last left in that rectangle. */
+.sim-layer-bottom {
+  z-index: 1;
+}
+.sim-layer-bottom[data-fill='opaque'] {
+  background: #000;
+}
+.sim-layer-bottom[data-fill='outgoing'] {
+  background: transparent;
+}
+
+/* ── Middle: the incoming live iframe ─────────────────────────────────────────────────────── */
+/* opacity, never `display:none` / `visibility:hidden`: a hidden frame must keep its rAF running so
+   it can prepare and render off-screen. Removing it from the box tree stops the rAF and the frame
+   never reaches SECTION_PRESENTED, which turns preparation into a deadlock. */
+.sim-layer-middle {
+  z-index: 2;
+  transition: opacity 0.2s ease;
+  will-change: opacity;
+}
+.sim-layer-middle[data-visibility='hidden'] {
+  opacity: 0;
+}
+.sim-layer-middle[data-visibility='covered'],
+.sim-layer-middle[data-visibility='revealed'] {
+  opacity: 1;
+}
+.sim-layer-middle[data-visibility='revealed'] {
+  pointer-events: auto;
+}
+.sim-layer-middle > * {
+  width: 100%;
+  height: 100%;
+  border: none;
+  display: block;
+}
+
+/* ── Top: poster / neutral cover ──────────────────────────────────────────────────────────── */
+.sim-layer-top {
+  z-index: 3;
+  transition: opacity 0.2s ease;
+}
+/* Opaque covers paint their own background so a `object-fit: contain` poster's letterbox bars are
+   filled rather than showing the layer beneath through them. */
+.sim-layer-top[data-opacity='opaque'] {
+  background: #000;
+}
+/* The transparent case exists for sections that composite over video. Painting ANY background here
+   defeats the entire point, including a "subtle" scrim. */
+.sim-layer-top[data-opacity='transparent'] {
+  background: transparent;
+}
+
+.sim-poster {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  user-select: none;
+}
+
+.sim-cover-fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+/* ── Recovery surface ─────────────────────────────────────────────────────────────────────── */
+/* Sits above the cover so the user reads the actions against the right picture: the poster stays
+   visible underneath, which is what makes "keep the poster" an obviously available choice rather
+   than an abstract one. */
+.sim-layer-recovery {
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  background: rgba(8, 8, 12, 0.55);
+}
+
+.sim-recovery-spinner {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, 0.18);
+  border-top-color: rgba(255, 255, 255, 0.85);
+  animation: sim-layer-spin 0.9s linear infinite;
+}
+
+@keyframes sim-layer-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── Reduced motion ───────────────────────────────────────────────────────────────────────── */
+/* Two mechanisms, deliberately. The class comes from the policy decision, so a caller that passes
+   an explicit `reducedMotion` override (a per-project setting, a test) gets a hard cut even where
+   the OS preference is unset. The media query is the backstop for the case where the component is
+   rendered before its matchMedia subscription has resolved — a cross-fade that starts and is then
+   cancelled is worse than the cut the user asked for. */
+.sim-presentation.no-motion .sim-layer-middle,
+.sim-presentation.no-motion .sim-layer-top {
+  transition: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sim-layer-middle,
+  .sim-layer-top {
+    transition: none;
+  }
+  .sim-recovery-spinner {
+    animation-duration: 2.4s;
+  }
+}
+
+/* ── Overlay mode ─────────────────────────────────────────────────────────────────────────────
+ *
+ * Used when the incoming frame lives OUTSIDE this component, in its own fixed slot. The viewer
+ * needs that: the resident pool must never be re-parented, because React rebuilds a subtree whose
+ * parent changes and every warmed iframe would be destroyed each time a modern package handed back
+ * to video — the exact cost the pool exists to avoid.
+ *
+ * z 22 sits above the pool (20) and the legacy wait affordance (21), and below the start screen
+ * (24/25), the hover strip (54) and the controls bar (55) — so a covered or failed section is
+ * always still seekable.
+ */
+.sim-presentation--overlay {
+  z-index: 22;
+}
+
+/* With no `incoming`, the middle layer is an empty box. It must not intercept anything: the frame
+ * it would have held is underneath this component, and a transparent div over it would swallow
+ * every pointer event the simulation is supposed to receive. */
+.sim-presentation--overlay .sim-layer-middle {
+  display: none;
+}
+
+/* The BOTTOM layer must not paint either, for the same reason and with a worse consequence.
+ *
+ * In the canonical layout the bottom layer sits UNDER the incoming frame (local z1 vs z2) and its
+ * opaque fill is a legitimate backdrop. In overlay mode the whole component is at global z22 while
+ * the frame it describes is the pool at z20 — so the same fill becomes a full-bleed black rectangle
+ * ON TOP of the revealed simulation. It is reachable whenever `outgoingValid` is false, i.e. every
+ * sim-first entry: the section presents correctly, the pool goes to opacity 1, and the user sees
+ * solid black with no cover, no spinner and no failure raised.
+ *
+ * What is beneath this component in overlay mode is the real outgoing content — the video and the
+ * pool — so there is nothing for a backdrop to stand in for. */
+.sim-presentation--overlay .sim-layer-bottom {
+  display: none;
+}

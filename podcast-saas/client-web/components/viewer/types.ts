@@ -6,6 +6,15 @@ export interface SimulationOverlay {
   end_sec:        number;
   simulation_url: string | null;
   simulation_id:  string | null;
+  /** Logical package revision (backend-derived). One of the five reveal-invariant identity axes. */
+  package_revision?: string | null;
+  /**
+   * The LAST PUBLISH-TIME CANARY VERDICT for this package, or null when it has never been
+   * canaried. Null means UNPROVEN, which the player treats exactly as it treats legacy: the v2
+   * path, no aggressive preparation, no activation-scoped reveal. Only 'managed-presentable'
+   * unlocks the modern path.
+   */
+  package_class?: 'managed-presentable' | 'managed-partial' | 'legacy-cooperative' | 'legacy-opaque' | 'failed' | null;
   sim_script:     string | null;
   simple_ui:      boolean | null;
   auto_script:    boolean | null;
@@ -13,6 +22,16 @@ export interface SimulationOverlay {
   // Emitted by buildPlayerConfig from sim_meta.uiControls.hide; passed to the sim
   // bridge as startScript.params.hideSelectors (old bridges ignore it harmlessly).
   ui_hide?:       string[];
+  /**
+   * The poster for THIS section's exact presentation identity (package revision + variant key +
+   * config hash + aspect + quality), or null when none has been captured.
+   *
+   * Never another identity's poster: a still picture that does not match the frame it stands in for
+   * is worse than no poster at all, because the user sees the difference and reads it as a glitch.
+   */
+  poster_url?:    string | null;
+  /** True when the poster was captured over a transparent background (a section that sits on video). */
+  poster_transparent?: boolean;
   label:          string | null;
   type:           string;
 }

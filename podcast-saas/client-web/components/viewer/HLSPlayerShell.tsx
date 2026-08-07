@@ -9,12 +9,15 @@ import { useProjectPlayer } from './useProjectPlayer';
 import { useCropOverlay } from './useCropOverlay';
 import { VideoLayer } from './VideoLayer';
 import { SimPoolOverlay } from './SimPoolOverlay';
+import { SimPresentationLayers } from './SimPresentationLayers';
+import type { PresentationDecision } from '../../lib/sim/presentationPolicy';
 import { ControlsBar, type CaptionStyle } from './ControlsBar';
 import { ImageOverlay } from '../ImageOverlay';
 import { AvatarCirclesOverlay } from './AvatarCirclesOverlay';
 import { ChoiceOverlay } from './ChoiceOverlay';
 import { resolveAssetUrl } from '../../lib/assetUrl';
 import './viewer.css';
+import './simLayers.css';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
 const DEFAULT_CAPTION_STYLE: CaptionStyle = {
@@ -353,6 +356,38 @@ export function HLSPlayerShell({
     state.controlsVisible ? 'controls-visible' : '',
   ].filter(Boolean).join(' ');
 
+  // The layered surface reports its decision here; the pool below reads it. This indirection is
+  // what keeps the pool in ONE fixed place in the tree.
+  const [layerDecision, setLayerDecision] = useState<PresentationDecision | null>(null);
+
+  /**
+   * Visibility of the resident pool.
+   *
+   * On the modern path the LAYER decides — `incoming: 'revealed'` is reachable only from
+   * `layer: 'live'`, which is reachable only from a matched SECTION_PRESENTED. On every other path
+   * this is the existing `showSimOverlay`, untouched.
+   */
+  //
+  // The layer publishes its decision from a PASSIVE EFFECT, so the parent's copy is always one
+  // commit — and one browser paint — behind. Trusting it alone meant every revealed→hidden
+  // transition took effect a frame late, always in the unsafe direction: at an A→B boundary the
+  // deactivate and the re-arm batch into ONE render where `simModern` is already true and
+  // `layerDecision` is still A's `revealed`, so the compositor presents a frame of A's scene while
+  // B is the active section. That is precisely the defect the protocol exists to prevent, so the
+  // decision is ANDed with state that changes synchronously in the same batch.
+  const poolVisible = state.simModern
+    ? layerDecision?.incoming === 'revealed' && state.simPresented && !state.simFailure
+    : state.showSimOverlay;
+
+  // A stale decision must not survive the surface that produced it.
+  useEffect(() => { if (!state.simModern) setLayerDecision(null); }, [state.simModern]);
+
+  // How much of the active sim section is still to run. The policy uses it only to make a live
+  // reveal LESS likely, so an unknown end is reported as "no time left" — the cautious answer.
+  const simRemainingMs = state.simSectionEndSec == null
+    ? 0
+    : Math.max(0, (state.simSectionEndSec - state.globalTime) * 1000);
+
   return (
     <div ref={rootRef} className={rootClass}>
       <VideoLayer
@@ -459,16 +494,61 @@ export function HLSPlayerShell({
         />
       )}
 
+      {/* ── The simulation surface ────────────────────────────────────────────────────────────
+          The resident pool is rendered in ONE fixed slot, unconditionally, and is NEVER re-parented.
+          That is not a style preference: React unmounts and rebuilds a subtree whose parent changes,
+          so wrapping the pool in the layered surface only while `simModern` is true would destroy
+          every warmed iframe each time a modern package handed back to video — the exact cost the
+          resident pool exists to avoid, and the thing SimPresentationLayers' own header forbids.
+
+          So the layered surface renders as a SIBLING that owns only the cover and the recovery
+          surface, and drives the pool through `poolVisible` above. It is mounted only while the
+          ACTIVE package is genuinely on the activation-scoped path (`simModern`: the canary
+          classified it `managed-presentable` AND its document reported itself ready). Every package
+          in storage today renders exactly as it always has, because `simModern` is never true for
+          one — `presented` can only come from a v3 SECTION_PRESENTED, which no v2 or legacy package
+          sends. */}
       <SimPoolOverlay
         frames={state.simPool}
         activeKey={state.activeSimUrl}
-        visible={state.showSimOverlay}
+        visible={poolVisible}
         armGate={state.simPoolArm}
-        stalled={state.simBootStalled}
-        coldCover={state.simColdCover}
+        stalled={state.simModern ? false : state.simBootStalled}
+        coldCover={state.simModern ? false : state.simColdCover}
         registerFrame={actions.registerSimFrame}
         onFrameLoad={actions.simFrameLoaded}
       />
+      {state.simModern && (
+        <SimPresentationLayers
+          // Mounted only while a modern sim section is active, so the intent cannot be anything
+          // else: the exit to video is expressed by this element un-mounting, not by an intent flip.
+          intent="sim"
+          presented={state.simPresented}
+          outgoingValid={state.simOutgoingValid}
+          outgoingKind="video"
+          posterSrc={state.simPosterUrl}
+          transparentSection={state.simPosterTransparent}
+          remainingMs={simRemainingMs}
+          failure={state.simFailure}
+          // The player's existing wait affordance, for a cover with no poster behind it — otherwise
+          // a section with no captured poster waits behind a featureless black rectangle. It also
+          // replaces the legacy `.sim-wait-affordance`, which is suppressed above on this path so
+          // the two never stack.
+          coverFallback={<div className="sim-overlay-spinner" />}
+          // The recovery ACTIONS UI is not built yet; what must never happen meanwhile is a failure
+          // the viewer cannot leave, so the existing, already-wired resume control is offered.
+          recovery={
+            <button className="viewer-top-btn viewer-top-btn--primary" onClick={actions.resumeFromSim}>
+              {state.resumeAction === 'backToVideo' ? 'Go back to video' : 'Resume video →'}
+            </button>
+          }
+          // No `incoming`: the pool lives outside this component (see above). The middle layer is
+          // therefore empty, and the component acts purely as the cover/recovery surface.
+          incoming={null}
+          className="sim-presentation--overlay"
+          onDecision={setLayerDecision}
+        />
+      )}
 
       {state.guidanceCaption && (
         <div className="guidance-caption">{state.guidanceCaption}</div>

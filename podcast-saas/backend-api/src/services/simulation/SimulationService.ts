@@ -4,10 +4,11 @@ import { z } from 'zod';
 import type { StorageService } from '../storage/StorageService.js';
 import { LLMService } from '../llm/LLMService.js';
 import { db } from '../../db/index.js';
-import { system_prompts } from '../../db/schema.js';
-import { eq } from 'drizzle-orm';
+import { simulations, system_prompts } from '../../db/schema.js';
+import { and, eq, isNull, ne, or } from 'drizzle-orm';
 import { logger } from '../../lib/logger.js';
 import { buildUiControlsPromptBlock, type SimUiSelection } from './SimUiControls.js';
+import { buildChildRuntimeSource } from './simRuntimeChild.js';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -300,6 +301,20 @@ const RAF_GATE_TEMPLATE = /* js */ `;(function () {
     queued.push({ id: id, cb: cb });
     return id;
   };
+  // System rAF for the injected bridge/guidance scripts: pause-coupled EXACTLY like the
+  // wrapped rAF (queues while paused, replays on resume) but NEVER counts as the sim's
+  // first paint — a bookkeeping callback draws nothing, and letting it ack SIM_PAINTED
+  // reported "painted" for scenes that had rendered nothing (audited false-paint source).
+  function sysRaf(cb) {
+    if (typeof cb !== 'function') return 0;
+    if (!paused) return nativeRaf ? nativeRaf(cb) : 0;
+    for (var i = 0; i < queued.length; i++) {
+      if (queued[i].cb === cb) return queued[i].id;
+    }
+    var id = nextQueuedId--;
+    queued.push({ id: id, cb: cb, sys: true });
+    return id;
+  }
   window.cancelAnimationFrame = function (id) {
     if (typeof id === 'number' && id < 0) {
       for (var i = 0; i < queued.length; i++) {
@@ -317,7 +332,8 @@ const RAF_GATE_TEMPLATE = /* js */ `;(function () {
       // Re-schedule via the NATIVE rAF: each callback runs once and receives the native
       // timestamp of the resumed frame. Timestamps are never fabricated here.
       // firstPaintWrap so a sim first unpaused via simResume (rather than warmed) still acks.
-      nativeRaf(firstPaintWrap(pending[i].cb));
+      // System callbacks (sys flag) replay unwrapped — they must never ack a paint.
+      nativeRaf(pending[i].sys ? pending[i].cb : firstPaintWrap(pending[i].cb));
     }
   }
   // ── Minimal-UI control picker: runtime scan (v3) ────────────────────────────
@@ -559,7 +575,16 @@ const RAF_GATE_TEMPLATE = /* js */ `;(function () {
   window.__SIM_RAF_GATE__ = {
     version: ${RAF_GATE_VERSION},
     isPaused: function () { return paused; },
-    queuedCount: function () { return queued.length; }
+    queuedCount: function () { return queued.length; },
+    // The UNWRAPPED requestAnimationFrame. System scripts (bridge/guidance) schedule their
+    // own bookkeeping through this so it can never count as the sim's first paint — the
+    // wrapped rAF acks SIM_PAINTED on the first callback that completes, and a bookkeeping
+    // callback (the bridge's _fireReady, guidance's poll loop) draws nothing (audited
+    // false-paint source). Sims keep using the wrapped window.requestAnimationFrame.
+    raw: nativeRaf || null,
+    // Pause-coupled system rAF (queues while paused like the wrapped one, but paint-neutral).
+    // Guidance's poll loop runs on this: it must freeze with simPause yet never ack a paint.
+    sys: sysRaf
   };
 })();`;
 
@@ -659,6 +684,7 @@ You only write the body of SCRIPTS.main.
       // [YOUR IMPLEMENTATION HERE]
       // Use _hide() to hide elements.
       // Push intervals: _ivs.push(setInterval(..., ms));
+      // Automation/demo intervals ONLY: _ivs.push(simDemoTimer(setInterval(..., ms)));
       // Push listeners: _listeners.push([el, event, handler]); el.addEventListener(event, handler);
       // Push injected: const el = document.createElement('div'); document.body.appendChild(el); _injected.push(el);
 
@@ -770,6 +796,12 @@ End the mainBody with: return function cleanup() { ... };
 ### Animation
 26. Use setInterval for animation: step 0.1–0.3, intervalMs 30–150ms. Pingpong at min/max.
 27. Push every interval ID into _ivs and every listener into _listeners so cleanup clears/removes them.
+27b. Wrap EVERY automation/demo interval in simDemoTimer(...) when pushing it:
+    _ivs.push(simDemoTimer(setInterval(step, 120)));
+    It returns the id unchanged (cleanup still clears it normally) and is what lets the player stop
+    the demo when the user grabs a control WITHOUT tearing your section down. Wrap ONLY automation
+    timers — never a timer that drives the simulation's own engine or a control-polling loop.
+    If simDemoTimer is undefined (older host), fall back: _ivs.push(setInterval(step, 120)).
 
 ### Render functions
 28. Call updateDerivedPhysics before render functions if it exists. Call render functions defensively
@@ -1184,7 +1216,9 @@ export function parseSectionEntries(bridgeJs: string): Map<string, string> {
         .map(l => l.startsWith('      ') ? l.slice(6) : l)
         .join('\n')
         .replace(/^\n/, '')
-        .replace(/\n$/, '');
+        // Trim ALL trailing whitespace, not one newline: re-wrapping adds indentation, so a
+        // single-newline trim let repeated rebuilds accrete blank lines in every body.
+        .replace(/\s+$/, '');
       entries.set(id, dedented);
     }
   }
@@ -1192,10 +1226,34 @@ export function parseSectionEntries(bridgeJs: string): Map<string, string> {
 }
 
 /** Build the full combined bridge.js IIFE from a sectionId→mainBody map. */
-export function wrapBridgeCombined(entries: Map<string, string>): string {
+export interface WrapBridgeOptions {
+  /**
+   * Embed the v3 activation-scoped runtime alongside the v2 listener.
+   *
+   * DEFAULT FALSE, deliberately. Every caller that produces bytes an existing test or a stored
+   * package is compared against — the rebuild tooling, the e2e fixture generator, the rollout
+   * gates — must keep producing exactly what it produced before, or the Priority 1 byte-identity
+   * proof and the Priority 3 acceptance suite are both measuring a different artifact than the one
+   * they were written for. Only the production generation path opts in.
+   */
+  runtimeV3?: boolean;
+  /** Every section body in this package returns a managed lifecycle object. */
+  allManaged?: boolean;
+  /** At least one section implements setQuality. */
+  anyQuality?: boolean;
+}
+
+export function wrapBridgeCombined(entries: Map<string, string>, opts?: WrapBridgeOptions): string {
   const sectionBlocks = [...entries.entries()]
     .map(([id, body]) => buildSectionEntry(id, body))
     .join('\n');
+
+  // Emitted at the END of the IIFE, after __SECTIONS__ exists and after the v2 listener is wired.
+  // Order matters: the v3 runtime reads __SECTIONS__ at install time, and installing it first
+  // would capture an undefined binding.
+  const v3 = opts?.runtimeV3
+    ? buildChildRuntimeSource({ allManaged: !!opts.allManaged, anyQuality: !!opts.anyQuality })
+    : null;
 
   return [
     '(function () {',
@@ -1222,9 +1280,13 @@ export function wrapBridgeCombined(entries: Map<string, string>): string {
     "    if (_ready) return; _ready = true; window._simReadyFired = true;",
     "    window.parent?.postMessage(_readyMsg(), '*');",
     '  }',
+    '  // Scheduled through the gate\'s RAW (unwrapped) rAF: the wrapped one acks SIM_PAINTED on',
+    '  // the first completed callback, and _fireReady draws nothing — with the wrapped handle a',
+    '  // sim that failed to render still reported "painted" (audited false-paint source).',
+    "  var _sysRaf = (window.__SIM_RAF_GATE__ && (window.__SIM_RAF_GATE__.sys || window.__SIM_RAF_GATE__.raw)) || window.requestAnimationFrame.bind(window);",
     "  if (document.readyState === 'loading')",
-    "    document.addEventListener('DOMContentLoaded', function() { requestAnimationFrame(_fireReady); });",
-    '  else requestAnimationFrame(_fireReady);',
+    "    document.addEventListener('DOMContentLoaded', function() { _sysRaf(_fireReady); });",
+    '  else _sysRaf(_fireReady);',
     '  setTimeout(_fireReady, 3000);',
     '',
     '  // ── Dispatch — DYNAMIC (v2): the ?section= param is only the DEFAULT. startScript',
@@ -1280,13 +1342,66 @@ export function wrapBridgeCombined(entries: Map<string, string>): string {
     '    }',
     '    if (st && st.remove) st.remove();',
     '  }',
+    "  function _post(msg) { try { window.parent && window.parent.postMessage(msg, '*'); } catch (e) {} }",
+    '  // ── Auto-script timer scope (narrow, no managed-lifecycle rewrite) ──────────',
+    '  // Generated section bodies drive their demo with setInterval/setTimeout created at body top',
+    '  // level. Those handles live in the body closure, so the player\'s pauseScript had NOTHING it',
+    '  // could stop and automation kept fighting the user after they grabbed a control (audited).',
+    '  //',
+    '  // TWO scopes, because they need DIFFERENT precision:',
+    '  //  • _timers — every timer scheduled during the synchronous body call. Cleared on TEARDOWN',
+    '  //    only. This window unavoidably also catches timers scheduled by the simulation\'s OWN',
+    '  //    engine when the body calls into it synchronously (the prompt mandates one up-front',
+    '  //    attempt, e.g. togglePlay()), which is harmless when everything is being torn down.',
+    '  //  • _demoTimers — handles the body EXPLICITLY registered as automation. Only these are',
+    '  //    cleared on pauseScript. Attribution must be exact there: pauseScript keeps the scene',
+    '  //    running, so clearing an engine timer by mistake FREEZES the simulation — strictly',
+    '  //    worse than the automation it was meant to stop. Delay cannot discriminate (the',
+    '  //    generation prompt specifies 30-150ms demo intervals, i.e. exactly engine-loop rates),',
+    '  //    so guessing is not an option and unregistered timers are deliberately left alone.',
+    '  var _timers = [];',
+    '  var _demoTimers = [];',
+    '  function _trackTimers(run) {',
+    '    var ni = window.setInterval, nt = window.setTimeout;',
+    '    // .apply(window, arguments) — the (fn, delay, ...args) form must keep forwarding its',
+    '    // extra callback arguments; a (f, d) shim silently dropped them for the body window.',
+    "    window.setInterval = function (f, d) { var id = ni.apply(window, arguments); _timers.push([1, id]); return id; };",
+    "    window.setTimeout = function (f, d) { var id = nt.apply(window, arguments); _timers.push([0, id]); return id; };",
+    '    try { return run(); } finally { window.setInterval = ni; window.setTimeout = nt; }',
+    '  }',
+    '  // Bodies opt a handle in: _ivs.push(simDemoTimer(setInterval(step, 120))). Returns the id',
+    '  // unchanged, so it stays a normal handle the body\'s own cleanup still clears.',
+    '  window.simDemoTimer = function (id) { _demoTimers.push(id); return id; };',
+    '  function _clearDemoTimers() {',
+    '    for (var i = 0; i < _demoTimers.length; i++) {',
+    '      // clearTimeout/clearInterval share one active-timer list per the HTML spec, so both',
+    '      // calls are safe regardless of which primitive created the handle.',
+    '      try { clearInterval(_demoTimers[i]); clearTimeout(_demoTimers[i]); } catch (e) {}',
+    '    }',
+    '    _demoTimers = [];',
+    '  }',
+    '  function _clearTimers() {',
+    '    for (var i = 0; i < _timers.length; i++) {',
+    '      try { if (_timers[i][0]) clearInterval(_timers[i][1]); else clearTimeout(_timers[i][1]); } catch (e) {}',
+    '    }',
+    '    _timers = [];',
+    '    _clearDemoTimers();',
+    '  }',
     '  function stopScript() {',
-    '    if (_cancelFn) { _cancelFn(); _cancelFn = null; }',
+    '    // A throwing cleanup must NEVER wedge dispatch: without the try/finally, _cancelFn kept',
+    '    // pointing at the throwing cleanup and EVERY later section switch re-threw — the',
+    '    '  + "// document was permanently broken (audited; the oldest template got this right).",
+    '    _clearTimers();',
+    '    if (_cancelFn) {',
+    '      var fn = _cancelFn; _cancelFn = null;',
+    "      try { if (typeof fn === 'function') fn(); }",
+    "      catch (err) { _post({ type: 'SCRIPT_ERROR', phase: 'cleanup', message: String(err && err.message || err) }); }",
+    '    }',
     '    _lastSig = null;',
     "    var st = document.getElementById('__simHideUi');",
     '    if (st && st.remove) st.remove();',
     '  }',
-    '  function startScript(name, params) {',
+    '  function startScript(name, params, token) {',
     "    var sig = (name || 'main') + ':' + JSON.stringify(params || {});",
     '    if (_cancelFn && sig === _lastSig) return;   // identical re-post — keep the script running',
     '    stopScript();',
@@ -1294,22 +1409,53 @@ export function wrapBridgeCombined(entries: Map<string, string>): string {
     '    applyHideUi(params);   // mechanical Minimal-UI hide — refreshed on every (re)start',
     "    var _bh = document.getElementById('__simBootHide');",
     '    if (_bh && _bh.remove) _bh.remove();   // __simHideUi above is definitive — drop the boot-time hide',
-    '    // Dynamic dispatch: a section id resolves its own body; unknown names fall back to',
-    "    // the ?section= default so old players sending 'main' behave exactly as before.",
-    '    var fn = SCRIPTS[name] || _sectionBody(name) || SCRIPTS.main;',
-    '    if (fn) _cancelFn = fn(params || {}) || null;',
+    "    // Dynamic dispatch: a section id resolves its own body; the literal 'main' (old players)",
+    "    // falls back to the ?section= default. An UNKNOWN modern name runs NOTHING and reports",
+    '    // SCRIPT_MISSING — silently running another section\'s body is the "same variation',
+    '    '  + '// everywhere" bug resurfacing (audited). Own-property guard on BOTH maps: prototype',
+    "    // names ('constructor', …) arrive via an origin-unchecked listener and previously",
+    '    // resolved to inherited functions, wedging the document (audited).',
+    '    var own = Object.prototype.hasOwnProperty;',
+    '    var fn = (name && own.call(SCRIPTS, name)) ? SCRIPTS[name] : _sectionBody(name);',
+    "    if (!fn && (!name || name === 'main')) fn = SCRIPTS.main;",
+    '    if (!fn) {',
+    "      _post({ type: 'SCRIPT_MISSING', script: name, token: token });",
+    '      return;',
+    '    }',
+    '    try {',
+    '      _cancelFn = _trackTimers(function () { return fn(params || {}) || null; });',
+    '      // Acknowledge only after ONE further frame: the body has returned AND the browser has',
+    '      // had a chance to lay out/paint its changes. Posting synchronously would ack a body',
+    '      // whose visible effect had not landed yet. The SYSTEM rAF is used so this bookkeeping',
+    '      // frame can never itself count as the simulation\'s first paint.',
+    "      var _ack = function () { _post({ type: 'SCRIPT_APPLIED', script: name || 'main', token: token }); };",
+    '      if (_sysRaf) _sysRaf(_ack); else _ack();',
+    '    } catch (err) {',
+    '      _cancelFn = null;',
+    "      _post({ type: 'SCRIPT_ERROR', phase: 'start', script: name || 'main', token: token, message: String(err && err.message || err) });",
+    '    }',
     '  }',
     '  window.SimAPI = { start: startScript, stop: stopScript };',
     "  window.addEventListener('message', function(e) {",
     '    var d = e.data || {}; var type = d.type; var script = d.script; var params = d.params;',
-    "    if (type === 'startScript')  startScript(script || 'main', params);",
+    "    if (type === 'startScript')  startScript(script || 'main', params, d.token);",
     "    if (type === 'stopScript')   stopScript();",
+    '    // Stop the demo WITHOUT tearing the section down: the scene, the applied Minimal-UI',
+    '    // policy and manual interactivity all stay exactly as they are. Clears ONLY handles the',
+    '    // body registered via simDemoTimer — never the broad body-call capture, which cannot be',
+    '    // told apart from the simulation\'s own engine timers (see the two scopes above). A body',
+    '    // that registers nothing is simply not pausable: a no-op, never a frozen scene.',
+    "    if (type === 'pauseScript')  { _clearDemoTimers(); _post({ type: 'AUTO_PAUSED' }); }",
     "    if (type === 'PING_SIM_READY' && window._simReadyFired)",
     "      window.parent?.postMessage(_readyMsg(), '*');",
     '  });',
     "  document.addEventListener('pointerdown', function() {",
     "    window.parent?.postMessage({ type: 'userInteraction' }, '*');",
     '  }, { capture: true });',
+    // The v3 runtime is ADDITIVE: everything above keeps running untouched, so a player that never
+    // offers a port sees precisely the document it has always seen. That is what makes the upgrade
+    // safe to ship to stored packages one stage at a time.
+    ...(v3 ? ['', v3] : []),
     '})();',
   ].join('\n');
 }
@@ -1855,12 +2001,17 @@ export class SimulationService {
           // HTML and bridge.js get overwritten in place by bridge (re)generation, and
           // they're served through the /sim-public proxy with its own cache policy anyway.
           const rewritable = /\.(html?|m?js)$/i.test(relPath);
+          // BOUNDED, never `immutable`: "Replace simulation" overwrites every key in place, and
+          // binary assets are served by a redirect to the bucket object — whose OWN Cache-Control
+          // is what the browser keeps. A year-long immutable value pinned replaced textures/audio
+          // with no revalidation path (audited). Restore long caching only with content-addressed
+          // revision prefixes (roadmap).
           return this.storage
             .uploadFile(
               `${prefix}/${relPath}`,
               buf,
               getSimulationContentType(relPath),
-              rewritable ? undefined : 'public, max-age=31536000, immutable',
+              rewritable ? undefined : 'public, max-age=3600',
             )
             .then(() => undefined);
         }),
@@ -2335,10 +2486,52 @@ export class SimulationService {
       // Merge: parse existing sections, add/replace the current section's body.
       const sectionEntries = parseSectionEntries(existingBridgeJs);
       sectionEntries.set(sectionId, mainBody(sectionEntries.get(sectionId)));
-      const combinedBridge = wrapBridgeCombined(sectionEntries);
+      // Newly generated bridges CARRY the v3 runtime. Carrying it is not the same as being trusted
+      // with it: the player only takes the modern path for a package the publish-time canary has
+      // classified `managed-presentable`, so a package that can speak v3 but has never proven it
+      // still runs on the v2 path. Emitting the runtime here is what makes that proof possible at
+      // all — a package with no v3 code can never be canaried into the modern class.
+      //
+      // `allManaged` / `anyQuality` are deliberately LEFT FALSE, and that is not an oversight: the
+      // generation prompt produces cleanup-closure bodies, which `toLifecycle` wraps as legacy. A
+      // package whose bodies cannot suspend or render on demand must not claim it can — so
+      // `capabilities()` reports those false, `classifyCanaryReport` caps the package at
+      // `managed-partial`, and `enableModern` declines. The consequence, stated plainly because it
+      // is easy to miss: a package generated today CANNOT reach `managed-presentable`, so the v3
+      // reveal path is not yet reachable for it. Closing that requires teaching the generator to
+      // emit ManagedSectionLifecycle bodies — see md-files/SIM-P456-ROLLOUT.md.
+      const combinedBridge = wrapBridgeCombined(sectionEntries, { runtimeV3: true });
       const hash = computeBridgeHash(combinedBridge);
 
       await this.storage.uploadFile(bridgeJsKey, Buffer.from(combinedBridge, 'utf-8'), 'application/javascript');
+
+      // Record the hash on the PACKAGE, not only in the section URL we are about to rewrite.
+      // Every section of this package now derives the same revision from it — which is what makes
+      // the revision an identity of the package rather than of whichever section was saved last.
+      try {
+        // Regenerating the bridge INVALIDATES the canary verdict, so clear it with the hash.
+        //
+        // The verdict is a statement about specific bytes. Leaving it in place while the bytes
+        // change grants the modern path to a package no canary ever ran — and every poster lookup
+        // then misses, because poster identities carry the OLD revision. That is exactly the state
+        // sim-canary-publish refuses to publish (EXIT.POSTERS_MISSING), reached through the back
+        // door. The WHERE means an idempotent regeneration that produces the identical hash keeps
+        // its verdict; only a genuine change clears it.
+        await db.update(simulations)
+          .set({ bridge_hash: hash, package_class: null, canary_report: null, canary_at: null })
+          .where(and(
+            eq(simulations.id, simId),
+            or(isNull(simulations.bridge_hash), ne(simulations.bridge_hash, hash)),
+          ));
+      } catch (err) {
+        // ONLY the pre-migration case may be swallowed. The bridge bytes were uploaded a few lines
+        // above, so any other failure here leaves the NEW bytes live under the OLD bridge_hash and
+        // the OLD canary verdict — precisely the "a verdict is a statement about specific bytes"
+        // back door this write exists to close. Demoting that to a warn log would hide it.
+        const code = (err as { code?: string } | null)?.code;
+        if (code !== '42703') throw err;
+        logger.warn({ err, simId }, 'sim: bridge_hash column absent — migration 049 not applied yet');
+      }
 
       // Update index.html in place (stable marker approach). Fall back to public URL read
       // when storage GetObject is denied.

@@ -166,7 +166,21 @@ describe('Bridge integration — acceptance criteria', () => {
     // Call-time resolution with a prototype-safe lookup (message input is untrusted).
     expect(bridge).toContain('function _sectionBody(name)');
     expect(bridge).toContain('Object.prototype.hasOwnProperty.call(__SECTIONS__, name)');
-    expect(bridge).toContain('var fn = SCRIPTS[name] || _sectionBody(name) || SCRIPTS.main;');
+    // Hardened dispatch (audited): own-property guard on BOTH maps (prototype names like
+    // 'constructor' arrived via the origin-unchecked listener and resolved to inherited
+    // functions), 'main'-only fallback (an unknown modern section reports SCRIPT_MISSING
+    // instead of silently running another section's body), and _fireReady scheduled through
+    // the gate's RAW rAF so the bridge's own bookkeeping can never ack the sim's first paint.
+    expect(bridge).toContain("var fn = (name && own.call(SCRIPTS, name)) ? SCRIPTS[name] : _sectionBody(name);");
+    expect(bridge).toContain("if (!fn && (!name || name === 'main')) fn = SCRIPTS.main;");
+    expect(bridge).toContain("_post({ type: 'SCRIPT_MISSING', script: name, token: token });");
+    // Every ack echoes the ACTIVATION TOKEN so a stale ack from a superseded activation can
+    // never satisfy a newer pending one (audited B→A→B race), and SCRIPT_APPLIED is posted from
+    // a system-rAF callback so it means "body ran AND a frame followed".
+    expect(bridge).toContain('function startScript(name, params, token)');
+    expect(bridge).toContain("startScript(script || 'main', params, d.token)");
+    expect(bridge).toContain('if (_sysRaf) _sysRaf(_ack); else _ack();');
+    expect(bridge).toContain('window.__SIM_RAF_GATE__ && (window.__SIM_RAF_GATE__.sys || window.__SIM_RAF_GATE__.raw)');
     // Valid syntax
     expect(() => new Function(bridge)).not.toThrow();
   });
@@ -262,6 +276,8 @@ function bootBridge(bridge: string, search: string) {
     addEventListener: (t: string, fn: (e: { data: unknown }) => void) => {
       if (t === 'message') messageListeners.push(fn);
     },
+    // The raw-rAF fallback binds window.requestAnimationFrame when no gate is present.
+    requestAnimationFrame: (fn: () => void) => { fn(); return 0; },
     __RUNS__: runs,
   };
   const raf = (fn: () => void) => { fn(); return 0; };
@@ -328,5 +344,70 @@ describe('Bridge round-trip — dynamic dispatch on one loaded document', () => 
     expect(refire).toBeTruthy();
     expect(refire!.dispatch).toBe('dynamic');
     expect(refire!.sections).toEqual(expect.arrayContaining([SEC_A, SEC_B]));
+  });
+});
+
+// ── Hardening round-trips: the audited wedge/fallback/ack defects stay fixed ─────────
+
+describe('Bridge hardening — cleanup throws, prototype names, missing sections, applied acks', () => {
+  let storage: MemStorage;
+  let bridge: string;
+
+  const GOOD = "window.__RUNS__.push('run:good');\nreturn function () { window.__RUNS__.push('cleanup:good'); };";
+  const THROWING_CLEANUP = "window.__RUNS__.push('run:bad');\nreturn function () { throw new Error('cleanup exploded'); };";
+
+  beforeEach(async () => {
+    storage = new MemStorage();
+    await storage.uploadFile(ENTRY_KEY, Buffer.from(SEED_HTML, 'utf-8'));
+    await generateSection(storage, { prefix: PREFIX, entryKey: ENTRY_KEY, sectionId: SEC_A, mainBody: THROWING_CLEANUP });
+    await generateSection(storage, { prefix: PREFIX, entryKey: ENTRY_KEY, sectionId: SEC_B, mainBody: GOOD });
+    bridge = storage.get(`${PREFIX}/bridge.js`);
+  });
+
+  it('[17] startScript posts SCRIPT_APPLIED with the applied script echoed', () => {
+    const { posted, post } = bootBridge(bridge, `?section=${SEC_A}`);
+    post({ type: 'startScript', script: SEC_B, params: {} });
+    const ack = posted.find((p) => p.type === 'SCRIPT_APPLIED') as { script?: string } | undefined;
+    expect(ack).toBeTruthy();
+    expect(ack!.script).toBe(SEC_B);
+  });
+
+  it('[18] a THROWING cleanup reports SCRIPT_ERROR and NEVER wedges later sections (audited permanent wedge)', () => {
+    const { posted, post, runs } = bootBridge(bridge, `?section=${SEC_A}`);
+    post({ type: 'startScript', script: SEC_A, params: {} });          // runs the bad body
+    expect(runs).toContain('run:bad');
+    post({ type: 'startScript', script: SEC_B, params: {} });          // its cleanup throws here
+    const err = posted.find((p) => p.type === 'SCRIPT_ERROR') as { phase?: string } | undefined;
+    expect(err).toBeTruthy();
+    expect(err!.phase).toBe('cleanup');
+    expect(runs).toContain('run:good');                                 // …and B still started
+    // And the document keeps working section after section:
+    post({ type: 'startScript', script: SEC_A, params: {} });
+    expect(runs.filter((r) => r === 'run:bad')).toHaveLength(2);
+  });
+
+  it("[19] prototype names ('constructor') resolve NOTHING — SCRIPT_MISSING, no wedge (audited DoS)", () => {
+    const { posted, post, runs } = bootBridge(bridge, `?section=${SEC_A}`);
+    post({ type: 'startScript', script: 'constructor', params: {} });
+    expect(runs).toEqual([]);                                           // no body ran
+    const missing = posted.find((p) => p.type === 'SCRIPT_MISSING') as { script?: string } | undefined;
+    expect(missing?.script).toBe('constructor');
+    // The document is NOT wedged — a real section still dispatches afterwards.
+    post({ type: 'startScript', script: SEC_B, params: {} });
+    expect(runs).toContain('run:good');
+  });
+
+  it('[20] an unknown modern section id runs NOTHING and reports SCRIPT_MISSING — never another section\'s body', () => {
+    const { posted, post, runs } = bootBridge(bridge, `?section=${SEC_A}`);
+    post({ type: 'startScript', script: 'cccccccc-9999-4999-8999-cccccccccccc', params: {} });
+    expect(runs).toEqual([]);                                           // NOT the boot default (the old silent fallback)
+    expect((posted.find((p) => p.type === 'SCRIPT_MISSING') as { script?: string } | undefined)?.script)
+      .toBe('cccccccc-9999-4999-8999-cccccccccccc');
+  });
+
+  it("[21] the literal 'main' KEEPS its boot-URL-default fallback (old players unchanged)", () => {
+    const { post, runs } = bootBridge(bridge, `?section=${SEC_B}`);
+    post({ type: 'startScript', script: 'main', params: {} });
+    expect(runs).toEqual(['run:good']);                                 // ?section=B default
   });
 });

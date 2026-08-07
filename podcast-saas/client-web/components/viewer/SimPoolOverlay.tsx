@@ -15,7 +15,7 @@
 import { memo, useCallback, useEffect, useState } from 'react';
 import type { SimPoolFrameSpec } from '../../lib/simPool';
 import { resolveAssetUrl } from '../../lib/assetUrl';
-import { resolveSimUrl } from '../../lib/simUrl';
+import { SimSurface } from '../../lib/sim/SimSurface';
 
 interface FrameProps {
   spec: SimPoolFrameSpec;
@@ -49,22 +49,25 @@ function SimPoolFrame({ spec, active, visible, delayMs, armGate, registerFrame, 
 
   if (!armed) return null;
 
-  const src = resolveSimUrl(
-    resolveAssetUrl(spec.src) ?? spec.src,
-    spec.bootHide?.length ? { hideSelectors: spec.bootHide } : undefined,
-  );
-
   const shown = active && visible;
+  // SimSurface owns every rule that must hold for ANY hosted simulation frame: the boot-hide
+  // fragment (dropping it turns a hash-only src change into a full navigation that reloads a
+  // resident frame — audited), the origin rebase, and the inert/aria-hidden/tabIndex policy that
+  // keeps a hidden frame out of the keyboard and assistive-tech tree. This surface used to
+  // re-implement all three; the pool-specific part is only the z-order swap below.
+  //
+  // `fade={false}` because `.sim-pool-frame` already carries the opacity transition in CSS — one
+  // owner for the duration, not an inline literal racing a stylesheet.
   return (
-    <iframe
-      ref={refCb}
-      src={src}
+    <SimSurface
+      src={resolveAssetUrl(spec.src) ?? spec.src}
+      bootHide={spec.bootHide ?? []}
+      visible={shown}
+      frameRef={refCb}
       onLoad={loadCb}
-      loading="eager"
+      fade={false}
       className="sim-pool-frame"
-      style={{ opacity: shown ? 1 : 0, pointerEvents: shown ? 'auto' : 'none', zIndex: shown ? 2 : 1 }}
-      sandbox="allow-scripts allow-same-origin allow-forms"
-      title="Interactive simulation"
+      style={{ zIndex: shown ? 2 : 1 }}
     />
   );
 }

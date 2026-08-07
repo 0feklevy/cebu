@@ -5,9 +5,16 @@ import type { RefObject } from 'react';
 import type { PlayerConfig, PlayerSegment, SimulationOverlay, TimelineSeg, BrollClip, ImageOverlayItem, AudioCutaway, PlayerBranchSequence, PlayerChoicePoint, PlayerBranchEdge } from './types';
 import { releaseAvatarElement } from '../../lib/avatarAudioGraph';
 import type { SimStartScriptParams } from '../../lib/simUiControls';
-import { canWarmUnpaused } from '../../lib/simCapability';
-import { collectSimPool, bootHideFor, dynamicScriptFor, packageKeyOf, SIM_POOL_CAP, type SimPoolFrameSpec } from '../../lib/simPool';
+import { canWarmUnpaused, learnCanEmitPaint } from '../../lib/simCapability';
+import { collectSimPool, bootHideFor, dynamicScriptFor, flattenSimOccurrences, packageKeyOf, planWindowResidency, SIM_POOL_CAP, type SimPoolFrameSpec } from '../../lib/simPool';
+import { newPlayerSessionId } from 'shared/src/sim/simIdentity';
 import { simTelemetry } from '../../lib/simTelemetry';
+import { SimRuntimeClient } from '../../lib/sim/SimRuntimeClient';
+// The atomic-exit bound lives in the shared protocol module — it is duplicated in the CSS fade
+// and in the e2e harness, and all of them must agree. Importing (rather than re-declaring) is
+// what keeps this surface from drifting away from the shared runtime again. The same-document
+// apply bound is not needed here at all: the runtime owns that timer.
+import { SIM_APPLY_STALL_MS, SIM_EXIT_STOP_MS } from '../../lib/sim/protocol';
 
 // Resident sim pool tuning. Every sim in the video is mounted ONCE up front in a persistent
 // hidden iframe (SimPoolOverlay) that boots muted, paints its scene, and freezes — so entering
@@ -19,7 +26,19 @@ import { simTelemetry } from '../../lib/simTelemetry';
 // bounded best-effort ceiling and a genuine-stall affordance only after 5s.
 const SIM_PAINT_DEADLINE_MS = 1200; // bounded HOLD ceiling (see the deadline handler for what it may reveal)
 const SIM_BOOT_STALLED_MS   = 5000; // only after this does a genuine-failure loading affordance show
+// LOAD-BEARING ORDERING (review F6): the 5s stall force path is safe only because every apply
+// hold is armed with the runtime's terminal bound and therefore released FIRST. Inverting these
+// constants would silently let the stall path present a held (unacknowledged) switch, so the
+// ordering is asserted here rather than trusted.
+if (SIM_APPLY_STALL_MS >= SIM_BOOT_STALLED_MS) {
+  throw new Error('SIM_APPLY_STALL_MS must stay below SIM_BOOT_STALLED_MS — see the comment above');
+}
 const SIM_WARM_MAX_MS       = 8000; // hidden un-paused warm budget per frame before force-freezing
+// The atomic-exit bound (SIM_EXIT_STOP_MS) is imported from lib/sim/protocol — see above.
+// Paint-recovery poll budget: 40 pings at 300ms. SimRuntimeClient owns the poll; its own
+// legacy reveal ceiling is deliberately pushed past that budget because THIS surface keeps its
+// richer, section-aware bounded hold below (mid-roll rule + cold-cover/stall affordances).
+const SIM_PAINT_POLL_MAX_MS = 12_000;
 // Sliding-window residency (weak devices): mount the NEXT package's frame only when its first
 // section is this close; drop packages with no section in the window (the active one stays).
 const SIM_WINDOW_LEAD_SEC   = 45;
@@ -89,6 +108,31 @@ export interface ProjectPlayerState {
   // Sim-first entry (t=0 sim / post-branch first sim) with no video frame underneath to
   // hold — the one case a brief loading affordance is correct instead of a blank hold.
   simColdCover:    boolean;
+  // ── Layered presentation (Priority 5) ──
+  // These describe the ACTIVE section only, and every one of them resets when it is left. They are
+  // the inputs the layered presentation surface needs and the viewer has no other way to know; see
+  // SimPresentationLayers / presentationPolicy for what each one is allowed to change.
+  //
+  // `simModern` is THE GATE. It is true only while the active package is BOTH classified
+  // `managed-presentable` by the publish-time canary AND actually running the activation-scoped
+  // protocol. Everything else — an unproven package, a legacy bridge, a modern-capable package
+  // whose handshake has not completed — renders exactly what it rendered before, because the
+  // layered surface refuses to present anything that has not reported PRESENTED, and no v2 package
+  // ever reports it.
+  simModern:       boolean;
+  simPresented:    boolean;
+  // A bounded modern failure is live for this activation (the package did not honour the
+  // presentation it promised). Never set on the v2 path, which promised nothing.
+  simFailure:      boolean;
+  simPosterUrl:    string | null;
+  simPosterTransparent: boolean;
+  // Are the pixels BENEATH the sim still valid content to show? False only until a video frame has
+  // decoded at all (sim-first entry, cold seek) — monotonic after that, because the video element
+  // retains its last frame for the rest of the session.
+  simOutgoingValid: boolean;
+  // Absolute (global-timeline) end of the active sim section, so the surface can compute how much
+  // of it is left. Null outside a sim section.
+  simSectionEndSec: number | null;
   currentSegIdx:   number;
   activeSegmentId: string;          // id of the playing segment (stable across branching)
   timeline:        TimelineSeg[];
@@ -214,6 +258,8 @@ export function useProjectPlayer(
   const pathStackRef = useRef<Array<{ sequenceId: string; edgeId: string }>>([]);
   const activeChoiceRef = useRef<PlayerChoicePoint | null>(null);
   const choiceTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // True once the hook's unmount cleanup ran; late timers consult it before touching the pool.
+  const unmountedRef = useRef(false);
   const choiceResolvedRef = useRef(false);  // a selection/timeout already navigated
   const sessionIdRef = useRef<string>('');
   if (!sessionIdRef.current) {
@@ -254,7 +300,20 @@ export function useProjectPlayer(
   }
   const initialSimPoolRef = useRef<SimPoolFrameSpec[] | null>(null);
   if (initialSimPoolRef.current === null) {
-    const cap = poolTierRef.current === 'all' ? SIM_POOL_CAP : poolTierRef.current === 'window' ? 1 : 0;
+    // 'window' starts EMPTY: the residency planner mounts active+next by media-time lead — the
+    // old cap of 1 booted the first package at video start even when its section was minutes
+    // away (audited distant-mount defect on weak devices).
+    // 'window' starts EMPTY (the planner mounts by media-time lead) — EXCEPT when the timeline
+    // OPENS on a simulation: there is no lead time to plan with, so its package must be seeded or
+    // a weak device is guaranteed a cold boot at t=0 (the arm gate already opens immediately for
+    // sim-first). 'single' never pre-mounts.
+    // `initialSegments` — the sequence that actually plays — NOT config.segments, which
+    // buildPlayerConfig fills with every main video flat in created_at order, so for a branching
+    // project its [0] is unrelated to the entry sequence and this decision disagreed with the
+    // `simFirst` arm gate below on the very same config (audited).
+    const opensOnSim = (initialSegments[0]?.simulations ?? []).some((sec) => !!sec.simulation_url && sec.start_sec <= 0.05);
+    const simFirstSeed = poolTierRef.current === 'window' && opensOnSim ? 1 : 0;
+    const cap = poolTierRef.current === 'all' ? SIM_POOL_CAP : simFirstSeed;
     initialSimPoolRef.current = collectSimPool(config, cap);
   }
   // Does the timeline OPEN on a sim (no leading video)? Then pool frames must arm immediately —
@@ -274,6 +333,13 @@ export function useProjectPlayer(
     simPoolArm:       simFirst,
     simBootStalled:   false,
     simColdCover:     false,
+    simModern:            false,
+    simPresented:         false,
+    simFailure:           false,
+    simPosterUrl:         null,
+    simPosterTransparent: false,
+    simOutgoingValid:     false,
+    simSectionEndSec:     null,
     currentSegIdx:    0,
     activeSegmentId:  initialSegments[0]?.id ?? '',
     timeline:         initialSegs,
@@ -292,6 +358,59 @@ export function useProjectPlayer(
 
   const merge = (patch: Partial<ProjectPlayerState>) =>
     setState((s) => ({ ...s, ...patch }));
+
+  // ── Layered-presentation state, written through a change filter ────────────
+  // `merge` always allocates a new state object, so it always renders. That is fine for the fields
+  // it is used for, which only change at real events — but the presentation fields are RESET on
+  // every call to deactivateSim, and deactivateSim runs on EVERY tick outside a sim section
+  // (updateSimOverlay only early-returns while a section is active). Merging them unconditionally
+  // would therefore re-render the whole player about four times a second for the entire video.
+  // The mirror makes the no-op case free while keeping `merge` the single state writer.
+  type SimPresentationFields = Pick<
+    ProjectPlayerState,
+    'simModern' | 'simPresented' | 'simFailure' | 'simPosterUrl' | 'simPosterTransparent'
+    | 'simOutgoingValid' | 'simSectionEndSec'
+  >;
+  const simPresentationRef = useRef<SimPresentationFields>({
+    simModern: false,
+    simPresented: false,
+    simFailure: false,
+    simPosterUrl: null,
+    simPosterTransparent: false,
+    simOutgoingValid: false,
+    simSectionEndSec: null,
+  });
+  const mergePresentation = (patch: Partial<SimPresentationFields>) => {
+    const cur = simPresentationRef.current;
+    const next = { ...cur, ...patch };
+    if (
+      next.simModern === cur.simModern &&
+      next.simPresented === cur.simPresented &&
+      next.simFailure === cur.simFailure &&
+      next.simPosterUrl === cur.simPosterUrl &&
+      next.simPosterTransparent === cur.simPosterTransparent &&
+      next.simOutgoingValid === cur.simOutgoingValid &&
+      next.simSectionEndSec === cur.simSectionEndSec
+    ) return;
+    simPresentationRef.current = next;
+    merge(patch);
+  };
+  /**
+   * Everything the layered surface knows about the ACTIVE SECTION, forgotten.
+   *
+   * `simOutgoingValid` is deliberately absent: whether a video frame has ever decoded is a fact
+   * about the player, not about the section being left, and unlearning it would make the next
+   * section's cover paint opaque black over a video that is demonstrably there.
+   */
+  const resetPresentation = () =>
+    mergePresentation({
+      simModern: false,
+      simPresented: false,
+      simFailure: false,
+      simPosterUrl: null,
+      simPosterTransparent: false,
+      simSectionEndSec: null,
+    });
 
   const videoRef      = useRef<HTMLVideoElement | null>(null);
   const standbyRef    = useRef<HTMLVideoElement | null>(null);
@@ -316,7 +435,6 @@ export function useProjectPlayer(
   const activeAudioCutawayIdRef = useRef<string | null>(null);
   const swappingRef     = useRef(false);
   const userPausedRef   = useRef(false);
-  const simPollRef      = useRef<ReturnType<typeof setInterval> | null>(null);
   // Pending/desired start for the ACTIVE section. `dynScript` = the section's own id (v2
   // dynamic bridges run it directly); `legacyScript` = what an old bridge understands
   // ('main' → its URL's ?section default); `sectionUrl` lets the SIM_READY handler detect a
@@ -336,18 +454,51 @@ export function useProjectPlayer(
   const simPoolSpecsRef = useRef<SimPoolFrameSpec[]>(initialSimPoolRef.current);
   // Live iframe elements, keyed by RAW sim URL (registered by SimPoolOverlay callback refs).
   const simPoolFramesRef = useRef<Map<string, HTMLIFrameElement>>(new Map());
-  // Per-PACKAGE lifecycle flags (keyed by packageKeyOf). `painted` (the bridge's SIM_PAINTED
-  // first-frame ack) — not `ready` — is the reveal gate. `dynamic` is the bridge's v2
-  // capability (startScript(sectionId) on one document); null until its SIM_READY payload
-  // arrives; false = legacy bridge that must NAVIGATE to switch sections. `v4` = the frame's
-  // gate can ack paints at all (legacy v3 gates can't — they get the bounded force-reveal).
-  // `expectReload` marks a DELIBERATE src change so a late native `load` event (fires after
-  // subresources — often after the handshake) can never reset a live frame's flags.
+  // ── Per-PACKAGE state, split by OWNER ───────────────────────────────────────
+  // The DOCUMENT lifecycle (ready / painted / currentScript / ackCapable / stopped, the
+  // activation token, ack matching, the deferred stopScript and the paint poll) belongs to
+  // SimRuntimeClient — one client per package, in `simRuntimesRef` below.
+  //
+  // PoolMeta keeps only what the POOL MANAGER owns and the runtime deliberately has no notion of:
+  //   `canEmitPaint` — whether this PACKAGE's document can emit SIM_PAINTED at all, i.e. whether
+  //     its injected rAF gate is the v4 one (legacy v3 gates can't ack a paint, and are the only
+  //     frames the bounded hold below is allowed to force-reveal). This is a capability of the
+  //     PAINT channel and is NOT a second classification of anything the runtime owns:
+  //     `dynamic` classifies in-place section dispatch, `ackCapable` classifies SCRIPT_APPLIED
+  //     acks, and both legitimately disagree with it (a DOM/setInterval package acks scripts and
+  //     never paints; a load-time-locked package rebuilt with the v4 gate paints and still needs
+  //     a per-section URL — both pinned in __tests__/simCapability.test.ts). It also differs from
+  //     the runtime's `painted`, a per-DOCUMENT fact every reload resets: capability is a
+  //     per-PACKAGE fact, so it is deliberately monotonic across navigations.
+  //     Folded by learnCanEmitPaint(): proven by a real paint, implied by the RUNTIME's own
+  //     `dynamic` state — read from the runtime, never re-derived here, so dispatch capability is
+  //     classified in exactly one place.
+  //   `expectReload` — marks a DELIBERATE src change so a late native `load` event (fires after
+  //     subresources, often after the handshake) can never reset a live frame's flags.
+  //   (the pool's former `paintedLatch` now lives in the runtime as markPaintedByPolicy, so
+  //     hatches for documents that can never ack a paint. It is NOT a document fact, so it must
+  //     not be written into the runtime's `painted`.
+  //   `warmCeil` — the hidden-warm budget timer.
   interface PoolMeta {
-    ready: boolean; painted: boolean; dynamic: boolean | null; v4: boolean;
+    canEmitPaint: boolean;
     expectReload: boolean; warmCeil: ReturnType<typeof setTimeout> | null;
   }
   const simPoolMetaRef = useRef<Map<string, PoolMeta>>(new Map());
+  // One SimRuntimeClient per package. SimRuntimeClient is a ONE-DOCUMENT state machine and this
+  // hook manages a POOL of documents, so the map is owned here: created on demand, re-attached on
+  // a document IDENTITY change (navigateFrame), disposed on dropPooled and on unmount.
+  const simRuntimesRef = useRef<Map<string, SimRuntimeClient>>(new Map());
+  // ONE player session for the whole viewer lifetime. It scopes every identity below it, and it is
+  // minted per HOOK INSTANCE rather than per module: two players on one page (the editor timeline
+  // and the section-editor preview do this by design) must not share a session id, because a
+  // shared one would make a message from the other player's document pass the session check.
+  const playerSessionIdRef = useRef<string>('');
+  if (!playerSessionIdRef.current) playerSessionIdRef.current = newPlayerSessionId();
+  // Back-to-video PRISTINE RELOADS: key → timer re-assigning a legacy frame's src AFTER the fade.
+  // A navigation, not a stopScript, so it cannot be the runtime's deferred stop — but the
+  // residency planner and the unmount cleanup must still see it (audited: a bare timer let the
+  // planner evict the frame mid-fade and then fired into a detached iframe).
+  const simPristineReloadRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   // Section id waiting on a paint ack to reveal (set on cold/at-boundary entry).
   const awaitingPaintSimIdRef = useRef<string | null>(null);
   // Bounded HOLD ceiling: reveals best-effort if SIM_PAINTED never arrives (legacy sim).
@@ -488,22 +639,73 @@ export function useProjectPlayer(
     scheduleHide();
   }, [scheduleHide]);
 
-  // ── postMessage helpers (pool-frame routed; KEYS are package identities) ──
+  // ── GUIDANCE postMessage helper (pool-frame routed; KEYS are package identities) ──
+  // NOT the simulation lifecycle. Every lifecycle message this once carried (simPause/simResume)
+  // now goes through SimRuntimeClient.freeze()/thaw(), so the runtime is the single owner of the
+  // sim protocol. What is left is the guidance channel, which is a different protocol with its own
+  // vocabulary and no lifecycle meaning — routing it through the runtime would put messages the
+  // runtime has no model for into the runtime's mouth.
   const sendToFrame = (key: string | null, msg: object) => {
     if (!key) return;
     try { simPoolFramesRef.current.get(key)?.contentWindow?.postMessage(msg, '*'); } catch (_) {}
   };
-  // Messages for "the current section's sim" go to the ACTIVE package's frame.
-  const sendToSim = (msg: object) => sendToFrame(activeSimUrlRef.current, msg);
 
-  // Per-package lifecycle flags (get-or-create — a frame may message before any bookkeeping).
+  // Per-package pool-manager flags (get-or-create — a frame may message before any bookkeeping).
   const poolMeta = (key: string): PoolMeta => {
     let m = simPoolMetaRef.current.get(key);
     if (!m) {
-      m = { ready: false, painted: false, dynamic: null, v4: false, expectReload: false, warmCeil: null };
+      m = { canEmitPaint: false, expectReload: false, warmCeil: null };
       simPoolMetaRef.current.set(key, m);
     }
     return m;
+  };
+
+  // ── SimRuntimeClient ownership ────────────────────────────────────────────
+  // Lifecycle reactions are dispatched through a ref so the client can be created before the
+  // handlers below are declared (they close over revealSim / merge, which come later in the body).
+  const runtimeEventRef = useRef<(key: string, event: string, detail?: Record<string, unknown>) => void>(() => {});
+  // Get-or-create the client for a package. It registers NO window listener until a frame is
+  // attached, so this is safe to call for a package that has no iframe yet.
+  const runtimeFor = (key: string): SimRuntimeClient => {
+    let rt = simRuntimesRef.current.get(key);
+    if (!rt) {
+      rt = new SimRuntimeClient({
+        // The runtime is the single interpreter of the lifecycle wire messages; it reports what it
+        // CONCLUDED (including which acks it matched against the live activation) through this
+        // channel, which is also the ?simdebug=1 breadcrumb trail the e2e suites read.
+        onTelemetry: (event, detail) => {
+          simTelemetry(event, { ...detail, key });
+          runtimeEventRef.current(key, event, detail);
+        },
+      });
+      simRuntimesRef.current.set(key, rt);
+    }
+    return rt;
+  };
+  const runtimeState = (key: string) => runtimeFor(key).getState();
+  // "Safe to composite" for THIS surface: a real paint, or the pool's own escape-hatch latch for
+  // documents that can never ack one.
+  // ONE classification of `painted`, owned by the runtime. The pool used to keep a parallel
+  // `paintedLatch`; because the runtime never learned of it, a latched document never received
+  // visibility once the reveal became gated on the runtime's grant (audited).
+  const simPainted = (key: string): boolean => runtimeState(key).painted;
+  /**
+   * Re-read the two presentation facts that can change WITHOUT a section change.
+   *
+   * `simModern` is the runtime's own verdict, not a guess made here: the canary's class says what a
+   * package proved at publish time, `modernActive()` says whether THIS document has actually
+   * adopted the port and reported itself ready. Both are required, and the second one flips
+   * mid-activation (the handshake completes after the section is already entered), so it has to be
+   * re-read rather than captured once. `simOutgoingValid` latches: once a video frame has decoded,
+   * the element keeps its last frame for the rest of the session.
+   */
+  const syncSimPresentation = () => {
+    const key = activeSimUrlRef.current;
+    const sec = activeSimRef.current;
+    mergePresentation({
+      simModern: !!key && sec?.package_class === 'managed-presentable' && runtimeFor(key).modernActive(),
+      simOutgoingValid: simPresentationRef.current.simOutgoingValid || (videoRef.current?.readyState ?? 0) >= 2,
+    });
   };
   const clearWarmCeil = (m: { warmCeil: ReturnType<typeof setTimeout> | null }) => {
     if (m.warmCeil) { clearTimeout(m.warmCeil); m.warmCeil = null; }
@@ -518,7 +720,7 @@ export function useProjectPlayer(
     simTelemetry('warm-begin', { key });
     meta.warmCeil = setTimeout(() => {
       meta.warmCeil = null;
-      if (key !== activeSimUrlRef.current) sendToFrame(key, { type: 'simPause' });
+      if (key !== activeSimUrlRef.current) runtimeFor(key).freeze();
       simTelemetry('warm-budget-expired', { key });
       finishWarm(key);
     }, SIM_WARM_MAX_MS);
@@ -528,9 +730,8 @@ export function useProjectPlayer(
     warmingSimUrlRef.current = null;
     while (warmQueueRef.current.length) {
       const next = warmQueueRef.current.shift()!;
-      const m = poolMeta(next);
-      if (next === activeSimUrlRef.current || m.painted || !m.ready) continue;
-      sendToFrame(next, { type: 'simResume' });
+      if (next === activeSimUrlRef.current || simPainted(next) || !runtimeState(next).ready) continue;
+      runtimeFor(next).thaw();
       beginWarm(next);
       return;
     }
@@ -543,6 +744,11 @@ export function useProjectPlayer(
     const meta = simPoolMetaRef.current.get(key);
     if (meta) clearWarmCeil(meta);
     simPoolMetaRef.current.delete(key);
+    // The document goes with the frame: dispose the client so no timer of its can fire and no
+    // message can be handled after the iframe unmounts. A later re-add builds a fresh one.
+    simRuntimesRef.current.get(key)?.dispose();
+    simRuntimesRef.current.delete(key);
+    cancelPristineReload(key);
     simPoolSpecsRef.current = simPoolSpecsRef.current.filter((s) => s.key !== key);
     merge({ simPool: simPoolSpecsRef.current });
     simTelemetry('pool-spec-evict', { key, reason });
@@ -551,11 +757,8 @@ export function useProjectPlayer(
   // ceiling protects the browser's live-WebGL-context budget: beyond it, evict the first
   // non-active, non-warming frame.
   const SIM_POOL_HARD_CAP = 6;
-  const ensurePooled = (sec: SimulationOverlay) => {
-    const url = sec.simulation_url;
-    if (!url) return;
-    const key = packageKeyOf(url);
-    if (simPoolSpecsRef.current.some((s) => s.key === key)) return;
+  const ensurePooledSpec = (spec: SimPoolFrameSpec) => {
+    if (simPoolSpecsRef.current.some((s) => s.key === spec.key)) return;
     // Single mode: strictly one resident frame — evict every non-active package before adding.
     if (poolTierRef.current === 'single') {
       for (const s of [...simPoolSpecsRef.current]) {
@@ -564,24 +767,54 @@ export function useProjectPlayer(
     }
     if (simPoolSpecsRef.current.length + 1 > SIM_POOL_HARD_CAP) {
       const evict = simPoolSpecsRef.current.find((s) =>
-        s.key !== key && s.key !== activeSimUrlRef.current && s.key !== warmingSimUrlRef.current)
-        ?? simPoolSpecsRef.current.find((s) => s.key !== key && s.key !== activeSimUrlRef.current);
+        s.key !== spec.key && s.key !== activeSimUrlRef.current && s.key !== warmingSimUrlRef.current)
+        ?? simPoolSpecsRef.current.find((s) => s.key !== spec.key && s.key !== activeSimUrlRef.current);
       if (evict) dropPooled(evict.key, 'hard-cap');
     }
-    simPoolSpecsRef.current = [...simPoolSpecsRef.current, { key, src: url, bootHide: bootHideFor(sec) }];
+    simPoolSpecsRef.current = [...simPoolSpecsRef.current, spec];
     merge({ simPool: simPoolSpecsRef.current });
-    simTelemetry('pool-spec-add', { key });
+    simTelemetry('pool-spec-add', { key: spec.key });
   };
+  const ensurePooled = (sec: SimulationOverlay) => {
+    const url = sec.simulation_url;
+    if (!url) return;
+    ensurePooledSpec({ key: packageKeyOf(url), src: url, bootHide: bootHideFor(sec) });
+  };
+  // ── Atomic fade-out ───────────────────────────────────────────────────────
+  // stopScript synchronously removes __simHideUi and runs the section cleanup inside the child,
+  // so posting it at the boundary re-showed the FULL UI while the overlay was still ~200ms into
+  // its opacity fade (audited deterministic Minimal-UI flash). SimRuntimeClient.deactivate() owns
+  // that ordering now — it freezes + mutes + closes the guidance gate immediately and defers
+  // stopScript by SIM_EXIT_STOP_MS, cancelling it if the same document re-activates inside the
+  // window (its own startScript runs the bridge's stopScript first, so a late deferred stop would
+  // tear down the LIVE section). It also records the teardown as `stopped` — not merely
+  // script-less, which reads as a genuine first activation and defeats the gate.
+  const cancelPristineReload = (key: string) => {
+    const t = simPristineReloadRef.current.get(key);
+    if (t) { clearTimeout(t); simPristineReloadRef.current.delete(key); }
+  };
+  /** True while an exit fade still owes this frame work — the planner must not evict it. */
+  const isFadingOut = (key: string): boolean =>
+    simRuntimesRef.current.get(key)?.hasDeferredStop() === true || simPristineReloadRef.current.has(key);
+
   // Deliberate frame NAVIGATION (legacy non-dynamic bridge switching sections, or a
   // back-to-video pristine reload). Marks the expected reload so the load handler knows this
   // reset is intentional — a late native `load` from the previous document is ignored.
-  const navigateFrame = (key: string, src: string) => {
+  // `bootHide` re-cloaks the DESTINATION section (the spec's original bootHide belonged to the
+  // package's first-using section — audited: a legacy Minimal-UI target navigated uncloaked).
+  const navigateFrame = (key: string, src: string, bootHide?: string[] | null) => {
     const meta = poolMeta(key);
-    meta.ready = false; meta.painted = false; meta.expectReload = true;
+    meta.expectReload = true;
+    // A document IDENTITY change. SimRuntimeClient models ONE document, so re-attach it under the
+    // new key: that resets every per-document flag and cancels its in-flight timers (including a
+    // deferred stop, which must never hit the new document).
+    runtimeFor(key).attach(simPoolFramesRef.current.get(key) ?? null, src);
+    cancelPristineReload(key);
     clearWarmCeil(meta);
     warmQueueRef.current = warmQueueRef.current.filter((k) => k !== key);
     finishWarm(key);
-    simPoolSpecsRef.current = simPoolSpecsRef.current.map((s) => (s.key === key ? { ...s, src } : s));
+    simPoolSpecsRef.current = simPoolSpecsRef.current.map((s) =>
+      (s.key === key ? { ...s, src, ...(bootHide !== undefined ? { bootHide } : {}) } : s));
     merge({ simPool: simPoolSpecsRef.current });   // spec.src change → iframe src prop → navigation
     simTelemetry('navigate', { key, src: src.slice(-80) });
   };
@@ -605,7 +838,16 @@ export function useProjectPlayer(
       if (warmGenRef.current !== gen) return;                  // seek/branch moved on — drop stale reveal
       if (!activeSimRef.current) return;                       // no longer a sim section
       const url = activeSimUrlRef.current;
-      if (!opts?.force && !(url && poolMeta(url).painted)) return;  // not painted yet
+      if (!opts?.force && !(url && simPainted(url))) return;  // not painted yet
+      // CENTRAL GUARD — the runtime's presentation permission is AUTHORITATIVE.
+      //
+      // The viewer still decides which pooled frame is selected, whether it is the active
+      // occurrence, residency, generation validity and the double-rAF composition timing. It may
+      // NOT present a frame the runtime has not granted. Reading `phase === 'awaiting-ack'` was
+      // not enough: it is one symptom of one hold, so a runtime that stopped granting visibility
+      // for any other reason was simply ignored — measured, a dead apply gate changed nothing on
+      // screen because this decision never consulted the runtime at all (audited).
+      if (!opts?.force && url && !runtimeState(url).visible) return;
       merge({ showSimOverlay: true, simBootStalled: false, simColdCover: false });
     }));
   };
@@ -674,38 +916,43 @@ export function useProjectPlayer(
     if (!guidanceAudioRef.current) startNextGuidanceRef.current();
   };
 
-  // Poll the ACTIVE frame's two handshakes: SIM_READY (bridge alive) then SIM_PAINTED (first
-  // real frame drew). The paint ping matters because the broadcast SIM_PAINTED can fire before
-  // our listener is looking (a sim animating during document load paints before SIM_READY) —
-  // the v4 gate re-posts it on request. Legacy (pre-v4) sims never answer the paint ping and
-  // are covered by the bounded HOLD deadline instead.
-  const startSimPoll = useCallback(() => {
-    if (simPollRef.current) clearInterval(simPollRef.current);
-    let attempts = 0;
-    simPollRef.current = setInterval(() => {
-      const url = activeSimUrlRef.current;
-      const meta = url ? poolMeta(url) : null;
-      if (!meta || (meta.ready && meta.painted) || ++attempts > 40) {
-        if (simPollRef.current) clearInterval(simPollRef.current);
-        return;
-      }
-      sendToFrame(url, { type: meta.ready ? 'PING_SIM_PAINTED' : 'PING_SIM_READY' });
-    }, 300);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // Poll a frame's two handshakes: SIM_READY (bridge alive) then SIM_PAINTED (first real frame
+  // drew). The paint ping matters because the broadcast SIM_PAINTED can fire before our listener
+  // is looking (a sim animating during document load paints before SIM_READY) — the v4 gate
+  // re-posts it on request. Legacy (pre-v4) sims never answer the paint ping and are covered by
+  // the bounded HOLD deadline below instead.
+  //
+  // The runtime owns the poll (it is scoped to its own document and stops itself on the first
+  // real paint). Its built-in legacy reveal ceiling is pushed out to the poll budget on purpose:
+  // it would only flip the runtime's own presentation flag, which this surface does not render,
+  // and the section-aware bounded hold below is the reveal policy that actually composites here.
+  const startSimPoll = (key: string) => {
+    runtimeFor(key).startPaintRecovery({ legacyCeilingMs: SIM_PAINT_POLL_MAX_MS });
+  };
 
   // ── simulation overlay (resident pool) ────────────────────────────────────
-  // Deactivate the current section's pool frame: stop its script, hide the overlay, freeze its
-  // rAF. The frame STAYS mounted and painted — re-entry is an instant opacity swap.
+  // Deactivate the current section's pool frame — ATOMIC EXIT ORDER (audited):
+  //   1. freeze (simPause) + silence (simMute) + close the guidance gate — the fade shows the
+  //      last VALID frame, and a hidden resident frame must never keep sounding or polling;
+  //   2. start the opacity fade;
+  //   3. stopScript only AFTER the fade (deferred) — it restores hidden controls/cleanup, which
+  //      used to flash the full UI mid-fade. The frame STAYS mounted and painted.
   const deactivateSim = () => {
     warmGenRef.current++;                    // invalidate any pending reveal
-    if (activeSimRef.current || showSimOverlayRef.current) {
-      sendToSim({ type: 'stopScript' });
-      // Fade out immediately at the boundary; CSS opacity transition smooths it.
+    const key = activeSimUrlRef.current;
+    // An armed apply hold must never survive the section it belonged to: its terminal bound would
+    // fire later and force-reveal a document this exit has deliberately taken off screen.
+    if (key) runtimeFor(key).cancelPendingApply();
+    if (key && (activeSimRef.current || showSimOverlayRef.current)) {
+      // Freeze + silence + close the guidance gate NOW, tear the section down only after the
+      // fade — all three, in that order, are SimRuntimeClient.deactivate().
+      runtimeFor(key).deactivate();
       merge({ showSimOverlay: false, simBootStalled: false, simColdCover: false });
-      sendToSim({ type: 'simPause' });
     }
     clearRevealTimers();
+    // The layered surface describes ONE activation. Carrying any of it into the next section is how
+    // a poster of the section just left ends up covering the section just entered.
+    resetPresentation();
     awaitingPaintSimIdRef.current = null;
     desiredSimRef.current = null;
     pendingSimRef.current = null;
@@ -785,6 +1032,52 @@ export function useProjectPlayer(
       // that can never ack a paint.
       const gen = warmGenRef.current;
       const meta = poolMeta(key);
+      const rt = runtimeFor(key);
+
+      // Arm the activation-scoped path — but only for a package the publish-time canary has
+      // classified `managed-presentable`. enableModern itself enforces that, so passing an
+      // unproven or null class here is a no-op that leaves the v2 path in charge; the call is made
+      // unconditionally so there is exactly ONE place that decides, rather than a condition here
+      // and another inside the client that could drift apart.
+      if (simSection.package_revision) {
+        rt.enableModern(
+          {
+            playerSessionId: playerSessionIdRef.current,
+            packageRevision: simSection.package_revision,
+            packageClass: simSection.package_class ?? 'legacy-opaque',
+          },
+          {
+            failureContext: {
+              // The recovery surface offers "keep the poster" ONLY when one actually exists for
+              // this exact identity — offering it with nothing to show would be a dead end.
+              hasPoster: !!simSection.poster_url,
+              hasVideo: !isPostRollSim,
+              canSkip: true,
+            },
+          },
+        );
+      }
+      // What the layered surface may know about THIS activation. Nothing is presented yet and no
+      // failure is live: both are facts the runtime has to report, and assuming either would be
+      // exactly the "presentation derived from something cheaper" this whole layer exists to end.
+      mergePresentation({
+        simModern: simSection.package_class === 'managed-presentable' && rt.modernActive(),
+        simPresented: false,
+        simFailure: false,
+        simPosterUrl: simSection.poster_url ?? null,
+        // The poster's transparency IS the section's: a capture over a transparent background is
+        // made only for a section that composites over the video, so it is the observed form of the
+        // same fact rather than a second, separately-stored one that could disagree.
+        simPosterTransparent: !!simSection.poster_transparent,
+        simOutgoingValid: simPresentationRef.current.simOutgoingValid || (videoRef.current?.readyState ?? 0) >= 2,
+        simSectionEndSec: (timelineRef.current[segmentIdx]?.offset ?? 0) + simSection.end_sec,
+      });
+      // Snapshot BEFORE activating: rt.activate() records the new script and takes the gate
+      // decision, and the branch conditions below describe the document as it was on entry.
+      const was = rt.getState();
+      const wasReady = was.ready;
+      const wasPainted = simPainted(key);
+      const wasDynamic = was.dynamic === true;
       const spec = simPoolSpecsRef.current.find((s) => s.key === key);
       // The activated frame no longer occupies the hidden-warm slot; let the next queued
       // frame take its turn (it warms behind whatever is on screen).
@@ -792,39 +1085,59 @@ export function useProjectPlayer(
       finishWarm(key);
       awaitingPaintSimIdRef.current = simSection.id;
 
-      const legacyNeedsNav = meta.dynamic === false && spec && spec.src !== sectionUrl;
+      // Re-entering during the exit fade — the deferred stop is superseded. (rt.activate() does
+      // this itself; the legacy-navigate branch below never reaches it, so cancel here too.)
+      rt.cancelDeferredStop();
+      cancelPristineReload(key);
+
+      // A document that HANDSHOOK and did not advertise in-place dispatch is load-time-locked:
+      // its SCRIPTS.main is its own URL's ?section default, so a postMessage cannot switch it.
+      const legacyNeedsNav = wasReady && !wasDynamic && spec && spec.src !== sectionUrl;
       if (legacyNeedsNav) {
-        // Old load-time-locked bridge showing a different section — reload it on this URL.
-        navigateFrame(key, sectionUrl);
+        // Old load-time-locked bridge showing a different section — reload it on this URL,
+        // re-cloaked with the TARGET section's Minimal-UI selectors (not the first-user's).
+        navigateFrame(key, sectionUrl, bootHideFor(simSection));
         pendingSimRef.current = { sectionUrl, dynScript, legacyScript, params };
-      } else if (meta.ready && meta.painted) {
+      } else if (wasReady && wasPainted) {
         clearWarmCeil(meta);
-        sendToFrame(key, { type: 'simResume' });
-        sendToFrame(key, { type: 'startScript', script: meta.dynamic ? dynScript : legacyScript, params });
-        sendToFrame(key, { type: 'clearBootHide' });   // startScript's __simHideUi supersedes the boot style
-        sendToFrame(key, { type: 'simRelayout' });     // re-sync canvas to the container/DPR at reveal
-        sendToFrame(key, { type: 'simUnmute' });
-        revealSim();
-      } else if (meta.ready) {
+        // Same-document switch: `painted` only certifies the document once drew SOMETHING
+        // (possibly the PREVIOUS section's frozen frame), so a proven-modern bridge must hold the
+        // swap until its acknowledgement — never a timer. rt.activate() takes that decision (with
+        // the document's OWN last-applied script, before it records the incoming one), posts
+        // resume → startScript → clearBootHide → relayout → unmute with the token the bridge
+        // echoes on every ack, and either holds or announces the reveal. The terminal bound that
+        // guarantees a wedged bridge can never hold the screen forever is its SIM_APPLY_STALL_MS
+        // timer, which reports `reveal-forced`.
+        rt.activate({ script: wasDynamic ? dynScript : legacyScript, params });
+        // A document the pool LATCHED as painted (the never-drives-rAF escape hatch below) can
+        // never produce the runtime's paint-driven reveal, so composite it here. revealSim
+        // re-checks the hold, so a gated switch is still never presented early.
+  // (removed: dead branch — wasPainted IS runtimeState(key).painted, captured above, and
+      // activate() never clears painted, so this condition could never be true; review F5)
+      } else if (wasReady) {
         // Frame is alive but hasn't acked a painted frame yet — drive it and poll the paint ack.
         clearWarmCeil(meta);
-        sendToFrame(key, { type: 'simResume' });
-        sendToFrame(key, { type: 'simUnmute' });
-        sendToFrame(key, { type: 'startScript', script: meta.dynamic ? dynScript : legacyScript, params });
-        sendToFrame(key, { type: 'clearBootHide' });
-        sendToFrame(key, { type: 'simRelayout' });
+        rt.activate({ script: wasDynamic ? dynScript : legacyScript, params });
       } else {
         // Frame still booting (or just added on-demand): the SIM_READY handler applies the
         // pending start once its bridge answers (and resolves dynamic-vs-legacy then).
+        //
+        // Resume it FIRST. A pool frame is frozen the instant it paints while backgrounded, and a
+        // bridge announces its readiness from inside a requestAnimationFrame — so a document that
+        // painted before it handshook has its OWN readiness callback frozen with it, and would
+        // never answer at all. This is a pool-only race (no single-document surface can freeze a
+        // frame it is about to present) and it is what the boundary handshake poll used to mask.
+        rt.resume();
         pendingSimRef.current = { sectionUrl, dynScript, legacyScript, params };
       }
 
-      if (!(meta.ready && meta.painted) || legacyNeedsNav) {
-        startSimPoll();
-        // Bounded HOLD ceiling. A paint ack may still land any moment — but a LEGACY frame
-        // (pre-v4 gate) can never ack, so after the ceiling it force-reveals (old behavior,
-        // documented blank risk only for legacy sims). v4 frames keep holding the underlying
-        // content and surface the wait affordance instead of a blank canvas.
+      if (!(wasReady && wasPainted) || legacyNeedsNav) {
+        startSimPoll(key);
+        // Bounded HOLD ceiling. A paint ack may still land any moment — but a frame whose gate
+        // cannot emit one (`canEmitPaint === false`) never will, so after the ceiling it
+        // force-reveals (old behavior, documented blank risk only for those legacy sims).
+        // Paint-capable frames keep holding the underlying content and surface the wait
+        // affordance instead of a blank canvas.
         const remainingMs = Math.max(0, simSection.end_sec - localTime) * 1000;
         const holdMs = Math.min(SIM_PAINT_DEADLINE_MS, remainingMs || SIM_PAINT_DEADLINE_MS);
         simPaintDeadlineRef.current = setTimeout(() => {
@@ -835,15 +1148,15 @@ export function useProjectPlayer(
           const v = videoRef.current;
           if (v && !v.paused && simSection.end_sec - v.currentTime < 0.35) return;
           const m = poolMeta(key);
-          if (m.painted) { revealSim(); return; }
-          if (m.ready && !m.v4) {
+          if (simPainted(key)) { revealSim(); return; }
+          if (runtimeState(key).ready && !m.canEmitPaint) {
             // Legacy gate — no paint ack will ever come. Best-effort reveal (old behavior).
-            m.painted = true;
+            runtimeFor(key).markPaintedByPolicy('bounded-hold');
             simTelemetry('hold-expired-legacy-reveal', { key });
             revealSim({ force: true });
             return;
           }
-          // v4 frame, genuinely not painted yet: keep holding the video/last frame and show
+          // Paint-capable frame, genuinely not painted yet: keep holding the video/last frame and show
           // the honest wait affordance. SIM_PAINTED reveals whenever it lands; the 5s stall
           // affordance takes over if it never does.
           simTelemetry('hold-expired-waiting', { key });
@@ -851,13 +1164,25 @@ export function useProjectPlayer(
         }, holdMs);
         // Sim-first with no video frame underneath to hold → show the loader immediately.
         if ((videoRef.current?.readyState ?? 0) < 2) merge({ simColdCover: true });
-        // Genuine-stall error affordance — only fires on a truly broken sim that never paints.
+        // TERMINAL bound. Making paint acks honest removed the only signal a simulation that
+        // never drives requestAnimationFrame ever produced (uploaded DOM / setInterval-canvas
+        // packages, and any package whose scene draws once on DOMContentLoaded). Those frames
+        // would otherwise hold forever behind the wait affordance — a permanent spinner and an
+        // entire class of simulations made undisplayable. So the hold ENDS here: show the frame
+        // best-effort rather than never. This is the documented compatibility fallback; a v4
+        // package that genuinely paints never reaches it.
         simBootStalledRef.current = setTimeout(() => {
           simBootStalledRef.current = null;
-          if (warmGenRef.current === gen && !showSimOverlayRef.current && activeSimRef.current?.id === simSection.id) {
-            simTelemetry('stall', { key });
-            merge({ simBootStalled: true, simColdCover: false });
+          if (warmGenRef.current !== gen || showSimOverlayRef.current || activeSimRef.current?.id !== simSection.id) return;
+          if (!simPainted(key)) {
+            runtimeFor(key).markPaintedByPolicy('boot-stalled');   // stop re-arming the hold
+            simTelemetry('stall-force-reveal', { key });
+            merge({ simBootStalled: false, simColdCover: false });
+            revealSim({ force: true });
+            return;
           }
+          simTelemetry('stall', { key });
+          merge({ simBootStalled: true, simColdCover: false });
         }, SIM_BOOT_STALLED_MS);
       }
     }
@@ -1400,32 +1725,31 @@ export function useProjectPlayer(
         }
       }
       // Residency. 'all' tier: every active-path package mounted at start — nothing to do.
-      // 'window' tier (weak devices): keep only the ACTIVE package + the NEXT upcoming one
-      // (first sim section within SIM_WINDOW_LEAD_SEC, looking across this segment and the
-      // next) resident; drop the rest so at most 2 WebGL documents ever live. The dropped
-      // package re-mounts with the same lead the next time the window reaches it.
+      // 'window' tier (weak devices): planner-driven — keep only the ACTIVE package plus the
+      // next DISTINCT upcoming package within SIM_WINDOW_LEAD_SEC, scanning the WHOLE remaining
+      // active path in absolute media time (the old scan stopped at segment+1 and missed sims
+      // behind short segments — audited). The plan is authoritative: an EMPTY plan evicts every
+      // non-active frame, so long sim-free gaps release WebGL contexts (the old `want.size > 0`
+      // guard retained them indefinitely — audited).
       if (poolTierRef.current === 'window') {
-        const findUpcoming = (): SimulationOverlay | null => {
-          const cur = segmentsRef.current[idx];
-          const segDur = timelineRef.current[idx]?.duration ?? cur?.duration_sec ?? Infinity;
-          const inSeg = cur?.simulations.find((s) =>
-            !!s.simulation_url && s.start_sec > t && s.start_sec - t <= SIM_WINDOW_LEAD_SEC) ?? null;
-          if (inSeg) return inSeg;
-          if (segDur - t <= SIM_WINDOW_LEAD_SEC) {
-            return segmentsRef.current[idx + 1]?.simulations.find((s) =>
-              !!s.simulation_url && s.start_sec <= SIM_WINDOW_LEAD_SEC - (segDur - t)) ?? null;
+        const occurrences = flattenSimOccurrences(
+          segmentsRef.current.map((s, i) => ({ offset: timelineRef.current[i]?.offset ?? 0, simulations: s.simulations })),
+        );
+        const absNow = (timelineRef.current[idx]?.offset ?? 0) + t;
+        const plan = planWindowResidency(occurrences, absNow, SIM_WINDOW_LEAD_SEC);
+        const keep = new Set(plan.keep);
+        if (activeSimUrlRef.current) keep.add(activeSimUrlRef.current);   // never drop the live frame
+        // A frame still inside its EXIT FADE must survive: unmounting it mid-fade removes the
+        // element being animated (the sim cuts to video instead of fading) and the deferred
+        // stopScript would fire into a dead frame. It is evicted on the next tick, after the fade.
+        for (const spec of simPoolSpecsRef.current) if (isFadingOut(spec.key)) keep.add(spec.key);
+        for (const occ of [plan.active, plan.next]) {
+          if (occ && !simPoolSpecsRef.current.some((s) => s.key === occ.packageKey)) {
+            ensurePooledSpec({ key: occ.packageKey, src: occ.src, bootHide: occ.bootHide });
           }
-          return null;
-        };
-        const upcoming = findUpcoming();
-        const want = new Set<string>();
-        if (activeSimUrlRef.current) want.add(activeSimUrlRef.current);
-        if (upcoming?.simulation_url) want.add(packageKeyOf(upcoming.simulation_url));
-        if (upcoming?.simulation_url && !simPoolSpecsRef.current.some((s) => s.key === packageKeyOf(upcoming.simulation_url!))) {
-          ensurePooled(upcoming);
         }
         for (const spec of [...simPoolSpecsRef.current]) {
-          if (!want.has(spec.key) && want.size > 0) dropPooled(spec.key, 'window-slide');
+          if (!keep.has(spec.key)) dropPooled(spec.key, 'window-slide');
         }
       }
     }
@@ -1531,10 +1855,12 @@ export function useProjectPlayer(
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onTick, onEnded, scheduleHide, showControls]);
 
-  // ── postMessage listener (pool-frame routed) ──────────────────────────────
-  // Every pool frame posts through here; the source window identifies WHICH sim sent it.
-  // Only the ACTIVE frame may drive user-visible behavior (pause video, guidance cues,
-  // branching edges); background frames only update their own lifecycle flags.
+  // ── postMessage listener — NON-lifecycle messages only ────────────────────
+  // The document lifecycle protocol is not read here at all: each package's SimRuntimeClient
+  // scopes every lifecycle event to its OWN frame by e.source and reports what it concluded (see
+  // runtimeEventRef). What is left needs the pool's reverse source lookup because it is addressed
+  // to the PLAYER, not to a document: guidance init/cues, the interaction pause, and branching
+  // triggers. Only the ACTIVE frame may drive user-visible behavior.
   useEffect(() => {
     const urlOfSource = (source: MessageEventSource | null): string | null => {
       for (const [url, el] of simPoolFramesRef.current) {
@@ -1545,83 +1871,9 @@ export function useProjectPlayer(
     const handler = (e: MessageEvent) => {
       const frameUrl = urlOfSource(e.source);
       if (!frameUrl) return;
-      const meta = poolMeta(frameUrl);
       const isActive = frameUrl === activeSimUrlRef.current;
       const { type } = (e.data as { type?: string }) ?? {};
 
-      if (type === 'SIM_READY') {
-        meta.ready = true;
-        // v2 capability handshake: dynamic bridges advertise startScript(sectionId) dispatch.
-        // A dynamic bridge implies the rebuilt package (v4 gate) — paint acks WILL come.
-        // Classify only from a payload that CARRIES the field (or on first contact): the
-        // bridge's PING_SIM_READY reply re-posts a bare {type:'SIM_READY'}, and letting it
-        // overwrite would DOWNGRADE a known-dynamic frame to legacy → spurious per-section
-        // document navigations of a perfectly pooled frame.
-        const payload = e.data as { dispatch?: string };
-        if (payload.dispatch !== undefined || meta.dynamic === null) {
-          meta.dynamic = payload.dispatch === 'dynamic';
-        }
-        if (meta.dynamic) meta.v4 = true;
-        simTelemetry('sim-ready', { key: frameUrl, dynamic: meta.dynamic });
-        if (isActive) {
-          // Self-heal: even if the pending start was consumed, an active section must never
-          // stay scriptless — fall back to the desired state. (sim-reliability fix)
-          const pending = pendingSimRef.current ??
-            (activeSimRef.current && desiredSimRef.current ? { ...desiredSimRef.current } : null);
-          pendingSimRef.current = null;
-          if (pending && (!userPausedRef.current || resumeActionRef.current === 'backToVideo')) {
-            // LEGACY frame parked on the wrong section: its SCRIPTS.main is the URL's own
-            // ?section default, so postMessage can't run the desired section — navigate.
-            const spec = simPoolSpecsRef.current.find((s) => s.key === frameUrl);
-            if (!meta.dynamic && spec && spec.src !== pending.sectionUrl) {
-              pendingSimRef.current = pending;   // re-arm for the post-navigation document
-              navigateFrame(frameUrl, pending.sectionUrl);
-              return;
-            }
-            // Drive the frame to paint. Reveal stays gated on SIM_PAINTED / the bounded ceiling.
-            sendToFrame(frameUrl, { type: 'simResume' });
-            sendToFrame(frameUrl, { type: 'simUnmute' });
-            sendToFrame(frameUrl, { type: 'startScript', script: meta.dynamic ? pending.dynScript : pending.legacyScript, params: pending.params });
-            sendToFrame(frameUrl, { type: 'clearBootHide' });
-            sendToFrame(frameUrl, { type: 'simRelayout' });
-          }
-        } else {
-          // A background pool frame finished loading. Mute it and gate guidance off; on capable
-          // devices let it warm (run unpaused → paint) — but SERIALIZED, one frame at a time,
-          // so several hidden WebGL scenes never fight the video decode concurrently. Low-end
-          // parks it cold immediately.
-          sendToFrame(frameUrl, { type: 'simMute' });
-          sendToFrame(frameUrl, { type: 'guidanceGate', active: false });
-          if (canWarmUnpaused()) {
-            if (warmingSimUrlRef.current && warmingSimUrlRef.current !== frameUrl) {
-              sendToFrame(frameUrl, { type: 'simPause' });
-              if (!warmQueueRef.current.includes(frameUrl)) warmQueueRef.current.push(frameUrl);
-            } else {
-              beginWarm(frameUrl);
-            }
-          } else {
-            sendToFrame(frameUrl, { type: 'simPause' });
-          }
-        }
-      }
-      if (type === 'SIM_PAINTED') {
-        // The sim rendered its first real frame (v4 rAF gate) — the true "safe to show" signal.
-        // Frames only navigate through navigateFrame (expected-reload epoch), so this ack can't
-        // belong to a stale document; recording it before SIM_READY is fine (a sim animating
-        // during load paints early).
-        meta.painted = true;
-        meta.v4 = true;
-        clearWarmCeil(meta);
-        simTelemetry('sim-painted', { key: frameUrl, active: isActive });
-        if (!isActive || !activeSimRef.current) {
-          sendToFrame(frameUrl, { type: 'simPause' });   // painted + frozen — instant reveal later
-        } else if (awaitingPaintSimIdRef.current === activeSimRef.current.id) {
-          if (simPaintDeadlineRef.current) { clearTimeout(simPaintDeadlineRef.current); simPaintDeadlineRef.current = null; }
-          merge({ simColdCover: false });
-          revealSim();
-        }
-        finishWarm(frameUrl);   // this frame's warm turn is over — advance the queue
-      }
       // ── Guided Simulation init — for EVERY frame (background boots/reloads included) ──
       if (type === 'GUIDANCE_READY') {
         // Seed with already-heard cues so they never replay across boots/reloads — a resident
@@ -1630,7 +1882,8 @@ export function useProjectPlayer(
         // overlay's actual visible state at fire time (read live, never captured).
         sendToFrame(frameUrl, { type: 'guidanceInit', firedIds: Array.from(firedCueIds.current) });
         setTimeout(() => {
-          sendToFrame(frameUrl, { type: 'guidanceGate', active: showSimOverlayRef.current && frameUrl === activeSimUrlRef.current });
+          if (unmountedRef.current) return;   // review F4: never resurrect a disposed runtime map
+          runtimeFor(frameUrl).setGuidance(showSimOverlayRef.current && frameUrl === activeSimUrlRef.current);
         }, 100);
       }
 
@@ -1639,7 +1892,10 @@ export function useProjectPlayer(
 
       if (type === 'userInteraction') {
         videoRef.current?.pause();
-        sendToFrame(frameUrl, { type: 'pauseScript' });   // stop animation, keep sim panel visible
+        // Stops the section's auto-demo timers WITHOUT tearing it down (bridge timer scope). NOTE:
+      // only packages whose bridge has been rebuilt honour this — on a stored pre-v2.1 bridge it
+      // is still a no-op and the auto-script keeps fighting the user (see the verdict doc).
+      runtimeFor(frameUrl).pauseAutomation();
         userPausedRef.current = true;
         // (D5) The player paused the video while the sim holds the screen — stop the
         // active + standby HLS loaders. NO simPause here: the sim stays visible and
@@ -1676,7 +1932,7 @@ export function useProjectPlayer(
   // Keep the guidance overlay's config-poll gate in sync with overlay visibility.
   useEffect(() => {
     showSimOverlayRef.current = state.showSimOverlay;
-    sendToSim({ type: 'guidanceGate', active: state.showSimOverlay });
+    if (activeSimUrlRef.current) runtimeFor(activeSimUrlRef.current).setGuidance(state.showSimOverlay);
     // When a simulation comes up, drop the controls bar so it never covers the sim.
     // It stays revealable on hover and auto-hides again via scheduleHide.
     if (state.showSimOverlay) hideControls();
@@ -1688,32 +1944,201 @@ export function useProjectPlayer(
   // loads. A load resets that frame's lifecycle flags (a fresh document has painted nothing);
   // if it's the ACTIVE frame, the desired script re-arms so the new document gets startScript.
   const registerSimFrame = useCallback((url: string, el: HTMLIFrameElement | null) => {
-    if (el) simPoolFramesRef.current.set(url, el);
-    else simPoolFramesRef.current.delete(url);
+    if (el) {
+      simPoolFramesRef.current.set(url, el);
+      // Bind the document to its client. The client's message listener only exists while a frame
+      // is attached, and every event it handles is scoped to THIS frame's contentWindow — which
+      // is what makes a pool of documents safe without any reverse source lookup.
+      const spec = simPoolSpecsRef.current.find((s) => s.key === url);
+      const rt = runtimeFor(url);
+      rt.attach(el, spec?.src ?? url);
+      // Binding a document resets the client, cancelling any recovery armed for it. A frame added
+      // on demand at a section boundary is polled BEFORE React mounts its element, so without
+      // re-arming here that poll is silently thrown away and a cold entry waits on nothing.
+      if (url === activeSimUrlRef.current && !rt.getState().painted) startSimPoll(url);
+    } else {
+      simPoolFramesRef.current.delete(url);
+      simRuntimesRef.current.get(url)?.attach(null, null);
+    }
+    // Deliberately dependency-free: SimPoolOverlay relies on this callback ref being STABLE. An
+    // identity change detaches and re-registers every frame on each render, and a handshake
+    // landing in that window is dropped (the measured cause of painted frames still hitting the
+    // bounded hold). Everything it touches is a ref.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleSimFrameLoad = useCallback((key: string) => {
     const meta = poolMeta(key);
-    simTelemetry('frame-load', { key, expected: meta.expectReload, hadHandshake: meta.ready || meta.painted });
+    const st = runtimeState(key);
+    const hadHandshake = st.ready || st.painted;
+    simTelemetry('frame-load-routed', { key, expected: meta.expectReload, hadHandshake });
     // The native `load` event fires after ALL subresources — routinely AFTER the bridge's
     // SIM_READY/SIM_PAINTED handshake on the same document. Resetting flags on such a late
     // load would restart a live, visible sim (poll → fresh SIM_READY → spurious startScript).
     // Flags reset ONLY when this load is a DELIBERATE navigation (navigateFrame/back-to-video
     // marked expectReload) or the frame's very first document (no handshake recorded yet).
-    if (!meta.expectReload && (meta.ready || meta.painted)) return;
+    if (!meta.expectReload && hadHandshake) return;
     meta.expectReload = false;
-    meta.ready = false;
-    meta.painted = false;
-    meta.dynamic = null;
+    // A freshly loaded document has drawn nothing, applied nothing and torn nothing down.
+    runtimeFor(key).handleFrameLoad();
     clearWarmCeil(meta);
     warmQueueRef.current = warmQueueRef.current.filter((k) => k !== key);
     finishWarm(key);   // a reloading frame gives up its warm slot
     if (key === activeSimUrlRef.current) {
       if (desiredSimRef.current) pendingSimRef.current = { ...desiredSimRef.current };
-      startSimPoll();
+      startSimPoll(key);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [startSimPoll]);
+  }, []);
+
+  // ── Lifecycle reactions, driven by what the runtime CONCLUDED ──────────────
+  // Each client interprets its own document's wire protocol — the handshake, the paint ack, and
+  // the activation token / ack matching that decides whether a switch may be presented — and
+  // reports the conclusion here. This surface adds only what the runtime deliberately has no
+  // notion of: which document is ACTIVE, the warm queue, and how the overlay is composited.
+  // The telemetry `detail` bag is deliberately NOT read here: every fact this surface reacts to is
+  // read back from the runtime's own state, so a classification can never exist in two copies.
+  runtimeEventRef.current = (key, event) => {
+    const meta = poolMeta(key);
+    const isActive = key === activeSimUrlRef.current;
+    // Whether the active document is on the activation-scoped path is re-read from the runtime on
+    // every one of its events rather than tracked per event type: the handshake, a navigation, a
+    // transport falling back to legacy and a disposal all change the answer, and enumerating them
+    // here would be a second copy of the runtime's own condition — free to drift, and silently.
+    if (isActive) syncSimPresentation();
+    switch (event) {
+      // ── the bridge answered: it is alive, and it said whether it can switch in place ──
+      case 'sim-ready': {
+        // A dynamic bridge implies the rebuilt package (v4 gate) — paint acks WILL come. The
+        // dispatch capability itself is the RUNTIME's classification: read its state rather than
+        // re-classifying from the telemetry payload, so the fact is decided in exactly one place
+        // (the same state the navigate/activate decisions below read).
+        meta.canEmitPaint = learnCanEmitPaint(meta.canEmitPaint, { dynamic: runtimeState(key).dynamic });
+        if (isActive) {
+          // Self-heal: even if the pending start was consumed, an active section must never
+          // stay scriptless — fall back to the desired state. (sim-reliability fix)
+          const pending = pendingSimRef.current ??
+            (activeSimRef.current && desiredSimRef.current ? { ...desiredSimRef.current } : null);
+          pendingSimRef.current = null;
+          if (pending && (!userPausedRef.current || resumeActionRef.current === 'backToVideo')) {
+            const isDynamic = runtimeState(key).dynamic === true;
+            // LEGACY frame parked on the wrong section: its SCRIPTS.main is the URL's own
+            // ?section default, so postMessage can't run the desired section — navigate.
+            const spec = simPoolSpecsRef.current.find((s) => s.key === key);
+            if (!isDynamic && spec && spec.src !== pending.sectionUrl) {
+              pendingSimRef.current = pending;   // re-arm for the post-navigation document
+              // Re-cloak for the TARGET section (params carry its Minimal-UI selection).
+              navigateFrame(key, pending.sectionUrl,
+                pending.params.simpleUi && pending.params.hideSelectors?.length ? pending.params.hideSelectors : null);
+              return;
+            }
+            // Drive the frame to paint. Reveal stays gated on the paint / the bounded ceiling.
+            runtimeFor(key).activate({
+              script: isDynamic ? pending.dynScript : pending.legacyScript,
+              params: pending.params,
+            });
+          }
+        } else {
+          // A background pool frame finished loading. Mute it and gate guidance off; on capable
+          // devices let it warm (run unpaused → paint) — but SERIALIZED, one frame at a time,
+          // so several hidden WebGL scenes never fight the video decode concurrently. Low-end
+          // parks it cold immediately.
+          runtimeFor(key).mute();
+          runtimeFor(key).setGuidance(false);
+          if (canWarmUnpaused()) {
+            if (warmingSimUrlRef.current && warmingSimUrlRef.current !== key) {
+              runtimeFor(key).freeze();
+              if (!warmQueueRef.current.includes(key)) warmQueueRef.current.push(key);
+            } else {
+              beginWarm(key);
+            }
+          } else {
+            runtimeFor(key).freeze();
+          }
+        }
+        return;
+      }
+      // ── a real frame drew (the rAF gate's honest "safe to show") ──
+      case 'sim-painted': {
+        // PROOF (not an implication): the rAF gate ran on this document, so this package can ack.
+        meta.canEmitPaint = learnCanEmitPaint(meta.canEmitPaint, { painted: true });
+        clearWarmCeil(meta);
+        if (!isActive || !activeSimRef.current) {
+          runtimeFor(key).freeze();   // painted + frozen — instant reveal later
+        } else if (awaitingPaintSimIdRef.current === activeSimRef.current.id) {
+          if (simPaintDeadlineRef.current) { clearTimeout(simPaintDeadlineRef.current); simPaintDeadlineRef.current = null; }
+          merge({ simColdCover: false });
+        }
+        finishWarm(key);   // this frame's warm turn is over — advance the queue
+        return;
+      }
+      // ── the runtime decided this document MAY be presented ──
+      // It is the single authority on WHETHER (paint arrived, the matching ack released the hold,
+      // or the terminal bound expired); this surface still decides HOW and WHEN to composite.
+      case 'reveal':
+        if (isActive) {
+          merge({ simBootStalled: false });
+          // On the modern path this event IS the reveal decision, and it is the only writer of
+          // simPresented:true. `modern-section-presented` fires earlier, before the gate has run,
+          // and the gate can still refuse — compositing on that breadcrumb showed frames the gate
+          // had rejected.
+          mergePresentation({ simPresented: true, simFailure: false });
+          revealSim();
+        }
+        return;
+      case 'reveal-forced':
+        if (isActive) { merge({ simBootStalled: false }); revealSim({ force: true }); }
+        return;
+      // ── the section could not be applied ──
+      // SCRIPT_MISSING: the bridge ran NOTHING, so the document still shows the PREVIOUS section's
+      // frozen frame — revealing it would present exactly the wrong-section frame the gate exists
+      // to prevent. SCRIPT_ERROR: a body that threw mid-apply leaves partial state. The runtime
+      // hides and silences the document either way; here the video simply plays on through the
+      // section, with no spinner parked (a failure the viewer cannot act on).
+      case 'script-missing':
+      case 'script-error':
+        if (isActive) merge({ simBootStalled: false, simColdCover: false });
+        return;
+      // ── activation-scoped (v3) presentation ───────────────────────────────────────────────
+      // THE gate the layered surface opens on. `presented` is set from this event and from nothing
+      // else — not from a paint, not from a load, not from a timer. Each of those has in turn been
+      // the thing that authorised a reveal here, and each in turn authorised a wrong one.
+      case 'modern-section-presented':
+        // The ACKNOWLEDGEMENT arrived — that is NOT permission to composite. The client emits this
+        // breadcrumb before `reveal()` runs, and `reveal()` can still refuse (context lost, package
+        // revision or document mismatch). Setting `simPresented` here made `poolVisible` true while
+        // the runtime's own `state.visible` stayed false, so the viewer composited a frame the gate
+        // had just rejected — a dead-context iframe stayed at full opacity for the rest of the
+        // section, with nothing to clear it. Presentation permission has exactly one owner, and it
+        // is the client's reveal decision below.
+        if (isActive) mergePresentation({ simFailure: false });
+        return;
+      case 'modern-reveal-refused':
+        // The gate refused — withdraw any permission a previous decision granted.
+        if (isActive) mergePresentation({ simPresented: false });
+        return;
+      // A new activation on the same document: whatever was presented belongs to the section being
+      // left. (The section change resets this too — this covers a re-activation of the SAME
+      // section, e.g. a retry or a seek back into it, which no section change accompanies.)
+      case 'modern-prepare':
+        if (isActive) mergePresentation({ simPresented: false });
+        return;
+      case 'modern-failure':
+        if (isActive) mergePresentation({ simPresented: false, simFailure: true });
+        return;
+      case 'modern-retry':
+        if (isActive) mergePresentation({ simPresented: false, simFailure: false });
+        return;
+      // The presented frame's rendering context is gone, so its pixels are no longer what was
+      // vouched for. The runtime has already hidden it; dropping `presented` is what brings the
+      // cover back over it instead of leaving a half-composited scene on screen.
+      case 'modern-context-lost':
+        if (isActive) mergePresentation({ simPresented: false });
+        return;
+      default:
+        return;
+    }
+  };
 
   // ── setup effect ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -1763,21 +2188,38 @@ export function useProjectPlayer(
     // videos opened the gate at init.
     const armPool = () => { merge({ simPoolArm: true }); simTelemetry('pool-armed', {}); };
     vA.addEventListener('playing', armPool, { once: true });
-    const armPoolTimer = setTimeout(armPool, 12_000);
+    // Stall fallback — armed only after an actual PLAY ATTEMPT stalls. The old unconditional
+    // 12s timer booted WebGL documents on pages the user never pressed play on (audited).
+    let armPoolTimer: ReturnType<typeof setTimeout> | null = null;
+    const armPoolOnAttempt = () => { if (!armPoolTimer) armPoolTimer = setTimeout(armPool, 12_000); };
+    vA.addEventListener('play', armPoolOnAttempt, { once: true });
 
     const poolMetaAtMount = simPoolMetaRef.current;   // stable Map instance for the cleanup
+    const reloadsAtMount = simPristineReloadRef.current;
+    const runtimesAtMount = simRuntimesRef.current;
     return () => {
       hlsRef.current?.destroy();
       hlsStandbyRef.current?.destroy();
       hlsBrollRef.current?.destroy();
       hlsBrollStandbyRef.current?.destroy();
       clearTimeout(idleTimerRef.current ?? undefined);
-      if (simPollRef.current) clearInterval(simPollRef.current);
       clearRevealTimers();
       vA.removeEventListener('playing', armPool);
-      clearTimeout(armPoolTimer);
+      vA.removeEventListener('play', armPoolOnAttempt);
+      if (armPoolTimer) clearTimeout(armPoolTimer);
+      // Pristine reloads must not fire into an unmounted tree.
+      for (const t of reloadsAtMount.values()) clearTimeout(t);
+      reloadsAtMount.clear();
+      // Disposing each client removes its window listener and makes every timer it owns
+      // (deferred stop, apply stall, paint poll, legacy ceiling) inert — irreversibly.
+      unmountedRef.current = true;
+      for (const rt of runtimesAtMount.values()) rt.dispose();
+      runtimesAtMount.clear();
       // Per-frame warm budgets must not fire into an unmounted tree.
       for (const m of poolMetaAtMount.values()) clearWarmCeil(m);
+      // The branching choice countdown ticks every 250ms and, at zero, follows an edge into
+      // detached video elements — it must never outlive the tree (review F2).
+      if (choiceTimerRef.current) { clearInterval(choiceTimerRef.current); choiceTimerRef.current = null; }
       // Stop any cutaway / guided-narration audio so it doesn't keep playing after
       // the player unmounts (e.g. navigating away mid-cutaway or mid-guidance).
       if (audioCutawayRef.current) { audioCutawayRef.current.pause(); audioCutawayRef.current = null; }
@@ -2075,8 +2517,11 @@ export function useProjectPlayer(
       const targetSeg = tl[targetIdx];
       const localTime = targetSeg ? Math.max(0, targetGlobal - targetSeg.offset) : 0;
 
-      sendToSim({ type: 'stopScript' });
-      sendToSim({ type: 'simPause' });
+      // ATOMIC EXIT (same ordering as deactivateSim — audited fade-out flash): freeze + mute
+      // NOW so the fade shows the last valid frame silently; run the state-restoring work
+      // (stopScript / legacy document reload) only after the fade has finished. A mid-fade
+      // stopScript re-showed hidden controls; a mid-fade src reload blanked the frame.
+      //
       // "Back to video" is an explicit "I'm done with this sim" — the next entry must start
       // pristine (user's in-sim changes discarded, by design). For a v2 DYNAMIC bridge,
       // stopScript already runs the section's full cleanup and the next activation's
@@ -2085,17 +2530,35 @@ export function useProjectPlayer(
       // LEGACY (pre-v2) bridge falls back to a document reload for pristine state.
       const doneKey = activeSimUrlRef.current;
       const doneFrame = doneKey ? simPoolFramesRef.current.get(doneKey) : null;
-      if (doneKey && doneFrame) {
+      const doneRt = doneKey ? runtimeFor(doneKey) : null;
+      if (doneKey && doneRt) {
         const m = poolMeta(doneKey);
-        if (m.dynamic !== true) {
-          m.ready = false; m.painted = false; m.expectReload = true; m.dynamic = null;
-          clearWarmCeil(m);
-          simTelemetry('reset-reload-legacy', { key: doneKey });
-          // Re-assigning src reloads the (cross-origin) document — location.reload() throws.
-          const src = doneFrame.src;
-          try { doneFrame.src = src; } catch { /* frame detached */ }
+        if (!doneFrame || doneRt.getState().dynamic !== true) {
+          // Freeze + silence + close the guidance gate now, but NOT the deferred stopScript:
+          // this exit is a NAVIGATION, and the reload is what restores pristine state.
+          doneRt.deactivate({ teardown: false });
+          cancelPristineReload(doneKey);
+          if (doneFrame) {
+            simTelemetry('reset-reload-legacy', { key: doneKey });
+            // Registered in the pristine-reload map rather than run as a bare timer: that map is
+            // what the window planner's mid-fade guard reads to keep a fading frame resident, and
+            // what the unmount cleanup cancels. A bare timer here was invisible to both — the
+            // planner could evict the frame mid-fade (hard cut instead of a fade) and the timer
+            // then fired against a detached iframe and an orphaned meta object (audited).
+            simPristineReloadRef.current.set(doneKey, setTimeout(() => {
+              simPristineReloadRef.current.delete(doneKey);
+              if (doneKey === activeSimUrlRef.current) return;   // re-entered during the fade
+              m.expectReload = true;
+              doneRt.handleFrameLoad();   // the document about to load has nothing applied
+              clearWarmCeil(m);
+              // Re-assigning src reloads the (cross-origin) document — location.reload() throws.
+              const src = doneFrame.src;
+              try { doneFrame.src = src; } catch { /* frame detached */ }
+            }, SIM_EXIT_STOP_MS));
+          }
         } else {
           simTelemetry('reset-stopscript', { key: doneKey });
+          doneRt.deactivate();
         }
       }
       warmGenRef.current++;
@@ -2135,22 +2598,27 @@ export function useProjectPlayer(
     if (activeSimRef.current) {
       const sec = activeSimRef.current;
       const key = activeSimUrlRef.current;
-      const dynamic = key ? poolMeta(key).dynamic === true : false;
-      sendToSim({ type: 'stopScript' });
-      sendToSim({
-        type: 'startScript',
-        // Dynamic bridges must be re-pointed at the ACTIVE section's body — 'main' would
-        // restart the frame URL's ?section default, which may be a different section.
-        // dynamicScriptFor keys off the section URL's ?section= param (sim_script is the
-        // literal 'main' on every generated row, so it must never win here).
-        script: dynamic ? dynamicScriptFor(sec) : (sec.sim_script ?? 'main'),
-        params: {
-          simpleUi:   sec.simple_ui   ?? false,
-          autoScript: sec.auto_script ?? true,
-          ...(sec.ui_hide?.length ? { hideSelectors: sec.ui_hide } : {}),
-        } satisfies SimStartScriptParams,
-      });
-      sendToSim({ type: 'clearBootHide' });
+      const dynamic = key ? runtimeState(key).dynamic === true : false;
+      // Dynamic bridges must be re-pointed at the ACTIVE section's body — 'main' would
+      // restart the frame URL's ?section default, which may be a different section.
+      // dynamicScriptFor keys off the section URL's ?section= param (sim_script is the
+      // literal 'main' on every generated row, so it must never win here).
+      const script = dynamic ? dynamicScriptFor(sec) : (sec.sim_script ?? 'main');
+      if (key) {
+        const rt = runtimeFor(key);
+        // stopScript FIRST, immediately (not deferred): the overlay is STAYING on screen, so
+        // there is no fade to protect, and it is what clears the bridge's _lastSig so the
+        // identical startScript below is not deduped.
+        rt.stopNow();
+        rt.activate({
+          script,
+          params: {
+            simpleUi:   sec.simple_ui   ?? false,
+            autoScript: sec.auto_script ?? true,
+            ...(sec.ui_hide?.length ? { hideSelectors: sec.ui_hide } : {}),
+          } satisfies SimStartScriptParams,
+        });
+      }
     }
     safePlay(videoRef.current!);
   // eslint-disable-next-line react-hooks/exhaustive-deps

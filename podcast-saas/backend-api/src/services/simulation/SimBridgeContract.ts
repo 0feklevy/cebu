@@ -110,6 +110,8 @@ const BRIDGE_BUILTINS = new Set([
   'removeEventListener', 'getComputedStyle', 'SimAPI', '_simReadyFired', 'innerWidth',
   'innerHeight', 'devicePixelRatio', 'dispatchEvent', 'Event', 'CustomEvent', 'performance',
   'console', 'Math', 'JSON', 'Object', 'Array', 'String', 'Number', 'Boolean', 'Date',
+  // Automation-handle registration the bridge injects — a host builtin, never a sim API symbol.
+  'simDemoTimer',
 ]);
 
 /**

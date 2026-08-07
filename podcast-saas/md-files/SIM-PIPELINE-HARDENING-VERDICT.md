@@ -1,0 +1,256 @@
+# Sim Pipeline Hardening — Status, Evidence, and Known Limitations
+
+**Branch:** `feat/sim-pipeline-hardening` → `main` (base `ce5b9c0`).
+**Input:** `md-files/FLOWVID-SIMULATION-PIPELINE-OPTIMIZATION-BRIEF.md` (external audit).
+**Process:** the brief's claims were re-verified against the code by three adversarial passes; the
+resulting branch was then put through a second, independent five-agent release-blocker audit whose
+findings are folded in below. Several defects listed here were introduced *by this branch* and
+caught by that second audit.
+
+> **This PR does NOT implement the optimization brief.** It implements the brief's *causal* fixes
+> inside the current architecture. The brief's platform program (posters, immutable revisions,
+> MessageChannel protocol, shared runtime, managed lifecycle, predictive scheduler) is deferred —
+> see §4. Read §5 before making any claim about this system's behaviour.
+
+---
+
+## 1. SHIPPED — fixes that take effect the moment this merges
+
+These are player-side or serve-time and work against **stored, un-rebuilt** packages.
+
+| Fix | What it changes |
+|---|---|
+| **Atomic exit** | `deactivateSim` / back-to-video now freeze + mute + close the guidance gate (to the still-known key — the old gate-off fired after the key was nulled and went nowhere), fade, and post `stopScript` only **after** the fade (`SIM_EXIT_STOP_MS=280` > 200 ms CSS). Kills the deterministic Minimal-UI Full-UI flash. |
+| **Window-tier planner** | `flattenSimOccurrences` + `planWindowResidency`: whole-timeline absolute-time lookahead (was: current segment + 1), next **distinct** package, authoritative plan (an empty plan now evicts — the old `want.size > 0` guard retained frames through every gap). Frames still inside their exit fade are protected from eviction. |
+| **Sim-first seed** | A timeline that *opens* on a simulation still pre-mounts its package on weak devices (the initial cap-0 change had removed this while still arming the pool). |
+| **Play-gated arming** | The 12 s pool-arm fallback starts only after a real `play` attempt — an idle page no longer boots WebGL documents. |
+| **DPR snapshot** | `devicePixelRatio` is captured once per page, so zoom/monitor changes no longer rewrite the iframe `src` and silently reload resident sims (whose `load` event was then misread, leaving stale `ready`/`painted` flags). |
+| **Legacy nav cloak** | `navigateFrame` re-cloaks with the **target** section's `bootHide` (was: the package's first-using section, or none). |
+| **A11y** | Hidden pool frames get `inert` + `aria-hidden` + `tabIndex=-1`. |
+| **Transition cost** | The full-frame `backdrop-filter: blur(2px)` composited during the reveal is removed. |
+| **Editor timeline player** (`VideoPlayer.tsx`) | Paint-gated reveal (`SIM_PAINTED` + `PING_SIM_PAINTED`, replacing the 50 ms guess as the primary signal) and the same deferred-`stopScript` atomic exit. |
+| **Avatar sim overlay** (shipping viewer surface) | Now routes through `resolveSimUrl`, so a stored `sim_entry_url` minted under another origin is rebased instead of being blocked by `frame-src` CSP. |
+| **Serving** | Local path injects the boot snippet (dev first-paint now matches prod); marker detection is exact-tag, not substring; text is `no-cache` + strong ETag; binary redirects are `302` + `max-age=3600` **and the uploaded object's own `Cache-Control` is bounded** (the redirect alone did not bound staleness — the object metadata is what a browser keeps). |
+| **`#simboot`** | Appends after an author fragment instead of overwriting it. |
+
+## 2b. Second adversarial review — one RELEASE BLOCKER found and fixed (commit 5e43900)
+
+A focused adversarial review of the full diff caught a blocker **the branch itself introduced**:
+the apply-ack gate (§3, the headline safety mechanism) was **dead code**. The activation path set
+`meta.lastScript = script` one line *before* calling `applyGateFor(meta, script)`, so
+`lastScript === nextScript` always held and the gate always returned `reveal-now` — every
+proven-modern same-document switch revealed immediately and could present the previous section's
+frozen frame. The pure unit test passed (it passed the *old* `lastScript`); the e2e harness replays
+messages and never runs the hook — the bug lived in the gap. **Fixed:** compute the decision before
+writing `lastScript`. Guarded by a new **source-invariant test** asserting the real hook orders the
+call correctly, plus a terminal-reveal assertion.
+
+The fix exposed a latent **HIGH** (the `await-ack` path had no terminal reveal — a post-roll sim
+whose bridge never acks would hold a paused frame forever); the wait timer now force-reveals
+best-effort at its bound. Two **MEDIUM** editor issues were also fixed: `VideoPlayer`'s
+`simPaintedRef` was never latched true (poll never early-exited; fast-reveal path dead), and a
+deferred `stopScript` could fire into a newly-navigated document (now cancelled on any new
+activation). Everything else the review checked (window planner, bridge timer-scope + `_sysRaf`
+hoisting, `simUrl` fragment append, unmount leak paths) it found **clean**.
+
+## 2c. Third review — 17 confirmed defects, all fixed (commit f43b264)
+
+A six-dimension adversarial review (54 agents; every finding independently verified by two
+refuters with different lenses; 24 raw → 17 confirmed, 6 split, 1 refuted) found that the
+headline gate was **still** defeated on a path the previous rounds never traced.
+
+**The apply gate was inert after any exit (HIGH).** `scheduleDeferredStop` recorded the teardown
+by nulling `lastScript` — but `applyGateFor` reads `null` as a genuine *first activation* and
+deliberately reveals immediately. Since a deferred stop runs on **every** normal sim exit, every
+exit→re-entry gap longer than the 280 ms fade (the common case — packages host many sections)
+skipped the `SCRIPT_APPLIED` wait entirely, presenting the previous section's frozen frame with
+its full UI restored. Keeping the old value would at least have gated cross-section entries; the
+null removed even that. A torn-down document is now tracked as **`stopped`** — distinct from
+"nothing applied yet" — and every activation path clears it. Legacy documents still never wait.
+
+**`pauseScript` could freeze the simulation (MEDIUM).** The body-call timer capture cannot tell
+the section's demo timer from an engine timer scheduled by a synchronous SIM call, and delay
+proves nothing: the generation prompt specifies **30–150 ms** demo intervals, i.e. exactly
+engine-loop rates. Attribution is now **explicit** — bodies register automation via
+`simDemoTimer()`, and only registered handles are cleared on pause. An unregistered timer is left
+alone: a no-op, never a frozen scene. Teardown still clears everything. **Consequence to be
+honest about:** existing stored bodies register nothing, and the rebuild preserves bodies
+byte-for-byte, so `pauseScript` stays a no-op for existing content until sections are
+**regenerated** — strictly safer than the alternative, but root cause #6 delivers nothing for
+existing content on day 1.
+
+Also fixed: editor sims returned **permanently muted** (the gate latches mute; the only unmute
+sat on a path unreachable after an exit); the rebuild tool **could not repair the half-applied
+state it created** (compared only `bridge.js`, so a failed entry upload reported `UNCHANGED`
+forever) and now also re-reads before writing (the live path holds a lock a separate process
+cannot join) and exits non-zero on failure; dropping the `#simboot` fragment **full-navigated**
+and hard-reloaded live sims; the sim-first seed read `config.segments` instead of the entry
+sequence that plays; the legacy back-to-video reload used a bare timer invisible to the planner's
+mid-fade guard; `SectionEditor` answered the **timeline player's** `SIM_READY` as its own; the
+boot-snippet `<head>` probe matched `<header>` lookalikes *inside script string literals*; and
+the backup tool swallowed read errors as skips, exited 0, and would overwrite the only copy of
+the pre-rebuild bytes.
+
+**Test honesty.** The e2e spec cited a `transitionOrder.test.ts` that **never existed**, so the
+flagship atomic-exit fix had no test anywhere that failed if it regressed — while the suite's
+control test made it look regression-proof. That file now exists and pins the player-side
+orderings; the scope note is corrected; and the fixture regenerates when the generator or the
+service feeding it changes, instead of silently certifying a stale bridge.
+
+## 2a. Release-completion round (multi-engine, rebuilt packages, remaining surfaces)
+
+A second execution pass added:
+
+- **Multi-engine browser tests.** The full transition suite (§2) now runs on **Chromium + Firefox + WebKit** via `client-web/playwright.sim.config.ts` — **36/36 passing** (12 × 3 engines). WebKit is the closest proxy available here to Safari/iPhone; **physical iOS/Android devices were NOT tested** (no device access — see §5.10).
+- **Rebuilt real packages validated in a real browser.** A dress-rehearsal applies the exact rebuild transform to the live `boids-3d` and `murmuration-knob` bridges and serves the rebuilt bridge+entry locally while proxying every other asset (three.js, `src/*.js`, CSS, textures) to the live backend, so the real WebGL scenes load exactly as production against the **rebuilt** bridge. Result: `SIM_READY` advertises every section, `SIM_PAINTED` fires (the real scene renders), **every real section dispatches to its own body** (boids 5/5, murmuration 2/2), an unknown id → `SCRIPT_MISSING` with no wrong-section fallback, and **A→B→A ×5** is clean with zero console/page errors. Combined with the byte-preservation proof (§6), the rebuild is validated end-to-end **without writing to production storage**.
+- **Editor + avatar surfaces completed.** `VideoPlayer.tsx` (editor timeline) now prefers `SIM_PAINTED` over the 50 ms guess, hides the outgoing section during a sim→sim switch, and mutes on exit. `SectionEditor.tsx`'s preview gains the first-paint Minimal-UI cloak. The avatar `ExtendedLibraryModal` (and the avatar overlay from the prior round) route stored sim URLs through `resolveSimUrl`. The admin-web avatar gallery thumbnail is left as-is (internal read-only preview, no `simUrl` helper in that workspace) — noted, not a viewer surface.
+- **Malformed URLs — none safely repairable.** The audit's "two malformed rows" resolve, on direct inspection, to **9** sim sections with no `?section=`, of which **6 are orphaned legacy `section_*.html` sims** (a pre-combined-bridge architecture; their files 404 and their packages have no `bridge.js`) and **2 are ungenerated placeholder sections** (`a7765242` on boids, `5c96b6b3` on pluck-boids) whose **own row ids have no body in the package bridge** and which carry **no inherited `?section=`** (so they are not Copy-duplicates). There is therefore **no provably-correct `?section=`** to write for any of them; per "modify only proven-malformed rows / do not guess", **none were edited**. They need author regeneration or deletion, not a URL patch.
+
+## 2. VERIFIED IN A REAL BROWSER
+
+`client-web/e2e/sim-transitions.spec.ts` — **12/12 passing, Chromium.** Drives a REAL iframe running
+the REAL generated artifacts (actual rAF gate, actual serve-time boot snippet, actual combined
+bridge, produced by `backend-api/src/scripts/gen-sim-fixture.ts` from the production code paths) and
+records **every animation frame**: the live animated overlay opacity, the sim's own `.controls`
+display, and which section is applied.
+
+Proven by rendered frames, not by message assertions:
+
+1. cold Minimal-UI entry never paints Full UI (boot cloak + gate + snippet);
+2. A → B in one package: no visible frame shows A after B is applied;
+3. A → B → A repeatedly ends on the requested section;
+4. **Minimal-UI exit: zero Full-UI frames while the overlay is fading** — with a **control test
+   (4b) proving the OLD ordering *does* flash**, so test 4 genuinely discriminates;
+5. a missing section id runs **nothing**, reports `SCRIPT_MISSING`, and never falls back to another
+   body;
+6. a throwing cleanup is reported and does **not** wedge later switches;
+7. `startScript('constructor')` dispatches nothing and cannot brick the document;
+8. a legacy bridge never emits `SCRIPT_APPLIED` — and *does* silently fall back on a missing section
+   (the documented legacy behaviour the player must defend against);
+9. a slow body (>200 ms) still applies and acks late;
+10. **user interaction stops the auto-demo** while the section, its Minimal-UI policy and its
+    visibility all survive;
+11. a sim that **never calls rAF** emits no false paint — and must remain displayable (see §3).
+
+**Not covered by browser tests:** Firefox/WebKit (only Chromium is installed here), the React viewer
+end-to-end, real devices. The harness replays the player's message ordering; that the player *emits*
+that ordering is pinned by the unit suites, not by this harness.
+
+## 3. COMPATIBILITY FALLBACKS — deliberate, bounded, and honest
+
+- **The apply gate never force-reveals a modern bridge.** `lib/simApplyGate.ts`: a same-document
+  switch waits for `SCRIPT_APPLIED` **only** when the document has already proven it acks
+  (`ackCapable === true` — a modern bridge acks on the package's *first* activation, before any
+  switch can occur). Legacy/unknown documents reveal immediately, exactly as before: they never wait
+  on silence, and there is **no timer that reveals an unacknowledged frame**. The earlier 200 ms
+  ceiling did both of those things and is gone.
+- **Every hold is terminal.** Making paint acks honest removed the only signal that sims which never
+  drive `requestAnimationFrame` ever produced. Such a package would otherwise hold forever behind a
+  spinner — a whole class made undisplayable. The 5 s stall bound is now **terminal**: it force-
+  reveals best-effort rather than never. A package that genuinely paints never reaches it.
+- **No permanent spinner.** `SCRIPT_MISSING` / `SCRIPT_ERROR` / a stalled apply degrade to *the video
+  continuing to play* with telemetry — they do not park a failure affordance the viewer cannot act
+  on, and they do not reveal the previous section's frozen frame.
+- **Activation tokens.** Every `startScript` carries a monotonic token echoed on each ack, so a
+  stale ack from a superseded activation (A→B→A faster than the child drains its queue) cannot
+  release a live pending apply.
+
+## 4. DEFERRED ROADMAP (explicitly not in this PR)
+
+Deterministic visual fixtures across Firefox/WebKit + filmstrip CI · shared `SimRuntimeClient` /
+`SimSurface` so viewer, editor timeline and Section Editor share one state machine · the full
+activation-scoped envelope protocol over `MessageChannel` (`documentId`, `PREPARE/PRESENT/ACTIVATE`)
+· section posters + publish-time browser canaries · the managed lifecycle contract
+(`pauseAuto`/`suspend`/`setQuality`/`setAudible`, system-owned resource scopes) · immutable package
+revisions + manifest-driven serving + real 304s · predictive scheduler budgets, `requestVideoFrameCallback`
+boundaries, production RUM · per-package `compileAsync`/disposal/adaptive DPR.
+
+## 5. KNOWN UNRESOLVED LIMITATIONS — read before claiming anything
+
+1. **Stored packages do not have the new bridge or gate.** Verified live: **0 of 6** production
+   simulations carry `SCRIPT_APPLIED`, the hardened dispatch, the guarded cleanup, or the honest
+   paint gate. Until a rebuild (§6), those four fixes are **inert for all existing content** — the
+   §1 fixes still apply. Two live rows (`49d20194`/`a7765242`, `a1ee064e`) have a `simulation_url`
+   with no `?section=` and therefore already render a **wrong sub-simulation**, silently; that is a
+   pre-existing data defect this PR does not repair.
+2. **`SCRIPT_APPLIED` means "the body ran and one frame followed"** — it is posted from a system-rAF
+   callback after `fn(params)` returns. It is *not* proof that the section's visible effect landed:
+   the mandated body shape polls for async-built controls on ~200 ms intervals, so a body can ack
+   before its hiding/mode change is visible. It is strictly better than `painted`, not a paint proof.
+3. **`pauseScript` only works on rebuilt packages.** The v2 template now tracks the section body's
+   own `setInterval`/`setTimeout` handles and clears them on `pauseScript` (browser-tested). On a
+   **stored** bridge it remains a complete no-op: the auto-demo keeps fighting the user until the
+   section ends. Timers created asynchronously *after* the body returns are not tracked.
+4. **`simPause` still does not suspend everything.** It freezes rAF only. `setInterval`/`setTimeout`
+   outside a tracked body, Web Workers and WebAudio keep running while hidden, and `simMute` silences
+   only `<video>`/`<audio>` elements — **not `AudioContext` output**.
+5. **Editor surfaces are not fully unified.** `VideoPlayer.tsx` got the paint gate and atomic exit,
+   but retains an 800 ms blind fallback for pre-v4 packages and still shows the previous section
+   across a sim→sim switch. `SectionEditor.tsx`'s preview is visible from mount and configures only
+   after `SIM_READY`. Both are internal authoring tools; unifying them is the shared-runtime work.
+6. **Binary assets already cached** by a viewer keep their year-long `immutable` entry; only objects
+   uploaded after this change are bounded. Retroactive correctness needs content-addressed revisions.
+7. **A hash router that matches the whole fragment** now sees `/scene/3&simboot=…` rather than
+   `/scene/3`. The author fragment is preserved as a prefix, which is strictly better than the
+   previous overwrite, but is not fully transparent.
+8. **The window-tier planner re-flattens the timeline on every `timeupdate`** (~4 Hz) on exactly the
+   constrained devices it targets. Correct, but not yet memoised.
+9. **The new local-disk HTML branch** in `sim-public.controller.ts` drops the ETag/Range handling
+   `serveLocalFile` provided and has no test coverage (the suite's mock storage cannot reach it).
+10. **No "no flash on every device" claim is supported.** One browser, no physical devices, no
+    Firefox/WebKit. What is proven is listed in §2 and nothing more.
+
+## 6. STORED-BRIDGE ROLLOUT
+
+**A rebuild is NOT required to merge** — every player-side change degrades gracefully against stored
+bridges — but **no value is realised for existing content without it** (§5.1).
+
+Verified read-only, in memory, against the live packages (`parseSectionEntries` → `wrapBridgeCombined`):
+**body-preserving and protocol-upgrading** — boids-3d 5/5 sections and murmuration-knob 2/2 with
+byte-identical bodies (whitespace-normalised), the new bridge parses, and each gains
+`SCRIPT_APPLIED` + the own-property guard + the guarded cleanup. `parseSectionEntries` was made
+idempotent so repeated rebuilds cannot accrete whitespace.
+
+Dry run (already executed, read-only):
+
+```
+=== Combined-bridge rebuild (DRY RUN) — 6 ready simulation(s) ===
+  SKIP     ising-kid-simu-complete / ising-kid-part2 / example — no bridge.js (404)
+  WOULD UPDATE boids-3d          — 5 section(s)
+  WOULD UPDATE murmuration-knob  — 2 section(s)
+  WOULD UPDATE pluck-boids       — 1 section(s)
+```
+
+**Turnkey procedure (owner-run, as part of the coordinated deploy — see §7):**
+
+```bash
+cd podcast-saas/backend-api
+# 1. BACK UP the stored bridge.js + entry HTML of every ready sim (NEW committed helper):
+npx tsx --env-file=../.env src/scripts/backup-sim-packages.ts backup ./sim-backup-$(date -u +%Y%m%dT%H%M%SZ)
+# 2. Dry run — re-confirm exactly which packages change:
+npx tsx --env-file=../.env src/scripts/rebuild-sim-bridges.ts
+# 3. Apply:
+npx tsx --env-file=../.env src/scripts/rebuild-sim-bridges.ts --apply
+```
+
+It rewrites **all** `status='ready'` simulations (there is no `--only` flag). Verified scope: only
+**3** packages actually have a combined bridge and will change — `boids-3d`, `murmuration-knob`,
+`pluck-boids`. The other three (`ising-kid-simu`, `ising-kid-part2`, `example`) have **no stored
+`bridge.js`** (their objects 404) and are SKIPPED. The `?v=` hash changes in the entry HTML's script
+tag; sections' stored `simulation_url` need no update (that `v=` is only an entry cache-buster, and
+the entry is served `no-cache`).
+
+**Rollback (proven):**
+
+```bash
+npx tsx --env-file=../.env src/scripts/backup-sim-packages.ts restore ./sim-backup-<the-date-you-used>
+```
+
+This re-uploads the exact pre-rebuild stored bytes. Code rollback alone does not revert storage.
+
+> **Coordination:** the new bridges are backward-compatible with the currently-deployed OLD player
+> (old player ignores the new `SCRIPT_APPLIED`/token; `boids`/`murm`/`pluck` all paint for real so
+> `SIM_PAINTED` still fires). The only behaviour change on the old player is that the two ungenerated
+> placeholder sections (§5.1) show the raw scene instead of a mis-pooled body — an improvement, not a
+> blank. Still, run the rebuild **with the new player deploy** (not days ahead) and keep the
+> `?simpool=single` / `admin_settings.sim_pool_mode='single'` kill switch ready.

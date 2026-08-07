@@ -333,13 +333,14 @@ ${configBlocks}
   document.addEventListener('change', _onEvt, true);
 
   // Configuration triggers — throttled rAF poll with stability debounce; gated off during auto-demos.
-  // Pause protocol: this rAF goes through the head sim-raf-gate wrapper (this file's script tag
-  // loads AFTER the gate, which is injected at the start of <head>), so a player-sent
-  // {type:'simPause'} freezes this poll loop too and {type:'simResume'} resumes it with native
-  // frame timestamps. No setInterval/setTimeout polling exists here, so no extra check is needed;
-  // pauseScript below keeps its own, unrelated meaning (auto-script gating).
+  // Pause protocol: this poll runs on the gate's SYSTEM rAF (__SIM_RAF_GATE__.sys) — pause-coupled
+  // exactly like the wrapped rAF (a player-sent {type:'simPause'} freezes it, {type:'simResume'}
+  // resumes it with native frame timestamps) but PAINT-NEUTRAL: a bookkeeping callback completing
+  // must never ack the sim's first paint (audited false-paint source). Falls back to the wrapped
+  // rAF on packages whose stored gate predates the sys handle.
+  var _guideRaf = (window.__SIM_RAF_GATE__ && window.__SIM_RAF_GATE__.sys) || function (cb) { return requestAnimationFrame(cb); };
   function _loop(ts){
-    requestAnimationFrame(_loop);
+    _guideRaf(_loop);
     if (ts - _lastPoll < 150) return; _lastPoll = ts;
     if (!_active()) return;
     for (var i = 0; i < __CONFIGS__.length; i++) {
@@ -351,7 +352,7 @@ ${configBlocks}
       else _streak[id] = 0;
     }
   }
-  requestAnimationFrame(_loop);
+  _guideRaf(_loop);
 
   window.addEventListener('message', function (e) {
     var d = e.data || {};
@@ -363,8 +364,8 @@ ${configBlocks}
   });
 
   function _ready(){ _post({ type: 'GUIDANCE_READY' }); }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { requestAnimationFrame(_ready); });
-  else requestAnimationFrame(_ready);
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { _guideRaf(_ready); });
+  else _guideRaf(_ready);
   setTimeout(_ready, 1500);
 })();
 `;

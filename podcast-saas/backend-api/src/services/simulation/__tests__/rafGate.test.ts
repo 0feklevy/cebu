@@ -188,8 +188,9 @@ describe('rAF gate snippet content', () => {
 
   it('replays queued callbacks via the NATIVE rAF (no fabricated timestamps)', () => {
     // v4 wraps the replayed callback in firstPaintWrap (first-frame ack) but still uses the
-    // NATIVE rAF underneath — no synthetic timestamps.
-    expect(out).toContain('nativeRaf(firstPaintWrap(pending[i].cb))');
+    // NATIVE rAF underneath — no synthetic timestamps. SYSTEM callbacks (bridge/guidance
+    // bookkeeping, `sys` flag) replay unwrapped: they must never ack the sim's first paint.
+    expect(out).toContain('nativeRaf(pending[i].sys ? pending[i].cb : firstPaintWrap(pending[i].cb))');
     expect(out).not.toContain('performance.now');
     expect(out).not.toContain('Date.now');
   });
@@ -215,7 +216,14 @@ describe('rAF gate snippet content', () => {
     // Both the live rAF path and the resume-flush path route through firstPaintWrap so a sim
     // first driven unpaused via simResume (not a hidden warm) still acks its first frame.
     expect(out).toContain('nativeRaf(firstPaintWrap(cb))');
-    expect(out).toContain('nativeRaf(firstPaintWrap(pending[i].cb))');
+    expect(out).toContain('nativeRaf(pending[i].sys ? pending[i].cb : firstPaintWrap(pending[i].cb))');
+    // The gate exposes paint-neutral scheduling for the injected system scripts: `raw`
+    // (unwrapped, pause-ignoring — the bridge's one-shot _fireReady) and `sys` (pause-coupled
+    // like the wrapped rAF but never acking paint — guidance's poll loop). Without these the
+    // bridge/guidance bookkeeping callbacks were themselves the first "paint" (audited).
+    expect(out).toContain('raw: nativeRaf || null');
+    expect(out).toContain('sys: sysRaf');
+    expect(out).toContain('function sysRaf(cb)');
   });
 
   it('v4: answers PING_SIM_PAINTED with a SIM_PAINTED re-post once painted (recoverable ack)', () => {
@@ -355,8 +363,13 @@ describe('guidance.js template', () => {
   ];
   const js = wrapGuidanceCombined(entries);
 
-  it('polls via requestAnimationFrame (frozen by the head gate on simPause)', () => {
-    expect(js).toContain('requestAnimationFrame(_loop)');
+  it('polls via the gate\'s SYSTEM rAF (frozen by simPause, but paint-neutral)', () => {
+    // __SIM_RAF_GATE__.sys queues while paused exactly like the wrapped rAF (simPause still
+    // freezes the poll) yet never acks SIM_PAINTED — a guidance bookkeeping frame must not
+    // report the sim as painted (audited false-paint source). Falls back to the wrapped rAF
+    // on packages whose stored gate predates the handle.
+    expect(js).toContain('_guideRaf(_loop)');
+    expect(js).toContain('window.__SIM_RAF_GATE__ && window.__SIM_RAF_GATE__.sys');
     // No interval-based polling that would bypass the rAF gate (the word appears in a
     // comment documenting exactly that, so assert on call sites).
     expect(js).not.toContain('setInterval(');

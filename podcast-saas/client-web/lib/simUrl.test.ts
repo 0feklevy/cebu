@@ -1,7 +1,7 @@
 // jsdom (vitest default env per vitest.config.ts) — SSR behavior is covered in
 // simUrl.ssr.test.ts under the node environment.
-import { afterEach, describe, expect, it } from 'vitest';
-import { resolveSimUrl } from './simUrl';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { resolveSimUrl, __resetDprSnapshotForTests } from './simUrl';
 import { SIM_DESTROY_GRACE_DESKTOP_MS, SIM_DESTROY_GRACE_LOW_MS, simDestroyGraceMs } from './simLifecycle';
 
 const touched: Array<{ target: object; key: string }> = [];
@@ -11,9 +11,16 @@ function stub(target: object, key: string, value: unknown) {
   touched.push({ target, key });
 }
 
+beforeEach(() => {
+  // dpr is SNAPSHOTTED once per page (a live value silently reloaded resident iframes on
+  // zoom/monitor changes — audited); tests reset the snapshot to observe their own stub.
+  __resetDprSnapshotForTests();
+});
+
 afterEach(() => {
   // Deleting the own property restores any prototype-provided value (jsdom defaults).
   for (const { target, key } of touched.splice(0)) Reflect.deleteProperty(target, key);
+  __resetDprSnapshotForTests();
 });
 
 function params(href: string): URLSearchParams {
@@ -61,8 +68,16 @@ describe('resolveSimUrl', () => {
     stub(window, 'devicePixelRatio', 3.75);
     expect(params(resolveSimUrl('https://x.test/a.html')).get('dpr')).toBe('3');
 
+    __resetDprSnapshotForTests();          // snapshot-per-page: a later live change is ignored
     stub(window, 'devicePixelRatio', 1.33333);
     expect(params(resolveSimUrl('https://x.test/a.html')).get('dpr')).toBe('1.33');
+  });
+
+  it('SNAPSHOTS dpr per page — a mid-session devicePixelRatio change never changes the src', () => {
+    stub(window, 'devicePixelRatio', 2);
+    const first = resolveSimUrl('https://x.test/a.html');
+    stub(window, 'devicePixelRatio', 3);   // zoom / monitor move
+    expect(resolveSimUrl('https://x.test/a.html')).toBe(first);   // no iframe reload
   });
 
   it('omits lowend and mem on a capable device', () => {
@@ -107,6 +122,36 @@ describe('resolveSimUrl', () => {
 
   it('returns the input unchanged when the URL cannot be parsed', () => {
     expect(resolveSimUrl('http://')).toBe('http://');
+  });
+
+  // The Minimal-UI cloak rides the FRAGMENT so a hide-list change never reloads a live iframe.
+  // That only holds while the fragment STAYS PRESENT: per the HTML navigation spec a src change
+  // is same-document only when the NEW fragment is non-null, so dropping it (Simple-UI toggled
+  // off, all controls re-checked, or the section going null during the destroy grace) is a FULL
+  // navigation that hard-reloads the sim (audited).
+  describe('boot fragment stability', () => {
+    const hash = (url: string, boot?: { hideSelectors?: string[] }) => new URL(resolveSimUrl(url, boot)).hash;
+
+    it('emits a simboot fragment even when nothing is hidden', () => {
+      expect(hash('https://x.test/a.html', { hideSelectors: [] })).toMatch(/^#simboot=/);
+    });
+
+    it('toggling the hide list on and off is always a fragment-only change', () => {
+      const on  = new URL(resolveSimUrl('https://x.test/a.html', { hideSelectors: ['#panel'] }));
+      const off = new URL(resolveSimUrl('https://x.test/a.html', { hideSelectors: [] }));
+      expect(off.hash, 'removing the fragment would full-navigate').not.toBe('');
+      expect(on.hash).not.toBe(off.hash);
+      // Everything BUT the fragment must be identical, or it is a real navigation.
+      expect(off.href.slice(0, off.href.indexOf('#'))).toBe(on.href.slice(0, on.href.indexOf('#')));
+    });
+
+    it('a boot-unaware caller still gets no fragment at all', () => {
+      expect(hash('https://x.test/a.html')).toBe('');
+    });
+
+    it('an author fragment is preserved alongside the cloak', () => {
+      expect(hash('https://x.test/a.html#/route/7', { hideSelectors: [] })).toMatch(/^#\/route\/7&simboot=/);
+    });
   });
 });
 

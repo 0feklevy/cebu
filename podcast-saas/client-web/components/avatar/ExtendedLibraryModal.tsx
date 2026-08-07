@@ -12,6 +12,16 @@ import { ChartRenderer } from './renderers/ChartRenderer';
 import { DiagramRenderer } from './renderers/DiagramRenderer';
 import './avatar.css';
 import { GuidedTour, type TourStep } from '../GuidedTour';
+import { SimSurface } from '../../lib/sim/SimSurface';
+
+/**
+ * Library previews are PASSIVE: they display a package, they never drive one. There is no
+ * useSimRuntime here, so nothing needs a handle on the element — but SimSurface's `frameRef` is
+ * required (it is the runtime's attach point on the surfaces that do have a lifecycle). A stable
+ * module-level no-op satisfies the contract without pretending a lifecycle exists, and being
+ * module-level it keeps SimSurface's memo() effective across re-renders.
+ */
+const NOOP_FRAME_REF = () => {};
 
 interface Props { open: boolean; onClose: () => void; projectId: string; characterId?: string; }
 
@@ -290,20 +300,43 @@ export function ExtendedLibraryModal({ open, onClose, projectId, characterId = '
   );
 }
 
-// Lazy iframe — mounts only when scrolled into view (keeps many sim previews cheap).
-function LazyIframe({ src, srcDoc }: { src?: string; srcDoc?: string }) {
+/**
+ * Lazy simulation preview — mounts only when scrolled into view (with dozens of cards this is a
+ * real performance property, not a nicety, so it survives the move onto SimSurface).
+ *
+ * The frame itself goes through SimSurface so this gallery cannot drift from the product's other
+ * simulation frames on the rules that actually bite: origin rebase (a raw stored URL is blocked by
+ * the frame-src CSP and renders blank), the #simboot boot-hide fragment, and — the one this
+ * surface used to get wrong — inert/aria-hidden/tabIndex on a frame that is not shown.
+ */
+function LazySimPreview({ src, srcDoc }: { src?: string; srcDoc?: string }) {
   const ref = useRef<HTMLDivElement>(null);
-  const [visible, setVisible] = useState(false);
+  const [mounted, setMounted] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   useEffect(() => {
     const el = ref.current; if (!el) return;
-    const obs = new IntersectionObserver(([e]) => setVisible(e.isIntersecting), { rootMargin: '120px' });
+    const obs = new IntersectionObserver(([e]) => setMounted(e.isIntersecting), { rootMargin: '120px' });
     obs.observe(el); return () => obs.disconnect();
   }, []);
+  // Scrolling out of view unmounts the frame entirely; a remount is a fresh document, so it has to
+  // re-earn its reveal or the next card would flash an unpainted white frame at full opacity.
+  useEffect(() => { if (!mounted) setLoaded(false); }, [mounted]);
   return (
     <div ref={ref} style={{ width: '100%', height: '100%' }}>
-      {visible && (
-        <iframe src={src} srcDoc={srcDoc} title="preview" sandbox={src ? 'allow-scripts allow-same-origin' : 'allow-scripts'}
-          style={{ width: '100%', height: '100%', border: 'none', pointerEvents: 'none', display: 'block', background: '#fff' }} />
+      {mounted && (
+        <SimSurface
+          src={src}
+          srcDoc={srcDoc}
+          visible={loaded}
+          onLoad={() => setLoaded(true)}
+          frameRef={NOOP_FRAME_REF}
+          title="preview"
+          interactive={false}
+          // srcDoc must NOT get allow-same-origin: a same-origin sandboxed document can strip its
+          // own sandbox attribute and reload itself out of the sandbox.
+          sandbox={src ? 'allow-scripts allow-same-origin' : 'allow-scripts'}
+          style={{ width: '100%', height: '100%', border: 'none', display: 'block', background: '#fff' }}
+        />
       )}
     </div>
   );
@@ -322,8 +355,10 @@ function MiniPreview({ item }: { item: LibraryItem }) {
     return <div className="avatar-gc__preview"><DiagramRenderer html={spec.html as string} iframeHeight={150} /></div>;
   }
   if (t === 'simulation') {
-    if (item.sim_entry_url) return <div className="avatar-gc__preview"><LazyIframe src={item.sim_entry_url} /></div>;
-    if (typeof spec?.html === 'string') return <div className="avatar-gc__preview"><LazyIframe srcDoc={spec.html as string} /></div>;
+    // The RAW stored URL is passed on purpose — SimSurface applies resolveSimUrl itself, and
+    // resolving twice here would just be a second chance to get it wrong.
+    if (item.sim_entry_url) return <div className="avatar-gc__preview"><LazySimPreview src={item.sim_entry_url} /></div>;
+    if (typeof spec?.html === 'string') return <div className="avatar-gc__preview"><LazySimPreview srcDoc={spec.html as string} /></div>;
     return <div className="avatar-gc__preview avatar-gc__preview--sim"><span>▶ Interactive</span></div>;
   }
   if (item.image_url) return <div className="avatar-gc__preview"><img src={item.image_url} alt={item.alt_text ?? ''} loading="lazy" /></div>;
@@ -333,13 +368,27 @@ function MiniPreview({ item }: { item: LibraryItem }) {
 function FullScreen({ item, onClose }: { item: LibraryItem; onClose: () => void }) {
   useEffect(() => { const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); }; document.addEventListener('keydown', h); return () => document.removeEventListener('keydown', h); }, [onClose]);
   const spec = item.visual_spec as Record<string, unknown> | null;
+  // Passive preview: `load` is the whole reveal gate. Until it fires the frame must stay out of
+  // the accessibility tree and out of the tab order — this dialog traps neither, so a hidden
+  // frame that was still focusable would swallow the user's next Tab.
+  const [simLoaded, setSimLoaded] = useState(false);
+  const simHtml = typeof spec?.html === 'string' ? spec.html : undefined;
   return (
     <div className="avatar-gfs" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <button className="avatar-gfs__close" onClick={onClose}><X size={18} /></button>
       {item.visual_type === 'image' && item.image_url && <img src={item.image_url} alt={item.alt_text ?? ''} className="avatar-gfs__img" />}
-      {item.visual_type === 'simulation' && (item.sim_entry_url
-        ? <iframe src={item.sim_entry_url} title="sim" sandbox="allow-scripts allow-same-origin" className="avatar-gfs__frame" />
-        : typeof spec?.html === 'string' ? <iframe srcDoc={spec.html as string} title="sim" sandbox="allow-scripts" className="avatar-gfs__frame" /> : null)}
+      {item.visual_type === 'simulation' && (
+        <SimSurface
+          src={item.sim_entry_url ?? undefined}
+          srcDoc={item.sim_entry_url ? undefined : simHtml}
+          visible={simLoaded}
+          onLoad={() => setSimLoaded(true)}
+          frameRef={NOOP_FRAME_REF}
+          title="sim"
+          sandbox={item.sim_entry_url ? 'allow-scripts allow-same-origin' : 'allow-scripts'}
+          className="avatar-gfs__frame"
+        />
+      )}
       {item.visual_type === 'equation' && !!spec?.latex && <div className="avatar-gfs__dark"><EquationRenderer latex={spec.latex as string} />{item.caption && <p className="avatar-gfs__cap">{item.caption}</p>}</div>}
       {item.visual_type === 'chart' && !!spec?.labels && <div className="avatar-gfs__dark avatar-gfs__chart"><ChartRenderer chartType={(spec.chartType as 'bar' | 'line' | 'pie') ?? 'bar'} title={(spec.title as string) ?? ''} labels={spec.labels as string[]} datasets={(spec.datasets as never[]) ?? []} height="100%" />{item.caption && <p className="avatar-gfs__cap">{item.caption}</p>}</div>}
       {item.visual_type === 'diagram' && !!spec?.html && <div className="avatar-gfs__dark"><DiagramRenderer html={spec.html as string} iframeHeight={520} />{item.caption && <p className="avatar-gfs__cap">{item.caption}</p>}</div>}
