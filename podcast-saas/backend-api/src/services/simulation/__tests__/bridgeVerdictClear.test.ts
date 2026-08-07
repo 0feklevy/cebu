@@ -12,6 +12,8 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { PGlite } from '@electric-sql/pglite';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 let pg: PGlite;
 
@@ -118,5 +120,52 @@ describe('a revisioned simulation keeps its projected verdict', () => {
     );
     expect(rows[0]!.package_class).toBeNull();
     expect(rows[0]!.bridge_hash).toBe('H2');
+  });
+});
+
+
+/**
+ * THE COPY ABOVE IS NOT THE PRODUCTION STATEMENT.
+ *
+ * Everything above drives `applyBridgeWrite`, a hand-written SQL transcription of the update in
+ * `SimulationService`. That proves the SEMANTICS are right; it cannot prove production still issues
+ * them. Dropping `isNull(simulations.active_revision_id)` from the real `.where(...)` left every
+ * assertion above green while production stomped the projected verdict of every revisioned
+ * simulation — the one outcome this file exists to prevent.
+ *
+ * `SimulationService` cannot be instantiated here (storage adapter, LLM client, live db), so its
+ * source is read instead, with comments stripped so prose cannot satisfy an assertion. Same
+ * technique as `trustProxyWiring.test.ts`.
+ */
+describe('the production statement still carries every predicate the copy models', () => {
+  const SRC = readFileSync(join(__dirname, '..', 'SimulationService.ts'), 'utf-8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+
+  /** The `.set(...).where(...)` chain that writes bridge_hash. */
+  const stmt = (): string => {
+    const m = SRC.match(/\.set\(\{\s*bridge_hash:[\s\S]*?\)\);/);
+    expect(m, 'could not find the bridge_hash update in SimulationService').not.toBeNull();
+    return m![0];
+  };
+
+  it('clears all three verdict columns with the hash', () => {
+    for (const col of ['package_class: null', 'canary_report: null', 'canary_at: null']) {
+      expect(stmt(), `the bridge write no longer clears ${col}`).toContain(col);
+    }
+  });
+
+  it('keeps the verdict when the hash is UNCHANGED (idempotent regeneration)', () => {
+    expect(stmt()).toMatch(/isNull\(simulations\.bridge_hash\)/);
+    expect(stmt()).toMatch(/ne\(simulations\.bridge_hash,\s*hash\)/);
+  });
+
+  // THE REGRESSION. Migration 050 projects the verdict onto the revision; a revisioned simulation
+  // must never have it stomped by a bridge regeneration.
+  it('NEVER stomps a projected verdict — the revisioned guard is still in the predicate', () => {
+    expect(stmt(),
+      'active_revision_id guard missing: a bridge regeneration now nulls package_class on '
+      + 'revisioned simulations, demoting proven packages to the legacy path')
+      .toMatch(/isNull\(simulations\.active_revision_id\)/);
   });
 });
