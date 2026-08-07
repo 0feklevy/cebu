@@ -139,7 +139,7 @@ jobs:
       - name: Full health + endpoint + CSP verification
         run: |
           pnpm --filter ops-release release-cli remote-health $REMOTE
-          pnpm --filter ops-release release-cli endpoint-audit --out "$ART/endpoints.json"
+          pnpm --filter ops-release release-cli endpoint-audit --run-id "$RUN_ID" --git-sha "${{ github.sha }}" --out "$ART/endpoints.json"
           pnpm --filter ops-release release-cli csp-audit --app client-web --out "$ART/csp-client-web.json" || true
           pnpm --filter ops-release release-cli csp-audit --app admin-web --out "$ART/csp-admin-web.json" || true
           pnpm --filter ops-release release-cli remote-audit $REMOTE --out "$ART/vm-audit.json" || true

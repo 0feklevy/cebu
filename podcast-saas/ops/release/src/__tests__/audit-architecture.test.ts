@@ -259,13 +259,23 @@ describe('remote failure classification', () => {
     });
   }
 
-  it('a non-255 exit means the VM ANSWERED — that is a production finding, not an audit error', () => {
-    // This is the case that matters most: the audit reached production, ran the script,
-    // and the script reported a problem. Reporting that as "the auditor broke" sends the
-    // operator to the wrong system entirely.
-    const d = diagnoseRemoteFailure({ code: 3, stdout: '{"db":"unreachable"}', stderr: '' });
-    expect(d.kind).toBe('REMOTE_COMMAND_FAILED');
-    expect(d.auditError).toBe(false);
+  it('a non-zero remote exit is an AUDIT error, because the VM script signals health in JSON and exits 0', () => {
+    // Corrected after adversarial review. deploy/scripts/production-audit.sh is a read-only
+    // snapshot: a down database still exits 0 with "backendHealth":{"ok":false} in its JSON.
+    // Its only non-zero exits are die() preconditions, crashes, 127 and signals — and a
+    // SIGKILLed ssh is indistinguishable from exit 1 (SshExecutor resolves `code ?? 1`).
+    // Calling any of those "the VM answered" points the operator at the wrong system.
+    for (const code of [1, 3, 126, 127]) {
+      const d = diagnoseRemoteFailure({ code, stdout: '', stderr: '' });
+      expect(d.kind).toBe('REMOTE_COMMAND_FAILED');
+      expect(d.auditError, `exit ${code} must be an audit error`).toBe(true);
+    }
+  });
+
+  it('a die() precondition failure is not reported as a production finding', () => {
+    const d = diagnoseRemoteFailure({ code: 1, stdout: '', stderr: '[fail ] python3 required.' });
+    expect(d.auditError).toBe(true);
+    expect(d.remediation).toMatch(/UNKNOWN/);
   });
 
   it('never recommends weakening host-key checking', () => {

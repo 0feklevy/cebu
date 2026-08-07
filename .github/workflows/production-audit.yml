@@ -177,6 +177,11 @@ jobs:
             --log "$ART/collectors.json" --run-id "$RUN_ID" --git-sha "$GIT_SHA"
           echo "PREFLIGHT_OK=$([ $pf -eq 0 ] && echo yes || echo no)" >> "$GITHUB_ENV"
 
+      # NOTE: the browser-tests collector deliberately passes NO --artifact. Pointing it at
+      # results.json would make a failed run write an error placeholder there, which
+      # playwright-summary would then parse as a valid empty report and turn into clean,
+      # run-stamped evidence the gate passes. Status comes from the exit code instead, and
+      # playwright-summary fails closed on the genuinely absent file.
       - name: Browser audit (Playwright over the live site)
         if: env.PREFLIGHT_OK == 'yes'
         working-directory: podcast-saas/client-web
@@ -200,7 +205,7 @@ jobs:
           pnpm --filter ops-release release-cli collector-record \
             --name browser-tests --command 'playwright test --config=playwright.production.config.ts' \
             --started-at "$started" --ended-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            --exit-code "$pw" --artifact "$PW_RESULTS" \
+            --exit-code "$pw" \
             --log "$ART/collectors.json" --run-id "$RUN_ID" --git-sha "$GIT_SHA"
 
       # If the preflight failed the browser step never ran; record that explicitly so the
@@ -212,7 +217,6 @@ jobs:
             --name browser-tests --command 'playwright test (skipped)' \
             --exit-code 1 --status ERROR \
             --reason 'skipped because the Playwright preflight could not load every audit spec' \
-            --artifact "$PW_RESULTS" \
             --log "$ART/collectors.json" --run-id "$RUN_ID" --git-sha "$GIT_SHA"
 
       - name: Findings + verdict
@@ -283,6 +287,15 @@ jobs:
             --out-json "$ART/audit-report.json" --out-md "$ART/audit-report.md"
           cat "$ART/audit-report.md" >> "$GITHUB_STEP_SUMMARY"
 
+      # UPLOAD ONLY THE MACHINE-READABLE RESULT.
+      #
+      # e2e-results/artifacts (Playwright traces + failure screenshots) and e2e-results/html
+      # are deliberately excluded. production-audit.spec.ts signs in with the real
+      # SMOKE_ADMIN_PASSWORD, and `trace: retain-on-failure` captures DOM snapshots, network
+      # activity and cookies for exactly the runs that fail — so a failed admin login would
+      # publish the production admin password and session cookie into an artifact any user
+      # with repository read access can download. results.json carries counts and test
+      # titles only.
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v6
@@ -290,7 +303,7 @@ jobs:
           name: production-audit-${{ github.run_id }}
           path: |
             release-artifacts
-            podcast-saas/client-web/e2e-results
+            podcast-saas/client-web/e2e-results/results.json
           if-no-files-found: ignore
 
       # One explicit terminal state. The two blocking kinds print different messages so the

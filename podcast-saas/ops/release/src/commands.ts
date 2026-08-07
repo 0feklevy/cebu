@@ -9,6 +9,7 @@
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { auditBrowserReport, parseBrowserAudit } from './asset-audit.js';
 import {
   deriveVerdict,
@@ -48,7 +49,11 @@ export interface CommandContext {
 
 export function defaultContext(): CommandContext {
   // ops/release/src -> app root is two levels up; monorepo root three.
-  const appRoot = join(new URL('..', import.meta.url).pathname, '..', '..');
+  //
+  // fileURLToPath, NOT URL.pathname: pathname is percent-encoded, so a checkout under a
+  // directory containing a space resolved to ".../My%20Repo/..." — a path that exists
+  // nowhere. Every evidence path is anchored here, so that would silently break resolution.
+  const appRoot = join(fileURLToPath(new URL('..', import.meta.url)), '..', '..');
   return {
     run: runCommand,
     fetchImpl: fetch,
@@ -398,7 +403,16 @@ export async function cmdEndpointAudit(
     // The fetch API does not expose the intermediate hop list; `res.url !== requested`
     // is the portable signal that redirection occurred, so record it as such rather
     // than claiming a chain we did not observe.
-    const redirects = finalUrl && finalUrl !== t.url ? [t.url, finalUrl] : [];
+    // fetch normalises `https://host` to `https://host/`, so a naive string compare reported
+    // a phantom redirect on every healthy path-less endpoint. Compare normalised forms.
+    const sameTarget = (a: string, b: string): boolean => {
+      try {
+        return new URL(a).href === new URL(b).href;
+      } catch {
+        return a === b;
+      }
+    };
+    const redirects = finalUrl && !sameTarget(finalUrl, t.url) ? [t.url, finalUrl] : [];
 
     const reason = transportError
       ? `transport failure: ${transportError}`
@@ -536,7 +550,38 @@ export function cmdPlaywrightSummary(
         `result. Refusing to summarize (fail closed); the gate will block on the absent evidence.`,
     );
   }
-  const summary = summarizePlaywrightReport(readFileSync(reportFile, 'utf8'));
+  const raw = readFileSync(reportFile, 'utf8');
+
+  // REFUSE AN ERROR PLACEHOLDER. A failed collector writes `{auditError: true}` at its
+  // artifact path so downstream steps do not die on ENOENT. If that path is the Playwright
+  // report, the placeholder parses as a valid report with no suites — i.e. zero tests, zero
+  // failures — and would be written out as a CLEAN, correctly run-stamped summary that the
+  // gate happily passes. That launders an audit error into positive evidence and defeats
+  // this entire module. Caught by adversarial review of this branch, reproduced end to end.
+  let parsed: { auditError?: unknown; suites?: unknown };
+  try {
+    parsed = JSON.parse(raw) as { auditError?: unknown; suites?: unknown };
+  } catch {
+    throw new Error(`Playwright report at ${reportFile} is not valid JSON — refusing to summarize (fail closed).`);
+  }
+  if (parsed.auditError === true) {
+    throw new Error(
+      `Playwright report at ${reportFile} is an audit-error placeholder, not a test report — browser ` +
+        `verification did not run. Refusing to summarize (fail closed).`,
+    );
+  }
+
+  const summary = summarizePlaywrightReport(raw);
+
+  // A production audit that executed ZERO tests has verified nothing. Silence here is the
+  // same failure as a missing file, so it is a CRITICAL finding rather than "0 failures".
+  if (summary.total === 0) {
+    throw new Error(
+      `Playwright report at ${reportFile} contains no tests — browser verification produced no ` +
+        `result to summarize. Refusing to report this as a clean run (fail closed).`,
+    );
+  }
+
   const findings: Finding[] =
     summary.failed > 0
       ? [
@@ -581,7 +626,9 @@ export function cmdGate(
     out?: string;
   },
 ): { decision: GateDecision; findings: Finding[]; exitCode: number } {
-  const collected = collectFindingsFromFiles(opts.findingsFiles);
+  // Resolve BOTH lists identically: the same path string must not mean two different
+  // files depending on which flag carried it.
+  const collected = collectFindingsFromFiles(opts.findingsFiles.map((f) => resolveEvidencePath(ctx, f)));
   // Required-evidence findings are appended, not substituted: a run can simultaneously
   // have a real production finding AND be missing an artifact, and the report must show
   // both rather than letting one mask the other.
@@ -635,14 +682,37 @@ export function cmdCollectorRecord(
 ): { record: CollectorRecord; exitCode: number } {
   const artifactPath = opts.artifact ? resolveEvidencePath(ctx, opts.artifact) : undefined;
   const producedArtifact = artifactPath !== undefined && existsSync(artifactPath);
-  const status = opts.status ?? statusFromExit(opts.exitCode, { producedArtifact });
+
+  // Read the artifact's own findings rather than trusting the exit code alone. Several
+  // collectors exit 0 while reporting HIGH findings (only CRITICAL sets exit 1), so an
+  // exit-code-only rule logged a real production finding as "PASS — completed with no
+  // findings". An unreadable artifact is left to statusFromExit, which treats it as ERROR.
+  let artifactFindings = 0;
+  let artifactIsPlaceholder = false;
+  if (producedArtifact) {
+    try {
+      const doc = readJson<{ findings?: unknown[]; auditError?: unknown }>(artifactPath!);
+      artifactFindings = Array.isArray(doc.findings) ? doc.findings.length : 0;
+      artifactIsPlaceholder = doc.auditError === true;
+    } catch {
+      artifactIsPlaceholder = true; // corrupt artifact is not evidence of health
+    }
+  }
+
+  const status =
+    opts.status ??
+    (artifactIsPlaceholder
+      ? 'ERROR'
+      : artifactFindings > 0 && opts.exitCode !== null && opts.exitCode <= 1
+        ? 'FINDING'
+        : statusFromExit(opts.exitCode, { producedArtifact }));
 
   const reason =
     opts.reason ??
     (status === 'PASS'
       ? 'completed with no findings'
       : status === 'FINDING'
-        ? 'completed and reported findings'
+        ? `completed and reported ${artifactFindings || 'one or more'} finding(s)`
         : status === 'NOT_CONFIGURED'
           ? 'not attempted — required inputs absent'
           : `exited ${opts.exitCode ?? 'without running'}${producedArtifact ? '' : ' and produced no artifact'}`);
@@ -888,7 +958,10 @@ export function cmdReport(
   const migration = read<MigrationAuditResult>(ARTIFACTS.migrationAudit);
   const vmDoc = read<{ vm?: VmAudit }>(ARTIFACTS.vmFindings) ?? { vm: read<VmAudit>(ARTIFACTS.vmAudit) };
   const dbAudit = read<Record<string, unknown>>(ARTIFACTS.dbUrlAudit);
-  const playwright = read<PlaywrightSummary>(ARTIFACTS.playwright);
+  // An audit-error placeholder has no counts; treat it as absent so the report still
+  // renders (the collector log is what records that the collector failed).
+  const playwrightRaw = read<PlaywrightSummary & { auditError?: unknown }>(ARTIFACTS.playwright);
+  const playwright = playwrightRaw && playwrightRaw.auditError === true ? undefined : playwrightRaw;
   const endpointsDoc = read<{ endpoints: EndpointStatus[] }>(ARTIFACTS.endpoints);
   // Audit sections: verdict, infrastructure errors and coverage are read from the
   // artifacts the audit workflow writes, so the rendered summary can separate

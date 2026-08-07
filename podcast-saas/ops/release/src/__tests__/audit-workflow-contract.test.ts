@@ -191,3 +191,37 @@ describe('secret hygiene', () => {
     expect(AUDIT).toMatch(/umask 077[\s\S]{0,200}\.ssh-deploy-key/);
   });
 });
+
+describe('identity-bearing evidence is actually stamped by its producer', () => {
+  // A gate that declares a file identity-bearing while its producer never stamps identity
+  // yields evidence.no-identity => CRITICAL => blocked => shouldRollback. In release.yml
+  // that meant EVERY release would fail its post-deploy gate and auto-roll-back.
+  for (const [name, text] of Object.entries({ 'production-audit.yml': AUDIT, 'release.yml': RELEASE, 'rollback.yml': ROLLBACK })) {
+    it(`${name}: every --identity-bearing artifact has a producer that stamps it`, () => {
+      const declared = [...text.matchAll(/--identity-bearing "([^"]+)"/g)].flatMap((m) => m[1].split(','));
+      if (declared.length === 0) return;
+      const producerFor: Record<string, RegExp> = {
+        'endpoints.json': /release-cli endpoint-audit[\s\S]{0,200}?--run-id[\s\S]{0,200}?--git-sha/,
+        'playwright-summary.json': /release-cli playwright-summary[\s\S]{0,300}?--run-id[\s\S]{0,300}?--git-sha/,
+      };
+      for (const artifact of declared) {
+        const pattern = producerFor[artifact.trim()];
+        expect(pattern, `no producer pattern known for ${artifact}`).toBeDefined();
+        expect(text, `${name} declares ${artifact} identity-bearing but never stamps it with --run-id/--git-sha`).toMatch(pattern);
+      }
+    });
+  }
+});
+
+describe('artifact uploads cannot publish production credentials', () => {
+  // production-audit.spec.ts signs in with the real SMOKE_ADMIN_PASSWORD, and
+  // `trace: retain-on-failure` captures DOM/network/cookies for failing runs — the exact
+  // runs that get uploaded. A whole-directory upload therefore publishes the production
+  // admin password to anyone with repository read access.
+  for (const [name, text] of Object.entries({ 'production-audit.yml': AUDIT, 'release.yml': RELEASE, 'rollback.yml': ROLLBACK })) {
+    it(`${name} never uploads the raw e2e-results directory`, () => {
+      const bad = /path:\s*podcast-saas\/client-web\/e2e-results\s*(,|})|^\s*podcast-saas\/client-web\/e2e-results\s*$/m;
+      expect(text, `${name} uploads Playwright traces/screenshots wholesale`).not.toMatch(bad);
+    });
+  }
+});

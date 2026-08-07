@@ -228,3 +228,30 @@ describe('the gate refuses to pass on absent or stale evidence', () => {
     expect(res.exitCode).toBe(0);
   });
 });
+
+describe('an audit-error placeholder can never be laundered into clean evidence', () => {
+  // Found by adversarial review of this branch and reproduced end to end: collector-record
+  // writes `{auditError:true}` at a failed collector's artifact path so downstream steps do
+  // not ENOENT. When that path was the Playwright report, the placeholder parsed as a valid
+  // report with zero suites — zero tests, zero failures — and was written out as a CLEAN,
+  // correctly run-stamped summary that the gate PASSED. The audit error became positive
+  // evidence, defeating the entire fix.
+  it('refuses to summarize an audit-error placeholder', () => {
+    const p = join(tmp, 'results.json');
+    writeFileSync(p, JSON.stringify({ schema: 'flowvid.audit-error/v1', auditError: true, collector: 'browser-tests', findings: [] }));
+    expect(() => cmdPlaywrightSummary(ctxWith(tmp), { reportFile: p, out: join(tmp, 'summary.json') })).toThrow(/audit-error placeholder/);
+    expect(existsSync(join(tmp, 'summary.json'))).toBe(false);
+  });
+
+  it('refuses a report containing zero tests — verifying nothing is not a pass', () => {
+    const p = join(tmp, 'results.json');
+    writeFileSync(p, JSON.stringify({ suites: [] }));
+    expect(() => cmdPlaywrightSummary(ctxWith(tmp), { reportFile: p })).toThrow(/no tests/);
+  });
+
+  it('refuses a truncated report rather than treating it as empty', () => {
+    const p = join(tmp, 'results.json');
+    writeFileSync(p, '{"suites": [');
+    expect(() => cmdPlaywrightSummary(ctxWith(tmp), { reportFile: p })).toThrow(/not valid JSON/);
+  });
+});

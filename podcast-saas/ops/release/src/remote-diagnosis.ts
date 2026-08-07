@@ -9,13 +9,24 @@
  * Measured during this investigation: TCP 22 on the production host accepted a connection
  * immediately and the site served HTTP 200, so the 21-second failure was NOT a connect
  * timeout. Meanwhile `https://api.flowvidco.com/health` answered 503 with
- * `{"status":"degraded","reason":"db_unavailable"}`. The most likely reading is therefore
- * the second kind — a VM-side check exiting non-zero — which the old code reported as an
- * infrastructure failure.
+ * `{"status":"degraded","reason":"db_unavailable"}`.
+ *
+ * WHAT A NON-ZERO REMOTE EXIT ACTUALLY MEANS HERE — an earlier version of this file assumed
+ * "the VM answered, so a non-zero exit describes production". Adversarial review disproved
+ * that against the shipped VM contract: deploy/scripts/production-audit.sh is a read-only
+ * SNAPSHOT that reports health INSIDE its JSON (`"backendHealth": {"ok": false}`) and exits
+ * 0 while doing so; findings are derived later by cmdVmAudit. Under `set -euo pipefail` its
+ * only reachable non-zero exits are die() preconditions (missing deploy/.env, bad usage, no
+ * python3), a crash in the python3 assembly step, shell 127, and signals. Every one of those
+ * is an AUDIT error. A SIGKILLed ssh is additionally indistinguishable from exit 1, because
+ * SshExecutor resolves `code ?? 1` — so a locally timed-out probe must not be read as an
+ * answer either. REMOTE_COMMAND_FAILED is therefore auditError: true.
  *
  * Nothing here weakens SSH security: strict host-key checking, BatchMode and key-only auth
  * stay exactly as they were. This module only reads what ssh already told us.
  */
+
+import { redactValue } from './redact.js';
 
 export type RemoteFailureKind =
   | 'DNS'
@@ -72,7 +83,9 @@ export function diagnoseRemoteFailure(input: { code: number; stdout: string; std
 }
 
 function describe(kind: RemoteFailureKind, input: { code: number; stdout: string; stderr: string }): RemoteDiagnosis {
-  const tail = (input.stderr.trim() || input.stdout.trim()).split('\n').slice(-3).join(' | ').slice(0, 400);
+  // Redact before embedding: this summary is written into an artifact and printed to the
+  // job log, and VM output can echo connection strings or tokens.
+  const tail = redactValue((input.stderr.trim() || input.stdout.trim()).split('\n').slice(-3).join(' | ')).slice(0, 400);
   switch (kind) {
     case 'DNS':
       return { kind, auditError: true, summary: 'the VM hostname did not resolve', remediation: 'Check the PRODUCTION_SSH_HOST variable and DNS.' };
@@ -94,9 +107,17 @@ function describe(kind: RemoteFailureKind, input: { code: number; stdout: string
     case 'REMOTE_COMMAND_FAILED':
       return {
         kind,
-        auditError: false,
-        summary: `the VM ran the audit and it exited ${input.code}${tail ? ` — ${tail}` : ''}`,
-        remediation: 'The VM answered, so this describes production. Read the VM audit output rather than the pipeline.',
+        // The VM-side audit signals production health in its JSON, not its exit status, so a
+        // non-zero exit means the snapshot could not be produced — we learned nothing about
+        // production. Exit 127/126 are a missing/non-executable command; a bare 1 with no
+        // output is also what a SIGKILLed ssh looks like.
+        auditError: true,
+        summary:
+          input.code === 127 || input.code === 126
+            ? `the VM could not execute the audit command (exit ${input.code})${tail ? ` — ${tail}` : ''}`
+            : `the VM-side audit did not complete (exit ${input.code})${tail ? ` — ${tail}` : ''}`,
+        remediation:
+          'The VM audit reports production health inside its JSON and exits 0 when it completes, so a non-zero exit means the snapshot failed (missing deploy/.env, absent python3, a crash, or a timeout). Production state is UNKNOWN from this collector.',
       };
     case 'INVALID_REMOTE_JSON':
       return { kind, auditError: true, summary: 'the VM returned output that is not valid JSON', remediation: 'Inspect production-audit.sh output; partial JSON is an audit error, not a pass.' };

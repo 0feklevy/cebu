@@ -99,7 +99,15 @@ describe('least-privilege permissions are preserved', () => {
   it('packages: write appears only in the image-build job; contents: write only for tag/publish', () => {
     expect((wf['release.yml'].match(/packages: write/g) ?? []).length).toBe(1);
     expect((wf['release.yml'].match(/contents: write/g) ?? []).length).toBe(2);
-    expect(wf['production-audit.yml']).not.toContain('write');
+    // Assert the PERMISSION, not the substring. The bare `not.toContain('write')` also
+    // forbade the word in comments, so documenting why the audit is read-only broke the
+    // least-privilege test. This checks what the test actually means: no permission scope
+    // in the audit workflow grants write.
+    const auditPermissions = [...wf['production-audit.yml'].matchAll(/^\s*([a-z-]+):\s*(read|write|none)\s*$/gm)];
+    expect(auditPermissions.length).toBeGreaterThan(0);
+    for (const [, scope, level] of auditPermissions) {
+      expect(level, `production-audit.yml grants ${scope}: ${level}`).not.toBe('write');
+    }
   });
 });
 
