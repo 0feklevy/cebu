@@ -22,7 +22,7 @@ import {
   type PosterKey,
   type PosterRecord,
   type PosterSizeName,
-} from 'shared/src/sim/posterIdentity';
+} from 'shared/sim/posterIdentity';
 
 // ── Fakes ─────────────────────────────────────────────────────────────────────
 

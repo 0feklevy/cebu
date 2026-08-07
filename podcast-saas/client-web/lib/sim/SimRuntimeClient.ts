@@ -61,6 +61,10 @@ import {
 import { applyGateFor } from '../simApplyGate';
 import { SimTransport } from './SimTransport';
 import {
+  computeDurations, summarize, deriveLeadMs,
+  type TransitionMarks, type TransitionStage, type TransitionSummary,
+} from 'shared/src/sim/transitionTiming';
+import {
   ACTIVATE_SECTION,
   DISPOSE_DOCUMENT,
   DOCUMENT_ERROR,
@@ -176,6 +180,14 @@ export interface ActivateOptions {
   params?: SimStartParams;
   /** Reveal policy override. 'auto' (default) applies the two rules above. */
   reveal?: 'auto' | 'never';
+  /**
+   * v2 only. This activation dispatches a key the caller KNOWS no body exists for — a raw package
+   * presentation ("show the full simulation"). SCRIPT_MISSING is then the expected outcome and the
+   * document must present AS LOADED, not be hidden: the hide exists to stop a wrong-section frame,
+   * and for a raw activation the as-loaded document IS the right frame. The caller is responsible
+   * for the document actually being pristine (the pool reloads a scripted document first).
+   */
+  presentAsLoaded?: boolean;
   /**
    * v3 only. The presentation configuration whose hash becomes part of this activation's identity.
    * Omitted on the v2 path, where it has nowhere to go — the legacy bridge has no field for it.
@@ -296,6 +308,64 @@ export class SimRuntimeClient {
     if (this.disposed && patch.phase !== 'disposed') return;
     this.state = { ...this.state, ...patch };
     this.cbs.onState?.(this.state);
+  }
+
+  // ── Transition measurement (Priority 8.1) ────────────────────────────────────────────────────
+  //
+  // Nothing in this pipeline has ever measured a transition, and the child's own numbers — applyMs,
+  // framesSubmitted, canvas — were computed, put on the wire and dropped here. Every stage below is
+  // recorded but NOTHING reads a duration to make a decision: this is measurement only, so it
+  // cannot change what the viewer sees. What reads it is the lead-time derivation, later.
+  /** v2: the pending activation expects SCRIPT_MISSING and must present the document as loaded. */
+  private pendingPresentAsLoaded = false;
+  private tmarks: TransitionMarks = { marks: {} };
+  private tHistory: TransitionMarks[] = [];
+  /** Bounded, with the drop counted. A silent cap makes a truncated sample look like a complete one. */
+  private tDropped = 0;
+  private static readonly T_HISTORY_CAP = 50;
+
+  /** The clock, in one place, so a non-browser host cannot crash the runtime by lacking one. */
+  private now(): number {
+    return typeof performance !== 'undefined' && typeof performance.now === 'function'
+      ? performance.now()
+      : Date.now();
+  }
+
+  /**
+   * Record a stage. First write wins per activation: a retried PREPARE must not re-stamp the
+   * original request time, or the total would silently exclude everything before the retry — which
+   * is exactly the slow case worth seeing.
+   */
+  private mark(stage: TransitionStage): void {
+    if (this.tmarks.marks[stage] === undefined) this.tmarks.marks[stage] = this.now();
+  }
+
+  /** Close the current transition and start a fresh one. */
+  private rollTransition(): void {
+    if (Object.keys(this.tmarks.marks).length > 0) {
+      if (this.tHistory.length >= SimRuntimeClient.T_HISTORY_CAP) {
+        this.tHistory.shift();
+        this.tDropped += 1;
+      }
+      this.tHistory.push(this.tmarks);
+    }
+    this.tmarks = { marks: {} };
+  }
+
+  /** What has been measured so far. Read by tests and, later, by the lead-time derivation. */
+  timingSummary(): TransitionSummary & { dropped: number } {
+    return { ...summarize(this.tHistory), dropped: this.tDropped };
+  }
+
+  /**
+   * The lead time preparation should use, derived from what THIS session measured.
+   *
+   * `fallbackMs` is the caller's prior — best sourced from the package's publish-time canary, which
+   * already records per-step ms for these exact bytes, and which is a far better guess than any
+   * constant compiled into the client.
+   */
+  leadMs(fallbackMs: number): { leadMs: number; source: 'measured' | 'fallback' } {
+    return deriveLeadMs({ summary: summarize(this.tHistory), fallbackMs });
   }
 
   private tel(event: string, detail?: Record<string, unknown>): void {
@@ -462,8 +532,27 @@ export class SimRuntimeClient {
     if (!this.matchesPending(script, token)) return;
     this.clearApplyStall();
     this.holding = false;
-    // The bridge deliberately ran NOTHING. Presenting the document would show whatever was on it
-    // before — degrade to the underlying content instead of a wrong or parked frame.
+    if (this.pendingPresentAsLoaded) {
+      // The caller DISPATCHED a no-body key on purpose: a raw package presentation. Missing is the
+      // expected outcome, and the as-loaded document is the right frame — hiding it here is what
+      // made the full-simulation finale vanish. The pool guarantees the document is pristine (a
+      // scripted document is reloaded before a raw activation reaches it), so presenting cannot
+      // show another section's leftovers.
+      this.set({ currentScript: null, pendingScript: null, stopped: false });
+      // A DISTINCT EVENT NAME, because this outcome is a SUCCESS. Reporting it as `script-missing`
+      // with a discriminator in `detail` meant the parent's FAILURE handler ran on every raw
+      // presentation: it cleared `simColdCover`/`simBootStalled` — tearing down the poster and the
+      // spinner at the instant the bridge answered, while `maybeReveal()` below still cannot reveal
+      // a document that has not painted — and it wrote a RUM `kind: 'failure'` row, poisoning the
+      // field signal used to judge whether a package is healthy. No consumer ever read the
+      // discriminator. From here the reveal path governs the affordance, as it does everywhere else.
+      this.tel('presented-as-loaded', { script });
+      this.maybeReveal();
+      return;
+    }
+    // The bridge deliberately ran NOTHING and the caller expected a body. Presenting the document
+    // would show whatever was on it before — degrade to the underlying content instead of a wrong
+    // or parked frame.
     this.set({ pendingScript: null, lastError: `missing section: ${script}` });
     this.tel('script-missing', { script });
     this.hideAndSilence();
@@ -588,6 +677,7 @@ export class SimRuntimeClient {
     }
 
     const { script, params } = opts;
+    const presentAsLoaded = opts.presentAsLoaded === true;
 
     // Any activation supersedes a pending teardown: the bridge's own startScript runs stopScript
     // first, and a late deferred stop would tear down the LIVE section instead.
@@ -602,6 +692,18 @@ export class SimRuntimeClient {
     const priorScript = this.state.currentScript;
     const wasStopped = this.state.stopped;
 
+    // MEASURE THE v2 PATH TOO.
+    //
+    // The marks were originally only on the v3 modern path, which no stored package uses yet — so
+    // in the field the measurement layer produced nothing at all, and a perf run reported zero
+    // transitions while the viewer was plainly performing them. v2 has no PREPARE/PRESENT split, so
+    // `requested` -> `revealed` is the whole observable span, which is exactly the number a viewer
+    // experiences.
+    this.rollTransition();
+    this.mark('requested');
+    this.mark('prepare-sent');
+
+    this.pendingPresentAsLoaded = presentAsLoaded;
     this.set({ activationToken: token, pendingScript: script, phase: 'applying', lastError: null });
 
     this.post({ type: SIM_RESUME });
@@ -845,9 +947,39 @@ export class SimRuntimeClient {
       case SECTION_APPLIED:
         if (!this.matchesActivation(env)) { this.tel('modern-stale-applied'); return; }
         this.clearPrepareTimer();
-        this.actMachine = activationReducer(this.actMachine!, { type: 'APPLIED' });
-        this.tel('modern-section-applied', { variantKey: env.variantKey });
+        // THE REDUCER'S REFUSAL IS A DECISION, NOT A NO-OP.
+        //
+        // `matchesActivation` compares identity only — activationId/variantKey/configHash — never
+        // state. APPLIED is legal exclusively from PREPARING, so a SECTION_APPLIED arriving once
+        // the activation is FAILED (a prepare-timeout already fired), RELEASED (the viewer scrubbed
+        // away mid-apply) or VISIBLE (the package re-acked) is refused — and `activationReducer`
+        // signals that by returning the SAME state object with a rejection breadcrumb. Assigning it
+        // back unchecked read as success and fell through to `sendPresent()`, which posted
+        // PRESENT_SECTION for a section that is failed, released or already on screen and armed the
+        // TERMINAL present bound behind it. That bound is guarded only by (generation,
+        // activationId) — neither changed by a refusal — so it later fired
+        // `failModern('present-timeout')`: a second breaker failure for one real fault, a fabricated
+        // failure kind replacing the true one, and in the VISIBLE case a working simulation hidden
+        // behind the recovery surface mid-section.
+        {
+          const applied = activationReducer(this.actMachine!, { type: 'APPLIED' });
+          if (applied.state !== 'APPLIED') {
+            this.tel('modern-applied-refused', { state: this.actMachine!.state });
+            return;
+          }
+          this.actMachine = applied;
+        }
+        this.mark('applied');
+        // The child measured its own body cost and has been sending it since the protocol shipped;
+        // it was read off the wire and discarded here. Kept separate from our prepareMs, which
+        // includes two postMessage hops the child's number does not.
+        {
+          const ap = (env.payload as { applyMs?: number } | undefined)?.applyMs;
+          if (typeof ap === 'number') this.tmarks.applyMs = ap;
+        }
+        this.tel('modern-section-applied', { variantKey: env.variantKey, applyMs: this.tmarks.applyMs ?? null });
         this.sendPresent();
+        this.mark('present-sent');
         return;
       case SECTION_PRESENTED: {
         if (!this.matchesActivation(env)) { this.tel('modern-stale-presented'); return; }
@@ -882,6 +1014,10 @@ export class SimRuntimeClient {
           },
         });
         if (advanced.state !== 'PRESENTED') {
+          // CLEAR THE BOUND BEFORE RETURNING. This path returned one line above the clear, so a
+          // refused acknowledgement left the terminal present timer armed on an activation that had
+          // in fact rendered — and it later fired `failModern('present-timeout')` against it.
+          this.clearPresentTimer();
           this.tel('modern-presented-refused', { state: this.actMachine!.state });
           return;
         }
@@ -889,7 +1025,16 @@ export class SimRuntimeClient {
         this.actMachine = advanced;
         this.breaker = recordSuccess(this.breaker);
         this.failure = null;
-        this.tel('modern-section-presented', { variantKey: env.variantKey, frames: payload.framesSubmitted });
+        this.mark('presented');
+        this.tmarks.framesSubmitted = payload.framesSubmitted;
+        // `canvas` proves something real was sized and drawn. It was validated on arrival and then
+        // dropped; it is the only signal that distinguishes a presented frame from a presented
+        // nothing, which is what an adaptive-quality controller would need first.
+        if (payload.canvas) this.tmarks.canvas = payload.canvas;
+        this.tel('modern-section-presented', {
+          variantKey: env.variantKey, frames: payload.framesSubmitted,
+          canvas: payload.canvas ?? null,
+        });
         this.reveal(false);
         return;
       }
@@ -937,6 +1082,12 @@ export class SimRuntimeClient {
 
     this.clearPrepareTimer();
     this.clearPresentTimer();
+    // A new activation ends the previous transition, whatever stage it reached. Rolling it here is
+    // what makes an ABANDONED transition visible: without this the next `mark('requested')` would
+    // be discarded by the first-write-wins rule and the two would silently merge into one bogus
+    // measurement spanning both. Where transitions die is data — a package that always stops at
+    // `applied` is failing differently from one that stops at `prepare-sent`.
+    this.rollTransition();
     // The deferral, if any, ends here: the modern gate governs from now on. Leaving `holding` set
     // would outlive the deferral for the life of the client, so a later transport downgrade to
     // legacy would find `maybeReveal`, `present()` and the legacy ceiling all permanently refusing.
@@ -980,7 +1131,9 @@ export class SimRuntimeClient {
     this.tel('modern-prepare', { variantKey: opts.script, activationId: identity.activationId });
 
     this.actMachine = activationReducer(this.actMachine, { type: 'PREPARE' });
+    this.mark('requested');
     this.transport.send(PREPARE_SECTION, identity, { variantKey: identity.variantKey, config });
+    this.mark('prepare-sent');
 
     const gen = this.generation;
     const actId = identity.activationId;
@@ -994,8 +1147,27 @@ export class SimRuntimeClient {
   private sendPresent(): void {
     const act = this.actMachine;
     if (!act || !this.transport) return;
+    // CLEAR BEFORE ARMING, like every other timer path here. `SECTION_APPLIED` calls this
+    // unconditionally after `matchesActivation`, and a duplicate SECTION_APPLIED with a higher
+    // `seq` passes both `validateEnvelope` and `matchesActivation` — the reducer then refuses the
+    // illegal transition by returning the SAME state object rather than throwing. The previous
+    // timer handle was overwritten and became unclearable, while its guard (generation +
+    // activationId) still passed, so it later fired `failModern('present-timeout')` against an
+    // activation that had already presented: a working simulation hidden and replaced by the
+    // recovery surface.
+    this.clearPresentTimer();
+    // REDUCE FIRST, THEN SEND AND ARM. PRESENT is legal only from APPLIED, so if the activation has
+    // moved on this refuses — and posting PRESENT_SECTION for a failed, released or already-visible
+    // section, then arming a terminal bound behind it, is exactly the wrong thing to do. The
+    // SECTION_APPLIED caller already guards this; the check is repeated here so the invariant
+    // belongs to the method that arms the bound rather than to its caller.
+    const advanced = activationReducer(act, { type: 'PRESENT' });
+    if (advanced.state !== 'RENDERING') {
+      this.tel('modern-present-refused', { state: act.state });
+      return;
+    }
     this.transport.send(PRESENT_SECTION, act.identity, {});
-    this.actMachine = activationReducer(act, { type: 'PRESENT' });
+    this.actMachine = advanced;
 
     const gen = this.generation;
     const actId = act.identity.activationId;
@@ -1152,7 +1324,12 @@ export class SimRuntimeClient {
       this.transport?.send(ACTIVATE_SECTION, act.identity, {});
       this.stopPaintPoll();
       this.set({ phase: 'visible', visible: true, interactive: true, pendingScript: null });
-      this.tel('reveal');
+      // The only stage a human perceives. Marked AFTER the reveal is authorised and committed, so a
+      // refused reveal can never contribute a total — a transition that was rejected did not
+      // complete, and counting it would make the p90 describe frames nobody saw.
+      this.mark('revealed');
+      this.tel('reveal', computeDurations(this.tmarks) as unknown as Record<string, unknown>);
+      this.rollTransition();
       return;
     }
 
@@ -1163,7 +1340,25 @@ export class SimRuntimeClient {
     if (this.legacyRevealTimer) { clearTimeout(this.legacyRevealTimer); this.legacyRevealTimer = null; }
     this.stopPaintPoll();
     this.set({ phase: 'visible', visible: true, interactive: true });
-    this.tel(force ? 'reveal-forced' : 'reveal');
+    // ONLY MEASURE A TRANSITION THAT WAS ACTUALLY OPENED.
+    //
+    // `reveal()` runs for reasons that are not section transitions — a first paint, a poll, an owner
+    // nudge — and it is not idempotent. Stamping presented/revealed unconditionally MANUFACTURED a
+    // transition: `rollTransition` pushes whenever the mark map is non-empty, which those two marks
+    // had just guaranteed, so the history filled with entries that had no `requested`. They can
+    // never be complete, so no percentile moved — but they were counted in `samples` and tallied
+    // into `abandonedAt.revealed`, the field that answers "where do transitions die". It read as a
+    // fleet dying at reveal when nothing had died at all. A transition is open exactly when
+    // `activate()` stamped `requested`.
+    if (this.tmarks.marks.requested !== undefined) {
+      this.mark('presented');
+      this.mark('revealed');
+      this.tel(force ? 'reveal-forced' : 'reveal',
+        computeDurations(this.tmarks) as unknown as Record<string, unknown>);
+      this.rollTransition();
+    } else {
+      this.tel(force ? 'reveal-forced' : 'reveal', { unmeasured: true });
+    }
   }
 
   /**

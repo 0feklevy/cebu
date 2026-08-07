@@ -9,8 +9,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { buildPlayerConfig } from '../buildPlayerConfig.js';
 import {
   DEFAULT_PRESENTATION_CONFIG, computeConfigHash, derivePackageRevision,
-} from 'shared/src/sim/simIdentity';
-import { posterIdentityString, posterStoragePath, type PosterKey } from 'shared/src/sim/posterIdentity';
+} from 'shared/sim/simIdentity';
+import { posterIdentityString, posterStoragePath, type PosterKey } from 'shared/sim/posterIdentity';
 
 const mocks = vi.hoisted(() => ({
   projects:           { findFirst: vi.fn() },

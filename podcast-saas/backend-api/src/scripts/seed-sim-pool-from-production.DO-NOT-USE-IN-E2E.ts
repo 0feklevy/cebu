@@ -26,13 +26,39 @@
  *   Delete: tsx --env-file=../.env src/scripts/seed-sim-pool-fixture.ts --delete
  *   URL:    /projects/00000000-0000-4000-a000-0000000f1c7e/view   (printed on success)
  */
-import { db } from '../db/index.js';
-import {
+/**
+ * QUARANTINED — NOT the e2e seeder. See seed-sim-pool-synthetic.ts, which is.
+ *
+ * This script COPIES ROWS OUT OF AN EXISTING PROJECT (SOURCE_PROJECT below) and reuses that
+ * project's real `simulation_url`s and `hls_master_key`. It therefore cannot run against a fresh
+ * database at all, and anything it seeds makes the browser fetch simulation packages and HLS media
+ * from real storage — which the sim-pool gate must never do, because that gate proves no request
+ * left loopback.
+ *
+ * It is kept only for manual operational use against a database that already contains the source
+ * project, and it refuses to start without an explicit opt-in so no harness can invoke it by
+ * accident.
+ */
+if (process.env.ALLOW_PRODUCTION_DATA_SEEDER !== 'i-understand-this-reads-real-project-data') {
+  console.error(
+    'refusing to run: this seeder copies real project rows and real asset URLs.\n' +
+    'The e2e fixture is src/scripts/seed-sim-pool-synthetic.ts (fully synthetic, loopback only).\n' +
+    'To run this one deliberately, set ALLOW_PRODUCTION_DATA_SEEDER=i-understand-this-reads-real-project-data',
+  );
+  process.exit(2);
+}
+
+// DYNAMIC imports, after the gate. Static `import` declarations are hoisted and evaluated before
+// any statement of this module body — including the refusal above — so a static db import would
+// construct the pool (and run that module's env probing) even on a refused run. Nothing below
+// this line is loaded unless the opt-in was given.
+const { db } = await import('../db/index.js');
+const {
   projects, video_files, timeline_sections, simulations,
   branch_sequences, branch_choice_points, branch_edges,
-} from '../db/schema.js';
-import { eq, and, like } from 'drizzle-orm';
-import { getStorageAdapter } from '../services/storage/getStorageAdapter.js';
+} = await import('../db/schema.js');
+const { eq, and, like } = await import('drizzle-orm');
+const { getStorageAdapter } = await import('../services/storage/getStorageAdapter.js');
 
 const FIXTURE_ID = '00000000-0000-4000-a000-0000000f1x7e'.replace('x', 'c'); // valid uuid
 const SOURCE_PROJECT = 'd8e7557a-6efd-4458-ab20-a391a0ee6b52';   // Edge of Chaos (real sim URLs + video)

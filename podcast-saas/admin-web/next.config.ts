@@ -32,6 +32,9 @@ const securityHeaders = (): { key: string; value: string }[] => {
     firebaseAuthDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
     includeStripe: false, // admin has no Stripe checkout
     dev: !IS_PROD,
+    // Dev-only: lets the LOCAL Firebase Auth emulator through connect-src. Without it the SDK's
+    // emulator request is refused by our own policy and anonymous sign-in fails silently.
+    authEmulatorHost: process.env.NEXT_PUBLIC_FIREBASE_AUTH_EMULATOR_HOST,
   });
   return [
     { key: 'Content-Security-Policy', value: csp },

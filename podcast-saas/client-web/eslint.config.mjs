@@ -19,6 +19,10 @@ export default tseslint.config(
       'tailwind.config.*',
       'scripts/**',
       'e2e/**',
+      // Playwright run output (traces, screenshots, extracted .ts resources). It is gitignored but
+      // eslint still walked it, so `pnpm lint` FAILED with parse errors on trace resources for
+      // anyone who had run the browser suite — a green tree and a red lint from the same commit.
+      'e2e-results/**',
       '**/*.config.{js,mjs,cjs,ts}',
     ],
   },

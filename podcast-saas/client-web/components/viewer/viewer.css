@@ -338,7 +338,34 @@
 .sim-wait-affordance.stalled {
   background: rgba(8, 8, 12, 0.6);
 }
+/* With a poster behind it the scrim would only dull the picture the viewer is waiting to see. */
+.sim-wait-affordance.has-poster {
+  background: transparent;
+}
+.sim-wait-affordance.has-poster.stalled {
+  background: rgba(8, 8, 12, 0.45);
+}
+/* `contain` matches how the sim itself is letterboxed, so the poster does not jump or crop at the
+   moment the live frame replaces it. */
+.sim-cold-poster {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+.sim-cold-poster.transparent {
+  background: transparent;
+}
+/* POSITIONED, and above the poster. `.sim-cold-poster` is absolutely positioned with an opaque
+   `background:#000`, so it paints in a later stacking layer than a statically-positioned sibling:
+   a static spinner is rendered into the DOM and then painted UNDERNEATH the poster. That is
+   exactly how the "retain a motion cue when the sim genuinely stalls" requirement was lost while
+   its test — which asserts DOM presence only — stayed green. */
 .sim-overlay-spinner {
+  position: relative;
+  z-index: 1;
   width: 34px;
   height: 34px;
   border-radius: 50%;

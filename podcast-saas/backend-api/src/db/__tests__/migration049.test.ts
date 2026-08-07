@@ -95,6 +95,25 @@ describe('migration 049 — sim_posters + canary columns', () => {
 
   /** Apply the real 049 file exactly as the migration runner would (one multi-statement exec). */
   const applyForward = () => pg.exec(forwardSql);
+
+  /**
+   * Apply 049 AND every migration after it.
+   *
+   * Needed by the Drizzle-shape assertions only. `schema.ts` always describes the HEAD of the
+   * migration list, and Drizzle emits every declared column in a full-row select — so a test that
+   * stops at 049 and then drives a full-row read is asserting against a database the current
+   * schema.ts no longer describes, and fails with 42703 on whatever 050+ added.
+   *
+   * That is not incidental to this file, it is the very hazard it documents: a schema ahead of the
+   * applied migrations breaks every full-row read. The catalog-level assertions above deliberately
+   * do NOT use this — they must keep testing 049 in isolation, or they would stop being about 049.
+   */
+  const applyForwardToHead = async (): Promise<void> => {
+    await applyForward();
+    for (const f of ALL.slice(ALL.indexOf(TARGET) + 1)) {
+      await pg.exec(readFileSync(join(MIGRATIONS_DIR, f), 'utf-8'));
+    }
+  };
   const applyRollback = () => pg.exec(rollbackSql);
 
   async function rows<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
@@ -349,7 +368,7 @@ describe('migration 049 — sim_posters + canary columns', () => {
 
   describe('after the migration', () => {
     beforeEach(async () => {
-      await applyForward();
+      await applyForwardToHead();
     });
 
     it('the full-row simulations read succeeds and reports the package as unclassified', async () => {

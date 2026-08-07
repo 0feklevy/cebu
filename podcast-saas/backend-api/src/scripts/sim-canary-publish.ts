@@ -26,7 +26,7 @@
 
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { simulations } from '../db/schema.js';
 import { logger } from '../lib/logger.js';
@@ -38,15 +38,16 @@ import {
   judgeCanaryReport,
   summarizeCanary,
 } from '../services/simulation/canaryJudge.js';
-import type { CanaryReport } from 'shared/src/sim/canaryContract';
+import type { CanaryReport } from 'shared/sim/canaryContract';
 import {
   POSTER_SIZES,
   formatsFor,
   type PosterFormat,
   type PosterKey,
   type PosterSizeName,
-} from 'shared/src/sim/posterIdentity';
-import { computeConfigHash } from 'shared/src/sim/simIdentity';
+} from 'shared/sim/posterIdentity';
+import { computeConfigHash } from 'shared/sim/simIdentity';
+import { canaryReportPrepareMs } from 'shared/sim/prepareBudget';
 
 /** Exit codes, so a rollout script can branch without parsing text. */
 export const EXIT = {
@@ -58,6 +59,13 @@ export const EXIT = {
   SIM_NOT_FOUND: 6,
   POSTERS_MISSING: 7,
   WRITE_FAILED: 8,
+  /**
+   * The simulation serves a REVISION, so its verdict is a projection of the revision row and this
+   * script must not write it. Distinct from WRITE_FAILED: nothing went wrong, the run simply has no
+   * legitimate way to record what it measured — and it must not exit 0, or a scheduled canary would
+   * silently stop updating verdicts forever.
+   */
+  VERDICT_IS_PROJECTED: 9,
 } as const;
 
 interface Args {
@@ -245,6 +253,7 @@ async function main(): Promise<void> {
     process.exit(EXIT.OK);
   }
 
+  let verdictProjected = false;
   try {
     // Posters FIRST: a row that references bytes which do not exist renders a broken cover, while
     // bytes with no row are merely invisible until the next sweep.
@@ -270,14 +279,44 @@ async function main(): Promise<void> {
       process.stdout.write(`  stored poster ${c.posterIdentity}\n`);
     }
 
-    await db.update(simulations).set({
+    // NEVER STOMP A PROJECTED VERDICT (migration 050).
+    //
+    // On a revisioned simulation these four columns are a PROJECTION of the active revision's own
+    // verdict, written inside the pointer-flip transaction. Writing them from here would describe
+    // whichever bytes this run happened to canary while the pointer still names another revision —
+    // and the next rollback would silently restore the projection, so the divergence would appear
+    // to heal itself. `SimulationService` carries the same guard for the same reason; this script
+    // is the only other writer.
+    const [projected] = await db.update(simulations).set({
       package_class: report.classification,
       canary_report: report as unknown as Record<string, unknown>,
       canary_at: new Date(),
-    }).where(eq(simulations.id, sim.id));
-    process.stdout.write(`  recorded verdict ${report.classification}\n`);
+      // Derived ONCE, here, so the player's hottest read path reads an integer instead of parsing
+      // this report. Null when the run produced no usable preparation steps, which the client reads
+      // as "no lab data" rather than as "instantaneous".
+      prepare_budget_ms: canaryReportPrepareMs(report),
+    }).where(and(
+      eq(simulations.id, sim.id),
+      isNull(simulations.active_revision_id),
+    )).returning({ id: simulations.id });
 
-    if (args.prune) {
+    if (!projected) {
+      // NOT AN EXIT 0 CASE. The run did work and recorded nothing, so a script that printed a note
+      // and succeeded would let a scheduled canary silently stop updating verdicts forever.
+      verdictProjected = true;
+      process.stdout.write(
+        `  SKIPPED verdict write: this simulation serves a revision, whose verdict is projected\n`
+        + `  from the revision row on activation, so writing it here would describe bytes the\n`
+        + `  pointer does not name — and the next rollback would appear to heal the divergence.\n`
+        + `  Poster pruning was skipped too (see below).\n`);
+    } else {
+      process.stdout.write(`  recorded verdict ${report.classification}\n`);
+    }
+
+    // GATED ON THE VERDICT ACTUALLY LANDING. The comment below is only true when it did: pruning
+    // after a skipped write deletes posters for a verdict that was never recorded, which is the
+    // exact ordering hazard the guard was added to avoid, arriving through the other door.
+    if (args.prune && projected) {
       // Only AFTER the new verdict is durable. Pruning first would leave a live section resolving
       // to a poster whose bytes had already been deleted.
       const pruned = await posterService.invalidate(sim.id, report.packageRevision);
@@ -292,6 +331,10 @@ async function main(): Promise<void> {
     process.exit(EXIT.WRITE_FAILED);
   }
 
+  if (verdictProjected) {
+    process.stdout.write('\nDONE, but NOTHING WAS RECORDED — see the SKIPPED note above.\n');
+    process.exit(EXIT.VERDICT_IS_PROJECTED);
+  }
   process.stdout.write('\nDONE.\n');
   process.exit(EXIT.OK);
 }

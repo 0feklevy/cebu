@@ -291,6 +291,16 @@ export const admin_settings = pgTable('admin_settings', {
   // Viewer simulation-pool kill switch (migration 048): 'adaptive' = package-identity
   // resident pool; 'single' = conservative one-frame-on-activation fallback.
   sim_pool_mode: text('sim_pool_mode').default('adaptive').notNull(),
+  // ── RUM kill switch (migration 051) ─────────────────────────────────────────
+  // 0 = collect nothing. Flippable at runtime with no deploy. The reader treats a missing column as
+  // 0, so an image that boots before 051 is applied simply collects nothing.
+  rum_sample_rate: real('rum_sample_rate').default(0).notNull(),
+  rum_retention_days: integer('rum_retention_days').default(30).notNull(),
+  // ── Priority 8 runtime kill switches (migration 052) ────────────────────────
+  // All default to today's behaviour; each is flippable at runtime with no deploy.
+  sim_scheduler_mode: text('sim_scheduler_mode').default('off').notNull(),
+  sim_adaptive_quality: boolean('sim_adaptive_quality').default(false).notNull(),
+  sim_boundary_sentinel: boolean('sim_boundary_sentinel').default(false).notNull(),
   updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
@@ -453,8 +463,70 @@ export const simulations = pgTable('simulations', {
   package_class:    text('package_class'),                          // SimPackageClass | null
   canary_report:    jsonb('canary_report'),                         // CanaryReport | null
   canary_at:        timestamp('canary_at', { withTimezone: true }),
+  // ── Immutable package revisions (migration 050) ─────────────────────────────
+  // THE POINTER. The only mutable thing about a revisioned package: everything it points at lives
+  // under a path containing the revision id and is never rewritten. NULL means this simulation has
+  // no revisions and serves from its legacy mutable prefix — packageRevisionFor() falls back to the
+  // pre-revision derivation for exactly that case, which is what makes 050 strictly additive.
+  //
+  // No .references() here: the FK is declared in 050 and adding it to the Drizzle table would make
+  // simulations and sim_revisions mutually recursive at module scope. It is enforced in the DB.
+  active_revision_id:        uuid('active_revision_id'),
+  // Full storage key of the active revision's entry document. Denormalised so buildPlayerConfig —
+  // the hottest read path — resolves the pointer without joining. Written in the SAME UPDATE as
+  // active_revision_id; simulations_active_revision_pair_chk forbids them from disagreeing.
+  active_revision_entry_key: text('active_revision_entry_key'),
+  // Monotonic allocator for revision_number, incremented under the row lock. Never max()+1.
+  revision_counter:          integer('revision_counter').notNull().default(0),
+  // Derived from this package's canary report at publication (migration 051). A scalar, so the
+  // hottest read path never pulls canary_report JSONB to learn one number.
+  prepare_budget_ms:         integer('prepare_budget_ms'),
   created_at:       timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * One immutable published package revision (migration 050).
+ *
+ * A revision's bytes are written once, under a prefix containing its id, and never rewritten.
+ * Switching which revision is live is a single pointer update on `simulations`, so a viewer holding
+ * the old pointer keeps receiving a complete, self-consistent old package rather than a mix.
+ *
+ * The canary verdict lives HERE and not only on the simulation row because activation and rollback
+ * change which bytes are served WITHOUT touching bridge_hash — and bridge_hash is what currently
+ * clears the row-level verdict. A verdict that survived a rollback would grant the modern runtime
+ * path to bytes no canary ever ran against.
+ */
+export const sim_revisions = pgTable(
+  'sim_revisions',
+  {
+    id:                       uuid('id').primaryKey().defaultRandom(),
+    simulation_id:            uuid('simulation_id').notNull().references(() => simulations.id, { onDelete: 'cascade' }),
+    revision_number:          integer('revision_number').notNull(),
+    status:                   text('status').notNull().default('draft'),   // SimRevisionStatus
+    manifest_hash:            text('manifest_hash'),
+    entry_path:               text('entry_path'),                          // prefix-relative, inside the revision
+    bridge_protocol_version:  integer('bridge_protocol_version'),
+    runtime_protocol_version: integer('runtime_protocol_version'),
+    package_class:            text('package_class'),                       // SimPackageClass | null
+    canary_report:            jsonb('canary_report'),
+    canary_at:                timestamp('canary_at', { withTimezone: true }),
+    rollback_of_revision_id:  uuid('rollback_of_revision_id'),             // FK declared in 050
+    created_by:               text('created_by'),                          // may be a script, so no FK
+    metadata:                 jsonb('metadata'),
+    created_at:               timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    activated_at:             timestamp('activated_at', { withTimezone: true }),
+    retired_at:               timestamp('retired_at', { withTimezone: true }),
+  },
+  (t) => ({
+    uniq_sim_number: unique('uniq_sim_revisions_sim_number').on(t.simulation_id, t.revision_number),
+    idx_sim_activated: index('idx_sim_revisions_sim_activated').on(t.simulation_id, t.activated_at),
+    idx_status_created: index('idx_sim_revisions_status_created').on(t.status, t.created_at),
+    // uniq_sim_revisions_active — the partial unique index enforcing at most one active revision
+    // per simulation — is declared in 050 only. Drizzle's index builder has no WHERE clause, so
+    // expressing it here would silently create a TOTAL unique index and forbid a simulation from
+    // ever having a second revision.
+  }),
+);
 
 /**
  * Captured poster images, one row per presentation identity (migration 049).
@@ -1179,6 +1251,49 @@ export type NewCourseLesson = typeof course_lessons.$inferInsert;
 export type CourseCustomDomain = typeof course_custom_domains.$inferSelect;
 export type ProjectRedirectTarget = typeof project_redirect_targets.$inferSelect;
 export type SimulationRow = typeof simulations.$inferSelect;
+/**
+ * Sampled field measurements of the simulation pipeline (migration 051).
+ *
+ * Nothing identifying is stored: `session_id` is random per page load and never persisted on the
+ * client, device fields are coarse buckets, and `t_ms` is an offset from session start rather than a
+ * wall-clock time so two rows cannot be correlated against an external log.
+ */
+export const sim_rum_events = pgTable(
+  'sim_rum_events',
+  {
+    id:               uuid('id').primaryKey().defaultRandom(),
+    session_id:       text('session_id').notNull(),
+    // No FK: a revision may be garbage-collected while its measurements remain useful, and a FK
+    // would either block that collection or delete the history explaining why it was withdrawn.
+    package_revision: text('package_revision').notNull(),
+    kind:             text('kind').notNull(),
+    t_ms:             integer('t_ms').notNull(),
+    total_ms:         integer('total_ms'),
+    prepare_ms:       integer('prepare_ms'),
+    present_ms:       integer('present_ms'),
+    apply_ms:         integer('apply_ms'),
+    furthest_stage:   text('furthest_stage'),
+    failure_code:     text('failure_code'),
+    dropped:          integer('dropped').notNull().default(0),
+    device_memory_gb: integer('device_memory_gb'),
+    device_cores:     integer('device_cores'),
+    coarse_pointer:   boolean('coarse_pointer'),
+    save_data:        boolean('save_data'),
+    dpr:              real('dpr'),
+    pool_tier:        text('pool_tier'),
+    created_at:       timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    idx_created: index('idx_sim_rum_created').on(t.created_at),
+    idx_package: index('idx_sim_rum_package').on(t.package_revision, t.kind, t.created_at),
+  }),
+);
+
+export type SimRumEventRow = typeof sim_rum_events.$inferSelect;
+export type NewSimRumEvent = typeof sim_rum_events.$inferInsert;
+
+export type SimRevisionRow = typeof sim_revisions.$inferSelect;
+export type NewSimRevision = typeof sim_revisions.$inferInsert;
 export type SimPosterRow = typeof sim_posters.$inferSelect;
 export type NewSimPoster = typeof sim_posters.$inferInsert;
 export type Playlist = typeof playlists.$inferSelect;

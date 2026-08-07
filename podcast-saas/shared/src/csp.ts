@@ -20,6 +20,43 @@ export interface FrontendCspOptions {
   includeStripe?: boolean;
   /** true in development → adds localhost sources. MUST be false for a production policy. */
   dev?: boolean;
+  /**
+   * `host:port` of a LOCAL Firebase Auth emulator, added to connect-src in development only.
+   *
+   * With `connectAuthEmulator` active the SDK posts to `http://<host>:<port>/identitytoolkit…`,
+   * which `connect-src` refused — so anonymous sign-in failed silently inside the provider's catch
+   * and the page ran unauthenticated. Ignored entirely unless `dev` is true AND the value is a
+   * loopback host, so it can never widen a production policy.
+   */
+  authEmulatorHost?: string;
+}
+
+/**
+ * `http://host:port` for a loopback emulator, or '' for anything else. Never widens production.
+ *
+ * PARSED, NOT SPLIT. `hostPort.split(':')[0]` is not the host: for
+ * `localhost:9099@attacker.example.com` it yields "localhost", while a URL built from that string
+ * resolves to `attacker.example.com` — the leading text is userinfo. A naive check therefore
+ * accepts a value that points authentication at a remote host. The authority is parsed with the
+ * URL parser and the RESULT is what gets validated and re-emitted, so the string that is checked
+ * is always the string that is used.
+ */
+export function authEmulatorOrigin(hostPort: string | undefined, dev: boolean): string {
+  if (!dev || !hostPort) return '';
+  const trimmed = hostPort.trim().replace(/^https?:\/\//i, '').replace(/[/?#].*$/, '');
+  // Credentials in an authority are never legitimate here and are the exact bypass vector.
+  if (trimmed.includes('@') || trimmed.includes('\\')) return '';
+  let url: URL;
+  try {
+    url = new URL(`http://${trimmed}`);
+  } catch {
+    return '';
+  }
+  if (url.username || url.password) return '';
+  if (!url.port || !/^\d+$/.test(url.port)) return '';
+  if (!['localhost', '127.0.0.1'].includes(url.hostname)) return '';
+  // Rebuilt from the PARSED parts, never from the caller's string.
+  return `http://${url.hostname}:${url.port}`;
 }
 
 const LOOPBACK = /(localhost|127\.0\.0\.1|0\.0\.0\.0|::1)/i;
@@ -46,6 +83,8 @@ export function buildFrontendCsp(opts: FrontendCspOptions): string {
   const { apiUrl, firebaseAuthDomain, includeStripe = false, dev = false } = opts;
   const authFrame = firebaseAuthFrameOrigin(firebaseAuthDomain);
   const devApi = dev ? ' http://localhost:8080' : '';
+  const emu = authEmulatorOrigin(opts.authEmulatorHost, dev);
+  const devEmu = emu ? ` ${emu}` : '';
 
   // frame-src — the exact origins whose iframes our pages may load:
   //   the API origin (sims via /sim-public), Stripe checkout (client-web), and the Firebase
@@ -72,6 +111,6 @@ export function buildFrontendCsp(opts: FrontendCspOptions): string {
     "font-src 'self' data: https:",
     `img-src 'self' data: blob: https:${devApi}`,
     `media-src 'self' blob: https:${devApi}`,
-    `connect-src 'self' https: wss:${dev ? ' http://localhost:8080 ws://localhost:8080' : ''}`,
+    `connect-src 'self' https: wss:${dev ? ' http://localhost:8080 ws://localhost:8080' : ''}${devEmu}`,
   ].join('; ');
 }

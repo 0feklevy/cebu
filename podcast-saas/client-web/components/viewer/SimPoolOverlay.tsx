@@ -82,6 +82,18 @@ interface Props {
   stalled?: boolean;
   /** Waiting for a not-yet-painted sim with no video frame underneath to hold. */
   coldCover?: boolean;
+  /**
+   * The active section's captured poster — its own first frame.
+   *
+   * Shown INSTEAD of a bare spinner while a cold document boots. Seeking forward onto a
+   * simulation cannot make its bytes arrive faster, but it can stop the wait from looking like a
+   * loading screen: the poster is a picture of exactly what is about to appear. Until now this
+   * only reached the v3 presentation path, which no package in storage is on, so every real cold
+   * seek showed a featureless spinner while the captured frame sat unused.
+   */
+  posterSrc?: string | null;
+  /** A poster captured over a transparent background must not get an opaque backdrop. */
+  posterTransparent?: boolean;
   registerFrame: (key: string, el: HTMLIFrameElement | null) => void;
   onFrameLoad: (key: string) => void;
 }
@@ -89,12 +101,30 @@ interface Props {
 // Boot stagger between pool frames (counted from the arm gate opening).
 const POOL_STAGGER_MS = 1200;
 
-function SimPoolOverlayInner({ frames, activeKey, visible, armGate, stalled = false, coldCover = false, registerFrame, onFrameLoad }: Props) {
+function SimPoolOverlayInner({
+  frames, activeKey, visible, armGate, stalled = false, coldCover = false,
+  posterSrc = null, posterTransparent = false, registerFrame, onFrameLoad,
+}: Props) {
+  // A poster only replaces the spinner once it has actually PAINTED. Keying suppression on the
+  // URL merely EXISTING left two holes: the poster's own fetch (a black rectangle with no cue,
+  // because .sim-cold-poster paints `background:#000` from its first frame) and a poster that
+  // 404s (that black rectangle forever). Both are tracked against the specific src, so a section
+  // change re-arms the spinner instead of inheriting the previous poster's "ready".
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(null);
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const onPosterLoad = useCallback(() => setLoadedSrc(posterSrc), [posterSrc]);
+  const onPosterError = useCallback(() => setFailedSrc(posterSrc), [posterSrc]);
   if (frames.length === 0) return null;
   // The wait/stall affordance is a SIBLING of the fading overlay, not a child: the player
   // holds the video (overlay opacity 0) while a sim hasn't painted, and the spinner must be
   // able to show during that hold. It never captures pointer events — controls stay usable.
   const affordance = stalled || coldCover;
+  const posterFailed = posterSrc !== null && failedSrc === posterSrc;
+  const posterPainted = posterSrc !== null && loadedSrc === posterSrc;
+  // A poster that failed to load is not shown at all — its `background:#000` would be an opaque
+  // black box standing in for a picture that will never arrive.
+  const showPoster = posterSrc !== null && !posterFailed;
+  const showSpinner = !showPoster || !posterPainted || stalled;
   return (
     <>
       <div className={`sim-overlay${visible ? ' visible' : ''}`}>
@@ -112,8 +142,29 @@ function SimPoolOverlayInner({ frames, activeKey, visible, armGate, stalled = fa
         ))}
       </div>
       {affordance && (
-        <div className={`sim-wait-affordance${stalled ? ' stalled' : ''}`} aria-hidden>
-          <div className="sim-overlay-spinner" />
+        <div
+          className={`sim-wait-affordance${stalled ? ' stalled' : ''}${showPoster ? ' has-poster' : ''}`}
+          aria-hidden
+        >
+          {showPoster && (
+            <img
+              className={`sim-cold-poster${posterTransparent ? ' transparent' : ''}`}
+              src={resolveAssetUrl(posterSrc) ?? posterSrc}
+              alt=""
+              // decoding=async so a large poster cannot block the frame that reveals the sim; the
+              // poster is a courtesy and must never itself become the reason the sim appears late.
+              decoding="async"
+              onLoad={onPosterLoad}
+              onError={onPosterError}
+            />
+          )}
+          {/* The spinner is kept when there is no poster, while the poster has not painted yet,
+              when the poster failed outright, or when the sim has genuinely stalled — a still
+              image with no motion would otherwise read as "finished loading" when it is broken.
+              `.sim-overlay-spinner` carries its own stacking context in viewer.css: the poster is
+              absolutely positioned, so a statically-positioned spinner paints UNDERNEATH it and
+              the stall cue silently disappears. */}
+          {showSpinner && <div className="sim-overlay-spinner" />}
         </div>
       )}
     </>

@@ -6,7 +6,14 @@ import type { PlayerConfig, PlayerSegment, SimulationOverlay, TimelineSeg, Broll
 import { releaseAvatarElement } from '../../lib/avatarAudioGraph';
 import type { SimStartScriptParams } from '../../lib/simUiControls';
 import { canWarmUnpaused, learnCanEmitPaint } from '../../lib/simCapability';
-import { collectSimPool, bootHideFor, dynamicScriptFor, flattenSimOccurrences, packageKeyOf, planWindowResidency, SIM_POOL_CAP, type SimPoolFrameSpec } from '../../lib/simPool';
+import { collectSimPool, bootHideFor, dynamicScriptFor, flattenSimOccurrences, packageKeyOf, planWindowResidency, sectionKeyOf, SIM_POOL_CAP, type SimPoolFrameSpec } from '../../lib/simPool';
+import { planResidency, type SimOccurrence } from 'shared/src/sim/occurrencePlanner';
+import { resolveBudget } from 'shared/src/sim/prepareBudget';
+import { nextQualityFor, INITIAL_QUALITY_STATE, type QualityState } from 'shared/src/sim/adaptiveQuality';
+import { armBoundarySentinel, type BoundarySentinel } from '../../lib/sim/boundaryClock';
+import { createRumRecorder, type RumRecorder } from '../../lib/sim/rumClient';
+import { labStandardMs } from '../../lib/sim/qualityBudgets';
+import { singleModeEvictions, hardCapEviction } from '../../lib/sim/poolResidency';
 import { newPlayerSessionId } from 'shared/src/sim/simIdentity';
 import { simTelemetry } from '../../lib/simTelemetry';
 import { SimRuntimeClient } from '../../lib/sim/SimRuntimeClient';
@@ -44,6 +51,8 @@ const SIM_PAINT_POLL_MAX_MS = 12_000;
 const SIM_WINDOW_LEAD_SEC   = 45;
 
 const BRANCH_API = process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
+/** Sampled field measurement (migration 051). Inert until an operator raises the sample rate. */
+const SIM_RUM_ENDPOINT = `${BRANCH_API}/sim-rum`;
 
 // ── HLS.js config (ported from interactive-podcast-react/player/src/constants/index.ts) ──
 const HLS_OPTS = {
@@ -281,6 +290,40 @@ export function useProjectPlayer(
   // Kill switch: 'single' mode (admin_settings.sim_pool_mode / SIM_POOL_MODE env, overridable
   // per-session with ?simpool=single|adaptive) reverts to the conservative pre-pool behavior —
   // ONE sim frame, mounted on activation, no residency/warm — without a deploy rollback.
+  // ── Priority 8 runtime switches. Read ONCE from the config; every one defaults to today's
+  // behaviour, so a config that predates migration 052 is indistinguishable from all-off.
+  const schedulerModeRef = useRef<'off' | 'predictive'>(
+    config.sim_scheduler_mode === 'predictive' ? 'predictive' : 'off');
+  const adaptiveQualityRef = useRef<boolean>(config.sim_adaptive_quality === true);
+  const boundarySentinelRef = useRef<boolean>(config.sim_boundary_sentinel === true);
+  /** Per-simulation lab preparation cost, from the package's own canary. */
+  const labBudgetsRef = useRef<Record<string, number>>(config.sim_lab_budget_ms ?? {});
+  const prepareBudgetsRef = useRef<Record<string, number>>(config.sim_prepare_budget_ms ?? {});
+  /** Adaptive-quality state per PACKAGE — quality is a property of the bytes, not of a section. */
+  const qualityStateRef = useRef<Map<string, QualityState>>(new Map());
+  /** The armed boundary sentinel, if any. Exactly one at a time. */
+  const boundarySentinelHandleRef = useRef<BoundarySentinel | null>(null);
+  const boundaryTargetRef = useRef<number | null>(null);
+  const rumRef = useRef<RumRecorder | null>(null);
+  /**
+   * The RUM recorder for this session, created once.
+   *
+   * Inert unless an operator has raised the sample rate AND this session wins its single roll, so
+   * on every current deployment `createRumRecorder` returns a no-op the player cannot distinguish
+   * from a live one. That symmetry is deliberate: nothing in the player may branch on whether
+   * measurement is on.
+   */
+  const rum = (): RumRecorder => {
+    if (!rumRef.current) {
+      rumRef.current = createRumRecorder({
+        endpoint: SIM_RUM_ENDPOINT,
+        sampleRate: config.sim_rum_sample_rate ?? 0,
+        poolTier: poolTierRef.current,
+      });
+    }
+    return rumRef.current;
+  };
+
   const simPoolModeRef = useRef<'adaptive' | 'single' | null>(null);
   if (simPoolModeRef.current === null) {
     let mode: 'adaptive' | 'single' = config.sim_pool_mode === 'single' ? 'single' : 'adaptive';
@@ -439,7 +482,11 @@ export function useProjectPlayer(
   // dynamic bridges run it directly); `legacyScript` = what an old bridge understands
   // ('main' → its URL's ?section default); `sectionUrl` lets the SIM_READY handler detect a
   // legacy frame parked on the WRONG section (→ navigate).
-  interface PendingSimStart { sectionUrl: string; dynScript: string; legacyScript: string; params: SimStartScriptParams }
+  interface PendingSimStart {
+    sectionUrl: string; dynScript: string; legacyScript: string; params: SimStartScriptParams;
+    /** True when this activation dispatches NO body (raw package — full simulation). */
+    raw: boolean;
+  }
   const pendingSimRef   = useRef<PendingSimStart | null>(null);
   // The CURRENT desired sim script+params while a sim section is active (null outside one).
   // A pool frame's 'load' listener re-arms pendingSimRef from this so a freshly (re)loaded
@@ -482,8 +529,20 @@ export function useProjectPlayer(
   interface PoolMeta {
     canEmitPaint: boolean;
     expectReload: boolean; warmCeil: ReturnType<typeof setTimeout> | null;
+    /**
+     * Whether THIS document has ever run a section body. Load-bearing for RAW activations (a
+     * section with no ?section= and no named script — "show the full simulation"): those dispatch
+     * NO body, so nothing repairs whatever imperative UI state the previous body left behind.
+     * The mechanical __simHideUi hide is reversed by stopScript, but generated bodies also hide
+     * controls imperatively when params.simpleUi is on, and their cleanups cannot be trusted to
+     * restore it — the bytes are baked into published bridges. A raw activation on a scripted
+     * document therefore needs a fresh document, and this flag is how it knows.
+     */
+    scriptedEver: boolean;
   }
   const simPoolMetaRef = useRef<Map<string, PoolMeta>>(new Map());
+  /** Monotonic nonce for forced same-URL reloads — see navigateFrame. */
+  const simResetSeqRef = useRef(0);
   // One SimRuntimeClient per package. SimRuntimeClient is a ONE-DOCUMENT state machine and this
   // hook manages a POOL of documents, so the map is owned here: created on demand, re-attached on
   // a document IDENTITY change (navigateFrame), disposed on dropPooled and on unmount.
@@ -654,7 +713,7 @@ export function useProjectPlayer(
   const poolMeta = (key: string): PoolMeta => {
     let m = simPoolMetaRef.current.get(key);
     if (!m) {
-      m = { canEmitPaint: false, expectReload: false, warmCeil: null };
+      m = { canEmitPaint: false, expectReload: false, warmCeil: null, scriptedEver: false };
       simPoolMetaRef.current.set(key, m);
     }
     return m;
@@ -663,6 +722,20 @@ export function useProjectPlayer(
   // ── SimRuntimeClient ownership ────────────────────────────────────────────
   // Lifecycle reactions are dispatched through a ref so the client can be created before the
   // handlers below are declared (they close over revealSim / merge, which come later in the body).
+  /**
+   * The package identity a field measurement is filed under, or null when there isn't one.
+   *
+   * NEVER the pool key as a fallback. That key is a full origin + pathname, so it is always past
+   * the validator's 64-character bound — and the validator rejects the whole BATCH on one bad
+   * event, not just that event. A single unrevisioned section therefore discarded every
+   * measurement sitting beside it in the ring. An unfiled measurement is worth nothing anyway:
+   * there is no package to attribute it to, which is exactly why the validator refuses it.
+   */
+  const rumPackageKey = (): string | null => {
+    const rev = activeSimRef.current?.package_revision;
+    return typeof rev === 'string' && rev.length > 0 && rev.length <= 64 ? rev : null;
+  };
+
   const runtimeEventRef = useRef<(key: string, event: string, detail?: Record<string, unknown>) => void>(() => {});
   // Get-or-create the client for a package. It registers NO window listener until a frame is
   // attached, so this is safe to call for a package that has no iframe yet.
@@ -760,17 +833,23 @@ export function useProjectPlayer(
   const ensurePooledSpec = (spec: SimPoolFrameSpec) => {
     if (simPoolSpecsRef.current.some((s) => s.key === spec.key)) return;
     // Single mode: strictly one resident frame — evict every non-active package before adding.
+    //
+    // A frame still inside its EXIT FADE is spared, exactly as the window planner spares it.
+    // `deactivateSim` clears `activeSimUrlRef` BEFORE this runs, so the outgoing frame is no longer
+    // "active" and was dropped here while still being animated: the simulation cut to video instead
+    // of fading, and the deferred stopScript fired into a dead frame. It is collected by a later
+    // residency pass once the fade has resolved — the per-tick loop applies the SAME rule, which it
+    // previously did not, so this sparing was undone within the same tick.
     if (poolTierRef.current === 'single') {
-      for (const s of [...simPoolSpecsRef.current]) {
-        if (s.key !== activeSimUrlRef.current) dropPooled(s.key, 'single-mode');
+      for (const key of singleModeEvictions([...simPoolSpecsRef.current], activeSimUrlRef.current, isFadingOut)) {
+        dropPooled(key, 'single-mode');
       }
     }
-    if (simPoolSpecsRef.current.length + 1 > SIM_POOL_HARD_CAP) {
-      const evict = simPoolSpecsRef.current.find((s) =>
-        s.key !== spec.key && s.key !== activeSimUrlRef.current && s.key !== warmingSimUrlRef.current)
-        ?? simPoolSpecsRef.current.find((s) => s.key !== spec.key && s.key !== activeSimUrlRef.current);
-      if (evict) dropPooled(evict.key, 'hard-cap');
-    }
+    const capVictim = hardCapEviction(
+      simPoolSpecsRef.current, spec.key, activeSimUrlRef.current, warmingSimUrlRef.current,
+      SIM_POOL_HARD_CAP, isFadingOut,
+    );
+    if (capVictim) dropPooled(capVictim, 'hard-cap');
     simPoolSpecsRef.current = [...simPoolSpecsRef.current, spec];
     merge({ simPool: simPoolSpecsRef.current });
     simTelemetry('pool-spec-add', { key: spec.key });
@@ -804,19 +883,37 @@ export function useProjectPlayer(
   // package's first-using section — audited: a legacy Minimal-UI target navigated uncloaked).
   const navigateFrame = (key: string, src: string, bootHide?: string[] | null) => {
     const meta = poolMeta(key);
+    // A RELOAD ONTO THE SAME URL NEEDS A DISTINCT SRC.
+    //
+    // When the frame is already on this URL — which happens whenever the raw section was entered
+    // before the one that dirtied the document — React re-renders an identical `src` prop and
+    // nothing navigates. Worse, `attach(frame, src)` then takes its SAME-DOCUMENT branch and keeps
+    // `ready`/`painted` alive, so the SIM_READY that would apply the pending activation never
+    // fires again and the frame sits undispatched with no paint poll and no stall bound.
+    //
+    // A nonce makes it a genuine new document identity: the spec really changes, the browser really
+    // navigates, and `attach` really resets. It does not disturb dispatch or residency — the nonce
+    // is not a `section` param, so `variantParamOf` still returns null, and `packageKeyOf` keys on
+    // origin+pathname, so the package stays one pool entry.
+    const prev = simPoolSpecsRef.current.find((s) => s.key === key);
+    const finalSrc = prev?.src === src
+      ? `${src}${src.includes('?') ? '&' : '?'}__simreset=${++simResetSeqRef.current}`
+      : src;
     meta.expectReload = true;
+    // A new document identity has run nothing — the raw-activation dirtiness starts over.
+    meta.scriptedEver = false;
     // A document IDENTITY change. SimRuntimeClient models ONE document, so re-attach it under the
     // new key: that resets every per-document flag and cancels its in-flight timers (including a
     // deferred stop, which must never hit the new document).
-    runtimeFor(key).attach(simPoolFramesRef.current.get(key) ?? null, src);
+    runtimeFor(key).attach(simPoolFramesRef.current.get(key) ?? null, finalSrc);
     cancelPristineReload(key);
     clearWarmCeil(meta);
     warmQueueRef.current = warmQueueRef.current.filter((k) => k !== key);
     finishWarm(key);
     simPoolSpecsRef.current = simPoolSpecsRef.current.map((s) =>
-      (s.key === key ? { ...s, src, ...(bootHide !== undefined ? { bootHide } : {}) } : s));
+      (s.key === key ? { ...s, src: finalSrc, ...(bootHide !== undefined ? { bootHide } : {}) } : s));
     merge({ simPool: simPoolSpecsRef.current });   // spec.src change → iframe src prop → navigation
-    simTelemetry('navigate', { key, src: src.slice(-80) });
+    simTelemetry('navigate', { key, src: finalSrc.slice(-80), forced: finalSrc !== src });
   };
 
   // ── Paint-gated reveal — the ONLY writer of showSimOverlay:true ───────────
@@ -993,6 +1090,92 @@ export function useProjectPlayer(
       const sectionUrl = simSection.simulation_url;
       const key = packageKeyOf(sectionUrl);
       ensurePooled(simSection);
+      // SINGLE MODE IS ENFORCED HERE, not only on the tick.
+      //
+      // The kill switch promises at most one resident document. Leaving that to the tick made the
+      // promise depend on `timeupdate`, whose cadence after a seek is engine-specific — WebKit
+      // held two frames where Chromium and Firefox held one. A kill switch whose guarantee varies
+      // by browser is not a kill switch, so the section change (which is deterministic) enforces
+      // it too. `ensurePooledSpec` already evicts when it ADDS a spec; this covers the case where
+      // the incoming package was already resident and it returns early.
+      // A frame still inside its EXIT FADE survives to a later pass, exactly as the window planner
+      // protects it: unmounting mid-fade removes the element being animated, so the simulation CUTS
+      // to video instead of fading, and the deferred stopScript fires into a dead frame. The kill
+      // switch's promise is at most one resident document in STEADY STATE, not one during a
+      // transition — and 'single' is the mode an operator selects during an incident, which is the
+      // worst moment to add a visible glitch. Same shared rule as the other two single-mode sites.
+      if (poolTierRef.current === 'single') {
+        for (const evictKey of singleModeEvictions([...simPoolSpecsRef.current], key, isFadingOut)) {
+          dropPooled(evictKey, 'single-mode-switch');
+        }
+      }
+      // ADAPTIVE QUALITY (migration 052 kill switch, default off).
+      //
+      // Decided BEFORE the identity is minted, which is the only safe place: `quality` is inside
+      // configHash and configHash is one of the five axes the reveal invariant compares. A change
+      // here produces a different hash — correctly invalidating the poster keyed on it — and can
+      // never alter a LIVE activation. Nothing here is ever consulted by the reveal gate.
+      //
+      // State is per PACKAGE because cost is a property of the bytes. Hysteresis is asymmetric:
+      // quick to protect a struggling device, slow to re-expand, because each change re-mints an
+      // identity and discards a poster.
+      let adaptiveQuality: 'high' | 'balanced' | 'low' | undefined;
+      if (adaptiveQualityRef.current) {
+        try {
+          const pkgKey = packageKeyOf(sectionUrl);
+          const rt0 = simRuntimesRef.current.get(pkgKey);
+          const summary = rt0?.timingSummary();
+          // THE LAB NUMBER, AND ONLY THE LAB NUMBER — no fallback to the lead time.
+          //
+          // `sim_prepare_budget_ms` is the preparation LEAD TIME, refined by field data once >=30
+          // credible rows exist; at that point it IS the fleet p90 x 1.25. Judging a device's p90
+          // against it asks whether `p90 > 1.25 x p90`, which is the circularity this call site was
+          // fixed to remove — and the `??` fallback below reintroduced it for exactly the packages
+          // the fix was written to protect. The old comment justified the fallback with "there the
+          // two are equal", which is true ONLY for a package that has a canary and no field data;
+          // a package with NO canary and plenty of field data is the case that matters, and there
+          // the lead time is pure field data masquerading as a standard.
+          //
+          // The server already emits `sim_lab_budget_ms` only when a real canary number exists
+          // (buildPlayerConfig: `if (lab !== null) simLabBudgets[simId] = lab`), so absent here
+          // means genuinely un-canaried. `nextQualityFor` answers 'no-lab-budget' for that, holding
+          // the prior profile rather than degrading the package against `MIN_BUDGET_MS` (250ms) —
+          // a floor is not a measurement, and an ordinary transition exceeds it.
+          const lab = labStandardMs(
+            { sim_lab_budget_ms: labBudgetsRef.current },
+            simSection.simulation_id,
+          );
+          // ONE tested composition, not two calls joined here.
+          //
+          // Joining them at this call site is what produced the defect: passing the measured p90
+          // into `resolveBudget` made the budget `p90 x 1.25`, so the controller then asked whether
+          // `p90 > 1.25 x p90` and pinned itself to 'high' for a device six times over its budget.
+          // `nextQualityFor` takes the lab number and the field p90 as separate arguments, so
+          // there is no longer a second place to put the p90.
+          const prior = qualityStateRef.current.get(pkgKey) ?? INITIAL_QUALITY_STATE;
+          const decision = nextQualityFor(prior, {
+            measuredP90Ms: summary?.p90TotalMs ?? null,
+            samples: summary?.completed ?? 0,
+            labBudgetMs: lab,
+          });
+          qualityStateRef.current.set(pkgKey, decision.state);
+          adaptiveQuality = decision.next;
+          // Reported on EVERY decision, not only on a change. A controller that has decided
+          // "stay at high" is doing its job; telemetry that spoke only on transitions could not
+          // distinguish that from a controller that was never consulted at all — which is exactly
+          // the confusion that let four of these modules ship with no caller.
+          simTelemetry('adaptive-quality', {
+            key: pkgKey, next: decision.next, changed: decision.changed,
+            reason: decision.reason, budgetSource: decision.budgetSource,
+          });
+        } catch (err) {
+          // A controller fault must never change what is shown. Leaving `adaptiveQuality`
+          // undefined is exactly the pre-feature behaviour.
+          adaptiveQuality = undefined;
+          simTelemetry('adaptive-quality-error', { message: String(err).slice(0, 120) });
+        }
+      }
+
       const params: SimStartScriptParams = {
         simpleUi:   simSection.simple_ui ?? false,
         autoScript: simSection.auto_script ?? true,
@@ -1007,9 +1190,22 @@ export function useProjectPlayer(
       // bridges only run their URL's ?section default, so they must NAVIGATE when the
       // frame's src is another section.
       const dynScript = dynamicScriptFor(simSection);
+      // RAW activation: the URL carries NO ?section= and no real named script, so nothing selects a
+      // body — by design this means "present the package as-is" (SCRIPT_MISSING runs nothing). The
+      // Edge-of-Chaos shape: a full-simulation finale sharing its package with scripted sections.
+      //
+      // STRUCTURAL, not `dynScript === simSection.id`. That comparison looked equivalent and is a
+      // string coincidence: SimulationService mints `?section=${sectionId}` using the section's OWN
+      // row id, so variantKeyFor returns that id for every normally generated section and the
+      // comparison was TRUE for almost all of them. Two things broke as a result — scripted
+      // siblings never marked the document dirty (so the reset this exists for rarely fired), and
+      // `presentAsLoaded` was passed on nearly every activation, disabling the SCRIPT_MISSING
+      // protection product-wide. Only a section that genuinely selects no body is raw.
+      const rawActivation = sectionKeyOf(sectionUrl) === null
+        && (!simSection.sim_script || simSection.sim_script === 'main');
       const legacyScript = simSection.sim_script ?? 'main';
       activeSimUrlRef.current = key;
-      desiredSimRef.current = { sectionUrl, dynScript, legacyScript, params };
+      desiredSimRef.current = { sectionUrl, dynScript, legacyScript, params, raw: rawActivation };
       merge({ activeSimUrl: key });
       simTelemetry('activate', { key, section: simSection.id });
 
@@ -1045,6 +1241,10 @@ export function useProjectPlayer(
             playerSessionId: playerSessionIdRef.current,
             packageRevision: simSection.package_revision,
             packageClass: simSection.package_class ?? 'legacy-opaque',
+            // Pre-identity, so a change here mints a NEW configHash rather than mutating a live
+            // activation. Undefined when the switch is off — the client's own default then applies,
+            // byte-for-byte as before.
+            ...(adaptiveQuality ? { quality: adaptiveQuality } : {}),
           },
           {
             failureContext: {
@@ -1093,11 +1293,21 @@ export function useProjectPlayer(
       // A document that HANDSHOOK and did not advertise in-place dispatch is load-time-locked:
       // its SCRIPTS.main is its own URL's ?section default, so a postMessage cannot switch it.
       const legacyNeedsNav = wasReady && !wasDynamic && spec && spec.src !== sectionUrl;
-      if (legacyNeedsNav) {
-        // Old load-time-locked bridge showing a different section — reload it on this URL,
-        // re-cloaked with the TARGET section's Minimal-UI selectors (not the first-user's).
+      // A RAW activation must present the package AS LOADED. On a document that has run a section
+      // body, "as loaded" no longer exists: the body applied its own imperative changes (Minimal-UI
+      // hiding among them, when ui_hide is empty and the mechanical path never engaged), stopScript
+      // reverses only the mechanical hide, and a raw dispatch runs nothing that could repair the
+      // rest. The v2-dynamic assumption — "the next startScript re-runs the body from its initial
+      // state" — holds for every scripted section and fails for exactly this one, so the raw case
+      // reloads the document instead of trusting it.
+      const rawNeedsNav = wasReady && wasDynamic && rawActivation && meta.scriptedEver;
+      if (legacyNeedsNav || rawNeedsNav) {
+        if (rawNeedsNav) simTelemetry('raw-reset-reload', { key });
+        // Reload on this URL, re-cloaked with the TARGET section's Minimal-UI selectors (not the
+        // first-user's). For the raw case the target URL carries no ?section=, so the fresh
+        // document boots with no default body — the full simulation, exactly as published.
         navigateFrame(key, sectionUrl, bootHideFor(simSection));
-        pendingSimRef.current = { sectionUrl, dynScript, legacyScript, params };
+        pendingSimRef.current = { sectionUrl, dynScript, legacyScript, params, raw: rawActivation };
       } else if (wasReady && wasPainted) {
         clearWarmCeil(meta);
         // Same-document switch: `painted` only certifies the document once drew SOMETHING
@@ -1108,7 +1318,9 @@ export function useProjectPlayer(
         // echoes on every ack, and either holds or announces the reveal. The terminal bound that
         // guarantees a wedged bridge can never hold the screen forever is its SIM_APPLY_STALL_MS
         // timer, which reports `reveal-forced`.
-        rt.activate({ script: wasDynamic ? dynScript : legacyScript, params });
+        if (!(wasDynamic && rawActivation)) meta.scriptedEver = true;
+        rt.activate({ script: wasDynamic ? dynScript : legacyScript, params,
+          presentAsLoaded: wasDynamic && rawActivation });
         // A document the pool LATCHED as painted (the never-drives-rAF escape hatch below) can
         // never produce the runtime's paint-driven reveal, so composite it here. revealSim
         // re-checks the hold, so a gated switch is still never presented early.
@@ -1117,7 +1329,9 @@ export function useProjectPlayer(
       } else if (wasReady) {
         // Frame is alive but hasn't acked a painted frame yet — drive it and poll the paint ack.
         clearWarmCeil(meta);
-        rt.activate({ script: wasDynamic ? dynScript : legacyScript, params });
+        if (!(wasDynamic && rawActivation)) meta.scriptedEver = true;
+        rt.activate({ script: wasDynamic ? dynScript : legacyScript, params,
+          presentAsLoaded: wasDynamic && rawActivation });
       } else {
         // Frame still booting (or just added on-demand): the SIM_READY handler applies the
         // pending start once its bridge answers (and resolves dynamic-vs-legacy then).
@@ -1128,10 +1342,18 @@ export function useProjectPlayer(
         // never answer at all. This is a pool-only race (no single-document surface can freeze a
         // frame it is about to present) and it is what the boundary handshake poll used to mask.
         rt.resume();
-        pendingSimRef.current = { sectionUrl, dynScript, legacyScript, params };
+        pendingSimRef.current = { sectionUrl, dynScript, legacyScript, params, raw: rawActivation };
       }
 
-      if (!(wasReady && wasPainted) || legacyNeedsNav) {
+      // `rawNeedsNav` BELONGS HERE for the same reason `legacyNeedsNav` does: both just called
+      // `navigateFrame`, so `wasReady && wasPainted` describes the document that was thrown away,
+      // not the blank one now booting. Omitting it meant a raw-reset reload armed NOTHING: no
+      // `startSimPoll` (no readiness/paint polling, no legacy reveal ceiling), no paint deadline,
+      // no `simColdCover` (so neither poster nor spinner over a blank frame), and no 5s stall
+      // affordance with its terminal force-reveal. The only remaining bound was the iframe's
+      // native `load`, which waits for every subresource — and if one hangs, nothing was armed at
+      // all and the section never revealed for its entire duration.
+      if (!(wasReady && wasPainted) || legacyNeedsNav || rawNeedsNav) {
         startSimPoll(key);
         // Bounded HOLD ceiling. A paint ack may still land any moment — but a frame whose gate
         // cannot emit one (`canEmitPaint === false`) never will, so after the ceiling it
@@ -1717,11 +1939,18 @@ export function useProjectPlayer(
       }
 
       // Residency. 'single' tier (kill switch): keep ONLY the active package's frame; drop
-      // everything else each tick, so at most one sim document ever lives (approximates the
-      // pre-pool navigating iframe). The active frame mounts on activation via ensurePooled.
+      // everything else each tick, so at most one sim document ever lives in STEADY STATE
+      // (approximates the pre-pool navigating iframe). The active frame mounts on activation via
+      // ensurePooled.
+      //
+      // THIS is the eviction that actually runs at a section boundary, and it had no fade guard:
+      // `deactivateSim` clears `activeSimUrlRef` first, so the outgoing frame is not "active" here
+      // and was dropped mid-fade on the very next timeupdate — defeating the guards at both
+      // `ensurePooledSpec` and the section-change site within the same tick. It now applies the
+      // same shared rule they do.
       if (poolTierRef.current === 'single') {
-        for (const spec of [...simPoolSpecsRef.current]) {
-          if (spec.key !== activeSimUrlRef.current) dropPooled(spec.key, 'single-mode');
+        for (const key of singleModeEvictions([...simPoolSpecsRef.current], activeSimUrlRef.current, isFadingOut)) {
+          dropPooled(key, 'single-mode');
         }
       }
       // Residency. 'all' tier: every active-path package mounted at start — nothing to do.
@@ -1731,6 +1960,173 @@ export function useProjectPlayer(
       // behind short segments — audited). The plan is authoritative: an EMPTY plan evicts every
       // non-active frame, so long sim-free gaps release WebGL contexts (the old `want.size > 0`
       // guard retained them indefinitely — audited).
+      // FRAME-ACCURATE BOUNDARY SENTINEL (migration 052 kill switch, default off).
+      //
+      // `timeupdate` fires at roughly 4Hz, so boundary detection is late by ~125ms on average
+      // before any of the transition work begins. requestVideoFrameCallback fires per PRESENTED
+      // frame and carries the frame's own mediaTime, cutting that to about one frame.
+      //
+      // It is a SENTINEL, not a replacement: this tick remains the master clock and the safety net.
+      // A missed sentinel costs nothing — the next tick re-detects the same boundary — and rVFC
+      // does not fire while paused, which this player does deliberately for post-roll sections.
+      // Where rVFC is absent (Firefox, historically) the sentinel falls back to a rate-scaled
+      // timer, and where neither can arm the behaviour is exactly today's.
+      if (boundarySentinelRef.current && !scrubbingRef.current) {
+        const segOff = timelineRef.current[idx]?.offset ?? 0;
+        let nextStart: number | null = null;
+        for (const sim of segmentsRef.current[idx]?.simulations ?? []) {
+          if (!sim.simulation_url) continue;
+          if (sim.start_sec > t && (nextStart === null || sim.start_sec < nextStart)) {
+            nextStart = sim.start_sec;
+          }
+        }
+        if (nextStart !== null && nextStart !== boundaryTargetRef.current) {
+          boundarySentinelHandleRef.current?.cancel();
+          boundarySentinelHandleRef.current = null;
+          const target = nextStart;
+          const armIdx = idx;
+          const v = videoRef.current;
+          const sentinel = v ? armBoundarySentinel({
+            video: v,
+            targetSec: target,
+            onBoundary: (mediaTime) => {
+              boundarySentinelHandleRef.current = null;
+              boundaryTargetRef.current = null;
+              simTelemetry('boundary-fired', { target, mediaTime });
+              // Guards appropriate to a sentinel: the element may have been swapped, the segment
+              // may have changed under the wait, or the user may be scrubbing.
+              //
+              // NOT `warmGenRef`. That counter is incremented by `deactivateSim`, which runs on
+              // every tick where no section is active — about four times a second, in exactly the
+              // video-only stretch this sentinel waits through. A generation that invalidates
+              // itself 4x/s cannot guard a 350 ms window; it can only ever refuse.
+              if (v !== videoRef.current || curIdxRef.current !== armIdx) return;
+              if (scrubbingRef.current) return;
+              updateSimOverlay(curIdxRef.current, mediaTime);
+              setProgress(segOff + mediaTime);
+            },
+          }) : null;
+          // LATCH ONLY ON A REAL ARM.
+          //
+          // `armBoundarySentinel` refuses (mode 'none') when the boundary is beyond its 0.35s
+          // horizon — which, for a section 30s away, is every tick but the last. Latching the
+          // target regardless spent the single arming attempt on that first refusal, and no later
+          // tick could retry because the target had stopped changing. The sentinel therefore never
+          // armed once during ordinary linear playback: it only ever ran when a seek happened to
+          // land inside the horizon. Leaving the target null re-attempts each tick, which costs a
+          // rejected call and gains the arm that the feature exists for.
+          if (sentinel && sentinel.mode !== 'none') {
+            boundarySentinelHandleRef.current = sentinel;
+            boundaryTargetRef.current = target;
+            // `mode` records WHICH mechanism armed — rvfc, timeout, or none.
+            //
+            // THIS IS NOT FIELD DATA. `simTelemetry` is inert unless the URL carries `?simdebug=1`
+            // and its only sink is an in-memory array; nothing transmits it. So this answers "which
+            // path did THIS session take" for someone debugging, and does NOT answer "what fraction
+            // of sessions get the frame-accurate path" — an earlier version of this comment claimed
+            // it did. Answering that needs `mode` routed through the RUM path.
+            simTelemetry('boundary-armed', { target, mode: sentinel.mode });
+          } else {
+            sentinel?.cancel();
+            boundaryTargetRef.current = null;
+          }
+        } else if (nextStart === null && boundaryTargetRef.current !== null) {
+          boundarySentinelHandleRef.current?.cancel();
+          boundarySentinelHandleRef.current = null;
+          boundaryTargetRef.current = null;
+        }
+      }
+
+      // PREDICTIVE PREPARATION (migration 052 kill switch, default 'off').
+      //
+      // Strictly ADDITIVE: it only ever MOUNTS a package early. The existing tier logic below keeps
+      // full authority over eviction, so a mistake here can waste a mount but can never drop a
+      // document the viewer is about to need — which is why this runs before, and does not replace,
+      // the residency block.
+      //
+      // The lead window comes from each package's own publish-time canary, never a constant. A
+      // package with no lab measurement gets the floor rather than being treated as instantaneous.
+      // 'all' ONLY — never at the 'window' tier.
+      //
+      // At 'window' the planner ~40 lines below owns residency with a 45s lead and evicts anything
+      // outside its keep set. Predictive's lead is a prepare budget capped at 10s, so it can never
+      // mount something that planner has not already mounted — but it CAN mount a second package
+      // (its capacity is 2) that the window planner then drops on the same tick. That repeats every
+      // timeupdate: iframe and WebGL context created and destroyed at ~4 Hz, which is worse than
+      // the feature is good. Restricting it to the tier where nothing else evicts removes the fight
+      // entirely rather than trying to keep two planners in agreement.
+      if (schedulerModeRef.current === 'predictive' && poolTierRef.current === 'all') {
+        try {
+          const occ: SimOccurrence[] = [];
+          for (let i = 0; i < segmentsRef.current.length; i += 1) {
+            const off = timelineRef.current[i]?.offset ?? 0;
+            for (const sim of segmentsRef.current[i]?.simulations ?? []) {
+              if (!sim.simulation_url) continue;
+              occ.push({
+                sectionId: sim.id,
+                packageKey: packageKeyOf(sim.simulation_url),
+                startSec: off + sim.start_sec,
+                endSec: off + sim.end_sec,
+              });
+            }
+          }
+          const absNow = (timelineRef.current[idx]?.offset ?? 0) + t;
+          const v = videoRef.current;
+          // Buffered-ahead gates SPECULATIVE preparation only: preparing a document the network
+          // cannot yet deliver competes with the segment fetches that would make it reachable.
+          let bufferedAheadSec: number | undefined;
+          try {
+            if (v && v.buffered.length > 0) {
+              for (let i = v.buffered.length - 1; i >= 0; i -= 1) {
+                if (v.buffered.start(i) <= v.currentTime && v.currentTime <= v.buffered.end(i)) {
+                  bufferedAheadSec = v.buffered.end(i) - v.currentTime;
+                  break;
+                }
+              }
+            }
+          } catch { bufferedAheadSec = undefined; }
+
+          const plan = planResidency({
+            occurrences: occ,
+            nowSec: absNow,
+            capacity: poolTierRef.current === 'all' ? SIM_POOL_CAP : 2,
+            resident: simPoolSpecsRef.current.map((sp) => sp.key),
+            bufferedAheadSec,
+            budgetMsFor: (packageKey) => {
+              const sim = occ.find((o) => o.packageKey === packageKey);
+              const secRow = sim
+                ? segmentsRef.current.flatMap((sg) => sg.simulations).find((x) => x.id === sim.sectionId)
+                : undefined;
+              const lab = secRow?.simulation_id ? prepareBudgetsRef.current[secRow.simulation_id] : undefined;
+              return resolveBudget({ measuredP90Ms: null, canaryMs: lab ?? null }).ms;
+            },
+          });
+          // Emitted whenever the planner RUNS, not only when it mounts something. At the 'all' tier
+          // every package is already resident from video start, so a plan with nothing to do is the
+          // normal case — and telemetry that only appeared on a mount could not distinguish
+          // "planned, nothing needed" from "never ran at all".
+          simTelemetry('predictive-plan', {
+            admit: plan.admit.length, prepare: plan.prepare.length, evict: plan.evict.length,
+          });
+          // MOUNT ONLY. `plan.evict` is deliberately ignored: eviction stays with the tier logic
+          // below, which already understands exit fades and the never-drop-the-live-frame rule.
+          for (const key of plan.prepare) {
+            if (simPoolSpecsRef.current.some((sp) => sp.key === key)) continue;
+            const o = occ.find((x) => x.packageKey === key);
+            const secRow = o
+              ? segmentsRef.current.flatMap((sg) => sg.simulations).find((x) => x.id === o.sectionId)
+              : undefined;
+            if (!secRow?.simulation_url) continue;
+            ensurePooledSpec({ key, src: secRow.simulation_url, bootHide: bootHideFor(secRow) });
+            simTelemetry('predictive-prepare', { key });
+          }
+        } catch (err) {
+          // A scheduler fault must never take the player down. Falling through leaves the existing
+          // residency behaviour entirely intact, which is the whole reason this is additive.
+          simTelemetry('predictive-error', { message: String(err).slice(0, 120) });
+        }
+      }
+
       if (poolTierRef.current === 'window') {
         const occurrences = flattenSimOccurrences(
           segmentsRef.current.map((s, i) => ({ offset: timelineRef.current[i]?.offset ?? 0, simulations: s.simulations })),
@@ -1998,7 +2394,9 @@ export function useProjectPlayer(
   // notion of: which document is ACTIVE, the warm queue, and how the overlay is composited.
   // The telemetry `detail` bag is deliberately NOT read here: every fact this surface reacts to is
   // read back from the runtime's own state, so a classification can never exist in two copies.
-  runtimeEventRef.current = (key, event) => {
+  // `detail` was previously dropped here. It carries the client's own measurement of the transition
+  // that just completed, which is the only place field timings can be observed.
+  runtimeEventRef.current = (key, event, detail) => {
     const meta = poolMeta(key);
     const isActive = key === activeSimUrlRef.current;
     // Whether the active document is on the activation-scoped path is re-read from the runtime on
@@ -2033,9 +2431,11 @@ export function useProjectPlayer(
               return;
             }
             // Drive the frame to paint. Reveal stays gated on the paint / the bounded ceiling.
+            if (!(isDynamic && pending.raw)) poolMeta(key).scriptedEver = true;
             runtimeFor(key).activate({
               script: isDynamic ? pending.dynScript : pending.legacyScript,
               params: pending.params,
+              presentAsLoaded: isDynamic && pending.raw,
             });
           }
         } else {
@@ -2078,6 +2478,21 @@ export function useProjectPlayer(
       case 'reveal':
         if (isActive) {
           merge({ simBootStalled: false });
+          // FIELD MEASUREMENT. `detail` carries the durations the client computed for this exact
+          // transition; the recorder is a no-op unless collection is enabled.
+          try {
+            const d = (detail ?? {}) as { totalMs?: number | null; prepareMs?: number | null;
+              presentMs?: number | null; applyMs?: number | null };
+            const pkgRev = rumPackageKey();
+            if (pkgRev) rum().record({
+              kind: 'transition',
+              packageRevision: pkgRev,
+              durations: {
+                totalMs: d.totalMs ?? null, prepareMs: d.prepareMs ?? null,
+                presentMs: d.presentMs ?? null, applyMs: d.applyMs ?? null,
+              },
+            });
+          } catch { /* measurement must never affect what a viewer sees */ }
           // On the modern path this event IS the reveal decision, and it is the only writer of
           // simPresented:true. `modern-section-presented` fires earlier, before the gate has run,
           // and the gate can still refuse — compositing on that breadcrumb showed frames the gate
@@ -2097,7 +2512,17 @@ export function useProjectPlayer(
       // section, with no spinner parked (a failure the viewer cannot act on).
       case 'script-missing':
       case 'script-error':
-        if (isActive) merge({ simBootStalled: false, simColdCover: false });
+        if (isActive) {
+          merge({ simBootStalled: false, simColdCover: false });
+          try {
+            const pkgRev = rumPackageKey();
+            if (pkgRev) rum().record({
+              kind: 'failure',
+              packageRevision: pkgRev,
+              code: event,
+            });
+          } catch { /* never affect the viewer */ }
+        }
         return;
       // ── activation-scoped (v3) presentation ───────────────────────────────────────────────
       // THE gate the layered surface opens on. `presented` is set from this event and from nothing
@@ -2197,7 +2622,15 @@ export function useProjectPlayer(
     const poolMetaAtMount = simPoolMetaRef.current;   // stable Map instance for the cleanup
     const reloadsAtMount = simPristineReloadRef.current;
     const runtimesAtMount = simRuntimesRef.current;
+    const rumAtMount = rumRef;
+    const sentinelAtMount = boundarySentinelHandleRef;
     return () => {
+      // The last batch is the most valuable one, and an armed sentinel must not outlive the tree:
+      // its callback closes over a video element this component is about to release.
+      try { rumAtMount.current?.dispose(); } catch { /* disposal must not throw into unmount */ }
+      rumAtMount.current = null;
+      try { sentinelAtMount.current?.cancel(); } catch { /* already gone */ }
+      sentinelAtMount.current = null;
       hlsRef.current?.destroy();
       hlsStandbyRef.current?.destroy();
       hlsBrollRef.current?.destroy();

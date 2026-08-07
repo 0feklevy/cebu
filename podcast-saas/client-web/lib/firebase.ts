@@ -3,6 +3,9 @@
 import { initializeApp, getApps } from 'firebase/app';
 import {
   getAuth,
+  initializeAuth,
+  browserLocalPersistence,
+  connectAuthEmulator,
   signInAnonymously,
   signInWithPopup,
   GoogleAuthProvider,
@@ -12,6 +15,7 @@ import {
   onAuthStateChanged,
   type User,
 } from 'firebase/auth';
+import { authEmulatorOrigin } from 'shared/src/csp';
 import { createContext, useContext, useEffect, useState } from 'react';
 import React from 'react';
 
@@ -25,7 +29,52 @@ const firebaseConfig = {
 };
 
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
-export const auth = getAuth(app);
+
+const AUTH_EMULATOR_HOST = process.env.NEXT_PUBLIC_FIREBASE_AUTH_EMULATOR_HOST;
+/**
+ * ONE validator, shared with the CSP, and the ORIGIN IT RETURNS is what gets used.
+ *
+ * `AUTH_EMULATOR_HOST.split(':')[0]` is not the host. For `localhost:9099@attacker.example.com` it
+ * yields "localhost" — so a loopback check passes — while `new URL('http://' + value)` resolves to
+ * `attacker.example.com`, because the leading text is userinfo. Interpolating the raw value after
+ * checking a split of it would therefore point anonymous sign-in at a remote host. `authEmulatorOrigin`
+ * parses the authority and rebuilds the origin from the parsed parts, so the string that is
+ * validated is necessarily the string that is connected to.
+ */
+const authEmulatorUrl = authEmulatorOrigin(AUTH_EMULATOR_HOST, process.env.NODE_ENV !== 'production');
+const useAuthEmulator = authEmulatorUrl !== '';
+
+/**
+ * `getAuth()` installs the browser popup/redirect resolver, and that resolver loads the gapi
+ * auth iframe from `https://apis.google.com` — WebKit fetches it on page load, which the
+ * loopback-only sim-pool gate correctly refused. Popup and redirect sign-in are never used by the
+ * E2E fixture, so on the emulator path auth is initialised WITHOUT that resolver. Every other
+ * environment keeps `getAuth()` byte-for-byte, so real popup sign-in is untouched.
+ */
+export const auth = useAuthEmulator
+  ? initializeAuth(app, { persistence: browserLocalPersistence })
+  : getAuth(app);
+
+/**
+ * LOCAL AUTH EMULATOR — opt-in, never in a production build.
+ *
+ * `FirebaseAuthProvider` signs guests in anonymously on mount, which is a live call to
+ * `identitytoolkit.googleapis.com`. That makes any "this gate ran entirely on loopback" claim false
+ * by construction — the sim-pool network guard caught exactly this. Pointing the SDK at a local
+ * emulator keeps the production code path identical (the same `signInAnonymously`, the same
+ * `onAuthStateChanged`) while the traffic terminates on 127.0.0.1.
+ *
+ * Guarded three ways so it cannot engage in a deployed build: the variable must be set, NODE_ENV
+ * must not be production, and the host must itself be loopback. A non-loopback value is refused
+ * rather than honoured — failing closed to the real backend beats silently pointing authentication
+ * at someone else's machine.
+ */
+if (useAuthEmulator) {
+  connectAuthEmulator(auth, authEmulatorUrl, { disableWarnings: true });
+} else if (AUTH_EMULATOR_HOST && process.env.NODE_ENV !== 'production') {
+  // eslint-disable-next-line no-console
+  console.error('[firebase] refusing a non-loopback auth emulator host');
+}
 
 export interface AuthContextValue {
   user: User | null;

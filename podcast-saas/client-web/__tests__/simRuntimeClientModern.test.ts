@@ -1010,6 +1010,118 @@ describe('timeouts are FAILURES, never reveals', () => {
     expect(events(tel)).not.toContain('reveal-forced');
   });
 
+  it('a duplicate SECTION_APPLIED does not arm a second present timeout', async () => {
+    // `SECTION_APPLIED` calls `sendPresent()` unconditionally after `matchesActivation`, which
+    // compares only activationId/variantKey/configHash — so a REPEAT of the same envelope with a
+    // fresh `seq` passes both it and `validateEnvelope`. The reducer then refuses the illegal
+    // transition by returning the SAME state object rather than throwing, so nothing upstream
+    // notices. Without clearing first, the second `setTimeout` overwrote the handle: the first
+    // timer became unclearable while its own guard (generation + activationId) still passed, so it
+    // later fired `present-timeout` against an activation that HAD presented — hiding a working
+    // simulation behind the recovery surface.
+    const { c, child, tel } = await boot({ v2: true, child: { autoPresented: false } });
+    c.activate({ script: 'A' });
+    await flush();
+    const prepare = child.last(PREPARE_SECTION);
+
+    child.sectionApplied(prepare);
+    await flush();
+    child.sectionApplied(prepare);          // the duplicate
+    await flush();
+
+    // It DID present — so no timeout may fire for it.
+    child.sectionPresented(child.last(PRESENT_SECTION));
+    await flush();
+    expect(c.getState().visible).toBe(true);
+
+    vi.advanceTimersByTime(SIM_PRESENT_TIMEOUT_MS * 2 + 10);
+    await flush();
+    expect(countTel(tel, 'modern-failure'),
+      'an orphaned present timer fired against an activation that already presented').toBe(0);
+    expect(c.getState().visible, 'the presented simulation was hidden by a stale timeout').toBe(true);
+  });
+
+  /**
+   * A LATE SECTION_APPLIED FOR AN ACTIVATION THAT HAS MOVED ON.
+   *
+   * `matchesActivation` compares identity only, never state, so a SECTION_APPLIED that arrives
+   * after the activation reached a state where APPLIED is illegal still passes it. The reducer
+   * refuses by returning the SAME state object; treating that as success posted PRESENT_SECTION and
+   * armed the TERMINAL present bound, whose only guard is (generation, activationId) — neither
+   * changed by a refusal. Five seconds later it fired `failModern('present-timeout')`.
+   *
+   * All three reachable shapes are covered because the damage differs in each.
+   */
+  describe('a SECTION_APPLIED the reducer refuses cannot arm the terminal present bound', () => {
+    it('FAILED: one real fault is not counted twice, and keeps its true failure kind', async () => {
+      const { c, child, tel } = await boot({ v2: true, child: { autoApplied: false } });
+      c.activate({ script: 'A' });
+      await flush();
+      const prepare = child.last(PREPARE_SECTION);
+
+      // The prepare bound fires first — this is the ONE real fault.
+      vi.advanceTimersByTime(SIM_PREPARE_TIMEOUT_MS + 10);
+      await flush();
+      expect(c.getModernState().failure?.kind).toBe('prepare-timeout');
+      const failuresAfterRealFault = countTel(tel, 'modern-failure');
+
+      // The slow package finishes and acks the SAME activation.
+      child.sectionApplied(prepare);
+      await flush();
+      // THE ENVELOPE MUST ACTUALLY REACH THE REFUSAL. Without this the test would pass for the
+      // wrong reason — a harness that silently drops the late ack proves nothing about the guard.
+      expect(events(tel), 'the late SECTION_APPLIED never reached the handler, so this test would '
+        + 'pass even with the guard removed').toContain('modern-applied-refused');
+      expect(child.types().filter((t) => t === PRESENT_SECTION),
+        'PRESENT_SECTION was posted for a FAILED activation').toHaveLength(0);
+
+      vi.advanceTimersByTime(SIM_PRESENT_TIMEOUT_MS * 2 + 10);
+      await flush();
+      expect(countTel(tel, 'modern-failure'),
+        'a fabricated present-timeout was recorded on top of the one real fault')
+        .toBe(failuresAfterRealFault);
+      expect(c.getModernState().failure?.kind,
+        'the true prepare-timeout was overwritten by a fabricated present-timeout')
+        .toBe('prepare-timeout');
+    });
+
+    it('RELEASED: scrubbing away mid-apply does not fail the package afterwards', async () => {
+      const { c, child, tel } = await boot({ v2: true, child: { autoApplied: false } });
+      c.activate({ script: 'A' });
+      await flush();
+      const prepare = child.last(PREPARE_SECTION);
+
+      c.deactivate({ teardown: false });          // viewer moved on while the child was applying
+      await flush();
+
+      child.sectionApplied(prepare);
+      await flush();
+      vi.advanceTimersByTime(SIM_PRESENT_TIMEOUT_MS * 2 + 10);
+      await flush();
+      expect(countTel(tel, 'modern-failure'),
+        'a released activation was failed by a bound armed after its release').toBe(0);
+    });
+
+    it('VISIBLE: a re-ack cannot hide a simulation that is already on screen', async () => {
+      const { c, child, tel } = await boot({ v2: true });
+      c.activate({ script: 'A' });
+      await flush();
+      const prepare = child.last(PREPARE_SECTION);
+      expect(c.getState().visible).toBe(true);
+      const failuresWhileHealthy = countTel(tel, 'modern-failure');
+
+      child.sectionApplied(prepare);              // the package re-acks an activation already shown
+      await flush();
+      vi.advanceTimersByTime(SIM_PRESENT_TIMEOUT_MS * 2 + 10);
+      await flush();
+
+      expect(countTel(tel, 'modern-failure'),
+        'a re-ack armed a bound that then failed a healthy activation').toBe(failuresWhileHealthy);
+      expect(c.getState().visible,
+        'a working, on-screen simulation was hidden behind the recovery surface').toBe(true);
+    });
+  });
+
   it('a superseded activation’s bound cannot fail the one that replaced it', async () => {
     const { c, child } = await boot({ child: { autoApplied: false } });
     c.activate({ script: 'A' });
@@ -1325,5 +1437,216 @@ describe('disposal', () => {
     await flush();
     expect(c.getModernState().failure, 'a bound fired after disposal').toBeNull();
     expect(c.getState().phase).toBe('disposed');
+  });
+});
+
+// ══ TRANSITION MEASUREMENT (Priority 8.1) ════════════════════════════════════════════════════
+//
+// Measurement only: nothing here may change what the viewer sees. The claims are that the stages
+// are recorded in protocol order, that the child's own numbers stop being discarded, and that an
+// abandoned or refused transition never contributes a total — a p90 built from frames nobody saw
+// would be worse than no measurement at all.
+
+describe('transition measurement', () => {
+  it('records every stage of a completed transition, in order', async () => {
+    const { c, child } = await boot({ child: { autoApplied: false, autoPresented: false } });
+    c.activate({ script: 'A' });
+    await flush();
+    vi.advanceTimersByTime(5);
+    child.sectionApplied(child.last(PREPARE_SECTION));
+    await flush();
+    vi.advanceTimersByTime(5);
+    child.sectionPresented(child.last(PRESENT_SECTION));
+    await flush();
+
+    const s = c.timingSummary();
+    expect(s.samples).toBe(1);
+    expect(s.completed).toBe(1);
+    // ORDER, not merely presence. Asserting `p50TotalMs >= 0` cannot fail — clamp is Math.max(0,…)
+    // and diff() already drops negatives — and an implementation that never marked `applied`,
+    // `present-sent` or `presented` would satisfy every other line here.
+    expect(s.p50PrepareMs, 'prepare was never measured').not.toBeNull();
+    expect(s.p50TotalMs, 'total was never measured').not.toBeNull();
+    // Each stage is a strict sub-span of the total, so a total that did not include them is wrong.
+    expect(s.p50TotalMs!).toBeGreaterThanOrEqual(s.p50PrepareMs!);
+    expect(s.abandonedAt).toEqual({});
+  });
+
+  it('captures the child applyMs that used to be read off the wire and dropped', async () => {
+    const { c, child, tel } = await boot({ child: { autoApplied: false, autoPresented: false } });
+    c.activate({ script: 'A' });
+    await flush();
+    child.sectionApplied(child.last(PREPARE_SECTION));
+    await flush();
+    // The FakeChild sends applyMs: 3, exactly as the real child has since the protocol shipped.
+    expect(lastTel(tel, 'modern-section-applied')?.detail.applyMs).toBe(3);
+    child.sectionPresented(child.last(PRESENT_SECTION));
+    await flush();
+    expect(c.timingSummary().p50ApplyMs).toBe(3);
+  });
+
+  it('keeps the child applyMs distinct from our own prepare measurement', async () => {
+    // prepareMs spans two postMessage hops applyMs does not. Conflating them would hide whether a
+    // slow prepare is the package's fault or the transport's.
+    const { c, child } = await boot({ child: { autoApplied: false, autoPresented: false } });
+    c.activate({ script: 'A' });
+    await flush();
+    vi.advanceTimersByTime(50);
+    child.sectionApplied(child.last(PREPARE_SECTION));
+    await flush();
+    child.sectionPresented(child.last(PRESENT_SECTION));
+    await flush();
+    const s = c.timingSummary();
+    expect(s.p50ApplyMs).toBe(3);
+    expect(s.p50PrepareMs).not.toBe(3);
+  });
+
+  it('emits the durations on the reveal breadcrumb', async () => {
+    const { c, tel } = await boot();
+    c.activate({ script: 'A' });
+    await flush();
+    const rev = lastTel(tel, 'reveal');
+    expect(rev).toBeDefined();
+    expect(rev!.detail).toHaveProperty('totalMs');
+    expect(rev!.detail).toHaveProperty('prepareMs');
+  });
+
+  it('records an ABANDONED transition rather than merging it into the next', async () => {
+    // Without the roll on re-activation, the next mark('requested') is swallowed by first-write-wins
+    // and one bogus measurement spans both sections.
+    const { c, child } = await boot({ child: { autoApplied: false, autoPresented: false } });
+    c.activate({ script: 'A' });
+    await flush();
+    c.activate({ script: 'B' });
+    await flush();
+    child.sectionApplied(child.last(PREPARE_SECTION));
+    await flush();
+    child.sectionPresented(child.last(PRESENT_SECTION));
+    await flush();
+
+    const s = c.timingSummary();
+    expect(s.samples).toBe(2);
+    expect(s.completed).toBe(1);
+    // A that never got past its prepare is counted where it died, not ignored.
+    expect(s.abandonedAt['prepare-sent']).toBe(1);
+  });
+
+  it('a REFUSED reveal contributes no total', async () => {
+    // A p90 that included rejected activations would describe frames no viewer ever saw.
+    const { c, child } = await boot({ child: { autoPresented: false } });
+    c.activate({ script: 'A' });
+    await flush();
+    // Acknowledge with a distorted variantKey: the five-axis invariant refuses it.
+    child.sectionPresented(child.last(PRESENT_SECTION), { distort: { variantKey: 'WRONG' } });
+    await flush();
+    expect(c.getState().visible).toBe(false);
+    expect(c.timingSummary().completed).toBe(0);
+  });
+
+  it('a refused reveal is still not counted once the transition is rolled', async () => {
+    // The subtler half of the previous test: an in-flight transition is not in the history yet, so
+    // "completed === 0" can hold for the wrong reason. Starting a NEW activation rolls the refused
+    // one into the history — and only a `revealed` mark placed AFTER the invariant check keeps it
+    // out of the completed count there.
+    // The distortion must be one that reaches `reveal()`. `matchesActivation` covers only
+    // activationId/variantKey/configHash, so a wrong packageRevision passes it, PRESENTS the
+    // activation, and is refused by the five-axis invariant inside reveal — which is the only place
+    // a `revealed` mark could be wrongly stamped.
+    const { c, child, tel } = await boot({ child: { autoPresented: false } });
+    c.activate({ script: 'A' });
+    await flush();
+    child.sectionPresented(child.last(PRESENT_SECTION),
+      { distort: { packageRevision: 'rev-from-a-republished-package' } });
+    await flush();
+    expect(c.getState().visible).toBe(false);
+    expect(lastTel(tel, 'modern-reveal-refused')?.detail.refusal).toBe('package-revision-mismatch');
+
+    c.activate({ script: 'B' });
+    await flush();
+
+    const s = c.timingSummary();
+    expect(s.samples).toBeGreaterThanOrEqual(1);
+    expect(s.completed, 'a reveal the invariant refused was counted as a completed transition').toBe(0);
+    expect(s.p50TotalMs).toBeNull();
+  });
+
+  it('the first mark of a stage wins, so a repeat cannot shorten the measurement', async () => {
+    // A duplicate SECTION_APPLIED (or a retried PREPARE) must not re-stamp the stage: overwriting
+    // discards everything before the repeat, which is exactly the slow case worth seeing.
+    const { c, child } = await boot({ child: { autoApplied: false, autoPresented: false } });
+    c.activate({ script: 'A' });
+    await flush();
+    const prepare = child.last(PREPARE_SECTION);
+    vi.advanceTimersByTime(10);
+    child.sectionApplied(prepare);
+    await flush();
+    vi.advanceTimersByTime(500);
+    child.sectionApplied(prepare);       // a repeat for the same activation
+    await flush();
+    child.sectionPresented(child.last(PRESENT_SECTION));
+    await flush();
+
+    const s = c.timingSummary();
+    expect(s.completed).toBe(1);
+    // Overwriting would move `applied` 500ms later and report a prepare that took ~510ms.
+    expect(s.p50PrepareMs!, 'a repeated stage re-stamped the mark').toBeLessThan(500);
+  });
+
+  it('an acknowledgement claiming no frame contributes no total', async () => {
+    const { c, child } = await boot({ child: { autoPresented: false } });
+    c.activate({ script: 'A' });
+    await flush();
+    child.sectionPresented(child.last(PRESENT_SECTION), { frames: 0 });
+    await flush();
+    expect(c.getState().visible).toBe(false);
+    expect(c.timingSummary().completed).toBe(0);
+  });
+
+  it('bounds the history and COUNTS what it dropped', async () => {
+    // A silent cap makes a truncated sample look like a complete one.
+    const { c, child } = await boot();
+    for (let i = 0; i < 60; i += 1) {
+      c.activate({ script: `S${i}` });
+      await flush();
+    }
+    const s = c.timingSummary();
+    // Exactly the cap, not merely "at most" — an implementation that dropped everything would
+    // satisfy a <= assertion.
+    expect(s.samples).toBe(50);
+    expect(s.dropped).toBe(60 - 50);
+    void child;
+  });
+
+  it('derives a lead time from measurement once there are enough samples, and says so', async () => {
+    const { c } = await boot();
+    expect(c.leadMs(800).source, 'a single sample is not a measurement').toBe('fallback');
+    expect(c.leadMs(800).leadMs).toBe(800);
+
+    for (let i = 0; i < 8; i += 1) {
+      c.activate({ script: `S${i}` });
+      await flush();
+    }
+    const derived = c.leadMs(800);
+    expect(derived.source).toBe('measured');
+    // Not `>= 0`, which clamp makes unfalsifiable: a measured lead must differ from the fallback it
+    // replaced, or nothing was actually derived.
+    expect(derived.leadMs).not.toBe(800);
+  });
+
+  it('measurement changes nothing a viewer sees', async () => {
+    // The whole step is instrumentation. If any assertion about visibility or protocol order moved,
+    // this stopped being measurement.
+    const { c, child, tel } = await boot({ child: { autoApplied: false, autoPresented: false } });
+    c.activate({ script: 'A' });
+    await flush();
+    expect(c.getState().visible).toBe(false);
+    child.sectionApplied(child.last(PREPARE_SECTION));
+    await flush();
+    expect(c.getState().visible).toBe(false);
+    child.sectionPresented(child.last(PRESENT_SECTION));
+    await flush();
+    expect(c.getState().visible).toBe(true);
+    expect(child.types()).toEqual([INIT_DOCUMENT, PREPARE_SECTION, PRESENT_SECTION, ACTIVATE_SECTION]);
+    expect(countTel(tel, 'reveal')).toBe(1);
   });
 });

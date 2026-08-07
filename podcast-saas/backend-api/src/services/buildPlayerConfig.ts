@@ -1,3 +1,4 @@
+import { packageRevisionFor as revisionIdentityFor } from 'shared/sim/simRevision';
 import { db } from '../db/index.js';
 import {
   projects, video_files, timeline_sections, image_files, audio_files, scenes,
@@ -23,12 +24,12 @@ export async function resolveSimPoolMode(): Promise<SimPoolMode> {
 }
 import {
   DEFAULT_PRESENTATION_CONFIG, computeConfigHash, derivePackageRevision, variantKeyFor,
-} from 'shared/src/sim/simIdentity';
+} from 'shared/sim/simIdentity';
 import {
   parsePosterVariants, posterIdentityString, selectPosterVariant,
   type PosterFormat, type PosterKey,
-} from 'shared/src/sim/posterIdentity';
-import type { SimPackageClass } from 'shared/src/sim/simFailurePolicy';
+} from 'shared/sim/posterIdentity';
+import type { SimPackageClass } from 'shared/sim/simFailurePolicy';
 import { requireProjectAccess } from './projectAccess.js';
 import { collaboratorContentIds } from './collabAccess.js';
 
@@ -65,6 +66,19 @@ type PlayerChoicePoint = {
 import { getStorageAdapter } from './storage/getStorageAdapter.js';
 import { captionUrlForVideo } from './captions/CaptionService.js';
 import { normalizeAvatarCircles, normalizeSpeakerTimeline, type AvatarCirclesLike } from './avatarCircles/normalizeAvatarCircles.js';
+import { logger } from '../lib/logger.js';
+import { resolveRumSampleRate, resolveSimRuntimeFlags, fieldAggregates } from './simulation/RumService.js';
+import { decideBudget } from 'shared/sim/closedLoop';
+
+/** The simulation columns this file reads. Named so the degraded-read catch cannot drift from it. */
+interface SimRowShape {
+  id: string;
+  package_class: string | null;
+  bridge_hash: string | null;
+  active_revision_id: string | null;
+  active_revision_entry_key: string | null;
+  prepare_budget_ms: number | null;
+}
 
 /**
  * Build the PlayerConfig for a single project — the dynamic equivalent of
@@ -95,7 +109,7 @@ export async function buildPlayerConfig(
   // player-config / share / playlist-item / course render), so the serial waits added up
   // (perf-003; scenes+branch_sequences folded in per loadperf-002/backend-110). Scenes and
   // sequences are filtered/used in memory below exactly as before.
-  const [allVideos, sections, imageRows, audioRows, allScenes, sequenceRows, simPoolMode, projectSimulations] = await Promise.all([
+  const [allVideos, sections, imageRows, audioRows, allScenes, sequenceRows, simPoolMode, rumSampleRate, simRuntimeFlags, projectSimulations] = await Promise.all([
     db.query.video_files.findMany({
       where: eq(video_files.project_id, project.id),
       orderBy: [asc(video_files.created_at)],
@@ -112,6 +126,8 @@ export async function buildPlayerConfig(
       orderBy: [asc(branch_sequences.sort_order), asc(branch_sequences.created_at)],
     }),
     resolveSimPoolMode(),
+    resolveRumSampleRate(),
+    resolveSimRuntimeFlags(),
     // The package identity + canary verdict for every simulation this project references.
     //
     // `columns` is not an optimisation detail: without it Drizzle selects the WHOLE row for every
@@ -125,9 +141,28 @@ export async function buildPlayerConfig(
     db.query.simulations
       .findMany({
         where: eq(simulations.project_id, project.id),
-        columns: { id: true, package_class: true, bridge_hash: true },
+        columns: {
+          id: true, package_class: true, bridge_hash: true,
+          // The pointer (migration 050). Two cheap scalars, deliberately denormalised onto this row
+          // so resolving which bytes are live costs no join on the hottest read path.
+          active_revision_id: true, active_revision_entry_key: true,
+          // The package's own publish-time preparation cost, derived once when the canary verdict
+          // was recorded. A scalar, deliberately: canary_report is large (per-case steps, errors,
+          // capabilities, resource counts) and this is the read path the `columns` list exists to
+          // keep narrow. It is the only real number available on a FIRST view, when nothing has
+          // been measured yet and a compiled-in constant is least defensible.
+          prepare_budget_ms: true,
+        },
       })
-      .catch(() => [] as { id: string; package_class: string | null }[]),
+      // A degraded read here is NOT harmless. An empty list makes every simulation look
+      // revision-less, so `simulationUrlOf` falls back to the stored legacy URL and the identity
+      // axis falls back to the pre-revision derivation — correct-looking output, entirely wrong
+      // bytes, with nothing surfaced. It still must not 500 the viewer, so the catch stays; but a
+      // project with sim sections and no simulation rows is an incident, not a degradation.
+      .catch((err: unknown) => {
+        logger.error({ err, projectId: project.id }, 'buildPlayerConfig: simulation rows unavailable — every sim degrades to the legacy package');
+        return [] as SimRowShape[];
+      }),
   ]);
 
   // Main video segments (uploaded by user, not AI-generated broll sources)
@@ -221,17 +256,107 @@ export async function buildPlayerConfig(
    * URL predates the hash, at the cost of a revision that only changes when the URL does; that is
    * strictly better than emitting null, which would disable identity checking for that section.
    */
+  /**
+   * Lab preparation cost per simulation, from that package's own canary report.
+   *
+   * Absent for a package that has never been canaried, and the client treats absence as "no lab
+   * data" rather than as zero — a package with no measurement must not be budgeted as instantaneous.
+   */
+  /**
+   * A stored `simulation_url` per simulation id, for the legacy `?v=` fallback below.
+   *
+   * First one wins: every section of a package shares one pooled document and one runtime client,
+   * so they must resolve to ONE revision — which is the same reason `packageRevisionFor` derives
+   * from the bridge hash rather than from each section's own URL.
+   */
+  const urlForSim = new Map<string, string>();
+  for (const sec of sections) {
+    if (sec.simulation_id && sec.simulation_url && !urlForSim.has(sec.simulation_id)) {
+      urlForSim.set(sec.simulation_id, sec.simulation_url);
+    }
+  }
+
+  /**
+   * The identity axis for one simulation ROW — the key field measurements are grouped by.
+   *
+   * MUST MATCH `packageRevisionFor` EXACTLY, including its `?v=` fallback for a package whose
+   * bridge predates the column. Omitting the fallback here forked the identity axis: legacy
+   * packages were looked up under a key the client never reports under, so their field data was
+   * silently never found — the closed loop reported "no samples" forever for exactly the packages
+   * most likely to be slow. This file's own comment warns that a forked axis is what costs every
+   * poster; the same fork cost every field measurement.
+   */
+  const packageRevisionForRow = (row: SimRowShape): string | null => {
+    try {
+      let bridgeHash: string | null = row.bridge_hash;
+      if (!bridgeHash) {
+        const url = urlForSim.get(row.id);
+        if (url) {
+          const m = /[?&]v=([^&#]+)/.exec(url);
+          bridgeHash = m ? m[1] : url;
+        }
+      }
+      return revisionIdentityFor(
+        { id: row.id, bridge_hash: bridgeHash, active_revision_id: row.active_revision_id },
+        derivePackageRevision,
+      );
+    } catch { return null; }
+  };
+
+  //
+  // CLOSED LOOP. The lab number is the anchor; a FIELD aggregate may refine it, and only if it
+  // survives every credibility check in `decideBudget`. That input derives from an unauthenticated
+  // endpoint, so a refused aggregate must leave exactly the value the lab alone would produce —
+  // which is what makes a hostile feed achieve nothing rather than something small.
+  //
+  // Field data is looked up in ONE grouped query for the whole project, and a failure returns an
+  // empty map rather than throwing: no field data is the state every deployment is in today.
+  const simPrepareBudgets: Record<string, number> = {};
+  /** Canary-derived only — never refined by field data. See the note at the emit site below. */
+  const simLabBudgets: Record<string, number> = {};
+  const revisionsForField = [...simRows.values()]
+    .map((r) => packageRevisionForRow(r))
+    .filter((r): r is string => typeof r === 'string' && r.length > 0);
+  // NOT GATED ON `rumSampleRate`. Gating it there was tried and reverted: the rate controls
+  // COLLECTION, not USE, so an operator who samples for a week and then turns collection back off
+  // would silently lose every budget the week produced — at the exact moment the data became
+  // complete. The cost is one grouped, indexed query, skipped entirely when no package on the
+  // project has a revision to look up.
+  const field = revisionsForField.length > 0
+    ? await fieldAggregates(revisionsForField).catch(() => new Map())
+    : new Map();
+  for (const [simId, row] of simRows) {
+    const lab = typeof row.prepare_budget_ms === 'number' && Number.isFinite(row.prepare_budget_ms)
+      && row.prepare_budget_ms > 0 ? row.prepare_budget_ms : null;
+    const rev = packageRevisionForRow(row);
+    const agg = rev ? field.get(rev) ?? null : null;
+    if (lab === null && agg === null) continue;   // absent means "no data", never "instantaneous"
+    const decision = decideBudget({ canaryMs: lab, field: agg });
+    // The floor is emitted only when something real produced it; a package with neither a lab
+    // number nor field data stays absent so the client treats it as unmeasured.
+    if (lab !== null || decision.source === 'measured') simPrepareBudgets[simId] = decision.ms;
+    // THE LAB NUMBER, UNREFINED, emitted separately.
+    //
+    // `sim_prepare_budget_ms` above is the LEAD TIME, and refining it with field data is exactly
+    // right for deciding how early to prepare. It is the wrong input for adaptive quality, which
+    // judges a device's p90 against a standard: once >=30 credible rows exist the emitted budget IS
+    // the fleet p90 x 1.25, so a device that dominates its own package's aggregate would be judged
+    // against 1.25x its own p90 — the same tautology the client-side fix removed, arriving from the
+    // server instead. The canary number is a property of the PACKAGE and of nobody's device, which
+    // is what a standard has to be.
+    if (lab !== null) simLabBudgets[simId] = lab;
+  }
+
   const packageRevisionFor = (simId: string | null, url: string | null): string | null => {
     if (!simId && !url) return null;
+    const row = simId ? simRows.get(simId) : undefined;
+
     // THE PACKAGE's bridge hash, not the section URL's.
     //
     // Regenerating one section rewrites the shared bridge but stamps the new `?v=` onto only that
-    // section's URL. Deriving from the URL therefore gave two sections of ONE package — which share
-    // a single pooled document and a single runtime client — different revisions, which re-opened
-    // the transport mid-session (wedging the modern path for the rest of it) and made every poster
-    // lookup miss. `simulations.bridge_hash` is written whenever the bridge is regenerated, so
-    // every section of a package derives the same value from it.
-    const row = simId ? (simRows.get(simId) as { bridge_hash?: string | null } | undefined) : undefined;
+    // section's URL. Deriving from the URL gave two sections of ONE package — which share a single
+    // pooled document and a single runtime client — different revisions, which re-opened the
+    // transport mid-session and made every poster lookup miss.
     let bridgeHash: string | null = row?.bridge_hash ?? null;
     if (!bridgeHash && url) {
       // A package whose bridge predates the column. Falls back to the previous behaviour rather
@@ -239,7 +364,33 @@ export async function buildPlayerConfig(
       const m = /[?&]v=([^&#]+)/.exec(url);
       bridgeHash = m ? m[1] : url;
     }
-    return derivePackageRevision(simId ?? url ?? '', bridgeHash);
+
+    // ONE resolver. `simRevision.packageRevisionFor` decides whether identity comes from the active
+    // revision (immutable bytes) or from the pre-revision derivation, and this file must not make
+    // that decision a second time — a forked identity axis costs every poster (the lookup has no
+    // fallback) and leaves the canary verdict describing bytes that are no longer served.
+    return revisionIdentityFor(
+      { id: simId ?? url ?? '', bridge_hash: bridgeHash, active_revision_id: row?.active_revision_id ?? null },
+      derivePackageRevision,
+    );
+  };
+
+  /**
+   * The URL a section's simulation is actually served from — the pointer flip made visible.
+   *
+   * The STORED `simulation_url` is never rewritten. Putting the revision id into stored URLs would
+   * make activation an N-row un-transacted rewrite and break the "single pointer update" promise
+   * outright; it would also break sim-script reuse, which compares against the raw stored value.
+   * So the pointer is resolved HERE, on the way out, and nowhere else.
+   */
+  const simulationUrlOf = (simId: string | null, url: string | null): string | null => {
+    const row = simId ? simRows.get(simId) : undefined;
+    if (!row?.active_revision_entry_key || !url) return url ?? null;
+    // `?section=` and `?v=` are preserved exactly: the pool dispatches on `?section=`, and the
+    // poster/variant identity axis reads it. Dropping the query here would collapse every section
+    // of a package onto one variant key.
+    const q = url.includes('?') ? url.slice(url.indexOf('?')) : '';
+    return storage.getSimPublicUrl(row.active_revision_entry_key) + q;
   };
 
   const packageClassFor = (simId: string | null): SimPackageClass | null => {
@@ -267,7 +418,7 @@ export async function buildPlayerConfig(
           id:             s.id,
           start_sec:      s.start_sec,
           end_sec:        s.end_sec,
-          simulation_url: s.simulation_url ?? null,
+          simulation_url: simulationUrlOf(s.simulation_id, s.simulation_url),
           simulation_id:  s.simulation_id  ?? null,
           package_revision,
           // The LAST CANARY VERDICT, or null when the package has never been canaried. Null is not a
@@ -624,6 +775,21 @@ export async function buildPlayerConfig(
     speaker_timeline: speakerTimeline,
     branching,
     sim_pool_mode: simPoolMode,   // kill switch: 'adaptive' (pool) | 'single' (conservative)
+    // Sampled field measurement (migration 051). 0 means the viewer sends nothing, which is the
+    // default and the state every existing deployment is in until an operator changes it.
+    sim_rum_sample_rate: rumSampleRate,
+    // Priority 8 runtime switches (migration 052). All default OFF, so a player that receives them
+    // behaves exactly as it does today until an operator changes one.
+    sim_scheduler_mode: simRuntimeFlags.schedulerMode,
+    sim_adaptive_quality: simRuntimeFlags.adaptiveQuality,
+    sim_boundary_sentinel: simRuntimeFlags.boundarySentinel,
+    // Per-package preparation budgets from each package's own publish-time canary. Emitted as a map
+    // rather than per section because a package's cost is a property of its BYTES, not of where it
+    // happens to appear on a timeline — and one package commonly appears in many sections.
+    sim_prepare_budget_ms: simPrepareBudgets,
+    // The canary number alone. Adaptive quality judges against this, never against the refined
+    // lead time above — see the note at the emit site.
+    sim_lab_budget_ms: simLabBudgets,
   };
 }
 

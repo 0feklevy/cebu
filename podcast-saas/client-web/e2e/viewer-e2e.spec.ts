@@ -21,6 +21,14 @@
  * never be mistaken for "passing" in an environment that never ran it.
  */
 import { test, expect, type Page, type Route } from '@playwright/test';
+import { isApprovedRequestUrl } from './hermeticHosts';
+import { authEmulatorOrigin } from 'shared/src/csp';
+
+/**
+ * The one approved auth-emulator origin for this run, vetted by the SAME validator the app and the
+ * CSP use — so the suite cannot approve an origin the app would refuse, or vice versa.
+ */
+const AUTH_EMULATOR_ORIGIN = authEmulatorOrigin(process.env.NEXT_PUBLIC_FIREBASE_AUTH_EMULATOR_HOST, true) || null;
 import { createServer, type Server } from 'node:http';
 import { readFileSync, existsSync, mkdirSync, statSync } from 'node:fs';
 import { join, extname, resolve } from 'node:path';
@@ -218,13 +226,31 @@ test.afterAll(async () => { await new Promise<void>((r) => server.close(() => r(
 
 // ── fixture project builder ───────────────────────────────────────────────────────────────
 
-interface SimSpec { id: string; start: number; end: number; pkg?: string; section?: string; simpleUi?: boolean; hide?: string[]; auto?: boolean }
+interface SimSpec {
+  id: string; start: number; end: number; pkg?: string; section?: string;
+  simpleUi?: boolean; hide?: string[]; auto?: boolean;
+  /** Bare entry URL with NO ?section= — the RAW "full simulation" shape (dispatches no body). */
+  rawUrl?: boolean;
+  /**
+   * Emit `?section=<the section's OWN row id>` — what SimulationService actually mints for every
+   * generated section. Every other fixture uses an id that differs from the section param, a shape
+   * production never produces, which is how a predicate comparing the two slipped through.
+   */
+  sectionIsOwnId?: boolean;
+}
 
 /**
  * Build a player-config exactly in the shape the real backend returns, so the real viewer parses
  * it with no special-casing. `simulations` carry the ?section= identity the player dispatches on.
  */
-function makeConfig(sims: SimSpec[], opts?: { segDuration?: number }) {
+function makeConfig(sims: SimSpec[], opts?: {
+  segDuration?: number;
+  /** Priority 8 runtime switches (migration 052). Absent = the production default, all OFF. */
+  scheduler?: 'off' | 'predictive';
+  adaptiveQuality?: boolean;
+  boundarySentinel?: boolean;
+  prepareBudgetMs?: Record<string, number>;
+}) {
   const duration = opts?.segDuration ?? 30;
   return {
     project: { id: 'e2e-project', title: 'E2E fixture' },
@@ -242,7 +268,9 @@ function makeConfig(sims: SimSpec[], opts?: { segDuration?: number }) {
         type: 'simulation',
         start_sec: s.start,
         end_sec: s.end,
-        simulation_url: `${assetBase}/${s.pkg ?? 'modern'}/index.html?section=${s.section ?? S.A}&v=1`,
+        simulation_url: s.rawUrl
+          ? `${assetBase}/${s.pkg ?? 'modern'}/index.html`
+          : `${assetBase}/${s.pkg ?? 'modern'}/index.html?section=${s.sectionIsOwnId ? s.id : (s.section ?? S.A)}&v=1`,
         sim_script: 'main',
         simple_ui: s.simpleUi ?? false,
         auto_script: s.auto ?? false,
@@ -250,6 +278,11 @@ function makeConfig(sims: SimSpec[], opts?: { segDuration?: number }) {
       })),
       broll: [], images: [], audio: [],
     }],
+    sim_scheduler_mode: opts?.scheduler ?? 'off',
+    sim_adaptive_quality: opts?.adaptiveQuality ?? false,
+    sim_boundary_sentinel: opts?.boundarySentinel ?? false,
+    sim_prepare_budget_ms: opts?.prepareBudgetMs ?? {},
+    sim_rum_sample_rate: 0,
     sequences: [], branching: null, avatar: null, captions: [],
   };
 }
@@ -349,11 +382,14 @@ async function bootViewer(page: Page, config: object, opts?: { simdebug?: boolea
   // loading behaviour, which is exactly what a hermeticity check must not do.
   page.on('request', (req) => {
     const url = req.url();
-    const allowed = url.startsWith(BASE) || url.startsWith(API_ORIGIN)
-      || url.startsWith('data:') || url.startsWith('blob:') || url.startsWith('about:')
-      // Explicitly STUBBED third parties are approved — they never reach the network. Anything
-      // else here means the suite's verdict depends on someone else's uptime.
-      || STUBBED_HOSTS.some((h) => url.startsWith(h));
+    // ONE predicate, in e2e/hermeticHosts.ts, so it is unit-testable and mutation-sensitive rather
+    // than an inline boolean no test can reach. The only allowance beyond the app, the API and the
+    // explicitly stubbed third parties is the SPECIFIC configured loopback auth emulator — not
+    // "any loopback host", which would approve every other local service on the machine.
+    const allowed = isApprovedRequestUrl(url, {
+      base: BASE, apiOrigin: API_ORIGIN, stubbedHosts: STUBBED_HOSTS,
+      authEmulator: AUTH_EMULATOR_ORIGIN,
+    });
     if (!allowed) external.push(url);
   });
 
@@ -754,6 +790,13 @@ test.describe('real React viewer — simulation transitions', () => {
     // …and the missing section must never have been silently substituted by another body.
     const wrong = late.flatMap((s) => s.frames).filter((f) => f.op > 0.01 && f.section === 'A');
     expect(wrong.length, 'the previous section was shown in place of the missing one').toBe(0);
+    // …and NOTHING was presented at all. Forbidding only the previous section is too weak: after
+    // the outgoing cleanup runs, a document presented for a missing section shows a blank grey
+    // marker rather than 'A', so a runtime that revealed it would slip past every check above
+    // while covering the video with an empty frame. A non-raw missing section must degrade to the
+    // underlying content, not to a blank sim.
+    const presented = late.flatMap((s) => s.frames).filter((f) => f.op > 0.5);
+    expect(presented.length, 'a missing section was presented as a blank frame over the video').toBe(0);
     expect(realErrors(page)).toEqual([]);
   });
 
@@ -846,6 +889,338 @@ test.describe('real React viewer — simulation transitions', () => {
     // A post-roll sim must not be able to hold a parked spinner: either it is applied and shown,
     // or the underlying content stays. Never a wrong section.
     assertVisibleFramesAreCorrect(samples, { expect: 'B' });
+  });
+
+  test('12b. a sim that OUTLIVES the video is still shown after `ended`', async ({ page }) => {
+    // Test 12 uses end_sec === segDuration, so `seg.duration < s.end_sec` is FALSE and onEnded's
+    // post-roll branch never runs — the real case (a section that continues past the last frame)
+    // had no coverage at all.
+    //
+    // NOTE ON DURATIONS: the fixture media is 40s of ffmpeg colour, while `segDuration` only sets
+    // what the CONFIG claims. So end_sec has to clear the MEDIA length, not the config's — a sim
+    // ending at 40 ends exactly when the video does and is not a post-roll at all. (Diagnosed the
+    // hard way: the first version of this test asserted against duration 40 and failed for that
+    // reason rather than for the behaviour under test.)
+    await bootViewer(page, makeConfig([{ id: 's1', start: 25, end: 60, section: S.B }], { segDuration: 30 }));
+    await startPlayback(page);
+    await seekTo(page, 26);
+    await waitForSection(page, 'B');
+
+    // Drive the video to its end and let `ended` fire.
+    await page.evaluate(() => {
+      const v = document.querySelector('video');
+      if (v) v.currentTime = Math.max(0, (v.duration || 30) - 0.05);
+    });
+    await page.waitForTimeout(2500);
+
+    const samples = await sampleFrames(page, 700);
+    const everShown = samples.some((s) => s.frames.some((f) => f.op > 0.5));
+    expect(everShown, 'the post-roll sim was not on screen after the video ended').toBe(true);
+    assertVisibleFramesAreCorrect(samples, { expect: 'B' });
+  });
+
+  test('12c. a full-UI post-roll section restores the UI a minimal-UI sibling hid', async ({ page }) => {
+    // The Edge-of-Chaos shape: one package, several minimal-UI sections mid-video, and a FULL
+    // simulation as the post-roll. The pool keeps ONE document per package, so the post-roll
+    // activation happens in a document whose last applied state was minimal — and it must restore
+    // the full UI, not inherit the hidden one.
+    await bootViewer(page, makeConfig([
+      { id: 's1', start: 3, end: 8, section: S.A, simpleUi: true, hide: ['.controls'] },
+      { id: 's2', start: 25, end: 60, section: S.B, simpleUi: false },
+    ], { segDuration: 30 }));
+    await startPlayback(page);
+    await seekTo(page, 4);
+    await waitForSection(page, 'A');
+
+    await seekTo(page, 26);
+    await waitForSection(page, 'B');
+    await page.evaluate(() => {
+      const v = document.querySelector('video');
+      if (v) v.currentTime = Math.max(0, (v.duration || 30) - 0.05);
+    });
+    await page.waitForTimeout(2500);
+
+    const samples = await sampleFrames(page, 900);
+    assertVisibleFramesAreCorrect(samples, { expect: 'B' });
+    // THE claim: the full UI is back. A frame visibly presenting B with its controls still hidden
+    // is the minimal-UI state leaking across sections of one pooled document.
+    const controlsSeen = samples.some((s) => s.frames.some((f) => f.op > 0.5 && f.controls));
+    expect(controlsSeen, 'the post-roll FULL simulation is still wearing the minimal-UI state').toBe(true);
+  });
+
+  test('12d. a RAW full-simulation finale never inherits a sibling section\'s minimal UI', async ({ page }) => {
+    // The Edge-of-Chaos bug, reproduced with the SHIPPING bridge: the dirtyui bodies hide the
+    // full-UI chrome imperatively when simpleUi is on (ui_hide empty — the mechanical path never
+    // engages) and their cleanups do not restore it, exactly like real generated bodies. The
+    // finale is the RAW package URL (no ?section=): it dispatches NO body, so before the
+    // raw-activation reset nothing could repair the hidden chrome and the full simulation
+    // presented wearing the previous section's minimal UI.
+    await bootViewer(page, makeConfig([
+      { id: 's1', start: 3, end: 8, pkg: 'dirtyui', section: S.A, simpleUi: true },
+      { id: 's2', start: 25, end: 60, pkg: 'dirtyui', rawUrl: true, simpleUi: false },
+    ], { segDuration: 30 }));
+    await startPlayback(page);
+    await seekTo(page, 4);
+    await waitForSection(page, 'A');
+
+    await seekTo(page, 26);
+    await page.waitForTimeout(2500);
+    await page.evaluate(() => {
+      const v = document.querySelector('video');
+      if (v) v.currentTime = Math.max(0, (v.duration || 30) - 0.05);
+    });
+    await page.waitForTimeout(2500);
+
+    const samples = await sampleFrames(page, 900);
+    const shown = samples.some((s) => s.frames.some((f) => f.op > 0.5));
+    expect(shown, 'the raw finale was never presented at all').toBe(true);
+    const controlsSeen = samples.some((s) => s.frames.some((f) => f.op > 0.5 && f.controls));
+    expect(controlsSeen, 'the RAW full simulation is wearing a sibling section\'s minimal UI').toBe(true);
+  });
+
+  test('12e. a single-section RAW package never reloads on re-entry', async ({ page }) => {
+    // EVERY single-section package is "raw": no ?section= on the URL, and sim_script 'main' falls
+    // through to the section id, which no bridge has a body for. If the raw-activation reset fired
+    // for those, the commonest package shape in the product would reload its document on every
+    // entry — a serious regression. It must reload ONLY when a scripted section dirtied the
+    // document first, which for a single-section package never happens.
+    await bootViewer(page, makeConfig([
+      { id: 's1', start: 3, end: 8, pkg: 'dirtyui', rawUrl: true },
+      { id: 's2', start: 20, end: 26, pkg: 'dirtyui', rawUrl: true },
+    ]), { simdebug: true });
+    await startPlayback(page);
+    await seekTo(page, 4);
+    await page.waitForTimeout(1500);
+    await seekTo(page, 12);            // leave the sim
+    await page.waitForTimeout(800);
+    await seekTo(page, 21);            // re-enter the same raw package
+    await page.waitForTimeout(1500);
+
+    const reloads = await page.evaluate(() =>
+      ((window as unknown as { __SIM_TELEMETRY__?: { events: ({ event: string })[] } })
+        .__SIM_TELEMETRY__?.events ?? []).filter((e) => e.event === 'raw-reset-reload').length);
+    expect(reloads, 'a single-section raw package reloaded — every such package would').toBe(0);
+
+    const samples = await sampleFrames(page, 700);
+    const shown = samples.some((s) => s.frames.some((f) => f.op > 0.5));
+    expect(shown, 'the raw package was never presented on re-entry').toBe(true);
+  });
+
+  test('12f. a reloaded document is clean again — a raw re-entry does not reload twice', async ({ page }) => {
+    // navigateFrame gives the package a NEW document identity, which has run no body. If
+    // scriptedEver survived that, every later raw activation would reload again even though the
+    // document is already pristine — an unnecessary reload on every entry to the finale.
+    await bootViewer(page, makeConfig([
+      { id: 's1', start: 3, end: 8, pkg: 'dirtyui', section: S.A, simpleUi: true },
+      { id: 's2', start: 12, end: 18, pkg: 'dirtyui', rawUrl: true },
+      { id: 's3', start: 22, end: 28, pkg: 'dirtyui', rawUrl: true },
+    ]), { simdebug: true });
+    await startPlayback(page);
+    await seekTo(page, 4);
+    await waitForSection(page, 'A');
+    await seekTo(page, 13);                 // first raw entry — SHOULD reload (document is dirty)
+    await page.waitForTimeout(2000);
+    await seekTo(page, 23);                 // second raw entry — document is clean, must NOT reload
+    await page.waitForTimeout(2000);
+
+    const reloads = await page.evaluate(() =>
+      ((window as unknown as { __SIM_TELEMETRY__?: { events: ({ event: string })[] } })
+        .__SIM_TELEMETRY__?.events ?? []).filter((e) => e.event === 'raw-reset-reload').length);
+    expect(reloads, 'the reset fired more than once — a reloaded document was still marked dirty').toBe(1);
+  });
+
+  test('12g. PRODUCTION url shape: a scripted section marks the document dirty', async ({ page }) => {
+    // SimulationService mints `?section=<the section's own row id>`, so a predicate comparing the
+    // dispatch key to the row id calls EVERY generated section "raw". Consequences: scripted
+    // siblings never mark the document dirty (the reset never fires), and presentAsLoaded is passed
+    // on nearly every activation (the SCRIPT_MISSING protection is disabled product-wide). Every
+    // other fixture uses a section param that differs from the row id — a shape production never
+    // produces — so nothing caught it.
+    //
+    // Here section A's id IS its section param, exactly as production emits.
+    await bootViewer(page, makeConfig([
+      { id: S.A, start: 3, end: 8, pkg: 'dirtyui', sectionIsOwnId: true, simpleUi: true },
+      { id: 's2', start: 20, end: 60, pkg: 'dirtyui', rawUrl: true },
+    ], { segDuration: 30 }), { simdebug: true });
+    await startPlayback(page);
+    await seekTo(page, 4);
+    await waitForSection(page, 'A');
+    await seekTo(page, 21);
+    await page.waitForTimeout(2500);
+
+    const reloads = await page.evaluate(() =>
+      ((window as unknown as { __SIM_TELEMETRY__?: { events: ({ event: string })[] } })
+        .__SIM_TELEMETRY__?.events ?? []).filter((e) => e.event === 'raw-reset-reload').length);
+    expect(reloads, 'a production-shaped scripted section did not mark the document dirty').toBe(1);
+
+    const samples = await sampleFrames(page, 900);
+    const controlsSeen = samples.some((s) => s.frames.some((f) => f.op > 0.5 && f.controls));
+    expect(controlsSeen, 'the raw finale inherited the minimal UI under the production url shape').toBe(true);
+  });
+
+  test('12h. a missing section is still HIDDEN under the production url shape', async ({ page }) => {
+    // The other half: presentAsLoaded must stay false for a section that genuinely selects a body.
+    // With the string-coincidence predicate this section was "raw", so a missing body presented the
+    // pooled document instead of degrading to video.
+    await bootViewer(page, makeConfig([
+      { id: S.A, start: 3, end: 8, sectionIsOwnId: true },
+      { id: S.MISSING, start: 8, end: 14, sectionIsOwnId: true },
+    ]));
+    await startPlayback(page);
+    await seekTo(page, 4);
+    await page.waitForTimeout(900);
+    const move = sampleFrames(page, 1500);
+    await seekTo(page, 10);
+    // SKIP BY TIME, NOT BY FRAME COUNT. `sampleFrames` ticks once per rAF, so `.slice(6)` skipped
+    // roughly 100ms — far less than the exit fade. The outgoing section's frame is still fading
+    // through that window, and on Firefox one sample landed just above the 0.5 threshold while
+    // Chromium's cadence happened to miss it. That made the test engine-dependent while saying
+    // nothing about the invariant, which is that a MISSING section must not be left presented once
+    // the fade has finished.
+    const AFTER_FADE_MS = 600;
+    const late = (await move).filter((smp) => smp.t >= AFTER_FADE_MS);
+    expect(late.length, 'no post-transition samples — the assertion below would be vacuous').toBeGreaterThan(5);
+    const presented = late.flatMap((s) => s.frames).filter((f) => f.op > 0.5);
+    expect(presented.length, 'a missing section was presented instead of degrading to video').toBe(0);
+  });
+
+  test('12i. the raw reset really reloads when the frame is already on that URL', async ({ page }) => {
+    // The reset navigates to the section URL. When the pool frame is ALREADY on that URL — which
+    // happens whenever the raw section was entered first — React re-renders an identical `src`
+    // prop and nothing navigates: no load event, no new document, and `attach` keeps every
+    // per-document flag alive. The frame would then sit undispatched with no paint poll and no
+    // stall bound, i.e. a permanent hang rather than a reload.
+    //
+    // Sequence: raw finale (spec.src becomes the bare URL) -> a NON-raw section (dispatches a body,
+    // marks the document dirty, leaves spec.src alone) -> the raw finale again.
+    await bootViewer(page, makeConfig([
+      { id: 's1', start: 3, end: 8, pkg: 'dirtyui', rawUrl: true },
+      { id: 's2', start: 12, end: 17, pkg: 'dirtyui', section: S.A, simpleUi: true },
+      { id: 's3', start: 21, end: 60, pkg: 'dirtyui', rawUrl: true },
+    ], { segDuration: 30 }), { simdebug: true });
+    await startPlayback(page);
+    await seekTo(page, 4);
+    await page.waitForTimeout(1800);
+    await seekTo(page, 13);
+    await waitForSection(page, 'A');
+    await seekTo(page, 22);
+    await page.waitForTimeout(3000);
+
+    const ev = await page.evaluate(() =>
+      ((window as unknown as { __SIM_TELEMETRY__?: { events: ({ event: string })[] } })
+        .__SIM_TELEMETRY__?.events ?? []).map((e) => e.event));
+    expect(ev.filter((e) => e === 'raw-reset-reload').length,
+      'the reset never fired — this test would prove nothing about the reload').toBe(1);
+
+    const samples = await sampleFrames(page, 900);
+    const shown = samples.some((s) => s.frames.some((f) => f.op > 0.5));
+    expect(shown, 'the raw finale was never presented — the reset navigated to the URL it was already on').toBe(true);
+  });
+
+  // ══ PRIORITY 8 WIRING — the call sites must genuinely execute ═══════════════════════════════
+  //
+  // These modules were previously shipped as tested libraries with NO production caller. A unit test
+  // proving a library correct says nothing about whether the player ever reaches it, so each test
+  // below drives the REAL viewer with the switch on and asserts the runtime evidence.
+
+  const telEvents = (page: import('@playwright/test').Page) => page.evaluate(() =>
+    ((window as unknown as { __SIM_TELEMETRY__?: { events: Array<Record<string, unknown>> } })
+      .__SIM_TELEMETRY__?.events ?? []).map((e) => String(e.event)));
+
+  test('P8a. the occurrence planner runs and prepares a package ahead of its boundary', async ({ page }) => {
+    await bootViewer(page, makeConfig([
+      { id: 's1', start: 3, end: 8, section: S.A },
+      { id: 's2', start: 22, end: 28, pkg: 'legacy', section: S.B },
+    ], { scheduler: 'predictive', prepareBudgetMs: { 'sim-1': 8000 } }), { simdebug: true });
+    await startPlayback(page);
+    await seekTo(page, 16);
+    await page.waitForTimeout(3000);
+    const ev = await telEvents(page);
+    // The call site EXECUTED. At the 'all' tier every package is resident from video start, so a
+    // plan with nothing left to mount is the normal outcome — asserting only on a mount could not
+    // tell that apart from never running.
+    expect(ev, 'the planner never ran — the call site is unreachable').toContain('predictive-plan');
+    expect(ev, 'the planner threw').not.toContain('predictive-error');
+
+    // …and it produced a real plan rather than an empty one.
+    const plans = await page.evaluate(() =>
+      ((window as unknown as { __SIM_TELEMETRY__?: { events: Array<Record<string, unknown>> } })
+        .__SIM_TELEMETRY__?.events ?? []).filter((e) => e.event === 'predictive-plan'));
+    expect(plans.some((p) => Number(p.admit) > 0), 'every plan was empty').toBe(true);
+  });
+
+  test('P8b. the planner stays OFF by default — no early mount without the switch', async ({ page }) => {
+    await bootViewer(page, makeConfig([
+      { id: 's1', start: 3, end: 8, section: S.A },
+      { id: 's2', start: 22, end: 28, pkg: 'legacy', section: S.B },
+    ]), { simdebug: true });
+    await startPlayback(page);
+    await seekTo(page, 16);
+    await page.waitForTimeout(3000);
+    expect(await telEvents(page), 'the scheduler ran with its kill switch off')
+      .not.toContain('predictive-plan');
+  });
+
+  test('P8c. the boundary sentinel arms and still reveals the correct section', async ({ page }) => {
+    // timeupdate remains the safety net, so the observable claim is that enabling the sentinel does
+    // not change WHAT is shown.
+    await bootViewer(page, makeConfig([{ id: 's1', start: 6, end: 12, section: S.A }],
+      { boundarySentinel: true }), { simdebug: true });
+    await startPlayback(page);
+    await seekTo(page, 4);
+    await page.waitForTimeout(1500);
+    await waitForSection(page, 'A');
+
+    // The sentinel ARMED — with the mechanism it chose on this engine recorded. Without this the
+    // test would pass with the whole call site deleted, since timeupdate alone already reveals A.
+    const armed = await page.evaluate(() =>
+      ((window as unknown as { __SIM_TELEMETRY__?: { events: Array<Record<string, unknown>> } })
+        .__SIM_TELEMETRY__?.events ?? []).filter((e) => e.event === 'boundary-armed'));
+    expect(armed.length, 'the sentinel never armed — the call site is unreachable').toBeGreaterThan(0);
+    // 'none' is NOT acceptable. It means armBoundarySentinel REFUSED — the boundary was outside its
+    // horizon — so accepting it here let the test pass while the sentinel never once armed during
+    // ordinary playback. The assertion is that a real mechanism engaged.
+    expect(['rvfc', 'timeout']).toContain(String(armed[armed.length - 1].mode));
+
+    // …and the safety net still governs WHAT is shown.
+    assertVisibleFramesAreCorrect(await sampleFrames(page, 900), { expect: 'A' });
+    expect(realErrors(page)).toEqual([]);
+  });
+
+  test('P8d. adaptive quality is consulted without disturbing what is shown', async ({ page }) => {
+    await bootViewer(page, makeConfig([{ id: 's1', start: 3, end: 10, section: S.A }],
+      { adaptiveQuality: true, prepareBudgetMs: { 'sim-1': 500 } }), { simdebug: true });
+    await startPlayback(page);
+    await seekTo(page, 4);
+    await waitForSection(page, 'A');
+    await page.waitForTimeout(1200);
+    const ev = await telEvents(page);
+    expect(ev, 'the adaptive-quality controller threw').not.toContain('adaptive-quality-error');
+    // The controller was CONSULTED and produced a decision that reached the activation.
+    const q = await page.evaluate(() =>
+      ((window as unknown as { __SIM_TELEMETRY__?: { events: Array<Record<string, unknown>> } })
+        .__SIM_TELEMETRY__?.events ?? []).filter((e) => e.event === 'adaptive-quality'));
+    expect(q.length, 'adaptive quality was never consulted — the call site is unreachable')
+      .toBeGreaterThan(0);
+    expect(['high', 'balanced', 'low']).toContain(String(q[0].next));
+    assertVisibleFramesAreCorrect(await sampleFrames(page, 700), { expect: 'A' });
+  });
+
+  test('P8e. transition timings are MEASURED on the path packages actually use today', async ({ page }) => {
+    // The marks were originally only on the v3 modern path, which no stored package uses — so in the
+    // field the measurement layer produced nothing at all.
+    await bootViewer(page, makeConfig([{ id: 's1', start: 3, end: 10, section: S.A }]),
+      { simdebug: true });
+    await startPlayback(page);
+    await seekTo(page, 4);
+    await waitForSection(page, 'A');
+    await page.waitForTimeout(1200);
+    const reveals = await page.evaluate(() =>
+      ((window as unknown as { __SIM_TELEMETRY__?: { events: Array<Record<string, unknown>> } })
+        .__SIM_TELEMETRY__?.events ?? []).filter((e) => e.event === 'reveal').map((e) => e.totalMs));
+    expect(reveals.length, 'no reveal was recorded at all').toBeGreaterThan(0);
+    expect(reveals.some((t) => typeof t === 'number'),
+      'a reveal carried no measurement — RUM would report nothing').toBe(true);
   });
 
   test('13. a LEGACY package (no ack support) is still displayed, never held on silence', async ({ page }) => {

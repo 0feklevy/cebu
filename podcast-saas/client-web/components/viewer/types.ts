@@ -207,6 +207,22 @@ export interface PlayerConfig {
   // Kill switch (admin_settings / SIM_POOL_MODE): 'adaptive' = package-identity resident pool;
   // 'single' = conservative one-frame-on-activation fallback. A ?simpool= URL param overrides it.
   sim_pool_mode?: 'adaptive' | 'single';
+  // ── Priority 8 runtime switches (migration 052). All absent/OFF = today's behaviour. ──
+  sim_scheduler_mode?: 'off' | 'predictive';
+  sim_adaptive_quality?: boolean;
+  sim_boundary_sentinel?: boolean;
+  sim_rum_sample_rate?: number;
+  /** Per-simulation publish-time preparation cost, keyed by simulation id. */
+  sim_prepare_budget_ms?: Record<string, number>;
+  /**
+   * The canary-derived budget alone, never refined by field data.
+   *
+   * Separate from `sim_prepare_budget_ms` because the two answer different questions. That one is
+   * a LEAD TIME and is rightly refined by what the fleet actually measures; this one is a STANDARD
+   * for adaptive quality to judge a device against, and a standard derived from the same
+   * measurement it judges is not a standard at all.
+   */
+  sim_lab_budget_ms?: Record<string, number>;
 }
 
 export interface TimelineSeg {

@@ -12,7 +12,7 @@ import {
   AbortMultipartUploadCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import type { CompletedPart, StorageService } from './StorageService.js';
+import type { CompletedPart, StorageService, StoredObjectHead } from './StorageService.js';
 import { publicApiOrigin } from '../../config/publicOrigins.js';
 
 /**
@@ -265,6 +265,25 @@ export class SupabaseStorageAdapter implements StorageService {
     } catch (err) {
       const status = (err as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode;
       if (status === 404 || (err as { name?: string }).name === 'NotFound') return false;
+      throw err; // real error (auth/network) — don't misreport as "missing"
+    }
+  }
+
+  async headObject(key: string): Promise<StoredObjectHead | null> {
+    try {
+      const r = await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }));
+      // Each field is reported as null when absent rather than defaulted. A caller verifying a
+      // published revision must be able to distinguish "the store says text/plain" from "the store
+      // did not say" — defaulting here would turn the second into a false mismatch or a false pass.
+      return {
+        contentType: r.ContentType ?? null,
+        cacheControl: r.CacheControl ?? null,
+        size: typeof r.ContentLength === 'number' ? r.ContentLength : null,
+        etag: r.ETag ?? null,
+      };
+    } catch (err) {
+      const status = (err as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode;
+      if (status === 404 || (err as { name?: string }).name === 'NotFound') return null;
       throw err; // real error (auth/network) — don't misreport as "missing"
     }
   }

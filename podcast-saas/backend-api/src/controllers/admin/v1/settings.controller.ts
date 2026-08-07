@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { db } from '../../../db/index.js';
+import { invalidateRumSampleRateCache } from '../../../services/simulation/RumService.js';
 import { admin_settings } from '../../../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { firebaseAdminRequired } from '../../../middleware/firebase-admin-required.js';
@@ -38,6 +39,12 @@ export async function registerAdminSettingsRoutes(app: FastifyInstance): Promise
         .set({ ...body.data, updated_at: new Date() })
         .where(eq(admin_settings.id, 1))
         .returning();
+
+      // The RUM sample rate is read on an unauthenticated write path, so it is cached in-process
+      // rather than queried per request. Invalidating here is what keeps it a real kill switch:
+      // an operator setting it to 0 during an incident sees it take effect now, not whenever the
+      // cache happens to expire.
+      invalidateRumSampleRateCache();
 
       return reply.send(updated);
     },
