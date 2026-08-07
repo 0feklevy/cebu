@@ -258,9 +258,41 @@ describe('reapRumEvents', () => {
     `);
     await ingestBatch(batch({ sessionId: 'session-fresh1' }));   // inside the window: must survive
 
-    expect(await reapRumEvents(), 'the loop stopped before the backlog was drained').toBe(OVER);
+    // OBSERVE EACH STATEMENT, not just the total. Asserting only the total cannot see the bound:
+    // with the LIMIT removed, one statement deletes the whole backlog and the total is still
+    // correct — which is exactly how that mutation survived until this wrapper existed.
+    const real = h.dbRef.current!.delete as (...a: unknown[]) => unknown;
+    const perPass: number[] = [];
+    h.dbRef.current!.delete = ((...args: unknown[]) => {
+      const builder = real.apply(h.dbRef.current, args) as Record<string, unknown>;
+      const where = builder.where as (...a: unknown[]) => Record<string, unknown>;
+      builder.where = (...wa: unknown[]) => {
+        const w = where.apply(builder, wa);
+        const ret = w.returning as (...a: unknown[]) => Promise<unknown[]>;
+        w.returning = async (...ra: unknown[]) => {
+          const out = await ret.apply(w, ra);
+          perPass.push(out.length);
+          return out;
+        };
+        return w;
+      };
+      return builder;
+    }) as typeof real;
+
+    try {
+      expect(await reapRumEvents(), 'the loop stopped before the backlog was drained').toBe(OVER);
+    } finally {
+      h.dbRef.current!.delete = real;
+    }
     const [{ n }] = await rows<{ n: number }>(`SELECT count(*)::int AS n FROM sim_rum_events`);
     expect(n, 'the sweep deleted a row that was inside the retention window').toBe(1);
+
+    expect(perPass.length, 'a backlog larger than one batch was cleared in a single statement')
+      .toBeGreaterThan(1);
+    expect(Math.max(...perPass),
+      `one statement deleted ${Math.max(...perPass)} rows — the per-statement bound is gone, so a `
+      + 'year of retention lowering is again one unbounded transaction in the web process')
+      .toBeLessThanOrEqual(RUM_REAP_BATCH);
   });
 });
 
