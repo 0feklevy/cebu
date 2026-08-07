@@ -9,6 +9,7 @@ import { and, eq, isNull, ne, or } from 'drizzle-orm';
 import { logger } from '../../lib/logger.js';
 import { buildUiControlsPromptBlock, type SimUiSelection } from './SimUiControls.js';
 import { buildChildRuntimeSource } from './simRuntimeChild.js';
+import { isSystemOwnedKey, isSystemOwnedRelPath } from 'shared/sim/simRevision';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -181,6 +182,20 @@ function normalizeSimulationPath(rawPath: string): string | null {
   const normalized = parts.join('/');
   if (normalized.length > 512) {
     throw new Error(`File path is too long in simulation bundle: ${rawPath}`);
+  }
+  // RESERVED NAMESPACES. `revisions/` and `posters/` under this prefix belong to the system, and a
+  // bundle writing there is not a traversal — it is an in-bounds path that lands on immutable
+  // bytes. Revision ids are public (they appear inside `simulation_url` in every player config)
+  // and revision objects are served `max-age=31536000, immutable`, so a bundle entry named
+  // `revisions/<active-id>/package/app.js` would replace verified content in place and pin the
+  // replacement for a year with no revalidation. Thrown, not silently dropped: unlike a __MACOSX
+  // sidecar, this is a real asset the author expects to be served, and skipping it quietly would
+  // publish a package missing a file.
+  if (isSystemOwnedRelPath(normalized)) {
+    throw new Error(
+      `Simulation bundles may not write into the reserved "${normalized.split('/')[0]}/" `
+      + `directory: ${rawPath}`,
+    );
   }
   return normalized;
 }
@@ -2082,7 +2097,17 @@ export class SimulationService {
     }
 
     // Generated artifacts must survive the swap (they are system-owned, not part of the upload).
+    //
+    // `isSystemOwnedKey` covers the two SUBTREES that are not part of the customer's bundle at
+    // all: immutable revisions and captured posters. Both live under this same simulation prefix
+    // and neither appears in an incoming bundle, so without it an ordinary replace swept every
+    // published revision's bytes while its `sim_revisions` row survived — leaving a revision that
+    // still activates (the promote CAS checks manifest_hash/entry_path, never that bytes exist)
+    // and a pointer that resolves to nothing. Filename rules cannot express this: a revision's own
+    // `bridge.js` matches the pattern below and survives while its `index.html` and `manifest.json`
+    // do not, which corrupts the package more quietly than deleting all of it.
     const isGeneratedKey = (k: string): boolean =>
+      isSystemOwnedKey(k, prefix) ||
       /\/(bridge|guidance)\.js$/.test(k) ||
       k.startsWith(`${prefix}/guidance/`) ||
       /\/section_[^/]+\.(html|js)$/.test(k);

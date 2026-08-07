@@ -190,6 +190,49 @@ const CANONICAL_PREFIX_SEGMENTS = 3;
 export const REVISIONS_SEGMENT = 'revisions';
 
 /**
+ * The first path segments under a simulation prefix that belong to the SYSTEM, not to the
+ * customer's uploaded bundle.
+ *
+ * This exists because two subsystems write into one keyspace. Immutable revisions live at
+ * `<prefix>/revisions/<id>/…` and captured posters at `<prefix>/posters/<identity>/…`, while the
+ * "replace simulation" flow uploads a customer bundle into that same `<prefix>/` and then deletes
+ * everything under it that the new bundle does not contain. Nothing told the sweep that these two
+ * subtrees are not stale customer files.
+ */
+export const SYSTEM_OWNED_SEGMENTS: readonly string[] = [REVISIONS_SEGMENT, POSTERS_SUBDIR];
+
+/**
+ * Is `key` inside a system-owned subtree of `storagePrefix`?
+ *
+ * THE SWEEP AND THE UPLOAD VALIDATOR MUST AGREE, so both call this one predicate:
+ *
+ *  - Deleting these keys destroys published revision bytes whose `sim_revisions` rows survive.
+ *    Activation only checks that the row has a `manifest_hash` and an `entry_path`, never that the
+ *    bytes exist, so the pointer then flips to an empty prefix and `simulationUrlOf` — which has no
+ *    fallback for a pointer that resolves to nothing — serves 404s for every section. Rollback dies
+ *    with it, because the retained revisions were swept too. Partial destruction is the likely
+ *    shape: a sweep that spares `bridge.js` by filename still removes `index.html` and
+ *    `manifest.json` from the same revision.
+ *  - WRITING these keys is worse than deleting them. A revision id is public (it appears inside
+ *    `simulation_url` in every player config), and revision bytes are served
+ *    `max-age=31536000, immutable`. A bundle containing `revisions/<active-id>/package/app.js`
+ *    would therefore overwrite verified content in place and pin the replacement for a year with
+ *    no revalidation path — defeating the immutability the whole design rests on.
+ */
+export function isSystemOwnedKey(key: string, storagePrefix: string): boolean {
+  const base = storagePrefix.replace(/\/+$/, '');
+  if (!key.startsWith(`${base}/`)) return false;
+  const first = key.slice(base.length + 1).split('/')[0];
+  return first !== undefined && SYSTEM_OWNED_SEGMENTS.includes(first);
+}
+
+/** Does a bundle-relative path try to write into a system-owned subtree? */
+export function isSystemOwnedRelPath(relPath: string): boolean {
+  const first = relPath.replace(/^\/+/, '').split('/')[0];
+  return first !== undefined && SYSTEM_OWNED_SEGMENTS.includes(first);
+}
+
+/**
  * Recover the revision id from a key whose storage prefix is KNOWN. Exact, no guessing.
  *
  * Prefer this wherever the simulation row is already loaded.
