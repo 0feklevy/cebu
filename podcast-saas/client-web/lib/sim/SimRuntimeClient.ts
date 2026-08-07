@@ -539,7 +539,14 @@ export class SimRuntimeClient {
       // scripted document is reloaded before a raw activation reaches it), so presenting cannot
       // show another section's leftovers.
       this.set({ currentScript: null, pendingScript: null, stopped: false });
-      this.tel('script-missing', { script, presentedAsLoaded: true });
+      // A DISTINCT EVENT NAME, because this outcome is a SUCCESS. Reporting it as `script-missing`
+      // with a discriminator in `detail` meant the parent's FAILURE handler ran on every raw
+      // presentation: it cleared `simColdCover`/`simBootStalled` — tearing down the poster and the
+      // spinner at the instant the bridge answered, while `maybeReveal()` below still cannot reveal
+      // a document that has not painted — and it wrote a RUM `kind: 'failure'` row, poisoning the
+      // field signal used to judge whether a package is healthy. No consumer ever read the
+      // discriminator. From here the reveal path governs the affordance, as it does everywhere else.
+      this.tel('presented-as-loaded', { script });
       this.maybeReveal();
       return;
     }
@@ -1115,6 +1122,15 @@ export class SimRuntimeClient {
   private sendPresent(): void {
     const act = this.actMachine;
     if (!act || !this.transport) return;
+    // CLEAR BEFORE ARMING, like every other timer path here. `SECTION_APPLIED` calls this
+    // unconditionally after `matchesActivation`, and a duplicate SECTION_APPLIED with a higher
+    // `seq` passes both `validateEnvelope` and `matchesActivation` — the reducer then refuses the
+    // illegal transition by returning the SAME state object rather than throwing. The previous
+    // timer handle was overwritten and became unclearable, while its guard (generation +
+    // activationId) still passed, so it later fired `failModern('present-timeout')` against an
+    // activation that had already presented: a working simulation hidden and replaced by the
+    // recovery surface.
+    this.clearPresentTimer();
     this.transport.send(PRESENT_SECTION, act.identity, {});
     this.actMachine = activationReducer(act, { type: 'PRESENT' });
 
