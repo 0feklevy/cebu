@@ -245,7 +245,10 @@ was verified against the source before being fixed; the list is what survived th
   than to the invariant. The API origin is now pinned in `vitest.config.ts`, which makes the suite
   hermetic *and* keeps the rebase meaningful, since the fixture origin and the configured origin
   differ. Verified both directions: 827 client tests pass under the normal env and under the
-  release-gate env, and removing the pin reproduces exactly CI's three failures.
+  release-gate env, and removing the pin reproduces exactly CI's three failures. The defect was
+  found here but it is not a Priorities 7–8 defect: the affected suite ships in the base branch, so
+  the fix belongs there and was backported to `feat/sim-pipeline-hardening`, whose own release gate
+  was failing for exactly this reason. This PR inherits it and no longer carries the patch itself.
 - **The retention sweep threw on every tick against the real driver, and no test could see it.**
   Found by BOOTING the emitted backend against real Postgres — not by any suite. The bounded-reaper
   change interpolated the cutoff `Date` straight into a raw `sql` fragment, where there is no column
