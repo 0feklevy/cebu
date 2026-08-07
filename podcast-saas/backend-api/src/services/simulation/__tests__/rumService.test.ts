@@ -263,6 +263,16 @@ describe('reapRumEvents', () => {
     // correct — which is exactly how that mutation survived until this wrapper existed.
     const real = h.dbRef.current!.delete as (...a: unknown[]) => unknown;
     const perPass: number[] = [];
+    // Capture what the DRIVER is actually handed. This is the real boundary: postgres.js throws
+    // here on a Date, PGlite does not, so asserting the parameter SHAPE at this exact point is what
+    // lets a PGlite suite see a production-driver failure.
+    const params: unknown[] = [];
+    const realQuery = pg.query.bind(pg);
+    (pg as unknown as { query: unknown }).query = ((text: string, args?: unknown[]) => {
+      if (Array.isArray(args)) params.push(...args);
+      return realQuery(text, args as never);
+    }) as typeof pg.query;
+
     h.dbRef.current!.delete = ((...args: unknown[]) => {
       const builder = real.apply(h.dbRef.current, args) as Record<string, unknown>;
       const where = builder.where as (...a: unknown[]) => Record<string, unknown>;
@@ -283,9 +293,24 @@ describe('reapRumEvents', () => {
       expect(await reapRumEvents(), 'the loop stopped before the backlog was drained').toBe(OVER);
     } finally {
       h.dbRef.current!.delete = real;
+      (pg as unknown as { query: unknown }).query = realQuery;
     }
     const [{ n }] = await rows<{ n: number }>(`SELECT count(*)::int AS n FROM sim_rum_events`);
     expect(n, 'the sweep deleted a row that was inside the retention window').toBe(1);
+
+    // NO Date MAY REACH THE DRIVER AS A BOUND PARAMETER.
+    //
+    // Inside a raw `sql` fragment there is no column for the driver to infer a type from. PGlite
+    // (this suite) serialises a Date without complaint; postgres.js — the PRODUCTION driver —
+    // throws ERR_INVALID_ARG_TYPE before the statement is sent, so the hourly sweep failed on every
+    // tick while every test here stayed green. Only the real-Postgres boot surfaced it. Asserting
+    // the parameter SHAPE is what makes this suite able to see it at all.
+    const dates = params.filter((p) => p instanceof Date);
+    expect(dates,
+      'a Date was bound into the raw SQL fragment — postgres.js refuses to serialise it, so the '
+      + 'retention sweep throws on every run in production').toEqual([]);
+    expect(params.some((p) => typeof p === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(p)),
+      'the cutoff is no longer passed as an ISO string').toBe(true);
 
     expect(perPass.length, 'a backlog larger than one batch was cleared in a single statement')
       .toBeGreaterThan(1);

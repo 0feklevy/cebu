@@ -248,8 +248,18 @@ export async function reapRumEvents(now: Date = new Date()): Promise<number> {
     // by the same n rather than by the size of the retention backlog.
     const deleted = await db
       .delete(sim_rum_events)
+      // ISO STRING WITH AN EXPLICIT CAST, never a Date object.
+      //
+      // Inside a raw `sql` fragment there is no column whose type the driver can infer the
+      // parameter from, and postgres.js (the production driver) refuses to serialise a Date in that
+      // position — it throws ERR_INVALID_ARG_TYPE before the statement is ever sent, so the hourly
+      // sweep failed on every tick. PGlite, which the unit suite runs on, accepts the Date happily,
+      // so no test could see it; the real-Postgres boot is what surfaced it. The cast keeps the
+      // comparison a timestamptz comparison rather than a text one.
       .where(sql`ctid IN (
-        SELECT ctid FROM sim_rum_events WHERE created_at < ${cutoff} LIMIT ${RUM_REAP_BATCH}
+        SELECT ctid FROM sim_rum_events
+         WHERE created_at < ${cutoff.toISOString()}::timestamptz
+         LIMIT ${RUM_REAP_BATCH}
       )`)
       .returning({ id: sim_rum_events.id });
     total += deleted.length;
