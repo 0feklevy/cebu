@@ -673,6 +673,18 @@ export function cmdCollectorRecord(
     endedAt: string;
     exitCode: number | null;
     artifact?: string;
+    /**
+     * Artifact used ONLY to classify the outcome — never written to.
+     *
+     * Needed for collectors whose evidence file is consumed by a typed parser. Writing an
+     * error placeholder over the Playwright report let it be re-read as a valid empty
+     * report and laundered into clean evidence; but dropping artifact detection entirely
+     * made a genuine production test failure classify as ERROR instead of FINDING, which
+     * is the same conflation in the opposite direction (observed in audit run 31241926542,
+     * where two specs failed on a real production 5xx and the run reported "the auditor is
+     * broken"). Probing gives accurate classification with no placeholder.
+     */
+    probeArtifact?: string;
     status?: CollectorStatus;
     reason?: string;
     log: string;
@@ -681,7 +693,9 @@ export function cmdCollectorRecord(
   },
 ): { record: CollectorRecord; exitCode: number } {
   const artifactPath = opts.artifact ? resolveEvidencePath(ctx, opts.artifact) : undefined;
-  const producedArtifact = artifactPath !== undefined && existsSync(artifactPath);
+  const probePath = opts.probeArtifact ? resolveEvidencePath(ctx, opts.probeArtifact) : undefined;
+  const classifyPath = artifactPath ?? probePath;
+  const producedArtifact = classifyPath !== undefined && existsSync(classifyPath);
 
   // Read the artifact's own findings rather than trusting the exit code alone. Several
   // collectors exit 0 while reporting HIGH findings (only CRITICAL sets exit 1), so an
@@ -691,7 +705,7 @@ export function cmdCollectorRecord(
   let artifactIsPlaceholder = false;
   if (producedArtifact) {
     try {
-      const doc = readJson<{ findings?: unknown[]; auditError?: unknown }>(artifactPath!);
+      const doc = readJson<{ findings?: unknown[]; auditError?: unknown }>(classifyPath!);
       artifactFindings = Array.isArray(doc.findings) ? doc.findings.length : 0;
       artifactIsPlaceholder = doc.auditError === true;
     } catch {
@@ -725,7 +739,7 @@ export function cmdCollectorRecord(
     exitCode: opts.exitCode,
     status,
     reason,
-    ...(opts.artifact ? { artifact: opts.artifact } : {}),
+    ...(opts.artifact ?? opts.probeArtifact ? { artifact: opts.artifact ?? opts.probeArtifact } : {}),
   };
 
   if (status === 'ERROR' && artifactPath && !producedArtifact) {

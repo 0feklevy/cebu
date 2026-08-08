@@ -232,7 +232,7 @@ jobs:
           pnpm --filter ops-release release-cli collector-record \
             --name browser-tests --command 'playwright test --config=playwright.production.config.ts' \
             --started-at "$started" --ended-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            --exit-code "$pw" \
+            --exit-code "$pw" --probe-artifact "$PW_RESULTS" \
             --log "$ART/collectors.json" --run-id "$RUN_ID" --git-sha "$GIT_SHA"
 
       # If the preflight failed the browser step never ran; record that explicitly so the

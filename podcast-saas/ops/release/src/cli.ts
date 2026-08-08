@@ -77,7 +77,7 @@ const USAGE = `Usage: release-cli <command> [flags]
   endpoint-audit      [--run-id ID] [--git-sha SHA] [--out endpoints.json]
   gate                --phase pre-deploy|post-deploy --findings f1.json,f2.json [--approve-high] [--block-on-warning]
                       [--require f1.json,f2.json] [--identity-bearing name.json,…] [--expect-run-id ID] [--expect-git-sha SHA] [--out gate.json]
-  collector-record    --name N --log collectors.json [--command C] [--exit-code N] [--artifact f]
+  collector-record    --name N --log collectors.json [--command C] [--exit-code N] [--artifact f] [--probe-artifact f]
                       [--status PASS|FINDING|ERROR|NOT_CONFIGURED] [--reason R] [--started-at T] [--ended-at T]
   coverage-report     [--out coverage.json]
   audit-verdict       --log collectors.json [--gate gate.json] [--coverage coverage.json] [--out verdict.json]
@@ -167,6 +167,7 @@ async function main(): Promise<number> {
         endedAt: flags.get('ended-at') ?? new Date().toISOString(),
         exitCode: flags.has('exit-code') ? Number(flags.get('exit-code')) : null,
         artifact: flags.get('artifact'),
+        probeArtifact: flags.get('probe-artifact'),
         status: flags.get('status') as CollectorStatus | undefined,
         reason: flags.get('reason'),
         log: need('log'),

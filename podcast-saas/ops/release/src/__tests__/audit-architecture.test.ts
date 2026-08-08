@@ -423,3 +423,52 @@ describe('the rendered report separates the three things an operator triages on'
     expect(md).toContain('None — every collector produced an answer.');
   });
 });
+
+describe('probe-artifact classifies without writing (both conflations closed)', () => {
+  it('a genuine test failure with a real report is a FINDING, not an audit error', () => {
+    // Audit run 31241926542: the suite ran, 2 specs failed on a real production 5xx, and
+    // because artifact detection had been removed the run reported BLOCKED_BY_AUDIT_ERROR —
+    // "the auditor is broken" for a genuine production incident.
+    const results = join(tmp, 'results.json');
+    writeFileSync(results, JSON.stringify({ suites: [{ specs: [{ ok: false, title: 't' }] }] }));
+    const { record } = cmdCollectorRecord(ctx(), {
+      name: 'browser-tests',
+      command: 'playwright test',
+      startedAt: 'a',
+      endedAt: 'b',
+      exitCode: 1,
+      probeArtifact: results,
+      log: join(tmp, 'collectors.json'),
+    });
+    expect(record.status).toBe('FINDING');
+  });
+
+  it('a crash with no report is an ERROR', () => {
+    const { record } = cmdCollectorRecord(ctx(), {
+      name: 'browser-tests',
+      command: 'playwright test',
+      startedAt: 'a',
+      endedAt: 'b',
+      exitCode: 1,
+      probeArtifact: join(tmp, 'results.json'),
+      log: join(tmp, 'collectors.json'),
+    });
+    expect(record.status).toBe('ERROR');
+  });
+
+  it('probing NEVER writes a placeholder over the probed file', () => {
+    // This is what stops the laundering: the report path must stay absent so
+    // playwright-summary fails closed instead of parsing a placeholder as an empty pass.
+    const results = join(tmp, 'results.json');
+    cmdCollectorRecord(ctx(), {
+      name: 'browser-tests',
+      command: 'playwright test',
+      startedAt: 'a',
+      endedAt: 'b',
+      exitCode: 1,
+      probeArtifact: results,
+      log: join(tmp, 'collectors.json'),
+    });
+    expect(existsSync(results)).toBe(false);
+  });
+});
