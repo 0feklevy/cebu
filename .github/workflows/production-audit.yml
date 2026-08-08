@@ -1,10 +1,24 @@
 # Production audit — read-only inspection of the live system, on demand and daily.
 # Inspects containers, endpoints, certificates, CSP, browser behaviour, assets, and
-# database URL fields WITHOUT changing anything. Fails (red) when any CRITICAL
-# finding exists, so a broken production is visible even between releases.
+# database URL fields WITHOUT changing anything.
 #
-# Uses the "production-audit" environment (read-only SSH credentials, no approval
-# gate) so the daily schedule never waits on a human.
+# RESULT MODEL (the thing this workflow is careful about)
+# -------------------------------------------------------
+# Every collector reports exactly one status — PASS / FINDING / ERROR / NOT_CONFIGURED —
+# and the run ends in exactly one of:
+#
+#   PASS                    every collector ran; nothing blocking found
+#   BLOCKED_BY_FINDINGS     every collector ran; production violates policy
+#   BLOCKED_BY_AUDIT_ERROR  a collector could not produce a trustworthy answer
+#
+# Those are kept apart because they demand opposite responses: page the on-call for the
+# first, fix the pipeline for the second. Run 31199562890 conflated them — Playwright died
+# during collection, no browser evidence existed, and the run still reported
+# "BLOCKED — 1C/0H/0W / AUDIT_FAILED", which reads exactly like a healthy audit that found
+# one real defect.
+#
+# Uses the "production-audit" environment (read-only SSH credentials, no approval gate)
+# so the daily schedule never waits on a human.
 name: Production audit
 
 on:
@@ -22,6 +36,12 @@ concurrency:
 env:
   ART: ${{ github.workspace }}/release-artifacts
   RUN_ID: audit-${{ github.run_id }}-${{ github.run_attempt }}
+  GIT_SHA: ${{ github.sha }}
+  # Absolute, workspace-anchored. `pnpm --filter ops-release` runs the CLI with cwd =
+  # ops/release, so a repo-relative path here resolved to ops/release/client-web/… and
+  # produced ENOENT. The CLI now also anchors relative paths to the app root, but the
+  # workflow states the path unambiguously rather than relying on that repair alone.
+  PW_RESULTS: ${{ github.workspace }}/podcast-saas/client-web/e2e-results/results.json
 
 defaults:
   run:
@@ -41,9 +61,7 @@ jobs:
         --repo-dir ${{ vars.PRODUCTION_REPO_DIR }}
     steps:
       # persist-credentials: false — this read-only workflow never pushes, so no git
-      # credential is written and checkout's post-step credential cleanup (the source
-      # of the floating "git exited 128" warning in run 29528323804: annotation
-      # anchored at "Post Run actions/checkout", log line 11) has nothing to do.
+      # credential is written and checkout's post-step credential cleanup has nothing to do.
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
@@ -59,27 +77,113 @@ jobs:
           cache: pnpm
           cache-dependency-path: podcast-saas/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile --filter ops-release --filter client-web
-      - name: Public endpoints + live CSP (semantic)
-        continue-on-error: true
+
+      # ── coverage: state up front which surfaces this run can actually test ──────────
+      # A verdict that does not declare its own coverage lets "green" be read as "all of
+      # production is healthy" when three surfaces were never visited.
+      - name: Declare coverage (which production surfaces are configured)
+        env:
+          SMOKE_BASE_URL: https://flowvidco.com
+          SMOKE_PUBLIC_PATH: ${{ vars.SMOKE_PUBLIC_PATH }}
+          SMOKE_PLAYLIST_PATH: ${{ vars.SMOKE_PLAYLIST_PATH }}
+          SMOKE_ADMIN_URL: https://admin.flowvidco.com
+          SMOKE_ADMIN_EMAIL: ${{ secrets.SMOKE_ADMIN_EMAIL }}
+          SMOKE_ADMIN_PASSWORD: ${{ secrets.SMOKE_ADMIN_PASSWORD }}
+          SMOKE_ADMIN_PREVIEW_PATH: ${{ vars.SMOKE_ADMIN_PREVIEW_PATH }}
         run: |
           mkdir -p "$ART"
-          pnpm --filter ops-release release-cli endpoint-audit --out "$ART/endpoints.json" || true
-          pnpm --filter ops-release release-cli csp-audit --app client-web --out "$ART/csp-client-web.json" || true
-          pnpm --filter ops-release release-cli csp-audit --app admin-web --out "$ART/csp-admin-web.json" || true
+          pnpm --filter ops-release release-cli coverage-report --out "$ART/coverage.json"
+
+      # ── collectors ─────────────────────────────────────────────────────────────────
+      # Each collector follows the same shape: run it, capture the REAL exit code, then
+      # record an explicit status. `|| true` is deliberately absent — suppressing the exit
+      # code is fine, but erasing the status is what made a crash look like a pass.
+      - name: Public endpoints + live CSP (semantic)
+        run: |
+          started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          set -o pipefail
+          set +e
+          pnpm --filter ops-release release-cli endpoint-audit \
+            --run-id "$RUN_ID" --git-sha "$GIT_SHA" --out "$ART/endpoints.json"
+          ep=$?
+          set -e
+          pnpm --filter ops-release release-cli collector-record \
+            --name endpoint-audit --command 'release-cli endpoint-audit' \
+            --started-at "$started" --ended-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --exit-code "$ep" --artifact "$ART/endpoints.json" \
+            --log "$ART/collectors.json" --run-id "$RUN_ID" --git-sha "$GIT_SHA"
+
+          for app in client-web admin-web; do
+            started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            set -o pipefail
+            set +e
+            pnpm --filter ops-release release-cli csp-audit --app "$app" --out "$ART/csp-$app.json"
+            code=$?
+            set -e
+            pnpm --filter ops-release release-cli collector-record \
+              --name "csp-audit:$app" --command "release-cli csp-audit --app $app" \
+              --started-at "$started" --ended-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              --exit-code "$code" --artifact "$ART/csp-$app.json" \
+              --log "$ART/collectors.json" --run-id "$RUN_ID" --git-sha "$GIT_SHA"
+          done
+
       - name: Write SSH credentials (0600, never logged)
         working-directory: .
         run: |
           umask 077
           printf '%s\n' "${{ secrets.PRODUCTION_SSH_KEY }}" > .ssh-deploy-key
           printf '%s\n' "${{ secrets.PRODUCTION_SSH_KNOWN_HOSTS }}" > .ssh-known-hosts
+
+      # Strict host-key checking, BatchMode and key-only auth are unchanged. The audit now
+      # CLASSIFIES a remote failure (DNS / CONNECT_TIMEOUT / HOST_KEY_MISMATCH / AUTH_FAILED
+      # / PERMISSION_DENIED / REPO_MISSING / REMOTE_COMMAND_FAILED / INVALID_REMOTE_JSON)
+      # instead of printing a bare "FAILED" and discarding the VM's stdout.
       - name: VM snapshot (containers, /health, worker, certs, DB URL audit — read-only)
-        continue-on-error: true
         run: |
-          pnpm --filter ops-release release-cli remote-audit $REMOTE --out "$ART/vm-audit.json" \
-            && pnpm --filter ops-release release-cli vm-audit --file "$ART/vm-audit.json" --policy report-only --out "$ART/vm-findings.json" \
-            || true
+          started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          set -o pipefail
+          set +e
+          pnpm --filter ops-release release-cli remote-audit $REMOTE --out "$ART/vm-audit.json"
+          ra=$?
+          if [ "$ra" -eq 0 ]; then
+            pnpm --filter ops-release release-cli vm-audit --file "$ART/vm-audit.json" \
+              --policy report-only --out "$ART/vm-findings.json"
+            ra=$?
+          fi
+          set -e
+          pnpm --filter ops-release release-cli collector-record \
+            --name remote-audit --command 'release-cli remote-audit' \
+            --started-at "$started" --ended-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --exit-code "$ra" --artifact "$ART/vm-findings.json" \
+            --log "$ART/collectors.json" --run-id "$RUN_ID" --git-sha "$GIT_SHA"
+
+      # ── Playwright preflight ───────────────────────────────────────────────────────
+      # Prove every selected spec can be LOADED before paying for browser installation.
+      # `--list` performs module resolution and fails exactly the way run 31199562890
+      # failed, but in seconds and without downloading a browser.
+      - name: Playwright preflight (every audit spec must load)
+        working-directory: podcast-saas/client-web
+        run: |
+          started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          set -o pipefail
+          set +e
+          npx playwright test --config=playwright.production.config.ts --list
+          pf=$?
+          set -e
+          pnpm --filter ops-release release-cli collector-record \
+            --name playwright-preflight --command 'playwright test --config=playwright.production.config.ts --list' \
+            --started-at "$started" --ended-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --exit-code "$pf" \
+            --log "$ART/collectors.json" --run-id "$RUN_ID" --git-sha "$GIT_SHA"
+          echo "PREFLIGHT_OK=$([ $pf -eq 0 ] && echo yes || echo no)" >> "$GITHUB_ENV"
+
+      # NOTE: the browser-tests collector deliberately passes NO --artifact. Pointing it at
+      # results.json would make a failed run write an error placeholder there, which
+      # playwright-summary would then parse as a valid empty report and turn into clean,
+      # run-stamped evidence the gate passes. Status comes from the exit code instead, and
+      # playwright-summary fails closed on the genuinely absent file.
       - name: Browser audit (Playwright over the live site)
-        continue-on-error: true
+        if: env.PREFLIGHT_OK == 'yes'
         working-directory: podcast-saas/client-web
         env:
           SMOKE_BASE_URL: https://flowvidco.com
@@ -91,28 +195,134 @@ jobs:
           SMOKE_ADMIN_PREVIEW_PATH: ${{ vars.SMOKE_ADMIN_PREVIEW_PATH }}
           PLAYWRIGHT_AUDIT_OUT: ${{ env.ART }}/browser-audit.json
         run: |
+          started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          set -o pipefail
+          set +e
+          # The browser INSTALL is its own collector. Its exit code used to be discarded, and
+          # that silently inverted the whole result model: when the install fails (a routine
+          # apt/CDN hiccup on ubuntu-latest), `playwright test` still runs, every spec fails
+          # with "Executable doesn't exist", Playwright STILL writes results.json and exits 1
+          # — which classified as FINDING and paged the on-call for a healthy production.
           npx playwright install --with-deps chromium
-          npx playwright test
+          inst=$?
+          set -e
+          pnpm --filter ops-release release-cli collector-record \
+            --name browser-install --command 'playwright install --with-deps chromium' \
+            --started-at "$started" --ended-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --exit-code "$inst" \
+            --log "$ART/collectors.json" --run-id "$RUN_ID" --git-sha "$GIT_SHA"
+
+          if [ "$inst" -ne 0 ]; then
+            # No browser, so no verification is possible. Say that, rather than letting the
+            # suite fail its way into a production verdict.
+            pnpm --filter ops-release release-cli collector-record \
+              --name browser-tests --command 'playwright test (not attempted)' \
+              --exit-code 1 --status ERROR \
+              --reason 'browser install failed, so no browser verification was attempted' \
+              --log "$ART/collectors.json" --run-id "$RUN_ID" --git-sha "$GIT_SHA"
+            exit 0
+          fi
+
+          started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          set -o pipefail
+          set +e
+          npx playwright test --config=playwright.production.config.ts
+          pw=$?
+          set -e
+          pnpm --filter ops-release release-cli collector-record \
+            --name browser-tests --command 'playwright test --config=playwright.production.config.ts' \
+            --started-at "$started" --ended-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --exit-code "$pw" --probe-artifact "$PW_RESULTS" \
+            --log "$ART/collectors.json" --run-id "$RUN_ID" --git-sha "$GIT_SHA"
+
+      # If the preflight failed the browser step never ran; record that explicitly so the
+      # verdict is BLOCKED_BY_AUDIT_ERROR rather than a silently missing collector.
+      - name: Record skipped browser audit (preflight failed)
+        if: env.PREFLIGHT_OK != 'yes'
+        run: |
+          pnpm --filter ops-release release-cli collector-record \
+            --name browser-tests --command 'playwright test (skipped)' \
+            --exit-code 1 --status ERROR \
+            --reason 'skipped because the Playwright preflight could not load every audit spec' \
+            --log "$ART/collectors.json" --run-id "$RUN_ID" --git-sha "$GIT_SHA"
+
       - name: Findings + verdict
         id: gate
-        continue-on-error: true
         run: |
-          pnpm --filter ops-release release-cli playwright-summary --report client-web/e2e-results/results.json --out "$ART/playwright-summary.json" || true
-          pnpm --filter ops-release release-cli browser-audit --report "$ART/browser-audit.json" --out "$ART/browser-findings.json" || true
+          started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          set -o pipefail
+          set +e
+          pnpm --filter ops-release release-cli playwright-summary --report "$PW_RESULTS" \
+            --run-id "$RUN_ID" --git-sha "$GIT_SHA" --out "$ART/playwright-summary.json"
+          ps=$?
+          set -e
+          pnpm --filter ops-release release-cli collector-record \
+            --name playwright-summary --command 'release-cli playwright-summary' \
+            --started-at "$started" --ended-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --exit-code "$ps" --artifact "$ART/playwright-summary.json" \
+            --log "$ART/collectors.json" --run-id "$RUN_ID" --git-sha "$GIT_SHA"
+
+          started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          set -o pipefail
+          set +e
+          pnpm --filter ops-release release-cli browser-audit --report "$ART/browser-audit.json" --out "$ART/browser-findings.json"
+          ba=$?
+          set -e
+          pnpm --filter ops-release release-cli collector-record \
+            --name browser-audit --command 'release-cli browser-audit' \
+            --started-at "$started" --ended-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --exit-code "$ba" --artifact "$ART/browser-findings.json" \
+            --log "$ART/collectors.json" --run-id "$RUN_ID" --git-sha "$GIT_SHA"
+
+          # --require makes absence a CRITICAL finding instead of silence; --identity-bearing
+          # additionally demands that the named artifacts prove they belong to THIS run, so a
+          # stale summary that rode in with a re-run cannot satisfy the gate.
+          set -o pipefail
+          set +e
           pnpm --filter ops-release release-cli gate --phase post-deploy \
             --findings "$ART/vm-findings.json,$ART/endpoints.json,$ART/csp-client-web.json,$ART/csp-admin-web.json,$ART/browser-findings.json,$ART/playwright-summary.json" \
+            --require "$ART/endpoints.json,$ART/playwright-summary.json" \
+            --identity-bearing "endpoints.json,playwright-summary.json" \
+            --expect-run-id "$RUN_ID" --expect-git-sha "$GIT_SHA" \
             --out "$ART/gate.json"
-      - name: Audit report (explicit verdict — AUDIT_PASSED/AUDIT_FAILED, never a fake deploy state)
+          gate=$?
+          set -e
+          echo "gate exited $gate"
+
+      - name: Audit verdict (PASS / BLOCKED_BY_FINDINGS / BLOCKED_BY_AUDIT_ERROR)
+        id: verdict
+        if: always()
+        run: |
+          set -o pipefail
+          set +e
+          pnpm --filter ops-release release-cli audit-verdict \
+            --log "$ART/collectors.json" --gate "$ART/gate.json" --coverage "$ART/coverage.json" \
+            --out "$ART/audit-verdict.json"
+          echo "VERDICT_EXIT=$?" >> "$GITHUB_ENV"
+          set -e
+
+      - name: Audit report
         if: always()
         run: |
           pnpm --filter ops-release release-cli report --dir "$ART" \
             --kind audit \
             --run-id "$RUN_ID" --actor '${{ github.actor }}' \
+            --git-sha "$GIT_SHA" \
             --workflow-url '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}' \
             --started-at "${AUDIT_STARTED_AT}" \
             --ended-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --out-json "$ART/audit-report.json" --out-md "$ART/audit-report.md"
           cat "$ART/audit-report.md" >> "$GITHUB_STEP_SUMMARY"
+
+      # UPLOAD ONLY THE MACHINE-READABLE RESULT.
+      #
+      # e2e-results/artifacts (Playwright traces + failure screenshots) and e2e-results/html
+      # are deliberately excluded. production-audit.spec.ts signs in with the real
+      # SMOKE_ADMIN_PASSWORD, and `trace: retain-on-failure` captures DOM snapshots, network
+      # activity and cookies for exactly the runs that fail — so a failed admin login would
+      # publish the production admin password and session cookie into an artifact any user
+      # with repository read access can download. results.json carries counts and test
+      # titles only.
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v6
@@ -120,10 +330,26 @@ jobs:
           name: production-audit-${{ github.run_id }}
           path: |
             release-artifacts
-            podcast-saas/client-web/e2e-results
+            podcast-saas/client-web/e2e-results/results.json
           if-no-files-found: ignore
-      - name: Red when CRITICAL findings exist
-        if: steps.gate.outcome == 'failure'
+
+      # One explicit terminal state. The two blocking kinds print different messages so the
+      # step annotation alone tells an operator which team owns the failure.
+      - name: Terminal state
+        if: always()
         run: |
-          echo '::error::Production audit found blocking (CRITICAL/unapproved HIGH) findings — see the audit report.'
-          exit 1
+          # Default to BLOCKED_BY_AUDIT_ERROR: if the verdict artifact is unreadable we do
+          # not know production's state, and "unknown" must never resolve to green.
+          verdict=$(jq -r '.verdict' "$ART/audit-verdict.json" 2>/dev/null || echo 'BLOCKED_BY_AUDIT_ERROR')
+          [ -n "$verdict" ] && [ "$verdict" != "null" ] || verdict='BLOCKED_BY_AUDIT_ERROR'
+          echo "Audit verdict: $verdict"
+          case "$verdict" in
+            PASS)
+              echo "::notice::Production audit PASS — see the report for coverage (surfaces not configured are listed there)." ;;
+            BLOCKED_BY_FINDINGS)
+              echo "::error::Production audit BLOCKED_BY_FINDINGS — production violates policy. This is a production incident, not a pipeline failure."
+              exit 1 ;;
+            *)
+              echo "::error::Production audit BLOCKED_BY_AUDIT_ERROR — a collector could not produce a trustworthy answer, so production state is UNKNOWN. Fix the auditor before drawing any conclusion about production."
+              exit 1 ;;
+          esac

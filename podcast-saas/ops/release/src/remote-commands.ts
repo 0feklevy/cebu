@@ -19,6 +19,8 @@ import {
   type Executor,
 } from './remote-deploy.js';
 import { writeJsonFile, type CommandContext } from './commands.js';
+import { redactValue } from './redact.js';
+import { diagnoseRemoteFailure } from './remote-diagnosis.js';
 
 export interface RemoteTargetFlags {
   host: string;
@@ -107,14 +109,44 @@ export async function cmdRemoteAudit(
 ): Promise<number> {
   const res = await runProductionAudit(makeExecutor(flags), flags.repoDir);
   if (!res.ok) {
-    ctx.log(`remote-audit: FAILED\n${res.result.stderr.slice(-2000)}`);
+    const d = diagnoseRemoteFailure({ code: res.result.code, stdout: res.result.stdout, stderr: res.result.stderr });
+    // Preserve what the VM actually said. The previous version printed only stderr (empty
+    // in the observed failure) and DISCARDED stdout, so the diagnosis had to be redone by
+    // hand. stdout is where production-audit.sh writes its JSON, including partial output.
+    ctx.log(`remote-audit: FAILED [${d.kind}] — ${d.summary}`);
+    ctx.log(`  classification: ${d.auditError ? 'AUDIT ERROR (production state unknown)' : 'PRODUCTION FINDING (the VM answered)'}`);
+    ctx.log(`  remediation: ${d.remediation}`);
+    const stderrTail = redactValue(res.result.stderr.slice(-2000)).trim();
+    const stdoutTail = redactValue(res.result.stdout.slice(-2000)).trim();
+    if (stderrTail) ctx.log(`  stderr(tail): ${stderrTail}`);
+    if (stdoutTail) ctx.log(`  stdout(tail): ${stdoutTail}`);
+    // Always leave a readable artifact so downstream steps classify rather than ENOENT.
+    writeJsonFile(flags.out, {
+      schema: 'flowvid.remote-audit-error/v1',
+      auditError: d.auditError,
+      kind: d.kind,
+      reason: d.summary,
+      remediation: d.remediation,
+      exitCode: res.result.code,
+      createdAt: new Date().toISOString(),
+      findings: [],
+    });
     return 1;
   }
   try {
     const doc = JSON.parse(res.json) as unknown;
     writeJsonFile(flags.out, doc);
   } catch {
-    ctx.log('remote-audit: VM did not return valid JSON on stdout.');
+    ctx.log('remote-audit: [INVALID_REMOTE_JSON] the VM did not return valid JSON on stdout.');
+    writeJsonFile(flags.out, {
+      schema: 'flowvid.remote-audit-error/v1',
+      auditError: true,
+      kind: 'INVALID_REMOTE_JSON',
+      reason: 'the VM returned output that is not valid JSON',
+      remediation: 'Inspect production-audit.sh output; partial JSON is an audit error, not a pass.',
+      createdAt: new Date().toISOString(),
+      findings: [],
+    });
     return 1;
   }
   ctx.log(`remote-audit: wrote ${flags.out}`);

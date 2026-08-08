@@ -5,8 +5,12 @@
  * Deterministic by construction: no AI, no network beyond the explicitly-audited
  * GET/HEAD probes, no secrets read or printed.
  */
+import type { CollectorStatus } from './audit-result.js';
 import {
+  cmdAuditVerdict,
   cmdBrowserAudit,
+  cmdCollectorRecord,
+  cmdCoverageReport,
   cmdCspAudit,
   cmdDbUrlAudit,
   cmdEndpointAudit,
@@ -69,9 +73,14 @@ const USAGE = `Usage: release-cli <command> [flags]
   vm-audit            --file vm-audit.json --policy report-only|allow-safe|require-approval [--out file]
   db-url-audit        --report backfill.json --policy … [--max-affected N] [--out file]
   browser-audit       --report browser-audit.json [--out file]
-  playwright-summary  --report playwright.json [--out file]
-  endpoint-audit      [--out endpoints.json]
-  gate                --phase pre-deploy|post-deploy --findings f1.json,f2.json [--approve-high] [--block-on-warning] [--out gate.json]
+  playwright-summary  --report playwright.json [--run-id ID] [--git-sha SHA] [--out file]
+  endpoint-audit      [--run-id ID] [--git-sha SHA] [--out endpoints.json]
+  gate                --phase pre-deploy|post-deploy --findings f1.json,f2.json [--approve-high] [--block-on-warning]
+                      [--require f1.json,f2.json] [--identity-bearing name.json,…] [--expect-run-id ID] [--expect-git-sha SHA] [--out gate.json]
+  collector-record    --name N --log collectors.json [--command C] [--exit-code N] [--artifact f] [--probe-artifact f]
+                      [--status PASS|FINDING|ERROR|NOT_CONFIGURED] [--reason R] [--started-at T] [--ended-at T]
+  coverage-report     [--out coverage.json]
+  audit-verdict       --log collectors.json [--gate gate.json] [--coverage coverage.json] [--out verdict.json]
   state-init          --file state.json --run-id ID [--version V] [--git-sha SHA] [--bump B]
   state-transition    --file state.json --to STATE [--note TEXT]
   report              --dir artifacts/ --run-id ID --out-json report.json --out-md report.md
@@ -129,16 +138,51 @@ async function main(): Promise<number> {
     case 'browser-audit':
       return cmdBrowserAudit(ctx, { reportFile: need('report'), out: flags.get('out') }).exitCode;
     case 'playwright-summary':
-      return cmdPlaywrightSummary(ctx, { reportFile: need('report'), out: flags.get('out') }).exitCode;
+      return cmdPlaywrightSummary(ctx, {
+        reportFile: need('report'),
+        out: flags.get('out'),
+        runId: flags.get('run-id'),
+        gitSha: flags.get('git-sha'),
+      }).exitCode;
     case 'endpoint-audit':
-      return (await cmdEndpointAudit(ctx, { out: flags.get('out') })).exitCode;
+      return (await cmdEndpointAudit(ctx, { out: flags.get('out'), runId: flags.get('run-id'), gitSha: flags.get('git-sha') })).exitCode;
     case 'gate':
       return cmdGate(ctx, {
         findingsFiles: need('findings').split(','),
         phase: need('phase') as Phase,
         policy: { approveHigh: bools.has('approve-high'), blockOnWarning: bools.has('block-on-warning') },
+        ...(flags.has('require') ? { requiredFiles: flags.get('require')!.split(',') } : {}),
+        ...(flags.has('identity-bearing') ? { identityBearing: flags.get('identity-bearing')!.split(',') } : {}),
+        expect: {
+          ...(flags.has('expect-run-id') ? { runId: flags.get('expect-run-id') } : {}),
+          ...(flags.has('expect-git-sha') ? { gitSha: flags.get('expect-git-sha') } : {}),
+        },
         out: flags.get('out'),
       }).exitCode;
+    case 'collector-record':
+      return cmdCollectorRecord(ctx, {
+        name: need('name'),
+        command: flags.get('command') ?? need('name'),
+        startedAt: flags.get('started-at') ?? new Date().toISOString(),
+        endedAt: flags.get('ended-at') ?? new Date().toISOString(),
+        exitCode: flags.has('exit-code') ? Number(flags.get('exit-code')) : null,
+        artifact: flags.get('artifact'),
+        probeArtifact: flags.get('probe-artifact'),
+        status: flags.get('status') as CollectorStatus | undefined,
+        reason: flags.get('reason'),
+        log: need('log'),
+        runId: flags.get('run-id'),
+        gitSha: flags.get('git-sha'),
+      }).exitCode;
+    case 'audit-verdict':
+      return cmdAuditVerdict(ctx, {
+        log: need('log'),
+        gate: flags.get('gate'),
+        coverage: flags.get('coverage'),
+        out: flags.get('out'),
+      }).exitCode;
+    case 'coverage-report':
+      return cmdCoverageReport(ctx, { out: flags.get('out') }).exitCode;
     case 'state-init':
       cmdStateInit(ctx, {
         file: need('file'),
