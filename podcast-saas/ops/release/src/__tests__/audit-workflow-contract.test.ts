@@ -121,6 +121,21 @@ describe('collector status is never erased', () => {
   });
 });
 
+describe('infrastructure failures never become production findings', () => {
+  it('the browser install has its own collector and its exit code is captured', () => {
+    // Discarding the install's exit code inverted the result model: a failed install let
+    // `playwright test` run against a missing browser, every spec failed, results.json was
+    // still written, and the run classified as FINDING — paging the on-call for a healthy
+    // production because an apt mirror hiccupped.
+    expect(AUDIT_CODE).toMatch(/npx playwright install[\s\S]{0,120}?inst=\$\?/);
+    expect(AUDIT_CODE).toMatch(/--name browser-install/);
+  });
+
+  it('a failed browser install short-circuits before the suite can manufacture failures', () => {
+    expect(AUDIT_CODE).toMatch(/if \[ "\$inst" -ne 0 \][\s\S]{0,600}?--status ERROR/);
+  });
+});
+
 describe('evidence paths do not depend on the caller’s cwd', () => {
   // `pnpm --filter ops-release` sets cwd to ops/release, so any repo-relative evidence
   // path silently resolves under ops/release and yields ENOENT.

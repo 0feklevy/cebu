@@ -198,7 +198,34 @@ jobs:
           started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           set -o pipefail
           set +e
+          # The browser INSTALL is its own collector. Its exit code used to be discarded, and
+          # that silently inverted the whole result model: when the install fails (a routine
+          # apt/CDN hiccup on ubuntu-latest), `playwright test` still runs, every spec fails
+          # with "Executable doesn't exist", Playwright STILL writes results.json and exits 1
+          # — which classified as FINDING and paged the on-call for a healthy production.
           npx playwright install --with-deps chromium
+          inst=$?
+          set -e
+          pnpm --filter ops-release release-cli collector-record \
+            --name browser-install --command 'playwright install --with-deps chromium' \
+            --started-at "$started" --ended-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --exit-code "$inst" \
+            --log "$ART/collectors.json" --run-id "$RUN_ID" --git-sha "$GIT_SHA"
+
+          if [ "$inst" -ne 0 ]; then
+            # No browser, so no verification is possible. Say that, rather than letting the
+            # suite fail its way into a production verdict.
+            pnpm --filter ops-release release-cli collector-record \
+              --name browser-tests --command 'playwright test (not attempted)' \
+              --exit-code 1 --status ERROR \
+              --reason 'browser install failed, so no browser verification was attempted' \
+              --log "$ART/collectors.json" --run-id "$RUN_ID" --git-sha "$GIT_SHA"
+            exit 0
+          fi
+
+          started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          set -o pipefail
+          set +e
           npx playwright test --config=playwright.production.config.ts
           pw=$?
           set -e
