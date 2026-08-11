@@ -1,5 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mediaKeyScope, mintMediaToken, verifyMediaToken, splitMediaTokenPrefix } from '../mediaToken.js';
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe('mediaToken', () => {
   it('scopes a key to its first two segments for hls/ and videos/ only', () => {
@@ -30,6 +34,58 @@ describe('mediaToken', () => {
     expect(splitMediaTokenPrefix('t/abc/hls/vf/run/seg.ts')).toEqual({ key: 'hls/vf/run/seg.ts', token: 'abc' });
     expect(splitMediaTokenPrefix('hls/vf/run/seg.ts')).toEqual({ key: 'hls/vf/run/seg.ts', token: null });
     expect(splitMediaTokenPrefix('t/')).toEqual({ key: 't/', token: null });
+  });
+
+  // ── Cache-key stability (P1.7c) ────────────────────────────────────────────
+  // The token is embedded in every media URL and the player config re-mints per fetch.
+  // Second-granularity expiries made every mint a DIFFERENT URL for the same immutable
+  // bytes, so browser/CDN caches missed on every re-fetch. Default mints are therefore
+  // day-quantized: identical within a UTC day, validity always within [7d, 8d].
+
+  it('default mints within the same UTC day are string-identical (stable cache key)', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-11T00:00:01Z'));
+    const early = mintMediaToken('hls/vf-1');
+    vi.setSystemTime(new Date('2026-08-11T12:34:56Z'));
+    const midday = mintMediaToken('hls/vf-1');
+    vi.setSystemTime(new Date('2026-08-11T23:59:59Z'));
+    const late = mintMediaToken('hls/vf-1');
+    expect(midday).toBe(early);
+    expect(late).toBe(early);
+    // …and it still verifies, and only for its own scope.
+    expect(verifyMediaToken('hls/vf-1', early)).toBe(true);
+    expect(verifyMediaToken('hls/vf-2', early)).toBe(false);
+  });
+
+  it('crossing a UTC-day boundary rotates the token', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-11T23:59:59Z'));
+    const before = mintMediaToken('hls/vf-1');
+    vi.setSystemTime(new Date('2026-08-12T00:00:01Z'));
+    const after = mintMediaToken('hls/vf-1');
+    expect(after).not.toBe(before);
+    expect(verifyMediaToken('hls/vf-1', before)).toBe(true); // old token stays valid until ITS exp
+    expect(verifyMediaToken('hls/vf-1', after)).toBe(true);
+  });
+
+  it('default validity is always at least 7 days and at most 8', () => {
+    for (const at of ['2026-08-11T00:00:00Z', '2026-08-11T11:30:00Z', '2026-08-11T23:59:59Z']) {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(at));
+      const token = mintMediaToken('hls/vf-1');
+      const exp = Number(token.slice(0, token.indexOf('-')));
+      const now = Math.floor(Date.now() / 1000);
+      expect(exp - now).toBeGreaterThanOrEqual(7 * 86400);
+      expect(exp - now).toBeLessThanOrEqual(8 * 86400);
+      vi.useRealTimers();
+    }
+  });
+
+  it('verification accepts old-style fine-grained expiries too (exp > now is the only time rule)', () => {
+    // An explicit ttl mints exactly the pre-quantization format: exp = now + ttl, any second.
+    const fineGrained = mintMediaToken('hls/vf-1', 3600);
+    expect(verifyMediaToken('hls/vf-1', fineGrained)).toBe(true);
+    expect(verifyMediaToken('hls/vf-2', fineGrained)).toBe(false);
   });
 
   it('a minted URL survives HLS relative resolution (token prefix preserved)', () => {

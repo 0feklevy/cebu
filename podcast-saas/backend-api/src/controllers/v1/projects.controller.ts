@@ -10,6 +10,7 @@ import { editableProject, projectsEditableByWhere } from '../../services/collabA
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { uploadWithFallback } from '../../services/storage/uploadWithFallback.js';
 import { deleteWithFallback, deleteWithPrefixFallback } from '../../services/storage/deleteWithFallback.js';
+import { deleteHlsRetirementRowsForVideo } from '../../services/video/hlsRetention.js';
 import { getOpenAIClient } from '../../services/llm/systemAi.js';
 import { moderateGenerationInput } from '../../services/llm/ContentModerationService.js';
 import { logger } from '../../lib/logger.js';
@@ -440,10 +441,12 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
       // Best-effort storage GC — from R2 and/or local disk, wherever the bytes landed
       // (review backend-003). Helpers swallow + log their own errors.
       await Promise.all([
-        // Raw video files + HLS segments
+        // Raw video files + HLS segments (plus the grace-period retirement bookkeeping —
+        // the whole hls/{id}/ tree is purged here, so the retention sweep must forget it)
         ...videos.flatMap(v => [
           v.storage_key ? deleteWithFallback(v.storage_key) : null,
           deleteWithPrefixFallback(`hls/${v.id}`),
+          deleteHlsRetirementRowsForVideo(v.id),
         ].filter(Boolean)),
         // Simulation file trees
         ...sims.map(s => deleteWithPrefixFallback(s.storage_prefix)),

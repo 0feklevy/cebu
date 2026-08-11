@@ -8,14 +8,23 @@ import { logger } from '../../lib/logger.js';
  * failures are retried; a persistent failure throws (callers surface a real error)
  * rather than silently writing to local disk where other instances can't see it.
  *
+ * `cacheControl`, when given, is stored as the object's Cache-Control metadata (see
+ * StorageService.uploadFile). Pass an immutable value ONLY for write-once keys — e.g.
+ * versioned HLS run trees (`hls/{id}/{runId}/…`) — never for objects overwritten in place.
+ *
  * (The name is kept for compatibility; the "fallback" is now retry, not local disk.)
  */
-export async function uploadWithFallback(key: string, data: Buffer, contentType: string): Promise<string> {
+export async function uploadWithFallback(
+  key: string,
+  data: Buffer,
+  contentType: string,
+  cacheControl?: string,
+): Promise<string> {
   const attempts = 3;
   let lastErr: unknown;
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {
-      return await getStorageAdapter().uploadFile(key, data, contentType);
+      return await getStorageAdapter().uploadFile(key, data, contentType, cacheControl);
     } catch (err) {
       lastErr = err;
       if (attempt < attempts - 1) {

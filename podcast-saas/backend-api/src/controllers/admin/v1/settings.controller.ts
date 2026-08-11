@@ -15,6 +15,17 @@ const UpdateSettingsSchema = z.object({
   anonymous_user_limit: z.number().int().min(0).optional(),
   generation_limit_enabled: z.boolean().optional(),
   generation_daily_limit: z.number().int().min(1).max(10000).optional(),
+  // ── Simulation / RUM runtime switches (migrations 048 / 051 / 052) ──────────
+  // These columns existed as runtime kill switches but were only reachable with raw SQL;
+  // a switch an operator cannot flip from the admin surface is not a real kill switch.
+  // Enums and bounds mirror the DDL CHECKs so an out-of-range value 400s here instead of
+  // surfacing as a constraint violation 500.
+  sim_pool_mode: z.enum(['single', 'adaptive']).optional(),
+  rum_sample_rate: z.number().min(0).max(1).optional(),
+  rum_retention_days: z.number().int().min(1).max(365).optional(),
+  sim_scheduler_mode: z.enum(['off', 'predictive']).optional(),
+  sim_adaptive_quality: z.boolean().optional(),
+  sim_boundary_sentinel: z.boolean().optional(),
 });
 
 export async function registerAdminSettingsRoutes(app: FastifyInstance): Promise<void> {

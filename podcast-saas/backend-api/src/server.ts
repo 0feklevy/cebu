@@ -42,6 +42,8 @@ import { registerAdminBillingRoutes } from './controllers/admin/v1/billing.contr
 import { firebaseAuthMiddleware, firebaseAuthOptionalMiddleware } from './middleware/firebase-auth.js';
 import { canServeMediaKey } from './services/storage/mediaAccess.js';
 import { splitMediaTokenPrefix } from './services/storage/mediaToken.js';
+import { hlsCacheControlForKey } from './services/video/hlsVersioning.js';
+import { startHlsRetentionSweep } from './services/video/hlsRetention.js';
 
 // Phase 2+ stub routes
 import { registerPhase2StubRoutes } from './controllers/stubs.js';
@@ -291,8 +293,11 @@ async function build() {
       const isSegment = !key.endsWith('.m3u8');
       const contentType = isSegment ? 'video/mp2t' : 'application/vnd.apple.mpegurl';
       return serveLocalFile(request, reply, filePath, contentType, {
-        // .ts segments are immutable; the .m3u8 playlist can change on re-transcode.
-        cacheControl: isSegment ? 'public, max-age=86400' : 'no-cache',
+        // Objects inside a versioned run tree (hls/{id}/{runId}/…) are write-once → immutable,
+        // playlists included (a re-transcode flips the DB pointer to a NEW tree). Legacy
+        // unversioned keys keep the old defaults: segments a day, playlists no-cache (they
+        // were overwritten in place).
+        cacheControl: hlsCacheControlForKey(key) ?? (isSegment ? 'public, max-age=86400' : 'no-cache'),
       });
     },
   );
@@ -328,10 +333,13 @@ async function build() {
           : 'video/mp2t';
         // Stream the upstream body through instead of buffering the whole segment
         // into the Node heap (was Buffer.from(await upstream.arrayBuffer())).
+        //
+        // Versioned run trees are write-once → immutable (playlists included; the mutable
+        // pointer is the DB row). Legacy/unrecognised keys keep the old 1h default.
         return reply
           .header('Content-Type', contentType)
           .header('Access-Control-Allow-Origin', '*')
-          .header('Cache-Control', 'public, max-age=3600')
+          .header('Cache-Control', hlsCacheControlForKey(key) ?? 'public, max-age=3600')
           .send(Readable.fromWeb(upstream.body as unknown as Parameters<typeof Readable.fromWeb>[0]));
       } catch (err) {
         if (controller.signal.aborted) return; // client disconnected mid-segment
@@ -485,6 +493,10 @@ async function build() {
   // reaper is part of this change rather than a follow-up" would be false and the table would grow
   // without bound.
   startRumRetentionSweep();
+  // Same posture for retired HLS trees (migration 053): a re-transcode RECORDS the old run
+  // tree in hls_retired_runs instead of deleting it mid-session under viewers; this sweep is
+  // what actually deletes those trees once their grace window has passed.
+  startHlsRetentionSweep();
 
   // Local upload endpoint — receives PUT from client for large video files in dev
   app.put<{ Params: { '*': string } }>(

@@ -440,6 +440,38 @@ export const video_files = pgTable('video_files', {
   created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * HLS run trees retired by a re-transcode, pending grace-period deletion (migration 053).
+ *
+ * A re-transcode flips the DB pointer to a fresh versioned tree; the OLD tree is recorded here
+ * instead of being deleted under viewers mid-session, and the hourly sweep
+ * (sweepRetiredHlsRuns) deletes the storage prefix only once `retire_after` has passed.
+ *
+ * No FK on video_file_id: entity deletion purges the whole hls/{id}/ storage prefix itself and
+ * drops these rows explicitly (deleteHlsRetirementRowsForVideo), so a FK would only turn that
+ * ordinary cleanup into a constraint hazard.
+ */
+export const hls_retired_runs = pgTable(
+  'hls_retired_runs',
+  {
+    id:            uuid('id').primaryKey().defaultRandom(),
+    video_file_id: uuid('video_file_id').notNull(),
+    /** The retired run tree's storage prefix, e.g. `hls/{videoFileId}/{runId}`. */
+    prefix:        text('prefix').notNull().unique(),
+    retired_at:    timestamp('retired_at', { withTimezone: true }).notNull().defaultNow(),
+    retire_after:  timestamp('retire_after', { withTimezone: true }).notNull(),
+    deleted_at:    timestamp('deleted_at', { withTimezone: true }),
+  },
+  (t) => ({
+    idx_video: index('idx_hls_retired_runs_video').on(t.video_file_id),
+    // idx_hls_retired_runs_due — the partial index (WHERE deleted_at IS NULL) the sweep uses —
+    // is declared in 053 only: Drizzle's index builder has no WHERE clause (see the
+    // sim_revisions note below), and declaring it here without one would create a total index.
+  }),
+);
+
+export type HlsRetiredRunRow = typeof hls_retired_runs.$inferSelect;
+
 export const simulations = pgTable('simulations', {
   id:               uuid('id').primaryKey().defaultRandom(),
   project_id:       uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
