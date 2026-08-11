@@ -143,6 +143,26 @@ const streamUrl = (uiControls?: string) => {
   return `/api/v1/projects/${PROJECT_ID}/sections/${SECTION_ID}/generate-sim-script/stream?${params.toString()}`;
 };
 
+/**
+ * A publishing service double.
+ *
+ * Since audit P0.4 the section row is no longer written by the controller after the service
+ * resolves: the controller hands the service a `persistSection` hook and the REAL service runs
+ * it inside the revision-activation transaction, so the pointer flip and the section row commit
+ * together. A double that merely resolves therefore models a service that published without
+ * ever persisting the section — which the controller now (correctly, loudly) rejects.
+ *
+ * So the double calls the hook exactly as the service does, handing it the mocked `db` as the
+ * transaction handle: the assertions below still read the row write off `mockUpdateSet`, and
+ * "the hook ran exactly once" is now part of what every case here pins.
+ */
+const publishing =
+  <T extends object>(result: T) =>
+  async (opts: { persistSection?: (tx: unknown, pub: T) => Promise<void> }): Promise<T> => {
+    await opts.persistSection?.({ update: mocks.mockUpdate }, result);
+    return result;
+  };
+
 async function makeApp() {
   const app = Fastify();
   await registerSectionsRoutes(app);
@@ -162,9 +182,11 @@ beforeEach(async () => {
   mockSimulations.findFirst.mockResolvedValue({
     id: SIM_ID, project_id: PROJECT_ID, entry_file: `simulations/${PROJECT_ID}/${SIM_ID}/index.html`,
   });
-  mockGenerate.mockResolvedValue(GEN_RESULT);
+  mockGenerate.mockImplementation(publishing(GEN_RESULT));
   mockReuse.mockImplementation((url: string) => ({ sectionUrl: url }));
-  mockMechanical.mockResolvedValue({ sectionUrl: OWN_URL.replace('abc123', 'mech01'), bridgeHash: 'mech01' });
+  mockMechanical.mockImplementation(
+    publishing({ sectionUrl: OWN_URL.replace('abc123', 'mech01'), bridgeHash: 'mech01' }),
+  );
   mockUpdateReturning.mockResolvedValue([makeSection(META_BASE)]);
   app = await makeApp();
 });
