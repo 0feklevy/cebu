@@ -44,6 +44,7 @@ import { canServeMediaKey } from './services/storage/mediaAccess.js';
 import { splitMediaTokenPrefix } from './services/storage/mediaToken.js';
 import { hlsCacheControlForKey } from './services/video/hlsVersioning.js';
 import { startHlsRetentionSweep } from './services/video/hlsRetention.js';
+import { startDuplicationSweep } from './services/project/ProjectDuplicationService.js';
 
 // Phase 2+ stub routes
 import { registerPhase2StubRoutes } from './controllers/stubs.js';
@@ -497,6 +498,11 @@ async function build() {
   // tree in hls_retired_runs instead of deleting it mid-session under viewers; this sweep is
   // what actually deletes those trees once their grace window has passed.
   startHlsRetentionSweep();
+  // And the third sweep of the same shape (migration 056): a project duplication runs for minutes
+  // on the inline driver, so a deploy or a crash mid-copy leaves its job row stuck in `copying`
+  // forever — where the partial unique index turns it into a permanent block on ever duplicating
+  // that project again. This is what declares such a row dead so the next attempt can start.
+  startDuplicationSweep();
 
   // Local upload endpoint — receives PUT from client for large video files in dev
   app.put<{ Params: { '*': string } }>(

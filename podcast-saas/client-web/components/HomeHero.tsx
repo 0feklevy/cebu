@@ -5,8 +5,10 @@ import Link from 'next/link';
 import {
   ArrowRight,
   Clock3,
+  Copy,
   Eye,
   Film,
+  Loader2,
   Plus,
   Search,
   Trash2,
@@ -16,6 +18,7 @@ import { CreateProjectDialog } from './CreateProjectDialog';
 import { PlaylistsPanel } from './PlaylistsPanel';
 import { ConfirmDialog } from './ConfirmDialog';
 import { api } from '../lib/api';
+import { duplicationLabel, useProjectDuplication } from '../lib/useProjectDuplication';
 import { canLoadPrivateWorkspace } from '../lib/authGate';
 import { useAuth } from '../lib/firebase';
 import type { Project } from 'shared/src/generated/client-v1';
@@ -59,13 +62,28 @@ function statusMeta(status: string) {
   return STATUS_META[status] ?? STATUS_META.draft;
 }
 
-function ProjectTile({ project, onDelete }: { project: Project; onDelete: (id: string) => void }) {
+function ProjectTile({ project, onDelete, onDuplicated }: {
+  project: Project;
+  onDelete: (id: string) => void;
+  onDuplicated?: (targetProjectId: string) => void;
+}) {
   const meta = statusMeta(project.status);
   const title = projectTitle(project);
   const isShared = project.collab_role === 'collaborator';
   const [confirm, setConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [confirmCopy, setConfirmCopy] = useState(false);
   const tileRef = useRef<HTMLDivElement>(null);
+  const dup = useProjectDuplication(project.id, (targetId) => {
+    setConfirmCopy(false);
+    onDuplicated?.(targetId);
+  });
+  // A FAILED copy closes the dialog too. `onReady` above is the success path only, so without this
+  // the modal stays up over the "Copy failed" strip it is covering, with a Duplicate button that is
+  // no longer busy and a Cancel that reads as the only way out of a run that already ended.
+  useEffect(() => {
+    if (dup.status === 'failed') setConfirmCopy(false);
+  }, [dup.status]);
 
   const handleDelete = async () => {
     setDeleting(true);
@@ -77,6 +95,8 @@ function ProjectTile({ project, onDelete }: { project: Project; onDelete: (id: s
       setConfirm(false);
     }
   };
+
+  const handleDuplicate = async () => { await dup.start(); };
 
   return (
     <div
@@ -149,6 +169,39 @@ function ProjectTile({ project, onDelete }: { project: Project; onDelete: (id: s
         <Trash2 size={16} strokeWidth={2} aria-hidden />
       </button>}
 
+      {/* Duplicate — beside Delete, same hover-revealed treatment. Owner-only for the same reason
+          Delete is: the backend refuses a duplication from a collaborator (a copy is a new project
+          the requester would own). While a copy runs the button stays visible and reports progress,
+          because the run outlives the hover and the user needs to be able to find it again. */}
+      {!isShared && <button
+        onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (!dup.busy) setConfirmCopy(true); }}
+        disabled={dup.busy}
+        title={duplicationLabel(dup)}
+        aria-label={duplicationLabel(dup)}
+        className={`absolute left-[52px] top-3 z-10 flex h-9 w-9 items-center justify-center rounded-md bg-black/60 text-white transition-opacity hover:bg-primary disabled:cursor-progress ${
+          dup.busy || dup.status === 'failed' ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+        }`}
+        style={{ pointerEvents: confirm || confirmCopy ? 'none' : 'auto' }}
+      >
+        {dup.busy
+          ? <Loader2 size={16} strokeWidth={2} aria-hidden className="animate-spin" />
+          : <Copy size={16} strokeWidth={2} aria-hidden />}
+      </button>}
+
+      {/* Progress / outcome strip. The copy can take minutes, so the tile says so rather than
+          leaving a spinner with no explanation; a failure is stated in place instead of an
+          alert(), which this surface has never used. */}
+      {(dup.busy || dup.status === 'failed') && (
+        <div
+          role="status"
+          className={`absolute inset-x-3 bottom-3 z-10 rounded-md px-2 py-1 text-[11px] font-semibold text-white shadow-sm ${
+            dup.status === 'failed' ? 'bg-red-600/90' : 'bg-black/70'
+          }`}
+        >
+          {dup.status === 'failed' ? (dup.error ?? 'Copy failed') : duplicationLabel(dup)}
+        </div>
+      )}
+
       {/* Confirmation modal — portaled to <body> so it is never clipped by the
           tile's hover-transform or the horizontal scroll container. */}
       {confirm && (
@@ -159,6 +212,18 @@ function ProjectTile({ project, onDelete }: { project: Project; onDelete: (id: s
           busy={deleting}
           onConfirm={handleDelete}
           onCancel={() => { if (!deleting) setConfirm(false); }}
+        />
+      )}
+
+      {confirmCopy && (
+        <ConfirmDialog
+          title="Duplicate project?"
+          description={`"${title}" will be copied into a new private project — video, timeline, branching and simulations included. Large videos can take a few minutes.`}
+          confirmLabel="Duplicate"
+          danger={false}
+          busy={dup.busy}
+          onConfirm={handleDuplicate}
+          onCancel={() => { if (!dup.busy) setConfirmCopy(false); }}
         />
       )}
     </div>
@@ -337,6 +402,20 @@ export function HomeHero() {
                               writeCachedProjects(next);
                               return next;
                             });
+                          }}
+                          // The copy exists as a real project only at this point, so it is fetched
+                          // and prepended rather than optimistically synthesised — and written
+                          // through to the localStorage cache, or a remount would show a list the
+                          // copy is missing from.
+                          onDuplicated={(targetId) => {
+                            void api.getProject(targetId).then((copy) => {
+                              setProjects(prev => {
+                                if (prev.some(p => p.id === copy.id)) return prev;
+                                const next = [copy, ...prev];
+                                writeCachedProjects(next);
+                                return next;
+                              });
+                            }).catch(() => { /* the next list refresh picks it up */ });
                           }}
                         />
                       ))}

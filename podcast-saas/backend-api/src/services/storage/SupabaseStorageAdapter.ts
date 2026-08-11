@@ -4,16 +4,21 @@ import {
   DeleteObjectCommand,
   DeleteObjectsCommand,
   ListObjectsV2Command,
+  CopyObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
   CreateMultipartUploadCommand,
   UploadPartCommand,
+  UploadPartCopyCommand,
   CompleteMultipartUploadCommand,
   AbortMultipartUploadCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import type { CompletedPart, StorageService, StoredObjectHead } from './StorageService.js';
 import { publicApiOrigin } from '../../config/publicOrigins.js';
+import { copySourceFor, isCopyTooLarge, isCopyUnsupported, multipartCopyObject } from './s3Copy.js';
+import { reroot } from './prefixScope.js';
+import { logger } from '../../lib/logger.js';
 
 /**
  * Supabase Storage adapter — uses Supabase's **S3-compatible** endpoint, so it reuses
@@ -241,6 +246,118 @@ export class SupabaseStorageAdapter implements StorageService {
       }
       continuationToken = list.NextContinuationToken;
     } while (continuationToken);
+  }
+
+  /**
+   * Server-side copy where the gateway supports it, read-then-write where it does not.
+   *
+   * Supabase's S3 gateway implements a subset of the protocol and `CopyObject` is not guaranteed
+   * to be in it — so unlike R2 the fallback here is an EXPECTED path, not a curiosity. It is
+   * routed through `withRetry` for the same reason `deleteWithPrefix` is: `CopyObject` is
+   * idempotent and carries no body, which is exactly the class of command that helper is for.
+   */
+  async copyObject(srcKey: string, destKey: string): Promise<void> {
+    try {
+      await this.withRetry(() =>
+        this.client.send(
+          new CopyObjectCommand({
+            Bucket: this.bucket,
+            Key: destKey,
+            CopySource: copySourceFor(this.bucket, srcKey),
+          }),
+        ),
+      );
+    } catch (err) {
+      // Same distinction R2 draws, and the same remedy: over the single-part ceiling is a permanent
+      // 400 that a ranged multipart copy CAN get past, while read-then-write would pull >5 GiB
+      // through the heap. The two fallbacks answer different failures and must never swap.
+      // Reactive, so the HEAD it needs is paid for once here rather than on every segment copy.
+      if (isCopyTooLarge(err)) {
+        await this.multipartCopy(srcKey, destKey, err);
+        return;
+      }
+      if (!isCopyUnsupported(err)) throw err;
+      logger.warn({ err, srcKey }, 'Supabase: server-side copy unsupported — falling back to read+write');
+      const head = await this.headObject(srcKey);
+      const bytes = await this.readObject(srcKey);
+      await this.uploadFile(
+        destKey,
+        bytes,
+        head?.contentType ?? 'application/octet-stream',
+        head?.cacheControl ?? undefined,
+      );
+    }
+  }
+
+  /**
+   * `CopyObject` past the 5 GiB wall: create → N × `UploadPartCopy` → complete, aborting on failure.
+   *
+   * The ranges, the ordering and the abort discipline are `multipartCopyObject`'s, so this adapter
+   * and R2 cannot drift apart on them; only the dispatch differs, and here it goes through
+   * `withRetry` — a part copy is idempotent and carries no body, exactly the class that helper
+   * exists for, and this gateway's transient 5xx would otherwise fail a copy that is minutes in.
+   * `CreateMultipartUpload` is issued directly rather than through this class's own
+   * `createMultipartUpload` because that one cannot carry the source's Cache-Control.
+   */
+  private async multipartCopy(srcKey: string, destKey: string, cause: unknown): Promise<void> {
+    const CopySource = copySourceFor(this.bucket, srcKey);
+    await multipartCopyObject(srcKey, destKey, {
+      head: () => this.headObject(srcKey),
+      create: async (meta) => {
+        const resp = await this.withRetry(() =>
+          this.client.send(
+            new CreateMultipartUploadCommand({
+              Bucket: this.bucket,
+              Key: destKey,
+              ContentType: meta.contentType ?? undefined,
+              CacheControl: meta.cacheControl ?? undefined,
+            }),
+          ),
+        );
+        if (!resp.UploadId) throw new Error('Supabase did not return an UploadId for the multipart copy');
+        return resp.UploadId;
+      },
+      copyPart: async (uploadId, part) => {
+        const resp = await this.withRetry(() =>
+          this.client.send(
+            new UploadPartCopyCommand({
+              Bucket: this.bucket,
+              Key: destKey,
+              UploadId: uploadId,
+              PartNumber: part.partNumber,
+              CopySource,
+              CopySourceRange: part.range,
+            }),
+          ),
+        );
+        const etag = resp.CopyPartResult?.ETag;
+        if (!etag) throw new Error(`Supabase did not return an ETag for part ${part.partNumber} of ${destKey}`);
+        return etag;
+      },
+      complete: async (uploadId, parts) => { await this.completeMultipartUpload(destKey, uploadId, parts); },
+      abort: (uploadId) => this.abortMultipartUpload(destKey, uploadId),
+    }, cause);
+  }
+
+  async copyPrefix(srcPrefix: string, destPrefix: string): Promise<number> {
+    let continuationToken: string | undefined;
+    let copied = 0;
+    do {
+      const list = await this.withRetry(() =>
+        this.client.send(
+          new ListObjectsV2Command({ Bucket: this.bucket, Prefix: srcPrefix, ContinuationToken: continuationToken }),
+        ),
+      );
+      for (const obj of list.Contents ?? []) {
+        if (!obj.Key) continue;
+        const dest = reroot(obj.Key, srcPrefix, destPrefix);
+        if (dest === null) continue;
+        await this.copyObject(obj.Key, dest);
+        copied += 1;
+      }
+      continuationToken = list.NextContinuationToken;
+    } while (continuationToken);
+    return copied;
   }
 
   getPublicUrl(path: string): string {

@@ -1,9 +1,10 @@
 'use client';
 
 import { useEffect, useState, useRef, useCallback } from 'react';
-import { ChevronDown, ChevronRight, ListVideo, Mic, Pencil, PlaySquare, Plus, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Copy, ListVideo, Loader2, Mic, Pencil, PlaySquare, Plus, Trash2 } from 'lucide-react';
 import { api } from '../lib/api';
 import { canLoadPrivateWorkspace } from '../lib/authGate';
+import { duplicationLabel, useProjectDuplication } from '../lib/useProjectDuplication';
 import { ConfirmDialog } from './ConfirmDialog';
 import { useAuth } from '../lib/firebase';
 import { UserProfileButton } from './UserProfileButton';
@@ -46,15 +47,27 @@ interface ProjectCardProps {
   project: Project;
   onRename: (id: string, newTitle: string) => void;
   onDelete: (id: string) => void;
+  onDuplicated?: (targetProjectId: string) => void;
 }
 
-function ProjectCard({ project, onRename, onDelete }: ProjectCardProps) {
+function ProjectCard({ project, onRename, onDelete, onDuplicated }: ProjectCardProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState('');
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [confirmCopy, setConfirmCopy] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const dup = useProjectDuplication(project.id, (targetId) => {
+    setConfirmCopy(false);
+    onDuplicated?.(targetId);
+  });
+  // A FAILED copy closes the dialog too. `onReady` above is the success path only, so without this
+  // the modal stays up over the "Copy failed" line it is covering, with a Duplicate button that is
+  // no longer busy and a Cancel that reads as the only way out of a run that already ended.
+  useEffect(() => {
+    if (dup.status === 'failed') setConfirmCopy(false);
+  }, [dup.status]);
 
   const startEdit = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -148,9 +161,13 @@ function ProjectCard({ project, onRename, onDelete }: ProjectCardProps) {
         <p className="pl-4 text-xs shell-muted">{timeAgo(project.created_at)}</p>
       </a>
 
-      {/* Action buttons — visible on hover */}
+      {/* Action buttons — visible on hover, or pinned open while a duplication is running or has
+          just failed (the run outlives the hover, and a silently-vanished failure is worse than
+          none). */}
       <div
-        className="absolute right-1.5 top-1.5 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100"
+        className={`absolute right-1.5 top-1.5 flex items-center gap-1 transition-opacity group-hover:opacity-100 ${
+          dup.busy || dup.status === 'failed' ? 'opacity-100' : 'opacity-0'
+        }`}
         style={{ pointerEvents: 'auto' }}
       >
         {/* Edit / rename */}
@@ -160,6 +177,20 @@ function ProjectCard({ project, onRename, onDelete }: ProjectCardProps) {
           className="flex h-8 w-8 items-center justify-center rounded-lg shell-muted transition-colors hover:bg-[var(--shell-hover)] hover:text-[hsl(var(--shell-foreground))]"
         >
           <Pencil size={15} strokeWidth={1.9} aria-hidden />
+        </button>
+        {/* Duplicate — immediately beside Delete, same icon-button treatment. */}
+        <button
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (!dup.busy) setConfirmCopy(true); }}
+          disabled={dup.busy}
+          title={duplicationLabel(dup)}
+          aria-label={duplicationLabel(dup)}
+          className="flex h-8 w-8 items-center justify-center rounded-lg shell-muted transition-colors hover:text-violet-300 hover:bg-violet-500/10 disabled:opacity-60"
+        >
+          {dup.busy ? (
+            <Loader2 size={15} strokeWidth={1.9} aria-hidden className="animate-spin" />
+          ) : (
+            <Copy size={15} strokeWidth={1.9} aria-hidden />
+          )}
         </button>
         {/* Delete */}
         <button
@@ -176,6 +207,15 @@ function ProjectCard({ project, onRename, onDelete }: ProjectCardProps) {
         </button>
       </div>
 
+      {(dup.busy || dup.status === 'failed') && (
+        <p
+          role="status"
+          className={`px-3 pb-2 text-[11px] font-medium ${dup.status === 'failed' ? 'text-red-400' : 'shell-muted'}`}
+        >
+          {dup.status === 'failed' ? (dup.error ?? 'Copy failed') : duplicationLabel(dup)}
+        </p>
+      )}
+
       {confirmDelete && (
         <ConfirmDialog
           title="Delete project?"
@@ -184,6 +224,18 @@ function ProjectCard({ project, onRename, onDelete }: ProjectCardProps) {
           busy={deleting}
           onConfirm={confirmDeleteNow}
           onCancel={() => { if (!deleting) setConfirmDelete(false); }}
+        />
+      )}
+
+      {confirmCopy && (
+        <ConfirmDialog
+          title="Duplicate project?"
+          description={`"${projectTitle(project)}" will be copied into a new private project — video, timeline, branching and simulations included. Large videos can take a few minutes.`}
+          confirmLabel="Duplicate"
+          danger={false}
+          busy={dup.busy}
+          onConfirm={() => { void dup.start(); }}
+          onCancel={() => { if (!dup.busy) setConfirmCopy(false); }}
         />
       )}
     </div>
@@ -326,6 +378,14 @@ export function HomeSidebar() {
     setProjects(prev => prev.filter(p => p.id !== id));
   }, []);
 
+  // Fetched rather than synthesised: the copy is a real project by the time this fires, and the
+  // list renders fields (status, thumbnail, created_at) that only the server knows.
+  const handleDuplicated = useCallback((targetProjectId: string) => {
+    void api.getProject(targetProjectId)
+      .then((copy) => setProjects(prev => (prev.some(p => p.id === copy.id) ? prev : [copy, ...prev])))
+      .catch(() => { /* the next sidebar load picks it up */ });
+  }, []);
+
   const togglePlaylist = useCallback((id: string) => {
     setExpandedPlaylists((previous) => {
       const next = new Set(previous);
@@ -408,6 +468,7 @@ export function HomeSidebar() {
                         project={p}
                         onRename={handleRename}
                         onDelete={handleDelete}
+                        onDuplicated={handleDuplicated}
                       />
                     ))}
                   </div>
