@@ -79,6 +79,8 @@ interface SimRowShape {
   active_revision_id: string | null;
   active_revision_entry_key: string | null;
   prepare_budget_ms: number | null;
+  bridge_ack_capable: boolean | null;
+  requires_import_maps: boolean | null;
 }
 
 /**
@@ -153,6 +155,17 @@ export async function buildPlayerConfig(
           // keep narrow. It is the only real number available on a FIRST view, when nothing has
           // been measured yet and a compiled-in constant is least defensible.
           prepare_budget_ms: true,
+          // Whether the ACTIVE revision's bridge acknowledges applied sections (migration 055).
+          // A scalar for the same reason `prepare_budget_ms` is one: this list exists to keep the
+          // hottest read path off the JSONB columns, and the fact itself lives in the revision's
+          // metadata. The player's apply gate is the only consumer, and it needs the answer BEFORE
+          // the first activation — which is precisely why it cannot be learned from the wire.
+          bridge_ack_capable: true,
+          // Does this package's entry document need import maps (migration 057, audit P0.8)? A
+          // scalar here for the same reason as the two above, and read on EVERY sim section rather
+          // than only on the modern path: a package that cannot resolve its bare specifiers never
+          // paints at all, so the viewer needs the answer before it decides what to put on screen.
+          requires_import_maps: true,
         },
       })
       // A degraded read here is NOT harmless. An empty list makes every simulation look
@@ -389,6 +402,36 @@ export async function buildPlayerConfig(
    */
   const simulationUrlOf = simulationUrlResolver(simRows, storage);
 
+  /**
+   * Three states, and the third one is the point (audit P0.5).
+   *
+   * `true`/`false` are the publication's own answer about the bytes being served. `null` — no row,
+   * no column, or a package published before migration 055 — is UNKNOWN, and the player's apply
+   * gate has a distinct branch for it. Coercing the absence to `false` here would tell the gate
+   * "this package cannot acknowledge, so reveal immediately", which is the first-activation hole
+   * this record exists to close, restored by a default.
+   */
+  const bridgeAckCapableFor = (simId: string | null): boolean | null => {
+    if (!simId) return null;
+    const row = simRows.get(simId) as { bridge_ack_capable?: boolean | null } | undefined;
+    return typeof row?.bridge_ack_capable === 'boolean' ? row.bridge_ack_capable : null;
+  };
+
+  /**
+   * The browser capability floor, as a package property (audit P0.8).
+   *
+   * `true`/`false` are the publication's own answer about the bytes being served. `null` — no row,
+   * no column, or a package published before migration 057 — is UNKNOWN, and the viewer's floor
+   * treats unknown as "no known requirement". Coercing the absence to `true` here would poster-only
+   * every legacy package on an older browser for a need it may not have; coercing it to `false`
+   * would be the same lie in the other direction, so both stay distinguishable from a real answer.
+   */
+  const requiresImportMapsFor = (simId: string | null): boolean | null => {
+    if (!simId) return null;
+    const row = simRows.get(simId) as { requires_import_maps?: boolean | null } | undefined;
+    return typeof row?.requires_import_maps === 'boolean' ? row.requires_import_maps : null;
+  };
+
   const packageClassFor = (simId: string | null): SimPackageClass | null => {
     if (!simId) return null;
     const row = simRows.get(simId) as { package_class?: string | null } | undefined;
@@ -421,6 +464,13 @@ export async function buildPlayerConfig(
           // failure and is not 'legacy' — it means unproven, and the player treats unproven exactly
           // as it treats legacy: v2 path, no aggressive preparation.
           package_class:  packageClassFor(s.simulation_id),
+          // Does this package's bridge acknowledge an applied section? Null means never recorded,
+          // which the apply gate treats as UNKNOWN rather than as either answer.
+          bridge_ack_capable: bridgeAckCapableFor(s.simulation_id),
+          // Does this package need `<script type="importmap">` support to run at all? Null means
+          // never recorded, which the viewer's capability floor treats as "nothing known to be
+          // missing" — it never downgrades a package on a guess.
+          requires_import_maps: requiresImportMapsFor(s.simulation_id),
           sim_script:     s.sim_script     ?? null,
           simple_ui:      s.simple_ui      ?? false,
           auto_script:    s.auto_script    ?? true,

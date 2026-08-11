@@ -170,7 +170,42 @@ describe('GET /sections', () => {
   it('keeps a narrow column select — the row also carries guidance and canary_report', async () => {
     await listSections();
     const args = mocks.simulations.findMany.mock.calls[0]?.[0] as { columns?: Record<string, boolean> };
-    expect(args.columns).toEqual({ id: true, active_revision_entry_key: true });
+    const selected = Object.keys(args.columns ?? {});
+
+    // What this guards is the SIZE of the row, not its exact shape. `simulations` carries
+    // `guidance`, `bridge_functions` and `canary_report` — JSONB that can run to hundreds of KB per
+    // row — and pulling any of them to resolve a URL would make opening the editor pay for data no
+    // caller here reads.
+    //
+    // Asserted as "these must be absent, those must be present" rather than a deep-equal on the
+    // whole set, because the set legitimately grows: this select is the agreed home for narrow
+    // per-simulation scalars the editor bootstrap needs (migration 057 added
+    // `requires_import_maps` to it for exactly that reason, and a deep-equal turned that into a
+    // spurious failure). A new SCALAR here is fine; a new JSONB is the regression.
+    for (const heavy of ['guidance', 'guidance_meta', 'bridge_functions', 'canary_report']) {
+      expect(selected, `the editor bootstrap must not select ${heavy}`).not.toContain(heavy);
+    }
+    expect(selected).toEqual(expect.arrayContaining([
+      'id', 'active_revision_entry_key', 'requires_import_maps',
+      // audit P0.5. Absent, the editor's apply gate could only ever answer UNKNOWN — for every
+      // package, on the same warm-then-dispatch pool the viewer uses — and a warm document that
+      // has already painted arms no ceiling, so the editor's cover ran for the whole section.
+      'bridge_ack_capable',
+    ]));
+  });
+
+  it('carries the bridge ack capability of the SERVED revision to the editor', async () => {
+    mocks.simulations.findMany.mockResolvedValue([
+      { id: 'sim-1', active_revision_entry_key: ENTRY_KEY, bridge_ack_capable: false },
+    ]);
+    const [row] = await listSections();
+    expect(row.bridge_ack_capable).toBe(false);
+  });
+
+  it('reports the capability as NULL when nothing recorded one', async () => {
+    const [row] = await listSections();       // the default pointer row has no capability columns
+    expect(row.bridge_ack_capable).toBeNull();
+    expect((await listSections())[0].requires_import_maps).toBeNull();
   });
 
   it('degrades to stored urls, loudly, when the pointer column cannot be read', async () => {
@@ -194,5 +229,38 @@ describe('GET /editor-state', () => {
     // resolve a pointer already present on those rows would undo the reason it exists.
     await editorState();
     expect(mocks.simulations.findMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('carries the ack capability, exactly as GET /sections does', async () => {
+    mocks.simulations.findMany.mockResolvedValue([
+      { id: 'sim-1', active_revision_entry_key: ENTRY_KEY, bridge_ack_capable: true },
+    ]);
+    const [row] = await editorState();
+    expect(row.bridge_ack_capable).toBe(true);
+  });
+
+  it('survives an image deployed AHEAD of migrations 055/057 — it retries without those columns', async () => {
+    // This read has no `columns` list, so Drizzle selects whatever the schema declares — including
+    // `bridge_ack_capable` and `requires_import_maps`. Before this guard a Postgres 42703 from
+    // either of them took down the WHOLE editor: videos, sections, images, audio and b-roll jobs
+    // with it, because this endpoint is the editor's single bootstrap read.
+    //
+    // It RETRIES rather than degrading to an empty list. `[]` would tell the editor the project has
+    // no simulations at all; dropping the two post-migration columns returns every row otherwise
+    // whole, with both facts reading UNKNOWN — the state both consumers already handle.
+    mocks.simulations.findMany
+      .mockRejectedValueOnce(Object.assign(new Error('column does not exist'), { code: '42703' }))
+      .mockResolvedValueOnce([{ id: 'sim-1', active_revision_entry_key: ENTRY_KEY }]);
+
+    const res = await app.inject({ method: 'GET', url: `/api/v1/projects/${PROJECT_ID}/editor-state` });
+    expect(res.statusCode, 'one missing column took the whole editor down').toBe(200);
+    const body = res.json() as { sections: Array<Record<string, unknown>>; simulations: unknown[] };
+    expect(body.simulations, 'the retry must return the rows, not swallow them').toHaveLength(1);
+    expect(body.sections[0].simulation_served_url).toBe(`${SERVED}?section=sec-1&v=H1`);
+    expect(body.sections[0].bridge_ack_capable, 'a dropped column must read UNKNOWN').toBeNull();
+    expect(logged.error).toHaveBeenCalled();
+
+    const retryArgs = mocks.simulations.findMany.mock.calls[1]?.[0] as { columns?: Record<string, boolean> };
+    expect(retryArgs.columns).toMatchObject({ bridge_ack_capable: false, requires_import_maps: false });
   });
 });

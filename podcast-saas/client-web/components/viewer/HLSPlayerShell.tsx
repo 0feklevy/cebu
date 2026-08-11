@@ -11,6 +11,11 @@ import { VideoLayer } from './VideoLayer';
 import { SimPoolOverlay } from './SimPoolOverlay';
 import { SimPresentationLayers } from './SimPresentationLayers';
 import type { PresentationDecision } from '../../lib/sim/presentationPolicy';
+import {
+  ASSUMED_CAPABILITIES, detectBrowserCapabilities, evaluateFloor, FLOOR_MESSAGES,
+  type BrowserCapabilities,
+} from '../../lib/sim/browserFloor';
+import { simTelemetry } from '../../lib/simTelemetry';
 import { ControlsBar, type CaptionStyle } from './ControlsBar';
 import { ImageOverlay } from '../ImageOverlay';
 import { AvatarCirclesOverlay } from './AvatarCirclesOverlay';
@@ -360,6 +365,43 @@ export function HLSPlayerShell({
   // what keeps the pool in ONE fixed place in the tree.
   const [layerDecision, setLayerDecision] = useState<PresentationDecision | null>(null);
 
+  // ── The browser capability floor (audit P0.8) ──────────────────────────────────────────────
+  //
+  // ONCE PER MOUNT, never per render and never per section: `HTMLScriptElement.supports` answers a
+  // question about the BUILD OF THE BROWSER, which cannot change while the page is open. Seeded
+  // with `ASSUMED_CAPABILITIES` and corrected in a mount effect rather than read during render —
+  // detection returns `false` under SSR (there is no `HTMLScriptElement`), and a server/client
+  // disagreement here would remount the element hosting the sim iframe.
+  const [browserCaps, setBrowserCaps] = useState<BrowserCapabilities>(ASSUMED_CAPABILITIES);
+  useEffect(() => { setBrowserCaps(detectBrowserCapabilities()); }, []);
+
+  /**
+   * Can this browser run the ACTIVE section's package?
+   *
+   * Both halves are required, which is the whole design: the package must be RECORDED as needing
+   * import maps AND this browser must lack them. A package with no recorded requirement, a package
+   * recorded as not needing them, and a browser that has them all evaluate `runnable` — a blanket
+   * downgrade of older browsers would break every package that uses no import map and would have
+   * run perfectly well.
+   */
+  const floor = useMemo(
+    () => evaluateFloor({ requiresImportMaps: state.simRequiresImportMaps }, browserCaps),
+    [state.simRequiresImportMaps, browserCaps],
+  );
+  // Only while a section is actually up. `simRequiresImportMaps` is reset on deactivate, so this is
+  // belt and braces — but the alternative failure (a cover with no section under it) is one the
+  // user cannot dismiss.
+  const floorBlocked = !floor.runnable && state.activeSimUrl !== null;
+  const floorMissing = floor.runnable ? null : floor.missing;
+
+  // Diagnosable by CAPABILITY NAME, not by a device guess — the whole point of feature detection is
+  // that the answer says what is missing. Once per (section, verdict): the effect's deps change
+  // only when the active package or the verdict does, so a postered section reports exactly once.
+  useEffect(() => {
+    if (!floorBlocked) return;
+    simTelemetry('floor-poster-only', { capability: floorMissing, key: state.activeSimUrl });
+  }, [floorBlocked, floorMissing, state.activeSimUrl]);
+
   /**
    * Visibility of the resident pool.
    *
@@ -375,12 +417,26 @@ export function HLSPlayerShell({
   // `layerDecision` is still A's `revealed`, so the compositor presents a frame of A's scene while
   // B is the active section. That is precisely the defect the protocol exists to prevent, so the
   // decision is ANDed with state that changes synchronously in the same batch.
-  const poolVisible = state.simModern
-    ? layerDecision?.incoming === 'revealed' && state.simPresented && !state.simFailure
-    : state.showSimOverlay;
+  //
+  // The floor short-circuits BOTH branches. A package that cannot resolve its bare specifiers never
+  // paints, so on the legacy branch `showSimOverlay` would eventually reveal — at the bounded stall
+  // ceiling, which force-reveals a frame that can never ack a paint — an empty iframe over the
+  // video. That is the blank frame P0.8 exists to end, arriving through the one path that does not
+  // wait for evidence.
+  const poolVisible = floorBlocked
+    ? false
+    : state.simModern
+      ? layerDecision?.incoming === 'revealed' && state.simPresented && !state.simFailure
+      : state.showSimOverlay;
+
+  // The layered surface is mounted for the modern path OR for a floor block. The second case is the
+  // reason `posterOnlyMode` existed at all and had never been reachable: a package the browser
+  // cannot run is exactly a section for which no live frame will be brought up, and the policy
+  // already knows what to show then (`poster-only-device`, with its no-poster fallbacks).
+  const simSurfaceMounted = state.simModern || floorBlocked;
 
   // A stale decision must not survive the surface that produced it.
-  useEffect(() => { if (!state.simModern) setLayerDecision(null); }, [state.simModern]);
+  useEffect(() => { if (!simSurfaceMounted) setLayerDecision(null); }, [simSurfaceMounted]);
 
   // How much of the active sim section is still to run. The policy uses it only to make a live
   // reveal LESS likely, so an unknown end is reported as "no time left" — the cautious answer.
@@ -389,7 +445,15 @@ export function HLSPlayerShell({
     : Math.max(0, (state.simSectionEndSec - state.globalTime) * 1000);
 
   return (
-    <div ref={rootRef} className={rootClass}>
+    <div
+      ref={rootRef}
+      className={rootClass}
+      // The capability name, in the DOM, whenever a section is postered for the floor (audit P0.8).
+      // `simTelemetry` above is the richer record but is inert without `?simdebug=1`; this is always
+      // there, so a support screenshot of the inspector or an automated check can tell "postered
+      // because this browser lacks import maps" apart from "still loading" without a repro.
+      data-sim-floor={floorMissing && floorBlocked ? floorMissing : undefined}
+    >
       <VideoLayer
         videoARef={videoARef}
         videoBRef={videoBRef}
@@ -530,20 +594,24 @@ export function HLSPlayerShell({
         activeKey={state.activeSimUrl}
         visible={poolVisible}
         armGate={state.simPoolArm}
-        stalled={state.simModern ? false : state.simBootStalled}
-        coldCover={state.simModern ? false : state.simColdCover}
+        // Suppressed whenever the layered surface is up — for the modern path as before, and now
+        // also for a floor block, where the legacy stall spinner would sit on top of the cover
+        // promising that something is still loading. Nothing is loading; the package cannot run.
+        stalled={simSurfaceMounted ? false : state.simBootStalled}
+        coldCover={simSurfaceMounted ? false : state.simColdCover}
         // The captured poster, on the LEGACY path too. `SimPresentationLayers` below already does
         // this, but it mounts only when `simModern` is true — which is no package in storage — so
         // in practice every cold seek showed a bare spinner while the poster went unused.
-        posterSrc={state.simModern ? null : state.simPosterUrl}
+        posterSrc={simSurfaceMounted ? null : state.simPosterUrl}
         posterTransparent={state.simPosterTransparent}
         registerFrame={actions.registerSimFrame}
         onFrameLoad={actions.simFrameLoaded}
       />
-      {state.simModern && (
+      {simSurfaceMounted && (
         <SimPresentationLayers
-          // Mounted only while a modern sim section is active, so the intent cannot be anything
-          // else: the exit to video is expressed by this element un-mounting, not by an intent flip.
+          // Mounted only while a sim section is active — modern, or one this browser cannot run —
+          // so the intent cannot be anything else: the exit to video is expressed by this element
+          // un-mounting, not by an intent flip.
           intent="sim"
           presented={state.simPresented}
           outgoingValid={state.simOutgoingValid}
@@ -552,11 +620,24 @@ export function HLSPlayerShell({
           transparentSection={state.simPosterTransparent}
           remainingMs={simRemainingMs}
           failure={state.simFailure}
+          // THE TRIGGER (audit P0.8). Nothing in production had ever set this, so the policy's
+          // whole poster-only branch was dead code. A browser that cannot resolve this package's
+          // bare specifiers is precisely "no live frame will be brought up for this section":
+          // nothing is broken — no recovery surface, no retry — the player simply shows the still
+          // picture of what would have run.
+          posterOnlyMode={floorBlocked}
           // The player's existing wait affordance, for a cover with no poster behind it — otherwise
           // a section with no captured poster waits behind a featureless black rectangle. It also
           // replaces the legacy `.sim-wait-affordance`, which is suppressed above on this path so
           // the two never stack.
-          coverFallback={<div className="sim-overlay-spinner" />}
+          //
+          // Except when the floor blocked this package and no poster exists: then there is nothing
+          // to wait FOR, and a spinner that will never stop is a worse lie than naming the reason.
+          coverFallback={
+            floorBlocked && floorMissing
+              ? <div className="sim-floor-notice" data-testid="sim-floor-notice">{FLOOR_MESSAGES[floorMissing]}</div>
+              : <div className="sim-overlay-spinner" />
+          }
           // The recovery ACTIONS UI is not built yet; what must never happen meanwhile is a failure
           // the viewer cannot leave, so the existing, already-wired resume control is offered.
           recovery={

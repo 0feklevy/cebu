@@ -37,6 +37,7 @@ import type { StorageService, StoredObjectHead } from '../storage/StorageService
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import { logger } from '../../lib/logger.js';
 import { canaryReportPrepareMs } from 'shared/sim/prepareBudget';
+import { bridgeAckCapableFromMetadata, requiresImportMapsFromMetadata } from 'shared/sim/bridgeCapability';
 import { createHash } from 'node:crypto';
 import {
   canTransition,
@@ -684,6 +685,19 @@ export class RevisionService {
           prepare_budget_ms: canaryReportPrepareMs(
             promoted.canary_report as Parameters<typeof canaryReportPrepareMs>[0],
           ),
+          // PROJECTED FROM THE REVISION'S OWN METADATA, in the same statement, for exactly the
+          // reason the verdict columns above are (audit P0.5). The bridge either posts
+          // SCRIPT_APPLIED or it does not, and that is a property of the BYTES — so after a
+          // rollback the projection has to describe the revision the pointer now names, not the
+          // one that was withdrawn. A revision published before the capability was recorded
+          // projects NULL, which the player reads as "unproven" and handles as its own case.
+          bridge_ack_capable: bridgeAckCapableFromMetadata(promoted.metadata),
+          // The OTHER half of the same record, projected in the same statement (audit P0.8).
+          // Whether the entry document needs import maps is a property of one revision's bytes, so
+          // a republish that adds or removes the tag — and a rollback past it — has to move this
+          // value with the pointer. A revision published before the requirement was recorded
+          // projects NULL, which the viewer's floor reads as UNKNOWN and never as "requires".
+          requires_import_maps: requiresImportMapsFromMetadata(promoted.metadata),
         })
         .where(and(
           eq(simulations.id, simulationId),

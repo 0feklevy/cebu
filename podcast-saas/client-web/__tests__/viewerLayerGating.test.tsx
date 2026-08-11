@@ -92,6 +92,15 @@ vi.mock('../lib/sim/SimRuntimeClient', () => {
     cancelPendingApply() {}
     cancelDeferredStop() {}
     hasDeferredStop() { return false; }
+    /** audit P0.5: the publication-time capability the player now hands every runtime. */
+    setPackageAckCapable() {}
+    /** audit P0.5: consulted by the terminal stall bound before it may force anything. */
+    isHoldingApply() { return false; }
+    /** audit: two-phase eviction. The double settles instantly — this suite is not about disposal. */
+    evict() { return Promise.resolve({ outcome: 'no-document', counts: null, leaked: [], waitedMs: 0 }); }
+    cancelEviction() { return false; }
+    isEvicting() { return false; }
+    evictionPhase() { return 'none'; }
     present() {}
     retryModern() { return false; }
     setQuality() {}

@@ -15,6 +15,29 @@ export interface SimulationOverlay {
    * unlocks the modern path.
    */
   package_class?: 'managed-presentable' | 'managed-partial' | 'legacy-cooperative' | 'legacy-opaque' | 'failed' | null;
+  /**
+   * Does this package's published bridge acknowledge an applied section with SCRIPT_APPLIED?
+   * (migration 055, audit P0.5.)
+   *
+   * THREE STATES. `true` proven-acking, `false` proven-silent, and `null`/absent UNKNOWN — the
+   * honest answer for every package published before the record existed. The apply gate has a
+   * distinct branch for unknown; nothing may collapse it into either boolean. It is the only fact
+   * that makes a package's FIRST activation a lookup instead of a guess, because in-session
+   * evidence by definition does not exist yet at that moment.
+   */
+  bridge_ack_capable?: boolean | null;
+  /**
+   * Does this package's published entry document need `<script type="importmap">` support to run
+   * at all? (migration 057, audit P0.8.)
+   *
+   * THREE STATES, like the field above. `true` means a browser without import maps can never see
+   * this package paint — the bare specifier does not resolve, no module evaluates, nothing renders
+   * — so the viewer covers it with the section's poster instead of a permanently blank frame.
+   * `false` means it is unaffected. `null`/absent is UNKNOWN and must never be read as "requires":
+   * downgrading every unrecorded package on an older browser is the regression this field exists to
+   * make impossible (`lib/sim/browserFloor.ts`).
+   */
+  requires_import_maps?: boolean | null;
   sim_script:     string | null;
   simple_ui:      boolean | null;
   auto_script:    boolean | null;

@@ -17,6 +17,12 @@ import {
 // import this module. RevisionMigration DOES (deriveEntryRelPath/getSimulationContentType), so its
 // helpers are pulled in lazily inside uploadSectionBridge — same pattern as GuidanceService.
 import { RevisionService, type RevisionDbTx } from './RevisionService.js';
+import {
+  BRIDGE_CAPABILITIES_KEY,
+  detectBridgeCapabilities,
+  detectEntryCapabilities,
+  type BridgeCapabilities,
+} from 'shared/sim/bridgeCapability';
 import type {
   SimManifest as SimPackageManifest,
   SimManifestFile,
@@ -1766,7 +1772,17 @@ export function assembleSectionBridgeArtifacts(opts: {
   /** Entry path relative to the PACKAGE ROOT (e.g. 'index.html', 'app/main.html'). */
   entryRelPath: string;
   mainBody: (existing: string | undefined) => string;
-}): { bridgeJs: string; entryHtml: string; bridgeHash: string; sectionCount: number } {
+}): {
+  bridgeJs: string; entryHtml: string; bridgeHash: string; sectionCount: number;
+  /**
+   * What the assembled artefacts can do, and what they NEED, read off the bytes that are about to
+   * be published (audit P0.5 for `scriptApplied`, P0.8 for `requiresImportMaps`). Decided HERE
+   * rather than at the call site so every publication path records the same answer about the same
+   * text — the alternative is a second detector that can disagree with the bytes, which is how a
+   * "capability" becomes a guess again.
+   */
+  capabilities: BridgeCapabilities;
+} {
   if (!SAFE_SECTION_ID_RE.test(opts.sectionId)) throw new Error(`Unsafe sectionId: "${opts.sectionId}"`);
 
   // Merge: parse existing sections, add/replace the current section's body.
@@ -1799,7 +1815,14 @@ export function assembleSectionBridgeArtifacts(opts: {
   // next generation (injectRafGate is marker-guarded and idempotent).
   const entryHtml = injectBridgeScriptTag(injectRafGate(opts.rawEntryHtml), bridgeRelPath, bridgeHash);
 
-  return { bridgeJs, entryHtml, bridgeHash, sectionCount: sectionEntries.size };
+  return {
+    bridgeJs, entryHtml, bridgeHash, sectionCount: sectionEntries.size,
+    // Read off `entryHtml`, not `opts.rawEntryHtml`: the injections above STRIP script tags (stale
+    // `section_*.js`, previous bridge tags, inline bridges) and add others, and the record has to
+    // describe the document that is actually uploaded. Detecting on the input would be answering a
+    // question about bytes no viewer will ever load.
+    capabilities: { ...detectBridgeCapabilities(bridgeJs), ...detectEntryCapabilities(entryHtml) },
+  };
 }
 
 /** Derive the entry HTML path relative to the sim's storage prefix.
@@ -1868,6 +1891,16 @@ export function validateGeneratedBridge(code: string, manifest: SimManifest, mai
     }
     if (!code.includes("type === 'autoPolicy'")) {
       fatal.push('Assembled bridge missing the autoPolicy handler (system error)');
+    }
+    // THE ACKNOWLEDGEMENT IS NOW LOAD-BEARING (audit P0.5). Publication records whether this bridge
+    // posts SCRIPT_APPLIED and the viewer's apply gate consults that record BEFORE the first
+    // activation, so a template regression that dropped the ack would not merely lose a message —
+    // it would silently reclassify every package published afterwards from "proven-acking" to
+    // "proven-silent", which tells the gate to reveal a switch it can no longer verify. Fatal, and
+    // scoped to the dynamic template for the same reason the two handlers above are: only the
+    // combined wrapper is expected to have it.
+    if (!detectBridgeCapabilities(code).scriptApplied) {
+      fatal.push('Assembled bridge never posts SCRIPT_APPLIED (system error)');
     }
   }
   if (!code.includes("window.addEventListener('message'")) {
@@ -2968,7 +3001,16 @@ export class SimulationService {
       const draft = await revisions.createDraft({
         simulationId: simId,
         createdBy: 'live-generation',
-        metadata: { trigger: 'section-generation', sectionId, baseRevisionId },
+        metadata: {
+          trigger: 'section-generation', sectionId, baseRevisionId,
+          // WHAT THESE BYTES CAN DO AND WHAT THEY NEED, recorded with the bytes (audit P0.5, and
+          // P0.8's import-map requirement in the same record). Written at DRAFT rather
+          // than at activation because it describes the artefact this publication just assembled —
+          // `activate()` only PROJECTS it onto the simulations row, so a rollback re-projects the
+          // right answer for whichever revision the pointer lands on. Reading it back from the
+          // stored bridge later would be the same fact resolved twice, from a place that can fail.
+          [BRIDGE_CAPABILITIES_KEY]: art.capabilities,
+        },
       });
       const uploading = await revisions.beginUpload(simId, draft.id);
       const files: SimManifestFile[] = [];

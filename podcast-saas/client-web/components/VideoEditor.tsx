@@ -19,7 +19,9 @@ import { BranchingModal } from './branching/BranchingModal';
 import { getAvatarCircles, saveAvatarCircles, type AvatarCirclesConfig } from './avatar/avatarApi';
 import { normalizeCircleSections, type CircleSection } from '../lib/circleSections';
 import { sectionAtPlayhead } from '../lib/sectionInterval';
+import { simOccurrencesOf } from '../lib/simPool';
 import { rememberServedSimUrls, servedSimulationUrl, type RememberedServedUrl } from '../lib/simServedUrl';
+import { getStoredSelection } from '../lib/simUiControls';
 import type { VideoFile, TimelineSection, TimelineMarker, Simulation, VideoGenerationJob, ImageFile, AudioFile } from 'shared/src/generated/client-v1';
 
 type ToolMode = 'video' | 'simulation' | 'broll';
@@ -497,6 +499,9 @@ export function VideoEditor({ projectId }: Props) {
   /** Global bounds of a main-track section — the axis every predicate below matches against. */
   const globalBounds = (s: TimelineSection) => ({ start: sectionGlobalStart(s), end: sectionGlobalEnd(s) });
 
+  /** The main-track layout, as a value: what the sim occurrence list must be memoised against. */
+  const simLayoutKey = mainVideosSorted.map(v => `${v.id}:${v.duration_sec ?? 0}`).join('|');
+
   const activeBrollSection = sectionAtPlayhead(
     brollSections,
     playheadSec,
@@ -732,6 +737,37 @@ export function VideoEditor({ projectId }: Props) {
       ? activeSimSection
       : { ...activeSimSection, simulation_url: activeSimServedUrl },
     [activeSimSection, activeSimServedUrl],
+  );
+
+  // The whole sim layout in absolute time, for the player's residency planning (audit §9.3 Stage 4).
+  // The player needs to know what is COMING, not just what is under the playhead: warming the next
+  // package during the video that precedes it is the only thing that makes a first entry smooth.
+  //
+  // MEMOISED ON THE LAYOUT, NOT THE PLAYHEAD. A fresh array every render would restart the player's
+  // warm timer on every clock tick, and the settle would never elapse — the prewarm would silently
+  // never happen. The playhead is applied inside the player, against its own clock.
+  //
+  // Served URLs, for the same reason the active section uses them: warming a RETIRED revision would
+  // mount the wrong bytes and then have to navigate away from them at the boundary.
+  const simOccurrences = useMemo(
+    () => simOccurrencesOf(
+      sections
+        .filter(s => s.type === 'simulation' && !!s.simulation_url)
+        .map((s) => {
+          const hide = s.simple_ui ? getStoredSelection(s.sim_meta)?.hide : null;
+          return {
+            simulation_url: servedSimulationUrl(s, servedSimUrls),
+            bootHide: hide?.length ? hide : null,
+            absStartSec: sectionGlobalStart(s),
+            absEndSec: sectionGlobalEnd(s),
+          };
+        }),
+    ),
+    // `videoGlobalOffsets` and the two bounds helpers are rebuilt on every render, so they cannot
+    // be dependencies — `simLayoutKey` is the same information in a form that only changes when the
+    // layout actually does.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sections, servedSimUrls, simLayoutKey],
   );
 
   // Compute active image section for the editor preview overlay
@@ -1203,6 +1239,7 @@ export function VideoEditor({ projectId }: Props) {
                     onTimeUpdate={setPlayheadSec}
                     sectionLabel={activeSectionLabel}
                     activeSimSection={activeSimSectionServed}
+                    simOccurrences={simOccurrences}
                     activeBrollSection={activeOverlay ?? null}
                     brollHlsUrl={brollHlsUrl}
                     activeImageSection={activeImageSection}

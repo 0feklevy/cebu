@@ -17,7 +17,7 @@ import { nextQualityFor, INITIAL_QUALITY_STATE, type QualityState } from 'shared
 import { armBoundarySentinel, type BoundarySentinel } from '../../lib/sim/boundaryClock';
 import { createRumRecorder, type RumRecorder } from '../../lib/sim/rumClient';
 import { labStandardMs } from '../../lib/sim/qualityBudgets';
-import { singleModeEvictions, hardCapEviction } from '../../lib/sim/poolResidency';
+import { singleModeEvictions, hardCapEviction, overCapEvictions } from '../../lib/sim/poolResidency';
 import { newPlayerSessionId } from 'shared/src/sim/simIdentity';
 import { simTelemetry } from '../../lib/simTelemetry';
 import { SimRuntimeClient } from '../../lib/sim/SimRuntimeClient';
@@ -52,10 +52,19 @@ import {
 // bounded best-effort ceiling and a genuine-stall affordance only after 5s.
 const SIM_PAINT_DEADLINE_MS = 1200; // bounded HOLD ceiling (see the deadline handler for what it may reveal)
 const SIM_BOOT_STALLED_MS   = 5000; // only after this does a genuine-failure loading affordance show
-// LOAD-BEARING ORDERING (review F6): the 5s stall force path is safe only because every apply
-// hold is armed with the runtime's terminal bound and therefore released FIRST. Inverting these
-// constants would silently let the stall path present a held (unacknowledged) switch, so the
-// ordering is asserted here rather than trusted.
+// LOAD-BEARING ORDERING (review F6, restated for audit P0.5).
+//
+// The apply hold's bound no longer RELEASES the hold — it selects a cover (`apply-deadline-cover`),
+// because a deadline is not evidence about which sub-simulation is on the canvas. So the reason
+// these constants are ordered has changed, and the old reason ("the hold is released first, so the
+// stall path can never present a held switch") is no longer true and must not be relied on.
+//
+// The ordering that still matters: the cover must be UP before the terminal stall bound makes its
+// decision. Inverted, the 5s path would fire into an unexplained pause and then hand the user a
+// generic stall affordance for a wait the poster was about to explain properly. The stall path
+// itself now refuses to force-reveal while the runtime is still holding a painted document — see
+// its handler — so the safety property no longer depends on this ordering at all, only the
+// presentation quality does.
 if (SIM_APPLY_STALL_MS >= SIM_BOOT_STALLED_MS) {
   throw new Error('SIM_APPLY_STALL_MS must stay below SIM_BOOT_STALLED_MS — see the comment above');
 }
@@ -166,6 +175,12 @@ export interface ProjectPlayerState {
   // Absolute (global-timeline) end of the active sim section, so the surface can compute how much
   // of it is left. Null outside a sim section.
   simSectionEndSec: number | null;
+  // Does the ACTIVE section's package need import-map support to run at all (audit P0.8)? Recorded
+  // at publication and delivered on the section; null means the publication never recorded an
+  // answer, and the capability floor treats null as "no known requirement", never as "requires".
+  // The BROWSER half of the question is not here — it is a property of the host, detected once per
+  // mount by the surface that renders the layers, not per section by the hook.
+  simRequiresImportMaps: boolean | null;
   currentSegIdx:   number;
   activeSegmentId: string;          // id of the playing segment (stable across branching)
   timeline:        TimelineSeg[];
@@ -445,6 +460,7 @@ export function useProjectPlayer(
     simPosterTransparent: false,
     simOutgoingValid:     false,
     simSectionEndSec:     null,
+    simRequiresImportMaps: null,
     currentSegIdx:    0,
     activeSegmentId:  initialSegments[0]?.id ?? '',
     timeline:         initialSegs,
@@ -474,7 +490,7 @@ export function useProjectPlayer(
   type SimPresentationFields = Pick<
     ProjectPlayerState,
     'simModern' | 'simPresented' | 'simFailure' | 'simPosterUrl' | 'simPosterTransparent'
-    | 'simOutgoingValid' | 'simSectionEndSec'
+    | 'simOutgoingValid' | 'simSectionEndSec' | 'simRequiresImportMaps'
   >;
   const simPresentationRef = useRef<SimPresentationFields>({
     simModern: false,
@@ -484,6 +500,7 @@ export function useProjectPlayer(
     simPosterTransparent: false,
     simOutgoingValid: false,
     simSectionEndSec: null,
+    simRequiresImportMaps: null,
   });
   const mergePresentation = (patch: Partial<SimPresentationFields>) => {
     const cur = simPresentationRef.current;
@@ -495,7 +512,8 @@ export function useProjectPlayer(
       next.simPosterUrl === cur.simPosterUrl &&
       next.simPosterTransparent === cur.simPosterTransparent &&
       next.simOutgoingValid === cur.simOutgoingValid &&
-      next.simSectionEndSec === cur.simSectionEndSec
+      next.simSectionEndSec === cur.simSectionEndSec &&
+      next.simRequiresImportMaps === cur.simRequiresImportMaps
     ) return;
     simPresentationRef.current = next;
     merge(patch);
@@ -515,6 +533,9 @@ export function useProjectPlayer(
       simPosterUrl: null,
       simPosterTransparent: false,
       simSectionEndSec: null,
+      // Forgotten with the section, like the poster: the requirement describes THAT package, and a
+      // stale `true` would keep the next section covered for a need it does not have.
+      simRequiresImportMaps: null,
     });
 
   const videoRef      = useRef<HTMLVideoElement | null>(null);
@@ -886,27 +907,138 @@ export function useProjectPlayer(
   };
   // Drop a package's frame entirely (iframe unmounts → context/heap freed). Releases the warm
   // slot FIRST — evicting the currently-warming frame must never strand the queue.
-  const dropPooled = (key: string, reason: string) => {
-    warmQueueRef.current = warmQueueRef.current.filter((k) => k !== key);
-    finishWarm(key);
+  /**
+   * Packages whose eviction has STARTED but whose iframe is still mounted (two-phase eviction).
+   *
+   * The element has to survive phase one: the parent is waiting for the child's DISPOSED, and a
+   * child cannot answer from a detached frame. So the spec stays in `simPoolSpecsRef` — which is
+   * what React renders — and this set is what every admission, selection and residency decision
+   * consults instead of the spec list, so an evicting frame is invisible to them while remaining
+   * present to the browser.
+   */
+  const simEvictingRef = useRef<Set<string>>(new Set());
+  /** True while a two-phase eviction owes this frame a disposal handshake. */
+  const isEvicting = (key: string): boolean => simEvictingRef.current.has(key);
+  /** The guards every residency pass must respect. One object so no site can pass only one. */
+  const residencyGuards = { isFadingOut: (k: string) => isFadingOut(k), isEvicting };
+  /**
+   * Take the element out of the DOM and forget the package. Phase TWO, and only ever from there.
+   *
+   * `evicted` IDENTIFIES WHAT MAY BE REMOVED, and removing by key alone is what made this unsafe.
+   *
+   * Phase two runs from a `.then()`, so it is always at least one microtask behind the settlement
+   * that scheduled it — and `SimRuntimeClient.dispose()` SETTLES a pending eviction (as forced, so
+   * the owner is never left awaiting a promise nothing can resolve). `ensurePooledSpec`'s re-entry
+   * path calls exactly that: past the grace window it disposes the dying runtime and calls
+   * `navigateFrame`, which mints a fresh runtime and a fresh document under the SAME key,
+   * synchronously. The queued `.then` then ran and removed that brand-new frame — disposing a
+   * runtime one line old and filtering its spec out, so the section the user had just re-entered
+   * lost its iframe. Reproduced A→B→A at `sim_pool_mode:'single'`:
+   * `attach:pkgA·s1 … dispose … attach:pkgA·s3 … dispose`, and pkgA had no iframe afterwards. At
+   * 'single' and 'all' nothing re-adds it, so the section is covered for its whole duration, every
+   * time, for the rest of the session.
+   *
+   * A pass may therefore only remove the runtime INSTANCE its own eviction was started for. That is
+   * structural rather than a timing tweak: any future path that replaces a runtime mid-eviction —
+   * a navigation, a re-admission, a second re-entry — invalidates the stale removal by
+   * construction, without having to know that this hazard exists.
+   */
+  const removePooled = (key: string, reason: string, outcome: string, evicted?: SimRuntimeClient) => {
+    if (evicted !== undefined && simRuntimesRef.current.get(key) !== evicted) {
+      // The frame under this key is NOT the one that was evicted. Whatever replaced it owns the key
+      // now and has its own lifecycle; this eviction's only remaining job was to remove an element
+      // that no longer exists.
+      simTelemetry('pool-evict-superseded', { key, reason, outcome });
+      return;
+    }
+    simEvictingRef.current.delete(key);
     const meta = simPoolMetaRef.current.get(key);
     if (meta) clearWarmCeil(meta);
     simPoolMetaRef.current.delete(key);
-    // The document goes with the frame: dispose the client so no timer of its can fire and no
-    // message can be handled after the iframe unmounts. A later re-add builds a fresh one.
+    // The client is disposed only NOW. Disposing it at the start of eviction removed the message
+    // listener that the acknowledgement arrives on, which is one of the two reasons no parent has
+    // ever seen a DISPOSED (the other was closing the port in the same statement as the send).
     simRuntimesRef.current.get(key)?.dispose();
     simRuntimesRef.current.delete(key);
     cancelPristineReload(key);
     simPoolSpecsRef.current = simPoolSpecsRef.current.filter((s) => s.key !== key);
     merge({ simPool: simPoolSpecsRef.current });
-    simTelemetry('pool-spec-evict', { key, reason });
+    simTelemetry('pool-spec-evict', { key, reason, outcome });
+  };
+  /**
+   * PHASE ONE of eviction — and deliberately not `async`.
+   *
+   * Every caller is on a path a user is watching (a section change, a residency tick, the
+   * single-mode kill switch), so none of them may wait for a teardown handshake. The frame is
+   * excluded from admission and silenced synchronously, here; the element is removed later, when
+   * the child has answered or the deadline has passed. A user never waits on eviction, and the
+   * eviction never cuts a frame the user is still being shown.
+   */
+  const dropPooled = (key: string, reason: string) => {
+    if (simEvictingRef.current.has(key)) return;   // already leaving — never evict one frame twice
+    // Excluded from admission FIRST, before anything asynchronous can interleave: from this point
+    // no pass may select, warm or present it, which is what makes the rest of the sequence safe to
+    // finish out of band.
+    simEvictingRef.current.add(key);
+    warmQueueRef.current = warmQueueRef.current.filter((k) => k !== key);
+    finishWarm(key);
+    const rt = simRuntimesRef.current.get(key);
+    if (!rt) { removePooled(key, reason, 'no-runtime'); return; }
+    simTelemetry('pool-spec-evicting', { key, reason });
+    rt.evict({ reason })
+      .then((res) => {
+        // A cancelled eviction is the ONE outcome that must not remove anything: the user came
+        // back inside the grace window and this frame is theirs again.
+        if (res.outcome === 'cancelled') { simEvictingRef.current.delete(key); return; }
+        simTelemetry('pool-evict-settled', {
+          key, reason, outcome: res.outcome, waitedMs: res.waitedMs, leaked: res.leaked.length,
+        });
+        // `rt`, not the key: by the time this microtask runs the key may belong to a runtime this
+        // eviction never touched. See removePooled.
+        removePooled(key, reason, res.outcome, rt);
+      })
+      // The element must go even if the handshake machinery itself threw. A rejected eviction that
+      // left the iframe mounted would be a leak created by the leak detector.
+      .catch(() => removePooled(key, reason, 'error', rt));
   };
   // Grow the pool at section entry (on-demand adds mount immediately — no stagger). A hard
   // ceiling protects the browser's live-WebGL-context budget: beyond it, evict the first
   // non-active, non-warming frame.
   const SIM_POOL_HARD_CAP = 6;
+  /**
+   * The user came back for a frame that is being evicted. Two-phase eviction exists so this has an
+   * answer better than "too late".
+   *
+   * Returns true when the DOCUMENT was reclaimed intact — the grace window had not closed, so no
+   * DISPOSE_DOCUMENT was ever sent and the frame the user left is the frame they get back.
+   * Returns false once disposal has begun: the child has released its managed scope and is closing
+   * its port, so there is nothing to resurrect and the caller must build a FRESH GENERATION. The
+   * caller does that by letting the spec be re-added, or by navigating the existing element, both
+   * of which mint a new document epoch.
+   */
+  const reclaimEvicting = (key: string): boolean => {
+    if (!simEvictingRef.current.has(key)) return true;   // not leaving at all
+    const reclaimed = simRuntimesRef.current.get(key)?.cancelEviction() === true;
+    simTelemetry(reclaimed ? 'pool-evict-reclaimed' : 'pool-evict-too-late', { key });
+    if (reclaimed) simEvictingRef.current.delete(key);
+    return reclaimed;
+  };
+
   const ensurePooledSpec = (spec: SimPoolFrameSpec) => {
-    if (simPoolSpecsRef.current.some((s) => s.key === spec.key)) return;
+    if (simPoolSpecsRef.current.some((s) => s.key === spec.key)) {
+      // RE-ENTRY DURING EVICTION. Inside the grace window the document comes back whole. Past it,
+      // the element is still mounted but the runtime behind it is disposing, so the only correct
+      // move is a new generation: `navigateFrame` re-attaches the client under a fresh document
+      // identity, which resets every per-document flag and mints a new epoch. Resurrecting the
+      // disposing one would install a section into a runtime that has thrown its resources away.
+      if (simEvictingRef.current.has(spec.key) && !reclaimEvicting(spec.key)) {
+        simEvictingRef.current.delete(spec.key);
+        simRuntimesRef.current.get(spec.key)?.dispose();
+        simRuntimesRef.current.delete(spec.key);
+        navigateFrame(spec.key, spec.src, spec.bootHide ?? null);
+      }
+      return;
+    }
     // Single mode: strictly one resident frame — evict every non-active package before adding.
     //
     // A frame still inside its EXIT FADE is spared, exactly as the window planner spares it.
@@ -916,13 +1048,13 @@ export function useProjectPlayer(
     // residency pass once the fade has resolved — the per-tick loop applies the SAME rule, which it
     // previously did not, so this sparing was undone within the same tick.
     if (poolTierRef.current === 'single') {
-      for (const key of singleModeEvictions([...simPoolSpecsRef.current], activeSimUrlRef.current, isFadingOut)) {
+      for (const key of singleModeEvictions([...simPoolSpecsRef.current], activeSimUrlRef.current, residencyGuards)) {
         dropPooled(key, 'single-mode');
       }
     }
     const capVictim = hardCapEviction(
       simPoolSpecsRef.current, spec.key, activeSimUrlRef.current, warmingSimUrlRef.current,
-      SIM_POOL_HARD_CAP, isFadingOut,
+      SIM_POOL_HARD_CAP, residencyGuards,
     );
     if (capVictim) dropPooled(capVictim, 'hard-cap');
     simPoolSpecsRef.current = [...simPoolSpecsRef.current, spec];
@@ -1001,13 +1133,107 @@ export function useProjectPlayer(
     if (simPaintDeadlineRef.current) { clearTimeout(simPaintDeadlineRef.current); simPaintDeadlineRef.current = null; }
     if (simBootStalledRef.current) { clearTimeout(simBootStalledRef.current); simBootStalledRef.current = null; }
   };
-  const revealSim = (opts?: { force?: boolean }) => {
+  /**
+   * How many times one reveal may be re-armed after a generation bump lands inside its double rAF.
+   *
+   * Three, because the bumps that can legitimately interleave with a single composition are
+   * countable — a boundary tick, a lease sync, a scrub landing back in the same section — and a
+   * fourth means something is bumping continuously, which is not a case a retry can win. The bound
+   * is what makes this a recovery and not a loop.
+   */
+  const REVEAL_REARM_LIMIT = 3;
+  /**
+   * Cancellers for reveal compositions still in flight — the second half of "a reveal is a managed
+   * thing", and the half that makes the re-arm above safe to add at all.
+   *
+   * A DEFERRED REVEAL MUST NOT OUTLIVE THE PLAYER. The composition is two animation frames long and
+   * NOTHING owned it: an unmount cancelled `simPaintDeadlineRef` and `simBootStalledRef` (the two
+   * timers `clearRevealTimers` knows about) and left the frames queued. The callback then ran
+   * against a dead tree, and because `activeSimRef`/`activeSimUrlRef` are refs that an unmount does
+   * not clear, it got past its own guards as far as `simPainted(url)` — which is `runtimeFor(key)`,
+   * which CREATES a `SimRuntimeClient` when the map has none. So unmounting the viewer during a
+   * reveal built a fresh runtime for a player that no longer exists: never disposed (the cleanup
+   * that would have disposed it has already run), owning a window `message` listener the moment
+   * anything attaches it, and merging state into a tree React has thrown away. Reproduced by
+   * execution — the object graph outlived the component, which is the leak, and the state write is
+   * the visible half of it.
+   *
+   * Cancelling on unmount is structural rather than a guard bolted onto one call site: any future
+   * work scheduled through `scheduleRevealFrames` inherits the lifetime, and nothing has to
+   * remember that this particular callback can allocate.
+   */
+  const revealFrameCancelsRef = useRef<Set<() => void>>(new Set());
+  const cancelPendingRevealFrames = () => {
+    for (const cancel of [...revealFrameCancelsRef.current]) cancel();
+    revealFrameCancelsRef.current.clear();
+  };
+  /**
+   * Run `cb` after a double animation frame, so the opacity flip composites on a real frame — and
+   * never after the player is gone.
+   */
+  const scheduleRevealFrames = (cb: () => void) => {
+    const hasRaf = typeof requestAnimationFrame === 'function';
+    let handle: number | ReturnType<typeof setTimeout> | null = null;
+    let live = true;
+    const cancel = () => {
+      live = false;
+      if (handle === null) return;
+      if (hasRaf) cancelAnimationFrame(handle as number);
+      else clearTimeout(handle as ReturnType<typeof setTimeout>);
+      handle = null;
+    };
+    const step = (next: () => void) => {
+      handle = hasRaf
+        ? requestAnimationFrame(() => { handle = null; next(); })
+        : setTimeout(() => { handle = null; next(); }, 16);
+    };
+    revealFrameCancelsRef.current.add(cancel);
+    step(() => {
+      if (!live || unmountedRef.current) return;
+      step(() => {
+        revealFrameCancelsRef.current.delete(cancel);
+        // Belt and braces with the canceller: a callback already dequeued by the event loop cannot
+        // be cancelled, so it re-reads the flag rather than trusting that it was.
+        if (!live || unmountedRef.current) return;
+        cb();
+      });
+    });
+  };
+  const revealSim = (opts?: { force?: boolean; rearm?: number }) => {
     const gen = warmGenRef.current;
+    // WHAT THIS REVEAL IS FOR. `warmGenRef` answers "has anything moved", which is not the same
+    // question as "is this reveal still wanted" — see the re-arm below.
+    const forSectionId = activeSimRef.current?.id ?? null;
+    const rearm = opts?.rearm ?? 0;
     clearRevealTimers();
     awaitingPaintSimIdRef.current = null;
-    const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (cb: FrameRequestCallback) => setTimeout(() => cb(0), 16);
-    raf(() => raf(() => {
-      if (warmGenRef.current !== gen) return;                  // seek/branch moved on — drop stale reveal
+    scheduleRevealFrames(() => {
+      if (warmGenRef.current !== gen) {
+        // THE GENERATION MOVED — RE-EVALUATE, DO NOT DISCARD.
+        //
+        // `warmGenRef` is bumped by `deactivateSim`, by entering a sim section from video, and by
+        // the back-to-video reset. Only the first and last of those mean "this reveal is stale";
+        // the middle one is a bump for the very section being revealed. Dropping on the counter
+        // alone was survivable while a first activation on a painted pooled document was
+        // `reveal-now` — `maybeReveal()` then ran in the same tick that bumped the generation, so
+        // the window between capturing `gen` and reading it was empty. P0.5 holds that case until
+        // SCRIPT_APPLIED, one or more macrotasks later, which is squarely where a bump lands: the
+        // window is now wide, nothing retried, and the stall timer no longer force-reveals, so a
+        // dropped reveal was final and the section stayed covered for its whole duration.
+        //
+        // So the intent is checked against the SECTION it was raised for, which is what actually
+        // makes it stale or not, and re-armed against the new generation when it still holds.
+        // Bounded by REVEAL_REARM_LIMIT so a continuously-moving generation ends in a reported
+        // drop rather than an unbounded chain.
+        const stillWanted = forSectionId !== null && activeSimRef.current?.id === forSectionId;
+        if (!stillWanted || rearm >= REVEAL_REARM_LIMIT) {
+          simTelemetry('reveal-dropped', { section: forSectionId, rearm, stillWanted });
+          return;
+        }
+        simTelemetry('reveal-rearmed', { section: forSectionId, rearm: rearm + 1 });
+        revealSim({ ...opts, rearm: rearm + 1 });
+        return;
+      }
       if (!activeSimRef.current) return;                       // no longer a sim section
       const url = activeSimUrlRef.current;
       if (!opts?.force && !(url && simPainted(url))) return;  // not painted yet
@@ -1021,7 +1247,7 @@ export function useProjectPlayer(
       // screen because this decision never consulted the runtime at all (audited).
       if (!opts?.force && url && !runtimeState(url).visible) return;
       merge({ showSimOverlay: true, simBootStalled: false, simColdCover: false });
-    }));
+    });
   };
 
   // ── (D5) free HLS bandwidth/memory while a sim holds the screen ───────────
@@ -1488,7 +1714,7 @@ export function useProjectPlayer(
       // transition — and 'single' is the mode an operator selects during an incident, which is the
       // worst moment to add a visible glitch. Same shared rule as the other two single-mode sites.
       if (poolTierRef.current === 'single') {
-        for (const evictKey of singleModeEvictions([...simPoolSpecsRef.current], key, isFadingOut)) {
+        for (const evictKey of singleModeEvictions([...simPoolSpecsRef.current], key, residencyGuards)) {
           dropPooled(evictKey, 'single-mode-switch');
         }
       }
@@ -1617,6 +1843,14 @@ export function useProjectPlayer(
       const meta = poolMeta(key);
       const rt = runtimeFor(key);
 
+      // WHAT PUBLICATION RECORDED ABOUT THIS PACKAGE'S BRIDGE (audit P0.5). Told to the runtime
+      // BEFORE the activation below, because it is the input that decides whether the FIRST
+      // activation on this document may be revealed on sight or must wait for the acknowledgement
+      // — and in-session evidence, by definition, does not exist yet at that moment. `?? null` is
+      // load-bearing: absent means UNKNOWN, which the gate handles as its own case, and coercing it
+      // to `false` would restore the hole by way of a default.
+      rt.setPackageAckCapable(simSection.bridge_ack_capable ?? null);
+
       // Arm the activation-scoped path — but only for a package the publish-time canary has
       // classified `managed-presentable`. enableModern itself enforces that, so passing an
       // unproven or null class here is a no-op that leaves the v2 path in charge; the call is made
@@ -1658,6 +1892,10 @@ export function useProjectPlayer(
         simPosterTransparent: !!simSection.poster_transparent,
         simOutgoingValid: simPresentationRef.current.simOutgoingValid || (videoRef.current?.readyState ?? 0) >= 2,
         simSectionEndSec: (timelineRef.current[segmentIdx]?.offset ?? 0) + simSection.end_sec,
+        // WHAT THIS PACKAGE NEEDS FROM THE BROWSER (audit P0.8), carried through unflattened.
+        // `?? null` and not `?? false`: absent means the publication never recorded an answer, and
+        // the floor must be able to tell that apart from a recorded "does not need import maps".
+        simRequiresImportMaps: simSection.requires_import_maps ?? null,
       });
       // Snapshot BEFORE activating: rt.activate() records the new script and takes the gate
       // decision, and the branch conditions below describe the document as it was on entry.
@@ -1783,6 +2021,18 @@ export function useProjectPlayer(
         simBootStalledRef.current = setTimeout(() => {
           simBootStalledRef.current = null;
           if (warmGenRef.current !== gen || showSimOverlayRef.current || activeSimRef.current?.id !== simSection.id) return;
+          // NEVER OVER A LIVE APPLY HOLD ON A DOCUMENT THAT HAS PIXELS (audit P0.5). The force
+          // below is the compatibility escape for a document that has drawn NOTHING and can
+          // acknowledge nothing — there are no wrong pixels on a blank canvas, so showing it
+          // best-effort is honest. A document that HAS painted and is holding an unacknowledged
+          // switch is the opposite case: its pixels are the boot scene, the previous section or a
+          // warm pass, and forcing them up is exactly the frame the gate is holding back. Keep the
+          // cover instead; the acknowledgement reveals it whenever it lands.
+          if (simPainted(key) && runtimeFor(key).isHoldingApply()) {
+            simTelemetry('stall-hold-covered', { key });
+            merge({ simBootStalled: false, simColdCover: true });
+            return;
+          }
           if (!simPainted(key)) {
             runtimeFor(key).markPaintedByPolicy('boot-stalled');   // stop re-arming the hold
             simTelemetry('stall-force-reveal', { key });
@@ -2379,7 +2629,7 @@ export function useProjectPlayer(
       // `ensurePooledSpec` and the section-change site within the same tick. It now applies the
       // same shared rule they do.
       if (poolTierRef.current === 'single') {
-        for (const key of singleModeEvictions([...simPoolSpecsRef.current], activeSimUrlRef.current, isFadingOut)) {
+        for (const key of singleModeEvictions([...simPoolSpecsRef.current], activeSimUrlRef.current, residencyGuards)) {
           dropPooled(key, 'single-mode');
         }
       }
@@ -2568,7 +2818,12 @@ export function useProjectPlayer(
         // A frame still inside its EXIT FADE must survive: unmounting it mid-fade removes the
         // element being animated (the sim cuts to video instead of fading) and the deferred
         // stopScript would fire into a dead frame. It is evicted on the next tick, after the fade.
-        for (const spec of simPoolSpecsRef.current) if (isFadingOut(spec.key)) keep.add(spec.key);
+        // A frame already in two-phase eviction is kept for the same mechanical reason: its
+        // element must stay mounted until the child answers, and `dropPooled` would be a no-op for
+        // it anyway. Naming it here keeps the `keep` set an honest description of the DOM.
+        for (const spec of simPoolSpecsRef.current) {
+          if (isFadingOut(spec.key) || isEvicting(spec.key)) keep.add(spec.key);
+        }
         for (const occ of [plan.active, plan.next]) {
           if (occ && !simPoolSpecsRef.current.some((s) => s.key === occ.packageKey)) {
             ensurePooledSpec({ key: occ.packageKey, src: occ.src, bootHide: occ.bootHide });
@@ -2577,6 +2832,26 @@ export function useProjectPlayer(
         for (const spec of [...simPoolSpecsRef.current]) {
           if (!keep.has(spec.key)) dropPooled(spec.key, 'window-slide');
         }
+      }
+
+      // THE HARD CAP IS A CEILING, NOT ONLY AN ADMISSION RULE.
+      //
+      // `ensurePooledSpec` admits over the cap whenever every eviction candidate has to be spared —
+      // a frame mid-exit-fade, or one whose disposal handshake has not finished — because cutting a
+      // live transition to hold an internal number is the worse trade. That overshoot is described
+      // as self-clearing, and it was not: nothing looked at the cap again after admission, so the
+      // extra frame's WebGL context stayed allocated for the rest of the session. This is the pass
+      // that comes back for it, once the fade or the handshake that forced the overshoot resolves.
+      //
+      // Runs at EVERY tier: 'single' and 'window' have their own keep sets and will normally have
+      // collected it first, but the cap is a device-safety limit rather than a tier preference, and
+      // 'all' has no other eviction rule at all. A pool at or under the cap yields no victims, so
+      // this is inert in the ordinary case.
+      for (const key of overCapEvictions(
+        simPoolSpecsRef.current, activeSimUrlRef.current, warmingSimUrlRef.current,
+        SIM_POOL_HARD_CAP, residencyGuards,
+      )) {
+        dropPooled(key, 'hard-cap-sweep');
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2953,6 +3228,15 @@ export function useProjectPlayer(
       // to prevent. SCRIPT_ERROR: a body that threw mid-apply leaves partial state. The runtime
       // hides and silences the document either way; here the video simply plays on through the
       // section, with no spinner parked (a failure the viewer cannot act on).
+      // ── the apply hold reached its deadline with no acknowledgement ────────────────────────
+      // A DEADLINE SELECTS A COVER, NEVER A REVEAL (audit §21 rule 7). The runtime keeps holding —
+      // elapsed time is not evidence about which sub-simulation is on the canvas — and this is the
+      // owner's cue to stop being silent about the wait. `simColdCover` is the existing cover: the
+      // section's poster when one was captured for this exact identity, and the honest wait
+      // affordance over the held outgoing video frame when none was.
+      case 'apply-deadline-cover':
+        if (isActive) merge({ simColdCover: true, simBootStalled: false });
+        return;
       case 'script-missing':
       case 'script-error':
         if (isActive) {
@@ -3119,6 +3403,10 @@ export function useProjectPlayer(
       hlsBrollStandbyRef.current?.destroy();
       clearTimeout(idleTimerRef.current ?? undefined);
       clearRevealTimers();
+      // …and the reveal COMPOSITIONS, which `clearRevealTimers` does not own: a queued double
+      // animation frame is not a timer this component tracked, and running one after unmount
+      // allocates a `SimRuntimeClient` nothing will ever dispose. See `revealFrameCancelsRef`.
+      cancelPendingRevealFrames();
       vA.removeEventListener('playing', armPool);
       vA.removeEventListener('play', armPoolOnAttempt);
       if (armPoolTimer) clearTimeout(armPoolTimer);

@@ -12,7 +12,7 @@
  * than one path's copy of the rule.
  */
 import { describe, it, expect } from 'vitest';
-import { singleModeEvictions, hardCapEviction } from '../lib/sim/poolResidency';
+import { singleModeEvictions, hardCapEviction, overCapEvictions } from '../lib/sim/poolResidency';
 
 const specs = (...keys: string[]) => keys.map((key) => ({ key }));
 const fading = (...keys: string[]) => (k: string) => keys.includes(k);
@@ -78,5 +78,99 @@ describe('hardCapEviction — the cap never cuts a live transition', () => {
   it('never evicts the incoming spec itself', () => {
     const pool = specs('new', 'a', 'b', 'c', 'd', 'e');
     expect(hardCapEviction(pool, 'new', 'a', null, CAP, none)).toBe('b');
+  });
+});
+
+// ── the SECOND guard: a frame already in two-phase eviction ───────────────────────────────────
+//
+// The fade guard spares a frame that must not be CUT. This one spares a frame that is already
+// LEAVING: marked, muted, frozen, its section released, with the parent holding the port open for
+// the child's DISPOSED. Selecting it again would start a second teardown of one document — a second
+// RELEASE_SECTION and DISPOSE_DOCUMENT into a port mid-handshake — and would file one eviction as
+// two, so the clean-vs-forced record the handshake exists to produce would count frames that were
+// never separately evicted.
+const evicting = (...keys: string[]) => ({ isFadingOut: () => false, isEvicting: (k: string) => keys.includes(k) });
+
+describe('the evicting guard — a frame that is already leaving is never selected again', () => {
+  it('singleModeEvictions skips a frame whose disposal handshake is in flight', () => {
+    expect(singleModeEvictions(specs('a', 'b', 'c'), 'a', evicting('b'))).toEqual(['c']);
+  });
+
+  it('singleModeEvictions returns nothing when every non-active frame is already leaving', () => {
+    expect(singleModeEvictions(specs('a', 'b', 'c'), 'a', evicting('b', 'c'))).toEqual([]);
+  });
+
+  it('hardCapEviction skips an evicting candidate and takes the next eligible one', () => {
+    const pool = specs('a', 'b', 'c', 'd', 'e', 'f');
+    expect(hardCapEviction(pool, 'new', 'a', 'b', 6, evicting('c'))).toBe('d');
+  });
+
+  it('an EVICTING frame still counts toward the cap — its context is allocated until the child answers', () => {
+    // Six resident frames, five of them leaving. Admitting a seventh without evicting would put the
+    // pool over the browser's live-context budget for the length of a disposal handshake, so the
+    // pass must still pick the one frame it may take.
+    const pool = specs('a', 'b', 'c', 'd', 'e', 'f');
+    expect(hardCapEviction(pool, 'new', null, null, 6, evicting('b', 'c', 'd', 'e', 'f'))).toBe('a');
+  });
+
+  it('admits without evicting when every candidate is either fading or leaving', () => {
+    const pool = specs('a', 'b', 'c', 'd', 'e', 'f');
+    const both = { isFadingOut: (k: string) => k === 'b', isEvicting: (k: string) => k !== 'b' };
+    expect(hardCapEviction(pool, 'new', 'a', null, 6, both)).toBeNull();
+  });
+
+  it('BOTH guards apply together — neither is a fallback tier for the other', () => {
+    const guards = { isFadingOut: (k: string) => k === 'b', isEvicting: (k: string) => k === 'c' };
+    expect(singleModeEvictions(specs('a', 'b', 'c', 'd'), 'a', guards)).toEqual(['d']);
+  });
+
+  it('the bare-predicate call shape still means "fading only", with nothing evicting', () => {
+    // Four call sites pass the predicate directly. If that shape ever started meaning something
+    // else, four eviction paths would change behaviour with no edit visible at any of them.
+    expect(singleModeEvictions(specs('a', 'b'), 'a', fading('b'))).toEqual([]);
+    expect(singleModeEvictions(specs('a', 'b'), 'a', none)).toEqual(['b']);
+  });
+});
+
+describe('overCapEvictions — the hard cap is a CEILING, not only an admission rule', () => {
+  const evicting = (...keys: string[]) => ({ isFadingOut: none, isEvicting: (k: string) => keys.includes(k) });
+
+  it('does nothing while the pool is at or under the cap', () => {
+    expect(overCapEvictions(specs('a', 'b', 'c'), 'a', null, 6, none)).toEqual([]);
+    expect(overCapEvictions(specs('a', 'b', 'c', 'd', 'e', 'f'), 'a', null, 6, none)).toEqual([]);
+  });
+
+  it('collects the overshoot `hardCapEviction` was forced to admit', () => {
+    // `ensurePooledSpec` admits over the cap when every candidate has to be spared — a frame
+    // mid-exit-fade, or one whose disposal handshake has not finished — because cutting a live
+    // transition to hold an internal number is the worse trade. That overshoot was described as
+    // self-clearing and was not: the cap was enforced at ADMISSION ONLY, so once the fade or the
+    // handshake resolved, nothing came back for the extra frame and its WebGL context stayed
+    // allocated for the rest of the session.
+    expect(overCapEvictions(specs('a', 'b', 'c', 'd', 'e', 'f', 'g'), 'a', null, 6, none)).toEqual(['b']);
+    // Two over the cap takes two, in the same preference order.
+    expect(overCapEvictions(specs('a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'), 'a', null, 6, none)).toEqual(['b', 'c']);
+  });
+
+  it('never takes the active frame, and prefers a frame that is neither active nor warming', () => {
+    expect(overCapEvictions(specs('a', 'b', 'c', 'd', 'e', 'f', 'g'), 'a', 'b', 6, none)).toEqual(['c']);
+    // Active plus warming plus five spared leaves only the warming frame — still never the active one.
+    const pool = specs('a', 'b', 'c', 'd', 'e', 'f', 'g');
+    expect(overCapEvictions(pool, 'a', 'b', 6, evicting('c', 'd', 'e', 'f', 'g'))).toEqual(['b']);
+  });
+
+  it('obeys BOTH guards and stops rather than cutting a fade or double-evicting', () => {
+    const pool = specs('a', 'b', 'c', 'd', 'e', 'f', 'g', 'h');
+    const guards = { isFadingOut: (k: string) => k === 'b', isEvicting: (k: string) => k !== 'b' && k !== 'a' };
+    // Everything but the active frame is spared: the pass yields NOTHING rather than taking one of
+    // them, and a later pass collects the overshoot once the fade and the handshakes resolve.
+    expect(overCapEvictions(pool, 'a', null, 6, guards)).toEqual([]);
+  });
+
+  it('terminates even when the pool is enormous and nothing may be taken', () => {
+    const pool = specs(...Array.from({ length: 50 }, (_, i) => `k${i}`));
+    expect(overCapEvictions(pool, 'k0', null, 6, { isFadingOut: none, isEvicting: () => true })).toEqual([]);
+    // …and never returns more keys than the overshoot when everything IS takeable.
+    expect(overCapEvictions(pool, 'k0', null, 6, none)).toHaveLength(44);
   });
 });

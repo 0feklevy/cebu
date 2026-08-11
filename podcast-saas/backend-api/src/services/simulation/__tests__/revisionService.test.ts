@@ -1077,3 +1077,220 @@ describe('activation cannot point at a prefix that is not the simulation\'s own'
     expect(res.activated.id).toBe(id);
   });
 });
+
+// ── Bridge acknowledgement capability (migration 055, audit P0.5) ────────────────────────────────
+//
+// The viewer's apply gate needs to know, BEFORE a package's first activation, whether its bridge
+// posts SCRIPT_APPLIED — in-session evidence by definition does not exist at that moment, and the
+// gate used to resolve the absence by revealing, over whatever the pooled document had drawn. The
+// fact is recorded on the revision (in `metadata`, beside the weight report) and PROJECTED onto the
+// simulations row in the pointer flip, for exactly the reason the canary verdict is: it describes
+// BYTES, so after a rollback it has to describe the revision the pointer now names.
+
+describe('bridge_ack_capable — projected with the pointer, like the verdict', () => {
+  /** Publish a revision whose metadata carries a capability record. */
+  async function publishWithCapability(scriptApplied: boolean | undefined): Promise<string> {
+    const draft = await svc.createDraft({
+      simulationId: simId,
+      metadata: scriptApplied === undefined ? {} : { bridgeCapabilities: { scriptApplied } },
+    });
+    const up = await svc.beginUpload(simId, draft.id);
+    for (const f of STD_FILES) {
+      await svc.writeFile(up, PREFIX, {
+        manifestPath: f.path, bytes: f.bytes, contentType: f.contentType, role: f.role as never,
+      });
+    }
+    const validating = await svc.finishUpload(simId, draft.id);
+    const res = await svc.validate(simId, validating, PREFIX, { manifest: manifestFor(STD_FILES) });
+    expect(res.ok).toBe(true);
+    return draft.id;
+  }
+
+  const projected = async (): Promise<boolean | null> => {
+    const [sim] = await rows<{ bridge_ack_capable: boolean | null }>(
+      `SELECT bridge_ack_capable FROM simulations WHERE id = $1`, [simId]);
+    return sim!.bridge_ack_capable;
+  };
+
+  it('projects TRUE for a bridge that acknowledges', async () => {
+    const id = await publishWithCapability(true);
+    await svc.activate({ simulationId: simId, revisionId: id, storagePrefix: PREFIX,
+      expectedActiveRevisionId: null, supersede: 'retired' });
+    expect(await projected()).toBe(true);
+  });
+
+  it('projects FALSE for a bridge that does not', async () => {
+    const id = await publishWithCapability(false);
+    await svc.activate({ simulationId: simId, revisionId: id, storagePrefix: PREFIX,
+      expectedActiveRevisionId: null, supersede: 'retired' });
+    expect(await projected()).toBe(false);
+  });
+
+  it('projects NULL when the revision predates the record — never a confident false', async () => {
+    // Every package published before 055. NULL is UNKNOWN, which the gate handles as its own case;
+    // a `false` here would tell the viewer "this bridge cannot acknowledge, so reveal on sight",
+    // which is the hole restored by a default.
+    const id = await publishWithCapability(undefined);
+    await svc.activate({ simulationId: simId, revisionId: id, storagePrefix: PREFIX,
+      expectedActiveRevisionId: null, supersede: 'retired' });
+    expect(await projected()).toBeNull();
+  });
+
+  it('survives validate(), which rewrites the metadata column to add the weight report', async () => {
+    // `validate` sets `metadata` wholesale. Spreading the existing record is what keeps the
+    // capability alive to reach activation at all; without it this column is NULL for every package
+    // and the whole mechanism is inert while every other test still passes.
+    const id = await publishWithCapability(true);
+    const [rev] = await rows<{ metadata: Record<string, unknown> }>(
+      `SELECT metadata FROM sim_revisions WHERE id = $1`, [id]);
+    expect(rev!.metadata).toHaveProperty('weight');
+    expect(rev!.metadata).toHaveProperty('bridgeCapabilities');
+  });
+
+  it('A ROLLBACK RE-PROJECTS THE TARGET: an acking package does not vouch for the one before it', async () => {
+    const silent = await publishWithCapability(false);
+    await svc.activate({ simulationId: simId, revisionId: silent, storagePrefix: PREFIX,
+      expectedActiveRevisionId: null, supersede: 'retired' });
+    const acking = await publishWithCapability(true);
+    await svc.activate({ simulationId: simId, revisionId: acking, storagePrefix: PREFIX,
+      expectedActiveRevisionId: silent, supersede: 'retired' });
+    expect(await projected()).toBe(true);
+
+    await svc.rollback({ simulationId: simId, storagePrefix: PREFIX,
+      expectedActiveRevisionId: acking, reason: 'bad release' });
+    // Left at `true`, the gate would hold every first activation of the rolled-back package waiting
+    // for an acknowledgement its bridge cannot send — the section would sit behind a cover for its
+    // whole duration, on the strength of a capability belonging to bytes no longer served.
+    expect(await projected(), 'the capability described the withdrawn revision').toBe(false);
+  });
+
+  it('ignores a malformed record rather than trusting it', async () => {
+    const draft = await svc.createDraft({
+      simulationId: simId, metadata: { bridgeCapabilities: { scriptApplied: 'yes' } },
+    });
+    const up = await svc.beginUpload(simId, draft.id);
+    for (const f of STD_FILES) {
+      await svc.writeFile(up, PREFIX, {
+        manifestPath: f.path, bytes: f.bytes, contentType: f.contentType, role: f.role as never,
+      });
+    }
+    const validating = await svc.finishUpload(simId, draft.id);
+    await svc.validate(simId, validating, PREFIX, { manifest: manifestFor(STD_FILES) });
+    await svc.activate({ simulationId: simId, revisionId: draft.id, storagePrefix: PREFIX,
+      expectedActiveRevisionId: null, supersede: 'retired' });
+    expect(await projected()).toBeNull();
+  });
+});
+
+// ── Import-map requirement (migration 057, audit P0.8) ───────────────────────────────────────────
+//
+// The second fact in the same capability record, projected by the same statement. It has to move
+// with the pointer for a reason the ack does not even have: a republish can ADD or REMOVE the
+// `<script type="importmap">` tag, so the answer genuinely differs between two revisions of one
+// package — and a stale `true` costs a working simulation (replaced by a still image) while a stale
+// `false` costs a permanently blank frame.
+
+describe('requires_import_maps — projected with the pointer, like the ack', () => {
+  async function publishRequiring(requiresImportMaps: boolean | undefined): Promise<string> {
+    const draft = await svc.createDraft({
+      simulationId: simId,
+      metadata: requiresImportMaps === undefined ? {} : { bridgeCapabilities: { requiresImportMaps } },
+    });
+    const up = await svc.beginUpload(simId, draft.id);
+    for (const f of STD_FILES) {
+      await svc.writeFile(up, PREFIX, {
+        manifestPath: f.path, bytes: f.bytes, contentType: f.contentType, role: f.role as never,
+      });
+    }
+    const validating = await svc.finishUpload(simId, draft.id);
+    const res = await svc.validate(simId, validating, PREFIX, { manifest: manifestFor(STD_FILES) });
+    expect(res.ok).toBe(true);
+    return draft.id;
+  }
+
+  const projected = async (): Promise<boolean | null> => {
+    const [sim] = await rows<{ requires_import_maps: boolean | null }>(
+      `SELECT requires_import_maps FROM simulations WHERE id = $1`, [simId]);
+    return sim!.requires_import_maps;
+  };
+
+  it('projects TRUE for a package whose entry needs import maps', async () => {
+    const id = await publishRequiring(true);
+    await svc.activate({ simulationId: simId, revisionId: id, storagePrefix: PREFIX,
+      expectedActiveRevisionId: null, supersede: 'retired' });
+    expect(await projected()).toBe(true);
+  });
+
+  it('projects FALSE for a package that does not', async () => {
+    const id = await publishRequiring(false);
+    await svc.activate({ simulationId: simId, revisionId: id, storagePrefix: PREFIX,
+      expectedActiveRevisionId: null, supersede: 'retired' });
+    expect(await projected()).toBe(false);
+  });
+
+  it('projects NULL when the revision predates the record — never a guessed requirement', async () => {
+    // Every package published before 057. NULL is UNKNOWN, and the viewer's floor leaves an unknown
+    // package running exactly as it does today; a `true` here would poster it on every browser
+    // without import maps for a need nobody ever detected.
+    const id = await publishRequiring(undefined);
+    await svc.activate({ simulationId: simId, revisionId: id, storagePrefix: PREFIX,
+      expectedActiveRevisionId: null, supersede: 'retired' });
+    expect(await projected()).toBeNull();
+  });
+
+  it('A ROLLBACK RE-PROJECTS THE TARGET: the newer revision does not vouch for the older one', async () => {
+    // The realistic sequence: an old revision loads three.js from a CDN, the republish switches it
+    // to an import map, the release is rolled back. Left at `true`, every viewer on an older WebKit
+    // would see a poster instead of a simulation that runs perfectly well on their browser.
+    const noMap = await publishRequiring(false);
+    await svc.activate({ simulationId: simId, revisionId: noMap, storagePrefix: PREFIX,
+      expectedActiveRevisionId: null, supersede: 'retired' });
+    const withMap = await publishRequiring(true);
+    await svc.activate({ simulationId: simId, revisionId: withMap, storagePrefix: PREFIX,
+      expectedActiveRevisionId: noMap, supersede: 'retired' });
+    expect(await projected()).toBe(true);
+
+    await svc.rollback({ simulationId: simId, storagePrefix: PREFIX,
+      expectedActiveRevisionId: withMap, reason: 'bad release' });
+    expect(await projected(), 'the requirement described the withdrawn revision').toBe(false);
+  });
+
+  it('the two capabilities in one record are projected independently', async () => {
+    // One JSONB key, two columns. A record that carries only the ack must not make the import-map
+    // column say anything, and the reverse — otherwise "unknown" would be curable by luck.
+    const draft = await svc.createDraft({
+      simulationId: simId, metadata: { bridgeCapabilities: { scriptApplied: true } },
+    });
+    const up = await svc.beginUpload(simId, draft.id);
+    for (const f of STD_FILES) {
+      await svc.writeFile(up, PREFIX, {
+        manifestPath: f.path, bytes: f.bytes, contentType: f.contentType, role: f.role as never,
+      });
+    }
+    const validating = await svc.finishUpload(simId, draft.id);
+    await svc.validate(simId, validating, PREFIX, { manifest: manifestFor(STD_FILES) });
+    await svc.activate({ simulationId: simId, revisionId: draft.id, storagePrefix: PREFIX,
+      expectedActiveRevisionId: null, supersede: 'retired' });
+    const [sim] = await rows<{ bridge_ack_capable: boolean | null; requires_import_maps: boolean | null }>(
+      `SELECT bridge_ack_capable, requires_import_maps FROM simulations WHERE id = $1`, [simId]);
+    expect(sim!.bridge_ack_capable).toBe(true);
+    expect(sim!.requires_import_maps).toBeNull();
+  });
+
+  it('ignores a malformed record rather than trusting it', async () => {
+    const draft = await svc.createDraft({
+      simulationId: simId, metadata: { bridgeCapabilities: { requiresImportMaps: 'yes' } },
+    });
+    const up = await svc.beginUpload(simId, draft.id);
+    for (const f of STD_FILES) {
+      await svc.writeFile(up, PREFIX, {
+        manifestPath: f.path, bytes: f.bytes, contentType: f.contentType, role: f.role as never,
+      });
+    }
+    const validating = await svc.finishUpload(simId, draft.id);
+    await svc.validate(simId, validating, PREFIX, { manifest: manifestFor(STD_FILES) });
+    await svc.activate({ simulationId: simId, revisionId: draft.id, storagePrefix: PREFIX,
+      expectedActiveRevisionId: null, supersede: 'retired' });
+    expect(await projected()).toBeNull();
+  });
+});

@@ -52,12 +52,37 @@ export function supportsImportMaps(): boolean {
 /** What a section needs from the browser. Fields are optional: an unknown requirement is not a claim. */
 export interface SimPackageRequirements {
   /**
-   * The package's entry HTML carries `<script type="importmap">`, detected at publication.
-   * `undefined` means UNKNOWN — a package published before detection existed — and unknown is
-   * never treated as "requires", because guessing would poster-only every legacy package on an
-   * older browser for a requirement it may not have.
+   * The package's entry HTML carries `<script type="importmap">`, detected at publication
+   * (`shared/src/sim/bridgeCapability.ts` → `sim_revisions.metadata.bridgeCapabilities` →
+   * `simulations.requires_import_maps` → the section's `requires_import_maps` field).
+   *
+   * `undefined` AND `null` both mean UNKNOWN — a package published before detection existed, or a
+   * row read without the column — and unknown is never treated as "requires", because guessing
+   * would poster-only every legacy package on an older browser for a requirement it may not have.
+   * `null` is accepted alongside `undefined` so the wire value can be passed straight through: a
+   * conversion step is a place for the three states to be flattened into two.
    */
-  requiresImportMaps?: boolean;
+  requiresImportMaps?: boolean | null;
+}
+
+/**
+ * A section as the floor needs to see it, on EITHER surface.
+ *
+ * `simulation_id` is not read — it is here so the type is not a "weak type" (all-optional), which
+ * TypeScript refuses to accept a `SimulationOverlay` or a `TimelineSection` for. That makes this
+ * usable structurally, with no cast, from both the viewer's player config and the editor's section
+ * rows, which is the point: one floor, asked the same way in both places.
+ */
+export interface SimFloorSection {
+  simulation_id: string | null;
+  requires_import_maps?: boolean | null;
+}
+
+/** The wire field, as the floor's own vocabulary. Absent section → no known requirement. */
+export function sectionRequirements(
+  section: SimFloorSection | null | undefined,
+): SimPackageRequirements {
+  return { requiresImportMaps: section?.requires_import_maps ?? null };
 }
 
 /** The browser side of the same question, injectable so tests never depend on the host. */
@@ -69,11 +94,32 @@ export function detectBrowserCapabilities(): BrowserCapabilities {
   return { importMaps: supportsImportMaps() };
 }
 
+/**
+ * What to assume BEFORE detection has run — on the server, and on the first client render.
+ *
+ * "Capable", deliberately, and it is the one place in this module that errs towards running the
+ * package. `supportsImportMaps()` cannot be called during render: it answers `false` under SSR
+ * (there is no `HTMLScriptElement`), so a render-time call would make the server and the first
+ * client render disagree about which layer is on screen — and a hydration mismatch on the element
+ * that hosts the sim iframe REMOUNTS the iframe, destroying a warmed document to answer a feature
+ * query. So callers seed with this and correct in a mount effect, exactly as the presentation
+ * surface already does for `prefers-reduced-motion`. The correction lands in the first commit,
+ * long before any package could have painted.
+ */
+export const ASSUMED_CAPABILITIES: BrowserCapabilities = { importMaps: true };
+
+/**
+ * What a browser can be missing. A CAPABILITY name, never a device or a browser name — the value
+ * travels into telemetry and into the DOM, and the moment it names a product instead of a feature
+ * it stops being checkable and starts being a guess about who the user is.
+ */
+export type MissingCapability = 'import-maps';
+
 export type FloorVerdict =
   /** Nothing known to be missing — run the package normally. */
   | { runnable: true }
   /** A requirement this browser cannot meet. The package would never paint; cover it instead. */
-  | { runnable: false; missing: 'import-maps' };
+  | { runnable: false; missing: MissingCapability };
 
 /**
  * Can this browser run this package?
@@ -93,7 +139,7 @@ export function evaluateFloor(
 }
 
 /** Human-readable, for a recovery cover and for telemetry. Not a UA string — a capability name. */
-export const FLOOR_MESSAGES: Record<'import-maps', string> = {
+export const FLOOR_MESSAGES: Record<MissingCapability, string> = {
   'import-maps':
     'This simulation needs a newer browser to run (Safari 16.4 or later). '
     + 'Showing a still image of it instead.',

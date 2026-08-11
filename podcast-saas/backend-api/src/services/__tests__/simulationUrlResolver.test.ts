@@ -129,11 +129,84 @@ describe('withServedSimulationUrls — the editor shape', () => {
 
   it('carries every other column through unchanged', () => {
     const out = withServedSimulationUrls(sections, rows, storage);
-    expect(out.map(({ simulation_served_url: _ignored, ...rest }) => rest)).toEqual(sections);
+    expect(out.map(({
+      simulation_served_url: _url, requires_import_maps: _floor, bridge_ack_capable: _ack, ...rest
+    }) => rest)).toEqual(sections);
   });
 
   it('falls back to stored urls when the pointer batch is empty (degraded read)', () => {
     const out = withServedSimulationUrls(sections, [], storage);
     expect(out.map(s => s.simulation_served_url)).toEqual(sections.map(s => s.simulation_url));
   });
+
+  // ── The capability floor rides with the pointer (audit P0.8) ────────────────────────────────
+  //
+  // The editor mounts the SERVED url in an iframe, so whether that document can paint on this
+  // browser is a fact about the same bytes the served url resolves. It is attached here so both
+  // editor bootstrap reads get it from the row they already load, and so an unrecorded package
+  // reaches the editor as UNKNOWN rather than as either answer.
+
+  it('attaches the import-map requirement of the SERVED revision', () => {
+    const out = withServedSimulationUrls(sections, [
+      { id: 'sim-1', active_revision_entry_key: ENTRY_KEY, requires_import_maps: true },
+      { id: 'sim-2', active_revision_entry_key: null, requires_import_maps: false },
+    ], storage);
+    expect(out[0].requires_import_maps).toBe(true);
+    expect(out[1].requires_import_maps).toBe(false);
+  });
+
+  it('reports NULL for a package with no recorded answer, a missing row, or no simulation', () => {
+    // Three different absences, one honest answer. Any of them arriving as `true` would put an
+    // "unsupported browser" cue over a package nobody ever detected a requirement for.
+    const out = withServedSimulationUrls(sections, rows, storage);
+    expect(out.map(s => s.requires_import_maps)).toEqual([null, null, null]);
+    expect(withServedSimulationUrls(sections, [], storage).map(s => s.requires_import_maps))
+      .toEqual([null, null, null]);
+  });
+
+  it('reports NULL — never false — when the column is absent from the pointer row', () => {
+    // An app image whose select predates migration 057, or a database that does. `?? false` here
+    // would tell the editor a package is known-safe when nothing has ever looked at it.
+    const out = withServedSimulationUrls(sections, [{ id: 'sim-1', active_revision_entry_key: ENTRY_KEY }], storage);
+    expect(out[0].requires_import_maps).toBeNull();
+  });
+
+// ── The ack capability rides with the pointer too (audit P0.5) ────────────────────────────────
+//
+// `bridge_ack_capable` reached the VIEWER through PlayerConfig from the day migration 055 landed,
+// and reached the EDITOR through nothing at all: its two bootstrap reads selected
+// `requires_import_maps` and stopped there. The editor runs the same warm-then-dispatch pool, so
+// its apply gate answered UNKNOWN for every package by construction — and a warm document that has
+// already painted skips `startPaintRecovery`, so nothing armed a ceiling and the editor's cover
+// spinner ran for the whole section.
+
+describe('withServedSimulationUrls — the bridge ack capability of the SERVED revision', () => {
+  it('attaches the recorded answer, either way', () => {
+    const out = withServedSimulationUrls(sections, [
+      { id: 'sim-1', active_revision_entry_key: ENTRY_KEY, bridge_ack_capable: true },
+      { id: 'sim-2', active_revision_entry_key: null, bridge_ack_capable: false },
+    ], storage);
+    expect(out[0].bridge_ack_capable).toBe(true);
+    expect(out[1].bridge_ack_capable).toBe(false);
+  });
+
+  it('reports NULL for a missing record, a missing row, a missing column and a non-sim section', () => {
+    // Four absences, one honest answer. UNKNOWN is a state the gate handles; `false` would let the
+    // editor reveal a pooled document's boot scene as if the package had been proven silent.
+    expect(withServedSimulationUrls(sections, rows, storage).map(s => s.bridge_ack_capable))
+      .toEqual([null, null, null]);
+    expect(withServedSimulationUrls(sections, [], storage).map(s => s.bridge_ack_capable))
+      .toEqual([null, null, null]);
+    expect(withServedSimulationUrls(sections, [{ id: 'sim-1', active_revision_entry_key: ENTRY_KEY }], storage)[0]
+      .bridge_ack_capable).toBeNull();
+  });
+
+  it('carries BOTH capability scalars off the same pointer row, without shadowing each other', () => {
+    const out = withServedSimulationUrls(sections, [
+      { id: 'sim-1', active_revision_entry_key: ENTRY_KEY, bridge_ack_capable: true, requires_import_maps: false },
+    ], storage);
+    expect(out[0].bridge_ack_capable).toBe(true);
+    expect(out[0].requires_import_maps).toBe(false);
+  });
+});
 });

@@ -18,7 +18,9 @@ import {
   simUiSelectionsEqual,
   type SimUiSelection,
 } from '../../services/simulation/SimUiControls.js';
-import { withServedSimulationUrls } from '../../services/simulation/simulationUrlResolver.js';
+import {
+  withServedSimulationUrls, type SimRevisionPointerRow,
+} from '../../services/simulation/simulationUrlResolver.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { logger } from '../../lib/logger.js';
 import { LLMService } from '../../services/llm/LLMService.js';
@@ -82,16 +84,25 @@ async function withServedSimUrls<T extends { simulation_id: string | null; simul
   sections: readonly T[],
 ): Promise<Array<T & { simulation_served_url: string | null }>> {
   if (!sections.some((s) => s.simulation_id)) {
-    return sections.map((s) => ({ ...s, simulation_served_url: s.simulation_url }));
+    return sections.map((s) => ({
+      ...s, simulation_served_url: s.simulation_url, requires_import_maps: null, bridge_ack_capable: null,
+    }));
   }
   const pointerRows = await db.query.simulations
     .findMany({
       where: eq(simulations.project_id, projectId),
-      columns: { id: true, active_revision_entry_key: true },
+      // `requires_import_maps` (migration 057, audit P0.8) and `bridge_ack_capable` (migration 055,
+      // audit P0.5) are two more scalars off the row this query already loads — the alternative is
+      // a second read, on both editor bootstrap paths, to learn whether the document the editor is
+      // about to mount can paint on this browser at all and whether its bridge acknowledges the
+      // sections the editor dispatches into it.
+      columns: {
+        id: true, active_revision_entry_key: true, requires_import_maps: true, bridge_ack_capable: true,
+      },
     })
     .catch((err: unknown) => {
       logger.error({ err, projectId }, 'sections: revision pointers unavailable — the editor falls back to stored URLs');
-      return [] as Array<{ id: string; active_revision_entry_key: string | null }>;
+      return [] as SimRevisionPointerRow[];
     });
   return withServedSimulationUrls(sections, pointerRows, getStorageAdapter());
 }

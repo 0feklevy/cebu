@@ -62,7 +62,7 @@ import {
   type SimInboundMessage,
   type SimStartParams,
 } from './protocol';
-import { applyGateFor } from '../simApplyGate';
+import { applyGateFor, capabilityOf, type ApplyGateDecision } from '../simApplyGate';
 import { SimTransport } from './SimTransport';
 import {
   computeDurations, summarize, deriveLeadMs,
@@ -71,6 +71,7 @@ import {
 import {
   ACTIVATE_SECTION,
   DISPOSE_DOCUMENT,
+  DISPOSED,
   DOCUMENT_ERROR,
   DOCUMENT_READY,
   DOCUMENT_RESUMED,
@@ -96,10 +97,12 @@ import {
   SET_UI_POLICY,
   SUSPEND_DOCUMENT,
   type AnySimEnvelope,
+  type DisposedPayload,
   type DocumentReadyPayload,
   type PolicyAppliedPayload,
   type PolicyRefusedPayload,
   type SectionPresentedPayload,
+  type SimResourceCounts,
 } from 'shared/src/sim/runtimeProtocol';
 import {
   mergePolicy,
@@ -137,6 +140,8 @@ import {
 import {
   SIM_HANDSHAKE_TIMEOUT_MS,
   SIM_CONTEXT_RESTORE_TIMEOUT_MS,
+  SIM_DISPOSE_TIMEOUT_MS,
+  SIM_EVICT_GRACE_MS,
   SIM_PREPARE_TIMEOUT_MS,
   SIM_PRESENT_TIMEOUT_MS,
   allowsAggressivePreparation,
@@ -188,6 +193,16 @@ export interface SimRuntimeState {
   activationToken: number;
   /** A deferred stopScript tore the last section down: frozen frame + restored full UI. */
   stopped: boolean;
+  /**
+   * The apply hold reached its deadline WITHOUT an acknowledgement, so the owner must put a cover
+   * (the poster, or the honest wait affordance over the held outgoing content) in front of the
+   * user (audit §21 rule 7: a deadline selects a cover, never a reveal).
+   *
+   * Deliberately separate from `visible`. This is not "hidden" — the hold already hid it — it is
+   * "hidden for longer than a viewer will accept in silence", which is the owner's cue to explain
+   * itself. Cleared by the acknowledgement, by the next activation, and by any hide.
+   */
+  covered: boolean;
   visible: boolean;
   muted: boolean;
   interactive: boolean;
@@ -240,6 +255,38 @@ export interface ModernSetup {
   quality?: SimQualityProfile;
 }
 
+/**
+ * How far an eviction has got, and therefore what is still reversible.
+ *
+ *   'none'      — not being evicted.
+ *   'grace'     — marked, muted, frozen, section released. DISPOSE_DOCUMENT has NOT been sent, so
+ *                 the document is intact and `cancelEviction()` restores it.
+ *   'disposing' — DISPOSE_DOCUMENT is out. The child is releasing its scope and will close its
+ *                 port; there is nothing left to come back to, so a re-entry must build a NEW
+ *                 generation rather than resurrect this one.
+ *   'evicted'   — the child confirmed, or the deadline passed. The owner may remove the element.
+ */
+export type SimEvictionPhase = 'none' | 'grace' | 'disposing' | 'evicted';
+
+/** What phase one of an eviction proved, for the record. */
+export interface SimEvictionOutcome {
+  /**
+   * 'clean'      — the child answered DISPOSED, and `counts` is its own report of what is left.
+   * 'forced'     — the deadline passed with no answer; the element is removed anyway, unproven.
+   * 'cancelled'  — a re-entry reclaimed the document inside the grace window.
+   * 'no-document'— nothing was ever handshaken (a legacy or never-mounted frame): there is no ack
+   *                to wait for, so eviction is immediate and honestly reported as unproven rather
+   *                than as clean.
+   */
+  outcome: 'clean' | 'forced' | 'cancelled' | 'no-document';
+  /** The child's own resource counters at dispose. Null unless it answered. */
+  counts: SimResourceCounts | null;
+  /** Resources the child could not release. A non-empty list is a leak, and it is reported. */
+  leaked: string[];
+  /** How long the parent actually waited for the acknowledgement. */
+  waitedMs: number;
+}
+
 /** Everything the v3 path exposes that the v2 path has no equivalent for. */
 export interface SimModernState {
   active: boolean;
@@ -264,6 +311,7 @@ const initialState = (): SimRuntimeState => ({
   pendingScript: null,
   activationToken: 0,
   stopped: false,
+  covered: false,
   visible: false,
   muted: false,
   interactive: false,
@@ -287,6 +335,41 @@ export class SimRuntimeClient {
    * which never acknowledges — permanently undisplayable.
    */
   private holding = false;
+
+  /**
+   * The PACKAGE's publication-time acknowledgement capability, told to this client by its owner
+   * (PlayerConfig `bridge_ack_capable`, migration 055). Null until told, and null means UNKNOWN —
+   * never "no". Kept off `SimRuntimeState` because nothing renders from it and a package fact does
+   * not change when a document does; it survives navigations for exactly that reason.
+   */
+  private packageAckCapable: boolean | null = null;
+
+  // ── Two-phase eviction ────────────────────────────────────────────────────────────────────
+  // The protocol has always had the handshake and BOTH ends did their half except this one: the
+  // child sets DISPOSING and posts DISPOSED with resource counts, `documentMachine` models
+  // `DISPOSING: { DISPOSED: 'EVICTED' }` — and the parent sent DISPOSE_DOCUMENT and closed the
+  // MessagePort in the same statement, so the acknowledgement it had asked for could not be
+  // delivered and no handler existed to receive it. Every eviction was therefore FORCED, and
+  // nothing recorded that, so a package leaking WebGL contexts on teardown looked identical to one
+  // that shut down cleanly.
+  private evictPhase: SimEvictionPhase = 'none';
+  private evictGraceTimer: Timer | null = null;
+  private evictDeadlineTimer: Timer | null = null;
+  private evictStartedAt = 0;
+  /** Resolves phase one. Held so DISPOSED, the deadline and a cancel all settle the SAME promise. */
+  private evictSettle: ((o: SimEvictionOutcome) => void) | null = null;
+  private evictPromise: Promise<SimEvictionOutcome> | null = null;
+  /**
+   * Did THIS eviction send the SUSPEND_DOCUMENT that `cancelEviction` has to undo?
+   *
+   * `thaw()` cannot answer that from the machine: `SUSPEND` maps to `DOCUMENT_READY` because the
+   * state only advances on the child's confirmation, so throughout the cancellable window
+   * `docMachine.state === 'SUSPENDED'` is false and `thaw()` sends nothing. The confirmation then
+   * lands on a document nobody resumed, `modernActive()` goes false permanently, and the next
+   * activation dies in `failModern('handshake-failed')`. Recorded here so the cancel is the exact
+   * inverse of the evict, rather than an inverse of whatever the child has got round to admitting.
+   */
+  private evictSuspended = false;
 
   private applyStallTimer: Timer | null = null;
   private deferredStopTimer: Timer | null = null;
@@ -420,6 +503,43 @@ export class SimRuntimeClient {
     try { this.frame?.contentWindow?.postMessage(msg, '*'); } catch { /* cross-origin teardown */ }
   }
 
+  /**
+   * Close an in-flight eviction that this document can no longer complete, as FORCED.
+   *
+   * Forced and not clean, always: nothing was proven about the child's teardown, and filing an
+   * unprovable disposal as a clean one would make the single metric the handshake exists to
+   * produce read as a pass for every frame that was simply abandoned.
+   */
+  private settleEvictionAsForced(cause: string): void {
+    if (!this.isEvicting()) return;
+    this.tel('evict-forced-settle', { cause, phase: this.evictPhase });
+    this.settleEviction({
+      outcome: 'forced', counts: null, leaked: [], waitedMs: this.elapsedSinceEvictStart(),
+    });
+  }
+
+  /**
+   * Advance the document generation — the ONE place it may happen.
+   *
+   * WHY THIS IS A METHOD AND NOT `this.generation++` AT THREE SITES.
+   * Every timer this client arms captures the generation and early-returns once it has moved, which
+   * is what makes a stale callback harmless. An EVICTION is the one wait where "harmless" is wrong:
+   * its grace and deadline callbacks are the only things that can settle `evictPromise`, so a bump
+   * that strands them leaves the owner awaiting a promise nothing can ever resolve. The iframe and
+   * its WebGL context then stay mounted for the rest of the session, the pool's own `isEvicting`
+   * guard spares that frame from every later residency pass, and the 'single' kill switch's
+   * one-resident-document promise is broken on exactly the weak devices it exists for.
+   *
+   * `attach()` was safe only because it happens to call `clearAllTimers()` first (which settles).
+   * `handleFrameLoad()` bumped the generation and did not — a native `load` landing inside the
+   * grace window wedged the eviction permanently (audited, reproduced). Making the bump itself
+   * settle removes the possibility rather than adding a third call site that must remember to.
+   */
+  private bumpGeneration(cause: string): void {
+    this.settleEvictionAsForced(cause);
+    this.generation++;
+  }
+
   // ── mounting ────────────────────────────────────────────────────────────────────────────
 
   /**
@@ -433,14 +553,14 @@ export class SimRuntimeClient {
     this.frame = frame;
     if (!frame || !documentKey) {
       this.clearAllTimers();
-      this.generation++;
+      this.bumpGeneration('detach');
       this.livePolicy = null;
       this.set({ ...initialState(), phase: 'unmounted' });
       return;
     }
     if (!sameDoc) {
       this.clearAllTimers();
-      this.generation++;
+      this.bumpGeneration('attach');
       this.livePolicy = null;   // a different document has its own policy support and its own state
       this.set({
         ...initialState(),
@@ -478,7 +598,11 @@ export class SimRuntimeClient {
    */
   handleFrameLoad(): void {
     if (this.disposed) return;
-    this.generation++;
+    // AN EVICTION IN FLIGHT DIES WITH THE DOCUMENT IT WAS STARTED FOR. The browser has replaced
+    // that document, so no DISPOSED can ever arrive for it — and the bump below would otherwise
+    // strand both eviction callbacks on their generation check, leaving the owner's promise
+    // unresolved and the frame permanently un-evictable. `bumpGeneration` settles it, forced.
+    this.bumpGeneration('frame-load');
     this.cancelDeferredStop();
     this.cancelPendingApply();
     // A NEW DOCUMENT knows nothing about the old one's policy — and, since `policies` resets with
@@ -609,7 +733,10 @@ export class SimRuntimeClient {
     if (!this.matchesPending(script, token)) { this.tel('stale-ack-ignored', { script, token }); return; }
     this.clearApplyStall();
     this.holding = false;
-    this.set({ currentScript: script, pendingScript: null, stopped: false });
+    // `covered: false` — the acknowledgement is exactly the evidence the cover was standing in
+    // for, so it retires with it. Left set, it would keep the poster over a section the bridge has
+    // now vouched for.
+    this.set({ currentScript: script, pendingScript: null, stopped: false, covered: false });
     this.tel('script-applied', { script });
     this.maybeReveal();
   }
@@ -624,7 +751,7 @@ export class SimRuntimeClient {
       // made the full-simulation finale vanish. The pool guarantees the document is pristine (a
       // scripted document is reloaded before a raw activation reaches it), so presenting cannot
       // show another section's leftovers.
-      this.set({ currentScript: null, pendingScript: null, stopped: false });
+      this.set({ currentScript: null, pendingScript: null, stopped: false, covered: false });
       // A DISTINCT EVENT NAME, because this outcome is a SUCCESS. Reporting it as `script-missing`
       // with a discriminator in `detail` meant the parent's FAILURE handler ran on every raw
       // presentation: it cleared `simColdCover`/`simBootStalled` — tearing down the poster and the
@@ -639,7 +766,7 @@ export class SimRuntimeClient {
     // The bridge deliberately ran NOTHING and the caller expected a body. Presenting the document
     // would show whatever was on it before — degrade to the underlying content instead of a wrong
     // or parked frame.
-    this.set({ pendingScript: null, lastError: `missing section: ${script}` });
+    this.set({ pendingScript: null, covered: false, lastError: `missing section: ${script}` });
     this.tel('script-missing', { script });
     this.hideAndSilence();
   }
@@ -661,7 +788,7 @@ export class SimRuntimeClient {
     if (!this.matchesPending(script ?? null, token)) { this.tel('stale-error-ignored', { message }); return; }
     this.clearApplyStall();
     this.holding = false;
-    this.set({ phase: 'failed', pendingScript: null, lastError: message });
+    this.set({ phase: 'failed', pendingScript: null, covered: false, lastError: message });
     this.tel('script-error', { message });
     this.hideAndSilence();
   }
@@ -684,6 +811,15 @@ export class SimRuntimeClient {
    */
   activate(opts: ActivateOptions): void {
     if (this.disposed || !this.frame) return;
+    // A DISPOSING DOCUMENT IS NOT A RESIDENT ONE. Past DISPOSE_DOCUMENT the child has released its
+    // managed scope — timers, listeners, GL objects — and is closing its port, so activating it
+    // would install a section into a runtime that has thrown away everything the section needs and
+    // can no longer answer for it. The owner's correct move is a fresh generation (navigate the
+    // frame, mint a new document epoch), and refusing loudly here is what tells it so.
+    if (this.evictPhase === 'disposing' || this.evictPhase === 'evicted') {
+      this.tel('activate-refused-disposing', { script: opts.script, phase: this.evictPhase });
+      return;
+    }
 
     // The policy baseline for everything that follows (audit P1.2). Recorded here, before any
     // branch, because EVERY path below installs a section — including the modern one and the
@@ -827,7 +963,7 @@ export class SimRuntimeClient {
     }
 
     const decision = this.gateFor({ prior: priorScript, next: script, wasStopped });
-    if (decision === 'await-ack') {
+    if (decision !== 'reveal-now') {
       // Hide FIRST. The outgoing section is still on the canvas (this is one document), so
       // leaving it presented while the new body applies is exactly the wrong-sub-simulation
       // frame the gate exists to prevent — holding a reveal is not enough when already visible.
@@ -836,19 +972,44 @@ export class SimRuntimeClient {
       // a body applies instantly, and a body that takes real time blocks the shared process — so
       // without this breadcrumb the single most important safety property has no viewer-level
       // signal at all (audited: a dead gate passed the whole e2e suite unchanged).
-      this.tel('apply-hold', { script });
-      this.set({ phase: 'awaiting-ack', visible: false, interactive: false });
+      //
+      // `capability` and `firstActivation` name WHY the hold was taken. Before P0.5 a first
+      // activation could not hold at all, so the field that would have shown the hole was the one
+      // nobody could see.
+      this.tel('apply-hold', {
+        script,
+        decision,
+        capability: capabilityOf(this.gateMeta(priorScript, wasStopped)),
+        firstActivation: priorScript === null,
+      });
+      this.set({ phase: 'awaiting-ack', visible: false, interactive: false, covered: false });
       const gen = this.generation;
       this.applyStallTimer = setTimeout(() => {
         this.applyStallTimer = null;
         if (this.generation !== gen || this.state.activationToken !== token) return;
-        // TERMINAL, never a permanent hold: after this bound the child has almost certainly
-        // applied the switch, and holding forever — especially a post-roll sim with the video
-        // paused — is worse than a best-effort reveal.
-        this.tel('apply-ack-timeout-reveal', { script });
-        this.holding = false;
-        this.set({ pendingScript: null });
-        this.reveal(true);
+        // AN UNKNOWN PACKAGE THAT WAS ASKED AND DID NOT ANSWER HAS ANSWERED (audit P0.5 follow-up).
+        //
+        // `await-ack-bounded` is the UNKNOWN case, and unknown is the state EVERY package already
+        // in the database is in: migration 055 shipped the column nullable with no backfill, so a
+        // `dispatch:'dynamic'` package published before SCRIPT_APPLIED existed reads unknown, holds
+        // here, and — since a deadline never reveals — stayed covered for the whole of every
+        // section, every entry. That is a regression this gate created, not a hazard it found.
+        //
+        // The release is EVIDENCE, not a timer authorising unproven pixels: this document was sent
+        // a section and given the full bound to acknowledge it, and did not. That is the definition
+        // of a silent bridge, so it is recorded as one — in-session, on the DOCUMENT, which resets
+        // on every navigation — and the gate then treats it exactly as a package the record already
+        // proved silent: reveal, as the product did before P0.5.
+        //
+        // It can never apply to a package KNOWN capable. Those take `await-ack`, whose deadline
+        // still only covers, and `capabilityOf` answers 'capable' from the record even once
+        // `ackCapable` is false — so a proven bridge that goes quiet keeps holding, forever if need
+        // be, which is the property this whole gate exists for.
+        if (decision === 'await-ack-bounded') { this.concludeAckSilent(script); return; }
+        // NOT a force-reveal. See coverUnacknowledged: the hold survives its own deadline and the
+        // owner is told to cover instead, because "the user has waited long enough" is not evidence
+        // about which sub-simulation is on the canvas.
+        this.coverUnacknowledged(script, decision, SIM_APPLY_STALL_MS);
       }, SIM_APPLY_STALL_MS);
     } else {
       this.holding = false;
@@ -1009,6 +1170,20 @@ export class SimRuntimeClient {
       case DOCUMENT_SUSPENDED:
         this.docMachine = documentReducer(this.docMachine, { type: 'SUSPENDED' });
         return;
+      case DISPOSED: {
+        // THE ACKNOWLEDGEMENT THE PARENT NEVER LISTENED FOR. `grep DISPOSED` in this file used to
+        // return nothing: the message was defined, sent by the child with real resource counts, and
+        // modelled by the document machine, but the port was closed before it could arrive and no
+        // case here would have handled it if it had.
+        const payload = (env.payload ?? {}) as Partial<DisposedPayload>;
+        const counts = (payload.counts ?? null) as SimResourceCounts | null;
+        const leaked = Array.isArray(payload.leaked) ? payload.leaked.map(String) : [];
+        this.docMachine = documentReducer(this.docMachine, { type: 'DISPOSED', ...(counts ? { counts } : {}) });
+        this.settleEviction({
+          outcome: 'clean', counts, leaked, waitedMs: this.elapsedSinceEvictStart(),
+        });
+        return;
+      }
       case DOCUMENT_RESUMED:
         // WITHOUT THIS THE DOCUMENT NEVER COMES BACK. The child sends DOCUMENT_RESUMED, the
         // protocol accepts it, and the machine's only edge out of SUSPENDED is `RESUMED` — but
@@ -1362,9 +1537,16 @@ export class SimRuntimeClient {
     this.clearPrepareTimer();
     this.clearPresentTimer();
     if (this.transport) {
-      if (this.currentDocumentId && this.docMachine.state !== 'EVICTED') {
+      // NOT WHILE A TWO-PHASE EVICTION IS IN FLIGHT. That path has already sent RELEASE_SECTION,
+      // may already have sent DISPOSE_DOCUMENT, and is holding the port open ON PURPOSE so the
+      // child's DISPOSED can arrive. Re-sending here and closing underneath it would recreate the
+      // exact defect the two-phase path exists to fix, from the other direction.
+      const evicting = this.evictPhase === 'grace' || this.evictPhase === 'disposing';
+      if (!evicting && this.currentDocumentId && this.docMachine.state !== 'EVICTED') {
         // Best effort: a document that is going away should be told, so it can release GPU memory
-        // now rather than when the browser eventually collects the frame.
+        // now rather than when the browser eventually collects the frame. This is the SYNCHRONOUS
+        // teardown (a re-armed enableModern, a navigation, an unmount) — there is no owner left to
+        // hand an acknowledgement to, so it is forced by construction.
         if (this.actMachine) this.transport.send(RELEASE_SECTION, this.actMachine.identity, {});
         this.transport.send(DISPOSE_DOCUMENT, {}, {});
       }
@@ -1380,14 +1562,99 @@ export class SimRuntimeClient {
    * The presentation gate. Kept as a pure method so the policy can be unit-tested and so every
    * surface provably shares it.
    */
-  private gateFor(a: { prior: string | null; next: string; wasStopped: boolean }): 'reveal-now' | 'await-ack' {
+  private gateFor(a: { prior: string | null; next: string; wasStopped: boolean }): ApplyGateDecision {
     // Delegates to the SHIPPING, separately unit-tested policy. Reimplementing it here would have
     // recreated the duplication this whole module exists to remove — two copies of the one rule
     // that decides whether a wrong sub-simulation can be shown (audited).
-    return applyGateFor(
-      { dynamic: this.state.dynamic, ackCapable: this.state.ackCapable, lastScript: a.prior, stopped: a.wasStopped },
-      a.next,
-    );
+    return applyGateFor(this.gateMeta(a.prior, a.wasStopped), a.next);
+  }
+
+  /** The gate's inputs, assembled once so the decision and its telemetry cannot disagree. */
+  private gateMeta(prior: string | null, wasStopped: boolean) {
+    return {
+      dynamic: this.state.dynamic,
+      ackCapable: this.state.ackCapable,
+      // The publication-time record (audit P0.5). Without it the FIRST activation of every package
+      // was a guess, and the guess revealed — over whatever the pooled document had already drawn.
+      packageAckCapable: this.packageAckCapable,
+      // Pixels-on-canvas, not activation history. A document that has drawn nothing cannot be
+      // showing the wrong sub-simulation, and a pooled one has almost always drawn its boot scene
+      // before the section it was mounted for is ever requested.
+      painted: this.state.painted,
+      lastScript: prior,
+      stopped: wasStopped,
+    };
+  }
+
+  /**
+   * Tell this client what PUBLICATION recorded about the package: does its bridge post
+   * SCRIPT_APPLIED? `null` means no record exists (every package published before migration 055),
+   * which the gate handles as its own case rather than as either answer.
+   *
+   * Safe to call on every render — it only writes when the answer actually changes, so a re-render
+   * cannot disturb a live hold.
+   */
+  setPackageAckCapable(capable: boolean | null): void {
+    if (this.disposed) return;
+    if (this.packageAckCapable === capable) return;
+    this.packageAckCapable = capable;
+    this.tel('package-ack-capability', { capable });
+  }
+
+  /** True while a gated activation is holding the presentation — nothing may present over it. */
+  isHoldingApply(): boolean { return this.holding; }
+
+  /**
+   * The apply hold reached its deadline with no acknowledgement.
+   *
+   * A DEADLINE SELECTS A COVER, NEVER A REVEAL (audit §21 rule 7). This used to call
+   * `reveal(true)`, on the reasoning that "after this bound the child has almost certainly applied
+   * the switch" — which is a belief about elapsed time, not evidence about what is on the canvas,
+   * and it is exactly the reasoning every wrong-frame incident in this pipeline has been built on.
+   * The hold therefore SURVIVES the deadline; what changes is that the owner is told to explain the
+   * wait, so the user sees the poster (or the honest wait affordance over the held outgoing
+   * content) rather than an unexplained pause or an unverified frame.
+   *
+   * The population that reaches this is reported, because it is the only measurement that can say
+   * whether the bound is set correctly.
+   */
+  /**
+   * The bounded wait on an UNKNOWN package expired: conclude, in-session, that its bridge is silent.
+   *
+   * WHY THIS IS EVIDENCE AND NOT A TIMER. Every other deadline in this file is asked to authorise
+   * pixels it knows nothing about, and each is refused. This one is asked a different question:
+   * "does this bridge acknowledge?" — and the answer is now known, because the bridge was sent a
+   * section, given the whole bound, and said nothing. A silent bridge is exactly what
+   * `bridge_ack_capable: false` records, so recording it here from observation is the same fact
+   * reached the same way the publication path reaches it, only later.
+   *
+   * SCOPED TO THE DOCUMENT, deliberately. `ackCapable` lives on `SimRuntimeState` and is reset by
+   * `attach()` and `handleFrameLoad()`, so a republished package on a fresh document is asked
+   * again. The PACKAGE record is never written from here — a stale in-session conclusion must not
+   * be able to outlive the document that produced it.
+   */
+  private concludeAckSilent(script: string): void {
+    if (this.disposed || !this.holding) return;
+    this.set({ ackCapable: false });
+    this.tel('apply-unknown-concluded-silent', { script, waitedMs: SIM_APPLY_STALL_MS });
+    this.holding = false;
+    // The hold is over, so nothing is left for a cover to explain.
+    this.set({ pendingScript: null, covered: false });
+    // Still gated on `painted`: a document that has drawn nothing has nothing to show, and the
+    // owner's own paint machinery governs that case exactly as it does for a legacy package.
+    this.maybeReveal();
+  }
+
+  private coverUnacknowledged(script: string, decision: ApplyGateDecision, waitedMs: number): void {
+    if (this.disposed || !this.holding) return;
+    this.set({ covered: true });
+    this.tel('apply-deadline-cover', {
+      script,
+      // 'await-ack' means the package is PROVEN to acknowledge and has not — the strongest reason
+      // of all to keep covering. 'await-ack-bounded' means nobody knows whether it can.
+      proven: decision === 'await-ack',
+      waitedMs,
+    });
   }
 
   /** Reveal if — and only if — every precondition still holds. The single writer of visible:true. */
@@ -1453,7 +1720,7 @@ export class SimRuntimeClient {
       this.actMachine = activationReducer(act, { type: 'ACTIVATE' });
       this.transport?.send(ACTIVATE_SECTION, act.identity, {});
       this.stopPaintPoll();
-      this.set({ phase: 'visible', visible: true, interactive: true, pendingScript: null });
+      this.set({ phase: 'visible', visible: true, interactive: true, pendingScript: null, covered: false });
       // The only stage a human perceives. Marked AFTER the reveal is authorised and committed, so a
       // refused reveal can never contribute a total — a transition that was rejected did not
       // complete, and counting it would make the p90 describe frames nobody saw.
@@ -1469,7 +1736,7 @@ export class SimRuntimeClient {
     if (!force && this.holding) return;
     if (this.legacyRevealTimer) { clearTimeout(this.legacyRevealTimer); this.legacyRevealTimer = null; }
     this.stopPaintPoll();
-    this.set({ phase: 'visible', visible: true, interactive: true });
+    this.set({ phase: 'visible', visible: true, interactive: true, covered: false });
     // ONLY MEASURE A TRANSITION THAT WAS ACTUALLY OPENED.
     //
     // `reveal()` runs for reasons that are not section transitions — a first paint, a poll, an owner
@@ -1751,9 +2018,18 @@ export class SimRuntimeClient {
       // all. Restart, and name the reason — a silent fallback here is indistinguishable from the
       // policy path quietly never having worked.
       this.tel('policy-unsupported', { missing, needed, advertised: supported });
+      // THE ANSWER FOLLOWS WHAT HAPPENED. `reactivateForPolicy` can decline — with no prior
+      // activation to reproduce there is nothing to re-run, and it says so with
+      // `policy-fallback-impossible`. Reporting 'reactivated' anyway told the caller the toggle had
+      // taken effect by restarting the section when the section had not been touched at all, and
+      // the advance of `livePolicy` made the NEXT setPolicy compare against a policy nothing is
+      // running, so an identical retry returned 'unchanged' and sent nothing either. Advance the
+      // live policy only when the restart that will realise it actually ran.
+      const prior = this.livePolicy;
       this.livePolicy = next;
-      this.reactivateForPolicy('unsupported');
-      return 'reactivated';
+      if (this.reactivateForPolicy('unsupported')) return 'reactivated';
+      this.livePolicy = prior;
+      return 'no-activation';
     }
 
     this.livePolicy = next;
@@ -1797,13 +2073,16 @@ export class SimRuntimeClient {
    * The fallback every refusal ends in: re-run the section with the new policy folded into its
    * params. This DOES reset the section — that is what makes it a fallback and not a fix — so it
    * is always accompanied by telemetry naming the package's reason.
+   *
+   * Returns whether the restart actually ran. The only caller that has an outcome to report was
+   * reporting 'reactivated' unconditionally, including for the branch that gives up.
    */
-  private reactivateForPolicy(reason: string): void {
+  private reactivateForPolicy(reason: string): boolean {
     const prior = this.lastActivate;
     const policy = this.livePolicy;
     if (!prior || !policy) {
       this.tel('policy-fallback-impossible', { reason });
-      return;
+      return false;
     }
     this.tel('policy-fallback-restart', { reason, script: prior.script });
     // `paramsForPolicy` REPLACES rather than merges: it is total over SimStartParams, and merging
@@ -1813,6 +2092,7 @@ export class SimRuntimeClient {
       params: paramsForPolicy(policy),
       ...(prior.config ? { config: withSectionPolicy(prior.config, policy) } : {}),
     });
+    return true;
   }
 
   /** Stop automation WITHOUT tearing the section down (the user grabbed a control). */
@@ -1851,7 +2131,9 @@ export class SimRuntimeClient {
     this.clearApplyStall();
     this.holding = false;
     this.handshakeDeferred = false;   // never leave a hold armed with no timer able to release it
-    if (this.state.pendingScript !== null) this.set({ pendingScript: null });
+    // The cover exists only to explain a live hold. Cancelling the hold without retiring it would
+    // leave the poster up over a document nothing is waiting for.
+    if (this.state.pendingScript !== null || this.state.covered) this.set({ pendingScript: null, covered: false });
   }
 
   cancelDeferredStop(): void {
@@ -1862,6 +2144,13 @@ export class SimRuntimeClient {
   hasDeferredStop(): boolean { return this.deferredStopTimer !== null; }
 
   private clearAllTimers(): void {
+    // An eviction whose timers are about to be cleared can never complete: its grace and deadline
+    // callbacks are the only things that would have settled it, and both also guard on
+    // `generation`, which every caller of this method is about to bump. Settle it FORCED here
+    // rather than leaving the owner awaiting a promise nothing can resolve.
+    this.settleEvictionAsForced('timers-cleared');
+    if (this.evictGraceTimer) { clearTimeout(this.evictGraceTimer); this.evictGraceTimer = null; }
+    if (this.evictDeadlineTimer) { clearTimeout(this.evictDeadlineTimer); this.evictDeadlineTimer = null; }
     this.holding = false;
     this.handshakeDeferred = false;
     this.clearContextTimer();
@@ -1873,9 +2162,234 @@ export class SimRuntimeClient {
     this.stopPaintPoll();
   }
 
+  // ── Two-phase eviction (audit: the parent never waited for DISPOSED) ────────────────────
+  //
+  //   mark EVICTING → exclude from future admission → mute/freeze → abort activation/loaders
+  //   → RELEASE_SECTION → [grace] → DISPOSE_DOCUMENT → wait up to SIM_DISPOSE_TIMEOUT_MS for
+  //   DISPOSED(resource counts) → the owner removes the iframe REGARDLESS at the deadline
+  //   → record clean vs forced.
+  //
+  // WHY THE OWNER MUST NOT AWAIT THIS ON A VISIBLE PATH. Nothing here is on the way to showing a
+  // user anything: the frame is already excluded from admission and already silent, so the only
+  // thing the wait buys is EVIDENCE — the child's own resource counters, and the difference between
+  // a package that shut down cleanly and one that did not. A user must never wait for evidence.
+
+  /** How far an eviction has got. The pool reads this to keep an evicting frame out of admission. */
+  evictionPhase(): SimEvictionPhase { return this.evictPhase; }
+
+  /** True while this document is being evicted — it must not be selected, warmed or presented. */
+  isEvicting(): boolean { return this.evictPhase !== 'none' && this.evictPhase !== 'evicted'; }
+
+  /**
+   * PHASE ONE of eviction. Resolves when the child confirms DISPOSED or at the deadline, whichever
+   * comes first; the owner removes the element when it resolves, and the outcome says which
+   * happened. Idempotent — a second call returns the SAME promise rather than starting a second
+   * teardown of one document.
+   */
+  evict(opts?: { graceMs?: number; deadlineMs?: number; reason?: string }): Promise<SimEvictionOutcome> {
+    if (this.evictPromise) return this.evictPromise;
+    const immediate = (o: SimEvictionOutcome): Promise<SimEvictionOutcome> => {
+      this.evictPhase = 'evicted';
+      this.tel('evict-complete', { ...o, reason: opts?.reason ?? null });
+      return Promise.resolve(o);
+    };
+    // NOTHING LEFT TO TEAR DOWN. Phase one already ran to completion: the transport is closed, the
+    // activation and document ids are gone, and no acknowledgement could reach anyone. Answering
+    // `no-document` is the same answer `beginDisposal` gives when a document cannot acknowledge,
+    // and it is a FRESH answer — `settleEviction` releases `evictPromise` precisely so a second
+    // call cannot be handed the first call's outcome as if it described this one.
+    if (this.disposed || this.evictPhase === 'evicted') {
+      return immediate({ outcome: 'no-document', counts: null, leaked: [], waitedMs: 0 });
+    }
+
+    this.evictStartedAt = Date.now();
+    this.evictPhase = 'grace';
+    // Held in a local as well as on the instance: `settleEviction` now releases the field the
+    // moment phase one closes, so returning the field at the end of this method would return null
+    // for any eviction that settles synchronously inside it.
+    const evicting = new Promise<SimEvictionOutcome>((resolve) => { this.evictSettle = resolve; });
+    this.evictPromise = evicting;
+    this.tel('evict-begin', { reason: opts?.reason ?? null, modern: this.modernActive() });
+
+    // ABORT EVERYTHING IN FLIGHT. A document on its way out must not be able to reveal itself, tear
+    // down a section it no longer owns, or fail an activation nobody is waiting for — each of which
+    // is a timer that outlives the decision to evict.
+    this.pendingActivate = null;
+    this.cancelPendingApply();
+    this.cancelDeferredStop();
+    this.clearPrepareTimer();
+    this.clearPresentTimer();
+    this.clearContextTimer();
+    this.stopPaintPoll();
+    if (this.legacyRevealTimer) { clearTimeout(this.legacyRevealTimer); this.legacyRevealTimer = null; }
+
+    // MUTE AND FREEZE. Ordered before the release so nothing is audible for the length of the
+    // handshake — an evicting document that keeps its audio is the exit-mute defect with a longer
+    // window to be noticed in.
+    this.post({ type: SIM_PAUSE });
+    this.post({ type: SIM_MUTE });
+    this.set({ visible: false, interactive: false, muted: true, covered: false });
+    if (this.modernActive()) {
+      this.transport?.send(SET_AUDIBLE, {}, { muted: true, volume: 0 });
+      this.transport?.send(SUSPEND_DOCUMENT, {}, {});
+      this.docMachine = documentReducer(this.docMachine, { type: 'SUSPEND' });
+      // REMEMBER THAT WE SENT IT, because the machine will not remember for us: `SUSPEND` maps to
+      // `DOCUMENT_READY` — the state only moves when the child confirms — so `thaw()`'s
+      // `state === 'SUSPENDED'` test is FALSE for the whole window a cancel can happen in. See
+      // `cancelEviction`, which is the half of this pair that has to undo it.
+      this.evictSuspended = true;
+    }
+    // RELEASE THE SECTION before disposing the document — the same order every other teardown here
+    // uses, and the one the child's own state machine expects.
+    if (this.transport && this.actMachine && this.actMachine.state !== 'RELEASED') {
+      this.transport.send(RELEASE_SECTION, this.actMachine.identity, {});
+      this.actMachine = activationReducer(this.actMachine, { type: 'RELEASE' });
+    }
+
+    // THE GRACE WINDOW is the whole of the cancellable half. See SIM_EVICT_GRACE_MS.
+    const gen = this.generation;
+    this.evictGraceTimer = setTimeout(() => {
+      this.evictGraceTimer = null;
+      if (this.disposed || this.generation !== gen || this.evictPhase !== 'grace') return;
+      this.beginDisposal(opts?.deadlineMs ?? SIM_DISPOSE_TIMEOUT_MS, opts?.reason ?? null);
+    }, opts?.graceMs ?? SIM_EVICT_GRACE_MS);
+
+    return evicting;
+  }
+
+  /**
+   * The irreversible half: ask the child to release everything, and WAIT for it to say it did.
+   *
+   * The port stays open across the wait. Closing it here — which is what `teardownModern` did, in
+   * the statement immediately after the send — is precisely why no DISPOSED ever reached a parent.
+   */
+  private beginDisposal(deadlineMs: number, reason: string | null): void {
+    this.evictPhase = 'disposing';
+    this.docMachine = documentReducer(this.docMachine, { type: 'DISPOSE' });
+
+    const canAck = !!this.transport && this.transport.isModern() && !!this.currentDocumentId;
+    if (!canAck) {
+      // A v2 (or never-handshaken) document has no DISPOSED to give. Reported as `no-document`
+      // rather than `clean`: nothing was proven, and calling that clean would make the one metric
+      // this handshake exists to produce read as a pass for every legacy package in the pool.
+      this.settleEviction({ outcome: 'no-document', counts: null, leaked: [], waitedMs: this.elapsedSinceEvictStart() });
+      return;
+    }
+
+    this.transport!.send(DISPOSE_DOCUMENT, {}, {});
+    this.tel('evict-dispose-sent', { reason, deadlineMs });
+
+    const gen = this.generation;
+    this.evictDeadlineTimer = setTimeout(() => {
+      this.evictDeadlineTimer = null;
+      if (this.disposed || this.generation !== gen || this.evictPhase !== 'disposing') return;
+      // THE ELEMENT GOES REGARDLESS. A child that cannot answer must not be able to pin a WebGL
+      // context for the rest of the session — but the removal is recorded as FORCED, with no
+      // counts, so an unprovable teardown is never filed as a clean one.
+      this.settleEviction({ outcome: 'forced', counts: null, leaked: [], waitedMs: this.elapsedSinceEvictStart() });
+    }, deadlineMs);
+  }
+
+  /**
+   * Reclaim a document the owner had decided to evict.
+   *
+   * Only legal BEFORE DISPOSE_DOCUMENT. After it the child has released its managed scope and is
+   * closing its port, so there is nothing to come back to — the caller must build a fresh
+   * generation instead, and the `false` return is how it learns that.
+   */
+  cancelEviction(): boolean {
+    if (this.evictPhase !== 'grace') {
+      if (this.evictPhase !== 'none') this.tel('evict-cancel-refused', { phase: this.evictPhase });
+      return false;
+    }
+    if (this.evictGraceTimer) { clearTimeout(this.evictGraceTimer); this.evictGraceTimer = null; }
+    this.tel('evict-cancelled', { waitedMs: this.elapsedSinceEvictStart() });
+    // Settle FIRST, then clear the phase: the owner's `.then()` must not observe a half-cancelled
+    // client. Mute is deliberately left in place — the activation that follows lifts it, and a
+    // document that came back audible before it was presented is a defect this codebase has had.
+    const settle = this.evictSettle;
+    this.evictSettle = null;
+    this.evictPromise = null;
+    this.evictPhase = 'none';
+    this.resumeAfterEvict();
+    settle?.({ outcome: 'cancelled', counts: null, leaked: [], waitedMs: this.elapsedSinceEvictStart() });
+    return true;
+  }
+
+  /**
+   * The exact inverse of the freeze `evict()` performed — which `thaw()` alone is not.
+   *
+   * `thaw()` resumes only a document the child has CONFIRMED suspended, and that confirmation is
+   * asynchronous: `documentReducer` maps `SUSPEND` to `DOCUMENT_READY` on purpose, so for the whole
+   * of the cancellable grace window the machine still reads `DOCUMENT_READY` and `thaw()` sends
+   * nothing at all. A cancel landing there left a RESUME_DOCUMENT permanently unsent; the child's
+   * DOCUMENT_SUSPENDED then arrived, `acceptsCommands` went false for good, and the re-entry the
+   * cancel exists to serve ended in `failModern('handshake-failed')`.
+   *
+   * So the resume is driven by what THIS client sent, not by what the child has admitted to yet.
+   */
+  private resumeAfterEvict(): void {
+    this.thaw();
+    if (!this.evictSuspended) return;
+    this.evictSuspended = false;
+    // Already resumed by `thaw()` above — the child confirmed inside the grace window and the
+    // machine reached SUSPENDED. Sending a second RESUME_DOCUMENT would be a command the child has
+    // no state to accept.
+    if (!this.transport?.isModern() || this.docMachine.state !== 'DOCUMENT_READY') return;
+    this.tel('evict-cancel-resume', { state: this.docMachine.state });
+    this.transport.send(RESUME_DOCUMENT, {}, {});
+  }
+
+  private elapsedSinceEvictStart(): number {
+    return this.evictStartedAt ? Math.max(0, Date.now() - this.evictStartedAt) : 0;
+  }
+
+  /** Close phase one exactly once, whatever ended it, and release the transport at that point. */
+  private settleEviction(outcome: SimEvictionOutcome): void {
+    if (this.evictPhase === 'none' || this.evictPhase === 'evicted') return;
+    if (this.evictGraceTimer) { clearTimeout(this.evictGraceTimer); this.evictGraceTimer = null; }
+    if (this.evictDeadlineTimer) { clearTimeout(this.evictDeadlineTimer); this.evictDeadlineTimer = null; }
+    this.evictPhase = 'evicted';
+    // The suspend is only owed a resume while the eviction is still CANCELLABLE. Past that the
+    // document is gone, so the debt is discharged rather than carried into anything later.
+    this.evictSuspended = false;
+    // NOW the port may go: the acknowledgement has either arrived or provably will not.
+    if (this.transport) {
+      this.transport.close();
+      this.transport = null;
+    }
+    this.docMachine = documentReducer(this.docMachine, { type: 'EVICT' });
+    this.actMachine = null;
+    this.currentDocumentId = null;
+    this.tel('evict-complete', {
+      outcome: outcome.outcome,
+      waitedMs: outcome.waitedMs,
+      leaked: outcome.leaked,
+      // The child's own numbers, kept whole. A leak is diagnosed from WHICH counter is non-zero,
+      // so summing them here would throw away the only part that identifies the cause.
+      counts: (outcome.counts ?? null) as unknown as Record<string, unknown> | null,
+    });
+    const settle = this.evictSettle;
+    this.evictSettle = null;
+    // RELEASE THE PROMISE WITH THE SETTLE. `evict()` returns `this.evictPromise` when one is in
+    // flight so a second call joins the first rather than starting a second teardown of one
+    // document — but a promise left here after it has resolved makes a LATER eviction resolve
+    // instantly with the previous one's outcome, so a caller that evicted, re-admitted and evicted
+    // again would remove its element on the strength of a settlement that described a different
+    // eviction. In flight it must be shared; settled it must not exist. Callers already holding it
+    // are unaffected: they hold the promise object, not this field.
+    this.evictPromise = null;
+    settle?.(outcome);
+  }
+
   /** Idempotent. After this the client is inert: no timer can fire, no message can be handled. */
   dispose(): void {
     if (this.disposed) return;
+    // An eviction that was still waiting for its acknowledgement will never get one now: the
+    // listener goes, the port goes, and the owner is unmounting. Settle it as FORCED rather than
+    // leaving the promise pending forever — an unresolved eviction is a caller stuck on a `.then()`
+    // that can no longer run, and it would also be missing from the clean-vs-forced record.
+    this.settleEvictionAsForced('dispose');
     this.teardownModern();
     this.clearAllTimers();
     if (this.listener && typeof window !== 'undefined') window.removeEventListener('message', this.listener);

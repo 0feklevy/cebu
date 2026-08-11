@@ -38,6 +38,10 @@ const read = (rel: string): string => readFileSync(join(__dirname, '..', rel), '
 const SURFACES = {
   viewer: 'components/viewer/useProjectPlayer.ts',
   editor: 'components/VideoPlayer.tsx',
+  // The editor's resident slot (audit §9.3). Listed here from the day it was added: it is the
+  // newest place a private listener or paint latch could grow back, and a surface that is not in
+  // this map is a surface none of the invariants below apply to.
+  editorPool: 'components/EditorSimPool.tsx',
   sectionEditor: 'components/SectionEditor.tsx',
   avatar: 'components/avatar/SimulationOverlay.tsx',
 } as const;
@@ -285,7 +289,9 @@ describe('no surface keeps a private simulation message listener', () => {
   // Surfaces that legitimately listen for NON-lifecycle messages today (guidance cues, the
   // Minimal-UI control scan). Pinned so "no listener at all" is an asserted fact per surface, not
   // an early return that quietly skips the check.
-  const LISTENS: Record<string, boolean> = { viewer: true, editor: false, sectionEditor: true, avatar: false };
+  const LISTENS: Record<string, boolean> = {
+    viewer: true, editor: false, editorPool: false, sectionEditor: true, avatar: false,
+  };
 
   for (const [name, rel] of Object.entries(SURFACES)) {
     it(`${name} does not interpret sim lifecycle messages itself`, () => {
@@ -356,6 +362,37 @@ describe('surface-specific behaviour that must SURVIVE the migration', () => {
       return cleared;
     })();
     expect(clears, 'the grace must still clear the URL so the WebGL context is freed').toBe(true);
+  });
+
+  it('(§9.3) the editor keeps package-keyed residency — not URL-keyed section mounting', () => {
+    // The defect was a comparison: `live.documentKey === newUrl` is false at every sim→sim
+    // boundary, including between two sections of ONE package, so every boundary re-booted a
+    // WebGL document. Losing any of these three silently restores it, and the symptom — "the
+    // editor feels laggy" — is exactly what no automated test would otherwise report.
+    // CALLS, not identifiers: an unused import still produces an identifier node, so a surface
+    // that stopped CONSULTING the rule while leaving the import line in place passed an
+    // identifier check (proven by mutation — the viewer's own equivalent pin has the same shape).
+    const sf = ast(SURFACES.editor);
+    for (const fn of ['packageKeyOf', 'simDocumentSwitch', 'simScriptFor', 'planEditorResidency']) {
+      expect(callsTo(sf, fn).length, `the editor no longer calls ${fn}()`).toBeGreaterThan(0);
+    }
+  });
+
+  it('(§9.3 Stage 1) the editor never arms the runtime\'s 800 ms reveal ceiling by default', () => {
+    // `SIM_LEGACY_REVEAL_MS` is the right DEFAULT at the runtime layer — it is what keeps a pre-v4
+    // package displayable — and simRuntimeClient.test.ts pins it there. It is wrong for this
+    // surface, which never calls enableModern, so the ceiling's reveal(true) force-bypasses the
+    // paint guard and composites a blank document 800 ms after load. The fix is per-CALLER, so it
+    // is the call sites that have to be pinned: an argument-less call is the regression.
+    const sf = ast(SURFACES.editor);
+    const bare: Hit[] = [];
+    walk(sf, (n) => {
+      if (!ts.isCallExpression(n) || calleeName(n.expression) !== 'startPaintRecovery') return;
+      if (n.arguments.length === 0) bare.push(hitAt(sf, n, 'startPaintRecovery()'));
+    });
+    expect(bare, 'an editor startPaintRecovery() inherited the 800 ms force-reveal').toEqual([]);
+    expect(callsTo(sf, 'startPaintRecovery').length,
+      'the editor stopped driving unpainted documents at all').toBeGreaterThan(0);
   });
 
   it('the editor keeps the preview coordination pact with the section editor', () => {
@@ -520,6 +557,148 @@ describe('the scanner cannot be fooled by comment-shaped strings', () => {
       const sf = ast(rel);
       expect(sf.statements.length, `${name} parsed to an empty AST`).toBeGreaterThan(0);
       expect(importSpecifiers(sf).length, `${name} parsed with no imports — parse likely failed`).toBeGreaterThan(0);
+    }
+  });
+});
+
+// ── two-phase eviction, pinned where a behavioural test cannot reach ──────────────────────────
+//
+// The player's eviction path is ~15 lines inside a 4,000-line hook that needs a whole media
+// pipeline to run, so the ORDERING that makes eviction two-phase is pinned structurally here and
+// the handshake itself is pinned by execution in simRuntimeClientModern.test.ts.
+//
+// The defect these describe: `dropPooled` used to call `runtime.dispose()` and drop the spec — which
+// unmounts the iframe — in the same synchronous block. `dispose()` sends DISPOSE_DOCUMENT and closes
+// the MessagePort immediately, and unmounting removes the listener the answer would arrive on, so
+// the acknowledgement the protocol specifies could not be delivered by construction. Restoring
+// either statement to `dropPooled` restores that, and every runtime-level test would still pass
+// because the runtime is not the thing that regressed.
+
+describe('the viewer evicts in two phases', () => {
+  const viewer = () => ast(SURFACES.viewer);
+
+  /** The body of a same-file function, or a failed expectation naming it. */
+  const bodyOf = (sf: ts.SourceFile, name: string): ts.Node => {
+    const fns = resolveFunctions(sf, name);
+    expect(fns.length, `${name} is not a resolvable function in ${SURFACES.viewer}`).toBe(1);
+    return fns[0];
+  };
+
+  /**
+   * Calls made SYNCHRONOUSLY by this function — not from a callback it passes elsewhere.
+   *
+   * The distinction is the entire finding. `removePooled()` inside `.then(...)` is phase TWO and is
+   * correct; the same call in the function's own statements is the synchronous unmount that made
+   * the acknowledgement undeliverable. A scan that could not tell them apart would pass either way.
+   */
+  const directCallsTo = (sf: ts.SourceFile, name: string, root: ts.Node): number => {
+    let n = 0;
+    const descend = (node: ts.Node): void => {
+      node.forEachChild((child) => {
+        if (ts.isArrowFunction(child) || ts.isFunctionExpression(child) || ts.isFunctionDeclaration(child)) return;
+        if (ts.isCallExpression(child) && calleeName(child.expression) === name) n += 1;
+        descend(child);
+      });
+    };
+    descend(root);
+    return n;
+  };
+
+  /** Arguments, as source text, of every call to `name`. */
+  const argTextsOf = (sf: ts.SourceFile, name: string): string[][] => {
+    const out: string[][] = [];
+    walk(sf, (n) => {
+      if (ts.isCallExpression(n) && calleeName(n.expression) === name) {
+        out.push(n.arguments.map((a) => a.getText(sf)));
+      }
+    });
+    return out;
+  };
+
+  it('phase one asks the runtime to evict — it does not dispose it', () => {
+    const sf = viewer();
+    const drop = bodyOf(sf, 'dropPooled');
+    expect(callsTo(sf, 'evict', drop).length, 'dropPooled no longer starts the disposal handshake').toBe(1);
+    expect(
+      callsTo(sf, 'dispose', drop),
+      'dropPooled disposes the client synchronously — the DISPOSED acknowledgement can never arrive',
+    ).toEqual([]);
+  });
+
+  it('phase one does not unmount the frame — the child must survive to answer', () => {
+    // `removePooled` is the ONLY place the spec leaves `simPoolSpecsRef`, and it runs from the
+    // settle callback. Calling it from `dropPooled` would detach the iframe while the parent is
+    // still waiting on its port.
+    const sf = viewer();
+    const drop = bodyOf(sf, 'dropPooled');
+    const direct = directCallsTo(sf, 'removePooled', drop);
+    // The `!rt` early exit is the one legitimate synchronous removal: there is no runtime, so there
+    // is no handshake to wait for and nothing that could answer. Everything else must be in a
+    // settle callback — and there ARE such calls, which is what makes this count meaningful.
+    expect(direct, `dropPooled removes the frame ${direct} times before the ack`).toBe(1);
+    expect(callsTo(sf, 'removePooled', drop).length,
+      'nothing removes the frame after the handshake either — eviction never completes').toBeGreaterThan(direct);
+  });
+
+  it('the client is disposed only in phase two', () => {
+    const sf = viewer();
+    expect(callsTo(sf, 'dispose', bodyOf(sf, 'removePooled')).length).toBe(1);
+  });
+
+  it('re-entry consults the runtime rather than assuming either answer', () => {
+    // `cancelEviction()` returns false once DISPOSE_DOCUMENT is out. A re-entry path that ignored
+    // the return value would hand the viewer a document that has released its managed scope.
+    const sf = viewer();
+    const reclaim = bodyOf(sf, 'reclaimEvicting');
+    expect(callsTo(sf, 'cancelEviction', reclaim).length).toBe(1);
+    expect(callsTo(sf, 'reclaimEvicting', bodyOf(sf, 'ensurePooledSpec')).length,
+      'the admission path does not try to reclaim an evicting frame').toBe(1);
+    expect(callsTo(sf, 'navigateFrame', bodyOf(sf, 'ensurePooledSpec')).length,
+      'a refused reclaim must build a NEW generation, not resurrect the disposing one').toBe(1);
+  });
+
+  it('the terminal stall bound refuses to force-reveal over a live apply hold', () => {
+    // The 5s stall bound is the compatibility escape for a document that has drawn NOTHING and can
+    // acknowledge nothing — there are no wrong pixels on a blank canvas. A document that HAS
+    // painted and is holding an unacknowledged switch is the opposite case, and forcing its pixels
+    // up is exactly the frame the gate is holding back. Pinned structurally because reaching this
+    // callback behaviourally needs a whole media pipeline and a 5s clock.
+    const sf = viewer();
+    let marker: ts.Node | null = null;
+    walk(sf, (n) => {
+      if (ts.isStringLiteralLike(n) && n.text === 'stall-force-reveal') marker = n;
+    });
+    expect(marker, "the terminal stall bound moved — re-check this invariant").not.toBeNull();
+    let scope: ts.Node | null = (marker as unknown as ts.Node).parent ?? null;
+    while (scope && !ts.isArrowFunction(scope) && !ts.isFunctionExpression(scope)) scope = scope.parent ?? null;
+    expect(scope, 'the force-reveal is not inside a resolvable callback').not.toBeNull();
+
+    const positionsOf = (name: string): number[] => {
+      const out: number[] = [];
+      walk(scope!, (n) => {
+        if (ts.isCallExpression(n) && calleeName(n.expression) === name) out.push(n.pos);
+      });
+      return out;
+    };
+    const guards = positionsOf('isHoldingApply');
+    const reveals = positionsOf('revealSim');
+    expect(guards.length, 'the stall bound can force-reveal a held switch').toBeGreaterThan(0);
+    expect(reveals.length, 'the callback no longer reveals at all — re-check this invariant').toBeGreaterThan(0);
+    // BEFORE, not merely present: a guard consulted after the force-reveal guards nothing.
+    expect(Math.min(...guards), 'the hold is consulted only after the frame has been forced up')
+      .toBeLessThan(Math.min(...reveals));
+  });
+
+  it('every residency pass passes BOTH guards, never the fade predicate alone', () => {
+    // The fade guard became a module precisely because three of five eviction sites had it and the
+    // two that ran did not. The evicting guard travels with it in one object so a site cannot pass
+    // one and forget the other.
+    const sf = viewer();
+    const calls = [...argTextsOf(sf, 'singleModeEvictions'), ...argTextsOf(sf, 'hardCapEviction')];
+    expect(calls.length, 'the residency call sites moved — re-check this invariant').toBe(4);
+    for (const args of calls) {
+      expect(args[args.length - 1], `a residency pass passes ${args[args.length - 1]} instead of the guard record`)
+        .toBe('residencyGuards');
     }
   });
 });

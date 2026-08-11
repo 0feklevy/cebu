@@ -190,6 +190,118 @@ describe('dry run', () => {
   });
 });
 
+// ── Bridge capability (P0.5) ─────────────────────────────────────────────────────────────────────
+//
+// The apply gate holds a painted document until the requested section acknowledges, and only a
+// package RECORDED as unable to acknowledge skips that hold. A migrated revision that records
+// nothing reads as UNKNOWN — the safe answer, but for a legacy package that genuinely never acks it
+// means a bounded cover on EVERY entry, forever, until someone republishes it. The migration is
+// rewriting the very bytes that answer the question, so it answers it.
+
+describe('bridge capability is recorded while the bytes are in hand', () => {
+  const capsOf = async (): Promise<Record<string, unknown> | undefined> => {
+    const [r] = await rows<{ metadata: Record<string, unknown> }>(
+      `SELECT metadata FROM sim_revisions ORDER BY revision_number DESC LIMIT 1`);
+    return r!.metadata.bridgeCapabilities as Record<string, unknown> | undefined;
+  };
+
+  it('records scriptApplied:false for a bridge that cannot acknowledge', async () => {
+    // The seeded fixture bridge is `window.__bridge = 1;` — it posts nothing.
+    await mig.publishLegacyAsRevision({ simulationId: simId });
+    expect(await capsOf()).toMatchObject({ scriptApplied: false });
+  });
+
+  it('records scriptApplied:true for a bridge that does', async () => {
+    adapter.objects.set(`${PREFIX}/bridge.js`, {
+      bytes: Buffer.from(`function f(){ _post({ type: 'SCRIPT_APPLIED', script: s }); }`, 'utf8'),
+      contentType: 'application/javascript',
+    });
+    await mig.publishLegacyAsRevision({ simulationId: simId });
+    expect(await capsOf()).toMatchObject({ scriptApplied: true });
+  });
+
+  it('records NOTHING — not false — when the package has no bridge at all', async () => {
+    // Absence of evidence must stay UNKNOWN. Recording `false` here would tell the gate to reveal
+    // switches on a package nobody has ever classified, which is the P0.5 hole in a new costume.
+    //
+    // Per FIELD, not per record: the record itself now also carries the entry document's answer
+    // (P0.8), which this package HAS. The two facts are independent and one must not vouch for the
+    // other — an assertion on the whole object would let a future field silently supply evidence
+    // about the bridge that nobody ever read.
+    adapter.objects.delete(`${PREFIX}/bridge.js`);
+    await mig.publishLegacyAsRevision({ simulationId: simId });
+    expect(await capsOf()).not.toHaveProperty('scriptApplied');
+  });
+
+  it('keeps the provenance metadata the migration already wrote', async () => {
+    await mig.publishLegacyAsRevision({ simulationId: simId });
+    const [r] = await rows<{ metadata: Record<string, unknown> }>(
+      `SELECT metadata FROM sim_revisions ORDER BY revision_number DESC LIMIT 1`);
+    expect(r!.metadata.migratedFromLegacyPrefix).toBe(PREFIX);
+  });
+});
+
+// ── Import-map requirement (P0.8) ────────────────────────────────────────────────────────────────
+//
+// The same argument as the bridge above, asked of the entry document. A legacy package that resolves
+// `three` through an import map cannot paint AT ALL on Safari/iOS 16.3 or older — and a revision
+// that records nothing leaves the viewer with no way to tell that apart from a slow boot, so the
+// user gets a permanently blank frame. This migration is already reading the entry bytes, so it
+// answers the question for the whole legacy population as it is rewritten.
+
+describe('the import-map requirement is recorded from the entry document', () => {
+  const requiresOf = async (): Promise<unknown> => {
+    const [r] = await rows<{ metadata: Record<string, unknown> }>(
+      `SELECT metadata FROM sim_revisions ORDER BY revision_number DESC LIMIT 1`);
+    return (r!.metadata.bridgeCapabilities as Record<string, unknown> | undefined)?.requiresImportMaps;
+  };
+
+  const seedEntry = (html: string) =>
+    adapter.objects.set(`${PREFIX}/index.html`, {
+      bytes: Buffer.from(html, 'utf8'), contentType: 'text/html; charset=utf-8',
+    });
+
+  it('records TRUE for an entry that resolves bare specifiers through an import map', async () => {
+    seedEntry('<html><head><script type="importmap">{"imports":{"three":"./t.js"}}</script></head><body></body></html>');
+    await mig.publishLegacyAsRevision({ simulationId: simId });
+    expect(await requiresOf()).toBe(true);
+  });
+
+  it('records the honest FALSE for an entry with no import map', async () => {
+    // The seeded fixture entry is a plain document. `false` is a real answer here, not an absence:
+    // it is what tells the viewer this package is unaffected on every browser, which is the common
+    // case and must stay one — a blanket downgrade of old browsers is the regression this prevents.
+    await mig.publishLegacyAsRevision({ simulationId: simId });
+    expect(await requiresOf()).toBe(false);
+  });
+
+  it('records NOTHING when the entry cannot be read — unknown, never a guessed false', async () => {
+    // A restricted token, a since-deleted object: the read throws where the bridge read already
+    // does. Recording `false` would publish a claim nobody verified, and its cost is the blank
+    // frame P0.8 exists to end.
+    const realRead = adapter.readObject.getMockImplementation()!;
+    adapter.readObject.mockImplementation(async (k: string) => {
+      if (k === `${PREFIX}/index.html`) throw new Error('AccessDenied');
+      return realRead(k);
+    });
+    await mig.publishLegacyAsRevision({ simulationId: simId });
+    // The copy loop reads the entry too, so the migration itself fails — what is asserted is that
+    // the DRAFT it left behind claims nothing about a document it never saw.
+    expect(await requiresOf()).toBeUndefined();
+  });
+
+  it('answers about the entry even when the package has no bridge at all', async () => {
+    // The two detections are independent, and this is the shape that proves it: no bridge (so no
+    // `scriptApplied`), a real import map (so a real requirement).
+    adapter.objects.delete(`${PREFIX}/bridge.js`);
+    seedEntry('<html><head><script type="importmap">{}</script></head><body></body></html>');
+    await mig.publishLegacyAsRevision({ simulationId: simId });
+    const caps = await rows<{ metadata: Record<string, unknown> }>(
+      `SELECT metadata FROM sim_revisions ORDER BY revision_number DESC LIMIT 1`);
+    expect(caps[0]!.metadata.bridgeCapabilities).toEqual({ requiresImportMaps: true });
+  });
+});
+
 // ── Publication ──────────────────────────────────────────────────────────────────────────────────
 
 describe('publishLegacyAsRevision', () => {

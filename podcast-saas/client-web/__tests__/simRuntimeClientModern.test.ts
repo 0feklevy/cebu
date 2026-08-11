@@ -33,11 +33,12 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { SimRuntimeClient, type SimRuntimeState } from '../lib/sim/SimRuntimeClient';
-import { SIM_EXIT_STOP_MS, SIM_PAINTED, SIM_READY, START_SCRIPT, SIM_MUTE, SIM_PAUSE } from '../lib/sim/protocol';
+import { SCRIPT_APPLIED, SIM_EXIT_STOP_MS, SIM_PAINTED, SIM_READY, START_SCRIPT, SIM_MUTE, SIM_PAUSE } from '../lib/sim/protocol';
 import {
   ACTIVATE_SECTION,
   CONTEXT_LOST,
   DISPOSE_DOCUMENT,
+  DISPOSED,
   DOCUMENT_READY,
   DOCUMENT_RESUMED,
   DOCUMENT_SUSPENDED,
@@ -45,10 +46,12 @@ import {
   PREPARE_SECTION,
   PRESENT_SECTION,
   RELEASE_SECTION,
+  RESUME_DOCUMENT,
   SECTION_APPLIED,
   SECTION_PRESENTED,
   SET_AUTOMATION_POLICY,
   SET_UI_POLICY,
+  SUSPEND_DOCUMENT,
   SIM_BOOTSTRAP_ACCEPT_KIND,
   SIM_BOOTSTRAP_TIMEOUT_MS,
   SIM_PROTOCOL_VERSION,
@@ -57,6 +60,7 @@ import {
   makeEnvelope,
   type AnySimEnvelope,
   type SimBootstrapOffer,
+  type SimResourceCounts,
   type SimRuntimeCapabilities,
 } from 'shared/src/sim/runtimeProtocol';
 import {
@@ -68,6 +72,8 @@ import type { SimPolicyKind } from 'shared/src/sim/simPolicy';
 import {
   PACKAGE_CLASS_ORDER,
   SIM_BREAKER_THRESHOLD,
+  SIM_DISPOSE_TIMEOUT_MS,
+  SIM_EVICT_GRACE_MS,
   SIM_PREPARE_TIMEOUT_MS,
   SIM_PRESENT_TIMEOUT_MS,
 } from 'shared/src/sim/simFailurePolicy';
@@ -116,6 +122,13 @@ interface ChildOptions {
   autoApplied?: boolean;
   /** Answer PRESENT_SECTION with SECTION_PRESENTED. */
   autoPresented?: boolean;
+  /**
+   * Answer DISPOSE_DOCUMENT with DISPOSED, as the shipped child does (simRuntimeChild.onDispose
+   * sets DISPOSING, takes the scope's counts, posts DISPOSED, then closes the port). `false` models
+   * the child that CANNOT answer — a wedged script, a crashed renderer — which is the case the
+   * parent's deadline exists for and the one every eviction silently behaved as until now.
+   */
+  autoDisposed?: boolean;
   /** What the automatic SECTION_PRESENTED claims it submitted. */
   frames?: unknown;
   /** Send SECTION_PRESENTED with no `framesSubmitted` field at all. */
@@ -160,6 +173,10 @@ class FakeChild {
   port: MessagePort | null = null;
   ident: DocIdent | null = null;
   private outSeq = 0;
+  /** Resource counters this child reports at DISPOSED. Non-zero models a leaking package. */
+  disposeCounts: SimResourceCounts = ZERO_RESOURCE_COUNTS;
+  /** What this child admits it could not release. */
+  disposeLeaked: string[] = [];
   private opts: Required<Omit<ChildOptions, 'distort' | 'policies'>>
     & { distort: Distortion | null; policies: SimPolicyKind[] | null };
   private readonly unadopted: MessagePort[] = [];
@@ -173,6 +190,7 @@ class FakeChild {
       autoPresented: opts.autoPresented ?? true,
       frames: opts.frames ?? 1,
       omitFrames: opts.omitFrames ?? false,
+      autoDisposed: opts.autoDisposed ?? true,
       distort: opts.distort ?? null,
       policies: opts.policies ?? null,
     };
@@ -246,6 +264,9 @@ class FakeChild {
       case PRESENT_SECTION:
         if (this.opts.autoPresented) this.sectionPresented(env);
         return;
+      case DISPOSE_DOCUMENT:
+        if (this.opts.autoDisposed) this.disposed();
+        return;
       default:
         return;
     }
@@ -301,6 +322,14 @@ class FakeChild {
   }
 
   contextLost(): void { this.send(CONTEXT_LOST, {}, { contextKind: 'webgl' }); }
+
+  /**
+   * The acknowledgement no parent had ever received. Posted on the still-open port — which is the
+   * whole point: the shipped parent used to close it in the statement after the send.
+   */
+  disposed(): void {
+    this.send(DISPOSED, {}, { counts: this.disposeCounts, leaked: this.disposeLeaked });
+  }
 
   suspended(): void { this.send(DOCUMENT_SUSPENDED, {}, { counts: ZERO_RESOURCE_COUNTS, unstoppable: [] }); }
 
@@ -1217,6 +1246,12 @@ describe('an activation requested while the handshake is still undecided', () =>
     expect(v2Types(child), 'the deferred activation was dropped instead of run').toContain(START_SCRIPT);
     expect(child.v2.filter((m) => m.type === START_SCRIPT).length, 'the section was applied twice').toBe(1);
     expect(child.v2.find((m) => m.type === START_SCRIPT)?.script).toBe('A');
+    // AND STILL NOT SHOWN YET (audit P0.5). The paint above was the BOOT SCENE — this test's own
+    // comment says the document had been sent no startScript when it arrived. Presenting the frame
+    // the moment the v2 fallback posted startScript would present those same boot-scene pixels as
+    // if they were section A. The acknowledgement is what makes them section A's.
+    expect(c.getState().visible, 'an unacknowledged boot-scene frame was presented as section A').toBe(false);
+    fromChild(child, { type: SCRIPT_APPLIED, script: 'A', token: c.getState().activationToken });
     expect(c.getState().visible, 'the section applied on v2 was never shown').toBe(true);
     expect(c.getModernState().active).toBe(false);
   });
@@ -1847,5 +1882,265 @@ describe('setPolicy on the modern path — an activation-scoped command, not a n
     vi.advanceTimersByTime(SIM_EXIT_STOP_MS + 10);
     await flush();
     expect(c.setPolicy({ simpleUi: false }), 'policed a released activation').toBe('no-activation');
+  });
+});
+
+// ══ 12. TWO-PHASE EVICTION ═══════════════════════════════════════════════════════════════════
+//
+// The protocol has always specified this handshake and BOTH ends did their half except the parent:
+// the child sets DISPOSING and posts DISPOSED with resource counts, `documentMachine` models
+// `DISPOSING: { DISPOSED: 'EVICTED' }` — and the parent sent DISPOSE_DOCUMENT and closed the
+// MessagePort in the same statement, with no handler for the answer it had just asked for. Every
+// eviction in production was therefore FORCED, and nothing recorded that, so a package leaking GPU
+// memory on teardown was indistinguishable from one that shut down cleanly.
+
+describe('two-phase eviction — the parent waits for DISPOSED', () => {
+  /** Bring a document up, presented, so eviction has a real activation to release. */
+  async function presented(opts: BootOptions = {}): Promise<Harness> {
+    const h = await boot(opts);
+    h.c.activate({ script: 'A' });
+    await flush();
+    return h;
+  }
+
+  it('releases the section, then disposes only AFTER the grace window', async () => {
+    const { c, child } = await presented();
+    const before = child.types().length;
+
+    const done = c.evict({ reason: 'test' });
+    await flush();
+    expect(child.types().slice(before), 'the section was not released before disposal').toContain(RELEASE_SECTION);
+    expect(child.types(), 'DISPOSE_DOCUMENT went out inside the cancellable window').not.toContain(DISPOSE_DOCUMENT);
+    expect(c.evictionPhase()).toBe('grace');
+
+    vi.advanceTimersByTime(SIM_EVICT_GRACE_MS + 1);
+    await flush();
+    expect(child.types()).toContain(DISPOSE_DOCUMENT);
+    expect((await done).outcome).toBe('clean');
+  });
+
+  it('the port is NOT closed before the acknowledgement — the ack actually arrives', async () => {
+    const { c, child } = await presented();
+    child.disposeCounts = { ...ZERO_RESOURCE_COUNTS, glTextures: 4, timeouts: 2 };
+    child.disposeLeaked = ['audioContext'];
+
+    const done = c.evict();
+    vi.advanceTimersByTime(SIM_EVICT_GRACE_MS + 1);
+    await flush();
+
+    const res = await done;
+    // THE MUTATION THIS PINS: close the port in the same statement as the send (which is what
+    // `teardownModern` did) and this outcome is 'forced' with null counts — every time, for every
+    // package, which is exactly what production recorded.
+    expect(res.outcome, 'the acknowledgement could not be delivered').toBe('clean');
+    expect(res.counts?.glTextures).toBe(4);
+    expect(res.counts?.timeouts).toBe(2);
+    expect(res.leaked, 'a leak the child admitted to was dropped').toEqual(['audioContext']);
+  });
+
+  it('records the resource counts on the document machine, not just in the outcome', async () => {
+    const { c, child } = await presented();
+    child.disposeCounts = { ...ZERO_RESOURCE_COUNTS, glRenderers: 1 };
+    const done = c.evict();
+    vi.advanceTimersByTime(SIM_EVICT_GRACE_MS + 1);
+    await flush();
+    await done;
+    expect(c.getModernState().documentState).toBe('EVICTED');
+  });
+
+  it('a child that never answers is FORCED out at the deadline — and recorded as forced', async () => {
+    const { c, child, tel } = await presented({ child: { autoDisposed: false } });
+    const done = c.evict();
+    vi.advanceTimersByTime(SIM_EVICT_GRACE_MS + 1);
+    await flush();
+    expect(child.types()).toContain(DISPOSE_DOCUMENT);
+
+    // Still waiting one tick short of the deadline: the element must not be removed early either.
+    vi.advanceTimersByTime(SIM_DISPOSE_TIMEOUT_MS - 10);
+    await flush();
+    expect(c.evictionPhase()).toBe('disposing');
+
+    vi.advanceTimersByTime(20);
+    await flush();
+    const res = await done;
+    expect(res.outcome, 'an unprovable teardown was filed as a clean one').toBe('forced');
+    expect(res.counts, 'counts were invented for a child that said nothing').toBeNull();
+    expect(lastTel(tel, 'evict-complete')?.detail.outcome).toBe('forced');
+  });
+
+  it('a v2 document is evicted immediately and reported as UNPROVEN, never as clean', async () => {
+    // A legacy package has no DISPOSED to give. Calling that 'clean' would make the one metric this
+    // handshake produces read as a pass for every unmanaged frame in the pool.
+    const { c } = await presented({ child: { adopt: false } });
+    const done = c.evict();
+    vi.advanceTimersByTime(SIM_EVICT_GRACE_MS + 1);
+    await flush();
+    expect((await done).outcome).toBe('no-document');
+  });
+
+  it('is idempotent — a second call joins the first rather than disposing twice', async () => {
+    const { c, child } = await presented();
+    const a = c.evict();
+    const b = c.evict();
+    expect(a).toBe(b);
+    vi.advanceTimersByTime(SIM_EVICT_GRACE_MS + 1);
+    await flush();
+    await a;
+    expect(child.types().filter((t) => t === DISPOSE_DOCUMENT).length).toBe(1);
+  });
+
+  it('mutes and freezes the frame before it waits — nothing is audible for the handshake', async () => {
+    const { c, child } = await presented();
+    c.evict();
+    await flush();
+    expect(v2Types(child)).toContain(SIM_MUTE);
+    expect(v2Types(child)).toContain(SIM_PAUSE);
+    expect(child.types()).toContain(SUSPEND_DOCUMENT);
+    expect(c.getState().muted).toBe(true);
+  });
+
+  it('aborts a pending activation instead of letting its timers fire into a dying document', async () => {
+    const { c, child, tel } = await presented({ child: { autoApplied: false } });
+    c.activate({ script: 'B' });        // never acknowledged
+    await flush();
+    c.evict();
+    vi.advanceTimersByTime(SIM_PREPARE_TIMEOUT_MS * 2);
+    await flush();
+    expect(events(tel), 'a prepare timeout fired against a document being evicted').not.toContain('modern-failure');
+    expect(c.getState().visible).toBe(false);
+    child.close();
+  });
+
+  it('a native frame load inside the grace window SETTLES the eviction instead of wedging it', async () => {
+    // THE WEDGE. `handleFrameLoad` bumps the generation, and BOTH eviction callbacks guard on it —
+    // so the grace callback early-returned without settling and without arming the deadline.
+    // `evictPromise` then never resolved, which means the owner's `.then` never ran: the iframe and
+    // its WebGL context stayed mounted for the rest of the session, `isEvicting` kept sparing that
+    // frame from every later residency pass, and the 'single' kill switch's one-resident-document
+    // promise was broken on exactly the weak devices it exists for. Measured: still `grace`, still
+    // unsettled, 60s later.
+    const { c, tel } = await presented({ child: { autoDisposed: false } });
+    let settled: string | null = null;
+    void c.evict({ reason: 'test' }).then((o) => { settled = o.outcome; });
+    await flush();
+    expect(c.evictionPhase()).toBe('grace');
+
+    // The browser replaced the document under us — a genuine navigation, or the pristine reload.
+    c.handleFrameLoad();
+    await flush();
+
+    expect(settled, 'the eviction is unsettled: the owner is on a `.then()` nothing can run').toBe('forced');
+    expect(c.isEvicting(), 'the frame is still marked evicting, so no pass will ever take it').toBe(false);
+    expect(events(tel)).toContain('evict-forced-settle');
+
+    // …and nothing resurrects it later: the timers are gone and the phase is terminal.
+    vi.advanceTimersByTime(SIM_EVICT_GRACE_MS * 4 + SIM_DISPOSE_TIMEOUT_MS * 4);
+    await flush();
+    expect(c.evictionPhase()).toBe('evicted');
+  });
+
+  it('a settled eviction releases its promise — a second evict is answered fresh, not with the old outcome', async () => {
+    const { c } = await presented();
+    const first = c.evict();
+    vi.advanceTimersByTime(SIM_EVICT_GRACE_MS + 1);
+    await flush();
+    expect((await first).outcome).toBe('clean');
+
+    // `evict()` returns the in-flight promise so one document is never torn down twice — but a
+    // promise kept after it has RESOLVED makes the next eviction resolve instantly with the
+    // previous one's outcome, and the caller would remove an element on the strength of a
+    // settlement that described something else.
+    const second = await c.evict({ reason: 'again' });
+    expect(second.outcome, "the second eviction reported the first one's outcome").toBe('no-document');
+    expect(second.counts, 'a stale `clean` carried its counts into an eviction that proved nothing').toBeNull();
+  });
+});
+
+describe('two-phase eviction — re-entry', () => {
+  async function presented(opts: BootOptions = {}): Promise<Harness> {
+    const h = await boot(opts);
+    h.c.activate({ script: 'A' });
+    await flush();
+    return h;
+  }
+
+  it('CANCELS inside the grace window: nothing was disposed, so the frame comes back', async () => {
+    const { c, child, tel } = await presented();
+    const done = c.evict();
+    await flush();
+
+    expect(c.cancelEviction(), 'a reversible eviction refused to be reversed').toBe(true);
+    expect((await done).outcome).toBe('cancelled');
+    expect(c.isEvicting()).toBe(false);
+    expect(child.types(), 'the document was disposed despite the cancel').not.toContain(DISPOSE_DOCUMENT);
+    expect(events(tel)).toContain('evict-cancelled');
+
+    // And it is genuinely usable again — the acid test, since a cancel that leaves the client wedged
+    // is worse than no cancel at all.
+    vi.advanceTimersByTime(SIM_EVICT_GRACE_MS * 3);
+    await flush();
+    expect(child.types(), 'the grace timer fired after the cancel').not.toContain(DISPOSE_DOCUMENT);
+    c.activate({ script: 'B' });
+    await flush();
+    expect(child.last(PREPARE_SECTION).variantKey).toBe('B');
+  });
+
+  it('REFUSES after DISPOSE_DOCUMENT: there is nothing left to resurrect', async () => {
+    // A child that has not answered yet, so the window under test — DISPOSE sent, DISPOSED not
+    // received — is actually open. With an instantly-answering child it closes in the same tick and
+    // the refusal would be tested against the wrong phase.
+    const { c, tel } = await presented({ child: { autoDisposed: false } });
+    c.evict();
+    vi.advanceTimersByTime(SIM_EVICT_GRACE_MS + 1);
+    await flush();
+    expect(c.evictionPhase()).toBe('disposing');
+    expect(c.cancelEviction(), 'a disposing document was handed back to the viewer').toBe(false);
+    expect(lastTel(tel, 'evict-cancel-refused')?.detail.phase).toBe('disposing');
+  });
+
+  it('RESUMES the document the eviction suspended, even before the child has confirmed', async () => {
+    // THE ASYMMETRY. `evict()` sends SUSPEND_DOCUMENT, and `documentReducer` maps SUSPEND to
+    // DOCUMENT_READY on purpose — the state only advances on the child's confirmation. `thaw()`
+    // resumes only a machine that already reads SUSPENDED, so for the WHOLE of the cancellable
+    // window it sent nothing at all. The confirmation then landed on a document nobody had
+    // resumed, `acceptsCommands` went false for good, and the re-entry this cancel exists to serve
+    // died in `failModern('handshake-failed')`.
+    const { c, child } = await presented();
+    c.evict();
+    await flush();
+    expect(child.types(), 'the evict did not suspend, so there is nothing to undo').toContain(SUSPEND_DOCUMENT);
+    const resumesBefore = child.types().filter((t) => t === RESUME_DOCUMENT).length;
+
+    expect(c.cancelEviction()).toBe(true);
+    await flush();
+    expect(
+      child.types().filter((t) => t === RESUME_DOCUMENT).length,
+      'the cancel left the SUSPEND_DOCUMENT it sent un-undone',
+    ).toBe(resumesBefore + 1);
+
+    // …and the late confirmation cannot wedge it: the child answers SUSPENDED then RESUMED, the
+    // machine converges on DOCUMENT_READY, and the section the user came back for actually runs.
+    child.suspended();
+    await flush();
+    child.resumed();
+    await flush();
+    c.activate({ script: 'B' });
+    await flush();
+    expect(child.last(PREPARE_SECTION).variantKey,
+      're-entry after a cancelled eviction could not install its section').toBe('B');
+  });
+
+  it('and refuses to ACTIVATE a disposing document — the owner must build a new generation', async () => {
+    const { c, child, tel } = await presented({ child: { autoDisposed: false } });
+    c.evict();
+    vi.advanceTimersByTime(SIM_EVICT_GRACE_MS + 1);
+    await flush();
+    const before = child.types().filter((t) => t === PREPARE_SECTION).length;
+
+    c.activate({ script: 'B' });
+    await flush();
+    expect(child.types().filter((t) => t === PREPARE_SECTION).length,
+      'a section was installed into a runtime that had released its scope').toBe(before);
+    expect(events(tel)).toContain('activate-refused-disposing');
   });
 });

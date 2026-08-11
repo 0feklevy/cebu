@@ -22,11 +22,29 @@
  * caller decides how to batch the lookup and the semantics stay unit-testable.
  */
 
-/** The two fields of a `simulations` row this resolution depends on. */
+/** The fields of a `simulations` row the editor shaping depends on. */
 export interface SimRevisionPointerRow {
   id: string;
   /** `simulations.active_revision_entry_key` — the storage key of the LIVE entry document. */
   active_revision_entry_key: string | null;
+  /**
+   * `simulations.requires_import_maps` (migration 057, audit P0.8) — does the LIVE entry document
+   * need `<script type="importmap">` support to run at all? Optional on this interface because it
+   * arrives in a later migration than the pointer: a row selected without it, or read from a
+   * database that predates it, must read as UNKNOWN rather than as either answer.
+   */
+  requires_import_maps?: boolean | null;
+  /**
+   * `simulations.bridge_ack_capable` (migration 055, audit P0.5) — does the LIVE bridge post
+   * SCRIPT_APPLIED? Optional, and for the same reason as the field above: absent (a narrow select,
+   * a database that predates the migration, a package never republished) must read as UNKNOWN.
+   *
+   * The EDITOR needs this every bit as much as the viewer does, and had no route to it at all. Its
+   * timeline slot is the same warm-then-dispatch pool: the document paints its boot scene long
+   * before the playhead enters a section, so the apply gate holds the swap — and with the record
+   * missing by construction the gate could only ever answer UNKNOWN, for every package.
+   */
+  bridge_ack_capable?: boolean | null;
 }
 
 /** The storage adapter surface used here — just the sim public-URL mapping. */
@@ -84,7 +102,13 @@ interface SimSectionRow {
 
 /**
  * Editor shaping: every section keeps its STORED `simulation_url` byte-for-byte and gains
- * `simulation_served_url`, the bytes that are live right now.
+ * `simulation_served_url`, the bytes that are live right now, plus `requires_import_maps`, the
+ * capability floor of those same bytes.
+ *
+ * The second field rides here rather than in a read of its own because it answers a question about
+ * exactly the revision the first one resolves: the editor mounts the SERVED url in an iframe, and
+ * whether that document can paint on this browser is a property of those bytes (audit P0.8). One
+ * pointer row already loaded, two facts derived from it, no extra query on either bootstrap read.
  *
  * ADDITIVE, NOT A REWRITE — and that is a correctness requirement, not a style choice. The editor
  * sends section rows straight back to the API: `sectionPatchBody` (undo/redo restore) and
@@ -101,10 +125,25 @@ export function withServedSimulationUrls<T extends SimSectionRow>(
   sections: readonly T[],
   pointerRows: readonly SimRevisionPointerRow[],
   storage: SimPublicUrlSource,
-): Array<T & { simulation_served_url: string | null }> {
-  const resolve = simulationUrlResolver(simRevisionPointers(pointerRows), storage);
+): Array<T & {
+  simulation_served_url: string | null;
+  requires_import_maps: boolean | null;
+  bridge_ack_capable: boolean | null;
+}> {
+  const pointers = simRevisionPointers(pointerRows);
+  const resolve = simulationUrlResolver(pointers, storage);
+  // THREE STATES, and the third is why neither of these is `?? false`. A section with no
+  // simulation, a simulation with no row, a row selected without the column and a package
+  // published before the migration all read the same: UNKNOWN. The editor's floor never downgrades
+  // on unknown, and the editor's apply gate treats unknown as its own bounded case.
+  const scalar = (simId: string | null, field: 'requires_import_maps' | 'bridge_ack_capable') => {
+    const v = simId ? pointers.get(simId)?.[field] : undefined;
+    return typeof v === 'boolean' ? v : null;
+  };
   return sections.map((s) => ({
     ...s,
     simulation_served_url: resolve(s.simulation_id, s.simulation_url),
+    requires_import_maps: scalar(s.simulation_id, 'requires_import_maps'),
+    bridge_ack_capable: scalar(s.simulation_id, 'bridge_ack_capable'),
   }));
 }

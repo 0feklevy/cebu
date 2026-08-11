@@ -59,17 +59,46 @@ function bootModern(firstScript = 'A'): { c: SimRuntimeClient; win: object; stat
   fromChild(win, { type: 'SIM_READY', dispatch: 'dynamic' });
   fromChild(win, { type: 'SIM_PAINTED' });
   c.activate({ script: firstScript });
-  // First activation reveals immediately (nothing to switch away from), and the ack that follows
-  // is what teaches the client this document is ack-capable.
+  // The first activation on a PAINTED document is HELD (audit P0.5): those pixels are the boot
+  // scene, not `firstScript`. The ack below is what both releases it and teaches the client that
+  // this document is ack-capable for the rest of the session.
   fromChild(win, { type: 'SCRIPT_APPLIED', script: firstScript, token: c.getState().activationToken });
   return { c, win, states };
 }
 
 describe('first activation and same-section re-entry', () => {
-  it('reveals immediately on the first activation — there is nothing to switch away from', () => {
+  it('reveals the first activation only once the acknowledgement lands (audit P0.5)', () => {
+    // WAS: "reveals immediately on the first activation — there is nothing to switch away from".
+    // There IS something to switch away from on a pooled frame: it painted its boot scene while it
+    // was warming, hours of viewer-time before this section was entered. `bootModern` paints before
+    // it activates, so this is that exact document.
     const { c } = bootModern('A');
     expect(c.getState().visible).toBe(true);
     expect(c.getState().ackCapable).toBe(true);
+  });
+
+  it('a first activation on a PAINTED document is held until its own ack, never revealed on sight', () => {
+    const c = new SimRuntimeClient();
+    const { el, win } = makeFrame();
+    c.attach(el, 'doc-pooled');
+    fromChild(win, { type: 'SIM_READY', dispatch: 'dynamic' });
+    fromChild(win, { type: 'SIM_PAINTED' });          // the boot scene — NOT section A
+    c.activate({ script: 'A' });
+    expect(c.getState().visible, 'the boot scene was revealed as if it were section A').toBe(false);
+    expect(c.getState().phase).toBe('awaiting-ack');
+    fromChild(win, { type: 'SCRIPT_APPLIED', script: 'A', token: c.getState().activationToken });
+    expect(c.getState().visible).toBe(true);
+  });
+
+  it('a first activation on an UNPAINTED document still reveals immediately — no pixels, no hazard', () => {
+    const c = new SimRuntimeClient();
+    const { el, win } = makeFrame();
+    c.attach(el, 'doc-cold');
+    fromChild(win, { type: 'SIM_READY', dispatch: 'dynamic' });
+    c.activate({ script: 'A' });                       // never painted
+    expect(c.getState().phase).not.toBe('awaiting-ack');
+    fromChild(win, { type: 'SIM_PAINTED' });
+    expect(c.getState().visible, 'a cold document must not be made to wait on silence').toBe(true);
   });
 
   it('re-entering the SAME section reveals immediately (already applied — no flicker)', () => {
@@ -111,27 +140,101 @@ describe('same-package section switch — the reveal must wait for its acknowled
     expect(c.getState().visible).toBe(true);
   });
 
-  it('the wait is TERMINAL — a bridge that never acks still releases at the bound', () => {
+  it('the bound SELECTS A COVER, never a reveal — a wedged bridge cannot buy itself a frame', () => {
+    // WAS: "the wait is TERMINAL — a bridge that never acks still releases at the bound", which
+    // called reveal(true) at SIM_APPLY_STALL_MS on the reasoning that by then the child has
+    // "almost certainly" applied the switch. That is a belief about elapsed time, not evidence
+    // about which sub-simulation is on the canvas — and this document is PROVEN to acknowledge, so
+    // silence from it is the strongest possible reason to keep covering (audit §21 rule 7).
     const { c } = bootModern('A');
     c.activate({ script: 'B' });
     expect(c.getState().visible).toBe(false);
     vi.advanceTimersByTime(SIM_APPLY_STALL_MS + 10);
-    expect(c.getState().visible, 'a wedged document must never hold the screen forever').toBe(true);
+    expect(c.getState().visible, 'the deadline revealed an unacknowledged switch').toBe(false);
+    expect(c.getState().covered, 'the wait was never explained to the viewer').toBe(true);
+  });
+
+  it('the cover retires the moment the acknowledgement finally arrives', () => {
+    const { c, win } = bootModern('A');
+    c.activate({ script: 'B' });
+    vi.advanceTimersByTime(SIM_APPLY_STALL_MS + 10);
+    expect(c.getState().covered).toBe(true);
+    fromChild(win, { type: 'SCRIPT_APPLIED', script: 'B', token: c.getState().activationToken });
+    expect(c.getState().visible).toBe(true);
+    expect(c.getState().covered, 'the poster stayed over a section the bridge vouched for').toBe(false);
   });
 });
 
 describe('legacy documents are never made to wait on silence', () => {
-  it('a document that has never acked reveals immediately on a switch', () => {
+  it('a package RECORDED as non-acking reveals immediately on a switch', () => {
+    // WAS: this document had no capability record at all and was revealed on sight. Silence is not
+    // proof of incapability — a slow body is silent too — so "never acked yet" no longer licenses a
+    // reveal. What does is the PUBLICATION's answer about the bridge's bytes (migration 055).
     const states: SimRuntimeState[] = [];
     const c = new SimRuntimeClient({ onState: (s) => states.push(s) });
     const { el, win } = makeFrame();
     c.attach(el, 'doc-legacy');
+    c.setPackageAckCapable(false);                                // proven-silent bridge
     fromChild(win, { type: 'SIM_READY', dispatch: 'dynamic' });   // dynamic, but it will never acknowledge
     fromChild(win, { type: 'SIM_PAINTED' });
     c.activate({ script: 'A' });
     c.activate({ script: 'B' });
     expect(c.getState().ackCapable).toBeNull();
     expect(c.getState().visible, 'waiting on a bridge that cannot answer makes it undisplayable').toBe(true);
+  });
+
+  it('a package with NO capability record holds, bounded — then concludes the bridge is silent', () => {
+    // The third state. An unrecorded package might be a v2.1 bridge whose body is merely slow, so
+    // revealing on sight is unsafe; it might be a pre-ack bridge, so waiting forever makes it
+    // undisplayable. The hold is therefore BOUNDED, and what ends it is evidence rather than a
+    // clock: the bridge was sent a section, given the whole bound, and said nothing — which is the
+    // definition of the silent bridge `bridge_ack_capable: false` records. Migration 055 shipped
+    // with no backfill, so this is the state EVERY package already in the database is in; without
+    // a conclusion here they would each be covered for the whole of every section, forever.
+    const tel: string[] = [];
+    const c = new SimRuntimeClient({ onTelemetry: (e) => tel.push(e) });
+    const { el, win } = makeFrame();
+    c.attach(el, 'doc-unknown');
+    fromChild(win, { type: 'SIM_READY', dispatch: 'dynamic' });
+    fromChild(win, { type: 'SIM_PAINTED' });
+    c.activate({ script: 'A' });
+    c.activate({ script: 'B' });
+    expect(c.getState().visible, 'an unverified frame was revealed').toBe(false);
+    vi.advanceTimersByTime(SIM_APPLY_STALL_MS - 50);
+    expect(c.getState().visible, 'released before the bound was up').toBe(false);
+
+    vi.advanceTimersByTime(100);
+    expect(tel, 'the conclusion must be REPORTED, not silent').toContain('apply-unknown-concluded-silent');
+    expect(c.getState().visible, 'a bridge proven silent in-session left the section undisplayable').toBe(true);
+    expect(c.getState().covered, 'nothing is left for a cover to explain').toBe(false);
+    // Recorded on the DOCUMENT, so the next switch does not pay the bound again — and so a
+    // navigation, which resets this state, asks the fresh document afresh.
+    expect(c.getState().ackCapable).toBe(false);
+  });
+
+  it('a package RECORDED as acking keeps holding at the deadline — the conclusion is never applied to it', () => {
+    // The asymmetry is the whole safety property. Silence from an UNKNOWN bridge is evidence about
+    // the bridge; silence from one PUBLICATION PROVED acknowledges is evidence about this apply
+    // only, and revealing on it would show whatever the shared document was already drawing. A
+    // deadline still selects a cover here, and never a reveal, however long it goes on.
+    const tel: string[] = [];
+    const c = new SimRuntimeClient({ onTelemetry: (e) => tel.push(e) });
+    const { el, win } = makeFrame();
+    c.attach(el, 'doc-proven');
+    c.setPackageAckCapable(true);
+    fromChild(win, { type: 'SIM_READY', dispatch: 'dynamic' });
+    fromChild(win, { type: 'SIM_PAINTED' });
+    c.activate({ script: 'A' });
+    c.activate({ script: 'B' });
+    vi.advanceTimersByTime(SIM_APPLY_STALL_MS + 10);
+    expect(c.getState().visible, 'a proven bridge that went quiet was revealed anyway').toBe(false);
+    expect(c.getState().covered).toBe(true);
+    expect(tel).toContain('apply-deadline-cover');
+    expect(tel, 'the unknown-package conclusion must never reach a proven package')
+      .not.toContain('apply-unknown-concluded-silent');
+    // And it keeps holding: no later timer may release what no acknowledgement has justified.
+    vi.advanceTimersByTime(60_000);
+    expect(c.getState().visible).toBe(false);
   });
 
   it('a bridge that advertises NO dispatch is legacy and never uses the in-place gate', () => {
@@ -283,7 +386,10 @@ describe('rapid enter/exit and navigation races', () => {
     vi.advanceTimersByTime(30);                     // B's original deadline passes
     expect(c.getState().visible, 'B’s timer released C early').toBe(false);
     vi.advanceTimersByTime(SIM_APPLY_STALL_MS);
-    expect(c.getState().visible).toBe(true);        // C's own terminal bound
+    // C's own bound covers rather than reveals (audit §21 rule 7) — and it is C's, not B's: B's
+    // fired 30ms ago and must have done nothing at all.
+    expect(c.getState().visible).toBe(false);
+    expect(c.getState().covered).toBe(true);
   });
 });
 
@@ -530,8 +636,16 @@ describe('the paint-recovery ceiling must never bypass a live apply hold', () =>
     vi.advanceTimersByTime(200);               // ceiling fires…
     expect(c.getState().visible, 'the ceiling revealed a held switch').toBe(false);
 
-    vi.advanceTimersByTime(SIM_APPLY_STALL_MS);   // …the hold's own terminal bound releases
-    expect(c.getState().visible, 'the terminal bound must still release the hold').toBe(true);
+    vi.advanceTimersByTime(SIM_APPLY_STALL_MS);   // …and the hold's own bound covers, not reveals
+    expect(c.getState().visible, 'the bound revealed a switch nothing acknowledged').toBe(false);
+    expect(c.getState().covered).toBe(true);
+    // The ONLY thing that may present it is the acknowledgement itself — and even then only once
+    // the document has actually drawn something, which this one (deliberately unpainted) has not.
+    fromChild(win, { type: 'SCRIPT_APPLIED', script: 'B', token: c.getState().activationToken });
+    expect(c.getState().covered, 'the acknowledgement did not retire the cover').toBe(false);
+    expect(c.getState().visible, 'an unpainted document was presented').toBe(false);
+    fromChild(win, { type: 'SIM_PAINTED' });
+    expect(c.getState().visible).toBe(true);
   });
 });
 
@@ -781,6 +895,26 @@ describe('setPolicy — an unsupported package is re-activated, and says so', ()
     const { c } = bootPolicy({ policy: ['ui', 'telepathy'] });
     expect(c.getState().policies).toEqual(['ui']);
     expect(c.setPolicy({ autoScript: false })).toBe('reactivated');
+  });
+
+  it('reports "no-activation" — not "reactivated" — when the restart could not run', () => {
+    // WHITE BOX ON PURPOSE, AND THAT IS THE POINT. `reactivateForPolicy` has a branch that gives
+    // up: with no prior activation to reproduce there is nothing to re-run, and it says so with
+    // `policy-fallback-impossible`. `setPolicy` returned 'reactivated' over the top of it anyway —
+    // telling the caller the toggle had taken effect BY RESTARTING a section that was never
+    // touched — and it had already advanced `livePolicy`, so an identical retry then answered
+    // 'unchanged' and sent nothing either: the toggle was lost twice over, silently.
+    //
+    // The pairing that keeps the branch unreachable through the public API today (`lastActivate`
+    // and `livePolicy` are written in the same statement) is exactly why a wrong answer here would
+    // never be noticed, so the state is constructed rather than waited for.
+    const { c } = bootPolicy();               // bare SIM_READY: 'ui' is unsupported, so it restarts
+    (c as unknown as { lastActivate: unknown }).lastActivate = null;
+    const before = c.getLivePolicy();
+
+    expect(c.setPolicy({ simpleUi: true, hideSelectors: ['.controls'] })).toBe('no-activation');
+    expect(typesSent(), 'a restart was reported that never happened').not.toContain('startScript');
+    expect(c.getLivePolicy(), 'the live policy advanced to a policy nothing is running').toEqual(before);
   });
 
   it('a PING_SIM_READY re-fire without `policy` does not un-prove a proven document', () => {

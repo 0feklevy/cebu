@@ -31,6 +31,12 @@ import { logger } from '../../lib/logger.js';
 import type { StorageService } from '../storage/StorageService.js';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import { RevisionService } from './RevisionService.js';
+import {
+  BRIDGE_CAPABILITIES_KEY,
+  detectBridgeCapabilities,
+  detectEntryCapabilities,
+  type BridgeCapabilities,
+} from 'shared/sim/bridgeCapability';
 import { deriveEntryRelPath, getSimulationContentType } from './SimulationService.js';
 import {
   SIM_MANIFEST_VERSION,
@@ -212,10 +218,56 @@ export class RevisionMigration {
       return { ...base, filesCopied: planned.length, entryPath: entry.revisionPath };
     }
 
+    // CLASSIFY THE PACKAGE WHILE WE HAVE ITS BYTES (P0.5 bridge ack, P0.8 import maps).
+    //
+    // The apply gate holds a painted document until the requested section acknowledges, and it can
+    // only skip that hold for a package RECORDED as unable to acknowledge. A revision published
+    // without that record reads as UNKNOWN, which is the cautious answer — a bounded cover instead
+    // of a possibly-wrong reveal — but for a legacy package that genuinely never acks, the cover is
+    // the one it will show on every entry, forever, until someone republishes it.
+    //
+    // This migration is copying the very bytes that answer the question, so it answers it. Reading
+    // bridge.js once more here is a rounding error against a migration that reads every file in the
+    // package, and it converts most of the unknown population at the moment it is already being
+    // rewritten. A package with no bridge at all records nothing and stays honestly unknown.
+    const bridgeItem = planned.find((p) => p.role === 'runtime' && /(^|\/)bridge\.js$/i.test(p.rel));
+    let capabilities: Partial<BridgeCapabilities> | undefined;
+    if (bridgeItem) {
+      try {
+        capabilities = detectBridgeCapabilities((await this.storage.readObject(bridgeItem.key)).toString('utf-8'));
+      } catch (err) {
+        // Unreadable here means unreadable in the copy loop below, which will fail the migration
+        // properly. Recording nothing keeps the answer UNKNOWN rather than guessing `false`.
+        logger.warn({ err, key: bridgeItem.key }, 'revision migration: bridge unreadable for capability detection');
+      }
+    }
+
+    // THE SAME ARGUMENT, ASKED OF THE ENTRY DOCUMENT (P0.8).
+    //
+    // A legacy package that resolves `three` through `<script type="importmap">` cannot paint at
+    // all on Safari/iOS 16.3 or older, and until the requirement is recorded the viewer has no way
+    // to know it should show the poster instead of a frame that will stay blank forever. The entry
+    // bytes are in hand here for the same reason the bridge's are, so the same question gets the
+    // same treatment — including its failure mode: an unreadable entry records NOTHING and stays
+    // honestly UNKNOWN, because a guessed `false` is the blank frame in a nicer costume.
+    //
+    // The two detections are INDEPENDENT. A package with no bridge still has an entry document, and
+    // its import-map answer is worth just as much on its own.
+    try {
+      const entryHtml = (await this.storage.readObject(entry.key)).toString('utf-8');
+      capabilities = { ...capabilities, ...detectEntryCapabilities(entryHtml) };
+    } catch (err) {
+      logger.warn({ err, key: entry.key }, 'revision migration: entry unreadable for capability detection');
+    }
+
     const draft = await this.revisions.createDraft({
       simulationId: sim.id,
       createdBy: opts.createdBy ?? 'revision-migration',
-      metadata: { migratedFromLegacyPrefix: prefix, legacyBridgeHash: sim.bridge_hash },
+      metadata: {
+        migratedFromLegacyPrefix: prefix,
+        legacyBridgeHash: sim.bridge_hash,
+        ...(capabilities ? { [BRIDGE_CAPABILITIES_KEY]: capabilities } : {}),
+      },
     });
     const uploading = await this.revisions.beginUpload(sim.id, draft.id);
 
