@@ -496,7 +496,20 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
       // `copying`, where the index makes it a PERMANENT block on duplicating this project and the
       // client's poll follows it forever at frozen progress. Answering `already_running` for a row
       // nothing is running is how that became unrecoverable.
-      const inflight = await liveDuplicationFor(project.id);
+      // 42P01 = `project_duplications` does not exist, i.e. migration 056 has been rolled back
+      // under an image that still serves this route. That is a DEPLOYED-FEATURE-REMOVED state, not
+      // a bug in the request, and it is what 056's rollback notes promise answers cleanly — so it
+      // has to be caught HERE and not only around the insert, because this read reaches the table
+      // first. Without it the route 500s and the client's poll treats it as a transient failure.
+      let inflight: Awaited<ReturnType<typeof liveDuplicationFor>>;
+      try {
+        inflight = await liveDuplicationFor(project.id);
+      } catch (err) {
+        if ((err as { code?: string } | null)?.code === '42P01') {
+          return reply.code(503).send({ message: 'Duplicating projects is temporarily unavailable.' });
+        }
+        throw err;
+      }
       if (inflight) {
         return reply.code(202).send({ duplication_id: inflight.id, status: inflight.status, already_running: true });
       }
@@ -538,6 +551,11 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
             return reply.code(202).send({ duplication_id: existing.id, status: existing.status, already_running: true });
           }
         }
+        // Same rolled-back-migration case as the read above: the table can also vanish between
+        // that read and this insert.
+        if ((err as { code?: string } | null)?.code === '42P01') {
+          return reply.code(503).send({ message: 'Duplicating projects is temporarily unavailable.' });
+        }
         request.log.error({ err, projectId: project.id }, 'failed to start project duplication');
         return reply.code(500).send({ message: 'Could not start the duplication. Please try again.' });
       }
@@ -555,10 +573,22 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
       });
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
-      const [row] = await db.select().from(project_duplications).where(and(
-        eq(project_duplications.id, request.params.duplicationId),
-        eq(project_duplications.source_project_id, project.id),
-      ));
+      // Same rolled-back-056 case the POST handles. It matters more here: the client polls this
+      // route, and an unhandled 500 would spend its whole consecutive-failure budget before
+      // reporting anything. A 503 spends the same budget but ends on a statement that is true —
+      // the copy may well have finished; what is gone is our ability to say so.
+      let row: typeof project_duplications.$inferSelect | undefined;
+      try {
+        [row] = await db.select().from(project_duplications).where(and(
+          eq(project_duplications.id, request.params.duplicationId),
+          eq(project_duplications.source_project_id, project.id),
+        ));
+      } catch (err) {
+        if ((err as { code?: string } | null)?.code === '42P01') {
+          return reply.code(503).send({ message: 'Duplicating projects is temporarily unavailable.' });
+        }
+        throw err;
+      }
       if (!row) return reply.code(404).send({ message: 'Duplication not found' });
 
       return reply.send({
