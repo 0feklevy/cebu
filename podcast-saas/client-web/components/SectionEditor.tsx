@@ -12,6 +12,7 @@ import {
 } from '../lib/simUiControls';
 import { SimSurface } from '../lib/sim/SimSurface';
 import { useSimRuntime } from '../lib/sim/useSimRuntime';
+import { acquireSimulationLease, shouldFirePickerActivation } from '../lib/sim/simulationLease';
 import { GuidedTour, type TourStep } from './GuidedTour';
 import { TourButton } from './TourButton';
 
@@ -264,7 +265,21 @@ export function SectionEditor({
   // the `simId` state, both of which are already in scope here.
   const readySims = simulations.filter(s => s.status === 'ready');
   const activeSim = readySims.find(s => s.id === simId) ?? null;
-  const simPreviewUrl = section.simulation_url ?? activeSim?.entry_file ?? null;
+  // (P1.1b) Preview identity follows the USER'S CHOICE. The persisted section keeps priority only
+  // while the picker agrees with it (or is untouched): once the user picks a DIFFERENT ready sim,
+  // the preview must mount THAT sim's document. The old `section.simulation_url ?? …` short-circuit
+  // kept the previous simulation's document on screen while the picker-reset and file-list effects
+  // (both keyed on simId) already showed the new one — panel and preview disagreed until Generate.
+  // Keying semantics are preserved: `key={simPreviewUrl}` below, so a divergent pick is a document
+  // change and remounts the frame exactly like any other URL change.
+  const previewPickerDiverges = !!simId && simId !== (section.simulation_id ?? '');
+  const simPreviewUrl = previewPickerDiverges
+    ? (activeSim?.entry_file ?? null)
+    : (section.simulation_url ?? activeSim?.entry_file ?? null);
+  // Script identity follows the document: the persisted sim_script was generated against the
+  // persisted document and cannot exist on a divergent pick's raw entry — use the 'main' default,
+  // the same identity a fresh (never-generated) pick has always previewed with.
+  const previewScript = previewPickerDiverges ? 'main' : (section.sim_script ?? 'main');
 
   const previewIframeRef = useRef<HTMLIFrameElement | null>(null);
   const simPreviewShellRef = useRef<HTMLDivElement>(null);
@@ -290,6 +305,20 @@ export function SectionEditor({
   // point at the same simulation_url), and the runtime has no notion of that. Every transition it
   // had before is preserved — set on activate, cleared on stop, on frame load, and on reset.
   const [previewRunning, setPreviewRunning] = useState(false);
+
+  // (P1.1a) Activation EPOCH for deferred preview activations. Any scheduled activation (the
+  // debounced picker re-apply below) captures the epoch at schedule time and drops itself at fire
+  // time unless the epoch is unchanged AND the live gating state still allows it. Bumped by every
+  // teardown of the preview's identity or run-state: stopPreview, the section-change reset, the
+  // picker reset, a document (simPreviewUrl) change, and a generation landing (applyDone). This is
+  // caller-side arbitration of WHICH activations may still be posted — the runtime keeps sole
+  // ownership of how an accepted activation is applied, acked and revealed.
+  const previewEpochRef = useRef(0);
+  // Live values for fire-time reads. A 150ms-old closure must never drive the (possibly new)
+  // document with values captured at schedule time — that stale drive is exactly the race the
+  // epoch kills. Render-phase mirror, same pattern as useSimRuntime's cbsRef.
+  const pickerFireStateRef = useRef({ previewRunning, simpleUi, autoScript, effectiveHideSelectors, previewScript });
+  pickerFireStateRef.current = { previewRunning, simpleUi, autoScript, effectiveHideSelectors, previewScript };
 
   // Right-panel tabs (simulation only)
   const [rightTab, setRightTab]               = useState<'preview' | 'files'>('preview');
@@ -338,6 +367,9 @@ export function SectionEditor({
   }, []);
 
   useEffect(() => {
+    // (P1.1a) New section identity: any deferred preview activation scheduled against the
+    // previous section is void, even when both sections share a document URL.
+    previewEpochRef.current += 1;
     const t = isBroll ? 'video' : (knownTypes.includes(section.type) ? section.type : section.type === 'clip' ? 'clip' : 'video');
     setType(t);
     setLabel(section.label ?? '');
@@ -387,6 +419,9 @@ export function SectionEditor({
   // Intentionally NOT keyed on sim_meta: a generation that persists the current picks
   // must not clobber the user's in-flight panel state.
   useEffect(() => {
+    // (P1.1a) The picker state a pending debounced re-apply was scheduled from is being reset —
+    // that timer must never fire against the new section/simulation.
+    previewEpochRef.current += 1;
     uiScannedRef.current = false;
     setUiPanelOpen(false);
     setUiScanBusy(false);
@@ -563,13 +598,17 @@ export function SectionEditor({
   }), [simpleUi, autoScript, effectiveHideSelectors]);
 
   // "Run this section now" — one activation + the Run/Stop chrome flag, shared by the handshake,
-  // the toggle re-apply and the Run button. `sim_script` identity is unchanged: 'main' fallback.
+  // the toggle re-apply and the Run button. Script identity is previewScript: the stored
+  // sim_script with its 'main' fallback, or plain 'main' when the picker diverges (P1.1b).
   const runPreview = useCallback(() => {
-    simRuntime.activate({ script: section.sim_script ?? 'main', params: livePreviewParams() });
+    simRuntime.activate({ script: previewScript, params: livePreviewParams() });
     setPreviewRunning(true);
-  }, [simRuntime, section.sim_script, livePreviewParams]);
+  }, [simRuntime, previewScript, livePreviewParams]);
 
   const stopPreview = useCallback(() => {
+    // (P1.1a) Stop orphans any deferred activation: without the bump, a picker re-apply
+    // scheduled up to 150ms ago would restart the sim the user just stopped.
+    previewEpochRef.current += 1;
     // Immediate teardown: this surface has no fade, so there is nothing to defer the stopScript
     // behind (deactivate's deferral exists precisely for surfaces that do fade).
     simRuntime.stopNow();
@@ -608,23 +647,51 @@ export function SectionEditor({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [simpleUi, autoScript]);
 
+  // (P1.1a) A document change orphans every deferred activation scheduled against the previous
+  // document — including the cases no other reset covers (a generation replacing simulation_url,
+  // a divergent picker choice swapping the mounted entry). Declared BEFORE the debounced picker
+  // effect so a same-commit document change bumps first and the timer scheduled in that commit
+  // (if any) belongs to the new epoch.
+  useEffect(() => {
+    previewEpochRef.current += 1;
+  }, [simPreviewUrl]);
+
   // Live-preview the picker: when the checked set changes (debounced ~150ms), re-apply the
   // CURRENT params with hideSelectors so the user sees hides apply/clear
   // immediately where the bridge's wrap template supports it. Only meaningful while the
   // preview is running and Minimal UI is on; old bridges ignore the param harmlessly.
   useEffect(() => {
     if (!uiDirty || !previewRunning || !simpleUi) return;
+    const scheduledEpoch = previewEpochRef.current;
     const timer = window.setTimeout(() => {
+      // (P1.1a) Re-decide from LIVE state, never from the schedule-time closure. The epoch
+      // catches every teardown that does not touch uiUnchecked (stop, section/picker resets,
+      // document changes, a generation landing) — the runtime keeps ONE client across document
+      // changes, so before this check a stale timer's activate() drove the NEW document with the
+      // OLD script/params. previewRunning/simpleUi are re-read because Stop alone flips them
+      // without any reset running. uiDirty needs no re-check: it only flips false in the picker
+      // reset, which bumps the epoch.
+      const live = pickerFireStateRef.current;
+      if (!shouldFirePickerActivation({
+        scheduledEpoch,
+        currentEpoch: previewEpochRef.current,
+        previewRunning: live.previewRunning,
+        simpleUi: live.simpleUi,
+      })) return;
       // hideSelectors is ALWAYS sent here (unlike livePreviewParams): an empty array is the
       // meaningful "clear every hide" instruction when the user re-checks every control.
       const params: SimStartScriptParams = {
-        simpleUi, autoScript,
-        hideSelectors: effectiveHideSelectors ?? [],
+        simpleUi: live.simpleUi,
+        autoScript: live.autoScript,
+        hideSelectors: live.effectiveHideSelectors ?? [],
       };
-      simRuntime.activate({ script: section.sim_script ?? 'main', params });
+      simRuntime.activate({ script: live.previewScript, params });
     }, 150);
     return () => window.clearTimeout(timer);
-  // Re-fire only when the picks change — everything else is read fresh at activation time.
+  // Re-fire only when the picks change — a picker change while running re-applies once, 150ms
+  // debounced. Everything else is read fresh AT FIRE TIME through pickerFireStateRef and
+  // previewEpochRef; listing those values here would re-schedule on unrelated renders and defeat
+  // both the debounce and the single-re-apply behavior.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uiUnchecked]);
 
@@ -723,17 +790,39 @@ export function SectionEditor({
     // Apply a `done` section to the editor + live preview (shared by the stream handler).
     const applyDone = (s: TimelineSection) => {
       onUpdate(s);
-      // On the canReuse / mechanical path the simulation_url can come back byte-identical, so
-      // the iframe (keyed on that URL) never reloads and no fresh SIM_READY fires — push the
-      // persisted params to the live iframe so the preview reflects the change immediately. On
-      // a real regeneration the URL changes and the iframe's own SIM_READY re-posts.
-      const doneHide = getStoredSelection(s.sim_meta)?.hide ?? (uiDirty ? effectiveHideSelectors : null);
-      const doneParams: SimStartScriptParams = {
-        simpleUi:   s.simple_ui ?? false,
-        autoScript: s.auto_script ?? true,
-        ...(doneHide ? { hideSelectors: doneHide } : {}),
-      };
-      simRuntime.activate({ script: s.sim_script ?? 'main', params: doneParams });
+      // (P1.1b) The PERSISTED section is the single source of truth for post-generation preview
+      // state. Sync the live toggles and the Minimal-UI panel from `s` FIRST, so the two ways the
+      // new state can reach the document — the same-document push below, or the remount +
+      // handshake auto-run when simulation_url changed — compute IDENTICAL params. (They used to
+      // race: this handler activated unconditionally with persisted params while the remount's
+      // handshake activated with live params, last write winning.) The epoch bump voids any
+      // still-pending debounced picker re-apply scheduled against the pre-generation state.
+      previewEpochRef.current += 1;
+      setSimpleUi(s.simple_ui ?? false);
+      setAutoScript(s.auto_script ?? true);
+      const doneSelection = getStoredSelection(s.sim_meta);
+      setUiControls(doneSelection?.controls ?? []);
+      setUiUnchecked(new Set(doneSelection?.hide ?? []));
+      setUiDirty(false);
+      setUiScanSource(doneSelection ? 'stored' : null);
+      // URL changed ⇒ the keyed iframe remounts, its SIM_READY fires, and the handshake effect
+      // auto-runs with the state just synced — activating the CURRENT runtime here as well is the
+      // second, conflicting activation this comment block used to describe but the code posted
+      // anyway. Only a byte-identical URL (canReuse / mechanical path: no reload, no fresh
+      // SIM_READY) still needs the explicit push. Compared against the runtime's mounted
+      // documentKey rather than the closure's `section`, which is stale whenever this very run
+      // already patched the section (type/simulation_id) before streaming.
+      const mountedDoc = simRuntime.getState().documentKey;
+      const remountCovers = !!s.simulation_url && s.simulation_url !== mountedDoc;
+      if (!remountCovers) {
+        const doneHide = doneSelection?.hide ?? null;   // [] is meaningful: clear every hide
+        const doneParams: SimStartScriptParams = {
+          simpleUi:   s.simple_ui ?? false,
+          autoScript: s.auto_script ?? true,
+          ...(doneHide ? { hideSelectors: doneHide } : {}),
+        };
+        simRuntime.activate({ script: s.sim_script ?? 'main', params: doneParams });
+      }
       setPreviewRunning(true);
     };
 
@@ -817,7 +906,7 @@ export function SectionEditor({
         setGenerationStatus(null);
       }
     }
-  }, [projectId, section, simId, simPrompt, simpleUi, autoScript, uiDirty, genSelection, effectiveHideSelectors, onUpdate, simRuntime]);
+  }, [projectId, section, simId, simPrompt, simpleUi, autoScript, genSelection, onUpdate, simRuntime]);
 
   const handleCancelGeneration = useCallback(() => {
     genAbortRef.current?.abort();
@@ -1102,18 +1191,26 @@ export function SectionEditor({
     [simpleUi, effectiveHideSelectors],
   );
 
-  // (D2b) Broadcast whether the preview-tab sim iframe is mounted so the timeline
-  // player (VideoPlayer) can freeze its own sim while this one is live — two
-  // concurrent WebGL sims is exactly what this kills. Fires false on tab switch,
-  // URL loss, and editor close (effect cleanup).
-  const previewSimMounted = rightTab === 'preview' && !!simPreviewUrl;
+  // (P1.1c) Page-wide arbitration: while the preview is actually RUNNING — not merely tab-open,
+  // the old gating, which suspended the timeline sim even for a stopped preview and never
+  // released when the user hit Stop — this editor holds the page's 'preview-visible' lease. The
+  // timeline player consults the lease before every activate/resume, so two concurrent WebGL
+  // sims stay impossible without any effect over there having to remember to listen. The
+  // 'sim-preview-active' CustomEvent remains as the compatibility pact with VideoPlayer and is
+  // now a lease-driven side effect: it fires exactly when the lease is acquired/released.
+  // Releasing in the cleanup covers Stop (previewRunning → false), section changes (the reset
+  // effect clears previewRunning) and unmount — the lease can never outlive its owner.
   useEffect(() => {
-    if (!previewSimMounted) return;
+    if (!previewRunning) return;
+    const lease = acquireSimulationLease({ id: 'section-editor-preview', priority: 'preview-visible' });
     window.dispatchEvent(new CustomEvent('sim-preview-active', { detail: { active: true } }));
     return () => {
+      // Release BEFORE announcing: a pact listener re-evaluating on the event must already see
+      // the freed lease, or it would no-op and wait for a broker notification that already ran.
+      lease.release();
       window.dispatchEvent(new CustomEvent('sim-preview-active', { detail: { active: false } }));
     };
-  }, [previewSimMounted]);
+  }, [previewRunning]);
 
   // ── Minimal-UI control picker: scanning ───────────────────────────────────
   // Runtime scan (exact — catches JS-built panels): ask the live preview iframe.

@@ -7,6 +7,7 @@ import { simDestroyGraceMs } from '../lib/simLifecycle';
 import { SIM_FADE_MS } from '../lib/sim/protocol';
 import { SimSurface } from '../lib/sim/SimSurface';
 import { useSimRuntime } from '../lib/sim/useSimRuntime';
+import { simulationLeaseAllows, subscribeSimulationLease, timelineActionOnLeaseFree } from '../lib/sim/simulationLease';
 import { getStoredSelection, type SimStartScriptParams } from '../lib/simUiControls';
 import type { Clip } from '../hooks/useClipSequence';
 import type { TimelineSection, ImageFile } from 'shared/src/generated/client-v1';
@@ -108,6 +109,14 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
   // re-applied the moment SIM_READY lands (see the ready effect below). This is the old
   // pendingSimRef/SIM_READY dance without the hand-rolled listener. (sim-race fix)
   const desiredSimRef = useRef<{ script: string; params: SimStartScriptParams } | null>(null);
+  // (P1.1c) True when a lease-blocked window skipped an activation this document still owes:
+  // entering a sim section (or a fresh SIM_READY) while the section editor's preview holds the
+  // page lease records the desire here, and the lease-release re-evaluation turns it into the
+  // real activate. Without it, a boundary crossed DURING a preview never started its script.
+  const pendingLeaseActivationRef = useRef(false);
+  // Last observed blocked-state, so the broker subscription and the compatibility CustomEvent
+  // delivering the same transition twice cannot double-suspend or double-restore.
+  const timelineLeaseBlockedRef = useRef(false);
   // (D2b) Destroy-on-leave: after the overlay hides, keep the paused iframe mounted for a grace
   // window (45s desktop / 700ms touch-or-low-memory), then clear simUrl so the iframe unmounts and
   // its WebGL context is truly freed. Cancelled on re-entry. The >=700ms floor is what guarantees
@@ -116,6 +125,10 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
 
   // ── shared playback engine (viewer-quality) ───────────────────────────────
   const hook = useEditorPlayback(clips, onTimeUpdate, timelineDuration);
+  // The lease sync below reads the engine through a ref: `hook` is a fresh object every render,
+  // and putting it in the subscription effect's deps would re-subscribe on every frame tick.
+  const hookRef = useRef(hook);
+  hookRef.current = hook;
 
   useImperativeHandle(imperativeRef, () => ({
     seek: (globalSec: number) => hook.seek(globalSec),
@@ -166,37 +179,77 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
   // (re)applied here — `ready` flips false→true on every freshly loaded document, which is exactly
   // where the old SIM_READY handler consumed pendingSimRef. Re-arming from desiredSimRef is what
   // makes navigation races harmless: the freshly loaded page always gets its startScript.
+  // (P1.1c) …unless the section editor's preview holds the page lease. This effect used to bypass
+  // the preview pact entirely: a document going ready mid-preview started its script under the
+  // editor's own sim. Now the desire is recorded and the lease-release sync performs it.
   useEffect(() => {
     if (!simState.ready) return;
     const desired = desiredSimRef.current;
     if (!desired) return;
+    if (!simulationLeaseAllows('timeline-visible')) { pendingLeaseActivationRef.current = true; return; }
     simRuntime.activate(desired);
     if (!simRuntime.getState().painted) simRuntime.startPaintRecovery();
   }, [simState.ready, simRuntime]);
 
-  // (D2b) SectionEditor coordination: while its preview-tab sim iframe is live, freeze the
-  // timeline sim; when the preview goes away, unfreeze — but only if the timeline overlay was
-  // actually visible (otherwise the normal hide path already froze it on purpose). Two
-  // concurrently-running WebGL sims is exactly what this kills.
-  const simPreviewHidRef = useRef(false);
-  useEffect(() => {
-    const onPreviewActive = (e: Event) => {
-      const active = !!(e as CustomEvent<{ active?: boolean }>).detail?.active;
-      if (active) {
-        // Latch BEFORE suspending: suspend() clears `visible`, so the "was it actually visible"
-        // guard can no longer be read off the runtime afterwards.
-        simPreviewHidRef.current = simRuntime.getState().visible;
-        simRuntime.suspend();
-      } else if (simPreviewHidRef.current) {
-        simPreviewHidRef.current = false;
-        simRuntime.resume();
-        simRuntime.unmute();    // suspend() silences the frame; it was audible before the preview
-        simRuntime.present();   // give back the presentation the pact took away
+  // (P1.1c) SectionEditor coordination, lease-mediated: while the editor's preview RUNS it holds
+  // the page's 'preview-visible' lease; this surface suspends its sim (and pauses the editor
+  // video) for exactly that window, then re-derives the DESIRED state when the lease frees.
+  // This replaces the old one-shot simPreviewHidRef latch, which could only undo exactly what it
+  // saw at suspend time — a boundary crossed mid-preview either resurrected the sim under the
+  // preview (via the effects that bypassed the pact) or stayed dead after it (latch saw
+  // visible=false). Two concurrently-running WebGL sims is exactly what this kills.
+  const syncTimelineWithLease = useCallback(() => {
+    const blocked = !simulationLeaseAllows('timeline-visible');
+    if (blocked === timelineLeaseBlockedRef.current) return;   // transition-dedupe
+    timelineLeaseBlockedRef.current = blocked;
+    if (blocked) {
+      // The audit's defect note: opening the preview never paused the editor video. Same control
+      // path as the sim's own onUserInteraction — the shared playback engine's pause().
+      if (hookRef.current.isPlaying) hookRef.current.pause();
+      simRuntime.suspend();
+      return;
+    }
+    const action = timelineActionOnLeaseFree({
+      wantsSim: activeSimUrlRef.current !== null,
+      pendingActivation: pendingLeaseActivationRef.current,
+      ready: simRuntime.getState().ready,
+    });
+    pendingLeaseActivationRef.current = false;
+    if (action === 'activate') {
+      // A boundary crossing (or SIM_READY) happened while blocked: the recorded desire becomes
+      // the real activation now. activate() itself resumes, unmutes and drives the reveal.
+      const desired = desiredSimRef.current;
+      if (desired) {
+        simRuntime.activate(desired);
+        if (!simRuntime.getState().painted) simRuntime.startPaintRecovery();
       }
-    };
-    window.addEventListener('sim-preview-active', onPreviewActive);
-    return () => window.removeEventListener('sim-preview-active', onPreviewActive);
+    } else if (action === 'resume-presented') {
+      simRuntime.resume();
+      simRuntime.unmute();    // suspend() silences the frame; it was audible before the preview
+      simRuntime.present();   // give back the presentation the lease took away
+    } else if (action === 'resume-boot') {
+      // Suspended mid-boot: unfreeze and drive the handshake — the ready effect above posts the
+      // startScript when SIM_READY lands (the lease is free by definition on this path).
+      simRuntime.resume();
+      simRuntime.startPaintRecovery();
+    }
   }, [simRuntime]);
+
+  useEffect(() => {
+    // Late join: a preview may ALREADY hold the lease when this player mounts.
+    syncTimelineWithLease();
+    const unsubscribe = subscribeSimulationLease(syncTimelineWithLease);
+    // Compatibility pact: the section editor still announces its preview over this CustomEvent.
+    // The LEASE is the authority — the event is only a re-evaluation nudge (a duplicate delivery
+    // is harmless: the sync is transition-deduped), kept so the two halves of the pact keep
+    // naming each other and cannot be removed independently.
+    const onPreviewActive = () => syncTimelineWithLease();
+    window.addEventListener('sim-preview-active', onPreviewActive);
+    return () => {
+      unsubscribe();
+      window.removeEventListener('sim-preview-active', onPreviewActive);
+    };
+  }, [syncTimelineWithLease]);
 
   // ── broll video: load / unload HLS ───────────────────────────────────────
   useEffect(() => {
@@ -306,6 +359,9 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
       }
       desiredSimRef.current = null;
       activeSimUrlRef.current = null;
+      // (P1.1c) Withdraw any desire recorded while the lease was held: leaving the sim section
+      // during a preview must not activate anything when the lease frees.
+      pendingLeaseActivationRef.current = false;
       return;
     }
     // (D2b) Re-entered a sim section before the destroy grace fired — keep the live iframe.
@@ -326,7 +382,14 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
     // A different document has to load first: its `load` arms the poll/ceiling and its SIM_READY
     // drives the ready effect above. Anything armed here would be discarded by the re-attach.
     if (!sameDoc) return;
-    if (live.ready) {
+    // (P1.1c) Boundary crossings consult the page lease before driving the document — this
+    // effect and the ready effect were the two paths that bypassed the preview pact, which is
+    // how a late crossing resurrected the timeline sim under the editor's running preview. While
+    // blocked, only the DESIRE is recorded (desiredSimRef above, plus this flag); the
+    // lease-release sync replays it.
+    if (!simulationLeaseAllows('timeline-visible')) {
+      pendingLeaseActivationRef.current = true;
+    } else if (live.ready) {
       // Live document — activate now. Re-running on params/script changes (deps below) is what
       // makes a canReuse regeneration — same URL, new toggles — show up live in the editor.
       // The runtime resumes, sends startScript + clearBootHide, unmutes, and decides whether the
