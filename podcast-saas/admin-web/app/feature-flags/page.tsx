@@ -7,7 +7,20 @@ import type { AdminSettings } from 'shared/src/generated/admin-v1';
 
 type Controls = Pick<
   AdminSettings,
-  'maintenance_mode' | 'maintenance_message' | 'anonymous_user_limit' | 'generation_limit_enabled' | 'generation_daily_limit'
+  | 'maintenance_mode'
+  | 'maintenance_message'
+  | 'anonymous_user_limit'
+  | 'generation_limit_enabled'
+  | 'generation_daily_limit'
+  // Simulation runtime. These are the kill switches an incident actually needs, and until now the
+  // admin PATCH accepted them while nothing rendered them — so reaching one meant a direct DB
+  // write against production. A switch that cannot be thrown is not a rollback plan.
+  | 'sim_pool_mode'
+  | 'sim_scheduler_mode'
+  | 'sim_adaptive_quality'
+  | 'sim_boundary_sentinel'
+  | 'sim_transition_coordinator'
+  | 'rum_sample_rate'
 >;
 
 export default function ControlsPage() {
@@ -26,6 +39,12 @@ export default function ControlsPage() {
           anonymous_user_limit: s.anonymous_user_limit,
           generation_limit_enabled: s.generation_limit_enabled,
           generation_daily_limit: s.generation_daily_limit,
+          sim_pool_mode: s.sim_pool_mode,
+          sim_scheduler_mode: s.sim_scheduler_mode,
+          sim_adaptive_quality: s.sim_adaptive_quality,
+          sim_boundary_sentinel: s.sim_boundary_sentinel,
+          sim_transition_coordinator: s.sim_transition_coordinator,
+          rum_sample_rate: s.rum_sample_rate,
         }),
       )
       .catch((e) => setError(e.message));
@@ -139,8 +158,121 @@ export default function ControlsPage() {
             <div className="mt-2 text-xs text-muted-foreground">Currently unlimited.</div>
           )}
         </FlagCard>
+
+        <div className="pt-2">
+          <h2 className="text-sm font-semibold text-foreground">Simulation runtime</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Kill switches for the viewer&apos;s simulation pipeline. Each takes effect on the next page load;
+            none requires a deploy.
+          </p>
+        </div>
+
+        <ChoiceCard
+          title="Resident simulation pool"
+          description="How many simulation documents may stay resident. Single keeps exactly one alive — the safe setting if simulations are leaking memory or crashing tabs."
+          value={form.sim_pool_mode}
+          options={[
+            { value: 'single', label: 'Single (safe)' },
+            { value: 'adaptive', label: 'Adaptive' },
+          ]}
+          onChange={(v) => set('sim_pool_mode', v as Controls['sim_pool_mode'])}
+        />
+
+        <ChoiceCard
+          title="Predictive scheduler"
+          description="Prepares an upcoming section's simulation before the playhead reaches it. Off falls back to preparing on arrival."
+          value={form.sim_scheduler_mode}
+          options={[
+            { value: 'off', label: 'Off' },
+            { value: 'predictive', label: 'Predictive' },
+          ]}
+          onChange={(v) => set('sim_scheduler_mode', v as Controls['sim_scheduler_mode'])}
+        />
+
+        <FlagCard
+          title="Frame-valid transition coordinator"
+          description="Holds the video→simulation handoff until the simulation has actually submitted a frame, instead of revealing on a timer. Off restores the previous handoff exactly."
+          enabled={form.sim_transition_coordinator}
+          onToggle={(v) => set('sim_transition_coordinator', v)}
+        />
+
+        <FlagCard
+          title="Adaptive quality"
+          description="Lets a simulation lower its own render quality when it cannot hold frame rate."
+          enabled={form.sim_adaptive_quality}
+          onToggle={(v) => set('sim_adaptive_quality', v)}
+        />
+
+        <FlagCard
+          title="Boundary sentinel"
+          description="Watches the section boundary with requestVideoFrameCallback so a handoff cannot be missed between animation frames."
+          enabled={form.sim_boundary_sentinel}
+          onToggle={(v) => set('sim_boundary_sentinel', v)}
+        />
+
+        <div className="rounded-lg border border-border bg-card p-5">
+          <div className="flex items-center justify-between">
+            <div className="flex-1 pr-4">
+              <div className="text-sm font-medium">Simulation telemetry sample rate</div>
+              <div className="text-xs text-muted-foreground mt-0.5">
+                Fraction of viewer sessions that report simulation timings. Set to 0 to stop ingestion entirely.
+              </div>
+            </div>
+            <input
+              type="number"
+              min={0}
+              max={1}
+              step={0.01}
+              value={form.rum_sample_rate}
+              onChange={(e) => {
+                // An empty or non-numeric field must not send NaN — the PATCH would 400 and the
+                // operator would lose every other unsaved change on this page with it.
+                const n = parseFloat(e.target.value);
+                set('rum_sample_rate', Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0);
+              }}
+              className="w-24 rounded-md border border-input bg-background px-3 py-1.5 text-sm text-center focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+          </div>
+        </div>
       </div>
     </AdminShell>
+  );
+}
+
+function ChoiceCard({
+  title,
+  description,
+  value,
+  options,
+  onChange,
+}: {
+  title: string;
+  description: string;
+  value: string;
+  options: Array<{ value: string; label: string }>;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-card p-5">
+      <div className="flex items-center justify-between">
+        <div className="flex-1 pr-4">
+          <div className="text-sm font-medium">{title}</div>
+          <div className="text-xs text-muted-foreground mt-0.5">{description}</div>
+        </div>
+        <select
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          aria-label={title}
+          className="rounded-md border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        >
+          {options.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </div>
+    </div>
   );
 }
 
