@@ -1,0 +1,29 @@
+-- 055: Does this package's bridge acknowledge applied sections? (audit P0.5)
+--
+-- WHY A COLUMN AND NOT A JSONB KEY
+-- The capability is recorded on the REVISION, in `sim_revisions.metadata` — the same JSONB the
+-- weight report already lives in, so the revision side needs nothing new. What needs a column is
+-- the READ side. `buildPlayerConfig` is the hottest read path in the product and it resolves a
+-- simulation's identity from `simulations` alone, with an explicit narrow `columns` list and no
+-- join to `sim_revisions`, precisely so it never pulls `canary_report`-sized JSONB per section.
+-- Reaching the revision's metadata from there would mean either a join on every player render or
+-- selecting a JSONB column to read one boolean — which is the cost migration 051 added
+-- `prepare_budget_ms` to avoid, in the same statement, for the same reason.
+--
+-- So this is 051's shape exactly: the fact lives with the revision, and a scalar PROJECTION of it
+-- is written onto `simulations` inside the pointer-flip transaction. A rollback re-projects it from
+-- the revision it rolls back to, so the value always describes the bytes the pointer names.
+--
+-- THREE STATES, WHICH IS WHY IT IS NULLABLE
+--   TRUE  — the published bridge posts SCRIPT_APPLIED. The viewer's apply gate may WAIT for it,
+--           including on a package's first activation, where it previously had to guess.
+--   FALSE — the published bridge does not. Waiting would be waiting on silence; the gate reveals.
+--   NULL  — UNKNOWN. Every package published before this migration, and every package that has
+--           never been republished. The gate treats unknown as its own case: it holds the valid
+--           outgoing content behind a cover, bounded, and reports at the deadline. It never
+--           reveals unverified pixels and it never waits forever.
+--
+-- Applying this migration changes nothing for any viewer: every existing row reads NULL, which is
+-- the state the gate handles as "unproven".
+ALTER TABLE simulations
+  ADD COLUMN IF NOT EXISTS bridge_ack_capable BOOLEAN;

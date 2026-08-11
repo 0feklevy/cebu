@@ -1,0 +1,39 @@
+-- 057: Does this package's entry document need import maps to run at all? (audit P0.8)
+--
+-- WHY A COLUMN AND NOT ONLY A JSONB KEY
+-- The fact itself is recorded on the REVISION, in `sim_revisions.metadata.bridgeCapabilities` —
+-- beside `scriptApplied`, under the same key, written by the same publication paths. It gets a
+-- column for the same reason 055 gave `bridge_ack_capable` one, and the reason is entirely about
+-- the READ side:
+--
+--   • `buildPlayerConfig` resolves a simulation's identity from `simulations` alone, with an
+--     explicit narrow `columns` list and NO join to `sim_revisions`, precisely so the hottest read
+--     path in the product never pulls `canary_report`-sized JSONB per section. Reaching the
+--     revision's metadata from there means either a join on every player render or selecting a
+--     JSONB column to read one boolean — the cost 051 added `prepare_budget_ms` to avoid.
+--   • The EDITOR's two bootstrap reads (GET /sections, GET /editor-state) already select a narrow
+--     pointer projection off `simulations` for `simulation_served_url`. This rides in that same
+--     select as one more scalar; going to the revision would add a second query to both.
+--
+-- So this is 051/055's shape exactly: the fact lives with the revision, and a scalar PROJECTION of
+-- it is written onto `simulations` inside the pointer-flip transaction. A rollback re-projects it
+-- from the revision it rolls back to, so the value always describes the bytes the pointer names —
+-- which matters here, because "needs import maps" is a property of one revision's entry HTML and a
+-- republish can add or remove the tag.
+--
+-- THREE STATES, WHICH IS WHY IT IS NULLABLE
+--   TRUE  — the published entry HTML carries `<script type="importmap">`. On a browser without
+--           import-map support the package can never paint, so the viewer covers it with the
+--           section's poster (presentationPolicy `poster-only-device`) instead of a blank frame,
+--           and the editor shows an honest cue instead of a spinner that can never resolve.
+--   FALSE — it does not. The package is unaffected on every browser, which is the common case and
+--           must stay the common case: a blanket downgrade of old browsers is the regression this
+--           per-package answer exists to prevent.
+--   NULL  — UNKNOWN. Every package published before this migration, and every package that has
+--           never been republished. Unknown is NEVER treated as "requires" — guessing would poster
+--           every legacy package on an older browser for a need it may not have.
+--
+-- Applying this migration changes nothing for any viewer: every existing row reads NULL, and NULL
+-- is the state that leaves the package exactly as it renders today.
+ALTER TABLE simulations
+  ADD COLUMN IF NOT EXISTS requires_import_maps BOOLEAN;

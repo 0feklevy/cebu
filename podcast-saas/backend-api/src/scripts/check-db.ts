@@ -72,6 +72,9 @@ const MIGRATION_FILES = [
   '052_sim_scheduler.sql',
   '053_hls_retired_runs.sql',
   '054_sim_transition_coordinator.sql',
+  '055_sim_bridge_ack_capable.sql',
+  '056_project_duplication.sql',
+  '057_sim_requires_import_maps.sql',
 ];
 
 type Row = Record<string, unknown>;
