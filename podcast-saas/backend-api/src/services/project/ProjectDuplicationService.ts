@@ -7,14 +7,30 @@
  *   1. SNAPSHOT   read every source row once, outside any transaction
  *   2. PLAN       allocate every new id and every destination key, in memory
  *   3. COPY       write the bytes into the (not-yet-referenced) destination keys
- *   4. COMMIT     insert the whole row graph in ONE transaction, in FK order
- *   5. ASSERT     re-read the copy and prove no reference escapes it
+ *   3b. RETARGET  rewrite the copied bytes that NAME ids, so they name the copy's
+ *   4. COMMIT     insert the whole row graph — and the job row's outcome — in ONE transaction
+ *   5. ASSERT     re-read the copy and prove no reference escapes it (inside step 4)
  *
  * A failure anywhere before step 4 leaves orphan objects at deterministic keys — reapable, and
  * harmless because nothing points at them — and NO project. A failure inside step 4 rolls back the
  * same way. The inverse ordering (rows first) would produce a project whose media 404s, which is
  * indistinguishable to a viewer from data loss. This is the ordering `RevisionService` and
  * `PosterService` already use, for the same reason.
+ *
+ * "NOTHING WAS CREATED" IS A PROMISE, SO THE JOB ROW COMMITS WITH THE PROJECT
+ * The row's terminal `ready` used to be a separate statement after the commit transaction. Any
+ * failure in that gap — a pool stall, a failover, or the job row simply gone because deleting the
+ * source project cascades it away — landed in the catch, which tells the user "Nothing was created;
+ * you can try again" about a project that exists, is in their list, and is named by nothing. The
+ * retry then made a second copy. The write now happens inside the same transaction, fenced on the
+ * row still being this run's (`WHERE status = 'committing'`), so the two facts cannot disagree and
+ * a run that was reaped mid-flight rolls back instead of committing behind its successor's back.
+ *
+ * BYTES THAT NAME IDS ARE REWRITTEN, NOT COPIED (step 3b)
+ * A simulation package's `bridge.js` dispatches on TIMELINE SECTION IDS held inside the file. Copied
+ * verbatim into a project whose sections all have new ids, it answers `SCRIPT_MISSING` for every
+ * section it is ever asked for. See `retargetCopiedPackages` for the full argument, including why
+ * the alternative (not remapping `?section=`) is worse.
  *
  * THE THREE HARD PARTS (plan §8.1)
  *  1. CROSS-ROW IDENTITY. `timeline_sections` references video files, simulations, and three
@@ -30,14 +46,15 @@
  *     media is exactly the complexity P0.3 declined.
  */
 
-import { and, eq, inArray, lt, or, sql } from 'drizzle-orm';
+import { and, eq, getTableColumns, inArray, lt, or, sql, type SQL } from 'drizzle-orm';
+import type { PgColumn, PgTable } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 
 import { db } from '../../db/index.js';
 import {
   audio_files, avatar_visuals, branch_choice_points, branch_edges, branch_sequences,
-  camera_plans, corpora, image_files, project_duplications, projects, scenes, scripts,
-  sim_posters, sim_revisions, simulations, timeline_markers, timeline_sections, video_files,
+  camera_plans, corpora, hls_retired_runs, image_files, project_duplications, projects, scenes,
+  scripts, sim_posters, sim_revisions, simulations, timeline_markers, timeline_sections, video_files,
   branch_path_events, collaborators, course_lessons, playlist_items, token_usage,
   video_generation_jobs, jobs, avatar_conversations, audio_renders, project_redirect_targets,
   billing_transactions, user_purchases,
@@ -45,14 +62,20 @@ import {
 import type { StorageService } from '../storage/StorageService.js';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import { logger } from '../../lib/logger.js';
-import { normalizePrefix } from '../storage/prefixScope.js';
+import { isUnderPrefix, normalizePrefix, reroot } from '../storage/prefixScope.js';
 import { MULTIPART_COPY_MAX_BYTES } from '../storage/s3Copy.js';
 import {
-  IdAllocator, PACKAGE_ROOT_EXCLUDED_SUBDIRS, freshSiblingKey, mapStorageKey, rebaseUrl,
-  rerootUrlThroughCopies, rewriteKeyByIds, rewriteSectionParam,
+  IdAllocator, PACKAGE_ROOT_EXCLUDED_SUBDIRS, freshSiblingKey, isExcludedFromCopy, mapStorageKey,
+  rebaseUrl, rerootUrlThroughCopies, rewriteKeyByIds, rewriteSectionParam,
   duplicatedMetadataStatus, duplicatedProjectStatus, duplicatedTitle,
   type DuplicationPlan, type StorageCopy,
 } from './duplicationPlan.js';
+import {
+  isRetargetableManifest, retargetManifest, rewriteGuidanceAudioUrls, rewriteGuidanceOverlayUrls,
+  type ManifestRetarget,
+} from './packageRetarget.js';
+import { rewriteBridgeSectionIds } from '../simulation/SimulationService.js';
+import { IMMUTABLE_CACHE_CONTROL, MANIFEST_FILENAME } from 'shared/sim/simRevision';
 import { bridgeAckCapableFromMetadata, requiresImportMapsFromMetadata } from 'shared/sim/bridgeCapability';
 import { packageRevisionFor } from 'shared/sim/simRevision';
 import { derivePackageRevision } from 'shared/sim/simIdentity';
@@ -153,6 +176,13 @@ export interface DuplicationSnapshot {
   cameraPlans: Row<typeof camera_plans>[];
   corpora: Row<typeof corpora>[];
   avatarVisuals: Row<typeof avatar_visuals>[];
+  /**
+   * Storage prefixes of HLS run trees the ORIGINAL has retired — `hls/{videoFileId}/{runId}`.
+   *
+   * Read so the plan can leave them behind. They are bytes the original is already finished with,
+   * and their retirement rows are (correctly) not copied — see `StorageCopy.exclude`.
+   */
+  retiredHlsPrefixes: string[];
   /** table → rows that exist on the source and are deliberately not copied; null = not countable. */
   excludedCounts: Record<string, number | null>;
 }
@@ -191,10 +221,45 @@ export interface PlannedDuplication {
   posters: PlannedPoster[];
 }
 
+/** What `retargetCopiedPackages` learned that the commit needs. */
+export interface PackageRetarget {
+  /**
+   * The copy's revision id → the manifest hash of its REWRITTEN bytes.
+   *
+   * Present only where a `manifest.json` was found and rewritten. Absent means "carry the source
+   * revision's hash", which is correct exactly when the bytes were carried unchanged too.
+   */
+  manifestHashByRevision: Map<string, string>;
+  warnings: string[];
+}
+
+/** An empty retarget — for `commitRows` callers that did not run the byte phase (tests, tooling). */
+const NO_RETARGET: PackageRetarget = { manifestHashByRevision: new Map(), warnings: [] };
+
 // ── Service ───────────────────────────────────────────────────────────────────────────────────
 
 export class ProjectDuplicationService {
   constructor(private readonly storage: StorageService = getStorageAdapter()) {}
+
+  /**
+   * The storage key behind a `corpora.storage_url`.
+   *
+   * THE ADAPTER ANSWERS FIRST, because it is the only component that knows how the URL was built —
+   * and pattern-matching hosts in a service was wrong for the one adapter whose URL shape is not a
+   * dev route: Supabase publishes `{origin}/storage/v1/object/public/{bucket}/{key}`, so the
+   * heuristic recovered a "key" that still contained the source project id. `rewriteKeyByIds`
+   * therefore mapped it, the plan committed to copying it, and `copyObject` threw `NoSuchKey` —
+   * neither `isCopyUnsupported` (404 is excluded on purpose) nor `isCopyTooLarge` — failing the
+   * whole duplication with "try again" advice that could never work. Any project with a corpus file
+   * was un-duplicatable on that backend, and the test fake's `https://cdn.test/{key}` URLs are why
+   * no suite could see it.
+   *
+   * The heuristic stays as a FALLBACK for a URL minted under an origin this adapter no longer
+   * publishes (a database restored into another environment, a row from before a storage move).
+   */
+  private corpusKey(url: string | null): string | null {
+    return this.storage.keyFromPublicUrl(url) ?? corpusKeyFromUrl(url);
+  }
 
   // ─── 1. Snapshot ────────────────────────────────────────────────────────────────────────────
 
@@ -247,6 +312,7 @@ export class ProjectDuplicationService {
       sequences, choicePoints, edges, sims, activeRevisions, posters,
       scripts: scriptRows, scenes: sceneRows, cameraPlans: cameraPlanRows,
       corpora: corpusRows, avatarVisuals: avatarVisualRows,
+      retiredHlsPrefixes: await retiredHlsPrefixesFor(videoFiles.map((v) => v.id)),
       excludedCounts: await this.countExcluded(sourceProjectId),
     };
   }
@@ -368,7 +434,26 @@ export class ProjectDuplicationService {
       }
       // The WHOLE tree, versioned runs and legacy layout alike. Copying by prefix rather than by
       // the two pointer columns is what keeps the variant playlists and every segment they name.
-      storage.push({ kind: 'prefix', from: `hls/${v.id}`, to: `hls/${ids.next(v.id)}`, reason: `video ${v.filename} HLS ladder` });
+      //
+      // MINUS THE RETIRED RUNS. A re-transcode leaves the superseded run tree in place for a grace
+      // window, named by an `hls_retired_runs` row that `sweepRetiredHlsRuns` will act on. Those
+      // rows are deliberately not copied (they are the ORIGINAL's retention bookkeeping), so a
+      // copied retired tree would be referenced by no column and named by no retirement row —
+      // permanently unreapable, and counted in `objects_total`/`estimatedBytes` as if it were
+      // content. Recording retirement rows for the copies was the alternative and is worse: it puts
+      // the copy's storage on a deletion timer for bytes it never had a use for, and it makes a
+      // duplication write into a table it otherwise only reads.
+      const retiredHere = snap.retiredHlsPrefixes.filter((p) => p === `hls/${v.id}` || p.startsWith(`hls/${v.id}/`));
+      storage.push({
+        kind: 'prefix', from: `hls/${v.id}`, to: `hls/${ids.next(v.id)}`,
+        reason: `video ${v.filename} HLS ladder`,
+        ...(retiredHere.length > 0 ? { exclude: retiredHere } : {}),
+      });
+      if (retiredHere.length > 0) {
+        warnings.push(
+          `video "${v.filename}" has ${retiredHere.length} retired HLS run tree(s) awaiting the sweep — not copied`,
+        );
+      }
       if (v.crop_key) storage.push({ kind: 'object', from: v.crop_key, to: dest(v.crop_key), reason: 'smart-crop metadata' });
       if (v.captions_vtt_key) storage.push({ kind: 'object', from: v.captions_vtt_key, to: dest(v.captions_vtt_key), reason: 'captions backup' });
     }
@@ -433,7 +518,7 @@ export class ProjectDuplicationService {
     // the row still copies — `extracted_md` is what every downstream reader actually uses — but its
     // `storage_url` is dropped rather than left pointing at the original's bytes.
     for (const c of snap.corpora) {
-      const key = corpusKeyFromUrl(c.storage_url);
+      const key = this.corpusKey(c.storage_url);
       if (key) storage.push({ kind: 'object', from: key, to: dest(key), reason: 'corpus source file' });
     }
 
@@ -618,6 +703,11 @@ export class ProjectDuplicationService {
         await this.storage.copyObject(c.from, c.to);
       } else if (c.kind === 'package-root') {
         await this.copySimulationMutablePrefix(c.from, c.to);
+      } else if (c.exclude && c.exclude.length > 0) {
+        // A prefix copy with holes in it. `copyPrefix` is one server-side sweep and has no
+        // exclusion vocabulary, so this walks the listing instead — the same shape
+        // `copySimulationMutablePrefix` already uses for the other subtree-excluding copy.
+        await this.copyPrefixExcept(c);
       } else {
         await this.storage.copyPrefix(c.from, c.to);
       }
@@ -636,6 +726,15 @@ export class ProjectDuplicationService {
    * lookup will ever compute, which is worse than not copying them, because a sweep would then have
    * to distinguish them from live ones.
    */
+  /** A prefix copy that skips the subtrees `StorageCopy.exclude` names. */
+  private async copyPrefixExcept(copy: StorageCopy): Promise<void> {
+    for (const key of await this.storage.listObjects(copy.from)) {
+      if (!isUnderPrefix(key, copy.from) || isExcludedFromCopy(key, copy)) continue;
+      const dest = reroot(key, copy.from, copy.to);
+      if (dest !== null) await this.storage.copyObject(key, dest);
+    }
+  }
+
   private async copySimulationMutablePrefix(from: string, to: string): Promise<void> {
     const keys = await this.storage.listObjects(from);
     for (const key of keys) {
@@ -662,13 +761,179 @@ export class ProjectDuplicationService {
         }
         continue;
       }
-      const sourceKeys = await this.storage.listObjects(c.from);
+      // Excluded subtrees are not copied, so they must not be counted as source either — a tree
+      // that is ENTIRELY retired would otherwise report a non-empty source against an empty (and
+      // correct) destination.
+      const sourceKeys = (await this.storage.listObjects(c.from)).filter((k) => !isExcludedFromCopy(k, c));
       if (sourceKeys.length === 0) continue; // nothing to copy is not a failure
       const destKeys = await this.storage.listObjects(c.to);
       if (destKeys.length === 0) {
         throw new Error(`duplication: prefix ${c.from} copied to ${c.to} but the destination is empty`);
       }
     }
+  }
+
+  // ─── 3b. Retarget the copied packages ───────────────────────────────────────────────────────
+
+  /**
+   * Make every copied simulation package's own BYTES name the copy. Runs after the byte copy and
+   * before the commit, so the rows that are written describe the bytes that are actually stored.
+   *
+   * THE INVARIANT
+   *   A copied package's published bytes name the COPY's ids — never the original's.
+   *
+   * WHY IT CANNOT BE SKIPPED (the defect this closes). `bridge.js` keys `__SECTIONS__` by TIMELINE
+   * SECTION ID (`assembleSectionBridgeArtifacts` → `sectionEntries.set(opts.sectionId, …)`), and the
+   * emitted dispatch resolves `startScript(name)` against exactly that map, posting `SCRIPT_MISSING`
+   * and running NOTHING on a miss. A duplication mints a fresh id for every section, so a copy whose
+   * bridge bytes were copied verbatim answers `SCRIPT_MISSING` for every simulation section it is
+   * ever asked for, in the viewer and in the editor alike — the video plays through with no
+   * simulation at all.
+   *
+   * WHY NOT SIMPLY STOP REMAPPING `?section=` (the other end of the same coupling). Leaving the
+   * original's section id in the URL would restore dispatch and break two things that read the SAME
+   * parameter: `variantKeyFor` reads it as the poster VARIANT KEY — and `planPosters` has already
+   * re-keyed the copy's posters onto the copy's section ids, so none of them would ever be looked
+   * up — and `sections.controller`'s `urlIsOwn` test (`simulation_url.includes('section=' + id)`)
+   * would answer "no" for every copied section, making the editor regenerate every bridge script it
+   * should have reused. Both axes are satisfied only by the copy owning its ids everywhere.
+   *
+   * WHAT ELSE MOVES. `guidance.js` bakes each cue's `audioUrl` in as a literal (rewriting the
+   * database column alone leaves the viewer firing the ORIGINAL's audio), and `manifest.json` names
+   * the simulation, project, revision and every variant key, and hashes the two files above.
+   *
+   * WHAT IS DELIBERATELY LEFT ALONE.
+   *  • A package with no parseable `@@SIM_BRIDGE@@` map — a legacy or hand-written bridge — keeps
+   *    its bytes exactly as they are, and says so in the warnings. There is no section map to
+   *    rewrite and inventing one would be worse than the defect.
+   *  • `simulations.bridge_hash`. It is stale for a rewritten bridge, and it must be: for a
+   *    pre-revision simulation it is an INPUT to `derivePackageRevision`, and `planPosters` has
+   *    already committed the copy's posters to paths derived from it. The copy's package-revision
+   *    axis is already distinguished by its new simulation/revision id, and the value re-derives
+   *    from the real bytes on the copy's next publication.
+   *  • The entry HTML's `bridge.js?v=…`. It is a cache-buster on a path that is itself new, so it
+   *    can never collide with a cached older body; it too re-derives on the next publication.
+   */
+  async retargetCopiedPackages(snap: DuplicationSnapshot, planned: PlannedDuplication): Promise<PackageRetarget> {
+    const { plan, ids } = planned;
+    const copies = plan.storage;
+    const warnings: string[] = [];
+    const manifestHashByRevision = new Map<string, string>();
+
+    // ONLY section ids, never the whole id map: the bridge's keys are timeline section ids, and a
+    // blanket substitution could rename a body's own literal that merely happens to be some other
+    // copied uuid.
+    const sectionIds = new Map<string, string>();
+    for (const s of snap.sections) {
+      const next = ids.get(s.id);
+      if (next) sectionIds.set(s.id, next);
+    }
+    const rewriteUrl = (url: string): string | null => rerootUrlThroughCopies(url, copies);
+
+    for (const sim of snap.sims) {
+      const oldPrefix = normalizePrefix(sim.storage_prefix);
+      const newPrefix = mapStorageKey(oldPrefix, copies) ?? oldPrefix;
+      if (newPrefix === oldPrefix) continue;   // nothing was copied for this simulation
+
+      const rev = snap.activeRevisions.find((r) => r.simulation_id === sim.id);
+      const newRevId = rev ? ids.next(rev.id) : null;
+      const revisionRoot = newRevId ? `${newPrefix}/revisions/${newRevId}` : null;
+      /** manifest-relative path → the bytes now stored there. Feeds the manifest's `files[]`. */
+      const rewritten = new Map<string, Buffer>();
+
+      for (const key of await this.storage.listObjects(newPrefix)) {
+        const isBridge = key.endsWith('/bridge.js');
+        const isGuidance = key.endsWith('/guidance.js');
+        if (!isBridge && !isGuidance) continue;
+
+        const before = (await this.storage.readObject(key)).toString('utf-8');
+        const after = isBridge
+          ? this.retargetBridge(key, before, sectionIds, warnings)
+          : rewriteGuidanceOverlayUrls(before, rewriteUrl).source;
+        if (after === before) continue;
+
+        const bytes = Buffer.from(after, 'utf-8');
+        await this.storage.uploadFile(key, bytes, 'application/javascript');
+        if (revisionRoot && key.startsWith(`${revisionRoot}/`)) {
+          rewritten.set(key.slice(revisionRoot.length + 1), bytes);
+        }
+      }
+
+      // The manifest LAST: it hashes the files above, so it has to see their final bytes.
+      if (rev && newRevId && revisionRoot) {
+        const hash = await this.retargetRevisionManifest({
+          manifestKey: `${revisionRoot}/${MANIFEST_FILENAME}`,
+          to: {
+            simulationId: ids.next(sim.id),
+            projectId: plan.targetProjectId,
+            // The copy's history begins now — `commitRows` inserts it as revision 1.
+            revisionNumber: 1,
+            revisionId: newRevId,
+            sectionIds,
+            rewritten,
+          },
+          warnings,
+        });
+        if (hash) manifestHashByRevision.set(newRevId, hash);
+        else if (rewritten.size > 0 && rev.manifest_hash) {
+          // Bytes moved but there is no manifest to re-describe them, so the inherited hash is the
+          // only thing available and it now describes a package that exists nowhere. Said out loud
+          // rather than silently carried; in practice unreachable, because `RevisionService.validate`
+          // writes `manifest.json` and `manifest_hash` in the same step.
+          warnings.push(
+            `simulation "${sim.name}" revision ${rev.id}: bytes were retargeted but no manifest.json was found, ` +
+            'so the copy inherits a manifest_hash that no longer describes its bytes',
+          );
+        }
+      }
+    }
+    return { manifestHashByRevision, warnings };
+  }
+
+  /**
+   * One bridge's source, re-keyed onto the copy's section ids.
+   *
+   * A package with no `@@SIM_BRIDGE@@` map is legacy or hand-written: there is no section table to
+   * re-key, so its bytes are returned untouched and the plan says so rather than the copy quietly
+   * carrying a bridge nobody has reasoned about.
+   */
+  private retargetBridge(
+    key: string,
+    source: string,
+    sectionIds: ReadonlyMap<string, string>,
+    warnings: string[],
+  ): string {
+    const out = rewriteBridgeSectionIds(source, sectionIds);
+    if (out.sections === 0) {
+      warnings.push(`${key} carries no @@SIM_BRIDGE@@ section map (legacy or hand-written) — its bytes are unchanged`);
+    }
+    return out.source;
+  }
+
+  /** Rewrite one revision's `manifest.json` onto the copy's identity. Returns its new hash. */
+  private async retargetRevisionManifest(opts: {
+    manifestKey: string;
+    to: ManifestRetarget;
+    warnings: string[];
+  }): Promise<string | null> {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse((await this.storage.readObject(opts.manifestKey)).toString('utf-8'));
+    } catch {
+      return null;   // no manifest, or unreadable — a legacy package; leave it alone
+    }
+    if (!isRetargetableManifest(parsed)) {
+      opts.warnings.push(`${opts.manifestKey} is not a manifest this version can retarget — left as it was`);
+      return null;
+    }
+    const { manifest, manifestHash } = retargetManifest(parsed, opts.to);
+    await this.storage.uploadFile(
+      opts.manifestKey,
+      Buffer.from(JSON.stringify(manifest, null, 2), 'utf-8'),
+      'application/json',
+      IMMUTABLE_CACHE_CONTROL,
+    );
+    return manifestHash;
   }
 
   // ─── 4. Commit rows ─────────────────────────────────────────────────────────────────────────
@@ -681,8 +946,24 @@ export class ProjectDuplicationService {
    * their simulation) and `branch_choice_points.default_edge_id` (edges reference their choice
    * point). Both are written as UPDATEs after their targets exist.
    */
-  async commitRows(snap: DuplicationSnapshot, planned: PlannedDuplication, requestedBy: string | null): Promise<string> {
+  async commitRows(
+    snap: DuplicationSnapshot,
+    planned: PlannedDuplication,
+    requestedBy: string | null,
+    opts: {
+      /** What the byte phase rewrote. Omitted by callers that did not run one. */
+      retarget?: PackageRetarget;
+      /**
+       * The duplication row to mark `ready` IN THIS TRANSACTION, fenced on it still being ours.
+       *
+       * Omitting it leaves the caller to record the outcome separately, which is what the code did
+       * before — see `finalizeDuplication` for why that window had to be closed.
+       */
+      finalize?: { duplicationId: string; now: Date };
+    } = {},
+  ): Promise<string> {
     const { plan, ids, posters } = planned;
+    const retarget = opts.retarget ?? NO_RETARGET;
     const idMap = ids.snapshot();
     const copies = plan.storage;
     const key = (k: string | null | undefined): string | null => mapStorageKey(k, copies);
@@ -754,16 +1035,31 @@ export class ProjectDuplicationService {
             storage_prefix: newPrefix,
             entry_file: rewriteEntryFile(s.entry_file, normalizePrefix(s.storage_prefix), newPrefix),
             bridge_functions: s.bridge_functions, status: s.status, error: s.error,
-            guidance: s.guidance, guidance_status: s.guidance_status,
+            // Every cue's `audioUrl` is a full public URL under the SOURCE simulation's
+            // `guidance/` subtree with no shadow key column. The bytes come along in the
+            // package-root copy; without this the copy's narration points into a prefix that
+            // project DELETE purges, and `useProjectPlayer` plays it with a bare
+            // `new Audio(url)` — no fallback, no error, just silence. The OVERLAY that actually
+            // fires the cue carries the same URLs and is rewritten in `retargetCopiedPackages`;
+            // this column is what the editor reads.
+            guidance: rewriteGuidanceAudioUrls(s.guidance, (u) => rerootUrlThroughCopies(u, copies)),
+            guidance_status: s.guidance_status,
             // `guidance_meta.mdUrl` is a public URL of `{prefix}/guidance/understanding.md` with no
             // shadow key column. The BYTES come along in the package-root copy; without rebasing the
             // URL the editor's "analysis ↗" link on the COPY opens the ORIGINAL's document, and 404s
             // the moment the original is deleted.
             guidance_meta: rewriteGuidanceMeta(s.guidance_meta, copies),
             guidance_error: s.guidance_error,
-            // The bytes are copied verbatim, so the hash and the verdict describe the SAME package
-            // — which is exactly the condition §8.2 attaches to carrying them. `verifyBytes` has
-            // already run by the time this executes; if it had not, these would have to be null.
+            // Carried, and DELIBERATELY STALE for a package whose bridge was retargeted.
+            //
+            // For a simulation with an active revision this value is inert: `packageRevisionFor`
+            // takes the revision id, and the canary verdict below describes behaviour the section
+            // rename does not change (the same bodies, under the copy's own keys). For a
+            // PRE-REVISION simulation it is an input to `derivePackageRevision` — and `planPosters`
+            // has already committed the copy's posters to storage paths derived from it, before any
+            // byte was read. Recomputing it here would silently orphan every one of them. The copy's
+            // identity axis is already distinct (new simulation id, new revision id), and the value
+            // re-derives from the real bytes on the copy's next publication.
             bridge_hash: s.bridge_hash,
             package_class: s.package_class,
             canary_report: s.canary_report,
@@ -792,7 +1088,13 @@ export class ProjectDuplicationService {
           simulation_id: newSimId,
           revision_number: 1,
           status: 'active',
-          manifest_hash: rev.manifest_hash,
+          // NOT inherited. `retargetCopiedPackages` rewrote this package's `bridge.js` so it
+          // dispatches on the COPY's section ids, which makes the copy's bytes genuinely
+          // different bytes — and in an immutable-revision model different bytes are a different
+          // revision, so they get their own manifest and their own hash. Carrying the source's
+          // would assert a byte identity that no longer holds. Falls back to the source's hash
+          // only where nothing was rewritten (a legacy package with no section map).
+          manifest_hash: retarget.manifestHashByRevision.get(newRevId) ?? rev.manifest_hash,
           entry_path: rev.entry_path,
           bridge_protocol_version: rev.bridge_protocol_version,
           runtime_protocol_version: rev.runtime_protocol_version,
@@ -952,7 +1254,7 @@ export class ProjectDuplicationService {
       // 9 ─ authoring inputs
       if (snap.corpora.length) {
         await tx.insert(corpora).values(snap.corpora.map((c) => {
-          const oldKey = corpusKeyFromUrl(c.storage_url);
+          const oldKey = this.corpusKey(c.storage_url);
           const newKey = oldKey ? key(oldKey) : null;
           return {
             id: ids.next(c.id), project_id: targetId, source_type: c.source_type,
@@ -1015,6 +1317,9 @@ export class ProjectDuplicationService {
       // true. It costs a handful of aggregate queries on rows that are already in this transaction's
       // snapshot.
       await this.assertNoEscapingReferences(src.id, targetId, tx);
+
+      // 11 ─ record the outcome on the job row, IN THIS TRANSACTION, fenced on still owning it.
+      if (opts.finalize) await finalizeDuplication(tx, opts.finalize, targetId);
     });
 
     return targetId;
@@ -1145,17 +1450,24 @@ export class ProjectDuplicationService {
 
     // Storage references that live INSIDE JSONB rather than in a key column.
     //
-    // Everything above walks column-shaped keys, which is exactly why the avatar-circle faces
-    // escaped: their only pointer is a URL nested in `avatar_config.avatarCircles.faces[].imageUrl`,
-    // and `guidance_meta.mdUrl` is the same shape. Checked as text against the SOURCE PROJECT ID
-    // rather than by walking the document, because the property being proved is not "this field was
-    // rewritten" but "nothing in this blob still names the original" — which is what survives a
-    // future field being added to either document without anyone remembering this file exists.
-    await check('projects.avatar_config pointing at the source', () => exec.select({ n }).from(projects)
-      .where(and(eq(projects.id, t), sql`${projects.avatar_config}::text LIKE ${'%' + sourceProjectId + '%'}`)));
-    await check('simulations.guidance_meta pointing at the source', () => exec.select({ n }).from(simulations)
-      .where(and(eq(simulations.project_id, t),
-        sql`${simulations.guidance_meta}::text LIKE ${'%' + sourceProjectId + '%'}`)));
+    // EVERY jsonb column of every table the copy owns, enumerated from the schema — not a
+    // hand-maintained list of the ones that have bitten us. Three separate pointers of exactly this
+    // shape have now escaped (avatar-circle faces, `guidance_meta.mdUrl`, `guidance[].audioUrl`),
+    // each caught only after it shipped, and each time the fix was "add one more column here". The
+    // list is the defect: a column added next year is a pointer nobody will remember to name.
+    // Enumerating from `getTableColumns` means a new jsonb column is covered the day it exists.
+    //
+    // Checked as TEXT against the SOURCE PROJECT ID rather than by walking each document, because
+    // the property being proved is not "this field was rewritten" but "nothing in this blob still
+    // names the original".
+    for (const [label, table, scope] of copyScopedTables(t)) {
+      for (const col of Object.values(getTableColumns(table)) as PgColumn[]) {
+        if (col.columnType !== 'PgJsonb') continue;
+        const body = jsonbScanExpression(label, col);
+        await check(`${label}.${col.name} pointing at the source`, () => exec.select({ n }).from(table)
+          .where(and(scope, sql`${body}::text LIKE ${'%' + sourceProjectId + '%'}`)));
+      }
+    }
 
     if (escapes.length > 0) {
       throw new Error(`duplication: copied rows reference the original — ${escapes.join('; ')}`);
@@ -1242,13 +1554,18 @@ export class ProjectDuplicationService {
       const tooBig = ProjectDuplicationService.oversizeRefusal(plan);
       if (tooBig) throw tooBig;
 
+      // Fenced like every other write to this row: a run that has lost its claim must not drag a
+      // terminal row back into an in-flight status, which would make the poll follow it forever.
       await db.update(project_duplications).set({
         status: 'copying',
         plan: plan as unknown as Record<string, unknown>,
         objects_total: plan.storage.length,
         bytes_total: plan.estimatedBytes,
         updated_at: new Date(),
-      }).where(eq(project_duplications.id, duplicationId));
+      }).where(and(
+        eq(project_duplications.id, duplicationId),
+        inArray(project_duplications.status, [...DUPLICATION_IN_FLIGHT_STATUSES]),
+      ));
 
       await this.copyBytes(plan, (copied) => {
         void db.update(project_duplications)
@@ -1258,17 +1575,40 @@ export class ProjectDuplicationService {
       });
       await this.verifyBytes(plan);
 
-      await db.update(project_duplications).set({
-        status: 'committing', objects_copied: plan.storage.length, updated_at: new Date(),
-      }).where(eq(project_duplications.id, duplicationId));
-
-      // The independence proof runs INSIDE this call's transaction (see `commitRows` step 10), so a
-      // violation rolls the copy back rather than leaving an unnamed corrupt project behind.
-      const targetId = await this.commitRows(snap, planned, job.requested_by);
+      // The bytes are in place but nothing points at them yet, which is the only safe moment to
+      // REWRITE them: a copied package's bridge/guidance/manifest must name the copy's own ids
+      // before any row asserts that they do. See `retargetCopiedPackages`.
+      const retarget = await this.retargetCopiedPackages(snap, planned);
+      plan.warnings.push(...retarget.warnings);
 
       await db.update(project_duplications).set({
-        status: 'ready', target_project_id: targetId, finished_at: new Date(), updated_at: new Date(),
-      }).where(eq(project_duplications.id, duplicationId));
+        status: 'committing', objects_copied: plan.storage.length,
+        plan: plan as unknown as Record<string, unknown>,
+        updated_at: new Date(),
+      }).where(and(
+        eq(project_duplications.id, duplicationId),
+        inArray(project_duplications.status, [...DUPLICATION_IN_FLIGHT_STATUSES]),
+      ));
+
+      // ONE TRANSACTION for the project AND the job row's terminal state.
+      //
+      // They used to be two statements, and the gap between them was a lie the user could see: the
+      // project committed, the `ready` write failed (a pool stall, a failover, or the job row simply
+      // gone because deleting the source cascades it away), and the catch below reported "Nothing
+      // was created; you can try again" about a project that exists, is in the owner's list, and is
+      // named by nothing — so the retry made a SECOND copy. Inside the transaction the two outcomes
+      // cannot disagree.
+      //
+      // The write is also FENCED (`WHERE status = 'committing'`), which closes the other half:
+      // `claim()` is a correct CAS but nothing re-checked it afterwards, and both
+      // `sweepAbandonedDuplications` and `liveDuplicationFor` can declare a run abandoned after five
+      // minutes without a heartbeat — a window a DB failover during storage I/O produces exactly.
+      // A run that lost its row now rolls back instead of committing a second project behind the
+      // back of the one that took over.
+      const targetId = await this.commitRows(snap, planned, job.requested_by, {
+        retarget,
+        finalize: { duplicationId, now: new Date() },
+      });
 
       logger.info({ duplicationId, sourceProjectId: job.source_project_id, targetId }, 'project duplicated');
       return targetId;
@@ -1277,9 +1617,15 @@ export class ProjectDuplicationService {
         ? err.message
         : 'Duplication failed. Nothing was created; you can try again.';
       logger.error({ err, duplicationId }, 'project duplication failed');
+      // FENCED for the same reason the success path is: a run that was reaped, or superseded, must
+      // not overwrite the terminal state of whoever owns the row now. `ready` in particular is a
+      // record of a project that exists.
       await db.update(project_duplications).set({
         status: 'failed', error: message, finished_at: new Date(), updated_at: new Date(),
-      }).where(eq(project_duplications.id, duplicationId)).catch((e: unknown) => {
+      }).where(and(
+        eq(project_duplications.id, duplicationId),
+        inArray(project_duplications.status, [...DUPLICATION_IN_FLIGHT_STATUSES]),
+      )).catch((e: unknown) => {
         logger.error({ err: e, duplicationId }, 'duplication: could not record the failure');
       });
       throw err;
@@ -1406,9 +1752,21 @@ interface PlannedPoster {
 }
 
 /**
- * The storage key behind a `corpora.storage_url`, recovered exactly the way `CorpusBuilder` does —
- * one derivation, so the copier and the ingester cannot disagree about which object a corpus row
- * names. Returns null for a URL that does not look like a hosted object.
+ * The storage key behind a `corpora.storage_url`, WITHOUT asking the adapter.
+ *
+ * Kept only as the last resort behind `ProjectDuplicationService.corpusKey`, for a URL minted under
+ * an origin the current adapter no longer publishes (a dev database restored into another
+ * environment, a row written before a storage migration). It is a guess, and it is documented as
+ * one: strip the host, then strip whichever of the four dev route prefixes is present.
+ *
+ * IT IS WRONG FOR SUPABASE and cannot be made right here. Supabase publishes
+ * `{origin}/storage/v1/object/public/{bucket}/{key}`, so this returns
+ * `storage/v1/object/public/{bucket}/{key}` — a string that still contains the project id, which is
+ * enough for `rewriteKeyByIds` to plan a copy of it, which then fails `NoSuchKey`: not
+ * `isCopyUnsupported` (404 is deliberately excluded), not `isCopyTooLarge`, so the whole duplication
+ * fails with "you can try again" advice that never can. Every Supabase project with a corpus file
+ * was permanently un-duplicatable. The fix is to ask the adapter to invert its own URL —
+ * `StorageService.keyFromPublicUrl` — which is what the caller does first.
  */
 export function corpusKeyFromUrl(url: string | null): string | null {
   if (!url || !/^https?:\/\//.test(url)) return null;
@@ -1416,6 +1774,111 @@ export function corpusKeyFromUrl(url: string | null): string | null {
   // Dev origins serve objects under a route prefix; the key starts after it.
   const cleaned = stripped.replace(/^(local-storage|sim-public|hls-public|hls-proxy)\//, '');
   return cleaned.length > 0 ? cleaned : null;
+}
+
+/**
+ * Which HLS run trees of these videos the ORIGINAL has already retired.
+ *
+ * Tolerant of a table that is not migrated yet, exactly like `countExcluded`: a deployment behind on
+ * migration 053 must still be able to duplicate a project, and "no retirements" is the honest answer
+ * there — nothing has been retired because nothing can record a retirement.
+ */
+async function retiredHlsPrefixesFor(videoFileIds: readonly string[]): Promise<string[]> {
+  if (videoFileIds.length === 0) return [];
+  try {
+    const rows = await db.select({ prefix: hls_retired_runs.prefix }).from(hls_retired_runs)
+      .where(inArray(hls_retired_runs.video_file_id, [...videoFileIds]));
+    return rows.map((r) => r.prefix);
+  } catch (err) {
+    logger.debug({ err }, 'duplication: hls_retired_runs unavailable — assuming no retired trees');
+    return [];
+  }
+}
+
+/**
+ * Mark a duplication row `ready`, or refuse the whole commit.
+ *
+ * THE FENCE IS THE POINT. `WHERE status = 'committing'` means: this run still owns this row. Zero
+ * rows updated has exactly two causes, and the same remedy fits both — the row was declared
+ * abandoned and re-claimed by a newer run (`claim`, `sweepAbandonedDuplications`,
+ * `liveDuplicationFor`), or it is gone entirely because the source project was deleted mid-run and
+ * `source_project_id` is `ON DELETE CASCADE`. Either way this run's project must not be committed:
+ * in the first case a second run is already making one, in the second nobody is waiting for it and
+ * nothing would ever name it. Throwing here rolls the whole transaction back, which is what makes
+ * the failure message ("Nothing was created") true again.
+ */
+async function finalizeDuplication(
+  tx: { update: typeof db.update },
+  finalize: { duplicationId: string; now: Date },
+  targetProjectId: string,
+): Promise<void> {
+  const [done] = await tx.update(project_duplications)
+    .set({
+      status: 'ready', target_project_id: targetProjectId,
+      finished_at: finalize.now, updated_at: finalize.now,
+    })
+    .where(and(
+      eq(project_duplications.id, finalize.duplicationId),
+      eq(project_duplications.status, 'committing'),
+    ))
+    .returning({ id: project_duplications.id });
+  if (!done) {
+    throw new DuplicationRefused(
+      'This copy was taken over by another attempt, or the project it was copying was deleted while ' +
+      'it ran. Nothing was created; you can start it again.',
+      409,
+    );
+  }
+}
+
+/**
+ * Every table the copy owns, with the predicate that scopes a row of it to the copy.
+ *
+ * Drives the generic JSONB escape scan in `assertNoEscapingReferences`. Listed here rather than
+ * derived, because "does this table belong to a project, and how do you tell" is not something a
+ * schema reflection can answer — but WHICH COLUMNS of it are jsonb is, and that is the half that
+ * kept going stale.
+ */
+function copyScopedTables(targetProjectId: string): Array<[string, PgTable, SQL]> {
+  const t = targetProjectId;
+  /** "belongs to a simulation of the copy" — neither revision nor poster has a project column. */
+  const ofACopiedSim = (column: PgColumn): SQL =>
+    sql`${column} IN (SELECT ${simulations.id} FROM ${simulations} WHERE ${simulations.project_id} = ${t})`;
+  return [
+    ['projects', projects, eq(projects.id, t)],
+    ['video_files', video_files, eq(video_files.project_id, t)],
+    ['image_files', image_files, eq(image_files.project_id, t)],
+    ['audio_files', audio_files, eq(audio_files.project_id, t)],
+    ['timeline_sections', timeline_sections, eq(timeline_sections.project_id, t)],
+    ['timeline_markers', timeline_markers, eq(timeline_markers.project_id, t)],
+    ['branch_sequences', branch_sequences, eq(branch_sequences.project_id, t)],
+    ['branch_choice_points', branch_choice_points, eq(branch_choice_points.project_id, t)],
+    ['branch_edges', branch_edges, eq(branch_edges.project_id, t)],
+    ['simulations', simulations, eq(simulations.project_id, t)],
+    ['scripts', scripts, eq(scripts.project_id, t)],
+    ['scenes', scenes, eq(scenes.project_id, t)],
+    ['camera_plans', camera_plans, eq(camera_plans.project_id, t)],
+    ['corpora', corpora, eq(corpora.project_id, t)],
+    ['avatar_visuals', avatar_visuals, eq(avatar_visuals.project_id, t)],
+    ['sim_revisions', sim_revisions, ofACopiedSim(sim_revisions.simulation_id)],
+    ['sim_posters', sim_posters, ofACopiedSim(sim_posters.simulation_id)],
+  ];
+}
+
+/**
+ * The JSONB value to scan for one column — with the ONE documented exemption.
+ *
+ * `sim_revisions.metadata.duplicatedFrom` records the source project, simulation and revision this
+ * revision was copied from. That is provenance the copy is SUPPOSED to carry: it is how an operator
+ * answers "where did this come from" months later, and it names the original by design. Scanning it
+ * would make the escape check fail on every single duplication. Exempted structurally (`- key`), not
+ * by relaxing the pattern, so everything else in the same document is still checked.
+ */
+function jsonbScanExpression(table: string, col: PgColumn): SQL {
+  if (table === 'sim_revisions' && col.name === 'metadata') {
+    return sql`(COALESCE(${col}, '{}'::jsonb) - 'duplicatedFrom')`;
+  }
+  return sql`COALESCE(${col}, '{}'::jsonb)`;
 }
 
 /**

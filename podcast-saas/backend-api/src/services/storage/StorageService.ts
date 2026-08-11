@@ -71,6 +71,17 @@ export interface StorageService {
   getPublicUrl(path: string): string;
   /** Returns the public (no-auth) URL for a simulation file. Served via /sim-public/* in local dev, R2 public URL in prod. */
   getSimPublicUrl(path: string): string;
+  /**
+   * The storage key a URL this adapter published names — the INVERSE of `getPublicUrl` /
+   * `getSimPublicUrl` — or null when the URL is not one of ours.
+   *
+   * Several columns store a full public URL and no key (`corpora.storage_url`,
+   * `avatar_config…faces[].imageUrl`, `guidance_meta.mdUrl`, `guidance[].audioUrl`). Recovering the
+   * key by pattern-matching hosts in a SERVICE is wrong for any adapter whose URL shape is not on
+   * the list — see `publicUrlKeys.ts` for the Supabase failure that motivated moving it here. Each
+   * adapter answers for its OWN shapes, beside the forward direction, so the pair cannot drift.
+   */
+  keyFromPublicUrl(url: string | null | undefined): string | null;
   /** Read a stored object as a Buffer. */
   readObject(key: string): Promise<Buffer>;
   /** List all object keys under the given prefix (non-recursive prefix, returns full keys). */

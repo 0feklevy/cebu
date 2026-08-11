@@ -19,8 +19,9 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import type { CompletedPart, StorageService, StoredObjectHead } from './StorageService.js';
 import { publicApiOrigin } from '../../config/publicOrigins.js';
 import { mediaKeyScope, mintMediaToken } from './mediaToken.js';
-import { copySourceFor, isCopyTooLarge, isCopyUnsupported, multipartCopyObject } from './s3Copy.js';
+import { copySourceFor, isCopyTooLarge, isCopyUnsupported, multipartCopyObject, readThenWriteCopy } from './s3Copy.js';
 import { reroot } from './prefixScope.js';
+import { keyFromPublicUrlAgainst } from './publicUrlKeys.js';
 import { logger } from '../../lib/logger.js';
 
 export class R2StorageAdapter implements StorageService {
@@ -233,14 +234,13 @@ export class R2StorageAdapter implements StorageService {
       }
       if (!isCopyUnsupported(err)) throw err;
       logger.warn({ err, srcKey }, 'R2: server-side copy unsupported — falling back to read+write');
-      const head = await this.headObject(srcKey);
-      const bytes = await this.readObject(srcKey);
-      await this.uploadFile(
-        destKey,
-        bytes,
-        head?.contentType ?? 'application/octet-stream',
-        head?.cacheControl ?? undefined,
-      );
+      // BOUNDED. `isCopyUnsupported` says nothing about size, so without the guard inside this
+      // helper an arbitrarily large object travels through the heap of the API process.
+      await readThenWriteCopy(srcKey, destKey, 'R2', {
+        head: () => this.headObject(srcKey),
+        read: () => this.readObject(srcKey),
+        write: (bytes, contentType, cacheControl) => this.uploadFile(destKey, bytes, contentType, cacheControl),
+      });
     }
   }
 
@@ -327,6 +327,14 @@ export class R2StorageAdapter implements StorageService {
     // Simulation static files are served directly from R2 public URL (no proxy needed —
     // they load via iframe which uses allow-same-origin, and postMessage works cross-origin).
     return `${this.publicUrl}/${path}`;
+  }
+
+  /** The inverse of the two shapes above. See `publicUrlKeys.ts`. */
+  keyFromPublicUrl(url: string | null | undefined): string | null {
+    return keyFromPublicUrlAgainst(url, [
+      `${publicApiOrigin().replace(/\/+$/, '')}/hls-proxy`,
+      this.publicUrl,
+    ]);
   }
 
   async objectExists(key: string): Promise<boolean> {

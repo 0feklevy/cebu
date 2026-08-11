@@ -8,6 +8,7 @@ import { reroot } from './prefixScope.js';
 import { mediaKeyScope, mintMediaToken } from './mediaToken.js';
 import { logger } from '../../lib/logger.js';
 import { publicApiOrigin, isProd } from '../../config/publicOrigins.js';
+import { keyFromPublicUrlAgainst } from './publicUrlKeys.js';
 
 // Local disk storage — DEV ONLY. Files are written to a PERSISTENT directory
 // (see localStoragePaths.ts — NOT os.tmpdir, which is wiped on restart) and served
@@ -150,6 +151,16 @@ export class LocalStorageAdapter implements StorageService {
   getSimPublicUrl(path: string): string {
     // Simulation files served via the unauthenticated /sim-public/* route
     return `${serveBase()}/sim-public/${path}`;
+  }
+
+  /** The inverse of the three routes above. See `publicUrlKeys.ts`. */
+  keyFromPublicUrl(url: string | null | undefined): string | null {
+    const base = serveBase().replace(/\/+$/, '');
+    return keyFromPublicUrlAgainst(url, [
+      `${base}/local-storage`,
+      `${base}/hls-public`,
+      `${base}/sim-public`,
+    ]);
   }
 
   async objectExists(key: string): Promise<boolean> {

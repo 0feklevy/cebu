@@ -16,8 +16,9 @@ import {
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import type { CompletedPart, StorageService, StoredObjectHead } from './StorageService.js';
 import { publicApiOrigin } from '../../config/publicOrigins.js';
-import { copySourceFor, isCopyTooLarge, isCopyUnsupported, multipartCopyObject } from './s3Copy.js';
+import { copySourceFor, isCopyTooLarge, isCopyUnsupported, multipartCopyObject, readThenWriteCopy } from './s3Copy.js';
 import { reroot } from './prefixScope.js';
+import { keyFromPublicUrlAgainst } from './publicUrlKeys.js';
 import { logger } from '../../lib/logger.js';
 
 /**
@@ -278,14 +279,14 @@ export class SupabaseStorageAdapter implements StorageService {
       }
       if (!isCopyUnsupported(err)) throw err;
       logger.warn({ err, srcKey }, 'Supabase: server-side copy unsupported — falling back to read+write');
-      const head = await this.headObject(srcKey);
-      const bytes = await this.readObject(srcKey);
-      await this.uploadFile(
-        destKey,
-        bytes,
-        head?.contentType ?? 'application/octet-stream',
-        head?.cacheControl ?? undefined,
-      );
+      // BOUNDED, and this is the adapter where it matters most: the comment above calls the
+      // unsupported branch an EXPECTED path, so on this gateway EVERY object of every duplication
+      // takes it — including a 10 GB video master, inline in the API process.
+      await readThenWriteCopy(srcKey, destKey, 'Supabase', {
+        head: () => this.headObject(srcKey),
+        read: () => this.readObject(srcKey),
+        write: (bytes, contentType, cacheControl) => this.uploadFile(destKey, bytes, contentType, cacheControl),
+      });
     }
   }
 
@@ -373,6 +374,21 @@ export class SupabaseStorageAdapter implements StorageService {
     // Content-Type (mirrors LocalStorageAdapter). BACKEND_API_URL must be the
     // backend's public origin in production.
     return `${publicApiOrigin()}/sim-public/${path}`;
+  }
+
+  /**
+   * The inverse of the two shapes above. See `publicUrlKeys.ts`.
+   *
+   * THIS ADAPTER IS THE REASON THE METHOD EXISTS. `{origin}/storage/v1/object/public/{bucket}/{key}`
+   * looks nothing like the dev-route shapes a host-stripping heuristic knows about, so the heuristic
+   * recovered `storage/v1/object/public/{bucket}/{key}` and every caller went on to copy, delete or
+   * re-root an object that does not exist.
+   */
+  keyFromPublicUrl(url: string | null | undefined): string | null {
+    return keyFromPublicUrlAgainst(url, [
+      this.publicBase,
+      `${publicApiOrigin().replace(/\/+$/, '')}/sim-public`,
+    ]);
   }
 
   async objectExists(key: string): Promise<boolean> {

@@ -1282,6 +1282,86 @@ export function parseSectionEntries(bridgeJs: string): Map<string, string> {
   return entries;
 }
 
+/**
+ * The marker pair `buildSectionEntry` writes, with the id captured separately from the block.
+ *
+ * The SAME grammar `parseSectionEntries` reads, deliberately kept adjacent to it: a rewriter that
+ * knew a different grammar than the parser would rename an entry the parser cannot find, or leave
+ * one it can — and either way the dispatch map and the markers would describe different sections.
+ */
+const SECTION_ENTRY_RE =
+  /(\/\*\s*@@SIM_BRIDGE:)([A-Za-z0-9_-]+)(@@\s*\*\/)([\s\S]*?)(\/\*\s*@@\/SIM_BRIDGE:)\2(@@\s*\*\/)/g;
+
+/**
+ * The `'<id>':` that opens a section entry's block.
+ *
+ * The id needs no escaping — `SECTION_ENTRY_RE` only ever captures `[A-Za-z0-9_-]+`, none of which
+ * is a regex metacharacter outside a character class — but it is asserted rather than assumed.
+ */
+const sectionKeyRe = (id: string): RegExp => {
+  if (!SAFE_SECTION_ID_RE.test(id)) throw new Error(`Unsafe sectionId: "${id}"`);
+  return new RegExp(`^(\\s*)(['"])${id}\\2(\\s*:)`);
+};
+
+export interface BridgeSectionRewrite {
+  /** The rewritten source. Byte-identical to the input when nothing was renamed. */
+  source: string;
+  /** How many `@@SIM_BRIDGE@@` entries the bridge carries at all. 0 = not a combined bridge. */
+  sections: number;
+  /** oldId → newId, for the entries that were actually renamed. */
+  renamed: Map<string, string>;
+}
+
+/**
+ * Rewrite the section ids a combined `bridge.js` dispatches on, in place, byte for byte otherwise.
+ *
+ * WHY THIS EXISTS: A DUPLICATED PROJECT'S SIMULATIONS RUN NOTHING WITHOUT IT.
+ * `__SECTIONS__` is keyed by TIMELINE SECTION ID, and `startScript(name)` resolves `name` against
+ * exactly that map (`own.call(SCRIPTS, name) ? … : _sectionBody(name)`), posting `SCRIPT_MISSING`
+ * and running nothing when it misses. A project duplication mints a fresh id for every section and
+ * remaps `?section=` accordingly — so a copy whose bridge bytes still carry the ORIGINAL's ids asks
+ * for a section the bridge has never heard of, in every simulation section, in both the viewer and
+ * the editor.
+ *
+ * SURGICAL, NOT A RE-WRAP. `wrapBridgeCombined(parseSectionEntries(js))` would also produce a
+ * correctly-keyed bridge, but from TODAY's template — so a package published against an older
+ * template would silently gain (or lose) runtime behaviour as a side effect of being copied. Here
+ * only the three tokens that spell the id move: the opening marker, the closing marker, and the
+ * object key. Everything else, including every byte of every body, is preserved.
+ *
+ * INCONSISTENCY IS FATAL, ABSENCE IS NOT. A bridge with no markers at all is a legacy or
+ * hand-written package (`sections: 0`); the caller leaves its bytes alone. A bridge whose marker is
+ * present but whose object key is not where the marker says it is would produce a document where
+ * the parser and the runtime disagree about which sections exist, so it throws instead.
+ */
+export function rewriteBridgeSectionIds(
+  bridgeJs: string,
+  rename: ReadonlyMap<string, string>,
+): BridgeSectionRewrite {
+  let sections = 0;
+  const renamed = new Map<string, string>();
+  const source = bridgeJs.replace(
+    SECTION_ENTRY_RE,
+    (whole, open: string, id: string, openEnd: string, block: string, close: string, closeEnd: string) => {
+      sections += 1;
+      const next = rename.get(id);
+      if (next === undefined || next === id) return whole;
+      if (!SAFE_SECTION_ID_RE.test(next)) throw new Error(`Unsafe sectionId: "${next}"`);
+      const keyRe = sectionKeyRe(id);
+      if (!keyRe.test(block)) {
+        throw new Error(
+          `bridge.js: section "${id}" is marked but its dispatch key is not at the head of its block — refusing a half-renamed bridge`,
+        );
+      }
+      renamed.set(id, next);
+      const newBlock = block.replace(keyRe, (_m, lead: string, quote: string, colon: string) =>
+        `${lead}${quote}${next}${quote}${colon}`);
+      return `${open}${next}${openEnd}${newBlock}${close}${next}${closeEnd}`;
+    },
+  );
+  return { source, sections, renamed };
+}
+
 /** Build the full combined bridge.js IIFE from a sectionId→mainBody map. */
 export interface WrapBridgeOptions {
   /**
@@ -1457,13 +1537,43 @@ export function wrapBridgeCombined(entries: Map<string, string>, opts?: WrapBrid
     '    var ni = window.setInterval, nt = window.setTimeout;',
     '    // .apply(window, arguments) — the (fn, delay, ...args) form must keep forwarding its',
     '    // extra callback arguments; a (f, d) shim silently dropped them for the body window.',
-    "    window.setInterval = function (f, d) { var id = ni.apply(window, arguments); _record(1, id, f, d, arguments); return id; };",
-    "    window.setTimeout = function (f, d) { var id = nt.apply(window, arguments); _record(0, id, f, d, arguments); return id; };",
+    "    window.setInterval = function (f, d) { var xs = Array.prototype.slice.call(arguments, 2);",
+    '      var id = ni.apply(window, arguments); _record(1, id, f, d, xs); return id; };',
+    "    window.setTimeout = function (f, d) { return _armTimeout(nt, f, d, Array.prototype.slice.call(arguments, 2)); };",
     '    try { return run(); } finally { window.setInterval = ni; window.setTimeout = nt; }',
     '  }',
-    '  function _record(kind, id, f, d, argv) {',
+    '  function _record(kind, id, f, d, args) {',
     '    _timers.push([kind, id]);',
-    '    _timerSpecs[id] = { kind: kind, fn: f, delay: d, args: Array.prototype.slice.call(argv, 2) };',
+    '    _timerSpecs[id] = { kind: kind, fn: f, delay: d, args: args };',
+    '  }',
+    '  // A ONE-SHOT THAT HAS ALREADY FIRED IS NOT AUTOMATION ANY MORE (audited).',
+    '  //',
+    '  // Nothing used to remove a setTimeout\'s spec when it fired, so _pauseDemoTimers retained a',
+    '  // COMPLETED one-shot and _resumeDemoTimers scheduled it again: toggling Auto Script off and',
+    '  // then on re-ran the body\'s one-shot demo steps — applyImpulse(), a scripted click, a reset.',
+    '  // That changes what the simulation COMPUTES, not merely when it is shown, which is the one',
+    '  // category of change this runtime is never allowed to make. So a setTimeout is armed through',
+    '  // a wrapper that forgets its own handle the instant the callback runs, BEFORE the body sees',
+    '  // it — a throwing body must still be forgotten, or the throw becomes resumable.',
+    '  function _forget(id) {',
+    '    delete _timerSpecs[id];',
+    '    // Splice rather than filter: _demoTimers is walked by index in _pauseDemoTimers, and a',
+    '    // fired one-shot left in it would be counted as "stopped" and reported as unrestorable.',
+    '    for (var i = _demoTimers.length - 1; i >= 0; i--) { if (_demoTimers[i] === id) _demoTimers.splice(i, 1); }',
+    '  }',
+    '  function _armTimeout(schedule, f, d, args) {',
+    '    // The id is not known until schedule() returns, and the callback cannot run before then',
+    '    // (timers never fire synchronously), so a box read at fire time is exact.',
+    '    var box = { id: 0 };',
+    '    // Only a FUNCTION can be wrapped. The legacy string form is passed through untouched: it',
+    '    // is not forgettable, and it is not faithfully re-creatable either.',
+    "    var body = (typeof f === 'function')",
+    '      ? function () { _forget(box.id); return f.apply(this, arguments); }',
+    '      : f;',
+    '    var id = schedule.apply(window, [body, d].concat(args));',
+    '    box.id = id;',
+    '    _record(0, id, f, d, args);',
+    '    return id;',
     '  }',
     '  // Bodies opt a handle in: _ivs.push(simDemoTimer(setInterval(step, 120))). Returns the id',
     '  // unchanged, so it stays a normal handle the body\'s own cleanup still clears.',
@@ -1496,12 +1606,15 @@ export function wrapBridgeCombined(entries: Map<string, string>, opts?: WrapBrid
     '    for (var i = 0; i < saved.length; i++) {',
     '      var s = saved[i], id;',
     '      try {',
-    '        id = s.kind',
-    '          ? _natSetInterval.apply(window, [s.fn, s.delay].concat(s.args))',
-    '          : _natSetTimeout.apply(window, [s.fn, s.delay].concat(s.args));',
+    '        if (s.kind) {',
+    '          id = _natSetInterval.apply(window, [s.fn, s.delay].concat(s.args));',
+    '          _record(1, id, s.fn, s.delay, s.args);',
+    '        } else {',
+    '          // Through the SAME arming wrapper as the first schedule, so a resumed one-shot',
+    '          // forgets itself when it fires instead of becoming resumable all over again.',
+    '          id = _armTimeout(_natSetTimeout, s.fn, s.delay, s.args);',
+    '        }',
     '      } catch (e) { _demoLost++; continue; }',
-    '      _timers.push([s.kind, id]);',
-    '      _timerSpecs[id] = s;',
     '      _demoTimers.push(id);',
     '      restarted++;',
     '    }',

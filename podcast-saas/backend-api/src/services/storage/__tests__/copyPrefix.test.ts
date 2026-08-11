@@ -35,7 +35,8 @@ vi.mock('../../../lib/logger.js', () => ({
 import { isUnderPrefix, normalizePrefix, reroot } from '../prefixScope.js';
 import {
   copySourceFor, isCopyTooLarge, isCopyUnsupported, partCopyRanges,
-  MULTIPART_COPY_MAX_BYTES, MULTIPART_COPY_MAX_PARTS, MULTIPART_COPY_PART_BYTES, S3_COPY_MAX_BYTES,
+  HEAP_COPY_MAX_BYTES, MULTIPART_COPY_MAX_BYTES, MULTIPART_COPY_MAX_PARTS, MULTIPART_COPY_PART_BYTES,
+  S3_COPY_MAX_BYTES,
 } from '../s3Copy.js';
 import { R2StorageAdapter } from '../R2StorageAdapter.js';
 import { SupabaseStorageAdapter } from '../SupabaseStorageAdapter.js';
@@ -396,6 +397,55 @@ describe.each(S3_ADAPTERS)('$label copyObject past the single-copy ceiling', ({ 
     // object the gateway cannot copy at all.
     expect(s3.names()).not.toContain('CreateMultipartUpload');
     expect(s3.names()).not.toContain('UploadPartCopy');
+  });
+
+  /**
+   * The gateway rejects `CopyObject` outright — the branch whose own documentation calls it "an
+   * EXPECTED path, not a curiosity" on Supabase — for an object far too big to hold in memory.
+   */
+  const unsupportedStore = (contentLength: number | undefined) => (name: string): unknown => {
+    switch (name) {
+      case 'CopyObject':
+        throw Object.assign(new Error('nope'), { name: 'NotImplemented', $metadata: { httpStatusCode: 501 } });
+      case 'HeadObject': return { ContentType: 'video/mp4', ContentLength: contentLength };
+      case 'GetObject': return { Body: Readable.from([Buffer.alloc(8)]) };
+      case 'PutObject': return {};
+      default: throw new Error(`unexpected command: ${name}`);
+    }
+  };
+
+  it('refuses the read-then-write fallback for an object too big to hold in memory', async () => {
+    // THE TWO FALLBACKS ARE DISJOINT BY ERROR CLASS, NOT BY SIZE, and that was never enough. A 501
+    // says nothing about how big the object is, so a 6 GB master took the read-then-write path and
+    // `Buffer.concat`-ed the whole thing inside the API process — which is where duplication runs,
+    // inline, for every user of the deployment.
+    const { adapter, s3 } = adapterUnder(unsupportedStore(SIZE));
+
+    await expect(adapter.copyObject(SRC, DEST)).rejects.toThrow(/does not support server-side copy/);
+    // Not a byte was moved, and it did not silently reroute to the multipart path either — that one
+    // answers a different failure and would fail again, slower.
+    expect(s3.names()).not.toContain('GetObject');
+    expect(s3.names()).not.toContain('PutObject');
+    expect(s3.names()).not.toContain('CreateMultipartUpload');
+  });
+
+  it('refuses when the store will not say how big the object is', async () => {
+    // A bound that cannot be evaluated is not a bound. Refusing costs a clear error; guessing costs
+    // the process.
+    const { adapter, s3 } = adapterUnder(unsupportedStore(undefined));
+
+    await expect(adapter.copyObject(SRC, DEST)).rejects.toThrow(/did not report the object's size/);
+    expect(s3.names()).not.toContain('GetObject');
+  });
+
+  it('still takes the fallback for an object the heap can hold', async () => {
+    // The guard must not turn an expected path into a broken one: Supabase's whole simulation
+    // package, every poster and every HLS segment goes through here.
+    const { adapter, s3 } = adapterUnder(unsupportedStore(HEAP_COPY_MAX_BYTES));
+
+    await adapter.copyObject(SRC, DEST);
+    expect(s3.names()).toContain('GetObject');
+    expect(s3.of('PutObject')[0]).toMatchObject({ Key: DEST, ContentType: 'video/mp4' });
   });
 
   it('lets a real failure surface as itself', async () => {

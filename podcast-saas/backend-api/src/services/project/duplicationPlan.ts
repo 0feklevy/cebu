@@ -37,6 +37,23 @@ export interface StorageCopy {
   to: string;
   /** Which part of the matrix asked for it — surfaced verbatim by the dry run. */
   reason: string;
+  /**
+   * Source prefixes INSIDE `from` that this copy must not carry (`prefix` copies only).
+   *
+   * The one user is a video's HLS tree, which holds retired-but-unswept run trees alongside the
+   * live one. Those are named by `hls_retired_runs` rows, and those rows are correctly not copied —
+   * so a copied retired tree would be referenced by no column and named by no retirement row, which
+   * makes it unreapable for the lifetime of the deployment while inflating `objects_total`.
+   *
+   * Recorded on the plan rather than filtered at copy time so the dry run — the stored answer to
+   * "what did this copy?" — says what was left behind and why.
+   */
+  exclude?: readonly string[];
+}
+
+/** Does an exclusion list keep this key out of a copy? */
+export function isExcludedFromCopy(key: string, copy: StorageCopy): boolean {
+  return (copy.exclude ?? []).some((p) => isUnderPrefix(key, p));
 }
 
 /** Subtrees of a simulation prefix owned by the system, not by the customer's bundle. */
@@ -160,7 +177,11 @@ export function mapStorageKey(key: string | null | undefined, copies: readonly S
     if (c.kind === 'object' && c.from === key) return c.to;
   }
   for (const c of copies) {
-    if (c.kind === 'prefix' && isUnderPrefix(key, c.from)) return reroot(key, c.from, c.to);
+    // An excluded subtree is NOT copied, so no destination exists to point a column at. Answering
+    // otherwise would hand back a key nothing was ever written to.
+    if (c.kind === 'prefix' && isUnderPrefix(key, c.from) && !isExcludedFromCopy(key, c)) {
+      return reroot(key, c.from, c.to);
+    }
   }
   for (const c of copies) {
     if (c.kind === 'package-root' && isUnderPrefix(key, c.from)) return reroot(key, c.from, c.to);
@@ -284,6 +305,13 @@ export function rerootUrlThroughCopies(url: string, copies: readonly StorageCopy
  * `sections.controller`'s `urlIsOwn` check (`simulation_url.includes('section=' + section.id)`)
  * would answer "no" for every section of the copy — so the editor would regenerate every bridge
  * script it should have reused.
+ *
+ * THE OTHER HALF OF THIS IS IN THE BYTES, and neither half works alone. The generated `bridge.js`
+ * keys `__SECTIONS__` by section id and `startScript` resolves against it, so remapping the
+ * parameter without re-keying the bridge asks the copy's package for a section it has never heard
+ * of — `SCRIPT_MISSING`, in every simulation section. `ProjectDuplicationService.
+ * retargetCopiedPackages` re-keys the bridge for exactly that reason; changing either of these two
+ * without the other reintroduces one of the two defects.
  */
 export function rewriteSectionParam(url: string, idMap: IdMap): string {
   const q = url.indexOf('?');

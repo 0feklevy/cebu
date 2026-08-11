@@ -19,13 +19,19 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PGlite } from '@electric-sql/pglite';
 import { drizzle } from 'drizzle-orm/pglite';
 
+import { eq } from 'drizzle-orm';
+
 import * as schema from '../../../db/schema.js';
+
+/** The transaction handle `assertNoEscapingReferences` is called with, as far as a test needs it. */
+type TxLike = Pick<typeof import('../../../db/index.js').db, 'update' | 'delete'>;
 
 const h = vi.hoisted(() => ({ dbRef: { current: null as unknown as Record<string, unknown> } }));
 
@@ -52,6 +58,10 @@ import {
   DUPLICATION_STALE_AFTER_MS, ProjectDuplicationService, liveDuplicationFor, sweepAbandonedDuplications,
 } from '../ProjectDuplicationService.js';
 import { rerootUrlThroughCopies, type StorageCopy } from '../duplicationPlan.js';
+import { keyFromPublicUrlAgainst } from '../../storage/publicUrlKeys.js';
+import { parseSectionEntries, wrapBridgeCombined } from '../../simulation/SimulationService.js';
+import { wrapGuidanceCombined } from '../../simulation/GuidanceService.js';
+import { computeManifestHash, type SimManifest } from 'shared/sim/simManifest';
 import { deleteWithFallback, deleteWithPrefixFallback } from '../../storage/deleteWithFallback.js';
 import { deleteHlsRetirementRowsForVideo, retireHlsRun, sweepRetiredHlsRuns } from '../../video/hlsRetention.js';
 import { packageRevisionFor } from 'shared/sim/simRevision';
@@ -115,9 +125,23 @@ function fakeStorage() {
     }),
     getPublicUrl: (key: string) => `https://cdn.test/${key}`,
     getSimPublicUrl: (key: string) => `https://sim.test/${key}`,
+    /**
+     * The adapter's own inverse, through the SHARED helper the real adapters use.
+     *
+     * SUPABASE'S BASE IS IN THE LIST DELIBERATELY. The fake used to mint only `https://cdn.test/{key}`
+     * — a shape the old host-stripping heuristic inverts correctly by accident — which is exactly why
+     * no test could see that a Supabase-shaped `corpora.storage_url`
+     * (`{origin}/storage/v1/object/public/{bucket}/{key}`) recovered a key that does not exist, and
+     * failed every duplication of every project with a corpus file on that backend.
+     */
+    keyFromPublicUrl: (url: string | null | undefined) =>
+      keyFromPublicUrlAgainst(url, ['https://cdn.test', 'https://sim.test', SUPABASE_PUBLIC_BASE]),
   };
   return adapter;
 }
+
+/** A real Supabase public base, shaped exactly as `SupabaseStorageAdapter` composes it. */
+const SUPABASE_PUBLIC_BASE = 'https://ref.supabase.co/storage/v1/object/public/media';
 
 let adapter: ReturnType<typeof fakeStorage>;
 let pg: PGlite;
@@ -169,6 +193,30 @@ interface Fixture {
 }
 
 const HLS_RUN = 'run7';
+/** A run tree the ORIGINAL has already retired: bytes still there, awaiting the sweep. */
+const HLS_RETIRED_RUN = 'run6';
+
+// ── Simulation package bytes the fixture publishes ────────────────────────────────────────────
+//
+// REAL artefacts, produced by the SHIPPING generators. The suite used to seed `bytes:<key>` for
+// every simulation file, which is why it could assert that `?section=` was remapped and still not
+// notice that the bridge those sections dispatch through had never heard of them.
+
+/** A section body that records which section actually ran. */
+const sectionBody = (tag: string): string =>
+  `var g = window.__ran = window.__ran || [];\ng.push('${tag}');\nreturn function () { g.push('stop:${tag}'); };`;
+
+/** The guidance cue's audio: a real object under the simulation's own `guidance/` subtree. */
+const GUIDANCE_AUDIO_REL = 'guidance/en/g1.deadbeef.mp3';
+
+function guidanceEntries(audioUrl: string): unknown[] {
+  return [{
+    id: 'g1', kind: 'feature', title: 'Press play', narration: 'Press play to start the reaction.',
+    enabled: true, confidence: 0.9, warnings: [],
+    trigger: { kind: 'feature', targetId: 'playBtn', events: ['pointerdown'] },
+    audioUrl,
+  }];
+}
 
 async function seed(): Promise<Fixture> {
   const org = await one<{ id: string }>(`INSERT INTO orgs (name) VALUES ('O') RETURNING id`);
@@ -232,6 +280,15 @@ hello','caphash')
      `crop/${videoMain.id}.json`,
      `captions/${project.id}/${videoMain.id}/cap.vtt`]);
 
+  // A run tree the original RETIRED before this duplication: its bytes are still in storage
+  // (the grace window has not elapsed) and an `hls_retired_runs` row names it. That row is
+  // deliberately not copied, so a copied tree would be reachable from nothing and reapable by
+  // nothing. Retired BEFORE the copy, which is the case the pre-existing test could not reach —
+  // it retired afterwards, so the plan never saw a retirement at all.
+  await pg.query(
+    `INSERT INTO hls_retired_runs (video_file_id, prefix, retire_after) VALUES ($1,$2, now() + interval '24 hours')`,
+    [videoMain.id, `hls/${videoMain.id}/${HLS_RETIRED_RUN}`]);
+
   // A legacy-shaped (unversioned) HLS tree, so the copy is proven to handle both layouts.
   const videoBroll = await one<{ id: string }>(
     `INSERT INTO video_files (project_id, filename, file_size, storage_key, status, is_broll, hls_status)
@@ -259,12 +316,16 @@ hello','caphash')
   // `guidance_meta.mdUrl` is a public URL of `{prefix}/guidance/understanding.md` with no shadow key
   // column — the editor's "analysis ↗" link. The BYTES are copied by the package-root copy; whether
   // the URL follows them is what this makes observable.
+  // `guidance[].audioUrl` is a full public URL under `{prefix}/guidance/…` with NO shadow key
+  // column, minted by `GuidanceService`. It is BOTH a database column and a literal baked into the
+  // generated `guidance.js` overlay, and the overlay is the one that fires the cue in the viewer.
   await pg.query(
-    `UPDATE simulations SET storage_prefix=$2, entry_file=$3, guidance_meta=$4::jsonb WHERE id=$1`,
+    `UPDATE simulations SET storage_prefix=$2, entry_file=$3, guidance_meta=$4::jsonb,
+                            guidance=$5::jsonb, guidance_status='ready' WHERE id=$1`,
     [simRev.id, simRevPrefix, `${simRevPrefix}/index.html`, JSON.stringify({
       provider: 'claude', model: 'm', confidence: 0.9, entryCount: 3, language: 'en',
       mdUrl: `https://sim.test/${simRevPrefix}/guidance/understanding.md`,
-    })]);
+    }), JSON.stringify(guidanceEntries(`https://sim.test/${simRevPrefix}/${GUIDANCE_AUDIO_REL}`))]);
 
   const retired = await one<{ id: string }>(
     `INSERT INTO sim_revisions (simulation_id, revision_number, status, manifest_hash, entry_path, activated_at)
@@ -373,6 +434,14 @@ hello','caphash')
     `INSERT INTO corpora (project_id, source_type, source_url, storage_url, extracted_md, hash, ingestion_status)
      VALUES ($1,'pdf','paper.pdf',$2,'# Notes','h1','ready')`,
     [project.id, `https://cdn.test/projects/${project.id}/corpus/1_paper.pdf`]);
+  // The SAME object, published under a SUPABASE public URL. The shape is
+  // `{origin}/storage/v1/object/public/{bucket}/{key}`, which a host-stripping heuristic recovers
+  // as `storage/v1/object/public/media/projects/{p}/corpus/…` — a string that still contains the
+  // project id, so the plan maps it and commits to copying an object that does not exist.
+  await pg.query(
+    `INSERT INTO corpora (project_id, source_type, source_url, storage_url, extracted_md, hash, ingestion_status)
+     VALUES ($1,'pdf','supabase.pdf',$2,'# Supa','h2','ready')`,
+    [project.id, `${SUPABASE_PUBLIC_BASE}/projects/${project.id}/corpus/2_supabase.pdf`]);
   await pg.query(
     `INSERT INTO scripts (project_id, version, body_json, status) VALUES ($1,1,$2::jsonb,'ready')`,
     [project.id, JSON.stringify({ turns: [] })]);
@@ -447,6 +516,8 @@ function seedObjects(f: Fixture, simRevPrefix: string, simLegacyPrefix: string, 
   put(`hls/${f.videoMainId}/${HLS_RUN}/master.m3u8`);
   put(`hls/${f.videoMainId}/${HLS_RUN}/360p/index.m3u8`);
   put(`hls/${f.videoMainId}/${HLS_RUN}/360p/seg_000.ts`);
+  put(`hls/${f.videoMainId}/${HLS_RETIRED_RUN}/master.m3u8`);
+  put(`hls/${f.videoMainId}/${HLS_RETIRED_RUN}/360p/seg_000.ts`);
   put(`hls/${f.videoBrollId}/master.m3u8`);
   put(`hls/${f.videoBrollId}/360p/seg_000.ts`);
   put(`crop/${f.videoMainId}.json`);
@@ -457,22 +528,79 @@ function seedObjects(f: Fixture, simRevPrefix: string, simLegacyPrefix: string, 
   put(`${simRevPrefix}/index.html`);
   put(`${simRevPrefix}/assets/app.js`);
   put(`${simRevPrefix}/guidance/understanding.md`);
-  put(`${simRevPrefix}/revisions/${activeRevId}/manifest.json`);
-  put(`${simRevPrefix}/revisions/${activeRevId}/package/index.html`);
-  put(`${simRevPrefix}/revisions/${activeRevId}/runtime/bridge.js`);
+  put(`${simRevPrefix}/${GUIDANCE_AUDIO_REL}`);
   put(`${simRevPrefix}/revisions/retired-tree/package/index.html`);
   put(`${simRevPrefix}/posters/${liveIdentity}/standard.webp`);
   put(`${simRevPrefix}/posters/stale-identity/standard.webp`);
-  put(`${simLegacyPrefix}/index.html`);
   put('avatar/images/aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa.png');
   put('simulations/avatar/bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb/index.html');
   put(`projects/${f.projectId}/corpus/1_paper.pdf`);
+  put(`projects/${f.projectId}/corpus/2_supabase.pdf`);
+
+  // ── The generated artefacts, produced by the shipping generators ──
+  const text = (k: string, s: string): void => { adapter.objects.set(k, Buffer.from(s, 'utf-8')); };
+  const revRoot = `${simRevPrefix}/revisions/${activeRevId}`;
+  const entryHtml = '<html><body><div id="app"></div>\n<script src="./bridge.js?v=bh-1"></script>\n</body></html>';
+  // TWO sections in ONE package — the whole point. A single-section bridge would still answer
+  // `main`, and the dispatch defect would be invisible.
+  const bridgeJs = wrapBridgeCombined(new Map([
+    [f.sectionMainId, sectionBody('main-section')],
+    [f.sectionClipId, sectionBody('clip-section')],
+  ]));
+  text(`${revRoot}/package/index.html`, entryHtml);
+  text(`${revRoot}/package/bridge.js`, bridgeJs);
+  text(`${revRoot}/manifest.json`, JSON.stringify(revisionManifest(f, activeRevId, entryHtml, bridgeJs), null, 2));
+  // The overlay the VIEWER loads, assembled by the real generator so the `audioUrl` literals are
+  // exactly the ones production bakes in.
+  text(`${simRevPrefix}/guidance.js`,
+    wrapGuidanceCombined(guidanceEntries(`https://sim.test/${simRevPrefix}/${GUIDANCE_AUDIO_REL}`) as never));
+  // The legacy simulation keeps its bridge at the mutable package root — the other layout.
+  text(`${simLegacyPrefix}/index.html`, entryHtml);
+  text(`${simLegacyPrefix}/bridge.js`, wrapBridgeCombined(new Map([[f.sectionMainId, sectionBody('legacy-main')]])));
+}
+
+/** A real `SimManifest` for the fixture's active revision, hashed over the bytes it seeds. */
+function revisionManifest(f: Fixture, revisionId: string, entryHtml: string, bridgeJs: string): SimManifest {
+  const file = (path: string, role: 'entry' | 'runtime', body: string, contentType: string) => ({
+    path, role: role as SimManifest['files'][number]['role'],
+    hash: createHash('sha256').update(Buffer.from(body, 'utf-8')).digest('hex'),
+    bytes: Buffer.byteLength(body, 'utf-8'), contentType,
+    cacheControl: 'public, max-age=31536000, immutable',
+  });
+  return {
+    manifestVersion: 1,
+    simulationId: f.simRevisionedId,
+    projectId: f.projectId,
+    revisionId,
+    revisionNumber: 2,
+    bridgeProtocolVersion: 3,
+    runtimeProtocolVersion: 3,
+    entry: 'package/index.html',
+    runtime: ['package/bridge.js'],
+    files: [
+      file('package/index.html', 'entry', entryHtml, 'text/html; charset=utf-8'),
+      file('package/bridge.js', 'runtime', bridgeJs, 'application/javascript'),
+    ],
+    // The variant keys ARE section ids — the same ids the bridge dispatches on.
+    variants: [
+      { variantKey: f.sectionMainId, configHashes: ['cfg1'] },
+      { variantKey: f.sectionClipId, configHashes: ['cfg1'] },
+    ],
+    posters: [],
+    qualityProfiles: ['high'],
+    externalDependencies: [],
+    generatedFrom: {},
+    canary: { classification: 'managed-presentable', ranAt: null, engine: null },
+    createdAt: '2026-01-01T00:00:00.000Z',
+    createdBy: null,
+  };
 }
 
 let fx: Fixture;
 let simRevPrefix: string;
 let simLegacyPrefix: string;
 let liveIdentity: string;
+let sourceManifestHash: string;
 
 beforeEach(async () => {
   pg = new PGlite();
@@ -493,8 +621,25 @@ beforeEach(async () => {
   adapter = fakeStorage();
   storageRef.adapter = adapter;
   seedObjects(fx, simRevPrefix, simLegacyPrefix, fx.activeRevId, liveIdentity);
+  // The source revision's `manifest_hash` is the REAL hash of the manifest just seeded, so
+  // "the copy's hash differs from the source's" is a statement about bytes rather than about a
+  // placeholder string.
+  sourceManifestHash = computeManifestHash(readManifest(`${simRevPrefix}/revisions/${fx.activeRevId}`));
+  await pg.query(`UPDATE sim_revisions SET manifest_hash=$2 WHERE id=$1`, [fx.activeRevId, sourceManifestHash]);
   svc = new ProjectDuplicationService(adapter as never);
 });
+
+/** The manifest stored under a revision root, parsed. */
+function readManifest(revisionRoot: string): SimManifest {
+  return JSON.parse(adapter.objects.get(`${revisionRoot}/manifest.json`)!.toString('utf-8')) as SimManifest;
+}
+
+/** The section-id → body map a stored bridge.js dispatches on, read from the bytes. */
+function bridgeSections(key: string): Map<string, string> {
+  const bytes = adapter.objects.get(key);
+  if (!bytes) throw new Error(`no bridge at ${key}`);
+  return parseSectionEntries(bytes.toString('utf-8'));
+}
 
 afterEach(async () => { await pg.close(); vi.clearAllMocks(); });
 
@@ -561,7 +706,7 @@ describe('dry run', () => {
       timeline_sections: 4, timeline_markers: 1,
       branch_sequences: 2, branch_choice_points: 1, branch_edges: 3,
       simulations: 2, sim_revisions: 1, sim_posters: 1,
-      scripts: 1, scenes: 1, camera_plans: 1, corpora: 1, avatar_visuals: 2,
+      scripts: 1, scenes: 1, camera_plans: 1, corpora: 2, avatar_visuals: 2,
     });
     // Nothing written, and no row created.
     expect(adapter.objects.size).toBe(before);
@@ -813,7 +958,10 @@ describe('(d) storage', () => {
     expect(rev.rollback_of_revision_id).toBeNull(); // that pointer named the ORIGINAL's history
 
     expect(adapter.objects.has(`${sim.storage_prefix}/revisions/${rev.id}/package/index.html`)).toBe(true);
-    expect(adapter.objects.has(`${sim.storage_prefix}/revisions/${rev.id}/runtime/bridge.js`)).toBe(true);
+    // `package/bridge.js` — the canonical spot (`revisionPathForLegacy` nests customer bytes and
+    // the generated runtime alike under `package/`), and the file whose CONTENT the copy rewrites.
+    expect(adapter.objects.has(`${sim.storage_prefix}/revisions/${rev.id}/package/bridge.js`)).toBe(true);
+    expect(adapter.objects.has(`${sim.storage_prefix}/revisions/${rev.id}/manifest.json`)).toBe(true);
     // The retired tree is not carried, and no revision row claims it.
     const retiredCopies = [...adapter.objects.keys()]
       .filter((k) => k.startsWith(`${sim.storage_prefix}/revisions/retired-tree`));
@@ -885,7 +1033,7 @@ describe('(d) storage', () => {
   it('copies the corpus source bytes and repoints the row at them', async () => {
     const target = await duplicate();
     const c = await one<{ storage_url: string; extracted_md: string }>(
-      `SELECT storage_url, extracted_md FROM corpora WHERE project_id=$1`, [target]);
+      `SELECT storage_url, extracted_md FROM corpora WHERE project_id=$1 AND source_url='paper.pdf'`, [target]);
     expect(c.extracted_md).toBe('# Notes');
     expect(c.storage_url).toBe(`https://cdn.test/projects/${target}/corpus/1_paper.pdf`);
     expect(adapter.objects.has(`projects/${target}/corpus/1_paper.pdf`)).toBe(true);
@@ -1078,8 +1226,9 @@ describe('(g) deleting the ORIGINAL, retirement sweep included, leaves the copy 
     // 2. The grace window passes and the sweep runs. THIS is the step that would delete the copy's
     //    HLS tree out from under it if the copy referenced the source's prefix instead of owning
     //    its own — the interaction plan §8.3 calls the single most important regression here.
+    // Two: the run just retired, and the one the fixture had already retired before the copy.
     const swept = await sweepRetiredHlsRuns(20, new Date(Date.now() + 72 * 3_600_000));
-    expect(swept).toBe(1);
+    expect(swept).toBe(2);
     expect(adapter.objects.has(`hls/${fx.videoMainId}/${HLS_RUN}/master.m3u8`)).toBe(false);
 
     // 3. The original project is deleted outright.
@@ -1459,5 +1608,332 @@ describe('existing project flows still behave', () => {
       `SELECT status, target_project_id FROM project_duplications WHERE source_project_id=$1`, [fx.projectId]);
     expect(row.target_project_id).toBeNull();
     expect(row.status).toBe('ready');
+  });
+});
+
+// ── (j) the bytes a copied simulation package is MADE of ──────────────────────────────────────
+//
+// Everything above this point asks whether the copy's ROWS point inside the copy. A simulation
+// package is the one thing a project owns whose CONTENT encodes those ids, and a verbatim byte copy
+// of it is not a copy at all — it is a package that talks about a different project.
+
+describe('(j) a copied simulation package dispatches on the COPY\'s section ids', () => {
+  /** The copy's ids, keyed by the source id they replace. */
+  async function mapping(target: string): Promise<{
+    simRev: { id: string; storage_prefix: string; active_revision_id: string };
+    simLegacy: { id: string; storage_prefix: string };
+    sectionMain: string; sectionClip: string;
+  }> {
+    const simRev = await one<{ id: string; storage_prefix: string; active_revision_id: string }>(
+      `SELECT id, storage_prefix, active_revision_id FROM simulations WHERE project_id=$1 AND name='Chloroplast'`,
+      [target]);
+    const simLegacy = await one<{ id: string; storage_prefix: string }>(
+      `SELECT id, storage_prefix FROM simulations WHERE project_id=$1 AND name='Legacy sim'`, [target]);
+    const sectionMain = await one<{ id: string }>(
+      `SELECT id FROM timeline_sections WHERE project_id=$1 AND type='simulation'`, [target]);
+    const sectionClip = await one<{ id: string }>(
+      `SELECT id FROM timeline_sections WHERE project_id=$1 AND sort_order=1`, [target]);
+    return { simRev, simLegacy, sectionMain: sectionMain.id, sectionClip: sectionClip.id };
+  }
+
+  it('re-keys __SECTIONS__ so every copied section resolves to the body it had', async () => {
+    const target = await duplicate();
+    const m = await mapping(target);
+    const revRoot = `${m.simRev.storage_prefix}/revisions/${m.simRev.active_revision_id}`;
+
+    const copySections = bridgeSections(`${revRoot}/package/bridge.js`);
+    // THE DEFECT, stated as an assertion: the copy's URL asks for `?section=<copy id>`, and the
+    // bridge has to have a body under exactly that key. With the bytes copied verbatim these keys
+    // are the ORIGINAL's, `startScript` falls through to `_sectionBody(name)` → null → the bridge
+    // posts SCRIPT_MISSING and runs nothing, in every simulation section of the copy.
+    expect([...copySections.keys()].sort()).toEqual([m.sectionMain, m.sectionClip].sort());
+    expect(copySections.has(fx.sectionMainId)).toBe(false);
+    expect(copySections.has(fx.sectionClipId)).toBe(false);
+
+    // The right body under the right key — not merely two keys and two bodies.
+    const source = bridgeSections(`${simRevPrefix}/revisions/${fx.activeRevId}/package/bridge.js`);
+    expect(copySections.get(m.sectionMain)).toBe(source.get(fx.sectionMainId));
+    expect(copySections.get(m.sectionClip)).toBe(source.get(fx.sectionClipId));
+
+    // And the section URL the copy stores agrees with the bridge it points at — the two halves
+    // that have to move together.
+    const url = (await one<{ simulation_url: string }>(
+      `SELECT simulation_url FROM timeline_sections WHERE id=$1`, [m.sectionMain])).simulation_url;
+    expect(new URL(url).searchParams.get('section')).toBe(m.sectionMain);
+    expect(copySections.has(new URL(url).searchParams.get('section')!)).toBe(true);
+  });
+
+  it('re-keys the LEGACY layout too — a bridge at the mutable package root', async () => {
+    const target = await duplicate();
+    const m = await mapping(target);
+    const copySections = bridgeSections(`${m.simLegacy.storage_prefix}/bridge.js`);
+    expect([...copySections.keys()]).toEqual([m.sectionMain]);
+  });
+
+  it('leaves the ORIGINAL\'s bridge byte-for-byte untouched', async () => {
+    const before = adapter.objects.get(`${simRevPrefix}/revisions/${fx.activeRevId}/package/bridge.js`)!.toString();
+    await duplicate();
+    expect(adapter.objects.get(`${simRevPrefix}/revisions/${fx.activeRevId}/package/bridge.js`)!.toString())
+      .toBe(before);
+    expect(bridgeSections(`${simRevPrefix}/revisions/${fx.activeRevId}/package/bridge.js`).has(fx.sectionMainId))
+      .toBe(true);
+  });
+
+  it('changes nothing but the ids: every body, and every other byte of the wrapper, survives', async () => {
+    const target = await duplicate();
+    const m = await mapping(target);
+    const src = adapter.objects.get(`${simRevPrefix}/revisions/${fx.activeRevId}/package/bridge.js`)!.toString();
+    const copy = adapter.objects.get(
+      `${m.simRev.storage_prefix}/revisions/${m.simRev.active_revision_id}/package/bridge.js`)!.toString();
+    // Substituting the ids back must reproduce the source exactly. That is a much stronger claim
+    // than "it parses": a re-wrap through today's template would pass a parse and fail this.
+    const back = copy.split(m.sectionMain).join(fx.sectionMainId).split(m.sectionClip).join(fx.sectionClipId);
+    expect(back).toBe(src);
+  });
+
+  it('gives the copy its OWN manifest, and its own manifest_hash', async () => {
+    const target = await duplicate();
+    const m = await mapping(target);
+    const revRoot = `${m.simRev.storage_prefix}/revisions/${m.simRev.active_revision_id}`;
+    const manifest = readManifest(revRoot);
+
+    // The manifest describes the COPY: its ids, its variant keys, its revision number.
+    expect(manifest.simulationId).toBe(m.simRev.id);
+    expect(manifest.projectId).toBe(target);
+    expect(manifest.revisionId).toBe(m.simRev.active_revision_id);
+    expect(manifest.revisionNumber).toBe(1);
+    expect(manifest.variants.map((v) => v.variantKey).sort()).toEqual([m.sectionMain, m.sectionClip].sort());
+
+    // And it describes the BYTES that are actually stored — the bridge's hash moved with its
+    // content, which is what `SimManifestFile.hash` is defined to mean.
+    const storedBridge = adapter.objects.get(`${revRoot}/package/bridge.js`)!;
+    const bridgeEntry = manifest.files.find((f) => f.path === 'package/bridge.js')!;
+    expect(bridgeEntry.hash).toBe(createHash('sha256').update(storedBridge).digest('hex'));
+    expect(bridgeEntry.bytes).toBe(storedBridge.length);
+
+    // Different bytes are a different revision, so the row carries its own hash — recomputed by
+    // the SAME function `RevisionService.validate` uses, not inherited from the source.
+    const row = await one<{ manifest_hash: string }>(
+      `SELECT manifest_hash FROM sim_revisions WHERE id=$1`, [m.simRev.active_revision_id]);
+    expect(row.manifest_hash).toBe(computeManifestHash(manifest));
+    expect(row.manifest_hash).not.toBe(sourceManifestHash);
+    // The original's revision row is untouched.
+    expect((await one<{ manifest_hash: string }>(
+      `SELECT manifest_hash FROM sim_revisions WHERE id=$1`, [fx.activeRevId])).manifest_hash)
+      .toBe(sourceManifestHash);
+  });
+
+  it('leaves a package with no parseable section map alone, and says so', async () => {
+    // A hand-written / pre-combined bridge: no `@@SIM_BRIDGE@@` markers, nothing to re-key.
+    const raw = ';(function(){ window.SimAPI = { start: function(){}, stop: function(){} }; })();';
+    adapter.objects.set(`${simLegacyPrefix}/bridge.js`, Buffer.from(raw, 'utf-8'));
+    const target = await duplicate();
+    const legacy = await one<{ storage_prefix: string }>(
+      `SELECT storage_prefix FROM simulations WHERE project_id=$1 AND name='Legacy sim'`, [target]);
+
+    expect(adapter.objects.get(`${legacy.storage_prefix}/bridge.js`)!.toString()).toBe(raw);
+    const job = await one<{ plan: { warnings: string[] } }>(
+      `SELECT plan FROM project_duplications WHERE target_project_id=$1`, [target]);
+    expect(job.plan.warnings.some((w) => w.includes('no @@SIM_BRIDGE@@ section map'))).toBe(true);
+  });
+});
+
+// ── (k) guidance narration follows the copy ───────────────────────────────────────────────────
+
+describe('(k) the copy\'s guidance narration survives the original\'s deletion', () => {
+  it('re-roots audioUrl in the DATABASE COLUMN and in the OVERLAY the viewer loads', async () => {
+    const target = await duplicate();
+    const sim = await one<{ id: string; storage_prefix: string; guidance: Array<{ audioUrl: string }> }>(
+      `SELECT id, storage_prefix, guidance FROM simulations WHERE project_id=$1 AND name='Chloroplast'`, [target]);
+    const expected = `https://sim.test/${sim.storage_prefix}/${GUIDANCE_AUDIO_REL}`;
+
+    // (1) the column — what the editor reads
+    expect(sim.guidance[0].audioUrl).toBe(expected);
+    // (2) the overlay bytes — what actually FIRES the cue. `_fire` posts the URL it finds HERE,
+    // so rebasing the column alone leaves the viewer playing the original's audio.
+    const overlay = adapter.objects.get(`${sim.storage_prefix}/guidance.js`)!.toString('utf-8');
+    expect(overlay).toContain(expected);
+    expect(overlay).not.toContain(simRevPrefix);
+    // (3) the bytes exist under the copy's own prefix
+    expect(adapter.objects.has(`${sim.storage_prefix}/${GUIDANCE_AUDIO_REL}`)).toBe(true);
+
+    // And the original's overlay is untouched.
+    expect(adapter.objects.get(`${simRevPrefix}/guidance.js`)!.toString('utf-8'))
+      .toContain(`https://sim.test/${simRevPrefix}/${GUIDANCE_AUDIO_REL}`);
+  });
+
+  it('still plays after the original project is deleted', async () => {
+    const target = await duplicate();
+    const sim = await one<{ storage_prefix: string; guidance: Array<{ audioUrl: string }> }>(
+      `SELECT storage_prefix, guidance FROM simulations WHERE project_id=$1 AND name='Chloroplast'`, [target]);
+    await deleteProjectLikeTheEndpointDoes(fx.projectId);
+    expect(adapter.objects.has(keyFromUrl(sim.guidance[0].audioUrl)!)).toBe(true);
+  });
+
+  it('the escape scan is generic: ANY jsonb column still naming the source fails the copy', async () => {
+    // Not "guidance is checked" — that would be one more hand-added column. This proves the check
+    // is over the SCHEMA's jsonb columns, by planting an escape in one nobody has ever listed.
+    const target = await duplicate();
+    await pg.query(`UPDATE camera_plans SET cuts_json = $2::jsonb WHERE project_id = $1`,
+      [target, JSON.stringify([{ note: `see projects/${fx.projectId}/corpus/1_paper.pdf` }])]);
+    await expect(svc.assertNoEscapingReferences(fx.projectId, target))
+      .rejects.toThrow(/camera_plans\.cuts_json/);
+  });
+
+  it('does not mistake the deliberate `duplicatedFrom` provenance for an escape', async () => {
+    const target = await duplicate();
+    const rev = await one<{ metadata: { duplicatedFrom: { projectId: string } } }>(
+      `SELECT r.metadata FROM sim_revisions r JOIN simulations s ON s.id = r.simulation_id
+       WHERE s.project_id = $1`, [target]);
+    // It genuinely names the original — that is the point of it.
+    expect(rev.metadata.duplicatedFrom.projectId).toBe(fx.projectId);
+    await expect(svc.assertNoEscapingReferences(fx.projectId, target)).resolves.toBeUndefined();
+  });
+});
+
+// ── (l) a corpus published under a Supabase URL ───────────────────────────────────────────────
+
+describe('(l) recovering a storage key from a public URL', () => {
+  it('duplicates a project whose corpus URL is Supabase-shaped', async () => {
+    // Before the adapter answered for its own URLs, the recovered "key" was
+    // `storage/v1/object/public/media/projects/{p}/corpus/2_supabase.pdf` — which still contains
+    // the project id, so the plan mapped it and committed to copying it. `copyObject` then threw
+    // `NoSuchKey`: not `isCopyUnsupported` (404 is excluded on purpose), not `isCopyTooLarge`, so
+    // the WHOLE duplication failed. Every project with a corpus file, permanently.
+    const plan = (await svc.dryRun(fx.projectId))!;
+    const corpusCopies = plan.storage.filter((c) => c.reason === 'corpus source file');
+    expect(corpusCopies.map((c) => c.from).sort()).toEqual([
+      `projects/${fx.projectId}/corpus/1_paper.pdf`,
+      `projects/${fx.projectId}/corpus/2_supabase.pdf`,
+    ]);
+    for (const c of corpusCopies) expect(adapter.objects.has(c.from)).toBe(true);
+
+    const target = await duplicate();
+    const supa = await one<{ storage_url: string }>(
+      `SELECT storage_url FROM corpora WHERE project_id=$1 AND source_url='supabase.pdf'`, [target]);
+    // Rebased on the URL AS STORED, so the copy keeps the base it was published under.
+    expect(supa.storage_url).toBe(`${SUPABASE_PUBLIC_BASE}/projects/${target}/corpus/2_supabase.pdf`);
+    expect(adapter.objects.has(`projects/${target}/corpus/2_supabase.pdf`)).toBe(true);
+  });
+});
+
+// ── (m) retired HLS run trees are left behind ─────────────────────────────────────────────────
+
+describe('(m) the copy does not inherit unreapable retired HLS trees', () => {
+  it('copies the live run tree and skips the retired one', async () => {
+    const target = await duplicate();
+    const main = await one<{ id: string }>(
+      `SELECT id FROM video_files WHERE project_id=$1 AND filename='main.mp4'`, [target]);
+
+    // The live ladder came along, complete.
+    expect(adapter.objects.has(`hls/${main.id}/${HLS_RUN}/master.m3u8`)).toBe(true);
+    expect(adapter.objects.has(`hls/${main.id}/${HLS_RUN}/360p/seg_000.ts`)).toBe(true);
+    // The retired one did not. Nothing would ever have deleted it: `hls_retired_runs` rows are
+    // (correctly) not copied, so the copied tree would be named by no row and referenced by no
+    // column, for the life of the deployment.
+    expect(adapter.objects.has(`hls/${main.id}/${HLS_RETIRED_RUN}/master.m3u8`)).toBe(false);
+    expect(adapter.objects.has(`hls/${main.id}/${HLS_RETIRED_RUN}/360p/seg_000.ts`)).toBe(false);
+    // The ORIGINAL's retired tree is still there, still awaiting its own sweep.
+    expect(adapter.objects.has(`hls/${fx.videoMainId}/${HLS_RETIRED_RUN}/master.m3u8`)).toBe(true);
+    expect(await count('hls_retired_runs', `prefix LIKE 'hls/'||$1||'%'`, [main.id])).toBe(0);
+  });
+
+  it('says what it left behind, and does not count it', async () => {
+    const plan = (await svc.dryRun(fx.projectId))!;
+    const ladder = plan.storage.find((c) => c.from === `hls/${fx.videoMainId}`)!;
+    expect(ladder.exclude).toEqual([`hls/${fx.videoMainId}/${HLS_RETIRED_RUN}`]);
+    expect(plan.warnings.some((w) => w.includes('retired HLS run tree'))).toBe(true);
+  });
+});
+
+// ── (n) the commit and the job row's outcome are one fact ─────────────────────────────────────
+
+describe('(n) a run that loses its claim commits nothing', () => {
+  /** Run a duplication, doing `sabotage` to the job row from inside the commit transaction. */
+  async function duplicateWith(
+    sabotage: (tx: TxLike, jobId: string) => Promise<unknown>,
+  ): Promise<{ err: unknown; jobId: string }> {
+    const job = await one<{ id: string }>(
+      `INSERT INTO project_duplications (source_project_id, requested_by) VALUES ($1,$2) RETURNING id`,
+      [fx.projectId, fx.userId]);
+    // The seam is the independence proof, which runs INSIDE the commit transaction immediately
+    // before the row is finalised — the exact window a failover, a pool stall or a reaper occupies.
+    // Sabotage goes through the TRANSACTION HANDLE it is passed: a second connection would be a
+    // different session, and against PGlite's single session it simply deadlocks.
+    const real = svc.assertNoEscapingReferences.bind(svc);
+    vi.spyOn(svc, 'assertNoEscapingReferences').mockImplementation(async (src, tgt, exec) => {
+      await real(src, tgt, exec);
+      await sabotage(exec as unknown as TxLike, job.id);
+    });
+    let err: unknown = null;
+    try { await svc.run(job.id); } catch (e) { err = e; }
+    vi.restoreAllMocks();
+    return { err, jobId: job.id };
+  }
+
+  it('rolls back when a reaper declared the run abandoned mid-commit', async () => {
+    const projectsBefore = await count('projects', 'true', []);
+    const { err, jobId } = await duplicateWith((tx, id) => tx.update(schema.project_duplications)
+      .set({ status: 'failed', error: 'reaped' })
+      .where(eq(schema.project_duplications.id, id)));
+
+    expect(err).toBeInstanceOf(Error);
+    // NOTHING was created — which is what makes the message the user sees true.
+    expect(await count('projects', 'true', [])).toBe(projectsBefore);
+    const row = await one<{ status: string; target_project_id: string | null; error: string }>(
+      `SELECT status, target_project_id, error FROM project_duplications WHERE id=$1`, [jobId]);
+    expect(row.target_project_id).toBeNull();
+    expect(row.status).toBe('failed');
+    expect(row.error).toMatch(/taken over by another attempt|deleted while it ran/);
+  });
+
+  it('rolls back when the source project was deleted and took the job row with it', async () => {
+    // `source_project_id` is ON DELETE CASCADE (migration 056), so the row simply vanishes and both
+    // the `ready` write and the failure write no-op. Committing the project anyway would leave one
+    // that exists, is in the owner's list, and is named by nothing.
+    const projectsBefore = await count('projects', 'true', []);
+    const { err, jobId } = await duplicateWith((tx, id) => tx.delete(schema.project_duplications)
+      .where(eq(schema.project_duplications.id, id)));
+
+    expect(err).toBeInstanceOf(Error);
+    expect(await count('projects', 'true', [])).toBe(projectsBefore);
+    // The delete rolled back with everything else, so the row is here and honestly failed.
+    const row = await one<{ status: string; target_project_id: string | null }>(
+      `SELECT status, target_project_id FROM project_duplications WHERE id=$1`, [jobId]);
+    expect(row.status).toBe('failed');
+    expect(row.target_project_id).toBeNull();
+  });
+
+  it('a losing run touches nothing on a row that has already finished', async () => {
+    // The other half of the fence, and the one the user sees. A run whose row was taken over — by a
+    // reaper plus a retry that got there first — throws at the commit and lands in the catch. Every
+    // write it makes from that point is over a row that records a project which really exists:
+    // unfenced, the `committing` update drags a terminal row back in flight and the catch then
+    // stamps `failed` over `ready`, so the poll follows a finished copy forever and reports failure.
+    //
+    // Sabotage here happens OUTSIDE the commit transaction (a spy on `verifyBytes`), because a write
+    // made inside it would simply roll back with everything else and prove nothing.
+    const projectsBefore = await count('projects', 'true', []);
+    const winner = fx.otherProjectId;                       // stands in for the run that got there first
+    const job = await one<{ id: string }>(
+      `INSERT INTO project_duplications (source_project_id, requested_by) VALUES ($1,$2) RETURNING id`,
+      [fx.projectId, fx.userId]);
+    const realVerify = svc.verifyBytes.bind(svc);
+    vi.spyOn(svc, 'verifyBytes').mockImplementation(async (plan) => {
+      await realVerify(plan);
+      await pg.query(
+        `UPDATE project_duplications SET status='ready', target_project_id=$2, finished_at=now() WHERE id=$1`,
+        [job.id, winner]);
+    });
+    await expect(svc.run(job.id)).rejects.toThrow();
+    vi.restoreAllMocks();
+
+    const row = await one<{ status: string; target_project_id: string; error: string | null }>(
+      `SELECT status, target_project_id, error FROM project_duplications WHERE id=$1`, [job.id]);
+    expect(row.status).toBe('ready');
+    expect(row.target_project_id).toBe(winner);
+    expect(row.error).toBeNull();
+    // And it committed nothing of its own.
+    expect(await count('projects', 'true', [])).toBe(projectsBefore);
   });
 });

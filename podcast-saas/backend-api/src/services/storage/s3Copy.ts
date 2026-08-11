@@ -71,6 +71,71 @@ export function isCopyTooLarge(err: unknown): boolean {
   return /larger than the maximum allowable size/i.test(String(e.message ?? ''));
 }
 
+// ── Read-then-write: the fallback for a store that cannot copy server-side at all ─────────────
+
+/**
+ * The largest object the read-then-write fallback will pull through the Node heap.
+ *
+ * THE TWO FALLBACKS ARE DISJOINT BY ERROR CLASS, NOT BY SIZE — and that is not enough.
+ * `isCopyTooLarge` routes big objects to the ranged multipart copy, which keeps every byte inside
+ * the store. But a gateway that rejects `CopyObject` OUTRIGHT (501/405) answers `isCopyUnsupported`
+ * for an object of ANY size, and the Supabase adapter's own documentation calls that "an EXPECTED
+ * path, not a curiosity". Uploads are admitted to 10 GB (`MAX_UPLOAD_BYTES`) and duplication runs
+ * INLINE IN THE API PROCESS, so without a bound one duplication of one ordinary video project can
+ * exhaust the heap and take the API down for every user of the deployment.
+ *
+ * 256 MiB, matching `MULTIPART_COPY_PART_BYTES` — the same figure this module already accepts as a
+ * reasonable transient allocation, arrived at for the same reason. Everything a package, a poster,
+ * an HLS segment or a caption track contains is orders of magnitude below it; a raw video master is
+ * the only thing that is not, and a store that cannot copy one server-side cannot serve this
+ * product's video pipeline at all.
+ */
+export const HEAP_COPY_MAX_BYTES = 256 * 1024 * 1024;
+
+/**
+ * Copy by downloading and re-uploading, refusing anything the heap should not hold.
+ *
+ * Written once and shared, so the bound cannot be present on one adapter and absent on the other —
+ * which is exactly how it came to be absent on both.
+ *
+ * The refusal is ACTIONABLE and permanent-sounding on purpose: no retry gets past it, and the real
+ * remedy is a storage configuration whose `CopyObject` works. Buffering anyway and hoping would
+ * trade a clear error for an OOM in a process that is also serving requests.
+ */
+export async function readThenWriteCopy(
+  srcKey: string,
+  destKey: string,
+  provider: string,
+  ops: {
+    head(): Promise<StoredObjectHead | null>;
+    read(): Promise<Buffer>;
+    write(bytes: Buffer, contentType: string, cacheControl: string | undefined): Promise<unknown>;
+  },
+): Promise<void> {
+  const head = await ops.head();
+  if (!head) {
+    throw new Error(`${provider}: cannot copy ${srcKey} — server-side copy is unavailable and the object does not exist`);
+  }
+  // A store that will not say how big an object is cannot be trusted to hand back something the
+  // heap can hold. Refusing is the safe direction; the alternative is finding out by dying.
+  if (head.size === null) {
+    throw new Error(
+      `${provider}: cannot copy ${srcKey} — server-side copy is unavailable and the store did not report the object's size, ` +
+      'so the download-and-re-upload fallback cannot bound how much memory it would need.',
+    );
+  }
+  if (head.size > HEAP_COPY_MAX_BYTES) {
+    throw new Error(
+      `${provider}: cannot copy ${srcKey} (${Math.round(head.size / 1e6)} MB) — this storage does not support server-side ` +
+      `copy, and the download-and-re-upload fallback refuses anything over ${Math.round(HEAP_COPY_MAX_BYTES / 1e6)} MB ` +
+      'because the whole object would be held in the API process\'s memory. Enable server-side copy (CopyObject) on the ' +
+      'storage bucket, or move this project\'s large media to a store that supports it.',
+    );
+  }
+  const bytes = await ops.read();
+  await ops.write(bytes, head.contentType ?? 'application/octet-stream', head.cacheControl ?? undefined);
+}
+
 // ── Ranged multipart copy: `CopyObject` for objects past the 5 GiB wall ───────────────────────
 
 /**
