@@ -28,7 +28,31 @@ const mocks = vi.hoisted(() => ({
   audio_files:            { findMany: vi.fn() },
 }));
 
-vi.mock('../../../db/index.js', () => ({ db: { query: mocks } }));
+/**
+ * The write half of the harness: `insert().values().returning()` and
+ * `update().set().where().returning()`, each answering with whatever `writeResult.row` holds.
+ *
+ * A REAL round-trip is the point. `editorCapabilityFloor.test.tsx` builds its section rows by hand
+ * and never asks an endpoint for one, which is exactly why it could not catch a write endpoint that
+ * returns the bare database row.
+ */
+const writes = vi.hoisted(() => ({
+  row: null as Record<string, unknown> | null,
+  inserted: [] as unknown[],
+  patched:  [] as unknown[],
+}));
+
+vi.mock('../../../db/index.js', () => ({
+  db: {
+    query: mocks,
+    insert: () => ({
+      values: (v: unknown) => { writes.inserted.push(v); return { returning: async () => [writes.row] }; },
+    }),
+    update: () => ({
+      set: (v: unknown) => { writes.patched.push(v); return { where: () => ({ returning: async () => [writes.row] }) }; },
+    }),
+  },
+}));
 vi.mock('../../../db/schema.js', () => ({
   projects: Symbol('projects'), timeline_sections: Symbol('timeline_sections'),
   simulations: Symbol('simulations'), video_files: Symbol('video_files'),
@@ -78,8 +102,13 @@ let app: FastifyInstance;
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  writes.row = section();
+  writes.inserted.length = 0;
+  writes.patched.length = 0;
   mocks.projects.findFirst.mockResolvedValue({ id: PROJECT_ID });
   mocks.timeline_sections.findMany.mockResolvedValue([section()]);
+  mocks.timeline_sections.findFirst.mockResolvedValue(section());
+  mocks.video_files.findFirst.mockResolvedValue({ id: 'vid-1', project_id: PROJECT_ID });
   mocks.simulations.findMany.mockResolvedValue([{ id: 'sim-1', active_revision_entry_key: ENTRY_KEY }]);
   mocks.video_files.findMany.mockResolvedValue([]);
   mocks.video_generation_jobs.findMany.mockResolvedValue([]);
@@ -213,6 +242,91 @@ describe('GET /sections', () => {
     mocks.simulations.findMany.mockRejectedValue(Object.assign(new Error('boom'), { code: '42703' }));
     const [row] = await listSections();
     expect(row.simulation_served_url).toBe(STORED);
+    expect(logged.error).toHaveBeenCalled();
+  });
+});
+
+/**
+ * THE WRITE ENDPOINTS RETURN THE SAME SHAPE THE READS DO.
+ *
+ * `POST /sections` and `PATCH /sections/:sid` used to return the raw database row — no
+ * `simulation_served_url`, no `bridge_ack_capable`, no `requires_import_maps`. Every client update
+ * path splices that response straight into editor state (`TimelinePanel`'s drag/trim/move,
+ * `VideoEditor`'s undo/redo restore), so ONE DRAG replaced a section that carried all three facts
+ * with one that carried none:
+ *
+ *   • the preview fell back to the retired revision the row stores (compensated client-side by
+ *     `VideoEditor.servedSimUrls`, and only because someone remembered to);
+ *   • a proven bridge collapsed to UNKNOWN, downgrading the apply gate to `await-ack-bounded`;
+ *   • a recorded `requires_import_maps` was ERASED — so on Safari/iOS <= 16.3 the honest P0.8 cue
+ *     turned back into the bounded reveal ceiling compositing a permanently blank iframe.
+ *
+ * These tests ROUND-TRIP through the endpoints on purpose. The editor-side floor test builds its
+ * rows by hand and never asks the API for one, which is precisely why it could not see this.
+ */
+describe.each([
+  ['POST /sections', async (app: FastifyInstance) => app.inject({
+    method: 'POST', url: `/api/v1/projects/${PROJECT_ID}/sections`,
+    payload: { video_file_id: 'vid-1', start_sec: 0, end_sec: 10, type: 'simulation', simulation_id: 'sim-1' },
+  }), 201],
+  ['PATCH /sections/:sid', async (app: FastifyInstance) => app.inject({
+    method: 'PATCH', url: `/api/v1/projects/${PROJECT_ID}/sections/sec-1`,
+    payload: { start_sec: 1, end_sec: 11 },
+  }), 200],
+] as const)('%s — the additive fields survive the write', (_name, call, expectedStatus) => {
+  const write = async (): Promise<Record<string, unknown>> => {
+    const res = await call(app);
+    expect(res.statusCode).toBe(expectedStatus);
+    return res.json() as Record<string, unknown>;
+  };
+
+  it('resolves the revision pointer, exactly as GET /sections does', async () => {
+    expect((await write()).simulation_served_url).toBe(`${SERVED}?section=sec-1&v=H1`);
+  });
+
+  it('carries the capability floor, so a drag cannot re-blank an unrunnable package', async () => {
+    // THE P0.8 REGRESSION. Dropping this field makes `evaluateFloor` answer "runnable", the cover's
+    // reason is replaced by a spinner, and 12 s later the bounded ceiling composites a frame that
+    // will never paint.
+    mocks.simulations.findMany.mockResolvedValue([
+      { id: 'sim-1', active_revision_entry_key: ENTRY_KEY, requires_import_maps: true },
+    ]);
+    expect((await write()).requires_import_maps).toBe(true);
+  });
+
+  it('carries the ack capability, so a drag cannot downgrade a proven bridge to UNKNOWN', async () => {
+    mocks.simulations.findMany.mockResolvedValue([
+      { id: 'sim-1', active_revision_entry_key: ENTRY_KEY, bridge_ack_capable: true },
+    ]);
+    expect((await write()).bridge_ack_capable).toBe(true);
+  });
+
+  it('still returns the STORED url untouched — the client writes this value back', async () => {
+    expect((await write()).simulation_url).toBe(STORED);
+  });
+
+  it('reports all three as UNKNOWN/stored rather than absent when nothing recorded them', async () => {
+    const row = await write();
+    // Present-and-null, not missing. A consumer reading `?? false` off an absent field is the same
+    // bug in a different place, and "the key is there" is what makes that visible in a fixture.
+    expect(row).toHaveProperty('bridge_ack_capable', null);
+    expect(row).toHaveProperty('requires_import_maps', null);
+    expect(row.simulation_served_url).toBe(`${SERVED}?section=sec-1&v=H1`);
+  });
+
+  it('costs no pointer query for a section with no simulation', async () => {
+    // The common case by far — a drag or trim on a video, b-roll or image section. The enrichment
+    // must not put a query on that path.
+    writes.row = section({ type: 'video', simulation_id: null, simulation_url: null });
+    const row = await write();
+    expect(mocks.simulations.findMany).not.toHaveBeenCalled();
+    expect(row.simulation_served_url).toBeNull();
+    expect(row.requires_import_maps).toBeNull();
+  });
+
+  it('degrades to the stored url, loudly, when the pointer column cannot be read', async () => {
+    mocks.simulations.findMany.mockRejectedValue(Object.assign(new Error('boom'), { code: '42703' }));
+    expect((await write()).simulation_served_url).toBe(STORED);
     expect(logged.error).toHaveBeenCalled();
   });
 });

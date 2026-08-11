@@ -20,7 +20,10 @@ const mocks = vi.hoisted(() => {
   return {
     mockProjects:         { findFirst: vi.fn() },
     mockSections:         { findFirst: vi.fn() },
-    mockSimulations:      { findFirst: vi.fn() },
+    // `findMany` is the project-scoped revision-pointer read every section-shaped response now
+    // makes (`withServedSimUrls`), writes included. Defaulted to `[]` — no revisioned package — so
+    // these fixtures keep describing the legacy shape they were written for.
+    mockSimulations:      { findFirst: vi.fn(), findMany: vi.fn(async () => []) },
     mockVideoFiles:       { findFirst: vi.fn() },
     mockInsert,
     mockInsertValues,

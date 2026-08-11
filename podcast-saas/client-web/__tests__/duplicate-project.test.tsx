@@ -8,7 +8,7 @@
  * then shows the copy — because `duplicateProject` returns a JOB id, and a UI that treated it as a
  * project id would navigate to a 404.
  */
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 if (typeof globalThis.localStorage === 'undefined') {
@@ -227,6 +227,124 @@ describe.each([
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     // The control is offered again, so the user can act on what they were just told.
     expect(screen.getByRole('button', { name: /Copy failed/i }).hasAttribute('disabled')).toBe(false);
+  });
+});
+
+/**
+ * A POLL THAT CANNOT READ THE ROW MUST STOP, AND THE USER MUST BE ABLE TO CLEAR IT.
+ *
+ * The loop swallowed every tick error on the (correct) reasoning that one failed poll is not a
+ * failed duplication, and ended only on a terminal row. A PERMANENT read failure therefore spun
+ * forever: delete the source project mid-copy and the GET is 404 for the rest of the session; let
+ * the token expire and it is 401. `state.status` stays `copying`, `busy` stays true, and the tile
+ * reads "Copying…" behind a disabled Duplicate button until the page is reloaded.
+ *
+ * Two things close it: a bound on CONSECUTIVE failures, and `reset()` — exported by the hook since
+ * the day it was written and called by neither surface.
+ */
+describe.each([
+  ['HomeHero', () => render(<HomeHero />)],
+  ['HomeSidebar', () => render(<HomeSidebar />)],
+] as const)('%s — a poll that can never succeed', (_name, mount) => {
+  // `clearAllMocks()` clears CALLS, not implementations, so a `mockRejectedValue` set by one test
+  // here would follow the next one into a completely different scenario.
+  beforeEach(() => {
+    api.getProjectDuplication.mockImplementation(async () => (
+      poll.queue.length > 1 ? poll.queue.shift()! : (poll.queue[0] ?? {
+        id: 'dup-1', status: 'copying', target_project_id: null,
+        objects_total: 4, objects_copied: 1, error: null,
+      })
+    ));
+  });
+
+  /** Start a duplication and let the status endpoint fail `n` times. */
+  const runWithFailingPolls = async (n: number, error: Error) => {
+    api.getProjectDuplication.mockRejectedValue(error);
+    mount();
+    await waitFor(() => expect(screen.getAllByTitle('Delete project').length).toBeGreaterThan(0));
+    fireEvent.click(duplicateButton());
+    await flush();
+    fireEvent.click(screen.getByRole('button', { name: 'Duplicate' }));
+    await waitFor(() => expect(api.getProjectDuplication).toHaveBeenCalled());
+    // The first tick fires immediately; the rest are one interval apart.
+    for (let i = 1; i < n; i++) {
+      await act(async () => { vi.advanceTimersByTime(3000); await Promise.resolve(); });
+    }
+    await flush();
+  };
+
+  it('gives up after a run of failures instead of spinning forever', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      // The source project was deleted while the copy ran: the status GET is 404 from here on.
+      await runWithFailingPolls(6, new Error('Project not found'));
+      await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/Lost contact/));
+      // …and the control is usable again, which is the whole point of ending the loop.
+      await waitFor(() => {
+        const button = screen.getByRole('button', { name: /Copy failed/i });
+        expect(button.hasAttribute('disabled')).toBe(false);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('says the copy MAY still be running — it does not claim to know it failed', async () => {
+    // Losing contact with the status row is not the same as the copy having failed; the server may
+    // well finish it. A message that said "Duplication failed" would be inventing an outcome.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      await runWithFailingPolls(6, new Error('401'));
+      await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/may still be running/));
+      expect(screen.getByRole('status').textContent).not.toMatch(/Nothing was created/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('rides out a transient failure — one bad tick is not a failed duplication', async () => {
+    // The premise the old comment got right, and which the bound must not break: a copy that runs
+    // for minutes across a flaky connection has to survive the odd unanswered poll.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      api.getProjectDuplication
+        .mockRejectedValueOnce(new Error('network blip'))
+        .mockResolvedValue({
+          id: 'dup-1', status: 'ready', target_project_id: 'proj-2',
+          objects_total: 4, objects_copied: 4, error: null,
+        });
+      mount();
+      await waitFor(() => expect(screen.getAllByTitle('Delete project').length).toBeGreaterThan(0));
+      fireEvent.click(duplicateButton());
+      await flush();
+      fireEvent.click(screen.getByRole('button', { name: 'Duplicate' }));
+      await waitFor(() => expect(api.getProjectDuplication).toHaveBeenCalledTimes(1));
+
+      await act(async () => { vi.advanceTimersByTime(3100); });
+      await waitFor(() => expect(api.getProject).toHaveBeenCalledWith('proj-2'));
+      expect(screen.queryByText(/Lost contact/)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('offers a way to clear a failure, so the tile is not left reporting a dead run', async () => {
+    poll.queue.push({
+      id: 'dup-1', status: 'failed', target_project_id: null,
+      objects_total: 4, objects_copied: 2, error: 'Duplication failed. Nothing was created; you can try again.',
+    });
+    mount();
+    await waitFor(() => expect(screen.getAllByTitle('Delete project').length).toBeGreaterThan(0));
+    fireEvent.click(duplicateButton());
+    await flush();
+    fireEvent.click(screen.getByRole('button', { name: 'Duplicate' }));
+    await waitFor(() => expect(screen.getByText(/Nothing was created/)).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: /dismiss copy error/i }));
+
+    await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
+    // Back to its resting state — the control names the action again, not the outcome.
+    expect(screen.getByRole('button', { name: /duplicate project/i })).toBeTruthy();
   });
 });
 

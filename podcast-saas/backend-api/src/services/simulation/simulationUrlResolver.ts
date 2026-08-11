@@ -101,6 +101,31 @@ interface SimSectionRow {
 }
 
 /**
+ * The ADDITIVE fields every section-shaped response owes the editor — named once, so the set cannot
+ * be extended in one place and silently dropped in another.
+ *
+ * This type is the contract, and it is deliberately a required-field interface rather than three
+ * loose optionals. Two endpoints (`POST /sections`, `PATCH /sections/:sid`) used to return the raw
+ * database row, which carries none of these, and every client update path splices that response
+ * straight into editor state: a drag re-armed the retired-revision preview, downgraded a proven
+ * bridge to UNKNOWN, and — worst — cleared a recorded `requires_import_maps`, which turns the
+ * honest "this browser cannot run it" cue back into the permanently blank iframe P0.8 exists to
+ * end. Declaring the shape here and having every producer return `WithServedSimFields<T>` is what
+ * makes the next added field a compile error instead of a silent regression.
+ */
+export interface ServedSimFields {
+  /** The bytes that are live right now — `simulation_url` with the revision pointer resolved. */
+  simulation_served_url: string | null;
+  /** Does the LIVE entry document need import maps to run at all? `null` is UNKNOWN. */
+  requires_import_maps: boolean | null;
+  /** Does the LIVE bridge post SCRIPT_APPLIED? `null` is UNKNOWN. */
+  bridge_ack_capable: boolean | null;
+}
+
+/** A section row as it goes out on the wire: the stored row, untouched, plus `ServedSimFields`. */
+export type WithServedSimFields<T> = T & ServedSimFields;
+
+/**
  * Editor shaping: every section keeps its STORED `simulation_url` byte-for-byte and gains
  * `simulation_served_url`, the bytes that are live right now, plus `requires_import_maps`, the
  * capability floor of those same bytes.
@@ -125,11 +150,7 @@ export function withServedSimulationUrls<T extends SimSectionRow>(
   sections: readonly T[],
   pointerRows: readonly SimRevisionPointerRow[],
   storage: SimPublicUrlSource,
-): Array<T & {
-  simulation_served_url: string | null;
-  requires_import_maps: boolean | null;
-  bridge_ack_capable: boolean | null;
-}> {
+): Array<WithServedSimFields<T>> {
   const pointers = simRevisionPointers(pointerRows);
   const resolve = simulationUrlResolver(pointers, storage);
   // THREE STATES, and the third is why neither of these is `?? false`. A section with no

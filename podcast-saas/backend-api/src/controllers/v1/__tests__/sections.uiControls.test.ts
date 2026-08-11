@@ -31,7 +31,9 @@ const mocks = vi.hoisted(() => {
   return {
     mockProjects:    { findFirst: vi.fn() },
     mockSections:    { findFirst: vi.fn() },
-    mockSimulations: { findFirst: vi.fn() },
+    // See sections.sim.test.ts: every section-shaped response resolves the revision pointer, so
+    // the write paths reach `simulations.findMany` too. `[]` = no revisioned package.
+    mockSimulations: { findFirst: vi.fn(), findMany: vi.fn(async () => []) },
     mockVideoFiles:  { findFirst: vi.fn() },
     mockUpdate, mockUpdateSet, mockUpdateWhere, mockUpdateReturning,
     mockGenerate:  vi.fn(),

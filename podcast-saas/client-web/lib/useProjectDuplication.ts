@@ -20,6 +20,30 @@ import type { ProjectDuplicationStatus } from 'shared/src/generated/client-v1';
 
 const POLL_MS = 3000;
 
+/**
+ * How many CONSECUTIVE failed status reads end the run.
+ *
+ * The old comment was right about the premise and wrong about the conclusion: a single failed poll
+ * really is not a failed duplication — the copy runs server-side and the next tick picks it up — but
+ * "only a terminal row ends the loop" turns any PERMANENT read failure into a loop that never ends.
+ * Delete the source project while a copy runs and the GET is 404 for the rest of the session; let
+ * the token expire and it is 401 for the rest of the session. Either way `state.status` stays
+ * `copying`, `busy` stays true, and the tile reads "Copying…" behind a disabled button forever.
+ *
+ * Five is ~15 s of unbroken failure, which is far longer than any transient this poll actually sees
+ * and short enough that the user is told while they are still looking at the tile. The counter is
+ * reset by ANY successful read, so a flaky connection that answers one tick in three never trips it.
+ *
+ * WHAT IT DOES NOT CLAIM. Losing contact with the status row is not the same as the copy having
+ * failed — the server may well finish it — so the message says exactly that, and the run is left in
+ * `failed` (the state whose control is enabled again) rather than pretending to know the outcome.
+ */
+const MAX_CONSECUTIVE_POLL_FAILURES = 5;
+
+/** Stated to the user when the poll gives up. Deliberately not "the duplication failed". */
+export const POLL_LOST_CONTACT_MESSAGE =
+  'Lost contact with the copy — it may still be running. Refresh to check.';
+
 export interface DuplicationState {
   /** Null when nothing is in flight. */
   status: ProjectDuplicationStatus | null;
@@ -82,10 +106,14 @@ export function useProjectDuplication(
     if (state.status !== 'queued' && state.status !== 'copying' && state.status !== 'committing') return;
 
     let cancelled = false;
+    // Consecutive, not cumulative: a run that survives an hour of intermittent failures is healthy,
+    // and a run that cannot read the row five times in a row is not going to.
+    let consecutiveFailures = 0;
     const tick = async (): Promise<void> => {
       try {
         const row = await api.getProjectDuplication(projectId, duplicationId);
         if (cancelled || !aliveRef.current) return;
+        consecutiveFailures = 0;
         const progress = row.objects_total > 0 ? row.objects_copied / row.objects_total : null;
         if (row.status === 'ready') {
           setDuplicationId(null);
@@ -103,7 +131,16 @@ export function useProjectDuplication(
         setState((s) => ({ ...s, status: row.status, progress }));
       } catch {
         // A single failed poll is not a failed duplication — the copy runs server-side and the
-        // next tick will pick it up. Only a terminal row ends the loop.
+        // next tick will pick it up. A RUN of them is a different statement: nothing this client
+        // can do will learn the outcome, so the loop stops and says so rather than spinning with a
+        // disabled control for the rest of the session.
+        if (cancelled || !aliveRef.current) return;
+        consecutiveFailures += 1;
+        if (consecutiveFailures < MAX_CONSECUTIVE_POLL_FAILURES) return;
+        // Clearing the id is what actually ends the loop: this effect is keyed on it, and its
+        // cleanup clears the interval.
+        setDuplicationId(null);
+        setState((s) => ({ ...s, status: 'failed', error: POLL_LOST_CONTACT_MESSAGE }));
       }
     };
     const timer = setInterval(() => { void tick(); }, POLL_MS);

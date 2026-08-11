@@ -19,7 +19,8 @@ import {
   type SimUiSelection,
 } from '../../services/simulation/SimUiControls.js';
 import {
-  withServedSimulationUrls, type SimRevisionPointerRow,
+  withServedSimulationUrls,
+  type SimRevisionPointerRow, type WithServedSimFields,
 } from '../../services/simulation/simulationUrlResolver.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { logger } from '../../lib/logger.js';
@@ -67,12 +68,27 @@ function resolveSimEntryUrl(entryFile: string | null): string | null {
 }
 
 /**
- * Attach `simulation_served_url` — the bytes that are live right now — to a section list.
+ * Attach `ServedSimFields` — the bytes that are live right now, and what publication recorded about
+ * them — to a section list.
  *
  * ONE query for the whole list, never one per section: the pointer read is project-scoped and
  * indexed, exactly as `buildPlayerConfig` does it, and is skipped entirely for a project with no
- * simulation sections (which is most of them). `columns` keeps it to two scalars — the row also
+ * simulation sections (which is most of them). `columns` keeps it to four scalars — the row also
  * carries `guidance`, `bridge_functions` and `canary_report`, none of which this needs.
+ *
+ * EVERY section-shaped response in this file goes through here, reads and writes alike. It used to
+ * be the read paths only, and the two write endpoints returned the raw row: every client update
+ * path (`TimelinePanel`'s drag/trim/move, `VideoEditor`'s undo/redo) splices that response straight
+ * into editor state, so one drag replaced a section carrying all three facts with one carrying
+ * none. `simulation_served_url` had a client-side compensation (`servedSimUrls` in VideoEditor);
+ * the other two had none, so a drag silently downgraded a proven bridge to UNKNOWN and — the one
+ * that costs a user something they can see — erased a recorded `requires_import_maps`, replacing
+ * P0.8's honest cue with exactly the blank frame it exists to end. The fix is at the SOURCE: the
+ * write endpoints return the same enriched shape the bootstrap reads return, so there is nothing
+ * for a client to have to remember.
+ *
+ * The extra query is paid only by a section that HAS a simulation — the early return below skips it
+ * for every other row, which is what a drag on a video or b-roll section is.
  *
  * The degraded read mirrors buildPlayerConfig's: `active_revision_entry_key` arrives in migration
  * 050, and an app image that boots before it is applied must not 500 the editor. Degrading means
@@ -82,14 +98,21 @@ function resolveSimEntryUrl(entryFile: string | null): string | null {
 async function withServedSimUrls<T extends { simulation_id: string | null; simulation_url: string | null }>(
   projectId: string,
   sections: readonly T[],
-): Promise<Array<T & { simulation_served_url: string | null }>> {
+): Promise<Array<WithServedSimFields<T>>> {
   if (!sections.some((s) => s.simulation_id)) {
     return sections.map((s) => ({
       ...s, simulation_served_url: s.simulation_url, requires_import_maps: null, bridge_ack_capable: null,
     }));
   }
-  const pointerRows = await db.query.simulations
-    .findMany({
+  // try/catch rather than `.catch()`: this now runs on the WRITE paths too, where the row is
+  // already committed. A response that failed here would tell the client its edit did not happen —
+  // after it did — and leave the editor's optimistic state diverged from the database. Degrading
+  // (every section falls back to its stored URL, both capabilities UNKNOWN) is the pre-migration
+  // behaviour and is loudly logged; failing is not an option a committed write leaves open. The
+  // wider form also covers a SYNCHRONOUS throw, which `.catch()` on the returned promise does not.
+  let pointerRows: SimRevisionPointerRow[];
+  try {
+    pointerRows = await db.query.simulations.findMany({
       where: eq(simulations.project_id, projectId),
       // `requires_import_maps` (migration 057, audit P0.8) and `bridge_ack_capable` (migration 055,
       // audit P0.5) are two more scalars off the row this query already loads — the alternative is
@@ -99,12 +122,25 @@ async function withServedSimUrls<T extends { simulation_id: string | null; simul
       columns: {
         id: true, active_revision_entry_key: true, requires_import_maps: true, bridge_ack_capable: true,
       },
-    })
-    .catch((err: unknown) => {
-      logger.error({ err, projectId }, 'sections: revision pointers unavailable — the editor falls back to stored URLs');
-      return [] as SimRevisionPointerRow[];
     });
+  } catch (err) {
+    logger.error({ err, projectId }, 'sections: revision pointers unavailable — the editor falls back to stored URLs');
+    pointerRows = [];
+  }
   return withServedSimulationUrls(sections, pointerRows, getStorageAdapter());
+}
+
+/**
+ * The same shaping for ONE row — every write endpoint's response.
+ *
+ * A separate name only because the singular call reads badly inline; it is the list helper with a
+ * one-element list, deliberately, so a write response can never drift from a read response.
+ */
+async function servedSection<T extends { simulation_id: string | null; simulation_url: string | null }>(
+  projectId: string,
+  section: T,
+): Promise<WithServedSimFields<T>> {
+  return (await withServedSimUrls(projectId, [section]))[0];
 }
 
 // ── Simulation-generation error mapping ───────────────────────────────────────
@@ -269,7 +305,10 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
         })
         .returning();
 
-      return reply.code(201).send(section);
+      // The SAME shape GET /sections returns. A duplicated section is spliced straight into editor
+      // state by the caller, so a bare row here would arrive with no served url, no capability
+      // floor and no ack record — for a section that may already be a fully revisioned package.
+      return reply.code(201).send(await servedSection(project.id, section));
     },
   );
 
@@ -365,7 +404,9 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
         .where(eq(timeline_sections.id, existing.id))
         .returning();
 
-      return reply.send(updated);
+      // Enriched, for the reason spelled out on `withServedSimUrls`: a drag, a trim, a move and an
+      // undo/redo restore all splice THIS response into the editor's section state.
+      return reply.send(await servedSection(project.id, updated));
     },
   );
 
@@ -619,7 +660,13 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
 
     try {
       const updated = await generateOrReuseSection({ ...ctx, signal: controller.signal, onEvent: sendEvent });
-      if (!controller.signal.aborted) sendEvent('done', { section: updated });
+      // The `done` frame is applied to the editor AND to the live preview (`applyDone`), and the
+      // preview mounts the SERVED url — so the frame has to carry it, or the section editor would
+      // remount the just-published revision from the stored value and re-derive UNKNOWN for both
+      // capabilities of a package publication has just measured.
+      if (!controller.signal.aborted) {
+        sendEvent('done', { section: await servedSection(ctx.project.id, updated) });
+      }
     } catch (err) {
       if (timedOut) {
         sendEvent('error', { error: 'Generation timed out. Please try again.', errorType: 'generation_error' });
@@ -757,7 +804,7 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
         const updated = await generateOrReuseSection({
           section, project, user, input: body.data, signal: controller.signal,
         });
-        return reply.send(updated);
+        return reply.send(await servedSection(project.id, updated));
       } catch (err) {
         const errorType = classifySimulationError(err);
         // 409 for a lost activation CAS: a concurrent publication won, nothing was overwritten,

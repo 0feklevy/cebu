@@ -177,7 +177,35 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
   // entering a sim section (or a fresh SIM_READY) while the section editor's preview holds the
   // page lease records the desire here, and the lease-release re-evaluation turns it into the
   // real activate. Without it, a boundary crossed DURING a preview never started its script.
+  //
+  // MIRRORED INTO STATE, because it is also a PRESENTATION fact and not only a bookkeeping one. A
+  // document that owes an activation has not been told what to run: what it is painting is its boot
+  // scene, its default sub-simulation, or whatever a previous section left on it. The runtime's own
+  // reveal path cannot know that — `holding` is only set by a gated ACTIVATION, and the whole point
+  // here is that no activation was ever posted — so the first paint runs
+  // `onPainted → maybeReveal → reveal(false)` and the slot composites content that belongs to no
+  // section. The owner is the only layer that knows an activation is outstanding, so the owner
+  // withholds the composite. Written only through `setPendingLeaseActivation` so the ref and the
+  // state cannot drift.
   const pendingLeaseActivationRef = useRef(false);
+  const [leaseActivationPending, setLeaseActivationPending] = useState(false);
+  const setPendingLeaseActivation = useCallback((pending: boolean) => {
+    pendingLeaseActivationRef.current = pending;
+    setLeaseActivationPending(pending);
+  }, []);
+  /**
+   * (P1.1c) A document MOUNT the lease refused, replayed when the lease frees.
+   *
+   * The reuse path could record its desire in the flag above and let the lease-release sync post the
+   * activation, because the document it needs is already resident. The NAVIGATE path cannot: there
+   * is nothing to activate until a different document is mounted, and mounting is exactly what must
+   * not happen while the preview holds the page. `attach()` resets every per-document flag —
+   * including the `phase: 'suspended'` the lease-driven `suspend()` just set — so a mount here boots
+   * a SECOND WebGL document, un-suspends the timeline out from under the preview, and then reveals
+   * itself on its first paint. That is the two-concurrent-simulations state the broker exists to
+   * make impossible, reached through the one branch that never asked it.
+   */
+  const pendingLeaseMountRef = useRef<{ src: string; bootHide: string[] | null } | null>(null);
   // Last observed blocked-state, so the broker subscription and the compatibility CustomEvent
   // delivering the same transition twice cannot double-suspend or double-restore.
   const timelineLeaseBlockedRef = useRef(false);
@@ -247,10 +275,43 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
     return verdict.runnable ? null : verdict.missing;
   }, [activeSimSection, browserCaps]);
 
+  /**
+   * May the resident document be PRESENTED at all? (audit P1.1c)
+   *
+   * The runtime's `visible` answers "has this document painted and is nothing holding it", which is
+   * a different question from "may the user see it", and the two came apart in both directions:
+   *
+   *   • AN OUTSTANDING ACTIVATION. A lease-blocked boundary — or a SIM_READY that landed mid-preview
+   *     — records the desire WITHOUT posting it, exactly as it should. But `holding` is set only by
+   *     a gated activation, so `onPainted → maybeReveal → reveal(false)` presented a document that
+   *     had been sent no `startScript` at all: the package's boot scene, standing in for a section.
+   *     The owner is the only layer that knows an activation is owed, so the owner withholds.
+   *
+   *   • THE LEASE ITSELF. `suspend()` cancels a pending APPLY bound, but the legacy paint-recovery
+   *     ceiling is a different timer and force-reveals (`reveal(true)`) on schedule — so a document
+   *     suspended before it ever handshook composited itself 12 s into someone else's preview.
+   *     Reading the broker here is the same rule the activate/resume paths follow, applied to the
+   *     one thing they do not cover. `leaseEpoch` is the reactive edge: it is bumped by the lease
+   *     subscription below, which is how a lease change re-renders this at all.
+   *
+   * The two terms OVERLAP TODAY and that is deliberate, not an oversight: an activation is owed
+   * exactly while the lease refuses one, so the second term cannot currently be observed on its own
+   * (removing it changes no test). It stays because the two are different statements — "someone
+   * else owns the screen" and "this document has not been told what to run" — and only the first is
+   * a property of the broker. A future path that defers an activation for any other reason would be
+   * covered by the second and by nothing else.
+   */
+  const timelineMayPresent = useMemo(
+    () => simulationLeaseAllows('timeline-visible'),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [leaseEpoch],
+  );
+  const simPresentable = simState.visible && timelineMayPresent && !leaseActivationPending;
+
   // A package the browser cannot run is never composited, whatever the runtime's reveal path says
   // (the bounded ceiling reveals documents that never announce themselves — which is exactly this
   // one). The slot shows the reason in its cover instead.
-  const showSimOverlay = simIsActive && simState.visible && !simFloorMissing;
+  const showSimOverlay = simIsActive && simPresentable && !simFloorMissing;
 
   const cancelSimDestroy = () => {
     if (simDestroyTimerRef.current) { clearTimeout(simDestroyTimerRef.current); simDestroyTimerRef.current = null; }
@@ -288,6 +349,16 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
   }, [onSimFrameLoad, simRuntime]);
 
   /**
+   * (P1.2) The section identity the live document was last ACTIVATED for.
+   *
+   * The boundary effect re-runs for two different kinds of change and used to treat them the same:
+   * a real move (a different section, a different document) and a pure POLICY change on the section
+   * already running (`simple_ui`, `auto_script`, `sim_meta.uiControls`). Only the first is an
+   * activation. This is how the two are told apart — see the policy branch in the effect below.
+   */
+  const activatedForRef = useRef<{ sectionId: string; url: string } | null>(null);
+
+  /**
    * Apply the recorded desire to the live document. One helper for all three paths that do it (the
    * boundary, SIM_READY, and the lease release) because the SCRIPT NAME is not a property of the
    * section alone: a dynamic v2 bridge is addressed by the section's variant key, a legacy one only
@@ -297,6 +368,7 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
   const activateDesired = useCallback(() => {
     const desired = desiredSimRef.current;
     if (!desired) return;
+    activatedForRef.current = { sectionId: desired.section.id, url: desired.section.simulation_url ?? '' };
     // BEFORE the activation, because it is the input that decides whether this document's FIRST
     // activation may be revealed on sight or must hold for the acknowledgement — and in-session
     // evidence, by definition, does not exist at that moment (audit P0.5).
@@ -344,9 +416,9 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
     if (!activeSimUrlRef.current) return;
     const desired = desiredSimRef.current;
     if (!desired) return;
-    if (!simulationLeaseAllows('timeline-visible')) { pendingLeaseActivationRef.current = true; return; }
+    if (!simulationLeaseAllows('timeline-visible')) { setPendingLeaseActivation(true); return; }
     activateDesired();
-  }, [simState.ready, activateDesired]);
+  }, [simState.ready, activateDesired, setPendingLeaseActivation]);
 
   // (P1.1c) SectionEditor coordination, lease-mediated: while the editor's preview RUNS it holds
   // the page's 'preview-visible' lease; this surface suspends its sim (and pauses the editor
@@ -366,12 +438,24 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
       simRuntime.suspend();
       return;
     }
+    // A MOUNT the lease refused comes first: there is no point asking what to do with the resident
+    // document when the answer is that a different one should be resident. Mounting it here is the
+    // whole of the replay — its native `load` arms the poll and the ceiling, its SIM_READY drives
+    // the ready effect, and the lease is free by definition on this path, so that effect activates
+    // rather than recording the desire again.
+    const deferredMount = pendingLeaseMountRef.current;
+    if (deferredMount) {
+      pendingLeaseMountRef.current = null;
+      setPendingLeaseActivation(false);
+      mountResident(deferredMount);
+      return;
+    }
     const action = timelineActionOnLeaseFree({
       wantsSim: activeSimUrlRef.current !== null,
       pendingActivation: pendingLeaseActivationRef.current,
       ready: simRuntime.getState().ready,
     });
-    pendingLeaseActivationRef.current = false;
+    setPendingLeaseActivation(false);
     if (action === 'activate') {
       // A boundary crossing (or SIM_READY) happened while blocked: the recorded desire becomes
       // the real activation now. activate() itself resumes, unmutes and drives the reveal.
@@ -386,7 +470,7 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
       simRuntime.resume();
       simRuntime.startPaintRecovery({ legacyCeilingMs: EDITOR_SIM_REVEAL_CEILING_MS });
     }
-  }, [simRuntime, activateDesired]);
+  }, [simRuntime, activateDesired, mountResident, setPendingLeaseActivation]);
 
   useEffect(() => {
     // Late join: a preview may ALREADY hold the lease when this player mounts.
@@ -522,9 +606,18 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
       }
       desiredSimRef.current = null;
       activeSimUrlRef.current = null;
+      // (P1.2) `deactivate()` above stops the section, so nothing is running for this document any
+      // more, and a re-entry inside the destroy grace must be an ACTIVATION even though the section,
+      // the URL and the toggles are all unchanged. The runtime already refuses to police a stopped
+      // section (`deactivate` nulls its `livePolicy`, so `setPolicy` answers 'no-activation' and the
+      // branch below falls through to activate). This clears the caller's own record of the same
+      // fact, so the two cannot disagree — the alternative is a policy branch whose correctness
+      // depends on a private field of another module.
+      activatedForRef.current = null;
       // (P1.1c) Withdraw any desire recorded while the lease was held: leaving the sim section
-      // during a preview must not activate anything when the lease frees.
-      pendingLeaseActivationRef.current = false;
+      // during a preview must not activate — or MOUNT — anything when the lease frees.
+      setPendingLeaseActivation(false);
+      pendingLeaseMountRef.current = null;
       return;
     }
     // (D2b) Re-entered a sim section before the destroy grace fired — keep the live iframe.
@@ -550,7 +643,22 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
     // What the sim SHOULD run now — and what publication recorded about its bridge (audit P0.5).
     desiredSimRef.current = { section, params, ackCapable: section.bridge_ack_capable ?? null };
     if (switchTo === 'navigate') {
-      mountResident({ src: newUrl, bootHide: section.simple_ui && uiHide?.length ? uiHide : null });
+      const spec = { src: newUrl, bootHide: section.simple_ui && uiHide?.length ? uiHide : null };
+      // (P1.1c) THE NAVIGATE PATH CONSULTS THE LEASE TOO. It used to be the one branch that did
+      // not, and mounting is the most expensive thing this surface can do without permission:
+      // `attach()` clears the runtime's per-document state — the `phase: 'suspended'` the
+      // lease-driven suspend() just set with it — so a regeneration, rollback or save landing while
+      // the section editor's preview runs booted a SECOND WebGL document, un-suspended the timeline
+      // under the preview, and (with no activation ever posted, because the ready effect correctly
+      // defers) composited the package's boot scene as the section's content until the preview
+      // closed. Deferred instead, and replayed by `syncTimelineWithLease`.
+      if (!simulationLeaseAllows('timeline-visible')) {
+        pendingLeaseMountRef.current = spec;
+        setPendingLeaseActivation(true);
+        return;
+      }
+      pendingLeaseMountRef.current = null;
+      mountResident(spec);
       // A different document has to load first: its `load` arms the poll/ceiling and its SIM_READY
       // drives the ready effect above. Anything armed here would be discarded by the re-attach.
       return;
@@ -563,13 +671,45 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
     // blocked, only the DESIRE is recorded (desiredSimRef above, plus this flag); the
     // lease-release sync replays it.
     if (!simulationLeaseAllows('timeline-visible')) {
-      pendingLeaseActivationRef.current = true;
+      setPendingLeaseActivation(true);
     } else if (live.ready) {
-      // Live document — activate now. Re-running on params/script changes (deps below) is what
-      // makes a canReuse regeneration — same URL, new toggles — show up live in the editor.
-      // The runtime resumes, sends startScript + clearBootHide, unmutes, and decides whether the
-      // reveal may happen immediately or must wait for this section's SCRIPT_APPLIED. This is also
-      // the SAME-PACKAGE HOP: one postMessage onto a document that is already painted.
+      // (P1.2) POLICY FIRST, WHEN NOTHING BUT POLICY CHANGED.
+      //
+      // This effect re-runs for two different kinds of change and treated them identically. A
+      // different section, or a different document, is a real move and must be an activation. But
+      // `simple_ui`, `auto_script` and `sim_meta.uiControls` are in the dep list too (deliberately —
+      // a canReuse regeneration keeps the URL and must still show up live), and for those the
+      // section already running is the section that should still be running. Re-activating it
+      // resets the demonstration: on v2 the bridge falls through `stopScript` — cleanup runs, every
+      // tracked timer dies, the body re-runs — and on v3 a new `configHash` IS a new activation by
+      // construction. So saving a Minimal-UI toggle in the section editor threw away wherever the
+      // timeline's simulation had got to, which is exactly the finding P1.2 closed on the preview.
+      //
+      // The claim that this could not be reached because the timeline is suspended behind the
+      // preview's lease does not hold: the lease is held only while the preview is RUNNING, and the
+      // toggles reach the row on Save (preview stopped, or never started) and on an undo/redo
+      // restore with no modal open at all.
+      //
+      // `setPolicy` owns the fallback for a package whose bridge predates the handlers — it
+      // re-activates and says so ('reactivated'). 'no-activation' is the one answer this surface
+      // must handle itself: the runtime has no live section, so a real activation is what is wanted.
+      const activatedFor = activatedForRef.current;
+      const policyOnly = activatedFor?.sectionId === section.id && activatedFor.url === newUrl;
+      if (policyOnly) {
+        const outcome = simRuntime.setPolicy({
+          simpleUi: params.simpleUi,
+          autoScript: params.autoScript,
+          // `[]` and `null` differ on the RESTART path only (simPolicy.ts): `null` leaves the body's
+          // own generated hide logic to decide, `[]` is "hide nothing". The section's stored
+          // selection is authoritative here, so an empty stored list means exactly `[]`.
+          hideSelectors: uiHide ?? null,
+        });
+        if (outcome !== 'no-activation') return;
+      }
+      // Live document — activate now. This is also the SAME-PACKAGE HOP: one postMessage onto a
+      // document that is already painted. The runtime resumes, sends startScript + clearBootHide,
+      // unmutes, and decides whether the reveal may happen immediately or must wait for this
+      // section's SCRIPT_APPLIED.
       activateDesired();
     } else {
       // (D2b) Same document, bridge not up yet (e.g. a warm mount still booting, or suspended
@@ -776,7 +916,7 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
       <EditorSimPool
         spec={residentSpec}
         active={simIsActive}
-        visible={simState.visible}
+        visible={simPresentable}
         interactive={simState.interactive}
         floorMissing={simFloorMissing}
         frameRef={simFrameRef}

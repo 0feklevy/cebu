@@ -273,9 +273,23 @@ export function SectionEditor({
   // Keying semantics are preserved: `key={simPreviewUrl}` below, so a divergent pick is a document
   // change and remounts the frame exactly like any other URL change.
   const previewPickerDiverges = !!simId && simId !== (section.simulation_id ?? '');
+  // (audit §9.6) THE SERVED URL, not the stored one. `simulation_url` is what THIS section last
+  // published; every other section of the same package rewrites the package's active-revision
+  // pointer when IT publishes, and a rollback moves it for everyone. So two sections sharing one
+  // simulation — generate A, generate B (retiring A's revision), regenerate A (retiring B's) — leave
+  // B's row naming a revision withdrawn two publications ago. Once that revision falls outside
+  // `keepLastN` and `RevisionService.collect` deletes it, this iframe 404s and the author's only
+  // view of their own simulation is permanently blank, while the timeline slot beside it — which
+  // has resolved the pointer since Stage 0 — shows the live revision correctly.
+  //
+  // This was the last sim surface reading the stored value: the viewer resolves it in
+  // `buildPlayerConfig`, the editor timeline resolves it in `VideoEditor`, and the field has been
+  // present on the very object this component receives all along (`selectedSection` comes from
+  // VideoEditor's bootstrap `sections` state). `?? section.simulation_url` keeps the pre-migration
+  // behaviour for a legacy package, a locally-constructed row, or an older backend.
   const simPreviewUrl = previewPickerDiverges
     ? (activeSim?.entry_file ?? null)
-    : (section.simulation_url ?? activeSim?.entry_file ?? null);
+    : (section.simulation_served_url ?? section.simulation_url ?? activeSim?.entry_file ?? null);
   // Script identity follows the document: the persisted sim_script was generated against the
   // persisted document and cannot exist on a divergent pick's raw entry — use the 'main' default,
   // the same identity a fresh (never-generated) pick has always previewed with.
@@ -845,7 +859,13 @@ export function SectionEditor({
       // documentKey rather than the closure's `section`, which is stale whenever this very run
       // already patched the section (type/simulation_id) before streaming.
       const mountedDoc = simRuntime.getState().documentKey;
-      const remountCovers = !!s.simulation_url && s.simulation_url !== mountedDoc;
+      // Compared against WHAT THIS SURFACE MOUNTS, which is the served url (see `simPreviewUrl`).
+      // Comparing the stored url against the mounted document key answered "remounting" for every
+      // revisioned package — the two are different strings by construction — so the explicit push
+      // was skipped on the canReuse/mechanical path, where no remount happens and no fresh
+      // SIM_READY arrives, and the new toggles reached the live document from nowhere at all.
+      const nextDoc = s.simulation_served_url ?? s.simulation_url;
+      const remountCovers = !!nextDoc && nextDoc !== mountedDoc;
       if (!remountCovers) {
         const doneHide = doneSelection?.hide ?? null;   // [] is meaningful: clear every hide
         const doneParams: SimStartScriptParams = {

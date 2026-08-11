@@ -13,6 +13,7 @@ import {
   Search,
   Trash2,
   Users,
+  X,
 } from 'lucide-react';
 import { CreateProjectDialog } from './CreateProjectDialog';
 import { PlaylistsPanel } from './PlaylistsPanel';
@@ -194,11 +195,26 @@ function ProjectTile({ project, onDelete, onDuplicated }: {
       {(dup.busy || dup.status === 'failed') && (
         <div
           role="status"
-          className={`absolute inset-x-3 bottom-3 z-10 rounded-md px-2 py-1 text-[11px] font-semibold text-white shadow-sm ${
+          className={`absolute inset-x-3 bottom-3 z-10 flex items-start gap-2 rounded-md px-2 py-1 text-[11px] font-semibold text-white shadow-sm ${
             dup.status === 'failed' ? 'bg-red-600/90' : 'bg-black/70'
           }`}
         >
-          {dup.status === 'failed' ? (dup.error ?? 'Copy failed') : duplicationLabel(dup)}
+          <span className="min-w-0 flex-1">
+            {dup.status === 'failed' ? (dup.error ?? 'Copy failed') : duplicationLabel(dup)}
+          </span>
+          {/* The way out. A failed run leaves this strip covering the tile with nothing that
+              dismisses it — the hook has exported `reset()` since it was written and neither
+              surface called it, so the only escape from a failure was a page reload. */}
+          {dup.status === 'failed' && (
+            <button
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); dup.reset(); }}
+              title="Dismiss"
+              aria-label="Dismiss copy error"
+              className="shrink-0 rounded px-1 leading-none opacity-80 transition-opacity hover:opacity-100 focus-ring"
+            >
+              <X size={12} strokeWidth={2.5} aria-hidden />
+            </button>
+          )}
         </div>
       )}
 

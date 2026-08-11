@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef, useCallback } from 'react';
-import { ChevronDown, ChevronRight, Copy, ListVideo, Loader2, Mic, Pencil, PlaySquare, Plus, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Copy, ListVideo, Loader2, Mic, Pencil, PlaySquare, Plus, Trash2, X } from 'lucide-react';
 import { api } from '../lib/api';
 import { canLoadPrivateWorkspace } from '../lib/authGate';
 import { duplicationLabel, useProjectDuplication } from '../lib/useProjectDuplication';
@@ -210,9 +210,24 @@ function ProjectCard({ project, onRename, onDelete, onDuplicated }: ProjectCardP
       {(dup.busy || dup.status === 'failed') && (
         <p
           role="status"
-          className={`px-3 pb-2 text-[11px] font-medium ${dup.status === 'failed' ? 'text-red-400' : 'shell-muted'}`}
+          className={`flex items-start gap-1.5 px-3 pb-2 text-[11px] font-medium ${dup.status === 'failed' ? 'text-red-400' : 'shell-muted'}`}
         >
-          {dup.status === 'failed' ? (dup.error ?? 'Copy failed') : duplicationLabel(dup)}
+          <span className="min-w-0 flex-1">
+            {dup.status === 'failed' ? (dup.error ?? 'Copy failed') : duplicationLabel(dup)}
+          </span>
+          {/* The way out — see the identical control on the HomeHero tile. `reset()` has been
+              exported by the hook since it was written and called by neither surface, so a failure
+              could only be cleared by reloading the page. */}
+          {dup.status === 'failed' && (
+            <button
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); dup.reset(); }}
+              title="Dismiss"
+              aria-label="Dismiss copy error"
+              className="shrink-0 rounded leading-none opacity-80 transition-opacity hover:opacity-100 focus-ring"
+            >
+              <X size={12} strokeWidth={2.5} aria-hidden />
+            </button>
+          )}
         </p>
       )}
 
