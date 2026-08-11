@@ -333,3 +333,174 @@ lives in object storage under per-entity prefixes. Three properties make a naive
 2. Should `avatar_config`/persona and guidance data carry over? (Assumed yes — they are authoring data.)
 3. Is a partial copy ever wanted ("duplicate structure without media"), or always a full clone?
 4. Quota behavior when duplication would exceed the plan: hard refuse, or allow and bill?
+
+---
+
+## 9. Requested fix — simulations do not render smoothly in the EDITOR
+
+**Ask (owner, 2026-08-11):** in the editor, simulations are not displayed smoothly/continuously the
+way they are in preview/publish. The editor's presentation needs to be brought up to the same
+standard. Owner calls this **critical**.
+
+**Status:** evidence-gathering ran as a five-lens read-only investigation with adversarial
+verification (lenses: document lifecycle/residency, reveal & paint gating, playback/scrubbing/boundary
+detection, layout & compositing, runtime-protocol capability parity). Findings and the ranked
+approach are recorded in §9.1 below.
+
+### 9.0 Why this is a real architectural gap, not a polish item
+
+The audit's whole "smoothness" apparatus lives on the **viewer** path and has no counterpart in the
+editor. The viewer has: a resident pool of iframes keyed by *package* so re-entry is a resume rather
+than a boot (`lib/simPool.ts`, `SimPoolOverlay.tsx`); a paint-gated reveal that refuses to show a
+document until it has drawn (`revealSim` in `useProjectPlayer.ts`); a boot-hide cloak injected at
+publication; a cold-seek poster/stall cue; the v2 apply gate; the layered presentation policy; and
+`enableModern`, whose only production call site is the viewer — so the editor is v2/legacy-only and
+cannot use prepare/present at all. The editor, by contrast, drives simulations through
+`useSimRuntime` from `VideoPlayer.tsx`'s section-boundary effect.
+
+Two consequences worth stating up front, because they shape the fix:
+- Anything the editor adopts must not regress the authoring behavior **just fixed by P1.1**
+  (activation epochs, preview identity, the page-wide `SimulationLease`). The editor is the one
+  surface that legitimately runs *two* simulations (preview panel + timeline), and parity with the
+  viewer is the wrong goal wherever that difference is real.
+- Residency costs WebGL contexts and memory. The audit caps resident documents on weak devices; the
+  editor already hosts a preview surface alongside the timeline. A pool in the editor must be
+  bounded more conservatively than the viewer's, not less.
+
+### 9.1 Root cause
+
+Five read-only lenses produced 23 findings that survived adversarial verification, and they collapse
+to **one architectural fact plus one amplifier**.
+
+**The cause: the editor has no simulation residency at all.** It drives every simulation through a
+single `<iframe>` created at the section boundary, whose `src` is the section's raw stored URL.
+`simUrl` starts null (`VideoPlayer.tsx:103`), is assigned in exactly one place — inside the
+boundary-crossing effect (`:381`) — and gates the iframe's existence (`:531`). `activeSimSection` is
+strict containment with **zero lookahead** (`VideoEditor.tsx:683-689`). So HTML fetch, JS parse,
+module evaluation, WebGL context creation, shader compile and first paint *all begin at the instant
+the playhead crosses into the section*.
+
+**And the reuse test cannot ever hit.** `const sameDoc = live.documentKey === newUrl`
+(`VideoPlayer.tsx:372`) compares the full URL, but every section URL carries a per-section query
+(`?section=<id>&v=<bridgeHash>`), and `resolveSimUrl` preserves it. So `sameDoc` is **false at every
+sim→sim boundary — including between two sections of the same package**, which `simPool.ts:3-8`
+records as the designed-for common case ("few PACKAGES (1–3) but many section URLs"). Since P0.4
+landed, sibling sections also live on different immutable revision *paths*, so they now differ before
+the query even matters.
+
+The viewer does the opposite, and says so in its own header (`useProjectPlayer.ts:44`): *"entering a
+sim section is a pure opacity swap of an already-painted frame; nothing loads at the boundary."* It
+keys a pool of up to four persistent frames on `packageKeyOf` (query and hash stripped,
+`simPool.ts:25,28`), mounts them up front on a 1.2 s stagger armed at the video's first `playing`,
+warms each to paint under an 8 s budget, and changes section with a postMessage to the
+already-painted document (`rt.activate({ script: dynamicScriptFor(section) })`).
+
+**What the user is seeing:** the sim goes to opacity 0, the talking-head video keeps playing bare
+underneath, a whole WebGL document boots, and the sim pops back seconds later — on first entry, on
+every hop between two sim sections, and on any re-entry past the destroy grace. The editor is
+permanently running in what the viewer classifies as its degraded `single` incident mode.
+
+**The amplifier: nothing covers the wait, and an 800 ms blank force-reveal.** The editor composites
+straight off the runtime flag (`showSimOverlay = simState.visible`, `VideoPlayer.tsx:147`) over a flat
+`#0e0e0e`, and passes **no children** to `SimSurface` even though it declares a cover slot documented
+as *"Rendered above the frame while it is hidden (spinner, cover)"* (`SimSurface.tsx:51,88`). It also
+calls `startPaintRecovery()` with no options at six sites, inheriting `SIM_LEGACY_REVEAL_MS = 800`
+(`protocol.ts:131`) — and because the editor never calls `enableModern` (sole product call site is
+`useProjectPlayer.ts:1623`), that ceiling's `reveal(true)` force-bypasses the `!painted` guard. The
+viewer deliberately neuters the same ceiling by pushing it to 12 s, *because it runs its own
+section-aware policy instead*: hold 1200 ms → poster + spinner → 5 s terminal cue.
+
+> **Ordering matters.** The missing cover does not cause the delay; it leaves the delay unexplained.
+> Fixing only the cover replaces a jarring gap with a still image over a gap of the same length.
+> Fixing only residency removes most of the gap but leaves the 800 ms blank reveal for slow packages.
+
+### 9.2 What the viewer already has (reuse inventory)
+
+| Module | Editor adoption |
+|---|---|
+| `lib/simPool.ts` — `packageKeyOf`, `dynamicScriptFor`, `planWindowResidency`, `collectSimPool` | **Mostly as-is.** The first two are pure and take section-shaped objects. `collectSimPool` takes a `PlayerConfig` and needs a small mechanical generalization to a section list. |
+| `lib/sim/SimSurface.tsx` — `children` cover slot | **As-is, currently unused.** The editor already renders it and just passes nothing. |
+| `SimRuntimeClient.startPaintRecovery({legacyCeilingMs})` | **As-is.** The option exists; the editor simply never passes it. |
+| `lib/simApplyGate.ts` | **As-is**, but inert until §9.3 Stage 2 — a fresh document always has `lastScript === null` → `reveal-now`. |
+| `lib/sim/simulationLease.ts` (landed in P1.1) | **As-is** — it already has the `warm` rank an editor pool needs. Its header says not to add a second channel; don't. |
+| `SimPoolOverlay.tsx` | **Reimplement thin (~150 lines).** Viewer-shaped (viewer.css, viewer prop types); reuse the *pattern*: arm gate + stagger + `key={spec.key}` + z-index swap. |
+| `useProjectPlayer`'s reveal/hold/cold-cover policy | **The only real REWRITE.** It is inline in a 3,600-line hook, not a module. Extracting `lib/sim/revealPolicy.ts` would serve both surfaces but touches the viewer, which P0.1 just stabilized. Only if an editor-local policy proves insufficient. |
+| `buildPlayerConfig.simulationUrlOf` | **Extract and share** — `editor-state.controller.ts` must resolve through the same helper. |
+| `enableModern` / v3 presentation, TransitionCoordinator, boundaryClock | **Inapplicable** — see non-goals. |
+
+### 9.3 Staged approach
+
+Each stage is independently shippable and keeps its value if a later one is dropped.
+
+- **Stage 0 — rebase editor URLs onto the active revision** *(backend, small)*. Extract
+  `simulationUrlOf` from `buildPlayerConfig.ts:386-393` and have `editor-state.controller.ts` use it.
+  Fixes a real bug on its own (the editor can currently render a *retired revision's* bytes) and is a
+  **hard prerequisite for Stage 2**: post-P0.4, sibling sections sit on different revision paths, so
+  `packageKeyOf` cannot collapse them without this.
+- **Stage 1 — presentation floor** *(client, small, no architecture change)*. Pass an explicit
+  `legacyCeilingMs` at the six `startPaintRecovery()` sites so an unpainted document is never
+  force-revealed, and render a spinner/cue in `SimSurface`'s existing `children` slot. Poster is the
+  expensive half and buys least once Stage 4 lands — **defer it**.
+- **Stage 2 — same-document section dispatch** *(client + shared, medium)*. Key the editor runtime on
+  `packageKeyOf(url)` and send `dynamicScriptFor(section)`. Turns every within-package hop from a
+  navigation into a postMessage. **Reverses an explicit design decision** at `VideoPlayer.tsx:336-337`
+  — update the comment, not just the code. Watch: a regenerate mints a new hash/revision, so the
+  document key legitimately changes and a navigation is *correct* there.
+- **Stage 3 — retention** *(client, small)*. Keep the last package's document mounted across a
+  sim→video→sim excursion rather than relying on the URL-equality destroy grace.
+- **Stage 4 — bounded prewarm** *(client, largest; the actual root-cause fix)*. Warm the *next*
+  package a bounded lead ahead, cap **1** resident timeline document plus the preview, mount hidden
+  and frozen, and hold the lease at `warm` so warming yields to both visible priorities. This is where
+  the smoothness actually comes from, and where the WebGL/memory cost lands. Do not start it before
+  Stages 0–2 are stable.
+
+### 9.4 Non-goals — parity with the viewer is wrong in four places
+
+1. **Two simultaneous surfaces.** The editor legitimately hosts a preview *and* a timeline sim; the
+   viewer never does. Residency must budget for both and arbitrate through `simulationLease`.
+2. **Context budget.** Cap the editor **more conservatively than the viewer, not less** — realistically
+   1 timeline document + 1 preview. Do not port `SIM_POOL_CAP = 4`.
+3. **Frequent seeking.** Editor users seek constantly to arbitrary sections; the viewer's 45 s
+   linear-playback lead will mispredict. "Warm the next section" beats "warm the window", and warming
+   must be cheap to cancel.
+4. **Authoring invalidation.** Live toggles, the picker and regeneration *should* invalidate the
+   resident document. Do not optimize every documentKey change away.
+
+Explicitly do **not**: port `enableModern` (editor is v2/legacy-only; large project, no bearing on the
+symptom); port the TransitionCoordinator (solves a viewer-only HLS handoff); add the rVFC boundary
+sentinel (defaults off, so not even a live difference today); add debounce to the activation path (the
+boundary effect is already idempotent via its dep array — a debounce would only delay the sim); or
+remove the editor's `backdrop-filter` chrome as a smoothness fix (it taxes plain video identically, so
+it cannot be what makes sims specifically feel bad).
+
+### 9.5 Verification
+
+**Human, side by side with the published viewer** (the user's own comparison is the acceptance test):
+two sim sections of one package back to back — no blank, no scene reset, no reload in Network; first
+entry on straight-through playback; a cold seek into a sim section; a three.js-over-CDN package for
+the half-built-scene artifact; and the P1.1 regression check — open the preview while the timeline sits
+on a sim, cross a boundary, and confirm exactly one sim runs. Count document requests over a full
+timeline: today one per *section*, target one per *package*, issued before its section starts.
+
+**Automated:** `packageKeyOf(urlA) === packageKeyOf(urlB)` for two sections of one package (fails today
+on path, not just query — `bridgePublication.test.ts:366-400` already proves the divergence and is the
+place to extend); iframe `src` unchanged across a same-package hop with `activate` called using
+`variantKeyFor`; `SimSurface` receives non-null children whenever hidden with a URL set; a next-package
+iframe present and lease-held at `warm` before its section starts; and a property test that no two
+runtimes are simultaneously non-suspended while a `preview-visible` lease is held.
+
+Note `simRuntimeClient.test.ts:365-379` currently advances 850 ms with no paint and *expects*
+`visible === true` — that test's existence proves the 800 ms reveal is intentional at the runtime
+layer, so Stage 1 must change the **caller**, not the runtime default.
+
+**Needs a runtime trace, not code reading:** whether the 800 ms ceiling actually fires for a given
+package (it depends on whether the package carries the v4 rAF paint gate, injected at generation time)
+and the real editor cold-boot cost distribution.
+
+### 9.6 Two separate bugs this investigation surfaced
+
+- **Editor can serve retired-revision bytes.** `editor-state.controller.ts` does not resolve the
+  active-revision pointer. Fixed by Stage 0; worth its own ticket if Stage 0 slips.
+- **Post-roll simulations mis-detect their boundary in the editor.** The viewer applies a `- 0.05`
+  tolerance the editor's predicate lacks. A playback-clock correctness defect, not this smoothness
+  complaint — separate ticket, and fixing it will not change what the owner is describing.
