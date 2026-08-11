@@ -360,14 +360,31 @@ export class SimRuntimeClient {
   private evictSettle: ((o: SimEvictionOutcome) => void) | null = null;
   private evictPromise: Promise<SimEvictionOutcome> | null = null;
   /**
-   * Did THIS eviction send the SUSPEND_DOCUMENT that `cancelEviction` has to undo?
+   * THE SUSPEND DEBT: this client has sent a SUSPEND_DOCUMENT that it has not yet sent the
+   * matching RESUME_DOCUMENT for.
    *
-   * `thaw()` cannot answer that from the machine: `SUSPEND` maps to `DOCUMENT_READY` because the
-   * state only advances on the child's confirmation, so throughout the cancellable window
-   * `docMachine.state === 'SUSPENDED'` is false and `thaw()` sends nothing. The confirmation then
-   * lands on a document nobody resumed, `modernActive()` goes false permanently, and the next
-   * activation dies in `failModern('handshake-failed')`. Recorded here so the cancel is the exact
-   * inverse of the evict, rather than an inverse of whatever the child has got round to admitting.
+   * WHY A FLAG AND NOT `docMachine.state === 'SUSPENDED'`.
+   * The machine cannot answer this question, ON PURPOSE: `SUSPEND` maps DOCUMENT_READY to
+   * DOCUMENT_READY because the state only advances on the CHILD's confirmation. So for the whole
+   * round trip the machine still reads DOCUMENT_READY, and any resume gated on `SUSPENDED` sends
+   * NOTHING. The confirmation then lands on a document nobody resumed, `acceptsCommands` goes false
+   * for good, `modernActive()` with it, and the next activation dies in
+   * `failModern('handshake-failed')` after holding the section hidden for the whole timeout.
+   *
+   * That hazard was found and fixed once, for `evict()`/`cancelEviction()` only, with a field that
+   * recorded what THAT pair had sent. The other two pairs — `suspend()`/`resume()` and
+   * `freeze()`/`thaw()` — still asked the machine, and `freeze()`/`thaw()` is the pair the resident
+   * pool uses on every warm, every background frame and every coordinated exit. So the record is
+   * now kept HERE, once, for every pair: `sendSuspendDocument` is the only place it is taken on and
+   * `sendResumeDocument` the only place it is discharged, which is what stops a fourth pair from
+   * reintroducing the same hole by asking the machine a question it is designed not to answer.
+   *
+   * Per-DOCUMENT, so `bumpGeneration` clears it: a new epoch has been sent nothing and owes nothing.
+   */
+  private suspendSent = false;
+  /**
+   * Was the outstanding suspend sent by an EVICTION? Only used to label the resume in telemetry, so
+   * a cancelled eviction is still distinguishable from an ordinary thaw in the breadcrumb trail.
    */
   private evictSuspended = false;
 
@@ -537,6 +554,11 @@ export class SimRuntimeClient {
    */
   private bumpGeneration(cause: string): void {
     this.settleEvictionAsForced(cause);
+    // A NEW EPOCH OWES NOTHING. `suspendSent` records a SUSPEND_DOCUMENT sent to a specific
+    // document; the one that replaces it has been sent nothing, and carrying the debt across would
+    // make the next `thaw()` post a RESUME_DOCUMENT to a child that never suspended.
+    this.suspendSent = false;
+    this.evictSuspended = false;
     this.generation++;
   }
 
@@ -820,6 +842,25 @@ export class SimRuntimeClient {
       this.tel('activate-refused-disposing', { script: opts.script, phase: this.evictPhase });
       return;
     }
+
+    // A SUSPENDED DOCUMENT CANNOT RUN THE SECTION IT IS BEING HANDED.
+    //
+    // The v2 path below posts `SIM_RESUME` for exactly this reason, and `activateModern` has no
+    // equivalent — nor could `SIM_RESUME` serve, because it does not undo the v3 child's
+    // `scope.pause()` (only RESUME_DOCUMENT does). So every owner that froze a document had to
+    // remember to thaw it before re-activating, and the viewer's re-entry path did not: the pool
+    // freezes the outgoing frame on a coordinated exit and on every background pass, and
+    // `updateSimOverlay`'s warm-frame branch calls `activate()` with no resume at all. Once the
+    // child's DOCUMENT_SUSPENDED landed, `modernActive()` was false, the activation fell into the
+    // handshake-window deferral, and the section played as bare video behind a hidden frame until
+    // `failModern('handshake-failed')` — on every re-entry, until the breaker opened.
+    //
+    // Paying the debt HERE makes that unforgettable: an activation is a statement that this
+    // document must run, so it is the right place to own the resume. It is sent BEFORE
+    // `activateModern` so the child sees SUSPEND → RESUME → PREPARE_SECTION in order, and if the
+    // suspend is already confirmed the deferral below holds the section for the one round trip it
+    // takes DOCUMENT_RESUMED to re-drive `pendingActivate`.
+    this.sendResumeDocument('activate');
 
     // The policy baseline for everything that follows (audit P1.2). Recorded here, before any
     // branch, because EVERY path below installs a section — including the modern one and the
@@ -1881,26 +1922,60 @@ export class SimRuntimeClient {
     this.maybeReveal();
   }
 
+  // ── the v3 quiescence pair, in ONE place ──────────────────────────────────────────────────
+  // Every suspend this client sends goes through `sendSuspendDocument` and every resume through
+  // `sendResumeDocument`, so the debt described on `suspendSent` is taken on and discharged in
+  // exactly two statements. `suspend()`, `freeze()` and `evict()` are then three POLICIES over one
+  // mechanism rather than three implementations of it.
+
+  /** Ask the child to go quiescent, and RECORD that a resume is now owed. */
+  private sendSuspendDocument(): void {
+    if (!this.modernActive()) return;
+    this.transport?.send(SUSPEND_DOCUMENT, {}, {});
+    this.docMachine = documentReducer(this.docMachine, { type: 'SUSPEND' });
+    this.suspendSent = true;
+  }
+
+  /**
+   * Pay the debt: send RESUME_DOCUMENT if — and only if — this client has an unmatched suspend.
+   *
+   * The reducer is driven ONLY from `SUSPENDED`, because that is the one state with a legal
+   * `RESUME` edge. In the unconfirmed window the machine still reads DOCUMENT_READY and the
+   * dispatch would be recorded as a REFUSED transition — telemetry that means "a surface is driving
+   * this machine wrongly", which this is not. The child processes its port in order, so the pending
+   * DOCUMENT_SUSPENDED then DOCUMENT_RESUMED walk the machine back to DOCUMENT_READY on their own.
+   */
+  private sendResumeDocument(cause: string): void {
+    if (!this.suspendSent) return;
+    this.suspendSent = false;
+    const wasEvict = this.evictSuspended;
+    this.evictSuspended = false;
+    if (!this.transport?.isModern()) return;
+    this.transport.send(RESUME_DOCUMENT, {}, {});
+    if (this.docMachine.state === 'SUSPENDED') {
+      this.docMachine = documentReducer(this.docMachine, { type: 'RESUME' });
+    }
+    if (wasEvict) this.tel('evict-cancel-resume', { state: this.docMachine.state });
+    // `state` distinguishes the two windows this method now covers, which is the whole point of
+    // the change: `DOCUMENT_READY` means the resume overtook a suspend the child has not confirmed
+    // yet (the window that used to send nothing at all), `SUSPENDED` means it had.
+    this.tel('modern-resume-sent', { cause, state: this.docMachine.state, evictCancel: wasEvict });
+  }
+
   /** Freeze a retained background document so it stops burning CPU/GPU. */
   suspend(): void {
     if (this.disposed) return;
     this.cancelPendingApply();   // a frozen frame must never force-reveal itself at the bound
     this.post({ type: SIM_PAUSE });
     this.post({ type: SIM_MUTE });
-    if (this.modernActive()) {
-      this.transport?.send(SUSPEND_DOCUMENT, {}, {});
-      this.docMachine = documentReducer(this.docMachine, { type: 'SUSPEND' });
-    }
+    this.sendSuspendDocument();
     this.set({ phase: 'suspended', muted: true, visible: false, interactive: false });
   }
 
   resume(): void {
     if (this.disposed) return;
     this.post({ type: SIM_RESUME });
-    if (this.transport?.isModern()) {
-      this.transport.send(RESUME_DOCUMENT, {}, {});
-      this.docMachine = documentReducer(this.docMachine, { type: 'RESUME' });
-    }
+    this.sendResumeDocument('resume');
     this.set({ phase: this.state.painted ? 'painted' : 'ready' });
   }
 
@@ -1943,20 +2018,14 @@ export class SimRuntimeClient {
   freeze(): void {
     if (this.disposed) return;
     this.post({ type: SIM_PAUSE });
-    if (this.modernActive()) {
-      this.transport?.send(SUSPEND_DOCUMENT, {}, {});
-      this.docMachine = documentReducer(this.docMachine, { type: 'SUSPEND' });
-    }
+    this.sendSuspendDocument();
   }
 
   /** Undo `freeze()`. Presentation state is untouched, exactly as on the way in. */
   thaw(): void {
     if (this.disposed) return;
     this.post({ type: SIM_RESUME });
-    if (this.transport?.isModern() && this.docMachine.state === 'SUSPENDED') {
-      this.transport.send(RESUME_DOCUMENT, {}, {});
-      this.docMachine = documentReducer(this.docMachine, { type: 'RESUME' });
-    }
+    this.sendResumeDocument('thaw');
   }
 
   mute(): void {
@@ -2231,13 +2300,11 @@ export class SimRuntimeClient {
     this.set({ visible: false, interactive: false, muted: true, covered: false });
     if (this.modernActive()) {
       this.transport?.send(SET_AUDIBLE, {}, { muted: true, volume: 0 });
-      this.transport?.send(SUSPEND_DOCUMENT, {}, {});
-      this.docMachine = documentReducer(this.docMachine, { type: 'SUSPEND' });
-      // REMEMBER THAT WE SENT IT, because the machine will not remember for us: `SUSPEND` maps to
-      // `DOCUMENT_READY` — the state only moves when the child confirms — so `thaw()`'s
-      // `state === 'SUSPENDED'` test is FALSE for the whole window a cancel can happen in. See
-      // `cancelEviction`, which is the half of this pair that has to undo it.
-      this.evictSuspended = true;
+      // The debt this takes on is recorded by `sendSuspendDocument`, so `cancelEviction` can be the
+      // exact inverse of this line rather than an inverse of whatever the child has got round to
+      // admitting. `evictSuspended` only labels the resume in telemetry.
+      this.sendSuspendDocument();
+      this.evictSuspended = this.suspendSent;
     }
     // RELEASE THE SECTION before disposing the document — the same order every other teardown here
     // uses, and the one the child's own state machine expects.
@@ -2311,33 +2378,15 @@ export class SimRuntimeClient {
     this.evictSettle = null;
     this.evictPromise = null;
     this.evictPhase = 'none';
-    this.resumeAfterEvict();
+    // THE EXACT INVERSE OF WHAT `evict()` FROZE, and `thaw()` is now able to be it. The resume is
+    // driven by what THIS client sent (`suspendSent`), not by what the child has admitted to yet,
+    // so it fires throughout the unconfirmed window as well as after the confirmation. This call
+    // used to need a private helper beside it, because `thaw()` consulted
+    // `docMachine.state === 'SUSPENDED'` — a state `documentReducer` deliberately does not reach
+    // until the child answers — and so sent nothing at all for the whole of the grace window.
+    this.thaw();
     settle?.({ outcome: 'cancelled', counts: null, leaked: [], waitedMs: this.elapsedSinceEvictStart() });
     return true;
-  }
-
-  /**
-   * The exact inverse of the freeze `evict()` performed — which `thaw()` alone is not.
-   *
-   * `thaw()` resumes only a document the child has CONFIRMED suspended, and that confirmation is
-   * asynchronous: `documentReducer` maps `SUSPEND` to `DOCUMENT_READY` on purpose, so for the whole
-   * of the cancellable grace window the machine still reads `DOCUMENT_READY` and `thaw()` sends
-   * nothing at all. A cancel landing there left a RESUME_DOCUMENT permanently unsent; the child's
-   * DOCUMENT_SUSPENDED then arrived, `acceptsCommands` went false for good, and the re-entry the
-   * cancel exists to serve ended in `failModern('handshake-failed')`.
-   *
-   * So the resume is driven by what THIS client sent, not by what the child has admitted to yet.
-   */
-  private resumeAfterEvict(): void {
-    this.thaw();
-    if (!this.evictSuspended) return;
-    this.evictSuspended = false;
-    // Already resumed by `thaw()` above — the child confirmed inside the grace window and the
-    // machine reached SUSPENDED. Sending a second RESUME_DOCUMENT would be a command the child has
-    // no state to accept.
-    if (!this.transport?.isModern() || this.docMachine.state !== 'DOCUMENT_READY') return;
-    this.tel('evict-cancel-resume', { state: this.docMachine.state });
-    this.transport.send(RESUME_DOCUMENT, {}, {});
   }
 
   private elapsedSinceEvictStart(): number {
@@ -2351,8 +2400,9 @@ export class SimRuntimeClient {
     if (this.evictDeadlineTimer) { clearTimeout(this.evictDeadlineTimer); this.evictDeadlineTimer = null; }
     this.evictPhase = 'evicted';
     // The suspend is only owed a resume while the eviction is still CANCELLABLE. Past that the
-    // document is gone, so the debt is discharged rather than carried into anything later.
+    // document is gone, so the debt is written off rather than carried into anything later.
     this.evictSuspended = false;
+    this.suspendSent = false;
     // NOW the port may go: the acknowledgement has either arrived or provably will not.
     if (this.transport) {
       this.transport.close();

@@ -78,11 +78,25 @@ export interface SimFloorSection {
   requires_import_maps?: boolean | null;
 }
 
+/**
+ * The wire value, as the floor's own vocabulary — the ONE place the three states are normalised.
+ *
+ * The viewer does not hold a section object at the point it asks (the player publishes the flag on
+ * its own state, `simRequiresImportMaps`), so it was hand-building the requirements record instead
+ * of coming through here: two derivations of the same input, free to disagree about what `undefined`
+ * means the day one of them is edited. Both call sites now bottom out in this function.
+ */
+export function importMapRequirement(
+  requiresImportMaps: boolean | null | undefined,
+): SimPackageRequirements {
+  return { requiresImportMaps: requiresImportMaps ?? null };
+}
+
 /** The wire field, as the floor's own vocabulary. Absent section → no known requirement. */
 export function sectionRequirements(
   section: SimFloorSection | null | undefined,
 ): SimPackageRequirements {
-  return { requiresImportMaps: section?.requires_import_maps ?? null };
+  return importMapRequirement(section?.requires_import_maps);
 }
 
 /** The browser side of the same question, injectable so tests never depend on the host. */

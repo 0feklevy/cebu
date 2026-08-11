@@ -238,6 +238,17 @@ export type TransitionEffect =
   | { type: 'RELEASE_OUTGOING_AUDIO'; generation: number }
   /** Evidence is in and the parent has painted: drop the cover and run the caller's teardown. */
   | { type: 'COMMIT_REVEAL'; generation: number; evidence: FrameEvidence }
+  /**
+   * A covered failure has become RECONSIDERABLE: re-issue this handoff.
+   *
+   * NOT a reveal, and deliberately not one: the wiring's only correct response is to start a new
+   * handoff, which walks the whole evidence path again from `EXIT_REQUESTED`. It exists because a
+   * `CoveredFailure` cannot re-arm in place — the phase is not a WAIT_PHASE, so no callback, no
+   * frame and no readiness signal is admitted while the state sits there — and the one thing that
+   * can make the failure obsolete (the page coming back to the front) is not a retryable event the
+   * wiring's own timer would ever notice.
+   */
+  | { type: 'REQUEST_RETRY'; generation: number; reason: 'visibility' }
   | { type: 'HOLD_COVER'; cover: TransitionCover; reason: PresentationReason | 'revealed' }
   | { type: 'TELEMETRY'; event: string; detail: Record<string, unknown> };
 
@@ -626,11 +637,30 @@ export function reduce(state: TransitionState, event: TransitionEvent): Transiti
       // must already be issued, and the handoff must still be waiting for a frame.
       const rearm = isWaiting(state.phase) && state.phase !== 'VideoRequested'
         && state.phase !== 'VideoSubmitted' && state.rvfc.available;
+      // A HANDOFF THAT FAILED WHILE HIDDEN IS NOT A HANDOFF THAT FAILED.
+      //
+      // Hiding cancels evidence and disarms rVFC (neither rVFC nor rAF runs on a hidden page), so
+      // the 4 s deadline fires with nothing to show for it and lands in `CoveredFailure`. That
+      // phase is not in WAIT_PHASES — by design, so no stale callback can revive a failed handoff —
+      // which means the re-arm above cannot reach it and NOTHING else ever will: `COMMIT_REVEAL`
+      // never runs, the caller's `commit`/`uncover` never runs, and the frozen simulation stays at
+      // full opacity over a playing, audible video for the rest of the section.
+      //
+      // The repair is to RECONSIDER, never to reveal (audit §21 rule 7): the deadline that produced
+      // this failure grants nothing, and the retry the wiring issues has to prove its own frame
+      // from scratch. Emitted only on a genuine hidden→visible edge, because the guard at the top
+      // of this case drops a VISIBILITY that reports what is already true.
+      const reconsider = state.phase === 'CoveredFailure';
       return withCover(
         { ...state, pageVisible: true, rvfc: { ...state.rvfc, armed: rearm } },
         [
           ...(rearm ? [{ type: 'ARM_FRAME_EVIDENCE' as const, generation: state.generation }] : []),
-          tel('transition-visible', { generation: state.generation, phase: state.phase, rearmed: rearm }),
+          ...(reconsider
+            ? [{ type: 'REQUEST_RETRY' as const, generation: state.generation, reason: 'visibility' as const }]
+            : []),
+          tel('transition-visible', {
+            generation: state.generation, phase: state.phase, rearmed: rearm, reconsidered: reconsider,
+          }),
         ],
       );
     }

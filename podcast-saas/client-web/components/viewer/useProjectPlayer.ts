@@ -954,11 +954,25 @@ export function useProjectPlayer(
     simEvictingRef.current.delete(key);
     const meta = simPoolMetaRef.current.get(key);
     if (meta) clearWarmCeil(meta);
-    simPoolMetaRef.current.delete(key);
     // The client is disposed only NOW. Disposing it at the start of eviction removed the message
     // listener that the acknowledgement arrives on, which is one of the two reasons no parent has
     // ever seen a DISPOSED (the other was closing the port in the same statement as the send).
     simRuntimesRef.current.get(key)?.dispose();
+    // …AND THE META IS DROPPED AFTER THAT DISPOSAL, NOT BEFORE IT.
+    //
+    // `dispose()` can emit telemetry SYNCHRONOUSLY — `settleEvictionAsForced` reports
+    // `evict-forced-settle` and `evict-complete` for an eviction still in flight — and every
+    // runtime event lands in `runtimeEventRef`, whose first statement is a get-or-CREATE
+    // `poolMeta(key)`. Deleting first therefore makes this function's own teardown able to put the
+    // entry straight back: one orphan `PoolMeta` per such disposal, for the life of the session,
+    // carrying a stale `scriptedEver`/`canEmitPaint` into any later document that reuses the key.
+    //
+    // No caller reaches that today — every path here runs from an eviction's own `.then`, by which
+    // point `evictionPhase()` is already `evicted` and the disposal is silent (measured, not
+    // assumed) — so this is ordering, not a bug fix. It costs nothing and it stops the invariant
+    // from depending on a property of the CALLERS: bookkeeping is dropped after the thing that can
+    // write to it is gone, not before.
+    simPoolMetaRef.current.delete(key);
     simRuntimesRef.current.delete(key);
     cancelPristineReload(key);
     simPoolSpecsRef.current = simPoolSpecsRef.current.filter((s) => s.key !== key);
@@ -1382,16 +1396,57 @@ export function useProjectPlayer(
   /** Set by the definition below; used by `resumeFromSim`, which is declared much later. */
   const retryCoordinatedExitRef = useRef<() => boolean>(() => false);
 
+  /**
+   * The cross-fade timer, cleared on its OWN, from anywhere.
+   *
+   * `COMMIT_REVEAL` arms it *after* `endHandoff()` has already dropped `handoffActiveRef` — so the
+   * one timer that outlives the handoff was the one timer no owner could reach: `endHandoff` had
+   * run, `cancelCoordinatedExit` early-returns on `!handoffActiveRef.current`, and the unmount
+   * cleanup goes through that same cancel. Giving it its own clear (called unconditionally by both,
+   * before either can decide there is nothing to do) is what makes it owned.
+   */
+  const clearHandoffFade = () => {
+    if (handoffFadeRef.current) { clearTimeout(handoffFadeRef.current); handoffFadeRef.current = null; }
+  };
+
   /** Drop every in-flight observer for the current handoff. Does NOT touch what is on screen. */
   const endHandoff = () => {
     evidenceProbeRef.current?.cancel();
     evidenceProbeRef.current = null;
     if (handoffDeadlineRef.current) { clearTimeout(handoffDeadlineRef.current); handoffDeadlineRef.current = null; }
-    if (handoffFadeRef.current) { clearTimeout(handoffFadeRef.current); handoffFadeRef.current = null; }
+    clearHandoffFade();
     if (handoffRetryRef.current) { clearTimeout(handoffRetryRef.current); handoffRetryRef.current = null; }
     handoffCleanupRef.current?.();
     handoffCleanupRef.current = null;
     handoffActiveRef.current = false;
+  };
+
+  /** Is the page in front of the user right now? SSR and jsdom without the API count as visible. */
+  const pageIsVisible = (): boolean =>
+    typeof document === 'undefined' || document.visibilityState !== 'hidden';
+
+  /**
+   * Arm the bounded replay of a covered failure — but never while the page is hidden.
+   *
+   * A retry issued to a hidden page cannot succeed: rVFC and rAF do not run there, so the reducer
+   * disarms evidence on `EXIT_REQUESTED`'s `pageVisible: false` and the new handoff burns its whole
+   * 4 s deadline to reach the same covered failure. Three of those exhaust the budget while the
+   * viewer is looking at another tab, and the handoff that is left when they come back has no
+   * attempts to spend on the one condition that had actually changed. So the budget is spent only
+   * on attempts that can produce evidence, and the return to visibility is what re-arms this
+   * (`REQUEST_RETRY`).
+   */
+  const scheduleHandoffRetry = (reason: string) => {
+    if (handoffRetryRef.current) return;
+    if (handoffAttemptsRef.current >= TRANSITION_MAX_RETRIES) return;
+    if (!pageIsVisible()) { simTelemetry('transition-retry-deferred-hidden', { reason }); return; }
+    handoffRetryRef.current = setTimeout(() => {
+      handoffRetryRef.current = null;
+      // Re-checked at fire time: the page can hide inside the delay, and issuing there would spend
+      // an attempt on the same unprovable handoff.
+      if (!pageIsVisible()) { simTelemetry('transition-retry-deferred-hidden', { reason }); return; }
+      retryCoordinatedExitRef.current();
+    }, TRANSITION_RETRY_DELAY_MS);
   };
 
   const dispatchTransition = (event: TransitionEvent): void => {
@@ -1436,12 +1491,23 @@ export function useProjectPlayer(
           handoffAudioRef.current?.();
           handoffAudioRef.current = null;
           commit?.();
+          // Armed AFTER `endHandoff()` on purpose — that call clears this very ref, so arming
+          // first would cancel the fade before it started. The consequence is that this timer is
+          // the one thing here that outlives `handoffActiveRef`, which is why `clearHandoffFade`
+          // exists and why `cancelCoordinatedExit` runs it ahead of its own early return.
           handoffFadeRef.current = setTimeout(() => {
             handoffFadeRef.current = null;
             dispatchTransition({ type: 'FADE_COMPLETE', generation: gen });
           }, SIM_EXIT_STOP_MS);
           break;
         }
+        case 'REQUEST_RETRY':
+          // The reducer has decided this covered failure is reconsiderable (the page came back).
+          // It does NOT uncover and cannot: the replay re-enters `VideoRequested` and has to prove
+          // its own frame, exactly as the first attempt did.
+          simTelemetry('transition-reconsider', { reason: effect.reason, generation: effect.generation });
+          scheduleHandoffRetry(effect.reason);
+          break;
         case 'HOLD_COVER': {
           // Diagnostics only — the cover is held by NOT committing, so there is nothing to apply.
           // Deduplicated because the reducer re-derives it on every phase change.
@@ -1474,12 +1540,7 @@ export function useProjectPlayer(
     if (before !== 'CoveredFailure' && next.phase === 'CoveredFailure') {
       resumeActionRef.current = 'backToVideo';
       merge({ showResumeBtn: true, resumeAction: 'backToVideo', controlsVisible: true });
-      if (handoffAttemptsRef.current < TRANSITION_MAX_RETRIES) {
-        handoffRetryRef.current = setTimeout(() => {
-          handoffRetryRef.current = null;
-          retryCoordinatedExitRef.current();
-        }, TRANSITION_RETRY_DELAY_MS);
-      }
+      scheduleHandoffRetry('covered-failure');
     }
   };
 
@@ -1600,6 +1661,11 @@ export function useProjectPlayer(
    * commit would tear down is the one coming back.
    */
   const cancelCoordinatedExit = (reason: string, opts?: { runPendingCommit?: boolean }) => {
+    // BEFORE the early return, because the cross-fade timer OUTLIVES the handoff that armed it:
+    // `COMMIT_REVEAL` calls `endHandoff()` (which drops `handoffActiveRef`) and only then arms it.
+    // Every caller of this function — a re-entry, a segment load, the unmount cleanup — is asking
+    // for every timer this handoff owns to stop, and that one is reachable from nowhere else.
+    clearHandoffFade();
     if (!handoffActiveRef.current) return;
     const pending = handoffCommitRef.current;
     endHandoff();
@@ -1656,6 +1722,18 @@ export function useProjectPlayer(
     // The layered surface describes ONE activation. Carrying any of it into the next section is how
     // a poster of the section just left ends up covering the section just entered.
     resetPresentation();
+    // …AND SO DOES `activeSimUrl`. It was written on entry and by nothing on the way out, so after
+    // the first simulation of a session it was permanently non-null — which silently disarmed the
+    // one guard that reads it: `HLSPlayerShell`'s `floorBlocked = !floor.runnable &&
+    // state.activeSimUrl !== null` degenerated to `!floor.runnable`, i.e. "is a section up" was
+    // answered by a value that could no longer say no. The ref beside it was already cleared here;
+    // the rendered copy was not.
+    //
+    // Written through the updater's own bail-out rather than `merge`, for the same reason
+    // `mergePresentation` keeps a mirror ref: `deactivateSim` runs on EVERY tick that is not
+    // inside a sim section, and `merge` allocates unconditionally. Returning the SAME object is
+    // React's documented no-op, so clearing a key that is already null costs nothing.
+    setState((s) => (s.activeSimUrl === null ? s : { ...s, activeSimUrl: null }));
     awaitingPaintSimIdRef.current = null;
     desiredSimRef.current = null;
     pendingSimRef.current = null;
@@ -1914,6 +1992,22 @@ export function useProjectPlayer(
       // this itself; the legacy-navigate branch below never reaches it, so cancel here too.)
       rt.cancelDeferredStop();
       cancelPristineReload(key);
+
+      // THAW BEFORE DRIVING IT, on EVERY branch.
+      //
+      // This pool freezes constantly: a background frame is frozen the moment it paints, a warm
+      // frame is frozen when its budget expires, and a coordinated exit freezes the OUTGOING frame
+      // at T0 so its last valid frame can be the cover. Only one of the branches below ever undid
+      // that — the cold one, which calls `rt.resume()` with a comment explaining exactly why a
+      // frozen document cannot be driven. The two warm branches, which are the ones a re-entry
+      // takes, did not.
+      //
+      // On v2 the omission was invisible: `activate()` posts SIM_RESUME itself. On v3 SIM_RESUME
+      // does not undo the child's `scope.pause()` — only RESUME_DOCUMENT does — so a re-entered
+      // section held hidden until `failModern('handshake-failed')` and then played as bare video
+      // for its whole duration, every time. `SimRuntimeClient.activate()` now pays that debt too,
+      // which is the backstop for any owner that forgets; this is the owner not forgetting.
+      rt.thaw();
 
       // A document that HANDSHOOK and did not advertise in-place dispatch is load-time-locked:
       // its SCRIPTS.main is its own URL's ?section default, so a postMessage cannot switch it.

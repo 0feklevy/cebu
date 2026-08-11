@@ -24,6 +24,7 @@ import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { HLSPlayerShell } from '../components/viewer/HLSPlayerShell';
+import { SIM_EXIT_STOP_MS } from '../lib/sim/protocol';
 import type { PlayerConfig } from '../components/viewer/types';
 
 // ── doubles ───────────────────────────────────────────────────────────────────────────────────
@@ -121,6 +122,20 @@ vi.mock('firebase/auth', () => ({ getAuth: () => ({ currentUser: null }) }));
 vi.mock('next/link', () => ({
   default: ({ children, href }: { children: React.ReactNode; href: string }) => <a href={href}>{children}</a>,
 }));
+
+/**
+ * The coordinator's own breadcrumb trail, captured.
+ *
+ * The real `simTelemetry` is a no-op unless the page carries `?simdebug=1`, so recording it here is
+ * the only way to observe an effect whose ONLY output is a telemetry line — which is exactly what a
+ * timer firing after unmount is.
+ */
+const tel = vi.hoisted(() => ({ events: [] as { event: string; detail: Record<string, unknown> }[] }));
+vi.mock('../lib/simTelemetry', () => ({
+  simTelemetry: (event: string, detail?: Record<string, unknown>) =>
+    tel.events.push({ event, detail: detail ?? {} }),
+}));
+const telEvents = () => tel.events.map((e) => e.event);
 
 // ── a hand-stepped animation clock ────────────────────────────────────────────────────────────
 // The coordinator's parent-paint gate, its fallback frame counter and the player's own reveal all
@@ -272,6 +287,7 @@ async function mountInSim(config: PlayerConfig, at = 0) {
 beforeEach(() => {
   h.calls.length = 0;
   h.instances.length = 0;
+  tel.events.length = 0;
   rafQueue = [];
   rafId = 1;
   globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
@@ -294,10 +310,27 @@ beforeEach(() => {
   }
 });
 
-afterEach(() => {
+/**
+ * Tab away, and come back.
+ *
+ * `visibilityState` is a getter on `document`, so it is redefined rather than assigned — and the
+ * event is dispatched separately, exactly as the browser orders it: the property is already the new
+ * value by the time any listener runs.
+ */
+async function setPageHidden(hidden: boolean): Promise<void> {
+  Object.defineProperty(document, 'visibilityState', {
+    configurable: true, get: () => (hidden ? 'hidden' : 'visible'),
+  });
+  Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden });
+  await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+}
+
+afterEach(async () => {
   cleanup();
   globalThis.requestAnimationFrame = realRaf;
   globalThis.cancelAnimationFrame = realCancelRaf;
+  Reflect.deleteProperty(document, 'visibilityState');
+  Reflect.deleteProperty(document, 'hidden');
   vi.useRealTimers();
 });
 
@@ -412,6 +445,46 @@ describe('flag ON — the automatic exit holds the cover until the frame is prov
     expect(h.calls).not.toContain('deactivate');
   });
 
+  it('a handoff that failed while the tab was hidden re-arms when the tab comes back', async () => {
+    // THE WEDGE THIS PINS. Hiding cancels evidence and disarms rVFC, and neither rVFC nor rAF runs
+    // on a hidden page — so the 4 s deadline fires with nothing to show for it and the handoff
+    // lands in `CoveredFailure`. The automatic replay then re-issued the SAME handoff with
+    // `pageVisible: false`, which cannot arm anything either, and burned another 4 s per attempt
+    // until the three-attempt budget was gone. On return, `VISIBILITY` re-armed only for a WAIT
+    // phase, and `CoveredFailure` is not one — so COMMIT_REVEAL never ran, the caller's uncover
+    // never ran, and the frozen simulation stayed at full opacity over a playing, audible video
+    // for the rest of the section. The only way out was the "Go back to video" button.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { container, video, clock, pipeline } = await mountInSim(midRollConfig(true));
+
+    clock.set(20);
+    await act(async () => { video.dispatchEvent(new Event('timeupdate')); });
+    expect(pipeline.pending(), 'the handoff never armed — this proves nothing').toBe(1);
+
+    // The viewer switches tabs mid-handoff.
+    await setPageHidden(true);
+    expect(pipeline.pending(), 'a hidden page must not hold a frame callback').toBe(0);
+
+    // No frame can arrive, so the whole deadline elapses. Ten times over, in fact: nothing hidden
+    // may spend the retry budget on an attempt that provably cannot produce evidence.
+    await act(async () => { vi.advanceTimersByTime(40_000); });
+    expect(coverUp(container), 'a timeout must never authorise a reveal (audit §21 rule 7)').toBe(true);
+    expect(h.calls, 'the teardown ran without evidence').not.toContain('deactivate');
+    expect(pipeline.pending(), 'a retry was issued to a hidden page').toBe(0);
+
+    // …and back. THE FIX: the return is what reconsiders the failure.
+    await setPageHidden(false);
+    await act(async () => { vi.advanceTimersByTime(400); });
+    expect(pipeline.pending(), 'the handoff never re-armed after the page came back').toBe(1);
+    expect(coverUp(container), 'the replay is still covered until IT is proven').toBe(true);
+
+    // And the replay completes the exit the viewer has been stuck in.
+    await act(async () => { pipeline.present(20); });
+    await frames(2);
+    expect(coverUp(container), 'the proven replay never uncovered').toBe(false);
+    expect(h.calls).toContain('deactivate');
+  });
+
   it('recovers through the LABELLED fallback when rVFC never fires but the element is fine', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const { container, video, clock, pipeline } = await mountInSim(midRollConfig(true));
@@ -450,6 +523,60 @@ describe('flag ON — the explicit return holds the cover until the frame is pro
     await frames(2);
     expect(coverUp(container), 'the requested frame reached the compositor — now it may uncover').toBe(false);
     expect(h.calls, 'the original teardown still runs, just later').toContain('deactivate');
+  });
+
+  it('the cross-fade timer does not outlive the player', async () => {
+    // AN UNOWNED TIMER. `COMMIT_REVEAL` calls `endHandoff()` — which clears `handoffActiveRef` and,
+    // incidentally, the very ref it is about to reuse — and THEN arms the cross-fade. So the fade
+    // timer is the one thing the handoff leaves behind that no owner could reach:
+    // `cancelCoordinatedExit` early-returns on `!handoffActiveRef.current`, and the unmount cleanup
+    // goes through that same cancel. It fired into a torn-down tree and re-entered
+    // `dispatchTransition` there. It only emits telemetry today, so this is a stray timer rather
+    // than a state write — but "only telemetry" is a property of the current effect list, not of
+    // the ownership, and the next effect added to `FADE_COMPLETE` inherits the hole.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const view = await mountInSim(postRollConfig(true), 10);
+    await act(async () => { fireEvent.click(backButton(view.container)!); });
+    await act(async () => { view.pipeline.present(0); });
+    await frames(2);
+    expect(telEvents(), 'the reveal never committed — this proves nothing').toContain('transition-reveal');
+    expect(telEvents(), 'the fade completed before the unmount — the window is not open').not.toContain('transition-live');
+
+    // The viewer navigates away mid-fade.
+    await act(async () => { view.unmount(); });
+    tel.events.length = 0;
+    await act(async () => { vi.advanceTimersByTime(SIM_EXIT_STOP_MS * 4); });
+
+    expect(
+      telEvents(),
+      'the cross-fade timer survived the unmount and re-entered the reducer against a dead tree',
+    ).not.toContain('transition-live');
+  });
+
+  it('a re-entry mid-fade takes the timer with it', async () => {
+    // The other caller of `cancelCoordinatedExit`, and the common one: the viewer scrubs back into
+    // the section while its exit fade is still running.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { video, clock, pipeline } = await mountInSim(midRollConfig(true));
+    clock.set(20);
+    await act(async () => { video.dispatchEvent(new Event('timeupdate')); });
+    await act(async () => { pipeline.present(20); });
+    await frames(2);
+    expect(telEvents()).toContain('transition-reveal');
+
+    // Back into the simulation, inside the fade. `cancelCoordinatedExit` runs — and its early
+    // return on `!handoffActiveRef.current` is the whole problem: COMMIT_REVEAL cleared that flag
+    // before arming the timer, so the cancel used to walk straight past the one thing left to
+    // cancel and the abandoned handoff went on to declare itself LIVE over a re-entered section.
+    tel.events.length = 0;
+    h.calls.length = 0;
+    clock.set(2);
+    await act(async () => { video.dispatchEvent(new Event('timeupdate')); });
+    await frames(3);
+    expect(h.calls, 'the section was never re-entered — this proves nothing').toContain('activate');
+
+    await act(async () => { vi.advanceTimersByTime(SIM_EXIT_STOP_MS * 4); });
+    expect(telEvents(), 'the abandoned handoff’s fade timer still ran').not.toContain('transition-live');
   });
 
   it('retains the package’s gain until the incoming video is audible, then releases it', async () => {

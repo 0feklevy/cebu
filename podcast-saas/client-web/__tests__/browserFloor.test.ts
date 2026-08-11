@@ -12,6 +12,8 @@ import {
   supportsImportMaps,
   detectBrowserCapabilities,
   evaluateFloor,
+  importMapRequirement,
+  sectionRequirements,
   FLOOR_MESSAGES,
 } from '../lib/sim/browserFloor';
 
@@ -114,6 +116,26 @@ describe('evaluateFloor', () => {
     for (const req of [{ requiresImportMaps: true }, { requiresImportMaps: false }, {}, undefined, null]) {
       expect(evaluateFloor(req, CAN)).toEqual({ runnable: true });
     }
+  });
+
+  it('normalises the wire value in ONE place, whichever surface is asking', () => {
+    // The two surfaces reach the floor from different shapes: the editor holds the section row and
+    // the viewer holds the flag on its own player state. They used to normalise it separately — one
+    // through `sectionRequirements`, one as a hand-written object literal in the viewer shell — so
+    // "what does an absent value mean" had two answers that were merely equal today. Both now
+    // bottom out here, and the three states must survive the trip identically from either side.
+    for (const wire of [true, false, null, undefined] as const) {
+      expect(importMapRequirement(wire)).toEqual(sectionRequirements({ simulation_id: 's', requires_import_maps: wire }));
+    }
+    // UNKNOWN is `null` on the way out, never `undefined` and never coerced to `false`: the floor
+    // has to be able to tell "no record" from "recorded as not needing them".
+    expect(importMapRequirement(undefined)).toEqual({ requiresImportMaps: null });
+    expect(importMapRequirement(null)).toEqual({ requiresImportMaps: null });
+    expect(importMapRequirement(false)).toEqual({ requiresImportMaps: false });
+    expect(importMapRequirement(true)).toEqual({ requiresImportMaps: true });
+    // …and an absent section is the same UNKNOWN, not a requirement.
+    expect(sectionRequirements(null)).toEqual({ requiresImportMaps: null });
+    expect(sectionRequirements(undefined)).toEqual({ requiresImportMaps: null });
   });
 
   it('names a capability, not a browser, in the user-facing message', () => {

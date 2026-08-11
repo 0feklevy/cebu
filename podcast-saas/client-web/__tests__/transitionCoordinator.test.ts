@@ -537,6 +537,43 @@ describe('visibility cancels and re-arms, and never advances the handoff', () =>
     expect(kinds(cycled.effects)).not.toContain('ARM_FRAME_EVIDENCE');
     expect(cycled.state.phase).toBe('VideoLive');
   });
+
+  it('asks for a RETRY when the page returns to a covered failure — the one state that cannot re-arm', () => {
+    // THE WEDGE. Hiding cancels evidence and disarms rVFC, and neither rVFC nor rAF runs hidden, so
+    // the deadline fires with nothing to show and lands in `CoveredFailure`. That phase is not in
+    // WAIT_PHASES — deliberately, so no stale callback can revive a failed handoff — which means
+    // the re-arm above cannot reach it and nothing else ever would: `COMMIT_REVEAL` never runs, the
+    // caller's uncover never runs, and the frozen simulation stays at full opacity over a playing,
+    // audible video until the viewer finds the "Go back to video" button.
+    const hidden = reduce(buffering(), { type: 'VISIBILITY', visible: false }).state;
+    const failed = reduce(hidden, { type: 'DEADLINE', generation: GEN, atMs: 4_000 }).state;
+    expect(failed.phase, 'the hidden deadline did not fail — this proves nothing').toBe('CoveredFailure');
+
+    const back = reduce(failed, { type: 'VISIBILITY', visible: true });
+    expect(kinds(back.effects), 'a covered failure could not be reconsidered on return').toContain('REQUEST_RETRY');
+    // AND IT IS NOT A REVEAL (audit §21 rule 7). Coming back into view proves nothing about the
+    // frame; the retry the wiring issues has to prove its own, from `VideoRequested`.
+    expect(kinds(back.effects)).not.toContain('COMMIT_REVEAL');
+    expect(back.state.phase, 'visibility advanced the machine on its own').toBe('CoveredFailure');
+    expect(isRevealed(back.state.phase)).toBe(false);
+    expect(revealsWithoutEvidence(back.state)).toBe(false);
+    expect(coverFor(back.state).cover, 'the cover was dropped by a visibility change').not.toBe('none');
+  });
+
+  it('asks only on a genuine hidden→visible edge, and never while the handoff is merely waiting', () => {
+    // A repeated `visible: true` is dropped at the top of the case, so a page that was never hidden
+    // cannot produce a retry request — the request means "the condition that failed this handoff
+    // has changed", and if nothing changed, nothing has.
+    const failedVisible = reduce(buffering(), { type: 'DEADLINE', generation: GEN, atMs: 4_000 }).state;
+    expect(kinds(reduce(failedVisible, { type: 'VISIBILITY', visible: true }).effects))
+      .not.toContain('REQUEST_RETRY');
+
+    // And a wait phase re-arms as it always did, rather than asking for a whole new handoff.
+    const waiting = reduce(buffering(), { type: 'VISIBILITY', visible: false }).state;
+    const backToWaiting = reduce(waiting, { type: 'VISIBILITY', visible: true });
+    expect(kinds(backToWaiting.effects)).toContain('ARM_FRAME_EVIDENCE');
+    expect(kinds(backToWaiting.effects)).not.toContain('REQUEST_RETRY');
+  });
 });
 
 // ── audio ─────────────────────────────────────────────────────────────────────────────────────

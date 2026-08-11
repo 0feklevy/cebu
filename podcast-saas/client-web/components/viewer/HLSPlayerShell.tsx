@@ -13,6 +13,7 @@ import { SimPresentationLayers } from './SimPresentationLayers';
 import type { PresentationDecision } from '../../lib/sim/presentationPolicy';
 import {
   ASSUMED_CAPABILITIES, detectBrowserCapabilities, evaluateFloor, FLOOR_MESSAGES,
+  importMapRequirement,
   type BrowserCapabilities,
 } from '../../lib/sim/browserFloor';
 import { simTelemetry } from '../../lib/simTelemetry';
@@ -384,13 +385,17 @@ export function HLSPlayerShell({
    * downgrade of older browsers would break every package that uses no import map and would have
    * run perfectly well.
    */
+  // Through `importMapRequirement`, not a literal: the editor already normalises the same wire
+  // value there (via `sectionRequirements`), and two hand-written derivations of one input are two
+  // places for "what does absent mean" to be answered differently.
   const floor = useMemo(
-    () => evaluateFloor({ requiresImportMaps: state.simRequiresImportMaps }, browserCaps),
+    () => evaluateFloor(importMapRequirement(state.simRequiresImportMaps), browserCaps),
     [state.simRequiresImportMaps, browserCaps],
   );
-  // Only while a section is actually up. `simRequiresImportMaps` is reset on deactivate, so this is
-  // belt and braces — but the alternative failure (a cover with no section under it) is one the
-  // user cannot dismiss.
+  // Only while a section is actually up. Both halves are load-bearing: `simRequiresImportMaps` and
+  // `activeSimUrl` are reset by `deactivateSim`, and this guard is what stops a verdict computed
+  // for the section just left from covering the video that follows it — a cover with no section
+  // under it is one the user cannot dismiss.
   const floorBlocked = !floor.runnable && state.activeSimUrl !== null;
   const floorMissing = floor.runnable ? null : floor.missing;
 

@@ -74,6 +74,7 @@ import {
   SIM_BREAKER_THRESHOLD,
   SIM_DISPOSE_TIMEOUT_MS,
   SIM_EVICT_GRACE_MS,
+  SIM_HANDSHAKE_TIMEOUT_MS,
   SIM_PREPARE_TIMEOUT_MS,
   SIM_PRESENT_TIMEOUT_MS,
 } from 'shared/src/sim/simFailurePolicy';
@@ -1319,6 +1320,113 @@ describe('an activation requested while the handshake is still undecided', () =>
     c.activate({ script: 'A' });
     await flush();
     expect(c.getState().visible, 'a resumed document could never be shown again').toBe(true);
+  });
+
+  it('THAWS a freeze the child has not confirmed yet — the pool freezes and thaws inside one tick', async () => {
+    // THE SAME ASYMMETRY THE EVICTION PAIR WAS FIXED FOR, in the pair the resident pool actually
+    // uses. `freeze()` sends SUSPEND_DOCUMENT and `documentReducer` maps SUSPEND to DOCUMENT_READY
+    // on purpose — the state only advances on the child's confirmation. `thaw()` used to gate on
+    // `docMachine.state === 'SUSPENDED'`, so for the whole of that round trip it sent NOTHING. The
+    // confirmation then landed on a document nobody had resumed: `acceptsCommands` went false for
+    // good, `modernActive()` with it, and the next activation held the section hidden until
+    // `failModern('handshake-failed')`. The pool freezes and thaws on the same synchronous pass
+    // (`finishWarm` thaws the next queued frame; a coordinated exit freezes and the re-entry
+    // activates), so this window is the NORMAL case, not a race.
+    const { c, child } = await boot();
+
+    c.freeze();
+    await flush();
+    expect(child.types(), 'the freeze sent nothing — this proves nothing').toContain(SUSPEND_DOCUMENT);
+    expect(
+      c.getModernState().documentState,
+      'the machine advanced without the child — the unconfirmed window does not exist here',
+    ).toBe('DOCUMENT_READY');
+    const resumesBefore = child.types().filter((t) => t === RESUME_DOCUMENT).length;
+
+    c.thaw();
+    await flush();
+    expect(
+      child.types().filter((t) => t === RESUME_DOCUMENT).length,
+      'the thaw left the SUSPEND_DOCUMENT it was the inverse of un-undone',
+    ).toBe(resumesBefore + 1);
+
+    // …and the late confirmations cannot wedge it: the child answers in the order it was asked, so
+    // the machine walks SUSPENDED → DOCUMENT_READY on its own and the document is usable again.
+    child.suspended();
+    await flush();
+    child.resumed();
+    await flush();
+    expect(c.getModernState().documentState).toBe('DOCUMENT_READY');
+    expect(c.modernActive(), 'the document never came back from an unconfirmed freeze').toBe(true);
+    c.activate({ script: 'B' });
+    await flush();
+    expect(child.last(PREPARE_SECTION).variantKey,
+      're-entry after an unconfirmed freeze/thaw could not install its section').toBe('B');
+  });
+
+  it('never resumes a document it did not suspend — the debt is what this client SENT', async () => {
+    // The other direction of the same rule. Driving the resume from a flag rather than from the
+    // machine must not turn every `thaw()` into an unconditional RESUME_DOCUMENT: a document that
+    // was never frozen has no `scope.pause()` to undo, and the child's own state machine has no
+    // state to accept the command in.
+    const { c, child } = await boot();
+    c.thaw();
+    c.thaw();
+    await flush();
+    expect(child.types(), 'a document that was never suspended was told to resume').not.toContain(RESUME_DOCUMENT);
+
+    // And ONE freeze is owed exactly ONE resume, however many times it is paid.
+    c.freeze();
+    c.thaw();
+    c.thaw();
+    await flush();
+    expect(child.types().filter((t) => t === RESUME_DOCUMENT).length,
+      'a second thaw sent a resume the child has nothing to match it to').toBe(1);
+  });
+
+  it('a NAVIGATION cancels the debt — a fresh document has been sent no suspend', async () => {
+    const { c, child } = await boot();
+    c.freeze();
+    await flush();
+
+    // The browser replaced the document under us: a new epoch, which this client has told nothing.
+    c.handleFrameLoad();
+    await flush();
+    const before = child.types().filter((t) => t === RESUME_DOCUMENT).length;
+    c.thaw();
+    await flush();
+    expect(child.types().filter((t) => t === RESUME_DOCUMENT).length,
+      'the new epoch inherited the old document’s suspend debt').toBe(before);
+  });
+
+  it('ACTIVATING a frozen document resumes it — the owner does not have to remember to', async () => {
+    // THE PLAYER-SIDE HALF, at the client boundary. `beginCoordinatedExit` freezes the outgoing
+    // package and the re-entry calls `activate()` with no thaw: on v2 that was invisible because
+    // `activate()` posts SIM_RESUME, but SIM_RESUME does not undo the v3 child's `scope.pause()`
+    // and `activateModern` posts nothing equivalent. So the activation arrived at a document that
+    // `modernActive()` reported dead, fell into the handshake-window deferral, held the section
+    // hidden and 6.5 s later failed it — with no recovery surface, on every single re-entry.
+    const { c, child, tel } = await boot();
+    c.freeze();
+    child.suspended();
+    await flush();
+    expect(c.modernActive(), 'the freeze was never confirmed — this proves nothing').toBe(false);
+
+    // Re-entry. Nobody thawed: that IS the viewer's re-entry path.
+    c.activate({ script: 'B' });
+    await flush();
+    expect(child.types(), 'the activation left the document paused').toContain(RESUME_DOCUMENT);
+
+    child.resumed();
+    await flush();
+    expect(child.last(PREPARE_SECTION).variantKey,
+      'the re-entered section was never prepared').toBe('B');
+    expect(c.getState().visible, 'the re-entered section was never shown').toBe(true);
+
+    // And the bounded failure the deferral arms never fires, because the deferral ended.
+    vi.advanceTimersByTime(SIM_HANDSHAKE_TIMEOUT_MS + SIM_PREPARE_TIMEOUT_MS + 100);
+    await flush();
+    expect(events(tel), 'the re-entry died in the handshake bound').not.toContain('modern-failure');
   });
 
   it('a teardown mid-deferral releases the hold — it must not strand the document invisible forever', async () => {
