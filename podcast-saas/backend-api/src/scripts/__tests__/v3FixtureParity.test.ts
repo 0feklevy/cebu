@@ -267,6 +267,23 @@ function createHarness(bodies: Record<string, string>, descriptor: V3PackageDesc
   const head = makeElement('head');
   const byId: Record<string, FakeElement> = { marker };
   const docListeners: { type: string; fn: (e: unknown) => void }[] = [];
+
+  /**
+   * An APPENDED element with an id becomes findable, and `remove()` un-finds it.
+   *
+   * The runtime's only DOM construction is the Minimal-UI hide style, and it manages that style by
+   * `getElementById('__simHideUi')` → create-or-update → `remove()`. Without this, every lookup
+   * returned null, so the runtime created a fresh orphan style on every call and the mechanical
+   * hide — the one visible effect a UI policy has when the section body exposes no hook — was
+   * unobservable. Modelling append/remove is what makes `hideRules()` below mean anything.
+   */
+  head.appendChild = (child: unknown): void => {
+    const el = child as FakeElement;
+    if (!el || !el.id) return;
+    byId[el.id] = el;
+    const detach = el.remove.bind(el);
+    el.remove = (): void => { detach(); if (byId[el.id] === el) delete byId[el.id]; };
+  };
   const doc = {
     readyState: 'complete',
     head,
@@ -391,7 +408,13 @@ function createHarness(bodies: Record<string, string>, descriptor: V3PackageDesc
       ...(options.overrides ?? {}),
     };
     if (!activePort) throw new Error('send() before bootstrap()');
-    activePort.postMessage(envelope);
+    // STRUCTURED CLONE, as a real MessagePort does. Without it the child holds a REFERENCE to the
+    // test's own payload object, and the runtime's deliberate in-place mutation of the prepared
+    // config (SET_UI_POLICY, audit P1.2) reaches back out and rewrites the fixture's shared
+    // CONFIG — a leak that makes later tests in the file depend on the order they ran in.
+    // `structuredClone` is also stricter than the fake was: an uncloneable payload now throws in
+    // the test rather than being delivered as something no real transport could carry.
+    activePort.postMessage(structuredClone(envelope));
     return envelope;
   }
 
@@ -429,10 +452,13 @@ function createHarness(bodies: Record<string, string>, descriptor: V3PackageDesc
   const state = (label: string): Record<string, unknown> =>
     ((ctx[V3_STATE_GLOBAL] as Record<string, Record<string, unknown>>) ?? {})[label];
 
+  /** The live `style#__simHideUi` text, or null when no mechanical hide is installed. */
+  const hideRules = (): string | null => byId.__simHideUi?.textContent ?? null;
+
   return {
     ctx, doc, marker, canvas, inbox, parentPosts, revokedUrls,
     advance, pump, offer, bootstrap, send, init, prepare, present,
-    envelopes, accepts, proto, state,
+    envelopes, accepts, proto, state, hideRules,
     setActivePort(port: FakePort) { activePort = port; },
   };
 }
@@ -582,6 +608,12 @@ describe('v3 fixture — document lifecycle', () => {
         qualityControl: true,
       },
       variants: Object.keys(V3_MANAGED_SECTION_BODIES),
+      // P1.2. Advertised NEXT TO the capability report rather than inside it: `capabilities` is the
+      // reveal-path contract the canary classifies (every flag there is load-bearing for
+      // `managed-presentable`), and being unable to hot-swap chrome says nothing about whether a
+      // package can draw a correct frame. A package published before the policy handlers omits
+      // this field entirely, and the parent reads that absence as "restart me instead".
+      policies: ['ui', 'automation'],
     });
     expect(ready[0].seq, 'outbound sequence numbers start at 1').toBe(1);
     expect(ready[0].documentId).toBe(DOCUMENT_ID);
@@ -825,6 +857,326 @@ describe('v3 fixture — activation lifecycle', () => {
     h.present(next);
     h.pump();
     expect(h.envelopes('SECTION_PRESENTED')).toHaveLength(1);
+  });
+});
+
+// ── section policy (audit P1.2) ───────────────────────────────────────────────────────────────
+
+/**
+ * A managed body that COUNTS ITS OWN EXECUTIONS and exposes a solver-ish integrator.
+ *
+ * THE PROXY, AND WHAT IT PROVES. "A UI toggle does not reset the simulation" is not directly
+ * observable from outside a document, so it is asserted through three things that are:
+ *
+ *   • `runs` — incremented once per synchronous execution of the body source. The body runs exactly
+ *     once per activation, so `runs` staying at 1 across a policy message means the runtime did not
+ *     re-prepare the section.
+ *   • `disposed` / `released` — the managed lifecycle's teardown hooks. `releaseCurrent()` is the
+ *     only thing that calls them, and it is what a new activation opens with, so an untouched pair
+ *     means no activation boundary was crossed.
+ *   • `t` — a value the automation interval integrates. It is reset ONLY by a fresh body run, so a
+ *     preserved `t` is trajectory continuity in the one sense a fixture can have one.
+ *
+ * WHAT IT DOES NOT PROVE. A real section's state lives in engine objects, GPU buffers and closures
+ * this fixture has no equivalent of. `runs === 1` proves the RUNTIME did not re-execute the body;
+ * it cannot prove a body does not throw its own state away in response to `setUiPolicy`. That is
+ * the section author's contract, and the honest statement of it is `bodyHook` on the wire — which
+ * is why the acknowledgement carries it.
+ */
+const policyBody = (label: string, opts: { uiHook: boolean }) => `
+  var scope = ctx.scope;
+  var g = window[${JSON.stringify(V3_STATE_GLOBAL)}] = window[${JSON.stringify(V3_STATE_GLOBAL)}] || {};
+  // RETAINED ACROSS BODY RUNS on purpose: a counter re-created by the body could never show that
+  // the body was re-created. Only 't' and the per-run flags are reset by a run.
+  var state = g[${JSON.stringify(label)}] = g[${JSON.stringify(label)}] || { runs: 0, uiCalls: [], t: 0 };
+  state.runs++;
+  state.t = 0;
+  state.disposed = false;
+  state.released = false;
+  state.autoPaused = false;
+  state.ticks = 0;
+  state.autoScriptAtStart = !!(ctx.config && ctx.config.autoScript !== false);
+  state.configSeen = ctx.config;
+
+  // Registered as AUTOMATION so the scope's pause/resume can reach it — the only handles a policy
+  // message is allowed to touch. A body that registers nothing is deliberately not pausable.
+  if (state.autoScriptAtStart) {
+    state.autoId = scope.registerAutomation(scope.setInterval(function () {
+      state.ticks++; state.t += 1;
+    }, 40), 'interval');
+  }
+
+  var lifecycle = {
+    prepare: function () {},
+    present: function (c) { c.scope.requestAnimationFrame(function () { c.markPresented(); }); },
+    pauseAuto: function () { state.autoPaused = true; },
+    resumeAuto: function () { state.autoPaused = false; },
+    release: function () { state.released = true; },
+    dispose: function () { state.disposed = true; }
+  };
+  ${opts.uiHook
+    ? `lifecycle.setUiPolicy = function (p) { state.uiCalls.push({ simpleUi: !!p.simpleUi, hideSelectors: (p.hideSelectors || []).slice() }); };`
+    : '/* no setUiPolicy — the mechanical hide is all this section gets */'}
+  return lifecycle;
+`;
+
+const POLICY_HOOKED = FIXTURE_V3_SECTIONS.V3A;
+const POLICY_BARE = FIXTURE_V3_SECTIONS.V3B;
+
+/** Only these two sections, so `allManaged` is honestly true and every body is a lifecycle. */
+const POLICY_BODIES: Record<string, string> = {
+  [POLICY_HOOKED]: policyBody('HOOKED', { uiHook: true }),
+  [POLICY_BARE]: policyBody('BARE', { uiHook: false }),
+};
+
+const SET_UI_POLICY = 'SET_UI_POLICY';
+const SET_AUTOMATION_POLICY = 'SET_AUTOMATION_POLICY';
+
+/** Boot the policy package and bring one section all the way to activated. */
+function bootPolicy(variantKey = POLICY_HOOKED, config: SimPresentationConfig = CONFIG) {
+  const h = createHarness(POLICY_BODIES, V3_ALL_MANAGED_DESCRIPTOR);
+  h.bootstrap();
+  h.init();
+  const activation = h.prepare(variantKey, 'act-policy', config);
+  h.present(activation);
+  h.pump();
+  h.send(ACTIVATE_SECTION, { ...activation, payload: {} });
+  return { h, activation };
+}
+
+describe('v3 child — a UI policy changes the chrome and NOTHING else', () => {
+  it('does not re-run the body, does not release, does not dispose, and keeps the solver running', () => {
+    const { h, activation } = bootPolicy();
+    h.advance(200);
+    const before = { runs: h.state('HOOKED').runs, t: h.state('HOOKED').t };
+    expect(before.runs, 'the body must have run exactly once for this activation').toBe(1);
+    expect(before.t, 'the automation never advanced, so continuity is untestable').toBeGreaterThan(0);
+
+    h.send(SET_UI_POLICY, { ...activation, payload: { simpleUi: true, hideSelectors: ['.controls'] } });
+
+    const after = h.state('HOOKED');
+    expect(after.runs, 'the section body was re-executed for a chrome change').toBe(1);
+    expect(after.disposed, 'the managed lifecycle was disposed for a chrome change').toBe(false);
+    expect(after.released, 'the activation was released for a chrome change').toBe(false);
+    expect(after.t, 'the integrator was reset — the trajectory was thrown away').toBe(before.t);
+
+    // And time keeps moving: the automation was not merely left registered, it is still firing.
+    h.advance(200);
+    expect(h.state('HOOKED').t as number).toBeGreaterThan(before.t as number);
+    // No LIFECYCLE traffic either — a second SECTION_APPLIED is what a re-prepare would produce,
+    // and a SECTION_ERROR is what a handler that fell through to one would.
+    expect(h.envelopes('SECTION_APPLIED'), 'a policy produced an activation acknowledgement').toHaveLength(1);
+    expect(h.envelopes('SECTION_ERROR')).toHaveLength(0);
+  });
+
+  it('installs, updates and removes the mechanical hide style', () => {
+    const { h, activation } = bootPolicy();
+    expect(h.hideRules(), 'nothing is hidden before a policy asks for it').toBeNull();
+
+    h.send(SET_UI_POLICY, { ...activation, payload: { simpleUi: true, hideSelectors: ['.controls', '#legend'] } });
+    expect(h.hideRules()).toBe('.controls{display:none !important}\n#legend{display:none !important}');
+
+    h.send(SET_UI_POLICY, { ...activation, payload: { simpleUi: true, hideSelectors: ['#legend'] } });
+    expect(h.hideRules(), 'a narrowed selection must narrow the style').toBe('#legend{display:none !important}');
+
+    // Minimal UI off is the un-hide, and it must take the style away rather than empty it: an
+    // empty <style> left behind is indistinguishable from a hide that silently stopped working.
+    h.send(SET_UI_POLICY, { ...activation, payload: { simpleUi: false, hideSelectors: ['#legend'] } });
+    expect(h.hideRules()).toBeNull();
+  });
+
+  it('refuses to smuggle markup through a selector, exactly as the prepare path does', () => {
+    const { h, activation } = bootPolicy();
+    h.send(SET_UI_POLICY, {
+      ...activation,
+      payload: { simpleUi: true, hideSelectors: ['.ok', '.bad{}', '</style><script>', '.tail\\'] },
+    });
+    // The hot-swap path must not be a hole in a guard the cold path enforces.
+    expect(h.hideRules()).toBe('.ok{display:none !important}');
+  });
+
+  it('calls lifecycle.setUiPolicy when the body has one, and reports bodyHook honestly when it does not', () => {
+    const hooked = bootPolicy(POLICY_HOOKED);
+    hooked.h.send(SET_UI_POLICY, { ...hooked.activation, payload: { simpleUi: true, hideSelectors: ['.a'] } });
+    expect(hooked.h.state('HOOKED').uiCalls).toEqual([{ simpleUi: true, hideSelectors: ['.a'] }]);
+    expect(plain(hooked.h.envelopes('POLICY_APPLIED').at(-1)!.payload))
+      .toEqual({ kind: 'ui', changed: true, bodyHook: true });
+
+    const bare = bootPolicy(POLICY_BARE);
+    bare.h.send(SET_UI_POLICY, { ...bare.activation, payload: { simpleUi: true, hideSelectors: ['.a'] } });
+    // bodyHook:false is NOT a failure and must not trigger a restart — the mechanical hide really
+    // did move. It is reported so a section whose own hiding did not follow is visible in the
+    // field rather than diagnosed from a screenshot.
+    expect(plain(bare.h.envelopes('POLICY_APPLIED').at(-1)!.payload))
+      .toEqual({ kind: 'ui', changed: true, bodyHook: false });
+    expect(bare.h.hideRules(), 'the mechanical hide must still apply without a body hook')
+      .toBe('.a{display:none !important}');
+    expect(bare.h.state('BARE').runs, 'a body with no hook was restarted instead').toBe(1);
+  });
+
+  it('an IDENTICAL re-post is changed:false, and does not call the body hook again', () => {
+    const { h, activation } = bootPolicy();
+    const payload = { simpleUi: true, hideSelectors: ['.a', '.b'] };
+    h.send(SET_UI_POLICY, { ...activation, payload });
+    h.send(SET_UI_POLICY, { ...activation, payload: { simpleUi: true, hideSelectors: ['.b', '.a', '.a'] } });
+
+    const applied = h.envelopes('POLICY_APPLIED').map((e) => plain<{ changed: boolean }>(e.payload).changed);
+    // The second payload is the SAME SET in a different order with a duplicate. Treating it as a
+    // change would re-invoke the body hook on every keystroke of a picker that reorders.
+    expect(applied).toEqual([true, false]);
+    expect(h.state('HOOKED').uiCalls).toHaveLength(1);
+  });
+
+  it('the prepared config is updated in place, so ctx.config keeps describing what is on screen', () => {
+    const { h, activation } = bootPolicy();
+    const seen = h.state('HOOKED').configSeen as { simpleUi?: boolean; hideSelectors?: string[] };
+    expect(seen.simpleUi).toBe(false);
+
+    h.send(SET_UI_POLICY, { ...activation, payload: { simpleUi: true, hideSelectors: ['.z'] } });
+    // The SAME object the body was handed at prepare — a body that re-reads ctx.config (or a later
+    // lifecycle callback that does) must see the live policy, not the one it was born with.
+    expect(seen.simpleUi).toBe(true);
+    expect(seen.hideSelectors).toEqual(['.z']);
+  });
+
+  it('a policy for a SUPERSEDED activation is dropped — it never reaches the live section', () => {
+    const { h, activation } = bootPolicy();
+    h.send(SET_UI_POLICY, { ...activation, payload: { simpleUi: true, hideSelectors: ['.a'] } });
+    expect(h.hideRules()).toBe('.a{display:none !important}');
+
+    // A late policy from the previous activation, valid in every respect except whose section it
+    // describes. Applying it would hide controls on the section that superseded it.
+    h.send(SET_UI_POLICY, {
+      ...activation, activationId: 'act-superseded',
+      payload: { simpleUi: true, hideSelectors: ['.b'] },
+    });
+    expect(h.hideRules(), 'a stale policy reached the live section').toBe('.a{display:none !important}');
+    expect(h.envelopes('POLICY_APPLIED'), 'a stale policy was acknowledged').toHaveLength(1);
+
+    // HONESTY NOTE. The v3 child DROPS a stale activation-scoped command silently, exactly as it
+    // does for PAUSE_AUTOMATION and RELEASE_SECTION — it does not answer POLICY_REFUSED with
+    // reason 'stale-activation'. That reason exists on the v2 bridge, where the activation token
+    // is the only identity available and the parent has no way to tell silence from a refusal.
+    // Here the parent MINTS the identity, so an unanswered policy is by construction one the
+    // parent has already superseded. (Pinned on the v2 side in
+    // services/simulation/__tests__/simPolicyBridge.test.ts.)
+    expect(h.envelopes('POLICY_REFUSED')).toHaveLength(0);
+  });
+
+  it('POLICY_APPLIED carries the activation identity, so the parent can scope it', () => {
+    // The parent runs `matchesActivation(env)` on every inbound acknowledgement. An answer posted
+    // WITHOUT the activation stamp — `post('POLICY_APPLIED', payload)` instead of
+    // `post(..., current)` — passes no five-axis check, so the parent would silently discard every
+    // policy result it ever received. Nothing else would break, and nothing would report it: the
+    // toggles would work and the telemetry would be empty forever.
+    const { h, activation } = bootPolicy();
+    h.send(SET_UI_POLICY, { ...activation, payload: { simpleUi: true, hideSelectors: ['.a'] } });
+    const applied = h.envelopes('POLICY_APPLIED').at(-1)!;
+    expect(applied.activationId).toBe(activation.activationId);
+    expect(applied.variantKey).toBe(activation.variantKey);
+    expect(applied.configHash).toBe(activation.configHash);
+  });
+
+  it('a policy does NOT re-key the activation — configHash still describes the PREPARE', () => {
+    // The deliberate boundary from simPolicy.ts: `configHash` means "the config this activation was
+    // prepared with", and the policy path does not repartition it (that would re-key every stored
+    // poster and every canary verdict). So the echoed identity must stay put even though the live
+    // presentation has drifted from it — and anything VISUAL must hash `effectiveConfig` instead of
+    // assuming this hash still describes the picture.
+    const { h, activation } = bootPolicy();
+    const uiOnly: SimPresentationConfig = { ...CONFIG, simpleUi: true, hideSelectors: ['.a'] };
+    expect(computeConfigHash(uiOnly), 'the premise is wrong — these configs hash the same')
+      .not.toBe(activation.configHash);
+
+    h.send(SET_UI_POLICY, { ...activation, payload: { simpleUi: true, hideSelectors: ['.a'] } });
+    expect(h.envelopes('POLICY_APPLIED').at(-1)!.configHash,
+      'the child re-derived an identity instead of echoing the one it was given')
+      .toBe(activation.configHash);
+    // …and every later acknowledgement for this activation agrees with it.
+    h.send(PRESENT_SECTION, { ...activation, payload: {} });
+    h.pump();
+    expect(h.envelopes('SECTION_PRESENTED').at(-1)!.configHash).toBe(activation.configHash);
+  });
+});
+
+describe('v3 child — an automation policy is a pause with an INVERSE', () => {
+  it('pausing stops the ticks without touching the body, and resuming keeps the solver state', () => {
+    const { h, activation } = bootPolicy();
+    h.advance(200);
+    const running = h.state('HOOKED').t as number;
+    expect(running).toBeGreaterThan(0);
+
+    h.send(SET_AUTOMATION_POLICY, { ...activation, payload: { autoScript: false } });
+    expect(plain(h.envelopes('POLICY_APPLIED').at(-1)!.payload))
+      .toEqual({ kind: 'automation', changed: true, stopped: 1 });
+    expect(h.state('HOOKED').autoPaused, 'the body was not told to pause its own automation').toBe(true);
+
+    h.advance(400);
+    const paused = h.state('HOOKED').t as number;
+    expect(paused, 'the automation kept firing while "paused"').toBe(running);
+
+    h.send(SET_AUTOMATION_POLICY, { ...activation, payload: { autoScript: true } });
+    expect(plain(h.envelopes('POLICY_APPLIED').at(-1)!.payload))
+      .toEqual({ kind: 'automation', changed: true, restarted: 1, unrestorable: 0 });
+    expect(h.state('HOOKED').autoPaused).toBe(false);
+
+    // THE POINT: resume did not go through the body. The integrator continues from where it
+    // stopped instead of restarting at zero, and the body still ran exactly once.
+    expect(h.state('HOOKED').runs, 'resuming automation re-ran the body').toBe(1);
+    expect(h.state('HOOKED').t, 'the solver state was reset by the resume').toBe(paused);
+    h.advance(200);
+    expect(h.state('HOOKED').t as number).toBeGreaterThan(paused);
+  });
+
+  it('turning automation ON for a body STARTED with it off is refused as never-started', () => {
+    // The body registered nothing, so there is nothing to resume and no honest way to fake one.
+    // Only a restart can give this section a demonstration, and only the parent may pay for it.
+    const { h, activation } = bootPolicy(POLICY_HOOKED, { ...CONFIG, autoScript: false });
+    expect(h.state('HOOKED').autoScriptAtStart).toBe(false);
+
+    h.send(SET_AUTOMATION_POLICY, { ...activation, payload: { autoScript: true } });
+    expect(plain(h.envelopes('POLICY_REFUSED').at(-1)!.payload))
+      .toEqual({ kind: 'automation', reason: 'never-started', requiresRestart: true });
+    expect(h.envelopes('POLICY_APPLIED'), 'a refusal was also acknowledged as applied').toHaveLength(0);
+    expect(h.state('HOOKED').runs, 'the child restarted the body on its own initiative').toBe(1);
+  });
+
+  it('an idempotent re-post is changed:false and stops nothing', () => {
+    const { h, activation } = bootPolicy();
+    h.send(SET_AUTOMATION_POLICY, { ...activation, payload: { autoScript: true } });
+    expect(plain(h.envelopes('POLICY_APPLIED').at(-1)!.payload)).toEqual({ kind: 'automation', changed: false });
+
+    h.advance(200);
+    expect(h.state('HOOKED').t as number, 'a no-op policy stopped the automation').toBeGreaterThan(0);
+    expect(h.state('HOOKED').autoPaused, 'a no-op policy called the body pause hook').toBe(false);
+  });
+
+  it('a policy for a superseded activation is dropped here too', () => {
+    const { h, activation } = bootPolicy();
+    h.send(SET_AUTOMATION_POLICY, {
+      ...activation, activationId: 'act-superseded', payload: { autoScript: false },
+    });
+    expect(h.envelopes('POLICY_APPLIED')).toHaveLength(0);
+    expect(h.envelopes('POLICY_REFUSED')).toHaveLength(0);
+    h.advance(200);
+    expect(h.state('HOOKED').t as number, 'a stale policy paused the live section').toBeGreaterThan(0);
+  });
+
+  it('a NEW activation does re-run the body — the boundary of what a policy can save', () => {
+    // The counterweight to every assertion above. If `runs` could never increase, "the body was not
+    // re-run" would be a property of the fixture rather than of the runtime.
+    const { h } = bootPolicy();
+    h.advance(200);
+    expect(h.state('HOOKED').runs).toBe(1);
+
+    const structural: SimPresentationConfig = { ...CONFIG, quality: 'low' };
+    h.prepare(POLICY_HOOKED, 'act-second', structural);
+    expect(h.state('HOOKED').runs, 'a genuinely new activation must re-run the body').toBe(2);
+    expect(h.state('HOOKED').t, 'a new activation starts the trajectory over').toBe(0);
+    // `releaseCurrent('superseded')` is silent on the wire — it is an internal boundary, not an
+    // answer to a RELEASE_SECTION — so the evidence is the lifecycle hooks the previous activation
+    // ran. The body's fresh run resets these flags, which is why `runs` above is the anchor.
+    expect(h.envelopes('SECTION_APPLIED'), 'the second activation was not acknowledged').toHaveLength(2);
   });
 });
 

@@ -31,8 +31,11 @@ import {
   SIM_PROTOCOL_VERSION,
 } from 'shared/sim/runtimeProtocol';
 
-/** Bumped whenever the emitted child source changes in a way a stored package must be rebuilt for. */
-export const SIM_CHILD_RUNTIME_VERSION = 1;
+/**
+ * Bumped whenever the emitted child source changes in a way a stored package must be rebuilt for.
+ * v2 adds SET_UI_POLICY / SET_AUTOMATION_POLICY and the `policies` advertisement (audit P1.2).
+ */
+export const SIM_CHILD_RUNTIME_VERSION = 2;
 
 export const SIM_CHILD_MARKER_START = `/* @@SIM_RUNTIME_V${SIM_PROTOCOL_VERSION}_START@@ */`;
 export const SIM_CHILD_MARKER_END = `/* @@SIM_RUNTIME_V${SIM_PROTOCOL_VERSION}_END@@ */`;
@@ -671,14 +674,19 @@ function __simInstallV3(win, sections, opts) {
   }
 
   // ── validation ────────────────────────────────────────────────────────────
+  // These two maps MUST agree with CHILD_INBOUND_TYPES / ACTIVATION_SCOPED_TYPES in
+  // shared/sim/runtimeProtocol.ts. They are restated here because this source is emitted as bytes
+  // into a package with no bundler in front of it; a test pins the agreement.
   var CHILD_INBOUND = {
     INIT_DOCUMENT: 1, SUSPEND_DOCUMENT: 1, RESUME_DOCUMENT: 1, SET_AUDIBLE: 1, SET_QUALITY: 1,
     DISPOSE_DOCUMENT: 1, PREPARE_SECTION: 1, PRESENT_SECTION: 1, ACTIVATE_SECTION: 1,
-    PAUSE_AUTOMATION: 1, RESUME_AUTOMATION: 1, RELEASE_SECTION: 1
+    PAUSE_AUTOMATION: 1, RESUME_AUTOMATION: 1, RELEASE_SECTION: 1,
+    SET_UI_POLICY: 1, SET_AUTOMATION_POLICY: 1
   };
   var ACTIVATION_SCOPED = {
     PREPARE_SECTION: 1, PRESENT_SECTION: 1, ACTIVATE_SECTION: 1,
-    PAUSE_AUTOMATION: 1, RESUME_AUTOMATION: 1, RELEASE_SECTION: 1
+    PAUSE_AUTOMATION: 1, RESUME_AUTOMATION: 1, RELEASE_SECTION: 1,
+    SET_UI_POLICY: 1, SET_AUTOMATION_POLICY: 1
   };
 
   function validate(raw) {
@@ -762,7 +770,16 @@ function __simInstallV3(win, sections, opts) {
     // previous section's resources registered is how a resident pool grows without bound.
     releaseCurrent('superseded');
 
-    current = { activationId: env.activationId, variantKey: env.variantKey, configHash: env.configHash, config: p.config || {} };
+    // 'config' is the PREPARED config and stays mutable on purpose: a later SET_UI_POLICY /
+    // SET_AUTOMATION_POLICY updates it in place so makeCtx() keeps describing what is actually
+    // installed. 'autoStarted' records the value the BODY was run with, which is the only thing
+    // that can answer "is there any automation to resume at all" — a body started with autoScript
+    // off registered nothing, and pretending we resumed it would be a lie.
+    current = {
+      activationId: env.activationId, variantKey: env.variantKey, configHash: env.configHash,
+      config: p.config || {},
+      autoStarted: (p.config || {}).autoScript !== false
+    };
     presentedFrames = 0;
     scope = __simMakeScope(win, function (where, err) {
       // 'where' names the resource and the phase ('dispose:glTextures', 'raf', 'interval'). Folding
@@ -865,6 +882,80 @@ function __simInstallV3(win, sections, opts) {
     post('AUTOMATION_RESUMED', { restarted: restarted || 0 }, current);
   }
 
+  // ── policy (audit P1.2) ───────────────────────────────────────────────────
+  // CHROME AND AUTOMATION WITHOUT A LIFECYCLE EVENT. Neither handler touches the scope, the
+  // lifecycle's dispose, or the body — which is the entire point: a Minimal-UI toggle must not
+  // reset the solver. A policy for a superseded activation is dropped exactly the way every other
+  // activation-scoped command here is; the parent, which owns the activation identity, is where
+  // that refusal is reported.
+
+  function onSetUiPolicy(env) {
+    if (!current || current.activationId !== env.activationId) return;
+    var p = env.payload || {};
+    var next = { simpleUi: !!p.simpleUi, hideSelectors: p.hideSelectors || [] };
+    var changed = !sameUiPolicy(current.config, next);
+    if (changed) {
+      current.config.simpleUi = next.simpleUi;
+      current.config.hideSelectors = next.hideSelectors;
+      applyHideUi(current.config);
+    }
+    // The body's OWN hiding is a closure the runtime cannot reach. A managed lifecycle may expose
+    // 'setUiPolicy' to re-apply it in place; without one, only the mechanical style moved and the
+    // acknowledgement says so rather than implying a complete change.
+    var bodyHook = !!(lifecycle && typeof lifecycle.setUiPolicy === 'function');
+    if (changed && bodyHook) {
+      runMaybeAsync(function () { return lifecycle.setUiPolicy(next); }, function () {}, 'automation');
+    }
+    post('POLICY_APPLIED', { kind: 'ui', changed: changed, bodyHook: bodyHook }, current);
+  }
+
+  function onSetAutomationPolicy(env) {
+    if (!current || current.activationId !== env.activationId) return;
+    var p = env.payload || {};
+    var want = !!p.autoScript;
+    if (want === (current.config.autoScript !== false)) {
+      post('POLICY_APPLIED', { kind: 'automation', changed: false }, current);
+      return;
+    }
+    if (want && !current.autoStarted) {
+      // Nothing was ever started, so there is nothing to resume. Restarting is the only way to get
+      // automation for this section, and only the parent can decide to pay for it.
+      post('POLICY_REFUSED', { kind: 'automation', reason: 'never-started', requiresRestart: true }, current);
+      return;
+    }
+    current.config.autoScript = want;
+    if (want) {
+      if (lifecycle && typeof lifecycle.resumeAuto === 'function') {
+        runMaybeAsync(function () { return lifecycle.resumeAuto(); }, function () {}, 'automation');
+      }
+      var restarted = scope ? scope.resumeAutomation() : 0;
+      post('POLICY_APPLIED', { kind: 'automation', changed: true, restarted: restarted || 0, unrestorable: 0 }, current);
+    } else {
+      if (lifecycle && typeof lifecycle.pauseAuto === 'function') {
+        runMaybeAsync(function () { return lifecycle.pauseAuto(); }, function () {}, 'automation');
+      }
+      var stopped = scope ? scope.pauseAutomation() : 0;
+      post('POLICY_APPLIED', { kind: 'automation', changed: true, stopped: stopped || 0 }, current);
+    }
+  }
+
+  /** Set semantics on hideSelectors — the same rule canonicalizeConfig uses. */
+  function sameUiPolicy(a, b) {
+    if (!!a.simpleUi !== !!b.simpleUi) return false;
+    var x = uniqSorted(a.hideSelectors), y = uniqSorted(b.hideSelectors);
+    if (x.length !== y.length) return false;
+    for (var i = 0; i < x.length; i++) { if (x[i] !== y[i]) return false; }
+    return true;
+  }
+  function uniqSorted(list) {
+    var out = [];
+    if (!list) return out;
+    for (var i = 0; i < list.length; i++) {
+      if (out.indexOf(list[i]) === -1) out.push(list[i]);
+    }
+    return out.sort();
+  }
+
   function onRelease(env) {
     if (!current || current.activationId !== env.activationId) return;
     var activation = current;
@@ -892,7 +983,10 @@ function __simInstallV3(win, sections, opts) {
     quality = p.quality || 'high';
     audible = p.audible || { muted: true, volume: 1 };
     docState = 'DOCUMENT_READY';
-    post('DOCUMENT_READY', { capabilities: capabilities(), variants: variants() });
+    // 'policies' is how a package proves it can hot-swap chrome/automation. A package published
+    // before P1.2 sends DOCUMENT_READY WITHOUT this field, and the parent reads that absence as
+    // "restart me instead" — the honest fallback, never an assumption that the handler is there.
+    post('DOCUMENT_READY', { capabilities: capabilities(), variants: variants(), policies: ['ui', 'automation'] });
   }
 
   function onSuspend() {
@@ -1045,6 +1139,8 @@ function __simInstallV3(win, sections, opts) {
       case 'ACTIVATE_SECTION': return onActivate(env);
       case 'PAUSE_AUTOMATION': return onPauseAutomation(env);
       case 'RESUME_AUTOMATION':return onResumeAutomation(env);
+      case 'SET_UI_POLICY':    return onSetUiPolicy(env);
+      case 'SET_AUTOMATION_POLICY': return onSetAutomationPolicy(env);
       case 'RELEASE_SECTION':  return onRelease(env);
       default: return;
     }

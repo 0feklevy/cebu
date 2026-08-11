@@ -642,3 +642,318 @@ describe('transition instrumentation — the v2 activation path is measured', ()
     expect(c.timingSummary().completed, 'the two activations did not produce two complete transitions').toBe(2);
   });
 });
+
+// ══ SECTION POLICY ON THE v2 PATH (audit P1.2) ═══════════════════════════════════════════════
+//
+// `setPolicy` exists so that hiding a control does not restart the section. What it must NEVER do
+// is fail QUIETLY: a policy the package cannot take has to end in a re-activation the caller can
+// see, because a toggle that silently does nothing is strictly worse than the restart this finding
+// set out to avoid — the restart at least worked.
+//
+// WHAT THIS BLOCK DOES AND DOES NOT PROVE. The client's job is the DECISION: send, don't send, or
+// restart. That everything downstream of "send" leaves the body alone is a property of the bridge,
+// and it is proven by executing the emitted bytes in
+// backend-api/src/services/simulation/__tests__/simPolicyBridge.test.ts. Here the frame is a
+// recorder, so "no startScript was posted" is exactly as strong as "the section was not restarted"
+// and no stronger.
+
+interface Tel { event: string; detail: Record<string, unknown> }
+
+/** Boot a v2 document, optionally advertising the policy families it can hot-swap. */
+function bootPolicy(opts: { policy?: string[]; script?: string } = {}): {
+  c: SimRuntimeClient; win: object; tel: Tel[];
+} {
+  const tel: Tel[] = [];
+  const c = new SimRuntimeClient({
+    onTelemetry: (event, detail) => tel.push({ event, detail: (detail ?? {}) as Record<string, unknown> }),
+  });
+  const { el, win } = makeFrame();
+  c.attach(el, 'doc-policy');
+  // The wire shape of an advertising bridge. `policy` ABSENT is what every package published
+  // before P1.2 sends, and the client must read that silence as "no support".
+  fromChild(win, { type: 'SIM_READY', dispatch: 'dynamic', ...(opts.policy ? { policy: opts.policy } : {}) });
+  fromChild(win, { type: 'SIM_PAINTED' });
+  c.activate({ script: opts.script ?? 'A', params: { simpleUi: false, autoScript: true } });
+  fromChild(win, { type: 'SCRIPT_APPLIED', script: opts.script ?? 'A', token: c.getState().activationToken });
+  sent = [];
+  return { c, win, tel };
+}
+
+const BOTH = ['ui', 'automation'];
+const events = (tel: Tel[]): string[] => tel.map((t) => t.event);
+const lastTel = (tel: Tel[], event: string): Record<string, unknown> | undefined =>
+  [...tel].reverse().find((t) => t.event === event)?.detail;
+
+describe('setPolicy — a supported package is policed, never restarted', () => {
+  it('sends ONE uiPolicy carrying the live activation token, and no startScript', () => {
+    const { c } = bootPolicy({ policy: BOTH });
+    const token = c.getState().activationToken;
+
+    expect(c.setPolicy({ simpleUi: true, hideSelectors: ['.controls'] })).toBe('policy');
+
+    expect(typesSent(), 'a policy fell through to a re-activation').not.toContain('startScript');
+    expect(typesSent().filter((t) => t === 'uiPolicy')).toHaveLength(1);
+    expect(lastOf('uiPolicy')).toEqual({
+      type: 'uiPolicy', simpleUi: true, hideSelectors: ['.controls'], token,
+    });
+  });
+
+  it('sends only the family that MOVED — a UI change posts no automation message', () => {
+    const { c } = bootPolicy({ policy: BOTH });
+    expect(c.setPolicy({ simpleUi: true })).toBe('policy');
+    expect(typesSent()).toEqual(['uiPolicy']);
+
+    sent = [];
+    expect(c.setPolicy({ autoScript: false })).toBe('policy');
+    expect(typesSent()).toEqual(['autoPolicy']);
+    expect(lastOf('autoPolicy')).toMatchObject({ autoScript: false });
+  });
+
+  it('a change on BOTH axes posts both messages, in one call', () => {
+    const { c } = bootPolicy({ policy: BOTH });
+    expect(c.setPolicy({ simpleUi: true, autoScript: false })).toBe('policy');
+    expect(typesSent()).toEqual(['uiPolicy', 'autoPolicy']);
+  });
+
+  it('normalises the hide set on the wire — the bridge is never asked to dedupe', () => {
+    const { c } = bootPolicy({ policy: BOTH });
+    c.setPolicy({ simpleUi: true, hideSelectors: ['.b', '.a', '.b'] });
+    expect(lastOf('uiPolicy')!.hideSelectors).toEqual(['.a', '.b']);
+  });
+
+  it('reports the outcome as telemetry, so the policy path is observable in the field', () => {
+    const { c, tel } = bootPolicy({ policy: BOTH });
+    c.setPolicy({ simpleUi: true });
+    expect(events(tel)).toContain('policy-sent');
+    expect(lastTel(tel, 'policy-sent')).toMatchObject({ ui: true, automation: false, modern: false });
+  });
+});
+
+describe('setPolicy — an unsupported package is re-activated, and says so', () => {
+  it('a package that advertised nothing returns "reactivated" and restarts instead', () => {
+    // THE HONEST FALLBACK. Not `false`, not `'policy'`: the caller is told the toggle took effect
+    // AND that it cost a restart. A boolean cannot express the difference, which is the whole
+    // reason SimPolicyOutcome is not one.
+    const { c } = bootPolicy();               // bare SIM_READY — every stored package
+    expect(c.getState().policies, 'silence must read as "no support", never as "unknown"').toEqual([]);
+
+    expect(c.setPolicy({ simpleUi: true, hideSelectors: ['.controls'] })).toBe('reactivated');
+
+    expect(typesSent(), 'a policy message was sent to a package that cannot take it')
+      .not.toContain('uiPolicy');
+    expect(typesSent()).toContain('startScript');
+    // The restart carries the NEW policy, or the toggle would have been lost entirely.
+    expect(lastOf('startScript')).toMatchObject({
+      script: 'A', params: { simpleUi: true, autoScript: true, hideSelectors: ['.controls'] },
+    });
+  });
+
+  it('names the missing families and the reason — a silent fallback is indistinguishable from a bug', () => {
+    const { c, tel } = bootPolicy();
+    c.setPolicy({ simpleUi: true });
+    expect(events(tel)).toContain('policy-unsupported');
+    expect(lastTel(tel, 'policy-unsupported')).toMatchObject({ missing: ['ui'], advertised: [] });
+    expect(events(tel)).toContain('policy-fallback-restart');
+    expect(lastTel(tel, 'policy-fallback-restart')).toMatchObject({ reason: 'unsupported', script: 'A' });
+  });
+
+  it('PARTIAL support: the advertised family is policed, the unadvertised one restarts', () => {
+    const { c } = bootPolicy({ policy: ['ui'] });
+    expect(c.setPolicy({ simpleUi: true })).toBe('policy');
+    expect(typesSent()).toEqual(['uiPolicy']);
+
+    sent = [];
+    expect(c.setPolicy({ autoScript: false })).toBe('reactivated');
+    expect(typesSent()).toContain('startScript');
+  });
+
+  it('a MIXED change with one family missing restarts ONCE and sends no half-policy', () => {
+    // Sending the deliverable half and restarting for the other would apply the UI change twice
+    // and make the restart's params disagree with what the package was just told.
+    const { c, tel } = bootPolicy({ policy: ['ui'] });
+    expect(c.setPolicy({ simpleUi: true, autoScript: false })).toBe('reactivated');
+    expect(typesSent(), 'half the policy was delivered before the restart').not.toContain('uiPolicy');
+    expect(typesSent().filter((t) => t === 'startScript')).toHaveLength(1);
+    expect(lastTel(tel, 'policy-unsupported')).toMatchObject({ missing: ['automation'], advertised: ['ui'] });
+  });
+
+  it('an unknown family name in the advertisement is discarded, not trusted', () => {
+    const { c } = bootPolicy({ policy: ['ui', 'telepathy'] });
+    expect(c.getState().policies).toEqual(['ui']);
+    expect(c.setPolicy({ autoScript: false })).toBe('reactivated');
+  });
+
+  it('a PING_SIM_READY re-fire without `policy` does not un-prove a proven document', () => {
+    // Same never-downgrade rule as `dispatch`. A partial re-post is a re-post, not a retraction —
+    // and treating it as one would silently return the document to restarting for every toggle.
+    const { c, win } = bootPolicy({ policy: BOTH });
+    fromChild(win, { type: 'SIM_READY' });
+    expect(c.getState().policies).toEqual(BOTH);
+    expect(c.setPolicy({ simpleUi: true })).toBe('policy');
+  });
+});
+
+describe('setPolicy — idempotence and activation identity', () => {
+  it('an identical re-post is "unchanged" and sends nothing at all', () => {
+    const { c } = bootPolicy({ policy: BOTH });
+    c.setPolicy({ simpleUi: true, hideSelectors: ['.a'] });
+    sent = [];
+    expect(c.setPolicy({ simpleUi: true, hideSelectors: ['.a'] })).toBe('unchanged');
+    expect(sent, 'an unchanged policy still cost a message').toEqual([]);
+  });
+
+  it('a RE-ORDERED or duplicated hide set is not a change', () => {
+    const { c } = bootPolicy({ policy: BOTH });
+    c.setPolicy({ simpleUi: true, hideSelectors: ['.a', '.b'] });
+    sent = [];
+    expect(c.setPolicy({ simpleUi: true, hideSelectors: ['.b', '.a', '.a'] })).toBe('unchanged');
+    expect(sent).toEqual([]);
+  });
+
+  it('null and [] are the same LIVE policy — a toggle must not re-post forever', () => {
+    // They differ only on the restart path, where the body sees the value (see simPolicy.ts).
+    const { c } = bootPolicy({ policy: BOTH });
+    expect(c.setPolicy({ simpleUi: true, hideSelectors: [] })).toBe('policy');
+    sent = [];
+    expect(c.setPolicy({ simpleUi: true, hideSelectors: null })).toBe('unchanged');
+    expect(sent).toEqual([]);
+  });
+
+  it('a PATCH leaves the fields it omits alone', () => {
+    const { c } = bootPolicy({ policy: BOTH });
+    c.setPolicy({ autoScript: false });
+    expect(c.getLivePolicy()).toEqual({ simpleUi: false, hideSelectors: null, autoScript: false });
+    c.setPolicy({ simpleUi: true });
+    expect(c.getLivePolicy(), 'a UI patch cleared the automation policy')
+      .toEqual({ simpleUi: true, hideSelectors: null, autoScript: false });
+  });
+
+  it('getLivePolicy hands out a COPY — the live policy cannot be edited through it', () => {
+    const { c } = bootPolicy({ policy: BOTH });
+    const snapshot = c.getLivePolicy()!;
+    snapshot.simpleUi = true;
+    expect(c.getLivePolicy()!.simpleUi).toBe(false);
+  });
+
+  it('the policy is scoped to the CURRENT activation, and re-based by the next one', () => {
+    const { c, win } = bootPolicy({ policy: BOTH });
+    c.setPolicy({ simpleUi: true });
+    expect(c.getLivePolicy()!.simpleUi).toBe(true);
+
+    // A different section, activated with its own params. The live policy is that section's, not
+    // a carry-over: a policy applied to A must not silently describe B.
+    c.activate({ script: 'B', params: { simpleUi: false, autoScript: false } });
+    fromChild(win, { type: 'SCRIPT_APPLIED', script: 'B', token: c.getState().activationToken });
+    expect(c.getLivePolicy()).toEqual({ simpleUi: false, hideSelectors: null, autoScript: false });
+
+    sent = [];
+    const tokenB = c.getState().activationToken;
+    expect(c.setPolicy({ simpleUi: true })).toBe('policy');
+    expect(lastOf('uiPolicy')!.token, 'the policy carried the superseded activation\'s token').toBe(tokenB);
+  });
+
+  it('there is nothing to police before an activation, after stopNow, or on a new document', () => {
+    const c1 = new SimRuntimeClient();
+    const f1 = makeFrame();
+    c1.attach(f1.el, 'doc-cold');
+    fromChild(f1.win, { type: 'SIM_READY', dispatch: 'dynamic', policy: BOTH });
+    expect(c1.setPolicy({ simpleUi: true }), 'policed a document with no section running')
+      .toBe('no-activation');
+    expect(c1.getLivePolicy()).toBeNull();
+
+    const { c } = bootPolicy({ policy: BOTH });
+    c.stopNow();
+    sent = [];
+    expect(c.setPolicy({ simpleUi: true })).toBe('no-activation');
+    expect(sent, 'a policy was sent to a section that had been torn down').toEqual([]);
+
+    const second = makeFrame();
+    c.attach(second.el, 'doc-other');
+    expect(c.setPolicy({ simpleUi: true })).toBe('no-activation');
+  });
+});
+
+describe('POLICY_RESULT — what the package answers, and what the client does about it', () => {
+  const result = (over: Record<string, unknown>) => ({
+    type: 'POLICY_RESULT', kind: 'ui', applied: true, changed: true, reason: null,
+    requiresRestart: false, ...over,
+  });
+
+  it('an APPLIED result changes nothing and is reported', () => {
+    const { c, win, tel } = bootPolicy({ policy: BOTH });
+    c.setPolicy({ simpleUi: true });
+    sent = [];
+    fromChild(win, result({ bodyHook: false, token: c.getState().activationToken }));
+
+    expect(sent, 'an applied policy triggered a restart').toEqual([]);
+    expect(lastTel(tel, 'policy-applied')).toMatchObject({ kind: 'ui', changed: true, bodyHook: false });
+  });
+
+  it('a REFUSAL that asks for a restart gets one, carrying the policy it refused', () => {
+    const { c, win, tel } = bootPolicy({ policy: BOTH });
+    c.setPolicy({ simpleUi: true, hideSelectors: ['.a'] });
+    sent = [];
+    fromChild(win, result({
+      applied: false, changed: false, reason: 'never-started', kind: 'automation',
+      requiresRestart: true, token: c.getState().activationToken,
+    }));
+
+    expect(lastTel(tel, 'policy-refused')).toMatchObject({ kind: 'automation', reason: 'never-started' });
+    expect(lastTel(tel, 'policy-fallback-restart')).toMatchObject({ reason: 'never-started' });
+    expect(typesSent()).toContain('startScript');
+    expect(lastOf('startScript')).toMatchObject({
+      params: { simpleUi: true, autoScript: true, hideSelectors: ['.a'] },
+    });
+  });
+
+  it('a STALE-ACTIVATION refusal is reported but NOT restarted', () => {
+    // `requiresRestart: false` is how a package refuses without asking to be torn down. Restarting
+    // for a policy whose activation is already gone would evict the section that superseded it —
+    // the wrong-activation defect arriving through the recovery path.
+    const { c, win, tel } = bootPolicy({ policy: BOTH });
+    c.setPolicy({ simpleUi: true });
+    sent = [];
+    fromChild(win, result({
+      applied: false, reason: 'stale-activation', requiresRestart: false,
+      token: c.getState().activationToken,
+    }));
+
+    expect(lastTel(tel, 'policy-refused')).toMatchObject({ reason: 'stale-activation' });
+    expect(sent, 'a stale refusal tore down the live section').toEqual([]);
+  });
+
+  it('a result carrying a SUPERSEDED token is ignored entirely', () => {
+    const { c, win, tel } = bootPolicy({ policy: BOTH });
+    const stale = c.getState().activationToken;
+    c.activate({ script: 'B' });
+    fromChild(win, { type: 'SCRIPT_APPLIED', script: 'B', token: c.getState().activationToken });
+    sent = [];
+
+    fromChild(win, result({ applied: false, reason: 'never-started', requiresRestart: true, token: stale }));
+    expect(sent, 'a refusal for a dead activation restarted the live one').toEqual([]);
+    expect(events(tel)).toContain('policy-stale-result-ignored');
+  });
+
+  it('the fallback restart reproduces the hide set EXACTLY — absent stays absent', () => {
+    // `paramsForPolicy` omits the key when there is no mechanical set and sends `[]` when the set
+    // is empty. The body's own generated hide logic reads that difference on the restart path, so
+    // collapsing the two here would change what the re-run section hides.
+    const { c } = bootPolicy();                       // unsupported ⇒ every change restarts
+    c.setPolicy({ simpleUi: true, hideSelectors: null });
+    const omitted = lastOf('startScript')!.params as Record<string, unknown>;
+    expect(Object.prototype.hasOwnProperty.call(omitted, 'hideSelectors')).toBe(false);
+
+    sent = [];
+    c.setPolicy({ hideSelectors: ['.a'] });
+    expect((lastOf('startScript')!.params as Record<string, unknown>).hideSelectors).toEqual(['.a']);
+
+    // ['.a'] → [] is a real change (an empty set is not "no set"), so this restart must carry the
+    // key. Going straight from `null` to `[]` would be `unchanged` and send nothing, which is the
+    // correct answer for the LIVE policy and the reason the two cases are sequenced.
+    sent = [];
+    c.setPolicy({ hideSelectors: [] });
+    const empty = lastOf('startScript')!.params as Record<string, unknown>;
+    expect(Object.prototype.hasOwnProperty.call(empty, 'hideSelectors')).toBe(true);
+    expect(empty.hideSelectors).toEqual([]);
+  });
+});

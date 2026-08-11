@@ -311,7 +311,19 @@ export interface TimelineSection {
   label: string | null;
   notes: string | null;
   sort_order: number | null;
+  /**
+   * The STORED url — what this section last published. Written only by the generation that
+   * published it, and the only value the client ever writes back (undo/redo restore, duplicate).
+   */
   simulation_url: string | null;
+  /**
+   * The url whose bytes are LIVE right now: `simulation_url` with the simulation's active
+   * revision pointer resolved into it (audit §9.6). Present on the two editor bootstrap reads
+   * (GET /sections, GET /editor-state) and absent from create/update responses, so render paths
+   * read `simulation_served_url ?? simulation_url`. NEVER persist it — see the resolver's note in
+   * backend-api/src/services/simulation/simulationUrlResolver.ts.
+   */
+  simulation_served_url?: string | null;
   simulation_id:  string | null;
   sim_script:     string | null;
   sim_prompt:     string | null;

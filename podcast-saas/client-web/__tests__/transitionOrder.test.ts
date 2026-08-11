@@ -99,6 +99,10 @@ const PROTOCOL_WIRE_VALUES: Record<string, string> = {
   SCRIPT_MISSING: 'SCRIPT_MISSING', SCRIPT_ERROR: 'SCRIPT_ERROR', AUTO_PAUSED: 'AUTO_PAUSED',
   USER_INTERACTION: 'userInteraction', START_SCRIPT: 'startScript', STOP_SCRIPT: 'stopScript',
   PAUSE_SCRIPT: 'pauseScript', SIM_PAUSE: 'simPause', SIM_RESUME: 'simResume',
+  // (P1.2) The section-policy pair. Listed here so the alias-laundering resolution stays TOTAL
+  // over lib/sim/protocol's message constants — a surface that imported `UI_POLICY as U` and built
+  // `{ type: U }` would otherwise slip past the forbidden-message check below.
+  UI_POLICY: 'uiPolicy', AUTO_POLICY: 'autoPolicy', POLICY_RESULT: 'POLICY_RESULT',
   SIM_MUTE: 'simMute', SIM_UNMUTE: 'simUnmute', SIM_RELAYOUT: 'simRelayout',
   CLEAR_BOOT_HIDE: 'clearBootHide', GUIDANCE_GATE: 'guidanceGate',
   PING_SIM_READY: 'PING_SIM_READY', PING_SIM_PAINTED: 'PING_SIM_PAINTED',
@@ -318,6 +322,12 @@ describe('no surface reimplements the reveal or cleanup machinery', () => {
       find: (sf) => messagesBuilt(sf, ['stopScript']) },
     { what: "a { type: 'simMute' | 'simUnmute' } message", why: 'raw mute posts — the runtime latches mute',
       find: (sf) => messagesBuilt(sf, ['simMute', 'simUnmute']) },
+    // (P1.2) The policy pair is capability-NEGOTIATED and activation-SCOPED: the runtime checks
+    // what the document advertised, stamps the live activation's identity, and owns the restart
+    // fallback when a package refuses. A surface posting one by hand would skip all three, and the
+    // failure would be silent — the message lands on a package with no handler and nothing happens.
+    { what: "a { type: 'uiPolicy' | 'autoPolicy' } message", why: 'a raw policy post — use runtime.setPolicy()',
+      find: (sf) => messagesBuilt(sf, ['uiPolicy', 'autoPolicy']) },
   ];
 
   for (const [name, rel] of Object.entries(SURFACES)) {
@@ -356,6 +366,26 @@ describe('surface-specific behaviour that must SURVIVE the migration', () => {
 
   it('the section editor keeps the Minimal-UI control scan (a DIFFERENT protocol)', () => {
     expect(tokensUsed(ast(SURFACES.sectionEditor), ['simControlsList']).length).toBeGreaterThan(0);
+  });
+
+  it('(P1.2) the section editor asks for a POLICY, and can still ACTIVATE', () => {
+    // POSITIVE delegation, because the regression is invisible behaviourally: going back to
+    // `runPreview()` on every toggle still "works" — by restarting the section, which is the reset
+    // this finding removed. No screenshot and no smoke test would tell the difference.
+    //
+    // A COUNT, not a presence check. The surface has exactly TWO live re-apply paths — the
+    // Minimal-UI / Auto-Script toggle effect and the debounced hide-picker — and each must ask for
+    // a policy. `> 0` would pass with one of them reverted to `runPreview()`, which is half the
+    // regression and every bit as invisible. Consolidating the two into one call site is a real
+    // change: update this number deliberately rather than loosening the check.
+    const sf = ast(SURFACES.sectionEditor);
+    expect(callsTo(sf, 'setPolicy').length,
+      'a live re-apply path stopped routing through runtime.setPolicy() (expected the toggle effect and the picker effect)')
+      .toBeGreaterThanOrEqual(2);
+    // …and the other half of the boundary: Run/Stop and section changes are activations by
+    // definition, because they change WHICH body is installed. A policy cannot do that.
+    expect(callsTo(sf, 'activate').length,
+      'the section editor can no longer activate a section at all').toBeGreaterThan(0);
   });
 
   it('the viewer keeps pooling, warming and residency planning', () => {

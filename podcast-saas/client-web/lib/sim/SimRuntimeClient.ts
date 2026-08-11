@@ -35,9 +35,12 @@
 import {
   asInbound,
   AUTO_PAUSED,
+  AUTO_POLICY,
   CLEAR_BOOT_HIDE,
   GUIDANCE_GATE,
   PAUSE_SCRIPT,
+  POLICY_RESULT,
+  UI_POLICY,
   PING_SIM_PAINTED,
   PING_SIM_READY,
   SCRIPT_APPLIED,
@@ -56,6 +59,7 @@ import {
   STOP_SCRIPT,
   USER_INTERACTION,
   SIM_LEGACY_REVEAL_MS,
+  type SimInboundMessage,
   type SimStartParams,
 } from './protocol';
 import { applyGateFor } from '../simApplyGate';
@@ -76,6 +80,8 @@ import {
   CONTEXT_RESTORED,
   INIT_DOCUMENT,
   PAUSE_AUTOMATION,
+  POLICY_APPLIED,
+  POLICY_REFUSED,
   PREPARE_SECTION,
   PRESENT_SECTION,
   RELEASE_SECTION,
@@ -85,12 +91,28 @@ import {
   SECTION_ERROR,
   SECTION_PRESENTED,
   SET_AUDIBLE,
+  SET_AUTOMATION_POLICY,
   SET_QUALITY,
+  SET_UI_POLICY,
   SUSPEND_DOCUMENT,
   type AnySimEnvelope,
   type DocumentReadyPayload,
+  type PolicyAppliedPayload,
+  type PolicyRefusedPayload,
   type SectionPresentedPayload,
 } from 'shared/src/sim/runtimeProtocol';
+import {
+  mergePolicy,
+  normalizeHideSelectors,
+  paramsForPolicy,
+  sameAutomationPolicy,
+  sameUiPolicy,
+  sectionPolicyOf,
+  withSectionPolicy,
+  type SimPolicyKind,
+  type SimPolicyOutcome,
+  type SimSectionPolicy,
+} from 'shared/src/sim/simPolicy';
 import {
   DEFAULT_PRESENTATION_CONFIG,
   computeConfigHash,
@@ -149,6 +171,12 @@ export interface SimRuntimeState {
   documentKey: string | null;
   /** v2 dynamic dispatch capability; null until SIM_READY classifies the document. */
   dynamic: boolean | null;
+  /**
+   * Policy families the LOADED document can apply without a restart (audit P1.2). `null` until the
+   * document classifies itself; an empty array is the honest answer for every package published
+   * before the handlers existed, and it means "restart me instead".
+   */
+  policies: SimPolicyKind[] | null;
   /** True once this document has emitted at least one SCRIPT_APPLIED. */
   ackCapable: boolean | null;
   ready: boolean;
@@ -228,6 +256,7 @@ const initialState = (): SimRuntimeState => ({
   phase: 'unmounted',
   documentKey: null,
   dynamic: null,
+  policies: null,
   ackCapable: null,
   ready: false,
   painted: false,
@@ -318,6 +347,21 @@ export class SimRuntimeClient {
   // cannot change what the viewer sees. What reads it is the lead-time derivation, later.
   /** v2: the pending activation expects SCRIPT_MISSING and must present the document as loaded. */
   private pendingPresentAsLoaded = false;
+
+  // ── policy (audit P1.2) ─────────────────────────────────────────────────────────────────
+  /**
+   * The policy the LIVE activation is running with. Kept here rather than in `SimRuntimeState`
+   * because it is not render state: nothing draws from it, and putting it in the state object
+   * would make every policy no-op emit a React update.
+   *
+   * Updated OPTIMISTICALLY on send. A refusal arrives asynchronously and re-activates, which
+   * rebuilds this from the activation's own params — so an optimistic value can never survive
+   * being wrong, while a pessimistic one would make a fast double-toggle send two messages the
+   * package then has to recognise as duplicates.
+   */
+  private livePolicy: SimSectionPolicy | null = null;
+  /** The last activation this client drove, so a refused policy can reproduce it exactly. */
+  private lastActivate: ActivateOptions | null = null;
   private tmarks: TransitionMarks = { marks: {} };
   private tHistory: TransitionMarks[] = [];
   /** Bounded, with the drop counted. A silent cap makes a truncated sample look like a complete one. */
@@ -390,12 +434,14 @@ export class SimRuntimeClient {
     if (!frame || !documentKey) {
       this.clearAllTimers();
       this.generation++;
+      this.livePolicy = null;
       this.set({ ...initialState(), phase: 'unmounted' });
       return;
     }
     if (!sameDoc) {
       this.clearAllTimers();
       this.generation++;
+      this.livePolicy = null;   // a different document has its own policy support and its own state
       this.set({
         ...initialState(),
         phase: 'mounting',
@@ -435,11 +481,15 @@ export class SimRuntimeClient {
     this.generation++;
     this.cancelDeferredStop();
     this.cancelPendingApply();
+    // A NEW DOCUMENT knows nothing about the old one's policy — and, since `policies` resets with
+    // the rest of the readiness flags below, it has not yet said what it can do about a new one.
+    this.livePolicy = null;
     this.set({
       phase: 'mounting',
       ready: false,
       painted: false,
       dynamic: null,
+      policies: null,
       ackCapable: null,
       currentScript: null,
       pendingScript: null,
@@ -486,12 +536,13 @@ export class SimRuntimeClient {
       case SCRIPT_MISSING: return this.onMissing(msg.script ?? null, msg.token);
       case SCRIPT_ERROR:   return this.onError(msg.message ?? 'script error', msg.token, msg.phase, msg.script ?? null);
       case AUTO_PAUSED:    this.tel('auto-paused'); return;
+      case POLICY_RESULT:  return this.onPolicyResult(msg);
       case USER_INTERACTION: this.cbs.onUserInteraction?.(); return;
       default: return;
     }
   }
 
-  private onReady(msg: { dispatch?: string; sections?: string[] }): void {
+  private onReady(msg: SimInboundMessage): void {
     // `dynamic` is how the document tells us it can switch sections IN PLACE. The shipping v2
     // bridge advertises `dispatch: 'dynamic'`; anything else is a load-time-locked document that
     // needs a per-section URL. Classify ONLY from that field — an earlier version keyed off a
@@ -503,8 +554,43 @@ export class SimRuntimeClient {
     // hand-rolled or partial re-post without `dispatch` must not demote a proven dynamic frame.
     const advertised = msg.dispatch === 'dynamic' ? true : msg.dispatch ? false : null;
     const dynamic = advertised ?? this.state.dynamic;
-    this.set({ ready: true, dynamic, phase: this.state.painted ? 'painted' : 'ready' });
-    this.tel('sim-ready', { dynamic, dispatch: msg.dispatch ?? null });
+    // POLICY IS FEATURE-DETECTED, NOT ASSUMED. A package published before the handlers existed
+    // sends no `policy` field at all, and the honest reading of that silence is `[]` — every
+    // policy request for it falls back to a full re-activation, loudly. Same never-downgrade rule
+    // as `dynamic`: a partial PING_SIM_READY re-fire must not un-prove a proven document.
+    const advertisedPolicies = Array.isArray(msg.policy)
+      ? msg.policy.filter((k): k is SimPolicyKind => k === 'ui' || k === 'automation')
+      : null;
+    const policies = advertisedPolicies ?? this.state.policies ?? [];
+    this.set({ ready: true, dynamic, policies, phase: this.state.painted ? 'painted' : 'ready' });
+    this.tel('sim-ready', { dynamic, dispatch: msg.dispatch ?? null, policies });
+  }
+
+  /**
+   * A v2 policy outcome. The only branch that DOES anything is a refusal, and what it does is the
+   * honest fallback: re-activate the section, and say so. A refusal that quietly changed nothing
+   * would leave the user's toggle with no effect at all — strictly worse than the restart this
+   * finding set out to avoid, because at least the restart worked.
+   */
+  private onPolicyResult(msg: SimInboundMessage): void {
+    const kind = msg.kind ?? null;
+    if (msg.token !== undefined && msg.token !== this.state.activationToken) {
+      this.tel('policy-stale-result-ignored', { kind, token: msg.token ?? null });
+      return;
+    }
+    if (msg.applied) {
+      this.tel('policy-applied', {
+        kind, changed: msg.changed ?? null, bodyHook: msg.bodyHook ?? null,
+        stopped: msg.stopped ?? null, restarted: msg.restarted ?? null,
+        unrestorable: msg.unrestorable ?? null,
+      });
+      return;
+    }
+    this.tel('policy-refused', { kind, reason: msg.reason ?? null, unrestorable: msg.unrestorable ?? null });
+    // `requiresRestart: false` is how a package refuses WITHOUT asking to be torn down — today only
+    // a stale policy does that, and restarting for it would evict the activation that superseded it.
+    if (msg.requiresRestart === false) return;
+    this.reactivateForPolicy(msg.reason ?? 'unsupported');
   }
 
   private onPainted(): void {
@@ -598,6 +684,21 @@ export class SimRuntimeClient {
    */
   activate(opts: ActivateOptions): void {
     if (this.disposed || !this.frame) return;
+
+    // The policy baseline for everything that follows (audit P1.2). Recorded here, before any
+    // branch, because EVERY path below installs a section — including the modern one and the
+    // background warm — and a `setPolicy` call that could not name the live policy would have to
+    // guess whether a change is a change.
+    this.lastActivate = opts;
+    this.livePolicy = opts.config
+      ? sectionPolicyOf(opts.config)
+      : {
+        simpleUi: !!opts.params?.simpleUi,
+        // `?? null` and not `?? []`: an omitted hide set means "the body decides", which is a
+        // different instruction from an empty one. See simPolicy.ts.
+        hideSelectors: opts.params?.hideSelectors ?? null,
+        autoScript: opts.params?.autoScript !== false,
+      };
 
     // Remembered BEFORE the branch: the handshake is asynchronous and this call is not, so
     // DOCUMENT_READY (or the fallback to legacy) needs to know what to drive when it settles. A
@@ -879,7 +980,15 @@ export class SimRuntimeClient {
       case DOCUMENT_READY: {
         const payload = env.payload as DocumentReadyPayload;
         this.docMachine = documentReducer(this.docMachine, { type: 'READY', capabilities: payload.capabilities });
-        this.tel('modern-document-ready', { variants: payload.variants?.length ?? 0 });
+        // POLICY SUPPORT, NEGOTIATED (audit P1.2). Deliberately NOT read from `capabilities`: that
+        // record is the reveal-path contract the canary classifies, and a package that cannot
+        // hot-swap chrome is not thereby unable to draw a correct frame. Absent ⇒ `[]` ⇒ every
+        // policy change for this package falls back to a full re-activation, loudly.
+        const policies = Array.isArray(payload.policies)
+          ? payload.policies.filter((k): k is SimPolicyKind => k === 'ui' || k === 'automation')
+          : [];
+        this.set({ policies });
+        this.tel('modern-document-ready', { variants: payload.variants?.length ?? 0, policies });
         // THE HANDSHAKE IS ASYNCHRONOUS AND THE ACTIVATION IS NOT.
         //
         // `enableModern()` and `activate()` are called in the same synchronous block by every
@@ -1036,6 +1145,27 @@ export class SimRuntimeClient {
           canvas: payload.canvas ?? null,
         });
         this.reveal(false);
+        return;
+      }
+      case POLICY_APPLIED: {
+        // Activation-scoped, like every other acknowledgement here: a policy result for a
+        // superseded activation describes a section that is no longer on screen.
+        if (!this.matchesActivation(env)) { this.tel('policy-stale-result-ignored', { modern: true }); return; }
+        const payload = env.payload as PolicyAppliedPayload;
+        this.tel('policy-applied', {
+          kind: payload?.kind ?? null, changed: payload?.changed ?? null,
+          bodyHook: payload?.bodyHook ?? null, stopped: payload?.stopped ?? null,
+          restarted: payload?.restarted ?? null, unrestorable: payload?.unrestorable ?? null,
+          modern: true,
+        });
+        return;
+      }
+      case POLICY_REFUSED: {
+        if (!this.matchesActivation(env)) { this.tel('policy-stale-result-ignored', { modern: true }); return; }
+        const payload = env.payload as PolicyRefusedPayload;
+        this.tel('policy-refused', { kind: payload?.kind ?? null, reason: payload?.reason ?? null, modern: true });
+        // The honest fallback. It DOES reset the section, which is why it is never silent.
+        this.reactivateForPolicy(payload?.reason ?? 'unsupported');
         return;
       }
       case SECTION_ERROR:
@@ -1417,6 +1547,7 @@ export class SimRuntimeClient {
     // cleanup function could not express — and the reason a resident pool can re-enter a section
     // without paying the whole document cost again.
     this.pendingActivate = null;   // the owner left the section; nothing to re-drive
+    this.livePolicy = null;        // no live section, so nothing to compare a policy against
     if (this.modernActive() && this.actMachine) {
       this.clearPrepareTimer();
       this.clearPresentTimer();
@@ -1575,6 +1706,115 @@ export class SimRuntimeClient {
   relayout(): void { this.post({ type: SIM_RELAYOUT }); }
   setGuidance(active: boolean): void { this.post({ type: GUIDANCE_GATE, active }); }
 
+  // ── section policy (audit P1.2) ─────────────────────────────────────────────────────────
+
+  /** The policy the live activation is running with, or null when nothing is running. */
+  getLivePolicy(): SimSectionPolicy | null {
+    return this.livePolicy ? { ...this.livePolicy } : null;
+  }
+
+  /**
+   * Change Minimal-UI / Auto-Script on the section that is ALREADY RUNNING.
+   *
+   * THE WHOLE POINT: a chrome or automation change must not reset the simulation. Before this,
+   * every such change arrived as an activation — v2 fell through `stopScript` (cleanup, timers
+   * cleared, body re-run) and v3 minted a new `configHash`, which IS a new activation by
+   * construction. Either way, hiding a slider restarted the physics.
+   *
+   * The return value is not a boolean on purpose. "The toggle took effect" and "the toggle took
+   * effect by restarting the section" are exactly the two outcomes this finding is about telling
+   * apart, and the caller — plus telemetry — gets to see which one happened.
+   *
+   * A patch that omits a field leaves it alone. `hideSelectors: null` is a real value meaning "no
+   * mechanical hide set", and is NOT the same as `[]` on the restart path (see simPolicy.ts).
+   */
+  setPolicy(patch: Partial<SimSectionPolicy>): SimPolicyOutcome {
+    if (this.disposed || !this.frame) return 'no-activation';
+    const base = this.livePolicy;
+    // Nothing is running: there is no activation to police, and inventing one here would race the
+    // owner's own activation logic (which knows about run/stop chrome, epochs and leases).
+    if (!base || (!this.modernActive() && this.state.currentScript === null)) return 'no-activation';
+
+    const next = mergePolicy(base, patch);
+    const uiChanged = !sameUiPolicy(base, next);
+    const autoChanged = !sameAutomationPolicy(base, next);
+    if (!uiChanged && !autoChanged) return 'unchanged';   // idempotent re-post costs nothing
+
+    const supported = this.policySupport();
+    const needed: SimPolicyKind[] = [
+      ...(uiChanged ? (['ui'] as const) : []),
+      ...(autoChanged ? (['automation'] as const) : []),
+    ];
+    const missing = needed.filter((k) => !supported.includes(k));
+    if (missing.length > 0) {
+      // AN OLD PACKAGE. Its bridge predates the handlers, so the message would land on nothing at
+      // all. Restart, and name the reason — a silent fallback here is indistinguishable from the
+      // policy path quietly never having worked.
+      this.tel('policy-unsupported', { missing, needed, advertised: supported });
+      this.livePolicy = next;
+      this.reactivateForPolicy('unsupported');
+      return 'reactivated';
+    }
+
+    this.livePolicy = next;
+    if (this.modernActive() && this.actMachine) {
+      const identity = this.actMachine.identity;
+      if (uiChanged) {
+        this.transport?.send(SET_UI_POLICY, identity, {
+          simpleUi: next.simpleUi,
+          hideSelectors: normalizeHideSelectors(next.hideSelectors),
+        });
+      }
+      if (autoChanged) {
+        this.transport?.send(SET_AUTOMATION_POLICY, identity, { autoScript: next.autoScript });
+      }
+    } else {
+      // The v2 activation token IS the activation identity here — deliberately not a second,
+      // parallel one. The bridge refuses a policy carrying a token it was not started with.
+      const token = this.state.activationToken;
+      if (uiChanged) {
+        this.post({
+          type: UI_POLICY,
+          simpleUi: next.simpleUi,
+          hideSelectors: normalizeHideSelectors(next.hideSelectors),
+          token,
+        });
+      }
+      if (autoChanged) this.post({ type: AUTO_POLICY, autoScript: next.autoScript, token });
+    }
+    this.tel('policy-sent', { ui: uiChanged, automation: autoChanged, modern: this.modernActive() });
+    return 'policy';
+  }
+
+  /** Policy families the LOADED document has actually advertised. Never assumed. */
+  private policySupport(): SimPolicyKind[] {
+    // On the modern path the child answers in DOCUMENT_READY; on v2 it answers in SIM_READY. Both
+    // land in the same field, so there is one rule rather than two that can drift.
+    return this.state.policies ?? [];
+  }
+
+  /**
+   * The fallback every refusal ends in: re-run the section with the new policy folded into its
+   * params. This DOES reset the section — that is what makes it a fallback and not a fix — so it
+   * is always accompanied by telemetry naming the package's reason.
+   */
+  private reactivateForPolicy(reason: string): void {
+    const prior = this.lastActivate;
+    const policy = this.livePolicy;
+    if (!prior || !policy) {
+      this.tel('policy-fallback-impossible', { reason });
+      return;
+    }
+    this.tel('policy-fallback-restart', { reason, script: prior.script });
+    // `paramsForPolicy` REPLACES rather than merges: it is total over SimStartParams, and merging
+    // would let the prior activation's `hideSelectors` survive a policy that deliberately has none.
+    this.activate({
+      ...prior,
+      params: paramsForPolicy(policy),
+      ...(prior.config ? { config: withSectionPolicy(prior.config, policy) } : {}),
+    });
+  }
+
   /** Stop automation WITHOUT tearing the section down (the user grabbed a control). */
   pauseAutomation(): void {
     this.post({ type: PAUSE_SCRIPT });
@@ -1594,6 +1834,9 @@ export class SimRuntimeClient {
   stopNow(): void {
     this.cancelDeferredStop();
     this.post({ type: STOP_SCRIPT });
+    // The section is gone, so there is no live policy to compare against. Leaving the old one here
+    // would make the next setPolicy() report `unchanged` for a section that is not running.
+    this.livePolicy = null;
     this.set({ currentScript: null, stopped: true });
   }
 

@@ -636,12 +636,31 @@ export function SectionEditor({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [simState.ready]);
 
-  // Live-apply toggle flips to a RUNNING preview. Toggles are runtime params (planVersion 5+),
-  // so no regeneration or reload is needed — but without this, flipping a toggle changed nothing
-  // on screen until the next Generate/Run click. (sim-preview fix)
+  // Live-apply toggle flips to a RUNNING preview.
+  //
+  // (P1.2) POLICY, NOT ACTIVATION. This used to call runPreview(), i.e. a full activation: on v2
+  // that falls through the bridge's stopScript (cleanup runs, every tracked timer dies, the body
+  // re-runs) and on v3 it mints a new configHash, which IS a new activation by construction.
+  // Either way, hiding a slider reset the physics and threw away wherever the demonstration had
+  // got to. setPolicy moves the chrome and the automation and touches nothing else.
+  //
+  // The fallback is the runtime's, not ours: a package whose bridge predates the policy handlers
+  // (every package published before this) is re-activated by setPolicy itself, which reports the
+  // reason. 'no-activation' is the one case this surface must handle — the preview chrome says it
+  // is running but the runtime has no live section, so a real activation is what is wanted.
   useEffect(() => {
     if (!previewRunning) return;
-    runPreview();
+    const outcome = simRuntime.setPolicy({
+      simpleUi,
+      autoScript,
+      // The deliberate difference from the picker effect below, PRESERVED: `null` here means "no
+      // mechanical hide set", which on the restart path leaves the body's own generated hide logic
+      // to decide. The picker sends `[]`, which is the stronger "the user re-checked everything".
+      // On the policy path the two are equivalent (the body is not re-run, so it never sees the
+      // value) — but the fallback restart does re-run it, and there the distinction is real.
+      hideSelectors: effectiveHideSelectors,
+    });
+    if (outcome === 'no-activation') runPreview();
   // Only re-fire on toggle changes — previewRunning/sim_script/hideSelectors are read fresh but
   // must not retrigger here (the debounced picker effect below owns hide-selection changes).
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -678,14 +697,27 @@ export function SectionEditor({
         previewRunning: live.previewRunning,
         simpleUi: live.simpleUi,
       })) return;
-      // hideSelectors is ALWAYS sent here (unlike livePreviewParams): an empty array is the
-      // meaningful "clear every hide" instruction when the user re-checks every control.
-      const params: SimStartScriptParams = {
+      // hideSelectors is ALWAYS an array here (unlike the toggle effect above): an empty array is
+      // the meaningful "clear every hide" instruction when the user re-checks every control.
+      //
+      // (P1.2) A hide-selection change is pure chrome, so it goes as POLICY. It used to re-activate
+      // — the picker's whole purpose is to let the author watch hides apply and clear while the
+      // demonstration runs, and re-running the body every 150ms debounce is precisely what stopped
+      // that from being watchable. setPolicy owns the restart fallback for packages that cannot
+      // take it; 'no-activation' is the only outcome this surface has to answer for itself.
+      const outcome = simRuntime.setPolicy({
         simpleUi: live.simpleUi,
         autoScript: live.autoScript,
         hideSelectors: live.effectiveHideSelectors ?? [],
-      };
-      simRuntime.activate({ script: live.previewScript, params });
+      });
+      if (outcome === 'no-activation') {
+        const params: SimStartScriptParams = {
+          simpleUi: live.simpleUi,
+          autoScript: live.autoScript,
+          hideSelectors: live.effectiveHideSelectors ?? [],
+        };
+        simRuntime.activate({ script: live.previewScript, params });
+      }
     }, 150);
     return () => window.clearTimeout(timer);
   // Re-fire only when the picks change — a picker change while running re-applies once, 150ms

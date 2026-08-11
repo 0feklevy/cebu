@@ -33,7 +33,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { SimRuntimeClient, type SimRuntimeState } from '../lib/sim/SimRuntimeClient';
-import { SIM_PAINTED, SIM_READY, START_SCRIPT, SIM_MUTE, SIM_PAUSE } from '../lib/sim/protocol';
+import { SIM_EXIT_STOP_MS, SIM_PAINTED, SIM_READY, START_SCRIPT, SIM_MUTE, SIM_PAUSE } from '../lib/sim/protocol';
 import {
   ACTIVATE_SECTION,
   CONTEXT_LOST,
@@ -47,6 +47,8 @@ import {
   RELEASE_SECTION,
   SECTION_APPLIED,
   SECTION_PRESENTED,
+  SET_AUTOMATION_POLICY,
+  SET_UI_POLICY,
   SIM_BOOTSTRAP_ACCEPT_KIND,
   SIM_BOOTSTRAP_TIMEOUT_MS,
   SIM_PROTOCOL_VERSION,
@@ -62,6 +64,7 @@ import {
   computeConfigHash,
   type SimPresentationConfig,
 } from 'shared/src/sim/simIdentity';
+import type { SimPolicyKind } from 'shared/src/sim/simPolicy';
 import {
   PACKAGE_CLASS_ORDER,
   SIM_BREAKER_THRESHOLD,
@@ -119,6 +122,12 @@ interface ChildOptions {
   omitFrames?: boolean;
   /** Lie about one identity axis in the automatic SECTION_PRESENTED. */
   distort?: Distortion;
+  /**
+   * (P1.2) The policy families this document's DOCUMENT_READY advertises. Omitted by default,
+   * which is precisely what a package published before the policy handlers sends — so every test
+   * that does not opt in is exercising the un-advertised case.
+   */
+  policies?: SimPolicyKind[];
 }
 
 interface DocIdent {
@@ -151,7 +160,8 @@ class FakeChild {
   port: MessagePort | null = null;
   ident: DocIdent | null = null;
   private outSeq = 0;
-  private opts: Required<Omit<ChildOptions, 'distort'>> & { distort: Distortion | null };
+  private opts: Required<Omit<ChildOptions, 'distort' | 'policies'>>
+    & { distort: Distortion | null; policies: SimPolicyKind[] | null };
   private readonly unadopted: MessagePort[] = [];
 
   constructor(src: string, opts: ChildOptions = {}) {
@@ -164,6 +174,7 @@ class FakeChild {
       frames: opts.frames ?? 1,
       omitFrames: opts.omitFrames ?? false,
       distort: opts.distort ?? null,
+      policies: opts.policies ?? null,
     };
     this.contentWindow = {
       postMessage: (msg, targetOrigin, transfer) => this.onPost(msg, targetOrigin, transfer),
@@ -257,8 +268,15 @@ class FakeChild {
     return env;
   }
 
-  documentReady(variants: string[] = ['A', 'B'], capabilities: SimRuntimeCapabilities = FULL_CAPABILITIES): void {
-    this.send(DOCUMENT_READY, {}, { capabilities, variants });
+  documentReady(
+    variants: string[] = ['A', 'B'],
+    capabilities: SimRuntimeCapabilities = FULL_CAPABILITIES,
+    policies: SimPolicyKind[] | null = this.opts.policies,
+  ): void {
+    // `policies` is ABSENT unless the fixture opted in — never `[]`. The parent has to be able to
+    // tell "this package predates the protocol" from "this package answered and declined", and an
+    // always-present empty array would erase that distinction at the source.
+    this.send(DOCUMENT_READY, {}, { capabilities, variants, ...(policies ? { policies } : {}) });
   }
 
   sectionApplied(prepare: AnySimEnvelope): void {
@@ -1648,5 +1666,186 @@ describe('transition measurement', () => {
     expect(c.getState().visible).toBe(true);
     expect(child.types()).toEqual([INIT_DOCUMENT, PREPARE_SECTION, PRESENT_SECTION, ACTIVATE_SECTION]);
     expect(countTel(tel, 'reveal')).toBe(1);
+  });
+});
+
+// ══ SECTION POLICY ON THE v3 PATH (audit P1.2) ═══════════════════════════════════════════════
+//
+// On v3 a presentation change was structural BY CONSTRUCTION: UI policy lives in
+// `PrepareSectionPayload.config`, `configHash` is an axis of activation identity, and `onPrepare`
+// opens with `releaseCurrent('superseded')`. So flipping "Minimal UI" released the scope, ran the
+// body's cleanup and re-ran the body — a full solver reset for a chrome change.
+//
+// SET_UI_POLICY / SET_AUTOMATION_POLICY are the two activation-scoped commands that deliberately
+// leave the activation where they found it. What is pinned HERE is the parent half: that the
+// command is sent with the live activation's five-axis identity, that it is only sent to a
+// document that advertised it, and that a refusal ends in a re-activation nobody has to infer.
+//
+// WHAT THIS BLOCK DOES NOT PROVE. Nothing here runs a section body — the child is a stand-in. That
+// a SET_UI_POLICY does not re-run the body is a property of the child RUNTIME, proven against the
+// emitted bytes in backend-api/src/scripts/__tests__/v3FixtureParity.test.ts.
+
+/** Bring a modern document to a section that has been prepared, presented and activated. */
+async function bootActivated(opts: BootOptions = {}): Promise<Harness & { config: SimPresentationConfig }> {
+  const h = await boot(opts);
+  const config = configFor();
+  h.c.activate({ script: 'A', config });
+  await flush();
+  return { ...h, config };
+}
+
+const POLICY_BOTH: SimPolicyKind[] = ['ui', 'automation'];
+
+/** The identity axes an activation-scoped command must carry, read off an envelope. */
+const axesOf = (env: AnySimEnvelope) => ({
+  activationId: env.activationId,
+  variantKey: env.variantKey,
+  configHash: env.configHash,
+  packageRevision: env.packageRevision,
+  documentId: env.documentId,
+});
+
+describe('setPolicy on the modern path — an activation-scoped command, not a new activation', () => {
+  it('sends SET_UI_POLICY with the LIVE activation identity, and prepares nothing', async () => {
+    const { c, child } = await bootActivated({ child: { policies: POLICY_BOTH } });
+    const prepare = child.last(PREPARE_SECTION);
+    const before = child.types().length;
+
+    expect(c.setPolicy({ simpleUi: true, hideSelectors: ['.controls'] })).toBe('policy');
+    await flush();
+
+    const policy = child.last(SET_UI_POLICY);
+    expect(policy.payload).toEqual({ simpleUi: true, hideSelectors: ['.controls'] });
+    // THE IDENTITY IS THE POINT. A policy that named a different activation would be applied to
+    // whatever is on screen when it lands — the wrong-section defect the whole identity model
+    // exists to close, arriving through a message that is not a lifecycle event.
+    expect(axesOf(policy)).toEqual(axesOf(prepare));
+
+    // …and nothing was re-prepared. On this path that is the entire finding: a second
+    // PREPARE_SECTION IS the release-and-re-run.
+    expect(child.types().slice(before), 'a chrome change produced lifecycle traffic').toEqual([SET_UI_POLICY]);
+    expect(child.types().filter((t) => t === PREPARE_SECTION)).toHaveLength(1);
+    expect(child.types().filter((t) => t === RELEASE_SECTION)).toHaveLength(0);
+  });
+
+  it('sends SET_AUTOMATION_POLICY for an automation change, and only that', async () => {
+    const { c, child } = await bootActivated({ child: { policies: POLICY_BOTH } });
+    const before = child.types().length;
+    expect(c.setPolicy({ autoScript: false })).toBe('policy');
+    await flush();
+    expect(child.types().slice(before)).toEqual([SET_AUTOMATION_POLICY]);
+    expect(child.last(SET_AUTOMATION_POLICY).payload).toEqual({ autoScript: false });
+  });
+
+  it('the hide set on the wire is ALWAYS an array — the null/[] distinction stops here', async () => {
+    // `SetUiPolicyPayload.hideSelectors` drives only the mechanical `#__simHideUi` style; the body
+    // is never re-run, so it never sees the value and the distinction has nothing to mean.
+    const { c, child } = await bootActivated({ child: { policies: POLICY_BOTH } });
+    c.setPolicy({ simpleUi: true, hideSelectors: null });
+    await flush();
+    expect((child.last(SET_UI_POLICY).payload as { hideSelectors: unknown }).hideSelectors).toEqual([]);
+  });
+
+  it('an un-advertising document is re-activated instead — the honest fallback', async () => {
+    // The default fixture sends DOCUMENT_READY with no `policies` field: exactly what a package
+    // published before the child gained the handlers sends.
+    const { c, child, tel } = await bootActivated();
+    expect(c.getState().policies, 'absence must read as "no support"').toEqual([]);
+    const prepares = child.types().filter((t) => t === PREPARE_SECTION).length;
+
+    expect(c.setPolicy({ simpleUi: true })).toBe('reactivated');
+    await flush();
+
+    expect(child.types(), 'a policy was sent to a child that never advertised one')
+      .not.toContain(SET_UI_POLICY);
+    expect(child.types().filter((t) => t === PREPARE_SECTION).length,
+      'the fallback did not actually re-activate').toBe(prepares + 1);
+    expect(events(tel)).toContain('policy-unsupported');
+    expect(lastTel(tel, 'policy-fallback-restart')!.detail).toMatchObject({ reason: 'unsupported' });
+  });
+
+  it('the fallback re-activation carries the new policy in its CONFIG, so the hash follows', async () => {
+    // On v3 the config is the activation's identity. A fallback that re-prepared with the OLD
+    // config would restart the section and still not apply the toggle — the worst of both.
+    const { c, child } = await bootActivated();
+    c.setPolicy({ simpleUi: true, hideSelectors: ['.x'] });
+    await flush();
+
+    const prepared = child.last(PREPARE_SECTION).payload as { config: SimPresentationConfig };
+    expect(prepared.config.simpleUi).toBe(true);
+    expect(prepared.config.hideSelectors).toEqual(['.x']);
+    expect(child.last(PREPARE_SECTION).configHash,
+      'the identity did not move with the config it describes')
+      .toBe(computeConfigHash(prepared.config));
+  });
+
+  it('POLICY_APPLIED is reported and changes nothing', async () => {
+    const { c, child, tel } = await bootActivated({ child: { policies: POLICY_BOTH } });
+    c.setPolicy({ simpleUi: true });
+    await flush();
+    const before = child.types().length;
+
+    child.send('POLICY_APPLIED', identityOf(child.last(SET_UI_POLICY)), {
+      kind: 'ui', changed: true, bodyHook: false,
+    });
+    await flush();
+
+    expect(lastTel(tel, 'policy-applied')!.detail).toMatchObject({ kind: 'ui', changed: true, bodyHook: false, modern: true });
+    expect(child.types().length, 'an applied policy produced further traffic').toBe(before);
+  });
+
+  it('POLICY_REFUSED re-activates, and names the package’s reason', async () => {
+    const { c, child, tel } = await bootActivated({ child: { policies: POLICY_BOTH } });
+    c.setPolicy({ autoScript: false });
+    await flush();
+    const prepares = child.types().filter((t) => t === PREPARE_SECTION).length;
+
+    child.send('POLICY_REFUSED', identityOf(child.last(SET_AUTOMATION_POLICY)), {
+      kind: 'automation', reason: 'never-started', requiresRestart: true,
+    });
+    await flush();
+
+    expect(lastTel(tel, 'policy-refused')!.detail).toMatchObject({ kind: 'automation', reason: 'never-started', modern: true });
+    expect(child.types().filter((t) => t === PREPARE_SECTION).length,
+      'a refusal did not fall back to a re-activation').toBe(prepares + 1);
+  });
+
+  it('a POLICY_REFUSED for a SUPERSEDED activation cannot tear down the live one', async () => {
+    // The refusal's own identity is checked before it is acted on. Acting on a stale one would
+    // evict the section that superseded it — a re-activation caused by a message about a section
+    // that is already gone.
+    const { c, child, tel } = await bootActivated({ child: { policies: POLICY_BOTH } });
+    c.setPolicy({ simpleUi: true });
+    await flush();
+    const stalePolicy = child.last(SET_UI_POLICY);
+
+    c.activate({ script: 'B', config: configFor() });
+    await flush();
+    const prepares = child.types().filter((t) => t === PREPARE_SECTION).length;
+
+    child.send('POLICY_REFUSED', identityOf(stalePolicy), {
+      kind: 'ui', reason: 'unsupported', requiresRestart: true,
+    });
+    await flush();
+
+    expect(child.types().filter((t) => t === PREPARE_SECTION).length,
+      'a stale refusal re-activated the live section').toBe(prepares);
+    expect(events(tel)).toContain('policy-stale-result-ignored');
+  });
+
+  it('an identical re-post sends nothing, and a release leaves nothing to police', async () => {
+    const { c, child } = await bootActivated({ child: { policies: POLICY_BOTH } });
+    c.setPolicy({ simpleUi: true, hideSelectors: ['.a'] });
+    await flush();
+    const after = child.types().length;
+
+    expect(c.setPolicy({ simpleUi: true, hideSelectors: ['.a'] })).toBe('unchanged');
+    await flush();
+    expect(child.types().length, 'an unchanged policy cost a message').toBe(after);
+
+    c.deactivate();
+    vi.advanceTimersByTime(SIM_EXIT_STOP_MS + 10);
+    await flush();
+    expect(c.setPolicy({ simpleUi: false }), 'policed a released activation').toBe('no-activation');
   });
 });
