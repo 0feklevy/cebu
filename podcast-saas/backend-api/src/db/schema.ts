@@ -301,6 +301,7 @@ export const admin_settings = pgTable('admin_settings', {
   sim_scheduler_mode: text('sim_scheduler_mode').default('off').notNull(),
   sim_adaptive_quality: boolean('sim_adaptive_quality').default(false).notNull(),
   sim_boundary_sentinel: boolean('sim_boundary_sentinel').default(false).notNull(),
+  sim_transition_coordinator: boolean('sim_transition_coordinator').default(false).notNull(),
   updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 

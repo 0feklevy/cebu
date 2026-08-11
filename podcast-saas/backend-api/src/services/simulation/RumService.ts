@@ -347,11 +347,17 @@ export interface SimRuntimeFlags {
   schedulerMode: 'off' | 'predictive';
   adaptiveQuality: boolean;
   boundarySentinel: boolean;
+  /**
+   * The frame-valid transition coordinator (migration 054, audit P0.1). It becomes the presentation
+   * authority for the simulation→video handoff, so it carries the same posture as the three above:
+   * OFF is today's exit, and OFF is what every unreadable state resolves to.
+   */
+  transitionCoordinator: boolean;
 }
 
 /** Every switch OFF. The value returned whenever anything is unreadable. */
 export const SIM_RUNTIME_FLAGS_OFF: SimRuntimeFlags = {
-  schedulerMode: 'off', adaptiveQuality: false, boundarySentinel: false,
+  schedulerMode: 'off', adaptiveQuality: false, boundarySentinel: false, transitionCoordinator: false,
 };
 
 /**
@@ -365,18 +371,23 @@ export async function resolveSimRuntimeFlags(): Promise<SimRuntimeFlags> {
   const envMode = (process.env.SIM_SCHEDULER_MODE ?? '').trim().toLowerCase();
   const envAdaptive = (process.env.SIM_ADAPTIVE_QUALITY ?? '').trim().toLowerCase();
   const envSentinel = (process.env.SIM_BOUNDARY_SENTINEL ?? '').trim().toLowerCase();
+  const envCoordinator = (process.env.SIM_TRANSITION_COORDINATOR ?? '').trim().toLowerCase();
 
   // Declared without an initializer: both branches below assign it, so an initial `{}` is dead and
   // reads as a third possible state that does not exist.
   let fromDb: Partial<SimRuntimeFlags>;
   try {
     const s = await db.query.admin_settings.findFirst({
-      columns: { sim_scheduler_mode: true, sim_adaptive_quality: true, sim_boundary_sentinel: true },
+      columns: {
+        sim_scheduler_mode: true, sim_adaptive_quality: true, sim_boundary_sentinel: true,
+        sim_transition_coordinator: true,
+      },
     });
     fromDb = {
       schedulerMode: s?.sim_scheduler_mode === 'predictive' ? 'predictive' : 'off',
       adaptiveQuality: s?.sim_adaptive_quality === true,
       boundarySentinel: s?.sim_boundary_sentinel === true,
+      transitionCoordinator: s?.sim_transition_coordinator === true,
     };
   } catch {
     // Column not migrated yet, or a DB hiccup. Today's behaviour; never surfaced to the player.
@@ -393,6 +404,9 @@ export async function resolveSimRuntimeFlags(): Promise<SimRuntimeFlags> {
     boundarySentinel: envSentinel === '1' || envSentinel === 'true' ? true
       : envSentinel === '0' || envSentinel === 'false' ? false
       : (fromDb.boundarySentinel ?? false),
+    transitionCoordinator: envCoordinator === '1' || envCoordinator === 'true' ? true
+      : envCoordinator === '0' || envCoordinator === 'false' ? false
+      : (fromDb.transitionCoordinator ?? false),
   };
 }
 

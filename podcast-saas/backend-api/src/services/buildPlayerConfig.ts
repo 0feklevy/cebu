@@ -783,6 +783,9 @@ export async function buildPlayerConfig(
     sim_scheduler_mode: simRuntimeFlags.schedulerMode,
     sim_adaptive_quality: simRuntimeFlags.adaptiveQuality,
     sim_boundary_sentinel: simRuntimeFlags.boundarySentinel,
+    // The frame-valid transition coordinator (migration 054, audit P0.1). OFF is byte-for-byte
+    // today's simulation→video exit; the server value is authoritative and there is no URL override.
+    sim_transition_coordinator: simRuntimeFlags.transitionCoordinator,
     // Per-package preparation budgets from each package's own publish-time canary. Emitted as a map
     // rather than per section because a package's cost is a property of its BYTES, not of where it
     // happens to appear on a timeline — and one package commonly appears in many sections.

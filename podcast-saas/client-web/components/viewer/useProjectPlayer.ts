@@ -23,6 +23,21 @@ import { SimRuntimeClient } from '../../lib/sim/SimRuntimeClient';
 // what keeps this surface from drifting away from the shared runtime again. The same-document
 // apply bound is not needed here at all: the runtime owns that timer.
 import { SIM_APPLY_STALL_MS, SIM_EXIT_STOP_MS } from '../../lib/sim/protocol';
+// The transition coordinator (P0.1). The reducer is pure and lives in lib/sim/; this surface owns
+// only the wiring — which DOM events feed it, and what its effects do to the player.
+import {
+  reduce as reduceTransition,
+  INITIAL_TRANSITION_STATE,
+  isRevealed,
+  type TransitionEvent,
+  type TransitionState,
+  type AudioIntent,
+} from '../../lib/sim/transitionCoordinator';
+import {
+  armFrameEvidence,
+  supportsRequestVideoFrameCallback,
+  type FrameEvidenceProbe,
+} from '../../lib/sim/frameEvidence';
 
 // Resident sim pool tuning. Every sim in the video is mounted ONCE up front in a persistent
 // hidden iframe (SimPoolOverlay) that boots muted, paints its scene, and freezes — so entering
@@ -201,6 +216,25 @@ async function safePlay(v: HTMLVideoElement): Promise<boolean> {
   }
 }
 
+/**
+ * One simulation→video handoff, as the transition coordinator's wiring sees it.
+ *
+ * `issueSeek` and `commit` are deliberately separate closures rather than one exit function: the
+ * whole defect P0.1 fixes is that today's exit runs them in the wrong order (uncover, then seek).
+ * Splitting them lets the flag-OFF path run `commit(); issueSeek();` — byte-for-byte today — while
+ * the flag-ON path runs `issueSeek()` at T0 and holds `commit` until the frame is proven.
+ */
+interface CoordinatedExitArgs {
+  /** The outgoing package's document key, for the freeze-now / mute-later split. */
+  key: string | null;
+  requestedMediaTime: number;
+  seekRequested: boolean;
+  audioIntent: AudioIntent;
+  issueSeek: () => void;
+  /** The caller's ORIGINAL uncover + teardown body. Runs only from COMMIT_REVEAL. */
+  commit: () => void;
+}
+
 // Branching: does a postMessage from the sim match an edge's sim-trigger condition?
 // trigger_event matches the message `type`; trigger_match optionally filters {key, op, value}.
 function triggerMatches(
@@ -314,6 +348,9 @@ export function useProjectPlayer(
     config.sim_scheduler_mode === 'predictive' ? 'predictive' : 'off');
   const adaptiveQualityRef = useRef<boolean>(config.sim_adaptive_quality === true);
   const boundarySentinelRef = useRef<boolean>(config.sim_boundary_sentinel === true);
+  // P0.1. Read ONCE into a ref, like the three switches above: the server value is authoritative
+  // for the whole session, and a mid-session flip would leave a handoff half-owned.
+  const transitionCoordinatorRef = useRef<boolean>(config.sim_transition_coordinator === true);
   /** Per-simulation lab preparation cost, from the package's own canary. */
   const labBudgetsRef = useRef<Record<string, number>>(config.sim_lab_budget_ms ?? {});
   const prepareBudgetsRef = useRef<Record<string, number>>(config.sim_prepare_budget_ms ?? {});
@@ -1062,6 +1099,292 @@ export function useProjectPlayer(
     runtimeFor(key).startPaintRecovery({ legacyCeilingMs: SIM_PAINT_POLL_MAX_MS });
   };
 
+  // ── The transition coordinator (P0.1) ──────────────────────────────────────
+  //
+  // WHAT THIS CHANGES. Today's simulation→video exit freezes and MUTES the package, clears
+  // `showSimOverlay`, and only THEN assigns `currentTime` and calls `play()` — so the cover drops
+  // before the seek is even issued and the compositor shows whatever was last in that element.
+  // Under the flag, the outgoing (frozen, still-audible) package IS the cover, and it is held
+  // until a frame callback proves the requested frame reached the compositor at the requested
+  // media time. The decision lives in the pure reducer; this block is only the wiring.
+  //
+  // FLAG OFF IS BYTE-FOR-BYTE TODAY. Every call site below asks `beginCoordinatedExit(...)`
+  // whether the coordinator took ownership; when it returns false the caller runs exactly the
+  // statements, in exactly the order, it ran before this existed.
+  //
+  // A DEADLINE NEVER UNCOVERS (audit §21 rule 7). The only effect that drops the cover is
+  // COMMIT_REVEAL, which the reducer emits from `PARENT_PAINT` and only out of `VideoSubmitted`.
+
+  /** Bound on a whole handoff. Selects a cover and a retry — never a reveal. */
+  const TRANSITION_DEADLINE_MS = 4_000;
+  /** Bound before rVFC silence is reported, unlocking the LABELLED lower-confidence fallback. */
+  const TRANSITION_NON_ARRIVAL_MS = 400;
+  /**
+   * Automatic attempts at the SAME handoff after a covered failure, before the player stops
+   * retrying and leaves the (still covered) recovery control to the viewer. Re-issuing the seek is
+   * the audit's `CoveredFailure → VideoRequested` edge; it is a recovery, not a reveal, so a
+   * handoff that never succeeds simply stays covered.
+   */
+  const TRANSITION_MAX_RETRIES = 3;
+  const TRANSITION_RETRY_DELAY_MS = 250;
+
+  const transitionRef = useRef<TransitionState>(INITIAL_TRANSITION_STATE);
+  const handoffGenRef = useRef(0);
+  const handoffActiveRef = useRef(false);
+  const evidenceProbeRef = useRef<FrameEvidenceProbe | null>(null);
+  const handoffDeadlineRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handoffFadeRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** The caller's own uncover + teardown body. Run ONLY from COMMIT_REVEAL. */
+  const handoffCommitRef = useRef<(() => void) | null>(null);
+  /** Release the outgoing package's gain. Run ONLY from the audio channel, never from pixels. */
+  const handoffAudioRef = useRef<(() => void) | null>(null);
+  const handoffCleanupRef = useRef<(() => void) | null>(null);
+  const handoffCoverRef = useRef<string>('');
+  /** The current handoff's own arguments, so a retry replays THIS handoff, not a recomputed one. */
+  const handoffArgsRef = useRef<CoordinatedExitArgs | null>(null);
+  const handoffAttemptsRef = useRef(0);
+  const handoffRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * True only while `issueSeek` is running. The exit's own seek can go through `loadSegment`, and
+   * `loadSegment` cancels handoffs — without this the handoff would cancel itself the instant it
+   * started, on exactly the cross-segment return the coordinator matters most for.
+   */
+  const handoffIssuingRef = useRef(false);
+  /** Set by the definition below; used by `resumeFromSim`, which is declared much later. */
+  const retryCoordinatedExitRef = useRef<() => boolean>(() => false);
+
+  /** Drop every in-flight observer for the current handoff. Does NOT touch what is on screen. */
+  const endHandoff = () => {
+    evidenceProbeRef.current?.cancel();
+    evidenceProbeRef.current = null;
+    if (handoffDeadlineRef.current) { clearTimeout(handoffDeadlineRef.current); handoffDeadlineRef.current = null; }
+    if (handoffFadeRef.current) { clearTimeout(handoffFadeRef.current); handoffFadeRef.current = null; }
+    if (handoffRetryRef.current) { clearTimeout(handoffRetryRef.current); handoffRetryRef.current = null; }
+    handoffCleanupRef.current?.();
+    handoffCleanupRef.current = null;
+    handoffActiveRef.current = false;
+  };
+
+  const dispatchTransition = (event: TransitionEvent): void => {
+    const before = transitionRef.current.phase;
+    const { state: next, effects } = reduceTransition(transitionRef.current, event);
+    transitionRef.current = next;
+
+    for (const effect of effects) {
+      switch (effect.type) {
+        case 'ARM_FRAME_EVIDENCE': {
+          const v = videoRef.current;
+          if (!v || effect.generation !== handoffGenRef.current) break;
+          evidenceProbeRef.current?.cancel();
+          evidenceProbeRef.current = armFrameEvidence({
+            video: v,
+            generation: effect.generation,
+            nonArrivalMs: TRANSITION_NON_ARRIVAL_MS,
+            onFrame: (f) => dispatchTransition({ type: 'FRAME_PRESENTED', ...f }),
+            onVisibleFrame: (generation) => dispatchTransition({ type: 'VISIBLE_FRAME', generation }),
+            onNonArrival: (generation) => dispatchTransition({ type: 'RVFC_NON_ARRIVAL', generation }),
+          });
+          break;
+        }
+        case 'CANCEL_FRAME_EVIDENCE':
+          evidenceProbeRef.current?.cancel();
+          evidenceProbeRef.current = null;
+          break;
+        case 'RELEASE_OUTGOING_AUDIO':
+          // The ONE place the outgoing package is silenced under the coordinator, and it is
+          // reached only from AUDIO_INCOMING_AUDIBLE — never from frame evidence.
+          handoffAudioRef.current?.();
+          handoffAudioRef.current = null;
+          break;
+        case 'COMMIT_REVEAL': {
+          const commit = handoffCommitRef.current;
+          handoffCommitRef.current = null;
+          const gen = effect.generation;
+          endHandoff();
+          // A handoff that reveals without ever releasing the outgoing gain would leave the
+          // package audible under the video. Pixels do not authorise the switch, but a completed
+          // handoff does close it.
+          handoffAudioRef.current?.();
+          handoffAudioRef.current = null;
+          commit?.();
+          handoffFadeRef.current = setTimeout(() => {
+            handoffFadeRef.current = null;
+            dispatchTransition({ type: 'FADE_COMPLETE', generation: gen });
+          }, SIM_EXIT_STOP_MS);
+          break;
+        }
+        case 'HOLD_COVER': {
+          // Diagnostics only — the cover is held by NOT committing, so there is nothing to apply.
+          // Deduplicated because the reducer re-derives it on every phase change.
+          const sig = `${effect.cover}:${effect.reason}`;
+          if (sig !== handoffCoverRef.current) {
+            handoffCoverRef.current = sig;
+            simTelemetry('transition-cover', { cover: effect.cover, reason: effect.reason });
+          }
+          break;
+        }
+        case 'TELEMETRY':
+          simTelemetry(effect.event, effect.detail);
+          break;
+      }
+    }
+
+    // The cross-fade may begin only on a PARENT PAINT after evidence (audit §4.3). Scheduling it
+    // here — rather than inside the reducer — keeps the reducer free of any clock.
+    if (before !== 'VideoSubmitted' && next.phase === 'VideoSubmitted') {
+      const gen = next.generation;
+      const paint = () => dispatchTransition({ type: 'PARENT_PAINT', generation: gen });
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => paint());
+      else setTimeout(paint, 0);
+    }
+
+    // A covered failure is a RECOVERY state, and a recovery the viewer cannot leave is a wedge.
+    // Two ways out, neither of which uncovers: bounded automatic replays of the same handoff, and
+    // the player's existing back-to-video control, which `resumeFromSim` routes into the same
+    // replay rather than into a fresh (and, mid-roll, wrongly-targeted) exit.
+    if (before !== 'CoveredFailure' && next.phase === 'CoveredFailure') {
+      resumeActionRef.current = 'backToVideo';
+      merge({ showResumeBtn: true, resumeAction: 'backToVideo', controlsVisible: true });
+      if (handoffAttemptsRef.current < TRANSITION_MAX_RETRIES) {
+        handoffRetryRef.current = setTimeout(() => {
+          handoffRetryRef.current = null;
+          retryCoordinatedExitRef.current();
+        }, TRANSITION_RETRY_DELAY_MS);
+      }
+    }
+  };
+
+  /**
+   * Hand an exit-to-video's COVER DROP and AUDIO RELEASE to the coordinator.
+   *
+   * Returns false when the coordinator is off or unusable — the caller must then do exactly what
+   * it did before. Returns true when it took ownership, in which case `commit` runs later, from
+   * COMMIT_REVEAL, or never (a covered failure that the caller's own control can retry).
+   */
+  const beginCoordinatedExit = (args: CoordinatedExitArgs, isRetry = false): boolean => {
+    const v = videoRef.current;
+    if (!transitionCoordinatorRef.current || !v) return false;
+
+    if (handoffActiveRef.current) {
+      // Already owned. A second exit request during the same handoff (the tick's own
+      // `updateSimOverlay` → `deactivateSim` runs while the seek is in flight) must NOT restart it
+      // and must NOT uncover — that is the whole point of returning true here.
+      if (!isRevealed(transitionRef.current.phase) && transitionRef.current.phase !== 'CoveredFailure') return true;
+      // A covered failure IS retryable, and the control that reaches this is the same "go back to
+      // video" button the viewer is already looking at (audit §4.3, CoveredFailure → VideoRequested).
+      endHandoff();
+    }
+
+    const gen = ++handoffGenRef.current;
+    const key = args.key;
+    handoffActiveRef.current = true;
+    handoffCoverRef.current = '';   // a new handoff's first cover is news, even if it looks the same
+    handoffArgsRef.current = args;
+    handoffAttemptsRef.current = isRetry ? handoffAttemptsRef.current + 1 : 0;
+    handoffCommitRef.current = args.commit;
+    handoffAudioRef.current = key
+      ? () => { try { runtimeFor(key).mute(); } catch { /* frame detached */ } }
+      : null;
+
+    // T0. Freeze the outgoing scene — that preserves the last VALID frame, which is the cover —
+    // but do NOT mute it. Muting is the audio channel's decision and it waits for the incoming
+    // media to be audible. This is the split `SimRuntimeClient.deactivate()` cannot express,
+    // because it freezes and silences together; the full deactivate still runs, inside `commit`.
+    if (key) { try { runtimeFor(key).freeze(); } catch { /* frame detached */ } }
+
+    const onSeeked = () => dispatchTransition({ type: 'MEDIA_READY', generation: gen, readyState: v.readyState, seeked: true });
+    const onData   = () => dispatchTransition({ type: 'MEDIA_READY', generation: gen, readyState: v.readyState, seeked: false });
+    const onPlaying = () => dispatchTransition({ type: 'AUDIO_INCOMING_AUDIBLE', generation: gen });
+    const onError = () => dispatchTransition({ type: 'FATAL', generation: gen, reason: 'fatal-media-error' });
+    const onVisibility = () => dispatchTransition({ type: 'VISIBILITY', visible: document.visibilityState !== 'hidden' });
+    v.addEventListener('seeked', onSeeked);
+    v.addEventListener('loadeddata', onData);
+    v.addEventListener('canplay', onData);
+    v.addEventListener('playing', onPlaying);
+    v.addEventListener('error', onError);
+    document.addEventListener('visibilitychange', onVisibility);
+    handoffCleanupRef.current = () => {
+      v.removeEventListener('seeked', onSeeked);
+      v.removeEventListener('loadeddata', onData);
+      v.removeEventListener('canplay', onData);
+      v.removeEventListener('playing', onPlaying);
+      v.removeEventListener('error', onError);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+
+    dispatchTransition({
+      type: 'EXIT_REQUESTED',
+      generation: gen,
+      incomingId: timelineRef.current[curIdxRef.current]?.id ?? null,
+      requestedMediaTime: args.requestedMediaTime,
+      seekRequested: args.seekRequested,
+      audioIntent: args.audioIntent,
+      // The video element retains its last decoded frame, and the frozen package is still
+      // composited — so on this path there IS valid outgoing content, which is what the cover holds.
+      outgoing: { kind: 'sim', valid: true },
+      poster: { available: false, loaded: false },
+      rvfcAvailable: supportsRequestVideoFrameCallback(v),
+      pageVisible: typeof document === 'undefined' || document.visibilityState !== 'hidden',
+      deadlineAt: Date.now() + TRANSITION_DEADLINE_MS,
+    });
+
+    // The seek is issued BEFORE the callback is registered, which is the ordering rVFC requires:
+    // a callback armed against the pre-seek source reports the frame we are trying to replace.
+    handoffIssuingRef.current = true;
+    try { args.issueSeek(); } finally { handoffIssuingRef.current = false; }
+    dispatchTransition({ type: 'SOURCE_ISSUED', generation: gen });
+    // Seed readiness from the element as it stands: a mid-roll exit never fires another media
+    // event, because playback never stopped.
+    dispatchTransition({ type: 'MEDIA_READY', generation: gen, readyState: v.readyState, seeked: false });
+
+    handoffDeadlineRef.current = setTimeout(() => {
+      handoffDeadlineRef.current = null;
+      dispatchTransition({ type: 'DEADLINE', generation: gen, atMs: Date.now() });
+    }, TRANSITION_DEADLINE_MS);
+    return true;
+  };
+
+  /**
+   * Replay the CURRENT handoff after a covered failure — the same target, the same commit.
+   *
+   * Replaying rather than recomputing matters on the automatic (mid-roll) exit: that handoff's
+   * target is the position the video was already playing, which nothing outside this closure
+   * records. Recomputing it from `simReturnGlobalSecRef` — the only stored return point, and one
+   * that is written for post-roll sections only — would seek somewhere else entirely.
+   */
+  const retryCoordinatedExit = (): boolean => {
+    const args = handoffArgsRef.current;
+    if (!args || !handoffActiveRef.current) return false;
+    if (transitionRef.current.phase !== 'CoveredFailure') return false;
+    return beginCoordinatedExit(args, true);
+  };
+  retryCoordinatedExitRef.current = retryCoordinatedExit;
+
+  /**
+   * Abandon a handoff (re-entry, unmount, an explicit navigation elsewhere).
+   *
+   * `runPendingCommit` is NOT a reveal of the unproven frame — it is disposal of a deferred
+   * teardown whose destination no longer exists. A scrub or a segment load replaces the incoming
+   * media entirely and brings its own presentation path with it; leaving this handoff's `commit`
+   * unrun would strand the outgoing simulation on screen over content it has nothing to do with.
+   * Re-entering the SAME simulation is the opposite case and must NOT run it: the overlay the
+   * commit would tear down is the one coming back.
+   */
+  const cancelCoordinatedExit = (reason: string, opts?: { runPendingCommit?: boolean }) => {
+    if (!handoffActiveRef.current) return;
+    const pending = handoffCommitRef.current;
+    endHandoff();
+    handoffCommitRef.current = null;
+    handoffArgsRef.current = null;
+    handoffAttemptsRef.current = 0;
+    simTelemetry('transition-cancel', { reason, phase: transitionRef.current.phase });
+    dispatchTransition({ type: 'CANCEL', generation: ++handoffGenRef.current });
+    // The outgoing package must not be left audible under whatever comes next.
+    handoffAudioRef.current?.();
+    handoffAudioRef.current = null;
+    if (opts?.runPendingCommit) pending?.();
+  };
+
   // ── simulation overlay (resident pool) ────────────────────────────────────
   // Deactivate the current section's pool frame — ATOMIC EXIT ORDER (audited):
   //   1. freeze (simPause) + silence (simMute) + close the guidance gate — the fade shows the
@@ -1069,7 +1392,12 @@ export function useProjectPlayer(
   //   2. start the opacity fade;
   //   3. stopScript only AFTER the fade (deferred) — it restores hidden controls/cleanup, which
   //      used to flash the full UI mid-fade. The frame STAYS mounted and painted.
-  const deactivateSim = () => {
+  //
+  // `exitToVideo` marks the ONE call that is a genuine simulation→video handoff (a section ending
+  // with video underneath). Only that call may be routed through the transition coordinator: every
+  // other caller is a segment load, a missing segment or a sim→sim change, where there is no
+  // incoming video frame to prove and holding a cover would be holding it for nothing.
+  const deactivateSim = (opts?: { exitToVideo?: boolean }) => {
     warmGenRef.current++;                    // invalidate any pending reveal
     const key = activeSimUrlRef.current;
     // An armed apply hold must never survive the section it belonged to: its terminal bound would
@@ -1078,8 +1406,22 @@ export function useProjectPlayer(
     if (key && (activeSimRef.current || showSimOverlayRef.current)) {
       // Freeze + silence + close the guidance gate NOW, tear the section down only after the
       // fade — all three, in that order, are SimRuntimeClient.deactivate().
-      runtimeFor(key).deactivate();
-      merge({ showSimOverlay: false, simBootStalled: false, simColdCover: false });
+      const uncover = () => {
+        runtimeFor(key).deactivate();
+        merge({ showSimOverlay: false, simBootStalled: false, simColdCover: false });
+      };
+      const v = videoRef.current;
+      const coordinated = opts?.exitToVideo === true && beginCoordinatedExit({
+        key,
+        // Mid-roll: the video clock never stopped, so the frame to prove is the one at the
+        // position it is already playing — and no seek is issued at all.
+        requestedMediaTime: v?.currentTime ?? 0,
+        seekRequested: false,
+        audioIntent: 'narration-continuous',
+        issueSeek: () => {},
+        commit: uncover,
+      });
+      if (!coordinated) uncover();
     }
     clearRevealTimers();
     // The layered surface describes ONE activation. Carrying any of it into the next section is how
@@ -1111,7 +1453,10 @@ export function useProjectPlayer(
 
     // Section is CHANGING — stop/hide/freeze the outgoing sim (frame stays resident).
     const hadActive = !!activeSimRef.current;
-    if (hadActive || !simSection) deactivateSim();
+    // The automatic exit: a section ended and video is what comes next. This is the second of the
+    // two paths the audit named (the explicit "back to video" button is the other), and the only
+    // `deactivateSim` call that hands its uncover to the transition coordinator.
+    if (hadActive || !simSection) deactivateSim({ exitToVideo: hadActive && !simSection });
     else warmGenRef.current++;
     activeSimRef.current = simSection;
 
@@ -1241,6 +1586,10 @@ export function useProjectPlayer(
       const legacyScript = simSection.sim_script ?? 'main';
       activeSimUrlRef.current = key;
       desiredSimRef.current = { sectionUrl, dynScript, legacyScript, params, raw: rawActivation };
+      // Re-entering a simulation abandons any exit still waiting for video evidence (a scrub back
+      // into the section, a branch). Without the generation bump its rVFC callback, deadline and
+      // media listeners would still be live and could uncover the section just entered.
+      cancelCoordinatedExit('sim-activated');
       merge({ activeSimUrl: key });
       simTelemetry('activate', { key, section: simSection.id });
 
@@ -1807,6 +2156,11 @@ export function useProjectPlayer(
     // Segment load: stop/hide/freeze the outgoing sim; its resident frame stays warm for
     // re-entry. If the new segment starts inside a sim section, finishSwap → updateSimOverlay
     // re-activates it instantly.
+    //
+    // A load that is NOT this handoff's own seek replaces the incoming media, so the handoff has
+    // nothing left to prove — abandon it and run its deferred teardown, or the outgoing simulation
+    // stays composited over the new segment.
+    if (!handoffIssuingRef.current) cancelCoordinatedExit('segment-load', { runPendingCommit: true });
     deactivateSim();
     swappingRef.current = true;
     resumeActionRef.current = 'resume';
@@ -2752,6 +3106,10 @@ export function useProjectPlayer(
       rumAtMount.current = null;
       try { sentinelAtMount.current?.cancel(); } catch { /* already gone */ }
       sentinelAtMount.current = null;
+      // A handoff holds an rVFC callback, an rAF loop, media listeners and a deadline, all closing
+      // over a video element this component is about to release. No commit on unmount: there is
+      // nothing left to uncover.
+      cancelCoordinatedExit('unmount');
       hlsRef.current?.destroy();
       hlsStandbyRef.current?.destroy();
       hlsBrollRef.current?.destroy();
@@ -2835,6 +3193,9 @@ export function useProjectPlayer(
 
       if (targetIdx === curIdxRef.current) {
         swapGenRef.current++;
+        // A scrub retargets the media the handoff was waiting on, so its evidence rule can never
+        // be satisfied and its retry would seek back to where the viewer just left.
+        cancelCoordinatedExit('scrub', { runPendingCommit: true });
         // (D5) Scrub-away resumes streaming anyway (startLoad below) — clear the sim-hold
         // flag so it stays truthful for the next stopHlsForSim.
         resumeHlsAfterSim();
@@ -3084,6 +3445,10 @@ export function useProjectPlayer(
   }, [togglePlay, startPlayback]);
 
   const resumeFromSim = useCallback(() => {
+    // A handoff that timed out is COVERED, not finished. The control the viewer just pressed is
+    // the recovery action for it, so it replays that handoff rather than starting a new one —
+    // and it can never uncover, because only COMMIT_REVEAL does that.
+    if (retryCoordinatedExitRef.current()) return;
     // (D5) Both resume paths restart playback — restore streaming if a sim-hold stopped it.
     resumeHlsAfterSim();
     if (resumeActionRef.current === 'backToVideo') {
@@ -3107,62 +3472,93 @@ export function useProjectPlayer(
       // startScript re-runs the body from its initial state — NO document reload, no network,
       // no shader recompile, and the frame stays painted for an instant re-entry. Only a
       // LEGACY (pre-v2) bridge falls back to a document reload for pristine state.
+      //
+      // Captured HERE, at T0, not read inside `commit`. Under the coordinator `commit` runs after
+      // the seek, and the seek's own `updateSimOverlay` tick has already cleared `activeSimUrlRef`
+      // by then — so reading the refs late would silently skip the pristine reload / stopScript.
       const doneKey = activeSimUrlRef.current;
       const doneFrame = doneKey ? simPoolFramesRef.current.get(doneKey) : null;
       const doneRt = doneKey ? runtimeFor(doneKey) : null;
-      if (doneKey && doneRt) {
-        const m = poolMeta(doneKey);
-        if (!doneFrame || doneRt.getState().dynamic !== true) {
-          // Freeze + silence + close the guidance gate now, but NOT the deferred stopScript:
-          // this exit is a NAVIGATION, and the reload is what restores pristine state.
-          doneRt.deactivate({ teardown: false });
-          cancelPristineReload(doneKey);
-          if (doneFrame) {
-            simTelemetry('reset-reload-legacy', { key: doneKey });
-            // Registered in the pristine-reload map rather than run as a bare timer: that map is
-            // what the window planner's mid-fade guard reads to keep a fading frame resident, and
-            // what the unmount cleanup cancels. A bare timer here was invisible to both — the
-            // planner could evict the frame mid-fade (hard cut instead of a fade) and the timer
-            // then fired against a detached iframe and an orphaned meta object (audited).
-            simPristineReloadRef.current.set(doneKey, setTimeout(() => {
-              simPristineReloadRef.current.delete(doneKey);
-              if (doneKey === activeSimUrlRef.current) return;   // re-entered during the fade
-              m.expectReload = true;
-              doneRt.handleFrameLoad();   // the document about to load has nothing applied
-              clearWarmCeil(m);
-              // Re-assigning src reloads the (cross-origin) document — location.reload() throws.
-              const src = doneFrame.src;
-              try { doneFrame.src = src; } catch { /* frame detached */ }
-            }, SIM_EXIT_STOP_MS));
-          }
-        } else {
-          simTelemetry('reset-stopscript', { key: doneKey });
-          doneRt.deactivate();
-        }
-      }
-      warmGenRef.current++;
-      clearRevealTimers();
-      awaitingPaintSimIdRef.current = null;
-      desiredSimRef.current = null;
-      pendingSimRef.current = null;
-      activeSimRef.current = null;
-      // Release the URL too: the reloading frame must be a BACKGROUND frame again, so its
-      // fresh SIM_READY takes the mute + guidance-gate + warm-budget path, not the active one.
-      activeSimUrlRef.current = null;
-      userPausedRef.current = false;
-      resumeActionRef.current = 'resume';
-      merge({ showResumeBtn: false, showSimOverlay: false, simBootStalled: false, simColdCover: false, resumeAction: 'resume', controlsVisible: true, globalTime: targetGlobal });
-      setProgress(targetGlobal);
-      updateBrollOverlay(targetGlobal); updateImageOverlay(targetGlobal);
-      updateAudioCutaway(targetGlobal, wasPlayingRef.current);
 
-      if (targetSeg && targetIdx === curIdxRef.current) {
-        videoRef.current!.currentTime = Math.min(localTime, targetSeg.duration);
-        updateSimOverlay(targetIdx, localTime);
-        safePlay(videoRef.current!);
-      } else if (targetSeg) {
-        loadSegment(targetIdx, localTime, true);
-      }
+      const commit = () => {
+        if (doneKey && doneRt) {
+          const m = poolMeta(doneKey);
+          if (!doneFrame || doneRt.getState().dynamic !== true) {
+            // Freeze + silence + close the guidance gate now, but NOT the deferred stopScript:
+            // this exit is a NAVIGATION, and the reload is what restores pristine state.
+            doneRt.deactivate({ teardown: false });
+            cancelPristineReload(doneKey);
+            if (doneFrame) {
+              simTelemetry('reset-reload-legacy', { key: doneKey });
+              // Registered in the pristine-reload map rather than run as a bare timer: that map is
+              // what the window planner's mid-fade guard reads to keep a fading frame resident, and
+              // what the unmount cleanup cancels. A bare timer here was invisible to both — the
+              // planner could evict the frame mid-fade (hard cut instead of a fade) and the timer
+              // then fired against a detached iframe and an orphaned meta object (audited).
+              simPristineReloadRef.current.set(doneKey, setTimeout(() => {
+                simPristineReloadRef.current.delete(doneKey);
+                if (doneKey === activeSimUrlRef.current) return;   // re-entered during the fade
+                m.expectReload = true;
+                doneRt.handleFrameLoad();   // the document about to load has nothing applied
+                clearWarmCeil(m);
+                // Re-assigning src reloads the (cross-origin) document — location.reload() throws.
+                const src = doneFrame.src;
+                try { doneFrame.src = src; } catch { /* frame detached */ }
+              }, SIM_EXIT_STOP_MS));
+            }
+          } else {
+            simTelemetry('reset-stopscript', { key: doneKey });
+            doneRt.deactivate();
+          }
+        }
+        warmGenRef.current++;
+        clearRevealTimers();
+        awaitingPaintSimIdRef.current = null;
+        desiredSimRef.current = null;
+        pendingSimRef.current = null;
+        activeSimRef.current = null;
+        // Release the URL too: the reloading frame must be a BACKGROUND frame again, so its
+        // fresh SIM_READY takes the mute + guidance-gate + warm-budget path, not the active one.
+        activeSimUrlRef.current = null;
+        userPausedRef.current = false;
+        resumeActionRef.current = 'resume';
+        merge({ showResumeBtn: false, showSimOverlay: false, simBootStalled: false, simColdCover: false, resumeAction: 'resume', controlsVisible: true, globalTime: targetGlobal });
+        setProgress(targetGlobal);
+        updateBrollOverlay(targetGlobal); updateImageOverlay(targetGlobal);
+        updateAudioCutaway(targetGlobal, wasPlayingRef.current);
+      };
+
+      const issueSeek = () => {
+        if (targetSeg && targetIdx === curIdxRef.current) {
+          videoRef.current!.currentTime = Math.min(localTime, targetSeg.duration);
+          updateSimOverlay(targetIdx, localTime);
+          void safePlay(videoRef.current!).then((ok) => {
+            // A refused play() is a covered, ACTIONABLE state, not a silent failure: the incoming
+            // media will never become audible, so the outgoing package must keep its gain. Guarded
+            // on an active handoff so the flag-OFF path is exactly today's fire-and-forget call.
+            if (!ok && handoffActiveRef.current) {
+              dispatchTransition({ type: 'AUDIO_BLOCKED', generation: handoffGenRef.current });
+            }
+          });
+        } else if (targetSeg) {
+          loadSegment(targetIdx, localTime, true);
+        }
+      };
+
+      // FLAG OFF: `commit(); issueSeek();` is exactly the statements, in exactly the order, this
+      // function ran before the coordinator existed. FLAG ON inverts them and puts the frame
+      // evidence in between.
+      const coordinated = beginCoordinatedExit({
+        key: doneKey,
+        requestedMediaTime: targetSeg ? Math.min(localTime, targetSeg.duration) : 0,
+        seekRequested: true,
+        // Returning to video restores the narration this section interrupted. The package keeps
+        // its gain until the video is actually audible, which is what closes the silence gap.
+        audioIntent: 'narration-continuous',
+        issueSeek,
+        commit,
+      });
+      if (!coordinated) { commit(); issueSeek(); }
       return;
     }
 

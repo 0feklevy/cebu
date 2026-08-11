@@ -211,6 +211,16 @@ export interface PlayerConfig {
   sim_scheduler_mode?: 'off' | 'predictive';
   sim_adaptive_quality?: boolean;
   sim_boundary_sentinel?: boolean;
+  /**
+   * The bidirectional frame-valid transition coordinator (migration 054, audit P0.1).
+   *
+   * ON, the simulation→video exit holds the outgoing (frozen, still-audible) package as the cover
+   * until a frame callback proves the REQUESTED video frame — matching handoff generation and
+   * media time — reached the compositor, then cross-fades on a parent paint. OFF is byte-for-byte
+   * today's exit. Server-resolved and authoritative: unlike `sim_pool_mode` there is no URL
+   * override, because this decides which pixels a viewer may see.
+   */
+  sim_transition_coordinator?: boolean;
   sim_rum_sample_rate?: number;
   /** Per-simulation publish-time preparation cost, keyed by simulation id. */
   sim_prepare_budget_ms?: Record<string, number>;
