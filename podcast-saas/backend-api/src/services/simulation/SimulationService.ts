@@ -5,11 +5,23 @@ import type { StorageService } from '../storage/StorageService.js';
 import { LLMService } from '../llm/LLMService.js';
 import { db } from '../../db/index.js';
 import { simulations, system_prompts } from '../../db/schema.js';
-import { and, eq, isNull, ne, or } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { logger } from '../../lib/logger.js';
 import { buildUiControlsPromptBlock, type SimUiSelection } from './SimUiControls.js';
 import { buildChildRuntimeSource } from './simRuntimeChild.js';
-import { isSystemOwnedKey, isSystemOwnedRelPath } from 'shared/sim/simRevision';
+import {
+  isSystemOwnedKey, isSystemOwnedRelPath, revisionIdFromKey,
+  revisionFileKey, revisionManifestKey, PACKAGE_SUBDIR,
+} from 'shared/sim/simRevision';
+// The staged-immutable publication machinery (Priority 7). NOT circular: RevisionService does not
+// import this module. RevisionMigration DOES (deriveEntryRelPath/getSimulationContentType), so its
+// helpers are pulled in lazily inside uploadSectionBridge — same pattern as GuidanceService.
+import { RevisionService, type RevisionDbTx } from './RevisionService.js';
+import type {
+  SimManifest as SimPackageManifest,
+  SimManifestFile,
+  SimFileRole,
+} from 'shared/sim/simManifest';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -90,6 +102,30 @@ export interface ValidationResult {
   fatal:    string[];  // Block upload, trigger auto-retry
   warnings: string[];  // Trigger retry if present; save to metadata
   weak:     string[];  // Save to metadata, no retry
+}
+
+/**
+ * In-transaction persistence hook for section-bridge publication.
+ *
+ * Runs INSIDE the revision-activation transaction, after the pointer flip — the caller (the
+ * sections controller) uses it to update `timeline_sections` in the SAME transaction, so the
+ * section row and the activation commit or roll back together. A throw here aborts the whole
+ * activation. It is never invoked when the activation loses a compare-and-set.
+ */
+export type SectionPersistHook = (
+  tx: RevisionDbTx,
+  pub: { sectionUrl: string; bridgeHash: string },
+) => Promise<void>;
+
+/** The abort error every generation path throws — `classifySimulationError` maps it to 'aborted'. */
+function generationAbortError(): Error {
+  const err = new Error('generation cancelled');
+  err.name = 'AbortError';
+  return err;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw generationAbortError();
 }
 
 // ── Storage content types ─────────────────────────────────────────────────────
@@ -1525,6 +1561,61 @@ export function computeBridgeHash(code: string): string {
   return createHash('sha256').update(code).digest('hex').slice(0, 12);
 }
 
+/**
+ * Assemble the two generated artifacts of a section-bridge publication: the combined bridge.js
+ * (all section bodies, this section's merged in) and the entry HTML with the bridge tag + rAF gate
+ * injected. PURE — reads and writes nothing — so the byte-assembly is exactly one piece of logic
+ * whether the base package came from the legacy mutable prefix or from an immutable revision.
+ *
+ * `mainBody` is a resolver over the CURRENTLY-stored body for this section: the LLM path
+ * overwrites (returns its fresh body ignoring the argument), while the mechanical path PRESERVES
+ * an existing demonstration (returns the existing body, or a no-op when absent).
+ */
+export function assembleSectionBridgeArtifacts(opts: {
+  sectionId: string;
+  /** The base package's combined bridge.js source — '' when no bridge was ever generated. */
+  existingBridgeJs: string;
+  /** The base package's entry HTML, as stored. */
+  rawEntryHtml: string;
+  /** Entry path relative to the PACKAGE ROOT (e.g. 'index.html', 'app/main.html'). */
+  entryRelPath: string;
+  mainBody: (existing: string | undefined) => string;
+}): { bridgeJs: string; entryHtml: string; bridgeHash: string; sectionCount: number } {
+  if (!SAFE_SECTION_ID_RE.test(opts.sectionId)) throw new Error(`Unsafe sectionId: "${opts.sectionId}"`);
+
+  // Merge: parse existing sections, add/replace the current section's body.
+  const sectionEntries = parseSectionEntries(opts.existingBridgeJs);
+  sectionEntries.set(opts.sectionId, opts.mainBody(sectionEntries.get(opts.sectionId)));
+  // Newly generated bridges CARRY the v3 runtime. Carrying it is not the same as being trusted
+  // with it: the player only takes the modern path for a package the publish-time canary has
+  // classified `managed-presentable`, so a package that can speak v3 but has never proven it
+  // still runs on the v2 path. Emitting the runtime here is what makes that proof possible at
+  // all — a package with no v3 code can never be canaried into the modern class.
+  //
+  // `allManaged` / `anyQuality` are deliberately LEFT FALSE, and that is not an oversight: the
+  // generation prompt produces cleanup-closure bodies, which `toLifecycle` wraps as legacy. A
+  // package whose bodies cannot suspend or render on demand must not claim it can — so
+  // `capabilities()` reports those false, `classifyCanaryReport` caps the package at
+  // `managed-partial`, and `enableModern` declines. The consequence, stated plainly because it
+  // is easy to miss: a package generated today CANNOT reach `managed-presentable`, so the v3
+  // reveal path is not yet reachable for it. Closing that requires teaching the generator to
+  // emit ManagedSectionLifecycle bodies — see md-files/SIM-P456-ROLLOUT.md.
+  const bridgeJs = wrapBridgeCombined(sectionEntries, { runtimeV3: true });
+  const bridgeHash = computeBridgeHash(bridgeJs);
+
+  // The bridge sits at the PACKAGE ROOT (`package/bridge.js` inside a revision — the same spot
+  // `<prefix>/bridge.js` occupied in the legacy layout), so the tag's relative path is derived
+  // from the entry's depth WITHIN the package. Layout preservation is what keeps this stable
+  // across legacy → revision publication.
+  const depth = opts.entryRelPath.split('/').length - 1;
+  const bridgeRelPath = (depth > 0 ? '../'.repeat(depth) : './') + 'bridge.js';
+  // Ensure the head rAF gate too: entry HTML uploaded before the gate existed gains it on the
+  // next generation (injectRafGate is marker-guarded and idempotent).
+  const entryHtml = injectBridgeScriptTag(injectRafGate(opts.rawEntryHtml), bridgeRelPath, bridgeHash);
+
+  return { bridgeJs, entryHtml, bridgeHash, sectionCount: sectionEntries.size };
+}
+
 /** Derive the entry HTML path relative to the sim's storage prefix.
  *  entry_file is a storage key on new rows (`simulations/<p>/<s>/index.html`) and a full
  *  public URL on legacy rows — handle both; returns null when underivable. */
@@ -1942,13 +2033,30 @@ export function buildContextPrompt(
 // ── SimulationService ─────────────────────────────────────────────────────────
 
 export class SimulationService {
-  /** Per-simulation promise chain — serialises concurrent bridge.js read-modify-write. */
+  /**
+   * Per-simulation promise chain — serialises concurrent section-bridge PUBLICATIONS in-process.
+   *
+   * Correctness no longer depends on this: publication is staged into a never-reused revision
+   * prefix and activated by compare-and-set, so a cross-process race loses with a RevisionConflict
+   * instead of clobbering anything. The lock is kept as a UX nicety for the common single-process
+   * deployment — two sections of the same simulation generating concurrently serialise here, so the
+   * second publication builds on the first's revision instead of losing its CAS and asking the
+   * user to retry.
+   */
   private readonly bridgeLocks = new Map<string, Promise<void>>();
+
+  /** Lazily constructed so tests injecting a fake storage adapter get a RevisionService bound to it. */
+  private _revisions: RevisionService | null = null;
 
   constructor(
     private readonly storage: StorageService,
     private readonly llmService: LLMService,
   ) {}
+
+  private revisions(): RevisionService {
+    if (!this._revisions) this._revisions = new RevisionService(this.storage);
+    return this._revisions;
+  }
 
   private async withBridgeLock<T>(simKey: string, fn: () => Promise<T>): Promise<T> {
     const prior = this.bridgeLocks.get(simKey) ?? Promise.resolve();
@@ -2201,6 +2309,8 @@ export class SimulationService {
     conversationHistory?: ConversationMessage[];
     onEvent?: (event: string, data: object) => void;
     signal?: AbortSignal;
+    /** Runs inside the activation transaction with the FULL generation result — see SectionPersistHook. */
+    persistSection?: (tx: RevisionDbTx, result: BridgeGenerationResult) => Promise<void>;
   }): Promise<BridgeGenerationResult> {
     const { simId, sectionId, projectId, userId, prompt, simpleUi, autoScript, onEvent, signal } = opts;
     const prefix = `simulations/${projectId}/${simId}`;
@@ -2391,21 +2501,14 @@ export class SimulationService {
       retryCount, retryReason,
     }, 'Bridge script ready');
 
-    // 8-10. Locate entry HTML + read-modify-write bridge.js under the per-sim lock —
-    // shared with applyMechanicalBridge (the zero-LLM Minimal-UI path).
-    const { sectionUrl, bridgeHash } = await this.uploadSectionBridge({
-      simId, sectionId, projectId, prefix, allKeys,
-      entryKey: opts.entryKey,
-      mainBody: () => bridge.mainBody,   // LLM path overwrites the section body
-      onEvent,
-    });
-
-    // Return typed BridgeGenerationResult — controller builds sim_meta from this
-    return {
-      sectionUrl,
+    // Every field of the result except sectionUrl/bridgeHash is known BEFORE publication, so the
+    // same builder serves both the in-transaction persistSection hook (which needs the full result
+    // to write sim_meta atomically with the pointer flip) and the method's own return value.
+    const finishResult = (pub: { sectionUrl: string; bridgeHash: string }): BridgeGenerationResult => ({
+      sectionUrl:           pub.sectionUrl,
       conversationHistory:  updatedHistory,
       sourceHash,
-      bridgeHash,
+      bridgeHash:           pub.bridgeHash,
       mainBody:             bridge.mainBody,
       provider:             llmProvider,
       model:                llmModel,
@@ -2417,7 +2520,24 @@ export class SimulationService {
       warnings:             allValidationWarnings,
       validationErrors:     [],  // always empty — fatals throw before upload
       validationWarnings:   validation.warnings,
-    };
+    });
+
+    // 8-10. Publish the section bridge as a staged immutable revision (CAS-activated) —
+    // shared with applyMinimalUiOnly (the zero-LLM Minimal-UI path).
+    const persistSection = opts.persistSection;
+    const { sectionUrl, bridgeHash } = await this.uploadSectionBridge({
+      simId, sectionId, projectId, prefix, allKeys,
+      entryKey: opts.entryKey,
+      mainBody: () => bridge.mainBody,   // LLM path overwrites the section body
+      onEvent,
+      signal,
+      persistSection: persistSection
+        ? (tx, pub) => persistSection(tx, finishResult(pub))
+        : undefined,
+    });
+
+    // Return typed BridgeGenerationResult — controller builds sim_meta from this
+    return finishResult({ sectionUrl, bridgeHash });
   }
 
   reuseBridgeScript(existingUrl: string): { sectionUrl: string } {
@@ -2436,6 +2556,12 @@ export class SimulationService {
     } catch {
       logger.warn({ prefix }, 'listObjects failed in generateBridgeScript — falling back to entry-HTML probe');
     }
+    // The LEGACY prefix is the customer source of truth; system subtrees are not part of it.
+    // Once a simulation has published revisions, `listObjects(prefix)` returns every revision's own
+    // copy of every file — without this filter the LLM context doubles per revision and
+    // `computeSourceHash` (which hashes PATH + content) changes on every publication, which would
+    // clear the conversation history on every single generation. Same filter the migration applies.
+    allKeys = allKeys.filter((k) => revisionIdFromKey(k) === null && !isSystemOwnedKey(k, prefix));
     if (allKeys.length === 0 && entryKeyOpt && !entryKeyOpt.startsWith('http')) {
       const entryKey = entryKeyOpt;
       const entryDir = entryKey.slice(0, entryKey.lastIndexOf('/') + 1);
@@ -2463,13 +2589,37 @@ export class SimulationService {
   }
 
   /**
-   * Locate the entry HTML and read-modify-write bridge.js under the per-simulation lock,
-   * then re-inject the bridge tag into the entry HTML. Extracted from generateBridgeScript
-   * so the zero-LLM mechanical path (applyMinimalUiOnly) shares the EXACT upload contract.
+   * Publish this section's bridge as a NEW IMMUTABLE REVISION and activate it (audit P0.4).
+   * Shared by generateBridgeScript and the zero-LLM mechanical path (applyMinimalUiOnly), so both
+   * take the EXACT same publication contract.
    *
-   * `mainBody` is a resolver over the CURRENTLY-stored body for this section: the LLM path
-   * overwrites (returns its fresh body ignoring the argument), while the mechanical path
-   * PRESERVES an existing demonstration (returns the existing body, or a no-op when absent).
+   * WHAT REPLACED THE OLD READ-MODIFY-WRITE
+   * This used to overwrite `<prefix>/bridge.js` and the entry HTML in place — two writes a viewer
+   * could land between, a client abort could orphan halfway, and a concurrent generation could
+   * silently clobber. Now every byte of the publication is staged under a never-reused revision
+   * prefix through RevisionService.writeFile (the sole write path into a revision), verified, and
+   * made live by ONE compare-and-set activation whose transaction also carries the caller's
+   * section-row update (`persistSection`). The legacy mutable prefix is never written again by
+   * this path — it stays exactly as it was, which is what migration 050's rollback reverts to.
+   *
+   * BASE PACKAGE: the active revision when one exists; otherwise the legacy prefix
+   * (migration-on-write — the FULL package layout is copied via the same plan the operator
+   * migration uses, not just bridge + entry).
+   *
+   * VERDICT PARITY: the old path explicitly nulled package_class/canary_report/canary_at when the
+   * bytes changed. Here a fresh-bytes revision has no canary yet, so its verdict columns are NULL
+   * — and activation PROJECTS them onto the simulations row inside the same transaction. Same
+   * downstream behaviour (unproven ⇒ legacy player path), now atomic with the pointer flip.
+   * `simulations.bridge_hash` is deliberately NOT advanced: it describes the legacy prefix's
+   * bytes, which this path no longer touches, and on a revisioned simulation the identity axis is
+   * the revision id (`packageRevisionFor`), not the hash.
+   *
+   * ABORT SAFETY: the signal is checked before the draft exists (cheap bail), per staged file, and
+   * once more after validation — where an abort marks the draft failed and leaves the pointer,
+   * the section row and the previous bytes untouched. It is NEVER checked inside the activation
+   * transaction, and after activation an abort is ignored (the publication is already live).
+   * Failed/aborted drafts sit in an inactive never-referenced prefix; reaping them is the existing
+   * gc/staleDrafts machinery's job (documented follow-up — no sweep is wired here).
    */
   private async uploadSectionBridge(opts: {
     simId:      string;
@@ -2480,114 +2630,228 @@ export class SimulationService {
     entryKey?:  string;
     mainBody:   (existing: string | undefined) => string;
     onEvent?:   (event: string, data: object) => void;
+    signal?:    AbortSignal;
+    persistSection?: SectionPersistHook;
   }): Promise<{ sectionUrl: string; bridgeHash: string }> {
-    const { simId, sectionId, projectId, prefix, allKeys, mainBody, onEvent } = opts;
+    const { simId, sectionId, projectId, prefix, allKeys, mainBody, onEvent, signal } = opts;
     if (!SAFE_SECTION_ID_RE.test(sectionId)) throw new Error(`Unsafe sectionId: "${sectionId}"`);
-    const isSectionFile = (k: string) => /section_[^/]+\.(html|js)$/.test(k) || /\/bridge\.js$/.test(k);
+    throwIfAborted(signal);
 
-    // Prefer opts.entryKey (authoritative from DB), then probe allKeys.
-    const passedEntryKey = opts.entryKey && !opts.entryKey.startsWith('http') ? opts.entryKey : undefined;
-    const entryKey = passedEntryKey
-      ?? allKeys.find(k => /\/(index|main)\.(html|htm)$/.test(k))
-      ?? allKeys.find(k => (k.endsWith('.html') || k.endsWith('.htm')) && !isSectionFile(k));
-    if (!entryKey) throw new Error('No HTML entry file found in simulation');
+    // In-process serialisation only (see bridgeLocks). Cross-process safety is the activation CAS.
+    return this.withBridgeLock(simId, async () => {
+      // Lazy import — a static SimulationService⇄RevisionMigration import would be circular
+      // (RevisionMigration imports deriveEntryRelPath/getSimulationContentType from here).
+      const { planLegacyCopy, buildLegacyManifest } = await import('./RevisionMigration.js');
+      const revisions = this.revisions();
 
-    const entryDir = entryKey.substring(0, entryKey.lastIndexOf('/'));
-    const relativeDepth = entryDir === prefix
-      ? 0
-      : entryDir.slice(prefix.length).split('/').filter(Boolean).length;
-    const bridgeRelPath = (relativeDepth > 0 ? '../'.repeat(relativeDepth) : './') + 'bridge.js';
-    const bridgeJsKey   = `${prefix}/bridge.js`;
+      // ── (1) Pointer + canonical prefix, read at the START of the build ─────────────────────
+      // `expectedActiveRevisionId` for the activation CAS is THIS read: a concurrent publication
+      // that activates in between makes our activation lose with a RevisionConflict instead of
+      // silently overwriting it.
+      const [simRow] = await db
+        .select({
+          storage_prefix: simulations.storage_prefix,
+          active_revision_id: simulations.active_revision_id,
+        })
+        .from(simulations)
+        .where(eq(simulations.id, simId));
+      if (!simRow) throw new Error('Simulation not found');
+      const norm = (v: string): string => v.replace(/\/+$/, '');
+      // Revision operations use the row's OWN storage_prefix — activate() refuses any other. The
+      // legacy reads keep the caller-computed prefix, which is where those bytes actually live.
+      const revisionRoot = norm(simRow.storage_prefix || prefix);
+      const legacyRoot = norm(prefix);
+      if (revisionRoot !== legacyRoot) {
+        logger.warn({ simId, revisionRoot, legacyRoot }, 'sim: storage_prefix differs from computed prefix');
+      }
+      const baseRevisionId = simRow.active_revision_id;
 
-    onEvent?.('status', { status: 'Uploading files…', type: 'progress' });
-
-    // Read-modify-write bridge.js under a per-simulation lock (concurrency safety).
-    return this.withBridgeLock(bridgeJsKey, async () => {
-      // Read existing bridge.js (may not exist on first generation).
+      // ── (2) Resolve the base package: active revision, or legacy prefix (migration-on-write) ──
+      type CopySource = {
+        manifestPath: string;
+        role: SimFileRole;
+        contentType: string;
+        read: () => Promise<Buffer>;
+      };
+      const bridgeManifestPath = `${PACKAGE_SUBDIR}/bridge.js`;
+      let copyPlan: CopySource[];
       let existingBridgeJs = '';
-      try { existingBridgeJs = (await this.storage.readObject(bridgeJsKey)).toString('utf-8'); }
-      catch { /* first generation — start fresh */ }
+      let rawEntryHtml: string;
+      let entryManifestPath: string;
 
-      // Merge: parse existing sections, add/replace the current section's body.
-      const sectionEntries = parseSectionEntries(existingBridgeJs);
-      sectionEntries.set(sectionId, mainBody(sectionEntries.get(sectionId)));
-      // Newly generated bridges CARRY the v3 runtime. Carrying it is not the same as being trusted
-      // with it: the player only takes the modern path for a package the publish-time canary has
-      // classified `managed-presentable`, so a package that can speak v3 but has never proven it
-      // still runs on the v2 path. Emitting the runtime here is what makes that proof possible at
-      // all — a package with no v3 code can never be canaried into the modern class.
-      //
-      // `allManaged` / `anyQuality` are deliberately LEFT FALSE, and that is not an oversight: the
-      // generation prompt produces cleanup-closure bodies, which `toLifecycle` wraps as legacy. A
-      // package whose bodies cannot suspend or render on demand must not claim it can — so
-      // `capabilities()` reports those false, `classifyCanaryReport` caps the package at
-      // `managed-partial`, and `enableModern` declines. The consequence, stated plainly because it
-      // is easy to miss: a package generated today CANNOT reach `managed-presentable`, so the v3
-      // reveal path is not yet reachable for it. Closing that requires teaching the generator to
-      // emit ManagedSectionLifecycle bodies — see md-files/SIM-P456-ROLLOUT.md.
-      const combinedBridge = wrapBridgeCombined(sectionEntries, { runtimeV3: true });
-      const hash = computeBridgeHash(combinedBridge);
+      if (baseRevisionId) {
+        // Base = the ACTIVE revision: its manifest is the authoritative file list, its bridge.js
+        // carries every section body published so far, and its entry HTML is what viewers load.
+        let baseManifest: SimPackageManifest;
+        try {
+          const raw = await this.storage.readObject(revisionManifestKey(revisionRoot, baseRevisionId));
+          baseManifest = JSON.parse(raw.toString('utf-8')) as SimPackageManifest;
+        } catch (err) {
+          throw new Error(
+            `Could not read the active revision's manifest (${String(err).slice(0, 120)})`,
+            { cause: err },
+          );
+        }
+        entryManifestPath = baseManifest.entry;
+        try {
+          existingBridgeJs = (await this.storage
+            .readObject(revisionFileKey(revisionRoot, baseRevisionId, bridgeManifestPath))).toString('utf-8');
+        } catch { /* base revision has no combined bridge yet */ }
+        rawEntryHtml = (await this.storage
+          .readObject(revisionFileKey(revisionRoot, baseRevisionId, entryManifestPath))).toString('utf-8');
+        copyPlan = baseManifest.files
+          .filter((f) => f.path !== entryManifestPath && f.path !== bridgeManifestPath)
+          .map((f) => ({
+            manifestPath: f.path,
+            role: f.role,
+            contentType: f.contentType,
+            read: () => this.storage.readObject(revisionFileKey(revisionRoot, baseRevisionId, f.path)),
+          }));
+      } else {
+        // Base = the legacy mutable prefix. Prefer opts.entryKey (authoritative from DB), then
+        // probe allKeys — exactly the resolution the old in-place path used.
+        const isSectionFile = (k: string) => /section_[^/]+\.(html|js)$/.test(k) || /\/bridge\.js$/.test(k);
+        const passedEntryKey = opts.entryKey && !opts.entryKey.startsWith('http') ? opts.entryKey : undefined;
+        const entryKey = passedEntryKey
+          ?? allKeys.find(k => /\/(index|main)\.(html|htm)$/.test(k))
+          ?? allKeys.find(k => (k.endsWith('.html') || k.endsWith('.htm')) && !isSectionFile(k));
+        if (!entryKey) throw new Error('No HTML entry file found in simulation');
+        const entryRelPath = entryKey.slice(legacyRoot.length + 1);
 
-      await this.storage.uploadFile(bridgeJsKey, Buffer.from(combinedBridge, 'utf-8'), 'application/javascript');
+        // FULL-PACKAGE migration-on-write: the same plan (classification + `package/` layout
+        // preservation) the operator migration uses — the first live generation on a legacy
+        // simulation publishes the whole package, not just bridge + entry.
+        const keysForPlan = allKeys.includes(entryKey) ? allKeys : [...allKeys, entryKey];
+        const { planned, entry } = planLegacyCopy({ allKeys: keysForPlan, prefix: legacyRoot, entryRelPath });
+        if (!entry) throw new Error('No HTML entry file found in simulation');
+        entryManifestPath = entry.revisionPath;
 
-      // Record the hash on the PACKAGE, not only in the section URL we are about to rewrite.
-      // Every section of this package now derives the same revision from it — which is what makes
-      // the revision an identity of the package rather than of whichever section was saved last.
+        try { existingBridgeJs = (await this.storage.readObject(`${legacyRoot}/bridge.js`)).toString('utf-8'); }
+        catch { /* first generation — start fresh */ }
+        // Fall back to a public URL read when storage GetObject is denied (write-only token).
+        try {
+          rawEntryHtml = (await this.storage.readObject(entryKey)).toString('utf-8');
+        } catch {
+          const res = await fetch(this.storage.getSimPublicUrl(entryKey));
+          if (!res.ok) throw new Error(`Could not read entry HTML for bridge injection (${res.status})`);
+          rawEntryHtml = await res.text();
+        }
+        copyPlan = planned
+          .filter((p) => p.rel !== entryRelPath && p.revisionPath !== bridgeManifestPath)
+          .map((p) => ({
+            manifestPath: p.revisionPath,
+            role: p.role,
+            contentType: getSimulationContentType(p.key),
+            read: () => this.storage.readObject(p.key),
+          }));
+      }
+
+      // ── (3) Build the new bridge.js + entry HTML bytes (pure) ──────────────────────────────
+      const entryRelWithinPackage = entryManifestPath.startsWith(`${PACKAGE_SUBDIR}/`)
+        ? entryManifestPath.slice(PACKAGE_SUBDIR.length + 1)
+        : entryManifestPath;
+      const art = assembleSectionBridgeArtifacts({
+        sectionId, existingBridgeJs, rawEntryHtml,
+        entryRelPath: entryRelWithinPackage,
+        mainBody,
+      });
+
+      onEvent?.('status', { status: 'Uploading files…', type: 'progress' });
+
+      // ── (4) Stage the revision: draft → upload every file → validate ───────────────────────
+      throwIfAborted(signal);   // cheap bail BEFORE the draft row exists
+      const draft = await revisions.createDraft({
+        simulationId: simId,
+        createdBy: 'live-generation',
+        metadata: { trigger: 'section-generation', sectionId, baseRevisionId },
+      });
+      const uploading = await revisions.beginUpload(simId, draft.id);
+      const files: SimManifestFile[] = [];
       try {
-        // Regenerating the bridge INVALIDATES the canary verdict, so clear it with the hash.
-        //
-        // The verdict is a statement about specific bytes. Leaving it in place while the bytes
-        // change grants the modern path to a package no canary ever ran — and every poster lookup
-        // then misses, because poster identities carry the OLD revision. That is exactly the state
-        // sim-canary-publish refuses to publish (EXIT.POSTERS_MISSING), reached through the back
-        // door. The WHERE means an idempotent regeneration that produces the identical hash keeps
-        // its verdict; only a genuine change clears it.
-        await db.update(simulations)
-          .set({ bridge_hash: hash, package_class: null, canary_report: null, canary_at: null })
-          .where(and(
-            eq(simulations.id, simId),
-            or(isNull(simulations.bridge_hash), ne(simulations.bridge_hash, hash)),
-            // NEVER stomp a projected verdict (migration 050).
-            //
-            // On a revisioned simulation these three columns are a PROJECTION of the active
-            // revision's own verdict, written inside the activation transaction. This statement
-            // fires on the legacy mutable prefix, which still exists and is still reachable — so
-            // without this predicate, regenerating one section's bridge nulls package_class on the
-            // row while sim_revisions still holds a valid verdict for the bytes actually being
-            // served. The row and the revision then disagree, and the row is what the player reads:
-            // every viewer silently drops to the legacy runtime path and every poster lookup misses.
-            // Nothing errors.
-            isNull(simulations.active_revision_id),
-          ));
+        for (const item of copyPlan) {
+          throwIfAborted(signal);
+          const bytes = await item.read();
+          files.push(await revisions.writeFile(uploading, revisionRoot, {
+            manifestPath: item.manifestPath, bytes, contentType: item.contentType, role: item.role,
+          }));
+        }
+        files.push(await revisions.writeFile(uploading, revisionRoot, {
+          manifestPath: bridgeManifestPath,
+          bytes: Buffer.from(art.bridgeJs, 'utf-8'),
+          contentType: 'application/javascript',
+          role: 'runtime',
+        }));
+        files.push(await revisions.writeFile(uploading, revisionRoot, {
+          manifestPath: entryManifestPath,
+          bytes: Buffer.from(art.entryHtml, 'utf-8'),
+          contentType: 'text/html; charset=utf-8',
+          role: 'entry',
+        }));
       } catch (err) {
-        // ONLY the pre-migration case may be swallowed. The bridge bytes were uploaded a few lines
-        // above, so any other failure here leaves the NEW bytes live under the OLD bridge_hash and
-        // the OLD canary verdict — precisely the "a verdict is a statement about specific bytes"
-        // back door this write exists to close. Demoting that to a warn log would hide it.
-        const code = (err as { code?: string } | null)?.code;
-        if (code !== '42703') throw err;
-        logger.warn({ err, simId }, 'sim: bridge_hash column absent — migration 049 not applied yet');
+        // The draft is abandoned where it stands — bytes in a never-referenced prefix, row failed.
+        await revisions.markFailed(simId, draft.id, 'uploading', String(err).slice(0, 500))
+          .catch(() => undefined);
+        throw err;
       }
 
-      // Update index.html in place (stable marker approach). Fall back to public URL read
-      // when storage GetObject is denied.
-      let rawHtml: string;
+      const validating = await revisions.finishUpload(simId, draft.id);
+      const manifest = buildLegacyManifest({
+        sim: { id: simId, projectId },
+        revisionId: draft.id,
+        revisionNumber: draft.revisionNumber,
+        entryPath: entryManifestPath,
+        files,
+        createdBy: 'live-generation',
+      });
+      const verdict = await revisions.validate(simId, validating, revisionRoot, { manifest });
+      if (!verdict.ok) {
+        // validate() already marked the revision failed, with every problem recorded on it.
+        throw new Error(
+          'Bridge publication failed verification: '
+          + JSON.stringify({ manifest: verdict.problems, storage: verdict.verified.problems }).slice(0, 500),
+        );
+      }
+
+      // ── (5) Last abort point — AFTER the build, BEFORE activation ──────────────────────────
+      if (signal?.aborted) {
+        await revisions.markFailed(simId, draft.id, 'canary_passed', 'generation aborted before activation')
+          .catch(() => undefined);
+        throw generationAbortError();
+      }
+
+      // ── (6) Activate: one transaction — demote, promote, pointer flip, section row ─────────
+      // sectionUrl mirrors buildPlayerConfig.simulationUrlOf for the new revision exactly:
+      // getSimPublicUrl(active_revision_entry_key) + ?section=<id>&v=<hash>.
+      const newEntryKey = revisionFileKey(revisionRoot, draft.id, entryManifestPath);
+      const sectionUrl = `${this.storage.getSimPublicUrl(newEntryKey)}?section=${sectionId}&v=${art.bridgeHash}`;
+      const persistSection = opts.persistSection;
       try {
-        rawHtml = (await this.storage.readObject(entryKey)).toString('utf-8');
-      } catch {
-        const res = await fetch(this.storage.getSimPublicUrl(entryKey));
-        if (!res.ok) throw new Error(`Could not read entry HTML for bridge injection (${res.status})`);
-        rawHtml = await res.text();
+        await revisions.activate({
+          simulationId: simId,
+          revisionId: draft.id,
+          storagePrefix: revisionRoot,
+          expectedActiveRevisionId: baseRevisionId,
+          supersede: 'retired',
+          onActivated: persistSection
+            ? (tx) => persistSection(tx, { sectionUrl, bridgeHash: art.bridgeHash })
+            : undefined,
+        });
+      } catch (err) {
+        // Whatever stopped the activation — a lost CAS (concurrent publication won) or a thrown
+        // persistSection hook (e.g. the section row vanished) — the transaction rolled back whole,
+        // so nothing this publication staged is referenced anywhere. Retire the draft so a stale
+        // build can never be activated later by something else.
+        await revisions.markFailed(simId, draft.id, 'canary_passed', `activation failed: ${String(err).slice(0, 300)}`)
+          .catch(() => undefined);
+        throw err;
       }
-      // Ensure the head rAF gate too: entry HTML uploaded before the gate existed gains it
-      // on the next generation (injectRafGate is marker-guarded and idempotent).
-      const updatedHtml = injectBridgeScriptTag(injectRafGate(rawHtml), bridgeRelPath, hash);
-      await this.storage.uploadFile(entryKey, Buffer.from(updatedHtml, 'utf-8'), 'text/html; charset=utf-8');
 
-      // sectionUrl encodes which section to run + busts the iframe cache on every generation.
-      const url = `${this.storage.getSimPublicUrl(entryKey)}?section=${sectionId}&v=${hash}`;
-      logger.info({ simId, sectionId, projectId, url, sections: sectionEntries.size }, 'Bridge script uploaded');
-      return { sectionUrl: url, bridgeHash: hash };
+      logger.info(
+        { simId, sectionId, projectId, revisionId: draft.id, revisionNumber: draft.revisionNumber,
+          url: sectionUrl, sections: art.sectionCount, files: files.length },
+        'Bridge revision published and activated',
+      );
+      return { sectionUrl, bridgeHash: art.bridgeHash };
     });
   }
 
@@ -2605,6 +2869,8 @@ export class SimulationService {
     projectId:  string;
     entryKey?:  string;
     onEvent?:   (event: string, data: object) => void;
+    signal?:    AbortSignal;
+    persistSection?: SectionPersistHook;
   }): Promise<{ sectionUrl: string; bridgeHash: string }> {
     const { simId, sectionId, projectId, onEvent } = opts;
     const prefix = `simulations/${projectId}/${simId}`;
@@ -2618,6 +2884,8 @@ export class SimulationService {
       entryKey: opts.entryKey,
       mainBody: (existing) => (existing && existing.trim() ? existing : NOOP_MAIN_BODY),
       onEvent,
+      signal: opts.signal,
+      persistSection: opts.persistSection,
     });
   }
 

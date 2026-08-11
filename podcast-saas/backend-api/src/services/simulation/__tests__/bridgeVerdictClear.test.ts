@@ -35,7 +35,16 @@ const seed = async (bridgeHash: string | null): Promise<void> => {
   );
 };
 
-/** The exact predicate SimulationService applies alongside the bridge_hash write. */
+/**
+ * The predicate a DIRECT verdict write must carry.
+ *
+ * This was `SimulationService`'s bridge write, verbatim. Since audit P0.4 that statement is gone:
+ * generation publishes an immutable revision and `RevisionService.activate` PROJECTS the verdict
+ * onto the row inside the promote transaction, so a fresh-bytes revision (no canary yet ⇒ NULL
+ * verdict) clears it atomically with the pointer flip. What survives — and what these cases still
+ * pin — is the shape any remaining direct writer must have; `sim-canary-publish` is now the only
+ * one, and the source assertions below hold it to exactly this predicate.
+ */
 const applyBridgeWrite = (hash: string) =>
   pg.query(
     `UPDATE simulations
@@ -125,47 +134,59 @@ describe('a revisioned simulation keeps its projected verdict', () => {
 
 
 /**
- * THE COPY ABOVE IS NOT THE PRODUCTION STATEMENT.
+ * THE COPY ABOVE IS NOT A PRODUCTION STATEMENT.
  *
- * Everything above drives `applyBridgeWrite`, a hand-written SQL transcription of the update in
- * `SimulationService`. That proves the SEMANTICS are right; it cannot prove production still issues
- * them. Dropping `isNull(simulations.active_revision_id)` from the real `.where(...)` left every
- * assertion above green while production stomped the projected verdict of every revisioned
- * simulation — the one outcome this file exists to prevent.
+ * Everything above drives `applyBridgeWrite`, a hand-written transcription. That proves the
+ * SEMANTICS are right; it cannot prove production still matches them. So the sources are read
+ * here, with comments stripped so prose cannot satisfy an assertion (same technique as
+ * `trustProxyWiring.test.ts`).
  *
- * `SimulationService` cannot be instantiated here (storage adapter, LLM client, live db), so its
- * source is read instead, with comments stripped so prose cannot satisfy an assertion. Same
- * technique as `trustProxyWiring.test.ts`.
+ * WHAT CHANGED (audit P0.4). These assertions used to target `SimulationService`'s bridge write.
+ * That statement no longer exists: generation publishes an immutable revision and the verdict
+ * reaches the row only by projection inside `RevisionService.activate`'s promote transaction.
+ * The regression this file exists to prevent — a regeneration stomping the projected verdict of
+ * a revisioned simulation — is therefore now prevented STRUCTURALLY, and the assertions moved to
+ * the two places that can still break it: a re-added direct write in the generation path, and
+ * the one direct writer that remains.
  */
-describe('the production statement still carries every predicate the copy models', () => {
-  const SRC = readFileSync(join(__dirname, '..', 'SimulationService.ts'), 'utf-8')
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/^\s*\/\/.*$/gm, '');
+describe('nothing can stomp a projected verdict', () => {
+  const stripped = (rel: string): string =>
+    readFileSync(join(__dirname, rel), 'utf-8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
 
-  /** The `.set(...).where(...)` chain that writes bridge_hash. */
-  const stmt = (): string => {
-    const m = SRC.match(/\.set\(\{\s*bridge_hash:[\s\S]*?\)\);/);
-    expect(m, 'could not find the bridge_hash update in SimulationService').not.toBeNull();
-    return m![0];
-  };
+  const SERVICE = stripped(join('..', 'SimulationService.ts'));
+  const REVISIONS = stripped(join('..', 'RevisionService.ts'));
+  const CANARY = stripped(join('..', '..', '..', 'scripts', 'sim-canary-publish.ts'));
 
-  it('clears all three verdict columns with the hash', () => {
-    for (const col of ['package_class: null', 'canary_report: null', 'canary_at: null']) {
-      expect(stmt(), `the bridge write no longer clears ${col}`).toContain(col);
+  // THE REGRESSION, structural form. The generation path must not write the verdict columns at
+  // all — a re-added bridge write would null the verdict of a revisioned simulation on every
+  // regeneration, demoting proven packages to the legacy path exactly as before.
+  it('the generation path writes no verdict column directly', () => {
+    for (const col of ['package_class', 'canary_report', 'canary_at']) {
+      expect(
+        SERVICE,
+        `SimulationService writes ${col} directly again. The verdict may only be PROJECTED by `
+        + 'RevisionService.activate inside the promote transaction; a direct write here stomps '
+        + 'the projection of every revisioned simulation.',
+      ).not.toMatch(new RegExp(`${col}\\s*:`));
     }
   });
 
-  it('keeps the verdict when the hash is UNCHANGED (idempotent regeneration)', () => {
-    expect(stmt()).toMatch(/isNull\(simulations\.bridge_hash\)/);
-    expect(stmt()).toMatch(/ne\(simulations\.bridge_hash,\s*hash\)/);
+  it('activation is what projects the verdict onto the row', () => {
+    expect(
+      REVISIONS,
+      'RevisionService no longer projects package_class onto simulations at activation — the '
+      + 'row would keep a verdict describing bytes that are no longer active.',
+    ).toMatch(/package_class:\s*promoted\.package_class/);
   });
 
-  // THE REGRESSION. Migration 050 projects the verdict onto the revision; a revisioned simulation
-  // must never have it stomped by a bridge regeneration.
-  it('NEVER stomps a projected verdict — the revisioned guard is still in the predicate', () => {
-    expect(stmt(),
-      'active_revision_id guard missing: a bridge regeneration now nulls package_class on '
-      + 'revisioned simulations, demoting proven packages to the legacy path')
-      .toMatch(/isNull\(simulations\.active_revision_id\)/);
+  // The surviving direct writer. It is correct ONLY while it refuses revisioned rows.
+  it('the canary publisher still refuses to touch a revisioned row', () => {
+    expect(
+      CANARY,
+      'active_revision_id guard missing from sim-canary-publish: it now overwrites the projected '
+      + 'verdict of revisioned simulations.',
+    ).toMatch(/isNull\(simulations\.active_revision_id\)/);
   });
 });

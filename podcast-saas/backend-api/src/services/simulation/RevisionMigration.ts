@@ -39,7 +39,7 @@ import {
   type SimManifest,
   type SimManifestFile,
 } from 'shared/sim/simManifest';
-import { revisionIdFromKey, PACKAGE_SUBDIR } from 'shared/sim/simRevision';
+import { revisionIdFromKey, isSystemOwnedKey, PACKAGE_SUBDIR } from 'shared/sim/simRevision';
 
 export interface MigrationResult {
   simulationId: string;
@@ -91,6 +91,59 @@ export function roleForLegacyPath(relPath: string, entryRelPath: string): SimFil
  */
 export function revisionPathForLegacy(relPath: string, _role: SimFileRole): string {
   return `${PACKAGE_SUBDIR}/${relPath}`;
+}
+
+/** One legacy object, classified and mapped to where it lands inside a revision. */
+export interface LegacyCopyPlanItem {
+  /** The legacy storage key the bytes are read from. */
+  key: string;
+  /** Normalized prefix-relative path of the legacy object. */
+  rel: string;
+  role: SimFileRole;
+  /** Manifest path inside the revision (`package/<rel>` — layout preserved). */
+  revisionPath: string;
+}
+
+/**
+ * Plan the FULL-PACKAGE copy of a legacy mutable prefix into a revision.
+ *
+ * Extracted from `publishLegacyAsRevision` so the LIVE generation path (migration-on-write in
+ * `SimulationService.uploadSectionBridge`) copies a legacy package with EXACTLY the same
+ * classification and layout rules as the operator migration — two copies of this logic would agree
+ * until one changed, and then a live-published package would differ structurally from a migrated
+ * one for no reason anyone chose.
+ *
+ * Pure over `allKeys` rather than listing storage itself: the live path may be running on a
+ * storage token without ListBucket, where the caller's best available key set comes from the
+ * entry-HTML reference probe — the plan must work over whatever keys the caller could actually see.
+ *
+ * Two exclusions, both deliberate:
+ *   - keys inside ANY revision (`revisionIdFromKey`) — a revision must never be re-copied into a
+ *     revision; and
+ *   - system-owned subtrees (`isSystemOwnedKey`: `revisions/`, `posters/`) — captured posters are
+ *     revision-scoped evidence, not customer package content, and republishing them as `package/`
+ *     assets would bloat every future copy of the package forever.
+ */
+export function planLegacyCopy(opts: {
+  allKeys: string[];
+  prefix: string;
+  entryRelPath: string;
+}): { planned: LegacyCopyPlanItem[]; entry: LegacyCopyPlanItem | null } {
+  const prefix = opts.prefix.replace(/\/+$/, '');
+  const planned = opts.allKeys
+    .filter((k) => k.startsWith(`${prefix}/`))
+    .filter((k) => revisionIdFromKey(k) === null && !isSystemOwnedKey(k, prefix))
+    .map((key) => {
+      const rel = key.slice(prefix.length + 1);
+      const norm = normalizeManifestPath(rel);
+      return norm ? { key, rel: norm } : null;
+    })
+    .filter((x): x is { key: string; rel: string } => x !== null)
+    .map(({ key, rel }) => {
+      const role = roleForLegacyPath(rel, opts.entryRelPath);
+      return { key, rel, role, revisionPath: revisionPathForLegacy(rel, role) };
+    });
+  return { planned, entry: planned.find((p) => p.role === 'entry') ?? null };
 }
 
 export class RevisionMigration {
@@ -145,24 +198,12 @@ export class RevisionMigration {
     }
 
     const allKeys = await this.storage.listObjects(prefix);
-    // Never re-copy a revision into a revision. `listObjects` on the simulation prefix returns
-    // everything beneath it, which after the first migration includes every revision's own files.
-    const legacyKeys = allKeys.filter((k) => revisionIdFromKey(k) === null);
-    if (legacyKeys.length === 0) return { ...base, skipped: 'no-files' };
+    // `planLegacyCopy` excludes every key inside a revision (a revision must never be re-copied
+    // into a revision — after the first migration the listing includes every revision's own files)
+    // and the system-owned subtrees (captured posters are not customer package content).
+    const { planned, entry } = planLegacyCopy({ allKeys, prefix, entryRelPath });
+    if (planned.length === 0) return { ...base, skipped: 'no-files' };
 
-    const planned = legacyKeys
-      .map((key) => {
-        const rel = key.slice(prefix.length + 1);
-        const norm = normalizeManifestPath(rel);
-        return norm ? { key, rel: norm } : null;
-      })
-      .filter((x): x is { key: string; rel: string } => x !== null)
-      .map(({ key, rel }) => {
-        const role = roleForLegacyPath(rel, entryRelPath);
-        return { key, rel, role, revisionPath: revisionPathForLegacy(rel, role) };
-      });
-
-    const entry = planned.find((p) => p.role === 'entry');
     if (!entry) {
       return { ...base, skipped: 'no-entry-path', error: `entry ${entryRelPath} not present under ${prefix}` };
     }
@@ -254,6 +295,8 @@ export function buildLegacyManifest(opts: {
   revisionNumber: number;
   entryPath: string;
   files: SimManifestFile[];
+  /** Who produced this revision — defaults to the operator migration. */
+  createdBy?: string;
 }): SimManifest {
   return {
     manifestVersion: SIM_MANIFEST_VERSION,
@@ -275,6 +318,6 @@ export function buildLegacyManifest(opts: {
     generatedFrom: {},
     canary: { classification: null, ranAt: null, engine: null },
     createdAt: new Date().toISOString(),
-    createdBy: 'revision-migration',
+    createdBy: opts.createdBy ?? 'revision-migration',
   };
 }

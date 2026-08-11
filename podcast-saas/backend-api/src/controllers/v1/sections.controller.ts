@@ -5,7 +5,11 @@ import { timeline_sections, simulations, video_files } from '../../db/schema.js'
 import { eq, and, asc } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { editableProject } from '../../services/collabAccess.js';
-import { SimulationService, type ConversationMessage } from '../../services/simulation/SimulationService.js';
+import {
+  SimulationService,
+  type ConversationMessage,
+  type SectionPersistHook,
+} from '../../services/simulation/SimulationService.js';
 import {
   SIM_UI_CONTROLS_PARAM_MAX_CHARS,
   SimUiSelectionSchema,
@@ -57,6 +61,36 @@ function resolveSimEntryUrl(entryFile: string | null): string | null {
   // New rows store the storage key; old rows stored the full URL (backward compat).
   return entryFile.startsWith('http') ? entryFile : getStorageAdapter().getSimPublicUrl(entryFile);
 }
+
+// ── Simulation-generation error mapping ───────────────────────────────────────
+// Module scope + exported so the SSE/HTTP error contract is unit-testable without a route.
+
+export function classifySimulationError(err: unknown): string {
+  if (err instanceof Error) {
+    // A lost activation compare-and-set: a CONCURRENT publication for the same simulation was
+    // activated first. Nothing was overwritten (the loser's bytes sit in an inactive revision
+    // prefix), so the correct client response is a retry, not a bug report. Matched by name
+    // rather than instanceof so the check cannot be defeated by a second copy of the class.
+    if (err.name === 'RevisionConflict') return 'conflict';
+    const msg = err.message.toLowerCase();
+    if (err.name === 'AbortError' || msg.includes('generation cancelled')) return 'aborted';
+    if (msg.includes('overloaded') || msg.includes('529'))                 return 'ai_overloaded';
+    if (msg.includes('rate_limit') || msg.includes('429'))                 return 'limit_exceeded';
+    if (msg.includes('no html entry') || msg.includes('not found'))        return 'not_found';
+    if (msg.includes('non-json plan'))                                     return 'validation_error';
+  }
+  return 'generation_error';
+}
+
+export const ERROR_MESSAGES: Record<string, string> = {
+  aborted:          'Generation was cancelled.',
+  ai_overloaded:    'AI is busy right now. Please try again in a moment.',
+  limit_exceeded:   'Rate limit reached. Please wait before trying again.',
+  not_found:        'Simulation files not found. Please re-upload the simulation.',
+  validation_error: 'AI returned an unexpected response. Please try a different prompt.',
+  conflict:         'A concurrent generation for this simulation completed first — nothing was overwritten. Please retry.',
+  generation_error: 'Generation failed. Please try again or simplify your prompt.',
+};
 
 export async function registerSectionsRoutes(app: FastifyInstance): Promise<void> {
   // GET /api/v1/projects/:id/sections
@@ -290,27 +324,6 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
 
   // ── Shared helpers for sim-script generation ──────────────────────────────────
 
-  function classifySimulationError(err: unknown): string {
-    if (err instanceof Error) {
-      const msg = err.message.toLowerCase();
-      if (err.name === 'AbortError' || msg.includes('generation cancelled')) return 'aborted';
-      if (msg.includes('overloaded') || msg.includes('529'))                 return 'ai_overloaded';
-      if (msg.includes('rate_limit') || msg.includes('429'))                 return 'limit_exceeded';
-      if (msg.includes('no html entry') || msg.includes('not found'))        return 'not_found';
-      if (msg.includes('non-json plan'))                                     return 'validation_error';
-    }
-    return 'generation_error';
-  }
-
-  const ERROR_MESSAGES: Record<string, string> = {
-    aborted:          'Generation was cancelled.',
-    ai_overloaded:    'AI is busy right now. Please try again in a moment.',
-    limit_exceeded:   'Rate limit reached. Please wait before trying again.',
-    not_found:        'Simulation files not found. Please re-upload the simulation.',
-    validation_error: 'AI returned an unexpected response. Please try a different prompt.',
-    generation_error: 'Generation failed. Please try again or simplify your prompt.',
-  };
-
   // The generate request body (shared by the POST stream route, the POST non-stream route,
   // and — parsed from the query string — the legacy GET stream route). `prompt` is OPTIONAL:
   // an empty prompt WITH a ui_controls selection is the zero-LLM "minimize UI only" path
@@ -367,7 +380,26 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
     }) | null;
 
     const patch: Record<string, unknown> = { simple_ui: simpleUi, auto_script: autoScript, sim_script: 'main' };
-    let sectionUrl: string;
+
+    // The section-row update runs INSIDE the revision-activation transaction, via the service's
+    // persistSection hook (audit P0.4): the pointer flip and the section row commit or roll back
+    // TOGETHER, so a client abort or crash can never leave a published revision the section does
+    // not reference, or vice versa. Every patch field — not only simulation_url/sim_meta — goes
+    // through this single in-transaction write. The hook throwing (section deleted mid-generation)
+    // rolls the whole activation back.
+    let updated: SectionRow | undefined;
+    const persistPatch = async (
+      tx: Parameters<SectionPersistHook>[0],
+      finalPatch: Record<string, unknown>,
+    ): Promise<void> => {
+      const [row] = await tx
+        .update(timeline_sections)
+        .set(finalPatch)
+        .where(eq(timeline_sections.id, section.id))
+        .returning();
+      if (!row) throw new Error('This section was removed during generation.');
+      updated = row as SectionRow;
+    };
 
     if (rawPrompt === '') {
       // ── Mechanical Minimal-UI path — zero LLM ────────────────────────────────
@@ -376,28 +408,34 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       const simRow = await db.query.simulations.findFirst({
         where: and(eq(simulations.id, section.simulation_id!), eq(simulations.project_id, project.id)),
       });
-      const res = await svc.applyMinimalUiOnly({
+      await svc.applyMinimalUiOnly({
         simId:     section.simulation_id!,
         sectionId: section.id,
         projectId: project.id,
         entryKey:  simRow?.entry_file && !simRow.entry_file.startsWith('http') ? simRow.entry_file : undefined,
         onEvent,
+        signal,
+        persistSection: async (tx, pub) => {
+          // Preserve provenance: the bridge BODY is unchanged (uploadSectionBridge kept any existing
+          // demo), so an LLM-authored section stays labeled 'llm' and keeps its prompt + provider/
+          // model/confidence/etc. — only the UI selection changed. We do NOT null sim_prompt, and we
+          // keep sim_meta.prompt so a later identical-prompt Generate can still canReuse. A section
+          // with no prior bridge (fresh) has no provenance to keep ⇒ generatedBy:'mechanical'.
+          await persistPatch(tx, {
+            ...patch,
+            sim_meta: {
+              ...(storedMeta ?? {}),
+              planVersion:           '7',
+              generatedBy:           storedMeta?.generatedBy ?? 'mechanical',
+              uiControls,
+              bridgeHash:            pub.bridgeHash,
+              generatedAt:           new Date().toISOString(),
+              supportsRuntimeParams: true,
+            },
+            simulation_url: pub.sectionUrl,
+          });
+        },
       });
-      sectionUrl = res.sectionUrl;
-      // Preserve provenance: the bridge BODY is unchanged (uploadSectionBridge kept any existing
-      // demo), so an LLM-authored section stays labeled 'llm' and keeps its prompt + provider/
-      // model/confidence/etc. — only the UI selection changed. We do NOT null sim_prompt, and we
-      // keep sim_meta.prompt so a later identical-prompt Generate can still canReuse. A section
-      // with no prior bridge (fresh) has no provenance to keep ⇒ generatedBy:'mechanical'.
-      patch.sim_meta = {
-        ...(storedMeta ?? {}),
-        planVersion:           '7',
-        generatedBy:           storedMeta?.generatedBy ?? 'mechanical',
-        uiControls,
-        bridgeHash:            res.bridgeHash,
-        generatedAt:           new Date().toISOString(),
-        supportsRuntimeParams: true,
-      };
     } else {
       // ── canReuse: prompt unchanged + own bridge + runtime-param bridge + same selection ──
       const supportsRuntimeParams =
@@ -410,63 +448,74 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
 
       if (canReuse) {
         onEvent?.('status', { status: 'Toggle updated — bridge handles it at runtime.', type: 'info' });
-        ({ sectionUrl } = svc.reuseBridgeScript(section.simulation_url!));
-      } else {
-        const simRow = await db.query.simulations.findFirst({
-          where: and(eq(simulations.id, section.simulation_id!), eq(simulations.project_id, project.id)),
-        });
-        const savedHistory = (storedMeta?.conversationHistory as ConversationMessage[] | undefined) ?? [];
-        const result = await svc.generateBridgeScript({
-          simId:               section.simulation_id!,
-          sectionId:           section.id,
-          projectId:           project.id,
-          userId:              user.id,
-          prompt:              rawPrompt,
-          simpleUi,
-          autoScript,
-          uiControls,
-          entryKey:            simRow?.entry_file && !simRow.entry_file.startsWith('http') ? simRow.entry_file : undefined,
-          storedSourceHash:    storedMeta?.sourceHash,
-          conversationHistory: savedHistory.length > 0 ? savedHistory : undefined,
-          onEvent,
-          signal,
-        });
-        sectionUrl = result.sectionUrl;
-        patch.sim_prompt = rawPrompt;
-        patch.sim_meta = {
-          planVersion:        '7',
-          generatedBy:        'llm',
-          prompt:             rawPrompt,
-          uiControls,
-          sourceHash:         result.sourceHash,
-          bridgeHash:         result.bridgeHash,
-          generatedAt:        new Date().toISOString(),
-          provider:           result.provider,
-          model:              result.model,
-          confidence:         result.confidence,
-          confidenceLevel:    result.confidenceLevel,
-          contextTruncated:   result.contextTruncated,
-          retryCount:         result.retryCount,
-          retryReason:        result.retryReason,
-          warnings:           result.warnings,
-          validationErrors:   result.validationErrors,
-          validationWarnings: result.validationWarnings,
-          supportsRuntimeParams: true,
-          runtimeValidated:   false,
-          conversationHistory: result.conversationHistory,
-        };
+        const { sectionUrl } = svc.reuseBridgeScript(section.simulation_url!);
+        // No publication happened — no revision, no activation transaction to join. The bare
+        // toggle write keeps its own abort check, exactly as before.
+        patch.simulation_url = sectionUrl;
+        if (signal.aborted) throw new Error('generation cancelled');
+        const [row] = await db
+          .update(timeline_sections)
+          .set(patch)
+          .where(eq(timeline_sections.id, section.id))
+          .returning();
+        if (!row) throw new Error('This section was removed during generation.');
+        return row;
       }
+
+      const simRow = await db.query.simulations.findFirst({
+        where: and(eq(simulations.id, section.simulation_id!), eq(simulations.project_id, project.id)),
+      });
+      const savedHistory = (storedMeta?.conversationHistory as ConversationMessage[] | undefined) ?? [];
+      await svc.generateBridgeScript({
+        simId:               section.simulation_id!,
+        sectionId:           section.id,
+        projectId:           project.id,
+        userId:              user.id,
+        prompt:              rawPrompt,
+        simpleUi,
+        autoScript,
+        uiControls,
+        entryKey:            simRow?.entry_file && !simRow.entry_file.startsWith('http') ? simRow.entry_file : undefined,
+        storedSourceHash:    storedMeta?.sourceHash,
+        conversationHistory: savedHistory.length > 0 ? savedHistory : undefined,
+        onEvent,
+        signal,
+        persistSection: async (tx, result) => {
+          await persistPatch(tx, {
+            ...patch,
+            sim_prompt: rawPrompt,
+            sim_meta: {
+              planVersion:        '7',
+              generatedBy:        'llm',
+              prompt:             rawPrompt,
+              uiControls,
+              sourceHash:         result.sourceHash,
+              bridgeHash:         result.bridgeHash,
+              generatedAt:        new Date().toISOString(),
+              provider:           result.provider,
+              model:              result.model,
+              confidence:         result.confidence,
+              confidenceLevel:    result.confidenceLevel,
+              contextTruncated:   result.contextTruncated,
+              retryCount:         result.retryCount,
+              retryReason:        result.retryReason,
+              warnings:           result.warnings,
+              validationErrors:   result.validationErrors,
+              validationWarnings: result.validationWarnings,
+              supportsRuntimeParams: true,
+              runtimeValidated:   false,
+              conversationHistory: result.conversationHistory,
+            },
+            simulation_url: result.sectionUrl,
+          });
+        },
+      });
     }
 
-    patch.simulation_url = sectionUrl;
-
-    if (signal.aborted) throw new Error('generation cancelled');
-    const [updated] = await db
-      .update(timeline_sections)
-      .set(patch)
-      .where(eq(timeline_sections.id, section.id))
-      .returning();
-    if (!updated) throw new Error('This section was removed during generation.');
+    // The service resolving means activation committed, which means the hook ran exactly once.
+    // Guarded loudly so a service change that stops invoking the hook cannot silently return a
+    // stale row. After this point an abort is ignored — the publication is already live.
+    if (!updated) throw new Error('Generation completed but the section update never ran.');
     return updated;
   }
 

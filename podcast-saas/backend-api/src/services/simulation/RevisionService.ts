@@ -77,6 +77,14 @@ export class RevisionConflict extends Error {
   }
 }
 
+/**
+ * The transaction handle `activate()`'s post-promote hook runs inside.
+ *
+ * Exposed as a type so a caller can write a hook without importing drizzle internals — it is
+ * exactly the `tx` a `db.transaction(async (tx) => …)` callback receives.
+ */
+export type RevisionDbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
 /** A published file failed verification. Publication must not proceed. */
 export interface VerificationProblem {
   path: string;
@@ -541,6 +549,18 @@ export class RevisionService {
     storagePrefix: string;
     expectedActiveRevisionId: string | null;
     supersede: 'retired' | 'rolled_back';
+    /**
+     * Runs INSIDE the activation transaction, after the pointer flip has succeeded.
+     *
+     * This is what lets a caller make one more row consistent with the flip ATOMICALLY — the live
+     * generation path updates `timeline_sections.simulation_url` here, so a crash or a thrown hook
+     * can never leave the section pointing at bytes that were not activated (the throw rolls the
+     * whole activation back, promote and pointer included). It is never called when any of the
+     * compare-and-sets loses: a conflict throws before this point.
+     *
+     * Optional and additive: `rollback()` and every pre-existing caller keep not passing it.
+     */
+    onActivated?: (tx: RevisionDbTx) => Promise<void>;
   }): Promise<{ activated: SimRevisionRecord; superseded: string | null }> {
     try {
       return await this.activateInTransaction(opts);
@@ -566,6 +586,7 @@ export class RevisionService {
     storagePrefix: string;
     expectedActiveRevisionId: string | null;
     supersede: 'retired' | 'rolled_back';
+    onActivated?: (tx: RevisionDbTx) => Promise<void>;
   }): Promise<{ activated: SimRevisionRecord; superseded: string | null }> {
     const { simulationId, revisionId, storagePrefix, expectedActiveRevisionId, supersede } = opts;
 
@@ -662,6 +683,14 @@ export class RevisionService {
         ))
         .returning({ id: simulations.id });
       if (!flipped) throw new RevisionConflict('pointer', 'active_revision_id moved under us');
+
+      // (d) THE CALLER'S POST-PROMOTE HOOK — same transaction, after every CAS has held.
+      //
+      //     Placement is the contract: a hook that runs before the pointer CAS could write rows
+      //     consistent with an activation that then loses; here, either the whole activation —
+      //     demote, promote, pointer AND the hook's writes — commits, or none of it does. A throw
+      //     from the hook is therefore a full rollback, not a half-activated package.
+      if (opts.onActivated) await opts.onActivated(tx);
 
       return { activated: toRecord(promoted), superseded };
     });
