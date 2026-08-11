@@ -18,7 +18,9 @@ import {
   simUiSelectionsEqual,
   type SimUiSelection,
 } from '../../services/simulation/SimUiControls.js';
+import { withServedSimulationUrls } from '../../services/simulation/simulationUrlResolver.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
+import { logger } from '../../lib/logger.js';
 import { LLMService } from '../../services/llm/LLMService.js';
 import { ApiKeyService } from '../../services/secrets/ApiKeyService.js';
 import { UsageTrackingService } from '../../services/usage/UsageTrackingService.js';
@@ -60,6 +62,38 @@ function resolveSimEntryUrl(entryFile: string | null): string | null {
   if (!entryFile) return null;
   // New rows store the storage key; old rows stored the full URL (backward compat).
   return entryFile.startsWith('http') ? entryFile : getStorageAdapter().getSimPublicUrl(entryFile);
+}
+
+/**
+ * Attach `simulation_served_url` — the bytes that are live right now — to a section list.
+ *
+ * ONE query for the whole list, never one per section: the pointer read is project-scoped and
+ * indexed, exactly as `buildPlayerConfig` does it, and is skipped entirely for a project with no
+ * simulation sections (which is most of them). `columns` keeps it to two scalars — the row also
+ * carries `guidance`, `bridge_functions` and `canary_report`, none of which this needs.
+ *
+ * The degraded read mirrors buildPlayerConfig's: `active_revision_entry_key` arrives in migration
+ * 050, and an app image that boots before it is applied must not 500 the editor. Degrading means
+ * every section falls back to its stored URL — which is today's behaviour, and wrong bytes rather
+ * than no editor — so it is logged as an incident rather than swallowed.
+ */
+async function withServedSimUrls<T extends { simulation_id: string | null; simulation_url: string | null }>(
+  projectId: string,
+  sections: readonly T[],
+): Promise<Array<T & { simulation_served_url: string | null }>> {
+  if (!sections.some((s) => s.simulation_id)) {
+    return sections.map((s) => ({ ...s, simulation_served_url: s.simulation_url }));
+  }
+  const pointerRows = await db.query.simulations
+    .findMany({
+      where: eq(simulations.project_id, projectId),
+      columns: { id: true, active_revision_entry_key: true },
+    })
+    .catch((err: unknown) => {
+      logger.error({ err, projectId }, 'sections: revision pointers unavailable — the editor falls back to stored URLs');
+      return [] as Array<{ id: string; active_revision_entry_key: string | null }>;
+    });
+  return withServedSimulationUrls(sections, pointerRows, getStorageAdapter());
 }
 
 // ── Simulation-generation error mapping ───────────────────────────────────────
@@ -107,7 +141,9 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
         orderBy: [asc(timeline_sections.sort_order), asc(timeline_sections.start_sec)],
       });
 
-      return reply.send(sections);
+      // The stored URL is what this section last published; the SERVED url is what is live now.
+      // The editor renders the served one and writes back only the stored one (audit §9.6).
+      return reply.send(await withServedSimUrls(project.id, sections));
     },
   );
 

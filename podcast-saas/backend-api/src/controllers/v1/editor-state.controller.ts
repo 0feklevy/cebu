@@ -7,6 +7,7 @@ import {
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { editableProject } from '../../services/collabAccess.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
+import { withServedSimulationUrls } from '../../services/simulation/simulationUrlResolver.js';
 
 // Aggregate editor bootstrap (loadperf-003). The editor previously opened with 6 parallel list
 // round-trips (videos, sections, simulations, broll jobs, images, audio). This returns all of
@@ -47,7 +48,14 @@ export async function registerEditorStateRoutes(app: FastifyInstance): Promise<v
           : r.entry_file,
       }));
 
-      return reply.send({ videos, sections, simulations: simulationsOut, brollJobs, images, audioFiles });
+      // Same served-URL shaping as GET /sections: the stored `simulation_url` is what a section
+      // last published, which after any republish or rollback is a RETIRED revision's bytes. The
+      // live bytes are behind `simulations.active_revision_entry_key`, and resolving that pointer
+      // on the way out is the only place it happens (audit §9.6). No extra round-trip — the
+      // simulation rows this needs were already loaded above, which is this endpoint's whole point.
+      const sectionsOut = withServedSimulationUrls(sections, simRows, storage);
+
+      return reply.send({ videos, sections: sectionsOut, simulations: simulationsOut, brollJobs, images, audioFiles });
     },
   );
 }

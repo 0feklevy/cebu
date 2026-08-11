@@ -68,6 +68,7 @@ import { captionUrlForVideo } from './captions/CaptionService.js';
 import { normalizeAvatarCircles, normalizeSpeakerTimeline, type AvatarCirclesLike } from './avatarCircles/normalizeAvatarCircles.js';
 import { logger } from '../lib/logger.js';
 import { resolveRumSampleRate, resolveSimRuntimeFlags, fieldAggregates } from './simulation/RumService.js';
+import { simulationUrlResolver } from './simulation/simulationUrlResolver.js';
 import { decideBudget } from 'shared/sim/closedLoop';
 
 /** The simulation columns this file reads. Named so the degraded-read catch cannot drift from it. */
@@ -381,17 +382,12 @@ export async function buildPlayerConfig(
    * The STORED `simulation_url` is never rewritten. Putting the revision id into stored URLs would
    * make activation an N-row un-transacted rewrite and break the "single pointer update" promise
    * outright; it would also break sim-script reuse, which compares against the raw stored value.
-   * So the pointer is resolved HERE, on the way out, and nowhere else.
+   * So the pointer is resolved on the way out — by the SHARED resolver, which is the only place
+   * that knows how. It used to be a closure here, which is precisely why the editor's own read of
+   * `timeline_sections` served retired bytes (audit §9.6): a rule that lives in one caller is a
+   * rule the other callers do not follow.
    */
-  const simulationUrlOf = (simId: string | null, url: string | null): string | null => {
-    const row = simId ? simRows.get(simId) : undefined;
-    if (!row?.active_revision_entry_key || !url) return url ?? null;
-    // `?section=` and `?v=` are preserved exactly: the pool dispatches on `?section=`, and the
-    // poster/variant identity axis reads it. Dropping the query here would collapse every section
-    // of a package onto one variant key.
-    const q = url.includes('?') ? url.slice(url.indexOf('?')) : '';
-    return storage.getSimPublicUrl(row.active_revision_entry_key) + q;
-  };
+  const simulationUrlOf = simulationUrlResolver(simRows, storage);
 
   const packageClassFor = (simId: string | null): SimPackageClass | null => {
     if (!simId) return null;

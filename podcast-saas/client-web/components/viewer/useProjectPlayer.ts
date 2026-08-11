@@ -7,6 +7,9 @@ import { releaseAvatarElement } from '../../lib/avatarAudioGraph';
 import type { SimStartScriptParams } from '../../lib/simUiControls';
 import { canWarmUnpaused, learnCanEmitPaint } from '../../lib/simCapability';
 import { resolveSimPoolMode } from '../../lib/simPoolMode';
+// The media/timeline slop this file has always applied by hand. Named and shared so the EDITOR's
+// section predicates use the same tolerance instead of a second epsilon of their own (audit §9.6).
+import { SECTION_BOUNDARY_EPSILON_SEC } from '../../lib/sectionInterval';
 import { collectSimPool, bootHideFor, dynamicScriptFor, flattenSimOccurrences, packageKeyOf, planWindowResidency, sectionKeyOf, SIM_POOL_CAP, type SimPoolFrameSpec } from '../../lib/simPool';
 import { planResidency, type SimOccurrence } from 'shared/src/sim/occurrencePlanner';
 import { resolveBudget } from 'shared/src/sim/prepareBudget';
@@ -412,14 +415,14 @@ export function useProjectPlayer(
     // buildPlayerConfig fills with every main video flat in created_at order, so for a branching
     // project its [0] is unrelated to the entry sequence and this decision disagreed with the
     // `simFirst` arm gate below on the very same config (audited).
-    const opensOnSim = (initialSegments[0]?.simulations ?? []).some((sec) => !!sec.simulation_url && sec.start_sec <= 0.05);
+    const opensOnSim = (initialSegments[0]?.simulations ?? []).some((sec) => !!sec.simulation_url && sec.start_sec <= SECTION_BOUNDARY_EPSILON_SEC);
     const simFirstSeed = poolTierRef.current === 'window' && opensOnSim ? 1 : 0;
     const cap = poolTierRef.current === 'all' ? SIM_POOL_CAP : simFirstSeed;
     initialSimPoolRef.current = collectSimPool(config, cap);
   }
   // Does the timeline OPEN on a sim (no leading video)? Then pool frames must arm immediately —
   // there is no video boot to protect.
-  const simFirst = (initialSegments[0]?.simulations ?? []).some((s) => !!s.simulation_url && s.start_sec <= 0.05);
+  const simFirst = (initialSegments[0]?.simulations ?? []).some((s) => !!s.simulation_url && s.start_sec <= SECTION_BOUNDARY_EPSILON_SEC);
 
   const [state, setState] = useState<ProjectPlayerState>({
     playing:          false,
@@ -1447,7 +1450,7 @@ export function useProjectPlayer(
     const segmentDuration = timelineRef.current[segmentIdx]?.duration ?? seg.duration_sec;
     const isPostRollSim = !!simSection &&
       simSection.type === 'simulation' &&
-      simSection.start_sec >= segmentDuration - 0.05;
+      simSection.start_sec >= segmentDuration - SECTION_BOUNDARY_EPSILON_SEC;
 
     if (simSection !== null && simSection?.id === activeSimRef.current?.id) return;
 
@@ -2588,7 +2591,7 @@ export function useProjectPlayer(
       s.type === 'simulation' &&
       !!s.simulation_url &&
       !!seg &&
-      seg.duration >= s.start_sec - 0.05 &&
+      seg.duration >= s.start_sec - SECTION_BOUNDARY_EPSILON_SEC &&
       seg.duration < s.end_sec,
     ) ?? null;
 

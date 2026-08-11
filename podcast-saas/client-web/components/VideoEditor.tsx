@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { AlertTriangle, Clapperboard, Copy, Flag, GitBranch, Maximize2, Minimize2, Music, Pencil, Plus, Redo2, RefreshCw, Sparkles, Trash2, Undo2, Upload } from 'lucide-react';
 import { useAuth } from '../lib/firebase';
 import { api } from '../lib/api';
@@ -18,6 +18,8 @@ import { ExtendedLibraryModal } from './avatar/ExtendedLibraryModal';
 import { BranchingModal } from './branching/BranchingModal';
 import { getAvatarCircles, saveAvatarCircles, type AvatarCirclesConfig } from './avatar/avatarApi';
 import { normalizeCircleSections, type CircleSection } from '../lib/circleSections';
+import { sectionAtPlayhead } from '../lib/sectionInterval';
+import { rememberServedSimUrls, servedSimulationUrl, type RememberedServedUrl } from '../lib/simServedUrl';
 import type { VideoFile, TimelineSection, TimelineMarker, Simulation, VideoGenerationJob, ImageFile, AudioFile } from 'shared/src/generated/client-v1';
 
 type ToolMode = 'video' | 'simulation' | 'broll';
@@ -264,6 +266,18 @@ export function VideoEditor({ projectId }: Props) {
   const [replacingSimId, setReplacingSimId] = useState<string | null>(null);     // Library "Replace simulation" target
   const [avatarCircles, setAvatarCircles] = useState<AvatarCirclesConfig | null>(null);
   const [sections, setSections] = useState<TimelineSection[]>([]);
+  /**
+   * What the simulation revision pointer resolved to at load, per section (audit §9.6).
+   *
+   * `simulation_served_url` rides only on the two bootstrap reads; create/update responses return
+   * the stored row, because that column is what the editor writes BACK (sectionPatchBody /
+   * sectionCreateBody) and the server must not start persisting a resolved URL. Without this
+   * memory, dragging a section would drop its preview back onto the retired revision the row
+   * stores. Keyed by the stored value it was resolved FROM, so a regeneration — which rewrites the
+   * stored URL to the revision it just published — invalidates the entry instead of pinning the
+   * preview to the revision that was live when the editor opened.
+   */
+  const [servedSimUrls, setServedSimUrls] = useState<Map<string, RememberedServedUrl>>(new Map());
   const [markers, setMarkers] = useState<TimelineMarker[]>([]);
   const [undoStack, setUndoStack] = useState<SectionSnapshot[]>([]);
   const [redoStack, setRedoStack] = useState<SectionSnapshot[]>([]);
@@ -355,6 +369,7 @@ export function VideoEditor({ projectId }: Props) {
       setVideos(vids.filter(v => !v.is_broll));
       setAllVideos(vids);
       setSections(secs);
+      setServedSimUrls(rememberServedSimUrls(secs));
       setUndoStack([]);
       setRedoStack([]);
       setSimulations(sims);
@@ -457,14 +472,11 @@ export function VideoEditor({ projectId }: Props) {
   const audioSections = sections.filter(isAudioSection);
   const hasBroll = toolMode === 'broll' || showAllLayers;
 
-  const activeBrollSection = brollSections.find(s => {
-    const start = s.global_offset_sec ?? 0;
-    const end   = start + (s.end_sec - s.start_sec);
-    return playheadSec >= start && playheadSec < end;
-  }) ?? null;
-
   // Main timeline offsets. Sections may extend past the physical video duration
   // when the user appends a simulation or existing clip after the last clip.
+  // (Hoisted above the playhead predicates below: every one of them now needs `timelineDuration`
+  // to know whether a section is the timeline's last, which is where the boundary tolerance
+  // applies — see sectionAtPlayhead.)
   const mainVideosSorted = [...allVideos.filter(v => !v.is_broll)].sort(
     (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
   );
@@ -482,13 +494,26 @@ export function VideoEditor({ projectId }: Props) {
     ...sections.filter(s => s.track === 'main').map(sectionGlobalEnd),
   );
 
+  /** Global bounds of a main-track section — the axis every predicate below matches against. */
+  const globalBounds = (s: TimelineSection) => ({ start: sectionGlobalStart(s), end: sectionGlobalEnd(s) });
+
+  const activeBrollSection = sectionAtPlayhead(
+    brollSections,
+    playheadSec,
+    s => {
+      const start = s.global_offset_sec ?? 0;
+      return { start, end: start + (s.end_sec - s.start_sec) };
+    },
+    timelineDuration,
+  );
+
   // Clip overlay — library video shown as overlay at playhead position.
-  const activeClipSection = sections.find(s => {
-    if (s.type !== 'clip' || !s.clip_source_video_id) return false;
-    const globalStart = sectionGlobalStart(s);
-    const globalEnd   = sectionGlobalEnd(s);
-    return playheadSec >= globalStart && playheadSec < globalEnd;
-  }) ?? null;
+  const activeClipSection = sectionAtPlayhead(
+    sections.filter(s => s.type === 'clip' && !!s.clip_source_video_id),
+    playheadSec,
+    globalBounds,
+    timelineDuration,
+  );
 
   // Normalize clip section to broll-like shape so VideoPlayer's seek formula works:
   // global_offset_sec = when the clip appears in global timeline
@@ -671,32 +696,52 @@ export function VideoEditor({ projectId }: Props) {
   })();
 
   // Compute active section label (global → local → section lookup)
-  const activeSectionLabel = (() => {
-    return sections.find(s =>
-      s.track === 'main' &&
-      playheadSec >= sectionGlobalStart(s) &&
-      playheadSec < sectionGlobalEnd(s),
-    )?.label ?? null;
-  })();
+  const activeSectionLabel = sectionAtPlayhead(
+    sections.filter(s => s.track === 'main'),
+    playheadSec,
+    globalBounds,
+    timelineDuration,
+  )?.label ?? null;
 
-  // Compute active simulation section for the editor preview overlay
-  const activeSimSection = (() => {
-    return sections.find(s =>
-      s.type === 'simulation' &&
-      !!s.simulation_url &&
-      playheadSec >= sectionGlobalStart(s) &&
-      playheadSec < sectionGlobalEnd(s),
-    ) ?? null;
-  })();
+  // Compute active simulation section for the editor preview overlay.
+  //
+  // This is the predicate the audit named (§9.6): a POST-ROLL simulation — one whose section runs
+  // to the end of the timeline — was never active at the final instant, because
+  // `useEditorPlayback.onEnded` parks the playhead exactly on the end and `playheadSec < end` is
+  // false there. The viewer has always tolerated that instant; `sectionAtPlayhead` is its
+  // tolerance, shared rather than re-invented.
+  const activeSimSection = sectionAtPlayhead(
+    sections.filter(s => s.type === 'simulation' && !!s.simulation_url),
+    playheadSec,
+    globalBounds,
+    timelineDuration,
+  );
+
+  // The preview must mount the bytes that are LIVE, not the ones this section last published: a
+  // republish or a rollback moves the simulation's active-revision pointer without rewriting any
+  // stored URL, so the stored one can name a retired revision (audit §9.6). The server resolves
+  // the pointer on the way out; `simulation_url` stays the stored value because that is the value
+  // the editor writes back (sectionPatchBody / sectionCreateBody), and only this render-time copy
+  // — never anything persisted — carries the resolved one.
+  const activeSimServedUrl = activeSimSection ? servedSimulationUrl(activeSimSection, servedSimUrls) : null;
+  // Memoized on the SECTION and the resolved url, not rebuilt per render: VideoPlayer memoizes its
+  // boot-hide list on this object's identity, and a fresh identity every render defeats
+  // SimSurface's memo() — the exact churn that memo exists to prevent.
+  const activeSimSectionServed = useMemo<TimelineSection | null>(
+    () => !activeSimSection || activeSimServedUrl === activeSimSection.simulation_url
+      ? activeSimSection
+      : { ...activeSimSection, simulation_url: activeSimServedUrl },
+    [activeSimSection, activeSimServedUrl],
+  );
 
   // Compute active image section for the editor preview overlay
   const activeImageSection = (() => {
-    const s = sections.find(sec =>
-      sec.type === 'clip' &&
-      !!sec.clip_source_image_id &&
-      playheadSec >= sectionGlobalStart(sec) &&
-      playheadSec < sectionGlobalEnd(sec),
-    ) ?? null;
+    const s = sectionAtPlayhead(
+      sections.filter(sec => sec.type === 'clip' && !!sec.clip_source_image_id),
+      playheadSec,
+      globalBounds,
+      timelineDuration,
+    );
     if (!s) return null;
     const img = images.find(i => i.id === s.clip_source_image_id);
     if (!img) return null;
@@ -1157,7 +1202,7 @@ export function VideoEditor({ projectId }: Props) {
                     currentTime={playheadSec}
                     onTimeUpdate={setPlayheadSec}
                     sectionLabel={activeSectionLabel}
-                    activeSimSection={activeSimSection}
+                    activeSimSection={activeSimSectionServed}
                     activeBrollSection={activeOverlay ?? null}
                     brollHlsUrl={brollHlsUrl}
                     activeImageSection={activeImageSection}
