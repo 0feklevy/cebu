@@ -6,6 +6,7 @@ import type { PlayerConfig, PlayerSegment, SimulationOverlay, TimelineSeg, Broll
 import { releaseAvatarElement } from '../../lib/avatarAudioGraph';
 import type { SimStartScriptParams } from '../../lib/simUiControls';
 import { canWarmUnpaused, learnCanEmitPaint } from '../../lib/simCapability';
+import { resolveSimPoolMode } from '../../lib/simPoolMode';
 import { collectSimPool, bootHideFor, dynamicScriptFor, flattenSimOccurrences, packageKeyOf, planWindowResidency, sectionKeyOf, SIM_POOL_CAP, type SimPoolFrameSpec } from '../../lib/simPool';
 import { planResidency, type SimOccurrence } from 'shared/src/sim/occurrencePlanner';
 import { resolveBudget } from 'shared/src/sim/prepareBudget';
@@ -98,6 +99,11 @@ export interface ProjectPlayerRefs {
 export interface ProjectPlayerState {
   playing:         boolean;
   started:         boolean;
+  // First 'playing' event of the current playback session has fired — i.e. real frames are
+  // being presented. The thumbnail cover hides on `started && videoLive`, so it outlives the
+  // play click by exactly the source-warmup gap instead of dropping onto a black frame
+  // (THUMB interim fix; the full rVFC first-frame gate is a later wave).
+  videoLive:       boolean;
   showResumeBtn:   boolean;
   showSimOverlay:  boolean;
   showBrollOverlay: boolean;
@@ -179,8 +185,20 @@ function fmt(s: number): string {
   return `${m}:${sec.toString().padStart(2, '0')}`;
 }
 
-async function safePlay(v: HTMLVideoElement): Promise<void> {
-  try { await v.play(); } catch (_) {}
+/**
+ * play() with the rejection caught: resolves true when playback genuinely started, false when
+ * the browser refused (NotAllowedError before a qualifying gesture, AbortError when a load()
+ * interrupted the request). startPlayback reacts to `false` by restoring the poster + play
+ * button (P0.6); every other call site is free to keep ignoring the result, exactly as before.
+ */
+async function safePlay(v: HTMLVideoElement): Promise<boolean> {
+  try { await v.play(); return true; }
+  catch (err) {
+    // Debug level: rejections are routine, but WHICH error it was is what turns a
+    // "black frame on load" report into something actionable.
+    console.debug('[viewer] video.play() rejected:', err);
+    return false;
+  }
 }
 
 // Branching: does a postMessage from the sim match an edge's sim-trigger condition?
@@ -326,12 +344,15 @@ export function useProjectPlayer(
 
   const simPoolModeRef = useRef<'adaptive' | 'single' | null>(null);
   if (simPoolModeRef.current === null) {
-    let mode: 'adaptive' | 'single' = config.sim_pool_mode === 'single' ? 'single' : 'adaptive';
-    if (typeof window !== 'undefined') {
-      const q = new URLSearchParams(window.location.search).get('simpool');
-      if (q === 'single' || q === 'adaptive') mode = q;
-    }
-    simPoolModeRef.current = mode;
+    // `?simpool` is DOWNGRADE-ONLY outside dev (KILLSW): 'single' always wins, 'adaptive' may
+    // upgrade the server's decision only in development. resolveSimPoolMode owns the rule (and
+    // its unit tests own the combination table) — previously any production URL could upgrade
+    // a server-side 'single' back to 'adaptive', defeating the operator kill switch.
+    const serverMode: 'adaptive' | 'single' = config.sim_pool_mode === 'single' ? 'single' : 'adaptive';
+    const q = typeof window !== 'undefined'
+      ? new URLSearchParams(window.location.search).get('simpool')
+      : null;
+    simPoolModeRef.current = resolveSimPoolMode(serverMode, q, process.env.NODE_ENV === 'development');
   }
   // Residency tier, decided once per mount. 'all': every active-path PACKAGE mounts up front
   // (strong devices; ≤SIM_POOL_CAP). 'window': only active + next package resident (weak/touch/
@@ -366,6 +387,7 @@ export function useProjectPlayer(
   const [state, setState] = useState<ProjectPlayerState>({
     playing:          false,
     started:          false,
+    videoLive:        false,
     showResumeBtn:    false,
     showSimOverlay:   false,
     showBrollOverlay: false,
@@ -581,6 +603,19 @@ export function useProjectPlayer(
   const guidanceVolRef    = useRef<number | null>(null);
   const showSimOverlayRef = useRef(false);
   const startedRef    = useRef(false);
+  // First-'playing' latch mirrored into state.videoLive (see ProjectPlayerState). Ref'd so the
+  // 'playing' listener (which fires on every stall recovery/seek) merges state exactly once.
+  const videoLiveRef  = useRef(false);
+  // ── async-init readiness (P0.6 quick win) ──────────────────────────────────
+  // The setup effect's init is async (dynamic hls.js import → construct → loadSource →
+  // attachMedia). Until that has completed there is nothing to play, so startPlayback must not
+  // flip `started` (dropping the poster over a sourceless element) — it parks its intent in
+  // pendingStartRef instead, and initAsync flushes it through the SAME path once the source is
+  // attached. onInitReadyRef carries callbacks that must wait for readiness (the autoStart
+  // effect arms its pacing timer through it, so its 600ms counts AFTER readiness).
+  const initReadyRef    = useRef(false);
+  const pendingStartRef = useRef(false);
+  const onInitReadyRef  = useRef<Array<() => void>>([]);
   const volumeRef     = useRef(1);
   const mutedRef      = useRef(false);
   const scrubbingRef  = useRef(false);
@@ -1421,6 +1456,19 @@ export function useProjectPlayer(
 
   // ── broll overlay ─────────────────────────────────────────────────────────
 
+  // Recover a b-roll instance in place on fatal errors rather than leaving it frozen over the
+  // main video (network → retry the load; anything else → media recover). Shared by the cold
+  // load path and the warm-standby promotion, which previously had no recovery at all.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const attachBrollRecovery = (hls: any, HlsLib: any) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    hls.on(HlsLib?.Events?.ERROR ?? 'hlsError', (_: string, d: any) => {
+      if (!d.fatal) return;
+      if (d.type === 'networkError') { setTimeout(() => { try { hls.startLoad(); } catch { /* detached */ } }, 1000); }
+      else { try { hls.recoverMediaError(); } catch { /* detached */ } }
+    });
+  };
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const loadBrollHls = (url: string, seekTo: number, HlsLib: any) => {
     const brollEl = refs.videoBroll.current;
@@ -1438,14 +1486,7 @@ export function useProjectPlayer(
       hlsBrollRef.current = hls;
       hls.loadSource(url);
       hls.attachMedia(brollEl);
-      // Recover the b-roll overlay in place on fatal errors rather than leaving it
-      // frozen over the main video.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      hls.on(HlsLib.Events.ERROR, (_: string, d: any) => {
-        if (!d.fatal) return;
-        if (d.type === 'networkError') { setTimeout(() => { try { hls.startLoad(); } catch { /* detached */ } }, 1000); }
-        else { try { hls.recoverMediaError(); } catch { /* detached */ } }
-      });
+      attachBrollRecovery(hls, HlsLib);
       hls.on(HlsLib.Events.MANIFEST_PARSED, () => {
         brollEl.currentTime = Math.max(0, seekTo);
         brollEl.addEventListener('seeked', () => {
@@ -1485,30 +1526,62 @@ export function useProjectPlayer(
     const brollEl = refs.videoBroll.current;
     if (!brollEl) return;
 
-    const hasWarm = standbyBrollClipIdRef.current === clip.id && hlsBrollStandbyRef.current;
+    const standbyEl = refs.videoBrollStandby?.current ?? null;
+    const hasWarm = standbyBrollClipIdRef.current === clip.id && hlsBrollStandbyRef.current && standbyEl;
 
+    if (!hasWarm) {
+      // Cold path — unchanged: tear down whatever was active, stream the clip fresh.
+      if (hlsBrollRef.current) {
+        hlsBrollRef.current.stopLoad();
+        hlsBrollRef.current.detachMedia();
+        hlsBrollRef.current.destroy();
+        hlsBrollRef.current = null;
+      }
+      loadBrollHls(clip.hls_url, seekTo, HlsLib);
+      return;
+    }
+
+    // PROMOTE the warm standby (P0.7): swap element ROLES — z-order and refs — exactly like the
+    // main path's swapVideos(). The prewarmed instance KEEPS the element it buffered into. The
+    // old "transfer" (detachMedia → attachMedia(brollEl)) threw the warmth away: in hls.js,
+    // detachMedia() ends the MediaSource and drops every SourceBuffer, so the clip arrived cold
+    // on the active element after all. Elements are never reparented and never detached here.
+
+    // The outgoing active instance is stale — its clip just ended — so destroy it cleanly on
+    // the element it owns (which becomes the new standby slot for the next prewarm).
     if (hlsBrollRef.current) {
       hlsBrollRef.current.stopLoad();
       hlsBrollRef.current.detachMedia();
       hlsBrollRef.current.destroy();
       hlsBrollRef.current = null;
     }
+    brollEl.pause();
 
-    if (hasWarm) {
-      // Transfer pre-warmed HLS from standby to active element
-      hlsBrollStandbyRef.current.detachMedia();
-      hlsBrollStandbyRef.current.attachMedia(brollEl);
-      hlsBrollRef.current = hlsBrollStandbyRef.current;
-      hlsBrollStandbyRef.current = null;
-      standbyBrollClipIdRef.current = null;
+    // The promoted instance is consumed as a standby; a later prewarmBroll finds the standby
+    // ref empty and warms the NEXT clip onto the demoted element — it can never tear down the
+    // instance being promoted here.
+    hlsBrollRef.current = hlsBrollStandbyRef.current;
+    hlsBrollStandbyRef.current = null;
+    standbyBrollClipIdRef.current = null;
 
-      brollEl.currentTime = Math.max(0, seekTo);
-      brollEl.addEventListener('seeked', () => {
-        if (!videoRef.current?.paused) safePlay(brollEl);
-      }, { once: true });
-    } else {
-      loadBrollHls(clip.hls_url, seekTo, HlsLib);
-    }
+    // Role swap. The shell binds opacity to `showBrollOverlay` on BOTH b-roll slots and keeps
+    // each slot's zIndex constant in JSX, so visibility tracks whichever element is on top and
+    // React never fights these imperative writes (same contract as videoA/videoB).
+    standbyEl.style.zIndex = '8';
+    brollEl.style.zIndex = '-1';
+    refs.videoBroll.current = standbyEl;
+    if (refs.videoBrollStandby) refs.videoBrollStandby.current = brollEl;
+
+    // The instance was created with the standby buffer budget — give the now-active clip the
+    // active budget (mirrors swapVideos' re-application; hls.config is mutable at runtime).
+    hlsBrollRef.current.config.maxBufferLength = HLS_OPTS_BROLL.maxBufferLength;
+    // Prewarm never attached fatal-error recovery; the ACTIVE overlay must have it.
+    attachBrollRecovery(hlsBrollRef.current, HlsLib);
+
+    standbyEl.currentTime = Math.max(0, seekTo);
+    standbyEl.addEventListener('seeked', () => {
+      if (!videoRef.current?.paused) safePlay(standbyEl);
+    }, { once: true });
   };
 
   const stopBroll = () => {
@@ -2200,7 +2273,11 @@ export function useProjectPlayer(
 
     stopBroll();
     startedRef.current = false;
-    merge({ started: false, controlsVisible: true });
+    // The session is over and `started` drops, so the thumbnail cover returns; the live latch
+    // resets with it so a replay covers until its OWN first frame presents (never a shorter
+    // cover than today — `started` alone already re-showed the poster here).
+    videoLiveRef.current = false;
+    merge({ started: false, videoLive: false, controlsVisible: true });
     // Playlist: hand control back to the wrapper to advance to the next project.
     onProjectCompleteRef.current?.();
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2248,6 +2325,15 @@ export function useProjectPlayer(
     });
     v.addEventListener('ended',    () => { if (v === videoRef.current) onEnded(); });
     v.addEventListener('progress', () => { if (v === videoRef.current) updateBuf(); });
+    // First frame genuinely presenting (THUMB): 'playing' — not 'play' — is the event that
+    // means decoded frames are advancing, so only now may the thumbnail cover drop
+    // (state gate: `started && videoLive`). Latched once per session; every later 'playing'
+    // (seeks, stall recoveries, segment swaps) is a no-op here.
+    v.addEventListener('playing', () => {
+      if (v !== videoRef.current || videoLiveRef.current) return;
+      videoLiveRef.current = true;
+      merge({ videoLive: true });
+    });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onTick, onEnded, scheduleHide, showControls]);
 
@@ -2567,16 +2653,34 @@ export function useProjectPlayer(
 
   // ── setup effect ──────────────────────────────────────────────────────────
   useEffect(() => {
+    // This mount is alive. The ref survives React's dev double-mount (StrictMode), so without
+    // this reset the second mount would inherit `true` from the first cleanup and every
+    // unmount guard in the tree (F4, the init gate below) would see a phantom unmount.
+    unmountedRef.current = false;
+    // Effect-scoped cancellation for the async init below (P0.6a). unmountedRef alone is NOT
+    // enough: under the double-mount the remount resets it to false BEFORE the first mount's
+    // in-flight hls.js import resolves, so a stale initAsync would then construct a second,
+    // orphaned Hls instance on top of the fresh mount's.
+    let cancelled = false;
     const vA = refs.videoA.current!;
     const vB = refs.videoB.current!;
     videoRef.current   = vA;
     standbyRef.current = vB;
     vA.style.zIndex = '2';
     vB.style.zIndex = '1';
+    // The b-roll slots follow the same role convention (activateBrollClip promotes a warm
+    // standby by swapping these imperatively, exactly like swapVideos) — pin the starting
+    // roles here so a dev remount can never inherit swapped z-indexes with un-swapped refs.
+    if (refs.videoBroll.current) refs.videoBroll.current.style.zIndex = '8';
+    if (refs.videoBrollStandby?.current) refs.videoBrollStandby.current.style.zIndex = '-1';
 
     const initAsync = async () => {
       if (typeof window === 'undefined') return;
       const HlsLib = (await import('hls.js')).default;
+      // The one await above: if the player unmounted while the chunk loaded, stop HERE —
+      // before this line nothing has been constructed, so there is nothing to destroy, and
+      // proceeding would leak an Hls instance no cleanup ever sees (P0.6a).
+      if (cancelled) return;
       hlsLibRef.current = HlsLib;
       const canUse = HlsLib.isSupported();
       useHlsJsRef.current = canUse;
@@ -2601,6 +2705,17 @@ export function useProjectPlayer(
       attachListeners(vB);
       setTotTime(totalDurRef.current);
       applyMediaVolume();
+
+      // Source attached — the player is startable (P0.6b). Flush everything that queued on
+      // readiness through the NORMAL start path: first the waiters (the autoStart effect arms
+      // its pacing timer here), then a start the viewer already requested with a click.
+      initReadyRef.current = true;
+      const waiters = onInitReadyRef.current.splice(0);
+      for (const fn of waiters) fn();
+      if (pendingStartRef.current) {
+        pendingStartRef.current = false;
+        startPlayback();
+      }
     };
 
     initAsync();
@@ -2625,6 +2740,12 @@ export function useProjectPlayer(
     const rumAtMount = rumRef;
     const sentinelAtMount = boundarySentinelHandleRef;
     return () => {
+      // FIRST, before any teardown: everything that fires after this line — the in-flight
+      // hls.js import above, pool timers, late acks — must already see the tree as gone.
+      // (This used to be set near the END of the cleanup, so an unmount during the import
+      // left an orphan Hls instance no destroy ever reached — P0.6a.)
+      cancelled = true;
+      unmountedRef.current = true;
       // The last batch is the most valuable one, and an armed sentinel must not outlive the tree:
       // its callback closes over a video element this component is about to release.
       try { rumAtMount.current?.dispose(); } catch { /* disposal must not throw into unmount */ }
@@ -2645,7 +2766,7 @@ export function useProjectPlayer(
       reloadsAtMount.clear();
       // Disposing each client removes its window listener and makes every timer it owns
       // (deferred stop, apply stall, paint poll, legacy ceiling) inert — irreversibly.
-      unmountedRef.current = true;
+      // (unmountedRef was already raised at the top of this cleanup.)
       for (const rt of runtimesAtMount.values()) rt.dispose();
       runtimesAtMount.clear();
       // Per-frame warm budgets must not fire into an unmounted tree.
@@ -2825,28 +2946,53 @@ export function useProjectPlayer(
 
   // ── public actions ─────────────────────────────────────────────────────────
   const startPlayback = useCallback(() => {
+    // Init-readiness gate (P0.6b): before the async init has attached a source there is
+    // nothing to play. Park the intent — poster and play button STAY — and initAsync flushes
+    // it through this same path the moment the source is attached. When init has already
+    // completed (the overwhelmingly common case) this branch is never taken and the behavior
+    // below is exactly the pre-gate behavior.
+    if (!initReadyRef.current) { pendingStartRef.current = true; return; }
     startedRef.current = true;
     merge({ started: true });
     applyMediaVolume();
-    safePlay(videoRef.current!);
+    void safePlay(videoRef.current!).then((ok) => {
+      // Rejected play (autoplay policy without a qualifying gesture, a load() interrupting
+      // the request): revert to the actionable poster + play button instead of a black
+      // frame (P0.6c). Never revert a video that is actually playing — another path (a
+      // second click, Space) may have started it while this promise settled.
+      if (ok || unmountedRef.current) return;
+      const v = videoRef.current;
+      if (v && !v.paused) return;
+      startedRef.current = false;
+      merge({ started: false });
+    });
     scheduleHide();
     // (Sims need no warm-up here: the resident pool mounted them at player render.)
   }, [scheduleHide, applyMediaVolume]);
 
-  // Auto-start (playlist videos 2..N): a user gesture already occurred in the lobby,
-  // so begin playing as soon as the first segment is ready.
+  // Auto-start (playlist videos 2..N): a user gesture already occurred in the lobby, so begin
+  // playing as soon as the first segment is ready. Armed only once the async init has attached
+  // a source (P0.6d) — every trigger below (readyState probe, canplay, the 600ms pacing timer)
+  // counts from READINESS, so the happy path keeps today's pacing while a slow init no longer
+  // gets a blind timer start against a sourceless element.
   useEffect(() => {
     if (!options.autoStart) return;
     let done = false;
-    const start = () => { if (done) return; done = true; startPlayback(); };
+    let t: ReturnType<typeof setTimeout> | null = null;
     const v = refs.videoA.current;
+    const start = () => { if (done) return; done = true; startPlayback(); };
     const onCan = () => start();
-    if (v) {
-      if (v.readyState >= 2) start();
-      else v.addEventListener('canplay', onCan, { once: true });
-    }
-    const t = setTimeout(start, 600);
-    return () => { v?.removeEventListener('canplay', onCan); clearTimeout(t); };
+    const arm = () => {
+      if (done) return;
+      if (v) {
+        if (v.readyState >= 2) { start(); return; }
+        v.addEventListener('canplay', onCan, { once: true });
+      }
+      t = setTimeout(start, 600);
+    };
+    if (initReadyRef.current) arm();
+    else onInitReadyRef.current.push(arm);
+    return () => { done = true; v?.removeEventListener('canplay', onCan); if (t) clearTimeout(t); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

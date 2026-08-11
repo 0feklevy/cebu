@@ -396,21 +396,38 @@ export function HLSPlayerShell({
         onClick={actions.handleVideoClick}
       />
 
-      {config.thumbnail_url && !state.started && (
+      {/* Thumbnail cover: held until the video is genuinely presenting frames — `started` alone
+          dropped it on the click, exposing the black warm-up gap (THUMB). `videoLive` latches on
+          the first 'playing' event, so the cover is strictly longer than before, never shorter.
+          pointer-events-none because after the click (play button gone) the cover may still be
+          up for a moment — it must not swallow the clicks the video layer owns. */}
+      {config.thumbnail_url && !(state.started && state.videoLive) && (
         <img
           src={resolveAssetUrl(config.thumbnail_url) ?? undefined}
           alt=""
           draggable={false}
-          className="absolute inset-0 z-[24] h-full w-full bg-black object-contain"
+          className="pointer-events-none absolute inset-0 z-[24] h-full w-full bg-black object-contain"
           onError={(e) => { e.currentTarget.style.display = 'none'; }}
         />
       )}
 
-      {/* Standby broll element — preloads next clip; hidden behind everything */}
+      {/* ── The two b-roll SLOTS (P0.7) ─────────────────────────────────────────────────────
+          These are roles, not fixed elements: a warm activation PROMOTES the standby by swapping
+          the two elements' z-order and the hook's refs (activateBrollClip — same contract as
+          videoA/videoB in swapVideos), so the prewarmed hls instance keeps the element it
+          buffered into and is never detached. Two rules keep React out of the swap's way:
+            • zIndex is a CONSTANT per slot in JSX (8 / -1) — its value never changes between
+              renders, so React never rewrites the hook's imperative swap;
+            • opacity tracks `showBrollOverlay` on BOTH slots — whichever element is on top is
+              the visible one; the one at -1 sits under the opaque main video regardless. */}
       <video
         ref={videoBrollStandbyRef}
         className="absolute inset-0 w-full h-full object-contain bg-transparent pointer-events-none"
-        style={{ zIndex: -1, opacity: 0 }}
+        style={{
+          zIndex: -1,
+          opacity: state.showBrollOverlay ? 1 : 0,
+          transition: 'opacity 0.25s ease',
+        }}
         playsInline
         muted
         preload="auto"
