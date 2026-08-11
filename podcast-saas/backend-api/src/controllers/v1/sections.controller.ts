@@ -713,7 +713,13 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
         return reply.send(updated);
       } catch (err) {
         const errorType = classifySimulationError(err);
-        const status = errorType === 'not_found' ? 404 : errorType === 'aborted' ? 499 : 500;
+        // 409 for a lost activation CAS: a concurrent publication won, nothing was overwritten,
+        // and the client should simply retry. Reporting it as 500 was accurate about neither the
+        // cause nor the remedy — and it pages, because a 5xx rate is what alerting watches.
+        const status = errorType === 'not_found' ? 404
+          : errorType === 'aborted'  ? 499
+          : errorType === 'conflict' ? 409
+          : 500;
         return reply.code(status).send({ message: ERROR_MESSAGES[errorType] ?? ERROR_MESSAGES.generation_error, errorType });
       } finally {
         clearTimeout(timeout);

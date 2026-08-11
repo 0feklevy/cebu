@@ -296,8 +296,16 @@ export class RevisionService {
       throw new RevisionConflict('active→failed',
         'the active revision cannot be failed in place — roll back to move the pointer first');
     }
+    // MERGE, do not replace. `transition` writes `extra` straight into `.set()`, so a plain
+    // `{ error }` object clobbered the whole metadata column — including the {trigger, sectionId,
+    // baseRevisionId} provenance `createDraft` wrote. That was survivable while failed drafts were
+    // rare; since P0.4 the live generation path routinely produces them (an abort after staging
+    // marks the draft failed and leaves its bytes in an unreferenced prefix), and the row was the
+    // only thing that could say which section those orphaned bytes came from. Merged in SQL rather
+    // than read-then-write so it stays one atomic statement, and `validate` merges for the same
+    // reason a few lines down.
     return this.transition(simulationId, revisionId, from, 'failed', {
-      metadata: { error },
+      metadata: sql`COALESCE(${sim_revisions.metadata}, '{}'::jsonb) || ${JSON.stringify({ error })}::jsonb`,
     });
   }
 
