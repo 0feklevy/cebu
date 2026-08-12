@@ -453,6 +453,47 @@ needed before the first screenshot succeeds, which is the mechanism behind the w
 no GPU flags at all. So on Chrome 144+ a Puppeteer user who adds GPU flags to a GPU-less container
 gets a black canvas, and a Playwright user does not.
 
+### Decision summary — two branches, and why I would start with A
+
+An eighth pass reached the M144 conclusion **independently**, with the same two CLs (5675974 adds the
+machinery at M130; 7128438 flips the behaviour at M144). Two agents converging on that from source,
+against what the official policy YAML says, is as settled as this gets.
+
+It also corrects a simplification above: **the X requirement is per-backend, not universal.**
+`--use-angle=gl` (Mesa desktop GL) must bind a GL surface and therefore needs a display →  Xvfb.
+`--use-angle=vulkan` does **not** — the reference NVIDIA recipe runs `--headless=new
+--use-angle=vulkan --enable-features=Vulkan --disable-vulkan-surface` with **no Xvfb at all**.
+
+| | **Branch A — deterministic** | **Branch B — real GPU** |
+|---|---|---|
+| Binary | `chrome-headless-shell` | full Chrome `--headless=new` |
+| Frame control | **`beginFrame`** — exact | virtual time + `captureScreenshot` |
+| GL | SwiftShader (auto-appended) | Vulkan on NVIDIA, no X |
+| Hardware | any Linux container | GPU instance + container toolkit |
+| Cost | slow, free | fast, paid |
+
+**Start with A.** Moving to B costs `beginFrame` — the very thing that makes the capture
+deterministic — so it is a downgrade in correctness bought with money. Only go there if a measured
+number says software is genuinely too slow.
+
+**And the throughput worry is smaller than the raw estimate suggests.** The extrapolation "1800
+frames → 3–12 hours single-threaded" assumes a minutes-long continuous render. Our sections are
+capped at **`VISUAL_MAX_SEC = 15`** (`TimelinePanel.tsx:26`), so a section is at most ~450 frames at
+30 fps, and a project has a handful of them. That is a much more tractable shape — and it argues for
+**sharding by section**, which the job model already suggests, rather than optimising single-stream
+throughput. (Independent support: adding cores to one box bought 1.7× for 14× the cores.)
+
+**One free safety net for either branch:** pass `--enable-unsafe-swiftshader` even on a GPU box, so a
+failed hardware acquisition degrades to software instead of returning `null` contexts and a black
+video.
+
+**And a tooling accident worth knowing:** Playwright unconditionally passes
+`--enable-unsafe-swiftshader` and defaults to `chromium-headless-shell` when headless — so Playwright
+users are **accidentally immune** to the Chrome 144 breakage. Puppeteer passes neither. Since the repo
+already has Playwright as a devDependency and drives real simulations with it in `sim-canary.spec.ts`,
+that is a point in favour of building the capture host on Playwright rather than Puppeteer — with the
+caveat that `puppeteer-capture` is the only ready-made `beginFrame` wrapper.
+
 ### Capture failure modes, ordered by damage
 
 1. **Black frame from failed WebGL context creation** (M139+). Silent — a valid MP4 of nothing.
