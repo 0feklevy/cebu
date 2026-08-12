@@ -923,3 +923,87 @@ User rulings folded in unchanged: 1920×1080 landscape output; music/cutaway aud
 1. **Real generated sims capture inside the triangulated 100–300 ms/frame SwiftShader band** (15 s section ≈ 0.5–2.5 min happy path). Field data shows blur/shader-heavy content at 300–800+ ms — HyperFrames measured a *single CSS blur declaration* 2.5×-ing a whole render — and the llvmpipe-under-headless-shell question (plan's #1 spike) is still unresolved; production-box absolutes are unmeasured. *Falsifier (~1 day):* in the Phase-2 container, a 100-line CDP loop (or `puppeteer-capture`) over 3 real stored packages, 450 frames JPEG q80 each, median ms/frame; same box, attempt an llvmpipe boot for the comparison number. If median >≈700 ms/frame, revisit Branch B / 24 fps before building the queue math.
 2. **The spec-based offline AnalyserNode byte-matches Chrome closely enough that the circles are sub-perceptually identical.** Explicitly unverified — the research says so — and the whole overlay leg's fidelity rests on it plus the 60 Hz cadence rule (τ=0.7 fall-time doubles from ~108 ms to ~217 ms if ticked at 30 Hz). *Falsifier (~half a day, no product code):* fixed 2 s PCM → real `AnalyserNode` (record `getByteFrequencyData` per rAF) vs the offline implementation; assert byte deltas, then render both through `computeBars` and pixel-diff the canvas.
 3. **A real stored v2 package reaches `SIM_PAINTED` under beginFrame with the shim installed at document start** — the `__SIM_RAF_GATE__` double-wrap ordering is the plan's own "where the hang will live", and the top-level `window.parent === window` handshake is verified from source but never spiked; nothing in §4 has run against a real package. *Falsifier (~half a day, container):* navigate top-level to one stored package with the shim, bounded 60 s timeout; assert the full `SIM_READY→SCRIPT_APPLIED→SIM_PAINTED` sequence, then 30 captured frames that are non-uniform and non-identical. A hang here reorders Phase 2's first week; it does not change the architecture.
+
+---
+
+# APPENDIX 2 — the on-device capture design (VERIFIED, reserved for v2)
+
+**Status note, read first:** this document was produced by the capture-pivot workflow while
+the user's device-fidelity requirement was in force; the user then ruled device fidelity NOT
+critical, and v1 proceeds server-side per THE DECISION above. It is kept in full because its
+cross-origin skeptic CONFIRMED the whole on-device stack (Region Capture's crop is geometric
+and includes cross-origin iframe pixels by design), which makes this the fully-designed,
+fully-verified v2 path — and the ONLY known route to sim-internal WebAudio in the export.
+Its one rule that must carry into any capture-audio future: inside a captured window the tab
+audio is the ONLY audio (it already contains the music), so asset spans intersecting capture
+windows must be dropped or the music doubles.
+
+# Linear Video Export — Final Architecture (post-pivot)
+
+Status: DECIDED 2026-08-13. Supersedes §4 and "THE DECISION (2026-08-12)" of `md-files/LINEAR-VIDEO-EXPORT-PLAN.md`; §5–§9 of that document (the measured ffmpeg assembly half) remain valid and are cited as [measured] below.
+
+## THE DECISION — on-device capture, one paragraph, no hedging
+
+Scripted simulation sections are recorded client-side, in the user's own Chromium browser, in real time, with the audio the tab is playing — a self-tab `getDisplayMedia` capture cropped by Region Capture to the sim overlay, exactly "as if I leave the screen open on record" — while main video, B-roll, clips and images are never captured and are spliced from source files by the already-measured server `filter_complex` graph; the server assembles the 1920×1080@30 master under `project_duplicate`-style job discipline. Region Capture (`cropTo`, Chrome 104+) is the capture primitive, not Element Capture: the cross-origin skeptic CONFIRMED that tab capture's crop is purely geometric and includes cross-origin iframe pixels by design — and our sim iframes are cross-origin in production (`shared/src/sim/simUrl.ts:37-56`) — whereas Element Capture's behaviour for a cross-origin iframe *descendant* of the restriction target is unverified and its eligibility rules silently freeze frames; the occlusion cost of Region Capture is paid by hiding player chrome (z21–z76) behind a `data-capturing` root class for the session. The recorder is MediaRecorder `video/webm;codecs=vp9,opus`; the WebCodecs+mediabunny path is pre-scoped as the upgrade only if measured trim error exceeds ±1 frame. The headless `beginFrame` worker is demoted to fallback/v2.
+
+## The capture session, end to end — numbered user-visible flow, with the API at each step and min Chrome version
+
+1. **Export click** — button between `ProjectHeader.tsx:164` and the Preview anchor (`:166-180`), gated `noVideos`. `POST /projects/:id/export` (replaces the 501 stub, `stubs.ts:22-30`); server writes the plan, returns `exportId` + capture manifest. Client opens `/projects/:id/export-capture`, a dedicated route mounting `HLSPlayerShell` directly (`autoStart`, `hideHomeLink`, no `topRightControls`/`bottomRightOverlay`), copying ViewerPage's player-config fetch (~20 lines) — zero edits inside `useProjectPlayer` (4042 lines untouched).
+2. **Preflight** — feature-detect `window.CropTarget` and `MediaDevices.getDisplayMedia`; absent → offer the degraded export (posters + asset audio) and stop here.
+3. **Permission, same gesture chain** — `getDisplayMedia({ video: true, audio: true, preferCurrentTab: true, surfaceSwitching: 'exclude', monitorTypeSurfaces: 'exclude' })`. `preferCurrentTab` Chrome 94+ (one-click "Share this tab" confirm dialog, `ShareThisTabDialogView`); `surfaceSwitching` 107+; `monitorTypeSurfaces` 119+ (both feature-detected, not required); tab audio since Chrome 74, checkbox preselected. Never set `selfBrowserSurface: 'exclude'` — with `preferCurrentTab` it throws TypeError.
+4. **Surface gate** — refuse unless `track.getSettings().displaySurface === 'browser'` AND the stream has an audio track (window/screen picks can be silent — the client-side twin of plan §9-1); stop tracks, explain, re-prompt.
+5. **Crop** — `CropTarget.fromElement(simOverlayEl)` → `videoTrack.cropTo(target)` (Region Capture, Chrome 104+, desktop only). Set root `data-capturing` (hides z21–z76 chrome; occlusions are baked into Region Capture), `videoTrack.contentHint = 'motion'`, and lock the stage to fixed CSS pixels — captured frames are physical pixels (DPR 2 doubles dimensions; zoom changes them mid-stream).
+6. **Drive** — per manifest entry, the viewer-e2e prior art: wait `video.readyState >= 1`, `play()`, seek `video.currentTime = startSec`, wait for the active `.sim-pool-frame` composited opacity > 0.5; confirm with `sectionAtPlayhead` (`lib/sectionInterval.ts`, epsilon 0.05 s). Post-roll sims: click the rendered resume button (`HLSPlayerShell.tsx:689`) or cap at the authored window.
+7. **Record** — `new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9,opus', videoBitsPerSecond: 8_000_000, videoKeyFrameIntervalDuration: 2000 /* feature-detect */ })`; `recorder.start(1000)`; stream every `dataavailable` chunk to the upload endpoint (storage-adapter + controller pattern). Wall-clock `endSec − startSec`, ≤15 s per section (`VISUAL_MAX_SEC`) ≈ ≤20 MB; a crash costs ≤1 s of tail plus at most one 2 s GOP.
+8. **Watchdog** — `requestVideoFrameCallback` staleness > 2 s aborts the take loudly: if the crop box empties or the element detaches, frames silently stop by spec (they do not go black).
+9. **Finish** — stop, next section; after the last, `POST /projects/:id/exports/:eid/complete`; the page polls job status (bounded poll like `useProjectDuplication`) and shows the download when `ready`.
+10. Throughout, the user hears everything normally (`suppressLocalAudioPlayback` defaults false), and the captured tab is exempt from background throttling while capture runs.
+
+## What the server does — assembly phases reusing the measured splice/overlay/mix graph and the duplication-style job discipline
+
+**Job discipline** — migration `058_project_exports` modelled on `project_duplications`: status CHECK `queued | planning | awaiting_capture | assembling | uploading | ready | failed` (client capture replaces the old server `capturing` phase), `claim()` as conditional UPDATE, unref'd 15 s heartbeat, fenced writes, `plan` jsonb written before any work, `cancel_requested`, phase-coded failures. Captures land at `exports/{projectId}/{exportId}/sections/{sectionId}.webm`, write-once.
+
+- **planning** — `buildExportPlan`: resolve the timeline to absolute windows, apply the exclusion predicate (below), pick the canonical grid (1920×1080@30 from the main video, clamped — never from the largest source), record warnings, emit the capture manifest.
+- **awaiting_capture** — validate each uploaded webm with a cheap `-c copy` remux probe (validation only — [measured] the splice graph ingests MediaRecorder output directly; the missing-Duration bug, crbug 40482588, does not gate ingest); assert one opus 48 kHz audio stream and decodable video. Missing or invalid capture → poster still + recorded warning; the export always completes, degraded loudly.
+- **assembling** — the measured graph, one normalisation function on every branch without exception: `scale=trunc(iw*sar/2)*2:ih,setsar=1,scale=…:force_original_aspect_ratio=decrease,pad=…,setsar=1` (the HLSTranscoder SAR bug stays fixed here), `fps=30` — captures get `fps=30:start_time=0`, which [measured] absorbs both sparse-VFR gaps and a late first frame (fixture: first frame at 0.300 s) — `format=yuv420p`, `settb`; `trim/atrim + setpts/asetpts + concat` filter ([measured] zero drift, exactly 12.000 s / 360 frames, versus 1.36 s baked-in drift from the concat demuxer); `split` any branch read twice; seam predicate always `gte(t,S)*lt(t,E)` from the single helper, never `between()` ([measured] double-draw at shared boundaries); overlays input-bounded ([measured] 100 overlays: 8.42 s enable-only → 2.30 s bounded vs 1.80 s baseline), `-framerate` on every image input (25 fps default trap), `eof_action=pass`; captions rasterised to PNG (build has no drawtext/subtitles/ass); graph written to file via `-/filter_complex` (`-filter_complex_script` is deprecated in ffmpeg 8); probe filter availability at job start.
+- **Audio — the one new post-pivot rule:** inside a captured window, the capture's own tab-audio track is the *only* audio — it already contains the sim's WebAudio, the section's music cutaways and guidance TTS, so mixing the stored cutaways there again would double the music. The plan builder must drop or trim any asset-audio span that intersects a capture window. Outside those windows, the existing `mixTimeline` discipline verbatim: `adelay=…:all=1`, `amix=normalize=0` ([measured] the default cost narration 5 dB), `dropout_transition=0`, two-pass `loudnorm`; `apad`+`atrim` per window so audio length is a function of the section window alone. Everything on the 48 kHz grid — opus is natively 48 kHz, so captures land on it exactly.
+- **uploading** — gates before anything is published: ffmpeg exit code 0 ([measured] SIGTERM finalises a valid, playable, truncated MP4 at exit 255 — existence/probe checks lie), master duration within one frame of the planned timeline, A/V stream durations agree within one frame; then versioned write-once `exports/{projectId}/{exportId}/master.mp4` (libx264 CRF ~20 preset fast, yuv420p, CFR 30, `-g 60`, aac 192k 48 kHz, `+faststart`), immutable headers, 6-hour presigned download. Progress from `-progress pipe:1` on stdout, parsing `out_time_us` ([measured] `out_time_ms` is microseconds — a 1000× trap). Cancel: SIGTERM, escalate ~5 s. No mid-encode resume; retries are cheap.
+
+## The exclusion rule — final predicate (scripted vs raw), where it runs, what the client receives
+
+Verbatim from the player's own RAW-activation logic (`useProjectPlayer.ts:1936`, `:616-622`), unchanged by the pivot:
+
+```ts
+import { variantParamOf } from 'shared/src/sim/simIdentity';
+
+const isFullSimulation = (s: SectionRow): boolean =>
+  s.type === 'simulation' &&
+  (!s.simulation_url || variantParamOf(s.simulation_url) === null) &&
+  (!s.sim_script || s.sim_script === 'main');
+
+// EXCLUDE from the render:  isFullSimulation(s)          — "Show full simulation" (RAW)
+// CAPTURE on-device:        s.type === 'simulation' && !isFullSimulation(s)
+// SPLICE from source:       s.type === 'clip' && (s.clip_source_video_id || s.clip_source_image_id)
+```
+
+Both halves of the clip test are required — type alone admits unconfigured sections, the FK alone admits stale leftovers from type switches (`SectionEditor.handleSave` only sends `clip_source_*` when `type === 'clip'`). **It runs in exactly one place: server-side, in `buildExportPlan`, during `planning`.** The client never re-derives it: it receives the plan's capture manifest — `[{ sectionId, startSec, endSec }]` for the `sim-capture` entries only — plus the plan warnings for honest display. RAW sections appear in neither the render nor the manifest. Known hole: legacy rows predating the `?section=` era; the repo already ships the repair tool.
+
+## Browser support and the honest gates — what happens on Firefox/Safari/weak devices; what the UI must say
+
+- **Hard floor: Chromium desktop 104+** (Region Capture); Chrome/Edge current stable in practice. `preferCurrentTab` needs 94+, `surfaceSwitching` 107+, `monitorTypeSurfaces` 119+ — the latter two are polish, feature-detected.
+- **Firefox and Safari: no recording, period.** No Region Capture, no `preferCurrentTab`, and tab-audio capture is not dependable outside Chromium. The UI offers the degraded export — poster stills over sim windows, asset-only audio mix, warnings recorded in the plan — and says plainly: "Recording your simulations requires Chrome or Edge on desktop."
+- **Weak devices:** capture is real time and frame-droppable — this is the pivot's accepted trade (the recording is *supposed* to look like that device). Sparse/dropped frames are absorbed by `fps=30` at ingest. Real-device drop rates: unmeasured.
+- **The UI must say, before the dialog:** one click on "Share this tab" starts it; cancelling the dialog means no recording; keep this window untouched — don't resize, zoom, or switch tabs; system notifications or extension popups that appear over the player **will be in the exported video** (Region Capture bakes in occlusions); you will keep hearing the audio out loud — that is expected, it is being recorded from the tab.
+- **Silent gates that re-prompt instead of failing late:** wrong surface picked (`displaySurface !== 'browser'`), missing audio track, watchdog frame-stall, `videoKeyFrameIntervalDuration` absent (proceed without it).
+
+## Where the headless path survives — as fallback/v2 automation, in two sentences
+
+The Phase-2 `chrome-headless-shell` + `--deterministic-mode` + `beginFrame` worker survives as (a) the silent-video fallback that upgrades poster stills when a browser capture never arrives, and (b) the v2 path for unattended/API-triggered exports — deterministic 30 fps, no audio, Linux containers only. It blocks nothing in v1: the assembler consumes `sections/{sectionId}.*` identically from either producer.
+
+## Risks ranked — top five, each with its cheapest falsifying experiment
+
+1. **Double-mixed music inside captured windows** — tab audio already contains the cutaways; re-mixing them yields a silently wrong, louder master. *Experiment:* unit-test `buildExportPlan` with a cutaway overlapping a capture window and assert the span is dropped/trimmed; belt-and-braces, assemble a 12 s fixture and check integrated loudness (~+6 dB if doubled).
+2. **Silent frame stall published as a finished take** — crop box emptied/detached stops frames by spec with no error; the recording continues as frozen video. *Experiment:* Playwright with `--auto-accept-this-tab-capture`; start a take, `display:none` the overlay for 3 s, assert the rVFC watchdog aborts within 2 s.
+3. **Occlusion contamination** — a toast, extension popup, or OS notification over the player lands in the customer's export (also a privacy leak). *Experiment:* same harness; flash a fixed-position div over the crop box mid-take and confirm it appears in decoded frames; then assert `data-capturing` computes `display:none`/`visibility:hidden` on every z21–z76 layer during a session.
+4. **Trim epoch error at seams > ±1 frame** — MediaRecorder timestamps vs the section window; currently unmeasured on real captures. *Experiment:* record a page with a burned-in millisecond clock, ingest through `fps=30:start_time=0` + trim, compare first/last visible clock values to the window; if error > ±33 ms, activate the pre-scoped WebCodecs+mediabunny path.
+5. **Mid-stream geometry change** — DPR/zoom/resize changes frame dimensions mid-file; MediaRecorder tolerates it, the normalisation chain must too. *Experiment:* record while toggling zoom 100%→125%; run the capture through the full normalisation branch and assert a constant 1920×1080 output with no ffmpeg error; if it breaks, enforce the locked stage harder (fixed window size gate + zoom warning).
