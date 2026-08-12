@@ -120,45 +120,228 @@ treats type as authoritative (`sectionKindLabel`, `TimelinePanel.tsx:55-62`).
 
 ## 4. Capturing a simulation
 
-> **PENDING — deep research on deterministic capture is still running.** This section will be
-> completed with the comparison of time-virtualisation approaches (`timecut`, Remotion, CDP
-> `Emulation.setVirtualTimePolicy`, `--deterministic-mode`), headless WebGL viability, and the audio
-> question. What follows is what the *codebase* already constrains, which is settled.
+### The two facts that decide the architecture
 
-### Constraints that are already certain
+**(a) Deterministic frame control and GPU WebGL are mutually exclusive in Chrome.** From Chromium's
+own CDP definition of `Target.createTarget`:
 
-**There is no deterministic clock.** Neither the v2 bridge nor the v3 protocol has `STEP`, `SEEK` or
-`SET_TIME`; there is no "script finished" event and no script duration anywhere. A section runs for
-exactly `end_sec - start_sec`, an author-dragged value capped at 15 s (`TimelinePanel.tsx:26`). Sims
-advance on wall-clock rAF delta — and the audit already records that **"weak FPS changes effective
-simulated time"** (`SIMULATION-VIDEO-PIPELINE-DEEP-AUDIT.md:532`). A renderer slower than real time
-does not merely stutter; it changes what the physics does.
+> `enableBeginFrameControl` — "Whether BeginFrames for this target will be controlled via DevTools
+> (**headless shell only**, not supported on MacOS yet, false by default)."
+> — [Target.pdl, chromium/main](https://raw.githubusercontent.com/chromium/chromium/main/third_party/blink/public/devtools_protocol/domains/Target.pdl)
 
-**CSP pins who may frame a simulation.** `frame-ancestors ${browserOrigins()}` —
-`sim-public.controller.ts:169,184`, where `browserOrigins()` is app + admin (+ localhost off-prod).
-**A bespoke capture harness on any other origin renders blank.** The capture page must be served
-from an approved origin, or navigate directly to the simulation as the top-level document.
+`chrome-headless-shell` is the old headless architecture and does not use a hardware GPU. So
+deterministic capture ⇒ **software WebGL**. Our deployment is a GPU-less AWS VM, so we lose nothing
+we had.
 
-**The frame is cross-origin**, so there is no DOM reach-in and no `captureStream` on its content —
-everything is postMessage. `simple_ui` and `auto_script` travel as **startScript params**, not URL
-params (`lib/sim/protocol.ts:71-75`), with `hideSelectors` pre-applied before first paint via the
-`#simboot` fragment.
+**(b) SwiftShader's WebGL fallback was REMOVED in Chrome M139. Stable is 151.**
 
-**Prior art exists, and it works headless.** `client-web/e2e/viewer-e2e.spec.ts` drives the *real*
-viewer with a mocked player-config, 1700 lines of scenarios including post-roll and direct seeks
-into a simulation. And `sim-canary.spec.ts:865-880` already screenshots a live sim frame
-(`iframe.elementHandle().screenshot()`) and hashes pairs to detect animation, with
-`deviceScaleFactor: 1` load-bearing. **This is the strongest evidence the capture is achievable**,
-and the right place to start.
+> "SwiftShader has been used to support WebGL on systems without GPU acceleration such as headless
+> systems or virtual machines but has been deprecated due to security issues. **Starting in M139,
+> WebGL context creation will fail** when it would have otherwise used SwiftShader. … This is a
+> temporary policy which will be removed in the future."
+> — [EnableUnsafeSwiftShader.yaml, chromium/main](https://raw.githubusercontent.com/chromium/chromium/main/components/policy/resources/templates/policy_definitions/Miscellaneous/EnableUnsafeSwiftShader.yaml)
 
-**Post-roll simulations pause the clock and wait for a click** (`useProjectPlayer.ts:1948-1957`,
-`:3000-3016`). A capture host must decide what a post-roll section means in a linear video — most
-likely "play for its authored `end_sec - start_sec`, then continue" — and that is a product
-decision.
+**A WebGL simulation on a GPU-less box gets a failed context and renders nothing — no crash, no
+non-zero exit, just a black canvas.** Our generated simulations almost certainly do not test for
+context-creation failure. `--enable-unsafe-swiftshader` defers it, and Chromium says that escape
+hatch is explicitly temporary. This needs a monitored dependency and a pinned Chrome, not a flag
+someone sets once.
 
-**Branching has no canonical linear path**, and it disables every flat overlay
-(`:2349,2394,2436`). A flat MP4 needs a path-selection policy; `default_edge_id` is the obvious
-default, but this must be decided explicitly rather than fall out of whatever the code happens to do.
+### Navigate directly to the simulation, do not capture the iframe
+
+You **cannot** draw an iframe into a canvas at all — the HTML spec's `CanvasImageSource` typedef is
+exhaustive and includes neither `HTMLIFrameElement` nor `Window`. CDP capture works because it
+operates at the compositor, below the security boundary. But the clean move is to make the
+simulation the **top-level document**: it removes the cross-origin problem, the `frame-ancestors`
+problem (§4 constraints) and the fragile "inject before the child's own scripts" problem in one step.
+
+**Verified against our v2 protocol:** the child listens on `window` and replies via
+`window.parent.postMessage(…, '*')` (`SimulationService.ts:255,273,706,772`). Loaded top-level,
+`window.parent === window`, so the capture host can send `startScript` and receive
+`SIM_READY`/`SCRIPT_APPLIED`/`SIM_PAINTED` on the same window. The `?section=&v=` query and the
+`#simboot=` fragment must be preserved or we lose dispatch and the pre-paint UI cloak.
+
+⚠️ **The v3 protocol will NOT initiate top-level.** `simRuntimeChild.ts:1198` guards with
+`if (win.parent && win.parent !== win)`, so the MessagePort handshake never starts. The capture host
+must speak **v2** — which is what every stored package speaks anyway, but it means the render path
+deliberately uses the older protocol and someone will eventually "fix" that unless it is documented.
+
+### Time virtualisation needs BOTH halves
+
+Chromium engineer Eric Seckler, answering exactly this question on headless-dev:
+
+> "You can use virtual time together with a manual rendering mode to render animations at a custom,
+> deterministic frame rate."
+> — [headless-dev](https://groups.google.com/a/chromium.org/g/headless-dev/c/s8ttGCh8jzM)
+
+- **Virtual time** — a JS shim over `Date`, `performance.now`, `setTimeout`/`setInterval`, `rAF`.
+  Governs the page's logic.
+- **Manual rendering** — `HeadlessExperimental.beginFrame({frameTimeTicks, interval, screenshot})`.
+  Governs the compositor: CSS animations, transitions, and the pixel readback.
+
+**Both are required for us specifically.** Only the shim (timesnap/timecut, CCapture) leaves CSS
+animations on the real clock — and our image overlays are CSS `@keyframes`. Only `beginFrame` leaves
+`setTimeout` on the real clock — and **our Auto Script loop is `setInterval`-based**
+(`SimulationService.ts:854`: *"Use setInterval for animation: step 0.1–0.3, intervalMs 30–150ms"*).
+
+`Emulation.setVirtualTimePolicy` alone is not the answer: it fast-forwards to the *next delayed
+task*, not "advance exactly 33.33 ms", and has documented hang reports. Every serious implementation
+uses a JS shim instead.
+
+### The comparison
+
+| Approach | Determinism | WebGL headless | Audio | Maturity | Licence |
+|---|---|---|---|---|---|
+| **`beginFrame` + clock shim** (`puppeteer-capture`) | **Highest** — clock *and* compositor driven | software only | none | v1.58.0, 2026-08-07, CI | **MIT** |
+| clock shim + `captureScreenshot` (`timecut`) | rAF/timers only; **CSS animations drift** | yes | none | **stale** — npm 2022, 33 open issues | BSD-3 |
+| **Remotion** | highest, but content must be a **pure function of frame number** | yes | assets only | very mature | **proprietary dual-licence** |
+| CCapture.js v2 | good | n/a (**canvas only**) | offline analysis | v2.0.0, 2026-07 | MIT |
+| `startScreencast`, Playwright video | **none** — real-time, droppable | yes | none | mature | MIT / Apache-2.0 |
+
+**Remotion is out**, and not because of the licence (free only for orgs ≤3 employees). Its model
+requires content to be a pure function of frame index — it renders frames across threads in any
+order. Our simulations are **stateful**: physics, particle accumulation, `setInterval` automation
+with internal position. Adopting it means rewriting the simulation generation contract, not adding
+an export.
+
+**CCapture is out** because it captures only the canvas, and Minimal UI deliberately *shows* the
+relevant DOM control while hiding the rest.
+
+**Recommendation: start from `puppeteer-capture` (MIT).** It implements the flag set, the frame loop
+and the ffmpeg piping already. It **throws on macOS** by design, so local dev needs a Linux container.
+
+### Audio: out of scope for v1, and this is structural
+
+Frame-locked capture and WebAudio are incompatible by construction. `BaseAudioContext.currentTime`
+is *"updated by the rendering thread in uniform increments"* — a hardware timestamp
+([spec](https://webaudio.github.io/web-audio-api/#rendering-loop)). Virtualise the main thread and
+render 1800 frames in 4 minutes of wall time, and the graph produces **4 minutes of audio for 60
+seconds of video**.
+
+Every tool surveyed records **no audio at all**. The one project that attacked it (Replit) solved
+*asset playback* by intercepting `fetch` and reconstructing an ffmpeg chain — and states its residual
+gap plainly: *"Audio from programmatically generated sources (OscillatorNode, AudioWorkletNode) …
+remain uncaptured."* Synthesised WebAudio is unsolved by anyone I could find.
+
+Our main video, B-roll, audio cutaways and guidance TTS are all **assets with known timing** — those
+mix in ffmpeg, which we already do. Simulation-synthesised audio is the only casualty. Say so in the
+export UI rather than shipping a silent gap.
+
+### Determinism of the simulation itself
+
+**No capture tool seeds the PRNG.** I read `puppeteer-capture`'s injector: it hooks `Date`,
+`performance.now`, the timers and `rAF` — **not `Math.random`**. Inject a seeded PRNG at document
+start, seeded from something stable; **`configHash` is the natural choice**, since it already
+participates in the identity discipline this codebase enforces. Inline a ~10-line mulberry32 rather
+than depending on `seedrandom` (2019, licence not auto-detected).
+
+**Good news:** zero uses of `Math.random` in `backend-api/src/services/simulation/`. The exposure is
+in generated bodies and any library they pull.
+
+### The repo-specific hazard I would flag hardest
+
+Our bridge **already wraps `window.requestAnimationFrame`** — `__SIM_RAF_GATE__` keeps `raw` and
+`sys` handles so system scripts schedule on the *unwrapped* rAF while sims use the wrapped one
+(`SimulationService.ts:330-352, 636-640`). A capture clock shim installed at document start becomes
+the thing the gate then wraps, so the gate's "unwrapped" handles will in fact be **virtual too**.
+
+That is probably what we want — but it is an ordering-dependent interaction between two rAF
+wrappers, and the `SIM_PAINTED` paint gate sits on top of it. **This is where a "sim never signals
+painted, capture hangs" bug will live.** Design the injection order explicitly and test it.
+
+### Throughput — estimate only
+
+CDP screenshots have long been reported at 60–90 ms each. At 30 fps a 30-second section is 900
+frames → order of **2–5 minutes wall-clock per section**, more on heavy scenes under SwiftShader.
+Fine for a background job with progress; **not** for anything synchronous. Mirror the
+`FFMPEG_CONCURRENCY` limiter for browser instances — Replit runs render concurrency 1.
+
+**⚠️ The #1 spike before committing to any of this:** Mesa llvmpipe via `--use-angle=gl` measured
+**24 s → 6 s** versus SwiftShader on a WebGL-heavy page
+([microlink](https://microlink.io/blog/webgl-without-a-gpu)) — but *both* published llvmpipe
+benchmarks ran with a display surface (Xvfb/headed). **Whether `chrome-headless-shell`, which has no
+display surface, can drive llvmpipe at all is unverified**, and it directly determines throughput.
+Also from that write-up: `--disable-gpu` silently forces SwiftShader back on, and `--in-process-gpu`
+kills the GL surface ANGLE needs. Neither flag, ever.
+
+### Corrections and additions from a second research pass
+
+**`--deterministic-mode`'s exact expansion**, from `headless/lib/browser/command_line_handler.cc`
+(not from documentation): it implies `--enable-begin-frame-control`,
+`--run-all-compositor-stages-before-draw`, `--disable-new-content-rendering-timeout`,
+`--disable-image-animation-resync`, `--disable-threaded-animation`, `--disable-checker-imaging`.
+It does **not** imply `--disable-threaded-scrolling` (that flag no longer exists in `main`) or
+`--deterministic-fetch` (removed from Chromium years ago — preload assets and gate on them instead).
+
+**Two hard constraints nobody documents:** it **refuses to start with `--site-per-process`**
+(explicit `LOG(ERROR)` + `return false`), and it only works in `chrome-headless-shell` — the flag is
+handled in `HeadlessContentMainDelegate::PreBrowserMain()`, which regular Chrome never runs.
+
+**CCapture is not stale — it was rewritten 16 days ago.** v2.0.0 published 2026-07-27 (previous
+release was 2018), MIT, 0 open issues. It is now `TimeWarp` (a reusable virtual clock) + `FrameWrap`
+(WebCodecs → mp4). Its documented gap is the one that matters to us: **it cannot step CSS/Web
+Animations**, and our image overlays are CSS `@keyframes`.
+
+**A codec trap that would bite late.** WebCodecs H.264 is gated on `proprietary_codecs`
+(`media/media_options.gni`): **Chrome for Testing has `avc1.*`; vanilla Chromium — including
+Playwright's bundled build — does not.** Any in-page WebCodecs path must either use Chrome for
+Testing or emit VP9/AV1 and transcode server-side. Also note `VideoEncoder` has **no alpha support**.
+
+**`preserveDrawingBuffer` is a spec-level constraint, not a CCapture quirk.** WebGL 1.0 spec: with
+it `false` (the default), using the context as a source image *after the rendering function returns*
+is undefined behaviour. That hits `new VideoFrame(canvas)` exactly as hard as `toDataURL`. It is
+**not** a problem for `beginFrame` compositor capture — one more reason to prefer it.
+
+**A third viable architecture** worth costing alongside the recommendation: **WebCodecs +
+[mediabunny](https://github.com/Vanilagy/mediabunny) + Playwright's [Clock API](https://playwright.dev/docs/clock)**.
+Playwright's Clock is a built-in, maintained time shim covering more surface than TimeWarp
+(`requestIdleCallback`, `Event.timeStamp`), and mediabunny (MPL-2.0, v1.53.0, 2.19M weekly) has
+**superseded `mp4-muxer`**, which now carries a deprecation banner. This owns no third-party capture
+dependency at all — attractive for something we maintain long-term — at the cost of building the
+frame loop ourselves and inheriting the H.264 issue above.
+
+**[HyperFrames](https://github.com/heygen-com/hyperframes)** (Apache-2.0, 40.7k stars, created
+2026-03-10) is the other `beginFrame` implementation, and notably it already does **GPU-completion
+gating** — the exact black-frame problem in failure mode 1. But it is five months old at v0.7.x with
+roughly two releases a day; worth reading, risky to depend on.
+
+**Physics determinism, checked in the actual bundles:** `cannon-es` has **zero** `Math.random`
+occurrences. `Matter.js` has zero and ships its own seeded LCG (`Common._seed`). **Rapier documents
+full cross-platform determinism** for its WASM build — if a physics engine is ever chosen for
+generated simulations, that is the one.
+
+**`--js-flags=--random-seed=N` works but is the wrong primary mechanism.** V8 seeds xorshift128+ via
+`MurmurHash3(seed)`, and every native context reads the *same* flag — so **every frame and every
+iframe gets a byte-identical `Math.random()` stream**. Reproducible, but two "independent" components
+would produce identical sequences. Use an injected per-context seed as the real mechanism and treat
+the flag as a backstop.
+
+**`crypto.getRandomValues` is not seedable by any spec mechanism** — monkey-patch it in the init
+script or ban it. (Three.js `generateUUID()` uses `Math.random()`, so patching that covers it.)
+
+### Capture failure modes, ordered by damage
+
+1. **Black frame from failed WebGL context creation** (M139+). Silent — a valid MP4 of nothing.
+   *Defence:* `--enable-unsafe-swiftshader`, assert `getContext('webgl2') !== null` in the init
+   script, and check frame 1 for non-uniform pixels.
+2. **Silent degradation to a 2D fallback** when the GL surface is missing. Output looks plausible and
+   is wrong. *Defence:* assert `UNMASKED_RENDERER_WEBGL` matches the expected backend and record it
+   in the job row.
+3. **`beginFrame` returns no `screenshotData`** — CDP warns capture "can fail … during renderer
+   initialization". *Defence:* retry, and **count frames** so a missing one cannot silently shorten
+   the clip.
+4. **Compositor staleness on the first frames.** *Defence:* ~30 discarded warmup frames (Replit's
+   number).
+5. **rAF wrapper collision** with `__SIM_RAF_GATE__` → hang. *Defence:* explicit ordering + a bounded
+   timeout that fails loudly.
+6. **Wrong Chrome binary** → `'HeadlessExperimental.beginFrame' wasn't found`. *Defence:* assert the
+   executable is `chrome-headless-shell`. (A widely-cited claim that `beginFrame` was "removed in
+   Chromium 147" is **wrong** — the reporter was using system Chromium, not headless shell. Verified
+   un-deprecated in `main` today.)
+7. **Web Worker / WebAudio loops escaping the virtual clock** — already a documented gap in our own
+   `simPause` (`SimulationService.ts:603`).
+8. **`/dev/shm` too small in Docker** → renderer crash. *Defence:* `--disable-dev-shm-usage`.
+9. **`--enable-unsafe-swiftshader` eventually removed.** Pin Chrome in the image; risk-register it.
 
 ---
 
@@ -373,7 +556,8 @@ Note `backend-api/src/controllers/stubs.ts:22-30` already reserves the URL space
 
 ## 11. Honest gaps in this document
 
-- **§4 is incomplete** — the deterministic-capture research is still running.
+- **Nothing in §4 has been spiked.** The llvmpipe-under-headless-shell question is unresolved and
+  determines throughput; per-frame timing is extrapolated, not measured.
 - **Whether the production ffmpeg has `drawtext`/`libass` is unverified.** Only this machine was
   measured. The PNG-overlay path sidesteps it entirely.
 - **No estimate of encode time or cost** for a realistic project; that needs the 20-minute fixture.
