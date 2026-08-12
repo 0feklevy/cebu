@@ -22,11 +22,6 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
-import {
-  AbortMultipartUploadCommand, CompleteMultipartUploadCommand, CopyObjectCommand,
-  CreateMultipartUploadCommand, GetObjectCommand, HeadObjectCommand, PutObjectCommand,
-  UploadPartCopyCommand,
-} from '@aws-sdk/client-s3';
 
 vi.mock('../../../lib/logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -34,12 +29,13 @@ vi.mock('../../../lib/logger.js', () => ({
 
 import { isUnderPrefix, normalizePrefix, reroot } from '../prefixScope.js';
 import {
-  copySourceFor, isCopyTooLarge, isCopyUnsupported, partCopyRanges,
+  copySourceFor, isCopyTooLarge, isCopyUnsupported, partCopyRanges, PermanentStorageError,
   HEAP_COPY_MAX_BYTES, MULTIPART_COPY_MAX_BYTES, MULTIPART_COPY_MAX_PARTS, MULTIPART_COPY_PART_BYTES,
   S3_COPY_MAX_BYTES,
 } from '../s3Copy.js';
 import { R2StorageAdapter } from '../R2StorageAdapter.js';
 import { SupabaseStorageAdapter } from '../SupabaseStorageAdapter.js';
+import { fakeS3 } from './fakeS3.js';
 
 describe('the "under a prefix" rule', () => {
   it('matches the prefix itself and its children, and nothing that merely starts with it', () => {
@@ -106,8 +102,86 @@ describe('S3 CopySource', () => {
     expect(isCopyUnsupported(real)).toBe(false);
   });
 
+  /**
+   * THE STORE IN PRODUCTION IS NOT AWS. `InvalidRequest` plus one English clause is how AWS S3 and
+   * R2 phrase this refusal, and for a long time it was the entire test — but the writable adapter
+   * on the deployment is Supabase, an S3-COMPATIBLE GATEWAY that phrases its own errors and sits
+   * behind a proxy that phrases some of them for it. An oversize rejection it did not recognise
+   * fell through as "neither unsupported nor too large" and failed the whole duplication with
+   * "you can try again", instead of being re-issued as the ranged multipart copy that gets past it.
+   */
+  it('recognises an S3-compatible gateway saying it, not only AWS\'s exact clause', () => {
+    // 413 is the canonical status for "too large", and the one a fronting proxy returns with an
+    // HTML body the SDK cannot parse into a `Code` at all — so status is the only thing left.
+    expect(isCopyTooLarge({ $metadata: { httpStatusCode: 413 } })).toBe(true);
+    expect(isCopyTooLarge({ name: 'EntityTooLarge', $metadata: { httpStatusCode: 413 } })).toBe(true);
+    // A 400 that names the size in words other than AWS's.
+    expect(isCopyTooLarge({
+      name: 'InvalidArgument', $metadata: { httpStatusCode: 400 }, message: 'copy source is too large',
+    })).toBe(true);
+    expect(isCopyTooLarge({
+      name: 'InvalidRequest', $metadata: { httpStatusCode: 400 }, message: 'Object exceeded the maximum allowed size',
+    })).toBe(true);
+
+    // …without becoming a catch-all for 4xx. These mean other things and have other remedies.
+    expect(isCopyTooLarge({ name: 'AccessDenied', $metadata: { httpStatusCode: 403 } })).toBe(false);
+    expect(isCopyTooLarge({ name: 'NoSuchKey', $metadata: { httpStatusCode: 404 } })).toBe(false);
+    expect(isCopyTooLarge({ name: 'InvalidArgument', $metadata: { httpStatusCode: 400 }, message: 'Invalid Argument' })).toBe(false);
+    // Disjoint from "unsupported" BY CONSTRUCTION now, not by the caller testing in the right
+    // order — even when the gateway's "not implemented" text also mentions the size. Answering
+    // "too large" here would start a multipart copy on a store that cannot copy at all.
+    expect(isCopyTooLarge({
+      name: 'NotImplemented', $metadata: { httpStatusCode: 501 },
+      message: 'copy source is too large: server-side copy is not implemented',
+    })).toBe(false);
+    // A dead socket is transient. Reading it as a permanent ceiling would swap a retry for a
+    // failure — and start a multipart copy against a gateway that never answered.
+    expect(isCopyTooLarge(Object.assign(
+      new Error('@smithy/node-http-handler - the request socket timed out after 15000 ms of inactivity (configured by client requestHandler).'),
+      { name: 'TimeoutError' },
+    ))).toBe(false);
+  });
+
   it('states the ceiling as the protocol does', () => {
     expect(S3_COPY_MAX_BYTES).toBe(5 * 1024 * 1024 * 1024);
+  });
+});
+
+/**
+ * The type a caller CLASSIFIES on.
+ *
+ * These refusals were written to be actionable and permanent — they name the object, its size and
+ * the bucket setting that would let the copy succeed — and then were thrown as plain `Error`s, so
+ * `ProjectDuplicationService`'s catch flattened every one into "Duplication failed. Nothing was
+ * created; you can try again." for conditions where trying again is guaranteed to fail identically.
+ */
+describe('PermanentStorageError', () => {
+  it('is an Error with a stable code, a user-safe message, and the original cause kept', () => {
+    const cause = new Error('the 400 that sent us here');
+    const err = new PermanentStorageError('COPY_SOURCE_MISSING', 'storage: cannot copy x', { cause });
+
+    expect(err).toBeInstanceOf(Error);
+    expect(err).toBeInstanceOf(PermanentStorageError);
+    expect(err.name).toBe('PermanentStorageError');
+    expect(err.code).toBe('COPY_SOURCE_MISSING');
+    expect(err.message).toBe('storage: cannot copy x');
+    expect(err.cause).toBe(cause);
+  });
+
+  it('is not what a transient failure produces', () => {
+    // The whole value of the type is the discrimination; a classifier that answered "permanent" to
+    // an ordinary 5xx would turn a retryable duplication into a dead end.
+    expect(new Error('boom')).not.toBeInstanceOf(PermanentStorageError);
+  });
+
+  it('refuses an object no multipart copy can address, permanently', () => {
+    // Uniform parts are an R2 requirement, so "use bigger parts" is not available mid-copy: this
+    // one is a fact about the object, not about the moment.
+    const err = (() => {
+      try { partCopyRanges(MULTIPART_COPY_MAX_BYTES + 1); return null; } catch (e) { return e as PermanentStorageError; }
+    })();
+    expect(err).toBeInstanceOf(PermanentStorageError);
+    expect(err?.code).toBe('COPY_TOO_MANY_PARTS');
   });
 });
 
@@ -168,35 +242,6 @@ describe('partCopyRanges', () => {
 
 // ── The multipart copy, driven through both S3-protocol adapters ──────────────────────────────
 
-/**
- * A fake `send` on the adapter's own client.
- *
- * The commands handed to it are the REAL command objects, so an assertion about `CopySourceRange`
- * or `CopySource` is an assertion about what would go on the wire — a hand-rolled S3 double could
- * not tell a `CopySourceRange` from a `Range`.
- */
-function fakeS3(adapter: unknown, react: (name: string, input: any) => unknown) {
-  const kinds: Array<[string, unknown]> = [
-    ['CopyObject', CopyObjectCommand], ['HeadObject', HeadObjectCommand],
-    ['GetObject', GetObjectCommand], ['PutObject', PutObjectCommand],
-    ['CreateMultipartUpload', CreateMultipartUploadCommand], ['UploadPartCopy', UploadPartCopyCommand],
-    ['CompleteMultipartUpload', CompleteMultipartUploadCommand],
-    ['AbortMultipartUpload', AbortMultipartUploadCommand],
-  ];
-  const calls: Array<{ name: string; input: any }> = [];
-  (adapter as any).client.send = async (cmd: any) => {
-    const hit = kinds.find(([, C]) => cmd instanceof (C as any));
-    const name = hit ? hit[0] : String(cmd?.constructor?.name);
-    calls.push({ name, input: cmd.input });
-    return react(name, cmd.input);
-  };
-  return {
-    calls,
-    names: (): string[] => calls.map((c) => c.name),
-    of: (name: string): any[] => calls.filter((c) => c.name === name).map((c) => c.input),
-  };
-}
-
 /** The real 400 R2 and S3 answer a `CopyObject` of an object over 5 GiB with. */
 function tooLargeError(): Error {
   return Object.assign(
@@ -211,6 +256,25 @@ function tooLargeError(): Error {
  */
 function failure(message: string): Error {
   return Object.assign(new Error(message), { name: 'AccessDenied', $metadata: { httpStatusCode: 403 } });
+}
+
+/** The store answering "there is no such object" — a 404 both adapters read as absence. */
+function missingError(): Error {
+  return Object.assign(new Error('NotFound'), { name: 'NotFound', $metadata: { httpStatusCode: 404 } });
+}
+
+/**
+ * The error a call rejected with, so a test can assert its TYPE and CODE rather than only its text.
+ * `rejects.toThrow(/…/)` cannot tell a permanent refusal from a transient failure with similar
+ * wording, and that distinction is the entire point of `PermanentStorageError`.
+ */
+async function refusalFrom(p: Promise<unknown>): Promise<Error> {
+  try {
+    await p;
+  } catch (err) {
+    return err as Error;
+  }
+  throw new Error('expected the call to be refused, but it succeeded');
 }
 
 const parseRange = (r: unknown): { start: number; end: number } => {
@@ -360,9 +424,51 @@ describe.each(S3_ADAPTERS)('$label copyObject past the single-copy ceiling', ({ 
   it('refuses before creating an upload when the store will not say how big the source is', async () => {
     const { adapter, s3 } = adapterUnder(oversizeStore({ HeadObject: () => ({ ContentType: 'video/mp4' }) }));
 
-    await expect(adapter.copyObject(SRC, DEST)).rejects.toThrow(/did not report its size/);
+    const err = await refusalFrom(adapter.copyObject(SRC, DEST));
+    expect(err).toBeInstanceOf(PermanentStorageError);
+    // Permanent, and SAYS so: the duplication service's catch turns anything else into
+    // "you can try again", which for this condition is advice that can never work.
+    expect((err as PermanentStorageError).code).toBe('COPY_SIZE_UNKNOWN');
+    expect(err.message).toMatch(/did not report its size/);
     expect(s3.of('CreateMultipartUpload')).toHaveLength(0);
     expect(s3.of('UploadPartCopy')).toHaveLength(0);
+  });
+
+  /**
+   * The failure this whole investigation started from: a key that names nothing.
+   *
+   * A duplication that plans a copy of a key recovered from a public URL can be planning a copy of
+   * an object that does not exist (see `publicUrlKeys.ts` for how that happened on Supabase). Every
+   * re-run plans the same copy of the same absent object, so "you can try again" is the one thing
+   * the user must not be told.
+   */
+  it('reports an absent source as permanent, not as something to try again', async () => {
+    const { adapter, s3 } = adapterUnder(oversizeStore({ HeadObject: () => { throw missingError(); } }));
+
+    const err = await refusalFrom(adapter.copyObject(SRC, DEST));
+    expect(err).toBeInstanceOf(PermanentStorageError);
+    expect((err as PermanentStorageError).code).toBe('COPY_SOURCE_MISSING');
+    expect(err.message).toMatch(/does not exist/);
+    // The 400 that sent us down this path is kept, so a diagnosis does not lose it.
+    expect((err.cause as Error)?.message).toMatch(/larger than the maximum allowable size/);
+    expect(s3.of('CreateMultipartUpload')).toHaveLength(0);
+  });
+
+  it('reports an absent source as permanent on the read-then-write path too', async () => {
+    const { adapter, s3 } = adapterUnder((name) => {
+      switch (name) {
+        case 'CopyObject':
+          throw Object.assign(new Error('nope'), { name: 'NotImplemented', $metadata: { httpStatusCode: 501 } });
+        case 'HeadObject': throw missingError();
+        default: throw new Error(`unexpected command: ${name}`);
+      }
+    });
+
+    const err = await refusalFrom(adapter.copyObject(SRC, DEST));
+    expect(err).toBeInstanceOf(PermanentStorageError);
+    expect((err as PermanentStorageError).code).toBe('COPY_SOURCE_MISSING');
+    expect(err.message).toMatch(/the object does not exist/);
+    expect(s3.names()).not.toContain('GetObject');
   });
 
   it('takes none of it for an ordinary object — no HEAD, no multipart, one round trip', async () => {
@@ -421,7 +527,12 @@ describe.each(S3_ADAPTERS)('$label copyObject past the single-copy ceiling', ({ 
     // inline, for every user of the deployment.
     const { adapter, s3 } = adapterUnder(unsupportedStore(SIZE));
 
-    await expect(adapter.copyObject(SRC, DEST)).rejects.toThrow(/does not support server-side copy/);
+    const err = await refusalFrom(adapter.copyObject(SRC, DEST));
+    expect(err).toBeInstanceOf(PermanentStorageError);
+    expect((err as PermanentStorageError).code).toBe('COPY_TOO_LARGE_FOR_FALLBACK');
+    // The wording is the actionable part and must survive the trip to the user intact.
+    expect(err.message).toMatch(/does not support server-side copy/);
+    expect(err.message).toMatch(/Enable server-side copy \(CopyObject\) on the storage bucket/);
     // Not a byte was moved, and it did not silently reroute to the multipart path either — that one
     // answers a different failure and would fail again, slower.
     expect(s3.names()).not.toContain('GetObject');
@@ -434,7 +545,10 @@ describe.each(S3_ADAPTERS)('$label copyObject past the single-copy ceiling', ({ 
     // the process.
     const { adapter, s3 } = adapterUnder(unsupportedStore(undefined));
 
-    await expect(adapter.copyObject(SRC, DEST)).rejects.toThrow(/did not report the object's size/);
+    const err = await refusalFrom(adapter.copyObject(SRC, DEST));
+    expect(err).toBeInstanceOf(PermanentStorageError);
+    expect((err as PermanentStorageError).code).toBe('COPY_SIZE_UNKNOWN');
+    expect(err.message).toMatch(/did not report the object's size/);
     expect(s3.names()).not.toContain('GetObject');
   });
 

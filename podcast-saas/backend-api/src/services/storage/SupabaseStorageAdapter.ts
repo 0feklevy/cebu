@@ -21,6 +21,24 @@ import { reroot } from './prefixScope.js';
 import { keyFromPublicUrlAgainst } from './publicUrlKeys.js';
 import { logger } from '../../lib/logger.js';
 
+/** TCP connect budget. Establishing a socket is fast or it is broken; size does not enter into it. */
+export const SUPABASE_CONNECTION_TIMEOUT_MS = 5_000;
+
+/** Socket-INACTIVITY allowance for an ordinary request. See the constructor for why it is this low. */
+export const SUPABASE_SOCKET_TIMEOUT_MS = 15_000;
+
+/**
+ * Socket-inactivity allowance for a SERVER-SIDE COPY (`CopyObject`, `UploadPartCopy`).
+ *
+ * These two are the only commands whose response time is a function of the object's SIZE while the
+ * socket carries nothing at all: the gateway copies the bytes internally and answers when it is
+ * done. Fifteen seconds is right for a request that should answer immediately and wrong for one
+ * that is moving gigabytes, so the two get different clients. Five minutes is roughly three times
+ * the worst realistic case (a 5 GiB single copy, or a 256 MiB part) and is still a bound — a
+ * genuinely dead socket on the copy path costs minutes, not forever.
+ */
+export const SUPABASE_COPY_SOCKET_TIMEOUT_MS = 5 * 60_000;
+
 /**
  * Supabase Storage adapter — uses Supabase's **S3-compatible** endpoint, so it reuses
  * the same AWS SDK + presigned-URL machinery as R2 (no new dependency). HTTPS-only,
@@ -36,6 +54,14 @@ import { logger } from '../../lib/logger.js';
  */
 export class SupabaseStorageAdapter implements StorageService {
   private readonly client: S3Client;
+  /**
+   * A second client, identical but for its socket timeout, used ONLY for server-side copies.
+   *
+   * See `SUPABASE_COPY_SOCKET_TIMEOUT_MS`. A per-request override is not available — the AWS SDK
+   * resolves `socketTimeout` once, from the client's `requestHandler` — so the allowance has to be
+   * carried by a second client rather than by the two commands that need it.
+   */
+  private readonly copyClient: S3Client;
   private readonly bucket: string;
   private readonly publicBase: string;
 
@@ -64,27 +90,46 @@ export class SupabaseStorageAdapter implements StorageService {
     // Public object URL base (works for objects in a public bucket / with public policy).
     this.publicBase = origin ? `${origin}/storage/v1/object/public/${this.bucket}` : '';
 
-    this.client = new S3Client({
+    const shared = {
       region,
       endpoint,
       forcePathStyle: true, // Supabase S3 requires path-style addressing
       credentials: { accessKeyId, secretAccessKey },
       // Match R2: don't embed CRC checksums (they break presigned URLs on some S3 impls).
-      requestChecksumCalculation: 'WHEN_REQUIRED',
-      responseChecksumValidation: 'WHEN_REQUIRED',
+      requestChecksumCalculation: 'WHEN_REQUIRED' as const,
+      responseChecksumValidation: 'WHEN_REQUIRED' as const,
+    };
+
+    this.client = new S3Client({
+      ...shared,
       // Fail fast instead of hanging (fiji's StorageService pattern). Without a socket
       // timeout, a black-holed connection through Supabase's CDN waits FOREVER — a sim
       // upload wave's Promise.all then never resolves and the sim sits at 'processing'
       // indefinitely. socketTimeout fires on socket INACTIVITY (verified in
       // @smithy/node-http-handler), so slow-but-flowing large streams are unaffected.
       requestHandler: {
-        connectionTimeout: 5_000, // 5s to establish TCP
+        connectionTimeout: SUPABASE_CONNECTION_TIMEOUT_MS,
         // 15s of ZERO socket activity → fail + retry. Healthy transfers of any size
         // keep the socket busy continuously, so this only fires on truly dead
         // connections. 60s proved painfully slow in practice: a network flap mid-sim-
         // upload meant each dead socket burned the full minute × retries (~5 min of
         // "Processing…" for 44 files) before recovering.
-        socketTimeout: 15_000,
+        socketTimeout: SUPABASE_SOCKET_TIMEOUT_MS,
+      },
+    });
+
+    // "Slow-but-flowing large streams are unaffected" is true of an UPLOAD and false of a
+    // SERVER-SIDE COPY — the one shape where nothing flows precisely because the transfer is large.
+    // The client sends a bodyless request and waits; every byte moves INSIDE the store, so the
+    // socket is idle for as long as the copy takes and the 15s inactivity timer, sized for a small
+    // request, destroys a copy that was working. Worse than slow: the `TimeoutError` it raises is
+    // neither "unsupported" nor "too large", so `copyObject` rethrows it and the duplication dies
+    // with "you can try again" — after the copy has, quite possibly, already completed server-side.
+    this.copyClient = new S3Client({
+      ...shared,
+      requestHandler: {
+        connectionTimeout: SUPABASE_CONNECTION_TIMEOUT_MS,
+        socketTimeout: SUPABASE_COPY_SOCKET_TIMEOUT_MS,
       },
     });
   }
@@ -99,15 +144,20 @@ export class SupabaseStorageAdapter implements StorageService {
    * err.$metadata), on 429/408, and on transport errors with no status at all (resets,
    * socket timeouts). Used only for idempotent commands whose bodies are re-sendable
    * (Buffers) — never streams.
+   *
+   * @param isFinal answers "this status is the gateway's SETTLED ANSWER, not a hiccup". Needed
+   *                because the status classes above are heuristics about the transport, and one of
+   *                them is wrong for a specific command: a `501 NotImplemented` is a 5xx, so it
+   *                looks transient, while it is in fact a permanent statement about the endpoint.
    */
-  private async withRetry<T>(op: () => Promise<T>, attempts = 4): Promise<T> {
+  private async withRetry<T>(op: () => Promise<T>, isFinal?: (err: unknown) => boolean, attempts = 4): Promise<T> {
     for (let attempt = 1; ; attempt++) {
       try {
         return await op();
       } catch (err) {
         const status = (err as { $metadata?: { httpStatusCode?: number } })?.$metadata?.httpStatusCode;
-        const retryable = status === undefined || status >= 500 || status === 429 || status === 408;
-        if (!retryable || attempt >= attempts) throw err;
+        const transient = status === undefined || status >= 500 || status === 429 || status === 408;
+        if (!transient || isFinal?.(err) || attempt >= attempts) throw err;
         await new Promise((r) => setTimeout(r, 500 * 2 ** (attempt - 1) + Math.random() * 250));
       }
     }
@@ -256,17 +306,29 @@ export class SupabaseStorageAdapter implements StorageService {
    * to be in it — so unlike R2 the fallback here is an EXPECTED path, not a curiosity. It is
    * routed through `withRetry` for the same reason `deleteWithPrefix` is: `CopyObject` is
    * idempotent and carries no body, which is exactly the class of command that helper is for.
+   *
+   * Sent on `copyClient`, whose socket-inactivity allowance is sized for a copy rather than for a
+   * request that answers at once — see `SUPABASE_COPY_SOCKET_TIMEOUT_MS`.
+   *
+   * The two ANSWERS below — unsupported, and over the ceiling — are excluded from the retry. Both
+   * arrive as statuses `withRetry` would otherwise re-send (`501` is a 5xx), and both are settled
+   * facts about the endpoint that four attempts cannot change. On the gateway where the unsupported
+   * branch is the EXPECTED one, retrying it charged every object of every duplication 3.5s of
+   * backoff before taking the fallback it was always going to take: over ten minutes of pure
+   * waiting for the few hundred objects an ordinary project holds, inline in the API process.
    */
   async copyObject(srcKey: string, destKey: string): Promise<void> {
     try {
-      await this.withRetry(() =>
-        this.client.send(
-          new CopyObjectCommand({
-            Bucket: this.bucket,
-            Key: destKey,
-            CopySource: copySourceFor(this.bucket, srcKey),
-          }),
-        ),
+      await this.withRetry(
+        () =>
+          this.copyClient.send(
+            new CopyObjectCommand({
+              Bucket: this.bucket,
+              Key: destKey,
+              CopySource: copySourceFor(this.bucket, srcKey),
+            }),
+          ),
+        (err) => isCopyUnsupported(err) || isCopyTooLarge(err),
       );
     } catch (err) {
       // Same distinction R2 draws, and the same remedy: over the single-part ceiling is a permanent
@@ -319,8 +381,10 @@ export class SupabaseStorageAdapter implements StorageService {
         return resp.UploadId;
       },
       copyPart: async (uploadId, part) => {
+        // `copyClient` again, and here it is not marginal: one part is up to 256 MiB of server-side
+        // copying behind a socket that carries nothing while it happens.
         const resp = await this.withRetry(() =>
-          this.client.send(
+          this.copyClient.send(
             new UploadPartCopyCommand({
               Bucket: this.bucket,
               Key: destKey,
@@ -391,34 +455,60 @@ export class SupabaseStorageAdapter implements StorageService {
     ]);
   }
 
-  async objectExists(key: string): Promise<boolean> {
-    try {
-      await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }));
-      return true;
-    } catch (err) {
-      const status = (err as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode;
-      if (status === 404 || (err as { name?: string }).name === 'NotFound') return false;
-      throw err; // real error (auth/network) — don't misreport as "missing"
-    }
+  /**
+   * Is this the store ANSWERING "no such object", rather than failing to answer?
+   *
+   * The distinction is the whole reason the 404 test lives inside the retried closure below: an
+   * answer is final, a failure is worth another attempt.
+   */
+  private static isMissing(err: unknown): boolean {
+    const status = (err as { $metadata?: { httpStatusCode?: number } })?.$metadata?.httpStatusCode;
+    return status === 404 || (err as { name?: string })?.name === 'NotFound';
   }
 
+  /**
+   * RETRIED, like every other idempotent bodyless command on this gateway.
+   *
+   * These were the last two that were not, and they are the ones a duplication leans on hardest:
+   * `ProjectDuplicationService.verifyBytes` issues one PER COPIED OBJECT — 50 to 300 back-to-back —
+   * immediately after a multi-minute copy wave, which is exactly when this Cloudflare-fronted
+   * gateway serves the transient 5xx `withRetry` was written for. One of them anywhere in that
+   * burst failed the entire duplication, after every byte had already been copied.
+   *
+   * The 404 absorption stays INSIDE the closure on purpose: a genuine miss is an answer, so it
+   * returns false at once instead of spending three more attempts re-asking a settled question.
+   */
+  async objectExists(key: string): Promise<boolean> {
+    return this.withRetry(async () => {
+      try {
+        await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }));
+        return true;
+      } catch (err) {
+        if (SupabaseStorageAdapter.isMissing(err)) return false;
+        throw err; // real error (auth/network) — don't misreport as "missing"
+      }
+    });
+  }
+
+  /** Retried, and absent-means-absent, for the reasons on `objectExists`. */
   async headObject(key: string): Promise<StoredObjectHead | null> {
-    try {
-      const r = await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }));
-      // Each field is reported as null when absent rather than defaulted. A caller verifying a
-      // published revision must be able to distinguish "the store says text/plain" from "the store
-      // did not say" — defaulting here would turn the second into a false mismatch or a false pass.
-      return {
-        contentType: r.ContentType ?? null,
-        cacheControl: r.CacheControl ?? null,
-        size: typeof r.ContentLength === 'number' ? r.ContentLength : null,
-        etag: r.ETag ?? null,
-      };
-    } catch (err) {
-      const status = (err as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode;
-      if (status === 404 || (err as { name?: string }).name === 'NotFound') return null;
-      throw err; // real error (auth/network) — don't misreport as "missing"
-    }
+    return this.withRetry(async () => {
+      try {
+        const r = await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }));
+        // Each field is reported as null when absent rather than defaulted. A caller verifying a
+        // published revision must be able to distinguish "the store says text/plain" from "the store
+        // did not say" — defaulting here would turn the second into a false mismatch or a false pass.
+        return {
+          contentType: r.ContentType ?? null,
+          cacheControl: r.CacheControl ?? null,
+          size: typeof r.ContentLength === 'number' ? r.ContentLength : null,
+          etag: r.ETag ?? null,
+        };
+      } catch (err) {
+        if (SupabaseStorageAdapter.isMissing(err)) return null;
+        throw err; // real error (auth/network) — don't misreport as "missing"
+      }
+    });
   }
 
   async readObject(key: string): Promise<Buffer> {

@@ -323,12 +323,23 @@ hello','caphash')
   // column, minted by `GuidanceService`. It is BOTH a database column and a literal baked into the
   // generated `guidance.js` overlay, and the overlay is the one that fires the cue in the viewer.
   await pg.query(
+    // `canary_report` is set HERE rather than at INSERT because a realistic one embeds the storage
+    // prefix, and the prefix embeds the simulation's own id. The row-level report is a separate
+    // value from the revision's and needs the same realism: a two-field stub cannot contain a
+    // project id, and a report that cannot contain one cannot exercise the escape scan.
     `UPDATE simulations SET storage_prefix=$2, entry_file=$3, guidance_meta=$4::jsonb,
-                            guidance=$5::jsonb, guidance_status='ready' WHERE id=$1`,
+                            guidance=$5::jsonb, guidance_status='ready', canary_report=$6::jsonb
+     WHERE id=$1`,
     [simRev.id, simRevPrefix, `${simRevPrefix}/index.html`, JSON.stringify({
       provider: 'claude', model: 'm', confidence: 0.9, entryCount: 3, language: 'en',
       mdUrl: `https://sim.test/${simRevPrefix}/guidance/understanding.md`,
-    }), JSON.stringify(guidanceEntries(`https://sim.test/${simRevPrefix}/${GUIDANCE_AUDIO_REL}`))]);
+    }), JSON.stringify(guidanceEntries(`https://sim.test/${simRevPrefix}/${GUIDANCE_AUDIO_REL}`)),
+     JSON.stringify({
+       packageRevision: 'rev0123456789ab', simulationId: simRev.id, storagePrefix: simRevPrefix,
+       classification: 'managed-presentable', cases: [],
+       assets: [{ path: `${simRevPrefix}/index.html`, ok: true, status: 200, contentType: 'text/html' }],
+       aborted: null, startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), engine: 'chromium/1',
+     })]);
 
   const retired = await one<{ id: string }>(
     `INSERT INTO sim_revisions (simulation_id, revision_number, status, manifest_hash, entry_path, activated_at)
@@ -341,8 +352,24 @@ hello','caphash')
                                 metadata, activated_at)
      VALUES ($1,2,'active',$2,'package/index.html',3,3,'managed-presentable',$3::jsonb, now(), $4,'tester',$5::jsonb, now())
      RETURNING id`,
-    [simRev.id, 'b'.repeat(64), JSON.stringify({ verdict: 'pass' }), retired.id, JSON.stringify({
+    [simRev.id, 'b'.repeat(64), JSON.stringify({
+      // A REALISTIC canary report, not `{verdict:'pass'}`. The real contract
+      // (shared/src/sim/canaryContract.ts) makes `storagePrefix` and `simulationId` required, and a
+      // project-scoped prefix inside an unrewritten jsonb column is what the escape scan fails the
+      // whole commit on. The old two-field stub could not contain a project id, so this entire
+      // class of permanent duplication blocker was invisible to the suite.
+      packageRevision: 'rev0123456789ab',
+      simulationId: simRev.id,
+      storagePrefix: simRevPrefix,
+      classification: 'managed-presentable',
+      cases: [], assets: [{ path: `${simRevPrefix}/bridge.js`, ok: true, status: 200, contentType: 'text/javascript' }],
+      aborted: null, startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), engine: 'chromium/1',
+    }), retired.id, JSON.stringify({
       note: 'orig',
+      // Written by `RevisionMigration` on every package migrated off a legacy prefix — and it is
+      // `simulations/{projectId}/{simId}`, so it NAMES THE SOURCE PROJECT. Carried verbatim it made
+      // any project with a migrated simulation permanently un-duplicatable.
+      migratedFromLegacyPrefix: simRevPrefix,
       // The publication-time capability record (migrations 055 + 057). Both values are the NON-default
       // answer on purpose: `null` is the state a copy that forgot to project them would land in, and
       // it is indistinguishable from these two unless they disagree with it.
