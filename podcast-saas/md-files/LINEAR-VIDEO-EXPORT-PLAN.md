@@ -738,3 +738,102 @@ Note `backend-api/src/controllers/stubs.ts:22-30` already reserves the URL space
 - **No estimate of encode time or cost** for a realistic project; that needs the 20-minute fixture.
 - **Nothing here has been prototyped.** Every ffmpeg claim is measured on synthetic sources shaped
   like the problem, not on a real project's media.
+
+---
+
+# THE DECISION (2026-08-12) — locked, implementation started
+
+User rulings folded in: output is **1920×1080 landscape**; avatar circles / captions / Ken Burns are
+**not critical — cut from v1**; device-specific fidelity is **not critical**; music/audio must be in
+the export; "Show full simulation" is excluded from the render.
+
+## Architecture: server-side deterministic capture + source splicing
+
+1. **Main video, B-roll, clips** — never captured. Spliced from source files with the measured
+   `filter_complex` graph (§5), including the `setsar` fix and VFR collapse.
+2. **Scripted simulation sections** — captured server-side: `chrome-headless-shell` +
+   `--deterministic-mode` + `HeadlessExperimental.beginFrame` + JS clock shim, navigating
+   **top-level** to the section's served sim URL (v2 protocol, `startScript` with
+   `simpleUi`/`autoScript`/`ui_hide` exactly as the viewer sends them). 30 fps, ≤15 s per section
+   (`VISUAL_MAX_SEC`). PNG frames → ffmpeg. **What a viewer sees is what is captured, because it is
+   the same bridge running the same script** — and at a perfect 30 fps, which a weak viewer device
+   cannot even achieve.
+3. **"Show full simulation" (RAW)** — excluded. Predicate verified from the player's own code
+   (below), no new field required.
+4. **Audio** — mixed entirely from assets: main video audio + audio cutaways/music via the
+   `mixTimeline` discipline (`amix normalize=0`, two-pass loudnorm). Sim-internal WebAudio is out of
+   scope v1 and recorded as a plan warning when a package is known to emit audio.
+5. **Poster fallback, permanent**: any sim window whose capture fails (or before Phase 2 lands)
+   renders as the section's poster still + silence — an export always completes, degraded loudly in
+   the plan rather than failing silently.
+6. **On-device capture (getDisplayMedia + Region Capture)** — documented v2 option; it is the only
+   route to sim-internal audio. Not in v1.
+
+## The exclusion predicate — final, verified (confidence: high)
+
+The player computes exactly this at `useProjectPlayer.ts:1936` and calls it RAW activation
+("show the full simulation", `:616-622`):
+
+```ts
+import { variantParamOf } from 'shared/src/sim/simIdentity';
+
+const isFullSimulation = (s: SectionRow): boolean =>
+  s.type === 'simulation' &&
+  (!s.simulation_url || variantParamOf(s.simulation_url) === null) &&
+  (!s.sim_script || s.sim_script === 'main');
+
+// EXCLUDE from the render:  isFullSimulation(s)
+// CAPTURE:                  s.type === 'simulation' && !isFullSimulation(s)
+// SPLICE:                   s.type === 'clip' && (clip_source_video_id || clip_source_image_id)
+```
+
+Stored-vs-served is safe (`resolveSimulationUrl` appends the stored query verbatim). One known
+hole: legacy rows from before the `?section=` era — the repo already ships the repair tool.
+
+## Implementation phases
+
+**Phase 1 — the pipeline without capture (ships value alone: poster-stills for sims).**
+- Migration `058_project_exports`: table modelled on `project_duplications` (status CHECK,
+  `updated_at`, progress, `plan` jsonb, `error`, `cancel_requested`, partial unique in-flight
+  index).
+- `buildExportPlan(projectId)`: timeline resolution (global offsets, both time conventions), the
+  predicate above, poster/caption/branching warnings, canonical grid decision, estimated bytes +
+  disk pre-flight. Stored in `plan` before any work.
+- `LinearAssembler`: the measured graph — normalise every branch (`setsar=1`, `fps=30`,
+  `format=yuv420p`, `settb`), `trim/atrim`+`concat`, `apad`+`atrim` audio discipline,
+  `gte/lt` enable helper (never `between`), `-/filter_complex` file, `-progress pipe:1`
+  (`out_time_us`!), SIGTERM cancel + **exit-0 + duration gates before upload**, versioned
+  write-once output key, 6-hour presigned download.
+- Queue job `project_export` (inline driver), CAS claim + heartbeat + fenced writes + phase-coded
+  `classifyDuplicationFailure`-style failures — copy the duplication discipline verbatim.
+- Endpoints replacing the 501 stubs: `POST /projects/:id/export`, `GET /projects/:id/exports/:eid`,
+  `POST …/cancel`. Owner-gated like duplicate.
+- Client: button left of Preview (`ProjectHeader.tsx:166`), `useProjectExport` (bounded poll like
+  `useProjectDuplication`), progress strip, download when `ready`, honest per-warning display.
+- Branching projects: **refused** (`retryable:false`) with a clear message, v1.
+
+**Phase 2 — the capture worker (needs the Linux container; scaffolded now, verified in-container).**
+- `SimCaptureWorker`: headless-shell launcher (flag set from §4 incl. the six
+  `--deterministic-mode` switches spelled out, `--use-angle=swiftshader`,
+  `--enable-unsafe-swiftshader` belt-and-braces, `--force-device-scale-factor=1`,
+  `--hide-scrollbars`, `--disable-dev-shm-usage`), clock shim + seeded PRNG (from `configHash`)
+  injected at document start, v2 handshake (`SIM_READY` → `startScript` → `SCRIPT_APPLIED` →
+  `SIM_PAINTED`), ~30 warmup frames, exactly `round(duration×30)` beginFrame captures, WebGL
+  context + `UNMASKED_RENDERER_WEBGL` + frame-1 non-uniformity + frame-count assertions — every
+  silent failure mode from §4 gated loudly.
+- Dockerfile: `chrome-headless-shell` pinned + fonts; dev loop is container-only (macOS cannot run
+  beginFrame — measured).
+- Integration: captures land in the export work dir; `LinearAssembler` swaps poster stand-ins for
+  captures when present.
+
+**Phase 3 — polish (post-v1): overlay stage (alpha capture is verified real), sim-internal audio
+via on-device capture, branching path selection, admin visibility.**
+
+## Contracts (both build agents implement against these)
+
+- `project_exports.status`: `queued | planning | capturing | assembling | uploading | ready | failed`.
+- Storage: `exports/{projectId}/{exportId}/master.mp4` (+ `sections/{sectionId}.mp4` captures),
+  immutable cache headers, never overwritten across exports.
+- `ExportPlan` jsonb: `{ grid: {w:1920,h:1080,fps:30}, timeline: [...resolved windows with absolute
+  times, kind: 'video'|'sim-capture'|'clip'|'image'|'poster-fallback'], audio: [...asset windows],
+  warnings: string[], failure?: {code, retryable, phase, detail} }`.
