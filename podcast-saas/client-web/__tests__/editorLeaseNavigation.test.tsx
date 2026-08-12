@@ -213,6 +213,34 @@ describe('a document change while the preview holds the page', () => {
     expect(frames(container), 'the replay must SWAP the resident document, not add one').toHaveLength(1);
   });
 
+  it('withdraws the deferred mount when the section goes back to the resident document', () => {
+    // THE DEFECT. The navigate branch records the mount; the REUSE branch — the one a revert lands
+    // on, because the deferral means the resident document is still the original — records only the
+    // activation desire and returns, leaving the ref pointing at the revision that was withdrawn.
+    // `syncTimelineWithLease` reads that ref FIRST and returns straight after mounting it, so
+    // closing the preview navigated the slot to a document belonging to no section and posted no
+    // activation for it: raw video, no simulation, no cover, until the playhead left and re-entered.
+    //
+    // Reachable as regenerate-then-revert (undo, or a failed save rolling the row back) with the
+    // section editor's preview open over it.
+    const { container, seek, republish } = mountEditor(URL_A);
+    seek(12);
+    runTimelineSim(container);
+    const lease = startPreview();
+
+    republish(URL_B);        // regenerate: navigate, deferred behind the lease
+    republish(URL_A);        // …and revert: the resident document is the right one again
+
+    act(() => { lease.release(); });
+
+    expect(frame(container).src, 'the slot navigated to the withdrawn revision').toContain('rev-aaaa');
+    expect(frame(container).src).not.toContain('rev-bbbb');
+    expect(frames(container), 'and it must still be ONE document').toHaveLength(1);
+    // …and the section it is showing is composited, rather than held behind the pending-activation
+    // gate the abandoned mount would have re-armed.
+    expect(frame(container).style.opacity, 'the reverted section never came back on screen').toBe('1');
+  });
+
   it('withdraws the deferred mount when the playhead leaves the section', () => {
     // Same rule the deferred ACTIVATION already followed: leaving the sim section during a preview
     // must not mount anything when the lease frees.

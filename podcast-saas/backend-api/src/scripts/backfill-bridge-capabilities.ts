@@ -70,6 +70,8 @@
  * also why `deriveEntryRelPath` is INJECTED rather than imported: it lives in `SimulationService`,
  * whose module scope opens a database client.
  */
+import { and, eq, isNull } from 'drizzle-orm';
+
 import {
   BRIDGE_CAPABILITIES_KEY,
   detectBridgeCapabilities,
@@ -77,6 +79,11 @@ import {
   type BridgeCapabilities,
 } from 'shared/sim/bridgeCapability';
 import { revisionPrefix } from 'shared/sim/simRevision';
+
+// TYPE-ONLY, therefore erased: importing these for their VALUES would open a database client at
+// module scope, which is the one thing this module promises not to do. See the header.
+import type { db as Database } from '../db/index.js';
+import type { simulations as SimulationsTable, sim_revisions as SimRevisionsTable } from '../db/schema.js';
 
 // ── the row shape this needs, and nothing more ────────────────────────────────
 
@@ -132,7 +139,9 @@ export type BackfillOutcome =
   /** At least one artefact was read and classified. */
   | 'classified'
   /** Nothing could be read. Left UNKNOWN — never guessed. */
-  | 'unreadable';
+  | 'unreadable'
+  /** Classified, but a publication moved the package on before the write. The publication wins. */
+  | 'superseded';
 
 export interface BackfillResult {
   simId: string;
@@ -295,6 +304,76 @@ export async function classifyPackage(
   return { result, capabilities };
 }
 
+// ── the write, and the race it has to lose ────────────────────────────────────
+
+/** The two tables the write touches, passed in so this module imports neither for its value. */
+export interface CapabilityWriteTables {
+  simulations: typeof SimulationsTable;
+  sim_revisions: typeof SimRevisionsTable;
+}
+
+/** The transaction surface the write needs, and nothing more. */
+export type CapabilityWriteTx = Pick<typeof Database, 'select' | 'update'>;
+
+/**
+ * Record one package's classification — the revision's own record and the scalar projection of it —
+ * FENCED on the package still pointing at the revision this run read.
+ *
+ * WHY THE FENCE. A backfill pass over the whole population takes as long as it takes, and the rows
+ * were read at the START of it. Between that read and this write, an author can publish a new
+ * revision of the same simulation: `RevisionService` activates it and, in the same statement,
+ * projects the capabilities OF THE NEW BYTES onto `simulations`. An unfenced backfill write then
+ * lands on top with the answers it derived from the bytes that were live minutes ago, and the
+ * projection now describes a package nobody is served — silently, and in the direction that
+ * matters: `requires_import_maps` reverting to the old package's answer is a blank iframe on
+ * Safari, or a still image in place of a working simulation.
+ *
+ * `active_revision_id` IS the version stamp for this — it is the only mutable thing about a
+ * revisioned package, and it moves on exactly the event that invalidates this run's reading. A row
+ * that had no revision at snapshot time is fenced on it still having none, for the same reason: it
+ * may have been migrated to immutable revisions mid-run, which also republishes the projections.
+ *
+ * Returns false when the fence held someone else's write — the caller reports it and moves on;
+ * there is nothing to retry, because the winner already recorded a better answer.
+ */
+export async function recordClassification(
+  tx: CapabilityWriteTx,
+  tables: CapabilityWriteTables,
+  row: BackfillSimRow,
+  capabilities: Partial<BridgeCapabilities>,
+): Promise<boolean> {
+  const projection: { bridge_ack_capable?: boolean; requires_import_maps?: boolean } = {};
+  if (capabilities.scriptApplied !== undefined)      projection.bridge_ack_capable   = capabilities.scriptApplied;
+  if (capabilities.requiresImportMaps !== undefined) projection.requires_import_maps = capabilities.requiresImportMaps;
+
+  // The projection first, and its result decides everything: if the package has moved on, the
+  // revision metadata must not be written either — the caller runs this inside a transaction, so
+  // returning false and rolling back leaves the winner's state untouched.
+  const written = await tx.update(tables.simulations)
+    .set(projection)
+    .where(and(
+      eq(tables.simulations.id, row.id),
+      row.active_revision_id
+        ? eq(tables.simulations.active_revision_id, row.active_revision_id)
+        : isNull(tables.simulations.active_revision_id),
+    ))
+    .returning({ id: tables.simulations.id });
+  if (written.length === 0) return false;
+
+  if (row.active_revision_id) {
+    const [rev] = await tx.select({
+      id: tables.sim_revisions.id,
+      metadata: tables.sim_revisions.metadata,
+    }).from(tables.sim_revisions).where(eq(tables.sim_revisions.id, row.active_revision_id));
+    if (rev) {
+      await tx.update(tables.sim_revisions)
+        .set({ metadata: mergedRevisionMetadata(rev.metadata, capabilities) })
+        .where(eq(tables.sim_revisions.id, rev.id));
+    }
+  }
+  return true;
+}
+
 /** Argument parsing, extracted so the bounds are testable without a process. */
 export function parseArgs(argv: readonly string[]): { apply: boolean; force: boolean; limit?: number } {
   const limitArg = argv.find((a) => a.startsWith('--limit='));
@@ -315,7 +394,7 @@ async function main(): Promise<void> {
 
   // `deriveEntryRelPath` comes from SimulationService, whose module scope opens a database client —
   // hence lazily, here, with the rest of the IO, and injected into the pure half.
-  const [{ db }, schema, { getStorageAdapter }, { eq, asc }, { deriveEntryRelPath }] = await Promise.all([
+  const [{ db }, schema, { getStorageAdapter }, { asc }, { deriveEntryRelPath }] = await Promise.all([
     import('../db/index.js'),
     import('../db/schema.js'),
     import('../services/storage/getStorageAdapter.js'),
@@ -344,7 +423,7 @@ async function main(): Promise<void> {
   const deps: ClassifyDeps = { readObject: read, deriveEntryRelPath };
 
   const results: BackfillResult[] = [];
-  let acking = 0, silent = 0, needsMaps = 0, noMaps = 0, unreadable = 0, failed = 0;
+  let acking = 0, silent = 0, needsMaps = 0, noMaps = 0, unreadable = 0, failed = 0, superseded = 0;
 
   for (const row of work) {
     const { result, capabilities } = await classifyPackage(row, deps, factsToLearn(row, force));
@@ -356,30 +435,19 @@ async function main(): Promise<void> {
     if (capabilities.requiresImportMaps === false) noMaps++;
     if (!apply) continue;
 
-    // Only the columns this run actually MEASURED. A fact left unlearned (already recorded, or its
-    // artefact unreadable) must not be written at all — `undefined` in a Drizzle `.set()` would be
-    // dropped silently anyway, but stating it here is what makes "never guessed" checkable.
-    const projection: { bridge_ack_capable?: boolean; requires_import_maps?: boolean } = {};
-    if (capabilities.scriptApplied !== undefined)      projection.bridge_ack_capable  = capabilities.scriptApplied;
-    if (capabilities.requiresImportMaps !== undefined) projection.requires_import_maps = capabilities.requiresImportMaps;
-
     try {
       // ONE TRANSACTION per package: the revision's record and the projection of it must not be
-      // able to disagree, which is the same invariant the pointer flip keeps at publication.
-      await db.transaction(async (tx) => {
-        if (row.active_revision_id) {
-          const rev = await tx.query.sim_revisions.findFirst({
-            where: eq(sim_revisions.id, row.active_revision_id!),
-            columns: { id: true, metadata: true },
-          });
-          if (rev) {
-            await tx.update(sim_revisions)
-              .set({ metadata: mergedRevisionMetadata(rev.metadata, capabilities) })
-              .where(eq(sim_revisions.id, rev.id));
-          }
-        }
-        await tx.update(simulations).set(projection).where(eq(simulations.id, row.id));
-      });
+      // able to disagree, which is the same invariant the pointer flip keeps at publication — and
+      // it is what lets the compare-and-set inside `recordClassification` abandon BOTH writes when
+      // a publication has moved the package on underneath this run.
+      const landed = await db.transaction(
+        (tx) => recordClassification(tx, { simulations, sim_revisions }, row, capabilities),
+      );
+      if (!landed) {
+        superseded++;
+        result.outcome = 'superseded';
+        result.note = 'a publication changed this package while the backfill ran — its answers win';
+      }
     } catch (err) {
       failed++;
       result.outcome = 'unreadable';
@@ -397,13 +465,16 @@ async function main(): Promise<void> {
     ].filter(Boolean).join(' ');
     const verb = r.outcome === 'classified'
       ? `${apply ? 'RECORDED' : 'WOULD RECORD'} ${facts}`
-      : `LEFT UNKNOWN`;
+      : r.outcome === 'superseded'
+        ? `SKIPPED (superseded) ${facts}`
+        : `LEFT UNKNOWN`;
     console.log(`  ${verb.padEnd(52)} ${r.simId}  "${r.name}"${r.note ? ` — ${r.note}` : ''}`);
   }
 
   console.log(`\nSummary: bridge — acking: ${acking}, silent: ${silent}`
     + `; entry — needs import maps: ${needsMaps}, does not: ${noMaps}`
-    + `; nothing readable (left UNKNOWN): ${unreadable}, write failures: ${failed}`);
+    + `; nothing readable (left UNKNOWN): ${unreadable}, superseded by a publication: ${superseded}`
+    + `, write failures: ${failed}`);
   if (!apply && acking + silent + needsMaps + noMaps > 0) {
     console.log('DRY RUN — nothing was written. Re-run with `-- --apply` to record the classifications.');
   }

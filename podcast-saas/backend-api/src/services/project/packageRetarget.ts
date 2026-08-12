@@ -120,7 +120,7 @@ export interface ManifestRetarget {
   projectId: string;
   revisionId: string;
   revisionNumber: number;
-  /** old section id → the copy's section id. Applied to `variants[].variantKey`. */
+  /** old section id → the copy's section id. Applied to EVERY `variantKey` the manifest holds. */
   sectionIds: ReadonlyMap<string, string>;
   /** manifest path → the bytes now stored there, for every file this duplication rewrote. */
   rewritten: ReadonlyMap<string, Buffer>;
@@ -149,6 +149,16 @@ export function isRetargetableManifest(value: unknown): value is SimManifest {
  * `computeManifestHash` is the SAME function `RevisionService.validate` uses — reused rather than
  * re-derived, because a second hasher for one manifest is the defect its own doc argues against.
  * The hash lands on the copy's `sim_revisions.manifest_hash`, so the row and the bytes agree.
+ *
+ * EVERY `variantKey`, not only `variants[]`. A variant key IS a timeline section id, and the
+ * manifest holds them in two places: `variants[]` and `posters[].variantKey`. Rewriting one and not
+ * the other leaves a manifest that contradicts itself — the poster block would claim a capture for
+ * a section the same document says the package does not have — and it leaves the SOURCE's section
+ * ids inside the copy's published bytes, which is the one thing this file exists to prevent. A
+ * poster entry's `identity` and `paths` are NOT touched here: both are derived from the package
+ * revision, which changes by construction, and `planPosters` has already re-keyed the copy's
+ * posters onto their own identities. (No publication path emits poster entries today, so this is
+ * the latent half of the same rule rather than an observed break.)
  */
 export function retargetManifest(
   manifest: SimManifest,
@@ -170,6 +180,10 @@ export function retargetManifest(
     variants: manifest.variants.map((v) => ({
       ...v,
       variantKey: to.sectionIds.get(v.variantKey) ?? v.variantKey,
+    })),
+    posters: manifest.posters.map((p) => ({
+      ...p,
+      variantKey: to.sectionIds.get(p.variantKey) ?? p.variantKey,
     })),
   };
   return { manifest: next, manifestHash: computeManifestHash(next) };

@@ -1703,7 +1703,11 @@ export function useProjectPlayer(
       // fade — all three, in that order, are SimRuntimeClient.deactivate().
       const uncover = () => {
         runtimeFor(key).deactivate();
-        merge({ showSimOverlay: false, simBootStalled: false, simColdCover: false });
+        // `activeSimUrl` is released HERE and not at T0 — see the note below the coordinator call.
+        // It rides in the same merge as `showSimOverlay` so the two halves of "the cover is gone"
+        // land in one render: `SimPoolFrame` shows a frame on `active && visible`, and dropping
+        // either one alone starts the 200 ms opacity fade by itself.
+        merge({ showSimOverlay: false, simBootStalled: false, simColdCover: false, activeSimUrl: null });
       };
       const v = videoRef.current;
       const coordinated = opts?.exitToVideo === true && beginCoordinatedExit({
@@ -1722,18 +1726,31 @@ export function useProjectPlayer(
     // The layered surface describes ONE activation. Carrying any of it into the next section is how
     // a poster of the section just left ends up covering the section just entered.
     resetPresentation();
-    // …AND SO DOES `activeSimUrl`. It was written on entry and by nothing on the way out, so after
-    // the first simulation of a session it was permanently non-null — which silently disarmed the
-    // one guard that reads it: `HLSPlayerShell`'s `floorBlocked = !floor.runnable &&
-    // state.activeSimUrl !== null` degenerated to `!floor.runnable`, i.e. "is a section up" was
-    // answered by a value that could no longer say no. The ref beside it was already cleared here;
-    // the rendered copy was not.
+    // …AND SO DOES `activeSimUrl` — BUT NOT WHILE THE COORDINATOR IS HOLDING THE COVER.
+    //
+    // It was written on entry and by nothing on the way out, so after the first simulation of a
+    // session it was permanently non-null — which silently disarmed the one guard that reads it:
+    // `HLSPlayerShell`'s `floorBlocked = !floor.runnable && state.activeSimUrl !== null` degenerated
+    // to `!floor.runnable`, i.e. "is a section up" was answered by a value that could no longer say
+    // no. The ref beside it was already cleared here; the rendered copy was not.
+    //
+    // Clearing it UNCONDITIONALLY, though, drops the coordinator's own cover at T0. The frozen
+    // simulation frame IS that cover, and `SimPoolOverlay` composites a frame on
+    // `spec.key === activeKey && visible` — so nulling the rendered key starts the 200 ms opacity
+    // fade the instant the handoff begins, while the coordinator still believes it is holding and
+    // has committed nothing. Worst exactly where the hold matters most: the deadline /
+    // `CoveredFailure` / retry paths, where nothing ever commits and the cover is the whole answer.
+    // So while a handoff owns the exit, the release belongs to `uncover` — i.e. to COMMIT_REVEAL,
+    // the one effect allowed to drop a cover — and this line only ever runs for an exit the
+    // coordinator declined (flag off, no video element) or for a tick with nothing to release.
     //
     // Written through the updater's own bail-out rather than `merge`, for the same reason
     // `mergePresentation` keeps a mirror ref: `deactivateSim` runs on EVERY tick that is not
     // inside a sim section, and `merge` allocates unconditionally. Returning the SAME object is
     // React's documented no-op, so clearing a key that is already null costs nothing.
-    setState((s) => (s.activeSimUrl === null ? s : { ...s, activeSimUrl: null }));
+    if (!handoffActiveRef.current) {
+      setState((s) => (s.activeSimUrl === null ? s : { ...s, activeSimUrl: null }));
+    }
     awaitingPaintSimIdRef.current = null;
     desiredSimRef.current = null;
     pendingSimRef.current = null;
@@ -3907,7 +3924,12 @@ export function useProjectPlayer(
         activeSimUrlRef.current = null;
         userPausedRef.current = false;
         resumeActionRef.current = 'resume';
-        merge({ showResumeBtn: false, showSimOverlay: false, simBootStalled: false, simColdCover: false, resumeAction: 'resume', controlsVisible: true, globalTime: targetGlobal });
+        // `activeSimUrl` travels with `showSimOverlay`, for the reason `deactivateSim` spells out:
+        // the pool frame is composited on `active && visible`, so releasing the rendered key is
+        // half of dropping the cover and belongs to the commit — under the coordinator this whole
+        // body runs from COMMIT_REVEAL, and the tick that seeks past the section deliberately
+        // leaves the key alone while the handoff is still holding.
+        merge({ showResumeBtn: false, showSimOverlay: false, simBootStalled: false, simColdCover: false, activeSimUrl: null, resumeAction: 'resume', controlsVisible: true, globalTime: targetGlobal });
         setProgress(targetGlobal);
         updateBrollOverlay(targetGlobal); updateImageOverlay(targetGlobal);
         updateAudioCutaway(targetGlobal, wasPlayingRef.current);

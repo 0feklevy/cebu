@@ -84,7 +84,11 @@ vi.mock('firebase/auth', () => ({ getAuth: () => ({ currentUser: null }) }));
 // Every ref `useProjectPlayer` declares, backed by a real element, exactly as `HLSPlayerShell`
 // supplies them. Nothing about the player is stubbed — this is the shipping hook.
 
-const latest: { state: ProjectPlayerState | null } = { state: null };
+const latest: {
+  state: ProjectPlayerState | null;
+  /** The player's own controls, so the explicit "go back to video" can be exercised. */
+  resumeFromSim: (() => void) | null;
+} = { state: null, resumeFromSim: null };
 
 function Harness({ config }: { config: PlayerConfig }) {
   const videoA = useRef<HTMLVideoElement | null>(null);
@@ -101,12 +105,13 @@ function Harness({ config }: { config: PlayerConfig }) {
   const totTime = useRef<HTMLSpanElement | null>(null);
   const root = useRef<HTMLDivElement | null>(null);
 
-  const { state } = useProjectPlayer(config, {
+  const { state, actions } = useProjectPlayer(config, {
     videoA, videoB, videoBroll, videoBrollStandby, tapFeedback,
     progressFill, progressThumb, progressBuf, progressTrack, progressWrap,
     curTime, totTime, root,
   });
   latest.state = state;
+  latest.resumeFromSim = actions.resumeFromSim;
 
   return (
     <div ref={root}>
@@ -124,12 +129,13 @@ function Harness({ config }: { config: PlayerConfig }) {
 const SIM_A = 'https://sims.example.com/pkg-a/index.html?section=a1&v=aaaa';
 const SIM_B = 'https://sims.example.com/pkg-b/index.html?section=b1&v=bbbb';
 
-function config(): PlayerConfig {
+function config(over: Partial<PlayerConfig> = {}): PlayerConfig {
   return {
     project_id: 'proj-1',
     title: 'T',
     description: null,
     thumbnail_url: null,
+    ...over,
     segments: [{
       id: 'vid-1',
       label: 'v.mp4',
@@ -155,13 +161,93 @@ function config(): PlayerConfig {
   } as unknown as PlayerConfig;
 }
 
+/**
+ * A POST-ROLL simulation: it starts at the segment's end, so the player pauses the video and offers
+ * "go back to video" — the explicit exit, which is `resumeFromSim` rather than the boundary tick.
+ */
+function postRollConfig(): PlayerConfig {
+  return {
+    project_id: 'proj-1',
+    title: 'T',
+    description: null,
+    thumbnail_url: null,
+    sim_transition_coordinator: true,
+    segments: [{
+      id: 'vid-1',
+      label: 'v.mp4',
+      duration_sec: 5,
+      hls_url: 'https://cdn.example.com/hls/master.m3u8',
+      fallback_url: 'https://cdn.example.com/hls/master.m3u8',
+      hls_status: 'ready',
+      captions: { status: 'ready', vtt_url: null },
+      simulations: [{
+        id: 'sec-a', start_sec: 5, end_sec: 15, simulation_url: SIM_A, simulation_id: 'sim-a',
+        package_revision: 'rev-a', package_class: null, sim_script: 'main',
+        simple_ui: false, auto_script: true, label: 'A', type: 'simulation',
+      }],
+    }],
+    broll_clips: [],
+  } as unknown as PlayerConfig;
+}
+
 async function seekTo(video: HTMLVideoElement, t: number) {
   Object.defineProperty(video, 'currentTime', { configurable: true, get: () => t, set: () => {} });
   await act(async () => { video.dispatchEvent(new Event('timeupdate')); });
 }
 
+// ── a hand-stepped animation clock + frame pipeline, for the coordinated exit ──────────────────
+// The coordinator's parent-paint gate runs on rAF and its evidence arrives through
+// `requestVideoFrameCallback`; jsdom has neither under the test's control. Owning both is what
+// makes "the key is still held" a statement about the handoff rather than about timing.
+
+let rafQueue: Array<{ id: number; cb: FrameRequestCallback }> = [];
+let rafId = 1;
+const realRaf = globalThis.requestAnimationFrame;
+const realCancelRaf = globalThis.cancelAnimationFrame;
+
+async function frames(n = 1): Promise<void> {
+  for (let i = 0; i < n; i++) {
+    const due = rafQueue;
+    rafQueue = [];
+    await act(async () => { for (const { cb } of due) cb(performance.now()); });
+  }
+}
+
+/** Give an element a controllable `requestVideoFrameCallback`, as a real browser would have. */
+function installRvfc(video: HTMLVideoElement) {
+  let next = 1;
+  const cbs = new Map<number, (now: number, meta: { mediaTime: number }) => void>();
+  Object.defineProperty(video, 'requestVideoFrameCallback', {
+    configurable: true,
+    value: (cb: (now: number, meta: { mediaTime: number }) => void) => { const id = next++; cbs.set(id, cb); return id; },
+  });
+  Object.defineProperty(video, 'cancelVideoFrameCallback', {
+    configurable: true,
+    value: (id: number) => { cbs.delete(id); },
+  });
+  return {
+    async present(mediaTime: number) {
+      const entry = [...cbs.entries()][0];
+      if (!entry) return false;
+      cbs.delete(entry[0]);
+      await act(async () => { entry[1](performance.now(), { mediaTime }); });
+      return true;
+    },
+    pending: () => cbs.size,
+  };
+}
+
 beforeEach(() => {
   latest.state = null;
+  latest.resumeFromSim = null;
+  rafQueue = [];
+  rafId = 1;
+  globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+    const id = rafId++;
+    rafQueue.push({ id, cb });
+    return id;
+  }) as typeof requestAnimationFrame;
+  globalThis.cancelAnimationFrame = ((id: number) => { rafQueue = rafQueue.filter((f) => f.id !== id); }) as typeof cancelAnimationFrame;
   if (!window.localStorage) {
     const store = new Map<string, string>();
     Object.defineProperty(window, 'localStorage', {
@@ -176,7 +262,11 @@ beforeEach(() => {
   }
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  globalThis.requestAnimationFrame = realRaf;
+  globalThis.cancelAnimationFrame = realCancelRaf;
+});
 
 describe('the rendered active-simulation key', () => {
   it('is set on entry and cleared again when the section is left', async () => {
@@ -227,5 +317,86 @@ describe('the rendered active-simulation key', () => {
       await seekTo(video, t);
       expect(latest.state!.activeSimUrl, `a later tick at ${t}s put the key back`).toBeNull();
     }
+  });
+});
+
+/**
+ * …AND THE CLEAR IS NOT UNCONDITIONAL. (The regression the fix above introduced.)
+ *
+ * `state.activeSimUrl` is `SimPoolOverlay`'s `activeKey`, and a resident frame is composited on
+ * `spec.key === activeKey && visible`. Under `sim_transition_coordinator` the frozen frame IS the
+ * cover the coordinator holds while it waits for evidence that the incoming video frame reached the
+ * compositor — so releasing the key on the boundary tick fades that cover out in 200 ms at T0, while
+ * the coordinator still believes it is holding and has committed nothing.
+ *
+ * The release therefore belongs to the exit's `uncover`, which runs from COMMIT_REVEAL and nowhere
+ * else. `simExitHandoff.test.tsx` asserts the same rule where the user meets it — the pool frame's
+ * own opacity through a whole handoff; these two assert the field itself, which is the thing that
+ * has to be held and then let go.
+ */
+describe('the rendered active-simulation key, under the transition coordinator', () => {
+  /** Enter section A, then cross its end — the automatic exit, with the coordinator owning it. */
+  async function exitUnderCoordinator() {
+    const view = render(<Harness config={config({ sim_transition_coordinator: true } as Partial<PlayerConfig>)} />);
+    await act(async () => { await Promise.resolve(); });
+    const video = view.getByTestId('a') as HTMLVideoElement;
+    const pipeline = installRvfc(video);
+
+    await seekTo(video, 1);
+    expect(latest.state!.activeSimUrl, 'the section never activated — this proves nothing').not.toBeNull();
+
+    await seekTo(video, 10);
+    return { video, pipeline };
+  }
+
+  it('is HELD across the boundary while the handoff waits for its frame', async () => {
+    const { pipeline } = await exitUnderCoordinator();
+
+    expect(
+      latest.state!.activeSimUrl,
+      'the cover the coordinator is holding was released at T0',
+    ).not.toBeNull();
+    expect(pipeline.pending(), 'no handoff is in flight — this proves nothing').toBe(1);
+  });
+
+  it('is released by the commit, on the proven frame', async () => {
+    // The other half: the hold is a deferral, not a leak. Asserted BEFORE any further tick, because
+    // the next tick outside a sim section would clear the key anyway — and a release that depends
+    // on the clock still running is not a release the commit owns.
+    const { pipeline } = await exitUnderCoordinator();
+
+    await pipeline.present(10);
+    await frames(2);
+
+    expect(
+      latest.state!.activeSimUrl,
+      'the commit ran but the rendered key outlived it',
+    ).toBeNull();
+  });
+
+  it('the explicit return holds it too, and releases it on ITS commit', async () => {
+    // `resumeFromSim` is the other coordinated exit, and it has its own `commit` — the pristine
+    // reload / stopScript body. Its `issueSeek` re-enters `deactivateSim` while the handoff is in
+    // flight, so the same two rules have to hold on a completely separate code path.
+    const view = render(<Harness config={postRollConfig()} />);
+    await act(async () => { await Promise.resolve(); });
+    const video = view.getByTestId('a') as HTMLVideoElement;
+    Object.defineProperty(video, 'play', { configurable: true, value: () => Promise.resolve() });
+    Object.defineProperty(video, 'pause', { configurable: true, value: () => {} });
+    const pipeline = installRvfc(video);
+
+    await seekTo(video, 5);
+    expect(latest.state!.activeSimUrl, 'the post-roll section never activated').not.toBeNull();
+    expect(latest.state!.resumeAction, 'this is not the explicit-return path').toBe('backToVideo');
+
+    await act(async () => { latest.resumeFromSim!(); });
+    expect(
+      latest.state!.activeSimUrl,
+      'the return dropped the cover on the click, before the seek had proven anything',
+    ).not.toBeNull();
+
+    await pipeline.present(0);
+    await frames(2);
+    expect(latest.state!.activeSimUrl, 'the return committed but never released the key').toBeNull();
   });
 });

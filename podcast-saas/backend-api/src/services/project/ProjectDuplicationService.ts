@@ -67,7 +67,7 @@ import { MULTIPART_COPY_MAX_BYTES } from '../storage/s3Copy.js';
 import {
   IdAllocator, PACKAGE_ROOT_EXCLUDED_SUBDIRS, freshSiblingKey, isExcludedFromCopy, mapStorageKey,
   rebaseUrl, rerootUrlThroughCopies, rewriteKeyByIds, rewriteSectionParam,
-  duplicatedMetadataStatus, duplicatedProjectStatus, duplicatedTitle,
+  duplicatedMetadataStatus, duplicatedProjectStatus, duplicatedStatus, duplicatedTitle, statusWasReset,
   type DuplicationPlan, type StorageCopy,
 } from './duplicationPlan.js';
 import {
@@ -75,7 +75,7 @@ import {
   type ManifestRetarget,
 } from './packageRetarget.js';
 import { rewriteBridgeSectionIds } from '../simulation/SimulationService.js';
-import { IMMUTABLE_CACHE_CONTROL, MANIFEST_FILENAME } from 'shared/sim/simRevision';
+import { IMMUTABLE_CACHE_CONTROL, MANIFEST_FILENAME, isImmutableRevisionKey } from 'shared/sim/simRevision';
 import { bridgeAckCapableFromMetadata, requiresImportMapsFromMetadata } from 'shared/sim/bridgeCapability';
 import { packageRevisionFor } from 'shared/sim/simRevision';
 import { derivePackageRevision } from 'shared/sim/simIdentity';
@@ -504,11 +504,31 @@ export class ProjectDuplicationService {
     storage.push(...posterPlan.copies);
 
     // ── Avatar library visuals ──
+    //
+    // `sim_storage_prefix` is NOT always a namespace the library owns. `syncBasicLibrary` mints one
+    // row per ready simulation OF THE PROJECT, pointing at that simulation's own prefix — so on any
+    // project with a simulation this loop is looking at a tree the simulation phase above has
+    // already planned, in two carefully-scoped pieces (the active revision, and the customer bundle
+    // MINUS `revisions/` and `posters/`). Copying it again as a flat prefix copy re-copied every
+    // object of the package a second time and, worse, carried the subtrees the package copy
+    // deliberately leaves behind: every retired revision and every stale poster, landing under the
+    // copy's own prefix where no row names them and no sweep can ever reap them. Roughly double the
+    // bytes and double the wall time of the simulation phase, forever.
+    //
+    // So: skip what a package-root copy already covers, and copy anything genuinely library-owned
+    // (`simulations/avatar/{uuid}`, and a zip upload's `simulations/{projectId}/{uuid}` with no
+    // `simulations` row) as a `package-root` copy too, so the same exclusions apply to it by
+    // construction rather than by luck.
     for (const v of snap.avatarVisuals) {
       if (v.image_key) storage.push({ kind: 'object', from: v.image_key, to: dest(v.image_key), reason: 'avatar library image' });
       if (v.sim_storage_prefix) {
         const from = normalizePrefix(v.sim_storage_prefix);
-        storage.push({ kind: 'prefix', from, to: dest(from), reason: 'avatar library simulation' });
+        const alreadyPlanned = storage.some(
+          (c) => c.kind === 'package-root' && (c.from === from || isUnderPrefix(from, c.from)),
+        );
+        if (!alreadyPlanned) {
+          storage.push({ kind: 'package-root', from, to: dest(from), reason: 'avatar library simulation' });
+        }
       }
     }
 
@@ -853,7 +873,18 @@ export class ProjectDuplicationService {
         if (after === before) continue;
 
         const bytes = Buffer.from(after, 'utf-8');
-        await this.storage.uploadFile(key, bytes, 'application/javascript');
+        // RE-ASSERT THE CACHE-CONTROL THE COPY ARRIVED WITH. `copyObject` carries the source
+        // object's metadata; this overwrite replaces the object outright, so a `uploadFile` with no
+        // cache-control silently drops it. Inside a revision that is two separate failures: every
+        // viewer of the copy re-downloads the bridge on every load, forever, and `RevisionService`'s
+        // `verify` compares the stored header against the manifest's `cacheControl` — which the
+        // retarget carries over verbatim — so the copy reports `cache-control-mismatch` on every
+        // check, permanently. Outside a revision the mutable bundle is written with no
+        // cache-control at all (`processFiles`, `GuidanceService`), and `undefined` keeps it that
+        // way: `immutable` on a path "Replace simulation" overwrites in place is the bug the
+        // upload path documents at length.
+        const cacheControl = isImmutableRevisionKey(key) ? IMMUTABLE_CACHE_CONTROL : undefined;
+        await this.storage.uploadFile(key, bytes, 'application/javascript', cacheControl);
         if (revisionRoot && key.startsWith(`${revisionRoot}/`)) {
           rewritten.set(key.slice(revisionRoot.length + 1), bytes);
         }
@@ -910,17 +941,35 @@ export class ProjectDuplicationService {
     return out.source;
   }
 
-  /** Rewrite one revision's `manifest.json` onto the copy's identity. Returns its new hash. */
+  /**
+   * Rewrite one revision's `manifest.json` onto the copy's identity. Returns its new hash.
+   *
+   * "NO MANIFEST" AND "I COULD NOT READ THE MANIFEST" ARE DIFFERENT ANSWERS, and one `try` around
+   * the read used to give both the first one. Absence is legitimate — a legacy package predates the
+   * manifest — and returning null makes the copy inherit the source revision's `manifest_hash`. A
+   * transient read failure returning null does the same thing, and by that point the copy's
+   * `bridge.js` has ALREADY been rewritten: the inherited hash then asserts a byte identity the copy
+   * demonstrably does not have, and it is `verify`'s only reference for the rest of the revision's
+   * life. So absence is established first, with `objectExists`, and a read failure after that is
+   * allowed to fail the run — which rolls the whole duplication back, leaving nothing.
+   */
   private async retargetRevisionManifest(opts: {
     manifestKey: string;
     to: ManifestRetarget;
     warnings: string[];
   }): Promise<string | null> {
+    if (!(await this.storage.objectExists(opts.manifestKey))) {
+      return null;   // no manifest at all — a legacy package; leave it alone
+    }
+    const raw = await this.storage.readObject(opts.manifestKey);
     let parsed: unknown;
     try {
-      parsed = JSON.parse((await this.storage.readObject(opts.manifestKey)).toString('utf-8'));
+      parsed = JSON.parse(raw.toString('utf-8'));
     } catch {
-      return null;   // no manifest, or unreadable — a legacy package; leave it alone
+      // Present but not JSON. Same treatment as an unrecognised manifest below: left as it is, said
+      // out loud, rather than replaced with something this code invented.
+      opts.warnings.push(`${opts.manifestKey} is not readable as JSON — left as it was`);
+      return null;
     }
     if (!isRetargetableManifest(parsed)) {
       opts.warnings.push(`${opts.manifestKey} is not a manifest this version can retarget — left as it was`);
@@ -1034,7 +1083,11 @@ export class ProjectDuplicationService {
             id: ids.next(s.id), project_id: targetId, name: s.name,
             storage_prefix: newPrefix,
             entry_file: rewriteEntryFile(s.entry_file, normalizePrefix(s.storage_prefix), newPrefix),
-            bridge_functions: s.bridge_functions, status: s.status, error: s.error,
+            bridge_functions: s.bridge_functions,
+            // A package captured mid-ingest has no ingest running for the copy. See
+            // `duplicatedSimulationState` — and note the next boot would otherwise decide this for
+            // us, with a message about a process restart that never happened to this row.
+            ...duplicatedSimulationState(s),
             // Every cue's `audioUrl` is a full public URL under the SOURCE simulation's
             // `guidance/` subtree with no shadow key column. The bytes come along in the
             // package-root copy; without this the copy's narration points into a prefix that
@@ -1147,20 +1200,19 @@ export class ProjectDuplicationService {
         await tx.insert(video_files).values(snap.videoFiles.map((v) => ({
           id: ids.next(v.id), project_id: targetId, filename: v.filename, file_size: v.file_size,
           storage_key: key(v.storage_key), status: v.status, duration_sec: v.duration_sec,
-          hls_status: v.hls_status,
           hls_master_key: key(v.hls_master_key),
           hls_current_tier: v.hls_current_tier,
           hls_360p_key: key(v.hls_360p_key),
-          hls_started_at: v.hls_started_at, hls_finished_at: v.hls_finished_at, hls_error: v.hls_error,
           // Derived state carried as DATA so the copy never re-runs a transcode, a crop analysis or
-          // a caption pass it already has the answer to.
+          // a caption pass it already has the answer to — EXCEPT where the answer is "a job is
+          // running", which is never true of a copy. See `duplicatedVideoPipelines`.
+          ...duplicatedVideoPipelines(v),
           waveform_peaks: v.waveform_peaks,
           is_broll: v.is_broll,
-          crop_status: v.crop_status, crop_key: key(v.crop_key),
-          crop_source_hash: v.crop_source_hash, crop_error: v.crop_error, crop_updated_at: v.crop_updated_at,
-          captions_status: v.captions_status, captions_vtt_key: key(v.captions_vtt_key),
+          crop_key: key(v.crop_key),
+          crop_source_hash: v.crop_source_hash,
+          captions_vtt_key: key(v.captions_vtt_key),
           captions_vtt: v.captions_vtt, captions_source_hash: v.captions_source_hash,
-          captions_error: v.captions_error, captions_updated_at: v.captions_updated_at,
           sequence_id: ids.requireInternal(v.sequence_id, 'video_files.sequence_id'),
           sequence_order: v.sequence_order,
         })));
@@ -1263,7 +1315,10 @@ export class ProjectDuplicationService {
               ? (rebaseUrl(c.storage_url, oldKey, newKey) ?? this.storage.getPublicUrl(newKey))
               : null,
             extracted_md: c.extracted_md, hash: c.hash, metadata: c.metadata,
-            ingestion_status: c.ingestion_status, error: c.error,
+            // `CorpusBuilder.ingest` runs in-process off the upload request. Nothing is ingesting
+            // for the copy, and nothing ever will unless the row says it still needs to be.
+            ingestion_status: duplicatedStatus('corpus', c.ingestion_status) as typeof c.ingestion_status,
+            error: statusWasReset('corpus', c.ingestion_status) ? null : c.error,
           };
         }));
       }
@@ -1294,10 +1349,20 @@ export class ProjectDuplicationService {
             image_url: imageKey && v.image_key
               ? (rebaseUrl(v.image_url, v.image_key, imageKey) ?? this.storage.getPublicUrl(imageKey))
               : null,
-            dalle_prompt: v.dalle_prompt, visual_spec: v.visual_spec,
+            dalle_prompt: v.dalle_prompt,
+            visual_spec: rewriteVisualSpec(v.visual_spec, copies),
             sim_storage_prefix: simPrefix,
+            // THE URL IS RE-ROOTED THROUGH THE PLAN FIRST, and only then guessed at. `rebaseUrl`
+            // needs the URL to END in the old key, and this one never does — it ends in the entry
+            // DOCUMENT, somewhere under the prefix — so it always fell through to the last resort,
+            // which invents `{prefix}/index.html`. That is right only when the entry happens to be
+            // called index.html and to sit at the root: a `syncBasicLibrary` row for a revisioned
+            // simulation points at `…/revisions/{r}/package/index.html`, and the invented URL names
+            // an object the copy does not have. `rerootUrlThroughCopies` recovers the real key from
+            // the URL and maps it through the same most-specific-wins rule everything else uses.
             sim_entry_url: simPrefix && v.sim_storage_prefix
-              ? (rebaseUrl(v.sim_entry_url, normalizePrefix(v.sim_storage_prefix), simPrefix)
+              ? (rerootUrlThroughCopies(v.sim_entry_url ?? '', copies)
+                 ?? rebaseUrl(v.sim_entry_url, normalizePrefix(v.sim_storage_prefix), simPrefix)
                  ?? this.storage.getSimPublicUrl(`${simPrefix}/index.html`))
               : null,
             // Reuse counters are the ORIGINAL's usage history.
@@ -1921,6 +1986,76 @@ function rewriteAvatarConfig(config: unknown, copies: readonly StorageCopy[]): u
     return moved === null ? face : { ...f, imageUrl: moved };
   });
   return { ...cfg, avatarCircles: { ...(circles as Record<string, unknown>), faces: rebased } };
+}
+
+/**
+ * What a copied simulation row says about a package the ORIGINAL was still ingesting.
+ *
+ * There is no "not ingested yet" status — `simulations` rows only exist once bytes were uploaded —
+ * so the honest terminal state is `failed`, with a reason the owner can act on. That is where the
+ * row ended up anyway: `recoverStuckSimulations` flips every `processing` simulation to `failed` at
+ * the next boot, which for a COPY means a tile that spins until the next deploy and then reports
+ * "Interrupted by process restart" about a restart that never touched it.
+ */
+export const DUPLICATED_MID_INGEST_SIM_ERROR =
+  'The original was still processing this simulation when the copy was made — re-upload the simulation.';
+
+function duplicatedSimulationState(s: Row<typeof simulations>): Pick<Row<typeof simulations>, 'status' | 'error'> {
+  if (!statusWasReset('simulation', s.status)) return { status: s.status, error: s.error };
+  return { status: duplicatedStatus('simulation', s.status), error: DUPLICATED_MID_INGEST_SIM_ERROR };
+}
+
+/**
+ * The three derived-media pipelines of a copied `video_files` row.
+ *
+ * Each is carried as DATA when it holds an answer, and RESET when it holds a claim that a job is
+ * running — because no job is. The leftovers of the claim go with it: a `processing` row's
+ * `hls_started_at` is what `recoverStuckHlsTranscodes` measures staleness against, so carrying it
+ * onto a row that is no longer `processing` would leave a timestamp describing a run that never
+ * existed, and an error message about it would be a report on the ORIGINAL's job.
+ */
+function duplicatedVideoPipelines(v: Row<typeof video_files>): Pick<Row<typeof video_files>,
+  'hls_status' | 'hls_started_at' | 'hls_finished_at' | 'hls_error'
+  | 'crop_status' | 'crop_error' | 'crop_updated_at'
+  | 'captions_status' | 'captions_error' | 'captions_updated_at'> {
+  const hlsReset = statusWasReset('hls', v.hls_status);
+  const cropReset = statusWasReset('crop', v.crop_status);
+  const captionsReset = statusWasReset('captions', v.captions_status);
+  return {
+    hls_status: duplicatedStatus('hls', v.hls_status) as Row<typeof video_files>['hls_status'],
+    hls_started_at: hlsReset ? null : v.hls_started_at,
+    hls_finished_at: hlsReset ? null : v.hls_finished_at,
+    hls_error: hlsReset ? null : v.hls_error,
+    crop_status: duplicatedStatus('crop', v.crop_status),
+    crop_error: cropReset ? null : v.crop_error,
+    crop_updated_at: cropReset ? null : v.crop_updated_at,
+    captions_status: duplicatedStatus('captions', v.captions_status),
+    captions_error: captionsReset ? null : v.captions_error,
+    captions_updated_at: captionsReset ? null : v.captions_updated_at,
+  };
+}
+
+/**
+ * The copy's `visual_spec`, with the storage key inside it pointed at the copy's own bytes.
+ *
+ * A zip-uploaded library simulation records `{ source: 'zip-upload', entryKey }`, and `entryKey` is
+ * a STORAGE KEY under `simulations/{sourceProjectId}/…` — the same namespace the three columns
+ * beside it (`image_key`, `sim_storage_prefix`, `sim_entry_url`) are already re-rooted through. It
+ * was the one left behind, so the copy carried a live pointer into the ORIGINAL's storage, which
+ * project DELETE purges. It is also the exact string the generic jsonb escape scan matches on, so
+ * every duplication of such a project failed inside the commit transaction and rolled back with
+ * retry advice that could never work.
+ *
+ * Field by field, like `rewriteAvatarConfig` and `rewriteGuidanceMeta`: the rest of the document is
+ * the author's caption, LaTeX, chart data or generated HTML, and has no business being scanned for
+ * storage keys. Anything nested that this misses is caught by `assertNoEscapingReferences`.
+ */
+function rewriteVisualSpec(spec: unknown, copies: readonly StorageCopy[]): unknown {
+  if (!spec || typeof spec !== 'object' || Array.isArray(spec)) return spec;
+  const s = spec as Record<string, unknown>;
+  if (typeof s.entryKey !== 'string') return spec;
+  const moved = mapStorageKey(s.entryKey, copies);
+  return moved === null || moved === s.entryKey ? spec : { ...s, entryKey: moved };
 }
 
 /**

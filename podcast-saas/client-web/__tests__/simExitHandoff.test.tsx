@@ -263,6 +263,21 @@ function baseConfig(coordinator: boolean, span: { start_sec: number; end_sec: nu
 
 /** The simulation cover: the pool overlay is composited only while it carries `visible`. */
 const coverUp = (c: HTMLElement) => c.querySelector('.sim-overlay.visible') !== null;
+
+/**
+ * THE COVER AS THE COMPOSITOR SEES IT — the resident frame's own opacity.
+ *
+ * `.sim-overlay.visible` is only HALF of what puts a simulation on screen. `SimPoolOverlay` shows a
+ * frame on `spec.key === activeKey && visible`, and `activeKey` is `state.activeSimUrl`: releasing
+ * that key alone starts `.sim-pool-frame`'s 200 ms opacity transition with the overlay class
+ * untouched. So a test written against the class passes while the viewer watches the cover fade,
+ * which is exactly how the T0 release below survived. Anything asserting "the cover is up" during a
+ * handoff must assert THIS.
+ */
+const poolFrameOpacity = (c: HTMLElement): string | null => {
+  const el = c.querySelector('.sim-overlay .sim-pool-frame') as HTMLIFrameElement | null;
+  return el ? el.style.opacity : null;
+};
 const backButton = (c: HTMLElement) =>
   [...c.querySelectorAll('button')].find((b) => b.textContent?.includes('Go back to video')) ?? null;
 
@@ -599,6 +614,91 @@ describe('flag ON — the explicit return holds the cover until the frame is pro
     await act(async () => { fireEvent.click(backButton(container)!); });
     await act(async () => { vi.advanceTimersByTime(3_000); });
     expect(h.calls, 'an unproven, unheard handoff leaves the outgoing audio alone').not.toContain('mute');
+  });
+});
+
+// ── the cover the coordinator holds is the FRAME, not the overlay class ───────────────────────
+
+/**
+ * THE DEFECT THIS PINS (a regression introduced by the `activeSimUrl` fix itself).
+ *
+ * `deactivateSim` began clearing the rendered `state.activeSimUrl` UNCONDITIONALLY, outside the
+ * coordinator branch — correct for a flag-off exit, and fatal for a coordinated one. The frozen
+ * simulation frame IS the cover during a handoff, and `SimPoolOverlay` composites a frame on
+ * `spec.key === activeKey && visible`. Nulling the key at T0 therefore started the 200 ms fade the
+ * instant the exit was requested, while the coordinator was still holding and had committed
+ * nothing: `.sim-overlay.visible` stayed on the DOM (so every existing assertion above passed) and
+ * the viewer watched the cover disappear over an unproven video frame anyway.
+ *
+ * Worst on the paths where nothing ever commits — the deadline, the covered failure, the retry —
+ * because there the cover is not merely early, it is the entire answer, and it was gone.
+ */
+describe('flag ON — the resident frame stays composited for as long as the coordinator holds', () => {
+  it('does not release the rendered active key at T0 on the automatic exit', async () => {
+    const { container, video, clock, pipeline } = await mountInSim(midRollConfig(true));
+    expect(poolFrameOpacity(container), 'the simulation is on screen inside its section').toBe('1');
+
+    clock.set(20);
+    await act(async () => { video.dispatchEvent(new Event('timeupdate')); });
+
+    expect(
+      poolFrameOpacity(container),
+      'the cover the coordinator is holding faded out at T0',
+    ).toBe('1');
+    expect(coverUp(container), 'and the overlay class agrees — it always did').toBe(true);
+
+    await act(async () => { pipeline.present(20); });
+    await frames(2);
+    expect(poolFrameOpacity(container), 'the proven frame must release it').toBe('0');
+  });
+
+  it('holds the frame across a deadline, a covered failure and the replay', async () => {
+    // The path with no commit at the end of it. A cover that has already faded is not a cover, so
+    // "a deadline never authorises a reveal" was true of the state machine and false on screen.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { container, video, clock, pipeline } = await mountInSim(midRollConfig(true));
+    clock.set(20);
+    await act(async () => { video.dispatchEvent(new Event('timeupdate')); });
+
+    await act(async () => { vi.advanceTimersByTime(4_100); });
+    expect(
+      poolFrameOpacity(container),
+      'the deadline uncovered — by fading the frame rather than by committing',
+    ).toBe('1');
+
+    // …and the replay the covered failure schedules inherits the same cover.
+    await act(async () => { vi.advanceTimersByTime(400); });
+    expect(pipeline.pending(), 'the replay never re-armed — this proves nothing').toBe(1);
+    expect(poolFrameOpacity(container), 'the replay is covered by the same frame').toBe('1');
+  });
+
+  it('holds the frame across the explicit return, whose seek re-enters deactivateSim', async () => {
+    // `resumeFromSim`'s `issueSeek` calls `updateSimOverlay`, which calls `deactivateSim` again
+    // while the handoff it just started is still in flight. That second pass is the one that
+    // released the key: the coordinator answers "already mine" and commits nothing, so the release
+    // had no owner and no evidence behind it.
+    const { container, pipeline } = await mountInSim(postRollConfig(true), 10);
+    expect(poolFrameOpacity(container)).toBe('1');
+
+    await act(async () => { fireEvent.click(backButton(container)!); });
+
+    expect(poolFrameOpacity(container), 'the real seek dropped the cover on the click').toBe('1');
+
+    await act(async () => { pipeline.present(0); });
+    await frames(2);
+    expect(poolFrameOpacity(container), 'the requested frame is proven — now it may go').toBe('0');
+  });
+
+  it('flag OFF still releases it at T0, exactly as before', async () => {
+    // The other half: the hold belongs to the coordinator, not to the frame. With the flag off the
+    // key is released on the boundary tick, which is today's behaviour and must stay it.
+    const { container, video, clock } = await mountInSim(midRollConfig(false));
+    expect(poolFrameOpacity(container)).toBe('1');
+
+    clock.set(20);
+    await act(async () => { video.dispatchEvent(new Event('timeupdate')); });
+
+    expect(poolFrameOpacity(container), 'flag off must be byte-for-byte today').toBe('0');
   });
 });
 

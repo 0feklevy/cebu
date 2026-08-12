@@ -187,6 +187,9 @@ interface Fixture {
   sectionAudioId: string;
   avatarImageVisualId: string;
   avatarSimVisualId: string;
+  avatarProjectSimVisualId: string;
+  /** The `{uuid}` of the zip-uploaded library simulation — NOT a `simulations` row id. */
+  avatarZipSimId: string;
   hlsRunId: string;
   /** The avatar-circle face image the project's `avatar_config` points at, by storage key. */
   faceKey: string;
@@ -452,16 +455,43 @@ hello','caphash')
     `INSERT INTO camera_plans (project_id, script_version, cuts_json) VALUES ($1,1,$2::jsonb)`,
     [project.id, JSON.stringify([{ at: 0 }])]);
 
+  // THREE library rows, because the avatar library × duplication seam has three distinct shapes and
+  // the fixture used to carry only the two easy ones — with `visual_spec` NULL on both, which is
+  // exactly why the pointer INSIDE that document was never observed.
   const avatarImage = await one<{ id: string }>(
-    `INSERT INTO avatar_visuals (project_id, scope, source, visual_type, caption, image_key, image_url, use_count)
-     VALUES ($1,'basic','editor','image','A leaf',$2,$3,17) RETURNING id`,
+    `INSERT INTO avatar_visuals (project_id, scope, source, visual_type, caption, image_key, image_url,
+                                 visual_spec, use_count)
+     VALUES ($1,'basic','editor','image','A leaf',$2,$3,$4::jsonb,17) RETURNING id`,
     [project.id, 'avatar/images/aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa.png',
-     'https://cdn.test/avatar/images/aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa.png']);
+     'https://cdn.test/avatar/images/aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa.png',
+     JSON.stringify({ type: 'image', imageType: 'realistic', source: 'upload' })]);
+  // (1) A ZIP-UPLOADED library simulation. `avatar.controller` mints `simulations/{projectId}/{uuid}`
+  // — project-scoped storage with NO `simulations` row — and records the entry as a STORAGE KEY
+  // inside `visual_spec`, beside the three columns that are already re-rooted. That key names the
+  // source project, so leaving it verbatim is both a live cross-project pointer and (since the
+  // generic jsonb scan) a duplication that fails inside the commit and rolls back.
+  const avatarZipSimId = 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb';
+  const avatarZipPrefix = `simulations/${project.id}/${avatarZipSimId}`;
   const avatarSim = await one<{ id: string }>(
-    `INSERT INTO avatar_visuals (project_id, scope, source, visual_type, caption, sim_storage_prefix, sim_entry_url)
-     VALUES ($1,'extended','generated','simulation','Orbit',$2,$3) RETURNING id`,
-    [project.id, 'simulations/avatar/bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb',
-     'https://sim.test/simulations/avatar/bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb/index.html']);
+    `INSERT INTO avatar_visuals (project_id, scope, source, visual_type, caption, sim_storage_prefix,
+                                 sim_entry_url, visual_spec)
+     VALUES ($1,'extended','generated','simulation','Orbit',$2,$3,$4::jsonb) RETURNING id`,
+    [project.id, avatarZipPrefix, `https://sim.test/${avatarZipPrefix}/index.html`,
+     JSON.stringify({
+       type: 'simulation', caption: 'Orbit', source: 'zip-upload',
+       entryKey: `${avatarZipPrefix}/index.html`,
+     })]);
+  // (2) What `syncBasicLibrary` writes for EVERY ready simulation of the project: a library row
+  // pointing at the simulation's OWN prefix. Nothing about it is library-owned, so a duplication
+  // that treats it as a fresh tree to copy re-copies the whole package — retired revisions and
+  // stale posters included, which the package copy deliberately leaves behind.
+  const avatarProjectSim = await one<{ id: string }>(
+    `INSERT INTO avatar_visuals (project_id, scope, source, visual_type, lookup_key, caption,
+                                 sim_storage_prefix, sim_entry_url, visual_spec)
+     VALUES ($1,'basic','editor','simulation','Chloroplast','Chloroplast',$2,$3,$4::jsonb) RETURNING id`,
+    [project.id, simRevPrefix,
+     `https://sim.test/${simRevPrefix}/revisions/${active.id}/package/index.html`,
+     JSON.stringify({ type: 'simulation', caption: 'Chloroplast' })]);
 
   // ── Rows in every EXCLUDED table, so "empty for the copy" is a real observation ──
   await pg.query(
@@ -503,6 +533,7 @@ hello','caphash')
     sectionMainId: sectionMain.id, sectionClipId: sectionClip.id,
     sectionImageId: sectionImage.id, sectionAudioId: sectionAudio.id,
     avatarImageVisualId: avatarImage.id, avatarSimVisualId: avatarSim.id,
+    avatarProjectSimVisualId: avatarProjectSim.id, avatarZipSimId,
     hlsRunId: HLS_RUN, faceKey,
   };
 }
@@ -533,7 +564,15 @@ function seedObjects(f: Fixture, simRevPrefix: string, simLegacyPrefix: string, 
   put(`${simRevPrefix}/posters/${liveIdentity}/standard.webp`);
   put(`${simRevPrefix}/posters/stale-identity/standard.webp`);
   put('avatar/images/aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa.png');
-  put('simulations/avatar/bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb/index.html');
+  // The ZIP-uploaded library visual: a package the library genuinely owns, living under the
+  // project's simulation namespace with NO `simulations` row of its own. It gets a `revisions/`
+  // subtree here on purpose — nothing writes one today, but the copy routes this through the same
+  // package-root exclusion as a real package, and a fixture that cannot tell a filtered copy from
+  // an unfiltered one cannot catch that exclusion regressing.
+  const zipPrefix = `simulations/${f.projectId}/${f.avatarZipSimId}`;
+  put(`${zipPrefix}/index.html`);
+  put(`${zipPrefix}/assets/orbit.js`);
+  put(`${zipPrefix}/revisions/should-not-be-copied/package/index.html`);
   put(`projects/${f.projectId}/corpus/1_paper.pdf`);
   put(`projects/${f.projectId}/corpus/2_supabase.pdf`);
 
@@ -706,7 +745,7 @@ describe('dry run', () => {
       timeline_sections: 4, timeline_markers: 1,
       branch_sequences: 2, branch_choice_points: 1, branch_edges: 3,
       simulations: 2, sim_revisions: 1, sim_posters: 1,
-      scripts: 1, scenes: 1, camera_plans: 1, corpora: 2, avatar_visuals: 2,
+      scripts: 1, scenes: 1, camera_plans: 1, corpora: 2, avatar_visuals: 3,
     });
     // Nothing written, and no row created.
     expect(adapter.objects.size).toBe(before);
@@ -1015,17 +1054,42 @@ describe('(d) storage', () => {
 
   it('copies the avatar library\'s images and generated simulations into fresh keys', async () => {
     const target = await duplicate();
-    const visuals = await rows<{ visual_type: string; image_key: string | null; image_url: string | null; sim_storage_prefix: string | null; sim_entry_url: string | null; use_count: number }>(
-      `SELECT visual_type, image_key, image_url, sim_storage_prefix, sim_entry_url, use_count
+    const visuals = await rows<{ visual_type: string; caption: string; image_key: string | null; image_url: string | null; sim_storage_prefix: string | null; sim_entry_url: string | null; visual_spec: { entryKey?: string } | null; use_count: number }>(
+      `SELECT visual_type, caption, image_key, image_url, sim_storage_prefix, sim_entry_url, visual_spec, use_count
        FROM avatar_visuals WHERE project_id=$1`, [target]);
     const img = visuals.find((v) => v.visual_type === 'image')!;
-    const sim = visuals.find((v) => v.visual_type === 'simulation')!;
+    // TWO simulation-typed rows, and they must be treated differently — which is the whole point:
+    // one is a package the library OWNS, the other is `syncBasicLibrary`'s pointer at a package the
+    // simulation phase has already copied. Selecting "the simulation one" by type alone is what let
+    // this test pass while the owned package was not being copied at all.
+    const zip = visuals.find((v) => v.caption === 'Orbit')!;
+    const pointer = visuals.find((v) => v.caption === 'Chloroplast')!;
+
     expect(img.image_key).not.toBe('avatar/images/aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa.png');
     expect(img.image_key!.startsWith('avatar/images/')).toBe(true);
     expect(adapter.objects.has(img.image_key!)).toBe(true);
     expect(img.image_url!.endsWith(img.image_key!)).toBe(true);
-    expect(sim.sim_storage_prefix).not.toBe('simulations/avatar/bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb');
-    expect(adapter.objects.has(`${sim.sim_storage_prefix}/index.html`)).toBe(true);
+
+    // (a) The library-owned ZIP package: re-rooted, and its bytes actually came along.
+    expect(zip.sim_storage_prefix).not.toContain(fx.projectId);
+    expect(adapter.objects.has(`${zip.sim_storage_prefix}/index.html`)).toBe(true);
+    expect(adapter.objects.has(`${zip.sim_storage_prefix}/assets/orbit.js`)).toBe(true);
+    // Copied as a package root, so the system-owned subtree is left behind exactly as it is for a
+    // real package — otherwise the copy carries bytes no row names and no sweep can reap.
+    expect(adapter.objects.has(`${zip.sim_storage_prefix}/revisions/should-not-be-copied/package/index.html`)).toBe(false);
+    // `visual_spec.entryKey` is a storage key with no shadow column. Left alone it is a live
+    // pointer into the ORIGINAL's bytes, and the escape scan rolls the whole duplication back.
+    expect(zip.visual_spec!.entryKey).toBe(`${zip.sim_storage_prefix}/index.html`);
+    expect(zip.visual_spec!.entryKey).not.toContain(fx.projectId);
+    expect(zip.sim_entry_url!.endsWith(`${zip.sim_storage_prefix}/index.html`)).toBe(true);
+
+    // (b) The `syncBasicLibrary` pointer: re-rooted onto the copy's own simulation, and NOT copied
+    // a second time — the simulation phase already planned that tree, in two scoped pieces.
+    expect(pointer.sim_storage_prefix).not.toContain(fx.projectId);
+    expect(adapter.objects.has(`${pointer.sim_storage_prefix}/index.html`)).toBe(true);
+    expect(adapter.objects.has(`${pointer.sim_storage_prefix}/revisions/retired-tree/package/index.html`)).toBe(false);
+    expect(adapter.objects.has(`${pointer.sim_storage_prefix}/posters/stale-identity/standard.webp`)).toBe(false);
+
     // Usage history belongs to the original.
     expect(Number(img.use_count)).toBe(0);
   });
@@ -1818,6 +1882,88 @@ describe('(l) recovering a storage key from a public URL', () => {
 });
 
 // ── (m) retired HLS run trees are left behind ─────────────────────────────────────────────────
+
+describe('(o) duplicating MID-JOB does not hand the copy a job that will never run', () => {
+  /**
+   * Every one of these statuses is a claim about a RUNNING job — a transcode, a crop, a caption
+   * pass, a package ingest, a corpus extraction. The copy has none of those jobs: nothing was
+   * enqueued for it, and nothing ever will be. Copied verbatim they are a lie that never resolves:
+   * the tile spins on `processing` forever, and for a simulation the next backend boot sweeps it to
+   * `failed — please re-upload` over a process restart that never happened to it.
+   *
+   * The reset rules already existed for `projects.status` and the thumbnail pipeline. This asserts
+   * they reach the CHILD rows too, and that each one's leftovers (the started-at stamp, the error
+   * text from the source's own run) go with them — a reset status beside a stale `hls_error` is
+   * still a copy that reports a failure it never had.
+   */
+  const IN_FLIGHT = 'processing';
+
+  beforeEach(async () => {
+    // Each status column is its own enum, so one shared placeholder cannot be type-deduced —
+    // bind them separately rather than letting the driver guess.
+    await pg.query(`UPDATE video_files SET hls_status=$1, hls_started_at=now(), hls_error='source boom',
+                    crop_status=$2, crop_error='crop boom', captions_status=$3, captions_error='cap boom'
+                    WHERE project_id=$4`, [IN_FLIGHT, IN_FLIGHT, IN_FLIGHT, fx.projectId]);
+    await pg.query(`UPDATE simulations SET status=$1, error='sim boom' WHERE project_id=$2`, [IN_FLIGHT, fx.projectId]);
+    await pg.query(`UPDATE corpora SET ingestion_status=$1, error='corpus boom' WHERE project_id=$2`, [IN_FLIGHT, fx.projectId]);
+  });
+
+  it('resets every in-flight child status, and clears the leftovers with it', async () => {
+    const target = await duplicate();
+
+    const vids = await rows<{ hls_status: string; hls_started_at: string | null; hls_error: string | null;
+                              crop_status: string; crop_error: string | null;
+                              captions_status: string; captions_error: string | null }>(
+      `SELECT hls_status, hls_started_at, hls_error, crop_status, crop_error, captions_status, captions_error
+       FROM video_files WHERE project_id=$1`, [target]);
+    expect(vids.length).toBeGreaterThan(0);
+    for (const v of vids) {
+      expect(v.hls_status).toBe('pending');       // the enum's "no transcode has run"
+      expect(v.hls_started_at).toBeNull();
+      expect(v.hls_error).toBeNull();
+      expect(v.crop_status).toBe('none');
+      expect(v.crop_error).toBeNull();
+      expect(v.captions_status).toBe('none');
+      expect(v.captions_error).toBeNull();
+    }
+
+    // A package row cannot exist without bytes, so there is no "not ingested yet" to reset to —
+    // the honest answer for one captured mid-ingest is the terminal one, reached deliberately here
+    // rather than by a boot sweep blaming a restart that never happened to this project.
+    const sims = await rows<{ status: string; error: string | null }>(
+      `SELECT status, error FROM simulations WHERE project_id=$1`, [target]);
+    for (const s of sims) expect(s.status).toBe('failed');
+
+    const corp = await rows<{ ingestion_status: string; error: string | null }>(
+      `SELECT ingestion_status, error FROM corpora WHERE project_id=$1`, [target]);
+    expect(corp.length).toBeGreaterThan(0);
+    for (const c of corp) {
+      expect(c.ingestion_status).toBe('pending');
+      expect(c.error).toBeNull();
+    }
+  });
+
+  it('leaves the ORIGINAL mid-job exactly as it was', async () => {
+    // The reset belongs to the copy. Reaching back and clearing the source would abandon a job that
+    // IS running, which is a far worse failure than the one being fixed.
+    await duplicate();
+    const [v] = await rows<{ hls_status: string; hls_error: string | null }>(
+      `SELECT hls_status, hls_error FROM video_files WHERE project_id=$1 LIMIT 1`, [fx.projectId]);
+    expect(v.hls_status).toBe(IN_FLIGHT);
+    expect(v.hls_error).toBe('source boom');
+  });
+
+  it('does NOT rewrite a status that is a fact rather than a claim', async () => {
+    // `ready`/`none` describe work that genuinely produced the bytes being copied, so the copy
+    // inherits them. A blanket "reset all statuses" would make every duplicate look untranscoded
+    // and re-run the entire ladder for nothing.
+    await pg.query(`UPDATE video_files SET hls_status='ready', hls_error=NULL WHERE project_id=$1`, [fx.projectId]);
+    const target = await duplicate();
+    const [v] = await rows<{ hls_status: string }>(
+      `SELECT hls_status FROM video_files WHERE project_id=$1 LIMIT 1`, [target]);
+    expect(v.hls_status).toBe('ready');
+  });
+});
 
 describe('(m) the copy does not inherit unreapable retired HLS trees', () => {
   it('copies the live run tree and skips the retired one', async () => {

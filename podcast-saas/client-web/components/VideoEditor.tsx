@@ -20,7 +20,9 @@ import { getAvatarCircles, saveAvatarCircles, type AvatarCirclesConfig } from '.
 import { normalizeCircleSections, type CircleSection } from '../lib/circleSections';
 import { sectionAtPlayhead } from '../lib/sectionInterval';
 import { simOccurrencesOf } from '../lib/simPool';
-import { rememberServedSimUrls, servedSimulationUrl, type RememberedServedUrl } from '../lib/simServedUrl';
+import {
+  rememberServedSimUrls, servedSimulationUrl, withRepublishedServedUrls, type RememberedServedUrl,
+} from '../lib/simServedUrl';
 import { getStoredSelection } from '../lib/simUiControls';
 import type { VideoFile, TimelineSection, TimelineMarker, Simulation, VideoGenerationJob, ImageFile, AudioFile } from 'shared/src/generated/client-v1';
 
@@ -563,7 +565,17 @@ export function VideoEditor({ projectId }: Props) {
   const commitSections = useCallback((nextSections: TimelineSection[]) => {
     setUndoStack(stack => [...stack.slice(-(HISTORY_LIMIT - 1)), cloneSections(sections)]);
     setRedoStack([]);
-    setSections(nextSections);
+    // A REPUBLISH MOVES THE WHOLE PACKAGE, not just the section that was regenerated.
+    //
+    // This is the path the section editor's generation `done` takes (SectionEditor → onUpdate →
+    // TimelinePanel → here), and only the regenerated row comes back with a freshly resolved
+    // `simulation_served_url`. Its siblings keep the revision they were handed at bootstrap, so
+    // without this the editor asks for two revision documents for one package: `packageKeyOf` is
+    // origin+path, so every hop between siblings becomes a full document boot behind the spinner
+    // instead of the one postMessage a same-package hop costs — the residency this whole stage
+    // exists for, lost on exactly the sections most likely to be revisited, until the next PATCH
+    // or a page reload. (It cannot 404: a retired revision stays in storage.)
+    setSections(withRepublishedServedUrls(nextSections, sections));
   }, [sections]);
 
   const restoreSectionSnapshot = useCallback(async (target: SectionSnapshot): Promise<TimelineSection[]> => {

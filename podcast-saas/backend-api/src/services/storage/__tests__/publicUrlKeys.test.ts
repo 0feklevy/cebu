@@ -28,6 +28,12 @@ const KEYS = [
   'images/8f6f0f4e-1111-4111-8111-aaaaaaaaaaaa/leaf.png',
   // The one key shape built from a name the user chose.
   'projects/8f6f0f4e-1111-4111-8111-aaaaaaaaaaaa/corpus/2_my paper+v2.pdf',
+  // …and the characters that make such a name collide with URL grammar. A key like this can only
+  // reach storage from a row written before `corpusObjectName` existed, and the presign that
+  // downloads it needs the WHOLE key: recovering `…/3_q&a` instead is a `NoSuchKey` on a file that
+  // uploaded perfectly.
+  'projects/8f6f0f4e-1111-4111-8111-aaaaaaaaaaaa/corpus/3_q&a #2 (draft).pdf',
+  'projects/8f6f0f4e-1111-4111-8111-aaaaaaaaaaaa/corpus/4_what?.pdf',
 ];
 /** HLS keys take the token-in-path form on two of the three adapters. */
 const HLS_KEY = 'hls/3333/run7/360p/seg_000.ts';
@@ -116,11 +122,31 @@ describe('keyFromPublicUrlAgainst', () => {
       .toBe('hls/v/run/seg.ts');
   });
 
-  it('drops the query and fragment, and does not percent-decode', () => {
-    // The forward builders interpolate the key verbatim, so decoding would invent a key that was
-    // never published.
+  it('drops a query the PRODUCT appended — `?section=` and `?v=` on a sim entry URL', () => {
+    // The one URL shape a caller extends after the adapter built it: `?section=` is the variant key
+    // the bridge dispatches on and `?v=` is the bridge hash. Neither is part of the key, and a
+    // caller asking for the key must not get `index.html?section=…` back.
+    expect(keyFromPublicUrlAgainst('https://api.test/sim-public/sim/p/index.html?section=abc&v=bh1', BASES))
+      .toBe('sim/p/index.html');
     expect(keyFromPublicUrlAgainst('https://api.test/sim-public/sim/p/index.html?v=bh1#top', BASES))
       .toBe('sim/p/index.html');
+  });
+
+  it('KEEPS a `?` or `#` that is part of the key, because the key went in verbatim', () => {
+    // THIS CASE USED TO READ THE OTHER WAY, and it was wrong: the test asserted that everything
+    // after `?`/`#` is URL grammar, which truncated every corpus key minted from a filename
+    // containing one. `CorpusBuilder.ingest` then presigned an object that does not exist and the
+    // upload failed after succeeding; a duplication of the same project died on `NoSuchKey`.
+    // `b.pdf` is not a parameter this product appends, so it is key text.
+    expect(keyFromPublicUrlAgainst('https://api.test/local-storage/p/corpus/1_a?b.pdf', BASES))
+      .toBe('p/corpus/1_a?b.pdf');
+    expect(keyFromPublicUrlAgainst('https://api.test/local-storage/p/corpus/2_q&a #2.pdf', BASES))
+      .toBe('p/corpus/2_q&a #2.pdf');
+  });
+
+  it('does not percent-decode', () => {
+    // The forward builders interpolate the key verbatim, so decoding would invent a key that was
+    // never published.
     expect(keyFromPublicUrlAgainst('https://api.test/local-storage/a/my%20file.pdf', BASES))
       .toBe('a/my%20file.pdf');
   });

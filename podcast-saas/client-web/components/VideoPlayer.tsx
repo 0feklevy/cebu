@@ -665,6 +665,21 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
     }
     // REUSE: the src is deliberately left alone. Re-assigning it — even to this section's own URL —
     // is a navigation, and a navigation is the reload this stage exists to remove.
+    //
+    // …WHICH IS ALSO WHY IT MUST WITHDRAW ANY DEFERRED MOUNT. Reaching here means the resident
+    // document is the one this section wants, so a mount recorded by an EARLIER pass of this effect
+    // has been superseded — and `pendingLeaseMountRef` is read on the lease-release path before
+    // anything else, so leaving it set replays a navigation the section no longer asks for. The
+    // reachable sequence is a regenerate-then-revert behind the section editor's preview: the
+    // regeneration takes the navigate branch and defers its mount, the revert (undo, or a failed
+    // save rolling the row back) puts the original URL back and lands HERE, and closing the preview
+    // then navigates the slot to the withdrawn revision. `syncTimelineWithLease` returns straight
+    // after that mount, so no activation follows it either: the timeline slot shows raw video with
+    // no simulation and no cover until the playhead leaves the section and comes back.
+    //
+    // The navigate branch above already overwrites the ref with its own spec, so this is the one
+    // exit from the effect that could leave a stale one behind.
+    pendingLeaseMountRef.current = null;
     // (P1.1c) Boundary crossings consult the page lease before driving the document — this
     // effect and the ready effect were the two paths that bypassed the preview pact, which is
     // how a late crossing resurrected the timeline sim under the editor's running preview. While

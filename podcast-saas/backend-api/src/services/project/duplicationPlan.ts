@@ -328,27 +328,68 @@ export function rewriteSectionParam(url: string, idMap: IdMap): string {
 // ── Status resets ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Statuses that assert work is IN FLIGHT. A copy has no job running, so carrying one over would
- * leave the tile spinning forever on a project nothing will ever finish.
+ * ONE RULE, one table: a status that asserts a JOB IS RUNNING becomes the status of a thing no job
+ * has touched, because the copy has no job.
  *
- * The complement — `draft`, `script_ready`, `approved`, `ready` — is carried over, which is a
- * deliberate departure from "reset to a draft-equivalent". Those four describe DATA, and the data
- * behind them is copied: a byte-for-byte clone of a finished project that presents itself as an
- * empty draft misdescribes itself, and `projects.status` is exactly what the home tile badge reads.
+ * WHY IT IS A TABLE AND NOT A FUNCTION PER PIPELINE. It was two functions — `projects.status` and
+ * `projects.metadata_status` — and the four CHILD columns that need exactly the same treatment
+ * (`video_files.hls_status`, `.crop_status`, `.captions_status`, `simulations.status`,
+ * `corpora.ingestion_status`) were copied verbatim, because nothing connected them to the rule one
+ * level up. A copy of a project mid-transcode therefore span forever on a job that does not exist,
+ * and the next backend boot — `recoverStuckSimulations` / `recoverStuckHlsTranscodes` /
+ * `recoverStuckCrops`, all of which match on `processing` — flipped the copy's simulation to
+ * `failed — please re-upload`. A third hand-written rule is how that happens again.
+ *
+ * WHAT IS *NOT* RESET, and this is the deliberate half. `ready`, `draft`, `script_ready`,
+ * `approved`, `none` describe DATA, and the data behind them is copied: a byte-for-byte clone of a
+ * finished project that presents itself as an empty draft misdescribes itself, and these columns
+ * are exactly what the tiles read.
  */
-const IN_FLIGHT_PROJECT_STATUSES: ReadonlySet<string> = new Set([
-  'ingesting', 'scripting', 'generating',
-  // `failed` is not in flight, but it is a fact about a run that did not happen to the copy.
-  'failed',
-]);
+const IN_FLIGHT_RESETS = {
+  /**
+   * `failed` is in here and is not in flight: it is a fact about a RUN, and that run did not happen
+   * to the copy. The other three are live-job claims.
+   */
+  project: { inFlight: ['ingesting', 'scripting', 'generating', 'failed'], reset: 'draft' },
+  /** The thumbnail-metadata pipeline: only `processing` is a live job. */
+  metadata: { inFlight: ['processing'], reset: 'none' },
+  /** The HLS ladder. `pending` is the enum's own "no transcode has run", which is the copy's truth. */
+  hls: { inFlight: ['processing'], reset: 'pending' },
+  /** Smart crop. `none` is "never analysed". */
+  crop: { inFlight: ['processing'], reset: 'none' },
+  /** Auto captions. `none` is "never generated". */
+  captions: { inFlight: ['processing'], reset: 'none' },
+  /**
+   * A simulation package has no "not ingested yet" state — the row cannot exist without bytes — so
+   * the honest answer for a package captured MID-INGEST is the terminal one, with a reason the user
+   * can act on. It is where the copy ended up anyway, at the next boot, via a message about a
+   * process restart that never happened to it.
+   */
+  simulation: { inFlight: ['processing'], reset: 'failed' },
+  /** Corpus ingestion. `pending` is the enum's default: nothing has read this file yet. */
+  corpus: { inFlight: ['processing'], reset: 'pending' },
+} as const satisfies Record<string, { inFlight: readonly string[]; reset: string }>;
 
-export function duplicatedProjectStatus(status: string): string {
-  return IN_FLIGHT_PROJECT_STATUSES.has(status) ? 'draft' : status;
+/** Which pipeline's rule to apply. */
+export type DuplicatedStatusKind = keyof typeof IN_FLIGHT_RESETS;
+
+/** The status a copy carries, given the source's. */
+export function duplicatedStatus(kind: DuplicatedStatusKind, status: string): string {
+  const rule = IN_FLIGHT_RESETS[kind];
+  return (rule.inFlight as readonly string[]).includes(status) ? rule.reset : status;
 }
 
-/** Same rule for the thumbnail-metadata pipeline: only `processing` is a live job. */
+/** Was this status reset — i.e. does the copy need the job's leftovers cleared with it? */
+export function statusWasReset(kind: DuplicatedStatusKind, status: string): boolean {
+  return duplicatedStatus(kind, status) !== status;
+}
+
+export function duplicatedProjectStatus(status: string): string {
+  return duplicatedStatus('project', status);
+}
+
 export function duplicatedMetadataStatus(status: string): string {
-  return status === 'processing' ? 'none' : status;
+  return duplicatedStatus('metadata', status);
 }
 
 /**
