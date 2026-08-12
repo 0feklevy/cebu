@@ -319,6 +319,60 @@ the flag as a backstop.
 **`crypto.getRandomValues` is not seedable by any spec mechanism** — monkey-patch it in the init
 script or ban it. (Three.js `generateUUID()` uses `Math.random()`, so patching that covers it.)
 
+### Verified by live measurement against real Chrome binaries
+
+A separate pass drove CDP over `--remote-debugging-pipe` against **`chrome-headless-shell 151`** and
+**`Google Chrome 151 --headless`**. These are measurements, not documentation:
+
+| Command | headless-shell 151 | Chrome 151 `--headless` |
+|---|---|---|
+| `HeadlessExperimental.beginFrame` | `-32000` "BeginFrameControl is not enabled" | **`-32601` "wasn't found"** |
+| `Target.createTarget{enableBeginFrameControl}` | honoured | **silently ignored** |
+| `Emulation.setVirtualTimePolicy` | works | works |
+
+**The whole `HeadlessExperimental` domain does not exist in the Chrome binary** — method-not-found,
+not a permission error. Only `chrome-headless-shell` has it. This also disproves a claim circulating
+in several repos that "Chromium 147 removed `beginFrame`": it is present in `main` and answered on
+151 headless-shell. The accurate statement is that *Chrome* lost it at M132, when old headless was
+split out.
+
+**⚠️ macOS is a hard blocker, from Chromium source** (`headless/lib/browser/protocol/target_handler.cc`):
+`#if BUILDFLAG(IS_MAC) … return Response::ServerError("BeginFrameControl is not supported on MacOS yet")`.
+**Measured:** that exact error. The frame-control path is therefore **Linux containers only** — local
+development on a Mac cannot run it at all, which matches `puppeteer-capture` throwing on darwin.
+Plan for a container-based dev loop from day one, not as a week-three discovery.
+
+**`--deterministic-mode` is exactly six switches and a veto**, from
+`headless/lib/browser/command_line_handler.cc`. **Measured:** combining it with `--site-per-process`
+makes the browser refuse to start with an explicit error. It does **not** touch scrollbars, DPI,
+timer throttling, the GPU backend, or network ordering — set `--hide-scrollbars`,
+`--force-device-scale-factor=1`, `--force-color-profile=srgb`,
+`--disable-background-timer-throttling` and `--mute-audio` ourselves. Chromium's own web-test runner
+is a better model than the chrome-launcher list.
+
+**Drop two flags entirely.** `--deterministic-fetch` was deleted in **M69 (2018)** — bisected across
+mirror tags — and `--disable-threaded-scrolling` was removed in 2023 ("hasn't actually worked since
+the launch of scroll unification"). Both are noise on a modern command line. The widely-copied
+chrome-launcher doc that lists them is stale.
+
+**A real risk signal: almost nobody authoritative uses `--deterministic-mode`.** Code search returns
+**one** hit in all of Chromium — the definition itself; Chromium's own headless compositor tests
+append the individual switches by hand. Zero hits in web-platform-tests, Puppeteer, Playwright,
+Percy, Chromatic, BackstopJS, reg-suit. The visual-diffing industry stabilises at the DOM/CSS layer
+instead. We would be relying on a lightly-travelled path — worth an explicit risk-register entry and
+an abstraction seam in the capture layer.
+
+**`--js-flags=--random-seed=42` measured across a top frame and two iframes:** all three produce the
+*identical* sequence, reproducible run to run, and byte-identical between headless-shell and Chrome
+at the same V8 version. Reproducible — and it confirms the footgun: two "independent" components
+draw the same numbers in seeded mode and different ones in production.
+
+**headless-shell already forces SwiftShader by default** (`headless/public/switches.h`, on
+`--enable-gpu`: *"Headless uses swiftshader by default for consistency across headless
+environments"*). That is the GL *implementation* choice and does not exempt us from the M139 WebGL
+fallback removal, so `--enable-unsafe-swiftshader` is still required. It does reframe the spike:
+the question is "can we override the default with llvmpipe", not "can we choose a backend".
+
 ### Capture failure modes, ordered by damage
 
 1. **Black frame from failed WebGL context creation** (M139+). Silent — a valid MP4 of nothing.
