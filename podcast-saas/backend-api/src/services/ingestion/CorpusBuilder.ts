@@ -65,10 +65,19 @@ export class CorpusBuilder {
         case 'document': {
           // For file-based types, the storage_url must be set from the upload step
           if (!corpus.storage_url) throw new Error(`${corpus.source_type} corpus missing storage_url`);
-          const url = await this.storage.getPresignedDownloadUrl(
-            corpus.storage_url.replace(/^https?:\/\/[^/]+\//, ''),
-            600,
-          );
+          // ASK THE ADAPTER TO INVERT ITS OWN URL. Stripping `https://host/` recovers the key only
+          // for an adapter whose public URL is `{origin}/{key}` — on Supabase it leaves
+          // `storage/v1/object/public/{bucket}/…`, and on a dev origin it leaves the route prefix,
+          // so the presign names an object that does not exist and ingestion fails on a file that
+          // uploaded perfectly. `keyFromPublicUrl` is the documented inverse of the two forward
+          // builders and lives beside them, where the pair cannot drift.
+          const key = this.storage.keyFromPublicUrl(corpus.storage_url);
+          if (!key) {
+            throw new Error(
+              `${corpus.source_type} corpus storage_url is not a URL this storage published: ${corpus.storage_url}`,
+            );
+          }
+          const url = await this.storage.getPresignedDownloadUrl(key, 600);
           const resp = await fetch(url);
           if (!resp.ok) throw new Error(`Storage download failed: ${resp.status} ${resp.statusText}`);
           const buf = Buffer.from(await resp.arrayBuffer());

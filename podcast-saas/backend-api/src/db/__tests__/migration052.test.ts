@@ -29,6 +29,23 @@ async function rows<T>(sql: string, params: unknown[] = []): Promise<T[]> {
 }
 const applyForward = (): Promise<unknown> => pg.exec(forwardSql);
 
+/**
+ * 052 and then EVERY migration after it.
+ *
+ * A Drizzle read selects every column `schema.ts` declares, and `schema.ts` always describes HEAD —
+ * so a read taken at 052 fails the moment any later migration adds an admin_settings column (054
+ * added `sim_transition_coordinator` and did exactly that: `42703 column … does not exist`). The
+ * ORM check is about the migration and the schema AGREEING, so it has to be taken at head; the
+ * catalog assertions below deliberately do not use this, because their whole point is to pin 052
+ * in isolation. Same helper, same reasoning, as `migration051.test.ts`.
+ */
+const applyForwardToHead = async (): Promise<void> => {
+  await applyForward();
+  for (const f of ALL.slice(ALL.indexOf(TARGET) + 1)) {
+    await pg.exec(readFileSync(join(MIGRATIONS_DIR, f), 'utf-8'));
+  }
+};
+
 async function snapshot(): Promise<unknown> {
   return {
     cols: await rows(`SELECT column_name, data_type, is_nullable, column_default
@@ -75,6 +92,10 @@ describe('052 — every switch defaults to today behaviour', () => {
   });
 
   it('a Drizzle admin_settings read works after it', async () => {
+    // At HEAD, not at 052: see `applyForwardToHead`. Reading at 052 asserted that schema.ts had
+    // not moved since, which is not a property of this migration and broke the first time a later
+    // one added a column.
+    await applyForwardToHead();
     await expect(db.query.admin_settings.findFirst()).resolves.toBeDefined();
   });
 });

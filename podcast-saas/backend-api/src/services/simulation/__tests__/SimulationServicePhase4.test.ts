@@ -15,6 +15,7 @@ import {
   parseSectionEntries,
   wrapBridgeCombined,
   injectBridgeScriptTag,
+  assembleSectionBridgeArtifacts,
   SAFE_SECTION_ID_RE,
   type SimManifest,
   type ConversationMessage,
@@ -754,5 +755,111 @@ describe('selectSources — bridge.js exclusion', () => {
     const { sourceMap } = selectSources(raw, isSectionFile);
     expect([...sourceMap.keys()]).not.toContain('sim/bridge.js');
     expect([...sourceMap.keys()]).toContain('sim/app.js');
+  });
+});
+
+// ── Bridge acknowledgement capability (audit P0.5) ────────────────────────────
+//
+// The viewer's apply gate now consults a PUBLISHED capability before a package's first activation,
+// so "does this bridge post SCRIPT_APPLIED?" stopped being a curiosity and became an input to what
+// a viewer is shown. Two consequences are pinned here: the assembler reports the answer about the
+// bytes it just produced, and the validator refuses to publish a dynamic bridge that lost the ack.
+
+describe('assembleSectionBridgeArtifacts reports what the assembled bridge can do', () => {
+  const assemble = (existingBridgeJs = '', rawEntryHtml = '<html><head></head><body></body></html>') =>
+    assembleSectionBridgeArtifacts({
+      sectionId: 'sec-1',
+      existingBridgeJs,
+      rawEntryHtml,
+      entryRelPath: 'index.html',
+      mainBody: () => 'return function cleanup() {};',
+    });
+
+  it('reports scriptApplied for the bridge it actually emits', () => {
+    const art = assemble();
+    expect(art.capabilities.scriptApplied).toBe(true);
+    // Not a claim about the template's source — a claim about the BYTES being uploaded.
+    expect(art.bridgeJs).toContain('SCRIPT_APPLIED');
+  });
+
+  it('the reported capability is derived from the emitted bytes, not hard-coded', () => {
+    // If this ever diverges the capability becomes a lie the viewer acts on, so the two are checked
+    // against each other rather than each against a constant.
+    const art = assemble();
+    expect(art.capabilities.scriptApplied).toBe(/_post\s*\(\s*\{[^}]*type\s*:\s*'SCRIPT_APPLIED'/.test(art.bridgeJs));
+  });
+
+  // ── The entry document's own answer (audit P0.8) ──────────────────────────────────────────
+  //
+  // The flagship packages resolve `three` through `<script type="importmap">`, which WebKit only
+  // supports from Safari/iOS 16.4. On anything older the bare specifier never resolves, no module
+  // evaluates and nothing paints — so the requirement is recorded here, with the bridge's ack, in
+  // the record that travels with these exact bytes.
+
+  it('records the import-map requirement of the entry it publishes', () => {
+    const withMap = assemble('', '<html><head><script type="importmap">{"imports":{}}</script></head><body></body></html>');
+    expect(withMap.capabilities.requiresImportMaps).toBe(true);
+    // Both facts, one record, one metadata key — never a second channel to keep in step.
+    expect(withMap.capabilities.scriptApplied).toBe(true);
+  });
+
+  it('records the honest FALSE for an entry that needs nothing', () => {
+    // Not `undefined`: the assembler READ this document and found no import map, and that is a
+    // different statement from "nobody has ever looked". Only the second may reach the viewer as
+    // unknown, and only unknown is exempt from the floor.
+    expect(assemble().capabilities.requiresImportMaps).toBe(false);
+  });
+
+  it('does not mistake the module script every entry has for an import map', () => {
+    // `type="module"` sits on essentially every modern entry document and needs no import map.
+    // Matching it would poster-only a huge share of packages on older browsers for nothing.
+    const modules = assemble('', '<html><head><script type="module" src="./main.js"></script></head><body></body></html>');
+    expect(modules.capabilities.requiresImportMaps).toBe(false);
+  });
+
+  it('describes the INJECTED entry, not the raw upload', () => {
+    // The assembler rewrites the document (rAF gate, bridge tag, stale-tag stripping) and those
+    // bytes are what gets uploaded. A record derived from the input would be a claim about a
+    // document no viewer will ever load.
+    const art = assemble('', '<html><head><script type="importmap">{}</script></head><body></body></html>');
+    expect(art.entryHtml).toContain('SIM_BRIDGE_SCRIPT_START');
+    expect(art.capabilities.requiresImportMaps).toBe(art.entryHtml.includes('type="importmap"'));
+  });
+});
+
+describe('validateGeneratedBridge — a dynamic bridge that cannot acknowledge is a system error', () => {
+  const dynamicBridge = (over = (s: string) => s) => over(assembleSectionBridgeArtifacts({
+    sectionId: 'sec-1',
+    existingBridgeJs: '',
+    rawEntryHtml: '<html><head></head><body></body></html>',
+    entryRelPath: 'index.html',
+    mainBody: () => 'return function cleanup() {};',
+  }).bridgeJs);
+
+  // The security checks run on the LLM-written mainBody, exactly as the publication path calls
+  // this (the embedded v3 runtime legitimately uses APIs a section body may not).
+  const MAIN_BODY = 'return function cleanup() {};';
+
+  it('passes the bridge the assembler produces', () => {
+    const result = validateGeneratedBridge(dynamicBridge(), baseManifest, MAIN_BODY);
+    expect(result.fatal).toEqual([]);
+  });
+
+  it('is FATAL when the acknowledgement is missing from a dynamic bridge', () => {
+    // A template regression here would not merely lose a message: publication would record the
+    // package as PROVEN-SILENT, which tells the viewer's gate to reveal a switch it can no longer
+    // verify — for every package published afterwards, silently.
+    const stripped = dynamicBridge((code) => code.replace(/type: 'SCRIPT_APPLIED'/g, "type: 'NOPE'"));
+    const result = validateGeneratedBridge(stripped, baseManifest, MAIN_BODY);
+    expect(result.fatal.some((f) => /SCRIPT_APPLIED/.test(f))).toBe(true);
+  });
+
+  it('does NOT demand it of a non-dynamic bridge', () => {
+    // Scoped exactly as the uiPolicy/autoPolicy checks are: a load-time-locked bridge from the
+    // pre-combined wrapper cannot switch sections in place either, so demanding an in-place
+    // acknowledgement from it would be a requirement no publication path can satisfy.
+    const result = validateGeneratedBridge(VALID_BRIDGE, baseManifest);
+    expect(VALID_BRIDGE).not.toContain("dispatch: 'dynamic'");
+    expect(result.fatal.filter((f) => /SCRIPT_APPLIED/.test(f))).toEqual([]);
   });
 });

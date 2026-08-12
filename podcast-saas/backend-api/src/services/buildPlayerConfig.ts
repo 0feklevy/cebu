@@ -68,6 +68,7 @@ import { captionUrlForVideo } from './captions/CaptionService.js';
 import { normalizeAvatarCircles, normalizeSpeakerTimeline, type AvatarCirclesLike } from './avatarCircles/normalizeAvatarCircles.js';
 import { logger } from '../lib/logger.js';
 import { resolveRumSampleRate, resolveSimRuntimeFlags, fieldAggregates } from './simulation/RumService.js';
+import { simulationUrlResolver } from './simulation/simulationUrlResolver.js';
 import { decideBudget } from 'shared/sim/closedLoop';
 
 /** The simulation columns this file reads. Named so the degraded-read catch cannot drift from it. */
@@ -78,6 +79,77 @@ interface SimRowShape {
   active_revision_id: string | null;
   active_revision_entry_key: string | null;
   prepare_budget_ms: number | null;
+  bridge_ack_capable: boolean | null;
+  requires_import_maps: boolean | null;
+}
+
+/**
+ * The columns that predate migrations 055/057, i.e. everything this file needs that a rollback of
+ * either cannot take away. Split out so the retry below can only ever ask for a strict subset of
+ * the full list — the two cannot drift.
+ */
+const SIM_COLUMNS_PRE_CAPABILITIES = {
+  id: true, package_class: true, bridge_hash: true,
+  active_revision_id: true, active_revision_entry_key: true,
+  prepare_budget_ms: true,
+} as const;
+
+/**
+ * The project's simulation rows, with the SAME degraded-column retry both editor reads already have
+ * (`editor-state.controller.loadSimulations`, `sections.controller.withServedSimUrls`).
+ *
+ * WHY THE RETRY MATTERS MORE HERE THAN ANYWHERE ELSE. `bridge_ack_capable` (055) and
+ * `requires_import_maps` (057) are named in the explicit `columns` list below, so a Postgres 42703
+ * from either — the 055/057 rollback run under an image that still declares them, or an image
+ * deployed ahead of its migrations — lands in the catch at the bottom of this function. That catch
+ * returns `[]`, and `[]` on THIS path is not a degradation: every simulation in the project then
+ * looks revision-less, so `simulationUrlOf` falls back to the stored legacy URL and the identity
+ * axis to the pre-revision derivation. Correct-looking output, entirely wrong bytes. Both rollback
+ * notes (055 and 057) call that out by name as "an incident rather than a degradation" — and the
+ * viewer, the one surface they single out, was the one surface with no retry.
+ *
+ * Dropping exactly the two post-migration columns returns every row otherwise whole: both facts
+ * read UNKNOWN, which is the state every consumer of them already handles, and the revision pointer
+ * — the thing whose loss is the incident — survives. A failure of the RETRY is a real database
+ * failure rather than migration lag, and falls through to the empty-list catch as before.
+ */
+async function loadProjectSimulations(projectId: string): Promise<SimRowShape[]> {
+  const where = eq(simulations.project_id, projectId);
+  try {
+    return await db.query.simulations.findMany({
+      where,
+      // `columns` is not an optimisation detail: without it Drizzle selects the WHOLE row for every
+      // simulation — `guidance` (a full GuidanceEntry[]), `guidance_meta`, `bridge_functions` and
+      // `canary_report` — on the hottest read path in the product, to read a handful of scalars.
+      columns: {
+        ...SIM_COLUMNS_PRE_CAPABILITIES,
+        // Whether the ACTIVE revision's bridge acknowledges applied sections (migration 055).
+        // A scalar for the same reason `prepare_budget_ms` is one: this list exists to keep the
+        // hottest read path off the JSONB columns, and the fact itself lives in the revision's
+        // metadata. The player's apply gate is the only consumer, and it needs the answer BEFORE
+        // the first activation — which is precisely why it cannot be learned from the wire.
+        bridge_ack_capable: true,
+        // Does this package's entry document need import maps (migration 057, audit P0.8)? A
+        // scalar here for the same reason as the one above, and read on EVERY sim section rather
+        // than only on the modern path: a package that cannot resolve its bare specifiers never
+        // paints at all, so the viewer needs the answer before it decides what to put on screen.
+        requires_import_maps: true,
+      },
+    });
+  } catch (err) {
+    logger.error(
+      { err, projectId },
+      'buildPlayerConfig: simulation read failed — retrying without the post-migration capability columns',
+    );
+    const rows = await db.query.simulations.findMany({
+      where,
+      columns: SIM_COLUMNS_PRE_CAPABILITIES,
+    });
+    // UNKNOWN, explicitly. `?? false` here would tell the apply gate a bridge is proven silent and
+    // the floor that a package is proven not to need import maps — two confident answers derived
+    // from a missing column.
+    return rows.map((r) => ({ ...r, bridge_ack_capable: null, requires_import_maps: null }));
+  }
 }
 
 /**
@@ -128,37 +200,20 @@ export async function buildPlayerConfig(
     resolveSimPoolMode(),
     resolveRumSampleRate(),
     resolveSimRuntimeFlags(),
-    // The package identity + canary verdict for every simulation this project references.
+    // The package identity + canary verdict for every simulation this project references. The
+    // narrow `columns` list and its degraded-column RETRY both live in `loadProjectSimulations`.
     //
-    // `columns` is not an optimisation detail: without it Drizzle selects the WHOLE row for every
-    // simulation — `guidance` (a full GuidanceEntry[]), `guidance_meta`, `bridge_functions` and the
-    // new `canary_report` JSONB — on the hottest read path in the product, to read one text field.
+    // The try/catch matches the precedent set by `resolveSimPoolMode` above: `package_class` and
+    // friends arrive in migration 049, and an app image that boots before the migration is applied
+    // must not 500 EVERY viewer surface over a feature no stored package can use yet.
     //
-    // The try/catch matches the precedent set by `resolveSimPoolMode` above: these columns arrive in
-    // migration 049, and an app image that boots before the migration is applied must not 500 EVERY
-    // viewer surface over a feature no stored package can use yet. An empty list reads as
-    // "unclassified", which is exactly the safe default.
-    db.query.simulations
-      .findMany({
-        where: eq(simulations.project_id, project.id),
-        columns: {
-          id: true, package_class: true, bridge_hash: true,
-          // The pointer (migration 050). Two cheap scalars, deliberately denormalised onto this row
-          // so resolving which bytes are live costs no join on the hottest read path.
-          active_revision_id: true, active_revision_entry_key: true,
-          // The package's own publish-time preparation cost, derived once when the canary verdict
-          // was recorded. A scalar, deliberately: canary_report is large (per-case steps, errors,
-          // capabilities, resource counts) and this is the read path the `columns` list exists to
-          // keep narrow. It is the only real number available on a FIRST view, when nothing has
-          // been measured yet and a compiled-in constant is least defensible.
-          prepare_budget_ms: true,
-        },
-      })
-      // A degraded read here is NOT harmless. An empty list makes every simulation look
-      // revision-less, so `simulationUrlOf` falls back to the stored legacy URL and the identity
-      // axis falls back to the pre-revision derivation — correct-looking output, entirely wrong
-      // bytes, with nothing surfaced. It still must not 500 the viewer, so the catch stays; but a
-      // project with sim sections and no simulation rows is an incident, not a degradation.
+    // A degraded read here is NOT harmless, which is why the retry inside `loadProjectSimulations`
+    // exists and this catch is the LAST resort. An empty list makes every simulation look
+    // revision-less, so `simulationUrlOf` falls back to the stored legacy URL and the identity
+    // axis falls back to the pre-revision derivation — correct-looking output, entirely wrong
+    // bytes, with nothing surfaced. It still must not 500 the viewer, so the catch stays; but a
+    // project with sim sections and no simulation rows is an incident, not a degradation.
+    loadProjectSimulations(project.id)
       .catch((err: unknown) => {
         logger.error({ err, projectId: project.id }, 'buildPlayerConfig: simulation rows unavailable — every sim degrades to the legacy package');
         return [] as SimRowShape[];
@@ -381,16 +436,41 @@ export async function buildPlayerConfig(
    * The STORED `simulation_url` is never rewritten. Putting the revision id into stored URLs would
    * make activation an N-row un-transacted rewrite and break the "single pointer update" promise
    * outright; it would also break sim-script reuse, which compares against the raw stored value.
-   * So the pointer is resolved HERE, on the way out, and nowhere else.
+   * So the pointer is resolved on the way out — by the SHARED resolver, which is the only place
+   * that knows how. It used to be a closure here, which is precisely why the editor's own read of
+   * `timeline_sections` served retired bytes (audit §9.6): a rule that lives in one caller is a
+   * rule the other callers do not follow.
    */
-  const simulationUrlOf = (simId: string | null, url: string | null): string | null => {
-    const row = simId ? simRows.get(simId) : undefined;
-    if (!row?.active_revision_entry_key || !url) return url ?? null;
-    // `?section=` and `?v=` are preserved exactly: the pool dispatches on `?section=`, and the
-    // poster/variant identity axis reads it. Dropping the query here would collapse every section
-    // of a package onto one variant key.
-    const q = url.includes('?') ? url.slice(url.indexOf('?')) : '';
-    return storage.getSimPublicUrl(row.active_revision_entry_key) + q;
+  const simulationUrlOf = simulationUrlResolver(simRows, storage);
+
+  /**
+   * Three states, and the third one is the point (audit P0.5).
+   *
+   * `true`/`false` are the publication's own answer about the bytes being served. `null` — no row,
+   * no column, or a package published before migration 055 — is UNKNOWN, and the player's apply
+   * gate has a distinct branch for it. Coercing the absence to `false` here would tell the gate
+   * "this package cannot acknowledge, so reveal immediately", which is the first-activation hole
+   * this record exists to close, restored by a default.
+   */
+  const bridgeAckCapableFor = (simId: string | null): boolean | null => {
+    if (!simId) return null;
+    const row = simRows.get(simId) as { bridge_ack_capable?: boolean | null } | undefined;
+    return typeof row?.bridge_ack_capable === 'boolean' ? row.bridge_ack_capable : null;
+  };
+
+  /**
+   * The browser capability floor, as a package property (audit P0.8).
+   *
+   * `true`/`false` are the publication's own answer about the bytes being served. `null` — no row,
+   * no column, or a package published before migration 057 — is UNKNOWN, and the viewer's floor
+   * treats unknown as "no known requirement". Coercing the absence to `true` here would poster-only
+   * every legacy package on an older browser for a need it may not have; coercing it to `false`
+   * would be the same lie in the other direction, so both stay distinguishable from a real answer.
+   */
+  const requiresImportMapsFor = (simId: string | null): boolean | null => {
+    if (!simId) return null;
+    const row = simRows.get(simId) as { requires_import_maps?: boolean | null } | undefined;
+    return typeof row?.requires_import_maps === 'boolean' ? row.requires_import_maps : null;
   };
 
   const packageClassFor = (simId: string | null): SimPackageClass | null => {
@@ -425,6 +505,13 @@ export async function buildPlayerConfig(
           // failure and is not 'legacy' — it means unproven, and the player treats unproven exactly
           // as it treats legacy: v2 path, no aggressive preparation.
           package_class:  packageClassFor(s.simulation_id),
+          // Does this package's bridge acknowledge an applied section? Null means never recorded,
+          // which the apply gate treats as UNKNOWN rather than as either answer.
+          bridge_ack_capable: bridgeAckCapableFor(s.simulation_id),
+          // Does this package need `<script type="importmap">` support to run at all? Null means
+          // never recorded, which the viewer's capability floor treats as "nothing known to be
+          // missing" — it never downgrades a package on a guess.
+          requires_import_maps: requiresImportMapsFor(s.simulation_id),
           sim_script:     s.sim_script     ?? null,
           simple_ui:      s.simple_ui      ?? false,
           auto_script:    s.auto_script    ?? true,
@@ -783,6 +870,9 @@ export async function buildPlayerConfig(
     sim_scheduler_mode: simRuntimeFlags.schedulerMode,
     sim_adaptive_quality: simRuntimeFlags.adaptiveQuality,
     sim_boundary_sentinel: simRuntimeFlags.boundarySentinel,
+    // The frame-valid transition coordinator (migration 054, audit P0.1). OFF is byte-for-byte
+    // today's simulation→video exit; the server value is authoritative and there is no URL override.
+    sim_transition_coordinator: simRuntimeFlags.transitionCoordinator,
     // Per-package preparation budgets from each package's own publish-time canary. Emitted as a map
     // rather than per section because a package's cost is a property of its BYTES, not of where it
     // happens to appear on a timeline — and one package commonly appears in many sections.

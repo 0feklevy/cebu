@@ -31,6 +31,12 @@ import { logger } from '../../lib/logger.js';
 import type { StorageService } from '../storage/StorageService.js';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import { RevisionService } from './RevisionService.js';
+import {
+  BRIDGE_CAPABILITIES_KEY,
+  detectBridgeCapabilities,
+  detectEntryCapabilities,
+  type BridgeCapabilities,
+} from 'shared/sim/bridgeCapability';
 import { deriveEntryRelPath, getSimulationContentType } from './SimulationService.js';
 import {
   SIM_MANIFEST_VERSION,
@@ -39,7 +45,7 @@ import {
   type SimManifest,
   type SimManifestFile,
 } from 'shared/sim/simManifest';
-import { revisionIdFromKey, PACKAGE_SUBDIR } from 'shared/sim/simRevision';
+import { revisionIdFromKey, isSystemOwnedKey, PACKAGE_SUBDIR } from 'shared/sim/simRevision';
 
 export interface MigrationResult {
   simulationId: string;
@@ -91,6 +97,59 @@ export function roleForLegacyPath(relPath: string, entryRelPath: string): SimFil
  */
 export function revisionPathForLegacy(relPath: string, _role: SimFileRole): string {
   return `${PACKAGE_SUBDIR}/${relPath}`;
+}
+
+/** One legacy object, classified and mapped to where it lands inside a revision. */
+export interface LegacyCopyPlanItem {
+  /** The legacy storage key the bytes are read from. */
+  key: string;
+  /** Normalized prefix-relative path of the legacy object. */
+  rel: string;
+  role: SimFileRole;
+  /** Manifest path inside the revision (`package/<rel>` — layout preserved). */
+  revisionPath: string;
+}
+
+/**
+ * Plan the FULL-PACKAGE copy of a legacy mutable prefix into a revision.
+ *
+ * Extracted from `publishLegacyAsRevision` so the LIVE generation path (migration-on-write in
+ * `SimulationService.uploadSectionBridge`) copies a legacy package with EXACTLY the same
+ * classification and layout rules as the operator migration — two copies of this logic would agree
+ * until one changed, and then a live-published package would differ structurally from a migrated
+ * one for no reason anyone chose.
+ *
+ * Pure over `allKeys` rather than listing storage itself: the live path may be running on a
+ * storage token without ListBucket, where the caller's best available key set comes from the
+ * entry-HTML reference probe — the plan must work over whatever keys the caller could actually see.
+ *
+ * Two exclusions, both deliberate:
+ *   - keys inside ANY revision (`revisionIdFromKey`) — a revision must never be re-copied into a
+ *     revision; and
+ *   - system-owned subtrees (`isSystemOwnedKey`: `revisions/`, `posters/`) — captured posters are
+ *     revision-scoped evidence, not customer package content, and republishing them as `package/`
+ *     assets would bloat every future copy of the package forever.
+ */
+export function planLegacyCopy(opts: {
+  allKeys: string[];
+  prefix: string;
+  entryRelPath: string;
+}): { planned: LegacyCopyPlanItem[]; entry: LegacyCopyPlanItem | null } {
+  const prefix = opts.prefix.replace(/\/+$/, '');
+  const planned = opts.allKeys
+    .filter((k) => k.startsWith(`${prefix}/`))
+    .filter((k) => revisionIdFromKey(k) === null && !isSystemOwnedKey(k, prefix))
+    .map((key) => {
+      const rel = key.slice(prefix.length + 1);
+      const norm = normalizeManifestPath(rel);
+      return norm ? { key, rel: norm } : null;
+    })
+    .filter((x): x is { key: string; rel: string } => x !== null)
+    .map(({ key, rel }) => {
+      const role = roleForLegacyPath(rel, opts.entryRelPath);
+      return { key, rel, role, revisionPath: revisionPathForLegacy(rel, role) };
+    });
+  return { planned, entry: planned.find((p) => p.role === 'entry') ?? null };
 }
 
 export class RevisionMigration {
@@ -145,24 +204,12 @@ export class RevisionMigration {
     }
 
     const allKeys = await this.storage.listObjects(prefix);
-    // Never re-copy a revision into a revision. `listObjects` on the simulation prefix returns
-    // everything beneath it, which after the first migration includes every revision's own files.
-    const legacyKeys = allKeys.filter((k) => revisionIdFromKey(k) === null);
-    if (legacyKeys.length === 0) return { ...base, skipped: 'no-files' };
+    // `planLegacyCopy` excludes every key inside a revision (a revision must never be re-copied
+    // into a revision — after the first migration the listing includes every revision's own files)
+    // and the system-owned subtrees (captured posters are not customer package content).
+    const { planned, entry } = planLegacyCopy({ allKeys, prefix, entryRelPath });
+    if (planned.length === 0) return { ...base, skipped: 'no-files' };
 
-    const planned = legacyKeys
-      .map((key) => {
-        const rel = key.slice(prefix.length + 1);
-        const norm = normalizeManifestPath(rel);
-        return norm ? { key, rel: norm } : null;
-      })
-      .filter((x): x is { key: string; rel: string } => x !== null)
-      .map(({ key, rel }) => {
-        const role = roleForLegacyPath(rel, entryRelPath);
-        return { key, rel, role, revisionPath: revisionPathForLegacy(rel, role) };
-      });
-
-    const entry = planned.find((p) => p.role === 'entry');
     if (!entry) {
       return { ...base, skipped: 'no-entry-path', error: `entry ${entryRelPath} not present under ${prefix}` };
     }
@@ -171,10 +218,56 @@ export class RevisionMigration {
       return { ...base, filesCopied: planned.length, entryPath: entry.revisionPath };
     }
 
+    // CLASSIFY THE PACKAGE WHILE WE HAVE ITS BYTES (P0.5 bridge ack, P0.8 import maps).
+    //
+    // The apply gate holds a painted document until the requested section acknowledges, and it can
+    // only skip that hold for a package RECORDED as unable to acknowledge. A revision published
+    // without that record reads as UNKNOWN, which is the cautious answer — a bounded cover instead
+    // of a possibly-wrong reveal — but for a legacy package that genuinely never acks, the cover is
+    // the one it will show on every entry, forever, until someone republishes it.
+    //
+    // This migration is copying the very bytes that answer the question, so it answers it. Reading
+    // bridge.js once more here is a rounding error against a migration that reads every file in the
+    // package, and it converts most of the unknown population at the moment it is already being
+    // rewritten. A package with no bridge at all records nothing and stays honestly unknown.
+    const bridgeItem = planned.find((p) => p.role === 'runtime' && /(^|\/)bridge\.js$/i.test(p.rel));
+    let capabilities: Partial<BridgeCapabilities> | undefined;
+    if (bridgeItem) {
+      try {
+        capabilities = detectBridgeCapabilities((await this.storage.readObject(bridgeItem.key)).toString('utf-8'));
+      } catch (err) {
+        // Unreadable here means unreadable in the copy loop below, which will fail the migration
+        // properly. Recording nothing keeps the answer UNKNOWN rather than guessing `false`.
+        logger.warn({ err, key: bridgeItem.key }, 'revision migration: bridge unreadable for capability detection');
+      }
+    }
+
+    // THE SAME ARGUMENT, ASKED OF THE ENTRY DOCUMENT (P0.8).
+    //
+    // A legacy package that resolves `three` through `<script type="importmap">` cannot paint at
+    // all on Safari/iOS 16.3 or older, and until the requirement is recorded the viewer has no way
+    // to know it should show the poster instead of a frame that will stay blank forever. The entry
+    // bytes are in hand here for the same reason the bridge's are, so the same question gets the
+    // same treatment — including its failure mode: an unreadable entry records NOTHING and stays
+    // honestly UNKNOWN, because a guessed `false` is the blank frame in a nicer costume.
+    //
+    // The two detections are INDEPENDENT. A package with no bridge still has an entry document, and
+    // its import-map answer is worth just as much on its own.
+    try {
+      const entryHtml = (await this.storage.readObject(entry.key)).toString('utf-8');
+      capabilities = { ...capabilities, ...detectEntryCapabilities(entryHtml) };
+    } catch (err) {
+      logger.warn({ err, key: entry.key }, 'revision migration: entry unreadable for capability detection');
+    }
+
     const draft = await this.revisions.createDraft({
       simulationId: sim.id,
       createdBy: opts.createdBy ?? 'revision-migration',
-      metadata: { migratedFromLegacyPrefix: prefix, legacyBridgeHash: sim.bridge_hash },
+      metadata: {
+        migratedFromLegacyPrefix: prefix,
+        legacyBridgeHash: sim.bridge_hash,
+        ...(capabilities ? { [BRIDGE_CAPABILITIES_KEY]: capabilities } : {}),
+      },
     });
     const uploading = await this.revisions.beginUpload(sim.id, draft.id);
 
@@ -254,6 +347,8 @@ export function buildLegacyManifest(opts: {
   revisionNumber: number;
   entryPath: string;
   files: SimManifestFile[];
+  /** Who produced this revision — defaults to the operator migration. */
+  createdBy?: string;
 }): SimManifest {
   return {
     manifestVersion: SIM_MANIFEST_VERSION,
@@ -275,6 +370,6 @@ export function buildLegacyManifest(opts: {
     generatedFrom: {},
     canary: { classification: null, ranAt: null, engine: null },
     createdAt: new Date().toISOString(),
-    createdBy: 'revision-migration',
+    createdBy: opts.createdBy ?? 'revision-migration',
   };
 }

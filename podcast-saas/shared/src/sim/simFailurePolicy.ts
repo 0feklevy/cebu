@@ -183,6 +183,23 @@ export const SIM_PREPARE_TIMEOUT_MS = 5_000;
 export const SIM_PRESENT_TIMEOUT_MS = 5_000;
 export const SIM_SUSPEND_TIMEOUT_MS = 2_000;
 export const SIM_DISPOSE_TIMEOUT_MS = 2_000;
+/**
+ * The cancellation window between the parent DECIDING to evict a document and DISPOSE_DOCUMENT
+ * going out (two-phase eviction).
+ *
+ * It exists because the two halves of eviction are irreversible at different moments. Everything
+ * before DISPOSE_DOCUMENT — marking the frame EVICTING, excluding it from admission, muting and
+ * freezing it, aborting its loaders, RELEASE_SECTION — is undoable: the document is intact and a
+ * user who scrubs back gets the frame they left. DISPOSE_DOCUMENT is not: the child releases its
+ * managed scope and closes its port, so "cancelling" after it would mean presenting a document
+ * that has thrown its resources away. This window is what makes the reversible half observable
+ * rather than theoretical.
+ *
+ * Sized just over the exit fade (SIM_EXIT_STOP_MS = 280): a viewer who changes their mind does so
+ * as the transition completes, and eviction is off the visible path, so a third of a second of
+ * extra residency costs nothing anyone can see.
+ */
+export const SIM_EVICT_GRACE_MS = 300;
 /** How long a lost WebGL context may stay lost before the activation is declared failed. */
 export const SIM_CONTEXT_RESTORE_TIMEOUT_MS = 6_000;
 

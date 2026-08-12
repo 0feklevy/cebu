@@ -12,6 +12,33 @@ import { logger } from '../../lib/logger.js';
 
 type FileSourceType = 'pdf' | 'audio' | 'image' | 'document';
 
+/**
+ * The leaf name a corpus object is stored under, given the name the browser sent.
+ *
+ * THE KEY IS INTERPOLATED INTO A URL, AND THE URL IS THE ONLY POINTER. `corpora.storage_url` has no
+ * shadow key column, so everything downstream — `CorpusBuilder.ingest`'s presign, a duplication's
+ * copy plan — has to recover the key by INVERTING that URL (`keyFromPublicUrl`). A filename
+ * carrying `?` or `#` makes that inversion ambiguous with URL grammar, and a `/` makes the "leaf"
+ * a directory. Both are removed HERE, at the one place that mints the key, rather than guessed at
+ * by every reader: a key that never needs escaping cannot be recovered wrongly.
+ *
+ * REMOVED, NOT ENCODED. Percent-encoding would be undone by nothing (the inverse deliberately does
+ * not decode), so it would only move the ambiguity into the key itself. The user-facing name is
+ * untouched — `corpora.source_url` and `metadata.filename` still carry exactly what was uploaded.
+ */
+export function corpusObjectName(filename: string): string {
+  const leaf = filename.split(/[\\/]/).pop() ?? '';
+  const cleaned = leaf
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .replace(/[?#]/g, '_')
+    // A leading dot makes `.`/`..` and hidden-file names; the segment must name a file.
+    .replace(/^\.+/, '')
+    .trim();
+  // Object stores accept long keys, but a 4 kB filename is a denial of service dressed as a name.
+  return cleaned.length > 0 ? cleaned.slice(0, 200) : 'upload';
+}
+
 function detectSourceType(filename: string, mime: string): FileSourceType {
   const ext = filename.split('.').pop()?.toLowerCase() ?? '';
   if (ext === 'pdf') return 'pdf';
@@ -44,7 +71,9 @@ export async function registerCorpusRoutes(app: FastifyInstance): Promise<void> 
         const mime = data.mimetype;
 
         const sourceType = detectSourceType(filename, mime);
-        const storagePath = `projects/${project.id}/corpus/${Date.now()}_${filename}`;
+        // The name the USER chose is kept on the row; the name the OBJECT gets is sanitised, because
+        // the key has to survive a round trip through a public URL. See `corpusObjectName`.
+        const storagePath = `projects/${project.id}/corpus/${Date.now()}_${corpusObjectName(filename)}`;
 
         let storageUrl: string;
         try {

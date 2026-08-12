@@ -14,31 +14,73 @@ function withNavProp(prop: string, value: unknown, run: () => void) {
   }
 }
 
+/** Nest withNavProp over several properties. jsdom reports the HOST's hardwareConcurrency, so
+ *  every case pins cores (and memory) explicitly — otherwise results vary by CI machine. */
+function withNavProps(props: Record<string, unknown>, run: () => void) {
+  const entries = Object.entries(props);
+  const step = (i: number): void =>
+    i === entries.length ? run() : withNavProp(entries[i][0], entries[i][1], () => step(i + 1));
+  step(0);
+}
+
 describe('canWarmUnpaused — when it is worth warming a hidden sim unpaused', () => {
+  const finePointer = () => vi.stubGlobal('matchMedia', () => ({ matches: false }) as MediaQueryList);
   afterEach(() => vi.unstubAllGlobals());
 
   it('returns a boolean and never throws in a jsdom environment', () => {
     expect(typeof canWarmUnpaused()).toBe('boolean');
   });
 
-  it('skips warming under Data Saver', () => {
-    withNavProp('connection', { saveData: true }, () => expect(canWarmUnpaused()).toBe(false));
+  it('skips warming under Data Saver, even on a strong device', () => {
+    withNavProps({ connection: { saveData: true }, deviceMemory: 8, hardwareConcurrency: 8 }, () =>
+      expect(canWarmUnpaused()).toBe(false));
   });
 
-  it('skips warming on low-memory devices (deviceMemory <= 4)', () => {
-    withNavProp('deviceMemory', 4, () => expect(canWarmUnpaused()).toBe(false));
+  it('skips warming on low-memory devices (deviceMemory <= 4), whatever the core count', () => {
+    withNavProps({ deviceMemory: 4, hardwareConcurrency: 16, connection: undefined }, () =>
+      expect(canWarmUnpaused()).toBe(false));
   });
 
-  it('skips warming on coarse-pointer (touch) devices', () => {
+  it('skips warming on few-core devices (hardwareConcurrency <= 4), whatever the memory', () => {
+    // The ≤4 threshold matches the lowend=1 hint shared/src/sim/simUrl.ts stamps into sim URLs.
+    finePointer();
+    withNavProps({ deviceMemory: 8, hardwareConcurrency: 4, connection: undefined }, () =>
+      expect(canWarmUnpaused()).toBe(false));
+  });
+
+  it('CLASSIFY regression: 4 cores + unknown memory + fine pointer is LOW-END (lowend=1 ⇒ tier below all)', () => {
+    // The audited contradiction: this exact device gets `lowend=1` in its sim URL
+    // (simUrl.ts: hardwareConcurrency <= 4) yet used to be classified strong here,
+    // warming every frame unpaused ('all'). The two classifiers must agree.
+    finePointer();
+    withNavProps({ deviceMemory: undefined, hardwareConcurrency: 4, connection: undefined }, () =>
+      expect(canWarmUnpaused()).toBe(false));
+  });
+
+  it('treats a device with NEITHER memory nor cores reported as unknown = conservative (skip)', () => {
+    finePointer();
+    withNavProps({ deviceMemory: undefined, hardwareConcurrency: undefined, connection: undefined }, () =>
+      expect(canWarmUnpaused()).toBe(false));
+  });
+
+  it('skips warming on coarse-pointer (touch) devices, even with strong reported hardware', () => {
     vi.stubGlobal('matchMedia', (q: string) => ({ matches: q.includes('coarse') }) as MediaQueryList);
-    expect(canWarmUnpaused()).toBe(false);
+    withNavProps({ deviceMemory: 8, hardwareConcurrency: 8, connection: undefined }, () =>
+      expect(canWarmUnpaused()).toBe(false));
   });
 
-  it('warms on a capable device (fine pointer, ample memory, no Data Saver)', () => {
-    vi.stubGlobal('matchMedia', () => ({ matches: false }) as MediaQueryList);
-    withNavProp('deviceMemory', 8, () =>
-      withNavProp('connection', undefined, () => expect(canWarmUnpaused()).toBe(true)),
-    );
+  it('warms on a capable device (fine pointer, ample memory and cores, no Data Saver)', () => {
+    finePointer();
+    withNavProps({ deviceMemory: 8, hardwareConcurrency: 8, connection: undefined }, () =>
+      expect(canWarmUnpaused()).toBe(true));
+  });
+
+  it('one strong signal is enough when the other is unknown (only BOTH-unknown is conservative)', () => {
+    finePointer();
+    withNavProps({ deviceMemory: 8, hardwareConcurrency: undefined, connection: undefined }, () =>
+      expect(canWarmUnpaused()).toBe(true));
+    withNavProps({ deviceMemory: undefined, hardwareConcurrency: 8, connection: undefined }, () =>
+      expect(canWarmUnpaused()).toBe(true));
   });
 });
 

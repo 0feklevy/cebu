@@ -1,11 +1,14 @@
-import { writeFile, mkdir, readFile, rm, readdir, stat } from 'fs/promises';
+import { writeFile, mkdir, readFile, rm, readdir, stat, copyFile } from 'fs/promises';
 import { createWriteStream } from 'fs';
-import { join } from 'path';
+import { join, dirname, sep } from 'path';
 import type { CompletedPart, StorageService, StoredObjectHead } from './StorageService.js';
 import { LOCAL_STORAGE_BASE_DIR } from './localStoragePaths.js';
+import { safeLocalPath } from './pathSafety.js';
+import { reroot } from './prefixScope.js';
 import { mediaKeyScope, mintMediaToken } from './mediaToken.js';
 import { logger } from '../../lib/logger.js';
 import { publicApiOrigin, isProd } from '../../config/publicOrigins.js';
+import { keyFromPublicUrlAgainst } from './publicUrlKeys.js';
 
 // Local disk storage — DEV ONLY. Files are written to a PERSISTENT directory
 // (see localStoragePaths.ts — NOT os.tmpdir, which is wiped on restart) and served
@@ -97,6 +100,41 @@ export class LocalStorageAdapter implements StorageService {
     await rm(join(BASE_DIR, prefix), { recursive: true, force: true });
   }
 
+  /**
+   * Copy one file, creating the destination directory.
+   *
+   * Unlike every other method here, copy takes TWO caller-supplied keys and WRITES to the second,
+   * so it is the one place where an escaping key would let a caller author a file anywhere on
+   * disk. `safeLocalPath` is therefore applied to both — the rest of this adapter predates it and
+   * relies on its callers, but a brand-new write primitive should not inherit that.
+   */
+  async copyObject(srcKey: string, destKey: string): Promise<void> {
+    const src = safeLocalPath(BASE_DIR, srcKey);
+    const dest = safeLocalPath(BASE_DIR, destKey);
+    if (!src || !dest) {
+      throw new Error('copyObject: key escapes the local storage root');
+    }
+    await mkdir(dirname(dest), { recursive: true });
+    await copyFile(src, dest);
+  }
+
+  async copyPrefix(srcPrefix: string, destPrefix: string): Promise<number> {
+    // listObjects already walks recursively and returns BASE_DIR-relative keys; reroot() then
+    // applies the shared "under the prefix" rule so this agrees with the cloud adapters even
+    // though the walk itself is directory-shaped.
+    const keys = await this.listObjects(srcPrefix);
+    let copied = 0;
+    for (const key of keys) {
+      // listObjects builds keys with the platform separator; storage keys are always '/'.
+      const posixKey = key.split(sep).join('/');
+      const dest = reroot(posixKey, srcPrefix, destPrefix);
+      if (dest === null) continue;
+      await this.copyObject(posixKey, dest);
+      copied += 1;
+    }
+    return copied;
+  }
+
   getPublicUrl(path: string): string {
     // HLS is served via /hls-public/* with a scoped media token in the PATH so
     // relative child-playlist/segment URLs inherit it (security-002); other
@@ -113,6 +151,16 @@ export class LocalStorageAdapter implements StorageService {
   getSimPublicUrl(path: string): string {
     // Simulation files served via the unauthenticated /sim-public/* route
     return `${serveBase()}/sim-public/${path}`;
+  }
+
+  /** The inverse of the three routes above. See `publicUrlKeys.ts`. */
+  keyFromPublicUrl(url: string | null | undefined): string | null {
+    const base = serveBase().replace(/\/+$/, '');
+    return keyFromPublicUrlAgainst(url, [
+      `${base}/local-storage`,
+      `${base}/hls-public`,
+      `${base}/sim-public`,
+    ]);
   }
 
   async objectExists(key: string): Promise<boolean> {

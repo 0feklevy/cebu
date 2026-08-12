@@ -13,6 +13,8 @@
  * of what already ships, not to introduce a second protocol alongside it.
  */
 
+import type { SimPolicyKind, SimPolicyRefusal } from 'shared/src/sim/simPolicy';
+
 // ── child → parent ────────────────────────────────────────────────────────────────────────
 
 /** The bridge booted and can accept startScript. Says NOTHING about what has been drawn. */
@@ -31,6 +33,12 @@ export const SCRIPT_MISSING = 'SCRIPT_MISSING' as const;
 export const SCRIPT_ERROR = 'SCRIPT_ERROR' as const;
 /** Automation was stopped in response to pauseScript. */
 export const AUTO_PAUSED = 'AUTO_PAUSED' as const;
+/**
+ * The outcome of a `uiPolicy` / `autoPolicy` request (audit P1.2). ONE message for both families
+ * and for both outcomes, because the interesting distinction is not "applied vs refused" — it is
+ * WHY a refusal happened, and a refusal that cannot say why is indistinguishable from a bug.
+ */
+export const POLICY_RESULT = 'POLICY_RESULT' as const;
 /** The user touched a control inside the simulation. */
 export const USER_INTERACTION = 'userInteraction' as const;
 
@@ -39,6 +47,16 @@ export const USER_INTERACTION = 'userInteraction' as const;
 export const START_SCRIPT = 'startScript' as const;
 export const STOP_SCRIPT = 'stopScript' as const;
 export const PAUSE_SCRIPT = 'pauseScript' as const;
+/**
+ * Change the section's chrome / automation on the LIVE activation, with no teardown and no re-run
+ * of the body (audit P1.2). Both carry the activation `token` the runtime already mints, so a
+ * policy for a superseded activation is refused rather than applied to whatever is on screen now.
+ *
+ * Only a bridge that ADVERTISED the matching kind in `SIM_READY.policy` may be sent these — see
+ * `SimInboundMessage.policy`. Assuming support would be a silent no-op on every stored package.
+ */
+export const UI_POLICY = 'uiPolicy' as const;
+export const AUTO_POLICY = 'autoPolicy' as const;
 export const SIM_PAUSE = 'simPause' as const;
 export const SIM_RESUME = 'simResume' as const;
 export const SIM_MUTE = 'simMute' as const;
@@ -65,12 +83,30 @@ export interface SimInboundMessage {
    */
   dispatch?: string;
   sections?: string[];
+  /**
+   * SIM_READY policy advertisement (audit P1.2): the policy families this bridge can apply without
+   * a restart. ABSENT on every package published before the handlers existed, and that absence is
+   * the answer — the runtime falls back to a full re-activation and says so.
+   */
+  policy?: SimPolicyKind[];
   script?: string;
   /** Echoed activation token — present only on acks from a v2.1+ bridge. */
   token?: number;
   message?: string;
   phase?: string;
   v?: number;
+  // ── POLICY_RESULT fields ──
+  kind?: SimPolicyKind;
+  applied?: boolean;
+  changed?: boolean;
+  reason?: SimPolicyRefusal;
+  requiresRestart?: boolean;
+  /** UI policy: false when the body exposes no re-apply hook, so only the mechanical hides moved. */
+  bodyHook?: boolean;
+  /** Automation policy: registered handles stopped / restarted / provably beyond recovery. */
+  stopped?: number;
+  restarted?: number;
+  unrestorable?: number;
 }
 
 /** Narrow an untrusted MessageEvent payload to the inbound shape. */
@@ -91,5 +127,26 @@ export const SIM_EXIT_STOP_MS = 280;
 /** Terminal bound on waiting for SCRIPT_APPLIED. Never a reveal-on-timer for a healthy bridge —
  *  only the escape hatch that keeps a wedged document from holding the screen forever. */
 export const SIM_APPLY_STALL_MS = 3_000;
+/**
+ * How long silence is inconclusive when we do not KNOW whether the bridge acknowledges at all.
+ *
+ * This is a different question from `SIM_APPLY_STALL_MS`, and conflating them cost the entire
+ * installed base three blank seconds. That bound is the slow-body allowance for a bridge we have
+ * already PROVEN acknowledges: we are waiting on a specific ack we know is coming, so waiting long
+ * is right. This bound answers "does this bridge acknowledge at all?" — and for that, silence stops
+ * being informative far sooner.
+ *
+ * Why this length is evidence and not a guess: the generated bridge posts SCRIPT_APPLIED from a
+ * `requestAnimationFrame` callback scheduled once the body has RETURNED (see the `_ack` closure in
+ * SimulationService's bridge template). The generation prompt's ~200 ms polling happens
+ * asynchronously AFTER that return, so it does not delay the ack. A bridge that acknowledges has
+ * therefore acknowledged within roughly one body-return plus one frame; this allows an order of
+ * magnitude more than that before concluding the bridge is silent.
+ *
+ * It only ever applies to the UNKNOWN case (`await-ack-bounded`). A package the record or an
+ * in-session ack proves capable keeps the full `SIM_APPLY_STALL_MS`, and its deadline still only
+ * covers — it never reveals.
+ */
+export const SIM_ACK_CAPABILITY_PROBE_MS = 600;
 /** Reveal ceiling for pre-gate packages that can never emit SIM_PAINTED. */
 export const SIM_LEGACY_REVEAL_MS = 800;

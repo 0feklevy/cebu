@@ -151,6 +151,29 @@ export interface ApiConfig {
   getToken: () => Promise<string | null>;
 }
 
+/** POST /projects/:id/duplicate — accepted, or joined to an already-running copy. */
+export interface StartedDuplication {
+  duplication_id: string;
+  status: ProjectDuplicationStatus;
+  /** True when this call attached to a duplication that was already in flight. */
+  already_running?: boolean;
+}
+
+export type ProjectDuplicationStatus = 'queued' | 'copying' | 'committing' | 'ready' | 'failed';
+
+/**
+ * Progress of one duplication. `target_project_id` is null until `status === 'ready'` — the copy's
+ * project row is created in a single commit at the end, so there is nothing to link to before then.
+ */
+export interface ProjectDuplication {
+  id: string;
+  status: ProjectDuplicationStatus;
+  target_project_id: string | null;
+  objects_total: number;
+  objects_copied: number;
+  error: string | null;
+}
+
 export interface Project {
   id: string;
   org_id: string;
@@ -311,7 +334,59 @@ export interface TimelineSection {
   label: string | null;
   notes: string | null;
   sort_order: number | null;
+  /**
+   * The STORED url — what this section last published. Written only by the generation that
+   * published it, and the only value the client ever writes back (undo/redo restore, duplicate).
+   */
   simulation_url: string | null;
+  /**
+   * ── The three ADDITIVE, DERIVED fields ────────────────────────────────────────────────────
+   *
+   * All three are projections of the simulation's LIVE bytes, not properties of the section row,
+   * and all three now ride on EVERY section-shaped response: the two bootstrap reads
+   * (GET /sections, GET /editor-state), the two writes (POST /sections, PATCH /sections/:sid) and
+   * the two sim-script generation responses. Server side they are one type —
+   * `ServedSimFields` in backend-api/src/services/simulation/simulationUrlResolver.ts — so a
+   * fourth cannot be added to one producer and forgotten by another.
+   *
+   * They stay OPTIONAL here on purpose. Optional is the honest description of a field a client may
+   * legitimately not have: a section constructed locally, a response from an older backend across
+   * a deploy, a fixture. Every consumer therefore reads them three-state — `served ?? stored` for
+   * the url, `?? null` (never `?? false`) for the two capabilities — and UNKNOWN keeps meaning
+   * UNKNOWN instead of collapsing into an answer nothing measured.
+   *
+   * NEVER PERSIST ANY OF THEM. The editor copies `simulation_url` verbatim into PATCH/POST bodies
+   * (undo/redo restore, duplicate section); writing a resolved url back would record a revision id
+   * captured at read time into a column whose meaning is "what THIS section published".
+   */
+  /**
+   * The url whose bytes are LIVE right now: `simulation_url` with the simulation's active
+   * revision pointer resolved into it (audit §9.6). Render paths read
+   * `simulation_served_url ?? simulation_url`.
+   */
+  simulation_served_url?: string | null;
+  /**
+   * Does the LIVE revision's bridge post SCRIPT_APPLIED (migration 055, audit P0.5)?
+   *
+   * Three states, and `null` is one of them: UNKNOWN means no record exists — a package published
+   * before the column, or a row read without it — and the apply gate treats unknown as its own
+   * bounded case rather than as either answer.
+   */
+  bridge_ack_capable?: boolean | null;
+  /**
+   * Does the LIVE revision's ENTRY document need `<script type="importmap">` to run at all
+   * (migration 057, audit P0.8)?
+   *
+   * `true` on a browser without import-map support means the package can never paint, so the
+   * surface shows the reason instead of a spinner or a blank frame (`lib/sim/browserFloor.ts`).
+   * `null` is UNKNOWN and is NEVER read as "requires" — guessing would poster every legacy package
+   * on an older browser for a need it may not have.
+   *
+   * Undeclared until now while the other two were declared, which is precisely how the write
+   * endpoints came to drop it with nothing failing to compile: `evaluateFloor` reads the field
+   * structurally, so a response missing it type-checks perfectly and simply answers "runnable".
+   */
+  requires_import_maps?: boolean | null;
   simulation_id:  string | null;
   sim_script:     string | null;
   sim_prompt:     string | null;
@@ -735,6 +810,23 @@ export class ClientV1Api {
 
   renameProject(projectId: string, title: string): Promise<Project> {
     return this.request(`/api/v1/projects/${projectId}`, { method: 'PATCH', body: { title } });
+  }
+
+  /**
+   * Start an independent copy of a project — media, timeline, branching, simulations and
+   * authoring inputs.
+   *
+   * Returns a DUPLICATION id, not a project id. The copy's project row is written only once every
+   * byte has landed, in a single transaction, so that a failed copy leaves nothing behind; until
+   * then there is no project to hand back. Poll `getProjectDuplication` and navigate when
+   * `target_project_id` appears.
+   */
+  duplicateProject(projectId: string): Promise<StartedDuplication> {
+    return this.request(`/api/v1/projects/${projectId}/duplicate`, { method: 'POST' });
+  }
+
+  getProjectDuplication(projectId: string, duplicationId: string): Promise<ProjectDuplication> {
+    return this.request(`/api/v1/projects/${projectId}/duplications/${duplicationId}`);
   }
 
   // Set who can view this project by id: private (owner only), unlisted (owner or a valid

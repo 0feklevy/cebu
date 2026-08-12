@@ -301,6 +301,7 @@ export const admin_settings = pgTable('admin_settings', {
   sim_scheduler_mode: text('sim_scheduler_mode').default('off').notNull(),
   sim_adaptive_quality: boolean('sim_adaptive_quality').default(false).notNull(),
   sim_boundary_sentinel: boolean('sim_boundary_sentinel').default(false).notNull(),
+  sim_transition_coordinator: boolean('sim_transition_coordinator').default(false).notNull(),
   updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
@@ -440,6 +441,38 @@ export const video_files = pgTable('video_files', {
   created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * HLS run trees retired by a re-transcode, pending grace-period deletion (migration 053).
+ *
+ * A re-transcode flips the DB pointer to a fresh versioned tree; the OLD tree is recorded here
+ * instead of being deleted under viewers mid-session, and the hourly sweep
+ * (sweepRetiredHlsRuns) deletes the storage prefix only once `retire_after` has passed.
+ *
+ * No FK on video_file_id: entity deletion purges the whole hls/{id}/ storage prefix itself and
+ * drops these rows explicitly (deleteHlsRetirementRowsForVideo), so a FK would only turn that
+ * ordinary cleanup into a constraint hazard.
+ */
+export const hls_retired_runs = pgTable(
+  'hls_retired_runs',
+  {
+    id:            uuid('id').primaryKey().defaultRandom(),
+    video_file_id: uuid('video_file_id').notNull(),
+    /** The retired run tree's storage prefix, e.g. `hls/{videoFileId}/{runId}`. */
+    prefix:        text('prefix').notNull().unique(),
+    retired_at:    timestamp('retired_at', { withTimezone: true }).notNull().defaultNow(),
+    retire_after:  timestamp('retire_after', { withTimezone: true }).notNull(),
+    deleted_at:    timestamp('deleted_at', { withTimezone: true }),
+  },
+  (t) => ({
+    idx_video: index('idx_hls_retired_runs_video').on(t.video_file_id),
+    // idx_hls_retired_runs_due — the partial index (WHERE deleted_at IS NULL) the sweep uses —
+    // is declared in 053 only: Drizzle's index builder has no WHERE clause (see the
+    // sim_revisions note below), and declaring it here without one would create a total index.
+  }),
+);
+
+export type HlsRetiredRunRow = typeof hls_retired_runs.$inferSelect;
+
 export const simulations = pgTable('simulations', {
   id:               uuid('id').primaryKey().defaultRandom(),
   project_id:       uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
@@ -481,6 +514,20 @@ export const simulations = pgTable('simulations', {
   // Derived from this package's canary report at publication (migration 051). A scalar, so the
   // hottest read path never pulls canary_report JSONB to learn one number.
   prepare_budget_ms:         integer('prepare_budget_ms'),
+  // Does the ACTIVE revision's bridge acknowledge applied sections with SCRIPT_APPLIED?
+  // (migration 055). A three-state projection of `sim_revisions.metadata.bridgeCapabilities`,
+  // written in the same pointer-flip statement as package_class for the same reason: the answer
+  // describes BYTES, so it must travel with the pointer or a rollback would leave it describing a
+  // revision that is no longer served. NULL means UNKNOWN — every package published before 055 —
+  // and the viewer's apply gate handles unknown as its own case rather than guessing either way.
+  bridge_ack_capable:        boolean('bridge_ack_capable'),
+  // Does the ACTIVE revision's ENTRY DOCUMENT carry `<script type="importmap">`? (migration 057,
+  // audit P0.8.) Same shape and same statement as `bridge_ack_capable` for the same reason: it is a
+  // property of the published bytes, projected from `sim_revisions.metadata.bridgeCapabilities` at
+  // the pointer flip, so a rollback describes the revision that is actually served. NULL means
+  // UNKNOWN, and unknown is never treated as "requires" — a browser without import-map support
+  // degrades exactly the packages recorded as needing them and nothing else.
+  requires_import_maps:      boolean('requires_import_maps'),
   created_at:       timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -1323,3 +1370,40 @@ export type PodcastClip = typeof podcast_clips.$inferSelect;
 export type NewPodcastClip = typeof podcast_clips.$inferInsert;
 export type PodcastMix = typeof podcast_mixes.$inferSelect;
 export type PodcastMixSnapshot = typeof podcast_mix_snapshots.$inferSelect;
+
+/**
+ * One "duplicate this project" run (migration 056).
+ *
+ * The row tracks the WORK, not the result: `target_project_id` stays NULL until the whole copied
+ * row graph has been committed in a single transaction, so a duplication that dies half-way leaves
+ * orphan storage objects (reapable) and no project at all. See migration 056 for why that ordering
+ * is the requirement rather than a preference.
+ */
+export const project_duplications = pgTable(
+  'project_duplications',
+  {
+    id:                uuid('id').primaryKey().defaultRandom(),
+    source_project_id: uuid('source_project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+    target_project_id: uuid('target_project_id').references(() => projects.id, { onDelete: 'set null' }),
+    requested_by:      uuid('requested_by').references(() => users.id, { onDelete: 'set null' }),
+    status:            text('status').notNull().default('queued'), // queued|copying|committing|ready|failed
+    objects_total:     integer('objects_total').notNull().default(0),
+    objects_copied:    integer('objects_copied').notNull().default(0),
+    bytes_total:       bigint('bytes_total', { mode: 'number' }).notNull().default(0),
+    plan:              jsonb('plan'),
+    error:             text('error'),
+    created_at:        timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updated_at:        timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    finished_at:       timestamp('finished_at', { withTimezone: true }),
+  },
+  (t) => ({
+    idxSource: index('idx_project_duplications_source').on(t.source_project_id, t.created_at),
+    // uniq_project_duplications_inflight — the partial unique index that makes a double-click
+    // impossible — is declared in 056 only, for the same reason as the sim_revisions note above:
+    // Drizzle's index builder has no WHERE clause, and a TOTAL unique index here would forbid a
+    // project from ever being duplicated twice.
+  }),
+);
+
+export type ProjectDuplication = typeof project_duplications.$inferSelect;
+export type NewProjectDuplication = typeof project_duplications.$inferInsert;

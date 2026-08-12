@@ -36,6 +36,8 @@ import {
   INIT_DOCUMENT,
   PARENT_INBOUND_TYPES,
   PAUSE_AUTOMATION,
+  POLICY_APPLIED,
+  POLICY_REFUSED,
   PREPARE_SECTION,
   PRESENT_SECTION,
   QUALITY_APPLIED,
@@ -47,7 +49,9 @@ import {
   SECTION_PRESENTED,
   SECTION_RELEASED,
   SET_AUDIBLE,
+  SET_AUTOMATION_POLICY,
   SET_QUALITY,
+  SET_UI_POLICY,
   SIM_BOOTSTRAP_ACCEPT_KIND,
   SIM_BOOTSTRAP_KIND,
   SIM_BOOTSTRAP_TIMEOUT_MS,
@@ -358,6 +362,9 @@ describe('validateEnvelope — direction allow-lists', () => {
     expect([...PARENT_INBOUND_TYPES].sort()).toEqual([
       AUTOMATION_PAUSED, AUTOMATION_RESUMED, CONTEXT_LOST, CONTEXT_RESTORED, DISPOSED,
       DOCUMENT_ERROR, DOCUMENT_READY, DOCUMENT_RESUMED, DOCUMENT_SUSPENDED, DOMAIN_EVENT,
+      // P1.2: the two answers a package gives to a policy request. POLICY_REFUSED is the one that
+      // makes the restart fallback observable rather than something inferred from a screenshot.
+      POLICY_APPLIED, POLICY_REFUSED,
       QUALITY_APPLIED, SECTION_APPLIED, SECTION_ERROR, SECTION_PRESENTED, SECTION_RELEASED,
     ].sort());
   });
@@ -366,6 +373,9 @@ describe('validateEnvelope — direction allow-lists', () => {
     expect([...CHILD_INBOUND_TYPES].sort()).toEqual([
       ACTIVATE_SECTION, DISPOSE_DOCUMENT, INIT_DOCUMENT, PAUSE_AUTOMATION, PREPARE_SECTION,
       PRESENT_SECTION, RELEASE_SECTION, RESUME_AUTOMATION, RESUME_DOCUMENT, SET_AUDIBLE,
+      // P1.2: the two activation-scoped commands that deliberately leave the activation where they
+      // found it — chrome and automation change, the body is never re-run.
+      SET_AUTOMATION_POLICY, SET_UI_POLICY,
       SET_QUALITY, SUSPEND_DOCUMENT,
     ].sort());
   });

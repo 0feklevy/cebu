@@ -37,9 +37,50 @@ describe('uploadWithFallback (cloud-only)', () => {
     const url = await uploadWithFallback('key.mp3', Buffer.from('x'), 'audio/mpeg');
     expect(url).toBe('https://cdn.example/media/key.mp3');
     expect(cloudUpload).toHaveBeenCalledTimes(1);
-    expect(cloudUpload).toHaveBeenCalledWith('key.mp3', expect.any(Buffer), 'audio/mpeg');
+    // No cacheControl given → forwarded as undefined (adapters treat it as "no metadata").
+    expect(cloudUpload).toHaveBeenCalledWith('key.mp3', expect.any(Buffer), 'audio/mpeg', undefined);
     expect(localCtor).not.toHaveBeenCalled();
     expect(localUpload).not.toHaveBeenCalled();
+  });
+
+  it('forwards cacheControl to the adapter — the HLS immutable value arrives verbatim', async () => {
+    cloudUpload.mockResolvedValue('https://cdn.example/media/hls/vf/run/360p/seg_000.ts');
+    await uploadWithFallback(
+      'hls/vf/run/360p/seg_000.ts',
+      Buffer.from('x'),
+      'video/mp2t',
+      'public, max-age=31536000, immutable',
+    );
+    expect(cloudUpload).toHaveBeenCalledWith(
+      'hls/vf/run/360p/seg_000.ts',
+      expect.any(Buffer),
+      'video/mp2t',
+      'public, max-age=31536000, immutable',
+    );
+  });
+
+  it('keeps forwarding cacheControl on the retry after a transient failure', async () => {
+    vi.useFakeTimers();
+    cloudUpload
+      .mockRejectedValueOnce(new Error('ECONNRESET'))
+      .mockResolvedValueOnce('https://cdn.example/media/hls/vf/run/master.m3u8');
+
+    const promise = uploadWithFallback(
+      'hls/vf/run/master.m3u8',
+      Buffer.from('#EXTM3U'),
+      'application/vnd.apple.mpegurl',
+      'public, max-age=31536000, immutable',
+    );
+    await vi.runAllTimersAsync();
+    await promise;
+
+    expect(cloudUpload).toHaveBeenCalledTimes(2);
+    expect(cloudUpload).toHaveBeenLastCalledWith(
+      'hls/vf/run/master.m3u8',
+      expect.any(Buffer),
+      'application/vnd.apple.mpegurl',
+      'public, max-age=31536000, immutable',
+    );
   });
 
   it('retries a transient failure and then succeeds (still cloud, no local fallback)', async () => {

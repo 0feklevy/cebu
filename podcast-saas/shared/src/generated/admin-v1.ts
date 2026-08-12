@@ -39,6 +39,16 @@ export interface AdminSettings {
   // Podcast Studio writers'-room model + effort (migration 044).
   podcast_model: string;
   podcast_effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  // Simulation runtime switches (migrations 048, 051, 052, 054). The admin PATCH has accepted
+  // these since they landed; declaring them here is what makes them reachable from the console,
+  // so an incident does not require a direct DB write to reach a kill switch.
+  sim_pool_mode: 'single' | 'adaptive';
+  sim_scheduler_mode: 'off' | 'predictive';
+  sim_adaptive_quality: boolean;
+  sim_boundary_sentinel: boolean;
+  sim_transition_coordinator: boolean;
+  rum_sample_rate: number;
+  rum_retention_days: number;
   updated_at: string;
 }
 

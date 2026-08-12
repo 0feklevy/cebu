@@ -8,7 +8,9 @@
 
 import { createHmac, timingSafeEqual, scryptSync } from 'crypto';
 
-const DEFAULT_TTL_SEC = 7 * 24 * 60 * 60; // 7 days — media URLs are re-minted per config fetch
+const DAY_SEC = 24 * 60 * 60;
+// Minimum validity of a default mint, in days. Media URLs are re-minted per config fetch.
+const MIN_TTL_DAYS = 7;
 
 function getMediaSecret(): Buffer {
   const hex = process.env.ENCRYPTION_KEY;
@@ -30,9 +32,26 @@ function sign(scope: string, exp: number): string {
   return createHmac('sha256', getMediaSecret()).update(`${scope}.${exp}`).digest('hex').slice(0, 32);
 }
 
-/** Mint a URL-safe token authorizing `scope` until now+ttl. */
-export function mintMediaToken(scope: string, ttlSec = DEFAULT_TTL_SEC): string {
-  const exp = Math.floor(Date.now() / 1000) + ttlSec;
+/**
+ * Mint a URL-safe token authorizing `scope`.
+ *
+ * DEFAULT MINTS ARE DAY-QUANTIZED FOR CACHE-KEY STABILITY. The token is embedded in every
+ * media URL, and the player config re-mints on every fetch — with a second-granularity
+ * `exp = now + 7d`, every fetch produced a DIFFERENT URL for the same immutable bytes, so
+ * browser/CDN caches missed on 100% of re-fetches. Quantizing `exp` to a UTC-day boundary
+ * (`(floor(now/86400) + 8) * 86400`) makes every default mint within one UTC day for one
+ * scope string-identical, while validity always stays in [7d, 8d]. Verification is
+ * unchanged — it only checks `exp > now` plus the HMAC — so fine-grained tokens minted
+ * before this change keep verifying until they expire.
+ *
+ * An explicit `ttlSec` keeps the exact fine-grained behaviour (`exp = now + ttlSec`);
+ * tests use it to fabricate expired/short-lived tokens.
+ */
+export function mintMediaToken(scope: string, ttlSec?: number): string {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const exp = ttlSec === undefined
+    ? (Math.floor(nowSec / DAY_SEC) + MIN_TTL_DAYS + 1) * DAY_SEC
+    : nowSec + ttlSec;
   return `${exp}-${sign(scope, exp)}`;
 }
 

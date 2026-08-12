@@ -5,11 +5,29 @@ import type { StorageService } from '../storage/StorageService.js';
 import { LLMService } from '../llm/LLMService.js';
 import { db } from '../../db/index.js';
 import { simulations, system_prompts } from '../../db/schema.js';
-import { and, eq, isNull, ne, or } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { logger } from '../../lib/logger.js';
 import { buildUiControlsPromptBlock, type SimUiSelection } from './SimUiControls.js';
 import { buildChildRuntimeSource } from './simRuntimeChild.js';
-import { isSystemOwnedKey, isSystemOwnedRelPath } from 'shared/sim/simRevision';
+import {
+  isSystemOwnedKey, isSystemOwnedRelPath, revisionIdFromKey,
+  revisionFileKey, revisionManifestKey, PACKAGE_SUBDIR,
+} from 'shared/sim/simRevision';
+// The staged-immutable publication machinery (Priority 7). NOT circular: RevisionService does not
+// import this module. RevisionMigration DOES (deriveEntryRelPath/getSimulationContentType), so its
+// helpers are pulled in lazily inside uploadSectionBridge — same pattern as GuidanceService.
+import { RevisionService, type RevisionDbTx } from './RevisionService.js';
+import {
+  BRIDGE_CAPABILITIES_KEY,
+  detectBridgeCapabilities,
+  detectEntryCapabilities,
+  type BridgeCapabilities,
+} from 'shared/sim/bridgeCapability';
+import type {
+  SimManifest as SimPackageManifest,
+  SimManifestFile,
+  SimFileRole,
+} from 'shared/sim/simManifest';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -90,6 +108,30 @@ export interface ValidationResult {
   fatal:    string[];  // Block upload, trigger auto-retry
   warnings: string[];  // Trigger retry if present; save to metadata
   weak:     string[];  // Save to metadata, no retry
+}
+
+/**
+ * In-transaction persistence hook for section-bridge publication.
+ *
+ * Runs INSIDE the revision-activation transaction, after the pointer flip — the caller (the
+ * sections controller) uses it to update `timeline_sections` in the SAME transaction, so the
+ * section row and the activation commit or roll back together. A throw here aborts the whole
+ * activation. It is never invoked when the activation loses a compare-and-set.
+ */
+export type SectionPersistHook = (
+  tx: RevisionDbTx,
+  pub: { sectionUrl: string; bridgeHash: string },
+) => Promise<void>;
+
+/** The abort error every generation path throws — `classifySimulationError` maps it to 'aborted'. */
+function generationAbortError(): Error {
+  const err = new Error('generation cancelled');
+  err.name = 'AbortError';
+  return err;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw generationAbortError();
 }
 
 // ── Storage content types ─────────────────────────────────────────────────────
@@ -1240,6 +1282,86 @@ export function parseSectionEntries(bridgeJs: string): Map<string, string> {
   return entries;
 }
 
+/**
+ * The marker pair `buildSectionEntry` writes, with the id captured separately from the block.
+ *
+ * The SAME grammar `parseSectionEntries` reads, deliberately kept adjacent to it: a rewriter that
+ * knew a different grammar than the parser would rename an entry the parser cannot find, or leave
+ * one it can — and either way the dispatch map and the markers would describe different sections.
+ */
+const SECTION_ENTRY_RE =
+  /(\/\*\s*@@SIM_BRIDGE:)([A-Za-z0-9_-]+)(@@\s*\*\/)([\s\S]*?)(\/\*\s*@@\/SIM_BRIDGE:)\2(@@\s*\*\/)/g;
+
+/**
+ * The `'<id>':` that opens a section entry's block.
+ *
+ * The id needs no escaping — `SECTION_ENTRY_RE` only ever captures `[A-Za-z0-9_-]+`, none of which
+ * is a regex metacharacter outside a character class — but it is asserted rather than assumed.
+ */
+const sectionKeyRe = (id: string): RegExp => {
+  if (!SAFE_SECTION_ID_RE.test(id)) throw new Error(`Unsafe sectionId: "${id}"`);
+  return new RegExp(`^(\\s*)(['"])${id}\\2(\\s*:)`);
+};
+
+export interface BridgeSectionRewrite {
+  /** The rewritten source. Byte-identical to the input when nothing was renamed. */
+  source: string;
+  /** How many `@@SIM_BRIDGE@@` entries the bridge carries at all. 0 = not a combined bridge. */
+  sections: number;
+  /** oldId → newId, for the entries that were actually renamed. */
+  renamed: Map<string, string>;
+}
+
+/**
+ * Rewrite the section ids a combined `bridge.js` dispatches on, in place, byte for byte otherwise.
+ *
+ * WHY THIS EXISTS: A DUPLICATED PROJECT'S SIMULATIONS RUN NOTHING WITHOUT IT.
+ * `__SECTIONS__` is keyed by TIMELINE SECTION ID, and `startScript(name)` resolves `name` against
+ * exactly that map (`own.call(SCRIPTS, name) ? … : _sectionBody(name)`), posting `SCRIPT_MISSING`
+ * and running nothing when it misses. A project duplication mints a fresh id for every section and
+ * remaps `?section=` accordingly — so a copy whose bridge bytes still carry the ORIGINAL's ids asks
+ * for a section the bridge has never heard of, in every simulation section, in both the viewer and
+ * the editor.
+ *
+ * SURGICAL, NOT A RE-WRAP. `wrapBridgeCombined(parseSectionEntries(js))` would also produce a
+ * correctly-keyed bridge, but from TODAY's template — so a package published against an older
+ * template would silently gain (or lose) runtime behaviour as a side effect of being copied. Here
+ * only the three tokens that spell the id move: the opening marker, the closing marker, and the
+ * object key. Everything else, including every byte of every body, is preserved.
+ *
+ * INCONSISTENCY IS FATAL, ABSENCE IS NOT. A bridge with no markers at all is a legacy or
+ * hand-written package (`sections: 0`); the caller leaves its bytes alone. A bridge whose marker is
+ * present but whose object key is not where the marker says it is would produce a document where
+ * the parser and the runtime disagree about which sections exist, so it throws instead.
+ */
+export function rewriteBridgeSectionIds(
+  bridgeJs: string,
+  rename: ReadonlyMap<string, string>,
+): BridgeSectionRewrite {
+  let sections = 0;
+  const renamed = new Map<string, string>();
+  const source = bridgeJs.replace(
+    SECTION_ENTRY_RE,
+    (whole, open: string, id: string, openEnd: string, block: string, close: string, closeEnd: string) => {
+      sections += 1;
+      const next = rename.get(id);
+      if (next === undefined || next === id) return whole;
+      if (!SAFE_SECTION_ID_RE.test(next)) throw new Error(`Unsafe sectionId: "${next}"`);
+      const keyRe = sectionKeyRe(id);
+      if (!keyRe.test(block)) {
+        throw new Error(
+          `bridge.js: section "${id}" is marked but its dispatch key is not at the head of its block — refusing a half-renamed bridge`,
+        );
+      }
+      renamed.set(id, next);
+      const newBlock = block.replace(keyRe, (_m, lead: string, quote: string, colon: string) =>
+        `${lead}${quote}${next}${quote}${colon}`);
+      return `${open}${next}${openEnd}${newBlock}${close}${next}${closeEnd}`;
+    },
+  );
+  return { source, sections, renamed };
+}
+
 /** Build the full combined bridge.js IIFE from a sectionId→mainBody map. */
 export interface WrapBridgeOptions {
   /**
@@ -1289,7 +1411,10 @@ export function wrapBridgeCombined(entries: Map<string, string>, opts?: WrapBrid
     '  // frame to legacy (per-URL navigation) whenever the initial handshake was missed.',
     '  function _readyMsg() {',
     "    var ids = []; for (var k in __SECTIONS__) { if (Object.prototype.hasOwnProperty.call(__SECTIONS__, k)) ids.push(k); }",
-    "    return { type: 'SIM_READY', dispatch: 'dynamic', sections: ids };",
+    // 'policy' advertises the P1.2 hot-swap handlers below. A package published BEFORE them simply
+    // does not send the field, and the player reads that absence as "restart me instead" —
+    // capability is NEGOTIATED, never assumed from the mere existence of a bridge.
+    "    return { type: 'SIM_READY', dispatch: 'dynamic', sections: ids, policy: ['ui', 'automation'] };",
     '  }',
     '  function _fireReady() {',
     "    if (_ready) return; _ready = true; window._simReadyFired = true;",
@@ -1328,12 +1453,27 @@ export function wrapBridgeCombined(entries: Map<string, string>, opts?: WrapBrid
     '      return body ? body(params) : null;',
     '    },',
     '  };',
+    '  // THE LIVE ACTIVATION, as three retained values rather than one opaque signature string.',
+    '  // _lastSig is DERIVED from them (see _sigOf) instead of being captured at startScript time:',
+    '  // a policy message changes params without restarting, and a signature frozen at start would',
+    '  // then describe a state the document is no longer in — after which an identical re-post of',
+    '  // the NEW params would fall through to a full restart, which is the reset P1.2 removes.',
+    '  var _lastName = null;',
+    '  var _lastParams = null;',
+    '  var _lastToken = undefined;',
     '  var _lastSig = null;',
+    "  function _sigOf(name, params) { return (name || 'main') + ':' + JSON.stringify(params || {}); }",
+    '  function _cloneParams(p) {',
+    '    var out = {};',
+    '    for (var k in p) { if (Object.prototype.hasOwnProperty.call(p, k)) out[k] = p[k]; }',
+    '    if (_isArray(out.hideSelectors)) out.hideSelectors = out.hideSelectors.slice();',
+    '    return out;',
+    '  }',
+    "  function _isArray(v) { return Object.prototype.toString.call(v) === '[object Array]'; }",
     '  // Minimal-UI mechanical hide: while params.simpleUi is on, params.hideSelectors are',
     '  // hidden via ONE <style id="__simHideUi"> (display:none !important), refreshed on every',
-    '  // startScript and removed on stopScript / when simpleUi is falsy. hideSelectors take',
-    '  // part in _lastSig naturally (the sig JSON.stringifies params), so a changed selection',
-    '  // re-posts through startScript and refreshes the style. Selectors containing { } <',
+    '  // startScript, on every SET_UI_POLICY, and removed on stopScript / when simpleUi is falsy.',
+    '  // Selectors containing { } <',
     '  // or backslash are rejected (no style/markup breakouts); the > child combinator the',
     '  // runtime-scanned structural paths use is allowed.',
     '  function applyHideUi(params) {',
@@ -1376,31 +1516,121 @@ export function wrapBridgeCombined(entries: Map<string, string>, opts?: WrapBrid
     '  //    so guessing is not an option and unregistered timers are deliberately left alone.',
     '  var _timers = [];',
     '  var _demoTimers = [];',
+    '  // RESPAWN RECORDS — what makes v2 automation RESUMABLE (audit P1.2).',
+    '  //',
+    '  // pauseScript used to be one-way: it cleared the demo handles and the ids in the body closure',
+    '  // went dead, so the only route back to a running demonstration was re-running the body — i.e.',
+    '  // resetting the simulation. The tracking shim already sees (fn, delay, ...args) at creation',
+    '  // time, so keeping that tuple costs nothing and turns "stop the demo" into something with an',
+    '  // inverse. A handle registered OUTSIDE the synchronous body call has no record, is still',
+    '  // stopped, and is counted as UNRESTORABLE rather than silently reported as resumed.',
+    '  var _timerSpecs = {};      // id -> {kind, fn, delay, args}',
+    '  var _demoSaved = [];       // specs retained while automation is paused',
+    '  var _demoLost = 0;         // paused handles with no record — honestly unrestorable',
+    '  var _autoStarted = true;   // the autoScript value the CURRENT body was started with',
+    '  var _autoRunning = true;   // the LIVE automation policy',
+    '  var _uiHook = null;        // the body\'s own re-apply hook, if it registered one',
+    '  // Captured before any body can replace them: a resume must schedule through the real',
+    '  // primitives, not through a shim a section left installed.',
+    '  var _natSetInterval = window.setInterval, _natSetTimeout = window.setTimeout;',
     '  function _trackTimers(run) {',
     '    var ni = window.setInterval, nt = window.setTimeout;',
     '    // .apply(window, arguments) — the (fn, delay, ...args) form must keep forwarding its',
     '    // extra callback arguments; a (f, d) shim silently dropped them for the body window.',
-    "    window.setInterval = function (f, d) { var id = ni.apply(window, arguments); _timers.push([1, id]); return id; };",
-    "    window.setTimeout = function (f, d) { var id = nt.apply(window, arguments); _timers.push([0, id]); return id; };",
+    "    window.setInterval = function (f, d) { var xs = Array.prototype.slice.call(arguments, 2);",
+    '      var id = ni.apply(window, arguments); _record(1, id, f, d, xs); return id; };',
+    "    window.setTimeout = function (f, d) { return _armTimeout(nt, f, d, Array.prototype.slice.call(arguments, 2)); };",
     '    try { return run(); } finally { window.setInterval = ni; window.setTimeout = nt; }',
+    '  }',
+    '  function _record(kind, id, f, d, args) {',
+    '    _timers.push([kind, id]);',
+    '    _timerSpecs[id] = { kind: kind, fn: f, delay: d, args: args };',
+    '  }',
+    '  // A ONE-SHOT THAT HAS ALREADY FIRED IS NOT AUTOMATION ANY MORE (audited).',
+    '  //',
+    '  // Nothing used to remove a setTimeout\'s spec when it fired, so _pauseDemoTimers retained a',
+    '  // COMPLETED one-shot and _resumeDemoTimers scheduled it again: toggling Auto Script off and',
+    '  // then on re-ran the body\'s one-shot demo steps — applyImpulse(), a scripted click, a reset.',
+    '  // That changes what the simulation COMPUTES, not merely when it is shown, which is the one',
+    '  // category of change this runtime is never allowed to make. So a setTimeout is armed through',
+    '  // a wrapper that forgets its own handle the instant the callback runs, BEFORE the body sees',
+    '  // it — a throwing body must still be forgotten, or the throw becomes resumable.',
+    '  function _forget(id) {',
+    '    delete _timerSpecs[id];',
+    '    // Splice rather than filter: _demoTimers is walked by index in _pauseDemoTimers, and a',
+    '    // fired one-shot left in it would be counted as "stopped" and reported as unrestorable.',
+    '    for (var i = _demoTimers.length - 1; i >= 0; i--) { if (_demoTimers[i] === id) _demoTimers.splice(i, 1); }',
+    '  }',
+    '  function _armTimeout(schedule, f, d, args) {',
+    '    // The id is not known until schedule() returns, and the callback cannot run before then',
+    '    // (timers never fire synchronously), so a box read at fire time is exact.',
+    '    var box = { id: 0 };',
+    '    // Only a FUNCTION can be wrapped. The legacy string form is passed through untouched: it',
+    '    // is not forgettable, and it is not faithfully re-creatable either.',
+    "    var body = (typeof f === 'function')",
+    '      ? function () { _forget(box.id); return f.apply(this, arguments); }',
+    '      : f;',
+    '    var id = schedule.apply(window, [body, d].concat(args));',
+    '    box.id = id;',
+    '    _record(0, id, f, d, args);',
+    '    return id;',
     '  }',
     '  // Bodies opt a handle in: _ivs.push(simDemoTimer(setInterval(step, 120))). Returns the id',
     '  // unchanged, so it stays a normal handle the body\'s own cleanup still clears.',
     '  window.simDemoTimer = function (id) { _demoTimers.push(id); return id; };',
-    '  function _clearDemoTimers() {',
+    '  // OPTIONAL body hook for Minimal-UI. The mechanical style covers params.hideSelectors, but a',
+    '  // body that hides controls with its OWN logic keeps that logic in a closure the runtime can',
+    '  // not reach. A body may register a re-apply function here so a UI policy change reaches it',
+    '  // WITHOUT a restart; a body that registers nothing gets the mechanical change only, and the',
+    '  // acknowledgement reports bodyHook:false so the residual is visible rather than assumed away.',
+    '  window.simOnUiPolicy = function (fn) { _uiHook = (typeof fn === \'function\') ? fn : null; };',
+    '  /** Stop registered automation, RETAINING what is needed to start it again. */',
+    '  function _pauseDemoTimers() {',
+    '    var stopped = 0;',
     '    for (var i = 0; i < _demoTimers.length; i++) {',
+    '      var id = _demoTimers[i];',
     '      // clearTimeout/clearInterval share one active-timer list per the HTML spec, so both',
     '      // calls are safe regardless of which primitive created the handle.',
-    '      try { clearInterval(_demoTimers[i]); clearTimeout(_demoTimers[i]); } catch (e) {}',
+    '      try { clearInterval(id); clearTimeout(id); } catch (e) {}',
+    '      stopped++;',
+    '      var spec = _timerSpecs[id];',
+    '      if (spec) { _demoSaved.push(spec); delete _timerSpecs[id]; } else { _demoLost++; }',
     '    }',
     '    _demoTimers = [];',
+    '    return stopped;',
     '  }',
+    '  /** Re-create what _pauseDemoTimers retained. Returns counts — never a bare boolean. */',
+    '  function _resumeDemoTimers() {',
+    '    var saved = _demoSaved; _demoSaved = [];',
+    '    var restarted = 0;',
+    '    for (var i = 0; i < saved.length; i++) {',
+    '      var s = saved[i], id;',
+    '      try {',
+    '        if (s.kind) {',
+    '          id = _natSetInterval.apply(window, [s.fn, s.delay].concat(s.args));',
+    '          _record(1, id, s.fn, s.delay, s.args);',
+    '        } else {',
+    '          // Through the SAME arming wrapper as the first schedule, so a resumed one-shot',
+    '          // forgets itself when it fires instead of becoming resumable all over again.',
+    '          id = _armTimeout(_natSetTimeout, s.fn, s.delay, s.args);',
+    '        }',
+    '      } catch (e) { _demoLost++; continue; }',
+    '      _demoTimers.push(id);',
+    '      restarted++;',
+    '    }',
+    '    var lost = _demoLost; _demoLost = 0;',
+    '    return { restarted: restarted, unrestorable: lost };',
+    '  }',
+    '  function _clearDemoTimers() { _pauseDemoTimers(); }',
     '  function _clearTimers() {',
     '    for (var i = 0; i < _timers.length; i++) {',
     '      try { if (_timers[i][0]) clearInterval(_timers[i][1]); else clearTimeout(_timers[i][1]); } catch (e) {}',
     '    }',
     '    _timers = [];',
     '    _clearDemoTimers();',
+    '    // TEARDOWN, so nothing is retained: the body and its closures are gone, and a spec pointing',
+    '    // at a dead body\'s callback would resurrect the OLD section on the next resume.',
+    '    _timerSpecs = {}; _demoSaved = []; _demoLost = 0;',
     '  }',
     '  function stopScript() {',
     '    // A throwing cleanup must NEVER wedge dispatch: without the try/finally, _cancelFn kept',
@@ -1412,15 +1642,24 @@ export function wrapBridgeCombined(entries: Map<string, string>, opts?: WrapBrid
     "      try { if (typeof fn === 'function') fn(); }",
     "      catch (err) { _post({ type: 'SCRIPT_ERROR', phase: 'cleanup', message: String(err && err.message || err) }); }",
     '    }',
-    '    _lastSig = null;',
+    '    _lastSig = null; _lastName = null; _lastParams = null; _lastToken = undefined;',
+    '    _autoStarted = true; _autoRunning = true; _uiHook = null;',
     "    var st = document.getElementById('__simHideUi');",
     '    if (st && st.remove) st.remove();',
     '  }',
     '  function startScript(name, params, token) {',
-    "    var sig = (name || 'main') + ':' + JSON.stringify(params || {});",
+    '    var p = params || {};',
+    '    var sig = _sigOf(name, p);',
     '    if (_cancelFn && sig === _lastSig) return;   // identical re-post — keep the script running',
     '    stopScript();',
-    '    _lastSig = sig;',
+    '    _lastName = name || \'main\';',
+    '    // CLONED, not aliased: the policy handlers mutate this object, and mutating the caller\'s',
+    '    // structured-clone would make the sig disagree with what the parent believes it sent.',
+    '    _lastParams = _cloneParams(p);',
+    '    _lastSig = _sigOf(_lastName, _lastParams);',
+    '    _lastToken = token;',
+    '    _autoStarted = p.autoScript !== false;',
+    '    _autoRunning = _autoStarted;',
     '    applyHideUi(params);   // mechanical Minimal-UI hide — refreshed on every (re)start',
     "    var _bh = document.getElementById('__simBootHide');",
     '    if (_bh && _bh.remove) _bh.remove();   // __simHideUi above is definitive — drop the boot-time hide',
@@ -1450,17 +1689,119 @@ export function wrapBridgeCombined(entries: Map<string, string>, opts?: WrapBrid
     "      _post({ type: 'SCRIPT_ERROR', phase: 'start', script: name || 'main', token: token, message: String(err && err.message || err) });",
     '    }',
     '  }',
+    '  // ── Policy (audit P1.2): chrome and automation WITHOUT a restart ────────────',
+    '  //',
+    '  // Toggling Minimal UI or Auto Script used to arrive as a startScript with different params,',
+    '  // which falls through to stopScript() — the body\'s cleanup runs, every tracked timer dies and',
+    '  // the body re-runs from scratch. For a physics demonstration that is a full state reset for',
+    '  // the sake of hiding a slider. Neither handler below touches _cancelFn, the tracked timers or',
+    '  // the body: they move the mechanical hide style and the registered automation handles, and',
+    '  // nothing else.',
+    '  //',
+    '  // ACTIVATION SCOPE is the v2 token the player already mints per activation — deliberately not',
+    '  // a second, parallel identity. A policy carrying a token the document was not started with',
+    '  // belongs to a superseded activation and is refused.',
+    '  function _policyResult(kind, applied, changed, reason, extra, token) {',
+    '    var msg = {',
+    "      type: 'POLICY_RESULT', kind: kind, applied: applied, changed: changed,",
+    '      reason: reason || null,',
+    '      // A STALE policy must never ask for a restart. It describes an activation that is already',
+    "      // gone; restarting for it would tear down the section that superseded it — the exact",
+    '      // wrong-activation defect the identity checks exist to prevent, arriving via the recovery',
+    '      // path instead of the primary one.',
+    "      requiresRestart: !applied && reason !== 'stale-activation',",
+    '      token: token',
+    '    };',
+    '    if (extra) { for (var k in extra) { if (Object.prototype.hasOwnProperty.call(extra, k)) msg[k] = extra[k]; } }',
+    '    _post(msg);',
+    '  }',
+    '  function _policyStale(token) {',
+    '    // `_lastParams`, NOT `_cancelFn`. `_cancelFn` is the body\'s CLEANUP FUNCTION, and a body is',
+    '    // free to return nothing — plenty do. Keying "is a section installed" on it made every',
+    '    // policy for such a section answer `stale-activation`, which carries requiresRestart:false,',
+    '    // so the player neither applied the toggle nor fell back to a restart: the Minimal-UI',
+    '    // checkbox moved and NOTHING happened, with no error anywhere. That is strictly worse than',
+    '    // the restart this finding set out to avoid, because the restart at least worked.',
+    '    // `_lastParams` is set by startScript and cleared by stopScript, so it means exactly',
+    '    // "a section is installed" — which is the question being asked.',
+    '    return !_lastParams || (_lastToken !== undefined && token !== undefined && token !== _lastToken);',
+    '  }',
+    '  function _sameHide(a, b) {',
+    '    var x = _uniqSorted(a), y = _uniqSorted(b);',
+    '    if (x.length !== y.length) return false;',
+    '    for (var i = 0; i < x.length; i++) { if (x[i] !== y[i]) return false; }',
+    '    return true;',
+    '  }',
+    '  function _uniqSorted(list) {',
+    '    var out = [];',
+    '    if (!_isArray(list)) return out;',
+    '    for (var i = 0; i < list.length; i++) { if (out.indexOf(list[i]) === -1) out.push(list[i]); }',
+    '    return out.sort();',
+    '  }',
+    '  function _onUiPolicy(d) {',
+    "    if (_policyStale(d.token)) { _policyResult('ui', false, false, 'stale-activation', null, d.token); return; }",
+    '    var want = { simpleUi: !!d.simpleUi, hideSelectors: _isArray(d.hideSelectors) ? d.hideSelectors : [] };',
+    '    var changed = (!!_lastParams.simpleUi !== want.simpleUi) || !_sameHide(_lastParams.hideSelectors, want.hideSelectors);',
+    '    if (changed) {',
+    '      _lastParams.simpleUi = want.simpleUi;',
+    '      _lastParams.hideSelectors = want.hideSelectors.slice();',
+    '      // Keep the signature describing what is INSTALLED, so a later identical startScript is',
+    '      // still recognised as a no-op instead of restarting the section it already matches.',
+    '      _lastSig = _sigOf(_lastName, _lastParams);',
+    '      applyHideUi(_lastParams);',
+    '    }',
+    '    var hooked = false;',
+    '    if (changed && _uiHook) {',
+    '      try { _uiHook(want); hooked = true; }',
+    "      catch (err) { _post({ type: 'SCRIPT_ERROR', phase: 'uiPolicy', token: _lastToken, message: String(err && err.message || err) }); }",
+    '    }',
+    "    _policyResult('ui', true, changed, null, { bodyHook: hooked }, d.token);",
+    '  }',
+    '  function _onAutoPolicy(d) {',
+    "    if (_policyStale(d.token)) { _policyResult('automation', false, false, 'stale-activation', null, d.token); return; }",
+    '    var want = !!d.autoScript;',
+    "    if (want === _autoRunning) { _policyResult('automation', true, false, null, null, d.token); return; }",
+    '    if (want && !_autoStarted) {',
+    '      // The body was RUN with autoScript off, so it never registered anything. There is nothing',
+    '      // to resume and saying otherwise would be a lie; only a restart can give this section a',
+    '      // demonstration, and only the player can decide to pay for one.',
+    "      _policyResult('automation', false, false, 'never-started', null, d.token);",
+    '      return;',
+    '    }',
+    '    if (want) {',
+    '      var r = _resumeDemoTimers();',
+    '      if (r.restarted === 0 && r.unrestorable > 0) {',
+    '        // Handles were stopped but none could be recreated. Acknowledging a resume here would',
+    '        // report a running demonstration that is in fact dead.',
+    '        _autoRunning = false;',
+    "        _policyResult('automation', false, false, 'unrestorable', { unrestorable: r.unrestorable }, d.token);",
+    '        return;',
+    '      }',
+    '      _autoRunning = true;',
+    '      _lastParams.autoScript = true; _lastSig = _sigOf(_lastName, _lastParams);',
+    "      _policyResult('automation', true, true, null, { restarted: r.restarted, unrestorable: r.unrestorable }, d.token);",
+    '      return;',
+    '    }',
+    '    var stopped = _pauseDemoTimers();',
+    '    _autoRunning = false;',
+    '    _lastParams.autoScript = false; _lastSig = _sigOf(_lastName, _lastParams);',
+    "    _policyResult('automation', true, true, null, { stopped: stopped }, d.token);",
+    '  }',
     '  window.SimAPI = { start: startScript, stop: stopScript };',
     "  window.addEventListener('message', function(e) {",
     '    var d = e.data || {}; var type = d.type; var script = d.script; var params = d.params;',
     "    if (type === 'startScript')  startScript(script || 'main', params, d.token);",
     "    if (type === 'stopScript')   stopScript();",
+    "    if (type === 'uiPolicy')     _onUiPolicy(d);",
+    "    if (type === 'autoPolicy')   _onAutoPolicy(d);",
     '    // Stop the demo WITHOUT tearing the section down: the scene, the applied Minimal-UI',
     '    // policy and manual interactivity all stay exactly as they are. Clears ONLY handles the',
     '    // body registered via simDemoTimer — never the broad body-call capture, which cannot be',
     '    // told apart from the simulation\'s own engine timers (see the two scopes above). A body',
     '    // that registers nothing is simply not pausable: a no-op, never a frozen scene.',
-    "    if (type === 'pauseScript')  { _clearDemoTimers(); _post({ type: 'AUTO_PAUSED' }); }",
+    '    // It now has an INVERSE (autoPolicy above): the retained respawn records mean the user',
+    '    // interaction that paused the demo no longer costs a restart to undo.',
+    "    if (type === 'pauseScript')  { _pauseDemoTimers(); _autoRunning = false; _post({ type: 'AUTO_PAUSED' }); }",
     "    if (type === 'PING_SIM_READY' && window._simReadyFired)",
     "      window.parent?.postMessage(_readyMsg(), '*');",
     '  });',
@@ -1525,6 +1866,78 @@ export function computeBridgeHash(code: string): string {
   return createHash('sha256').update(code).digest('hex').slice(0, 12);
 }
 
+/**
+ * Assemble the two generated artifacts of a section-bridge publication: the combined bridge.js
+ * (all section bodies, this section's merged in) and the entry HTML with the bridge tag + rAF gate
+ * injected. PURE — reads and writes nothing — so the byte-assembly is exactly one piece of logic
+ * whether the base package came from the legacy mutable prefix or from an immutable revision.
+ *
+ * `mainBody` is a resolver over the CURRENTLY-stored body for this section: the LLM path
+ * overwrites (returns its fresh body ignoring the argument), while the mechanical path PRESERVES
+ * an existing demonstration (returns the existing body, or a no-op when absent).
+ */
+export function assembleSectionBridgeArtifacts(opts: {
+  sectionId: string;
+  /** The base package's combined bridge.js source — '' when no bridge was ever generated. */
+  existingBridgeJs: string;
+  /** The base package's entry HTML, as stored. */
+  rawEntryHtml: string;
+  /** Entry path relative to the PACKAGE ROOT (e.g. 'index.html', 'app/main.html'). */
+  entryRelPath: string;
+  mainBody: (existing: string | undefined) => string;
+}): {
+  bridgeJs: string; entryHtml: string; bridgeHash: string; sectionCount: number;
+  /**
+   * What the assembled artefacts can do, and what they NEED, read off the bytes that are about to
+   * be published (audit P0.5 for `scriptApplied`, P0.8 for `requiresImportMaps`). Decided HERE
+   * rather than at the call site so every publication path records the same answer about the same
+   * text — the alternative is a second detector that can disagree with the bytes, which is how a
+   * "capability" becomes a guess again.
+   */
+  capabilities: BridgeCapabilities;
+} {
+  if (!SAFE_SECTION_ID_RE.test(opts.sectionId)) throw new Error(`Unsafe sectionId: "${opts.sectionId}"`);
+
+  // Merge: parse existing sections, add/replace the current section's body.
+  const sectionEntries = parseSectionEntries(opts.existingBridgeJs);
+  sectionEntries.set(opts.sectionId, opts.mainBody(sectionEntries.get(opts.sectionId)));
+  // Newly generated bridges CARRY the v3 runtime. Carrying it is not the same as being trusted
+  // with it: the player only takes the modern path for a package the publish-time canary has
+  // classified `managed-presentable`, so a package that can speak v3 but has never proven it
+  // still runs on the v2 path. Emitting the runtime here is what makes that proof possible at
+  // all — a package with no v3 code can never be canaried into the modern class.
+  //
+  // `allManaged` / `anyQuality` are deliberately LEFT FALSE, and that is not an oversight: the
+  // generation prompt produces cleanup-closure bodies, which `toLifecycle` wraps as legacy. A
+  // package whose bodies cannot suspend or render on demand must not claim it can — so
+  // `capabilities()` reports those false, `classifyCanaryReport` caps the package at
+  // `managed-partial`, and `enableModern` declines. The consequence, stated plainly because it
+  // is easy to miss: a package generated today CANNOT reach `managed-presentable`, so the v3
+  // reveal path is not yet reachable for it. Closing that requires teaching the generator to
+  // emit ManagedSectionLifecycle bodies — see md-files/SIM-P456-ROLLOUT.md.
+  const bridgeJs = wrapBridgeCombined(sectionEntries, { runtimeV3: true });
+  const bridgeHash = computeBridgeHash(bridgeJs);
+
+  // The bridge sits at the PACKAGE ROOT (`package/bridge.js` inside a revision — the same spot
+  // `<prefix>/bridge.js` occupied in the legacy layout), so the tag's relative path is derived
+  // from the entry's depth WITHIN the package. Layout preservation is what keeps this stable
+  // across legacy → revision publication.
+  const depth = opts.entryRelPath.split('/').length - 1;
+  const bridgeRelPath = (depth > 0 ? '../'.repeat(depth) : './') + 'bridge.js';
+  // Ensure the head rAF gate too: entry HTML uploaded before the gate existed gains it on the
+  // next generation (injectRafGate is marker-guarded and idempotent).
+  const entryHtml = injectBridgeScriptTag(injectRafGate(opts.rawEntryHtml), bridgeRelPath, bridgeHash);
+
+  return {
+    bridgeJs, entryHtml, bridgeHash, sectionCount: sectionEntries.size,
+    // Read off `entryHtml`, not `opts.rawEntryHtml`: the injections above STRIP script tags (stale
+    // `section_*.js`, previous bridge tags, inline bridges) and add others, and the record has to
+    // describe the document that is actually uploaded. Detecting on the input would be answering a
+    // question about bytes no viewer will ever load.
+    capabilities: { ...detectBridgeCapabilities(bridgeJs), ...detectEntryCapabilities(entryHtml) },
+  };
+}
+
 /** Derive the entry HTML path relative to the sim's storage prefix.
  *  entry_file is a storage key on new rows (`simulations/<p>/<s>/index.html`) and a full
  *  public URL on legacy rows — handle both; returns null when underivable. */
@@ -1574,6 +1987,35 @@ export function validateGeneratedBridge(code: string, manifest: SimManifest, mai
   if (!code.includes('SIM_READY'))        fatal.push('Assembled bridge missing SIM_READY (system error)');
   if (!code.includes('startScript'))      fatal.push('Assembled bridge missing startScript (system error)');
   if (!code.includes('stopScript'))       fatal.push('Assembled bridge missing stopScript (system error)');
+  // The P1.2 policy handlers are system-owned exactly like startScript/stopScript, so their absence
+  // means the wrapper was bypassed — not that a package declined a feature. FATAL rather than a
+  // warning for a concrete reason: a bridge that silently lacks them still WORKS, by restarting the
+  // section on every Minimal-UI toggle, which is precisely the reset this finding removed. A
+  // degradation that looks identical to correct behaviour is the kind that ships.
+  //
+  // SCOPED TO THE DYNAMIC TEMPLATE. `dispatch: 'dynamic'` is the marker of the combined wrapper —
+  // the only one anything publishes today (assembleSectionBridgeArtifacts always calls
+  // wrapBridgeCombined). A load-time-locked bridge from the pre-combined wrapper cannot switch
+  // sections in place either; demanding hot-swappable chrome from it would be a requirement it was
+  // never built to meet, and one no publication path can produce.
+  if (code.includes("dispatch: 'dynamic'")) {
+    if (!code.includes("type === 'uiPolicy'")) {
+      fatal.push('Assembled bridge missing the uiPolicy handler (system error)');
+    }
+    if (!code.includes("type === 'autoPolicy'")) {
+      fatal.push('Assembled bridge missing the autoPolicy handler (system error)');
+    }
+    // THE ACKNOWLEDGEMENT IS NOW LOAD-BEARING (audit P0.5). Publication records whether this bridge
+    // posts SCRIPT_APPLIED and the viewer's apply gate consults that record BEFORE the first
+    // activation, so a template regression that dropped the ack would not merely lose a message —
+    // it would silently reclassify every package published afterwards from "proven-acking" to
+    // "proven-silent", which tells the gate to reveal a switch it can no longer verify. Fatal, and
+    // scoped to the dynamic template for the same reason the two handlers above are: only the
+    // combined wrapper is expected to have it.
+    if (!detectBridgeCapabilities(code).scriptApplied) {
+      fatal.push('Assembled bridge never posts SCRIPT_APPLIED (system error)');
+    }
+  }
   if (!code.includes("window.addEventListener('message'")) {
     fatal.push('Assembled bridge missing message listener (system error)');
   }
@@ -1942,13 +2384,30 @@ export function buildContextPrompt(
 // ── SimulationService ─────────────────────────────────────────────────────────
 
 export class SimulationService {
-  /** Per-simulation promise chain — serialises concurrent bridge.js read-modify-write. */
+  /**
+   * Per-simulation promise chain — serialises concurrent section-bridge PUBLICATIONS in-process.
+   *
+   * Correctness no longer depends on this: publication is staged into a never-reused revision
+   * prefix and activated by compare-and-set, so a cross-process race loses with a RevisionConflict
+   * instead of clobbering anything. The lock is kept as a UX nicety for the common single-process
+   * deployment — two sections of the same simulation generating concurrently serialise here, so the
+   * second publication builds on the first's revision instead of losing its CAS and asking the
+   * user to retry.
+   */
   private readonly bridgeLocks = new Map<string, Promise<void>>();
+
+  /** Lazily constructed so tests injecting a fake storage adapter get a RevisionService bound to it. */
+  private _revisions: RevisionService | null = null;
 
   constructor(
     private readonly storage: StorageService,
     private readonly llmService: LLMService,
   ) {}
+
+  private revisions(): RevisionService {
+    if (!this._revisions) this._revisions = new RevisionService(this.storage);
+    return this._revisions;
+  }
 
   private async withBridgeLock<T>(simKey: string, fn: () => Promise<T>): Promise<T> {
     const prior = this.bridgeLocks.get(simKey) ?? Promise.resolve();
@@ -2201,6 +2660,8 @@ export class SimulationService {
     conversationHistory?: ConversationMessage[];
     onEvent?: (event: string, data: object) => void;
     signal?: AbortSignal;
+    /** Runs inside the activation transaction with the FULL generation result — see SectionPersistHook. */
+    persistSection?: (tx: RevisionDbTx, result: BridgeGenerationResult) => Promise<void>;
   }): Promise<BridgeGenerationResult> {
     const { simId, sectionId, projectId, userId, prompt, simpleUi, autoScript, onEvent, signal } = opts;
     const prefix = `simulations/${projectId}/${simId}`;
@@ -2391,21 +2852,14 @@ export class SimulationService {
       retryCount, retryReason,
     }, 'Bridge script ready');
 
-    // 8-10. Locate entry HTML + read-modify-write bridge.js under the per-sim lock —
-    // shared with applyMechanicalBridge (the zero-LLM Minimal-UI path).
-    const { sectionUrl, bridgeHash } = await this.uploadSectionBridge({
-      simId, sectionId, projectId, prefix, allKeys,
-      entryKey: opts.entryKey,
-      mainBody: () => bridge.mainBody,   // LLM path overwrites the section body
-      onEvent,
-    });
-
-    // Return typed BridgeGenerationResult — controller builds sim_meta from this
-    return {
-      sectionUrl,
+    // Every field of the result except sectionUrl/bridgeHash is known BEFORE publication, so the
+    // same builder serves both the in-transaction persistSection hook (which needs the full result
+    // to write sim_meta atomically with the pointer flip) and the method's own return value.
+    const finishResult = (pub: { sectionUrl: string; bridgeHash: string }): BridgeGenerationResult => ({
+      sectionUrl:           pub.sectionUrl,
       conversationHistory:  updatedHistory,
       sourceHash,
-      bridgeHash,
+      bridgeHash:           pub.bridgeHash,
       mainBody:             bridge.mainBody,
       provider:             llmProvider,
       model:                llmModel,
@@ -2417,7 +2871,24 @@ export class SimulationService {
       warnings:             allValidationWarnings,
       validationErrors:     [],  // always empty — fatals throw before upload
       validationWarnings:   validation.warnings,
-    };
+    });
+
+    // 8-10. Publish the section bridge as a staged immutable revision (CAS-activated) —
+    // shared with applyMinimalUiOnly (the zero-LLM Minimal-UI path).
+    const persistSection = opts.persistSection;
+    const { sectionUrl, bridgeHash } = await this.uploadSectionBridge({
+      simId, sectionId, projectId, prefix, allKeys,
+      entryKey: opts.entryKey,
+      mainBody: () => bridge.mainBody,   // LLM path overwrites the section body
+      onEvent,
+      signal,
+      persistSection: persistSection
+        ? (tx, pub) => persistSection(tx, finishResult(pub))
+        : undefined,
+    });
+
+    // Return typed BridgeGenerationResult — controller builds sim_meta from this
+    return finishResult({ sectionUrl, bridgeHash });
   }
 
   reuseBridgeScript(existingUrl: string): { sectionUrl: string } {
@@ -2436,6 +2907,12 @@ export class SimulationService {
     } catch {
       logger.warn({ prefix }, 'listObjects failed in generateBridgeScript — falling back to entry-HTML probe');
     }
+    // The LEGACY prefix is the customer source of truth; system subtrees are not part of it.
+    // Once a simulation has published revisions, `listObjects(prefix)` returns every revision's own
+    // copy of every file — without this filter the LLM context doubles per revision and
+    // `computeSourceHash` (which hashes PATH + content) changes on every publication, which would
+    // clear the conversation history on every single generation. Same filter the migration applies.
+    allKeys = allKeys.filter((k) => revisionIdFromKey(k) === null && !isSystemOwnedKey(k, prefix));
     if (allKeys.length === 0 && entryKeyOpt && !entryKeyOpt.startsWith('http')) {
       const entryKey = entryKeyOpt;
       const entryDir = entryKey.slice(0, entryKey.lastIndexOf('/') + 1);
@@ -2463,13 +2940,37 @@ export class SimulationService {
   }
 
   /**
-   * Locate the entry HTML and read-modify-write bridge.js under the per-simulation lock,
-   * then re-inject the bridge tag into the entry HTML. Extracted from generateBridgeScript
-   * so the zero-LLM mechanical path (applyMinimalUiOnly) shares the EXACT upload contract.
+   * Publish this section's bridge as a NEW IMMUTABLE REVISION and activate it (audit P0.4).
+   * Shared by generateBridgeScript and the zero-LLM mechanical path (applyMinimalUiOnly), so both
+   * take the EXACT same publication contract.
    *
-   * `mainBody` is a resolver over the CURRENTLY-stored body for this section: the LLM path
-   * overwrites (returns its fresh body ignoring the argument), while the mechanical path
-   * PRESERVES an existing demonstration (returns the existing body, or a no-op when absent).
+   * WHAT REPLACED THE OLD READ-MODIFY-WRITE
+   * This used to overwrite `<prefix>/bridge.js` and the entry HTML in place — two writes a viewer
+   * could land between, a client abort could orphan halfway, and a concurrent generation could
+   * silently clobber. Now every byte of the publication is staged under a never-reused revision
+   * prefix through RevisionService.writeFile (the sole write path into a revision), verified, and
+   * made live by ONE compare-and-set activation whose transaction also carries the caller's
+   * section-row update (`persistSection`). The legacy mutable prefix is never written again by
+   * this path — it stays exactly as it was, which is what migration 050's rollback reverts to.
+   *
+   * BASE PACKAGE: the active revision when one exists; otherwise the legacy prefix
+   * (migration-on-write — the FULL package layout is copied via the same plan the operator
+   * migration uses, not just bridge + entry).
+   *
+   * VERDICT PARITY: the old path explicitly nulled package_class/canary_report/canary_at when the
+   * bytes changed. Here a fresh-bytes revision has no canary yet, so its verdict columns are NULL
+   * — and activation PROJECTS them onto the simulations row inside the same transaction. Same
+   * downstream behaviour (unproven ⇒ legacy player path), now atomic with the pointer flip.
+   * `simulations.bridge_hash` is deliberately NOT advanced: it describes the legacy prefix's
+   * bytes, which this path no longer touches, and on a revisioned simulation the identity axis is
+   * the revision id (`packageRevisionFor`), not the hash.
+   *
+   * ABORT SAFETY: the signal is checked before the draft exists (cheap bail), per staged file, and
+   * once more after validation — where an abort marks the draft failed and leaves the pointer,
+   * the section row and the previous bytes untouched. It is NEVER checked inside the activation
+   * transaction, and after activation an abort is ignored (the publication is already live).
+   * Failed/aborted drafts sit in an inactive never-referenced prefix; reaping them is the existing
+   * gc/staleDrafts machinery's job (documented follow-up — no sweep is wired here).
    */
   private async uploadSectionBridge(opts: {
     simId:      string;
@@ -2480,114 +2981,237 @@ export class SimulationService {
     entryKey?:  string;
     mainBody:   (existing: string | undefined) => string;
     onEvent?:   (event: string, data: object) => void;
+    signal?:    AbortSignal;
+    persistSection?: SectionPersistHook;
   }): Promise<{ sectionUrl: string; bridgeHash: string }> {
-    const { simId, sectionId, projectId, prefix, allKeys, mainBody, onEvent } = opts;
+    const { simId, sectionId, projectId, prefix, allKeys, mainBody, onEvent, signal } = opts;
     if (!SAFE_SECTION_ID_RE.test(sectionId)) throw new Error(`Unsafe sectionId: "${sectionId}"`);
-    const isSectionFile = (k: string) => /section_[^/]+\.(html|js)$/.test(k) || /\/bridge\.js$/.test(k);
+    throwIfAborted(signal);
 
-    // Prefer opts.entryKey (authoritative from DB), then probe allKeys.
-    const passedEntryKey = opts.entryKey && !opts.entryKey.startsWith('http') ? opts.entryKey : undefined;
-    const entryKey = passedEntryKey
-      ?? allKeys.find(k => /\/(index|main)\.(html|htm)$/.test(k))
-      ?? allKeys.find(k => (k.endsWith('.html') || k.endsWith('.htm')) && !isSectionFile(k));
-    if (!entryKey) throw new Error('No HTML entry file found in simulation');
+    // In-process serialisation only (see bridgeLocks). Cross-process safety is the activation CAS.
+    return this.withBridgeLock(simId, async () => {
+      // Lazy import — a static SimulationService⇄RevisionMigration import would be circular
+      // (RevisionMigration imports deriveEntryRelPath/getSimulationContentType from here).
+      const { planLegacyCopy, buildLegacyManifest } = await import('./RevisionMigration.js');
+      const revisions = this.revisions();
 
-    const entryDir = entryKey.substring(0, entryKey.lastIndexOf('/'));
-    const relativeDepth = entryDir === prefix
-      ? 0
-      : entryDir.slice(prefix.length).split('/').filter(Boolean).length;
-    const bridgeRelPath = (relativeDepth > 0 ? '../'.repeat(relativeDepth) : './') + 'bridge.js';
-    const bridgeJsKey   = `${prefix}/bridge.js`;
+      // ── (1) Pointer + canonical prefix, read at the START of the build ─────────────────────
+      // `expectedActiveRevisionId` for the activation CAS is THIS read: a concurrent publication
+      // that activates in between makes our activation lose with a RevisionConflict instead of
+      // silently overwriting it.
+      const [simRow] = await db
+        .select({
+          storage_prefix: simulations.storage_prefix,
+          active_revision_id: simulations.active_revision_id,
+        })
+        .from(simulations)
+        .where(eq(simulations.id, simId));
+      if (!simRow) throw new Error('Simulation not found');
+      const norm = (v: string): string => v.replace(/\/+$/, '');
+      // Revision operations use the row's OWN storage_prefix — activate() refuses any other. The
+      // legacy reads keep the caller-computed prefix, which is where those bytes actually live.
+      const revisionRoot = norm(simRow.storage_prefix || prefix);
+      const legacyRoot = norm(prefix);
+      if (revisionRoot !== legacyRoot) {
+        logger.warn({ simId, revisionRoot, legacyRoot }, 'sim: storage_prefix differs from computed prefix');
+      }
+      const baseRevisionId = simRow.active_revision_id;
 
-    onEvent?.('status', { status: 'Uploading files…', type: 'progress' });
-
-    // Read-modify-write bridge.js under a per-simulation lock (concurrency safety).
-    return this.withBridgeLock(bridgeJsKey, async () => {
-      // Read existing bridge.js (may not exist on first generation).
+      // ── (2) Resolve the base package: active revision, or legacy prefix (migration-on-write) ──
+      type CopySource = {
+        manifestPath: string;
+        role: SimFileRole;
+        contentType: string;
+        read: () => Promise<Buffer>;
+      };
+      const bridgeManifestPath = `${PACKAGE_SUBDIR}/bridge.js`;
+      let copyPlan: CopySource[];
       let existingBridgeJs = '';
-      try { existingBridgeJs = (await this.storage.readObject(bridgeJsKey)).toString('utf-8'); }
-      catch { /* first generation — start fresh */ }
+      let rawEntryHtml: string;
+      let entryManifestPath: string;
 
-      // Merge: parse existing sections, add/replace the current section's body.
-      const sectionEntries = parseSectionEntries(existingBridgeJs);
-      sectionEntries.set(sectionId, mainBody(sectionEntries.get(sectionId)));
-      // Newly generated bridges CARRY the v3 runtime. Carrying it is not the same as being trusted
-      // with it: the player only takes the modern path for a package the publish-time canary has
-      // classified `managed-presentable`, so a package that can speak v3 but has never proven it
-      // still runs on the v2 path. Emitting the runtime here is what makes that proof possible at
-      // all — a package with no v3 code can never be canaried into the modern class.
-      //
-      // `allManaged` / `anyQuality` are deliberately LEFT FALSE, and that is not an oversight: the
-      // generation prompt produces cleanup-closure bodies, which `toLifecycle` wraps as legacy. A
-      // package whose bodies cannot suspend or render on demand must not claim it can — so
-      // `capabilities()` reports those false, `classifyCanaryReport` caps the package at
-      // `managed-partial`, and `enableModern` declines. The consequence, stated plainly because it
-      // is easy to miss: a package generated today CANNOT reach `managed-presentable`, so the v3
-      // reveal path is not yet reachable for it. Closing that requires teaching the generator to
-      // emit ManagedSectionLifecycle bodies — see md-files/SIM-P456-ROLLOUT.md.
-      const combinedBridge = wrapBridgeCombined(sectionEntries, { runtimeV3: true });
-      const hash = computeBridgeHash(combinedBridge);
+      if (baseRevisionId) {
+        // Base = the ACTIVE revision: its manifest is the authoritative file list, its bridge.js
+        // carries every section body published so far, and its entry HTML is what viewers load.
+        let baseManifest: SimPackageManifest;
+        try {
+          const raw = await this.storage.readObject(revisionManifestKey(revisionRoot, baseRevisionId));
+          baseManifest = JSON.parse(raw.toString('utf-8')) as SimPackageManifest;
+        } catch (err) {
+          throw new Error(
+            `Could not read the active revision's manifest (${String(err).slice(0, 120)})`,
+            { cause: err },
+          );
+        }
+        entryManifestPath = baseManifest.entry;
+        try {
+          existingBridgeJs = (await this.storage
+            .readObject(revisionFileKey(revisionRoot, baseRevisionId, bridgeManifestPath))).toString('utf-8');
+        } catch { /* base revision has no combined bridge yet */ }
+        rawEntryHtml = (await this.storage
+          .readObject(revisionFileKey(revisionRoot, baseRevisionId, entryManifestPath))).toString('utf-8');
+        copyPlan = baseManifest.files
+          .filter((f) => f.path !== entryManifestPath && f.path !== bridgeManifestPath)
+          .map((f) => ({
+            manifestPath: f.path,
+            role: f.role,
+            contentType: f.contentType,
+            read: () => this.storage.readObject(revisionFileKey(revisionRoot, baseRevisionId, f.path)),
+          }));
+      } else {
+        // Base = the legacy mutable prefix. Prefer opts.entryKey (authoritative from DB), then
+        // probe allKeys — exactly the resolution the old in-place path used.
+        const isSectionFile = (k: string) => /section_[^/]+\.(html|js)$/.test(k) || /\/bridge\.js$/.test(k);
+        const passedEntryKey = opts.entryKey && !opts.entryKey.startsWith('http') ? opts.entryKey : undefined;
+        const entryKey = passedEntryKey
+          ?? allKeys.find(k => /\/(index|main)\.(html|htm)$/.test(k))
+          ?? allKeys.find(k => (k.endsWith('.html') || k.endsWith('.htm')) && !isSectionFile(k));
+        if (!entryKey) throw new Error('No HTML entry file found in simulation');
+        const entryRelPath = entryKey.slice(legacyRoot.length + 1);
 
-      await this.storage.uploadFile(bridgeJsKey, Buffer.from(combinedBridge, 'utf-8'), 'application/javascript');
+        // FULL-PACKAGE migration-on-write: the same plan (classification + `package/` layout
+        // preservation) the operator migration uses — the first live generation on a legacy
+        // simulation publishes the whole package, not just bridge + entry.
+        const keysForPlan = allKeys.includes(entryKey) ? allKeys : [...allKeys, entryKey];
+        const { planned, entry } = planLegacyCopy({ allKeys: keysForPlan, prefix: legacyRoot, entryRelPath });
+        if (!entry) throw new Error('No HTML entry file found in simulation');
+        entryManifestPath = entry.revisionPath;
 
-      // Record the hash on the PACKAGE, not only in the section URL we are about to rewrite.
-      // Every section of this package now derives the same revision from it — which is what makes
-      // the revision an identity of the package rather than of whichever section was saved last.
+        try { existingBridgeJs = (await this.storage.readObject(`${legacyRoot}/bridge.js`)).toString('utf-8'); }
+        catch { /* first generation — start fresh */ }
+        // Fall back to a public URL read when storage GetObject is denied (write-only token).
+        try {
+          rawEntryHtml = (await this.storage.readObject(entryKey)).toString('utf-8');
+        } catch {
+          const res = await fetch(this.storage.getSimPublicUrl(entryKey));
+          if (!res.ok) throw new Error(`Could not read entry HTML for bridge injection (${res.status})`);
+          rawEntryHtml = await res.text();
+        }
+        copyPlan = planned
+          .filter((p) => p.rel !== entryRelPath && p.revisionPath !== bridgeManifestPath)
+          .map((p) => ({
+            manifestPath: p.revisionPath,
+            role: p.role,
+            contentType: getSimulationContentType(p.key),
+            read: () => this.storage.readObject(p.key),
+          }));
+      }
+
+      // ── (3) Build the new bridge.js + entry HTML bytes (pure) ──────────────────────────────
+      const entryRelWithinPackage = entryManifestPath.startsWith(`${PACKAGE_SUBDIR}/`)
+        ? entryManifestPath.slice(PACKAGE_SUBDIR.length + 1)
+        : entryManifestPath;
+      const art = assembleSectionBridgeArtifacts({
+        sectionId, existingBridgeJs, rawEntryHtml,
+        entryRelPath: entryRelWithinPackage,
+        mainBody,
+      });
+
+      onEvent?.('status', { status: 'Uploading files…', type: 'progress' });
+
+      // ── (4) Stage the revision: draft → upload every file → validate ───────────────────────
+      throwIfAborted(signal);   // cheap bail BEFORE the draft row exists
+      const draft = await revisions.createDraft({
+        simulationId: simId,
+        createdBy: 'live-generation',
+        metadata: {
+          trigger: 'section-generation', sectionId, baseRevisionId,
+          // WHAT THESE BYTES CAN DO AND WHAT THEY NEED, recorded with the bytes (audit P0.5, and
+          // P0.8's import-map requirement in the same record). Written at DRAFT rather
+          // than at activation because it describes the artefact this publication just assembled —
+          // `activate()` only PROJECTS it onto the simulations row, so a rollback re-projects the
+          // right answer for whichever revision the pointer lands on. Reading it back from the
+          // stored bridge later would be the same fact resolved twice, from a place that can fail.
+          [BRIDGE_CAPABILITIES_KEY]: art.capabilities,
+        },
+      });
+      const uploading = await revisions.beginUpload(simId, draft.id);
+      const files: SimManifestFile[] = [];
       try {
-        // Regenerating the bridge INVALIDATES the canary verdict, so clear it with the hash.
-        //
-        // The verdict is a statement about specific bytes. Leaving it in place while the bytes
-        // change grants the modern path to a package no canary ever ran — and every poster lookup
-        // then misses, because poster identities carry the OLD revision. That is exactly the state
-        // sim-canary-publish refuses to publish (EXIT.POSTERS_MISSING), reached through the back
-        // door. The WHERE means an idempotent regeneration that produces the identical hash keeps
-        // its verdict; only a genuine change clears it.
-        await db.update(simulations)
-          .set({ bridge_hash: hash, package_class: null, canary_report: null, canary_at: null })
-          .where(and(
-            eq(simulations.id, simId),
-            or(isNull(simulations.bridge_hash), ne(simulations.bridge_hash, hash)),
-            // NEVER stomp a projected verdict (migration 050).
-            //
-            // On a revisioned simulation these three columns are a PROJECTION of the active
-            // revision's own verdict, written inside the activation transaction. This statement
-            // fires on the legacy mutable prefix, which still exists and is still reachable — so
-            // without this predicate, regenerating one section's bridge nulls package_class on the
-            // row while sim_revisions still holds a valid verdict for the bytes actually being
-            // served. The row and the revision then disagree, and the row is what the player reads:
-            // every viewer silently drops to the legacy runtime path and every poster lookup misses.
-            // Nothing errors.
-            isNull(simulations.active_revision_id),
-          ));
+        for (const item of copyPlan) {
+          throwIfAborted(signal);
+          const bytes = await item.read();
+          files.push(await revisions.writeFile(uploading, revisionRoot, {
+            manifestPath: item.manifestPath, bytes, contentType: item.contentType, role: item.role,
+          }));
+        }
+        files.push(await revisions.writeFile(uploading, revisionRoot, {
+          manifestPath: bridgeManifestPath,
+          bytes: Buffer.from(art.bridgeJs, 'utf-8'),
+          contentType: 'application/javascript',
+          role: 'runtime',
+        }));
+        files.push(await revisions.writeFile(uploading, revisionRoot, {
+          manifestPath: entryManifestPath,
+          bytes: Buffer.from(art.entryHtml, 'utf-8'),
+          contentType: 'text/html; charset=utf-8',
+          role: 'entry',
+        }));
       } catch (err) {
-        // ONLY the pre-migration case may be swallowed. The bridge bytes were uploaded a few lines
-        // above, so any other failure here leaves the NEW bytes live under the OLD bridge_hash and
-        // the OLD canary verdict — precisely the "a verdict is a statement about specific bytes"
-        // back door this write exists to close. Demoting that to a warn log would hide it.
-        const code = (err as { code?: string } | null)?.code;
-        if (code !== '42703') throw err;
-        logger.warn({ err, simId }, 'sim: bridge_hash column absent — migration 049 not applied yet');
+        // The draft is abandoned where it stands — bytes in a never-referenced prefix, row failed.
+        await revisions.markFailed(simId, draft.id, 'uploading', String(err).slice(0, 500))
+          .catch(() => undefined);
+        throw err;
       }
 
-      // Update index.html in place (stable marker approach). Fall back to public URL read
-      // when storage GetObject is denied.
-      let rawHtml: string;
+      const validating = await revisions.finishUpload(simId, draft.id);
+      const manifest = buildLegacyManifest({
+        sim: { id: simId, projectId },
+        revisionId: draft.id,
+        revisionNumber: draft.revisionNumber,
+        entryPath: entryManifestPath,
+        files,
+        createdBy: 'live-generation',
+      });
+      const verdict = await revisions.validate(simId, validating, revisionRoot, { manifest });
+      if (!verdict.ok) {
+        // validate() already marked the revision failed, with every problem recorded on it.
+        throw new Error(
+          'Bridge publication failed verification: '
+          + JSON.stringify({ manifest: verdict.problems, storage: verdict.verified.problems }).slice(0, 500),
+        );
+      }
+
+      // ── (5) Last abort point — AFTER the build, BEFORE activation ──────────────────────────
+      if (signal?.aborted) {
+        await revisions.markFailed(simId, draft.id, 'canary_passed', 'generation aborted before activation')
+          .catch(() => undefined);
+        throw generationAbortError();
+      }
+
+      // ── (6) Activate: one transaction — demote, promote, pointer flip, section row ─────────
+      // sectionUrl mirrors buildPlayerConfig.simulationUrlOf for the new revision exactly:
+      // getSimPublicUrl(active_revision_entry_key) + ?section=<id>&v=<hash>.
+      const newEntryKey = revisionFileKey(revisionRoot, draft.id, entryManifestPath);
+      const sectionUrl = `${this.storage.getSimPublicUrl(newEntryKey)}?section=${sectionId}&v=${art.bridgeHash}`;
+      const persistSection = opts.persistSection;
       try {
-        rawHtml = (await this.storage.readObject(entryKey)).toString('utf-8');
-      } catch {
-        const res = await fetch(this.storage.getSimPublicUrl(entryKey));
-        if (!res.ok) throw new Error(`Could not read entry HTML for bridge injection (${res.status})`);
-        rawHtml = await res.text();
+        await revisions.activate({
+          simulationId: simId,
+          revisionId: draft.id,
+          storagePrefix: revisionRoot,
+          expectedActiveRevisionId: baseRevisionId,
+          supersede: 'retired',
+          onActivated: persistSection
+            ? (tx) => persistSection(tx, { sectionUrl, bridgeHash: art.bridgeHash })
+            : undefined,
+        });
+      } catch (err) {
+        // Whatever stopped the activation — a lost CAS (concurrent publication won) or a thrown
+        // persistSection hook (e.g. the section row vanished) — the transaction rolled back whole,
+        // so nothing this publication staged is referenced anywhere. Retire the draft so a stale
+        // build can never be activated later by something else.
+        await revisions.markFailed(simId, draft.id, 'canary_passed', `activation failed: ${String(err).slice(0, 300)}`)
+          .catch(() => undefined);
+        throw err;
       }
-      // Ensure the head rAF gate too: entry HTML uploaded before the gate existed gains it
-      // on the next generation (injectRafGate is marker-guarded and idempotent).
-      const updatedHtml = injectBridgeScriptTag(injectRafGate(rawHtml), bridgeRelPath, hash);
-      await this.storage.uploadFile(entryKey, Buffer.from(updatedHtml, 'utf-8'), 'text/html; charset=utf-8');
 
-      // sectionUrl encodes which section to run + busts the iframe cache on every generation.
-      const url = `${this.storage.getSimPublicUrl(entryKey)}?section=${sectionId}&v=${hash}`;
-      logger.info({ simId, sectionId, projectId, url, sections: sectionEntries.size }, 'Bridge script uploaded');
-      return { sectionUrl: url, bridgeHash: hash };
+      logger.info(
+        { simId, sectionId, projectId, revisionId: draft.id, revisionNumber: draft.revisionNumber,
+          url: sectionUrl, sections: art.sectionCount, files: files.length },
+        'Bridge revision published and activated',
+      );
+      return { sectionUrl, bridgeHash: art.bridgeHash };
     });
   }
 
@@ -2605,6 +3229,8 @@ export class SimulationService {
     projectId:  string;
     entryKey?:  string;
     onEvent?:   (event: string, data: object) => void;
+    signal?:    AbortSignal;
+    persistSection?: SectionPersistHook;
   }): Promise<{ sectionUrl: string; bridgeHash: string }> {
     const { simId, sectionId, projectId, onEvent } = opts;
     const prefix = `simulations/${projectId}/${simId}`;
@@ -2618,6 +3244,8 @@ export class SimulationService {
       entryKey: opts.entryKey,
       mainBody: (existing) => (existing && existing.trim() ? existing : NOOP_MAIN_BODY),
       onEvent,
+      signal: opts.signal,
+      persistSection: opts.persistSection,
     });
   }
 

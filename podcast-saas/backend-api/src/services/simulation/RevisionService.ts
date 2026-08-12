@@ -37,6 +37,7 @@ import type { StorageService, StoredObjectHead } from '../storage/StorageService
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import { logger } from '../../lib/logger.js';
 import { canaryReportPrepareMs } from 'shared/sim/prepareBudget';
+import { bridgeAckCapableFromMetadata, requiresImportMapsFromMetadata } from 'shared/sim/bridgeCapability';
 import { createHash } from 'node:crypto';
 import {
   canTransition,
@@ -76,6 +77,14 @@ export class RevisionConflict extends Error {
     this.name = 'RevisionConflict';
   }
 }
+
+/**
+ * The transaction handle `activate()`'s post-promote hook runs inside.
+ *
+ * Exposed as a type so a caller can write a hook without importing drizzle internals — it is
+ * exactly the `tx` a `db.transaction(async (tx) => …)` callback receives.
+ */
+export type RevisionDbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 /** A published file failed verification. Publication must not proceed. */
 export interface VerificationProblem {
@@ -288,8 +297,16 @@ export class RevisionService {
       throw new RevisionConflict('active→failed',
         'the active revision cannot be failed in place — roll back to move the pointer first');
     }
+    // MERGE, do not replace. `transition` writes `extra` straight into `.set()`, so a plain
+    // `{ error }` object clobbered the whole metadata column — including the {trigger, sectionId,
+    // baseRevisionId} provenance `createDraft` wrote. That was survivable while failed drafts were
+    // rare; since P0.4 the live generation path routinely produces them (an abort after staging
+    // marks the draft failed and leaves its bytes in an unreferenced prefix), and the row was the
+    // only thing that could say which section those orphaned bytes came from. Merged in SQL rather
+    // than read-then-write so it stays one atomic statement, and `validate` merges for the same
+    // reason a few lines down.
     return this.transition(simulationId, revisionId, from, 'failed', {
-      metadata: { error },
+      metadata: sql`COALESCE(${sim_revisions.metadata}, '{}'::jsonb) || ${JSON.stringify({ error })}::jsonb`,
     });
   }
 
@@ -541,6 +558,18 @@ export class RevisionService {
     storagePrefix: string;
     expectedActiveRevisionId: string | null;
     supersede: 'retired' | 'rolled_back';
+    /**
+     * Runs INSIDE the activation transaction, after the pointer flip has succeeded.
+     *
+     * This is what lets a caller make one more row consistent with the flip ATOMICALLY — the live
+     * generation path updates `timeline_sections.simulation_url` here, so a crash or a thrown hook
+     * can never leave the section pointing at bytes that were not activated (the throw rolls the
+     * whole activation back, promote and pointer included). It is never called when any of the
+     * compare-and-sets loses: a conflict throws before this point.
+     *
+     * Optional and additive: `rollback()` and every pre-existing caller keep not passing it.
+     */
+    onActivated?: (tx: RevisionDbTx) => Promise<void>;
   }): Promise<{ activated: SimRevisionRecord; superseded: string | null }> {
     try {
       return await this.activateInTransaction(opts);
@@ -566,6 +595,7 @@ export class RevisionService {
     storagePrefix: string;
     expectedActiveRevisionId: string | null;
     supersede: 'retired' | 'rolled_back';
+    onActivated?: (tx: RevisionDbTx) => Promise<void>;
   }): Promise<{ activated: SimRevisionRecord; superseded: string | null }> {
     const { simulationId, revisionId, storagePrefix, expectedActiveRevisionId, supersede } = opts;
 
@@ -655,6 +685,19 @@ export class RevisionService {
           prepare_budget_ms: canaryReportPrepareMs(
             promoted.canary_report as Parameters<typeof canaryReportPrepareMs>[0],
           ),
+          // PROJECTED FROM THE REVISION'S OWN METADATA, in the same statement, for exactly the
+          // reason the verdict columns above are (audit P0.5). The bridge either posts
+          // SCRIPT_APPLIED or it does not, and that is a property of the BYTES — so after a
+          // rollback the projection has to describe the revision the pointer now names, not the
+          // one that was withdrawn. A revision published before the capability was recorded
+          // projects NULL, which the player reads as "unproven" and handles as its own case.
+          bridge_ack_capable: bridgeAckCapableFromMetadata(promoted.metadata),
+          // The OTHER half of the same record, projected in the same statement (audit P0.8).
+          // Whether the entry document needs import maps is a property of one revision's bytes, so
+          // a republish that adds or removes the tag — and a rollback past it — has to move this
+          // value with the pointer. A revision published before the requirement was recorded
+          // projects NULL, which the viewer's floor reads as UNKNOWN and never as "requires".
+          requires_import_maps: requiresImportMapsFromMetadata(promoted.metadata),
         })
         .where(and(
           eq(simulations.id, simulationId),
@@ -662,6 +705,14 @@ export class RevisionService {
         ))
         .returning({ id: simulations.id });
       if (!flipped) throw new RevisionConflict('pointer', 'active_revision_id moved under us');
+
+      // (d) THE CALLER'S POST-PROMOTE HOOK — same transaction, after every CAS has held.
+      //
+      //     Placement is the contract: a hook that runs before the pointer CAS could write rows
+      //     consistent with an activation that then loses; here, either the whole activation —
+      //     demote, promote, pointer AND the hook's writes — commits, or none of it does. A throw
+      //     from the hook is therefore a full rollback, not a half-activated package.
+      if (opts.onActivated) await opts.onActivated(tx);
 
       return { activated: toRecord(promoted), superseded };
     });

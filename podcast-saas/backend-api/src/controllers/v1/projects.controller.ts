@@ -3,15 +3,17 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { extname } from 'path';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
-import { projects, hosts, video_files, simulations, audio_files, image_files, collaborators } from '../../db/schema.js';
+import { projects, hosts, video_files, simulations, audio_files, image_files, collaborators, project_duplications } from '../../db/schema.js';
 import { eq, and, inArray } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { editableProject, projectsEditableByWhere } from '../../services/collabAccess.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { uploadWithFallback } from '../../services/storage/uploadWithFallback.js';
 import { deleteWithFallback, deleteWithPrefixFallback } from '../../services/storage/deleteWithFallback.js';
+import { deleteHlsRetirementRowsForVideo } from '../../services/video/hlsRetention.js';
 import { getOpenAIClient } from '../../services/llm/systemAi.js';
 import { moderateGenerationInput } from '../../services/llm/ContentModerationService.js';
+import { enqueueJob } from '../../queue/index.js';
 import { logger } from '../../lib/logger.js';
 import { AppError, CreateProjectSchema } from 'shared';
 
@@ -440,10 +442,12 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
       // Best-effort storage GC — from R2 and/or local disk, wherever the bytes landed
       // (review backend-003). Helpers swallow + log their own errors.
       await Promise.all([
-        // Raw video files + HLS segments
+        // Raw video files + HLS segments (plus the grace-period retirement bookkeeping —
+        // the whole hls/{id}/ tree is purged here, so the retention sweep must forget it)
         ...videos.flatMap(v => [
           v.storage_key ? deleteWithFallback(v.storage_key) : null,
           deleteWithPrefixFallback(`hls/${v.id}`),
+          deleteHlsRetirementRowsForVideo(v.id),
         ].filter(Boolean)),
         // Simulation file trees
         ...sims.map(s => deleteWithPrefixFallback(s.storage_prefix)),
@@ -458,6 +462,143 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
       ]);
 
       return reply.code(204).send();
+    },
+  );
+
+  // POST /api/v1/projects/:id/duplicate — start an independent copy of the whole project.
+  //
+  // ASYNC, and it returns the DUPLICATION id, not a project id. A full HLS ladder is hundreds of
+  // megabytes, so the copy cannot run inside a request; and the destination project row is written
+  // only at the very end, in one transaction, so that a failed copy leaves no half-built project to
+  // find. The client polls the GET below and navigates when `target_project_id` appears.
+  //
+  // Owner-only, exactly like DELETE: duplication reads every byte of the project and mints a new
+  // one that the requester will own. Collaborators can edit but not fork (collab-042's line).
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/projects/:id/duplicate',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const project = await db.query.projects.findFirst({
+        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
+      });
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+
+      const { ProjectDuplicationService, duplicateMaxBytes, liveDuplicationFor } =
+        await import('../../services/project/ProjectDuplicationService.js');
+
+      // Already running? Return the in-flight job rather than starting a second full media copy —
+      // the partial unique index would reject the insert anyway, but answering with the existing
+      // job makes a double-click idempotent instead of an error.
+      //
+      // …unless it is not actually running, which `liveDuplicationFor` is what decides. The copy
+      // takes minutes on a driver with no durability, so a deploy or a crash strands the row in
+      // `copying`, where the index makes it a PERMANENT block on duplicating this project and the
+      // client's poll follows it forever at frozen progress. Answering `already_running` for a row
+      // nothing is running is how that became unrecoverable.
+      // 42P01 = `project_duplications` does not exist, i.e. migration 056 has been rolled back
+      // under an image that still serves this route. That is a DEPLOYED-FEATURE-REMOVED state, not
+      // a bug in the request, and it is what 056's rollback notes promise answers cleanly — so it
+      // has to be caught HERE and not only around the insert, because this read reaches the table
+      // first. Without it the route 500s and the client's poll treats it as a transient failure.
+      let inflight: Awaited<ReturnType<typeof liveDuplicationFor>>;
+      try {
+        inflight = await liveDuplicationFor(project.id);
+      } catch (err) {
+        if ((err as { code?: string } | null)?.code === '42P01') {
+          return reply.code(503).send({ message: 'Duplicating projects is temporarily unavailable.' });
+        }
+        throw err;
+      }
+      if (inflight) {
+        return reply.code(202).send({ duplication_id: inflight.id, status: inflight.status, already_running: true });
+      }
+
+      // The quota check runs HERE, synchronously, so an over-budget project is refused with a
+      // reason the user sees instead of a job that fails a minute later in a poll response.
+      const plan = await new ProjectDuplicationService().dryRun(project.id);
+      if (!plan) return reply.code(404).send({ message: 'Project not found' });
+      const cap = duplicateMaxBytes();
+      if (plan.estimatedBytes > cap) {
+        return reply.code(413).send({
+          message: `This project stores about ${Math.round(plan.estimatedBytes / 1e9)} GB of media, which is over the ${Math.round(cap / 1e9)} GB duplication limit.`,
+        });
+      }
+      // Same posture for an object the storage layer cannot copy at all: refused up front with the
+      // file named, rather than a job that spends minutes reaching a 400 no retry can pass.
+      const tooBig = ProjectDuplicationService.oversizeRefusal(plan);
+      if (tooBig) return reply.code(tooBig.statusCode).send({ message: tooBig.message });
+
+      try {
+        const [row] = await db.insert(project_duplications).values({
+          source_project_id: project.id,
+          requested_by: user.id,
+          status: 'queued',
+          objects_total: plan.storage.length,
+          bytes_total: plan.estimatedBytes,
+        }).returning();
+        enqueueJob('project_duplicate', { duplicationId: row.id });
+        return reply.code(202).send({ duplication_id: row.id, status: 'queued' });
+      } catch (err) {
+        // 23505 = the in-flight partial unique index; someone else won the race between the read
+        // above and this insert.
+        if ((err as { code?: string } | null)?.code === '23505') {
+          const [existing] = await db.select().from(project_duplications).where(and(
+            eq(project_duplications.source_project_id, project.id),
+            inArray(project_duplications.status, ['queued', 'copying', 'committing']),
+          ));
+          if (existing) {
+            return reply.code(202).send({ duplication_id: existing.id, status: existing.status, already_running: true });
+          }
+        }
+        // Same rolled-back-migration case as the read above: the table can also vanish between
+        // that read and this insert.
+        if ((err as { code?: string } | null)?.code === '42P01') {
+          return reply.code(503).send({ message: 'Duplicating projects is temporarily unavailable.' });
+        }
+        request.log.error({ err, projectId: project.id }, 'failed to start project duplication');
+        return reply.code(500).send({ message: 'Could not start the duplication. Please try again.' });
+      }
+    },
+  );
+
+  // GET /api/v1/projects/:id/duplications/:duplicationId — progress for one duplication.
+  app.get<{ Params: { id: string; duplicationId: string } }>(
+    '/api/v1/projects/:id/duplications/:duplicationId',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const project = await db.query.projects.findFirst({
+        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
+      });
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+
+      // Same rolled-back-056 case the POST handles. It matters more here: the client polls this
+      // route, and an unhandled 500 would spend its whole consecutive-failure budget before
+      // reporting anything. A 503 spends the same budget but ends on a statement that is true —
+      // the copy may well have finished; what is gone is our ability to say so.
+      let row: typeof project_duplications.$inferSelect | undefined;
+      try {
+        [row] = await db.select().from(project_duplications).where(and(
+          eq(project_duplications.id, request.params.duplicationId),
+          eq(project_duplications.source_project_id, project.id),
+        ));
+      } catch (err) {
+        if ((err as { code?: string } | null)?.code === '42P01') {
+          return reply.code(503).send({ message: 'Duplicating projects is temporarily unavailable.' });
+        }
+        throw err;
+      }
+      if (!row) return reply.code(404).send({ message: 'Duplication not found' });
+
+      return reply.send({
+        id: row.id,
+        status: row.status,
+        target_project_id: row.target_project_id,
+        objects_total: row.objects_total,
+        objects_copied: row.objects_copied,
+        error: row.error,
+      });
     },
   );
 

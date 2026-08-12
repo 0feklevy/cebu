@@ -39,10 +39,49 @@ export interface StorageService {
   deleteFile(path: string): Promise<void>;
   /** Delete all objects whose key starts with prefix (used to purge HLS segments). */
   deleteWithPrefix(prefix: string): Promise<void>;
+
+  /**
+   * Copy one object to a new key, preserving its content type and Cache-Control.
+   *
+   * Server-side where the store can do it (S3 `CopyObject`), so a 400 MB HLS ladder never
+   * travels through the Node heap. Adapters that cannot copy server-side fall back to
+   * read-then-write, which is correct but slow — the fallback is an implementation detail,
+   * never a difference in observable behaviour.
+   *
+   * IDEMPOTENT BY CONSTRUCTION: the destination is overwritten, so an interrupted copy is
+   * resumable by simply running it again. `RevisionMigration` already depends on that property
+   * for its own byte-shuttling loop, and project duplication relies on it too — bytes are
+   * written before any row is committed, so a retry must be able to land on top of whatever
+   * the previous attempt already wrote.
+   */
+  copyObject(srcKey: string, destKey: string): Promise<void>;
+  /**
+   * Copy every object under `srcPrefix` to the same relative path under `destPrefix`.
+   *
+   * "Under" means the key IS `srcPrefix` or begins with `srcPrefix + '/'` — a deliberate
+   * narrowing of the raw string-prefix semantics `deleteWithPrefix` has on the cloud adapters,
+   * so that `copyPrefix('hls/abc', …)` cannot sweep up `hls/abcdef/…`. Every adapter honours
+   * that same rule, which is what lets the local-disk adapter (whose natural unit is a
+   * directory) and the S3 adapters (whose natural unit is a key prefix) agree.
+   *
+   * Returns the number of objects copied.
+   */
+  copyPrefix(srcPrefix: string, destPrefix: string): Promise<number>;
   /** Returns the public (no-auth) URL for a storage key. Used for HLS segments. */
   getPublicUrl(path: string): string;
   /** Returns the public (no-auth) URL for a simulation file. Served via /sim-public/* in local dev, R2 public URL in prod. */
   getSimPublicUrl(path: string): string;
+  /**
+   * The storage key a URL this adapter published names — the INVERSE of `getPublicUrl` /
+   * `getSimPublicUrl` — or null when the URL is not one of ours.
+   *
+   * Several columns store a full public URL and no key (`corpora.storage_url`,
+   * `avatar_config…faces[].imageUrl`, `guidance_meta.mdUrl`, `guidance[].audioUrl`). Recovering the
+   * key by pattern-matching hosts in a SERVICE is wrong for any adapter whose URL shape is not on
+   * the list — see `publicUrlKeys.ts` for the Supabase failure that motivated moving it here. Each
+   * adapter answers for its OWN shapes, beside the forward direction, so the pair cannot drift.
+   */
+  keyFromPublicUrl(url: string | null | undefined): string | null;
   /** Read a stored object as a Buffer. */
   readObject(key: string): Promise<Buffer>;
   /** List all object keys under the given prefix (non-recursive prefix, returns full keys). */

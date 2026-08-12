@@ -28,7 +28,11 @@ import {
   CHILD_INBOUND_TYPES,
   DOCUMENT_READY,
   PARENT_INBOUND_TYPES,
+  POLICY_APPLIED,
+  POLICY_REFUSED,
   SECTION_PRESENTED,
+  SET_AUTOMATION_POLICY,
+  SET_UI_POLICY,
   SIM_PROTOCOL_NAMESPACE,
   SIM_PROTOCOL_VERSION,
   makeEnvelope,
@@ -287,6 +291,10 @@ const INBOUND_IS_ACTIVATION_SCOPED = {
   DOCUMENT_ERROR: false,
   SECTION_APPLIED: true, SECTION_PRESENTED: true, SECTION_RELEASED: true,
   AUTOMATION_PAUSED: true, AUTOMATION_RESUMED: true, SECTION_ERROR: true, DOMAIN_EVENT: true,
+  // P1.2. A policy result is activation-scoped for the same reason an acknowledgement is: it
+  // describes ONE activation, and applying it to a later one is the whole class of defect the
+  // identity model exists to close.
+  POLICY_APPLIED: true, POLICY_REFUSED: true,
 } satisfies Record<SimInboundType, boolean>;
 
 const OUTBOUND_IS_ACTIVATION_SCOPED = {
@@ -294,6 +302,9 @@ const OUTBOUND_IS_ACTIVATION_SCOPED = {
   SET_AUDIBLE: false, SET_QUALITY: false, DISPOSE_DOCUMENT: false,
   PREPARE_SECTION: true, PRESENT_SECTION: true, ACTIVATE_SECTION: true,
   PAUSE_AUTOMATION: true, RESUME_AUTOMATION: true, RELEASE_SECTION: true,
+  // P1.2. Scoped, but NOT lifecycle: these two are the only activation-scoped commands that leave
+  // the activation exactly where they found it.
+  SET_UI_POLICY: true, SET_AUTOMATION_POLICY: true,
 } satisfies Record<SimOutboundType, boolean>;
 
 describe('makeEnvelope round-trips through validateEnvelope for EVERY message type', () => {
@@ -348,6 +359,80 @@ describe('makeEnvelope round-trips through validateEnvelope for EVERY message ty
   it('lists exactly the types each direction may receive', () => {
     expect([...PARENT_INBOUND_TYPES].sort()).toEqual(Object.keys(INBOUND_IS_ACTIVATION_SCOPED).sort());
     expect([...CHILD_INBOUND_TYPES].sort()).toEqual(Object.keys(OUTBOUND_IS_ACTIVATION_SCOPED).sort());
+  });
+});
+
+// ── P1.2: the policy pair, in lockstep across the three places that name it ────────────────────
+
+/**
+ * A message type lives in THREE places that cannot check each other: the direction UNION (compile
+ * time), the direction ALLOW-LIST (runtime), and `ACTIVATION_SCOPED_TYPES` (runtime). The tables
+ * above pin the first two by construction — they are total Records over the unions, and the
+ * allow-lists are compared to their key sets. What no total Record can express is the NEGATIVE:
+ * that a command is refused when it arrives from the wrong side.
+ *
+ * That negative is the interesting one for the policy pair specifically. `SET_UI_POLICY` and
+ * `SET_AUTOMATION_POLICY` are the first activation-scoped commands that leave the activation
+ * running, so an implementation could reasonably (and wrongly) treat them as harmless enough to
+ * accept from either direction — at which point a child's own echoed command would be read by the
+ * parent as a package's answer.
+ */
+describe('SET_UI_POLICY / SET_AUTOMATION_POLICY / POLICY_APPLIED / POLICY_REFUSED', () => {
+  const IDENTITY = {
+    playerSessionId: SESSION,
+    packageRevision: REVISION,
+    documentId: DOC,
+    activationId: 'act_1',
+    variantKey: 'sec-1',
+    configHash: '0123456789abcdef',
+  };
+
+  /** [constant, its wire value, the set that MUST accept it, the set that must NOT]. */
+  const PAIRS: [string, string, ReadonlySet<string>, ReadonlySet<string>, string][] = [
+    [SET_UI_POLICY, 'SET_UI_POLICY', CHILD_INBOUND_TYPES, PARENT_INBOUND_TYPES, 'a command'],
+    [SET_AUTOMATION_POLICY, 'SET_AUTOMATION_POLICY', CHILD_INBOUND_TYPES, PARENT_INBOUND_TYPES, 'a command'],
+    [POLICY_APPLIED, 'POLICY_APPLIED', PARENT_INBOUND_TYPES, CHILD_INBOUND_TYPES, 'an answer'],
+    [POLICY_REFUSED, 'POLICY_REFUSED', PARENT_INBOUND_TYPES, CHILD_INBOUND_TYPES, 'an answer'],
+  ];
+
+  for (const [constant, wire, accepts, rejects, role] of PAIRS) {
+    it(`${wire} is ${role}: accepted by its own direction, 'unknown-type' from the other`, () => {
+      // The literal value matters on its own. The v3 child restates these as bare strings in
+      // emitted ES5 (`case 'SET_UI_POLICY':`), so a renamed constant that kept compiling here
+      // would simply stop being dispatched by every package — silently, and only in production.
+      expect(constant).toBe(wire);
+      expect(accepts.has(wire), `${wire} is missing from the direction that must receive it`).toBe(true);
+      expect(rejects.has(wire), `${wire} is accepted from the wrong direction`).toBe(false);
+
+      const env = makeEnvelope(wire, IDENTITY, 1, {});
+      expect(validateEnvelope(env, { ...baseCtx(), lastSeq: 0, allowedTypes: accepts }).ok).toBe(true);
+
+      const wrongWay = validateEnvelope(env, { ...baseCtx(), lastSeq: 0, allowedTypes: rejects });
+      expect(wrongWay.ok).toBe(false);
+      if (!wrongWay.ok) expect(wrongWay.reason).toBe('unknown-type');
+    });
+
+    it(`${wire} is activation-scoped — an envelope without an activationId is refused`, () => {
+      // A policy that could arrive without naming its activation would be applied to whatever is on
+      // screen when it lands. For the two COMMANDS that means hiding controls on the section that
+      // superseded the one the user was looking at; for the two ANSWERS it means a refusal
+      // triggering a re-activation of the wrong section.
+      expect(ACTIVATION_SCOPED_TYPES.has(wire)).toBe(true);
+      const stripped = makeEnvelope(wire, {
+        playerSessionId: SESSION, packageRevision: REVISION, documentId: DOC,
+      }, 1, {});
+      const result = validateEnvelope(stripped, { ...baseCtx(), lastSeq: 0, allowedTypes: accepts });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.reason).toBe('missing-activation-id');
+    });
+  }
+
+  it('the four are genuinely NEW types — none of them collides with an existing one', () => {
+    // Cheap, and it catches the copy-paste that gives two constants the same wire value: the
+    // allow-list membership tests above would both still pass, and one of the two messages would
+    // silently be dispatched as the other.
+    const all = [...PARENT_INBOUND_TYPES, ...CHILD_INBOUND_TYPES];
+    expect(new Set(all).size, 'two message types share a wire value').toBe(all.length);
   });
 });
 

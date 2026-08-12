@@ -9,11 +9,11 @@ import { eq, and, gt, sql } from 'drizzle-orm';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import { transcodeToHLS, extractWaveformPeaks } from './HLSTranscoder.js';
 import { previousHlsTreeToGc } from './hlsVersioning.js';
+import { retireHlsRun } from './hlsRetention.js';
 import { isSimilarMedia, parsePeaks } from './mediaSimilarity.js';
 import { enqueueCropForProject } from '../crop/runCropAnalysis.js';
 import { enqueueCaptionsForProject } from '../captions/CaptionService.js';
 import { fetchWithRetry } from '../../lib/fetchWithRetry.js';
-import { deleteWithPrefixFallback } from '../storage/deleteWithFallback.js';
 import { logger } from '../../lib/logger.js';
 
 export async function runVideoTranscode(video_file_id: string): Promise<{ hls_master_key: string }> {
@@ -122,9 +122,18 @@ export async function runVideoTranscode(video_file_id: string): Promise<{ hls_ma
       }
     }
 
-    // Pointer is flipped — GC the previous *versioned* tree (different run), if any.
+    // Pointer is flipped — RETIRE the previous *versioned* tree (different run), if any.
+    // NOT deleted here: viewers mid-session still hold segment URLs into the old tree (their
+    // player buffered the old master before the flip), so it goes into hls_retired_runs and
+    // the hourly sweep deletes it only after the grace window (P0.3, sweepRetiredHlsRuns).
     const oldTree = previousHlsTreeToGc(video_file_id, oldMasterKey, runId);
-    if (oldTree) deleteWithPrefixFallback(oldTree).catch(() => {});
+    if (oldTree) {
+      await retireHlsRun(video_file_id, oldTree).catch((err) => {
+        // Best-effort, like the delete it replaces: a failed INSERT must not fail a finished
+        // transcode — but it means the old tree leaks until manually purged, so say so.
+        logger.warn({ err, video_file_id, oldTree }, 'failed to record retired HLS tree — it will not be swept');
+      });
+    }
 
     // Captions + smart-crop run on the WRITE path. Skip-if-similar: on a REPLACE where the
     // new media is essentially the same as the old (same duration + near-identical audio),

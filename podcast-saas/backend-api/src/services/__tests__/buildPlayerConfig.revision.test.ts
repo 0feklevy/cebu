@@ -223,6 +223,78 @@ describe('when the simulation rows cannot be read', () => {
     expect(sim.simulation_url).toBe(STORED_URL);
     expect(logged.error).toHaveBeenCalled();
   });
+
+  /**
+   * The 055/057 rollback window — the one both rollback files name as an incident.
+   *
+   * `bridge_ack_capable` and `requires_import_maps` are named in this file's explicit `columns`
+   * list, so dropping either column under an image that still declares it (or deploying an image
+   * ahead of its migrations) raises Postgres 42703 here. Without a retry that lands in the catch
+   * above, and `[]` on THIS path is not a degradation: every simulation loses its revision pointer
+   * at once and the viewer serves retired bytes for the whole project, silently. Both editor reads
+   * were given this retry; the viewer — the surface the rollback notes single out — was not.
+   */
+  describe('and the failure is only the post-migration capability columns', () => {
+    const revisionRow = () => simRow({ active_revision_id: REV, active_revision_entry_key: ENTRY_KEY });
+    // `mockResolvedValue`, not `…Once`: an unconsumed once-queue entry survives `clearAllMocks()`
+    // and would leak into the next test, which turns a mutation check into a puzzle.
+    const failThenRetry = () => {
+      mocks.simulations.findMany
+        .mockRejectedValueOnce(Object.assign(new Error('column "requires_import_maps" does not exist'), { code: '42703' }))
+        .mockResolvedValue([revisionRow()]);
+    };
+
+    it('KEEPS THE REVISION POINTER — it retries without those columns instead of degrading', async () => {
+      failThenRetry();
+      expect((await firstSim()).simulation_url)
+        .toBe(`https://cdn.example.com/sim-public/${ENTRY_KEY}?section=sec-1&v=H1`);
+      expect(logged.error).toHaveBeenCalled();
+    });
+
+    it('keeps the revision identity too, so no poster lookup moves', async () => {
+      failThenRetry();
+      expect((await firstSim()).package_revision).toBe(
+        packageRevisionFor({ id: 'sim-1', bridge_hash: 'H1', active_revision_id: REV }, derivePackageRevision),
+      );
+    });
+
+    it('reports both dropped facts as UNKNOWN — never as an answer', async () => {
+      // `?? false` on either would tell the apply gate a bridge is proven silent and the floor that
+      // a package is proven not to need import maps, both derived from a column that is not there.
+      failThenRetry();
+      const sim = await firstSim();
+      expect(sim.bridge_ack_capable).toBeNull();
+      expect(sim.requires_import_maps).toBeNull();
+    });
+
+    it('drops exactly those two columns and keeps every other one it reads', async () => {
+      failThenRetry();
+      await firstSim();
+      expect(mocks.simulations.findMany).toHaveBeenCalledTimes(2);
+      const retry = mocks.simulations.findMany.mock.calls[1]?.[0] as { columns?: Record<string, boolean> };
+      const selected = Object.keys(retry.columns ?? {});
+      expect(selected).not.toContain('bridge_ack_capable');
+      expect(selected).not.toContain('requires_import_maps');
+      // The pointer is the whole reason the retry exists; losing it here would make the retry a
+      // more elaborate way of reaching the same incident.
+      expect(selected).toEqual(expect.arrayContaining([
+        'id', 'package_class', 'bridge_hash', 'active_revision_id', 'active_revision_entry_key',
+        'prepare_budget_ms',
+      ]));
+      // And the retry must stay off the JSONB columns the narrow select exists to avoid.
+      for (const heavy of ['guidance', 'guidance_meta', 'bridge_functions', 'canary_report']) {
+        expect(selected).not.toContain(heavy);
+      }
+    });
+
+    it('still falls back to the empty list when the RETRY fails too', async () => {
+      // A failure of the retry is a real database failure rather than migration lag. The viewer
+      // must still render, which is what the outer catch is for.
+      mocks.simulations.findMany.mockRejectedValue(Object.assign(new Error('down'), { code: '08006' }));
+      expect((await firstSim()).simulation_url).toBe(STORED_URL);
+      expect(mocks.simulations.findMany).toHaveBeenCalledTimes(2);
+    });
+  });
 });
 
 // ══ RUM + PREPARE BUDGETS (Priority 8.7 / 8.9) ═══════════════════════════════════════════════
@@ -433,5 +505,129 @@ describe('sim_lab_budget_ms — the unrefined canary standard', () => {
       const cfg = await buildPlayerConfig('proj-1', 'user-1') as { sim_lab_budget_ms: Record<string, number> };
       expect(cfg.sim_lab_budget_ms['sim-1'], String(bad)).toBeUndefined();
     }
+  });
+});
+
+// ── Bridge acknowledgement capability (migration 055, audit P0.5) ────────────────────────────────
+//
+// The viewer's apply gate reads this on the FIRST activation of a package, at the one moment it has
+// no in-session evidence of its own. Delivering the wrong value is viewer-visible in both
+// directions: a false TRUE holds the section behind a cover for its whole duration, a false FALSE
+// reveals whatever the pooled document had already drawn as if it were the section requested.
+
+describe('bridge_ack_capable reaches the player alongside package_class', () => {
+  const capabilityOf = async () => (await firstSim()).bridge_ack_capable;
+
+  it('delivers a recorded TRUE', async () => {
+    mocks.simulations.findMany.mockResolvedValue([simRow({ bridge_ack_capable: true })]);
+    expect(await capabilityOf()).toBe(true);
+  });
+
+  it('delivers a recorded FALSE', async () => {
+    mocks.simulations.findMany.mockResolvedValue([simRow({ bridge_ack_capable: false })]);
+    expect(await capabilityOf()).toBe(false);
+  });
+
+  it('delivers NULL for a package published before the record existed', async () => {
+    // The default state of every row in production on the day 055 lands. It must arrive as null,
+    // which the gate treats as UNKNOWN and handles as its own case.
+    expect(await capabilityOf()).toBeNull();
+  });
+
+  it('delivers NULL — never false — when the column is absent from the row entirely', async () => {
+    // An app image running ahead of the migration: Drizzle returns rows without the key. `?? false`
+    // anywhere on this path would tell every viewer that every package is proven-silent, which is
+    // the first-activation hole restored globally, by a default, with nothing surfaced.
+    const { bridge_ack_capable: _omitted, ...withoutColumn } = simRow({ bridge_ack_capable: true });
+    mocks.simulations.findMany.mockResolvedValue([withoutColumn]);
+    expect(await capabilityOf()).toBeNull();
+  });
+
+  it('delivers NULL when the simulation row is missing altogether', async () => {
+    mocks.simulations.findMany.mockResolvedValue([]);
+    expect(await capabilityOf()).toBeNull();
+  });
+
+  it('is per-simulation, not per-project — two packages keep their own answers', async () => {
+    mocks.timeline_sections.findMany.mockResolvedValue([
+      section(),
+      section({ id: 'sec-2', simulation_id: 'sim-2', start_sec: 10, end_sec: 20 }),
+    ]);
+    mocks.simulations.findMany.mockResolvedValue([
+      simRow({ bridge_ack_capable: true }),
+      simRow({ id: 'sim-2', bridge_ack_capable: false }),
+    ]);
+    const cfg = await buildPlayerConfig('proj-1', 'user-1') as {
+      segments: Array<{ simulations: Array<Record<string, unknown>> }>;
+    };
+    expect(cfg.segments[0]!.simulations.map((s) => s.bridge_ack_capable)).toEqual([true, false]);
+  });
+});
+
+// ── Import-map requirement (migration 057, audit P0.8) ───────────────────────────────────────────
+//
+// This is what tells the viewer that a package cannot paint on THIS browser at all, so it can show
+// the section's poster instead of a frame that will stay blank for the whole section. Delivering the
+// wrong value is viewer-visible in both directions: a false TRUE replaces a working simulation with
+// a still image, a false FALSE is the blank frame P0.8 exists to end.
+
+describe('requires_import_maps reaches the player alongside bridge_ack_capable', () => {
+  const requirementOf = async () => (await firstSim()).requires_import_maps;
+
+  it('delivers a recorded TRUE', async () => {
+    mocks.simulations.findMany.mockResolvedValue([simRow({ requires_import_maps: true })]);
+    expect(await requirementOf()).toBe(true);
+  });
+
+  it('delivers a recorded FALSE', async () => {
+    mocks.simulations.findMany.mockResolvedValue([simRow({ requires_import_maps: false })]);
+    expect(await requirementOf()).toBe(false);
+  });
+
+  it('delivers NULL for a package published before the record existed', async () => {
+    // The default state of every row in production on the day 057 lands. Null reaches the viewer as
+    // UNKNOWN, and unknown never triggers the floor — so applying the migration changes nothing for
+    // anyone until packages are republished.
+    expect(await requirementOf()).toBeNull();
+  });
+
+  it('delivers NULL — never true — when the column is absent from the row entirely', async () => {
+    // An app image running ahead of the migration. A `?? true` anywhere on this path would poster
+    // every simulation in the product for every viewer on an older browser, in one deploy.
+    const { requires_import_maps: _omitted, ...withoutColumn } = simRow({ requires_import_maps: true });
+    mocks.simulations.findMany.mockResolvedValue([withoutColumn]);
+    expect(await requirementOf()).toBeNull();
+  });
+
+  it('delivers NULL when the simulation row is missing altogether', async () => {
+    mocks.simulations.findMany.mockResolvedValue([]);
+    expect(await requirementOf()).toBeNull();
+  });
+
+  it('is per-simulation, not per-project — two packages keep their own answers', async () => {
+    // The reason the requirement is a package property and not a device rule: one project can hold
+    // a three.js package that needs an import map and a plain-canvas one that does not, and only
+    // the first may be degraded on a browser that lacks them.
+    mocks.timeline_sections.findMany.mockResolvedValue([
+      section(),
+      section({ id: 'sec-2', simulation_id: 'sim-2', start_sec: 10, end_sec: 20 }),
+    ]);
+    mocks.simulations.findMany.mockResolvedValue([
+      simRow({ requires_import_maps: true }),
+      simRow({ id: 'sim-2', requires_import_maps: false }),
+    ]);
+    const cfg = await buildPlayerConfig('proj-1', 'user-1') as {
+      segments: Array<{ simulations: Array<Record<string, unknown>> }>;
+    };
+    expect(cfg.segments[0]!.simulations.map((s) => s.requires_import_maps)).toEqual([true, false]);
+  });
+
+  it('travels beside the ack without either shadowing the other', async () => {
+    mocks.simulations.findMany.mockResolvedValue([
+      simRow({ bridge_ack_capable: true, requires_import_maps: false }),
+    ]);
+    const sim = await firstSim();
+    expect(sim.bridge_ack_capable).toBe(true);
+    expect(sim.requires_import_maps).toBe(false);
   });
 });

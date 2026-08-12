@@ -37,6 +37,7 @@ import type {
   SimQualityProfile,
   VariantKey,
 } from './simIdentity.js';
+import type { SimPolicyKind, SimPolicyRefusal } from './simPolicy.js';
 
 // ─── Constants ────────────────────────────────────────────────────────────────────────────────
 
@@ -78,6 +79,18 @@ export const ACTIVATE_SECTION = 'ACTIVATE_SECTION' as const;
 export const PAUSE_AUTOMATION = 'PAUSE_AUTOMATION' as const;
 export const RESUME_AUTOMATION = 'RESUME_AUTOMATION' as const;
 export const RELEASE_SECTION = 'RELEASE_SECTION' as const;
+/**
+ * POLICY, not lifecycle (audit P1.2). These change the section's CHROME and AUTOMATION on the
+ * activation that is already live — no release, no cleanup, no re-run of the body, no solver
+ * reset. They are activation-scoped for the same reason every other command here is: a policy
+ * that arrived one activation late would otherwise be applied to whatever is on screen now.
+ *
+ * They are deliberately NOT modelled as a config change. `configHash` is an axis of activation
+ * identity, so a config change IS a new activation by construction — which is exactly the defect
+ * this pair exists to remove.
+ */
+export const SET_UI_POLICY = 'SET_UI_POLICY' as const;
+export const SET_AUTOMATION_POLICY = 'SET_AUTOMATION_POLICY' as const;
 
 /** Child → parent, activation scope. */
 export const SECTION_APPLIED = 'SECTION_APPLIED' as const;
@@ -85,6 +98,14 @@ export const SECTION_PRESENTED = 'SECTION_PRESENTED' as const;
 export const SECTION_RELEASED = 'SECTION_RELEASED' as const;
 export const AUTOMATION_PAUSED = 'AUTOMATION_PAUSED' as const;
 export const AUTOMATION_RESUMED = 'AUTOMATION_RESUMED' as const;
+/** A policy landed. Carries `changed:false` for an idempotent re-post — a no-op, not a failure. */
+export const POLICY_APPLIED = 'POLICY_APPLIED' as const;
+/**
+ * The package cannot honour this policy without being restarted, and says so rather than pretending
+ * it applied. The parent's only correct answer is a full re-activation — the honest fallback the
+ * finding demands be OBSERVABLE rather than silent.
+ */
+export const POLICY_REFUSED = 'POLICY_REFUSED' as const;
 export const SECTION_ERROR = 'SECTION_ERROR' as const;
 /** Anything the section reports about itself (interaction, milestone, custom telemetry). */
 export const DOMAIN_EVENT = 'DOMAIN_EVENT' as const;
@@ -93,14 +114,16 @@ export type SimOutboundType =
   | typeof INIT_DOCUMENT | typeof SUSPEND_DOCUMENT | typeof RESUME_DOCUMENT
   | typeof SET_AUDIBLE | typeof SET_QUALITY | typeof DISPOSE_DOCUMENT
   | typeof PREPARE_SECTION | typeof PRESENT_SECTION | typeof ACTIVATE_SECTION
-  | typeof PAUSE_AUTOMATION | typeof RESUME_AUTOMATION | typeof RELEASE_SECTION;
+  | typeof PAUSE_AUTOMATION | typeof RESUME_AUTOMATION | typeof RELEASE_SECTION
+  | typeof SET_UI_POLICY | typeof SET_AUTOMATION_POLICY;
 
 export type SimInboundType =
   | typeof DOCUMENT_READY | typeof DOCUMENT_SUSPENDED | typeof DOCUMENT_RESUMED
   | typeof QUALITY_APPLIED | typeof DISPOSED | typeof CONTEXT_LOST | typeof CONTEXT_RESTORED
   | typeof DOCUMENT_ERROR
   | typeof SECTION_APPLIED | typeof SECTION_PRESENTED | typeof SECTION_RELEASED
-  | typeof AUTOMATION_PAUSED | typeof AUTOMATION_RESUMED | typeof SECTION_ERROR
+  | typeof AUTOMATION_PAUSED | typeof AUTOMATION_RESUMED
+  | typeof POLICY_APPLIED | typeof POLICY_REFUSED | typeof SECTION_ERROR
   | typeof DOMAIN_EVENT;
 
 /**
@@ -111,8 +134,10 @@ export type SimInboundType =
 export const ACTIVATION_SCOPED_TYPES: ReadonlySet<string> = new Set<string>([
   PREPARE_SECTION, PRESENT_SECTION, ACTIVATE_SECTION,
   PAUSE_AUTOMATION, RESUME_AUTOMATION, RELEASE_SECTION,
+  SET_UI_POLICY, SET_AUTOMATION_POLICY,
   SECTION_APPLIED, SECTION_PRESENTED, SECTION_RELEASED,
-  AUTOMATION_PAUSED, AUTOMATION_RESUMED, SECTION_ERROR, DOMAIN_EVENT,
+  AUTOMATION_PAUSED, AUTOMATION_RESUMED,
+  POLICY_APPLIED, POLICY_REFUSED, SECTION_ERROR, DOMAIN_EVENT,
 ]);
 
 // ─── Envelope ─────────────────────────────────────────────────────────────────────────────────
@@ -151,6 +176,20 @@ export interface DocumentReadyPayload {
   capabilities: SimRuntimeCapabilities;
   /** Section ids the document really has. */
   variants: string[];
+  /**
+   * Policy families this document's bridge can apply WITHOUT a re-activation (audit P1.2).
+   *
+   * DELIBERATELY NOT A `SimRuntimeCapabilities` FIELD. That record is the reveal-path contract the
+   * canary classifies — every flag in it is load-bearing for `managed-presentable`, and a package
+   * that cannot hot-swap chrome is not thereby unable to present a correct frame. Folding policy
+   * support in there would demote healthy packages for a reason that has nothing to do with what
+   * they draw.
+   *
+   * ABSENT (undefined) IS THE ANSWER AN OLD PACKAGE GIVES. The bridge is regenerated per
+   * publication, so a package published before this protocol simply does not send the field — and
+   * the parent must read that as "no policy support" and fall back to a full restart, loudly.
+   */
+  policies?: SimPolicyKind[];
 }
 
 export interface SimRuntimeCapabilities {
@@ -201,6 +240,50 @@ export interface SectionPresentedPayload {
   canvas?: { width: number; height: number } | null;
   /** Frames the managed scope has submitted for THIS activation. Must be >= 1. */
   framesSubmitted: number;
+}
+
+export interface SetUiPolicyPayload {
+  simpleUi: boolean;
+  /**
+   * The MECHANICAL hide set — always an array on the wire, because this message drives ONLY the
+   * `#__simHideUi` style and never re-runs the body. The `null`-vs-`[]` distinction that matters
+   * on a restart (see simPolicy.ts) has no meaning here: the body never sees this value.
+   */
+  hideSelectors: string[];
+}
+
+export interface SetAutomationPolicyPayload {
+  autoScript: boolean;
+}
+
+export interface PolicyAppliedPayload {
+  kind: SimPolicyKind;
+  /** False for an idempotent re-post: the package was already in this state. Not a failure. */
+  changed: boolean;
+  /** Automation only — registered handles actually stopped. 0 is legitimate and is not a failure. */
+  stopped?: number;
+  /** Automation only — registered handles actually restarted. */
+  restarted?: number;
+  /**
+   * Automation only — handles that were paused but could not be recreated. Reported rather than
+   * hidden: a "resumed" acknowledgement covering timers that are in fact dead is worse than an
+   * honest zero.
+   */
+  unrestorable?: number;
+  /**
+   * UI only. False when the section body exposes no re-apply hook, so only the MECHANICAL hides
+   * moved and the body's own hiding (if it has any) was not re-evaluated. The parent does NOT
+   * restart for this — restarting is the reset this whole message exists to avoid — but the
+   * residual is reported so it is visible in the field rather than inferred from a screenshot.
+   */
+  bodyHook?: boolean;
+}
+
+export interface PolicyRefusedPayload {
+  kind: SimPolicyKind;
+  reason: SimPolicyRefusal;
+  /** Always true today: every refusal here means "re-activate me". Explicit so it can stop being. */
+  requiresRestart: boolean;
 }
 
 export interface SetAudiblePayload {
@@ -389,7 +472,8 @@ export const PARENT_INBOUND_TYPES: ReadonlySet<string> = new Set<string>([
   DOCUMENT_READY, DOCUMENT_SUSPENDED, DOCUMENT_RESUMED, QUALITY_APPLIED, DISPOSED,
   CONTEXT_LOST, CONTEXT_RESTORED, DOCUMENT_ERROR,
   SECTION_APPLIED, SECTION_PRESENTED, SECTION_RELEASED,
-  AUTOMATION_PAUSED, AUTOMATION_RESUMED, SECTION_ERROR, DOMAIN_EVENT,
+  AUTOMATION_PAUSED, AUTOMATION_RESUMED,
+  POLICY_APPLIED, POLICY_REFUSED, SECTION_ERROR, DOMAIN_EVENT,
 ]);
 
 /** The types a CHILD may legally receive. */
@@ -397,6 +481,7 @@ export const CHILD_INBOUND_TYPES: ReadonlySet<string> = new Set<string>([
   INIT_DOCUMENT, SUSPEND_DOCUMENT, RESUME_DOCUMENT, SET_AUDIBLE, SET_QUALITY, DISPOSE_DOCUMENT,
   PREPARE_SECTION, PRESENT_SECTION, ACTIVATE_SECTION,
   PAUSE_AUTOMATION, RESUME_AUTOMATION, RELEASE_SECTION,
+  SET_UI_POLICY, SET_AUTOMATION_POLICY,
 ]);
 
 // ─── Construction ─────────────────────────────────────────────────────────────────────────────

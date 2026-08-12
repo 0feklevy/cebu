@@ -33,11 +33,12 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { SimRuntimeClient, type SimRuntimeState } from '../lib/sim/SimRuntimeClient';
-import { SIM_PAINTED, SIM_READY, START_SCRIPT, SIM_MUTE, SIM_PAUSE } from '../lib/sim/protocol';
+import { SCRIPT_APPLIED, SIM_EXIT_STOP_MS, SIM_PAINTED, SIM_READY, START_SCRIPT, SIM_MUTE, SIM_PAUSE } from '../lib/sim/protocol';
 import {
   ACTIVATE_SECTION,
   CONTEXT_LOST,
   DISPOSE_DOCUMENT,
+  DISPOSED,
   DOCUMENT_READY,
   DOCUMENT_RESUMED,
   DOCUMENT_SUSPENDED,
@@ -45,8 +46,12 @@ import {
   PREPARE_SECTION,
   PRESENT_SECTION,
   RELEASE_SECTION,
+  RESUME_DOCUMENT,
   SECTION_APPLIED,
   SECTION_PRESENTED,
+  SET_AUTOMATION_POLICY,
+  SET_UI_POLICY,
+  SUSPEND_DOCUMENT,
   SIM_BOOTSTRAP_ACCEPT_KIND,
   SIM_BOOTSTRAP_TIMEOUT_MS,
   SIM_PROTOCOL_VERSION,
@@ -55,6 +60,7 @@ import {
   makeEnvelope,
   type AnySimEnvelope,
   type SimBootstrapOffer,
+  type SimResourceCounts,
   type SimRuntimeCapabilities,
 } from 'shared/src/sim/runtimeProtocol';
 import {
@@ -62,9 +68,13 @@ import {
   computeConfigHash,
   type SimPresentationConfig,
 } from 'shared/src/sim/simIdentity';
+import type { SimPolicyKind } from 'shared/src/sim/simPolicy';
 import {
   PACKAGE_CLASS_ORDER,
   SIM_BREAKER_THRESHOLD,
+  SIM_DISPOSE_TIMEOUT_MS,
+  SIM_EVICT_GRACE_MS,
+  SIM_HANDSHAKE_TIMEOUT_MS,
   SIM_PREPARE_TIMEOUT_MS,
   SIM_PRESENT_TIMEOUT_MS,
 } from 'shared/src/sim/simFailurePolicy';
@@ -113,12 +123,25 @@ interface ChildOptions {
   autoApplied?: boolean;
   /** Answer PRESENT_SECTION with SECTION_PRESENTED. */
   autoPresented?: boolean;
+  /**
+   * Answer DISPOSE_DOCUMENT with DISPOSED, as the shipped child does (simRuntimeChild.onDispose
+   * sets DISPOSING, takes the scope's counts, posts DISPOSED, then closes the port). `false` models
+   * the child that CANNOT answer — a wedged script, a crashed renderer — which is the case the
+   * parent's deadline exists for and the one every eviction silently behaved as until now.
+   */
+  autoDisposed?: boolean;
   /** What the automatic SECTION_PRESENTED claims it submitted. */
   frames?: unknown;
   /** Send SECTION_PRESENTED with no `framesSubmitted` field at all. */
   omitFrames?: boolean;
   /** Lie about one identity axis in the automatic SECTION_PRESENTED. */
   distort?: Distortion;
+  /**
+   * (P1.2) The policy families this document's DOCUMENT_READY advertises. Omitted by default,
+   * which is precisely what a package published before the policy handlers sends — so every test
+   * that does not opt in is exercising the un-advertised case.
+   */
+  policies?: SimPolicyKind[];
 }
 
 interface DocIdent {
@@ -151,7 +174,12 @@ class FakeChild {
   port: MessagePort | null = null;
   ident: DocIdent | null = null;
   private outSeq = 0;
-  private opts: Required<Omit<ChildOptions, 'distort'>> & { distort: Distortion | null };
+  /** Resource counters this child reports at DISPOSED. Non-zero models a leaking package. */
+  disposeCounts: SimResourceCounts = ZERO_RESOURCE_COUNTS;
+  /** What this child admits it could not release. */
+  disposeLeaked: string[] = [];
+  private opts: Required<Omit<ChildOptions, 'distort' | 'policies'>>
+    & { distort: Distortion | null; policies: SimPolicyKind[] | null };
   private readonly unadopted: MessagePort[] = [];
 
   constructor(src: string, opts: ChildOptions = {}) {
@@ -163,7 +191,9 @@ class FakeChild {
       autoPresented: opts.autoPresented ?? true,
       frames: opts.frames ?? 1,
       omitFrames: opts.omitFrames ?? false,
+      autoDisposed: opts.autoDisposed ?? true,
       distort: opts.distort ?? null,
+      policies: opts.policies ?? null,
     };
     this.contentWindow = {
       postMessage: (msg, targetOrigin, transfer) => this.onPost(msg, targetOrigin, transfer),
@@ -235,6 +265,9 @@ class FakeChild {
       case PRESENT_SECTION:
         if (this.opts.autoPresented) this.sectionPresented(env);
         return;
+      case DISPOSE_DOCUMENT:
+        if (this.opts.autoDisposed) this.disposed();
+        return;
       default:
         return;
     }
@@ -257,8 +290,15 @@ class FakeChild {
     return env;
   }
 
-  documentReady(variants: string[] = ['A', 'B'], capabilities: SimRuntimeCapabilities = FULL_CAPABILITIES): void {
-    this.send(DOCUMENT_READY, {}, { capabilities, variants });
+  documentReady(
+    variants: string[] = ['A', 'B'],
+    capabilities: SimRuntimeCapabilities = FULL_CAPABILITIES,
+    policies: SimPolicyKind[] | null = this.opts.policies,
+  ): void {
+    // `policies` is ABSENT unless the fixture opted in — never `[]`. The parent has to be able to
+    // tell "this package predates the protocol" from "this package answered and declined", and an
+    // always-present empty array would erase that distinction at the source.
+    this.send(DOCUMENT_READY, {}, { capabilities, variants, ...(policies ? { policies } : {}) });
   }
 
   sectionApplied(prepare: AnySimEnvelope): void {
@@ -283,6 +323,14 @@ class FakeChild {
   }
 
   contextLost(): void { this.send(CONTEXT_LOST, {}, { contextKind: 'webgl' }); }
+
+  /**
+   * The acknowledgement no parent had ever received. Posted on the still-open port — which is the
+   * whole point: the shipped parent used to close it in the statement after the send.
+   */
+  disposed(): void {
+    this.send(DISPOSED, {}, { counts: this.disposeCounts, leaked: this.disposeLeaked });
+  }
 
   suspended(): void { this.send(DOCUMENT_SUSPENDED, {}, { counts: ZERO_RESOURCE_COUNTS, unstoppable: [] }); }
 
@@ -1199,6 +1247,12 @@ describe('an activation requested while the handshake is still undecided', () =>
     expect(v2Types(child), 'the deferred activation was dropped instead of run').toContain(START_SCRIPT);
     expect(child.v2.filter((m) => m.type === START_SCRIPT).length, 'the section was applied twice').toBe(1);
     expect(child.v2.find((m) => m.type === START_SCRIPT)?.script).toBe('A');
+    // AND STILL NOT SHOWN YET (audit P0.5). The paint above was the BOOT SCENE — this test's own
+    // comment says the document had been sent no startScript when it arrived. Presenting the frame
+    // the moment the v2 fallback posted startScript would present those same boot-scene pixels as
+    // if they were section A. The acknowledgement is what makes them section A's.
+    expect(c.getState().visible, 'an unacknowledged boot-scene frame was presented as section A').toBe(false);
+    fromChild(child, { type: SCRIPT_APPLIED, script: 'A', token: c.getState().activationToken });
     expect(c.getState().visible, 'the section applied on v2 was never shown').toBe(true);
     expect(c.getModernState().active).toBe(false);
   });
@@ -1266,6 +1320,113 @@ describe('an activation requested while the handshake is still undecided', () =>
     c.activate({ script: 'A' });
     await flush();
     expect(c.getState().visible, 'a resumed document could never be shown again').toBe(true);
+  });
+
+  it('THAWS a freeze the child has not confirmed yet — the pool freezes and thaws inside one tick', async () => {
+    // THE SAME ASYMMETRY THE EVICTION PAIR WAS FIXED FOR, in the pair the resident pool actually
+    // uses. `freeze()` sends SUSPEND_DOCUMENT and `documentReducer` maps SUSPEND to DOCUMENT_READY
+    // on purpose — the state only advances on the child's confirmation. `thaw()` used to gate on
+    // `docMachine.state === 'SUSPENDED'`, so for the whole of that round trip it sent NOTHING. The
+    // confirmation then landed on a document nobody had resumed: `acceptsCommands` went false for
+    // good, `modernActive()` with it, and the next activation held the section hidden until
+    // `failModern('handshake-failed')`. The pool freezes and thaws on the same synchronous pass
+    // (`finishWarm` thaws the next queued frame; a coordinated exit freezes and the re-entry
+    // activates), so this window is the NORMAL case, not a race.
+    const { c, child } = await boot();
+
+    c.freeze();
+    await flush();
+    expect(child.types(), 'the freeze sent nothing — this proves nothing').toContain(SUSPEND_DOCUMENT);
+    expect(
+      c.getModernState().documentState,
+      'the machine advanced without the child — the unconfirmed window does not exist here',
+    ).toBe('DOCUMENT_READY');
+    const resumesBefore = child.types().filter((t) => t === RESUME_DOCUMENT).length;
+
+    c.thaw();
+    await flush();
+    expect(
+      child.types().filter((t) => t === RESUME_DOCUMENT).length,
+      'the thaw left the SUSPEND_DOCUMENT it was the inverse of un-undone',
+    ).toBe(resumesBefore + 1);
+
+    // …and the late confirmations cannot wedge it: the child answers in the order it was asked, so
+    // the machine walks SUSPENDED → DOCUMENT_READY on its own and the document is usable again.
+    child.suspended();
+    await flush();
+    child.resumed();
+    await flush();
+    expect(c.getModernState().documentState).toBe('DOCUMENT_READY');
+    expect(c.modernActive(), 'the document never came back from an unconfirmed freeze').toBe(true);
+    c.activate({ script: 'B' });
+    await flush();
+    expect(child.last(PREPARE_SECTION).variantKey,
+      're-entry after an unconfirmed freeze/thaw could not install its section').toBe('B');
+  });
+
+  it('never resumes a document it did not suspend — the debt is what this client SENT', async () => {
+    // The other direction of the same rule. Driving the resume from a flag rather than from the
+    // machine must not turn every `thaw()` into an unconditional RESUME_DOCUMENT: a document that
+    // was never frozen has no `scope.pause()` to undo, and the child's own state machine has no
+    // state to accept the command in.
+    const { c, child } = await boot();
+    c.thaw();
+    c.thaw();
+    await flush();
+    expect(child.types(), 'a document that was never suspended was told to resume').not.toContain(RESUME_DOCUMENT);
+
+    // And ONE freeze is owed exactly ONE resume, however many times it is paid.
+    c.freeze();
+    c.thaw();
+    c.thaw();
+    await flush();
+    expect(child.types().filter((t) => t === RESUME_DOCUMENT).length,
+      'a second thaw sent a resume the child has nothing to match it to').toBe(1);
+  });
+
+  it('a NAVIGATION cancels the debt — a fresh document has been sent no suspend', async () => {
+    const { c, child } = await boot();
+    c.freeze();
+    await flush();
+
+    // The browser replaced the document under us: a new epoch, which this client has told nothing.
+    c.handleFrameLoad();
+    await flush();
+    const before = child.types().filter((t) => t === RESUME_DOCUMENT).length;
+    c.thaw();
+    await flush();
+    expect(child.types().filter((t) => t === RESUME_DOCUMENT).length,
+      'the new epoch inherited the old document’s suspend debt').toBe(before);
+  });
+
+  it('ACTIVATING a frozen document resumes it — the owner does not have to remember to', async () => {
+    // THE PLAYER-SIDE HALF, at the client boundary. `beginCoordinatedExit` freezes the outgoing
+    // package and the re-entry calls `activate()` with no thaw: on v2 that was invisible because
+    // `activate()` posts SIM_RESUME, but SIM_RESUME does not undo the v3 child's `scope.pause()`
+    // and `activateModern` posts nothing equivalent. So the activation arrived at a document that
+    // `modernActive()` reported dead, fell into the handshake-window deferral, held the section
+    // hidden and 6.5 s later failed it — with no recovery surface, on every single re-entry.
+    const { c, child, tel } = await boot();
+    c.freeze();
+    child.suspended();
+    await flush();
+    expect(c.modernActive(), 'the freeze was never confirmed — this proves nothing').toBe(false);
+
+    // Re-entry. Nobody thawed: that IS the viewer's re-entry path.
+    c.activate({ script: 'B' });
+    await flush();
+    expect(child.types(), 'the activation left the document paused').toContain(RESUME_DOCUMENT);
+
+    child.resumed();
+    await flush();
+    expect(child.last(PREPARE_SECTION).variantKey,
+      'the re-entered section was never prepared').toBe('B');
+    expect(c.getState().visible, 'the re-entered section was never shown').toBe(true);
+
+    // And the bounded failure the deferral arms never fires, because the deferral ended.
+    vi.advanceTimersByTime(SIM_HANDSHAKE_TIMEOUT_MS + SIM_PREPARE_TIMEOUT_MS + 100);
+    await flush();
+    expect(events(tel), 'the re-entry died in the handshake bound').not.toContain('modern-failure');
   });
 
   it('a teardown mid-deferral releases the hold — it must not strand the document invisible forever', async () => {
@@ -1648,5 +1809,446 @@ describe('transition measurement', () => {
     expect(c.getState().visible).toBe(true);
     expect(child.types()).toEqual([INIT_DOCUMENT, PREPARE_SECTION, PRESENT_SECTION, ACTIVATE_SECTION]);
     expect(countTel(tel, 'reveal')).toBe(1);
+  });
+});
+
+// ══ SECTION POLICY ON THE v3 PATH (audit P1.2) ═══════════════════════════════════════════════
+//
+// On v3 a presentation change was structural BY CONSTRUCTION: UI policy lives in
+// `PrepareSectionPayload.config`, `configHash` is an axis of activation identity, and `onPrepare`
+// opens with `releaseCurrent('superseded')`. So flipping "Minimal UI" released the scope, ran the
+// body's cleanup and re-ran the body — a full solver reset for a chrome change.
+//
+// SET_UI_POLICY / SET_AUTOMATION_POLICY are the two activation-scoped commands that deliberately
+// leave the activation where they found it. What is pinned HERE is the parent half: that the
+// command is sent with the live activation's five-axis identity, that it is only sent to a
+// document that advertised it, and that a refusal ends in a re-activation nobody has to infer.
+//
+// WHAT THIS BLOCK DOES NOT PROVE. Nothing here runs a section body — the child is a stand-in. That
+// a SET_UI_POLICY does not re-run the body is a property of the child RUNTIME, proven against the
+// emitted bytes in backend-api/src/scripts/__tests__/v3FixtureParity.test.ts.
+
+/** Bring a modern document to a section that has been prepared, presented and activated. */
+async function bootActivated(opts: BootOptions = {}): Promise<Harness & { config: SimPresentationConfig }> {
+  const h = await boot(opts);
+  const config = configFor();
+  h.c.activate({ script: 'A', config });
+  await flush();
+  return { ...h, config };
+}
+
+const POLICY_BOTH: SimPolicyKind[] = ['ui', 'automation'];
+
+/** The identity axes an activation-scoped command must carry, read off an envelope. */
+const axesOf = (env: AnySimEnvelope) => ({
+  activationId: env.activationId,
+  variantKey: env.variantKey,
+  configHash: env.configHash,
+  packageRevision: env.packageRevision,
+  documentId: env.documentId,
+});
+
+describe('setPolicy on the modern path — an activation-scoped command, not a new activation', () => {
+  it('sends SET_UI_POLICY with the LIVE activation identity, and prepares nothing', async () => {
+    const { c, child } = await bootActivated({ child: { policies: POLICY_BOTH } });
+    const prepare = child.last(PREPARE_SECTION);
+    const before = child.types().length;
+
+    expect(c.setPolicy({ simpleUi: true, hideSelectors: ['.controls'] })).toBe('policy');
+    await flush();
+
+    const policy = child.last(SET_UI_POLICY);
+    expect(policy.payload).toEqual({ simpleUi: true, hideSelectors: ['.controls'] });
+    // THE IDENTITY IS THE POINT. A policy that named a different activation would be applied to
+    // whatever is on screen when it lands — the wrong-section defect the whole identity model
+    // exists to close, arriving through a message that is not a lifecycle event.
+    expect(axesOf(policy)).toEqual(axesOf(prepare));
+
+    // …and nothing was re-prepared. On this path that is the entire finding: a second
+    // PREPARE_SECTION IS the release-and-re-run.
+    expect(child.types().slice(before), 'a chrome change produced lifecycle traffic').toEqual([SET_UI_POLICY]);
+    expect(child.types().filter((t) => t === PREPARE_SECTION)).toHaveLength(1);
+    expect(child.types().filter((t) => t === RELEASE_SECTION)).toHaveLength(0);
+  });
+
+  it('sends SET_AUTOMATION_POLICY for an automation change, and only that', async () => {
+    const { c, child } = await bootActivated({ child: { policies: POLICY_BOTH } });
+    const before = child.types().length;
+    expect(c.setPolicy({ autoScript: false })).toBe('policy');
+    await flush();
+    expect(child.types().slice(before)).toEqual([SET_AUTOMATION_POLICY]);
+    expect(child.last(SET_AUTOMATION_POLICY).payload).toEqual({ autoScript: false });
+  });
+
+  it('the hide set on the wire is ALWAYS an array — the null/[] distinction stops here', async () => {
+    // `SetUiPolicyPayload.hideSelectors` drives only the mechanical `#__simHideUi` style; the body
+    // is never re-run, so it never sees the value and the distinction has nothing to mean.
+    const { c, child } = await bootActivated({ child: { policies: POLICY_BOTH } });
+    c.setPolicy({ simpleUi: true, hideSelectors: null });
+    await flush();
+    expect((child.last(SET_UI_POLICY).payload as { hideSelectors: unknown }).hideSelectors).toEqual([]);
+  });
+
+  it('an un-advertising document is re-activated instead — the honest fallback', async () => {
+    // The default fixture sends DOCUMENT_READY with no `policies` field: exactly what a package
+    // published before the child gained the handlers sends.
+    const { c, child, tel } = await bootActivated();
+    expect(c.getState().policies, 'absence must read as "no support"').toEqual([]);
+    const prepares = child.types().filter((t) => t === PREPARE_SECTION).length;
+
+    expect(c.setPolicy({ simpleUi: true })).toBe('reactivated');
+    await flush();
+
+    expect(child.types(), 'a policy was sent to a child that never advertised one')
+      .not.toContain(SET_UI_POLICY);
+    expect(child.types().filter((t) => t === PREPARE_SECTION).length,
+      'the fallback did not actually re-activate').toBe(prepares + 1);
+    expect(events(tel)).toContain('policy-unsupported');
+    expect(lastTel(tel, 'policy-fallback-restart')!.detail).toMatchObject({ reason: 'unsupported' });
+  });
+
+  it('the fallback re-activation carries the new policy in its CONFIG, so the hash follows', async () => {
+    // On v3 the config is the activation's identity. A fallback that re-prepared with the OLD
+    // config would restart the section and still not apply the toggle — the worst of both.
+    const { c, child } = await bootActivated();
+    c.setPolicy({ simpleUi: true, hideSelectors: ['.x'] });
+    await flush();
+
+    const prepared = child.last(PREPARE_SECTION).payload as { config: SimPresentationConfig };
+    expect(prepared.config.simpleUi).toBe(true);
+    expect(prepared.config.hideSelectors).toEqual(['.x']);
+    expect(child.last(PREPARE_SECTION).configHash,
+      'the identity did not move with the config it describes')
+      .toBe(computeConfigHash(prepared.config));
+  });
+
+  it('POLICY_APPLIED is reported and changes nothing', async () => {
+    const { c, child, tel } = await bootActivated({ child: { policies: POLICY_BOTH } });
+    c.setPolicy({ simpleUi: true });
+    await flush();
+    const before = child.types().length;
+
+    child.send('POLICY_APPLIED', identityOf(child.last(SET_UI_POLICY)), {
+      kind: 'ui', changed: true, bodyHook: false,
+    });
+    await flush();
+
+    expect(lastTel(tel, 'policy-applied')!.detail).toMatchObject({ kind: 'ui', changed: true, bodyHook: false, modern: true });
+    expect(child.types().length, 'an applied policy produced further traffic').toBe(before);
+  });
+
+  it('POLICY_REFUSED re-activates, and names the package’s reason', async () => {
+    const { c, child, tel } = await bootActivated({ child: { policies: POLICY_BOTH } });
+    c.setPolicy({ autoScript: false });
+    await flush();
+    const prepares = child.types().filter((t) => t === PREPARE_SECTION).length;
+
+    child.send('POLICY_REFUSED', identityOf(child.last(SET_AUTOMATION_POLICY)), {
+      kind: 'automation', reason: 'never-started', requiresRestart: true,
+    });
+    await flush();
+
+    expect(lastTel(tel, 'policy-refused')!.detail).toMatchObject({ kind: 'automation', reason: 'never-started', modern: true });
+    expect(child.types().filter((t) => t === PREPARE_SECTION).length,
+      'a refusal did not fall back to a re-activation').toBe(prepares + 1);
+  });
+
+  it('a POLICY_REFUSED for a SUPERSEDED activation cannot tear down the live one', async () => {
+    // The refusal's own identity is checked before it is acted on. Acting on a stale one would
+    // evict the section that superseded it — a re-activation caused by a message about a section
+    // that is already gone.
+    const { c, child, tel } = await bootActivated({ child: { policies: POLICY_BOTH } });
+    c.setPolicy({ simpleUi: true });
+    await flush();
+    const stalePolicy = child.last(SET_UI_POLICY);
+
+    c.activate({ script: 'B', config: configFor() });
+    await flush();
+    const prepares = child.types().filter((t) => t === PREPARE_SECTION).length;
+
+    child.send('POLICY_REFUSED', identityOf(stalePolicy), {
+      kind: 'ui', reason: 'unsupported', requiresRestart: true,
+    });
+    await flush();
+
+    expect(child.types().filter((t) => t === PREPARE_SECTION).length,
+      'a stale refusal re-activated the live section').toBe(prepares);
+    expect(events(tel)).toContain('policy-stale-result-ignored');
+  });
+
+  it('an identical re-post sends nothing, and a release leaves nothing to police', async () => {
+    const { c, child } = await bootActivated({ child: { policies: POLICY_BOTH } });
+    c.setPolicy({ simpleUi: true, hideSelectors: ['.a'] });
+    await flush();
+    const after = child.types().length;
+
+    expect(c.setPolicy({ simpleUi: true, hideSelectors: ['.a'] })).toBe('unchanged');
+    await flush();
+    expect(child.types().length, 'an unchanged policy cost a message').toBe(after);
+
+    c.deactivate();
+    vi.advanceTimersByTime(SIM_EXIT_STOP_MS + 10);
+    await flush();
+    expect(c.setPolicy({ simpleUi: false }), 'policed a released activation').toBe('no-activation');
+  });
+});
+
+// ══ 12. TWO-PHASE EVICTION ═══════════════════════════════════════════════════════════════════
+//
+// The protocol has always specified this handshake and BOTH ends did their half except the parent:
+// the child sets DISPOSING and posts DISPOSED with resource counts, `documentMachine` models
+// `DISPOSING: { DISPOSED: 'EVICTED' }` — and the parent sent DISPOSE_DOCUMENT and closed the
+// MessagePort in the same statement, with no handler for the answer it had just asked for. Every
+// eviction in production was therefore FORCED, and nothing recorded that, so a package leaking GPU
+// memory on teardown was indistinguishable from one that shut down cleanly.
+
+describe('two-phase eviction — the parent waits for DISPOSED', () => {
+  /** Bring a document up, presented, so eviction has a real activation to release. */
+  async function presented(opts: BootOptions = {}): Promise<Harness> {
+    const h = await boot(opts);
+    h.c.activate({ script: 'A' });
+    await flush();
+    return h;
+  }
+
+  it('releases the section, then disposes only AFTER the grace window', async () => {
+    const { c, child } = await presented();
+    const before = child.types().length;
+
+    const done = c.evict({ reason: 'test' });
+    await flush();
+    expect(child.types().slice(before), 'the section was not released before disposal').toContain(RELEASE_SECTION);
+    expect(child.types(), 'DISPOSE_DOCUMENT went out inside the cancellable window').not.toContain(DISPOSE_DOCUMENT);
+    expect(c.evictionPhase()).toBe('grace');
+
+    vi.advanceTimersByTime(SIM_EVICT_GRACE_MS + 1);
+    await flush();
+    expect(child.types()).toContain(DISPOSE_DOCUMENT);
+    expect((await done).outcome).toBe('clean');
+  });
+
+  it('the port is NOT closed before the acknowledgement — the ack actually arrives', async () => {
+    const { c, child } = await presented();
+    child.disposeCounts = { ...ZERO_RESOURCE_COUNTS, glTextures: 4, timeouts: 2 };
+    child.disposeLeaked = ['audioContext'];
+
+    const done = c.evict();
+    vi.advanceTimersByTime(SIM_EVICT_GRACE_MS + 1);
+    await flush();
+
+    const res = await done;
+    // THE MUTATION THIS PINS: close the port in the same statement as the send (which is what
+    // `teardownModern` did) and this outcome is 'forced' with null counts — every time, for every
+    // package, which is exactly what production recorded.
+    expect(res.outcome, 'the acknowledgement could not be delivered').toBe('clean');
+    expect(res.counts?.glTextures).toBe(4);
+    expect(res.counts?.timeouts).toBe(2);
+    expect(res.leaked, 'a leak the child admitted to was dropped').toEqual(['audioContext']);
+  });
+
+  it('records the resource counts on the document machine, not just in the outcome', async () => {
+    const { c, child } = await presented();
+    child.disposeCounts = { ...ZERO_RESOURCE_COUNTS, glRenderers: 1 };
+    const done = c.evict();
+    vi.advanceTimersByTime(SIM_EVICT_GRACE_MS + 1);
+    await flush();
+    await done;
+    expect(c.getModernState().documentState).toBe('EVICTED');
+  });
+
+  it('a child that never answers is FORCED out at the deadline — and recorded as forced', async () => {
+    const { c, child, tel } = await presented({ child: { autoDisposed: false } });
+    const done = c.evict();
+    vi.advanceTimersByTime(SIM_EVICT_GRACE_MS + 1);
+    await flush();
+    expect(child.types()).toContain(DISPOSE_DOCUMENT);
+
+    // Still waiting one tick short of the deadline: the element must not be removed early either.
+    vi.advanceTimersByTime(SIM_DISPOSE_TIMEOUT_MS - 10);
+    await flush();
+    expect(c.evictionPhase()).toBe('disposing');
+
+    vi.advanceTimersByTime(20);
+    await flush();
+    const res = await done;
+    expect(res.outcome, 'an unprovable teardown was filed as a clean one').toBe('forced');
+    expect(res.counts, 'counts were invented for a child that said nothing').toBeNull();
+    expect(lastTel(tel, 'evict-complete')?.detail.outcome).toBe('forced');
+  });
+
+  it('a v2 document is evicted immediately and reported as UNPROVEN, never as clean', async () => {
+    // A legacy package has no DISPOSED to give. Calling that 'clean' would make the one metric this
+    // handshake produces read as a pass for every unmanaged frame in the pool.
+    const { c } = await presented({ child: { adopt: false } });
+    const done = c.evict();
+    vi.advanceTimersByTime(SIM_EVICT_GRACE_MS + 1);
+    await flush();
+    expect((await done).outcome).toBe('no-document');
+  });
+
+  it('is idempotent — a second call joins the first rather than disposing twice', async () => {
+    const { c, child } = await presented();
+    const a = c.evict();
+    const b = c.evict();
+    expect(a).toBe(b);
+    vi.advanceTimersByTime(SIM_EVICT_GRACE_MS + 1);
+    await flush();
+    await a;
+    expect(child.types().filter((t) => t === DISPOSE_DOCUMENT).length).toBe(1);
+  });
+
+  it('mutes and freezes the frame before it waits — nothing is audible for the handshake', async () => {
+    const { c, child } = await presented();
+    c.evict();
+    await flush();
+    expect(v2Types(child)).toContain(SIM_MUTE);
+    expect(v2Types(child)).toContain(SIM_PAUSE);
+    expect(child.types()).toContain(SUSPEND_DOCUMENT);
+    expect(c.getState().muted).toBe(true);
+  });
+
+  it('aborts a pending activation instead of letting its timers fire into a dying document', async () => {
+    const { c, child, tel } = await presented({ child: { autoApplied: false } });
+    c.activate({ script: 'B' });        // never acknowledged
+    await flush();
+    c.evict();
+    vi.advanceTimersByTime(SIM_PREPARE_TIMEOUT_MS * 2);
+    await flush();
+    expect(events(tel), 'a prepare timeout fired against a document being evicted').not.toContain('modern-failure');
+    expect(c.getState().visible).toBe(false);
+    child.close();
+  });
+
+  it('a native frame load inside the grace window SETTLES the eviction instead of wedging it', async () => {
+    // THE WEDGE. `handleFrameLoad` bumps the generation, and BOTH eviction callbacks guard on it —
+    // so the grace callback early-returned without settling and without arming the deadline.
+    // `evictPromise` then never resolved, which means the owner's `.then` never ran: the iframe and
+    // its WebGL context stayed mounted for the rest of the session, `isEvicting` kept sparing that
+    // frame from every later residency pass, and the 'single' kill switch's one-resident-document
+    // promise was broken on exactly the weak devices it exists for. Measured: still `grace`, still
+    // unsettled, 60s later.
+    const { c, tel } = await presented({ child: { autoDisposed: false } });
+    let settled: string | null = null;
+    void c.evict({ reason: 'test' }).then((o) => { settled = o.outcome; });
+    await flush();
+    expect(c.evictionPhase()).toBe('grace');
+
+    // The browser replaced the document under us — a genuine navigation, or the pristine reload.
+    c.handleFrameLoad();
+    await flush();
+
+    expect(settled, 'the eviction is unsettled: the owner is on a `.then()` nothing can run').toBe('forced');
+    expect(c.isEvicting(), 'the frame is still marked evicting, so no pass will ever take it').toBe(false);
+    expect(events(tel)).toContain('evict-forced-settle');
+
+    // …and nothing resurrects it later: the timers are gone and the phase is terminal.
+    vi.advanceTimersByTime(SIM_EVICT_GRACE_MS * 4 + SIM_DISPOSE_TIMEOUT_MS * 4);
+    await flush();
+    expect(c.evictionPhase()).toBe('evicted');
+  });
+
+  it('a settled eviction releases its promise — a second evict is answered fresh, not with the old outcome', async () => {
+    const { c } = await presented();
+    const first = c.evict();
+    vi.advanceTimersByTime(SIM_EVICT_GRACE_MS + 1);
+    await flush();
+    expect((await first).outcome).toBe('clean');
+
+    // `evict()` returns the in-flight promise so one document is never torn down twice — but a
+    // promise kept after it has RESOLVED makes the next eviction resolve instantly with the
+    // previous one's outcome, and the caller would remove an element on the strength of a
+    // settlement that described something else.
+    const second = await c.evict({ reason: 'again' });
+    expect(second.outcome, "the second eviction reported the first one's outcome").toBe('no-document');
+    expect(second.counts, 'a stale `clean` carried its counts into an eviction that proved nothing').toBeNull();
+  });
+});
+
+describe('two-phase eviction — re-entry', () => {
+  async function presented(opts: BootOptions = {}): Promise<Harness> {
+    const h = await boot(opts);
+    h.c.activate({ script: 'A' });
+    await flush();
+    return h;
+  }
+
+  it('CANCELS inside the grace window: nothing was disposed, so the frame comes back', async () => {
+    const { c, child, tel } = await presented();
+    const done = c.evict();
+    await flush();
+
+    expect(c.cancelEviction(), 'a reversible eviction refused to be reversed').toBe(true);
+    expect((await done).outcome).toBe('cancelled');
+    expect(c.isEvicting()).toBe(false);
+    expect(child.types(), 'the document was disposed despite the cancel').not.toContain(DISPOSE_DOCUMENT);
+    expect(events(tel)).toContain('evict-cancelled');
+
+    // And it is genuinely usable again — the acid test, since a cancel that leaves the client wedged
+    // is worse than no cancel at all.
+    vi.advanceTimersByTime(SIM_EVICT_GRACE_MS * 3);
+    await flush();
+    expect(child.types(), 'the grace timer fired after the cancel').not.toContain(DISPOSE_DOCUMENT);
+    c.activate({ script: 'B' });
+    await flush();
+    expect(child.last(PREPARE_SECTION).variantKey).toBe('B');
+  });
+
+  it('REFUSES after DISPOSE_DOCUMENT: there is nothing left to resurrect', async () => {
+    // A child that has not answered yet, so the window under test — DISPOSE sent, DISPOSED not
+    // received — is actually open. With an instantly-answering child it closes in the same tick and
+    // the refusal would be tested against the wrong phase.
+    const { c, tel } = await presented({ child: { autoDisposed: false } });
+    c.evict();
+    vi.advanceTimersByTime(SIM_EVICT_GRACE_MS + 1);
+    await flush();
+    expect(c.evictionPhase()).toBe('disposing');
+    expect(c.cancelEviction(), 'a disposing document was handed back to the viewer').toBe(false);
+    expect(lastTel(tel, 'evict-cancel-refused')?.detail.phase).toBe('disposing');
+  });
+
+  it('RESUMES the document the eviction suspended, even before the child has confirmed', async () => {
+    // THE ASYMMETRY. `evict()` sends SUSPEND_DOCUMENT, and `documentReducer` maps SUSPEND to
+    // DOCUMENT_READY on purpose — the state only advances on the child's confirmation. `thaw()`
+    // resumes only a machine that already reads SUSPENDED, so for the WHOLE of the cancellable
+    // window it sent nothing at all. The confirmation then landed on a document nobody had
+    // resumed, `acceptsCommands` went false for good, and the re-entry this cancel exists to serve
+    // died in `failModern('handshake-failed')`.
+    const { c, child } = await presented();
+    c.evict();
+    await flush();
+    expect(child.types(), 'the evict did not suspend, so there is nothing to undo').toContain(SUSPEND_DOCUMENT);
+    const resumesBefore = child.types().filter((t) => t === RESUME_DOCUMENT).length;
+
+    expect(c.cancelEviction()).toBe(true);
+    await flush();
+    expect(
+      child.types().filter((t) => t === RESUME_DOCUMENT).length,
+      'the cancel left the SUSPEND_DOCUMENT it sent un-undone',
+    ).toBe(resumesBefore + 1);
+
+    // …and the late confirmation cannot wedge it: the child answers SUSPENDED then RESUMED, the
+    // machine converges on DOCUMENT_READY, and the section the user came back for actually runs.
+    child.suspended();
+    await flush();
+    child.resumed();
+    await flush();
+    c.activate({ script: 'B' });
+    await flush();
+    expect(child.last(PREPARE_SECTION).variantKey,
+      're-entry after a cancelled eviction could not install its section').toBe('B');
+  });
+
+  it('and refuses to ACTIVATE a disposing document — the owner must build a new generation', async () => {
+    const { c, child, tel } = await presented({ child: { autoDisposed: false } });
+    c.evict();
+    vi.advanceTimersByTime(SIM_EVICT_GRACE_MS + 1);
+    await flush();
+    const before = child.types().filter((t) => t === PREPARE_SECTION).length;
+
+    c.activate({ script: 'B' });
+    await flush();
+    expect(child.types().filter((t) => t === PREPARE_SECTION).length,
+      'a section was installed into a runtime that had released its scope').toBe(before);
+    expect(events(tel)).toContain('activate-refused-disposing');
   });
 });

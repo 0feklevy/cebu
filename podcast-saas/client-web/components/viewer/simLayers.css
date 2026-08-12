@@ -112,6 +112,19 @@
   pointer-events: none;
 }
 
+/* The capability floor's cue (audit P0.8), shown in the cover-fallback slot when a package this
+   browser cannot run has no poster to stand in for it. It replaces the spinner rather than joining
+   it: a spinner promises that something is still arriving, and here nothing is — the simulation
+   will not run on this browser at all, and saying so is the only honest thing on offer. */
+.sim-floor-notice {
+  max-width: 32ch;
+  padding: 0 1.5rem;
+  text-align: center;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.72);
+}
+
 /* ── Recovery surface ─────────────────────────────────────────────────────────────────────── */
 /* Sits above the cover so the user reads the actions against the right picture: the poster stays
    visible underneath, which is what makes "keep the poster" an obviously available choice rather

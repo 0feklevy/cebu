@@ -7,6 +7,7 @@ import { editableProject, type CollabUser } from '../../services/collabAccess.js
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { uploadStreamWithFallback } from '../../services/storage/uploadStreamWithFallback.js';
 import { deleteWithFallback, deleteWithPrefixFallback } from '../../services/storage/deleteWithFallback.js';
+import { deleteHlsRetirementRowsForVideo } from '../../services/video/hlsRetention.js';
 import { logger } from '../../lib/logger.js';
 import { randomUUID } from 'crypto';
 import { enqueueCropForProject } from '../../services/crop/runCropAnalysis.js';
@@ -505,6 +506,9 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
       }
       // Delete all HLS segments and playlists (hls/{videoId}/*)
       await deleteWithPrefixFallback(`hls/${videoFile.id}`);
+      // The whole hls/{id}/ tree is gone — drop any pending grace-period retirement rows so
+      // the retention sweep (migration 053) isn't left pointing at already-deleted prefixes.
+      await deleteHlsRetirementRowsForVideo(videoFile.id);
 
       await db.delete(video_files).where(eq(video_files.id, videoFile.id));
 

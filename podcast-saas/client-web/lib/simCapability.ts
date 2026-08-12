@@ -13,7 +13,18 @@ export function canWarmUnpaused(): boolean {
   if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
   const nav = navigator as NavigatorLike;
   if (nav.connection?.saveData) return false;                 // respect Data Saver
-  if (typeof nav.deviceMemory === 'number' && nav.deviceMemory <= 4) return false;
+  const mem   = typeof nav.deviceMemory === 'number' ? nav.deviceMemory : null;
+  const cores = typeof nav.hardwareConcurrency === 'number' ? nav.hardwareConcurrency : null;
+  if (mem !== null && mem <= 4) return false;
+  // The ≤4-core threshold deliberately matches the `lowend=1` hint shared/src/sim/simUrl.ts
+  // stamps into every sim URL (hardwareConcurrency <= 4). Before this check, a 4-core device
+  // with unknown memory and a fine pointer was told it is low-end inside its own sim URL while
+  // this classifier handed it pool tier 'all' (CLASSIFY) — the two must agree.
+  if (cores !== null && cores <= 4) return false;
+  // Neither memory nor cores reported at all: unknown = conservative (skip), exactly as the
+  // header documents. (Firefox/Safari expose neither `deviceMemory` nor, in some privacy
+  // configurations, a truthful `hardwareConcurrency`.)
+  if (mem === null && cores === null) return false;
   try {
     if (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) return false; // touch/mobile
   } catch { /* matchMedia unavailable — fall through */ }
