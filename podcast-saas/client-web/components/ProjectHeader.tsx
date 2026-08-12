@@ -3,11 +3,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import Link from 'next/link';
-import { ArrowLeft, Check, Copy, ExternalLink, Eye, Globe, Link2, Loader2, Lock, Share2, Unlink2, X } from 'lucide-react';
+import { ArrowLeft, Check, Copy, ExternalLink, Eye, Film, Globe, Link2, Loader2, Lock, Share2, Unlink2, X } from 'lucide-react';
 import { TourButton } from './TourButton';
 import { api, createShareToken, revokeShareToken } from '../lib/api';
 import { PermalinkEditor } from './PermalinkEditor';
 import { ProjectSettingsPanel } from './ProjectSettingsPanel';
+import { ExportProgressPanel } from './ExportProgressPanel';
+import { useProjectExport } from '../lib/useProjectExport';
 import { useAuth } from '../lib/firebase';
 import type { Project } from 'shared/src/generated/client-v1';
 
@@ -41,8 +43,14 @@ export function ProjectHeader({ projectId }: Props) {
   const [shareOpen,     setShareOpen]      = useState(false);
   const [shareError,    setShareError]     = useState<string | null>(null);
   const [shareTab,      setShareTab]       = useState<'public' | 'private'>('public');
+  const [exportOpen,    setExportOpen]     = useState(false);
   const popRef = useRef<HTMLDivElement>(null);
   const sheetRef = useRef<HTMLDivElement>(null);
+  const exportWrapRef = useRef<HTMLDivElement>(null);
+
+  // Owned here, not by the panel: the poll must survive the popover being closed, and the button's
+  // spinner reflects a run the user may have started minutes ago.
+  const exportFlow = useProjectExport(projectId);
 
   // Load project info and existing share token
   useEffect(() => {
@@ -94,6 +102,26 @@ export function ProjectHeader({ projectId }: Props) {
     return () => window.removeEventListener('keydown', handler);
   }, [shareOpen]);
 
+  // The export popover closes like the share sheet does — outside click or Escape. Closing hides
+  // the panel only; the export itself keeps running (and keeps being polled) in the hook above.
+  useEffect(() => {
+    if (!exportOpen) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (exportWrapRef.current && !exportWrapRef.current.contains(e.target as Node)) {
+        setExportOpen(false);
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setExportOpen(false);
+    };
+    document.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [exportOpen]);
+
   const statusStyle = project ? (STATUS_STYLES[project.status] ?? 'bg-muted text-muted-foreground') : '';
   const statusLabel = project ? (STATUS_LABELS[project.status] ?? project.status) : '';
   // Only disable Preview/Share when the timeline has no main clip (fresh project). Once any main
@@ -129,6 +157,15 @@ export function ProjectHeader({ projectId }: Props) {
     setTimeout(() => setShareCopied(false), 2000);
   };
 
+  const handleExportClick = () => {
+    setExportOpen(true);
+    // Reopening while a run is in flight — or finished, or paused on the degraded-quality
+    // question — must NOT restart it: the server would join us to the same run anyway
+    // (`already_running`), but resetting client state here would discard the warnings, the
+    // download, or the consent dialog the user came back for. Only a resting control starts.
+    if (exportFlow.status === null && !exportFlow.degradedConsent) void exportFlow.start();
+  };
+
   const handleRevoke = async () => {
     setShareLoading(true);
     try {
@@ -161,6 +198,30 @@ export function ProjectHeader({ projectId }: Props) {
             {statusLabel}
           </span>
         )}
+      </div>
+
+      <div className="relative shrink-0" ref={exportWrapRef}>
+        <button
+          type="button"
+          aria-label="Export video"
+          onClick={handleExportClick}
+          disabled={noVideos}
+          title={noVideos ? 'Add a video first to export' : undefined}
+          className={`inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-2 text-xs font-medium shell-muted transition-colors focus-ring sm:px-3 ${noVideos ? 'cursor-not-allowed opacity-50' : 'shell-hover hover:text-[hsl(var(--shell-foreground))]'}`}
+          style={{ borderColor: 'hsl(var(--shell-border))' }}
+        >
+          {exportFlow.busy ? (
+            <Loader2 size={13} className="animate-spin" aria-hidden />
+          ) : (
+            <Film size={13} strokeWidth={1.8} aria-hidden />
+          )}
+          <span className="hidden min-[390px]:inline">Export video</span>
+        </button>
+        <ExportProgressPanel
+          open={exportOpen}
+          onClose={() => setExportOpen(false)}
+          flow={exportFlow}
+        />
       </div>
 
       <a
