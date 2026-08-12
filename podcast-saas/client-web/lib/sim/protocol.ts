@@ -127,5 +127,26 @@ export const SIM_EXIT_STOP_MS = 280;
 /** Terminal bound on waiting for SCRIPT_APPLIED. Never a reveal-on-timer for a healthy bridge —
  *  only the escape hatch that keeps a wedged document from holding the screen forever. */
 export const SIM_APPLY_STALL_MS = 3_000;
+/**
+ * How long silence is inconclusive when we do not KNOW whether the bridge acknowledges at all.
+ *
+ * This is a different question from `SIM_APPLY_STALL_MS`, and conflating them cost the entire
+ * installed base three blank seconds. That bound is the slow-body allowance for a bridge we have
+ * already PROVEN acknowledges: we are waiting on a specific ack we know is coming, so waiting long
+ * is right. This bound answers "does this bridge acknowledge at all?" — and for that, silence stops
+ * being informative far sooner.
+ *
+ * Why this length is evidence and not a guess: the generated bridge posts SCRIPT_APPLIED from a
+ * `requestAnimationFrame` callback scheduled once the body has RETURNED (see the `_ack` closure in
+ * SimulationService's bridge template). The generation prompt's ~200 ms polling happens
+ * asynchronously AFTER that return, so it does not delay the ack. A bridge that acknowledges has
+ * therefore acknowledged within roughly one body-return plus one frame; this allows an order of
+ * magnitude more than that before concluding the bridge is silent.
+ *
+ * It only ever applies to the UNKNOWN case (`await-ack-bounded`). A package the record or an
+ * in-session ack proves capable keeps the full `SIM_APPLY_STALL_MS`, and its deadline still only
+ * covers — it never reveals.
+ */
+export const SIM_ACK_CAPABILITY_PROBE_MS = 600;
 /** Reveal ceiling for pre-gate packages that can never emit SIM_PAINTED. */
 export const SIM_LEGACY_REVEAL_MS = 800;

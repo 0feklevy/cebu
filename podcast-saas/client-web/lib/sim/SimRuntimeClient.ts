@@ -47,6 +47,7 @@ import {
   SCRIPT_ERROR,
   SCRIPT_MISSING,
   SIM_APPLY_STALL_MS,
+  SIM_ACK_CAPABILITY_PROBE_MS,
   SIM_EXIT_STOP_MS,
   SIM_MUTE,
   SIM_PAINTED,
@@ -1025,6 +1026,14 @@ export class SimRuntimeClient {
       });
       this.set({ phase: 'awaiting-ack', visible: false, interactive: false, covered: false });
       const gen = this.generation;
+      // Two different questions, two different bounds. `await-ack` waits on an ack we KNOW is
+      // coming, so it gets the full slow-body allowance. `await-ack-bounded` is the UNKNOWN case:
+      // it is asking whether this bridge acknowledges AT ALL, and one shared 3 s constant meant
+      // every dynamic package published before SCRIPT_APPLIED existed — i.e. the whole installed
+      // base, since 055 shipped nullable with no backfill — showed nothing for three seconds on
+      // its first activation. That is the regression `13. a LEGACY package … never held on
+      // silence` catches.
+      const holdMs = decision === 'await-ack-bounded' ? SIM_ACK_CAPABILITY_PROBE_MS : SIM_APPLY_STALL_MS;
       this.applyStallTimer = setTimeout(() => {
         this.applyStallTimer = null;
         if (this.generation !== gen || this.state.activationToken !== token) return;
@@ -1046,12 +1055,12 @@ export class SimRuntimeClient {
         // still only covers, and `capabilityOf` answers 'capable' from the record even once
         // `ackCapable` is false — so a proven bridge that goes quiet keeps holding, forever if need
         // be, which is the property this whole gate exists for.
-        if (decision === 'await-ack-bounded') { this.concludeAckSilent(script); return; }
+        if (decision === 'await-ack-bounded') { this.concludeAckSilent(script, holdMs); return; }
         // NOT a force-reveal. See coverUnacknowledged: the hold survives its own deadline and the
         // owner is told to cover instead, because "the user has waited long enough" is not evidence
         // about which sub-simulation is on the canvas.
-        this.coverUnacknowledged(script, decision, SIM_APPLY_STALL_MS);
-      }, SIM_APPLY_STALL_MS);
+        this.coverUnacknowledged(script, decision, holdMs);
+      }, holdMs);
     } else {
       this.holding = false;
       this.maybeReveal();
@@ -1674,10 +1683,10 @@ export class SimRuntimeClient {
    * again. The PACKAGE record is never written from here — a stale in-session conclusion must not
    * be able to outlive the document that produced it.
    */
-  private concludeAckSilent(script: string): void {
+  private concludeAckSilent(script: string, waitedMs: number): void {
     if (this.disposed || !this.holding) return;
     this.set({ ackCapable: false });
-    this.tel('apply-unknown-concluded-silent', { script, waitedMs: SIM_APPLY_STALL_MS });
+    this.tel('apply-unknown-concluded-silent', { script, waitedMs });
     this.holding = false;
     // The hold is over, so nothing is left for a cover to explain.
     this.set({ pendingScript: null, covered: false });

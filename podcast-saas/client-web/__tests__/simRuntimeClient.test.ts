@@ -9,7 +9,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { SimRuntimeClient, type SimRuntimeState } from '../lib/sim/SimRuntimeClient';
-import { SIM_APPLY_STALL_MS, SIM_EXIT_STOP_MS } from '../lib/sim/protocol';
+import { SIM_APPLY_STALL_MS, SIM_EXIT_STOP_MS, SIM_ACK_CAPABILITY_PROBE_MS } from '../lib/sim/protocol';
 
 // ── fake document plumbing ────────────────────────────────────────────────────────────────
 interface Sent { type: string; [k: string]: unknown }
@@ -200,7 +200,14 @@ describe('legacy documents are never made to wait on silence', () => {
     c.activate({ script: 'A' });
     c.activate({ script: 'B' });
     expect(c.getState().visible, 'an unverified frame was revealed').toBe(false);
-    vi.advanceTimersByTime(SIM_APPLY_STALL_MS - 50);
+    // The bound is the CAPABILITY PROBE, not the slow-body allowance, and the difference is the
+    // whole point. This test originally pinned SIM_APPLY_STALL_MS, and that is exactly the defect
+    // the real-viewer E2E `13. a LEGACY package … never held on silence` caught: since 055 shipped
+    // nullable with no backfill, EVERY package in the database is unknown, so a shared 3 s bound
+    // meant the entire installed base showed nothing for three seconds on its first activation.
+    // A bridge that acknowledges does so one frame after the body RETURNS, so silence stops being
+    // informative long before three seconds.
+    vi.advanceTimersByTime(SIM_ACK_CAPABILITY_PROBE_MS - 50);
     expect(c.getState().visible, 'released before the bound was up').toBe(false);
 
     vi.advanceTimersByTime(100);
@@ -226,6 +233,13 @@ describe('legacy documents are never made to wait on silence', () => {
     fromChild(win, { type: 'SIM_PAINTED' });
     c.activate({ script: 'A' });
     c.activate({ script: 'B' });
+    // A PROVEN bridge keeps the full slow-body allowance — it is waiting on a specific ack it is
+    // known to send, which is a different question from "does this bridge ack at all". Pinned
+    // explicitly: without this, collapsing both bounds back onto the short probe window would
+    // still leave every assertion below green, because they all look only at the far side of the
+    // longer deadline.
+    vi.advanceTimersByTime(SIM_ACK_CAPABILITY_PROBE_MS + 50);
+    expect(c.getState().covered, 'a proven bridge was covered at the UNKNOWN probe window').toBe(false);
     vi.advanceTimersByTime(SIM_APPLY_STALL_MS + 10);
     expect(c.getState().visible, 'a proven bridge that went quiet was revealed anyway').toBe(false);
     expect(c.getState().covered).toBe(true);
