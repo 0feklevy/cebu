@@ -1695,6 +1695,17 @@ export function useProjectPlayer(
   const deactivateSim = (opts?: { exitToVideo?: boolean }) => {
     warmGenRef.current++;                    // invalidate any pending reveal
     const key = activeSimUrlRef.current;
+    // A HANDOFF IN FLIGHT OWNS THIS EXIT — later ticks must not exit it again behind its back.
+    //
+    // This runs on every video-only tick, and during a hold the residency ref DELIBERATELY stays
+    // set (it is what keeps the cover resident at the 'window' tier). Before that, the T0 tick's
+    // unconditional `activeSimUrlRef.current = null` made every later tick a no-op here BY
+    // ACCIDENT — `key` was null, the branch never re-entered. With the ref alive, the very next
+    // tick (~250 ms later) re-entered, asked the coordinator for a second handoff, was refused —
+    // one exit, one handoff — and fell through to the flag-off `uncover()`, dropping the cover a
+    // tick after T0 and re-running the whole teardown. No existing test drove a second tick
+    // between T0 and the commit, which is how the fallthrough stayed invisible at every tier.
+    if (handoffActiveRef.current) return;
     // An armed apply hold must never survive the section it belonged to: its terminal bound would
     // fire later and force-reveal a document this exit has deliberately taken off screen.
     if (key) runtimeFor(key).cancelPendingApply();
@@ -1703,6 +1714,14 @@ export function useProjectPlayer(
       // fade — all three, in that order, are SimRuntimeClient.deactivate().
       const uncover = () => {
         runtimeFor(key).deactivate();
+        // DELIBERATELY NOT RELEASED HERE: the residency ref (`activeSimUrlRef`). Its release has
+        // exactly ONE owner — the tail of `deactivateSim`, guarded on `!handoffActiveRef` — and
+        // the commit ending the handoff is precisely what re-arms that owner: the next video tick
+        // (≤ ~250 ms) runs it and the 'window' planner reclaims the frame then. A second release
+        // here would be a second owner of the same fact, and two owners disagreeing about "which
+        // frame is on screen" during a hold is the exact bug this block exists to prevent — it
+        // was also proven redundant by mutation (removing it changed no observable behaviour).
+        //
         // `activeSimUrl` is released HERE and not at T0 — see the note below the coordinator call.
         // It rides in the same merge as `showSimOverlay` so the two halves of "the cover is gone"
         // land in one render: `SimPoolFrame` shows a frame on `active && visible`, and dropping
@@ -1755,7 +1774,16 @@ export function useProjectPlayer(
     desiredSimRef.current = null;
     pendingSimRef.current = null;
     activeSimRef.current = null;
-    activeSimUrlRef.current = null;
+    // THE REF FOLLOWS THE SAME RULE AS THE RENDERED KEY ABOVE, and it must: they are two owners
+    // of one fact ("which frame is on screen"), and letting them disagree during a hold is the
+    // bug. The rendered key kept the cover COMPOSITED; this ref is what keeps it RESIDENT — the
+    // 'window' planner's `keep.add(activeSimUrlRef.current)` is its only defence for a frame
+    // whose occurrence has passed and whose exit fade has not begun. Nulling it at T0 had the
+    // planner dropPooled() the element the coordinator was holding, on the first tick of every
+    // coordinated exit, on every device the 'window' tier exists for. The post-roll exit already
+    // does this correctly (its release rides inside `commit`); this brings the mid-roll exit to
+    // the same rule. Under a hold, `uncover` releases both together at COMMIT_REVEAL.
+    if (!handoffActiveRef.current) activeSimUrlRef.current = null;
   };
 
   const updateSimOverlay = (segmentIdx: number, localTime: number) => {

@@ -702,6 +702,83 @@ describe('flag ON — the resident frame stays composited for as long as the coo
   });
 });
 
+// ── the LOW-END tier must hold the same cover ─────────────────────────────────────────────────
+
+/**
+ * THE DEFECT THIS PINS (found by CI's 2-core runner, invisible on every developer machine).
+ *
+ * `canWarmUnpaused()` reads the host's real `hardwareConcurrency`, and at ≤4 cores the pool runs
+ * the 'window' tier — whose planner keeps only the plan, `activeSimUrlRef`, and frames mid-fade or
+ * mid-eviction. `deactivateSim` nulled that ref UNCONDITIONALLY at T0, so on a coordinated exit
+ * the planner `dropPooled()`-ed the element the coordinator was holding as its cover, on the first
+ * tick, on every device the 'window' tier exists for. At the 'all' tier there is no eviction rule
+ * at all, which is exactly why every >4-core machine passed while CI failed.
+ *
+ * The global vitest pin (vitest.setup.ts) runs the suite at 8 cores, so WITHOUT this explicit
+ * low-end case the fix would be unpinned: reverting the ref guard would pass the entire pinned
+ * suite. Cores are forced to 2 here, instance-level, BEFORE mount — the tier latches on first
+ * render and never re-reads.
+ */
+describe('flag ON, LOW-END (2 cores, window tier) — the held cover survives the planner', () => {
+  beforeEach(() => {
+    Object.defineProperty(navigator, 'hardwareConcurrency', { value: 2, configurable: true });
+  });
+  afterEach(() => {
+    Reflect.deleteProperty(navigator, 'hardwareConcurrency');
+  });
+
+  it('the window-tier planner does not unmount the frame the coordinator is holding', async () => {
+    const { container, video, clock, pipeline } = await mountInSim(midRollConfig(true));
+    expect(poolFrameOpacity(container), 'the simulation is on screen inside its section').toBe('1');
+
+    clock.set(20);
+    await act(async () => { video.dispatchEvent(new Event('timeupdate')); });
+
+    // NULL here — not '0' — is the low-end failure shape: the element was not faded, it was gone.
+    expect(
+      poolFrameOpacity(container),
+      'the window-tier planner dropped the element under the held cover at T0',
+    ).toBe('1');
+
+    // The hold must survive further video-only ticks: every tick re-runs the planner, and every
+    // re-run is a fresh chance for a disagreeing ref to hand it the frame.
+    clock.set(21);
+    await act(async () => { video.dispatchEvent(new Event('timeupdate')); });
+    expect(poolFrameOpacity(container), 'a later tick reclaimed the held cover').toBe('1');
+
+    // Evidence within DEFAULT_FRAME_TOLERANCE_SEC of the time requested at T0. In production rVFC
+    // fires per presented frame, so near-request evidence arrives within ~one frame of arming;
+    // the harness fires only on demand, and a frame a whole second late is DELIBERATELY rejected
+    // (that is the pre-boundary/tolerance rule its own test pins). Late delivery of a valid frame
+    // is fine; a frame at the wrong media time is not.
+    await act(async () => { pipeline.present(20.1); });
+    await frames(2);
+    expect(poolFrameOpacity(container), 'the proven frame must still release it').toBe('0');
+  });
+
+  it('after the commit, the window tier DOES reclaim the frame — the hold is not a leak', async () => {
+    // The other half of the low-end story, and what pins `uncover`'s release of the residency
+    // ref: if the commit did not release it, "never drop the live frame" would keep a dead
+    // section's WebGL context resident for the rest of the session — on exactly the devices the
+    // 'window' tier exists to protect. (The harness runtime has no deferred-stop, so the fade
+    // guard is inert here and the reclaim lands on the first tick after the release; in
+    // production it lands one tick later, after `hasDeferredStop()` clears.)
+    const { container, video, clock, pipeline } = await mountInSim(midRollConfig(true));
+    clock.set(20);
+    await act(async () => { video.dispatchEvent(new Event('timeupdate')); });
+    await act(async () => { pipeline.present(20); });
+    await frames(2);
+    expect(poolFrameOpacity(container), 'released after the proof').toBe('0');
+
+    clock.set(22);
+    await act(async () => { video.dispatchEvent(new Event('timeupdate')); });
+    expect(
+      poolFrameOpacity(container),
+      'the committed exit must let the window tier reclaim the frame',
+    ).toBeNull();
+  });
+});
+
 // ── the two flag states differ ONLY in the gate ───────────────────────────────────────────────
 
 describe('the flag is the whole difference', () => {

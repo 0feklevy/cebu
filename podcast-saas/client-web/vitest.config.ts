@@ -32,6 +32,9 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'jsdom',
+    // Pins navigator hardware metrics — see the file's header for why a suite that reads the
+    // host's real core count is testing the hardware, not the product.
+    setupFiles: ['./vitest.setup.ts'],
     include: ['__tests__/**/*.test.{ts,tsx}', 'lib/**/*.test.{ts,tsx}'],
     exclude: ['e2e/**', 'node_modules/**', '.next/**'],
     /**
