@@ -80,6 +80,17 @@ straight through with no simulation. The copy was exactly the empty shell the fe
 avoid. The existing test asserted the remap while its fixture package had no real section map, so it
 could not see the break.
 
+### The whole installed base blanked for 3 seconds (caught by the pre-existing real-viewer E2E)
+
+P0.5's bounded hold reused the 3-second slow-body allowance for the UNKNOWN-capability case — a
+different question entirely ("does this bridge acknowledge at all?"). Since migration 055 ships
+with no backfill, every already-published package is UNKNOWN, so every one of them showed nothing
+for three full seconds on its first activation. `viewer-e2e` test 13 — which predates this branch —
+failed on all three engines. The unknown case now has its own 600 ms probe (a bridge that acks does
+so one frame after the body returns), a proven bridge keeps the full allowance, and the distinction
+is pinned by mutations in **both** directions. The unit test that had encoded the 3-second hold was
+written by the same round that introduced the defect — the pre-existing E2E was the authority.
+
 ### A 6 GB master could not be duplicated
 
 Uploads are admitted to 10 GB; S3 `CopyObject` refuses a single object over 5 GiB. This was
@@ -151,23 +162,51 @@ and the pointer flip keeps it true on republish and rollback.
 
 ---
 
-## 7. Verification
+## 7. Three adversarial rounds, and what each one found
+
+Every round ran **after** the previous one's work was complete and its suite was green. That is the
+point: none of these were reachable by reading the diff of a feature you just wrote.
+
+| Round | Scope | Found |
+|---|---|---|
+| 1 | the feature work | 1 CRITICAL, 6 HIGH, 8 MED |
+| 2 | **the round-1 fixes** (12 agents, every HIGH put to an independent skeptic) | 4 MUST-FIX, 7 SHOULD-FIX |
+| 3 | mutation-testing round 2's own fixes | **2 surviving mutations** |
+
+Round 1's CRITICAL was that a duplicated project's simulations ran nothing. **Two of round 2's four
+must-fixes were regressions round 1 had introduced** — a corpus filename containing `#` breaking
+ingestion that previously worked, and the coordinated exit dropping its own cover. A third was a fix
+that had turned a silent cross-project pointer into a hard, unrecoverable failure.
+
+Round 3 mattered most for a fix that had shipped with **no test at all**: duplicating mid-transcode
+copied `hls_status`/`crop_status`/`captions_status`/`simulations.status`/`corpora.ingestion_status`
+verbatim, so the copy spun on `processing` forever and the next backend boot swept its simulation to
+`failed — please re-upload`. The fix was correct and completely unverified; mutating it revealed
+that, and `(o)` now pins all five columns, asserts the original is left mid-job untouched, and
+asserts a terminal status is *not* rewritten so "reset everything" cannot pass either.
+
+Round 2 also correctly **refuted** two reported findings, and one reviewer's own claim ("this can
+404") was struck because the collector it depends on has no production caller. Findings were
+dropped, not just added.
+
+## 8. Verification
 
 Full 9-step `deploy/scripts/release-verify.sh`, uncontended, exit 0:
 
 | Workspace | Files | Tests |
 |---|---|---|
 | shared | 23 | 877 |
-| client-web | 50 | 1295 |
-| backend-api | 99 (+1 skipped) | 1745 (+5 skipped) |
+| client-web | 54 | 1355 |
+| backend-api | 104 (+1 skipped) | 1838 (+5 skipped) |
 | ops/release | 21 | 237 |
 | admin-web | 2 | 34 |
-| **Total** | **195** | **4188** |
+| **Total** | **204** | **4341** |
 
-Typecheck clean in all workspaces; eslint **0 errors** (pre-existing warnings only); both production
-builds succeed; bundle scan finds no loopback/internal hosts.
+Typecheck clean in all four workspaces; eslint **0 errors** (45 backend / 84 client pre-existing
+warnings, unchanged from the baseline); both production builds succeed; bundle scan finds no
+loopback or internal hosts in either browser bundle.
 
-Playwright, self-contained fixture servers, Chromium + Firefox + WebKit:
+Playwright, self-contained fixture servers, Chromium + Firefox + WebKit — **170 tests**:
 
 | Suite | Tests |
 |---|---|
@@ -181,33 +220,90 @@ Playwright, self-contained fixture servers, Chromium + Firefox + WebKit:
 `sim-leak` reports **0 leaked** across intervals, listeners, abort controllers, object URLs and 256
 GL textures — the suite that matters most given the iframe/WebGL leak fixed here.
 
-`sim-transitions` includes a deliberate control (`4b`) that asserts the *old* ordering **does** flash
+`sim-transitions` includes a deliberate control (`4b`) asserting the *old* ordering **does** flash
 Full UI mid-fade, so a green run proves the suite discriminates rather than merely passing.
 
-### What was not verified
+**The real-viewer suite** (`viewer-e2e`, 114 tests × Chromium/Firefox/WebKit, against a live dev
+server): **114/114 passed.** This is the only suite that runs the actual Next.js route, the real
+React viewer and the real `useProjectPlayer` — the harness suites above replay the orderings the
+player is *supposed* to emit, and by construction cannot fail when the player itself regresses. It
+is also the suite that caught the installed-base 3-second blank (§3) after every other suite was
+green — which is the concrete argument for never treating the harness suites as sufficient.
 
-- **No physical-device testing was performed.** iOS/Safari behaviour is covered by WebKit in
-  Playwright and by unit tests over the capability floor; that is not the same as a real device, and
-  P0.8's poster path in particular deserves one before wide rollout.
-- The `viewer-e2e` and default Playwright configs require a running app; results are recorded
-  separately below.
-- Mutation testing was applied per-fix by the implementing agent, not as a whole-repo campaign.
+### Contention is not signal
+
+Three separate runs during this work reported failures that were not defects: 8, then 17, then a
+57-minute Playwright run. Every one was CPU starvation — the 17-failure run was **11 PGlite hook
+timeouts and zero assertion failures**. All pass uncontended. Any future red run on this repo should
+be classified by error *kind* before being believed.
+
+### What was NOT verified — do not read the above as covering it
+
+- **No physical-device testing was performed.** iOS/Safari is covered by WebKit in Playwright and by
+  unit tests over the capability floor. That is not a real device, and P0.8's poster path deserves
+  one before wide rollout.
+- **Nothing was executed against real R2 or Supabase.** The storage layer is verified against fakes
+  and against the real range arithmetic; no duplication has copied a real >5 GiB object.
+- **No security or authorization lens ran** over the new duplication endpoints, the admin kill-switch
+  PATCH fields, or the RUM ingestion route.
+- **Migrations were reviewed for content, not for ordering** or behaviour on a partially migrated
+  deployment.
+- **14 MED/LOW findings from round 2 were never put to a skeptic.** Of the three that were, all came
+  back materially changed — assume a similar error rate in the unchallenged set.
+- Mutation testing was per-fix, not a whole-repo campaign.
+- `viewer-e2e` runs against the **dev** server by design (the production build refuses a loopback
+  API origin, and the suite's hermeticity policy requires one); the production bundle itself is
+  exercised by the build + bundle-scan steps, not by this suite.
 
 ---
 
-## 8. Risks
+## 9. Master-spec completeness
 
-**Measured.** `sim_transition_coordinator` ships off, so P0.1 is inactive until enabled. P0.8 is
-inert for every package published before this branch until `sims:backfill-ack` runs, because
-`requires_import_maps` is NULL and unknown is never treated as "requires".
+The 26 audit findings plus the two added requirements, adjudicated from the code rather than from
+commit messages.
+
+**Delivered and ON by default:** P0.2, P0.3, P0.4, P0.5, P0.6, P0.7, P1.1, P1.2, P1.7 — plus both
+added requirements (**Duplicate Project** and **editor simulation smoothness**).
+
+**Built but inactive by default** — the mechanism is real and tested; a flag or a data backfill
+gates it: P0.1 (`sim_transition_coordinator` off), P0.8 (column NULL until the backfill runs),
+P1.3 (flag off *and* tier-gated off mobile), P1.5 (`rum_sample_rate` 0), P1.6 (flag off, and the v3
+path is unreachable for any package the current assembler produces), P1.4's presentation half.
+
+**Deliberately out of scope, correctly:** P2.1 (already on the base), P2.2 / P2.4 / P2.5
+(package-side; Three.js, import maps and package HTML do not exist in this repo), P3.1–P3.4
+(research).
+
+**Genuinely not done, and not previously declared:** P2.3, P2.6 — both "only after measurement" in
+the audit itself, and no measurement exists yet — and P1.5's second half, the physical-device
+release matrix. `release-verify.sh` runs no Playwright and no device job.
+
+The honest one-line summary: **the P0 line is real and on; the P1 line is largely built and off.**
+
+---
+
+## 10. Risks
+
+**Measured.** `sim_transition_coordinator` ships off, so P0.1 is inactive until enabled — and turning
+it off does *not* revert the sibling viewer changes in the same commits, which have no switch. P0.8
+is inert for every package published before this branch until `pnpm sims:backfill-ack -- --apply`
+runs, because `requires_import_maps` is NULL and unknown is never treated as "requires"; no admin
+surface reports how many rows remain NULL. No RUM is collected until an operator raises
+`rum_sample_rate` above 0.
 
 **Assumed, not measured.** The editor residency change alters memory behaviour on low-end devices in
-a direction unit tests cannot show. Duplicate Project's storage copy has been tested against fakes
-and the real range arithmetic, but not against a real >5 GiB object in S3/R2.
+a direction unit tests cannot show. The storage copy has never moved a real multi-gigabyte object.
+Predictive admission (P1.3) is tier-gated off phones and tablets — the population whose cold entries
+the audit actually measured — so it cannot help there even once enabled.
+
+**Product decisions embedded here, which a reviewer should confirm rather than inherit.** A duplicate
+does **not** carry the original's collaborators, share token, permalink slug, publish state or view
+counts: the copy belongs to whoever clicked it, and inheriting a published slug would be a defect. If
+collaborators should follow the copy, that is a deliberate change, not a bug fix.
 
 ---
 
-## 9. Rollback
+## 11. Rollback
 
 Each migration has a reversing rollback. 055/057 are additive nullable columns: dropping them
 returns every package to UNKNOWN, which is the render-as-today state. 056 drops
