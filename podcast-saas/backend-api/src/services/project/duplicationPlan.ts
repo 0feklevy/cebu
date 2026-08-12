@@ -22,6 +22,20 @@ import { isUnderPrefix, reroot } from '../storage/prefixScope.js';
 export type IdMap = ReadonlyMap<string, string>;
 
 /**
+ * A row inside the project points at something outside it, so the copy cannot carry the reference.
+ *
+ * Its own class, not a plain `Error`, because permanence is the fact the caller needs: this is a
+ * property of the DATA, and retrying is guaranteed to reach the same row. Reported generically it
+ * became "you can try again", advice that can never come true.
+ */
+export class CrossProjectReference extends Error {
+  constructor(readonly what: string, readonly referencedId: string) {
+    super(`duplication: ${what} references ${referencedId}, which is not part of the copy`);
+    this.name = 'CrossProjectReference';
+  }
+}
+
+/**
  * One unit of byte copying the plan commits to.
  *
  * `package-root` is `prefix` minus the two subtrees a simulation's prefix shares with the system
@@ -136,12 +150,16 @@ export class IdAllocator {
    * Throws rather than passing the original through, because passing it through is precisely the
    * defect this whole module exists to prevent: a copied row silently pointing at the original's
    * data. A null stays null — an absent reference is not an escaping one.
+   *
+   * The throw is TYPED because it is a permanent, data-shaped condition: no number of retries can
+   * make a row that points outside the project point inside it. Reported as a plain `Error` it was
+   * indistinguishable from a transient socket failure, and the user was told to try again forever.
    */
   requireInternal(oldId: string | null | undefined, what: string): string | null {
     if (oldId === null || oldId === undefined) return null;
     const mapped = this.map.get(oldId);
     if (!mapped) {
-      throw new Error(`duplication: ${what} references ${oldId}, which is not part of the copy`);
+      throw new CrossProjectReference(what, oldId);
     }
     return mapped;
   }

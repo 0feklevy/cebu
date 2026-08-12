@@ -9,6 +9,44 @@ import type { CompletedPart, StoredObjectHead } from './StorageService.js';
 import { logger } from '../../lib/logger.js';
 
 /**
+ * The codes `PermanentStorageError` is thrown with. Stable strings, because a caller CLASSIFIES on
+ * them — matching on the message text would break the moment the wording is improved.
+ */
+export type PermanentStorageErrorCode =
+  /** The source object is not there. A copy of a thing that does not exist cannot start. */
+  | 'COPY_SOURCE_MISSING'
+  /** The store answered the HEAD but would not say how big the object is. */
+  | 'COPY_SIZE_UNKNOWN'
+  /** Server-side copy is unavailable and the object is too big to pass through the API's heap. */
+  | 'COPY_TOO_LARGE_FOR_FALLBACK'
+  /** The object needs more parts than one multipart upload may have. */
+  | 'COPY_TOO_MANY_PARTS';
+
+/**
+ * A storage failure that RETRYING CANNOT FIX.
+ *
+ * The refusals in this module were written to be actionable — they name the object, the size and the
+ * configuration change that would let the copy succeed. Thrown as a plain `Error` they are
+ * indistinguishable from a transient one, so `ProjectDuplicationService`'s catch flattens every one
+ * of them into "Duplication failed. Nothing was created; you can try again." — advice that is not
+ * merely unhelpful here but WRONG: the same run will fail the same way forever, and the user has no
+ * way to learn that the fix is a bucket setting.
+ *
+ * `message` is user-safe by construction: every site below states a fact about the caller's own
+ * object and the store's own limits, and none interpolates a credential, a signed URL or an internal
+ * path. `code` is what a classifier should switch on.
+ */
+export class PermanentStorageError extends Error {
+  readonly code: PermanentStorageErrorCode;
+
+  constructor(code: PermanentStorageErrorCode, message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'PermanentStorageError';
+    this.code = code;
+  }
+}
+
+/**
  * The `CopySource` value for a bucket/key pair.
  *
  * S3 requires this to be URL-encoded, but the `/` separators must survive — so each PATH SEGMENT
@@ -52,23 +90,48 @@ export function isCopyUnsupported(err: unknown): boolean {
 export const S3_COPY_MAX_BYTES = 5 * 1024 * 1024 * 1024;
 
 /**
+ * The ways a store says "that copy source is over the single-copy ceiling".
+ *
+ * A FIXED VOCABULARY, NOT A GENERIC "too large". AWS's and R2's exact clause is the first
+ * alternative; the rest are the phrasings an S3-COMPATIBLE GATEWAY uses for the same refusal.
+ * Anything vaguer would start classifying ordinary 400s as oversize and re-issuing them as
+ * multipart copies that answer a different failure.
+ */
+const COPY_OVERSIZE_MESSAGE =
+  /(larger than the maximum allowable size|copy source is too large|exceeds the maximum (allowed |allowable )?(copy |object |source )?size|maximum allowed size|payload too large|entity too large)/i;
+
+/**
  * Does this error mean "the source object is too big for a single-part copy"?
  *
- * Distinct from `isCopyUnsupported` in both cause and remedy: this is a 400 `InvalidRequest`, no
- * retry can get past it, and the read-then-write fallback would be strictly worse (it pulls the
- * whole object through the Node heap). It is classified separately so the failure surfaces as the
- * fact it is instead of as a generic copy error with "you can try again" advice that never can.
+ * Distinct from `isCopyUnsupported` in both cause and remedy: no retry can get past it, and the
+ * read-then-write fallback would be strictly worse (it pulls the whole object through the Node
+ * heap). It is classified separately so the failure surfaces as the fact it is instead of as a
+ * generic copy error with "you can try again" advice that never can.
  *
- * The message is part of the test on purpose: `InvalidRequest` is a broad S3 code, and only the one
- * that names the copy-source size limit means this.
+ * NOT ONLY AWS'S WORDING. `InvalidRequest` + one English clause is how AWS S3 and R2 phrase it, and
+ * for a long time it was the whole test — but the writable adapter in production is Supabase, an
+ * S3-COMPATIBLE GATEWAY that phrases its own errors. Two shapes it can answer with were missed
+ * entirely: a `413`, the canonical status for "too large" and the one a fronting proxy returns with
+ * an HTML body the SDK cannot parse into a `Code` at all; and a 400 that names the size in words
+ * other than AWS's. Both fell through to "neither unsupported nor too large" and failed the whole
+ * duplication with advice that can never work.
+ *
+ * Still deliberately narrow in the other direction: absence and permission errors are never size
+ * errors, and `isCopyUnsupported` wins outright, so the two stay disjoint by construction rather
+ * than by the caller happening to test them in the right order.
  */
 export function isCopyTooLarge(err: unknown): boolean {
-  const e = err as { name?: string; Code?: string; message?: string } | null;
+  const e = err as { name?: string; Code?: string; message?: string; $metadata?: { httpStatusCode?: number } } | null;
   if (!e) return false;
+  if (isCopyUnsupported(e)) return false;
   const name = e.name ?? e.Code;
   if (name === 'EntityTooLarge') return true;
-  if (name !== 'InvalidRequest') return false;
-  return /larger than the maximum allowable size/i.test(String(e.message ?? ''));
+  const status = e.$metadata?.httpStatusCode;
+  if (status === 413) return true;
+  // A miss or a refusal says nothing about size, and routing either one to the multipart copy would
+  // replace a clear error with a slower repeat of it.
+  if (status === 403 || status === 404 || name === 'AccessDenied' || name === 'NoSuchKey') return false;
+  return COPY_OVERSIZE_MESSAGE.test(String(e.message ?? ''));
 }
 
 // ── Read-then-write: the fallback for a store that cannot copy server-side at all ─────────────
@@ -114,18 +177,23 @@ export async function readThenWriteCopy(
 ): Promise<void> {
   const head = await ops.head();
   if (!head) {
-    throw new Error(`${provider}: cannot copy ${srcKey} — server-side copy is unavailable and the object does not exist`);
+    throw new PermanentStorageError(
+      'COPY_SOURCE_MISSING',
+      `${provider}: cannot copy ${srcKey} — server-side copy is unavailable and the object does not exist`,
+    );
   }
   // A store that will not say how big an object is cannot be trusted to hand back something the
   // heap can hold. Refusing is the safe direction; the alternative is finding out by dying.
   if (head.size === null) {
-    throw new Error(
+    throw new PermanentStorageError(
+      'COPY_SIZE_UNKNOWN',
       `${provider}: cannot copy ${srcKey} — server-side copy is unavailable and the store did not report the object's size, ` +
       'so the download-and-re-upload fallback cannot bound how much memory it would need.',
     );
   }
   if (head.size > HEAP_COPY_MAX_BYTES) {
-    throw new Error(
+    throw new PermanentStorageError(
+      'COPY_TOO_LARGE_FOR_FALLBACK',
       `${provider}: cannot copy ${srcKey} (${Math.round(head.size / 1e6)} MB) — this storage does not support server-side ` +
       `copy, and the download-and-re-upload fallback refuses anything over ${Math.round(HEAP_COPY_MAX_BYTES / 1e6)} MB ` +
       'because the whole object would be held in the API process\'s memory. Enable server-side copy (CopyObject) on the ' +
@@ -200,7 +268,11 @@ export function partCopyRanges(size: number, partSize: number = MULTIPART_COPY_P
   }
   const count = Math.ceil(size / partSize);
   if (count > MULTIPART_COPY_MAX_PARTS) {
-    throw new Error(
+    // Permanent, unlike the two argument checks above: those are invariant violations by this
+    // module's own callers, while this one is a fact about the caller's OBJECT that no re-run
+    // changes — the parts are uniform by R2's requirement, so a bigger part size is not available.
+    throw new PermanentStorageError(
+      'COPY_TOO_MANY_PARTS',
       `multipart copy: ${size} bytes needs ${count} parts of ${partSize}, over the ${MULTIPART_COPY_MAX_PARTS}-part limit`,
     );
   }
@@ -260,10 +332,18 @@ export async function multipartCopyObject(
 ): Promise<void> {
   const head = await ops.head();
   if (!head) {
-    throw new Error(`storage: cannot copy ${srcKey} — it is over the single-copy ceiling and does not exist`, { cause });
+    throw new PermanentStorageError(
+      'COPY_SOURCE_MISSING',
+      `storage: cannot copy ${srcKey} — it is over the single-copy ceiling and does not exist`,
+      { cause },
+    );
   }
   if (head.size === null) {
-    throw new Error(`storage: cannot copy ${srcKey} — the store did not report its size`, { cause });
+    throw new PermanentStorageError(
+      'COPY_SIZE_UNKNOWN',
+      `storage: cannot copy ${srcKey} — the store did not report its size`,
+      { cause },
+    );
   }
   const parts = partCopyRanges(head.size);
   logger.info(

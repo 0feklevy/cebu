@@ -63,11 +63,12 @@ import type { StorageService } from '../storage/StorageService.js';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import { logger } from '../../lib/logger.js';
 import { isUnderPrefix, normalizePrefix, reroot } from '../storage/prefixScope.js';
-import { MULTIPART_COPY_MAX_BYTES } from '../storage/s3Copy.js';
+import { MULTIPART_COPY_MAX_BYTES, PermanentStorageError } from '../storage/s3Copy.js';
 import {
   IdAllocator, PACKAGE_ROOT_EXCLUDED_SUBDIRS, freshSiblingKey, isExcludedFromCopy, mapStorageKey,
   rebaseUrl, rerootUrlThroughCopies, rewriteKeyByIds, rewriteSectionParam,
   duplicatedMetadataStatus, duplicatedProjectStatus, duplicatedStatus, duplicatedTitle, statusWasReset,
+  CrossProjectReference,
   type DuplicationPlan, type StorageCopy,
 } from './duplicationPlan.js';
 import {
@@ -146,11 +147,112 @@ export const DUPLICATION_ABANDONED_MESSAGE =
 
 /** A duplication that cannot proceed for a reason the caller should see, not a 500. */
 export class DuplicationRefused extends Error {
-  constructor(message: string, readonly statusCode: number) {
+  /**
+   * `retryable` means ONE thing: the identical attempt, with nothing changed, could succeed.
+   *
+   * It is not "is this the user's fault" and not "is this recoverable in principle" — a project
+   * over the size limit is recoverable by deleting a video, and is still `false`, because pressing
+   * the same button again cannot help. Getting this wrong in the false direction is the worse
+   * error: it is what put "you can try again" under a condition where trying again is guaranteed
+   * to fail, which is the advice this whole change exists to stop giving.
+   */
+  constructor(
+    message: string,
+    readonly statusCode: number,
+    readonly code: string = 'refused',
+    readonly retryable: boolean = false,
+  ) {
     super(message);
     this.name = 'DuplicationRefused';
   }
 }
+
+/** Which phase of `run()` was in flight when it threw — the coarsest useful fact about a failure. */
+export type DuplicationPhase = 'planning' | 'copying' | 'verifying' | 'retargeting' | 'committing';
+
+export interface DuplicationFailure {
+  code: string;
+  retryable: boolean;
+  /** One sentence for the user. Never a stack, never an internal identifier. */
+  userMessage: string;
+  /** For the operator: the real error, or the escape scan's own list. Stored, not rendered. */
+  detail: string;
+}
+
+/** Cap on the stored sentence. `error` is unconstrained TEXT, but a UI strip is not. */
+const MAX_STORED_ERROR = 500;
+
+/**
+ * Turn whatever `run()` threw into something the row can hold and a person can act on.
+ *
+ * WHY THIS EXISTS. Every failure used to collapse into "Duplication failed. Nothing was created;
+ * you can try again." — one string for a missing source project, a storage gateway with no
+ * server-side copy, an object too large to fall back on, a cross-project reference, and a transient
+ * socket timeout. Four of those five cannot be fixed by trying again, and the transaction rolls
+ * back, so the failure also destroys the only evidence of itself. A user could not tell us why
+ * their project would not copy, and neither could we.
+ *
+ * The classification is deliberately conservative at the bottom: an error we do not recognise is
+ * reported as RETRYABLE, because telling someone to give up on a copy that would have worked is
+ * worse than letting them press a button twice.
+ */
+export function classifyDuplicationFailure(err: unknown): DuplicationFailure {
+  const detailOf = (e: unknown): string =>
+    e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+
+  if (err instanceof DuplicationRefused) {
+    return { code: err.code, retryable: err.retryable, userMessage: err.message, detail: detailOf(err) };
+  }
+  if (err instanceof PermanentStorageError) {
+    // These messages were WRITTEN to be actionable ("enable server-side copy on the bucket…") and
+    // were the first casualty of the generic catch. They pass through verbatim.
+    return {
+      code: `storage_${err.code.toLowerCase()}`,
+      retryable: false,
+      userMessage: err.message,
+      detail: detailOf(err),
+    };
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  if (message.startsWith(ESCAPE_SCAN_PREFIX)) {
+    // The scan already computed the exact diagnosis — which table.column still names the original,
+    // and how many rows. Flattening that into "try again" threw away the answer at the moment it
+    // was known, for a condition where retrying is provably useless.
+    return {
+      code: 'escaping_reference',
+      retryable: false,
+      userMessage:
+        'This project holds a reference to itself that the copy cannot rewrite, so a duplicate would '
+        + 'not be independent of the original. It was not created. This needs a fix on our side — '
+        + 'the details have been recorded.',
+      detail: message,
+    };
+  }
+  if (err instanceof CrossProjectReference) {
+    return {
+      code: 'cross_project_reference',
+      retryable: false,
+      userMessage:
+        'This project points at content that belongs to a different project, which a copy cannot '
+        + 'carry. It was not created. The details have been recorded.',
+      detail: message,
+    };
+  }
+  return {
+    code: 'unknown',
+    retryable: true,
+    userMessage: 'Duplication failed. Nothing was created; you can try again.',
+    detail: detailOf(err),
+  };
+}
+
+/**
+ * The escape scan's message prefix, shared by its throw site and the classifier so the two cannot
+ * drift. The scan stays a plain `Error` deliberately: it is an INTERNAL invariant violation — the
+ * copy we just built is not independent — rather than a fact about the user's data, and its whole
+ * payload is the human-readable list of offending `table.column`s it appends after this prefix.
+ */
+export const ESCAPE_SCAN_PREFIX = 'duplication: copied rows reference the original';
 
 // ── Snapshot ──────────────────────────────────────────────────────────────────────────────────
 
@@ -622,7 +724,7 @@ export class ProjectDuplicationService {
       `“${worst.what}” is ${tb(worst.bytes)} TB. Duplication copies media file by file and cannot ` +
       `copy a single file larger than ${tb(MULTIPART_COPY_MAX_BYTES)} TB, so this project cannot ` +
       'be duplicated as it stands. Splitting or re-encoding that video below the limit will let it copy.',
-      413,
+      413, 'object_too_large', false,
     );
   }
 
@@ -1115,7 +1217,9 @@ export class ProjectDuplicationService {
             // re-derives from the real bytes on the copy's next publication.
             bridge_hash: s.bridge_hash,
             package_class: s.package_class,
-            canary_report: s.canary_report,
+            canary_report: rewriteCanaryReport(s.canary_report, {
+              oldPrefix: normalizePrefix(s.storage_prefix), newPrefix, oldSimId: s.id, newSimId: ids.get(s.id)!,
+            }),
             canary_at: s.canary_at,
             prepare_budget_ms: s.prepare_budget_ms,
             active_revision_id: null,
@@ -1132,8 +1236,21 @@ export class ProjectDuplicationService {
         const newSimId = ids.requireInternal(rev.simulation_id, 'sim_revisions.simulation_id')!;
         const oldSim = snap.sims.find((s) => s.id === rev.simulation_id)!;
         const newPrefix = key(normalizePrefix(oldSim.storage_prefix)) ?? normalizePrefix(oldSim.storage_prefix);
+        // PROVENANCE IS REWRITTEN, NOT INHERITED.
+        //
+        // `migratedFromLegacyPrefix` is written by `RevisionMigration` as
+        // `simulations/{projectId}/{simId}` — it NAMES THE SOURCE PROJECT. Carried verbatim it was
+        // both false about the copy (this revision was duplicated, it was never migrated off a
+        // legacy prefix) and a hard duplication blocker: the escape scan reads every jsonb column
+        // as text, exempts only `duplicatedFrom`, and so failed the whole commit for any project
+        // with a migrated simulation — permanently, with "you can try again" as the only advice.
+        //
+        // Dropped rather than re-rooted, because the chain survives without it: `duplicatedFrom`
+        // points at the source revision, and THAT revision still carries its own migration record.
+        const { migratedFromLegacyPrefix: _legacyPrefix, ...inheritedMetadata } =
+          (typeof rev.metadata === 'object' && rev.metadata !== null ? rev.metadata as Record<string, unknown> : {});
         const metadata = {
-          ...(typeof rev.metadata === 'object' && rev.metadata !== null ? rev.metadata as Record<string, unknown> : {}),
+          ...inheritedMetadata,
           duplicatedFrom: { projectId: src.id, simulationId: oldSim.id, revisionId: rev.id },
         };
         await tx.insert(sim_revisions).values({
@@ -1152,7 +1269,9 @@ export class ProjectDuplicationService {
           bridge_protocol_version: rev.bridge_protocol_version,
           runtime_protocol_version: rev.runtime_protocol_version,
           package_class: rev.package_class,
-          canary_report: rev.canary_report,
+          canary_report: rewriteCanaryReport(rev.canary_report, {
+            oldPrefix: normalizePrefix(oldSim.storage_prefix), newPrefix, oldSimId: oldSim.id, newSimId,
+          }),
           canary_at: rev.canary_at,
           // Never carried: it names a revision in the ORIGINAL's history, which this copy does not
           // have. A rollback marker pointing outside the project is the exact escape being guarded.
@@ -1535,7 +1654,7 @@ export class ProjectDuplicationService {
     }
 
     if (escapes.length > 0) {
-      throw new Error(`duplication: copied rows reference the original — ${escapes.join('; ')}`);
+      throw new Error(`${ESCAPE_SCAN_PREFIX} — ${escapes.join('; ')}`);
     }
   }
 
@@ -1601,9 +1720,14 @@ export class ProjectDuplicationService {
     }, DUPLICATION_HEARTBEAT_MS);
     if (typeof heartbeat.unref === 'function') heartbeat.unref();
 
+    // Hoisted so the catch can say WHERE it died. The five phases are the coarsest fact that
+    // separates the failure classes: a planning throw is data-shaped, a copying throw is
+    // storage-shaped, and a committing throw is the independence proof. Without it every cause
+    // looked alike in the row, and the row is all the operator has after the rollback.
+    let phase: DuplicationPhase = 'planning';
     try {
       const snap = await this.loadSnapshot(job.source_project_id);
-      if (!snap) throw new DuplicationRefused('Source project no longer exists', 404);
+      if (!snap) throw new DuplicationRefused('Source project no longer exists', 404, 'source_missing', false);
 
       const planned = this.buildPlan(snap);
       const { plan } = planned;
@@ -1611,7 +1735,7 @@ export class ProjectDuplicationService {
       if (plan.estimatedBytes > cap) {
         throw new DuplicationRefused(
           `This project stores about ${Math.round(plan.estimatedBytes / 1e9)} GB of media, over the ${Math.round(cap / 1e9)} GB duplication limit.`,
-          413,
+          413, 'over_size_limit', false,
         );
       }
       // Before the first byte: an object beyond even the multipart copy's reach makes this run
@@ -1632,17 +1756,20 @@ export class ProjectDuplicationService {
         inArray(project_duplications.status, [...DUPLICATION_IN_FLIGHT_STATUSES]),
       ));
 
+      phase = 'copying';
       await this.copyBytes(plan, (copied) => {
         void db.update(project_duplications)
           .set({ objects_copied: copied, updated_at: new Date() })
           .where(eq(project_duplications.id, duplicationId))
           .catch((err: unknown) => logger.warn({ err }, 'duplication: progress write failed'));
       });
+      phase = 'verifying';
       await this.verifyBytes(plan);
 
       // The bytes are in place but nothing points at them yet, which is the only safe moment to
       // REWRITE them: a copied package's bridge/guidance/manifest must name the copy's own ids
       // before any row asserts that they do. See `retargetCopiedPackages`.
+      phase = 'retargeting';
       const retarget = await this.retargetCopiedPackages(snap, planned);
       plan.warnings.push(...retarget.warnings);
 
@@ -1670,6 +1797,7 @@ export class ProjectDuplicationService {
       // minutes without a heartbeat — a window a DB failover during storage I/O produces exactly.
       // A run that lost its row now rolls back instead of committing a second project behind the
       // back of the one that took over.
+      phase = 'committing';
       const targetId = await this.commitRows(snap, planned, job.requested_by, {
         retarget,
         finalize: { duplicationId, now: new Date() },
@@ -1678,15 +1806,35 @@ export class ProjectDuplicationService {
       logger.info({ duplicationId, sourceProjectId: job.source_project_id, targetId }, 'project duplicated');
       return targetId;
     } catch (err) {
-      const message = err instanceof DuplicationRefused
-        ? err.message
-        : 'Duplication failed. Nothing was created; you can try again.';
-      logger.error({ err, duplicationId }, 'project duplication failed');
+      // THE FAILURE IS THE PRODUCT HERE, so it is recorded rather than flattened.
+      //
+      // This catch used to write one fixed sentence for every cause: a missing source project, a
+      // storage gateway with no server-side copy, an object too large to fall back on, a row
+      // pointing at another project, and a transient socket timeout all read the same. Four of
+      // those five cannot be fixed by trying again, which is the one thing the sentence told the
+      // user to do — and because the commit rolls back, the attempt also destroyed the only
+      // evidence of itself. Nobody could answer "why won't this project copy?", including us.
+      const failure = classifyDuplicationFailure(err);
+      // Stamped where a UI strip can hold it, with the code at the END so a clamp takes the
+      // machine half and leaves the human half intact.
+      const stored = `${failure.userMessage} [${failure.code}]`.slice(0, MAX_STORED_ERROR);
+      logger.error(
+        { err, duplicationId, sourceProjectId: job.source_project_id, phase, code: failure.code, retryable: failure.retryable },
+        'project duplication failed',
+      );
       // FENCED for the same reason the success path is: a run that was reaped, or superseded, must
       // not overwrite the terminal state of whoever owns the row now. `ready` in particular is a
       // record of a project that exists.
+      //
+      // `plan` is merged rather than replaced: the planning phase already wrote the real plan
+      // there, and it SURVIVES a failure (this update touches only status/error/timestamps), so
+      // the operator keeps the object list next to the reason it stopped. `detail` is the raw
+      // error and lives only here — it is never rendered.
       await db.update(project_duplications).set({
-        status: 'failed', error: message, finished_at: new Date(), updated_at: new Date(),
+        status: 'failed', error: stored, finished_at: new Date(), updated_at: new Date(),
+        plan: sql`COALESCE(${project_duplications.plan}, '{}'::jsonb) || ${JSON.stringify({
+          failure: { code: failure.code, retryable: failure.retryable, phase, detail: failure.detail.slice(0, 4000) },
+        })}::jsonb`,
       }).where(and(
         eq(project_duplications.id, duplicationId),
         inArray(project_duplications.status, [...DUPLICATION_IN_FLIGHT_STATUSES]),
@@ -1891,7 +2039,7 @@ async function finalizeDuplication(
     throw new DuplicationRefused(
       'This copy was taken over by another attempt, or the project it was copying was deleted while ' +
       'it ran. Nothing was created; you can start it again.',
-      409,
+      409, 'superseded', true,
     );
   }
 }
@@ -1904,7 +2052,7 @@ async function finalizeDuplication(
  * schema reflection can answer — but WHICH COLUMNS of it are jsonb is, and that is the half that
  * kept going stale.
  */
-function copyScopedTables(targetProjectId: string): Array<[string, PgTable, SQL]> {
+export function copyScopedTables(targetProjectId: string): Array<[string, PgTable, SQL]> {
   const t = targetProjectId;
   /** "belongs to a simulation of the copy" — neither revision nor poster has a project column. */
   const ofACopiedSim = (column: PgColumn): SQL =>
@@ -1931,6 +2079,55 @@ function copyScopedTables(targetProjectId: string): Array<[string, PgTable, SQL]
 }
 
 /**
+ * A canary verdict, re-pointed at the package the COPY owns.
+ *
+ * The report's first three fields are IDENTITY — which package this verdict is about
+ * (`shared/src/sim/canaryContract.ts`: `packageRevision`, `simulationId`, `storagePrefix`) — and
+ * carried verbatim they name the original. `storagePrefix` is the dangerous one: a project-scoped
+ * prefix (`simulations/{projectId}/{simId}`) inside a jsonb column that nothing rewrites is exactly
+ * the shape the escape scan fails the whole commit on, permanently and with no usable message.
+ *
+ * Today's only writer stamps an `__e2e` prefix, so this is a hole rather than a live break — which
+ * is precisely why it is worth closing now: the day a canary runs against a project-scoped prefix,
+ * every project with a canaried simulation stops being duplicable, and nothing in the failure would
+ * point here.
+ *
+ * The VERDICT travels unchanged. `retargetCopiedPackages` renames section-id tokens in the bridge,
+ * which is why `manifest_hash` is not inherited — but a rename does not change what the package can
+ * do, so the classification it earned still holds. Nulling the report (and with it `package_class`)
+ * would silently demote every duplicated simulation to the legacy playback path, which is a
+ * regression dressed as hygiene.
+ */
+function rewriteCanaryReport(
+  report: unknown,
+  ids: { oldPrefix: string; newPrefix: string; oldSimId: string; newSimId: string },
+): unknown {
+  if (typeof report !== 'object' || report === null || Array.isArray(report)) return report;
+  const swap = (v: unknown): unknown =>
+    typeof v === 'string' && ids.oldPrefix && v.includes(ids.oldPrefix)
+      ? v.split(ids.oldPrefix).join(ids.newPrefix)
+      : v;
+  const r = report as Record<string, unknown>;
+  return {
+    ...r,
+    ...(typeof r.storagePrefix === 'string' ? { storagePrefix: swap(r.storagePrefix) } : {}),
+    ...(r.simulationId === ids.oldSimId ? { simulationId: ids.newSimId } : {}),
+    // `assets[].path` and `errors[].url` can embed the prefix too; both are diagnostic lists whose
+    // entries are otherwise opaque, so only the prefix is touched and the shape is preserved.
+    ...(Array.isArray(r.assets)
+      ? { assets: r.assets.map((a) => (typeof a === 'object' && a !== null
+          ? { ...a, ...(typeof (a as Record<string, unknown>).path === 'string' ? { path: swap((a as Record<string, unknown>).path) } : {}) }
+          : a)) }
+      : {}),
+    ...(Array.isArray(r.errors)
+      ? { errors: r.errors.map((e) => (typeof e === 'object' && e !== null
+          ? { ...e, ...(typeof (e as Record<string, unknown>).url === 'string' ? { url: swap((e as Record<string, unknown>).url) } : {}) }
+          : e)) }
+      : {}),
+  };
+}
+
+/**
  * The JSONB value to scan for one column — with the ONE documented exemption.
  *
  * `sim_revisions.metadata.duplicatedFrom` records the source project, simulation and revision this
@@ -1939,7 +2136,7 @@ function copyScopedTables(targetProjectId: string): Array<[string, PgTable, SQL]
  * would make the escape check fail on every single duplication. Exempted structurally (`- key`), not
  * by relaxing the pattern, so everything else in the same document is still checked.
  */
-function jsonbScanExpression(table: string, col: PgColumn): SQL {
+export function jsonbScanExpression(table: string, col: PgColumn): SQL {
   if (table === 'sim_revisions' && col.name === 'metadata') {
     return sql`(COALESCE(${col}, '{}'::jsonb) - 'duplicatedFrom')`;
   }

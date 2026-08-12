@@ -18,6 +18,7 @@
     "videos:audit": "tsx --env-file=../.env src/scripts/audit-videos.ts",
     "sims:reinject-gates": "tsx --env-file=../.env src/scripts/reinject-sim-gates.ts",
     "sims:backfill-ack": "tsx --env-file=../.env src/scripts/backfill-bridge-capabilities.ts",
+    "duplication:diagnose": "tsx --env-file=../.env src/scripts/diagnose-duplication.ts",
     "db:studio": "drizzle-kit studio",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
