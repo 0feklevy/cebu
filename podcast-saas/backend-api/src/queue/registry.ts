@@ -9,6 +9,7 @@ import { runPodcastClipsJob } from '../services/podcast/audio/runPodcastClips.js
 import { runPodcastMixExportJob } from '../services/podcast/audio/runPodcastMixExport.js';
 import { runVideoGenerateLimited } from '../jobs/video.generate.js';
 import { ProjectDuplicationService } from '../services/project/ProjectDuplicationService.js';
+import { ProjectExportService } from '../services/export/ProjectExportService.js';
 
 /**
  * Maps each job name to its existing service entrypoint. Handlers are thin adapters from
@@ -31,4 +32,6 @@ export const handlers: JobHandlers = {
   // module-scope instance would capture whatever adapter existed at import time, which in tests is
   // whichever suite imported the registry first.
   project_duplicate: (p) => new ProjectDuplicationService().run(p.duplicationId),
+  // Same per-job construction, same reason as above: the adapter is resolved when the job RUNS.
+  project_export: (p) => new ProjectExportService().run(p.exportId),
 };

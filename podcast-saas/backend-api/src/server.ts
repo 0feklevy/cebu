@@ -45,6 +45,8 @@ import { splitMediaTokenPrefix } from './services/storage/mediaToken.js';
 import { hlsCacheControlForKey } from './services/video/hlsVersioning.js';
 import { startHlsRetentionSweep } from './services/video/hlsRetention.js';
 import { startDuplicationSweep } from './services/project/ProjectDuplicationService.js';
+import { startExportSweep } from './services/export/ProjectExportService.js';
+import { registerExportRoutes } from './controllers/v1/export.controller.js';
 
 // Phase 2+ stub routes
 import { registerPhase2StubRoutes } from './controllers/stubs.js';
@@ -503,6 +505,10 @@ async function build() {
   // forever — where the partial unique index turns it into a permanent block on ever duplicating
   // that project again. This is what declares such a row dead so the next attempt can start.
   startDuplicationSweep();
+  // And the fourth (migration 058): an export encodes for minutes on the same driver, so the
+  // same deploy/crash strands its row in an in-flight status where the partial unique index
+  // blocks every future export of that project. Same reaper shape, same staleness rule.
+  startExportSweep();
 
   // Local upload endpoint — receives PUT from client for large video files in dev
   app.put<{ Params: { '*': string } }>(
@@ -561,6 +567,7 @@ async function build() {
   await registerPodcastScriptRoutes(app);
   await registerPodcastRenderRoutes(app);
   await registerPodcastStudioRoutes(app);
+  await registerExportRoutes(app);
 
   // Phase 2+ stubs (return 501 Not Implemented)
   await registerPhase2StubRoutes(app);

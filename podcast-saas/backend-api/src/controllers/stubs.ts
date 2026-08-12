@@ -25,9 +25,9 @@ export async function registerPhase2StubRoutes(app: FastifyInstance): Promise<vo
   // Layer 10 — Per-scene regeneration
   app.post('/api/v1/projects/:id/scenes/:scene_id/regenerate', stub);
 
-  // Layer 12 — Export
-  app.post('/api/v1/projects/:id/export', stub);
-  app.get('/api/v1/projects/:id/export/:format', stub);
+  // Layer 12 — Export: no longer stubbed. The linear video export owns this URL space now —
+  // POST /projects/:id/export, GET /projects/:id/exports/:exportId and its /cancel live in
+  // controllers/v1/export.controller.ts (migration 058).
 
   // Admin Phase 2+ routes
   app.get('/api/admin/v1/billing', stub);
