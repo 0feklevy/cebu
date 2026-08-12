@@ -1407,3 +1407,47 @@ export const project_duplications = pgTable(
 
 export type ProjectDuplication = typeof project_duplications.$inferSelect;
 export type NewProjectDuplication = typeof project_duplications.$inferInsert;
+
+/**
+ * One "export this project as a linear video" run (migration 058).
+ *
+ * The row tracks the WORK, not the file: `output_key` stays NULL until the assembled master has
+ * passed the exit-code and duration gates and its bytes are uploaded, so a cancelled or failed
+ * encode — which SIGTERM leaves as a well-formed, playable partial MP4 on disk — can never be
+ * published by accident. `plan` is the frozen resolution of the timeline, written before any work,
+ * because it is the only way to answer "why does the master look like that?" after the temp
+ * directory is gone. See migration 058 for the full argument.
+ */
+export const project_exports = pgTable(
+  'project_exports',
+  {
+    id:               uuid('id').primaryKey().defaultRandom(),
+    project_id:       uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+    requested_by:     uuid('requested_by').references(() => users.id, { onDelete: 'set null' }),
+    status:           text('status').notNull().default('queued'), // queued|planning|capturing|assembling|uploading|ready|failed|cancelled
+    // full | degraded. A column, not a plan-jsonb derivation: "is this master the full
+    // composition?" is the one fact every poll needs, answered without parsing the plan.
+    quality_state:    text('quality_state').notNull().default('full'),
+    objects_total:    integer('objects_total').notNull().default(0),
+    objects_done:     integer('objects_done').notNull().default(0),
+    plan:             jsonb('plan'),
+    error:            text('error'),
+    // A REQUEST, checked by the runner between phases. The endpoint sets it; only the runner
+    // flips status, so the poll cannot observe a terminal row while ffmpeg still runs.
+    cancel_requested: boolean('cancel_requested').notNull().default(false),
+    output_key:       text('output_key'),
+    created_at:       timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updated_at:       timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    finished_at:      timestamp('finished_at', { withTimezone: true }),
+  },
+  (t) => ({
+    idxProject: index('idx_project_exports_project').on(t.project_id, t.created_at),
+    // uniq_project_exports_inflight — the partial unique index that makes a double-click
+    // impossible — is declared in 058 only, exactly like project_duplications above: Drizzle's
+    // index builder has no WHERE clause, and a TOTAL unique index here would forbid a project
+    // from ever being exported twice.
+  }),
+);
+
+export type ProjectExport = typeof project_exports.$inferSelect;
+export type NewProjectExport = typeof project_exports.$inferInsert;

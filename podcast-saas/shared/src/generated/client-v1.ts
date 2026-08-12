@@ -174,6 +174,53 @@ export interface ProjectDuplication {
   error: string | null;
 }
 
+/** POST /projects/:id/export — accepted, or joined to an already-running export. */
+export interface StartedExport {
+  export_id: string;
+  status: ProjectExportStatus;
+  /** True when this call attached to an export that was already in flight. */
+  already_running?: boolean;
+}
+
+export type ProjectExportStatus =
+  | 'queued' | 'planning' | 'capturing' | 'assembling' | 'uploading' | 'ready' | 'failed' | 'cancelled';
+
+/**
+ * `full` — the master is the whole composition. `degraded` — at least one window resolved to a
+ * fallback (Phase 1: every simulation exports as its poster still) or a planned layer was
+ * skipped; the specifics are in `warnings`.
+ */
+export type ProjectExportQuality = 'full' | 'degraded';
+
+/**
+ * Progress of one linear video export. `download_url` is present only when `status === 'ready'` —
+ * it is a short-lived presigned URL minted per poll, so it is read from the response and used,
+ * never stored. `warnings` are the plan's honest record of what the export deliberately left out
+ * (RAW simulation sections, out-of-scope layers, poster stand-ins) — the UI shows them per line
+ * rather than flattening them into a boolean.
+ */
+export interface ProjectExport {
+  id: string;
+  status: ProjectExportStatus;
+  quality_state: ProjectExportQuality;
+  objects_total: number;
+  objects_done: number;
+  error: string | null;
+  download_url?: string | null;
+  warnings: string[];
+  cancel_requested?: boolean;
+}
+
+/**
+ * POST /projects/:id/export answers 409 with this body when the export WOULD be degraded and the
+ * caller did not pass `allow_degraded: true` — the consent dialog's machine-readable half.
+ */
+export interface DegradedExportRefusal {
+  code: 'degraded_only';
+  message: string;
+  warnings: string[];
+}
+
 export interface Project {
   id: string;
   org_id: string;
@@ -827,6 +874,33 @@ export class ClientV1Api {
 
   getProjectDuplication(projectId: string, duplicationId: string): Promise<ProjectDuplication> {
     return this.request(`/api/v1/projects/${projectId}/duplications/${duplicationId}`);
+  }
+
+  /**
+   * Start a linear video export of a project — main video, clips, images and audio spliced
+   * server-side; scripted simulation sections captured (Phase 1: poster stills, recorded as
+   * warnings), RAW "show full simulation" sections excluded by design.
+   *
+   * When the export would be DEGRADED (any simulation window falling back to its poster —
+   * Phase 1: all of them) the server answers 409 `degraded_only` unless `allowDegraded` is
+   * passed: show the returned warnings, get consent, retry with `allowDegraded: true`.
+   *
+   * Returns an EXPORT id. Poll `getProjectExport` and offer `download_url` when `ready`.
+   */
+  startProjectExport(projectId: string, opts: { allowDegraded?: boolean } = {}): Promise<StartedExport> {
+    return this.request(`/api/v1/projects/${projectId}/export`, {
+      method: 'POST',
+      body: { allow_degraded: opts.allowDegraded ?? false },
+    });
+  }
+
+  getProjectExport(projectId: string, exportId: string): Promise<ProjectExport> {
+    return this.request(`/api/v1/projects/${projectId}/exports/${exportId}`);
+  }
+
+  /** Ask a running export to stop. The runner honours it between phases; poll for the outcome. */
+  cancelProjectExport(projectId: string, exportId: string): Promise<ProjectExport> {
+    return this.request(`/api/v1/projects/${projectId}/exports/${exportId}/cancel`, { method: 'POST' });
   }
 
   // Set who can view this project by id: private (owner only), unlisted (owner or a valid
