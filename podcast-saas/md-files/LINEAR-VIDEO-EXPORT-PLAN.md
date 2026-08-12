@@ -1,7 +1,9 @@
 # Linear Video Export — findings and plan
 
-**Status: DRAFT FOR REVIEW. Not implementation-ready.** One scope question (§1) has to be answered
-before the architecture is decidable, and it changes the size of this feature by roughly 10×.
+**Status: DECIDED — building Phase 1 behind a flag.** The scope question is resolved (§0.1), the
+architecture is locked (see "THE DECISION" mid-document), and a security review has been folded in
+(§0.2). Everything below "THE DECISION" is the research trail that led here; the two §0 blocks are
+the operative summary — read them first, they supersede any open question phrased earlier.
 
 Branch `feat/linear-video-export`, based on `douplicate` @ `e9e6273`.
 
@@ -9,6 +11,60 @@ Everything marked **[measured]** was verified empirically — against the real r
 `ffmpeg 8.1.2` with synthetic sources deliberately shaped like this problem. Everything else is
 reasoning, and is labelled as such. Where research could not settle a question, it says so instead
 of guessing.
+
+---
+
+## §0.1 — Every scope question, DECIDED (supersedes the open questions below)
+
+| Question | Decision | Reason |
+|---|---|---|
+| What is captured vs excluded | Scripted sim sections **captured**; "Show full simulation" (RAW) **excluded** | The player already makes this exact distinction (`useProjectPlayer.ts:1936`); predicate needs no new field |
+| Output | **1920×1080 landscape @30**, from the main video's grid clamped to 1080p | User ruling |
+| Avatar circles / captions / Ken Burns | **Cut from v1** (architecture reserves them a zero-fork leg for v3) | User ruling — "not critical at all" |
+| Device-specific fidelity | **Not required** → server-side capture, not on-device | User ruling |
+| Main video / B-roll / clips / images | **Spliced from source**, never captured | Measured ffmpeg graph; perfect quality, no generation loss |
+| B-roll audio | **Muted** (match the viewer), warn when a stored `broll_volume>0` is ignored | The viewer's b-roll elements carry `muted`; honouring it would add audio the product never plays |
+| Music / audio cutaways | **Mixed from source assets** | Known assets with known timing; no capture needed |
+| Simulation-internal WebAudio | **Out of scope v1**, recorded warning; v2 via on-device capture | Frame-locked capture and the realtime audio clock are incompatible (measured) |
+| Post-roll simulation | **Plays its authored window** (≤15 s) under autoScript; never pause-wait | "Pause and wait for a click" has no meaning in a linear file |
+| Guidance narration | **Omitted**, recorded warning | Cues are interaction-driven, throttled, dropped-if-queued — nondeterministic by design |
+| Branching projects | **Refused in v1** (`retryable:false`, clear message) | A single linear file silently misrepresents a branching project; path choice is product UI |
+| Legacy pre-`?section=` sim rows | **Poster-fallback + warning**, never silent exclusion; repair tool exists | The one hole in the RAW predicate |
+
+## §0.2 — Security architecture (v1 requirement, not future hardening)
+
+The capture worker runs **untrusted code**: simulation HTML/JS is generated from user prompts, and
+there is a ZIP-upload path — i.e. arbitrary JavaScript. Chromium's own console warning is explicit
+that `--enable-unsafe-swiftshader` lowers security guarantees and is for **trusted** content; we run
+the opposite. Isolation is therefore a v1 blocker, and the design is stronger than a deny-list:
+
+- **No network egress, structurally.** The capture container runs with **no outbound network**
+  (`--network none` / empty egress). The job downloads the (already-immutable) simulation package on
+  the *trusted* side, serves it from a static server bound to loopback **inside the container's own
+  network namespace**, and Chrome navigates to `127.0.0.1`. The simulation can reach nothing —
+  not the AWS metadata endpoint, not the backend, not Postgres, not any internal service. SSRF is
+  impossible by construction, not filtered.
+- **No credentials, ever.** The worker holds no application secrets, no DB connection, no cookies.
+  Input arrives as a presigned GET (the package bytes); output leaves as a presigned PUT (the
+  captured frames/clip). The trusted job orchestrator, in a separate process with DB access, mints
+  both and never shares them with the browser process.
+- **Least privilege runtime.** Non-root user; read-only root filesystem; a single small `tmpfs` for
+  the work dir; hard CPU / memory / PID quotas; `--no-sandbox` is **not** used (keep Chrome's own
+  sandbox — run the container with the capabilities it needs instead of disabling it); a hard
+  wall-clock timeout per section and per job that SIGKILLs the browser.
+- **Determinism aids isolation:** the seeded PRNG and virtual clock also remove two side channels.
+
+This section is enforced in Phase 2 (the capture worker) and its Dockerfile; Phase 1 ships no
+browser, so it inherits none of this risk — which is another reason Phase 1 is safe to build first.
+
+## §0.3 — Rendering sanity gate (not "proof", by design)
+
+Frame-1 non-uniformity is **not** sufficient: a dead black WebGL canvas under a Minimal-UI slider
+still yields a non-uniform screenshot. The gate therefore samples **the canvas region only** (not the
+full screenshot), checks both intra-frame uniformity and inter-frame delta across several frames, and
+requires `SIM_PAINTED`. The repo already has the primitive — `sim-canary.spec.ts`'s `movedOver()`
+hashes frame pairs to detect animation. Even passing, this is called a *sanity gate*, not a proof:
+its failure is trustworthy (something is wrong), its success is only strong evidence.
 
 ---
 
