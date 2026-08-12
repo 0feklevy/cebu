@@ -837,3 +837,89 @@ via on-device capture, branching path selection, admin visibility.**
 - `ExportPlan` jsonb: `{ grid: {w:1920,h:1080,fps:30}, timeline: [...resolved windows with absolute
   times, kind: 'video'|'sim-capture'|'clip'|'image'|'poster-fallback'], audio: [...asset windows],
   warnings: string[], failure?: {code, retryable, phase, detail} }`.
+
+---
+
+# APPENDIX — the evidence-backed decision from the 8-agent architecture workflow
+
+Both load-bearing claims survived independent skeptics (raw discriminator; alpha capture).
+Recorded verbatim below. Where it assigns overlays (circles/captions) an implementation leg,
+the user's later ruling supersedes: those are Phase 3+, not v1. The measured JPEG-q80 capture
+lever (24 ms vs 267 ms/frame) and the legacy-row backstop are folded into the build directly.
+
+# Linear Video Export — FINAL ARCHITECTURE DECISION (2026-08-13)
+
+Branch `feat/linear-video-export`. Supersedes nothing; completes `md-files/LINEAR-VIDEO-EXPORT-PLAN.md` §10 and locks the architecture the plan's tail sketched, now with the overlay stage promoted from "polish" to a designed leg. Every number below is from the measured evidence base; anything else is marked unmeasured.
+
+## THE DECISION — one architecture, one paragraph, no hedging
+
+**Hybrid per-layer deterministic assembly (Candidate H): one ffmpeg 8 master graph splices sources; two beginFrame capture legs render only what ffmpeg cannot; nothing look-bearing is reimplemented.** Leg 1 — main video, B-roll, clips, images, music, cutaways are never re-captured: normalised onto one canonical 1920×1080@30 grid (the `setsar`-corrected chain, `trim/atrim` + `concat` filter, `apad`+`atrim` one-number audio discipline, `gte/lt` never `between`, bounded overlay inputs, `-/filter_complex` file, `amix=normalize=0` + two-pass `loudnorm`), encoded libx264 CRF 20 / 48 kHz AAC 192k / `+faststart`, gated on exit-0 plus duration-within-one-frame before upload. Leg 2 — scripted simulation sections (≤ `VISUAL_MAX_SEC=15` s → ≤450 frames each) are captured in a Linux container by pinned `chrome-headless-shell` ≥151: `--deterministic-mode`'s six switches, `HeadlessExperimental.beginFrame` plus a document-start clock shim (both halves, per Seckler), top-level navigation to the served sim URL speaking v2, mulberry32 seeded from `configHash`, ~30 warmup frames, **JPEG q80 `optimizeForSpeed` screenshots (measured 24 ms vs 267 ms default-PNG — the single biggest lever)**, exactly `round(duration×30)` frames counted. Leg 3 — avatar circles and captions are rendered by a dedicated **stage route mounting the product's own components** (`AvatarCirclesOverlay`, the viewer's caption renderer) over an unpainted `html`/`body`, made transparent via `Emulation.setDefaultBackgroundColorOverride({a:0})` (verified in Chromium source: `EncodeBGRASkBitmap(..., discard_transparency=false)`; HyperFrames ships this in production), driven by a ~60-line fake `window.AudioContext` installed via `addInitScript` and fed FFT byte-tracks precomputed from the export's own mixed PCM (AnalyserNode is fully spec-defined; ~3.3 MB per 36 s of circle-visible time), ticked at **60 Hz virtual time with a PNG screenshot every other beginFrame** (the cadence rule that keeps τ=0.7 decay at its live ~108 ms, not 217 ms), packed as **png-in-mov RGBA reels (measured bit-exact, 11.9 MB/450 frames @480², fastest overlay input)** and composited post-concat with the bounded-input pattern (~2.2 s per overlaid minute sticker-size, ~14 s/min worst-case full-frame). Audio is mixed entirely from assets; sim-internal WebAudio and guidance narration are the two recorded v1 cuts, shown in the export UI, never silent.
+
+## Why not the rivals — one paragraph each for the two rejected candidates
+
+**Rival 1 — whole-player capture (screen-record `HLSPlayerShell` playing the project end-to-end, Replit-shape).** Rejected on measurement, not taste. The main `<video>` cannot be stepped deterministically: pausing and seeking per frame turns the live `AnalyserNode` into decaying stale data (measured: max 195 → 188 → … → 124 across ten seeks, decay rate set by *wall time between captures* — machine-dependent garbage), and `AudioContext.currentTime` advances on the audio thread's real clock even with `performance.now`/`Date.now` frozen (measured 0.523 s in ~600 ms wall), so every audio-reactive pixel is nondeterministic by construction. It re-encodes already-encoded video — generation loss on the majority of the timeline that is plain assets ffmpeg splices bit-faithfully for free — and it pays capture cost on *everything*: at the field range (40–120 ms/frame DOM-light, 100–300 ms WebGL-under-SwiftShader), a 20-minute 30 fps export is 36,000 frames ≈ 24–120+ min of capture, versus paying capture only on ≤450-frame sim windows. HLS delivery adds network nondeterminism on top. Slower, lossier, and less deterministic than splicing on every axis.
+
+**Rival 2 — pure-ffmpeg/offline reimplementation (no overlay capture leg: offline FFT → bars drawn server-side, `drawtext` captions, `zoompan` Ken Burns).** Rejected because it forks every look-bearing component: the circles' layout math (breakpoints, stacking, insets, ask-clearance) and attribution precedence live in `AvatarCirclesOverlay` — re-deriving them is exactly the seam the hybrid attack evaluated and rejected; captions would be rebuilt from scratch (and this ffmpeg build has **no `drawtext`, no `subtitles`, no `ass` — measured**, plus the viewer renders VTT into a styled div, not a track); Ken Burns easing becomes a `zoompan` approximation. Every future UI change then silently diverges export from product — permanent parity debt. And it cannot even remove the browser: simulation capture is mandatory regardless, so this rival maintains N hand-written forks to avoid a browser it still runs. (The Remotion variant is doubly out: content must be a pure function of frame number, our sims are stateful `setInterval` machines, and the licence is proprietary.)
+
+## The exclusion rule — final predicate as code, with the §1 resolution and any residual need for a new field
+
+§1 resolves to **reading (A)** — capture embedded scripted sims, exclude "Show full simulation" — and **no new field is needed**. The player already computes this exact distinction, names it RAW activation, and documents it as "show the full simulation" (`client-web/components/viewer/useProjectPlayer.ts:1936`, PoolMeta gloss at `:616-622`). Verified across every write path of `simulation_url`: generation always writes `?section=<id>&v=<hash>` + `sim_script:'main'`; the picked/"Show full simulation" flows always write a bare URL (or none) with no script; duplication preserves the classification.
+
+```ts
+import { variantParamOf } from 'shared/src/sim/simIdentity';
+
+const isFullSimulation = (s: SectionRow): boolean =>
+  s.type === 'simulation' &&
+  (!s.simulation_url || variantParamOf(s.simulation_url) === null) &&
+  (!s.sim_script || s.sim_script === 'main');           // 'main' is a legacy entry-point name, not an identity
+
+// EXCLUDE from the render:  isFullSimulation(s)         // RAW — matches the viewer's own semantics
+// CAPTURE (leg 2):          s.type === 'simulation' && !isFullSimulation(s)
+// SPLICE  (leg 1):          s.type === 'clip' && (!!s.clip_source_video_id || !!s.clip_source_image_id)
+//                           — both halves required: type alone admits unconfigured; FK alone admits stale leftovers
+```
+
+Stored-vs-served is safe: `resolveSimulationUrl` appends the stored query verbatim. **The one residual hole is legacy pre-`?section=` generated rows** (pre-0c1556e eras minted `section_<id>.html` with no `?section=`), which evaluate raw despite being scripted. Resolution, no new column: (1) run the repo's existing repair tool `backend-api/src/scripts/classify-orphan-sim-rows.ts --apply` as a backfill before enabling export in prod — it rewrites the provable class; (2) backstop discriminator in `buildExportPlan`: **bare URL + non-null `sim_meta` ⇒ plan warning "suspected legacy scripted — needs repair" + poster fallback — never a silent exclusion.** Rows with `simulation_url` null (sim deleted) have nothing to capture and are excluded like the viewer would present nothing.
+
+## Every §10 question, decided — table: question | decision | reason | reversible?
+
+| # | Question | Decision | Reason | Reversible? |
+|---|---|---|---|---|
+| 1 | Scope: reading (A) or (B)? How is "full simulation" distinguished? | **(A).** RAW predicate above; no new field | User ruling + the player already makes exactly this distinction; skeptic-verified across all write paths; repair tool exists for the one legacy hole | Yes — predicate is one function; (B) is `type==='simulation'` alone |
+| 2 | Sim-internal WebAudio in the export? | **No — v1 cut, recorded warning** when a package is known to emit audio | Structural: frame-locked capture and the realtime audio clock are incompatible (measured: audio clock ignores JS shims; analyser under seeks decays nondeterministically); unsolved industry-wide (Replit states the same residual gap) | Yes — additive v2 via on-device capture, the only known route |
+| 3 | B-roll audio: match viewer (muted) or honour `broll_volume`? | **Match the viewer: muted.** Emit a plan warning when a stored `broll_volume > 0` is being ignored | Both b-roll elements carry `muted` in JSX; an export honouring the stored volume produces audio the product never plays — parity wins; unmuting is a product decision to make in the viewer first | Trivially — one mixer input flip |
+| 4 | Branching projects? | **Refuse in v1** — `retryable:false`, clear message | A single linear file silently misrepresents a branching project; path choice is product UI, not an export default | Yes — later opt-in path parameter (`default_edge_id` as the preselected suggestion) |
+| 5 | Post-roll sims: pause-wait or play through? | **Play the authored window** (≤15 s) under autoScript; never pause-wait | "Pause and wait for a click" has no meaning in a linear file; the capture drives the same script the viewer would | Yes — plan-level per-section duration rule |
+| 6 | Guidance narration? | **Omit, with a recorded plan warning** | Cues are interaction-driven, 12 s-throttled, dropped-if-queued — nondeterministic by design; capturing "whatever fires" breaks byte-stable re-export | Yes — revisit with v2 on-device capture |
+
+User rulings folded in unchanged: 1920×1080 landscape output; music/cutaway audio in; avatar circles/captions/Ken Burns acceptable to cut from *v1 shipping* — the architecture nevertheless reserves them a leg (Phase 3/4) that forks zero code, which is what "ideal" buys.
+
+## Implementation phases — numbered, each with: deliverable, the test that proves it, and what can ship without the next phase
+
+**Phase 1 — Assembly pipeline, no browser.**
+- *Deliverable:* migration `058_project_exports` (duplication-model table: status CHECK, plan jsonb written first, CAS claim, heartbeat, fenced writes, `cancel_requested`); `buildExportPlan` (predicate above, canonical grid from main video clamped 1080p, legacy-row backstop, warnings, disk preflight); `LinearAssembler` (every measured §5 discipline: `setsar` fix, concat filter never demuxer, `apad`+`atrim`, `gte/lt` helper, bounded inputs, `-/filter_complex` file, filter probe at job start, `-progress pipe:1` parsing `out_time_us` — the µs trap, SIGTERM→SIGKILL cancel, **exit-0 + duration gate before upload**, versioned write-once key); endpoints replacing the 501 stubs; button left of Preview; sims render as poster stills + silence; branching refused.
+- *Test:* a genuine 20-minute fixture (built now — §9.5) exports to one master; ffprobe asserts video ≡ audio ≡ planned duration within one frame and start_time 0 (the lab's seam fixture hit exactly 30.000000 s / 900 frames / zero drift); anamorphic source lands SAR 1:1/DAR 16:9; a mid-encode cancel publishes nothing despite leaving a valid MP4 on disk.
+- *Ships without Phase 2:* yes — complete exports with poster placeholders, per the user's v1 ruling.
+
+**Phase 2 — Sim capture worker (Linux container only; macOS cannot run beginFrame — measured).**
+- *Deliverable:* `SimCaptureWorker`: pinned `chrome-headless-shell` ≥151; the six `--deterministic-mode` switches spelled out + `--hide-scrollbars --force-device-scale-factor=1 --force-color-profile=srgb --disable-background-timer-throttling --mute-audio --disable-dev-shm-usage`; `--use-angle=swiftshader` (+ `--enable-unsafe-swiftshader` belt-and-braces; never `--disable-gpu`/`--in-process-gpu`); document-start clock shim + mulberry32(`configHash`) + `crypto.getRandomValues` patch, ordering vs `__SIM_RAF_GATE__` explicit and tested; top-level v2 handshake (`SIM_READY→startScript→SCRIPT_APPLIED→SIM_PAINTED`, `?section=&v=` and `#simboot=` preserved); ~30 warmup frames; **JPEG q80 `optimizeForSpeed`**; exactly `round(dur×30)` frames; gates: `webgl2` context non-null, `UNMASKED_RENDERER_WEBGL` recorded and matched, frame-1 non-uniformity, frame count. Dockerfile + container dev loop; per-section sharding under a concurrency limiter (mirroring `FFMPEG_CONCURRENCY`; Replit runs 1).
+- *Test:* CI container captures a canary scripted sim **twice → byte-identical per-frame hashes** (determinism proven, PRNG included); a deliberately misconfigured run (`--use-angle=gl`, no display) trips the black-frame gate and fails loudly — the negative test for the M144 trap.
+- *Ships without Phase 3:* yes — real sim visuals; overlays still absent (ruled acceptable).
+
+**Phase 3 — Overlay stage: avatar circles + captions from the product's own components.**
+- *Deliverable:* stage route (unpainted `html`/`body`) mounting `AvatarCirclesOverlay` and the viewer caption renderer with `buildPlayerConfig`-derived props; FFT byte-track precompute from the export's mixed narration PCM (48 kHz mono decode; spec AnalyserNode: Blackman → 1024-pt FFT → τ=0.7 EMA stepped once per virtual frame → dB→byte over [−100,−30]); fake `AudioContext` via `addInitScript`, stage route only, zero production-code change; 60 Hz virtual ticks, PNG screenshot every other beginFrame; reels packed png-in-mov RGBA; assembler swaps them in post-concat, bounded, `eof_action=pass:repeatlast=0`.
+- *Test:* (a) in-container CI pixel gate: frame-1 corner alpha === 0; (b) **analyser golden test** — same PCM through a real Chrome `AnalyserNode` and the offline implementation, byte-delta tolerance, then both through `computeBars` → canvas pixel diff; (c) reel discipline: numbered 450-frame reel lands on exactly output frames N..N+449 (reproducing the lab's measured no-off-by-one result); (d) one-frame stage-vs-live-viewer visual diff.
+- *Ships without Phase 4:* yes — this is v1-ideal visual parity; the only remaining cuts are the two audio ones.
+
+**Phase 4 — Ken Burns + hardening.**
+- *Deliverable:* image-clip Ken Burns rendered by the stage route's own CSS `@keyframes` stepped by beginFrame (structurally immune to the SwiftShader family — DOM/2D only); `classify-orphan-sim-rows --apply` run against prod as the export-era backfill; admin visibility; optional VP9 reel path behind a code gate that forces `-c:v libvpx-vp9` **before** `-i` (the measured silent-opacity trap), only if reel storage ever dominates.
+- *Test:* captured Ken Burns frame at time t matches the viewer's animation state at t (sampled transform, ≤1 px); a seeded legacy fixture row produces the backstop warning, never a silent exclusion.
+- *Ships without Phase 5:* yes — Phase 5 is unscheduled v2.
+
+**Phase 5 — v2, documented, unscheduled:** sim-internal audio + guidance narration via on-device capture (`getDisplayMedia` + Region Capture — the only known route to synthesized WebAudio); branching path selection UI. Nothing in v1 blocks on it; the export UI copy already tells the truth without it.
+
+## The three riskiest assumptions still standing — each with the cheapest experiment that would falsify it
+
+1. **Real generated sims capture inside the triangulated 100–300 ms/frame SwiftShader band** (15 s section ≈ 0.5–2.5 min happy path). Field data shows blur/shader-heavy content at 300–800+ ms — HyperFrames measured a *single CSS blur declaration* 2.5×-ing a whole render — and the llvmpipe-under-headless-shell question (plan's #1 spike) is still unresolved; production-box absolutes are unmeasured. *Falsifier (~1 day):* in the Phase-2 container, a 100-line CDP loop (or `puppeteer-capture`) over 3 real stored packages, 450 frames JPEG q80 each, median ms/frame; same box, attempt an llvmpipe boot for the comparison number. If median >≈700 ms/frame, revisit Branch B / 24 fps before building the queue math.
+2. **The spec-based offline AnalyserNode byte-matches Chrome closely enough that the circles are sub-perceptually identical.** Explicitly unverified — the research says so — and the whole overlay leg's fidelity rests on it plus the 60 Hz cadence rule (τ=0.7 fall-time doubles from ~108 ms to ~217 ms if ticked at 30 Hz). *Falsifier (~half a day, no product code):* fixed 2 s PCM → real `AnalyserNode` (record `getByteFrequencyData` per rAF) vs the offline implementation; assert byte deltas, then render both through `computeBars` and pixel-diff the canvas.
+3. **A real stored v2 package reaches `SIM_PAINTED` under beginFrame with the shim installed at document start** — the `__SIM_RAF_GATE__` double-wrap ordering is the plan's own "where the hang will live", and the top-level `window.parent === window` handshake is verified from source but never spiked; nothing in §4 has run against a real package. *Falsifier (~half a day, container):* navigate top-level to one stored package with the shim, bounded 60 s timeout; assert the full `SIM_READY→SCRIPT_APPLIED→SIM_PAINTED` sequence, then 30 captured frames that are non-uniform and non-identical. A hang here reorders Phase 2's first week; it does not change the architecture.
