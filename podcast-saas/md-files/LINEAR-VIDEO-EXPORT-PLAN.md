@@ -133,7 +133,7 @@ own CDP definition of `Target.createTarget`:
 deterministic capture ⇒ **software WebGL**. Our deployment is a GPU-less AWS VM, so we lose nothing
 we had.
 
-**(b) SwiftShader's WebGL fallback was REMOVED in Chrome M139. Stable is 151.**
+**(b) SwiftShader's WebGL fallback was REMOVED — in M144, not M139. Stable is 151.**
 
 > "SwiftShader has been used to support WebGL on systems without GPU acceleration such as headless
 > systems or virtual machines but has been deprecated due to security issues. **Starting in M139,
@@ -372,6 +372,86 @@ draw the same numbers in seeded mode and different ones in production.
 environments"*). That is the GL *implementation* choice and does not exempt us from the M139 WebGL
 fallback removal, so `--enable-unsafe-swiftshader` is still required. It does reframe the spike:
 the question is "can we override the default with llvmpipe", not "can we choose a backend".
+
+### Two corrections to what is written above, from a seventh pass
+
+**The milestone is M144, not M139 — and I had it wrong.** The policy YAML and chromestatus both say
+M139, which is where my earlier statement came from. They are wrong. Verified three independent
+ways: the commit→milestone mapping (CL 7128438 flips `kAllowSwiftShaderFallback` to *disabled*, which
+lands in 144 — CL 5675974 added the flag and the warning back in **M130**); Microsoft's copy of the
+same policy — *"Starting in Microsoft Edge version 144, SwiftShader is deprecated… As a result, WebGL
+context creation fails"*; and a real regression report of Three.js in headless Docker **working on
+143 and failing on 144**, which Ken Russell attributed to exactly this. Does not change the design —
+we are on 151 either way — but it does mean anyone testing on ≤143 will not reproduce the failure.
+
+**`--enable-unsafe-swiftshader` is not actually required — and this contradicts most published
+advice, including what I wrote above.** From `ui/gl/gl_features.cc`:
+
+```cpp
+bool IsSwiftShaderAllowedByCommandLine(const base::CommandLine* command_line) {
+  if (command_line->HasSwitch(switches::kEnableUnsafeSwiftShader)) return true;
+  std::string angle_name = command_line->GetSwitchValueASCII(switches::kUseANGLE);
+  if (angle_name == kANGLEImplementationSwiftShaderName ||
+      angle_name == kANGLEImplementationSwiftShaderForWebGLName) return true;   // explicit → allowed
+  return false;
+}
+```
+
+**Explicitly passing `--use-angle=swiftshader` is itself sufficient.** And both headless modes
+*self-append* that switch on Linux, which is why headless WebGL still works out of the box on 151.
+The console warning still fires without the flag — it is noise, not an error. Keep
+`--enable-unsafe-swiftshader` anyway as cheap insurance, but understand it is belt-and-braces.
+
+### ⚠️ The trap that will actually bite us
+
+**The flags people add to get GPU acceleration are exactly what breaks WebGL when there is no GPU.**
+Chrome auto-appends `--use-angle=swiftshader-webgl` on Linux headless *only if* none of
+`--use-gl`, `--use-angle` or `--enable-gpu` is present
+(`chrome/browser/headless/headless_mode_init.cc`). Pass any of them, fail to acquire hardware, and
+nothing permits SwiftShader — so `getContext('webgl')` returns **null**, silently, with a
+transparent canvas and a 200. That is precisely the 143→144 report above, and it is the most likely
+way this feature ships broken.
+
+Related, same family: **`--disable-gpu` silently re-enables SwiftShader** and is, in Microlink's
+words, *"the most-copied flag in every headless tutorial"*. Chrome's own note says it is needed only
+on Windows. **Delete it.** And `--in-process-gpu` / `--single-process` kill the GL surface ANGLE
+needs — never either.
+
+### The central architectural trade, stated plainly
+
+Mesa llvmpipe is genuinely ~2–4× faster than SwiftShader (Microlink ~24 s → ~6 s isolated, ~2× under
+load, pixel-identical; botbrowser −49% CPU — SwiftShader is capped at 128-bit SIMD, llvmpipe uses
+AVX2). But **`--use-angle=gl` must bind a GL surface, which needs an X display even headless** — so
+llvmpipe means Xvfb, which means running **headed**, which means **losing `beginFrame`**.
+
+So the decision is exactly this: **frame-accurate capture (headless-shell + `beginFrame`, SwiftShader
+speed) versus ~2–4× throughput (Xvfb + headed + llvmpipe, no manual frame control).** Only a measured
+number on a real simulation can settle it, and it should be measured before either path is built.
+
+**Encouraging precedent for the slow-but-correct side:** Remotion Lambda's default GL backend is
+`swangle` and they recommend it for Three.js on GPU-less machines. Software rendering of thousands of
+frames under virtual time is the deployed norm, not an experiment.
+
+**Two counter-intuitive scaling facts, both from Remotion issues:** adding cores to one box is a bad
+lever — 14× the cores bought **1.7×** (#4949) — so scale out. And a GPU is not an automatic win in
+this architecture: an L40S made a React-Three-Fiber render **3× slower** (#4955). Measure before
+buying hardware.
+
+### Two more silent failures worth designing against
+
+**A blank frame roughly 4 seconds after navigation.** `kNewContentRenderingDelay = base::Seconds(4)`;
+on expiry `ClearDisplayedGraphics()` wipes the output. Fixed by
+`--disable-new-content-rendering-timeout`, which `--deterministic-mode` already implies — but it
+matters if anyone assembles the flag list by hand.
+
+**`beginFrame` has two hard preconditions, each with an explicit error:** BeginFrameControl must be
+enabled, *and* `--run-all-compositor-stages-before-draw` must be present. Also, from the original
+announcement: *"a BeginFrame may or may not be answered with a display update"* — several may be
+needed before the first screenshot succeeds, which is the mechanism behind the warmup-frames advice.
+
+**Tooling note:** Playwright unconditionally injects `--enable-unsafe-swiftshader`; Puppeteer injects
+no GPU flags at all. So on Chrome 144+ a Puppeteer user who adds GPU flags to a GPU-less container
+gets a black canvas, and a Playwright user does not.
 
 ### Capture failure modes, ordered by damage
 
