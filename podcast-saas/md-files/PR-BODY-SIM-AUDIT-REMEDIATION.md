@@ -91,6 +91,21 @@ so one frame after the body returns), a proven bridge keeps the full allowance, 
 is pinned by mutations in **both** directions. The unit test that had encoded the 3-second hold was
 written by the same round that introduced the defect — the pre-existing E2E was the authority.
 
+### The low-end tier unmounted the cover the coordinator was holding (caught by CI's 2-core runner)
+
+The pool tier is derived from `hardwareConcurrency`: `'all'` above 4 cores — no eviction rule at
+all — and `'window'` at or below. Every developer machine ran `'all'`; CI ran `'window'`, and there
+the planner dropped the element the coordinator was holding as its cover at T0 of every coordinated
+exit, because `deactivateSim` released the residency ref unconditionally while the rendered key
+beside it had already learned to survive the hold. Two owners of one fact, disagreeing during a
+hold. Fixing it exposed a second defect the old bug had been masking by accident: with the ref
+alive, the *next* video tick re-entered the exit branch, was refused a second handoff, and fell
+through to the flag-off uncover — dropping the cover a tick after T0 at **every** tier. A handoff
+in flight now owns its exit. The test suite also no longer reads the host's real core count
+(`vitest.setup.ts` pins it, with `SIM_TEST_CORES` for explicit low-end probing), and an explicit
+2-core regression proves both the hold and that the window tier still reclaims the frame after the
+commit. Flag-off behaviour is byte-identical at every tier.
+
 ### A 6 GB master could not be duplicated
 
 Uploads are admitted to 10 GB; S3 `CopyObject` refuses a single object over 5 GiB. This was
