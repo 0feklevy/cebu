@@ -23,9 +23,12 @@
  *     the flag; the RUNNER honours it between phases (and via the assembler's AbortSignal) and is
  *     the only writer of terminal status — so the poll can never see a terminal row while ffmpeg
  *     still holds the work directory.
- *   • Phases are `planning → capturing → assembling → uploading`. In Phase 1 `capturing` resolves
- *     every `sim-capture` window to `poster-fallback` — real capture is the Phase 2 worker — and
- *     records each substitution as a warning, because a degraded export must be degraded LOUDLY.
+ *   • Phases are `planning → capturing → assembling → uploading`. `capturing` captures each scripted
+ *     sim window when a capture backend is injected AND available on this host, uploading the gated
+ *     clip to the export's own write-once section key so it splices like any other source; with no
+ *     backend (the shipped default), or on a capture that is unavailable or fails its sanity gate,
+ *     the window resolves to its poster still. Every substitution is recorded as a warning, because
+ *     a degraded export must be degraded LOUDLY, and `quality_state` becomes `degraded`.
  *   • The output lands at a versioned write-once key and `output_key` is set only in the terminal
  *     `ready` write: a SIGTERM'd encode leaves a well-formed, playable partial MP4, so nothing
  *     upstream of the exit-0 gate may ever become the published pointer.
@@ -45,7 +48,8 @@ import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import { IMMUTABLE_CACHE_CONTROL } from 'shared/sim/simRevision';
 
 import { ExportRefused, buildExportPlan } from './exportPlan.js';
-import type { ExportPhase, ExportPlan, LinearAssembler, PosterFallbackWindow } from './types.js';
+import type { ExportPhase, ExportPlan, LinearAssembler, PosterFallbackWindow, ClipWindow } from './types.js';
+import { CaptureUnavailable, CaptureGateFailed, type SimCaptureBackend } from './capture/captureTypes.js';
 
 // ── Liveness ──────────────────────────────────────────────────────────────────────────────────
 
@@ -152,6 +156,18 @@ export class ProjectExportService {
     private readonly storage: StorageService = getStorageAdapter(),
     /** Injectable for tests; production resolves the sibling implementation lazily in run(). */
     private readonly assembler: LinearAssembler | null = null,
+    /**
+     * The simulation capture backend. **Null by default, and that is the shipped Phase-1 state**:
+     * with no provider every sim window resolves to its poster still, which is the path that has
+     * been verified end to end. A real backend (the isolated container capture worker) is INJECTED
+     * only once it is deployed and its container-verification checklist
+     * (`md-files/EXPORT-CAPTURE-ISOLATION.md`) has passed on a Linux host — because that path
+     * cannot be verified on a developer machine (beginFrame is macOS-blocked, measured). When a
+     * provider is present and reports `isAvailable()`, a captured window becomes an ordinary
+     * spliced clip; a capture that is unavailable or fails its sanity gate degrades to the poster
+     * fallback, loudly. The default therefore changes nothing until an operator switches it on.
+     */
+    private readonly captureProvider: SimCaptureBackend | null = null,
   ) {}
 
   /**
@@ -288,29 +304,89 @@ export class ProjectExportService {
       await this.throwIfCancelRequested(exportId);
 
       // ─── capturing ──────────────────────────────────────────────────────────────────────────
-      // Phase 1: every sim-capture window resolves to its poster fallback — the Phase 2 worker
-      // is what will actually capture. Recorded PER WINDOW: a degraded export degrades loudly.
+      // Each scripted sim window is captured if a backend is present and can run here; otherwise —
+      // and on any capture that is unavailable or fails its sanity gate — it resolves to the
+      // poster still. Recorded PER WINDOW, because a degraded export must degrade LOUDLY: the user
+      // is told exactly which sections became stills, and `quality_state` becomes `degraded` at the
+      // ready write. With no provider (the shipped default) this is every sim window, unchanged
+      // from before capture existed.
       phase = 'capturing';
       await this.fencedUpdate(exportId, { status: 'capturing' });
-      let done = 0;
-      plan.timeline = plan.timeline.map((w) => {
-        done += 1;
-        if (w.kind !== 'sim-capture') return w;
-        const fallback: PosterFallbackWindow = {
-          kind: 'poster-fallback',
-          sectionId: w.sectionId,
-          label: w.label,
-          startSec: w.startSec,
-          endSec: w.endSec,
-          posterKey: w.posterKey,
-        };
-        plan.warnings.push(
-          w.posterKey
-            ? `${w.label ?? `section ${w.sectionId}`}: simulation capture is not available yet — this window is exported as its poster still with silence`
-            : `${w.label ?? `section ${w.sectionId}`}: simulation capture is not available yet and no poster still exists — the base video plays through this window`,
-        );
-        return fallback;
+      const toPoster = (w: { sectionId: string; label: string | null; startSec: number; endSec: number; posterKey: string | null }): PosterFallbackWindow => ({
+        kind: 'poster-fallback', sectionId: w.sectionId, label: w.label,
+        startSec: w.startSec, endSec: w.endSec, posterKey: w.posterKey,
       });
+      const name = (w: { sectionId: string; label?: string | null }): string => w.label ?? `section ${w.sectionId}`;
+      // ONE availability check, not one per window: `isAvailable` is a host preflight, not a
+      // per-section fact, and calling it N times would launch N browsers to learn one answer.
+      const backend = this.captureProvider;
+      const canCapture = backend ? await backend.isAvailable().catch(() => false) : false;
+
+      let done = 0;
+      const captured: ExportPlan['timeline'] = [];
+      for (const w of plan.timeline) {
+        done += 1;
+        if (w.kind !== 'sim-capture') { captured.push(w); continue; }
+        await this.throwIfCancelRequested(exportId);
+
+        if (!canCapture || !backend || !w.servedUrl) {
+          captured.push(toPoster(w));
+          plan.warnings.push(
+            w.posterKey
+              ? `${name(w)}: simulation capture is not available — exported as its poster still with silence`
+              : `${name(w)}: simulation capture is not available and no poster still exists — the base video plays through this window`,
+          );
+          continue;
+        }
+
+        try {
+          const result = await backend.captureSection({
+            servedSimUrl: w.servedUrl, sectionId: w.sectionId,
+            simpleUi: w.simpleUi, autoScript: w.autoScript, uiHide: w.uiHide ?? [],
+            durationSec: w.endSec - w.startSec, fps: plan.grid.fps,
+            width: plan.grid.w, height: plan.grid.h, configHash: w.configHash ?? '', posterKey: w.posterKey ?? '',
+          });
+
+          if (result.gate === 'failed' || !result.clipPath) {
+            // A render that ran but did not pass — or a backend that produced only frames, which
+            // this service does not encode (a documented gap; the production backend returns a
+            // clip). Either way, degrade to the poster with the reason, never a wrong frame.
+            captured.push(toPoster(w));
+            plan.warnings.push(
+              result.gate === 'failed'
+                ? `${name(w)}: the captured render did not pass the sanity gate (${result.reason ?? 'no reason'}; renderer "${result.rendererString}") — exported as its poster still`
+                : `${name(w)}: the capture backend returned frames this service cannot encode — exported as its poster still`,
+            );
+            continue;
+          }
+
+          // A gated clip. Upload it to the export's own write-once section key and splice it exactly
+          // as any other source clip — the assembler downloads it by key like everything else, so a
+          // captured sim travels the identical, already-verified path. `sourceVideoFileId` carries
+          // the section id: audit-only (the splice keys off `storageKey`), honest about origin.
+          const clipKey = `exports/${job.project_id}/${exportId}/sections/${w.sectionId}.mp4`;
+          await this.storage.uploadFile(clipKey, await readFile(result.clipPath), 'video/mp4', IMMUTABLE_CACHE_CONTROL);
+          const clip: ClipWindow = {
+            kind: 'clip', sectionId: w.sectionId, label: w.label, startSec: w.startSec, endSec: w.endSec,
+            sourceVideoFileId: w.sectionId, storageKey: clipKey,
+            sourceInSec: 0, sourceOutSec: w.endSec - w.startSec, sourceRole: 'clip',
+          };
+          captured.push(clip);
+        } catch (err) {
+          if (!(err instanceof CaptureUnavailable)) {
+            // A real render failure (gate-hard, crash, timeout). One window failing must never fail
+            // the whole export — degrade this window loudly and carry on.
+            const reason = err instanceof CaptureGateFailed
+              ? `${err.message} (renderer "${err.rendererString}")`
+              : err instanceof Error ? err.message : String(err);
+            plan.warnings.push(`${name(w)}: simulation capture failed (${reason}) — exported as its poster still`);
+          } else {
+            plan.warnings.push(`${name(w)}: simulation capture is not available — exported as its poster still with silence`);
+          }
+          captured.push(toPoster(w));
+        }
+      }
+      plan.timeline = captured;
       await this.fencedUpdate(exportId, {
         plan: plan as unknown as Record<string, unknown>,
         objects_done: done,

@@ -28,8 +28,15 @@ export default defineConfig({
     // resulting failure is a TIMEOUT with passing assertions, which reads as a logic bug and is
     // not one. Verified: the affected file passes in isolation and timed out at 6.7s in a loaded
     // run. This raises the budget for starting a database; it weakens no assertion.
-    testTimeout: 30_000,
-    hookTimeout: 30_000,
+    //
+    // Raised 30s → 60s after the linear-export and sim-capture PGlite suites landed: under
+    // `release:verify`, which runs every workspace's suite concurrently, the added DB-booting files
+    // starved each other past 30s and 18 hooks timed out — every one with passing assertions, all
+    // green in isolation (backend-alone: 2178 passed) and green cross-workspace at 60s. The
+    // "realistic timeout" 32691ce chose simply grew with the suite; the number tolerates a slower
+    // DB boot under contention and weakens nothing.
+    testTimeout: 60_000,
+    hookTimeout: 60_000,
     include: ['src/**/*.test.ts'],
     // src/_archive holds the retired v1 podcast pipeline. Its tests import a
     // db/index.js that no longer exists in the archive tree, so they cannot run.

@@ -11,7 +11,8 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { mkdtemp, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PGlite } from '@electric-sql/pglite';
@@ -44,6 +45,7 @@ import {
 import { ExportRefused } from '../exportPlan.js';
 import type { StorageService } from '../../storage/StorageService.js';
 import type { ExportPlan, LinearAssembler } from '../types.js';
+import type { SimCaptureBackend } from '../capture/captureTypes.js';
 
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'db', 'migrations');
 
@@ -215,11 +217,102 @@ describe('run — the happy path (Phase 1: poster fallback for every sim window)
     // Phase 1 capturing: the sim-capture window became poster-fallback, recorded as a warning.
     const kinds = row.plan!.timeline!.map((w) => w.kind).sort();
     expect(kinds).toEqual(['poster-fallback', 'video']);
-    expect(row.plan!.warnings!.some((w) => w.includes('simulation capture is not available yet'))).toBe(true);
+    // Wording note: with no capture backend injected (the default), every sim window becomes its
+    // poster still. Asserted on the stable phrase, not the exact sentence, so a reword of the
+    // reason does not break a test whose intent is 'the user is told the sim became a still'.
+    expect(row.plan!.warnings!.some((w) => w.includes('poster still'))).toBe(true);
 
     // The assembler received the SUBSTITUTED plan — it must never see a sim-capture window.
     const seen = assembler.assemble.mock.calls[0][0];
     expect(seen.timeline.every((w) => w.kind !== 'sim-capture')).toBe(true);
+  });
+
+  // ── the capture provider seam (Phase 2 wiring; default-off is proven above) ──────────────────
+  //
+  // These drive the SAME service with a FAKE SimCaptureBackend. The real backends (Playwright
+  // screenshot, container beginFrame) are proven in the capture module's own suites; here the only
+  // question is whether the service does the right thing with what a backend returns — capture a
+  // clip and splice it, or degrade to the poster, loudly.
+  describe('with a capture backend injected', () => {
+    const withCapture = (assembler: LinearAssembler, backend: SimCaptureBackend): ProjectExportService =>
+      new ProjectExportService(storage, assembler, backend);
+
+    it('a gated clip is uploaded to the section key and spliced — the window is NOT a poster', async () => {
+      const assembler = stubAssembler();
+      const backend: SimCaptureBackend = {
+        name: 'fake',
+        isAvailable: async () => true,
+        captureSection: vi.fn(async (spec) => {
+          const clipPath = join(await mkdtemp(join(tmpdir(), 'cap-')), 'clip.mp4');
+          await writeFile(clipPath, Buffer.from('captured'));
+          // The service passed the section's own params through — the capture identity.
+          expect(spec.sectionId).toBe(scriptedSectionId);
+          expect(spec.simpleUi).toBe(true);
+          expect(spec.autoScript).toBe(true);
+          return { clipPath, frameCount: 300, rendererString: 'ANGLE (fake)', gate: 'passed' as const };
+        }),
+      };
+      const exportId = await newExport();
+      await withCapture(assembler, backend).run(exportId);
+
+      const row = await exportRow(exportId);
+      expect(row.status).toBe('ready');
+      // The captured clip was uploaded to the export's own write-once section key…
+      expect(storage.uploads.map((u) => u.key)).toContain(
+        `exports/${projectId}/${exportId}/sections/${scriptedSectionId}.mp4`);
+      // …and the assembler saw it as a CLIP, never a sim-capture or a poster-fallback.
+      const seen = assembler.assemble.mock.calls[0][0];
+      const simWin = seen.timeline.find((w) => w.sectionId === scriptedSectionId);
+      expect(simWin?.kind).toBe('clip');
+      // A real capture that passed the gate is NOT a degradation.
+      expect(row.quality_state).toBe('full');
+    });
+
+    it('a gate FAILURE degrades to the poster, loudly, and never fails the export', async () => {
+      const assembler = stubAssembler();
+      const backend: SimCaptureBackend = {
+        name: 'fake',
+        isAvailable: async () => true,
+        // The dangerous case the gate exists for: a clip WAS produced (a file on disk) but its
+        // canvas region never moved — a black render under Minimal UI. The service must reject it
+        // on the gate verdict, NOT trust the file's existence. (A backend that returns no clip at
+        // all is the easy case; returning a bad clip is what would otherwise ship a wrong video.)
+        captureSection: vi.fn(async () => {
+          const clipPath = join(await mkdtemp(join(tmpdir(), 'cap-')), 'black.mp4');
+          await writeFile(clipPath, Buffer.from('a produced but dead render'));
+          return {
+            clipPath, frameCount: 300, rendererString: 'SwiftShader Device',
+            gate: 'failed' as const, reason: 'canvas region never changed',
+          };
+        }),
+      };
+      const exportId = await newExport();
+      await withCapture(assembler, backend).run(exportId);
+
+      const row = await exportRow(exportId);
+      expect(row.status).toBe('ready');            // one bad window never fails the whole export
+      expect(row.quality_state).toBe('degraded');
+      const simWin = row.plan!.timeline!.find((w) => w.sectionId === scriptedSectionId);
+      expect(simWin?.kind).toBe('poster-fallback');
+      expect(row.plan!.warnings!.some((w) => w.includes('sanity gate'))).toBe(true);
+      // No captured clip was uploaded — only the master.
+      expect(storage.uploads.map((u) => u.key)).not.toContain(
+        `exports/${projectId}/${exportId}/sections/${scriptedSectionId}.mp4`);
+    });
+
+    it('an UNAVAILABLE backend is the poster path — isAvailable false skips capture entirely', async () => {
+      const assembler = stubAssembler();
+      const captureSection = vi.fn();
+      const backend: SimCaptureBackend = { name: 'fake', isAvailable: async () => false, captureSection };
+      const exportId = await newExport();
+      await withCapture(assembler, backend).run(exportId);
+
+      const row = await exportRow(exportId);
+      expect(row.status).toBe('ready');
+      expect(row.quality_state).toBe('degraded');
+      // isAvailable() false means captureSection is NEVER called — no browser launched to learn it.
+      expect(captureSection).not.toHaveBeenCalled();
+    });
   });
 
   it('an export with no sim windows lands ready at FULL quality', async () => {
