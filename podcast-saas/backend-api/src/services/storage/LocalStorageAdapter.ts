@@ -52,7 +52,7 @@ export class LocalStorageAdapter implements StorageService {
     return `${serveBase()}/local-storage/${path}`;
   }
 
-  async getPresignedDownloadUrl(path: string, _ttlSeconds: number): Promise<string> {
+  async getPresignedDownloadUrl(path: string, ttlSeconds: number): Promise<string> {
     // /video-raw/* serves with range-request support so the browser's <video>
     // element can stream it directly — but it only accepts videos/ keys. The
     // scoped media token in the path authorizes private projects' media without
@@ -63,6 +63,13 @@ export class LocalStorageAdapter implements StorageService {
       const scope = mediaKeyScope(path);
       if (scope) return `${serveBase()}/video-raw/t/${mintMediaToken(scope)}/${path}`;
       return `${serveBase()}/video-raw/${path}`;
+    }
+    // Export masters download via a plain <a> navigation — no Authorization header possible —
+    // so the "presigned" local URL carries the same scoped token the video routes use. The TTL
+    // honours the caller's request the way a real presign would.
+    if (path.startsWith('exports/')) {
+      const scope = mediaKeyScope(path);
+      if (scope) return `${serveBase()}/local-storage/t/${mintMediaToken(scope, ttlSeconds)}/${path}`;
     }
     return `${serveBase()}/local-storage/${path}`;
   }

@@ -6,12 +6,14 @@ afterEach(() => {
 });
 
 describe('mediaToken', () => {
-  it('scopes a key to its first two segments for hls/ and videos/ only', () => {
+  it('scopes a key to its first two segments for hls/, videos/ and exports/ only', () => {
     expect(mediaKeyScope('hls/vf-1/run/master.m3u8')).toBe('hls/vf-1');
     expect(mediaKeyScope('videos/proj-1/file.mp4')).toBe('videos/proj-1');
+    expect(mediaKeyScope('exports/proj-1/exp-1/master.mp4')).toBe('exports/proj-1');
     expect(mediaKeyScope('thumbnails/proj-1/x.jpg')).toBeNull();
     expect(mediaKeyScope('hls/')).toBeNull();
     expect(mediaKeyScope('videos')).toBeNull();
+    expect(mediaKeyScope('exports/')).toBeNull();
   });
 
   it('round-trips a minted token for its scope only', () => {

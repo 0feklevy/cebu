@@ -350,7 +350,9 @@ export async function buildExportPlan(
         startSec,
         endSec,
         simulationId: s.simulation_id,
-        servedUrl: resolveSimulationUrl(s.simulation_url, simRow, storage),
+        servedUrl: withBootCloak(
+          resolveSimulationUrl(s.simulation_url, simRow, storage), s.simple_ui ?? false, uiHide,
+        ),
         simpleUi: s.simple_ui ?? false,
         autoScript: s.auto_script ?? true,
         uiHide,
@@ -548,4 +550,21 @@ function uiHideFromMeta(simMeta: unknown): string[] | undefined {
   if (!Array.isArray(hide)) return undefined;
   const clean = hide.filter((x): x is string => typeof x === 'string' && x.length > 0);
   return clean.length > 0 ? clean : undefined;
+}
+
+/**
+ * Append the viewer's Minimal-UI boot cloak to a served sim URL (`bootHideFor` semantics: selectors
+ * only when Minimal UI is on, `{"hide":[]}` otherwise). The `data-simboot` head snippet — injected
+ * by the `/sim-public/` proxy at serve time and baked into container packages by `packageInput` —
+ * turns the fragment into pre-paint `display:none` CSS, which is what actually hides a Minimal-UI
+ * section's controls in a capture: the capture never sends `clearBootHide`, so the cloak holds for
+ * bridges without runtime `applyHideUi` while a full bridge replaces it in `startScript` anyway.
+ * Any fragment already on the stored URL is replaced — it belongs to the viewer's own resolution.
+ */
+export function withBootCloak(
+  url: string | null, simpleUi: boolean, uiHide: readonly string[] | undefined,
+): string | null {
+  if (!url) return url;
+  const hide = simpleUi && uiHide && uiHide.length > 0 ? [...uiHide] : [];
+  return `${url.replace(/#.*$/, '')}#simboot=${encodeURIComponent(JSON.stringify({ hide }))}`;
 }

@@ -54,4 +54,11 @@ describe('keyHasTraversal', () => {
     // a filename merely containing dots (not a `..` path segment) is fine
     expect(keyHasTraversal('hls/a..b/seg.ts')).toBe(false);
   });
+
+  it('flags the public-prefix-masquerade key that /local-storage must reject', () => {
+    // `podcasts/..%2fexports/…` decodes to this key: a PUBLIC leading segment (skips auth) that
+    // safeLocalPath would resolve back to a private exports/ file. The `..` segment is what the
+    // route guard catches before the public-prefix branch runs.
+    expect(keyHasTraversal('podcasts/../exports/proj-1/exp-1/master.mp4')).toBe(true);
+  });
 });

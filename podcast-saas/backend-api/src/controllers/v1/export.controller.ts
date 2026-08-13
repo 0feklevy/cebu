@@ -19,6 +19,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 
 import { db } from '../../db/index.js';
 import { project_exports, projects } from '../../db/schema.js';
+import { logger } from '../../lib/logger.js';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { enqueueJob } from '../../queue/index.js';
@@ -67,7 +68,13 @@ export async function registerExportRoutes(app: FastifyInstance): Promise<void> 
     async (request, reply: FastifyReply) => {
       // The dark-ship gate, before anything else: OFF means this URL behaves as if the feature
       // does not exist — 404, indistinguishable from the pre-058 world.
-      if (!exportEnabled()) return reply.code(404).send({ message: 'Not found' });
+      if (!exportEnabled()) {
+        logger.info(
+          { projectId: request.params.id },
+          'export: refused — LINEAR_EXPORT_ENABLED is off, answering 404',
+        );
+        return reply.code(404).send({ message: 'Not found' });
+      }
 
       const user = request.dbUser!;
       const project = await db.query.projects.findFirst({
@@ -91,6 +98,10 @@ export async function registerExportRoutes(app: FastifyInstance): Promise<void> 
         throw err;
       }
       if (inflight) {
+        logger.info(
+          { projectId: project.id, exportId: inflight.id, status: inflight.status },
+          'export: joined already-running export',
+        );
         return reply.code(202).send({ export_id: inflight.id, status: inflight.status, already_running: true });
       }
 
@@ -102,6 +113,10 @@ export async function registerExportRoutes(app: FastifyInstance): Promise<void> 
         plan = await buildExportPlan(project.id, storage);
       } catch (err) {
         if (err instanceof ExportRefused) {
+          logger.info(
+            { projectId: project.id, code: err.code, statusCode: err.statusCode },
+            'export: refused by plan',
+          );
           return reply.code(err.statusCode).send({ code: err.code, message: err.message });
         }
         throw err;
@@ -116,6 +131,10 @@ export async function registerExportRoutes(app: FastifyInstance): Promise<void> 
         (w) => w.kind === 'sim-capture' || w.kind === 'poster-fallback',
       );
       if (wouldDegrade && request.body?.allow_degraded !== true) {
+        logger.info(
+          { projectId: project.id, planWarnings: plan.warnings.length },
+          'export: degraded consent required — answering 409 degraded_only',
+        );
         return reply.code(409).send({
           code: 'degraded_only',
           message:
@@ -132,6 +151,10 @@ export async function registerExportRoutes(app: FastifyInstance): Promise<void> 
           status: 'queued',
         }).returning();
         enqueueJob('project_export', { exportId: row.id });
+        logger.info(
+          { projectId: project.id, exportId: row.id, allowDegraded: request.body?.allow_degraded === true },
+          'export: accepted — job enqueued',
+        );
         return reply.code(202).send({ export_id: row.id, status: 'queued' });
       } catch (err) {
         // 23505 = the in-flight partial unique index; someone won the race between read & insert.
@@ -146,7 +169,7 @@ export async function registerExportRoutes(app: FastifyInstance): Promise<void> 
         }
         // The table can also vanish between the read above and this insert.
         if (isMissingTable(err)) return reply.code(503).send(UNAVAILABLE);
-        request.log.error({ err, projectId: project.id }, 'failed to start project export');
+        logger.error({ err, projectId: project.id }, 'failed to start project export');
         return reply.code(500).send({ message: 'Could not start the export. Please try again.' });
       }
     },

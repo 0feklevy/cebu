@@ -43,6 +43,15 @@ import type { ProjectExport, ProjectExportStatus } from 'shared/src/generated/cl
 const POLL_MS = 3000;
 
 /**
+ * `[export]` debug logging — development only. `NODE_ENV` is statically replaced by the bundler, so
+ * production builds compile these to no-ops and ship a clean console; local debugging keeps the
+ * full POST/poll/outcome trail.
+ */
+const dbg = process.env.NODE_ENV !== 'production'
+  ? { info: console.info.bind(console), warn: console.warn.bind(console), error: console.error.bind(console) }
+  : { info: (..._a: unknown[]) => {}, warn: (..._a: unknown[]) => {}, error: (..._a: unknown[]) => {} };
+
+/**
  * How many CONSECUTIVE failed status reads end the run. Five is ~15 s of unbroken failure — longer
  * than any transient this poll actually sees, short enough that the user is told while they are
  * still looking at the panel. Any successful read resets the counter.
@@ -114,11 +123,13 @@ export function useProjectExport(projectId: string): UseProjectExport {
     setCancelRequested(false);
     setDegradedConsent(null);
     setState({ ...IDLE, status: 'queued' });
+    dbg.info('[export] POST /export', { projectId, allowDegraded });
     try {
       const started = allowDegraded
         ? await startProjectExport(projectId, { allowDegraded: true })
         : await startProjectExport(projectId);
       if (!aliveRef.current) return;
+      dbg.info('[export] started', started);
       // `already_running` joins are indistinguishable from a fresh start on purpose: either way
       // the id names the run to poll, and the next tick reports its real progress.
       setExportId(started.export_id);
@@ -130,10 +141,12 @@ export function useProjectExport(projectId: string): UseProjectExport {
       // re-POST with `allow_degraded` happens only through confirmDegraded(). (When the refusal
       // arrives even WITH consent, fall through to failure — looping the dialog would spin.)
       if (!allowDegraded && isDegradedOnlyRefusal(err)) {
+        dbg.info('[export] server asks degraded-quality consent', { warnings: err.warnings?.length ?? 0 });
         setState(IDLE);
         setDegradedConsent({ warnings: err.warnings ?? [] });
         return;
       }
+      dbg.error('[export] start failed:', err);
       setState({
         ...IDLE,
         status: 'failed',
@@ -163,12 +176,14 @@ export function useProjectExport(projectId: string): UseProjectExport {
   const cancel = useCallback(async () => {
     if (!exportId) return;
     setCancelRequested(true);
+    dbg.info('[export] cancel requested', { exportId });
     try {
       await api.cancelProjectExport(projectId, exportId);
       // Nothing else: the runner honours the request between phases and the poll reports the
       // terminal row it produces.
     } catch (err) {
       if (!aliveRef.current) return;
+      dbg.error('[export] cancel failed:', err);
       setCancelRequested(false);
       setState((s) => ({
         ...s,
@@ -185,11 +200,18 @@ export function useProjectExport(projectId: string): UseProjectExport {
     // Consecutive, not cumulative: a run that survives an hour of intermittent failures is healthy;
     // a run that cannot read the row five times in a row is not going to.
     let consecutiveFailures = 0;
+    // Log poll results only when something changed — a 3 s heartbeat would drown the console.
+    let lastLoggedSnapshot = '';
     const tick = async (): Promise<void> => {
       try {
         const row: ProjectExport = await api.getProjectExport(projectId, exportId);
         if (cancelled || !aliveRef.current) return;
         consecutiveFailures = 0;
+        const snapshot = `${row.status} ${row.objects_done}/${row.objects_total}`;
+        if (snapshot !== lastLoggedSnapshot) {
+          lastLoggedSnapshot = snapshot;
+          dbg.info('[export] poll:', snapshot, row.error ? `error: ${row.error}` : '');
+        }
         const progressPct = row.objects_total > 0
           ? Math.round((row.objects_done / row.objects_total) * 100)
           : null;
@@ -197,6 +219,9 @@ export function useProjectExport(projectId: string): UseProjectExport {
         // A join can attach to a run someone else already asked to stop; reflect that honestly.
         if (row.cancel_requested) setCancelRequested(true);
         if (row.status === 'ready') {
+          dbg.info('[export] ready', {
+            qualityState: row.quality_state, warnings: warnings.length, hasDownloadUrl: !!row.download_url,
+          });
           setExportId(null);
           setState({
             status: 'ready', progressPct: 100, warnings,
@@ -215,6 +240,7 @@ export function useProjectExport(projectId: string): UseProjectExport {
           return;
         }
         if (row.status === 'failed') {
+          dbg.error('[export] failed:', row.error ?? 'no error message stored');
           setExportId(null);
           setState({
             status: 'failed', progressPct, warnings,
@@ -226,14 +252,19 @@ export function useProjectExport(projectId: string): UseProjectExport {
           return;
         }
         setState((s) => ({ ...s, status: row.status, progressPct, warnings }));
-      } catch {
+      } catch (err) {
         // A single failed poll is not a failed export — the job runs server-side and the next tick
         // picks it up. A RUN of them means this client will never learn the outcome, so the loop
         // stops and says so rather than spinning behind a disabled control forever.
         if (cancelled || !aliveRef.current) return;
         consecutiveFailures += 1;
+        dbg.warn(
+          `[export] poll failed (${consecutiveFailures}/${MAX_CONSECUTIVE_POLL_FAILURES}):`,
+          err instanceof Error ? err.message : err,
+        );
         if (consecutiveFailures < MAX_CONSECUTIVE_POLL_FAILURES) return;
         // Clearing the id is what actually ends the loop: this effect is keyed on it.
+        dbg.error('[export] lost contact — giving up polling; the export may still be running server-side');
         setExportId(null);
         setState((s) => ({ ...s, status: 'failed', error: EXPORT_POLL_LOST_CONTACT_MESSAGE }));
       }

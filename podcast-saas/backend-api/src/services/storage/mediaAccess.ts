@@ -32,6 +32,15 @@ async function resolveProjectForKey(key: string): Promise<ProjectAccessRow | nul
     });
     return row ?? null;
   }
+  // Export masters live under `exports/{projectId}/…` — the project id is the scope, exactly
+  // like `videos/{projectId}`.
+  if (parts[0] === 'exports' && UUID_RE.test(parts[1] ?? '')) {
+    const row = await db.query.projects.findFirst({
+      where: eq(projects.id, parts[1]),
+      columns: { id: true, visibility: true, created_by: true },
+    });
+    return row ?? null;
+  }
   if (parts[0] === 'hls' && UUID_RE.test(parts[1] ?? '')) {
     const video = await db.query.video_files.findFirst({
       where: eq(video_files.id, parts[1]),

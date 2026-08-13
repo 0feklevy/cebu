@@ -290,6 +290,7 @@ export class ProjectExportService {
     let workDir: string | null = null;
     try {
       // ─── planning ───────────────────────────────────────────────────────────────────────────
+      logger.info({ exportId, projectId: job.project_id }, 'export: run started — planning');
       const plan = await buildExportPlan(job.project_id, this.storage);
       if (!plan) throw new ExportRefused('The project no longer exists.', 404, 'project_missing', false);
 
@@ -299,6 +300,12 @@ export class ProjectExportService {
         plan: plan as unknown as Record<string, unknown>,
         objects_total: plan.timeline.length,
       });
+      logger.info({
+        exportId,
+        windows: plan.timeline.length,
+        simWindows: plan.timeline.filter((w) => w.kind === 'sim-capture').length,
+        planWarnings: plan.warnings.length,
+      }, 'export: plan built');
 
       await assertDiskHeadroom(plan, exportId);
       await this.throwIfCancelRequested(exportId);
@@ -321,15 +328,27 @@ export class ProjectExportService {
       // per-section fact, and calling it N times would launch N browsers to learn one answer.
       const backend = this.captureProvider;
       const canCapture = backend ? await backend.isAvailable().catch(() => false) : false;
+      logger.info(
+        { exportId, captureBackend: backend != null, captureAvailable: canCapture },
+        'export: capturing phase started',
+      );
 
       let done = 0;
       const captured: ExportPlan['timeline'] = [];
       for (const w of plan.timeline) {
         done += 1;
+        // Advisory per-window progress so the client's bar advances during the (slow) capture phase
+        // instead of sitting at 0% until it ends. Unfenced like the assembler's counter: a lost
+        // write costs one poll tick, not correctness — the FENCED status writes are what gate.
+        void db.update(project_exports)
+          .set({ objects_done: done, updated_at: new Date() })
+          .where(eq(project_exports.id, exportId))
+          .catch((err: unknown) => logger.debug({ err, exportId }, 'export: capture progress write failed'));
         if (w.kind !== 'sim-capture') { captured.push(w); continue; }
         await this.throwIfCancelRequested(exportId);
 
         if (!canCapture || !backend || !w.servedUrl) {
+          logger.info({ exportId, section: name(w) }, 'export: sim window degraded — capture unavailable');
           captured.push(toPoster(w));
           plan.warnings.push(
             w.posterKey
@@ -348,6 +367,10 @@ export class ProjectExportService {
           });
 
           if (result.gate === 'failed' || !result.clipPath) {
+            logger.warn(
+              { exportId, section: name(w), reason: result.reason ?? 'backend returned frames, not a clip' },
+              'export: sim window degraded — capture rejected',
+            );
             // A render that ran but did not pass — or a backend that produced only frames, which
             // this service does not encode (a documented gap; the production backend returns a
             // clip). Either way, degrade to the poster with the reason, never a wrong frame.
@@ -371,8 +394,10 @@ export class ProjectExportService {
             sourceVideoFileId: w.sectionId, storageKey: clipKey,
             sourceInSec: 0, sourceOutSec: w.endSec - w.startSec, sourceRole: 'clip',
           };
+          logger.info({ exportId, section: name(w), clipKey }, 'export: sim window captured');
           captured.push(clip);
         } catch (err) {
+          logger.warn({ err, exportId, section: name(w) }, 'export: sim window degraded — capture failed');
           if (!(err instanceof CaptureUnavailable)) {
             // A real render failure (gate-hard, crash, timeout). One window failing must never fail
             // the whole export — degrade this window loudly and carry on.
@@ -396,6 +421,14 @@ export class ProjectExportService {
       // ─── assembling ─────────────────────────────────────────────────────────────────────────
       phase = 'assembling';
       await this.fencedUpdate(exportId, { status: 'assembling', objects_done: 0 });
+      logger.info(
+        {
+          exportId,
+          windows: plan.timeline.length,
+          degradedWindows: plan.timeline.filter((w) => w.kind === 'poster-fallback').length,
+        },
+        'export: assembling phase started',
+      );
       // INGEST GATE: every mutable source must still be the bytes the plan froze. A re-upload or
       // "replace" mid-export would otherwise splice two generations of one file into a master
       // nobody authored. Classified `source_changed`, retryable — a fresh attempt re-plans
@@ -404,6 +437,7 @@ export class ProjectExportService {
       workDir = await mkdtemp(join(tmpdir(), 'project-export-'));
       const assembler = this.assembler ?? await loadAssembler();
       const total = plan.timeline.length;
+      let lastLoggedBucket = -1;
       const { masterPath } = await assembler.assemble(
         plan,
         workDir,
@@ -411,6 +445,12 @@ export class ProjectExportService {
           // Unfenced on purpose, like duplication's object counter: progress is advisory, and a
           // lost write costs one poll tick, not correctness. The FENCED writes are status writes.
           const clamped = Math.max(0, Math.min(100, pct));
+          // One log line per quarter, not per ffmpeg tick.
+          const bucket = Math.floor(clamped / 25);
+          if (bucket > lastLoggedBucket) {
+            lastLoggedBucket = bucket;
+            logger.info({ exportId, pct: Math.round(clamped) }, 'export: assembling progress');
+          }
           void db.update(project_exports)
             .set({ objects_done: Math.round((clamped / 100) * total), updated_at: new Date() })
             .where(eq(project_exports.id, exportId))
@@ -432,6 +472,7 @@ export class ProjectExportService {
       // points at it until the terminal write below sets output_key.
       const outputKey = `exports/${job.project_id}/${exportId}/master.mp4`;
       const { size } = await stat(masterPath);
+      logger.info({ exportId, sizeBytes: size }, 'export: uploading master');
       if (size <= UPLOAD_BUFFER_MAX_BYTES) {
         // The buffered path can set Cache-Control; the key is write-once, so immutable is right.
         await this.storage.uploadFile(outputKey, await readFile(masterPath), 'video/mp4', IMMUTABLE_CACHE_CONTROL);
