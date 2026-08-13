@@ -8,7 +8,7 @@ import type { MetadataOptions } from '../services/generateVideoMetadata.js';
  * is `inline` (see inlineDriver.ts) and behaviour is identical to the historical
  * `setImmediate(runX(...))` producers.
  */
-export type JobName = 'transcode' | 'captions' | 'crop' | 'metadata' | 'podcast_script' | 'podcast_render' | 'podcast_clips' | 'podcast_mix_export' | 'video_generate' | 'project_duplicate';
+export type JobName = 'transcode' | 'captions' | 'crop' | 'metadata' | 'podcast_script' | 'podcast_render' | 'podcast_clips' | 'podcast_mix_export' | 'video_generate' | 'project_duplicate' | 'project_export';
 
 export interface JobPayloads {
   transcode: { videoFileId: string };
@@ -21,6 +21,7 @@ export interface JobPayloads {
   podcast_mix_export: { renderId: string }; // Audio Studio: render a master from the user-edited mix
   video_generate: { jobId: string };        // B-roll: external video gen (submit/poll/download/transcode)
   project_duplicate: { duplicationId: string }; // Duplicate project: copy bytes, then commit the row graph
+  project_export: { exportId: string };         // Linear video export: plan, capture (Phase 2), assemble, upload
 }
 
 export type JobHandlers = {

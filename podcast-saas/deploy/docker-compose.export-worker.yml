@@ -1,0 +1,76 @@
+# Export-capture worker — the hardened container spec, as a REVIEWABLE compose mirror of the runtime
+# contract (Linear Video Export Phase 2, plan §0.2). NEW file: it does not modify docker-compose.yml.
+#
+# READ THIS FIRST. In production the trusted orchestrator spawns ONE short-lived container PER SECTION
+# via `docker run`, with the argument set assembled in
+# backend-api/src/services/export/capture/isolation/containerRunArgs.ts — that assembler is the
+# AUTHORITATIVE, unit-tested source of the hardening flags. This compose file exists so a human can
+# review the same controls in one place and run the worker by hand for the container-verification
+# checklist (md-files/EXPORT-CAPTURE-ISOLATION.md). Some flags the assembler emits CANNOT be expressed
+# in compose (e.g. tmpfs `noexec,nosuid,nodev`); where compose is weaker, the run-arg assembler wins
+# and the runbook says so. Do NOT weaken either to make them match.
+#
+# One-shot manual run (the checklist uses this):
+#   EXPORT_INPUT_DIR=/ram/in EXPORT_OUTPUT_DIR=/ram/out \
+#   docker compose -f deploy/docker-compose.export-worker.yml run --rm export-worker
+
+name: podcast-saas-export-worker
+
+services:
+  export-worker:
+    image: podcast-saas/export-worker:${APP_VERSION:-latest}
+    build:
+      context: ..
+      dockerfile: deploy/docker/export-worker.Dockerfile
+      args:
+        # Pin to a REAL published Chrome-for-Testing build ≥151 (see the Dockerfile header).
+        CHROME_HEADLESS_SHELL_VERSION: ${CHROME_HEADLESS_SHELL_VERSION:?set to a pinned CfT build}
+
+    # ── No network egress, structurally (the crux) ────────────────────────────────────────────────
+    # `none` gives an isolated netns with only `lo` up. The in-container loopback package server on
+    # 127.0.0.1 works; the AWS metadata endpoint, the backend, Postgres and every internal service are
+    # unrouteable. SSRF is impossible by construction, not filtered.
+    network_mode: none
+
+    # ── Least-privilege runtime ───────────────────────────────────────────────────────────────────
+    read_only: true                     # read-only root filesystem
+    user: "10001:10001"                 # non-root (also baked into the image)
+    cap_drop: [ALL]                     # drop every capability…
+    # cap_add: []                       # …and add none: headless-shell uses the unprivileged userns
+                                        #   sandbox, which needs no capability. On a host with
+                                        #   unprivileged userns DISABLED, add SYS_ADMIN here (the
+                                        #   documented fallback) — NEVER pass --no-sandbox.
+    security_opt:
+      - "no-new-privileges:true"        # no setuid escalation; compatible with the userns sandbox
+      # - "seccomp=/etc/chrome.seccomp.json"   # only if the host's default profile is stricter than Docker's
+    init: true                          # tini as PID 1 — reaps zombies, forwards SIGKILL
+    pids_limit: 256                     # fork-bomb ceiling
+    mem_limit: 2048m                    # hard memory cap
+    memswap_limit: 2048m                # == mem_limit ⇒ swap disabled
+    cpus: 2                             # hard CPU quota
+    stop_grace_period: 10s              # graceful window before SIGKILL (orchestrator escalates)
+
+    # The SINGLE writable RAM scratch: Chrome user-data-dir, the /dev/shm substitute (the driver sets
+    # --disable-dev-shm-usage), temp. Ephemeral, gone on exit. NOTE: compose cannot add
+    # noexec/nosuid/nodev here — the run-arg assembler does, and that is what production uses.
+    tmpfs:
+      - /tmp:size=536870912,mode=1777
+
+    volumes:
+      # Package bytes + capture-spec.json, written by the trusted side. READ-ONLY.
+      - type: bind
+        source: ${EXPORT_INPUT_DIR:?per-section input dir}
+        target: /input
+        read_only: true
+      # Frames/clip + result.json, read back by the trusted side for the presigned PUT. Read-write.
+      # Put this dir on a RAM-backed (tmpfs) host mount so nothing captured is persisted to disk.
+      - type: bind
+        source: ${EXPORT_OUTPUT_DIR:?per-section output dir}
+        target: /output
+
+    # No env carries a credential. Only the benign renderer-identity + backend-module wiring, which
+    # are baked into the image; the capture spec is a FILE on /input, never an environment variable.
+    environment:
+      EXPORT_IMAGE_DIGEST: ${EXPORT_IMAGE_DIGEST:-unknown}
+
+    restart: "no"                       # one-shot, per section

@@ -75,6 +75,7 @@ const MIGRATION_FILES = [
   '055_sim_bridge_ack_capable.sql',
   '056_project_duplication.sql',
   '057_sim_requires_import_maps.sql',
+  '058_project_exports.sql',
 ];
 
 type Row = Record<string, unknown>;
