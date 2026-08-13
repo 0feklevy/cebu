@@ -70,6 +70,33 @@ describe('consent panel with MANY warnings (rule 7 — the production overflow)'
     expect(exportAnyway.parentElement?.className).toContain('flex-none');
   });
 
+  it('caps the warning list itself to a few lines (its own max-h, not just the panel cap)', () => {
+    render(
+      <ExportProgressPanel
+        open
+        onClose={() => {}}
+        flow={makeFlow({ degradedConsent: { warnings: MANY_WARNINGS } })}
+      />,
+    );
+    expect(screen.getByRole('list', { name: 'Export warnings' }).className).toMatch(/max-h-/);
+  });
+
+  it('Copy all puts the COMPLETE warning text on the clipboard', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    const { getByRole, findByRole } = render(
+      <ExportProgressPanel
+        open
+        onClose={() => {}}
+        flow={makeFlow({ degradedConsent: { warnings: MANY_WARNINGS } })}
+      />,
+    );
+    getByRole('button', { name: /copy all/i }).click();
+    expect(writeText).toHaveBeenCalledWith(MANY_WARNINGS.join('\n'));
+    // Feedback state flips so the user knows it worked.
+    expect(await findByRole('button', { name: /copied/i })).toBeTruthy();
+  });
+
   it('keeps the same discipline on the RUNNING view (warnings arrive from every poll)', () => {
     render(
       <ExportProgressPanel

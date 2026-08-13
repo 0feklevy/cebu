@@ -34,7 +34,8 @@
  *    Zero/unknown progress renders an INDETERMINATE bar (no number, no aria-valuenow) instead.
  */
 
-import { Download, Loader2, X } from 'lucide-react';
+import { useState } from 'react';
+import { Check, Copy, Download, Loader2, X } from 'lucide-react';
 import { exportPhaseLabel, type UseProjectExport } from '../lib/useProjectExport';
 
 interface Props {
@@ -44,22 +45,54 @@ interface Props {
   flow: UseProjectExport;
 }
 
-/** Verbatim warning list. The ONE region rule 7 lets shrink and scroll; everything else is fixed. */
+/**
+ * Verbatim warning list. The ONE region rule 7 lets shrink and scroll; everything else is fixed.
+ * Its own `max-h` keeps it to a few lines even on tall screens, and the Copy button hands the FULL
+ * text over in one click — dozens of long warnings are for pasting into a bug report or a chat,
+ * not for reading inside a 360px popover.
+ */
 function WarningList({ warnings }: { warnings: readonly string[] }) {
+  const [copied, setCopied] = useState(false);
   if (warnings.length === 0) return null;
+
+  const copyAll = async (): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(warnings.join('\n'));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      /* clipboard unavailable (permissions/http) — the list itself stays selectable */
+    }
+  };
+
   return (
-    <ul
-      aria-label="Export warnings"
-      // tabIndex: a keyboard user must be able to scroll a long list to read it (rule 7).
-      tabIndex={0}
-      className="min-h-0 flex-shrink overflow-y-auto space-y-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 focus-ring"
-    >
-      {warnings.map((w, i) => (
-        <li key={i} className="text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
-          {w}
-        </li>
-      ))}
-    </ul>
+    <div className="flex min-h-0 flex-shrink flex-col gap-1">
+      <div className="flex flex-none items-center justify-between">
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+          {warnings.length} warning{warnings.length === 1 ? '' : 's'}
+        </span>
+        <button
+          onClick={() => void copyAll()}
+          className="inline-flex h-6 items-center gap-1 rounded-md px-2 text-[10px] font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-ring"
+        >
+          {copied
+            ? (<><Check size={11} strokeWidth={2} aria-hidden /> Copied</>)
+            : (<><Copy size={11} strokeWidth={2} aria-hidden /> Copy all</>)}
+        </button>
+      </div>
+      <ul
+        aria-label="Export warnings"
+        // tabIndex: a keyboard user must be able to scroll a long list to read it (rule 7).
+        tabIndex={0}
+        className="min-h-0 max-h-40 flex-shrink overflow-y-auto space-y-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 focus-ring"
+      >
+        {warnings.map((w, i) => (
+          <li key={i} className="text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
+            {w}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
