@@ -105,7 +105,11 @@ describe('runCaptureHandshake — the sequence', () => {
       token: 424242,
       params: { simpleUi: true, autoScript: true, hideSelectors: ['.controls', '#hud'] },
     });
-    expect(state.posted.some((p) => p.type === 'clearBootHide')).toBe(true);
+    // Viewer parity: simRelayout is sent so canvas/WebGL sims size to the capture viewport.
+    // clearBootHide is NOT sent — the #simboot boot cloak is what keeps Minimal UI hidden on
+    // bridges without runtime applyHideUi (the full bridge clears the cloak in startScript itself).
+    expect(state.posted.some((p) => p.type === 'simRelayout')).toBe(true);
+    expect(state.posted.some((p) => p.type === 'clearBootHide')).toBe(false);
 
     expect(res.sawReady).toBe(true);
     expect(res.sawApplied).toBe(true);
@@ -127,6 +131,17 @@ describe('runCaptureHandshake — the sequence', () => {
     const { deps } = makeFake({ paintAtLoad: true, appliedToken: 'omit' });
     const res = await runCaptureHandshake(deps, { ...BASE, uiHide: [] });
     expect(res.sawApplied).toBe(true);
+  });
+
+  it('proceeds on SIM_PAINTED when the bridge sends NO SCRIPT_APPLIED (the shipped product bridge)', async () => {
+    // SimulationService's BRIDGE_TEMPLATE applies startScript synchronously and never acks. Capture
+    // must still complete — SIM_PAINTED is the real signal — or no real simulation could be captured.
+    const { deps, state } = makeFake({ emitApplied: false, paintAtFrame: 2 });
+    const res = await runCaptureHandshake(deps, { ...BASE, uiHide: [] });
+    expect(res.sawApplied).toBe(false);
+    expect(res.sawPainted).toBe(true);
+    expect(res.frameCount).toBe(30);
+    expect(state.captured).toEqual(Array.from({ length: 30 }, (_, i) => i));
   });
 });
 

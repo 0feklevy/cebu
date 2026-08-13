@@ -19,8 +19,9 @@ import { join, relative, sep } from 'node:path';
 import type { SimManifest } from 'shared/sim/simManifest';
 import { MANIFEST_FILENAME } from 'shared/sim/simRevision';
 
+import { injectSimBootSnippet } from '../../../../controllers/sim-public.controller.js';
 import { CAPTURE_RESULT_FILENAME, CAPTURE_SPEC_FILENAME } from './captureJobBoundary.js';
-import type { LoopbackPackageFile } from './loopbackPackageServer.js';
+import { contentTypeForPath, type LoopbackPackageFile } from './loopbackPackageServer.js';
 
 /** Files that live on the input mount but are NOT part of the served package. */
 const NON_PACKAGE_FILES = new Set<string>([CAPTURE_SPEC_FILENAME, CAPTURE_RESULT_FILENAME]);
@@ -40,9 +41,25 @@ export async function readManifestFilesFromInput(inputDir: string): Promise<Loop
       const content = await readFile(join(inputDir, file.path));
       out.push({ path: file.path, content, contentType: file.contentType });
     }
-    return out;
+    return withBootSnippet(out);
   }
-  return walkPackage(inputDir);
+  return withBootSnippet(await walkPackage(inputDir));
+}
+
+/**
+ * Bake the Minimal-UI boot-cloak snippet into every HTML file, mirroring what the `/sim-public/`
+ * proxy does at serve time. The viewer's `#simboot={"hide":[…]}` fragment only works because that
+ * snippet reads `location.hash` and injects pre-paint hide CSS — and the loopback server serves
+ * FROZEN bytes with no serve-time hook, so parity has to be baked in here, on the trusted side,
+ * when the bytes are loaded. `injectSimBootSnippet` is idempotent, so a package that already
+ * carries the snippet is untouched.
+ */
+function withBootSnippet(files: LoopbackPackageFile[]): LoopbackPackageFile[] {
+  return files.map((f) => {
+    const contentType = f.contentType ?? contentTypeForPath(f.path);
+    if (!contentType.startsWith('text/html')) return f;
+    return { ...f, content: Buffer.from(injectSimBootSnippet(f.content.toString('utf8')), 'utf8') };
+  });
 }
 
 async function tryReadManifest(inputDir: string): Promise<SimManifest | null> {

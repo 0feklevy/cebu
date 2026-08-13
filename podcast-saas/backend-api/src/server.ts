@@ -228,7 +228,7 @@ async function build() {
     request: FastifyRequest,
     reply: FastifyReply,
     raw: string,
-    prefix: 'hls/' | 'videos/',
+    prefix: 'hls/' | 'videos/' | 'exports/',
   ): Promise<{ key: string; token: string | null } | null> {
     const { key, token } = splitMediaTokenPrefix(raw);
     if (!key.startsWith(prefix)) {
@@ -254,14 +254,25 @@ async function build() {
   app.get<{ Params: { '*': string } }>(
     '/local-storage/*',
     async (request, reply) => {
-      const key = request.params['*'];
+      // The path may carry the adapters' `t/{token}/` prefix (export downloads are plain <a>
+      // navigations with no auth header). Public checks and the served file both use the
+      // STRIPPED key; authorization re-parses the raw path itself.
+      const raw = request.params['*'];
+      const key = splitMediaTokenPrefix(raw).key;
+      // Reject `..` BEFORE the public-prefix branch — the same guard /video-raw, /video-proxy and
+      // /sim-public already apply. Without it, an encoded-slash key like `podcasts/..%2fexports/…`
+      // decodes to a `..` segment whose leading part matches a PUBLIC prefix (skipping auth) while
+      // safeLocalPath resolves it back to the private `exports/…` file. `..` never appears in a key
+      // this app mints, so this only ever rejects an attack.
+      if (keyHasTraversal(key)) return reply.code(403).send({ message: 'Forbidden' });
       const isPublic = PUBLIC_LOCAL_PREFIXES.some((p) => key.startsWith(p));
       if (!isPublic) {
         // Media keys get per-object authorization (any-logged-in-user was too
         // broad — it let every account read every private key, security-002).
-        if (key.startsWith('videos/') || key.startsWith('hls/')) {
+        if (key.startsWith('videos/') || key.startsWith('hls/') || key.startsWith('exports/')) {
           const authorized = await authorizeMediaRequest(
-            request, reply, key, key.startsWith('hls/') ? 'hls/' : 'videos/',
+            request, reply, raw,
+            key.startsWith('hls/') ? 'hls/' : key.startsWith('videos/') ? 'videos/' : 'exports/',
           );
           if (!authorized) return;
         } else {

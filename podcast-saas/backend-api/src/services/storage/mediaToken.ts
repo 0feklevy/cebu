@@ -23,7 +23,10 @@ function getMediaSecret(): Buffer {
 export function mediaKeyScope(key: string): string | null {
   const parts = key.split('/');
   if (parts.length < 2) return null;
-  if (parts[0] !== 'hls' && parts[0] !== 'videos') return null;
+  // `exports/{projectId}` — linear-export masters (migration 058): the download link is a plain
+  // <a> navigation, which cannot carry an Authorization header, so the local adapter needs the
+  // same scoped-token URL shape the video routes use. Cloud adapters presign instead.
+  if (parts[0] !== 'hls' && parts[0] !== 'videos' && parts[0] !== 'exports') return null;
   if (!parts[1]) return null;
   return `${parts[0]}/${parts[1]}`;
 }

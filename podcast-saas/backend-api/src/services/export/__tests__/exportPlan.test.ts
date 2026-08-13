@@ -46,7 +46,7 @@ vi.mock('../../storage/getStorageAdapter.js', () => ({
   getStorageAdapter: () => { throw new Error('exportPlan tests must inject their own storage'); },
 }));
 
-import { ExportRefused, buildExportPlan, isFullSimulation } from '../exportPlan.js';
+import { ExportRefused, buildExportPlan, isFullSimulation, withBootCloak } from '../exportPlan.js';
 import type { ClipWindow, ImageWindow, PosterFallbackWindow, SimCaptureWindow, VideoWindow } from '../types.js';
 import { packageRevisionFor } from 'shared/sim/simRevision';
 import {
@@ -340,9 +340,11 @@ describe('buildExportPlan — THE PREDICATE', () => {
     const p = (await plan())!;
     const win = windowFor<SimCaptureWindow>(p.timeline, fx.sectionScriptedId)!;
     expect(win.kind).toBe('sim-capture');
-    // Served URL: the revision pointer resolved, the stored query APPENDED VERBATIM.
+    // Served URL: the revision pointer resolved, the stored query APPENDED VERBATIM, and the
+    // viewer's Minimal-UI boot cloak in the fragment (simple_ui=true + ui_hide ⇒ the selectors).
     expect(win.servedUrl).toBe(
-      `https://sim.test/${fx.entryKey}?section=${fx.sectionScriptedId}&v=bh-1`);
+      `https://sim.test/${fx.entryKey}?section=${fx.sectionScriptedId}&v=bh-1`
+      + `#simboot=${encodeURIComponent(JSON.stringify({ hide: ['#panel', '#debug'] }))}`);
     expect(win.simpleUi).toBe(true);
     expect(win.autoScript).toBe(true);
     expect(win.uiHide).toEqual(['#panel', '#debug']);
@@ -402,6 +404,29 @@ describe('buildExportPlan — post-roll', () => {
 });
 
 // ── Branching ─────────────────────────────────────────────────────────────────────────────────
+
+describe('withBootCloak — the Minimal-UI boot cloak on the served URL', () => {
+  const enc = (hide: string[]): string => `#simboot=${encodeURIComponent(JSON.stringify({ hide }))}`;
+
+  it('carries the hide selectors only when Minimal UI is ON (bootHideFor semantics)', () => {
+    expect(withBootCloak('http://s/x.html?section=a&v=1', true, ['.controls', '#hud']))
+      .toBe(`http://s/x.html?section=a&v=1${enc(['.controls', '#hud'])}`);
+    // Full UI: an EMPTY cloak, so nothing is hidden but the fragment shape stays uniform.
+    expect(withBootCloak('http://s/x.html?section=a&v=1', false, ['.controls']))
+      .toBe(`http://s/x.html?section=a&v=1${enc([])}`);
+    // Minimal UI with nothing configured to hide: also empty.
+    expect(withBootCloak('http://s/x.html', true, undefined)).toBe(`http://s/x.html${enc([])}`);
+  });
+
+  it('replaces any fragment already on the stored URL rather than stacking a second one', () => {
+    expect(withBootCloak(`http://s/x.html${enc(['.old'])}`, true, ['.new']))
+      .toBe(`http://s/x.html${enc(['.new'])}`);
+  });
+
+  it('passes a null URL through untouched', () => {
+    expect(withBootCloak(null, true, ['.controls'])).toBeNull();
+  });
+});
 
 describe('buildExportPlan — branching', () => {
   it('refuses a branching project: typed, coded, and NOT retryable', async () => {

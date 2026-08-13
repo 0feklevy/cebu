@@ -4,8 +4,13 @@
  * It navigates TOP-LEVEL to the served sim URL (so `window.parent === window` and the child's
  * `postMessage(…, '*')` lands on the same window we listen on), then runs the v2 protocol:
  *
- *     navigate → SIM_READY → startScript{simpleUi,autoScript,hideSelectors} → SCRIPT_APPLIED
- *              → SIM_PAINTED → ~30 warmup frames discarded → exactly round(dur×fps) frames captured
+ *     navigate → SIM_READY → startScript{simpleUi,autoScript,hideSelectors} → (SCRIPT_APPLIED,
+ *              best-effort) → SIM_PAINTED → ~30 warmup frames discarded → exactly round(dur×fps)
+ *              frames captured
+ *
+ * SCRIPT_APPLIED is NOT gated on: the shipped bridge applies the script synchronously and sends no
+ * ack (only the test fixture does), so SIM_PAINTED — a real rendered frame — is the signal we wait
+ * on. A SCRIPT_APPLIED that echoes a foreign token is still a hard failure.
  *
  * v3 is deliberately NOT used: `simRuntimeChild.ts` guards its MessagePort handshake with
  * `if (win.parent && win.parent !== win)`, so loaded top-level it never initiates — v2 is what every
@@ -69,8 +74,8 @@ export interface DriverOptions {
   paintTimeoutMs?: number;
   /** Virtual-frame budget per wait phase — the deterministic loud-fail bound. */
   maxHandshakeFrames?: number;
-  /** Send `clearBootHide` after the script applies (matches the viewer). Default true. */
-  clearBootHide?: boolean;
+  /** Send `simRelayout` after startScript (matches the viewer's activate sequence). Default true. */
+  simRelayout?: boolean;
   /** Pin the startScript token (tests). Otherwise a fresh one is generated. */
   token?: number;
 }
@@ -86,7 +91,6 @@ export interface DriverResult {
 }
 
 const DEFAULT_READY_TIMEOUT_MS = 15_000;
-const DEFAULT_APPLIED_TIMEOUT_MS = 10_000;
 const DEFAULT_PAINT_TIMEOUT_MS = 15_000;
 
 /** Parts of a served sim URL the top-level navigation MUST preserve (plan §4). */
@@ -133,7 +137,6 @@ export async function runCaptureHandshake(deps: DriverDeps, options: DriverOptio
   const warmupFrames = options.warmupFrames ?? DEFAULT_WARMUP_FRAMES;
   const captureFrames = frameCountFor(options.durationSec, fps);
   const readyTimeoutMs = options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
-  const appliedTimeoutMs = options.appliedTimeoutMs ?? DEFAULT_APPLIED_TIMEOUT_MS;
   const paintTimeoutMs = options.paintTimeoutMs ?? DEFAULT_PAINT_TIMEOUT_MS;
   // ~30 virtual seconds of frames is a generous per-phase budget; the handshake normally takes ≤3.
   const maxHandshakeFrames = options.maxHandshakeFrames ?? Math.max(600, fps * 30);
@@ -142,6 +145,9 @@ export async function runCaptureHandshake(deps: DriverDeps, options: DriverOptio
 
   let virtualFrame = 0;
   const seen = { ready: false, applied: false, painted: false };
+  // A SCRIPT_APPLIED that echoes a FOREIGN token means a script other than ours was applied — a hard
+  // failure, even though the shipped bridge sends no ack at all (see the paint gate below).
+  let appliedWrongToken = false;
 
   const observe = (messages: ReadonlyArray<Record<string, unknown>>): void => {
     for (const m of messages) {
@@ -150,6 +156,7 @@ export async function runCaptureHandshake(deps: DriverDeps, options: DriverOptio
       else if (type === 'SCRIPT_APPLIED') {
         // A bridge that echoes the token must echo OURS; one that omits it (older bridge) still counts.
         if (m.token === undefined || m.token === token) seen.applied = true;
+        else appliedWrongToken = true;
       } else if (type === 'SIM_PAINTED') seen.painted = true;
     }
   };
@@ -187,15 +194,32 @@ export async function runCaptureHandshake(deps: DriverDeps, options: DriverOptio
   await deps.postToSim({ type: 'startScript', script: options.sectionId, params, token });
   await deps.yieldToEventLoop();
 
-  await pumpUntil(() => seen.applied, 'SCRIPT_APPLIED', appliedTimeoutMs);
-  log('SCRIPT_APPLIED');
-
-  if (options.clearBootHide !== false) {
-    await deps.postToSim({ type: 'clearBootHide' });
+  // simRelayout (viewer parity): the rAF gate dispatches a synthetic `resize`, so a canvas/WebGL
+  // sim sizes itself to the capture viewport instead of a stale internal resolution.
+  //
+  // `clearBootHide` is deliberately NOT sent, unlike the viewer. The `#simboot` boot cloak
+  // (pre-paint hide CSS from the served URL's fragment) is what keeps a Minimal-UI section's
+  // controls hidden on bridges without runtime `applyHideUi`; the full bridge's own startScript
+  // removes the cloak itself and replaces it with its steady-state hide style, so not sending the
+  // clear is correct for BOTH bridge generations — sending it un-hid Minimal UI on the older one.
+  if (options.simRelayout !== false) {
+    await deps.postToSim({ type: 'simRelayout' });
     await deps.yieldToEventLoop();
   }
 
-  await pumpUntil(() => seen.painted, 'SIM_PAINTED', paintTimeoutMs);
+  // SCRIPT_APPLIED is a BEST-EFFORT ack, NOT a gate. The shipped product bridge
+  // (SimulationService BRIDGE_TEMPLATE) applies the script SYNCHRONOUSLY on the message and never
+  // echoes an ack — only the E2E test fixture does — so waiting for SCRIPT_APPLIED timed out for
+  // every real simulation (the reason capture degraded to the poster on real sims). SIM_PAINTED —
+  // the sim actually put a frame up — is the real "the script is running" signal, so THAT is the
+  // gate. A SCRIPT_APPLIED that echoes a FOREIGN token is still a hard failure: a different script ran.
+  await pumpUntil(() => {
+    if (appliedWrongToken) {
+      throw new CaptureTimeoutError('SCRIPT_APPLIED echoed a foreign token — a different script was applied');
+    }
+    return seen.painted;
+  }, 'SIM_PAINTED', paintTimeoutMs);
+  log(seen.applied ? 'SCRIPT_APPLIED' : 'SCRIPT_APPLIED (no ack — bridge applied synchronously)');
   log('SIM_PAINTED');
 
   // Warmup: several beginFrames may pass before the compositor answers (plan §4 mode 4). Discarded.

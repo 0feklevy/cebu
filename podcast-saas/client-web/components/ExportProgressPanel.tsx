@@ -108,6 +108,9 @@ export function ExportProgressPanel({ open, onClose, flow }: Props) {
               <p className="flex items-center gap-1.5 font-medium">
                 <Loader2 size={12} className="animate-spin" aria-hidden />
                 {exportPhaseLabel(status)}
+                {progressPct !== null && (
+                  <span className="text-muted-foreground">· {progressPct}%</span>
+                )}
               </p>
             )}
           </div>
