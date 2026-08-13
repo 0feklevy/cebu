@@ -42,11 +42,24 @@ FROM node:22-bookworm-slim AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 
-# ffmpeg/ffprobe are required by the transcoding + captions pipeline.
+# ffmpeg/ffprobe are required by the transcoding + captions pipeline — and the linear-video-export
+# assembler REQUIRES ffmpeg ≥7: it passes the splice graph via the file-form `-/filter_complex`
+# (LinearAssembler, measured against ffmpeg 8). Debian bookworm's apt ffmpeg is 5.1, which dies with
+# "Unrecognized option '/filter_complex'" (the production incident this comment memorializes), so a
+# PINNED static build is installed instead of the distro package. linux64 matches the x86_64 deploy
+# host; bump the pin deliberately, never back below 7.
 # curl is used by the container HEALTHCHECK.
+ARG FFMPEG_BUILD=ffmpeg-n8.1-latest-linux64-gpl-8.1
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ffmpeg curl ca-certificates \
- && rm -rf /var/lib/apt/lists/*
+ && apt-get install -y --no-install-recommends curl ca-certificates xz-utils \
+ && rm -rf /var/lib/apt/lists/* \
+ && curl -fsSL "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/${FFMPEG_BUILD}.tar.xz" \
+      -o /tmp/ffmpeg.tar.xz \
+ && tar -xJf /tmp/ffmpeg.tar.xz -C /tmp \
+ && install -m 0755 "/tmp/${FFMPEG_BUILD}/bin/ffmpeg" /usr/local/bin/ffmpeg \
+ && install -m 0755 "/tmp/${FFMPEG_BUILD}/bin/ffprobe" /usr/local/bin/ffprobe \
+ && rm -rf /tmp/ffmpeg.tar.xz "/tmp/${FFMPEG_BUILD}" \
+ && ffmpeg -version | head -1 && ffprobe -version | head -1
 RUN corepack enable
 
 # Run as the built-in non-root `node` user.
