@@ -155,6 +155,8 @@ COUNT=$(ls "$FRAMES_DIR"/frame-*.jpg 2>/dev/null | wc -l | tr -d ' ')
 if cmp -s "$FRAMES_DIR/frame-000000.jpg" "$FRAMES_DIR/frame-000059.jpg"; then
   echo "STAGE-C: FAIL — first and last frames are byte-identical (static capture)" >&2; exit 1
 fi
-echo "STAGE-C: PASS — 60 distinct frames, gate passed"
+# Precise about what was actually checked: the first and last frames differ (the dead-compositor
+# signal), NOT that all 60 files are pairwise distinct.
+echo "STAGE-C: PASS — 60 frames, first/last differ, gate passed"
 
 echo "FLOWVID_SMOKE=PASS (A: chrome cage, B: backend contract, C: entrypoint capture; mechanism=$MECHANISM)"

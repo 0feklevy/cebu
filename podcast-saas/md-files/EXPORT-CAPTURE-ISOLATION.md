@@ -270,8 +270,10 @@ the WHOLE script after EVERY image build. Each false-pass taught it a stage:
 - **Stage C — entrypoint capture.** The real `node …/isolation/main.js` against a deterministic,
   NON-static fixture sim (frame counter + hue sweep, minimal v2 bridge): loopback serving, bridge
   handshake, beginFrame pump, 60 frames on `/output`, `result.json` with `gate: passed` — and the
-  first/last frames must DIFFER byte-wise, so a dead compositor or a static-capture regression
-  cannot pass. Same cage, same caps, no relaxation.
+  FIRST and LAST frames must differ byte-wise (the dead-compositor signal; the check does not
+  claim all 60 are pairwise distinct). Same cage, same caps, no relaxation.
+  **Status: the stage is ADDED, not yet executed** — no image built from this branch has been run
+  on the host. It becomes evidence only once a real run prints `FLOWVID_SMOKE=PASS`.
 
 (Fontconfig may log `No writable cache directories` unless HOME/XDG point below `/tmp`; the image
 sets that, and the warning is non-fatal either way.)

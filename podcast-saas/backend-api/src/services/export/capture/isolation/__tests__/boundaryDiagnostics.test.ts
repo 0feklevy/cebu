@@ -13,6 +13,7 @@
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -149,6 +150,115 @@ describe('DockerCaptureBoundary — non-zero exit diagnostics (Mutation E)', () 
     expect(result.status).toBe('ok');
     expect(result.framesDir).toBe('frames');
   });
+});
+
+/**
+ * The TERMINATION contract of `spawnDocker`, which the diagnostics rewrite touched but did not
+ * previously cover: cancellation (AbortSignal) and the per-section wall clock. Both are container
+ * lifecycle, so both are exercised against a stub `docker` that behaves like one — `run` stays
+ * alive until a `stop`/`kill` invocation tells it to die, and every invocation is logged.
+ */
+async function lifecycleDocker(): Promise<{ dockerBin: string; inputDir: string; outputDir: string; log: () => string }> {
+  scratch = await mkdtemp(join(tmpdir(), 'boundary-life-'));
+  const inputDir = join(scratch, 'input');
+  const outputDir = join(scratch, 'output');
+  const logFile = join(scratch, 'docker-calls.log');
+  await mkdir(inputDir, { recursive: true });
+  await mkdir(outputDir, { recursive: true });
+  const dockerBin = join(scratch, 'docker-lifecycle.js');
+  await writeFile(
+    dockerBin,
+    `#!/usr/bin/env node
+const fs = require('fs');
+const LOG = ${JSON.stringify(logFile)};
+const TERM = ${JSON.stringify(join(scratch, 'terminate'))};
+const verb = process.argv[2];
+fs.appendFileSync(LOG, process.argv.slice(2).join(' ') + '\\n');
+if (verb === 'run') {
+  // A live container: exits only once something asks it to (or a hard test-safety ceiling).
+  process.on('exit', () => { try { fs.appendFileSync(LOG, 'run-exit\\n'); } catch {} });
+  const poll = setInterval(() => { if (fs.existsSync(TERM)) { clearInterval(poll); process.exit(137); } }, 20);
+  setTimeout(() => process.exit(99), 20000).unref?.();
+} else {
+  fs.writeFileSync(TERM, verb); // stop/kill both terminate the container
+  process.exit(0);
+}
+`,
+    'utf8',
+  );
+  await chmod(dockerBin, 0o755);
+  // Empty until the stub's first invocation — pollers read it before the child has spawned.
+  const log = (): string => {
+    try {
+      return readFileSync(logFile, 'utf8');
+    } catch {
+      return '';
+    }
+  };
+  return { dockerBin, inputDir, outputDir, log };
+}
+
+/** Poll until the predicate holds or the budget runs out — no fixed sleeps. */
+async function until(predicate: () => boolean, budgetMs: number): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > budgetMs) throw new Error('until: predicate never held');
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
+describe('DockerCaptureBoundary — termination paths (cancellation and the wall clock)', () => {
+  it('AbortSignal DURING the run stops the container gracefully, settles promptly, stays classified', async () => {
+    const { dockerBin, inputDir, outputDir, log } = await lifecycleDocker();
+    const controller = new AbortController();
+    const running = boundary(dockerBin)
+      .runCapture(SPEC, { inputDir, outputDir }, controller.signal)
+      .catch((e: unknown) => e as Error);
+
+    await until(() => log().includes('run '), 5_000); // the container is genuinely up
+    const abortedAt = Date.now();
+    controller.abort();
+    const outcome = await running;
+
+    // Settles well inside the 5s escalation window — the graceful stop was enough.
+    expect(Date.now() - abortedAt).toBeLessThan(5_000);
+    expect(log()).toMatch(/^stop /m);
+    expect(log()).not.toMatch(/^kill /m); // escalation was never needed, and was cleared
+    // No orphan: the container process actually terminated.
+    expect(log()).toContain('run-exit');
+    // The failure is still classified, never a silent success.
+    expect(outcome).toBeInstanceOf(Error);
+    expect((outcome as Error).message).toMatch(/exited 137/);
+  }, 20_000);
+
+  it('the wall clock hard-kills the container, bounded, and the promise settles with no orphan', async () => {
+    const { dockerBin, inputDir, outputDir, log } = await lifecycleDocker();
+    const startedAt = Date.now();
+    const outcome = await boundary(dockerBin)
+      .runCapture({ ...SPEC, wallClockTimeoutSec: 1 }, { inputDir, outputDir }, new AbortController().signal)
+      .catch((e: unknown) => e as Error);
+
+    // Fired on the 1s wall clock and stayed bounded — not the 30s of the default spec.
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(900);
+    expect(Date.now() - startedAt).toBeLessThan(15_000);
+    expect(log()).toMatch(/^kill --signal=KILL /m);
+    expect(log()).toContain('run-exit');
+    expect(outcome).toBeInstanceOf(Error);
+    expect((outcome as Error).message).toMatch(/exited 137/);
+  }, 25_000);
+
+  it('a signal already aborted BEFORE the call still terminates the container and settles', async () => {
+    const { dockerBin, inputDir, outputDir, log } = await lifecycleDocker();
+    const controller = new AbortController();
+    controller.abort();
+    const outcome = await boundary(dockerBin)
+      .runCapture(SPEC, { inputDir, outputDir }, controller.signal)
+      .catch((e: unknown) => e as Error);
+
+    expect(log()).toMatch(/^stop /m);
+    expect(log()).toContain('run-exit');
+    expect(outcome).toBeInstanceOf(Error);
+  }, 20_000);
 });
 
 describe('sanitizeStderrTail — untrusted bytes, bounded and stripped', () => {
