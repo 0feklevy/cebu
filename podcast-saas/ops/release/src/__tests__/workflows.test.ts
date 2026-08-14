@@ -62,8 +62,36 @@ describe('checkout credential hygiene (git-128 post-step fix)', () => {
   });
 
   it('ci and rollback checkouts do not persist credentials (they never push)', () => {
-    expect((wf['ci.yml'].match(/persist-credentials: false/g) ?? []).length).toBe(2);
-    expect((wf['rollback.yml'].match(/persist-credentials: false/g) ?? []).length).toBe(2);
+    // Derived from the file rather than hardcoded: the invariant is "EVERY checkout in
+    // these workflows opts out", so adding a job must not mean editing a magic number
+    // here — while a checkout added without the flag still fails, which is the point.
+    for (const name of ['ci.yml', 'rollback.yml']) {
+      const checkouts = (wf[name].match(/uses: actions\/checkout@v\d+/g) ?? []).length;
+      const withoutCreds = (wf[name].match(/persist-credentials: false/g) ?? []).length;
+      expect(checkouts, `${name} performs no checkout`).toBeGreaterThan(0);
+      expect(withoutCreds, `${name}: every checkout must set persist-credentials: false`).toBe(checkouts);
+    }
+  });
+
+  it('the CI redundancy guard can only remove proven-duplicate work, never weaken it', () => {
+    const ci = wf['ci.yml'];
+    // Both verification jobs must be gated on the guard, or one of them silently keeps
+    // running while the other is skipped — a half-verified push that reads as green.
+    for (const job of ['release-verify:', 'static-audits:']) {
+      const body = ci.slice(ci.indexOf(`  ${job}`));
+      expect(body.slice(0, 400), `${job} must depend on the guard`).toContain('needs: guard');
+      expect(body.slice(0, 400), `${job} must be conditioned on the guard`).toContain("needs.guard.outputs.skip != 'true'");
+    }
+    // The guard may only skip a MERGE whose tree is byte-identical to a PR head that
+    // already passed a pull_request run. Losing any of these turns it into a way to
+    // skip verification outright.
+    expect(ci).toContain("event==\"pull_request\"");
+    expect(ci).toContain('conclusion=="success"');
+    expect(ci).toContain("HEAD^2^{tree}");
+    // An API failure must fall through to "not proven" (run everything), never to skip.
+    expect(ci).toContain('|| echo 0');
+    // The guard itself must never be the thing that decides a release is safe.
+    expect(wf['release.yml']).toContain('release:verify');
   });
 
   it('release keeps credentials ONLY for the remote-read (plan) and tag-push (release-plan) jobs', () => {

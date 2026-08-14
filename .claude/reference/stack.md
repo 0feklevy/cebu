@@ -28,6 +28,7 @@ cebu/                        ← repo root, and the cwd Claude Code runs in
     ├── admin-web/           ← Next.js admin
     ├── shared/              ← shared types + hand-written API clients
     ├── ops/release/         ← release autopilot (deterministic audits)
+    ├── ops/ship/            ← ship conductor (drives the workflows from outside)
     └── deploy/              ← Docker Compose + nginx + systemd
 ```
 
@@ -46,7 +47,7 @@ pnpm -C podcast-saas --filter shared     build
 ```
 
 Workspace packages (`podcast-saas/pnpm-workspace.yaml`): `backend-api`, `client-web`, `admin-web`,
-`shared`, `ops/release`. Package manager **pnpm@11.4.0**, Node **>=22** (local: v22.23.2).
+`shared`, `ops/release`, `ops/ship`. Package manager **pnpm@11.4.0**, Node **>=22** (local: v22.23.2).
 
 ---
 
@@ -108,6 +109,7 @@ Workspace packages (`podcast-saas/pnpm-workspace.yaml`): `backend-api`, `client-
 | `podcast-saas/admin-web/**` | Next.js admin | `frontend-reviewer`, `ui-ux-reviewer` |
 | `podcast-saas/shared/**` | types, `csp.ts`, `generated/client-v1.ts`, `generated/admin-v1.ts` | `types-contracts-reviewer` |
 | `podcast-saas/ops/release/**` | deterministic release audits + state machine | `release-auditor`, `migration-auditor` |
+| `podcast-saas/ops/ship/**` | ship conductor: sequences PR → CI → merge → release → approval → deploy → audit via `gh`, and streams events to `.claude/ship/runs/`. Decides no pass/fail itself | `release-auditor`, `backend-reviewer` |
 | `podcast-saas/deploy/**` | docker-compose, nginx, systemd | `config-deploy-reviewer` |
 | `podcast-saas/**/package.json`, lockfile | dependencies, `allowBuilds` | `dependency-auditor` |
 

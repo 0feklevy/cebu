@@ -7,8 +7,47 @@
     "This runs fleet-guard.mjs in `secrets` mode for EVERY tool call in this project: it denies",
     "reading, printing, or exfiltrating .env/.env.* and credential material, and nothing else. The",
     "stricter read-only and writer policies stay in each agent's frontmatter, so ordinary work in",
-    "the main session is unaffected."
+    "the main session is unaffected.",
+    "",
+    "permissions.allow pre-authorises the ship conductor and the GitHub CLI so a shipment runs",
+    "without a prompt per step. `gh api --method POST` is deliberately absent: it is the only way",
+    "to approve a production deployment or change repo settings directly. Nothing here can deploy",
+    "on its own — the `production` environment on GitHub requires a named reviewer."
   ],
+  "permissions": {
+    "allow": [
+      "Bash(pnpm -C podcast-saas ship:*)",
+      "Bash(node podcast-saas/ops/ship/watch.mjs:*)",
+
+      "Bash(gh run list:*)",
+      "Bash(gh run view:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr checks:*)",
+      "Bash(gh release list:*)",
+
+      "Bash(gh pr create:*)",
+      "Bash(gh pr ready:*)",
+      "Bash(gh pr merge:*)",
+      "Bash(gh workflow run:*)",
+
+      "Bash(pnpm -C podcast-saas typecheck:*)",
+      "Bash(pnpm -C podcast-saas lint:*)",
+      "Bash(pnpm -C podcast-saas test:*)",
+      "Bash(pnpm -C podcast-saas --filter:*)",
+
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "Bash(git fetch:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git rev-list:*)",
+      "Bash(git branch:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {

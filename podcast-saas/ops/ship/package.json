@@ -1,0 +1,22 @@
+{
+  "name": "ops-ship",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Ship conductor for FlowVid. Drives the deterministic release workflows from outside via gh, and streams every stage as a machine-readable event so Claude can watch and react.",
+  "scripts": {
+    "ship": "tsx src/cli.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.0.0",
+    "eslint": "^9.39.4",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.4",
+    "typescript-eslint": "^8.60.1",
+    "vitest": "^4.1.7"
+  }
+}

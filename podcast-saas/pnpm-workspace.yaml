@@ -4,6 +4,7 @@ packages:
   - 'admin-web'
   - 'shared'
   - 'ops/release'
+  - 'ops/ship'
 allowBuilds:
   '@google/genai': true
   bson: true
