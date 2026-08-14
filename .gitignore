@@ -22,3 +22,8 @@ darwin-avatar/
 # Release pipeline outputs ($ART in the workflows; also written by local release-cli runs).
 # Must be ignored or release preflight flags its own plan/state files as a dirty tree.
 /release-artifacts/
+
+# Ship conductor run directories — downloaded logs, artifacts and reports for one
+# shipment. Local evidence, not source; and ship's own preflight refuses to start on a
+# dirty tree, so tracking these would make every shipment block the next one.
+/.claude/ship/

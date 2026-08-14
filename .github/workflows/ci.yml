@@ -22,8 +22,86 @@ defaults:
     working-directory: podcast-saas
 
 jobs:
+  # ── Redundancy guard ───────────────────────────────────────────────────────────
+  # The same tree used to be verified three times per change: once on the PR, again on
+  # the push to main, and a third time inside the release's own `verify` job. The
+  # middle one is the only one that can be dropped without weakening anything, and only
+  # when it is PROVABLY redundant:
+  #
+  #   • the push is a merge commit (two parents), and
+  #   • its tree is byte-identical to the tree of the PR head it merged, and
+  #   • a `pull_request` CI run for that exact PR head concluded success.
+  #
+  # If main moved between the PR run and the merge, the trees differ and the full gate
+  # runs — which is the case that actually needed re-verification. Anything the script
+  # cannot prove leaves skip=false, and a guard that errors fails the run rather than
+  # waving it through: this job may only ever remove work that is already done.
+  guard:
+    name: Redundancy guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      skip: ${{ steps.decide.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Decide whether this exact tree was already verified
+        id: decide
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          skip=false
+          reason='not a redundant push'
+
+          if [ "${GITHUB_EVENT_NAME}" = 'push' ] && [ "${GITHUB_REF}" = 'refs/heads/main' ]; then
+            # `rev-list --parents -n 1` prints "<sha> <parent…>": 3 words means a merge.
+            if [ "$(git rev-list --parents -n 1 HEAD | wc -w | tr -d ' ')" = '3' ]; then
+              head_tree="$(git rev-parse 'HEAD^{tree}')"
+              pr_head="$(git rev-parse 'HEAD^2')"
+              pr_tree="$(git rev-parse 'HEAD^2^{tree}')"
+              if [ "$head_tree" = "$pr_tree" ]; then
+                # event==pull_request matters: only a PR run is guaranteed to have run
+                # the full gate, since this guard can never short-circuit one.
+                # `|| echo 0` makes an API blip fall through to "not proven", which
+                # runs the full gate. A guard may only ever remove work it can prove
+                # is done — never fail the build because it could not ask.
+                passed="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${pr_head}&per_page=100" \
+                  --jq '[.workflow_runs[] | select(.name=="CI" and .event=="pull_request" and .conclusion=="success")] | length' \
+                  || echo 0)"
+                if [ "${passed:-0}" -ge 1 ]; then
+                  skip=true
+                  reason="tree ${head_tree} already verified by a successful PR CI run on ${pr_head}"
+                else
+                  reason="no successful pull_request CI run found for ${pr_head}"
+                fi
+              else
+                reason='main moved since the PR was verified — the merged tree is new'
+              fi
+            else
+              reason='not a merge commit (squash/rebase/direct push) — cannot prove redundancy'
+            fi
+          fi
+
+          echo "skip=${skip}" >> "$GITHUB_OUTPUT"
+          echo "${reason}"
+          if [ "$skip" = 'true' ]; then
+            echo "::notice::Skipping re-verification — ${reason}. The release workflow verifies from scratch before anything ships."
+            echo "### Redundancy guard: skipped re-verification" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "${reason}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   release-verify:
     name: Release verification gate
+    needs: guard
+    if: ${{ needs.guard.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -43,6 +121,8 @@ jobs:
 
   static-audits:
     name: Static audits (secrets, migrations, docker, incident regressions)
+    needs: guard
+    if: ${{ needs.guard.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
