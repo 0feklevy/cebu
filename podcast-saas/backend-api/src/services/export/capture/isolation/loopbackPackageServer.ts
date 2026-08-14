@@ -39,6 +39,10 @@ import { normalizeManifestPath } from 'shared/sim/simManifest';
 /** The two loopback literals we will bind. Anything else is rejected — see the class doc. */
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1']);
 
+/** Caps on the missing-dependency record — a diagnostic, never an unbounded log of sim behaviour. */
+const MAX_RECORDED_MISSES = 20;
+const MAX_MISS_PATH_CHARS = 200;
+
 /**
  * The Cache-Control served with every package object. Revision bytes are immutable by the revision
  * model (the id is in the path; bytes under an id are never rewritten), so this is both correct and
@@ -134,6 +138,17 @@ export class LoopbackPackageServer {
   private readonly entryPath: string | null;
   private server: Server | null = null;
   private boundPort: number | null = null;
+  /**
+   * Paths the page asked for that the package does not contain — the missing-dependency record.
+   *
+   * The v0.1.23 incident was a package staged without its `../bridge.js`, and the only symptom the
+   * trusted side ever saw was a generic `SIM_READY: no signal within 900 virtual frames`. The
+   * request itself is the evidence, and it passes through here. BOUNDED (a first-N set of
+   * normalized in-package paths, which are package-relative and carry no host, query or secret) so
+   * a sim that requests thousands of missing files cannot turn a diagnostic into a memory leak.
+   */
+  private readonly misses = new Set<string>();
+  private missOverflow = 0;
 
   constructor(files: readonly LoopbackPackageFile[], options: LoopbackPackageServerOptions = {}) {
     const host = options.host ?? '127.0.0.1';
@@ -278,9 +293,28 @@ export class LoopbackPackageServer {
     this.serve(normalized, method, res);
   }
 
+  /** Bounded record of one missing in-package path. */
+  private recordMiss(normalized: string): void {
+    if (this.misses.size >= MAX_RECORDED_MISSES) {
+      this.missOverflow += 1;
+      return;
+    }
+    this.misses.add(normalized.slice(0, MAX_MISS_PATH_CHARS));
+  }
+
+  /**
+   * Package paths the page requested that do not exist, newest-bounded. Empty when the package was
+   * self-contained. The capture reads this after a failed handshake so "the bridge is missing" is
+   * reported as a missing dependency rather than as an unexplained timeout.
+   */
+  missingPaths(): { paths: string[]; overflow: number } {
+    return { paths: [...this.misses], overflow: this.missOverflow };
+  }
+
   private serve(normalized: string, method: string, res: ServerResponse): void {
     const entry = this.files.get(normalized);
     if (!entry) {
+      this.recordMiss(normalized);
       res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('not found');
       return;

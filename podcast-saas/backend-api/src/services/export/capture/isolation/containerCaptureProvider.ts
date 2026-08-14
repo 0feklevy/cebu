@@ -49,24 +49,22 @@ import {
   type ContainerCaptureResult,
   type DockerCaptureBoundaryConfig,
 } from './captureJobBoundary.js';
+import { isStageablePackagePath, parseSimPackageKey, type SimPackageKey } from './simPackageKey.js';
 
 // ── servedUrl → storage keys ────────────────────────────────────────────────────────────────────
 
-export interface ParsedSimSource {
-  /** Storage key of the entry document (no query/fragment), e.g. `simulations/p/s/revisions/r/package/index.html`. */
-  entryKey: string;
-  /** The prefix every package file lives under — the entry document's directory. */
-  baseDir: string;
-  /** Entry path RELATIVE to `baseDir` — what the container's loopback server serves at `/`. */
-  entryPath: string;
-}
+export type ParsedSimSource = SimPackageKey;
 
 /**
- * Parse a served sim URL (`…/sim-public/<key>?section=…#simboot=…`) back into storage terms.
- * Anchoring the package root at the ENTRY DOCUMENT'S DIRECTORY works for both layouts — revisioned
- * (`…/revisions/{rev}/package/index.html`) and legacy flat keys — because a package's assets are
- * relative references resolved against the entry document, which is exactly the shape the loopback
- * server reproduces. Returns null for a URL that does not address a sim-public key.
+ * Parse a served sim URL (`…/sim-public/<key>?section=…#simboot=…`) into PACKAGE terms — the
+ * package root, and the entry path relative to it with its nesting intact.
+ *
+ * It does NOT anchor on the entry document's directory. That was the v0.1.23 incident: a package's
+ * generated runtime (`bridge.js`, `guidance.js`) lives at the PACKAGE ROOT and a nested entry
+ * references it as `../bridge.js`, so staging `dirname(entryKey)` dropped the one file that emits
+ * SIM_READY and every capture timed out at `bridge_ready`. The package boundary is a grammar
+ * (`simPackageKey.ts`), not a guess. Returns null for a URL that does not address a sim-public
+ * key, or whose key the grammar refuses.
  */
 export function parseServedSimUrl(servedUrl: string): ParsedSimSource | null {
   let pathname: string;
@@ -79,37 +77,54 @@ export function parseServedSimUrl(servedUrl: string): ParsedSimSource | null {
   const at = pathname.indexOf(marker);
   if (at === -1) return null;
   const entryKey = pathname.slice(at + marker.length).replace(/^\/+/, '');
-  const lastSlash = entryKey.lastIndexOf('/');
-  if (lastSlash <= 0) return null;
-  const baseDir = entryKey.slice(0, lastSlash);
-  const entryPath = entryKey.slice(lastSlash + 1);
-  if (!entryPath) return null;
-  return { entryKey, baseDir, entryPath };
+  return parseSimPackageKey(entryKey);
 }
 
 /** Defensive ceiling on one package's total bytes — a runaway prefix must fail loudly, not OOM. */
 export const MAX_PACKAGE_BYTES = 256 * 1024 * 1024;
 
+/**
+ * Stage the package WHOLE, from its root, layout preserved — so every relative reference the
+ * stored HTML makes (`../bridge.js`, `./src/main.js`, an author's `../assets/model.glb`) resolves
+ * inside the container exactly as it does in the viewer. No file is special-cased.
+ *
+ * A LEGACY root is shared with the system's `revisions/` and `posters/` subtrees, so those are
+ * excluded — staging them would ship the package's entire publication history and every poster
+ * rendition into the capture container.
+ */
 async function fetchPackageFiles(
   storage: StorageService,
   source: ParsedSimSource,
 ): Promise<CaptureInputFile[]> {
-  const prefix = `${source.baseDir}/`;
+  const prefix = `${source.packageRoot}/`;
   const keys = await storage.listObjects(prefix);
   if (keys.length === 0) {
     throw new Error(`container capture: no package objects under ${prefix}`);
   }
   const files: CaptureInputFile[] = [];
   let total = 0;
+  let skipped = 0;
   for (const key of keys) {
     const rel = key.slice(prefix.length);
     if (!rel) continue;
+    if (!isStageablePackagePath(source.layout, rel)) {
+      skipped += 1;
+      continue;
+    }
     const content = await storage.readObject(key);
     total += content.byteLength;
     if (total > MAX_PACKAGE_BYTES) {
       throw new Error(`container capture: package under ${prefix} exceeds ${MAX_PACKAGE_BYTES} bytes`);
     }
     files.push({ path: rel, content });
+  }
+  if (!files.some((f) => f.path === source.entryPath)) {
+    throw new Error(
+      `container capture: entry ${source.entryPath} is not among the ${files.length} staged files of ${prefix}`,
+    );
+  }
+  if (skipped > 0) {
+    logger.debug({ packageRoot: source.packageRoot, skipped }, 'export(container-capture): skipped system-owned keys');
   }
   return files;
 }
@@ -315,8 +330,18 @@ export class ContainerCaptureProvider implements SimCaptureBackend {
     try {
       const files = await fetchPackageFiles(this.storage, source);
       await writeCaptureInput(inputDir, files, containerSpec);
+      // The staging report the v0.1.23 forensics needed and did not have: which boundary was used,
+      // where the entry sits inside it, and whether the package's generated runtime came along.
       logger.info(
-        { section: spec.sectionId, files: files.length, image: this.config.image },
+        {
+          section: spec.sectionId,
+          files: files.length,
+          layout: source.layout,
+          packageRoot: source.packageRoot,
+          entryPath: source.entryPath,
+          hasBridge: files.some((f) => f.path === 'bridge.js'),
+          image: this.config.image,
+        },
         'export(container-capture): input staged — running worker container',
       );
 

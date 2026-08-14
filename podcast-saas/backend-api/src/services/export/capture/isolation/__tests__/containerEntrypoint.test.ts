@@ -7,12 +7,13 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { get } from 'node:http';
 
 import { runContainerCapture, type SimCaptureDriver } from '../containerEntrypoint.js';
+import { CaptureStageError } from '../../captureTypes.js';
 import { CAPTURE_RESULT_FILENAME, type ContainerCaptureResult, type ContainerCaptureSpec } from '../captureJobBoundary.js';
 import type { LoopbackPackageFile } from '../loopbackPackageServer.js';
 
@@ -103,6 +104,141 @@ describe('runContainerCapture', () => {
       const onDisk = JSON.parse(await readFile(join(outputDir, CAPTURE_RESULT_FILENAME), 'utf8'));
       expect(onDisk.frameCount).toBe(60);
       expect(onDisk.status).toBe('ok');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('SERVES the production topology: a nested entry resolves ../bridge.js to the package root', async () => {
+    // The positive half of the v0.1.23 fix, without docker. The package is the real shape — the
+    // generated runtime at the ROOT, the entry one level down referencing it upward — and the
+    // driver resolves that reference exactly as a browser would, against the entry URL. If the
+    // container ever re-narrowed the package to the entry's directory (or flattened it), this 404s.
+    const dir = await mkdtemp(join(tmpdir(), 'entry-'));
+    try {
+      const nested: LoopbackPackageFile[] = [
+        { path: 'bridge.js', content: Buffer.from('/* SIM_READY emitter */') },
+        { path: 'guidance.js', content: Buffer.from('/* guidance */') },
+        { path: 'scene/index.html', content: Buffer.from('<script src="../bridge.js?v=1"></script>') },
+        { path: 'scene/src/main.js', content: Buffer.from('export const x = 1;') },
+      ];
+      const fetched: Record<string, { status: number; body: string }> = {};
+      const driver: SimCaptureDriver = {
+        async drive({ entryUrl, spec }) {
+          // Resolve every reference the way the browser does — relative to the ENTRY URL.
+          for (const ref of ['../bridge.js?v=1', '../guidance.js', './src/main.js']) {
+            fetched[ref] = await fetchText(new URL(ref, entryUrl).toString());
+          }
+          return {
+            resultVersion: 1, sectionId: spec.sectionId, status: 'ok', framesDir: null, clipPath: null,
+            frameCount: 0, rendererString: '', gate: 'passed', reason: null,
+            rendererIdentity: { imageDigest: 'i', headlessShellVersion: 'v', viewport: { w: 1, h: 1 }, dpr: 1 },
+            failure: null,
+          };
+        },
+      };
+
+      await runContainerCapture({
+        packageFiles: nested,
+        spec: { ...SPEC, entryPath: 'scene/index.html' },
+        outputDir: join(dir, 'out'),
+        driver,
+      });
+
+      // 200 + the real bytes — the incident, inverted.
+      expect(fetched['../bridge.js?v=1']?.status).toBe(200);
+      expect(fetched['../bridge.js?v=1']?.body).toContain('SIM_READY emitter');
+      expect(fetched['../guidance.js']?.status).toBe(200);
+      expect(fetched['./src/main.js']?.body).toContain('export const x');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('names the MISSING package files in the failure — the v0.1.23 diagnostic', async () => {
+    // The exact incident shape: the entry asks for `../bridge.js`, which staging never copied.
+    // The request reaches the loopback server, misses, and must appear in the thrown error so the
+    // next operator reads "package is missing …/bridge.js" instead of a bare SIM_READY timeout.
+    const dir = await mkdtemp(join(tmpdir(), 'entry-'));
+    try {
+      const driver: SimCaptureDriver = {
+        async drive({ entryUrl }) {
+          const base = entryUrl.slice(0, entryUrl.lastIndexOf('/'));
+          await fetchText(`${base}/../bridge.js?v=abc`).catch(() => '');
+          await fetchText(`${base}/../guidance.js`).catch(() => '');
+          throw new CaptureStageError('bridge_ready', 'SIM_READY: no signal within 900 virtual frames');
+        },
+      };
+      const err = await runContainerCapture({
+        packageFiles: PACKAGE, spec: SPEC, outputDir: join(dir, 'out'), driver,
+      }).catch((e: unknown) => e as Error);
+
+      expect(err).toBeInstanceOf(CaptureStageError);
+      expect((err as CaptureStageError).stage).toBe('bridge_ready'); // classification preserved
+      expect((err as Error).message).toMatch(/SIM_READY: no signal/);
+      expect((err as Error).message).toMatch(/package is missing 2 requested file\(s\)/);
+      expect((err as Error).message).toContain('bridge.js');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a CUSTOMER manifest.json at the package root is served as an asset, never read as ours', async () => {
+    // The mount is flat, so the package root IS the mount root — and `manifest.json` is a name
+    // customers own (PWA/Vite builds ship one). Trusting it blindly died with
+    // "manifest.files is not iterable" BEFORE the loopback even started, so nothing could explain
+    // it. It must be treated as an ordinary package byte.
+    const dir = await mkdtemp(join(tmpdir(), 'entry-'));
+    try {
+      // Written to a REAL input mount and loaded by readManifestFilesFromInput — the code path the
+      // container actually takes. (Passing packageFiles would bypass the loader under test.)
+      const inputDir = join(dir, 'input');
+      await mkdir(join(inputDir, 'scene'), { recursive: true });
+      await writeFile(join(inputDir, 'manifest.json'), '{"name":"My Sim","short_name":"sim","icons":[]}');
+      await writeFile(join(inputDir, 'bridge.js'), '/* bridge */');
+      await writeFile(join(inputDir, 'scene', 'index.html'), '<script src="../bridge.js"></script>');
+
+      let manifestFetch = { status: 0, body: '' };
+      let bridgeFetch = { status: 0, body: '' };
+      const driver: SimCaptureDriver = {
+        async drive({ entryUrl, spec }) {
+          manifestFetch = await fetchText(new URL('../manifest.json', entryUrl).toString());
+          bridgeFetch = await fetchText(new URL('../bridge.js', entryUrl).toString());
+          return {
+            resultVersion: 1, sectionId: spec.sectionId, status: 'ok', framesDir: null, clipPath: null,
+            frameCount: 0, rendererString: '', gate: 'passed', reason: null,
+            rendererIdentity: { imageDigest: 'i', headlessShellVersion: 'v', viewport: { w: 1, h: 1 }, dpr: 1 },
+            failure: null,
+          };
+        },
+      };
+      // No throw — and both the customer's manifest and the real bridge are served verbatim.
+      await runContainerCapture({
+        inputDir,
+        spec: { ...SPEC, entryPath: 'scene/index.html' },
+        outputDir: join(dir, 'out'),
+        driver,
+      });
+      expect(manifestFetch.status).toBe(200);
+      expect(manifestFetch.body).toContain('short_name');
+      expect(bridgeFetch.status).toBe(200);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('adds NO missing-file noise when the package served everything it was asked for', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'entry-'));
+    try {
+      const driver: SimCaptureDriver = {
+        async drive() {
+          throw new CaptureStageError('paint_ready', 'SIM_PAINTED: no signal');
+        },
+      };
+      const err = await runContainerCapture({
+        packageFiles: PACKAGE, spec: SPEC, outputDir: join(dir, 'out'), driver,
+      }).catch((e: unknown) => e as Error);
+      expect((err as Error).message).not.toMatch(/package is missing/);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

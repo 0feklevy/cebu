@@ -62,10 +62,32 @@ function withBootSnippet(files: LoopbackPackageFile[]): LoopbackPackageFile[] {
   });
 }
 
+/**
+ * Read `manifest.json` off the mount — but ONLY trust it if it is OUR manifest.
+ *
+ * `manifest.json` is a name customers own too (a PWA/Vite/webpack build manifest is the common
+ * case), and their file can land at the mount root: the input mount is flat, so the package root
+ * IS the mount root. An unchecked `JSON.parse(...) as SimManifest` then iterates `manifest.files`
+ * on an object that has no `files[]` and the container dies with `TypeError: manifest.files is not
+ * iterable` — before the loopback server even starts, so the missing-dependency diagnostic cannot
+ * explain it either. A customer manifest is just an asset: shape-check, and on any doubt fall
+ * through to walking the mount (which serves that file like any other package byte).
+ */
+function looksLikeSimManifest(value: unknown): value is SimManifest {
+  const m = value as Partial<SimManifest> | null;
+  return (
+    !!m &&
+    typeof m === 'object' &&
+    Array.isArray(m.files) &&
+    m.files.every((f) => !!f && typeof (f as { path?: unknown }).path === 'string')
+  );
+}
+
 async function tryReadManifest(inputDir: string): Promise<SimManifest | null> {
   try {
     const raw = await readFile(join(inputDir, MANIFEST_FILENAME), 'utf8');
-    return JSON.parse(raw) as SimManifest;
+    const parsed: unknown = JSON.parse(raw);
+    return looksLikeSimManifest(parsed) ? parsed : null;
   } catch {
     return null;
   }
@@ -84,7 +106,11 @@ async function walkPackage(inputDir: string): Promise<LoopbackPackageFile[]> {
         continue;
       }
       const rel = relative(inputDir, abs).split(sep).join('/');
-      if (NON_PACKAGE_FILES.has(rel) || rel === MANIFEST_FILENAME) continue;
+      // Only the TRUSTED SIDE'S sidecars are excluded. `manifest.json` is NOT one of them here:
+      // this branch runs precisely when the mount carries no manifest of ours, so a file by that
+      // name belongs to the customer (a PWA/Vite build manifest) and `/sim-public` would serve it.
+      // Dropping it would make capture quietly less faithful than the viewer.
+      if (NON_PACKAGE_FILES.has(rel)) continue;
       out.push({ path: rel, content: await readFile(abs) });
     }
   }
