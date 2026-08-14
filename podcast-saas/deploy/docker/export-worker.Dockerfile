@@ -54,13 +54,15 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends unzip ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 # @puppeteer/browsers resolves the exact build and verifies it against the Chrome-for-Testing hash.
+# The binary is asserted IN PLACE inside its CfT distribution directory — never symlinked or copied
+# out of it in this stage. The distribution siblings (icudtl.dat, *.pak, v8_context_snapshot.bin,
+# locales/, libEGL/libGLESv2) are load-bearing: Chrome resolves them relative to the executable, and
+# a standalone copy of the binary dies at startup with "Invalid file descriptor to ICU data
+# received." (exit 133) — the v0.1.21 production incident.
 RUN npx --yes @puppeteer/browsers install "chrome-headless-shell@${CHROME_HEADLESS_SHELL_VERSION}" --path /opt/chrome \
- # Normalise the versioned install path to a stable location the runner references.
- && ln -s "$(find /opt/chrome -type f -name chrome-headless-shell | head -n1)" /opt/chrome-headless-shell \
- # Hard assert: `ln -s` happily creates a DANGLING link if extraction produced nothing, and the
- # runner stage would COPY it without complaint. `test -x` follows the link, so any silent
- # install/extraction failure stops the build here, at the stage that caused it.
- && test -x /opt/chrome-headless-shell
+ && BIN="$(find /opt/chrome -type f -name chrome-headless-shell | head -n1)" \
+ && test -x "$BIN" \
+ && test -f "$(dirname "$BIN")/icudtl.dat"
 
 # ---------- runner ----------
 FROM node:22-bookworm-slim AS runner
@@ -82,10 +84,21 @@ RUN apt-get update \
       fonts-liberation fonts-noto-core fonts-noto-color-emoji fonts-noto-cjk \
  && rm -rf /var/lib/apt/lists/*
 
-# The pinned browser + the compiled backend.
+# The pinned browser + the compiled backend. ONLY the complete /opt/chrome tree is copied: a COPY
+# of the convenience symlink dereferences it into a standalone 188 MB binary stripped of its CfT
+# distribution siblings (icudtl.dat, .pak resources, v8 snapshot, locales/, libEGL/libGLESv2), and
+# that binary dies with "Invalid file descriptor to ICU data received." / exit 133 (v0.1.21).
 COPY --from=chrome /opt/chrome        /opt/chrome
-COPY --from=chrome /opt/chrome-headless-shell /opt/chrome-headless-shell
 COPY --from=builder /app              /app
+
+# Recreate the stable path IN THIS stage as a symlink INTO the distribution directory, and assert
+# the runtime files it depends on travelled with it. `test -x` follows the link, so a dangling
+# link (extraction drift, renamed layout) fails the build here, not at first capture.
+RUN BIN="$(find /opt/chrome -type f -name chrome-headless-shell | head -n1)" \
+ && test -x "$BIN" \
+ && test -f "$(dirname "$BIN")/icudtl.dat" \
+ && ln -s "$BIN" /opt/chrome-headless-shell \
+ && test -x /opt/chrome-headless-shell
 
 ARG CHROME_HEADLESS_SHELL_VERSION
 # Recorded into every capture result so "why do these two exports differ?" stays answerable.
@@ -95,6 +108,13 @@ ENV CHROME_HEADLESS_SHELL_PATH=/opt/chrome-headless-shell
 # build so the two halves stay decoupled). The sibling ships the begin-frame backend at this path.
 ENV EXPORT_CAPTURE_BACKEND_MODULE=/app/backend-api/dist/services/export/capture/beginFrameBackend.js
 ENV EXPORT_CAPTURE_DPR=1
+# Point HOME/XDG caches below /tmp — the ONE writable surface (the runtime tmpfs). With a read-only
+# rootfs, fontconfig otherwise probes /var/cache/fontconfig and $HOME/.cache and logs "No writable
+# cache directories" on every launch (non-fatal, but noise that buries real failures). No extra
+# mount is added; fontconfig creates these under the tmpfs on demand.
+ENV HOME=/tmp \
+    XDG_CACHE_HOME=/tmp/.cache \
+    XDG_CONFIG_HOME=/tmp/.config
 
 # A non-root, no-login user. The container is ALSO launched with `--user` (belt and braces); running
 # non-root in the image means an operator who forgets the flag still does not get root.

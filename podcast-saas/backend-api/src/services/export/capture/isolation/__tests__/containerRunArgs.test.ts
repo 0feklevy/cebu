@@ -118,10 +118,26 @@ describe('buildContainerRunArgv — sandbox mechanisms (never --no-sandbox)', ()
     expect(argv).not.toContain('--no-sandbox');
   });
 
-  it("'sys-admin' adds ONLY SYS_ADMIN, still no --no-sandbox", () => {
+  it("'sys-admin' grants EXACTLY {SYS_ADMIN, SYS_CHROOT} — the pair proven on Ubuntu 26.04", () => {
     const argv = buildContainerRunArgv({ ...BASE, sandboxMechanism: 'sys-admin' });
-    expect(hasFlagValue(argv, '--cap-add', 'SYS_ADMIN')).toBe(true);
+    // Exact set, not merely membership: a regression that DROPS one cap (SYS_ADMIN alone dies at
+    // sys_chroot("/proc/self/fdinfo/"), exit 133) or smuggles in a third must fail here.
+    expect(valuesOf(argv, '--cap-add').sort()).toEqual(['SYS_ADMIN', 'SYS_CHROOT']);
     expect(hasFlagValue(argv, '--cap-drop', 'ALL')).toBe(true);
+    expect(argv).not.toContain('--no-sandbox');
+  });
+
+  it("'sys-admin' keeps the full jail: network none, read-only, tmpfs scratch, non-root, quotas, no-new-privileges", () => {
+    const argv = buildContainerRunArgv({ ...BASE, sandboxMechanism: 'sys-admin' });
+    expect(hasFlagValue(argv, '--network', 'none')).toBe(true);
+    expect(argv).toContain('--read-only');
+    expect(valuesOf(argv, '--tmpfs').some((v) => v.startsWith(`${CONTAINER_MOUNTS.scratch}:rw,nosuid,nodev,noexec`))).toBe(true);
+    expect(hasFlagValue(argv, '--user', BASE.user)).toBe(true);
+    expect(hasFlagValue(argv, '--pids-limit', '256')).toBe(true);
+    expect(hasFlagValue(argv, '--memory', '2048m')).toBe(true);
+    expect(hasFlagValue(argv, '--memory-swap', '2048m')).toBe(true);
+    expect(valuesOf(argv, '--security-opt')).toContain('no-new-privileges:true');
+    expect(argv).not.toContain('--privileged');
     expect(argv).not.toContain('--no-sandbox');
   });
 

@@ -47,6 +47,7 @@ import {
   type CaptureInputFile,
   type CaptureJobBoundary,
   type ContainerCaptureResult,
+  type DockerCaptureBoundaryConfig,
 } from './captureJobBoundary.js';
 
 // ── servedUrl → storage keys ────────────────────────────────────────────────────────────────────
@@ -150,6 +151,15 @@ function encodeFramesToClip(
 
 // ── Configuration ───────────────────────────────────────────────────────────────────────────────
 
+/**
+ * The sandbox mechanisms an OPERATOR may select via environment. Deliberately narrower than the
+ * assembler's `SandboxMechanism`: 'seccomp-profile' needs a curated profile file and stays a
+ * code-level decision — env can choose a mechanism from this allow-list, never arbitrary docker
+ * arguments.
+ */
+export const ENV_SANDBOX_MECHANISMS = ['userns', 'sys-admin'] as const;
+export type EnvSandboxMechanism = (typeof ENV_SANDBOX_MECHANISMS)[number];
+
 export interface ContainerCaptureConfig {
   image: string;
   /** Host-visible parent for input/output mounts; null = os tmpdir (bare-metal backend only). */
@@ -161,9 +171,21 @@ export interface ContainerCaptureConfig {
   tmpfsScratchMb: number;
   stopTimeoutSec: number;
   dockerBin: string;
+  /**
+   * How Chrome's sandbox is granted what it needs (NEVER `--no-sandbox`). 'userns' is the
+   * least-privilege default; 'sys-admin' (= `--cap-add SYS_ADMIN` + `SYS_CHROOT`, both proven
+   * required) is for hosts whose AppArmor blocks unprivileged user namespaces — Ubuntu ≥23.10
+   * with `kernel.apparmor_restrict_unprivileged_userns=1`.
+   */
+  sandboxMechanism: EnvSandboxMechanism;
 }
 
-/** Read the provider configuration from the environment; null unless the image is named. */
+/**
+ * Read the provider configuration from the environment; null unless the image is named.
+ * An UNRECOGNISED sandbox mechanism throws rather than defaulting: on a userns-restricted host a
+ * silent 'userns' fallback would fail every capture with "No usable sandbox!", which is exactly
+ * the quiet degradation this feature's history teaches us to refuse.
+ */
 export function configFromEnv(env: NodeJS.ProcessEnv = process.env): ContainerCaptureConfig | null {
   const image = env.EXPORT_CAPTURE_IMAGE?.trim();
   if (!image) return null;
@@ -171,6 +193,14 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): ContainerCa
     const n = Number(v);
     return Number.isFinite(n) && n > 0 ? Math.floor(n) : dflt;
   };
+  const rawMechanism = env.EXPORT_CAPTURE_SANDBOX_MECHANISM?.trim();
+  const sandboxMechanism = (rawMechanism || 'userns') as EnvSandboxMechanism;
+  if (!ENV_SANDBOX_MECHANISMS.includes(sandboxMechanism)) {
+    throw new Error(
+      `EXPORT_CAPTURE_SANDBOX_MECHANISM: unknown value ${JSON.stringify(rawMechanism)}; ` +
+      `allowed: ${ENV_SANDBOX_MECHANISMS.join(', ')}`,
+    );
+  }
   return {
     image,
     workDir: env.EXPORT_CAPTURE_WORKDIR?.trim() || null,
@@ -181,6 +211,25 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): ContainerCa
     tmpfsScratchMb: int(env.EXPORT_CAPTURE_TMPFS_MB, 512),
     stopTimeoutSec: int(env.EXPORT_CAPTURE_STOP_TIMEOUT_SEC, 10),
     dockerBin: env.EXPORT_CAPTURE_DOCKER_BIN?.trim() || 'docker',
+    sandboxMechanism,
+  };
+}
+
+/**
+ * The exact boundary configuration a capture config produces — extracted (and exported) so the
+ * env → config → boundary → argv chain is assertable in the unit suite link by link.
+ */
+export function boundaryConfigFrom(config: ContainerCaptureConfig): DockerCaptureBoundaryConfig {
+  return {
+    image: config.image,
+    user: config.user,
+    cpus: config.cpus,
+    memoryMb: config.memoryMb,
+    pidsLimit: config.pidsLimit,
+    tmpfsScratchMb: config.tmpfsScratchMb,
+    stopTimeoutSec: config.stopTimeoutSec,
+    dockerBin: config.dockerBin,
+    sandboxMechanism: config.sandboxMechanism,
   };
 }
 
@@ -197,16 +246,7 @@ export class ContainerCaptureProvider implements SimCaptureBackend {
 
   constructor(
     private readonly config: ContainerCaptureConfig,
-    private readonly boundary: CaptureJobBoundary = new DockerCaptureBoundary({
-      image: config.image,
-      user: config.user,
-      cpus: config.cpus,
-      memoryMb: config.memoryMb,
-      pidsLimit: config.pidsLimit,
-      tmpfsScratchMb: config.tmpfsScratchMb,
-      stopTimeoutSec: config.stopTimeoutSec,
-      dockerBin: config.dockerBin,
-    }),
+    private readonly boundary: CaptureJobBoundary = new DockerCaptureBoundary(boundaryConfigFrom(config)),
     private readonly storage: StorageService = getStorageAdapter(),
   ) {}
 
