@@ -46,10 +46,21 @@ RUN pnpm --filter shared build \
 FROM node:22-bookworm-slim AS chrome
 ARG CHROME_HEADLESS_SHELL_VERSION
 RUN test -n "${CHROME_HEADLESS_SHELL_VERSION}" || (echo "ERROR: pin CHROME_HEADLESS_SHELL_VERSION to a real CfT build ≥151" && false)
+# `unzip` MUST be installed before the @puppeteer/browsers step: CfT ships linux64
+# chrome-headless-shell as a .zip, and the extractor shells out to `unzip` (yauzl is not a
+# dependency here). bookworm-slim carries neither, which fails the build with
+# "Extraction failed: no zip archiver is available" — the v0.1.20 production incident.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends unzip ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
 # @puppeteer/browsers resolves the exact build and verifies it against the Chrome-for-Testing hash.
 RUN npx --yes @puppeteer/browsers install "chrome-headless-shell@${CHROME_HEADLESS_SHELL_VERSION}" --path /opt/chrome \
  # Normalise the versioned install path to a stable location the runner references.
- && ln -s "$(find /opt/chrome -type f -name chrome-headless-shell | head -n1)" /opt/chrome-headless-shell
+ && ln -s "$(find /opt/chrome -type f -name chrome-headless-shell | head -n1)" /opt/chrome-headless-shell \
+ # Hard assert: `ln -s` happily creates a DANGLING link if extraction produced nothing, and the
+ # runner stage would COPY it without complaint. `test -x` follows the link, so any silent
+ # install/extraction failure stops the build here, at the stage that caused it.
+ && test -x /opt/chrome-headless-shell
 
 # ---------- runner ----------
 FROM node:22-bookworm-slim AS runner
