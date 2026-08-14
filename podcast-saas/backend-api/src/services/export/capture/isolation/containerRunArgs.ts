@@ -46,10 +46,15 @@
  *   • 'seccomp-profile'— supply a curated seccomp profile via `--security-opt seccomp=<path>` for a
  *                        host whose default profile is stricter than stock Docker's.
  *   • 'sys-admin'      — the documented fallback for a hardened host with unprivileged userns
- *                        DISABLED: `--cap-add SYS_ADMIN` lets the sandbox initialise. Broad, but the
- *                        residual blast radius is bounded by `--network none` + `--read-only` +
- *                        non-root + `--pids-limit` + no-new-privileges, and it is STILL not
- *                        `--no-sandbox` (the renderer seccomp-bpf layer stays on).
+ *                        DISABLED: `--cap-add SYS_ADMIN` PLUS `--cap-add SYS_CHROOT`. Both are
+ *                        required, experimentally proven on Ubuntu 26.04 with AppArmor's
+ *                        `kernel.apparmor_restrict_unprivileged_userns=1`: SYS_ADMIN alone gets the
+ *                        sandbox past namespace setup and then dies at
+ *                        `sys_chroot("/proc/self/fdinfo/")` (the SUID/semantics-layer chroot jail),
+ *                        exit 133. With both caps Chrome renders and exits 0 (runbook §7a). Broad,
+ *                        but the residual blast radius is bounded by `--network none` +
+ *                        `--read-only` + non-root + `--pids-limit` + no-new-privileges, and it is
+ *                        STILL not `--no-sandbox` (the renderer seccomp-bpf layer stays on).
  */
 export type SandboxMechanism = 'userns' | 'seccomp-profile' | 'sys-admin';
 
@@ -152,7 +157,10 @@ export function buildContainerRunArgv(spec: ContainerRunSpec): string[] {
   // ── Privileges: drop everything, then grant ONLY what Chrome's sandbox needs ──────────────────
   argv.push('--cap-drop', 'ALL');
   if (mechanism === 'sys-admin') {
+    // BOTH caps, not just SYS_ADMIN: the sandbox's chroot jail needs sys_chroot once the
+    // namespace layer is granted — proven on Ubuntu 26.04 (see SandboxMechanism doc above).
     argv.push('--cap-add', 'SYS_ADMIN');
+    argv.push('--cap-add', 'SYS_CHROOT');
   }
   if (mechanism === 'seccomp-profile') {
     argv.push('--security-opt', `seccomp=${spec.seccompProfilePath}`);

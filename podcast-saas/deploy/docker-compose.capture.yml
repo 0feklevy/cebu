@@ -42,6 +42,12 @@ services:
       # meaningful isolation layers are unchanged (--network none, cap-drop, pids/mem limits).
       # To restore the runbook's 10001:10001 split, chown the workdir accordingly and drop this.
       EXPORT_CAPTURE_USER: "1000:1000"
+      # How Chrome's sandbox is granted what it needs (never a disabled sandbox). Strict
+      # allow-list: userns | sys-admin. Default here is sys-admin because the production host
+      # (Ubuntu 26.04, kernel.apparmor_restrict_unprivileged_userns=1) blocks the userns path —
+      # experimentally verified, runbook §7a. sys-admin = --cap-add SYS_ADMIN + SYS_CHROOT (both
+      # required; SYS_ADMIN alone dies at the sandbox's chroot jail with exit 133).
+      EXPORT_CAPTURE_SANDBOX_MECHANISM: "${EXPORT_CAPTURE_SANDBOX_MECHANISM:-sys-admin}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /var/lib/flowvid-capture:/var/lib/flowvid-capture

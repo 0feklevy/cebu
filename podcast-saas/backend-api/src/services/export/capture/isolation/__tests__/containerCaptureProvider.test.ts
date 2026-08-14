@@ -23,6 +23,7 @@ import {
 import {
   ContainerCaptureProvider,
   MAX_PACKAGE_BYTES,
+  boundaryConfigFrom,
   configFromEnv,
   parseServedSimUrl,
   wallClockCapSec,
@@ -84,6 +85,7 @@ describe('configFromEnv', () => {
       tmpfsScratchMb: 512,
       stopTimeoutSec: 10,
       dockerBin: 'docker',
+      sandboxMechanism: 'userns',
     });
   });
 
@@ -100,6 +102,39 @@ describe('configFromEnv', () => {
       cpus: '1.5',
       memoryMb: 3072,
       dockerBin: '/usr/local/bin/docker',
+    });
+  });
+
+  it('parses the sandbox mechanism from the STRICT allow-list only', () => {
+    expect(
+      configFromEnv({ EXPORT_CAPTURE_IMAGE: 'img:x', EXPORT_CAPTURE_SANDBOX_MECHANISM: 'sys-admin' }),
+    ).toMatchObject({ sandboxMechanism: 'sys-admin' });
+    expect(
+      configFromEnv({ EXPORT_CAPTURE_IMAGE: 'img:x', EXPORT_CAPTURE_SANDBOX_MECHANISM: 'userns' }),
+    ).toMatchObject({ sandboxMechanism: 'userns' });
+  });
+
+  it('THROWS on an unknown mechanism instead of silently defaulting (no quiet sandbox downgrade)', () => {
+    // 'seccomp-profile' exists in the assembler but is deliberately NOT env-selectable (it needs a
+    // curated profile file); arbitrary strings must never pass through to docker either.
+    for (const bad of ['seccomp-profile', 'privileged', 'no-sandbox', 'SYS-ADMIN', 'anything']) {
+      expect(() =>
+        configFromEnv({ EXPORT_CAPTURE_IMAGE: 'img:x', EXPORT_CAPTURE_SANDBOX_MECHANISM: bad }),
+      ).toThrow(/allowed: userns, sys-admin/);
+    }
+  });
+});
+
+describe('boundaryConfigFrom — the env → boundary chain link', () => {
+  it('passes the sandbox mechanism through to the DockerCaptureBoundary configuration', () => {
+    const config = configFromEnv({
+      EXPORT_CAPTURE_IMAGE: 'img:x',
+      EXPORT_CAPTURE_SANDBOX_MECHANISM: 'sys-admin',
+    });
+    expect(config).not.toBeNull();
+    expect(boundaryConfigFrom(config as ContainerCaptureConfig)).toMatchObject({
+      image: 'img:x',
+      sandboxMechanism: 'sys-admin',
     });
   });
 });
@@ -158,6 +193,7 @@ function testConfig(workDir: string): ContainerCaptureConfig {
     tmpfsScratchMb: 512,
     stopTimeoutSec: 10,
     dockerBin: 'true',
+    sandboxMechanism: 'userns',
   };
 }
 

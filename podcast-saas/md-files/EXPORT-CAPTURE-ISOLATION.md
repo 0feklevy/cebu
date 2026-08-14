@@ -167,10 +167,14 @@ disabling the sandbox. `containerRunArgs` supports three mechanisms via `sandbox
   with `--cap-drop ALL`. The "grant" is a **host** property: unprivileged user namespaces must be
   enabled (default on modern Debian/Ubuntu/Amazon Linux 2023), and Docker's **default** seccomp
   profile already permits the needed `clone`/`unshare`. No extra docker flag is emitted.
-- **`sys-admin` (documented fallback).** For a hardened host with unprivileged userns **disabled**,
-  add `--cap-add SYS_ADMIN` so the sandbox can initialise. Broad, but the residual blast radius is
-  bounded by `--network none` + `--read-only` + non-root + `--pids-limit` + `no-new-privileges`, and
-  it is **still not `--no-sandbox`** — the renderer seccomp layer stays on.
+- **`sys-admin` (documented fallback — TWO caps, experimentally proven).** For a hardened host
+  with unprivileged userns **disabled**, add `--cap-add SYS_ADMIN` **and** `--cap-add SYS_CHROOT`.
+  Both are required: on Ubuntu 26.04 (AppArmor, `kernel.apparmor_restrict_unprivileged_userns=1`)
+  SYS_ADMIN alone gets the namespace layer up and then dies in the sandbox's chroot jail —
+  `Check failed: sys_chroot("/proc/self/fdinfo/") == 0 … No such file or directory`, exit 133.
+  With the pair, Chrome initialises its sandbox and renders (§7a). Broad, but the residual blast
+  radius is bounded by `--network none` + `--read-only` + non-root + `--pids-limit` +
+  `no-new-privileges`, and it is **still not `--no-sandbox`** — the renderer seccomp layer stays on.
 - **`seccomp-profile`.** For a host whose default seccomp is stricter than stock Docker's, supply a
   curated profile via `--security-opt seccomp=<path>` (e.g. Docker's default plus the clone/unshare
   the namespace sandbox needs). No setuid `chrome-sandbox` binary is shipped — the namespace sandbox
@@ -179,6 +183,12 @@ disabling the sandbox. `containerRunArgs` supports three mechanisms via `sandbox
 **Which one this deployment uses is a host fact to confirm** (checklist C3): if
 `sysctl kernel.unprivileged_userns_clone` is `1` (Debian) or `user.max_user_namespaces > 0`
 (mainline), `userns` works with `--cap-drop ALL` and nothing else. If not, switch to `sys-admin`.
+**The production EC2 host is the second case**: Ubuntu 26.04 ships AppArmor with
+`kernel.apparmor_restrict_unprivileged_userns=1`, which denies the unprivileged userns path to
+unconfined binaries — `userns` there fails with Chrome's `No usable sandbox!`. The operator
+selects the mechanism with `EXPORT_CAPTURE_SANDBOX_MECHANISM` (strict allow-list:
+`userns` | `sys-admin`; anything else refuses to configure — no silent downgrade, no arbitrary
+docker arguments from environment).
 
 ---
 
@@ -203,12 +213,13 @@ directory 0 errors.**
 
 ---
 
-## 7. Container-verification checklist — PENDING (Linux container only)
+## 7. Container-verification checklist (Linux container only)
 
 macOS cannot run this: `HeadlessExperimental.beginFrame` is unsupported on macOS (plan §4,
-measured), and `--network none` / namespace semantics are Linux kernel behaviour. **Everything in
-this section is `verified-in-container: PENDING`.** Each item is a concrete command a human runs on a
-real Linux host with the built image, and its expected result. Build first:
+measured), and `--network none` / namespace semantics are Linux kernel behaviour. Each item is a
+concrete command a human runs on a real Linux host with the built image, and its expected result.
+**§7a (sandbox + runtime packaging) is now experimentally VERIFIED on the production host; the
+remaining items stay `verified-in-container: PENDING`.** Build first:
 
 ```bash
 docker build -f deploy/docker/export-worker.Dockerfile \
@@ -216,6 +227,41 @@ docker build -f deploy/docker/export-worker.Dockerfile \
   -t podcast-saas/export-worker:verify ..
 IMG=podcast-saas/export-worker:verify
 ```
+
+### §7a — VERIFIED 2026-08-14: sandbox + runtime packaging on the production host
+
+Host: **Ubuntu 26.04 EC2**, AppArmor enabled, `kernel.apparmor_restrict_unprivileged_userns=1`.
+Three experiments, in order:
+
+1. **`userns` path** (no cap grants): Chrome prints `No usable sandbox!` — expected on this host;
+   the sysctl denies unprivileged user namespaces to unconfined binaries.
+2. **`SYS_ADMIN` alone**: advances past namespace setup, then
+   `Check failed: sys_chroot("/proc/self/fdinfo/") == 0 … No such file or directory`, exit 133.
+   The namespace sandbox's chroot jail needs `sys_chroot` once the namespace layer is granted.
+3. **The production-equivalent jail with BOTH caps** — rendered and exited 0:
+
+```bash
+docker run --rm \
+  --network none --read-only \
+  --tmpfs /tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777 \
+  --user 1000:1000 \
+  --cap-drop ALL --cap-add SYS_ADMIN --cap-add SYS_CHROOT \
+  --security-opt no-new-privileges:true \
+  --pids-limit 256 --memory 2048m --memory-swap 2048m --cpus 2 \
+  --entrypoint /opt/chrome-headless-shell "$IMG" \
+  --headless --disable-dev-shm-usage --dump-dom 'data:text/html,FLOWVID-SANDBOX-OK'
+# → <html><head></head><body>FLOWVID-SANDBOX-OK</body></html>
+# → CHROME_EXIT=0, FLOWVID_SANDBOX=PASS
+```
+
+This exact experiment is scripted as `deploy/scripts/export-worker-smoke.sh <image> [mechanism]`
+— run it after EVERY image build. `test -x`/`--version` are NOT sufficient: the v0.1.21 image
+passed both while its `COPY`-dereferenced standalone binary died at first launch with
+`Invalid file descriptor to ICU data received.` (exit 133), because Chrome resolves its runtime
+data (`icudtl.dat`, `.pak` resources, the v8 snapshot, `locales/`, `libEGL`/`libGLESv2`)
+relative to the executable and the distribution had been left behind. Only a real render proves
+packaging + sandbox together. (Fontconfig may log `No writable cache directories` unless
+HOME/XDG point below `/tmp`; the image sets that, and the warning is non-fatal either way.)
 
 ### C1 — `--network none` blocks egress WHILE `127.0.0.1` still serves (the crux)
 
@@ -356,6 +402,9 @@ Deployment shape (single VM, `deploy/docker-compose.capture.yml` overlay):
   the worker the socket and `.env` names the image.
 - `EXPORT_CAPTURE_WORKDIR` is bind-mounted at the SAME path on host and worker, because the
   daemon resolves the capture container's `-v` flags against the HOST filesystem.
+- `EXPORT_CAPTURE_SANDBOX_MECHANISM` selects the sandbox grant (strict allow-list: `userns` |
+  `sys-admin`; unknown values refuse to configure). The overlay defaults it to `sys-admin` —
+  the production host's AppArmor blocks the userns path (§5, §7a).
 - **Socket tradeoff, stated plainly (see §9 gap 3):** the overlay hands the worker the raw
   docker socket, which is root-equivalent on the host. On a single VM running first-party worker
   code this is an explicit, opt-in compromise; the untrusted sim still never sees the socket —
@@ -375,13 +424,17 @@ Deployment shape (single VM, `deploy/docker-compose.capture.yml` overlay):
 | Boundary: no-credential spec, query/fragment preserved, result validation | **Verified locally** (§6, L6) |
 | Entrypoint + alignment bridge | **Verified locally** (§6, L7–L8) |
 | Trusted-side caller (`containerCaptureProvider`): staging, verdict pass-through, env gate | **Verified locally** (unit suite, fake boundary) |
+| Runtime packaging: binary stays inside its CfT distribution (icudtl.dat & siblings) | **VERIFIED on Ubuntu 26.04** (§7a; v0.1.21 standalone-binary failure reproduced + fixed) |
+| Chrome sandbox initialises in the full jail (sys-admin = SYS_ADMIN + SYS_CHROOT) | **VERIFIED on Ubuntu 26.04** (§7a; render smoke `FLOWVID_SANDBOX=PASS`, exit 0) |
+| userns mechanism on the production host | **BLOCKED by host AppArmor** (`apparmor_restrict_unprivileged_userns=1`) — use `sys-admin` there |
 | `--network none` blocks egress while loopback serves | **PENDING** (§7, C1) — cannot run on macOS |
-| Read-only rootfs, non-root, sandbox-without-`--no-sandbox`, quotas | **PENDING** (§7, C2–C4) |
+| Read-only rootfs, non-root, quotas (beyond what §7a's jail exercised) | **PENDING** (§7, C2–C4) |
 | Adversarial sim reaches nothing; determinism | **PENDING** (§7, C5–C6) |
 | Chrome-headless-shell version / image digest | **Not pinned in this change** — set a real CfT build at build time |
 
-**Gaps called out plainly.** (1) Nothing container-level has been executed here — the whole of §7 is
-PENDING and must be run on a Linux host before enabling export in production. (2) The exact
+**Gaps called out plainly.** (1) §7a (packaging + sandbox) is the only container-level item
+executed so far — the REST of §7 remains PENDING and must be run on the Linux host before
+trusting real exports. (2) The exact
 `chrome-headless-shell` build is an un-pinned build ARG; the Dockerfile refuses to build without it,
 but a real published version + verified digest must be chosen. (3) The Docker-socket exposure for
 docker-out-of-docket is a real attack surface of its own — use a scoped socket proxy or a dedicated
