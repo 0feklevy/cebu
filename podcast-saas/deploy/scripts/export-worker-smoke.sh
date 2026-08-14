@@ -159,4 +159,103 @@ fi
 # signal), NOT that all 60 files are pairwise distinct.
 echo "STAGE-C: PASS — 60 frames, first/last differ, gate passed"
 
-echo "FLOWVID_SMOKE=PASS (A: chrome cage, B: backend contract, C: entrypoint capture; mechanism=$MECHANISM)"
+# ── Stage D: PRODUCTION TOPOLOGY — a nested entry loading ../bridge.js ────────────────────────
+# Stage C's fixture is one flat self-contained document, so it cannot fail the v0.1.23 bug: that
+# incident was a NESTED entry whose `../bridge.js` lived at the package root and was never staged.
+# This stage reproduces the real shape — package-root runtime + nested entry + a module and a
+# stylesheet — and requires the FULL handshake, so a package-root regression cannot pass again.
+echo "=== STAGE D: production-topology capture (nested entry, ../bridge.js) ==="
+WORK_D="$(mktemp -d /tmp/flowvid-capture-smoke-d.XXXXXX)"
+IN_D="$WORK_D/input"; OUT_D="$WORK_D/output"
+mkdir -p "$IN_D/scene/src" "$OUT_D"
+trap 'rm -rf "$WORK" "$WORK_D"' EXIT
+
+# The generated runtime AT THE PACKAGE ROOT — exactly where a real package keeps bridge.js. It
+# owns the handshake: SIM_READY on load, SCRIPT_APPLIED on startScript, SIM_PAINTED on first draw.
+cat > "$IN_D/bridge.js" <<'JS'
+;(function () {
+  var ctx = null, frame = 0, running = false;
+  function draw() {
+    frame += 1;
+    var c = document.getElementById('c');
+    ctx = ctx || (c && c.getContext('2d'));
+    if (ctx) {
+      ctx.fillStyle = 'hsl(' + ((frame * 29) % 360) + ',90%,50%)';
+      ctx.fillRect(0, 0, 640, 360);
+      ctx.fillStyle = '#000'; ctx.font = '48px monospace';
+      ctx.fillText('FRAME ' + frame, 40, 190);
+      if (frame === 1) window.postMessage({ type: 'SIM_PAINTED' }, '*');
+    }
+    if (running) requestAnimationFrame(draw);
+  }
+  window.addEventListener('message', function (e) {
+    var d = (e && e.data) || {};
+    if (d.type === 'startScript') {
+      window.postMessage({ type: 'SCRIPT_APPLIED', token: d.token }, '*');
+      if (!running) { running = true; requestAnimationFrame(draw); }
+    }
+    if (d.type === 'PING_SIM_READY') window.postMessage({ type: 'SIM_READY' }, '*');
+  });
+  requestAnimationFrame(function () { window.postMessage({ type: 'SIM_READY' }, '*'); });
+})();
+JS
+
+# The NESTED entry — the shape `findEntryHtml` produces from a folder-ZIP, loading the root bridge
+# upward and its own assets downward. If staging ever flattens or re-anchors, this 404s.
+cat > "$IN_D/scene/index.html" <<'HTML'
+<!doctype html><meta charset="utf-8">
+<link rel="stylesheet" href="./app.css">
+<canvas id="c" width="640" height="360"></canvas>
+<script type="module" src="./src/main.js"></script>
+<!-- SIM_BRIDGE_SCRIPT_START -->
+<script src="../bridge.js?v=smoke"></script>
+<!-- SIM_BRIDGE_SCRIPT_END -->
+HTML
+printf 'html,body{margin:0;background:#000}\n' > "$IN_D/scene/app.css"
+printf 'export const ready = true;\n' > "$IN_D/scene/src/main.js"
+
+cat > "$IN_D/capture-spec.json" <<'JSON'
+{
+  "specVersion": 1,
+  "sectionId": "smoke-d",
+  "simulationId": null,
+  "configHash": "smoke",
+  "entryPath": "scene/index.html",
+  "entryQuery": "?section=smoke-d&v=smoke",
+  "entryFragment": "",
+  "startScript": { "simpleUi": false, "autoScript": false, "uiHide": [] },
+  "durationSec": 2,
+  "fps": 30,
+  "width": 640,
+  "height": 360,
+  "warmupFrames": 30,
+  "posterKey": null,
+  "output": { "format": "jpeg", "quality": 80, "frameDir": "frames", "namePattern": "frame-%06d.jpg" },
+  "wallClockTimeoutSec": 180
+}
+JSON
+chmod -R a+rX "$IN_D"; chmod a+rwX "$OUT_D"
+
+set +e
+timeout 240 docker run --rm "${CAGE[@]}" "${CHROME_CAPS[@]}" \
+  --mount "type=bind,src=$IN_D,dst=/input,ro" \
+  --mount "type=bind,src=$OUT_D,dst=/output" \
+  "$IMAGE"
+ENTRY_D_EXIT=$?
+set -e
+echo "entrypoint exit: $ENTRY_D_EXIT"
+[ -f "$OUT_D/result.json" ] || { echo "STAGE-D: FAIL — no result.json written" >&2; exit 1; }
+echo "--- result.json ---"; cat "$OUT_D/result.json"; echo
+# A package-root regression surfaces HERE, named: "package is missing 1 requested file(s): bridge.js".
+[ "$ENTRY_D_EXIT" -eq 0 ] || { echo "STAGE-D: FAIL — entrypoint exited $ENTRY_D_EXIT (see result.json above)" >&2; exit 1; }
+grep -q '"status": *"ok"'   "$OUT_D/result.json" || { echo "STAGE-D: FAIL — status is not ok" >&2; exit 1; }
+grep -q '"gate": *"passed"' "$OUT_D/result.json" || { echo "STAGE-D: FAIL — sanity gate did not pass" >&2; exit 1; }
+grep -q '"frameCount": *60' "$OUT_D/result.json" || { echo "STAGE-D: FAIL — expected 60 frames" >&2; exit 1; }
+COUNT_D=$(ls "$OUT_D/frames"/frame-*.jpg 2>/dev/null | wc -l | tr -d ' ')
+[ "$COUNT_D" -eq 60 ] || { echo "STAGE-D: FAIL — $COUNT_D frame files, expected 60" >&2; exit 1; }
+if cmp -s "$OUT_D/frames/frame-000000.jpg" "$OUT_D/frames/frame-000059.jpg"; then
+  echo "STAGE-D: FAIL — first and last frames are byte-identical (static capture)" >&2; exit 1
+fi
+echo "STAGE-D: PASS — nested entry + ../bridge.js handshake, 60 frames, first/last differ, gate passed"
+
+echo "FLOWVID_SMOKE=PASS (A: chrome cage, B: backend contract, C: entrypoint capture, D: production topology; mechanism=$MECHANISM)"

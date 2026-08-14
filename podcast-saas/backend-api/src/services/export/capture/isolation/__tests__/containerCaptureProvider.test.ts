@@ -33,32 +33,40 @@ import {
 // ── parseServedSimUrl ───────────────────────────────────────────────────────────────────────────
 
 describe('parseServedSimUrl', () => {
-  it('splits a revisioned sim-public URL into baseDir + entryPath, dropping query and fragment', () => {
+  const REV_UUID = '11111111-2222-4333-8444-555555555555';
+
+  it('resolves a revisioned sim-public URL to the PACKAGE ROOT, dropping query and fragment', () => {
     const parsed = parseServedSimUrl(
-      'http://127.0.0.1:8080/api/v1/sim-public/simulations/p1/s1/revisions/r1/package/index.html?section=sec-1&v=abc#simboot=%7B%22hide%22%3A%5B%5D%7D',
+      `http://127.0.0.1:8080/api/v1/sim-public/simulations/p1/s1/revisions/${REV_UUID}/package/index.html?section=sec-1&v=abc#simboot=%7B%22hide%22%3A%5B%5D%7D`,
     );
     expect(parsed).toEqual({
-      entryKey: 'simulations/p1/s1/revisions/r1/package/index.html',
-      baseDir: 'simulations/p1/s1/revisions/r1/package',
+      layout: 'revision',
+      entryKey: `simulations/p1/s1/revisions/${REV_UUID}/package/index.html`,
+      packageRoot: `simulations/p1/s1/revisions/${REV_UUID}/package`,
       entryPath: 'index.html',
     });
   });
 
-  it('handles legacy flat keys and percent-encoded path segments', () => {
+  it('handles legacy keys and percent-encoded path segments, keeping the entry NESTED', () => {
+    // The v0.1.23 shape: the package root is the simulation prefix, and the entry keeps its
+    // directory so the stored `../bridge.js` still points at the root.
     const parsed = parseServedSimUrl(
-      'https://api.flowvidco.com/api/v1/sim-public/simulations/p1/boids%203d/index.html',
+      'https://api.flowvidco.com/api/v1/sim-public/simulations/p1/s1/boids%203d/index.html',
     );
     expect(parsed).toEqual({
-      entryKey: 'simulations/p1/boids 3d/index.html',
-      baseDir: 'simulations/p1/boids 3d',
-      entryPath: 'index.html',
+      layout: 'legacy',
+      entryKey: 'simulations/p1/s1/boids 3d/index.html',
+      packageRoot: 'simulations/p1/s1',
+      entryPath: 'boids 3d/index.html',
     });
   });
 
-  it('returns null for non-sim URLs, malformed URLs, and keys with no directory', () => {
+  it('returns null for non-sim URLs, malformed URLs, and keys the grammar refuses', () => {
     expect(parseServedSimUrl('https://api.flowvidco.com/api/v1/podcasts/x.mp3')).toBeNull();
     expect(parseServedSimUrl('not a url')).toBeNull();
     expect(parseServedSimUrl('https://api.flowvidco.com/api/v1/sim-public/orphan.html')).toBeNull();
+    // Below the canonical simulations/<project>/<sim> depth — not an entry.
+    expect(parseServedSimUrl('https://api.flowvidco.com/api/v1/sim-public/simulations/p1/s1')).toBeNull();
   });
 });
 
@@ -151,7 +159,7 @@ describe('wallClockCapSec', () => {
 
 const SPEC: CaptureSpec = {
   servedSimUrl:
-    'http://127.0.0.1:8080/api/v1/sim-public/simulations/p1/s1/revisions/r1/package/index.html?section=sec-1&v=abc#simboot=%7B%22hide%22%3A%5B%5D%7D',
+    'http://127.0.0.1:8080/api/v1/sim-public/simulations/p1/s1/revisions/rev-01HZX9K4TQ8M/package/index.html?section=sec-1&v=abc#simboot=%7B%22hide%22%3A%5B%5D%7D',
   sectionId: 'sec-1',
   simpleUi: true,
   autoScript: true,
@@ -167,8 +175,8 @@ const SPEC: CaptureSpec = {
 /** Two-file fake package under the URL's baseDir prefix. */
 function fakeStorage(): StorageService {
   const objects: Record<string, Buffer> = {
-    'simulations/p1/s1/revisions/r1/package/index.html': Buffer.from('<!doctype html><title>sim</title>'),
-    'simulations/p1/s1/revisions/r1/package/app.js': Buffer.from('console.log(1)'),
+    'simulations/p1/s1/revisions/rev-01HZX9K4TQ8M/package/index.html': Buffer.from('<!doctype html><title>sim</title>'),
+    'simulations/p1/s1/revisions/rev-01HZX9K4TQ8M/package/app.js': Buffer.from('console.log(1)'),
   };
   return {
     listObjects: async (prefix: string) =>

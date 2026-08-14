@@ -166,6 +166,31 @@ describe('export-worker-smoke.sh — the three-stage smoke contract', () => {
     expect(smoke).toContain("'FRAME ' + frame");
   });
 
+  /** The Stage D block only — so a Stage C assertion can never stand in for a Stage D one. */
+  const stageD = (): string => {
+    const at = smoke.indexOf('STAGE D:');
+    expect(at, 'the smoke script must contain a Stage D').toBeGreaterThan(-1);
+    return smoke.slice(at);
+  };
+
+  it('Stage D reproduces the PRODUCTION TOPOLOGY: nested entry loading ../bridge.js', () => {
+    // Stage C's fixture is flat and self-contained, so it could never fail the v0.1.23 bug.
+    // Stage D is the shape that did: package-root runtime + a nested entry referencing it upward.
+    const d = stageD(); // scoped: Stage C cannot satisfy any of these
+    expect(d).toContain('src="../bridge.js?v=smoke"');
+    expect(d).toContain('"entryPath": "scene/index.html"'); // nested, not a bare basename
+    expect(d).toMatch(/mkdir -p "\$IN_D\/scene\/src"/);     // the bridge is NOT beside the entry
+    // The full handshake must be exercised, not just a paint.
+    expect(d).toContain('SIM_READY');
+    expect(d).toContain('SCRIPT_APPLIED');
+    expect(d).toContain('SIM_PAINTED');
+    // Same demands as Stage C: real frames, distinct endpoints, passed gate.
+    expect(d).toContain('STAGE-D: FAIL — sanity gate did not pass');
+    expect(d).toMatch(/cmp -s "\$OUT_D\/frames\/frame-000000\.jpg" "\$OUT_D\/frames\/frame-000059\.jpg"/);
+    // And it runs in the SAME cage — no relaxation for the harder fixture.
+    expect(d).toMatch(/docker run --rm "\$\{CAGE\[@\]\}" "\$\{CHROME_CAPS\[@\]\}"[\s\S]{0,200}dst=\/input,ro/);
+  });
+
   it('never contains --no-sandbox or --privileged, even as an option', () => {
     expect(smoke).not.toMatch(/--no-sandbox/);
     expect(smoke).not.toMatch(/--privileged/);
