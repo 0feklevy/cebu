@@ -13,17 +13,26 @@ import { logger } from '../lib/logger.js';
  * through transaction poolers, so it is the default.
  */
 
-/** Job names routed through pg-boss in this phase. Phase B: crop; Phase C: video_generate. */
-export const PGBOSS_JOB_NAMES = ['crop', 'video_generate'] as const satisfies readonly JobName[];
+/**
+ * Job names routed through pg-boss in this phase. Phase B: crop; Phase C: video_generate;
+ * Phase D: project_export — the ffmpeg assembly (and, when configured, the capture containers)
+ * must run in the WORKER service, not the web tier: the 2026-08-13 incident was the kernel
+ * OOM-killing the API container mid-assembly, taking every in-flight request down with it.
+ */
+export const PGBOSS_JOB_NAMES = ['crop', 'video_generate', 'project_export'] as const satisfies readonly JobName[];
 
 const DLQ_SUFFIX = '-dead';
 
 // Per-queue retry/backoff + expiry. Inherited by each job; expireInSeconds must exceed the
 // worst-case job runtime (crop's stale-claim window is 20 min, so 30 min is a safe ceiling;
 // video_generate polls up to 20 min then downloads + HLS-transcodes, so 45 min).
+// project_export: retries are safe — run() no-ops on terminal states and its claim() refuses a
+// second live encode, so a retry only ever resumes a CRASHED run (the claim goes stale with the
+// heartbeat). 60 min covers per-section capture wall clocks (≤10 min each) plus the assembly.
 const QUEUE_OPTIONS: Record<(typeof PGBOSS_JOB_NAMES)[number], QueueOptions> = {
   crop: { retryLimit: 3, retryDelay: 30, retryBackoff: true, expireInSeconds: 30 * 60 },
   video_generate: { retryLimit: 2, retryDelay: 60, retryBackoff: true, expireInSeconds: 45 * 60 },
+  project_export: { retryLimit: 2, retryDelay: 60, retryBackoff: true, expireInSeconds: 60 * 60 },
 };
 
 function connectionString(): string {

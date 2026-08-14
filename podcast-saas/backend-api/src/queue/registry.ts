@@ -10,6 +10,7 @@ import { runPodcastMixExportJob } from '../services/podcast/audio/runPodcastMixE
 import { runVideoGenerateLimited } from '../jobs/video.generate.js';
 import { ProjectDuplicationService } from '../services/project/ProjectDuplicationService.js';
 import { ProjectExportService } from '../services/export/ProjectExportService.js';
+import { resolveConfiguredCaptureProvider } from '../services/export/capture/isolation/containerCaptureProvider.js';
 
 /**
  * Maps each job name to its existing service entrypoint. Handlers are thin adapters from
@@ -33,5 +34,9 @@ export const handlers: JobHandlers = {
   // whichever suite imported the registry first.
   project_duplicate: (p) => new ProjectDuplicationService().run(p.duplicationId),
   // Same per-job construction, same reason as above: the adapter is resolved when the job RUNS.
-  project_export: (p) => new ProjectExportService().run(p.exportId),
+  // The 3rd arg is the sim capture backend. `resolveConfiguredCaptureProvider()` is null unless
+  // EXPORT_CAPTURE_IMAGE names the pinned worker image — null keeps the shipped poster-fallback
+  // behaviour; configured, sim sections are captured in the isolated container (the Phase-2 path).
+  project_export: (p) =>
+    new ProjectExportService(undefined, null, resolveConfiguredCaptureProvider()).run(p.exportId),
 };

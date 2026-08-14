@@ -1,0 +1,47 @@
+# OPT-IN overlay: give the WORKER service the ability to run isolated export-capture containers.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.capture.yml up -d
+#
+# Without this file nothing changes: the backend image carries an inert docker CLI, the capture
+# provider resolves to null (no EXPORT_CAPTURE_IMAGE), and sim sections use the poster fallback.
+#
+# WHAT THIS GRANTS AND WHY IT IS THE WORKER, NOT THE BACKEND: the docker socket is root-equivalent
+# on the host. It goes ONLY to the worker service — no listening port, not reachable from the
+# internet — never to the web tier. `project_export` is routed to the worker via pg-boss
+# (PGBOSS_JOB_NAMES), so the web tier neither encodes nor talks to docker. The capture container
+# itself still runs with the boundary's full hardening: --network none (SSRF impossible by
+# construction), cap-drop ALL, no-new-privileges, pids/memory/cpu limits, read-only input mount.
+#
+# ONE-TIME HOST SETUP (as root on the VM):
+#   1. Build the pinned worker image (choose a REAL Chrome-for-Testing build id ≥151):
+#        docker compose -f docker-compose.export-worker.yml build \
+#          --build-arg CHROME_HEADLESS_SHELL_VERSION=<pin>
+#   2. mkdir -p /var/lib/flowvid-capture && chown 1000:1000 /var/lib/flowvid-capture
+#      (uid 1000 = the image's `node` user; job dirs are created and reaped under this path).
+#   3. In the root .env set:
+#        EXPORT_CAPTURE_IMAGE=podcast-saas/export-worker:<tag you built>
+#   4. export DOCKER_GID="$(getent group docker | cut -d: -f3)" (or put DOCKER_GID in .env).
+#   5. Bring the stack up with both -f files, then run the container-verification checklist
+#      (md-files/EXPORT-CAPTURE-ISOLATION.md §7) once on this host before trusting real exports.
+#
+# CAPACITY: capture + assembly need real memory (Chrome ≈1–2 GB per section run, ffmpeg encode on
+# top). Do not enable this on a sub-4 GB host — the 908 MB instance OOM-killed plain assembly.
+services:
+  worker:
+    # Lets the in-container `node` user reach /var/run/docker.sock (root:docker on the host).
+    group_add:
+      - "${DOCKER_GID:?export DOCKER_GID=$(getent group docker | cut -d: -f3)}"
+    environment:
+      # The pinned worker image — REQUIRED here so an overlay without it fails at `up`, loudly.
+      EXPORT_CAPTURE_IMAGE: "${EXPORT_CAPTURE_IMAGE:?set EXPORT_CAPTURE_IMAGE in .env to the export-worker image you built}"
+      # Job dirs must live on a path the DAEMON sees at the same location the worker writes it —
+      # `docker run -v` resolves against the HOST filesystem, hence the twin bind mount below.
+      EXPORT_CAPTURE_WORKDIR: /var/lib/flowvid-capture
+      # The capture container runs as the SAME uid that owns the job dirs (the worker's `node`,
+      # uid 1000), so the read-only input and the output mount need no chmod gymnastics. The
+      # meaningful isolation layers are unchanged (--network none, cap-drop, pids/mem limits).
+      # To restore the runbook's 10001:10001 split, chown the workdir accordingly and drop this.
+      EXPORT_CAPTURE_USER: "1000:1000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/lib/flowvid-capture:/var/lib/flowvid-capture
