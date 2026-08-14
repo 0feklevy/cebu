@@ -14,24 +14,44 @@
  *     Chrome 151 `--headless`: `-32601 "'HeadlessExperimental.beginFrame' wasn't found"`. Wrong
  *     binary ⇒ method-not-found (plan §4 "Verified by live measurement").
  *
- * THEREFORE: this file DOES NOT CLAIM TO CAPTURE HERE. It provides the parts that CAN be verified
- * without a browser and are pinned by unit tests — the exact flag set (the six `--deterministic-mode`
- * switches spelled out, the GL flags, and the forbidden list), the CDP message SHAPES
- * (`Target.createTarget` with `enableBeginFrameControl`, the beginFrame frame schedule, and the
- * measured JPEG-q80-`optimizeForSpeed` screenshot params — the 24 ms vs 267 ms / ~11× lever) — and a
- * `captureSection` that assembles all of that and then fails LOUDLY with `CaptureUnavailable` at the
- * transport boundary on any host where it cannot legitimately run. The CDP transport itself is wired
- * in the container by the isolation/Docker sibling (§0.2, Phase 2 Dockerfile), not here.
+ * This file owns the beginFrame CAPTURE POLICY and composes the pieces that already ship:
+ *
+ *   flag policy + CDP message shapes + frame schedule   (this file — unit-pinned)
+ *        ↓
+ *   document-start injection (`injection.ts`) + bridge handshake (`driver.ts` `runCaptureHandshake`)
+ *        ↓
+ *   `DriverDeps` — implemented here over CDP commands
+ *        ↓
+ *   the thin pipe transport (`cdpPipeTransport.ts` — the one piece that was missing)
+ *        ↓
+ *   chrome-headless-shell
+ *
+ * There is exactly ONE beginFrame backend. The v0.1.22 incident: this module exported no
+ * `createBackend()`/default, so the container's `loadBackend()` could never instantiate it — and
+ * `captureSection` was a stub that threw unconditionally, so the transport had never been wired at
+ * all. Both are fixed here, compositionally: no duplicate navigation/handshake/gate logic exists —
+ * the same `runCaptureHandshake`/`buildInitScript`/`evaluateSanityGate` the Playwright backend uses
+ * drive this one. Failures carry a `CaptureStage` so the next incident names its stage instead of
+ * "container exited 1".
  */
 
+import { access, constants as fsConstants, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { launchHeadlessShell, type CdpEvent, type HeadlessShellHandle } from './cdpPipeTransport.js';
+import { CaptureTimeoutError, runCaptureHandshake, type DriverDeps } from './driver.js';
 import { buildInitScript } from './injection.js';
+import { evaluateSanityGate, type FrameSample } from './sanityGate.js';
 import {
+  CaptureStageError,
   CaptureUnavailable,
   DEFAULT_FRAME_EPOCH_MS,
   DEFAULT_WARMUP_FRAMES,
   frameCountFor,
   type CaptureResult,
   type CaptureSpec,
+  type CaptureStage,
   type SimCaptureBackend,
 } from './captureTypes.js';
 
@@ -199,45 +219,350 @@ export function buildBeginFrameSchedule(opts: {
 }
 
 /**
- * This host cannot run beginFrame. macOS: the measured Chromium error. Anything else: the transport
- * is not wired in this build (it belongs to the container). Either way, a `CaptureUnavailable` that
- * the export service turns into the poster fallback.
+ * Refuse hosts that cannot run beginFrame. macOS: the measured Chromium error. Elsewhere: the
+ * pinned browser must be named by `CHROME_HEADLESS_SHELL_PATH` (baked into the worker image).
+ * Throws `CaptureUnavailable` — the export service's poster-fallback signal.
  */
-export function assertBeginFrameRunnable(platform: NodeJS.Platform = process.platform): void {
+export function assertBeginFrameRunnable(
+  platform: NodeJS.Platform = process.platform,
+  executablePath: string | undefined = process.env.CHROME_HEADLESS_SHELL_PATH,
+): string {
   if (platform === 'darwin') {
     throw new CaptureUnavailable(
       'beginFrame is not supported on macOS (Chromium: "BeginFrameControl is not supported on MacOS yet"). ' +
         'This backend is Linux-container-only.',
     );
   }
-  throw new CaptureUnavailable(
-    'beginFrame backend: the CDP transport is not wired in this build — it runs only in the Phase-2 ' +
-      'Linux container (chrome-headless-shell). Use the Playwright screenshot backend for local dev.',
-  );
+  if (!executablePath) {
+    throw new CaptureUnavailable(
+      'beginFrame backend: CHROME_HEADLESS_SHELL_PATH is not set — outside the export-worker container ' +
+        'there is no pinned browser. Use the Playwright screenshot backend for local dev.',
+    );
+  }
+  return executablePath;
+}
+
+const NAV_TIMEOUT_MS = 30_000;
+/** Real-clock pause between navigation beginFrame pumps (load progress under deterministic mode). */
+const NAV_PUMP_INTERVAL_MS = 50;
+
+export interface BeginFrameBackendOptions {
+  /** Override the browser binary (default: `CHROME_HEADLESS_SHELL_PATH`, baked into the image). */
+  executablePath?: string;
+  /** Base dir for frames + the browser profile. Default: os tmpdir (the container's tmpfs /tmp). */
+  workDir?: string;
+  /** Transport seam for tests: a fake launcher avoids any real Chrome. */
+  launch?: typeof launchHeadlessShell;
+  /** Platform seam for tests. */
+  platform?: NodeJS.Platform;
+  /** Canvas-region gate sample grid (gridN × gridN). Default 24. */
+  gridN?: number;
+  /** How many frames across the capture to sample for the gate. Default 6 (min 2). */
+  sampleCount?: number;
+  log?: (message: string) => void;
+}
+
+/** Even sample indices across [0, frameCount), always including the first and last. */
+function sampleIndices(frameCount: number, sampleCount: number): Set<number> {
+  const n = Math.max(2, Math.min(sampleCount, frameCount));
+  const out = new Set<number>();
+  if (frameCount <= 0) return out;
+  if (frameCount === 1) return new Set([0]);
+  for (let i = 0; i < n; i++) out.add(Math.round((i * (frameCount - 1)) / (n - 1)));
+  return out;
+}
+
+/** In-page canvas sampler (stringified for `Runtime.evaluate`) — same sampling the Playwright backend does. */
+function samplerExpression(gridN: number): string {
+  return `(() => {
+    const d = globalThis.document; if (!d) return 'null';
+    const cs = Array.from(d.querySelectorAll('canvas')); if (cs.length === 0) return 'null';
+    let best = cs[0], bestArea = 0;
+    for (const c of cs) { const a = (c.width||0)*(c.height||0); if (a > bestArea) { bestArea = a; best = c; } }
+    const off = d.createElement('canvas'); off.width = ${gridN}; off.height = ${gridN};
+    const g = off.getContext('2d'); if (!g) return 'null';
+    try { g.drawImage(best, 0, 0, ${gridN}, ${gridN}); } catch { return 'null'; }
+    const data = g.getImageData(0, 0, ${gridN}, ${gridN}).data;
+    return JSON.stringify({ width: ${gridN}, height: ${gridN}, rgba: Array.from(data) });
+  })()`;
 }
 
 /**
- * The beginFrame backend. `isAvailable()` is honest (false on macOS, and false here because the
- * transport is container-wired); `captureSection` assembles the flags, init script, and frame
- * schedule (all exercised) and then refuses loudly at the transport boundary.
+ * THE beginFrame backend — the single production capture implementation. One instance per
+ * container run; `captureSection` launches the pinned browser, reuses the shipped handshake, pumps
+ * `HeadlessExperimental.beginFrame`, and returns a `frame-%06d.jpg` directory (the exact pattern
+ * the trusted side's encoder expects).
  */
 export class BeginFrameBackend implements SimCaptureBackend {
   readonly name = 'begin-frame';
 
+  constructor(private readonly opts: BeginFrameBackendOptions = {}) {}
+
   async isAvailable(): Promise<boolean> {
-    // Never available on macOS; and this build does not ship the CDP transport, so: not here.
-    return false;
+    if (this.opts.launch) return true; // transport injected (tests) — always runnable
+    const platform = this.opts.platform ?? process.platform;
+    const exe = this.opts.executablePath ?? process.env.CHROME_HEADLESS_SHELL_PATH;
+    if (platform === 'darwin' || !exe) return false;
+    try {
+      await access(exe, fsConstants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async captureSection(spec: CaptureSpec): Promise<CaptureResult> {
-    // Assemble everything that CAN be built without a browser — the parts under test.
-    const totalFrames = DEFAULT_WARMUP_FRAMES + frameCountFor(spec.durationSec, spec.fps);
-    assembleBeginFrameFlags({ width: spec.width, height: spec.height });
-    buildInitScript({ fps: spec.fps, configHash: spec.configHash, epochMs: DEFAULT_FRAME_EPOCH_MS });
-    buildBeginFrameSchedule({ fps: spec.fps, totalFrames, warmupFrames: DEFAULT_WARMUP_FRAMES });
-    // …then stop at the boundary this build does not cross.
-    assertBeginFrameRunnable();
-    // Unreachable — assertBeginFrameRunnable always throws. Keeps the return type honest.
-    throw new CaptureUnavailable('beginFrame backend is not runnable on this host');
+    const log = this.opts.log ?? (() => {});
+    const executablePath =
+      this.opts.launch ? (this.opts.executablePath ?? 'injected-transport')
+      : assertBeginFrameRunnable(this.opts.platform ?? process.platform, this.opts.executablePath ?? process.env.CHROME_HEADLESS_SHELL_PATH);
+
+    const base = this.opts.workDir ?? tmpdir();
+    const jobDir = await mkdtemp(join(base, `beginframe-${spec.sectionId.slice(0, 8)}-`));
+    const framesDir = join(jobDir, 'frames');
+    const profileDir = join(jobDir, 'profile');
+    await mkdir(framesDir, { recursive: true });
+    await mkdir(profileDir, { recursive: true });
+
+    // Policy: the pinned flag set (validated against the forbidden list) + the profile location.
+    const flags = assembleBeginFrameFlags({
+      width: spec.width,
+      height: spec.height,
+      extra: [`--user-data-dir=${profileDir}`, '--no-first-run'],
+    });
+
+    const launch = this.opts.launch ?? launchHeadlessShell;
+    let handle: HeadlessShellHandle;
+    try {
+      handle = launch({ executablePath, flags, log });
+    } catch (err) {
+      await rm(jobDir, { recursive: true, force: true }).catch(() => {});
+      throw err instanceof CaptureStageError
+        ? err
+        : new CaptureStageError('chrome_launch', err instanceof Error ? err.message : String(err));
+    }
+    const cdp = handle.connection;
+
+    const stage = async <T>(name: CaptureStage, work: () => Promise<T>): Promise<T> => {
+      try {
+        return await work();
+      } catch (err) {
+        if (err instanceof CaptureStageError || err instanceof CaptureUnavailable) throw err;
+        throw new CaptureStageError(name, err instanceof Error ? err.message : String(err));
+      }
+    };
+
+    try {
+      // ── CDP bootstrap: target with beginFrame control, page session, document-start injection ──
+      const sessionId = await stage('cdp_connect', async () => {
+        const target = buildCreateTargetParams('about:blank', spec.width, spec.height);
+        const created = await cdp.send(target.method, { ...target.params });
+        const attached = await cdp.send('Target.attachToTarget', {
+          targetId: created.targetId as string,
+          flatten: true,
+        });
+        const sid = attached.sessionId as string;
+        await cdp.send('Page.enable', {}, sid);
+        await cdp.send('Runtime.enable', {}, sid);
+        const init = buildAddInitScriptParams(
+          buildInitScript({ fps: spec.fps, configHash: spec.configHash, epochMs: DEFAULT_FRAME_EPOCH_MS }),
+        );
+        await cdp.send(init.method, { ...init.params }, sid);
+        return sid;
+      });
+
+      // Runtime.evaluate wrapper: an in-page exception is a real failure at the calling stage.
+      const evalInPage = async (
+        expression: string,
+        opts: { awaitPromise?: boolean; stage: CaptureStage },
+      ): Promise<unknown> => {
+        return stage(opts.stage, async () => {
+          const res = await cdp.send(
+            'Runtime.evaluate',
+            { expression, returnByValue: true, awaitPromise: opts.awaitPromise ?? false },
+            sessionId,
+          );
+          const exception = res.exceptionDetails as { text?: string } | undefined;
+          if (exception) throw new Error(`in-page exception: ${exception.text ?? 'unknown'}`);
+          return (res.result as { value?: unknown } | undefined)?.value;
+        });
+      };
+
+      // ── beginFrame pump: ONE compositor frame per virtual frame, the schedule's exact shape ─────
+      // The compositor clock must advance in LOCKSTEP with the JS virtual clock (the schedule pins
+      // exactly `totalFrames` beginFrames at `interval` apart). So a `stepFrame` DEFERS its
+      // beginFrame: a captured frame's single beginFrame is the screenshot one; an uncaptured
+      // frame's (handshake/warmup) is flushed — without display churn, the schedule's warmup
+      // semantics — right before the next step. Never two compositor frames per virtual frame.
+      const interval = 1000 / spec.fps;
+      let ticks = DEFAULT_FRAME_EPOCH_MS;
+      let pendingStepFlush = false;
+      const beginFrame = async (withScreenshot: boolean): Promise<string | null> => {
+        return stage(withScreenshot ? 'screenshot' : 'begin_frame', async () => {
+          const params: Record<string, unknown> = {
+            frameTimeTicks: ticks,
+            interval,
+            noDisplayUpdates: !withScreenshot,
+            ...(withScreenshot ? { screenshot: buildScreenshotParams() } : {}),
+          };
+          ticks += interval;
+          const res = await cdp.send('HeadlessExperimental.beginFrame', params, sessionId);
+          return typeof res.screenshotData === 'string' ? res.screenshotData : null;
+        });
+      };
+
+      const samples: FrameSample[] = [];
+      const captureFrames = frameCountFor(spec.durationSec, spec.fps);
+      const toSample = sampleIndices(captureFrames, this.opts.sampleCount ?? 6);
+      const gridN = this.opts.gridN ?? 24;
+      let msgCursor = 0;
+
+      const deps: DriverDeps = {
+        navigate: async (url) => {
+          await stage('navigation', async () => {
+            const dom = cdp.waitForEvent('Page.domContentEventFired', sessionId, NAV_TIMEOUT_MS);
+            let settled = false;
+            const raced = dom.then(
+              (event: CdpEvent) => { settled = true; return event; },
+              (err: unknown) => { settled = true; throw err; },
+            );
+            // Deterministic mode: renderer progress can be frame-gated, so pump while waiting. The
+            // pump's own failure (e.g. Chrome died — its sends reject the instant the pipe shuts
+            // down) must NEVER become an orphaned rejection: both promises are settled together,
+            // and the FIRST classified error wins. The waitForEvent side fails fast too —
+            // CdpConnection.shutdown() rejects event waiters with the "chrome exited …" reason.
+            let pumpError: unknown = null;
+            const pump = (async () => {
+              try {
+                while (!settled) {
+                  await beginFrame(false);
+                  await new Promise((resolve) => setTimeout(resolve, NAV_PUMP_INTERVAL_MS));
+                }
+              } catch (err) {
+                pumpError = err;
+              }
+            })();
+            try {
+              const nav = await cdp.send('Page.navigate', { url }, sessionId);
+              if (typeof nav.errorText === 'string' && nav.errorText) {
+                throw new Error(`Page.navigate: ${nav.errorText}`);
+              }
+              await raced;
+            } finally {
+              settled = true;
+              raced.catch(() => {}); // never leave the dom promise orphaned on an early throw
+              await pump;
+            }
+            if (pumpError) throw pumpError;
+          });
+        },
+        postToSim: async (message) => {
+          await evalInPage(`window.postMessage(${JSON.stringify(message)}, '*')`, { stage: 'start_script' });
+        },
+        drainMessages: async () => {
+          const raw = await evalInPage(
+            `JSON.stringify((((globalThis.__SIM_CAPTURE__ || {}).messages) || []).slice(${msgCursor}))`,
+            { stage: 'bridge_ready' },
+          );
+          const batch = JSON.parse(String(raw ?? '[]')) as Array<Record<string, unknown>>;
+          msgCursor += batch.length;
+          return batch;
+        },
+        stepFrame: async (virtualFrame) => {
+          if (pendingStepFlush) await beginFrame(false); // the PREVIOUS uncaptured frame's compositor turn
+          pendingStepFlush = false;
+          await evalInPage(
+            `globalThis.__SIM_CLOCK__ && globalThis.__SIM_CLOCK__.advanceToFrame(${virtualFrame})`,
+            { stage: 'begin_frame' },
+          );
+          pendingStepFlush = true;
+        },
+        captureFrame: async (captureIndex) => {
+          pendingStepFlush = false; // THIS frame's single beginFrame is the screenshot one
+          const data = await beginFrame(true);
+          if (!data) {
+            throw new CaptureStageError('screenshot', `beginFrame returned no screenshotData at frame ${captureIndex}`);
+          }
+          const name = `frame-${String(captureIndex).padStart(6, '0')}.jpg`;
+          await writeFile(join(framesDir, name), Buffer.from(data, 'base64'));
+          if (toSample.has(captureIndex)) {
+            const raw = await evalInPage(samplerExpression(gridN), { stage: 'sanity_gate' });
+            const parsed = JSON.parse(String(raw ?? 'null')) as FrameSample | null;
+            if (parsed) samples.push(parsed);
+          }
+        },
+        now: () => Date.now(),
+        yieldToEventLoop: async () => {
+          await evalInPage(
+            'new Promise((resolve) => { const c = globalThis.__SIM_CLOCK__; (c && c.realSetTimeout ? c.realSetTimeout : setTimeout)(resolve, 0); })',
+            { awaitPromise: true, stage: 'bridge_ready' },
+          );
+        },
+        log,
+      };
+
+      let run;
+      try {
+        run = await runCaptureHandshake(deps, {
+          url: spec.servedSimUrl,
+          sectionId: spec.sectionId,
+          simpleUi: spec.simpleUi,
+          autoScript: spec.autoScript,
+          uiHide: spec.uiHide,
+          fps: spec.fps,
+          durationSec: spec.durationSec,
+          warmupFrames: DEFAULT_WARMUP_FRAMES,
+        });
+      } catch (err) {
+        if (err instanceof CaptureTimeoutError) {
+          const timeoutStage: CaptureStage = err.message.startsWith('SIM_READY')
+            ? 'bridge_ready'
+            : err.message.startsWith('SIM_PAINTED')
+              ? 'paint_ready'
+              : 'start_script';
+          throw new CaptureStageError(timeoutStage, err.message);
+        }
+        throw err;
+      }
+
+      const webgl = await stage('sanity_gate', async () => {
+        const raw = await evalInPage(
+          `JSON.stringify((() => { const c = globalThis.__SIM_CAPTURE__; const r = c && c.webgl;
+             return r ? { attempted: !!r.attempted, ok: !!r.ok, renderer: String(r.renderer || '') }
+                      : { attempted: false, ok: false, renderer: '' }; })())`,
+          { stage: 'sanity_gate' },
+        );
+        return JSON.parse(String(raw)) as { attempted: boolean; ok: boolean; renderer: string };
+      });
+
+      const gate = evaluateSanityGate({ simPainted: run.sawPainted, webgl, frames: samples });
+      log(`gate ${gate.gate}${gate.reason ? `: ${gate.reason}` : ''} (renderer="${webgl.renderer}")`);
+
+      return {
+        framesDir,
+        frameCount: run.frameCount,
+        rendererString: webgl.renderer,
+        gate: gate.gate,
+        reason: gate.reason,
+      };
+    } catch (err) {
+      // Partial frames from a FAILED capture are worthless and must not linger on the tmpfs.
+      await rm(jobDir, { recursive: true, force: true }).catch(() => {});
+      throw err;
+    } finally {
+      await handle.kill().catch(() => {});
+      // On success the frames dir must OUTLIVE this call (the adapter relocates it); the profile
+      // must not. (On failure the whole jobDir is already gone — this rm is a no-op.)
+      await rm(profileDir, { recursive: true, force: true }).catch(() => {});
+    }
   }
+}
+
+/**
+ * The plugin-contract factory `isolation/main.ts` loads via `EXPORT_CAPTURE_BACKEND_MODULE` —
+ * the export whose ABSENCE was the v0.1.22 incident ("exports neither createBackend() nor a
+ * default backend", every capture container exiting 1 before any capture code ran).
+ */
+export function createBackend(): SimCaptureBackend {
+  return new BeginFrameBackend();
 }

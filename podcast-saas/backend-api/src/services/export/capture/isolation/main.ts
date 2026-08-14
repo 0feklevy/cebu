@@ -20,6 +20,7 @@
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import type { RendererIdentity } from '../../types.js';
 
@@ -49,7 +50,24 @@ function rendererIdentityFromEnv(spec: ContainerCaptureSpec): RendererIdentity {
   };
 }
 
-async function loadBackend(): Promise<SimCaptureBackend> {
+/** The instance half of the contract: whatever the module yielded must BE a capture backend. */
+function assertBackendInstance(candidate: unknown, moduleSpecifier: string): SimCaptureBackend {
+  const backend = candidate as SimCaptureBackend | null | undefined;
+  if (!backend || typeof backend.captureSection !== 'function' || typeof backend.isAvailable !== 'function') {
+    throw new Error(
+      `backend module ${moduleSpecifier}: the factory returned ${backend === null ? 'null' : typeof backend}` +
+        ' without captureSection()/isAvailable() — not a SimCaptureBackend. The v0.1.22 lesson: fail HERE,' +
+        ' at load, never layers later inside a capture.',
+    );
+  }
+  return backend;
+}
+
+/**
+ * Exported so the unit suite can exercise the EXACT loader the container runs — the v0.1.22
+ * incident was this function meeting the configured module for the first time in production.
+ */
+export async function loadBackend(): Promise<SimCaptureBackend> {
   const moduleSpecifier = process.env.EXPORT_CAPTURE_BACKEND_MODULE;
   if (!moduleSpecifier) {
     throw new Error('EXPORT_CAPTURE_BACKEND_MODULE is not set — the container has no browser backend to load');
@@ -57,8 +75,24 @@ async function loadBackend(): Promise<SimCaptureBackend> {
   // Variable specifier ⇒ resolved at runtime, not statically bound to the sibling's files.
   const mod = (await import(moduleSpecifier)) as BackendModule;
   const factory = mod.createBackend ?? mod.default;
-  if (typeof factory === 'function') return (factory as () => SimCaptureBackend)();
-  if (factory && typeof (factory as SimCaptureBackend).captureSection === 'function') return factory as SimCaptureBackend;
+  if (typeof factory === 'function') {
+    let produced: unknown;
+    try {
+      produced = (factory as () => SimCaptureBackend)();
+    } catch (err) {
+      // A class default export (constructor without `new`) or a throwing factory lands here.
+      throw new Error(
+        `backend module ${moduleSpecifier}: invoking the factory failed — ` +
+          `${err instanceof Error ? err.message : String(err)}. If the module default-exports a class, ` +
+          'export createBackend() (or an instance) instead.',
+        { cause: err },
+      );
+    }
+    return assertBackendInstance(produced, moduleSpecifier);
+  }
+  if (factory && typeof (factory as SimCaptureBackend).captureSection === 'function') {
+    return assertBackendInstance(factory, moduleSpecifier);
+  }
   throw new Error(`backend module ${moduleSpecifier} exports neither createBackend() nor a default backend`);
 }
 
@@ -114,4 +148,8 @@ async function main(): Promise<void> {
   }
 }
 
-void main();
+// Run ONLY as the container entrypoint (`node …/main.js`) — importing this module (the unit suite
+// does, to reach loadBackend) must never execute a capture attempt or set the exit code.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  void main();
+}

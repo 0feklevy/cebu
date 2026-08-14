@@ -254,14 +254,29 @@ docker run --rm \
 # → CHROME_EXIT=0, FLOWVID_SANDBOX=PASS
 ```
 
-This exact experiment is scripted as `deploy/scripts/export-worker-smoke.sh <image> [mechanism]`
-— run it after EVERY image build. `test -x`/`--version` are NOT sufficient: the v0.1.21 image
-passed both while its `COPY`-dereferenced standalone binary died at first launch with
-`Invalid file descriptor to ICU data received.` (exit 133), because Chrome resolves its runtime
-data (`icudtl.dat`, `.pak` resources, the v8 snapshot, `locales/`, `libEGL`/`libGLESv2`)
-relative to the executable and the distribution had been left behind. Only a real render proves
-packaging + sandbox together. (Fontconfig may log `No writable cache directories` unless
-HOME/XDG point below `/tmp`; the image sets that, and the warning is non-fatal either way.)
+This experiment is Stage A of `deploy/scripts/export-worker-smoke.sh <image> [mechanism]` — run
+the WHOLE script after EVERY image build. Each false-pass taught it a stage:
+
+- **Stage A — Chrome cage render.** `test -x`/`--version` are NOT sufficient: the v0.1.21 image
+  passed both while its `COPY`-dereferenced standalone binary died at first launch with
+  `Invalid file descriptor to ICU data received.` (exit 133) — Chrome resolves its runtime data
+  (`icudtl.dat`, `.pak`, the v8 snapshot, `locales/`, `libEGL`/`libGLESv2`) relative to the
+  executable. Only a real render proves packaging + sandbox together.
+- **Stage B — backend module contract.** Stage A alone is ALSO not sufficient: the v0.1.22 image
+  rendered perfectly while `EXPORT_CAPTURE_BACKEND_MODULE` named a module with no
+  `createBackend()`/default export — every real capture container exited 1 before any capture
+  code ran. Stage B dynamic-imports the module named by the image's OWN env (no duplicated path
+  to drift) and requires a usable `SimCaptureBackend` that reports `available: true`.
+- **Stage C — entrypoint capture.** The real `node …/isolation/main.js` against a deterministic,
+  NON-static fixture sim (frame counter + hue sweep, minimal v2 bridge): loopback serving, bridge
+  handshake, beginFrame pump, 60 frames on `/output`, `result.json` with `gate: passed` — and the
+  FIRST and LAST frames must differ byte-wise (the dead-compositor signal; the check does not
+  claim all 60 are pairwise distinct). Same cage, same caps, no relaxation.
+  **Status: the stage is ADDED, not yet executed** — no image built from this branch has been run
+  on the host. It becomes evidence only once a real run prints `FLOWVID_SMOKE=PASS`.
+
+(Fontconfig may log `No writable cache directories` unless HOME/XDG point below `/tmp`; the image
+sets that, and the warning is non-fatal either way.)
 
 ### C1 — `--network none` blocks egress WHILE `127.0.0.1` still serves (the crux)
 
@@ -426,6 +441,9 @@ Deployment shape (single VM, `deploy/docker-compose.capture.yml` overlay):
 | Trusted-side caller (`containerCaptureProvider`): staging, verdict pass-through, env gate | **Verified locally** (unit suite, fake boundary) |
 | Runtime packaging: binary stays inside its CfT distribution (icudtl.dat & siblings) | **VERIFIED on Ubuntu 26.04** (§7a; v0.1.21 standalone-binary failure reproduced + fixed) |
 | Chrome sandbox initialises in the full jail (sys-admin = SYS_ADMIN + SYS_CHROOT) | **VERIFIED on Ubuntu 26.04** (§7a; render smoke `FLOWVID_SANDBOX=PASS`, exit 0) |
+| Backend plugin contract (`createBackend` ↔ `loadBackend`, instance validated) | **Unit-pinned** (contract test through the REAL loader; the v0.1.22 mismatch reproduces red on the old tree) |
+| beginFrame transport (CDP pipe) + real `captureSection` composition | **Verified over a scripted transport** (unit suite); REAL-Chrome execution = smoke Stage C, **PENDING on the host** |
+| Non-zero-exit diagnostics (failed result.json surfaced, bounded sanitized stderr) | **Unit-pinned** (stub docker binary; exit-1-with-ok-result is a refused contradiction) |
 | userns mechanism on the production host | **BLOCKED by host AppArmor** (`apparmor_restrict_unprivileged_userns=1`) — use `sys-admin` there |
 | `--network none` blocks egress while loopback serves | **PENDING** (§7, C1) — cannot run on macOS |
 | Read-only rootfs, non-root, quotas (beyond what §7a's jail exercised) | **PENDING** (§7, C2–C4) |
