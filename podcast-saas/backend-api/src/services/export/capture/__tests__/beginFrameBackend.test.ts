@@ -15,6 +15,7 @@ import {
   buildBeginFrameSchedule,
   assertBeginFrameRunnable,
   BeginFrameBackend,
+  createBackend,
   DETERMINISTIC_MODE_SWITCHES,
   GL_SWITCHES,
 } from '../beginFrameBackend.js';
@@ -94,10 +95,10 @@ describe('CDP message shapes', () => {
   });
 });
 
-describe('host refusal (honest — this cannot capture here)', () => {
+describe('host refusal (honest — where this cannot capture, it says so)', () => {
   it('assertBeginFrameRunnable throws the measured macOS error on darwin', () => {
     try {
-      assertBeginFrameRunnable('darwin');
+      assertBeginFrameRunnable('darwin', '/opt/chrome-headless-shell');
       throw new Error('expected a throw');
     } catch (err) {
       expect(err).toBeInstanceOf(CaptureUnavailable);
@@ -105,14 +106,30 @@ describe('host refusal (honest — this cannot capture here)', () => {
     }
   });
 
-  it('assertBeginFrameRunnable refuses on other hosts too (transport is container-wired)', () => {
-    expect(() => assertBeginFrameRunnable('linux')).toThrow(CaptureUnavailable);
+  it('refuses on Linux when no pinned browser is named (outside the worker image)', () => {
+    // '' is the explicit "not named" case; `undefined` would fall through to the env default,
+    // which is exactly the environment dependence these tests must not have.
+    expect(() => assertBeginFrameRunnable('linux', '')).toThrow(CaptureUnavailable);
+    expect(() => assertBeginFrameRunnable('linux', '')).toThrow(/CHROME_HEADLESS_SHELL_PATH/);
   });
 
-  it('the backend is not available and captureSection throws CaptureUnavailable', async () => {
-    const backend = new BeginFrameBackend();
-    expect(backend.name).toBe('begin-frame');
-    expect(await backend.isAvailable()).toBe(false);
+  it('ACCEPTS Linux + a named browser — the container case (the transport now exists)', () => {
+    expect(assertBeginFrameRunnable('linux', '/opt/chrome-headless-shell')).toBe('/opt/chrome-headless-shell');
+  });
+
+  it('isAvailable is false on macOS and false without a browser, INDEPENDENT of this host env', async () => {
+    // Explicit platform + executablePath: the verdict must not depend on whether the machine
+    // running the suite happens to export CHROME_HEADLESS_SHELL_PATH.
+    expect(new BeginFrameBackend().name).toBe('begin-frame');
+    expect(await new BeginFrameBackend({ platform: 'darwin', executablePath: '/opt/x' }).isAvailable()).toBe(false);
+    expect(await new BeginFrameBackend({ platform: 'linux', executablePath: '' }).isAvailable()).toBe(false);
+    expect(
+      await new BeginFrameBackend({ platform: 'linux', executablePath: '/nonexistent-browser' }).isAvailable(),
+    ).toBe(false);
+  });
+
+  it('captureSection on macOS refuses with CaptureUnavailable (the poster-fallback signal)', async () => {
+    const backend = new BeginFrameBackend({ platform: 'darwin', executablePath: '/opt/x' });
     await expect(
       backend.captureSection({
         servedSimUrl: 'http://127.0.0.1:5/x?section=a&v=1#simboot=%7B%7D',
@@ -128,5 +145,12 @@ describe('host refusal (honest — this cannot capture here)', () => {
         posterKey: 'poster/a',
       }),
     ).rejects.toBeInstanceOf(CaptureUnavailable);
+  });
+
+  it('createBackend() yields a usable instance — the export the v0.1.22 image lacked', async () => {
+    const backend = createBackend();
+    expect(typeof backend.captureSection).toBe('function');
+    expect(typeof backend.isAvailable).toBe('function');
+    expect(backend.name).toBe('begin-frame');
   });
 });

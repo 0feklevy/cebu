@@ -36,6 +36,8 @@ import { dirname, join } from 'node:path';
 
 import type { RendererIdentity, SimCaptureWindow } from '../../types.js';
 
+import { sanitizeUntrustedText } from '../captureTypes.js';
+
 import { buildContainerRunArgv, type ContainerRunSpec } from './containerRunArgs.js';
 
 /** The current spec/result wire version. Bump on any breaking shape change. */
@@ -297,15 +299,24 @@ export function parseCaptureResult(raw: unknown): ContainerCaptureResult {
     framesDir: (o.framesDir as string | null) ?? null,
     clipPath: (o.clipPath as string | null) ?? null,
     frameCount: o.frameCount,
-    rendererString: o.rendererString,
+    // Free-text fields cross the trust boundary: the container is untrusted and these end up in
+    // logs, the job row, and the user-visible warning list. Strip control characters and cap the
+    // length HERE, once, so no caller has to remember to.
+    rendererString: sanitizeUntrustedText(o.rendererString, { maxBytes: 256, maxLines: 1 }),
     gate: o.gate,
-    reason: typeof o.reason === 'string' ? o.reason : null,
+    reason: typeof o.reason === 'string' ? sanitizeUntrustedText(o.reason, { maxBytes: 1_024, maxLines: 12 }) : null,
     rendererIdentity: o.rendererIdentity,
     failure:
       o.failure && typeof o.failure === 'object'
         ? {
-            code: String((o.failure as Record<string, unknown>).code ?? 'unknown'),
-            detail: String((o.failure as Record<string, unknown>).detail ?? ''),
+            code: sanitizeUntrustedText(String((o.failure as Record<string, unknown>).code ?? 'unknown'), {
+              maxBytes: 64,
+              maxLines: 1,
+            }),
+            detail: sanitizeUntrustedText(String((o.failure as Record<string, unknown>).detail ?? ''), {
+              maxBytes: 2_048,
+              maxLines: 40,
+            }),
           }
         : null,
   };
@@ -422,8 +433,30 @@ export class DockerCaptureBoundary implements CaptureJobBoundary {
       seccompProfilePath: this.config.seccompProfilePath,
     });
 
-    await this.spawnDocker(dockerBin, argv, containerName, spec.wallClockTimeoutSec, signal);
-    return readCaptureResult(io.outputDir);
+    const exit = await this.spawnDocker(dockerBin, argv, containerName, spec.wallClockTimeoutSec, signal);
+    if (exit.code === 0) return readCaptureResult(io.outputDir);
+
+    // Non-zero exit. The entrypoint promises a `failed` result.json for ANY failure — honour that
+    // promise on the trusted side instead of discarding it (the v0.1.22 incident hid its root
+    // cause behind a bare "exited 1" for days). SEMANTIC RULE: exit≠0 may surface as a CLASSIFIED
+    // FAILURE, never as a success — an `ok` result next to a non-zero exit is itself an error.
+    let onDisk: ContainerCaptureResult | null;
+    try {
+      onDisk = await readCaptureResult(io.outputDir);
+    } catch {
+      onDisk = null; // no readable artifact — fall through to the stderr-carrying error
+    }
+    if (onDisk && onDisk.status === 'failed') return onDisk;
+    if (onDisk) {
+      throw new Error(
+        `export capture container exited ${exit.code ?? 'null'} but result.json claims status "${onDisk.status}" — ` +
+          `refusing the contradiction${exit.stderrTail ? `; stderr tail: ${exit.stderrTail}` : ''}`,
+      );
+    }
+    throw new Error(
+      `export capture container exited ${exit.code ?? 'null'} with no readable result.json` +
+        (exit.stderrTail ? `; stderr tail: ${exit.stderrTail}` : ''),
+    );
   }
 
   private spawnDocker(
@@ -432,9 +465,18 @@ export class DockerCaptureBoundary implements CaptureJobBoundary {
     containerName: string,
     wallClockTimeoutSec: number,
     signal: AbortSignal,
-  ): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
+  ): Promise<{ code: number | null; stderrTail: string }> {
+    return new Promise<{ code: number | null; stderrTail: string }>((resolve, reject) => {
       const proc = spawn(dockerBin, argv, { stdio: ['ignore', 'pipe', 'pipe'] });
+
+      // Bounded, sanitized stderr tail. The stream mixes docker's own errors with the UNTRUSTED
+      // sim's output (via the entrypoint's console.error), so it is diagnostic material, not log
+      // fodder: keep only the last STDERR_TAIL_BYTES, strip control characters at use time, and
+      // never persist it anywhere beyond the thrown error's message.
+      let stderrAcc = '';
+      proc.stderr?.on('data', (d: Buffer) => {
+        stderrAcc = (stderrAcc + d.toString('utf8')).slice(-STDERR_TAIL_BYTES);
+      });
 
       // The hard wall-clock kill the plan requires: docker cannot SIGKILL itself on a wall clock, so
       // the orchestrator does it. `docker kill --signal=KILL` terminates the whole container (and
@@ -469,11 +511,25 @@ export class DockerCaptureBoundary implements CaptureJobBoundary {
       });
       proc.on('close', (code) => {
         cleanup();
-        if (code === 0) resolve();
-        else reject(new Error(`export capture container exited ${code ?? 'null'}`));
+        resolve({ code, stderrTail: sanitizeStderrTail(stderrAcc) });
       });
     });
   }
+}
+
+/** Cap on the raw stderr kept in memory while the container runs. */
+const STDERR_TAIL_BYTES = 4_096;
+/** Cap on the sanitized tail that may ride inside an error message (untrusted content!). */
+const STDERR_MESSAGE_BYTES = 2_048;
+const STDERR_MAX_LINES = 40;
+
+/**
+ * Make an untrusted stderr tail safe to put in ONE error message: strip control characters
+ * (terminal-escape smuggling), collapse to the last few lines, and hard-cap the bytes. Exported
+ * so the caps themselves are pinned by tests.
+ */
+export function sanitizeStderrTail(raw: string): string {
+  return sanitizeUntrustedText(raw, { maxBytes: STDERR_MESSAGE_BYTES, maxLines: STDERR_MAX_LINES });
 }
 
 /** Best-effort removal of a per-section work dir pair. Used by the orchestrator in a finally. */

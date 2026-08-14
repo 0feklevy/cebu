@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -105,12 +105,12 @@ describe('export-worker.Dockerfile — runner stage keeps the binary inside its 
 });
 
 /**
- * The REAL smoke (deploy/scripts/export-worker-smoke.sh) launches Chrome in the production jail
- * and requires a rendered marker — `test -x`/`--version` already false-passed once. The script
- * cannot run here (no docker on dev/CI), so its CONTRACT is pinned: the proven capability pair,
- * the full jail, the render assertion, and the absent forbidden flags.
+ * The REAL smoke (deploy/scripts/export-worker-smoke.sh) — three stages, each in the production
+ * jail. The script cannot run here (no docker on dev/CI), so its CONTRACT is pinned: the proven
+ * capability pair, the full jail, and each stage's load-bearing assertion. Stage A alone
+ * false-passed v0.1.22 (Chrome rendered while the backend module was unloadable), hence B and C.
  */
-describe('export-worker-smoke.sh — the render smoke contract', () => {
+describe('export-worker-smoke.sh — the three-stage smoke contract', () => {
   const SMOKE = join(
     dirname(fileURLToPath(import.meta.url)),
     '../../../../../..',
@@ -130,20 +130,62 @@ describe('export-worker-smoke.sh — the render smoke contract', () => {
       '--tmpfs /tmp:rw,nosuid,nodev,noexec',
       '--security-opt no-new-privileges:true',
       '--pids-limit 256',
-      '--memory 2048m --memory-swap 2048m --cpus 2',
+      '--memory 2048m',
+      '--memory-swap 2048m',
+      '--cpus 2',
+      // The same cage production builds, including the PID-1 init and the graceful window.
+      '--init',
+      '--stop-timeout 10',
     ]) {
       expect(smoke).toContain(flag);
     }
   });
 
-  it('actually RENDERS a marker via dump-dom and fails without it — not test -x, not --version', () => {
+  it('Stage A renders a marker via dump-dom — not test -x, not --version', () => {
     expect(smoke).toContain('--dump-dom');
     expect(smoke).toContain('FLOWVID-SANDBOX-OK');
     expect(smoke).toMatch(/grep -q "\$MARKER"/);
   });
 
+  it("Stage B loads the backend through the IMAGE'S OWN env var — no duplicated path to drift", () => {
+    expect(smoke).toContain('import(process.env.EXPORT_CAPTURE_BACKEND_MODULE)');
+    expect(smoke).toContain('BACKEND-CONTRACT-OK');
+    expect(smoke).toContain("captureSection");
+    expect(smoke).toContain('available: true'); // the backend must also report runnable in its own image
+  });
+
+  it('Stage C runs the REAL entrypoint on a NON-static fixture and demands distinct frames + a passed gate', () => {
+    expect(smoke).toContain('SIM_READY');
+    expect(smoke).toContain('SIM_PAINTED');
+    expect(smoke).toContain('dst=/input,ro');
+    expect(smoke).toContain('dst=/output');
+    expect(smoke).toContain('"gate": *"passed"');
+    expect(smoke).toContain('"frameCount": *60');
+    expect(smoke).toMatch(/cmp -s .*frame-000000\.jpg.*frame-000059\.jpg/);
+    // The fixture animates (frame counter + hue) so byte-identical frames mean a dead compositor.
+    expect(smoke).toContain("'FRAME ' + frame");
+  });
+
   it('never contains --no-sandbox or --privileged, even as an option', () => {
     expect(smoke).not.toMatch(/--no-sandbox/);
     expect(smoke).not.toMatch(/--privileged/);
+  });
+});
+
+describe('EXPORT_CAPTURE_BACKEND_MODULE ↔ the source tree (the misconfigured-path mutation)', () => {
+  it('the Dockerfile points at a dist path whose SOURCE module exists', () => {
+    const match = /ENV EXPORT_CAPTURE_BACKEND_MODULE=(\S+)/.exec(text);
+    expect(match, 'Dockerfile must set EXPORT_CAPTURE_BACKEND_MODULE').toBeTruthy();
+    const distPath = (match as RegExpExecArray)[1];
+    expect(distPath).toMatch(/^\/app\/backend-api\/dist\/.+\.js$/);
+    const srcRelative = distPath
+      .replace('/app/backend-api/dist/', '')
+      .replace(/\.js$/, '.ts');
+    const srcPath = join(
+      dirname(fileURLToPath(import.meta.url)),
+      '../../../../..', // …/backend-api/src
+      srcRelative,
+    );
+    expect(existsSync(srcPath), `source module ${srcRelative} must exist for the baked dist path`).toBe(true);
   });
 });

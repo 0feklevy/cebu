@@ -149,3 +149,53 @@ export interface SimCaptureBackend {
    */
   captureSection(spec: CaptureSpec): Promise<CaptureResult>;
 }
+
+/**
+ * Where in the capture pipeline a failure happened. A one-word classification that turns the next
+ * production incident from "container exited 1" into "failed at cdp_connect: …" — the v0.1.22
+ * root cause took `docker events` + live log attachment to find precisely because nothing carried
+ * this. Small on purpose: a label on errors, not a telemetry framework.
+ */
+export type CaptureStage =
+  | 'backend_load'
+  | 'chrome_launch'
+  | 'cdp_connect'
+  | 'navigation'
+  | 'bridge_ready'
+  | 'start_script'
+  | 'paint_ready'
+  | 'begin_frame'
+  | 'screenshot'
+  | 'sanity_gate'
+  | 'result_write';
+
+/** An error that knows which pipeline stage produced it. `message` already carries the stage. */
+export class CaptureStageError extends Error {
+  constructor(
+    readonly stage: CaptureStage,
+    detail: string,
+  ) {
+    super(`capture stage ${stage}: ${detail}`);
+    this.name = 'CaptureStageError';
+  }
+}
+
+/**
+ * Make UNTRUSTED text (sim-controlled stderr, container-reported reasons) safe to carry in one
+ * error message or result field: strip C0/C1 control characters and the Unicode line/paragraph
+ * separators (terminal-escape and log-injection smuggling), cap the LINE count, keep the TAIL of
+ * the bytes (the newest evidence wins). Shared by the transport and the docker boundary so the
+ * caps cannot drift apart.
+ */
+export function sanitizeUntrustedText(
+  raw: string,
+  opts: { maxBytes?: number; maxLines?: number } = {},
+): string {
+  const maxBytes = opts.maxBytes ?? 2_048;
+  const maxLines = opts.maxLines ?? 40;
+  // eslint-disable-next-line no-control-regex -- stripping control characters IS the point
+  const stripped = raw.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u2028\u2029]/g, '');
+  const lines = stripped.split('\n').filter((l) => l.trim().length > 0);
+  const tail = lines.slice(-maxLines).join('\n');
+  return tail.length > maxBytes ? `…${tail.slice(-maxBytes)}` : tail;
+}
