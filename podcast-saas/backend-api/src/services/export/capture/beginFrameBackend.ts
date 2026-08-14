@@ -43,6 +43,7 @@ import { launchHeadlessShell, type CdpEvent, type HeadlessShellHandle } from './
 import { CaptureTimeoutError, runCaptureHandshake, type DriverDeps } from './driver.js';
 import { buildInitScript } from './injection.js';
 import { evaluateSanityGate, type FrameSample } from './sanityGate.js';
+import { PageAudit } from './pageAudit.js';
 import {
   CaptureStageError,
   CaptureUnavailable,
@@ -317,6 +318,10 @@ export class BeginFrameBackend implements SimCaptureBackend {
       this.opts.launch ? (this.opts.executablePath ?? 'injected-transport')
       : assertBeginFrameRunnable(this.opts.platform ?? process.platform, this.opts.executablePath ?? process.env.CHROME_HEADLESS_SHELL_PATH);
 
+    // Bounded record of what the page did — read only when the gate fails, to name the cause.
+    const audit = new PageAudit();
+    const pendingRequests = new Map<string, string>();
+
     const base = this.opts.workDir ?? tmpdir();
     const jobDir = await mkdtemp(join(base, `beginframe-${spec.sectionId.slice(0, 8)}-`));
     const framesDir = join(jobDir, 'frames');
@@ -364,6 +369,31 @@ export class BeginFrameBackend implements SimCaptureBackend {
         const sid = attached.sessionId as string;
         await cdp.send('Page.enable', {}, sid);
         await cdp.send('Runtime.enable', {}, sid);
+        // Listen for what the page actually does. The v0.1.26 incident's cause — a module request
+        // to a CDN the container cannot reach — was visible in exactly these events the whole
+        // time, and nothing was subscribed. Every payload is untrusted and is bounded/sanitised
+        // by `PageAudit` before it can reach a log.
+        await cdp.send('Network.enable', {}, sid);
+        cdp.onEvent((event) => {
+          if (event.sessionId !== sid) return;
+          if (event.method === 'Network.loadingFailed') {
+            const url = pendingRequests.get(String(event.params.requestId ?? '')) ?? '';
+            audit.recordFailedRequest(url, String(event.params.errorText ?? 'load failed'));
+          } else if (event.method === 'Network.requestWillBeSent') {
+            const id = String(event.params.requestId ?? '');
+            const req = event.params.request as { url?: string } | undefined;
+            if (id && req?.url) {
+              if (pendingRequests.size > 512) pendingRequests.clear(); // bounded, never a leak
+              pendingRequests.set(id, req.url);
+            }
+          } else if (event.method === 'Runtime.exceptionThrown') {
+            const details = event.params.exceptionDetails as { text?: string; exception?: { description?: string } } | undefined;
+            audit.recordException(details?.exception?.description ?? details?.text ?? 'uncaught exception');
+          } else if (event.method === 'Runtime.consoleAPICalled' && event.params.type === 'error') {
+            const args = (event.params.args as Array<{ value?: unknown; description?: string }> | undefined) ?? [];
+            audit.recordConsoleError(args.map((a) => String(a.description ?? a.value ?? '')).join(' '));
+          }
+        });
         const init = buildAddInitScriptParams(
           buildInitScript({ fps: spec.fps, configHash: spec.configHash, epochMs: DEFAULT_FRAME_EPOCH_MS }),
         );
@@ -538,12 +568,22 @@ export class BeginFrameBackend implements SimCaptureBackend {
       const gate = evaluateSanityGate({ simPainted: run.sawPainted, webgl, frames: samples });
       log(`gate ${gate.gate}${gate.reason ? `: ${gate.reason}` : ''} (renderer="${webgl.renderer}")`);
 
+      // A failed gate reports the SYMPTOM ("uniform canvas"). The audit knows the CAUSE when the
+      // page left evidence — a request that escaped loopback, a 404, an uncaught exception — so
+      // the reason names it. This is the difference between the next incident taking an hour and
+      // taking a day.
+      const auditSummary = gate.gate === 'failed' ? audit.summarise() : null;
+      const reason =
+        gate.gate === 'failed'
+          ? `${audit.classify(gate.reason)}: ${gate.reason ?? 'sanity gate failed'}${auditSummary ? `; ${auditSummary}` : ''}`
+          : gate.reason;
+
       return {
         framesDir,
         frameCount: run.frameCount,
         rendererString: webgl.renderer,
         gate: gate.gate,
-        reason: gate.reason,
+        reason,
       };
     } catch (err) {
       // Partial frames from a FAILED capture are worthless and must not linger on the tmpfs.

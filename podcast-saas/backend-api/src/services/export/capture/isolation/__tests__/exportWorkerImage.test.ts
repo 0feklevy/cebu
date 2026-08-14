@@ -191,6 +191,43 @@ describe('export-worker-smoke.sh — the three-stage smoke contract', () => {
     expect(d).toMatch(/docker run --rm "\$\{CAGE\[@\]\}" "\$\{CHROME_CAPS\[@\]\}"[\s\S]{0,200}dst=\/input,ro/);
   });
 
+  /** The Stage E block only. */
+  const stageE = (): string => {
+    const at = smoke.indexOf('STAGE E:');
+    expect(at, 'the smoke script must contain a Stage E').toBeGreaterThan(-1);
+    return smoke.slice(at);
+  };
+
+  it('Stage E is the ONLY stage that can fail the v0.1.26 dependency bug', () => {
+    const e = stageE();
+    // The fixture declares the REAL production dependency shape…
+    expect(e).toContain('cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js');
+    expect(e).toContain('"three/addons/"');
+    // …resolved by the REAL trusted registry inside the image (not a hand-copied vendor tree)…
+    expect(e).toContain('loadTrustedRegistry');
+    expect(e).toContain('materialise');
+    expect(e).toContain('planCaptureDependencies');
+    expect(e).toContain('rewriteEntryHtmlForCapture');
+    // …and the CDN must be gone before Chrome ever sees the document.
+    expect(e).toMatch(/grep -q 'cdn\.jsdelivr\.net' "\$IN_E\/scene\/index\.html" && \{ echo "STAGE-E: FAIL/);
+    // A real WebGLRenderer and a real addon from the PREFIX mapping.
+    expect(e).toContain('new THREE.WebGLRenderer');
+    expect(e).toContain("from 'three/addons/controls/OrbitControls.js'");
+    // The empty renderer string WAS the v0.1.26 signature: it must now be a hard failure.
+    expect(e).toMatch(/rendererString": \*""'.*FAIL — renderer string is empty/s);
+    // Same gate demands as C and D, same cage.
+    expect(e).toContain('STAGE-E: FAIL — sanity gate did not pass');
+    expect(e).toMatch(/cmp -s "\$OUT_E\/frames\/frame-000000\.jpg" "\$OUT_E\/frames\/frame-000059\.jpg"/);
+    expect(e).toMatch(/docker run --rm "\$\{CAGE\[@\]\}" "\$\{CHROME_CAPS\[@\]\}"[\s\S]{0,240}dst=\/input,ro/);
+  });
+
+  it('every stage runs with --network none — the closure never becomes an excuse to open the cage', () => {
+    // The whole point of vendoring is that isolation stays absolute. If a stage ever needed the
+    // network to pass, the dependency closure would be broken and this would catch it.
+    expect(smoke).not.toMatch(/--network\s+(bridge|host)/);
+    expect((smoke.match(/--network none/g) ?? []).length).toBeGreaterThanOrEqual(3);
+  });
+
   it('never contains --no-sandbox or --privileged, even as an option', () => {
     expect(smoke).not.toMatch(/--no-sandbox/);
     expect(smoke).not.toMatch(/--privileged/);

@@ -1,0 +1,92 @@
+{
+  "registryVersion": 1,
+  "generatedBy": "build-pack.mjs",
+  "packs": [
+    {
+      "provider": "npm",
+      "name": "three",
+      "version": "0.169.0",
+      "satisfies": [
+        "https://cdn.jsdelivr.net/npm/three@0.169.0/",
+        "https://unpkg.com/three@0.169.0/",
+        "https://esm.sh/three@0.169.0/"
+      ],
+      "exact": {
+        "three": "build/three.module.js"
+      },
+      "prefix": {
+        "three/addons/": "examples/jsm/"
+      },
+      "files": {
+        "build/three.module.js": {
+          "bytes": 1304820,
+          "sha256": "0a3368c165eea773490aec7b77c22de70e3eac288503409256fdbf4d12578416"
+        },
+        "examples/jsm/controls/OrbitControls.js": {
+          "bytes": 32134,
+          "sha256": "80efaadea4f8a636a65fb0bd08bfef62f3d93a0bb94e2e7500f23176c5c07f4e"
+        },
+        "examples/jsm/loaders/GLTFLoader.js": {
+          "bytes": 110029,
+          "sha256": "6f1719dcc6a179d30273dfb0de07a8c898a7981f7b08e600b446387f5967371f"
+        },
+        "examples/jsm/objects/Sky.js": {
+          "bytes": 6819,
+          "sha256": "eacd17d5debec3b909d1208304d70024a59c38c58b6533fcd4711f8a6a0b63bc"
+        },
+        "examples/jsm/postprocessing/BokehPass.js": {
+          "bytes": 3394,
+          "sha256": "581ad606035764f92a6c5124980ddeb78c09cb076d2bdeb6c760ca9d0a8332ec"
+        },
+        "examples/jsm/postprocessing/EffectComposer.js": {
+          "bytes": 4651,
+          "sha256": "d234e578618fa816955ebdc059c049c577e203e650e33cf22bde3f232c29e669"
+        },
+        "examples/jsm/postprocessing/MaskPass.js": {
+          "bytes": 2231,
+          "sha256": "328cf7db0da5d9be83ffe39d54b01d5ac1fddf108cc98182ddbb056f5c8b537f"
+        },
+        "examples/jsm/postprocessing/OutputPass.js": {
+          "bytes": 2524,
+          "sha256": "32f879d2179087676631c799857a885586b3cdd13b9731bd3b13f06428bd58b7"
+        },
+        "examples/jsm/postprocessing/Pass.js": {
+          "bytes": 1706,
+          "sha256": "b3c6128340eaa37e40a6a2f1b738e894c855239417d50959759b34a2b5e89f92"
+        },
+        "examples/jsm/postprocessing/RenderPass.js": {
+          "bytes": 1941,
+          "sha256": "6c9b8a539ea16e898f65e4760f14937ef9ea94043bd9842c141e0301f41903e8"
+        },
+        "examples/jsm/postprocessing/ShaderPass.js": {
+          "bytes": 1576,
+          "sha256": "3b28a1ee27e0eb96c0eab137a1f442ccf127a926904eced2d51e125ec44af781"
+        },
+        "examples/jsm/postprocessing/UnrealBloomPass.js": {
+          "bytes": 12410,
+          "sha256": "3bd23a1097af75c7002d0ffc21a6c14f45c4dd701dbaf737030dfc61fb7c64d9"
+        },
+        "examples/jsm/shaders/BokehShader.js": {
+          "bytes": 5769,
+          "sha256": "a6558cc4baf2c372c192828e9fffcf088d22f80291ac72a13a5be6d3b7a18ddc"
+        },
+        "examples/jsm/shaders/CopyShader.js": {
+          "bytes": 571,
+          "sha256": "4e3346db194db56a596cd074e9bdb39fb5eb52040c333e0d29dc4eb1324d3b1d"
+        },
+        "examples/jsm/shaders/LuminosityHighPassShader.js": {
+          "bytes": 1147,
+          "sha256": "9f4866f9abb2d96fd83eec46ba4bf2165b22155a7a37ff425c0f60eba18007cb"
+        },
+        "examples/jsm/shaders/OutputShader.js": {
+          "bytes": 1490,
+          "sha256": "4944cecd49c0d4d1520a4d927bde8a590fd43f041ee913252b9451855a01d0f0"
+        },
+        "examples/jsm/utils/BufferGeometryUtils.js": {
+          "bytes": 31768,
+          "sha256": "c25b7930e570e9ec56173cd3b866ec8d2e10016630db3937efb439daf1cedbf6"
+        }
+      }
+    }
+  ]
+}

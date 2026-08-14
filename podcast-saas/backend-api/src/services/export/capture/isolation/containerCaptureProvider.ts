@@ -50,6 +50,7 @@ import {
   type DockerCaptureBoundaryConfig,
 } from './captureJobBoundary.js';
 import { isStageablePackagePath, parseSimPackageKey, type SimPackageKey } from './simPackageKey.js';
+import { prepareOfflinePackage } from '../dependencies/offlinePackage.js';
 
 // ── servedUrl → storage keys ────────────────────────────────────────────────────────────────────
 
@@ -328,7 +329,13 @@ export class ContainerCaptureProvider implements SimCaptureBackend {
     await mkdir(outputDir, { recursive: true });
 
     try {
-      const files = await fetchPackageFiles(this.storage, source);
+      const stored = await fetchPackageFiles(this.storage, source);
+      // Offline closure: the capture container has no network, so a package whose import map names
+      // a CDN cannot boot in it (v0.1.26 — dead canvas, empty renderer). Trusted pinned packs are
+      // materialised into the COPY and the copy's import map is retargeted at them. Storage is
+      // never written; the stored package is byte-identical before and after an export.
+      const offline = await prepareOfflinePackage(stored, source.entryPath);
+      const files = offline.files;
       await writeCaptureInput(inputDir, files, containerSpec);
       // The staging report the v0.1.23 forensics needed and did not have: which boundary was used,
       // where the entry sits inside it, and whether the package's generated runtime came along.
@@ -340,6 +347,10 @@ export class ContainerCaptureProvider implements SimCaptureBackend {
           packageRoot: source.packageRoot,
           entryPath: source.entryPath,
           hasBridge: files.some((f) => f.path === 'bridge.js'),
+          vendoredPacks: offline.vendoredPacks,
+          vendoredBytes: offline.vendoredBytes,
+          rewrittenSpecifiers: offline.rewrittenSpecifiers,
+          neutralisedUrls: offline.neutralisedUrls,
           image: this.config.image,
         },
         'export(container-capture): input staged — running worker container',

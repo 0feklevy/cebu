@@ -460,3 +460,147 @@ node; do not hand the worker an unrestricted Docker socket. (4) The browser driv
 the paint/WebGL sanity gate are the sibling's territory (`capture/driver.ts`, `injection.ts`,
 `sanityGate.ts`, `captureTypes.ts`); this document covers only the container and the trusted
 orchestration around it.
+
+---
+
+## 10. Offline dependency closure — why the network stays shut
+
+### The incident this section exists for (v0.1.26)
+
+Package-root staging was fixed, the bridge loaded, `SIM_READY` fired — and every capture still
+failed the rendering gate:
+
+```
+gate=failed  reason="every sampled canvas frame is uniform (dead/black canvas under the UI);
+                     the canvas did not change across frames (nothing is animating)"
+rendererString=""      ← nothing ever created a WebGL context
+```
+
+The production packages declare their runtime library as an import map pointing at a CDN:
+
+```json
+{ "imports": {
+    "three":          "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+    "three/addons/":  "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/" } }
+```
+
+and the entry module begins `import * as THREE from 'three'`. The capture child runs
+`--network none`, so the module graph never resolved, the app never booted, no renderer was ever
+constructed, and the canvas stayed exactly as the document left it. **The gate was right.**
+Corpus-wide, not boids-only: `boids-3d`, `pluck-boids` and `pluck-ising` all declare the same
+`three@0.169.0` import map plus a Google Fonts stylesheet.
+
+**The fix is not to open the network.** `--network none` is what makes SSRF impossible by
+construction (§1–2). The fix is to make the package dependency-complete BEFORE the container starts.
+
+### The rule
+
+> A capture-compatible simulation renders from its own immutable bytes plus TRUSTED PINNED
+> dependencies, with zero outbound network. Nothing is fetched at capture time.
+
+### How it works
+
+```
+stored package (never mutated)
+   +  trusted pinned pack        vendor/sim-deps/<name>/<version>/…  (+ SHA-256 per file)
+   ↓  prepareOfflinePackage()    — trusted side, before the container exists
+staged copy
+   /input/
+     bridge.js
+     boids-3d/index.html         ← import map REWRITTEN to /__flowvid_vendor/…
+     boids-3d/src/…
+     __flowvid_vendor/three/0.169.0/build/three.module.js
+     __flowvid_vendor/three/0.169.0/examples/jsm/…   (transitive closure only)
+   ↓
+network-none capture child       — every request is loopback, by construction
+```
+
+Targets are root-absolute (`/__flowvid_vendor/…`), so a nested entry resolves them identically to a
+flat one — entry depth cannot change dependency resolution.
+
+**The stored package is never touched.** No storage write, no DB write, no republish: the viewer
+serves the same bytes before and after an export, and the plan's frozen `servedSimUrl` stays the
+sole capture identity.
+
+### Adding a supported dependency or version
+
+1. add/extend an entry in `PACKS` in `backend-api/vendor/sim-deps/build-pack.mjs` (exact version —
+   never a range, never `latest`);
+2. run `node build-pack.mjs` from that directory (needs network; run it locally, never in prod);
+3. commit the emitted files **and** the regenerated `registry.json`;
+4. every byte is re-verified against `registry.json` at load, so a drifted CDN or a corrupted
+   checkout fails closed instead of capturing a different library under the same identity.
+
+Nothing in the capture provider knows about any particular library. A new dependency is data.
+
+### Fonts and other non-boot external references
+
+An external stylesheet is not boot-critical, but with no network it is a render-blocking request
+that ends in an error — and whether it arrived would otherwise decide the captured layout. Those
+links are **removed from the capture copy** (never from storage) so the local fallback renders
+deterministically. Removed, not commented out: an untrusted `href` containing `-->` would escape an
+HTML comment and inject markup. Known cosmetic consequence: an icon font's ligature text renders as
+its raw glyph name (`pau Pause`). With `simple_ui=true` those panels are hidden anyway.
+
+### Publish-time enforcement
+
+`validateCaptureCompatibility()` answers, before a package is ever exported:
+
+| verdict | meaning |
+|---|---|
+| `compatible` | renders offline from its own bytes + trusted packs |
+| `compatible-with-substitutions` | renders; a non-boot external reference was dropped (an icon font) |
+| `incompatible` | a boot-critical reference nothing trusted satisfies, a missing package file, or a path escaping the root |
+
+Generation prompts are guidance; **this is the authority**.
+
+### Troubleshooting tree
+
+| symptom | look at |
+|---|---|
+| `bridge_ready: SIM_READY: no signal` | package root / `bridge.js` staging (§8) |
+| `external_dependency_blocked: …` | an unsatisfied CDN reference — add a trusted pack, or the package is not capture-compatible |
+| `module_load_failed: …` | a LOOPBACK 404 — a torn package |
+| `runtime_exception: …` | the graph loaded and the app threw — a simulation bug |
+| `uniform_canvas` with a NON-empty renderer | WebGL initialised but nothing animated — sim logic |
+| `uniform_canvas` with an EMPTY renderer | no WebGL context at all — check the dependency closure first |
+
+`PageAudit` attaches bounded, sanitised evidence (query strings stripped): requests that left
+loopback, loopback 404s, uncaught exceptions, console errors.
+
+### Smoke stages
+
+| stage | proves |
+|---|---|
+| A | the pinned Chrome renders inside the hardened cage |
+| B | the image's configured backend module loads and reports available |
+| C | the real entrypoint captures a flat, self-contained fixture |
+| D | the **production topology** — nested entry loading `../bridge.js` |
+| E | the **real dependency shape** — CDN import map → trusted materialisation → rewrite → network-none → real `WebGLRenderer` → 60 frames, first/last differ, **non-empty renderer string** |
+
+Stage E is the only stage that can fail the v0.1.26 bug: C and D draw with canvas 2D and import
+nothing.
+
+### Verifying ONE real section (no export)
+
+```bash
+pnpm --filter backend-api exec tsx src/scripts/capture-one-section.ts \
+  --section-id <uuid>
+```
+
+Read-only. Prints layout / packageRoot / entryPath / file count / `hasBridge` / vendored packs /
+rewritten specifiers / unresolved references, then runs the REAL provider and reports
+`frameCount`, `rendererString`, `gate` and clip bytes. Writes nothing.
+
+### Verifying a package renders offline (no container, no export)
+
+```bash
+pnpm --filter backend-api exec tsx src/scripts/verify-offline-render.ts \
+  --package ~/Desktop/boids-3d --entry index.html --out /tmp/verify-boids --seconds 4
+```
+
+Runs the PRODUCTION dependency closure and the PRODUCTION loopback server against a real Chrome,
+with **every non-loopback request actively failed** (stronger than an absent network: a warm cache
+cannot mask a missing dependency). Reports the WebGL renderer string, external-request attempts,
+and writes frames to inspect. macOS substitutes `Page.captureScreenshot` for `beginFrame`, which
+does not exist there — the container/beginFrame path is Stages A–E on Linux.

@@ -84,8 +84,11 @@ function fakeLaunch(opts: FakeOptions = {}): {
         return { targetId: 'T1' };
       case 'Target.attachToTarget':
         return { sessionId: 'S1' };
+      // `Network.enable` is here because the page audit subscribes to Network events, so a failed
+      // dependency request can be NAMED instead of surfacing only as "uniform canvas" (v0.1.26).
       case 'Page.enable':
       case 'Runtime.enable':
+      case 'Network.enable':
       case 'Page.addScriptToEvaluateOnNewDocument':
         return {};
       case 'Page.navigate':
