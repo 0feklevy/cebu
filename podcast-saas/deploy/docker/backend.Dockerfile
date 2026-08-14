@@ -60,6 +60,19 @@ RUN apt-get update \
  && install -m 0755 "/tmp/${FFMPEG_BUILD}/bin/ffprobe" /usr/local/bin/ffprobe \
  && rm -rf /tmp/ffmpeg.tar.xz "/tmp/${FFMPEG_BUILD}" \
  && ffmpeg -version | head -1 && ffprobe -version | head -1
+
+# docker CLI (client ONLY, pinned static build) — the worker service uses it to spawn the isolated
+# export-capture containers (`DockerCaptureBoundary`). INERT unless the compose overlay grants that
+# service the docker socket AND EXPORT_CAPTURE_IMAGE is set (deploy/docker-compose.capture.yml);
+# without both, nothing in this image ever invokes it. The distro path would drag in the daemon
+# (Debian ships only `docker.io`), hence the static client tarball, same pinning style as ffmpeg.
+ARG DOCKER_CLI_VERSION=27.5.1
+RUN curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_CLI_VERSION}.tgz" \
+      -o /tmp/docker.tgz \
+ && tar -xzf /tmp/docker.tgz -C /tmp docker/docker \
+ && install -m 0755 /tmp/docker/docker /usr/local/bin/docker \
+ && rm -rf /tmp/docker.tgz /tmp/docker \
+ && docker --version
 RUN corepack enable
 
 # Run as the built-in non-root `node` user.

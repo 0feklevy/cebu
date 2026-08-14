@@ -336,6 +336,36 @@ every capture's `RendererIdentity`, so "why do these two exports differ?" stays 
 
 ---
 
+## 8. The trusted-side caller and the single-VM deployment shape
+
+The caller this document kept referring to ("the caller owns download, `writeCaptureInput`,
+reading the frames…") now exists: `capture/isolation/containerCaptureProvider.ts`. It implements
+the in-process `SimCaptureBackend` seam that `ProjectExportService` accepts, and per section it:
+parses the window's served URL back into storage keys, downloads the package via the storage
+adapter (`listObjects` + `readObject`), stages the input mount, runs `DockerCaptureBoundary`,
+and turns the result into a clip (copying the container's clip out, or encoding its frame
+directory with ffmpeg). It is **null unless `EXPORT_CAPTURE_IMAGE` is set** — the unset state is
+byte-identical to the Phase-1 poster-fallback behaviour.
+
+Deployment shape (single VM, `deploy/docker-compose.capture.yml` overlay):
+
+- `project_export` is routed through pg-boss (`PGBOSS_JOB_NAMES`), so the export job — ffmpeg
+  assembly AND docker spawning — runs in the **worker service**, never the web tier. (The
+  2026-08-13 incident was the kernel OOM-killing the API container mid-assembly.)
+- The backend image carries a **pinned static docker CLI**; it is inert until the overlay grants
+  the worker the socket and `.env` names the image.
+- `EXPORT_CAPTURE_WORKDIR` is bind-mounted at the SAME path on host and worker, because the
+  daemon resolves the capture container's `-v` flags against the HOST filesystem.
+- **Socket tradeoff, stated plainly (see §9 gap 3):** the overlay hands the worker the raw
+  docker socket, which is root-equivalent on the host. On a single VM running first-party worker
+  code this is an explicit, opt-in compromise; the untrusted sim still never sees the socket —
+  it runs inside the hardened capture container. On anything bigger than one VM, prefer the §9
+  recommendation: a scoped socket proxy or a dedicated capture node.
+- Enabling it on a host is the overlay header's one-time setup, and **§7 must be run on that
+  host first** — the checklist is still the gate between "wired" and "trusted".
+
+---
+
 ## 9. Honest status
 
 | Area | Status |
@@ -344,6 +374,7 @@ every capture's `RendererIdentity`, so "why do these two exports differ?" stays 
 | Run-arg assembler: exact hardened flag set, no `--no-sandbox`, no env | **Verified locally** (§6, L4–L5) |
 | Boundary: no-credential spec, query/fragment preserved, result validation | **Verified locally** (§6, L6) |
 | Entrypoint + alignment bridge | **Verified locally** (§6, L7–L8) |
+| Trusted-side caller (`containerCaptureProvider`): staging, verdict pass-through, env gate | **Verified locally** (unit suite, fake boundary) |
 | `--network none` blocks egress while loopback serves | **PENDING** (§7, C1) — cannot run on macOS |
 | Read-only rootfs, non-root, sandbox-without-`--no-sandbox`, quotas | **PENDING** (§7, C2–C4) |
 | Adversarial sim reaches nothing; determinism | **PENDING** (§7, C5–C6) |
