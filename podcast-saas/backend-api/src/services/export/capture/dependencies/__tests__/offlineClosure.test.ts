@@ -309,3 +309,40 @@ describe('review findings — import-map handling', () => {
     ).rejects.toBeInstanceOf(ExternalDependencyBlocked);
   });
 });
+
+/**
+ * Second-round review findings. Both were package-controlled FALSE GREENS: the closure reported
+ * `bootComplete` while a CDN target survived into the container.
+ */
+describe('review round 2 — the tokenizer and multiple import maps', () => {
+  it('a decoy import map inside ANOTHER TAG’S attribute cannot masquerade as the document’s map', async () => {
+    // `scanTags` used to advance only past tags it wanted, so a `<` inside a non-matching tag's
+    // quoted value was read as a tag start — and this <meta> became "the import map": entries [],
+    // nothing vendored, the real CDN map left intact, verdict "compatible".
+    const html =
+      '<meta name="generator" content="<script type=importmap>{}</script>" />' +
+      '<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js"}}</script>';
+    const prepared = await prepareOfflinePackage([{ path: 'index.html', content: Buffer.from(html) }], 'index.html');
+    expect(prepared.vendoredPacks).toEqual(['three@0.169.0']);
+    expect(prepared.files.find((f) => f.path === 'index.html')!.content.toString()).not.toContain('cdn.jsdelivr.net');
+  });
+
+  it('EVERY import map is planned and rewritten — Chrome merges them, so the second is not decoration', async () => {
+    const html =
+      '<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js"}}</script>' +
+      '<script type="importmap">{"imports":{"three/addons/":"https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"}}</script>';
+    const prepared = await prepareOfflinePackage([{ path: 'index.html', content: Buffer.from(html) }], 'index.html');
+    const out = prepared.files.find((f) => f.path === 'index.html')!.content.toString();
+    expect(out).not.toContain('cdn.jsdelivr.net');           // neither map keeps a CDN target
+    expect(prepared.rewrittenSpecifiers.join(' ')).toContain('three/addons/ ->');
+  });
+
+  it('an unsatisfiable target in a SECOND map still refuses the package', async () => {
+    const html =
+      '<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js"}}</script>' +
+      '<script type="importmap">{"imports":{"d3":"https://cdn.jsdelivr.net/npm/d3@7/+esm"}}</script>';
+    await expect(
+      prepareOfflinePackage([{ path: 'index.html', content: Buffer.from(html) }], 'index.html'),
+    ).rejects.toBeInstanceOf(ExternalDependencyBlocked);
+  });
+});

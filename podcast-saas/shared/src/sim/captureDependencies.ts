@@ -122,46 +122,42 @@ function commentSpans(html: string): Array<[number, number]> {
  * is one that is not valid JSON — a malformed import map is a broken package, and silently
  * treating it as absent would strand the very specifiers the capture must rewrite.
  */
-export function parseImportMap(html: string): ParsedImportMap | null {
-  // The FIRST non-commented import map is the one the browser honours; a second is ignored by the
-  // spec, so a CDN target hiding in one would never load — but it must still be REPORTED, which
-  // `additionalImportMaps` below does.
+export function parseImportMaps(html: string): ParsedImportMap[] {
   const inComment = commentSpans(html);
-  const maps = scanTags(html, new Set(['script'])).filter(
+  const tags = scanTags(html, new Set(['script'])).filter(
     (t) => (t.attrs.type ?? '').toLowerCase() === 'importmap' &&
            !inComment.some(([a, b]) => t.start >= a && t.start < b),
   );
-  const open = maps[0];
-  if (!open) return null;
-  const start = open.end;
-  const end = html.indexOf('</script>', start);
-  if (end === -1) throw new Error('import map: unterminated <script type="importmap"> block');
-  const body = html.slice(start, end);
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(body);
-  } catch (err) {
-    throw new Error(`import map: body is not valid JSON — ${err instanceof Error ? err.message : String(err)}`);
-  }
-  const imports = (parsed as { imports?: unknown } | null)?.imports;
-  if (imports !== undefined && (typeof imports !== 'object' || imports === null || Array.isArray(imports))) {
-    throw new Error('import map: "imports" must be an object');
-  }
-  const entries: ImportMapEntry[] = Object.entries((imports ?? {}) as Record<string, unknown>)
-    .filter(([, target]) => typeof target === 'string')
-    .map(([specifier, target]) => ({
-      specifier,
-      target: target as string,
-      // Per the import-maps spec a trailing-slash key is a PREFIX mapping and its value must also
-      // end in `/`; anything else is an exact mapping.
-      isPrefix: specifier.endsWith('/'),
-    }));
-  // Everything the map declares other than `imports` is carried through the rewrite verbatim.
-  // Emitting only `{imports}` silently DELETED `scopes` from the capture copy — a page whose
-  // per-scope mapping vanished would resolve a different module than the viewer does.
-  const rest = { ...(parsed as Record<string, unknown>) };
-  delete rest.imports;
-  return { start, end, entries, rest };
+  return tags.map((tag) => {
+    const start = tag.end;
+    const end = html.indexOf('</script>', start);
+    if (end === -1) throw new Error('import map: unterminated <script type="importmap"> block');
+    const body = html.slice(start, end);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(body);
+    } catch (err) {
+      throw new Error(`import map: body is not valid JSON — ${err instanceof Error ? err.message : String(err)}`);
+    }
+    const imports = (parsed as { imports?: unknown } | null)?.imports;
+    if (imports !== undefined && (typeof imports !== 'object' || imports === null || Array.isArray(imports))) {
+      throw new Error('import map: "imports" must be an object');
+    }
+    const entries: ImportMapEntry[] = Object.entries((imports ?? {}) as Record<string, unknown>)
+      .filter(([, target]) => typeof target === 'string')
+      .map(([specifier, target]) => ({
+        specifier,
+        target: target as string,
+        isPrefix: specifier.endsWith('/'),
+      }));
+    const rest = { ...(parsed as Record<string, unknown>) };
+    delete rest.imports;
+    return { start, end, entries, rest };
+  });
+}
+
+export function parseImportMap(html: string): ParsedImportMap | null {
+  return parseImportMaps(html)[0] ?? null;
 }
 
 /** Absolute `http(s)` URL? (Protocol-relative `//host/x` counts — it is external too.) */
@@ -206,11 +202,14 @@ export function scanTags(html: string, names: ReadonlySet<string>): ScannedTag[]
   for (let i = 0; i < html.length; i++) {
     if (html[i] !== '<') continue;
     let j = i + 1;
+    if (html[j] === '/') j++; // an end tag still has to be consumed, or its attrs confuse the scan
     let name = '';
     while (j < html.length && /[a-zA-Z0-9-]/.test(html[j]!)) name += html[j++]!;
     name = name.toLowerCase();
-    if (!names.has(name)) continue;
-    // Attributes, honouring quotes.
+    if (name.length === 0) continue; // '<' that begins no tag (a comment, a stray '<' in text)
+    const wanted = names.has(name);
+    // Attributes are parsed for EVERY tag, matched or not: the scan must know where this tag ENDS
+    // so a '<' inside its quoted attribute value cannot be mistaken for the next tag.
     const attrs: Record<string, string> = {};
     while (j < html.length) {
       while (j < html.length && /\s/.test(html[j]!)) j++;
@@ -235,7 +234,7 @@ export function scanTags(html: string, names: ReadonlySet<string>): ScannedTag[]
       }
       if (attrName) attrs[attrName.toLowerCase()] = value.trim();
     }
-    out.push({ name, attrs, start: i, end: j });
+    if (wanted) out.push({ name, attrs, start: i, end: j });
     i = j - 1;
   }
   return out;
@@ -363,14 +362,14 @@ export function planCaptureDependencies(
   html: string,
   registry: readonly TrustedDependencyDescriptor[],
 ): CaptureDependencyClosure {
-  const map = parseImportMap(html);
+  const maps = parseImportMaps(html);
   const resolved: DependencyResolution[] = [];
   const unresolved: ExternalReference[] = [];
 
   // Iterate the ENTRIES, not the deduplicated refs: two specifiers may share one CDN target
   // (`three` and `three-core`), and resolving only the first left the other pointing at the CDN
   // while the closure still reported bootComplete.
-  for (const entry of map?.entries ?? []) {
+  for (const entry of maps.flatMap((m) => m.entries)) {
     if (!isExternalUrl(entry.target)) continue;
     const hit = resolveEntry(entry, registry);
     if (hit) resolved.push(hit);
@@ -430,8 +429,9 @@ export function rewriteEntryHtmlForCapture(
   const rewrittenSpecifiers: string[] = [];
   const neutralisedUrls: string[] = [];
 
-  const map = parseImportMap(out);
-  if (map && closure.resolved.length > 0) {
+  const allMaps = parseImportMaps(out);
+  for (const map of [...allMaps].reverse()) {
+    if (closure.resolved.length === 0) break;
     const byTarget = new Map(closure.resolved.map((r) => [r.entry.specifier, r]));
     const imports: Record<string, string> = {};
     for (const entry of map.entries) {
