@@ -60,6 +60,9 @@ const exportEnabled = (): boolean => process.env.LINEAR_EXPORT_ENABLED === 'true
 const DL_TTL = 6 * 60 * 60;
 
 const UNAVAILABLE = { message: 'Exporting videos is temporarily unavailable.' };
+
+/** The in-flight statuses, mirrored so the discovery route need not import the service eagerly. */
+const EXPORT_IN_FLIGHT_STATUSES_RO = ['queued', 'planning', 'capturing', 'assembling', 'uploading'] as const;
 const isMissingTable = (err: unknown): boolean =>
   (err as { code?: string } | null)?.code === '42P01';
 
@@ -380,6 +383,55 @@ export async function registerExportRoutes(app: FastifyInstance): Promise<void> 
   );
 
   // GET /api/v1/projects/:id/exports/:exportId — progress; presigned download when ready.
+  /**
+   * GET /api/v1/projects/:id/export/current — the export that is running, if one is.
+   *
+   * Registered BEFORE `/export/:exportId`, or Fastify would match "current" as an id. Without this
+   * route a reload lost the export: the id lived only in the tab that started it, so refreshing —
+   * or opening the project on another device — showed no sign that a render was in progress, and
+   * the natural response was to press Export again.
+   *
+   * It also carries the server's own capability state, so the client stops duplicating feature
+   * flags it cannot actually see.
+   */
+  app.get<{ Params: { id: string } }>(
+    '/api/v1/projects/:id/export/current',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const project = await db.query.projects.findFirst({
+        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
+      });
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+
+      const capability = {
+        export_enabled: exportEnabled(),
+        // Whether live capture is configured AT ALL on this deployment. The client showed a
+        // "simulations will render live" promise it had no way to verify.
+        live_capture_configured: Boolean(process.env.EXPORT_CAPTURE_IMAGE?.trim()),
+      };
+      if (!exportEnabled()) return reply.code(200).send({ export: null, capability });
+
+      try {
+        const rows = await db.select().from(project_exports).where(
+          and(
+            eq(project_exports.project_id, project.id),
+            inArray(project_exports.status, [...EXPORT_IN_FLIGHT_STATUSES_RO]),
+          ),
+        );
+        const live = rows[0] ?? null;
+        return reply.code(200).send({
+          export: live ? exportBody(live, null) : null,
+          capability,
+        });
+      } catch (err) {
+        if (isMissingTable(err)) return reply.code(503).send(UNAVAILABLE);
+        throw err;
+      }
+    },
+  );
+
+
   app.get<{ Params: { id: string; exportId: string } }>(
     '/api/v1/projects/:id/exports/:exportId',
     { preHandler: [firebaseAuthMiddleware] },

@@ -167,6 +167,49 @@ describe('LINEAR_EXPORT_ENABLED', () => {
 
 // ── POST ──────────────────────────────────────────────────────────────────────────────────────
 
+describe('GET /projects/:id/export/current — discovery', () => {
+  it('finds the in-flight export, so a reload does not lose it', async () => {
+    // The id used to live only in the tab that started the export: refreshing, or opening the
+    // project on another device, showed no sign that a render was in progress — and the natural
+    // response was to press Export again.
+    mocks.select.mockResolvedValue([{ ...READY_ROW, status: 'capturing' }]);
+    const res = await app.inject({ method: 'GET', url: `/api/v1/projects/${PROJECT_ID}/export/current` });
+    expect(res.statusCode).toBe(200);
+    const body = res.json<{ export: { id: string; status: string } | null; capability: Record<string, boolean> }>();
+    expect(body.export).toMatchObject({ id: EXPORT_ID, status: 'capturing' });
+    expect(body.capability).toMatchObject({ export_enabled: true });
+  });
+
+  it('answers null when nothing is running, rather than 404', async () => {
+    mocks.select.mockResolvedValue([]);
+    const res = await app.inject({ method: 'GET', url: `/api/v1/projects/${PROJECT_ID}/export/current` });
+    expect(res.statusCode).toBe(200);
+    expect(res.json<{ export: unknown }>().export).toBeNull();
+  });
+
+  it('is matched BEFORE /export/:exportId — "current" is not an id', async () => {
+    mocks.select.mockResolvedValue([]);
+    const res = await app.inject({ method: 'GET', url: `/api/v1/projects/${PROJECT_ID}/export/current` });
+    // A 404 here would mean Fastify routed to the by-id handler and looked up an export called
+    // "current".
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('reports server capability instead of letting the client duplicate flags it cannot see', async () => {
+    delete process.env.EXPORT_CAPTURE_IMAGE;
+    mocks.select.mockResolvedValue([]);
+    const res = await app.inject({ method: 'GET', url: `/api/v1/projects/${PROJECT_ID}/export/current` });
+    expect(res.json<{ capability: { live_capture_configured: boolean } }>().capability.live_capture_configured)
+      .toBe(false);
+  });
+
+  it('is owner-only', async () => {
+    mocks.findFirst.mockResolvedValue(undefined);
+    const res = await app.inject({ method: 'GET', url: `/api/v1/projects/${PROJECT_ID}/export/current` });
+    expect(res.statusCode).toBe(404);
+  });
+});
+
 describe('POST /projects/:id/export', () => {
   it('a SIM-CAPTURE window needs no consent — it is the promise to render, not degradation', async () => {
     // The old gate asked every user to pre-approve a slideshow before anything had failed, which
