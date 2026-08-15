@@ -1,5 +1,5 @@
 import { getBoss, PGBOSS_JOB_NAMES } from './pgBoss.js';
-import { registerWorkers } from './pgBossDriver.js';
+import { resolveWorkerQueues, registerWorkers } from './pgBossDriver.js';
 import { handlers } from './registry.js';
 import { logger } from '../lib/logger.js';
 
@@ -11,6 +11,12 @@ import { logger } from '../lib/logger.js';
  */
 export async function startWorker(): Promise<void> {
   const boss = await getBoss();
-  await registerWorkers(boss, PGBOSS_JOB_NAMES, handlers);
+  // WORKER_QUEUES decides what THIS process consumes. Unset means every queue, which is right for
+  // a single-process dev box and wrong for production: the API must never pick up `project_export`,
+  // because running it there means a capture container launched from the request-serving process,
+  // with the Docker socket that requires.
+  const queues = resolveWorkerQueues(PGBOSS_JOB_NAMES);
+  logger.info({ queues }, '[pg-boss] worker queues resolved');
+  await registerWorkers(boss, queues, handlers);
   logger.info({ queues: PGBOSS_JOB_NAMES }, '[worker] ready');
 }

@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => ({
   liveExportFor: vi.fn(),
   buildExportPlan: vi.fn(),
   enqueueJob: vi.fn(),
+  enqueueProjectExport: vi.fn(async () => {}),
   presign: vi.fn(),
 }));
 
@@ -38,7 +39,17 @@ vi.mock('../../../db/index.js', () => ({
     query: { projects: { findFirst: mocks.findFirst } },
     select: () => ({ from: () => ({ where: mocks.select }) }),
     insert: () => ({ values: (v: unknown) => { mocks.values(v); return { returning: mocks.insert }; } }),
-    update: () => ({ set: () => ({ where: () => ({ returning: mocks.update }) }) }),
+    // `where` is both awaitable and chainable: the controller awaits it for a plain UPDATE and
+    // calls `.returning()` for the cancel path, and a mock that supports only one shape turns a
+    // deliberate 503 into a 500.
+    update: () => ({
+      set: (v: unknown) => ({
+        where: () => {
+          mocks.update(v);
+          return Object.assign(Promise.resolve([{ id: EXPORT_ID }]), { returning: mocks.update });
+        },
+      }),
+    }),
   },
 }));
 vi.mock('../../../db/schema.js', () => ({
@@ -56,7 +67,14 @@ vi.mock('../../../middleware/firebase-auth.js', () => ({
 vi.mock('../../../services/storage/getStorageAdapter.js', () => ({
   getStorageAdapter: () => ({ getPresignedDownloadUrl: mocks.presign }),
 }));
-vi.mock('../../../queue/index.js', () => ({ enqueueJob: mocks.enqueueJob }));
+vi.mock('../../../queue/index.js', () => ({
+  enqueueJob: mocks.enqueueJob,
+  enqueueProjectExport: mocks.enqueueProjectExport,
+  ExportQueueUnavailable: class ExportQueueUnavailable extends Error {
+    readonly code = 'export_queue_unavailable';
+    constructor(readonly detail: string) { super('unavailable'); this.name = 'ExportQueueUnavailable'; }
+  },
+}));
 vi.mock('../../../services/export/exportPlan.js', () => {
   class ExportRefused extends Error {
     constructor(
@@ -158,7 +176,7 @@ describe('POST /projects/:id/export', () => {
     const res = await post();
     expect(res.statusCode).toBe(202);
     expect(mocks.insert).toHaveBeenCalled();
-    expect(mocks.enqueueJob).toHaveBeenCalledWith('project_export', { exportId: EXPORT_ID });
+    expect(mocks.enqueueProjectExport).toHaveBeenCalledWith(EXPORT_ID);
   });
 
   it('refuses an inadmissible capture workload BEFORE enqueueing anything', async () => {
@@ -178,7 +196,7 @@ describe('POST /projects/:id/export', () => {
     expect(res.json()).toMatchObject({ code: 'too_many_simulations' });
     // MUTATION TARGET: move the check after the insert and these two stop holding.
     expect(mocks.insert).not.toHaveBeenCalled();
-    expect(mocks.enqueueJob).not.toHaveBeenCalled();
+    expect(mocks.enqueueProjectExport).not.toHaveBeenCalled();
   });
 
   it('records the STRICT policy on the row by default', async () => {
@@ -204,7 +222,17 @@ describe('POST /projects/:id/export', () => {
     expect(body.consent_token).toMatch(/^[\w-]+\.[\w-]+$/);
     expect(body.plan_fingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(mocks.insert).not.toHaveBeenCalled();
-    expect(mocks.enqueueJob).not.toHaveBeenCalled();
+    expect(mocks.enqueueProjectExport).not.toHaveBeenCalled();
+  });
+
+  it('a durable-enqueue failure answers 503 and does not leave a queued row nobody will run', async () => {
+    // Fire-and-forget was the old shape: a send that failed left a `queued` row nothing would ever
+    // pick up, and the user watched a progress bar for a job that did not exist.
+    mocks.enqueueProjectExport.mockRejectedValueOnce(new Error('pg-boss is down'));
+    const res = await post();
+    expect(res.statusCode).toBe(503);
+    expect(res.json()).toMatchObject({ code: 'export_queue_unavailable', retryable: true });
+    expect(mocks.update).toHaveBeenCalled();   // the row was marked failed, not left queued
   });
 
   it('a NAKED allow_degraded no longer starts anything — a boolean is not consent', async () => {
@@ -214,7 +242,7 @@ describe('POST /projects/:id/export', () => {
     const res = await post({ allow_degraded: true } as never);
     expect(res.statusCode).toBe(409);
     expect(mocks.insert).not.toHaveBeenCalled();
-    expect(mocks.enqueueJob).not.toHaveBeenCalled();
+    expect(mocks.enqueueProjectExport).not.toHaveBeenCalled();
   });
 
   it('starts with a VALID token → 202, and the row records allow_poster', async () => {
@@ -225,7 +253,7 @@ describe('POST /projects/:id/export', () => {
     const res = await post({ consent_token });
     expect(res.statusCode).toBe(202);
     expect(res.json()).toMatchObject({ export_id: EXPORT_ID, status: 'queued' });
-    expect(mocks.enqueueJob).toHaveBeenCalledWith('project_export', { exportId: EXPORT_ID });
+    expect(mocks.enqueueProjectExport).toHaveBeenCalledWith(EXPORT_ID);
     expect(mocks.values).toHaveBeenCalledWith(expect.objectContaining({ degradation_policy: 'allow_poster' }));
   });
 

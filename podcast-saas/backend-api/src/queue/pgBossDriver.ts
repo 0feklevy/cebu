@@ -63,6 +63,34 @@ function singletonKeyFor<N extends JobName>(name: N, payload: JobPayloads[N]): s
 }
 
 /** Register a batched worker for each durable queue. ffmpeg stays globally bounded by ffmpegLimit. */
+/**
+ * Which queues THIS process may consume, from `WORKER_QUEUES`.
+ *
+ * Without an allowlist every process that starts a worker consumes every queue, so the API — which
+ * has no Docker socket and no business rendering video — would pick up an export and run a capture
+ * container it cannot launch, or worse, could. Splitting the pool is not a deployment detail: it is
+ * what keeps Docker access out of the request-serving process.
+ *
+ * A general worker gets `crop,video_generate`. A dedicated export orchestrator gets
+ * `project_export` and nothing else. An unknown name is a startup error rather than a silent
+ * omission, because a typo would otherwise mean a queue nobody consumes and jobs that sit forever.
+ */
+export function resolveWorkerQueues(
+  available: readonly JobName[],
+  env: NodeJS.ProcessEnv = process.env,
+): JobName[] {
+  const raw = env.WORKER_QUEUES?.trim();
+  if (!raw) return [...available];
+  const named = raw.split(',').map((n) => n.trim()).filter(Boolean);
+  const unknown = named.filter((n) => !(available as readonly string[]).includes(n));
+  if (unknown.length > 0) {
+    throw new Error(
+      `WORKER_QUEUES names unknown queue(s): ${unknown.join(', ')}; known: ${available.join(', ')}`,
+    );
+  }
+  return named as JobName[];
+}
+
 export async function registerWorkers(
   boss: PgBossType,
   names: readonly JobName[],

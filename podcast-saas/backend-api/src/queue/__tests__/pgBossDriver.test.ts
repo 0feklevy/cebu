@@ -7,7 +7,7 @@ vi.mock('../pgBoss.js', () => ({
 }));
 
 import { getBoss } from '../pgBoss.js';
-import { pgBossSend, registerWorkers } from '../pgBossDriver.js';
+import { pgBossSend, registerWorkers, resolveWorkerQueues } from '../pgBossDriver.js';
 import type { JobHandlers } from '../types.js';
 
 const mockGetBoss = vi.mocked(getBoss);
@@ -122,5 +122,52 @@ describe('project_export runs serially, crops do not', () => {
     } finally {
       delete process.env.QUEUE_EXPORT_CONCURRENCY;
     }
+  });
+});
+
+/**
+ * WORKER_QUEUES. Without an allowlist every process that starts a worker consumes every queue, so
+ * the API — which has no Docker socket and no business rendering video — would pick up an export.
+ * Splitting the pool is not a deployment detail; it is what keeps Docker access out of the
+ * request-serving process.
+ */
+describe('resolveWorkerQueues', () => {
+  const ALL = ['crop', 'video_generate', 'project_export'] as const;
+
+  it('unset means every queue — right for a single-process dev box', () => {
+    expect(resolveWorkerQueues(ALL, {} as NodeJS.ProcessEnv)).toEqual([...ALL]);
+  });
+
+  it('a general worker takes crop and video_generate, and NOT project_export', () => {
+    expect(resolveWorkerQueues(ALL, { WORKER_QUEUES: 'crop,video_generate' } as NodeJS.ProcessEnv))
+      .toEqual(['crop', 'video_generate']);
+  });
+
+  it('a dedicated export orchestrator takes project_export and nothing else', () => {
+    expect(resolveWorkerQueues(ALL, { WORKER_QUEUES: 'project_export' } as NodeJS.ProcessEnv))
+      .toEqual(['project_export']);
+  });
+
+  it('tolerates whitespace and empty entries', () => {
+    expect(resolveWorkerQueues(ALL, { WORKER_QUEUES: ' crop , , video_generate ' } as NodeJS.ProcessEnv))
+      .toEqual(['crop', 'video_generate']);
+  });
+
+  it('an unknown name is a STARTUP ERROR, not a silent omission', () => {
+    // A typo would otherwise mean a queue nobody consumes and jobs that sit forever — the failure
+    // shows up as "my export never started", days later, with nothing in the logs.
+    expect(() => resolveWorkerQueues(ALL, { WORKER_QUEUES: 'crop,projectexport' } as NodeJS.ProcessEnv))
+      .toThrow(/unknown queue\(s\): projectexport/);
+  });
+});
+
+describe('project_export can never run inline', () => {
+  it('enqueueJob refuses it outright, whatever the driver says', async () => {
+    // The inline fallback exists so "a job is never lost". For this job, losing it is the better
+    // outcome: the user gets a truthful 503, instead of an API that stops answering while it
+    // renders someone's video in the request-serving process.
+    const { enqueueJob } = await import('../index.js');
+    expect(() => enqueueJob('project_export', { exportId: 'e-1' }))
+      .toThrow(/must be enqueued durably/);
   });
 });

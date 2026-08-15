@@ -22,7 +22,7 @@ import { project_exports, projects } from '../../db/schema.js';
 import { logger } from '../../lib/logger.js';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
-import { enqueueJob } from '../../queue/index.js';
+import { enqueueProjectExport } from '../../queue/index.js';
 import { ExportRefused, admitCaptureWorkload, buildExportPlan } from '../../services/export/exportPlan.js';
 import { EXPORT_GRID } from '../../services/export/types.js';
 import { fingerprintPlan } from '../../services/export/planFingerprint.js';
@@ -327,7 +327,34 @@ export async function registerExportRoutes(app: FastifyInstance): Promise<void> 
           plan_fingerprint: planFingerprint,
           objects_total: Array.isArray(plan.timeline) ? plan.timeline.length : 0,
         }).returning();
-        enqueueJob('project_export', { exportId: row.id });
+        // AWAITED, and no inline fallback. A fire-and-forget send that fails leaves a `queued` row
+        // nothing will ever pick up, and the user watches a progress bar for a job that does not
+        // exist. Failing here lets the row be marked failed and the caller told the truth.
+        try {
+          await enqueueProjectExport(row.id);
+        } catch (err) {
+          await db.update(project_exports)
+            .set({
+              status: 'failed',
+              error: 'Exporting videos is temporarily unavailable. Please try again in a few minutes.',
+              failure: {
+                code: 'export_queue_unavailable',
+                retryable: true,
+                phase: 'planning',
+                detail: err instanceof Error ? err.message.slice(0, 500) : String(err),
+              },
+              finished_at: new Date(),
+              updated_at: new Date(),
+            })
+            .where(eq(project_exports.id, row.id))
+            .catch(() => {});
+          logger.error({ err, projectId: project.id, exportId: row.id }, 'export: durable enqueue failed');
+          return reply.code(503).send({
+            code: 'export_queue_unavailable',
+            message: 'Exporting videos is temporarily unavailable. Please try again in a few minutes.',
+            retryable: true,
+          });
+        }
         logger.info(
           { projectId: project.id, exportId: row.id, degradationPolicy, planFingerprint },
           'export: accepted — job enqueued',
