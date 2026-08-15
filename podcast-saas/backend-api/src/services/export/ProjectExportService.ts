@@ -117,6 +117,41 @@ export function classifyExportFailure(err: unknown): ExportFailure {
   };
 }
 
+/** The two answers to "may this export ship a still instead of a live simulation?". */
+export type DegradationPolicy = 'forbid' | 'allow_poster';
+
+/**
+ * Read the policy frozen on the row. Anything unrecognised — an older row, a hand-edited value —
+ * reads as `forbid`, because the failure direction matters: guessing `allow_poster` ships a
+ * slideshow the user never agreed to, while guessing `forbid` at worst fails an export the user can
+ * retry with explicit consent.
+ */
+export function degradationPolicyOf(row: { degradation_policy?: string | null }): DegradationPolicy {
+  return row.degradation_policy === 'allow_poster' ? 'allow_poster' : 'forbid';
+}
+
+/**
+ * A simulation window could not be captured while the export was forbidden from degrading.
+ *
+ * This is the whole point of the strict contract: the user asked for a video of their simulations,
+ * and a still image is not a worse version of that — it is a different artifact. Publishing one
+ * anyway is the failure the entire capture incident exists to prevent, and it is worse than
+ * publishing nothing, because nothing is visible and a silent slideshow is not.
+ */
+export class StrictCaptureFailed extends ExportRefused {
+  constructor(section: string, reason: string, retryable: boolean) {
+    super(
+      `The simulation "${section}" could not be rendered, so the export was stopped. `
+        + 'No video was published. You can try again, or export with still images instead.',
+      422,
+      'capture_failed_strict',
+      retryable,
+    );
+    this.detail = `${section}: ${reason}`;
+  }
+  detail: string;
+}
+
 // ── The assembler seam ────────────────────────────────────────────────────────────────────────
 
 /**
@@ -328,6 +363,9 @@ export class ProjectExportService {
       // per-section fact, and calling it N times would launch N browsers to learn one answer.
       const backend = this.captureProvider;
       const canCapture = backend ? await backend.isAvailable().catch(() => false) : false;
+      // The policy the user actually agreed to, read from the row rather than re-derived. A retry,
+      // a restart, or a duplicate delivery of this job therefore honours the same answer.
+      const policy = degradationPolicyOf(job);
       logger.info(
         { exportId, captureBackend: backend != null, captureAvailable: canCapture },
         'export: capturing phase started',
@@ -348,6 +386,15 @@ export class ProjectExportService {
         await this.throwIfCancelRequested(exportId);
 
         if (!canCapture || !backend || !w.servedUrl) {
+          if (policy === 'forbid') {
+            // Strict mode: infrastructure that cannot render is a truthful, RETRYABLE failure, not
+            // grounds to quietly ship a still. The user asked for the simulation.
+            throw new StrictCaptureFailed(
+              name(w),
+              !w.servedUrl ? 'the simulation has no capturable package' : 'no capture backend is available on this host',
+              Boolean(w.servedUrl),
+            );
+          }
           logger.info({ exportId, section: name(w) }, 'export: sim window degraded — capture unavailable');
           captured.push(toPoster(w));
           plan.warnings.push(
@@ -404,6 +451,23 @@ export class ProjectExportService {
           logger.info({ exportId, section: name(w), clipKey }, 'export: sim window captured');
           captured.push(clip);
         } catch (err) {
+          // Cancellation is NEVER degradation. It arrives here as an abort from the same signal the
+          // capture was given, and a generic catch that turned it into a poster would publish a
+          // slideshow for a user who pressed stop. Rethrow before any policy is consulted.
+          if (err instanceof Error && err.name === 'AbortError') throw err;
+          if (err instanceof ExportRefused) throw err;
+
+          const failReason = err instanceof CaptureGateFailed
+            ? `${err.message} (renderer "${err.rendererString}")`
+            : err instanceof Error ? err.message : String(err);
+
+          if (policy === 'forbid') {
+            // Every strict failure lands here: unavailable, exception, timeout, missing clip,
+            // invalid artifact, failed gate. None of them may publish a master.
+            logger.warn({ err, exportId, section: name(w) }, 'export: strict mode — capture failed, failing the export');
+            throw new StrictCaptureFailed(name(w), failReason, !(err instanceof CaptureGateFailed));
+          }
+
           logger.warn({ err, exportId, section: name(w) }, 'export: sim window degraded — capture failed');
           if (!(err instanceof CaptureUnavailable)) {
             // A real render failure (gate-hard, crash, timeout). One window failing must never fail

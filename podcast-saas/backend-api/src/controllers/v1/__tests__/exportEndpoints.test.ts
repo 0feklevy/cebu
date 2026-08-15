@@ -20,6 +20,8 @@ const PROJECT_ID = 'proj-1';
 const EXPORT_ID = 'exp-1';
 
 const mocks = vi.hoisted(() => ({
+  // The row the controller writes — the frozen degradation policy is asserted on it.
+  values: vi.fn(),
   findFirst: vi.fn(),
   select: vi.fn(),
   insert: vi.fn(),
@@ -34,7 +36,7 @@ vi.mock('../../../db/index.js', () => ({
   db: {
     query: { projects: { findFirst: mocks.findFirst } },
     select: () => ({ from: () => ({ where: mocks.select }) }),
-    insert: () => ({ values: () => ({ returning: mocks.insert }) }),
+    insert: () => ({ values: (v: unknown) => { mocks.values(v); return { returning: mocks.insert }; } }),
     update: () => ({ set: () => ({ where: () => ({ returning: mocks.update }) }) }),
   },
 }));
@@ -80,6 +82,12 @@ const PLAN_WITH_SIMS = {
   warnings: ['Scripted sim: exported as its poster still'],
 };
 const PLAN_NO_SIMS = { timeline: [{ kind: 'video' }], warnings: [] };
+// A window the PLANNER already resolved to a still — the package cannot be captured at all. This,
+// and only this, is degradation known before the run, and so the only thing consent is for.
+const PLAN_WITH_POSTER_FALLBACK = {
+  timeline: [{ kind: 'video' }, { kind: 'poster-fallback', sectionId: 's1' }],
+  warnings: ['Broken sim: cannot be captured — exported as its poster still'],
+};
 
 const READY_ROW = {
   id: EXPORT_ID, status: 'ready', quality_state: 'degraded',
@@ -131,23 +139,42 @@ describe('LINEAR_EXPORT_ENABLED', () => {
 // ── POST ──────────────────────────────────────────────────────────────────────────────────────
 
 describe('POST /projects/:id/export', () => {
-  it('requires degraded CONSENT: sim windows without allow_degraded answer 409 degraded_only with the warnings', async () => {
+  it('a SIM-CAPTURE window needs no consent — it is the promise to render, not degradation', async () => {
+    // The old gate asked every user to pre-approve a slideshow before anything had failed, which
+    // trained them to click through the warning and made the full-quality contract unreachable.
+    // A sim-capture window means "this will be rendered live"; if that fails, the STRICT policy
+    // fails the export rather than quietly shipping a still.
+    const res = await post();
+    expect(res.statusCode).toBe(202);
+    expect(mocks.insert).toHaveBeenCalled();
+    expect(mocks.enqueueJob).toHaveBeenCalledWith('project_export', { exportId: EXPORT_ID });
+  });
+
+  it('records the STRICT policy on the row by default', async () => {
+    await post();
+    expect(mocks.values).toHaveBeenCalledWith(expect.objectContaining({ degradation_policy: 'forbid' }));
+  });
+
+  it('a POSTER-FALLBACK window requires consent: 409 degraded_only carrying the warnings', async () => {
     // MUTATION TARGET: drop the consent gate and this becomes a 202 — a degraded master the
     // user learns about from the file instead of from a dialog.
+    mocks.buildExportPlan.mockResolvedValue(PLAN_WITH_POSTER_FALLBACK);
     const res = await post();
     expect(res.statusCode).toBe(409);
     const body = res.json<{ code: string; warnings: string[] }>();
     expect(body.code).toBe('degraded_only');
-    expect(body.warnings).toEqual(PLAN_WITH_SIMS.warnings);
+    expect(body.warnings).toEqual(PLAN_WITH_POSTER_FALLBACK.warnings);
     expect(mocks.insert).not.toHaveBeenCalled();
     expect(mocks.enqueueJob).not.toHaveBeenCalled();
   });
 
-  it('starts with consent: allow_degraded true → 202 + the job enqueued with {exportId}', async () => {
+  it('starts with consent: allow_degraded true → 202, and the row records allow_poster', async () => {
+    mocks.buildExportPlan.mockResolvedValue(PLAN_WITH_POSTER_FALLBACK);
     const res = await post({ allow_degraded: true });
     expect(res.statusCode).toBe(202);
     expect(res.json()).toMatchObject({ export_id: EXPORT_ID, status: 'queued' });
     expect(mocks.enqueueJob).toHaveBeenCalledWith('project_export', { exportId: EXPORT_ID });
+    expect(mocks.values).toHaveBeenCalledWith(expect.objectContaining({ degradation_policy: 'allow_poster' }));
   });
 
   it('needs no consent when nothing would degrade', async () => {

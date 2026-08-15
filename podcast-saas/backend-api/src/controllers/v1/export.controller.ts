@@ -45,10 +45,17 @@ function exportBody(row: typeof project_exports.$inferSelect, downloadUrl: strin
   const warnings = Array.isArray(plan?.warnings)
     ? plan.warnings.filter((w): w is string => typeof w === 'string')
     : [];
+  const terminal = row.status === 'ready';
   return {
     id: row.id,
     status: row.status,
-    quality_state: row.quality_state,
+    // Only a FINISHED export has a quality. The column defaults to 'full', so reporting it verbatim
+    // told every poll that a queued or still-capturing export was already full quality — the one
+    // claim this feature must never make early, since it is exactly what the user is waiting to
+    // learn. Null until the master exists.
+    quality_state: terminal ? row.quality_state : null,
+    degradation_policy: row.degradation_policy,
+    degraded_windows: terminal ? warnings.length : 0,
     objects_total: row.objects_total,
     objects_done: row.objects_done,
     error: row.error,
@@ -123,13 +130,12 @@ export async function registerExportRoutes(app: FastifyInstance): Promise<void> 
       }
       if (!plan) return reply.code(404).send({ message: 'Project not found' });
 
-      // CONSENT: when any simulation window will render as a fallback (Phase 1: every one of
-      // them), the export is degraded, and a degraded master must never be something the user
-      // finds out about from the file. 409 `degraded_only` carries the warnings so the client
-      // can show exactly what will be missing; `allow_degraded: true` is informed consent.
-      const wouldDegrade = plan.timeline.some(
-        (w) => w.kind === 'sim-capture' || w.kind === 'poster-fallback',
-      );
+      // CONSENT is for degradation that is KNOWN BEFORE THE RUN — a window the planner already
+      // resolved to a poster because the package cannot be captured. A `sim-capture` window is the
+      // opposite of that: it is the promise to render the simulation live, and treating it as
+      // degradation asked every user to pre-approve a slideshow before anything had failed, which
+      // both trained them to click through the warning and made the strict contract unreachable.
+      const wouldDegrade = plan.timeline.some((w) => w.kind === 'poster-fallback');
       if (wouldDegrade && request.body?.allow_degraded !== true) {
         logger.info(
           { projectId: project.id, planWarnings: plan.warnings.length },
@@ -145,14 +151,20 @@ export async function registerExportRoutes(app: FastifyInstance): Promise<void> 
       }
 
       try {
+        // The answer is FROZEN on the row here, at creation. Previously it lived only in this
+        // request body: the controller read it, logged it, and dropped it — so the worker degraded
+        // whatever failed, with no way to know what had been agreed to, and a retry or duplicate
+        // delivery had no answer at all.
+        const degradationPolicy = request.body?.allow_degraded === true ? 'allow_poster' : 'forbid';
         const [row] = await db.insert(project_exports).values({
           project_id: project.id,
           requested_by: user.id,
           status: 'queued',
+          degradation_policy: degradationPolicy,
         }).returning();
         enqueueJob('project_export', { exportId: row.id });
         logger.info(
-          { projectId: project.id, exportId: row.id, allowDegraded: request.body?.allow_degraded === true },
+          { projectId: project.id, exportId: row.id, degradationPolicy },
           'export: accepted — job enqueued',
         );
         return reply.code(202).send({ export_id: row.id, status: 'queued' });

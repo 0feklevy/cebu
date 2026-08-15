@@ -45,7 +45,7 @@ import {
 import { ExportRefused } from '../exportPlan.js';
 import type { StorageService } from '../../storage/StorageService.js';
 import type { ExportPlan, LinearAssembler } from '../types.js';
-import type { SimCaptureBackend } from '../capture/captureTypes.js';
+import { CaptureGateFailed, type SimCaptureBackend } from '../capture/captureTypes.js';
 
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'db', 'migrations');
 
@@ -120,11 +120,20 @@ async function seed(): Promise<void> {
     [section.id, `https://cdn.test/simulations/x/index.html?section=${section.id}&v=h1`]);
 }
 
-async function newExport(status = 'queued', opts: { cancelRequested?: boolean; staleMinutes?: number } = {}): Promise<string> {
+/**
+ * Most tests here are about claiming, fencing, heartbeats, assembly and cancellation — not the
+ * degradation policy — and they were written when a failed capture always fell back to a poster.
+ * They therefore state `allow_poster` explicitly, which is what their assertions assume. The strict
+ * default is exercised deliberately by the outcome-matrix tests further down.
+ */
+async function newExport(
+  status = 'queued',
+  opts: { cancelRequested?: boolean; staleMinutes?: number; policy?: 'forbid' | 'allow_poster' } = {},
+): Promise<string> {
   const { id } = await one<{ id: string }>(
-    `INSERT INTO project_exports (project_id, status, cancel_requested, updated_at)
-     VALUES ($1,$2,$3, now() - ($4 || ' minutes')::interval) RETURNING id`,
-    [projectId, status, opts.cancelRequested ?? false, String(opts.staleMinutes ?? 0)]);
+    `INSERT INTO project_exports (project_id, status, cancel_requested, updated_at, degradation_policy)
+     VALUES ($1,$2,$3, now() - ($4 || ' minutes')::interval, $5) RETURNING id`,
+    [projectId, status, opts.cancelRequested ?? false, String(opts.staleMinutes ?? 0), opts.policy ?? 'allow_poster']);
   return id;
 }
 
@@ -172,6 +181,9 @@ function stubAssembler(impl?: LinearAssembler['assemble']) {
 }
 
 let storage: ReturnType<typeof fakeStorage>;
+
+const withCapture = (assembler: LinearAssembler, backend: SimCaptureBackend): ProjectExportService =>
+    new ProjectExportService(storage, assembler, backend);
 
 const service = (assembler: LinearAssembler): ProjectExportService =>
   new ProjectExportService(storage, assembler);
@@ -234,8 +246,7 @@ describe('run — the happy path (Phase 1: poster fallback for every sim window)
   // question is whether the service does the right thing with what a backend returns — capture a
   // clip and splice it, or degrade to the poster, loudly.
   describe('with a capture backend injected', () => {
-    const withCapture = (assembler: LinearAssembler, backend: SimCaptureBackend): ProjectExportService =>
-      new ProjectExportService(storage, assembler, backend);
+    // (hoisted to module scope so the outcome-matrix tests can use the same wiring)
 
     it('a gated clip is uploaded to the section key and spliced — the window is NOT a poster', async () => {
       const assembler = stubAssembler();
@@ -312,6 +323,119 @@ describe('run — the happy path (Phase 1: poster fallback for every sim window)
       expect(row.quality_state).toBe('degraded');
       // isAvailable() false means captureSection is NEVER called — no browser launched to learn it.
       expect(captureSection).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * The outcome matrix. The product contract is a video OF THE SIMULATIONS: under the default
+   * policy a capture that does not happen must fail the export, because a still image is not a
+   * lesser version of the requested artifact, it is a different one — and shipping it silently is
+   * exactly the failure the whole capture incident exists to prevent. Publishing nothing is better
+   * than publishing a slideshow, because nothing is visible and a silent slideshow is not.
+   */
+  describe('degradation policy — the outcome matrix', () => {
+    const strictFailure = async (exportId: string) => {
+      const row = await exportRow(exportId);
+      expect(row.status).toBe('failed');
+      // The load-bearing assertion: NO master was published, at any key.
+      expect(row.output_key).toBeNull();
+      return row;
+    };
+
+    it('FORBID + unavailable provider fails the export and publishes no master', async () => {
+      const assembler = stubAssembler();
+      const captureSection = vi.fn();
+      const backend: SimCaptureBackend = { name: 'fake', isAvailable: async () => false, captureSection };
+      const exportId = await newExport('queued', { policy: 'forbid' });
+
+      await expect(withCapture(assembler, backend).run(exportId)).rejects.toMatchObject({
+        code: 'capture_failed_strict',
+      });
+      const row = await strictFailure(exportId);
+      expect(row.error).toMatch(/could not be rendered/i);
+      expect(captureSection).not.toHaveBeenCalled();
+    });
+
+    it('FORBID + a capture exception fails the export and publishes no master', async () => {
+      const assembler = stubAssembler();
+      const backend: SimCaptureBackend = {
+        name: 'fake',
+        isAvailable: async () => true,
+        captureSection: async () => { throw new Error('chrome crashed at begin_frame'); },
+      };
+      const exportId = await newExport('queued', { policy: 'forbid' });
+      await expect(withCapture(assembler, backend).run(exportId)).rejects.toMatchObject({
+        code: 'capture_failed_strict',
+      });
+      await strictFailure(exportId);
+    });
+
+    it('FORBID + a FAILED GATE fails the export — a dead canvas is never published', async () => {
+      const assembler = stubAssembler();
+      const backend: SimCaptureBackend = {
+        name: 'fake',
+        isAvailable: async () => true,
+        captureSection: async () => {
+          throw new CaptureGateFailed('every sampled canvas frame is uniform', 'SwiftShader', 450);
+        },
+      };
+      const exportId = await newExport('queued', { policy: 'forbid' });
+      await expect(withCapture(assembler, backend).run(exportId)).rejects.toMatchObject({
+        code: 'capture_failed_strict',
+        // A gate failure is deterministic: the same package fails the same way, so retrying is a
+        // waste of ten minutes of CPU rather than a second chance.
+        retryable: false,
+      });
+      await strictFailure(exportId);
+    });
+
+    it('ALLOW_POSTER keeps the per-window fallback and records the exact warning', async () => {
+      const assembler = stubAssembler();
+      const backend: SimCaptureBackend = {
+        name: 'fake',
+        isAvailable: async () => true,
+        captureSection: async () => { throw new Error('chrome crashed at begin_frame'); },
+      };
+      const exportId = await newExport('queued', { policy: 'allow_poster' });
+      await withCapture(assembler, backend).run(exportId);
+
+      const row = await exportRow(exportId);
+      expect(row.status).toBe('ready');
+      expect(row.quality_state).toBe('degraded');
+      const warnings = (row.plan as { warnings?: string[] } | null)?.warnings ?? [];
+      expect(warnings.join(' ')).toMatch(/simulation capture failed/i);
+      expect(warnings.join(' ')).toMatch(/chrome crashed at begin_frame/);
+    });
+
+    it('CANCELLATION is never degradation, even where a poster was permitted', async () => {
+      const assembler = stubAssembler();
+      const abortErr = Object.assign(new Error('aborted'), { name: 'AbortError' });
+      const backend: SimCaptureBackend = {
+        name: 'fake',
+        isAvailable: async () => true,
+        captureSection: async () => { throw abortErr; },
+      };
+      // allow_poster: the ONE policy under which a lazy catch would have turned a user pressing
+      // stop into a published slideshow.
+      const exportId = await newExport('queued', { policy: 'allow_poster' });
+      await expect(withCapture(assembler, backend).run(exportId)).rejects.toMatchObject({ name: 'AbortError' });
+
+      const row = await exportRow(exportId);
+      expect(row.status).toBe('cancelled');
+      expect(row.output_key).toBeNull();
+      // The planner's own advisory ("no poster exists for this configuration") is fine and
+      // predates the run. What must NOT appear is a DEGRADATION record — a claim that this window
+      // was exported as a still, which is what a lazy catch would have written for a cancellation.
+      const warnings = (row.plan as { warnings?: string[] } | null)?.warnings ?? [];
+      expect(warnings.join(' ')).not.toMatch(/exported as its poster still/i);
+      expect(warnings.join(' ')).not.toMatch(/simulation capture failed/i);
+    });
+
+    it('the policy is read from the ROW, so a redelivery cannot change the answer', async () => {
+      const exportId = await newExport('queued', { policy: 'forbid' });
+      const { degradation_policy } = await one<{ degradation_policy: string }>(
+        `SELECT degradation_policy FROM project_exports WHERE id = $1`, [exportId]);
+      expect(degradation_policy).toBe('forbid');
     });
   });
 

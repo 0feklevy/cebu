@@ -1428,6 +1428,11 @@ export const project_exports = pgTable(
     // full | degraded. A column, not a plan-jsonb derivation: "is this master the full
     // composition?" is the one fact every poll needs, answered without parsing the plan.
     quality_state:    text('quality_state').notNull().default('full'),
+    // forbid | allow_poster. FROZEN at creation and never rewritten: consent was given for the
+    // project as it was then, and a retry or a duplicate delivery must honour the same answer.
+    // 'forbid' is the default because the product contract is a full-quality render — a capture
+    // failure fails the export instead of silently shipping stills.
+    degradation_policy: text('degradation_policy').notNull().default('forbid'),
     objects_total:    integer('objects_total').notNull().default(0),
     objects_done:     integer('objects_done').notNull().default(0),
     plan:             jsonb('plan'),
