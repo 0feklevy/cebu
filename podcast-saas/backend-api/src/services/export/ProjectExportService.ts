@@ -435,14 +435,21 @@ export class ProjectExportService {
           // captured sim travels the identical, already-verified path. `sourceVideoFileId` carries
           // the section id: audit-only (the splice keys off `storageKey`), honest about origin.
           const clipKey = `exports/${job.project_id}/${exportId}/sections/${w.sectionId}.mp4`;
-          await this.storage.uploadFile(clipKey, await readFile(result.clipPath), 'video/mp4', IMMUTABLE_CACHE_CONTROL);
-          // The clip had to outlive the capture job's own scratch directory, so the backend leaves it
-          // in a sibling temp dir and the OWNERSHIP passes here, to the code that consumes it. Once
-          // the bytes are in storage nothing needs the local copy, and "the OS tmp reaper will get
-          // it" is not true when the operator points EXPORT_CAPTURE_WORKDIR at a real directory —
-          // which is exactly what the container-capture setup requires. Left alone, every captured
-          // section leaks an MP4 onto the worker host permanently.
-          await rm(dirname(result.clipPath), { recursive: true, force: true }).catch(() => {});
+          // OWNERSHIP. The clip has to outlive the capture job's own scratch directory, so the
+          // backend leaves it in a sibling temp dir and this is the code that owns it from here.
+          // The release is in `finally`, not after the upload: an upload failure, a DB error, a
+          // cancellation and a throw are all paths that used to leave the file behind, and "the OS
+          // tmp reaper will get it" is simply false when EXPORT_CAPTURE_WORKDIR points at a real
+          // directory — which is exactly what container capture requires. Every captured section
+          // leaked an MP4 onto the worker host, permanently, on those paths.
+          const clipDir = dirname(result.clipPath);
+          try {
+            await this.storage.uploadFile(clipKey, await readFile(result.clipPath), 'video/mp4', IMMUTABLE_CACHE_CONTROL);
+          } finally {
+            await rm(clipDir, { recursive: true, force: true }).catch((e: unknown) =>
+              logger.warn({ e, exportId, clipDir }, 'export: capture clip cleanup failed — orphan left on disk'),
+            );
+          }
           const clip: ClipWindow = {
             kind: 'clip', sectionId: w.sectionId, label: w.label, startSec: w.startSec, endSec: w.endSec,
             sourceVideoFileId: w.sectionId, storageKey: clipKey,

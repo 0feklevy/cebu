@@ -131,6 +131,27 @@ afterEach(async () => {
   scratch = null;
 });
 
+/**
+ * Probes that report exactly what the spec asked for.
+ *
+ * These suites drive the provider with fake frame bytes ('a', 'b'), so running a real `ffprobe` over
+ * them would only prove that ffprobe rejects text. The pixel-reading half is exercised for real by
+ * the end-to-end encode test; here it is stubbed to AGREE, so a staging or parsing regression is
+ * what fails, not the fixture. The values are derived from the spec rather than hard-coded, because
+ * a stub that always says 1920x1080 would quietly pass a provider that stopped checking.
+ */
+function probesFor(spec: { width: number; height: number; fps: number; durationSec: number }) {
+  const frames = Math.round(spec.durationSec * spec.fps);
+  return {
+    probeImage: async () => ({ codec: 'mjpeg', width: spec.width, height: spec.height }),
+    probeClip: async () => ({
+      streams: 1, codec: 'h264', pixFmt: 'yuv420p',
+      width: spec.width, height: spec.height, fps: spec.fps,
+      durationSec: frames / spec.fps, frames,
+    }),
+  };
+}
+
 describe('parseServedSimUrl — package terms, not entry-directory terms', () => {
   it('THE PRODUCTION URL resolves to the package root with a NESTED entry path', () => {
     expect(parseServedSimUrl(specFor(`${PREFIX}/boids-3d/index.html`).servedSimUrl)).toMatchObject({
@@ -150,7 +171,7 @@ describe('staging a NESTED LEGACY package (the failing production shape)', () =>
   it('stages the package ROOT-relative, bridge.js included, nesting preserved, entryPath nested', async () => {
     scratch = await mkdtemp(join(tmpdir(), 'pkgroot-'));
     const { boundary, seen } = capturingBoundary();
-    const provider = new ContainerCaptureProvider(testConfig(scratch), boundary, LEGACY_NESTED);
+    const provider = new ContainerCaptureProvider(testConfig(scratch), boundary, LEGACY_NESTED, probesFor(specFor('x/y/index.html')));
 
     const result = await provider.captureSection(specFor(`${PREFIX}/boids-3d/index.html`));
     expect(result.gate).toBe('passed');
@@ -182,7 +203,7 @@ describe('staging a NESTED LEGACY package (the failing production shape)', () =>
         return boundary.runCapture(spec, io);
       },
     };
-    const provider = new ContainerCaptureProvider(testConfig(scratch), spy, LEGACY_NESTED);
+    const provider = new ContainerCaptureProvider(testConfig(scratch), spy, LEGACY_NESTED, probesFor(specFor('x/y/index.html')));
     await provider.captureSection(specFor(`${PREFIX}/boids-3d/index.html`));
     expect(staged).toContain('src="../bridge.js?v=3cb4123b80d1"');
   });
@@ -218,7 +239,7 @@ describe('the INPUT MOUNT the container actually gets (offline closure, end to e
         return boundary.runCapture(spec, io);
       },
     };
-    const provider = new ContainerCaptureProvider(testConfig(scratch), spy, cdnStorage);
+    const provider = new ContainerCaptureProvider(testConfig(scratch), spy, cdnStorage, probesFor(specFor('x/y/index.html')));
     await provider.captureSection(specFor(`${PREFIX}/boids-3d/index.html`));
 
     // The v0.1.26 assertion, at the mount: nothing the container serves points off-origin.
@@ -245,7 +266,7 @@ describe('the INPUT MOUNT the container actually gets (offline closure, end to e
       [`${PREFIX}/index.html`]:
         '<script type="importmap">{"imports":{"d3":"https://cdn.jsdelivr.net/npm/d3@7/+esm"}}</script>',
     });
-    const provider = new ContainerCaptureProvider(testConfig(scratch), boundary, unsupported);
+    const provider = new ContainerCaptureProvider(testConfig(scratch), boundary, unsupported, probesFor(specFor('x/y/index.html')));
     await expect(provider.captureSection(specFor(`${PREFIX}/index.html`))).rejects.toThrow(
       /no trusted pack satisfies[\s\S]*d3/,
     );
@@ -297,7 +318,7 @@ describe('the other three supported layouts still stage correctly', () => {
     it(`${c.name}: entryPath "${c.expectEntry}" with the package root staged whole`, async () => {
       scratch = await mkdtemp(join(tmpdir(), 'pkgroot-'));
       const { boundary, seen } = capturingBoundary();
-      const provider = new ContainerCaptureProvider(testConfig(scratch), boundary, c.storage);
+      const provider = new ContainerCaptureProvider(testConfig(scratch), boundary, c.storage, probesFor(specFor('x/y/index.html')));
       await provider.captureSection(specFor(c.entryKey));
       expect(seen.spec?.entryPath).toBe(c.expectEntry);
       for (const p of c.expectStaged) expect(seen.staged, p).toContain(p);
@@ -312,7 +333,7 @@ describe('refusals', () => {
     const { boundary } = capturingBoundary();
     // Root exists but the entry object does not — a torn package.
     const torn = storageOf({ [`${PREFIX}/bridge.js`]: '/* b */' });
-    const provider = new ContainerCaptureProvider(testConfig(scratch), boundary, torn);
+    const provider = new ContainerCaptureProvider(testConfig(scratch), boundary, torn, probesFor(specFor('x/y/index.html')));
     await expect(provider.captureSection(specFor(`${PREFIX}/boids-3d/index.html`))).rejects.toThrow(
       /entry boids-3d\/index\.html is not among/,
     );
@@ -325,7 +346,7 @@ describe('refusals', () => {
       listObjects: async () => { throw new Error('storage must not be touched'); },
       readObject: async () => { throw new Error('storage must not be touched'); },
     } as unknown as StorageService;
-    const provider = new ContainerCaptureProvider(testConfig(scratch), boundary, exploding);
+    const provider = new ContainerCaptureProvider(testConfig(scratch), boundary, exploding, probesFor(specFor('x/y/index.html')));
     await expect(
       provider.captureSection(specFor('podcasts/not-a-simulation.html')),
     ).rejects.toThrow(/not a sim-public key|sim-public/);

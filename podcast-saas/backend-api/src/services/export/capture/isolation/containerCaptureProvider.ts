@@ -44,6 +44,7 @@ import {
   DockerCaptureBoundary,
   assertFrameSet,
   assertRegularArtifact,
+  frameFileName,
   buildCaptureSpec,
   expectedFrameCount,
   writeCaptureInput,
@@ -54,6 +55,14 @@ import {
 } from './captureJobBoundary.js';
 import { isStageablePackagePath, parseSimPackageKey, type SimPackageKey } from './simPackageKey.js';
 import { prepareOfflinePackage } from '../dependencies/offlinePackage.js';
+import { assertClipMatches, probeClip, probeImage, type ProbedImage, type ProbedVideo } from './artifactProbe.js';
+
+/** The pixel-reading half of artifact validation, injectable so unit fakes need not be real media. */
+export interface ArtifactProbes {
+  probeImage(path: string, opts?: { signal?: AbortSignal }): Promise<ProbedImage>;
+  probeClip(path: string, opts?: { signal?: AbortSignal }): Promise<ProbedVideo>;
+}
+import { runFfmpegLimited } from '../../../ffmpegLimit.js';
 
 // ── servedUrl → storage keys ────────────────────────────────────────────────────────────────────
 
@@ -144,7 +153,11 @@ function encodeFramesToClip(
   clipPath: string,
   opts: { timeoutMs: number; signal?: AbortSignal } = { timeoutMs: ENCODE_TIMEOUT_MS },
 ): Promise<void> {
-  return new Promise((resolve, reject) => {
+  // Through the GLOBAL cap, like every other ffmpeg in the process. This encode was the one
+  // exception, so a burst of captures could put an unbounded number of x264 runs on a host whose
+  // whole point is that it has two cores — and the limiter that exists to prevent exactly that
+  // never saw them.
+  return runFfmpegLimited(() => new Promise<void>((resolve, reject) => {
     const args = [
       '-hide_banner', '-nostdin', '-nostats', '-y',
       // -framerate BEFORE -i: image2's input rate, so no frames are dropped or duplicated.
@@ -183,7 +196,7 @@ function encodeFramesToClip(
         else reject(new Error(`container capture: frame encode exited ${code}: ${stderr.slice(-400)}`));
       });
     });
-  });
+  }), opts.signal);
 }
 
 // ── Configuration ───────────────────────────────────────────────────────────────────────────────
@@ -303,10 +316,17 @@ export class ContainerCaptureProvider implements SimCaptureBackend {
   readonly name = 'container-beginframe';
   private available: boolean | null = null;
 
+  /**
+   * `probes` is injectable for the same reason `boundary` and `storage` are: the unit suite drives
+   * this class with fake frame bytes, and a real `ffprobe` over 'a' and 'b' proves nothing except
+   * that ffprobe works. The DEFAULT is the real implementation, so production always measures; the
+   * end-to-end encode test exercises that path against genuine frames.
+   */
   constructor(
     private readonly config: ContainerCaptureConfig,
     private readonly boundary: CaptureJobBoundary = new DockerCaptureBoundary(boundaryConfigFrom(config)),
     private readonly storage: StorageService = getStorageAdapter(),
+    private readonly probes: ArtifactProbes = { probeImage, probeClip },
   ) {}
 
   /** Cheap preflight: the docker binary answers and the pinned image is present on this host. */
@@ -444,6 +464,22 @@ export class ContainerCaptureProvider implements SimCaptureBackend {
           expectedFrames: expectedFrameCount(containerSpec),
           namePattern: containerSpec.output.namePattern,
         });
+        // Every check so far has been about names, sizes and paths — none of it reads a pixel. A
+        // container that writes correctly-named 320x180 files, or files that are not images at all,
+        // satisfies all of them, and the first person to notice would be a viewer watching a
+        // stretched section of their finished video. Probe the first and last frame: enough to
+        // catch a wrong size or an undecodable file, cheap enough not to become its own bottleneck.
+        const expectedFrames = expectedFrameCount(containerSpec);
+        for (const index of [0, expectedFrames - 1]) {
+          const name = frameFileName(containerSpec.output.namePattern, index);
+          const probed = await this.probes.probeImage(join(framesReal, name), { signal });
+          if (probed.width !== spec.width || probed.height !== spec.height) {
+            throw new Error(
+              `container capture: ${name} is ${probed.width}x${probed.height}, not the requested ${spec.width}x${spec.height}`,
+            );
+          }
+        }
+
         await encodeFramesToClip(
           framesReal,
           containerSpec.output.namePattern,
@@ -460,7 +496,19 @@ export class ContainerCaptureProvider implements SimCaptureBackend {
           reason: 'container produced neither a clip nor a frames directory',
         };
       }
+      // And the clip itself, against the window it has to fill. A clip short by two frames leaves a
+      // gap the assembler covers by stretching or repeating — visible, and blamed on the simulation.
       await stat(clipPath);
+      assertClipMatches(
+        await this.probes.probeClip(clipPath, { signal }),
+        {
+          width: spec.width,
+          height: spec.height,
+          fps: spec.fps,
+          frames: expectedFrameCount(containerSpec),
+        },
+        `container capture ${spec.sectionId}`,
+      );
       logger.info(
         { section: spec.sectionId, frameCount: result.frameCount, renderer: result.rendererString },
         'export(container-capture): section captured',

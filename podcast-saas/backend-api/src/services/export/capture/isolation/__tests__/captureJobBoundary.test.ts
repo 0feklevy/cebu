@@ -338,7 +338,9 @@ describe('the output boundary below the artifact name', () => {
       await md(out, { recursive: true });
       await wf(join(root, 'secret.env'), 'DATABASE_URL=postgres://real');
       await symlink(join(root, 'secret.env'), join(out, 'result.json'));
-      await expect(readCaptureResult(out)).rejects.toThrow(/outside the output directory/);
+      // Refused at the NAME, before any resolution: a top-level symlink whose target happened to
+      // sit inside the output directory would otherwise pass a check applied only after realpath.
+      await expect(readCaptureResult(out)).rejects.toThrow(/is a symlink/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -382,7 +384,60 @@ describe('the output boundary below the artifact name', () => {
 
       await expect(
         assertFrameSet(root, 'frames', { expectedFrames: 3, namePattern: NAME_PATTERN }),
-      ).rejects.toThrow(/not a regular file/);
+      ).rejects.toThrow(/is a symlink/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a HARD link where a frame should be — nothing to resolve, so realpath cannot see it', async () => {
+    const { link, writeFile: wf, unlink } = await import('node:fs/promises');
+    const root = await mkdtemp(join(tmpdir(), 'boundary-hardlink-'));
+    try {
+      const dir = await frames(root, 3);
+      await wf(join(root, 'host-secret.jpg'), 'JPEGBYTES');
+      await unlink(join(dir, 'frame-000001.jpg'));
+      // A hard link IS the file — same inode, no link to follow, confinement sees nothing wrong.
+      // The only tell is that the inode is reachable under another name.
+      await link(join(root, 'host-secret.jpg'), join(dir, 'frame-000001.jpg'));
+
+      await expect(
+        assertFrameSet(root, 'frames', { expectedFrames: 3, namePattern: NAME_PATTERN }),
+      ).rejects.toThrow(/has 2 links/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a hard-linked result.json for the same reason', async () => {
+    const { link, writeFile: wf, mkdir: md } = await import('node:fs/promises');
+    const root = await mkdtemp(join(tmpdir(), 'boundary-hardlink2-'));
+    try {
+      const out = join(root, 'output');
+      await md(out, { recursive: true });
+      await wf(join(root, 'secret.env'), 'DATABASE_URL=postgres://real');
+      await link(join(root, 'secret.env'), join(out, 'result.json'));
+      await expect(readCaptureResult(out)).rejects.toThrow(/has 2 links/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a FIFO and a socket named as an artifact', async () => {
+    // A FIFO makes a privileged reader block forever; a socket is simply not a capture artifact.
+    // Neither is a symlink, so the link checks miss both — `isFile()` is what catches them.
+    const { mkdir: md } = await import('node:fs/promises');
+    const { execFileSync } = await import('node:child_process');
+    const root = await mkdtemp(join(tmpdir(), 'boundary-fifo-'));
+    try {
+      const out = join(root, 'output');
+      await md(out, { recursive: true });
+      try {
+        execFileSync('mkfifo', [join(out, 'result.json')]);
+      } catch {
+        return; // no mkfifo on this host; the isFile() assertion below is covered by the dir case
+      }
+      await expect(readCaptureResult(out)).rejects.toThrow(/not a regular file/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

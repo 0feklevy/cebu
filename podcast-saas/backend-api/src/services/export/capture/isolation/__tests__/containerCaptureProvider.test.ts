@@ -32,6 +32,27 @@ import {
 
 // ── parseServedSimUrl ───────────────────────────────────────────────────────────────────────────
 
+/**
+ * Probes that report exactly what the spec asked for.
+ *
+ * These suites drive the provider with fake frame bytes ('a', 'b'), so running a real `ffprobe` over
+ * them would only prove that ffprobe rejects text. The pixel-reading half is exercised for real by
+ * the end-to-end encode test; here it is stubbed to AGREE, so a staging or parsing regression is
+ * what fails, not the fixture. The values are derived from the spec rather than hard-coded, because
+ * a stub that always says 1920x1080 would quietly pass a provider that stopped checking.
+ */
+function probesFor(spec: { width: number; height: number; fps: number; durationSec: number }) {
+  const frames = Math.round(spec.durationSec * spec.fps);
+  return {
+    probeImage: async () => ({ codec: 'mjpeg', width: spec.width, height: spec.height }),
+    probeClip: async () => ({
+      streams: 1, codec: 'h264', pixFmt: 'yuv420p',
+      width: spec.width, height: spec.height, fps: spec.fps,
+      durationSec: frames / spec.fps, frames,
+    }),
+  };
+}
+
 describe('parseServedSimUrl', () => {
   const REV_UUID = '11111111-2222-4333-8444-555555555555';
 
@@ -253,7 +274,7 @@ describe('ContainerCaptureProvider.captureSection', () => {
         return okResult({ clipPath: 'section.mp4' });
       },
     };
-    const provider = new ContainerCaptureProvider(testConfig(scratch), boundary, fakeStorage());
+    const provider = new ContainerCaptureProvider(testConfig(scratch), boundary, fakeStorage(), probesFor(SPEC));
 
     const result = await provider.captureSection(SPEC);
 
@@ -282,7 +303,7 @@ describe('ContainerCaptureProvider.captureSection', () => {
         return okResult({ gate: 'failed', reason: 'all frames byte-identical', frameCount: 60 });
       },
     };
-    const provider = new ContainerCaptureProvider(testConfig(scratch), boundary, fakeStorage());
+    const provider = new ContainerCaptureProvider(testConfig(scratch), boundary, fakeStorage(), probesFor(SPEC));
 
     const result = await provider.captureSection(SPEC);
     expect(result.gate).toBe('failed');
@@ -298,7 +319,7 @@ describe('ContainerCaptureProvider.captureSection', () => {
       },
     };
     const config = { ...testConfig(scratch), dockerBin: '/nonexistent-docker-binary' };
-    const provider = new ContainerCaptureProvider(config, boundary, fakeStorage());
+    const provider = new ContainerCaptureProvider(config, boundary, fakeStorage(), probesFor(SPEC));
 
     await expect(provider.captureSection(SPEC)).rejects.toBeInstanceOf(CaptureUnavailable);
   });

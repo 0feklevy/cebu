@@ -31,7 +31,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { lstat, mkdir, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { constants as fsConstants, lstat, mkdir, open as fsOpen, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, sep } from 'node:path';
 
 import type { RendererIdentity, SimCaptureWindow } from '../../types.js';
@@ -411,13 +411,45 @@ export async function assertRegularArtifact(
   artifact: string,
   maxBytes = MAX_ARTIFACT_FILE_BYTES,
 ): Promise<string> {
-  const real = await assertWithinOutputDir(outputDir, artifact);
-  const st = await lstat(real);
-  if (!st.isFile()) {
+  // lstat the NAME THE CONTAINER GAVE, before any resolution: `realpath` would follow a top-level
+  // symlink and then report on its target, so a link whose target happens to sit inside the output
+  // directory would pass a check applied only after resolution. The link itself has to be refused.
+  const literal = join(outputDir, artifact);
+  const linkStat = await lstat(literal).catch((err: unknown) => {
+    throw new Error(
+      `capture artifact ${artifact} is not readable: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
+  });
+  if (linkStat.isSymbolicLink()) {
+    throw new Error(`capture artifact ${artifact} is a symlink — refusing to follow it`);
+  }
+  if (!linkStat.isFile()) {
     throw new Error(`capture artifact ${artifact} is not a regular file — refusing to read it`);
   }
-  if (st.size > maxBytes) {
-    throw new Error(`capture artifact ${artifact} is ${st.size} bytes, over the ${maxBytes} cap`);
+  if (linkStat.nlink !== 1) {
+    // A HARD link is indistinguishable from the file it aliases — no realpath check can see it,
+    // because there is nothing to resolve. `nlink > 1` means the same inode is reachable under
+    // another name, which for a freshly written capture artifact means the container arranged it.
+    throw new Error(`capture artifact ${artifact} has ${linkStat.nlink} links — refusing to read an aliased file`);
+  }
+
+  const real = await assertWithinOutputDir(outputDir, artifact);
+  // O_NOFOLLOW closes the gap between the check above and the read below: the descriptor refuses a
+  // symlink at open time, and everything after is done through THAT descriptor, so the name cannot
+  // be swapped underneath us. (The container is already dead here; this removes the race anyway,
+  // because "no attacker is running right now" is a weaker property than "there is no race".)
+  const handle = await fsOpen(real, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+  try {
+    const st = await handle.stat();
+    if (!st.isFile()) {
+      throw new Error(`capture artifact ${artifact} is not a regular file — refusing to read it`);
+    }
+    if (st.size > maxBytes) {
+      throw new Error(`capture artifact ${artifact} is ${st.size} bytes, over the ${maxBytes} cap`);
+    }
+  } finally {
+    await handle.close();
   }
   return real;
 }
@@ -477,7 +509,11 @@ export async function assertFrameSet(
       throw new Error(`capture frames ${artifact} is missing ${name}`);
     }
     // lstat, deliberately: a symlink must fail HERE rather than be followed by ffmpeg later.
+    if (st.isSymbolicLink()) throw new Error(`capture frame ${name} is a symlink — refusing to follow it`);
     if (!st.isFile()) throw new Error(`capture frame ${name} is not a regular file — refusing to encode it`);
+    if (st.nlink !== 1) {
+      throw new Error(`capture frame ${name} has ${st.nlink} links — refusing to encode an aliased file`);
+    }
     if (st.size > MAX_ARTIFACT_FILE_BYTES) {
       throw new Error(`capture frame ${name} is ${st.size} bytes, over the ${MAX_ARTIFACT_FILE_BYTES} cap`);
     }
