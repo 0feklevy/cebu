@@ -105,6 +105,9 @@ const READY_ROW = {
 };
 
 beforeEach(async () => {
+  // Consent is signed, so the suite needs a key. Absent, the endpoint refuses to issue one at
+  // all — which is the production posture, not a test inconvenience.
+  process.env.EXPORT_CONSENT_SECRET = 'test-consent-secret-at-least-32-chars-long';
   vi.clearAllMocks();
   process.env.LINEAR_EXPORT_ENABLED = 'true';
   mocks.findFirst.mockResolvedValue({ id: PROJECT_ID, created_by: 'user-1' });
@@ -183,26 +186,63 @@ describe('POST /projects/:id/export', () => {
     expect(mocks.values).toHaveBeenCalledWith(expect.objectContaining({ degradation_policy: 'forbid' }));
   });
 
-  it('a POSTER-FALLBACK window requires consent: 409 degraded_only carrying the warnings', async () => {
+  it('a POSTER-FALLBACK window requires consent: 409 naming the sections, with a token to confirm with', async () => {
     // MUTATION TARGET: drop the consent gate and this becomes a 202 — a degraded master the
     // user learns about from the file instead of from a dialog.
     mocks.buildExportPlan.mockResolvedValue(PLAN_WITH_POSTER_FALLBACK);
     const res = await post();
     expect(res.statusCode).toBe(409);
-    const body = res.json<{ code: string; warnings: string[] }>();
+    const body = res.json<{
+      code: string; warnings: string[]; consent_token: string; plan_fingerprint: string;
+      affected_sections: Array<{ section_id: string; label: string | null; will_use_still: boolean }>;
+    }>();
     expect(body.code).toBe('degraded_only');
     expect(body.warnings).toEqual(PLAN_WITH_POSTER_FALLBACK.warnings);
+    // The dialog can NAME what it is asking about. "This export will include simulations as still
+    // images" was true of nothing in particular and implied all of them.
+    expect(body.affected_sections).toEqual([{ section_id: 's1', label: null, will_use_still: true }]);
+    expect(body.consent_token).toMatch(/^[\w-]+\.[\w-]+$/);
+    expect(body.plan_fingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(mocks.insert).not.toHaveBeenCalled();
     expect(mocks.enqueueJob).not.toHaveBeenCalled();
   });
 
-  it('starts with consent: allow_degraded true → 202, and the row records allow_poster', async () => {
+  it('a NAKED allow_degraded no longer starts anything — a boolean is not consent', async () => {
+    // It could be sent by anything that could reach this endpoint, said nothing about what was
+    // being agreed to, and survived any amount of drift.
     mocks.buildExportPlan.mockResolvedValue(PLAN_WITH_POSTER_FALLBACK);
-    const res = await post({ allow_degraded: true });
+    const res = await post({ allow_degraded: true } as never);
+    expect(res.statusCode).toBe(409);
+    expect(mocks.insert).not.toHaveBeenCalled();
+    expect(mocks.enqueueJob).not.toHaveBeenCalled();
+  });
+
+  it('starts with a VALID token → 202, and the row records allow_poster', async () => {
+    mocks.buildExportPlan.mockResolvedValue(PLAN_WITH_POSTER_FALLBACK);
+    const first = await post();
+    const { consent_token } = first.json<{ consent_token: string }>();
+
+    const res = await post({ consent_token });
     expect(res.statusCode).toBe(202);
     expect(res.json()).toMatchObject({ export_id: EXPORT_ID, status: 'queued' });
     expect(mocks.enqueueJob).toHaveBeenCalledWith('project_export', { exportId: EXPORT_ID });
     expect(mocks.values).toHaveBeenCalledWith(expect.objectContaining({ degradation_policy: 'allow_poster' }));
+  });
+
+  it('a token issued for a DIFFERENT plan re-prompts instead of starting', async () => {
+    mocks.buildExportPlan.mockResolvedValue(PLAN_WITH_POSTER_FALLBACK);
+    const { consent_token } = (await post()).json<{ consent_token: string }>();
+
+    // The project changed between the dialog and the confirmation: the substitutions the user saw
+    // are not the substitutions that would happen.
+    mocks.buildExportPlan.mockResolvedValue({
+      ...PLAN_WITH_POSTER_FALLBACK,
+      timeline: [...PLAN_WITH_POSTER_FALLBACK.timeline, { kind: 'poster-fallback', sectionId: 's2' }],
+    });
+    const res = await post({ consent_token });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ reason: 'plan_changed' });
+    expect(mocks.insert).not.toHaveBeenCalled();
   });
 
   it('needs no consent when nothing would degrade', async () => {

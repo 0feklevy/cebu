@@ -26,6 +26,28 @@ import { enqueueJob } from '../../queue/index.js';
 import { ExportRefused, admitCaptureWorkload, buildExportPlan } from '../../services/export/exportPlan.js';
 import { EXPORT_GRID } from '../../services/export/types.js';
 import { fingerprintPlan } from '../../services/export/planFingerprint.js';
+import { ConsentInvalid, issueConsentToken, verifyConsentToken } from '../../services/export/consentToken.js';
+
+/**
+ * The sections a degraded export would replace with a still, named.
+ *
+ * "This export will include simulations as still images" was true of nothing in particular: it did
+ * not say which, and it implied ALL of them. A user with eleven simulations and one broken package
+ * was told their whole video would be a slideshow.
+ */
+function affectedSections(plan: { timeline: readonly unknown[] }): Array<{
+  section_id: string; label: string | null; will_use_still: boolean;
+}> {
+  return (plan.timeline as Array<{ kind: string; sectionId?: string; label?: string | null }>)
+    .filter((w) => w.kind === 'poster-fallback')
+    .map((w) => ({
+      section_id: String(w.sectionId ?? ''),
+      label: w.label ?? null,
+      // `will`, not `may`: the planner already decided this one. A live capture that might yet fail
+      // is a different statement, and conflating them is what made the old warning untrustworthy.
+      will_use_still: true,
+    }));
+}
 
 /**
  * SHIPS DARK until Phase 2: the feature flag gates the POST, and OFF answers 404 — exactly what
@@ -75,8 +97,60 @@ function exportBody(row: typeof project_exports.$inferSelect, downloadUrl: strin
 export async function registerExportRoutes(app: FastifyInstance): Promise<void> {
   const storage = getStorageAdapter();
 
+  /**
+   * GET /api/v1/projects/:id/export/preview — what an export WOULD do, without doing any of it.
+   *
+   * The consent dialog used to be driven by a 409 from the start endpoint, which meant asking "what
+   * will this cost me?" required attempting the thing. This answers the question directly: no row is
+   * inserted, no job is enqueued, nothing is charged, and the caller gets the sections that would be
+   * replaced by stills plus a token to confirm with. Owner-only, like every other route here.
+   */
+  app.get<{ Params: { id: string } }>(
+    '/api/v1/projects/:id/export/preview',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      if (!exportEnabled()) return reply.code(404).send({ message: 'Not found' });
+      const user = request.dbUser!;
+      const project = await db.query.projects.findFirst({
+        where: and(eq(projects.id, request.params.id), eq(projects.created_by, user.id)),
+      });
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+
+      let plan: Awaited<ReturnType<typeof buildExportPlan>>;
+      try {
+        plan = await buildExportPlan(project.id, storage);
+      } catch (err) {
+        if (err instanceof ExportRefused) {
+          return reply.code(err.statusCode).send({ code: err.code, message: err.message });
+        }
+        throw err;
+      }
+      if (!plan) return reply.code(404).send({ message: 'Project not found' });
+
+      const fingerprint = fingerprintPlan(plan as unknown as Record<string, unknown>);
+      const affected = affectedSections(plan);
+      const inadmissible = admitCaptureWorkload(plan.timeline, EXPORT_GRID.fps);
+      return reply.code(200).send({
+        plan_fingerprint: fingerprint,
+        // Sections the planner ALREADY resolved to a still — these will definitely be stills.
+        affected_sections: affected,
+        // …and the ones that will be rendered live, which may still fail. Kept separate on purpose:
+        // conflating "will" with "may" is what made the old warning untrustworthy.
+        live_sections: plan.timeline.filter((w) => w.kind === 'sim-capture').length,
+        may_use_still: plan.timeline.some((w) => w.kind === 'sim-capture'),
+        will_use_still: affected.length > 0,
+        warnings: plan.warnings,
+        admissible: inadmissible === null,
+        refusal: inadmissible ? { code: inadmissible.code, message: inadmissible.message } : null,
+        consent_token: affected.length > 0
+          ? issueConsentToken({ projectId: project.id, userId: user.id, fingerprint, nowMs: Date.now() })
+          : null,
+      });
+    },
+  );
+
   // POST /api/v1/projects/:id/export — start a linear video export.
-  app.post<{ Params: { id: string }; Body: { allow_degraded?: boolean } | null }>(
+  app.post<{ Params: { id: string }; Body: { consent_token?: unknown } | null }>(
     '/api/v1/projects/:id/export',
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
@@ -159,8 +233,43 @@ export async function registerExportRoutes(app: FastifyInstance): Promise<void> 
       // opposite of that: it is the promise to render the simulation live, and treating it as
       // degradation asked every user to pre-approve a slideshow before anything had failed, which
       // both trained them to click through the warning and made the strict contract unreachable.
+      const planSnapshot = plan as unknown as Record<string, unknown>;
+      const planFingerprint = fingerprintPlan(planSnapshot);
       const wouldDegrade = plan.timeline.some((w) => w.kind === 'poster-fallback');
-      if (wouldDegrade && request.body?.allow_degraded !== true) {
+
+      // The consent TOKEN, not a boolean. `allow_degraded: true` could be sent by anything that
+      // could reach this endpoint, said nothing about what was being agreed to, and survived any
+      // amount of drift — a stale tab could spend it on a project rewritten since. A token names
+      // this user, this project and this exact plan, and expires.
+      let degradationPolicy: 'forbid' | 'allow_poster' = 'forbid';
+      if (request.body?.consent_token !== undefined) {
+        try {
+          verifyConsentToken({
+            token: request.body.consent_token,
+            projectId: project.id,
+            userId: user.id,
+            fingerprint: planFingerprint,
+            nowMs: Date.now(),
+          });
+          degradationPolicy = 'allow_poster';
+        } catch (err) {
+          const reason = err instanceof ConsentInvalid ? err.reason : 'malformed';
+          logger.info({ projectId: project.id, reason }, 'export: consent rejected — re-prompting');
+          return reply.code(409).send({
+            code: 'degraded_only',
+            message: err instanceof Error ? err.message : 'Confirm again to export with still images.',
+            reason,
+            warnings: plan.warnings,
+            affected_sections: affectedSections(plan),
+            consent_token: wouldDegrade
+              ? issueConsentToken({ projectId: project.id, userId: user.id, fingerprint: planFingerprint, nowMs: Date.now() })
+              : null,
+            plan_fingerprint: planFingerprint,
+          });
+        }
+      }
+
+      if (wouldDegrade && degradationPolicy !== 'allow_poster') {
         logger.info(
           { projectId: project.id, planWarnings: plan.warnings.length },
           'export: degraded consent required — answering 409 degraded_only',
@@ -168,9 +277,14 @@ export async function registerExportRoutes(app: FastifyInstance): Promise<void> 
         return reply.code(409).send({
           code: 'degraded_only',
           message:
-            'This export will include simulations as still images, not live captures. '
-            + 'Confirm to export anyway.',
+            'Some simulations in this project cannot be rendered and would be exported as still '
+            + 'images. Confirm to export anyway.',
           warnings: plan.warnings,
+          affected_sections: affectedSections(plan),
+          consent_token: issueConsentToken({
+            projectId: project.id, userId: user.id, fingerprint: planFingerprint, nowMs: Date.now(),
+          }),
+          plan_fingerprint: planFingerprint,
         });
       }
 
@@ -179,13 +293,10 @@ export async function registerExportRoutes(app: FastifyInstance): Promise<void> 
         // request body: the controller read it, logged it, and dropped it — so the worker degraded
         // whatever failed, with no way to know what had been agreed to, and a retry or duplicate
         // delivery had no answer at all.
-        const degradationPolicy = request.body?.allow_degraded === true ? 'allow_poster' : 'forbid';
         // THE SNAPSHOT. The plan computed above — the exact one whose consequences were just
         // described to the user — is what the worker will execute. Storing it here, with its
         // fingerprint, is what closes the gap in which the project could be edited between the
         // answer and the render: the worker no longer re-plans, so there is nothing to drift.
-        const planSnapshot = plan as unknown as Record<string, unknown>;
-        const planFingerprint = fingerprintPlan(planSnapshot);
         const [row] = await db.insert(project_exports).values({
           project_id: project.id,
           requested_by: user.id,
