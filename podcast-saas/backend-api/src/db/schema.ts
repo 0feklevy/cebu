@@ -1443,6 +1443,19 @@ export const project_exports = pgTable(
     effective_plan: jsonb('effective_plan'),
     // Why a run stopped. Also separate, for the same reason.
     failure: jsonb('failure'),
+    // Progress the poll can say something true with. `objects_done/total` alone could not: a
+    // simulation capture is minutes long and the counter sat still throughout it.
+    current_phase: text('current_phase'),
+    phase_done: integer('phase_done').notNull().default(0),
+    phase_total: integer('phase_total').notNull().default(0),
+    current_section_id: uuid('current_section_id'),
+    current_section_label: text('current_section_label'),
+    capture_stage: text('capture_stage'),
+    frames_done: integer('frames_done').notNull().default(0),
+    frames_total: integer('frames_total').notNull().default(0),
+    // Real poster-fallback windows, not warnings: warnings include planning advisories that are
+    // not degradation, so counting them told users their export was degraded when nothing was.
+    degraded_windows: integer('degraded_windows').notNull().default(0),
     objects_total:    integer('objects_total').notNull().default(0),
     objects_done:     integer('objects_done').notNull().default(0),
     plan:             jsonb('plan'),

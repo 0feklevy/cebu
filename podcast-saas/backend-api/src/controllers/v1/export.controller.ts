@@ -84,7 +84,28 @@ function exportBody(row: typeof project_exports.$inferSelect, downloadUrl: strin
     // learn. Null until the master exists.
     quality_state: terminal ? row.quality_state : null,
     degradation_policy: row.degradation_policy,
-    degraded_windows: terminal ? warnings.length : 0,
+    // The COLUMN, not a warning count: warnings include planning advisories that are not
+    // degradation at all, so counting them reported degradation where none happened.
+    degraded_windows: row.degraded_windows,
+    // What the run is doing now, and how far into it. `objects_done/total` alone could not say:
+    // a simulation capture is minutes long, and the counter sat still for all of it.
+    current_phase: row.current_phase,
+    phase_done: row.phase_done,
+    phase_total: row.phase_total,
+    current_section_id: row.current_section_id,
+    current_section_label: row.current_section_label,
+    capture_stage: row.capture_stage,
+    frames_done: row.frames_done,
+    frames_total: row.frames_total,
+    // Whether trying again could plausibly work, from the recorded failure rather than guessed by
+    // the client from a message string.
+    retryable: (row.failure as { retryable?: boolean } | null)?.retryable ?? null,
+    // A strict export that failed on capture CAN be retried with stills — but only by asking, and
+    // never automatically. This says the option exists; it does not take it.
+    degraded_retry_available:
+      row.status === 'failed'
+      && (row.failure as { code?: string } | null)?.code === 'capture_failed_strict'
+      && row.degradation_policy === 'forbid',
     objects_total: row.objects_total,
     objects_done: row.objects_done,
     error: row.error,

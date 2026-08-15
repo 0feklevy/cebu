@@ -549,6 +549,76 @@ describe('run — the happy path (Phase 1: poster fallback for every sim window)
     });
   });
 
+  /**
+   * Progress that can be believed.
+   *
+   * The counter was incremented BEFORE each window, so a project reported "3 of 4 done" while the
+   * third had not started — and if the run then failed, the user had been told it was nearly
+   * finished. During a simulation capture, which is minutes long, nothing moved at all and the only
+   * honest thing the UI could show was a spinner.
+   */
+  describe('progress is monotonic and never ahead of the work', () => {
+    it('names the section it is working on, and counts it only once it is finished', async () => {
+      const seen: Array<{ done: number; section: string | null; total: number }> = [];
+      const assembler = stubAssembler();
+      const exportId = await newExport();
+      const backend: SimCaptureBackend = {
+        name: 'fake',
+        isAvailable: async () => true,
+        captureSection: async () => {
+          // Mid-capture: the row must name THIS section and must not have counted it yet.
+          const row = await one<{ phase_done: number; current_section_label: string | null; phase_total: number }>(
+            `SELECT phase_done, current_section_label, phase_total FROM project_exports WHERE id = $1`, [exportId]);
+          seen.push({ done: row.phase_done, section: row.current_section_label, total: row.phase_total });
+          throw new Error('stop here — the observation above is the test');
+        },
+      };
+      await withCapture(assembler, backend).run(exportId).catch(() => {});
+
+      expect(seen).toHaveLength(1);
+      expect(seen[0]!.section).toBe('Scripted sim');
+      // NOT counted while running. MUTATION TARGET: increment before the window and this breaks.
+      expect(seen[0]!.done).toBeLessThan(seen[0]!.total);
+    });
+
+    it('never moves backwards across the whole run', async () => {
+      const assembler = stubAssembler();
+      const exportId = await newExport();
+      const samples: number[] = [];
+      const poll = setInterval(() => {
+        void one<{ phase_done: number }>(`SELECT phase_done FROM project_exports WHERE id = $1`, [exportId])
+          .then((r) => samples.push(r.phase_done))
+          .catch(() => {});
+      }, 5);
+      try {
+        await service(assembler).run(exportId);
+      } finally {
+        clearInterval(poll);
+      }
+      // Assembly must not reset a counter the capture phase already advanced.
+      for (let i = 1; i < samples.length; i++) expect(samples[i]!).toBeGreaterThanOrEqual(samples[i - 1]!);
+    });
+
+    it('degraded_windows counts real substitutions, not warnings', async () => {
+      const assembler = stubAssembler();
+      const backend: SimCaptureBackend = {
+        name: 'fake',
+        isAvailable: async () => true,
+        captureSection: async () => { throw new Error('capture failed'); },
+      };
+      const exportId = await newExport('queued', { policy: 'allow_poster' });
+      await withCapture(assembler, backend).run(exportId);
+
+      const row = await one<{ degraded_windows: number }>(
+        `SELECT degraded_windows FROM project_exports WHERE id = $1`, [exportId]);
+      const warnings = (await exportRow(exportId)).effective_plan?.warnings ?? [];
+      expect(row.degraded_windows).toBe(1);
+      // The planner's advisories are also in `warnings`, so the two numbers differ — which is the
+      // whole point: counting warnings reported degradation where none happened.
+      expect(warnings.length).toBeGreaterThanOrEqual(row.degraded_windows);
+    });
+  });
+
   it('an export with no sim windows lands ready at FULL quality', async () => {
     await pg.query(`DELETE FROM timeline_sections WHERE id = $1`, [scriptedSectionId]);
     const assembler = stubAssembler();

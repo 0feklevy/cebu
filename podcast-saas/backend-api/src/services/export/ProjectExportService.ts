@@ -397,16 +397,30 @@ export class ProjectExportService {
 
       let done = 0;
       const captured: ExportPlan['timeline'] = [];
+      const totalWindows = plan.timeline.length;
       for (const w of plan.timeline) {
-        done += 1;
-        // Advisory per-window progress so the client's bar advances during the (slow) capture phase
-        // instead of sitting at 0% until it ends. Unfenced like the assembler's counter: a lost
-        // write costs one poll tick, not correctness — the FENCED status writes are what gate.
+        // Progress names what is happening NOW and counts only what is FINISHED. The counter used
+        // to be incremented before each window, so a project reported "3 of 4 done" while the third
+        // had not started — and if the run then failed, the user had been told it was nearly there.
         void db.update(project_exports)
-          .set({ objects_done: done, updated_at: new Date() })
+          .set({
+            current_phase: 'capturing',
+            phase_done: done,
+            phase_total: totalWindows,
+            current_section_id: w.kind === 'sim-capture' ? w.sectionId : null,
+            current_section_label: w.kind === 'sim-capture' ? (w.label ?? null) : null,
+            capture_stage: w.kind === 'sim-capture' ? 'starting' : null,
+            frames_done: 0,
+            frames_total: w.kind === 'sim-capture' ? Math.round((w.endSec - w.startSec) * plan.grid.fps) : 0,
+            updated_at: new Date(),
+          })
           .where(eq(project_exports.id, exportId))
           .catch((err: unknown) => logger.debug({ err, exportId }, 'export: capture progress write failed'));
-        if (w.kind !== 'sim-capture') { captured.push(w); continue; }
+        if (w.kind !== 'sim-capture') {
+          captured.push(w);
+          done += 1;
+          continue;
+        }
         await this.throwIfCancelRequested(exportId);
 
         if (!canCapture || !backend || !w.servedUrl) {
@@ -530,6 +544,13 @@ export class ProjectExportService {
           }
           captured.push(toPoster(w));
         }
+        // Counted here, after the window resolved — captured or substituted. Monotonic, and never
+        // ahead of the work.
+        done += 1;
+        void db.update(project_exports)
+          .set({ objects_done: done, phase_done: done, updated_at: new Date() })
+          .where(eq(project_exports.id, exportId))
+          .catch((err: unknown) => logger.debug({ err, exportId }, 'export: capture progress write failed'));
       }
       plan.timeline = captured;
       await this.fencedUpdate(exportId, {
@@ -620,6 +641,13 @@ export class ProjectExportService {
         .set({
           status: 'ready',
           quality_state: degraded ? 'degraded' : 'full',
+          // A COUNT of real substitutions. Counting warnings told users their export was degraded
+          // when the only "warning" was a planning advisory about a poster that was never used.
+          degraded_windows: plan.timeline.filter((w) => w.kind === 'poster-fallback').length,
+          current_phase: 'uploading',
+          capture_stage: null,
+          current_section_id: null,
+          current_section_label: null,
           output_key: outputKey,
           objects_done: total,
           // NOT `plan`. The snapshot is what we were ASKED to make and must survive the run intact;
