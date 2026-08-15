@@ -408,6 +408,21 @@ export class BeginFrameBackend implements SimCaptureBackend {
         return sid;
       });
 
+      // Where the capture loop's wall clock actually goes. Measured because the answer decides an
+      // infrastructure question and could not be inferred: a cost dominated by `sim` is the
+      // simulation's own JS on the CPU, which a GPU would barely improve, while a cost dominated by
+      // `raster` is SwiftShader software rendering, which is exactly what a GPU replaces. Four
+      // buckets, monotonic clock, no allocation per frame.
+      const cost = { sim: 0, flush: 0, raster: 0, write: 0 };
+      const timed = async <T>(bucket: keyof typeof cost, fn: () => Promise<T>): Promise<T> => {
+        const t0 = performance.now();
+        try {
+          return await fn();
+        } finally {
+          cost[bucket] += performance.now() - t0;
+        }
+      };
+
       // Runtime.evaluate wrapper: an in-page exception is a real failure at the calling stage.
       const evalInPage = async (
         expression: string,
@@ -506,22 +521,24 @@ export class BeginFrameBackend implements SimCaptureBackend {
           return batch;
         },
         stepFrame: async (virtualFrame) => {
-          if (pendingStepFlush) await beginFrame(false); // the PREVIOUS uncaptured frame's compositor turn
+          if (pendingStepFlush) await timed('flush', () => beginFrame(false)); // the PREVIOUS uncaptured frame
           pendingStepFlush = false;
-          await evalInPage(
-            `globalThis.__SIM_CLOCK__ && globalThis.__SIM_CLOCK__.advanceToFrame(${virtualFrame})`,
-            { stage: 'begin_frame' },
+          await timed('sim', () =>
+            evalInPage(
+              `globalThis.__SIM_CLOCK__ && globalThis.__SIM_CLOCK__.advanceToFrame(${virtualFrame})`,
+              { stage: 'begin_frame' },
+            ),
           );
           pendingStepFlush = true;
         },
         captureFrame: async (captureIndex) => {
           pendingStepFlush = false; // THIS frame's single beginFrame is the screenshot one
-          const data = await beginFrame(true);
+          const data = await timed('raster', () => beginFrame(true));
           if (!data) {
             throw new CaptureStageError('screenshot', `beginFrame returned no screenshotData at frame ${captureIndex}`);
           }
           const name = `frame-${String(captureIndex).padStart(6, '0')}.jpg`;
-          await writeFile(join(framesDir, name), Buffer.from(data, 'base64'));
+          await timed('write', () => writeFile(join(framesDir, name), Buffer.from(data, 'base64')));
           if (toSample.has(captureIndex)) {
             const raw = await evalInPage(compositedSamplerExpression(gridN, data), {
               awaitPromise: true,
@@ -574,6 +591,14 @@ export class BeginFrameBackend implements SimCaptureBackend {
         );
         return JSON.parse(String(raw)) as { attempted: boolean; ok: boolean; renderer: string };
       });
+
+      const kept = Math.max(1, run.frameCount);
+      const ms = (v: number) => Math.round(v);
+      log(
+        `cost/frame ${ms((cost.sim + cost.flush + cost.raster + cost.write) / kept)}ms ` +
+          `= sim ${ms(cost.sim / kept)} + flush ${ms(cost.flush / kept)} ` +
+          `+ raster ${ms(cost.raster / kept)} + write ${ms(cost.write / kept)} (over ${kept} frames)`,
+      );
 
       const gate = evaluateSanityGate({ simPainted: run.sawPainted, webgl, frames: samples });
       log(`gate ${gate.gate}${gate.reason ? `: ${gate.reason}` : ''} (renderer="${webgl.renderer}")`);
