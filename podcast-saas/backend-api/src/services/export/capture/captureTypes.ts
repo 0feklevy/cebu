@@ -82,6 +82,27 @@ export interface CaptureSpec {
  * the screenshot backend emits a directory of numbered PNGs; a backend that pipes straight to
  * ffmpeg emits a clip path.
  */
+/**
+ * Where a captured frame's wall clock went, in milliseconds, averaged over the kept frames.
+ *
+ * ADVISORY ONLY. This crosses the trust boundary from the container, so nothing may branch on it:
+ * it exists to answer "why is this slow", and the answer it gave — 96.8 % of a frame is
+ * rasterisation — is what turned the hardware question from a guess into a decision. Every field is
+ * validated finite, non-negative and bounded before it is stored or logged.
+ */
+export interface CaptureCostBreakdown {
+  /** Advancing the page's virtual clock: the simulation's own JavaScript. */
+  readonly simMs: number;
+  /** The uncaptured compositor turn between kept frames. */
+  readonly flushMs: number;
+  /** beginFrame with a screenshot: rasterisation plus readback plus JPEG encode. */
+  readonly rasterMs: number;
+  /** Writing the JPEG to disk. */
+  readonly writeMs: number;
+  /** Frames the averages are over. */
+  readonly frames: number;
+}
+
 export interface CaptureResult {
   /** Directory of numbered, zero-padded frame PNGs (screenshot backend). */
   readonly framesDir?: string;
@@ -102,6 +123,8 @@ export interface CaptureResult {
   readonly gate: 'passed' | 'failed';
   /** Why the gate failed, or any non-fatal note on a pass. */
   readonly reason?: string;
+  /** Advisory per-frame cost split. Absent when the backend did not measure one. */
+  readonly cost?: CaptureCostBreakdown;
 }
 
 /**

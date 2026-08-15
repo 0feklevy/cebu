@@ -47,7 +47,6 @@ import {
   CaptureStageError,
   CaptureUnavailable,
   DEFAULT_FRAME_EPOCH_MS,
-  DEFAULT_WARMUP_FRAMES,
   frameCountFor,
   type CaptureResult,
   type CaptureSpec,
@@ -620,11 +619,10 @@ export class BeginFrameBackend implements SimCaptureBackend {
           uiHide: spec.uiHide,
           fps: spec.fps,
           durationSec: spec.durationSec,
-          // The spec's value when it carries one, the shipped default otherwise. Reading the
-          // constant unconditionally made `ContainerCaptureSpec.warmupFrames` dead wire.
-          warmupFrames: Number.isInteger(spec.warmupFrames) && spec.warmupFrames! >= 0
-            ? spec.warmupFrames!
-            : DEFAULT_WARMUP_FRAMES,
+          // Passed through VERBATIM, including 0 and including undefined. `runCaptureHandshake`
+          // owns the single default; applying one here too meant two places could disagree, and a
+          // deliberate 0 had to survive both of them to mean anything.
+          warmupFrames: spec.warmupFrames,
         });
       } catch (err) {
         if (err instanceof CaptureTimeoutError) {
@@ -638,22 +636,73 @@ export class BeginFrameBackend implements SimCaptureBackend {
         throw err;
       }
 
+      // RENDERER IDENTITY, read where the page cannot reach it.
+      //
+      // This used to read `globalThis.__SIM_CAPTURE__.webgl`, which the simulation's own code can
+      // overwrite — the object lives in the page's world, so any package could have reported
+      // "NVIDIA RTX" while SwiftShader did the work, and `assertRendererMatchesProfile` would have
+      // been satisfied by a string the untrusted side chose. That is not a hypothetical for the
+      // hardware profile: its entire purpose is to catch a silent fall back to software, and the
+      // check was reading the one field the fallback's beneficiary controls.
+      //
+      // An ISOLATED WORLD has its own JS globals and prototypes while sharing the DOM, so a context
+      // created here is not reachable by page script: `getContext('webgl')` and
+      // `WEBGL_debug_renderer_info` resolve to the browser's real implementations. The page probe is
+      // still consulted for `attempted` — whether the SIMULATION tried to make a context is a fact
+      // about the page and belongs to the page — but never for identity.
       const webgl = await stage('sanity_gate', async () => {
+        const tree = await cdp.send('Page.getFrameTree', {}, sessionId);
+        const frameId = ((tree.frameTree as { frame?: { id?: string } } | undefined)?.frame?.id) ?? '';
+        // `grantUniveralAccess` is spelled that way in the CDP protocol itself; false is the point —
+        // the probe world must not be handed access back into the page's.
+        const world = await cdp.send('Page.createIsolatedWorld',
+          { frameId, worldName: 'flowvid-capture-probe', grantUniveralAccess: false },
+          sessionId);
+        const trusted = await cdp.send('Runtime.evaluate', {
+          expression: `JSON.stringify((() => {
+            try {
+              const c = document.createElement('canvas');
+              const gl = c.getContext('webgl2') || c.getContext('webgl');
+              if (!gl) return { ok: false, renderer: '' };
+              const ext = gl.getExtension('WEBGL_debug_renderer_info');
+              const renderer = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+              return { ok: true, renderer: String(renderer || '') };
+            } catch { return { ok: false, renderer: '' }; }
+          })())`,
+          contextId: world.executionContextId as number,
+          returnByValue: true,
+        }, sessionId);
+        const identity = JSON.parse(
+          String((trusted.result as { value?: unknown } | undefined)?.value ?? '{"ok":false,"renderer":""}'),
+        ) as { ok: boolean; renderer: string };
+
+        // Page-sourced, and used ONLY for "did the simulation ask for a context" — advisory, never
+        // identity, and coerced to a boolean so a hostile value cannot carry anything else.
         const raw = await evalInPage(
           `JSON.stringify((() => { const c = globalThis.__SIM_CAPTURE__; const r = c && c.webgl;
-             return r ? { attempted: !!r.attempted, ok: !!r.ok, renderer: String(r.renderer || '') }
-                      : { attempted: false, ok: false, renderer: '' }; })())`,
+             return { attempted: !!(r && r.attempted) }; })())`,
           { stage: 'sanity_gate' },
         );
-        return JSON.parse(String(raw)) as { attempted: boolean; ok: boolean; renderer: string };
+        const page = JSON.parse(String(raw)) as { attempted: boolean };
+        return { attempted: !!page.attempted, ok: identity.ok, renderer: identity.renderer };
       });
 
       const kept = Math.max(1, run.frameCount);
       const ms = (v: number) => Math.round(v);
+      // Returned as DATA on the result, so it survives an exit-0 run and reaches the trusted side
+      // through the same validated channel as everything else. It is also logged, but the log is a
+      // convenience — stderr is untrusted text here, never a channel anything reads back.
+      const costBreakdown = {
+        simMs: ms(cost.sim / kept),
+        flushMs: ms(cost.flush / kept),
+        rasterMs: ms(cost.raster / kept),
+        writeMs: ms(cost.write / kept),
+        frames: kept,
+      };
       log(
-        `cost/frame ${ms((cost.sim + cost.flush + cost.raster + cost.write) / kept)}ms ` +
-          `= sim ${ms(cost.sim / kept)} + flush ${ms(cost.flush / kept)} ` +
-          `+ raster ${ms(cost.raster / kept)} + write ${ms(cost.write / kept)} (over ${kept} frames)`,
+        `cost/frame ${costBreakdown.simMs + costBreakdown.flushMs + costBreakdown.rasterMs + costBreakdown.writeMs}ms ` +
+          `= sim ${costBreakdown.simMs} + flush ${costBreakdown.flushMs} ` +
+          `+ raster ${costBreakdown.rasterMs} + write ${costBreakdown.writeMs} (over ${kept} frames)`,
       );
 
       // Fail closed BEFORE the gate: if hardware was asked for and SwiftShader answered, the
@@ -669,6 +718,7 @@ export class BeginFrameBackend implements SimCaptureBackend {
         rendererString: webgl.renderer,
         gate: gate.gate,
         reason: gate.reason,
+        cost: costBreakdown,
       };
     } catch (err) {
       // Partial frames from a FAILED capture are worthless and must not linger on the tmpfs.

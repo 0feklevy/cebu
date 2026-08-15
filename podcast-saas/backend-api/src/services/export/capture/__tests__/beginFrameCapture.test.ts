@@ -41,6 +41,8 @@ interface FakeOptions {
   dieAfterSends?: number;
   /** Chrome dies once `Page.navigate` has been acknowledged (the mid-navigation death). */
   dieAfterNavigate?: boolean;
+  /** What the ISOLATED-WORLD renderer probe reports. Page script cannot influence this one. */
+  rendererString?: string;
 }
 
 /** A scripted CDP endpoint speaking exactly the choreography the backend performs. */
@@ -53,11 +55,12 @@ function fakeLaunch(opts: FakeOptions = {}): {
     beginFrames: number;
     /** Every page-scoped send must carry the attached session — a real CDP requirement. */
     sendsMissingSession: string[];
+    isolatedWorlds: number;
     dead: boolean;
   };
 } {
   const state = {
-    kills: 0, sends: 0, screenshots: 0, beginFrames: 0,
+    kills: 0, sends: 0, screenshots: 0, beginFrames: 0, isolatedWorlds: 0,
     sendsMissingSession: [] as string[], dead: false,
   };
   const messages: Array<Record<string, unknown>> = opts.silentBridge ? [] : [{ type: 'SIM_READY' }];
@@ -91,6 +94,13 @@ function fakeLaunch(opts: FakeOptions = {}): {
       case 'Network.enable':
       case 'Page.addScriptToEvaluateOnNewDocument':
         return {};
+      // The renderer-identity probe runs in an ISOLATED WORLD, where page script cannot patch the
+      // globals it reads. The fake answers the two calls that world needs.
+      case 'Page.getFrameTree':
+        return { frameTree: { frame: { id: 'F1' } } };
+      case 'Page.createIsolatedWorld':
+        state.isolatedWorlds += 1;
+        return { executionContextId: 99 };
       case 'Page.navigate':
         if (opts.dieAfterNavigate) {
           // Chrome dies right after acking the navigation: the transport shuts down, which (per
@@ -109,6 +119,14 @@ function fakeLaunch(opts: FakeOptions = {}): {
       }
       case 'Runtime.evaluate': {
         const expr = String(params.expression);
+        // Anything evaluated with a contextId is the trusted probe, not page script.
+        if (params.contextId === 99) {
+          return {
+            result: {
+              value: JSON.stringify({ ok: true, renderer: opts.rendererString ?? 'Google SwiftShader' }),
+            },
+          };
+        }
         if (expr.includes('window.postMessage')) {
           // The startScript lands → the bridge paints. (simRelayout also passes through here.)
           if (expr.includes('startScript') && !opts.silentBridge && !opts.neverPaints) {
@@ -129,7 +147,7 @@ function fakeLaunch(opts: FakeOptions = {}): {
         }
         if (expr.includes('webgl')) {
           return {
-            result: { value: JSON.stringify({ attempted: true, ok: true, renderer: 'ANGLE (SwiftShader)' }) },
+            result: { value: JSON.stringify({ attempted: true, ok: true, renderer: 'ANGLE (NVIDIA GeForce RTX 4090)' }) },
           };
         }
         if (expr.includes('new Promise')) return { result: { value: undefined } };
@@ -175,7 +193,12 @@ describe('BeginFrameBackend.captureSection over a scripted transport', () => {
 
     expect(result.gate).toBe('passed');
     expect(result.frameCount).toBe(5); // round(0.5 × 10)
-    expect(result.rendererString).toBe('ANGLE (SwiftShader)');
+    // Identity comes from the ISOLATED WORLD, not the page. The fake page probe above claims an
+    // RTX 4090 — the exact spoof an untrusted package could perform, since `__SIM_CAPTURE__` lives
+    // in its own world and it can write whatever it likes there. What lands in the result is what
+    // the browser actually reported to a context the page cannot reach.
+    expect(result.rendererString).toBe('Google SwiftShader');
+    expect(result.rendererString).not.toContain('RTX');
     expect(result.framesDir).toBeTruthy();
     const files = (await readdir(result.framesDir as string)).sort();
     expect(files).toEqual([
@@ -214,6 +237,45 @@ describe('BeginFrameBackend.captureSection over a scripted transport', () => {
     await new BeginFrameBackend({ launch, workDir: scratch }).captureSection(SPEC);
     // 30 warmup beginFrames carry no screenshot; exactly the 5 kept frames do.
     expect(state.beginFrames - state.screenshots).toBeGreaterThanOrEqual(30);
+  });
+
+  /**
+   * The warmup contract, proven at the level the operator actually sets it.
+   *
+   * `warmupFrames` crossed the boundary and was DROPPED twice over: `toBackendSpec` never copied it,
+   * and the backend read `DEFAULT_WARMUP_FRAMES` unconditionally. So any value a controlled
+   * experiment set was silently ignored, and a benchmark that believed it varied warmup measured the
+   * default every time. Two defaults also disagreed — one here, one in the handshake — so a
+   * deliberate 0 had to survive both to mean anything. There is one default now, and these prove the
+   * spec's value reaches the compositor.
+   */
+  it.each([
+    { warmupFrames: 0, label: 'no warmup at all' },
+    { warmupFrames: 7, label: 'an arbitrary small warmup' },
+  ])('honours warmupFrames=$warmupFrames from the spec ($label)', async ({ warmupFrames }) => {
+    scratch = await mkdtemp(join(tmpdir(), 'bf-capture-'));
+    const { launch, state } = fakeLaunch();
+    const result = await new BeginFrameBackend({ launch, workDir: scratch })
+      .captureSection({ ...SPEC, warmupFrames });
+
+    // Kept frames are the ones that carry a screenshot; everything else is warmup or the flush.
+    expect(result.frameCount).toBe(5);
+    expect(state.screenshots).toBe(5);
+    const discarded = state.beginFrames - state.screenshots;
+    // 0 must mean 0 — the case a `??` default would have swallowed had it been applied twice.
+    expect(discarded).toBeLessThan(warmupFrames + 5);
+    expect(discarded).toBeGreaterThanOrEqual(warmupFrames);
+  });
+
+  it('reads renderer identity from an isolated world the page cannot patch', async () => {
+    scratch = await mkdtemp(join(tmpdir(), 'bf-capture-'));
+    // The page claims hardware; the browser reports software. Only one of them is a measurement.
+    const { launch, state } = fakeLaunch({ rendererString: 'ANGLE (Google, Vulkan, SwiftShader driver)' });
+    const result = await new BeginFrameBackend({ launch, workDir: scratch }).captureSection(SPEC);
+
+    expect(state.isolatedWorlds).toBe(1);
+    expect(result.rendererString).toContain('SwiftShader');
+    expect(result.rendererString).not.toContain('RTX');
   });
 
   it('a bridge that signals READY but never PAINTS fails at paint_ready — not bridge_ready', async () => {

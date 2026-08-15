@@ -85,6 +85,9 @@ export function backendToDriver(backend: SimCaptureBackend, opts: BackendAdapter
         status: 'ok',
         framesDir,
         clipPath,
+        // Advisory, and it must reach the host on the SUCCESS path too — the run that answers
+        // "why is this slow" is the one that worked.
+        cost: result.cost ?? null,
         frameCount: result.frameCount,
         rendererString: result.rendererString,
         gate: result.gate,

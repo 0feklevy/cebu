@@ -31,7 +31,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { lstat, mkdir, open as fsOpen, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, sep } from 'node:path';
 
 import type { RendererIdentity, SimCaptureWindow } from '../../types.js';
@@ -118,6 +118,13 @@ export interface ContainerCaptureSpec {
   height: number;
   /** Discarded warmup frames before the real capture (compositor staleness — plan §4). */
   warmupFrames: number;
+  /**
+   * Which renderer the capture must use. A TYPED field on the wire rather than an environment read
+   * inside the container: the trusted side decides what a job renders with, the untrusted side is
+   * told. An unrecognised value is refused rather than defaulted, because silently falling back to
+   * software is precisely the failure `assertRendererMatchesProfile` exists to make loud.
+   */
+  rendererProfile: 'swiftshader' | 'hardware';
   /** Poster identity the trusted side falls back to if capture fails; opaque to the container. */
   posterKey: string | null;
   output: CaptureOutputSpec;
@@ -131,6 +138,40 @@ export interface ContainerCaptureSpec {
  * `gate`/`reason`) so the adapter's translation is a widening, plus the container-level identity the
  * in-process shape does not carry.
  */
+/** Bounded, validated form of the container's cost report. */
+export interface CaptureCostSummary {
+  simMs: number;
+  flushMs: number;
+  rasterMs: number;
+  writeMs: number;
+  frames: number;
+}
+
+/** One capture cannot honestly spend more than this per frame in any bucket; beyond it is noise. */
+export const MAX_COST_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Validate the container's cost report, or discard it.
+ *
+ * Advisory numbers still cross the boundary, so they get the same treatment as any other untrusted
+ * input: every field must be a finite, non-negative, bounded number, and anything else makes the
+ * whole report `null` rather than a partially-trusted object. Discarding is safe precisely because
+ * nothing branches on it.
+ */
+export function parseCaptureCost(raw: unknown): CaptureCostSummary | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const o = raw as Record<string, unknown>;
+  const num = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= MAX_COST_MS ? v : null;
+  const simMs = num(o.simMs);
+  const flushMs = num(o.flushMs);
+  const rasterMs = num(o.rasterMs);
+  const writeMs = num(o.writeMs);
+  const frames = num(o.frames);
+  if (simMs === null || flushMs === null || rasterMs === null || writeMs === null || frames === null) return null;
+  return { simMs, flushMs, rasterMs, writeMs, frames: Math.floor(frames) };
+}
+
 export interface ContainerCaptureResult {
   resultVersion: typeof CAPTURE_SPEC_VERSION;
   sectionId: string;
@@ -150,6 +191,12 @@ export interface ContainerCaptureResult {
   reason: string | null;
   /** The capture-environment identity — which image/viewport/DPR produced these frames. */
   rendererIdentity: RendererIdentity;
+  /**
+   * ADVISORY per-frame cost split, in milliseconds. Authored by the untrusted container, so it is
+   * bounded and validated on arrival and nothing branches on it — it exists so "why is this slow"
+   * has an answer without a second instrumented build. `null` when absent or unusable.
+   */
+  cost: CaptureCostSummary | null;
   failure: { code: string; detail: string } | null;
 }
 
@@ -164,6 +211,8 @@ export interface BuildCaptureSpecOptions {
   width: number;
   height: number;
   warmupFrames: number;
+  /** Renderer the trusted side requires. Refused if unrecognised. */
+  rendererProfile: 'swiftshader' | 'hardware';
   wallClockTimeoutSec: number;
 }
 
@@ -216,6 +265,17 @@ function extractQueryFragment(servedUrl: string): { query: string; fragment: str
  * poster fallback before calling here) or if the assembled spec somehow contains a credential-shaped
  * key.
  */
+/**
+ * The renderer profile names the wire admits. An unknown value FAILS rather than falling back:
+ * defaulting to software would turn "the operator asked for hardware and got a typo" into an
+ * expensive machine quietly rasterising in software, which is the exact failure the profile exists
+ * to make loud.
+ */
+export function assertRendererProfileName(value: unknown): 'swiftshader' | 'hardware' {
+  if (value === 'swiftshader' || value === 'hardware') return value;
+  throw new Error(`capture spec: unknown renderer profile ${JSON.stringify(String(value).slice(0, 32))}`);
+}
+
 export function buildCaptureSpec(window: SimCaptureWindow, opts: BuildCaptureSpecOptions): ContainerCaptureSpec {
   if (!window.servedUrl) {
     throw new Error(`buildCaptureSpec: section ${window.sectionId} has no servedUrl; route it to poster fallback, do not capture`);
@@ -243,6 +303,7 @@ export function buildCaptureSpec(window: SimCaptureWindow, opts: BuildCaptureSpe
     width: opts.width,
     height: opts.height,
     warmupFrames: opts.warmupFrames,
+    rendererProfile: assertRendererProfileName(opts.rendererProfile),
     posterKey: window.posterKey,
     output: opts.output,
     wallClockTimeoutSec: opts.wallClockTimeoutSec,
@@ -312,7 +373,12 @@ export async function assertWithinOutputDir(outputDir: string, artifact: string)
   try {
     targetReal = await realpath(join(rootReal, artifact));
   } catch (err) {
-    throw new Error(`capture artifact ${artifact} is not readable: ${err instanceof Error ? err.message : String(err)}`);
+    // `cause` kept: the ENOENT/ELOOP/EACCES underneath is the whole diagnostic, and re-wrapping
+    // without it is how "is not readable" becomes an unactionable line in a log.
+    throw new Error(
+      `capture artifact ${artifact} is not readable: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
   }
   const prefix = rootReal.endsWith(sep) ? rootReal : rootReal + sep;
   if (targetReal !== rootReal && !targetReal.startsWith(prefix)) {
@@ -501,6 +567,7 @@ export function parseCaptureResult(raw: unknown): ContainerCaptureResult {
     gate: o.gate,
     reason: typeof o.reason === 'string' ? sanitizeUntrustedText(o.reason, { maxBytes: 1_024, maxLines: 12 }) : null,
     rendererIdentity: o.rendererIdentity,
+    cost: parseCaptureCost(o.cost),
     failure:
       o.failure && typeof o.failure === 'object'
         ? {

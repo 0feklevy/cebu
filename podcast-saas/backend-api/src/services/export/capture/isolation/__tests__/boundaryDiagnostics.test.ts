@@ -38,6 +38,7 @@ const SPEC: ContainerCaptureSpec = {
   width: 640,
   height: 360,
   warmupFrames: 5,
+  rendererProfile: 'swiftshader' as const,
   posterKey: null,
   output: { format: 'jpeg', quality: 80, frameDir: 'frames', namePattern: 'frame-%06d.jpg' },
   wallClockTimeoutSec: 30,
@@ -113,7 +114,7 @@ process.exit(${behavior.exitCode});
 
 function boundary(dockerBin: string): DockerCaptureBoundary {
   return new DockerCaptureBoundary({
-    image: 'podcast-saas/export-worker:test',
+    image: 'podcast-saas/export-worker:test', rendererProfile: 'swiftshader',
     user: '1000:1000',
     cpus: '2',
     memoryMb: 2048,

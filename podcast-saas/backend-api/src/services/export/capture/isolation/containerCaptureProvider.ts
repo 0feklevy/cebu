@@ -199,6 +199,11 @@ export type EnvSandboxMechanism = (typeof ENV_SANDBOX_MECHANISMS)[number];
 
 export interface ContainerCaptureConfig {
   image: string;
+  /**
+   * Which renderer every capture from this provider must use. Resolved ONCE, on the trusted side,
+   * from `EXPORT_CAPTURE_RENDERER`; the container never reads the environment for it.
+   */
+  rendererProfile: 'swiftshader' | 'hardware';
   /** Host-visible parent for input/output mounts; null = os tmpdir (bare-metal backend only). */
   workDir: string | null;
   user: string;
@@ -238,8 +243,18 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): ContainerCa
       `allowed: ${ENV_SANDBOX_MECHANISMS.join(', ')}`,
     );
   }
+  // Same shape as the sandbox mechanism above, for the same reason: an operator typo must be a
+  // startup error, not a silent fallback to the slow path on a machine bought for the fast one.
+  const rawRenderer = env.EXPORT_CAPTURE_RENDERER?.trim();
+  const rendererProfile = (rawRenderer || 'swiftshader') as 'swiftshader' | 'hardware';
+  if (rendererProfile !== 'swiftshader' && rendererProfile !== 'hardware') {
+    throw new Error(
+      `EXPORT_CAPTURE_RENDERER: unknown value ${JSON.stringify(rawRenderer)}; allowed: swiftshader, hardware`,
+    );
+  }
   return {
     image,
+    rendererProfile,
     workDir: env.EXPORT_CAPTURE_WORKDIR?.trim() || null,
     user: env.EXPORT_CAPTURE_USER?.trim() || '10001:10001',
     cpus: env.EXPORT_CAPTURE_CPUS?.trim() || '2',
@@ -345,6 +360,10 @@ export class ContainerCaptureProvider implements SimCaptureBackend {
       width: spec.width,
       height: spec.height,
       warmupFrames: DEFAULT_WARMUP_FRAMES,
+      // The TRUSTED side decides what a job renders with; the container is told, and refuses a name
+      // it does not know. Reading the environment inside the container would have put the choice on
+      // the wrong side of the boundary.
+      rendererProfile: this.config.rendererProfile,
       wallClockTimeoutSec: wallClockCapSec(spec.durationSec),
     });
 
@@ -467,6 +486,6 @@ export class ContainerCaptureProvider implements SimCaptureBackend {
 export function resolveConfiguredCaptureProvider(): SimCaptureBackend | null {
   const config = configFromEnv();
   if (!config) return null;
-  logger.info({ image: config.image }, 'export: container capture provider configured');
+  logger.info({ image: config.image, rendererProfile: config.rendererProfile }, 'export: container capture provider configured');
   return new ContainerCaptureProvider(config);
 }

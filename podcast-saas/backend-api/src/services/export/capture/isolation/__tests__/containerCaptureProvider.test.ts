@@ -84,7 +84,7 @@ describe('configFromEnv', () => {
       EXPORT_CAPTURE_MEMORY_MB: 'not-a-number',
     });
     expect(config).toMatchObject({
-      image: 'podcast-saas/export-worker:1.2.3',
+      image: 'podcast-saas/export-worker:1.2.3', rendererProfile: 'swiftshader',
       workDir: null,
       user: '10001:10001',
       cpus: '2',
@@ -193,6 +193,7 @@ function fakeStorage(): StorageService {
 function testConfig(workDir: string): ContainerCaptureConfig {
   return {
     image: 'podcast-saas/export-worker:test',
+    rendererProfile: 'swiftshader',
     workDir,
     user: '10001:10001',
     cpus: '2',
@@ -217,7 +218,7 @@ function okResult(partial: Partial<ContainerCaptureResult>): ContainerCaptureRes
     gate: 'passed',
     reason: null,
     rendererIdentity: {
-      image: 'podcast-saas/export-worker:test',
+      image: 'podcast-saas/export-worker:test', rendererProfile: 'swiftshader',
       chromeHeadlessShellVersion: 'test',
       viewport: '1920x1080',
       dpr: 1,

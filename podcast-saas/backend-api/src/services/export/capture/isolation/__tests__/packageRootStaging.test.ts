@@ -85,7 +85,7 @@ function specFor(entryKey: string): CaptureSpec {
 
 function testConfig(workDir: string): ContainerCaptureConfig {
   return {
-    image: 'podcast-saas/export-worker:test', workDir, user: '1000:1000', cpus: '2',
+    image: 'podcast-saas/export-worker:test', rendererProfile: 'swiftshader', workDir, user: '1000:1000', cpus: '2',
     memoryMb: 2048, pidsLimit: 256, tmpfsScratchMb: 512, stopTimeoutSec: 10,
     dockerBin: 'true', sandboxMechanism: 'sys-admin',
   };

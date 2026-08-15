@@ -108,6 +108,7 @@ async function writeFailure(outputDir: string, sectionId: string, err: unknown):
     status: 'failed',
     framesDir: null,
     clipPath: null,
+    cost: null,
     frameCount: 0,
     rendererString: '',
     gate: 'failed',

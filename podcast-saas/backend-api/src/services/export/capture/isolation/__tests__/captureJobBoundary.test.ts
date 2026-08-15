@@ -56,6 +56,7 @@ const OPTS = {
   width: 1920,
   height: 1080,
   warmupFrames: 30,
+  rendererProfile: 'swiftshader' as const,
   wallClockTimeoutSec: 120,
 };
 

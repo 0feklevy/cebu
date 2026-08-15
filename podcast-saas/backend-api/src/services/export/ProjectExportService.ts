@@ -627,12 +627,21 @@ export class ProjectExportService {
       // A HONOURED CANCELLATION IS NOT A FAILURE. `cancelled` is its own terminal status: the
       // system did exactly what the user asked, and folding that into `failed` would make every
       // cancel read as a defect — in the UI, in the logs, and in any error-rate metric.
-      const terminal = failure.code === 'export_cancelled' ? 'cancelled' : 'failed';
+      // …and the decision is made BY THE DATABASE, atomically, not by this process's view of the
+      // world. `cancel_requested` can be set at any moment, including between the throw and this
+      // write, so a check-then-write here loses the race and records a defect for a user who simply
+      // pressed stop. `CASE` evaluates the flag in the same statement that writes the status.
+      const terminalStatus = failure.code === 'export_cancelled'
+        ? sql`'cancelled'`
+        : sql`CASE WHEN ${project_exports.cancel_requested} THEN 'cancelled' ELSE 'failed' END`;
+      const terminalError = failure.code === 'export_cancelled'
+        ? sql`${stored}`
+        : sql`CASE WHEN ${project_exports.cancel_requested} THEN ${EXPORT_CANCELLED_MESSAGE} ELSE ${stored} END`;
       // FENCED like the success path: a reaped run must not overwrite its successor's terminal
       // state. `plan` is merged, not replaced — the planning phase's real plan survives next to
       // the reason the run stopped.
       await db.update(project_exports).set({
-        status: terminal, error: stored, finished_at: new Date(), updated_at: new Date(),
+        status: terminalStatus, error: terminalError, finished_at: new Date(), updated_at: new Date(),
         plan: sql`COALESCE(${project_exports.plan}, '{}'::jsonb) || ${JSON.stringify({
           failure: { code: failure.code, retryable: failure.retryable, phase, detail: failure.detail.slice(0, 4000) },
         })}::jsonb`,

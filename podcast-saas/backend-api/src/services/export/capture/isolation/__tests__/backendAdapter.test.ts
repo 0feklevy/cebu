@@ -43,6 +43,7 @@ function containerSpec(overrides: Partial<ContainerCaptureSpec> = {}): Container
     width: 1920,
     height: 1080,
     warmupFrames: 30,
+  rendererProfile: 'swiftshader' as const,
     posterKey: 'posters/p/s/poster.jpg',
     output: { format: 'jpeg', quality: 80, frameDir: 'frames', namePattern: 'frame-%06d.jpg' },
     wallClockTimeoutSec: 120,
