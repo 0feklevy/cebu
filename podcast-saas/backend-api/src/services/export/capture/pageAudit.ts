@@ -130,10 +130,14 @@ export class PageAudit {
    * The gate's own verdict ("uniform canvas") is a SYMPTOM. This names the cause when the evidence
    * supports one, and otherwise leaves the symptom in place rather than inventing a story.
    */
-  classify(gateReason: string | undefined): string {
+  classify(gateReason: string | undefined, webgl?: { attempted: boolean; ok: boolean }): string {
     if (this.externalFailures().length > 0) return 'external_dependency_blocked';
     if (this.failed.length > 0) return 'module_load_failed';
     if (this.exceptions.length > 0) return 'runtime_exception';
+    // The page ASKED for a WebGL context and did not get one — a renderer problem, not a dead
+    // scene. Without this branch it fell through to 'uniform_canvas', which sends the next
+    // operator to look at the simulation instead of at the GPU stack.
+    if (webgl && webgl.attempted && !webgl.ok) return 'webgl_context_failed';
     if (gateReason?.includes('uniform')) return 'uniform_canvas';
     if (gateReason?.includes('did not change')) return 'static_canvas';
     return 'sanity_gate_failed';

@@ -469,3 +469,113 @@ export function rewriteEntryHtmlForCapture(
 
   return { html: out, rewrittenSpecifiers, neutralisedUrls };
 }
+
+// ── JavaScript module specifiers ────────────────────────────────────────────────────────────────
+
+/**
+ * Extract every module specifier from JavaScript, with a real LEXER rather than a pattern match.
+ *
+ * WHY A LEXER: an import map only governs BARE specifiers. A module may name an absolute URL
+ * directly — `import * as THREE from 'https://cdn.jsdelivr.net/…'` — which bypasses the map
+ * entirely, so a validator that reads only the HTML would call such a package capture-compatible
+ * and it would die inside `--network none` exactly as v0.1.26 did. Finding those specifiers means
+ * knowing which quotes are code and which are text: `// import 'https://evil'` is a comment,
+ * `` `import 'x'` `` is a template, and `/'/` is a regex. A pattern match cannot tell them apart;
+ * this walks the source and skips each construct properly.
+ *
+ * HONEST LIMIT, stated rather than hidden: a specifier a program COMPUTES (`import(base + name)`)
+ * is not statically knowable, by anyone. That is precisely why the capture also audits real
+ * requests at runtime and reports any that leave loopback — static analysis narrows the problem,
+ * the runtime audit closes it.
+ */
+export function scanJsModuleSpecifiers(source: string): string[] {
+  const found: string[] = [];
+  const n = source.length;
+  /** Was the last significant token a value? Then `/` divides; otherwise it starts a regex. */
+  let prevSignificant = '';
+
+  const readString = (i: number, quote: string): number => {
+    let j = i + 1;
+    let value = '';
+    while (j < n) {
+      const c = source[j]!;
+      if (c === '\\') { j += 2; value += 'x'; continue; }
+      if (c === quote) break;
+      value += c;
+      j++;
+    }
+    // Look BACKWARD past whitespace for the construct that owns this string.
+    let k = i - 1;
+    while (k >= 0 && /\s/.test(source[k]!)) k--;
+    const before = source.slice(Math.max(0, k - 11), k + 1);
+    if (/\b(?:from|import)$/.test(before) || /\bimport\s*\($/.test(`${before}(`) || before.endsWith('import(')) {
+      found.push(value);
+    }
+    return j + 1;
+  };
+
+  for (let i = 0; i < n; i++) {
+    const c = source[i]!;
+    const next = source[i + 1];
+    if (c === '/' && next === '/') { while (i < n && source[i] !== '\n') i++; continue; }
+    if (c === '/' && next === '*') { const e = source.indexOf('*/', i + 2); i = e === -1 ? n : e + 1; continue; }
+    if (c === '/' && !/[\w)\]]/.test(prevSignificant)) {
+      // Regex literal — skip to its unescaped closing slash so `/'/` cannot open a fake string.
+      let j = i + 1;
+      let inClass = false;
+      while (j < n) {
+        const d = source[j]!;
+        if (d === '\\') { j += 2; continue; }
+        if (d === '[') inClass = true;
+        else if (d === ']') inClass = false;
+        else if (d === '/' && !inClass) break;
+        else if (d === '\n') break;
+        j++;
+      }
+      i = j;
+      prevSignificant = '/';
+      continue;
+    }
+    if (c === '`') {
+      // Template literal: skip it, but keep scanning `${…}` because code lives there.
+      let j = i + 1;
+      while (j < n) {
+        const d = source[j]!;
+        if (d === '\\') { j += 2; continue; }
+        if (d === '`') break;
+        if (d === '$' && source[j + 1] === '{') {
+          let depth = 1;
+          j += 2;
+          const start = j;
+          while (j < n && depth > 0) {
+            if (source[j] === '{') depth++;
+            else if (source[j] === '}') depth--;
+            j++;
+          }
+          for (const spec of scanJsModuleSpecifiers(source.slice(start, j - 1))) found.push(spec);
+          continue;
+        }
+        j++;
+      }
+      i = j;
+      prevSignificant = '`';
+      continue;
+    }
+    if (c === '"' || c === "'") { i = readString(i, c) - 1; prevSignificant = '"'; continue; }
+    if (!/\s/.test(c)) prevSignificant = c;
+  }
+  return found;
+}
+
+/** External (absolute) module specifiers a JS file imports — those the import map cannot govern. */
+export function externalJsImports(source: string): ExternalReference[] {
+  return scanJsModuleSpecifiers(source)
+    .filter((spec) => isExternalUrl(spec))
+    .map((spec) => ({
+      kind: 'module-specifier' as const,
+      raw: spec,
+      origin: originOf(spec),
+      // A direct URL import is part of the module graph: without it the graph does not execute.
+      criticality: 'boot' as const,
+    }));
+}

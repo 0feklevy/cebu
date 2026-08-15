@@ -14,6 +14,7 @@
  */
 
 import {
+  externalJsImports,
   isExternalUrl,
   planCaptureDependencies,
   scanTags,
@@ -128,6 +129,22 @@ export function validateCaptureCompatibility(
     if (!pkg.files.has(resolved)) missingLocalRefs.push(resolved);
   }
 
+  // An import map governs BARE specifiers only. A module naming an absolute URL directly
+  // bypasses it, so the HTML scan alone would call such a package compatible — and it would die
+  // inside --network none exactly as v0.1.26 did.
+  const jsExternals: ExternalReference[] = [];
+  for (const [path, bytes] of pkg.files) {
+    if (!/\.m?js$/i.test(path)) continue;
+    for (const ref of externalJsImports(bytes.toString('utf8'))) {
+      if (registry.some((d) => d.satisfies.some((b) => ref.raw.startsWith(b)))) continue;
+      jsExternals.push(ref);
+      reasons.push(
+        `${path} imports ${ref.raw} directly; an import map cannot redirect an absolute URL and the ` +
+          'capture container has no network access',
+      );
+    }
+  }
+
   for (const ref of closure.unresolved) {
     if (ref.criticality === 'boot') {
       reasons.push(
@@ -146,7 +163,7 @@ export function validateCaptureCompatibility(
   }
 
   const verdict: CaptureCompatibility =
-    !closure.bootComplete || missingLocalRefs.length > 0 || escapingRefs > 0
+    !closure.bootComplete || missingLocalRefs.length > 0 || escapingRefs > 0 || jsExternals.length > 0
       ? 'incompatible'
       : closure.unresolved.some((r) => r.criticality === 'visual')
         ? 'compatible-with-substitutions'
@@ -161,7 +178,7 @@ export function validateCaptureCompatibility(
       raw: r.entry.target,
       origin: null,
       criticality: 'boot' as const,
-    })), ...closure.unresolved],
+    })), ...closure.unresolved, ...jsExternals],
     missingLocalRefs,
   };
 }

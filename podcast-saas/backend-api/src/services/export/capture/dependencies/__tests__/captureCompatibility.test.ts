@@ -146,3 +146,43 @@ describe('resolvePackageRef', () => {
     expect(resolvePackageRef('a/b/index.html', '../../../x')).toBeNull();
   });
 });
+
+describe('validateCaptureCompatibility — JS imports the import map cannot govern', () => {
+  it('INCOMPATIBLE: a module importing an absolute URL directly', async () => {
+    const registry = (await loadTrustedRegistry()).descriptors();
+    const report = validateCaptureCompatibility(
+      pkg('index.html', {
+        'index.html': '<script type="module" src="./main.js"></script>',
+        'main.js': "import * as d3 from 'https://cdn.jsdelivr.net/npm/d3@7/+esm';",
+      }),
+      registry,
+    );
+    expect(report.verdict).toBe('incompatible');
+    expect(report.reasons.join(' ')).toMatch(/main\.js imports https:\/\/cdn\.jsdelivr\.net/);
+    expect(report.reasons.join(' ')).toMatch(/an import map cannot redirect an absolute URL/);
+  });
+
+  it('COMPATIBLE: a direct URL import that a TRUSTED pack satisfies is fine', async () => {
+    const registry = (await loadTrustedRegistry()).descriptors();
+    const report = validateCaptureCompatibility(
+      pkg('index.html', {
+        'index.html': '<script type="module" src="./main.js"></script>',
+        'main.js': "import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js';",
+      }),
+      registry,
+    );
+    expect(report.verdict).toBe('compatible');
+  });
+
+  it('a commented-out CDN import does not make a package incompatible', async () => {
+    const registry = (await loadTrustedRegistry()).descriptors();
+    const report = validateCaptureCompatibility(
+      pkg('index.html', {
+        'index.html': '<script type="module" src="./main.js"></script>',
+        'main.js': "// import d3 from 'https://cdn.jsdelivr.net/npm/d3@7/+esm'\nexport const x = 1;",
+      }),
+      registry,
+    );
+    expect(report.verdict).toBe('compatible');
+  });
+});

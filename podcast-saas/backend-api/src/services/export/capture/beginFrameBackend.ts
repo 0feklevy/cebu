@@ -575,7 +575,7 @@ export class BeginFrameBackend implements SimCaptureBackend {
       const auditSummary = gate.gate === 'failed' ? audit.summarise() : null;
       const reason =
         gate.gate === 'failed'
-          ? `${audit.classify(gate.reason)}: ${gate.reason ?? 'sanity gate failed'}${auditSummary ? `; ${auditSummary}` : ''}`
+          ? `${audit.classify(gate.reason, webgl)}: ${gate.reason ?? 'sanity gate failed'}${auditSummary ? `; ${auditSummary}` : ''}`
           : gate.reason;
 
       return {

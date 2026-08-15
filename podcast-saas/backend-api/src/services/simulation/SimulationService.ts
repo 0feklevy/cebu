@@ -7,6 +7,7 @@ import { db } from '../../db/index.js';
 import { simulations, system_prompts } from '../../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { logger } from '../../lib/logger.js';
+import { CAPTURE_AUTHORING_RULES } from 'shared/sim/captureAuthoring';
 import { buildUiControlsPromptBlock, type SimUiSelection } from './SimUiControls.js';
 import { buildChildRuntimeSource } from './simRuntimeChild.js';
 import {
@@ -2725,7 +2726,14 @@ export class SimulationService {
 
     // 5. Load system/context prompt from DB (admin-editable), fall back to hardcoded
     const dbPrompt = await db.query.system_prompts.findFirst({ where: eq(system_prompts.key, 'bridge_plan') });
-    const baseSystemPrompt = dbPrompt?.is_customized ? dbPrompt.content : BRIDGE_GENERATION_SYSTEM_PROMPT;
+    // The offline/capture rules are prepended OUTSIDE the fallback, deliberately. An admin who
+    // customises this prompt must not be able to switch them off by accident: they are a platform
+    // invariant the publish validator enforces regardless, so a package that ignores them is
+    // rejected later anyway — stating them up front is the difference between a rejection and a
+    // simulation that works. Appending them to the hardcoded default instead made them INERT for
+    // exactly the case the comment above calls expected.
+    const authored = dbPrompt?.is_customized ? dbPrompt.content : BRIDGE_GENERATION_SYSTEM_PROMPT;
+    const baseSystemPrompt = `${CAPTURE_AUTHORING_RULES}\n\n${authored}`;
 
     // 6. Build deterministic ContextPack — source files + manifest live in the system prompt.
     //    This is provider-neutral: Claude caches it; OpenAI/Gemini receive it in system role.
