@@ -568,7 +568,11 @@ export class BeginFrameBackend implements SimCaptureBackend {
           uiHide: spec.uiHide,
           fps: spec.fps,
           durationSec: spec.durationSec,
-          warmupFrames: DEFAULT_WARMUP_FRAMES,
+          // The spec's value when it carries one, the shipped default otherwise. Reading the
+          // constant unconditionally made `ContainerCaptureSpec.warmupFrames` dead wire.
+          warmupFrames: Number.isInteger(spec.warmupFrames) && spec.warmupFrames! >= 0
+            ? spec.warmupFrames!
+            : DEFAULT_WARMUP_FRAMES,
         });
       } catch (err) {
         if (err instanceof CaptureTimeoutError) {
@@ -629,5 +633,17 @@ export class BeginFrameBackend implements SimCaptureBackend {
  * default backend", every capture container exiting 1 before any capture code ran).
  */
 export function createBackend(): SimCaptureBackend {
-  return new BeginFrameBackend();
+  // With no `log`, the backend's diagnostics — including the per-frame cost breakdown that decides
+  // the renderer-hardware question — are discarded, which is exactly what happened: the constructor
+  // took no options, so every stage line and every measurement written by this file went nowhere.
+  //
+  // stderr is the right channel and the only one available: the container writes its result to a
+  // file, and the trusted side already treats this stream as UNTRUSTED diagnostic text (it is
+  // sanitised and length-capped, never parsed as a control signal). So this is observable without
+  // becoming an input.
+  return new BeginFrameBackend({
+    log: (message) => {
+      process.stderr.write(`[capture] ${message}\n`);
+    },
+  });
 }

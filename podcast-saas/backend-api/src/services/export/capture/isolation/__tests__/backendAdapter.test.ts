@@ -165,3 +165,35 @@ describe('backendToDriver', () => {
     }
   });
 });
+
+/**
+ * The warmup contract. `ContainerCaptureSpec.warmupFrames` existed, was carried across the boundary,
+ * and was then DROPPED: `toBackendSpec` never copied it and the backend read the constant instead.
+ * So any value an operator or a controlled experiment set was silently ignored — and a benchmark
+ * that believed it varied warmup was in fact measuring the default every time. One authority now.
+ */
+describe('warmupFrames survives the boundary', () => {
+  it('toBackendSpec forwards the requested count', () => {
+    expect(toBackendSpec(containerSpec({ warmupFrames: 3 }), 'http://127.0.0.1:1/e').warmupFrames).toBe(3);
+    expect(toBackendSpec(containerSpec({ warmupFrames: 0 }), 'http://127.0.0.1:1/e').warmupFrames).toBe(0);
+  });
+
+  it('the backend actually RECEIVES it — the assertion the old code would fail', async () => {
+    let seen: number | undefined = -1;
+    const backend: SimCaptureBackend = {
+      name: 'warmup-probe',
+      async isAvailable() { return true; },
+      async captureSection(spec): Promise<BackendCaptureResult> {
+        seen = spec.warmupFrames;
+        return { framesDir: undefined, clipPath: undefined, frameCount: 0, rendererString: '', gate: 'failed' };
+      },
+    };
+    await backendToDriver(backend, { rendererIdentity: RENDERER }).drive({
+      entryUrl: 'http://127.0.0.1:9/e',
+      spec: containerSpec({ warmupFrames: 7 }),
+      outputDir: join(tmpdir(), 'warmup-probe-out'),
+      signal: new AbortController().signal,
+    });
+    expect(seen).toBe(7);
+  });
+});

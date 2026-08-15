@@ -42,8 +42,10 @@ import {
 } from '../captureTypes.js';
 import {
   DockerCaptureBoundary,
-  assertWithinOutputDir,
+  assertFrameSet,
+  assertRegularArtifact,
   buildCaptureSpec,
+  expectedFrameCount,
   writeCaptureInput,
   type CaptureInputFile,
   type CaptureJobBoundary,
@@ -140,6 +142,7 @@ function encodeFramesToClip(
   fps: number,
   dims: { width: number; height: number },
   clipPath: string,
+  opts: { timeoutMs: number; signal?: AbortSignal } = { timeoutMs: ENCODE_TIMEOUT_MS },
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const args = [
@@ -157,11 +160,28 @@ function encodeFramesToClip(
     ];
     const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
     let stderr = '';
-    proc.stderr.on('data', (d) => { stderr += String(d); });
-    proc.on('error', reject);
+    let settled = false;
+    // ffmpeg reads the frame files itself, on the TRUSTED host. Every input it opens has already
+    // been lstat'd as a regular file, but an encode still needs its own ceiling: without one, a
+    // single slow or pathological input holds this promise — and therefore the whole export job —
+    // open forever, since `close`/`error` were the only ways out.
+    const done = (fn: () => void) => { if (!settled) { settled = true; clearTimeout(timer); signal?.removeEventListener('abort', onAbort); fn(); } };
+    const kill = (why: string) => {
+      proc.kill('SIGKILL');
+      done(() => reject(new Error(`container capture: frame encode ${why}`)));
+    };
+    const timer = setTimeout(() => kill(`exceeded ${opts.timeoutMs} ms`), Math.max(1, opts.timeoutMs));
+    const onAbort = () => kill('was cancelled');
+    const signal = opts.signal;
+    if (signal?.aborted) { kill('was cancelled'); return; }
+    signal?.addEventListener('abort', onAbort, { once: true });
+    proc.stderr.on('data', (d) => { if (stderr.length < 8192) stderr += String(d); });
+    proc.on('error', (err) => done(() => reject(err)));
     proc.on('close', (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`container capture: frame encode exited ${code}: ${stderr.slice(-400)}`));
+      done(() => {
+        if (code === 0) resolve();
+        else reject(new Error(`container capture: frame encode exited ${code}: ${stderr.slice(-400)}`));
+      });
     });
   });
 }
@@ -251,6 +271,13 @@ export function boundaryConfigFrom(config: ContainerCaptureConfig): DockerCaptur
 }
 
 /** Per-section hard wall clock: handshake+warmup slack plus real-time-scaled capture, capped. */
+/**
+ * Ceiling on the trusted-host frame encode. It runs AFTER the container is gone, so it is outside
+ * the capture wall clock entirely — without its own bound it is an unbounded operation inside a
+ * bounded job.
+ */
+export const ENCODE_TIMEOUT_MS = 10 * 60 * 1000;
+
 export function wallClockCapSec(durationSec: number): number {
   return Math.min(600, Math.ceil(90 + durationSec * 6));
 }
@@ -388,14 +415,23 @@ export class ContainerCaptureProvider implements SimCaptureBackend {
       // are needed: the mount is container-writable, so a symlink named exactly `section.mp4` would
       // otherwise let `copyFile` pull an arbitrary host file into the clip the service then uploads.
       if (result.clipPath) {
-        await copyFile(await assertWithinOutputDir(outputDir, result.clipPath), clipPath);
+        await copyFile(await assertRegularArtifact(outputDir, result.clipPath), clipPath);
       } else if (result.framesDir) {
+        // Confining the DIRECTORY was not enough. ffmpeg opens each `frame-%06d.jpg` itself, in the
+        // host namespace, following every symlink — so a link inside a confined directory still
+        // reaches any host file, and one that decodes as an image lands in the MP4 that gets served.
+        // `assertFrameSet` lstats every entry against the count the TRUSTED side expects.
+        const framesReal = await assertFrameSet(outputDir, result.framesDir, {
+          expectedFrames: expectedFrameCount(containerSpec),
+          namePattern: containerSpec.output.namePattern,
+        });
         await encodeFramesToClip(
-          await assertWithinOutputDir(outputDir, result.framesDir),
+          framesReal,
           containerSpec.output.namePattern,
           spec.fps,
           { width: spec.width, height: spec.height },
           clipPath,
+          { timeoutMs: ENCODE_TIMEOUT_MS, signal },
         );
       } else {
         return {

@@ -66,6 +66,13 @@ export interface CaptureSpec {
    * capture is byte-reproducible (plan §4 "Determinism of the simulation itself").
    */
   readonly configHash: string;
+  /**
+   * Discarded warmup frames before the kept capture. Optional so existing callers keep
+   * `DEFAULT_WARMUP_FRAMES`, but when the boundary spec names a value it must ARRIVE here: the
+   * container spec carried a `warmupFrames` field that the backend never read, so the number an
+   * operator or an experiment set was silently ignored and every run used the default.
+   */
+  readonly warmupFrames?: number;
   /** Poster identity the caller falls back to if capture is unavailable/fails. Opaque here. */
   readonly posterKey: string;
 }

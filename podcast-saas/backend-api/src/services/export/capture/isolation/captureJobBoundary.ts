@@ -31,7 +31,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, open as fsOpen, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, sep } from 'node:path';
 
 import type { RendererIdentity, SimCaptureWindow } from '../../types.js';
@@ -321,6 +321,108 @@ export async function assertWithinOutputDir(outputDir: string, artifact: string)
   return targetReal;
 }
 
+/** `result.json` is small structured JSON. Anything larger is not a result, it is an attack. */
+export const MAX_RESULT_BYTES = 256 * 1024;
+/** One frame, or one clip file. Generous for a 1080p JPEG / a short x264 clip. */
+export const MAX_ARTIFACT_FILE_BYTES = 64 * 1024 * 1024;
+/** Everything one capture may hand back, across all its frames. */
+export const MAX_ARTIFACT_TOTAL_BYTES = 1024 * 1024 * 1024;
+
+/**
+ * A confined artifact that is also a REGULAR FILE of a bounded size.
+ *
+ * Confinement alone is not enough for anything the trusted side then reads into memory. A symlink
+ * to a character device — `/dev/zero` exists at a fixed path on every host, is world-readable, and
+ * `symlink(2)` needs no capability — reports size 0 to `stat` and then yields bytes forever:
+ * `readFile` on it allocates at gigabytes per second until the backend process is OOM-killed. That
+ * process holds the database and storage credentials for every tenant, so this is a shared-process
+ * kill reached on the ordinary success path. Confinement rejects it (the realpath is outside the
+ * output directory), and the regular-file check rejects the same trick played with a device node
+ * planted inside.
+ */
+export async function assertRegularArtifact(
+  outputDir: string,
+  artifact: string,
+  maxBytes = MAX_ARTIFACT_FILE_BYTES,
+): Promise<string> {
+  const real = await assertWithinOutputDir(outputDir, artifact);
+  const st = await lstat(real);
+  if (!st.isFile()) {
+    throw new Error(`capture artifact ${artifact} is not a regular file — refusing to read it`);
+  }
+  if (st.size > maxBytes) {
+    throw new Error(`capture artifact ${artifact} is ${st.size} bytes, over the ${maxBytes} cap`);
+  }
+  return real;
+}
+
+/** Expand a trusted printf frame pattern (`frame-%06d.jpg`) for one index. */
+export function frameFileName(namePattern: string, index: number): string {
+  const m = /%0(\d+)d/.exec(namePattern);
+  if (!m) throw new Error(`frame name pattern ${JSON.stringify(namePattern)} has no %0Nd field`);
+  return namePattern.replace(m[0], String(index).padStart(Number(m[1]), '0'));
+}
+
+/**
+ * Verify a confined frames directory EXHAUSTIVELY before the trusted host's ffmpeg reads it.
+ *
+ * Confining the directory was not enough, and that gap is the same bug one level down: ffmpeg is
+ * given `-i <dir>/frame-%06d.jpg` and opens each entry itself, in the HOST namespace, following
+ * every symlink. A link named `frame-000004.jpg` pointing at any host file that decodes as an image
+ * puts those pixels into the section's MP4, which is then uploaded and served — exactly the
+ * exfiltration the artifact allowlist was meant to close. A link to a FIFO is worse: ffmpeg's
+ * `open()` blocks forever with no writer, and the encode has no timeout to escape it.
+ *
+ * So the directory's contents must be exactly the frames the TRUSTED side expects — its own count,
+ * not the container's claim — each one a regular file within its size cap, with no extra entries.
+ * There is no time-of-check/time-of-use gap: the container has already exited when this runs, so
+ * nothing is left that could swap an entry afterwards.
+ */
+export async function assertFrameSet(
+  outputDir: string,
+  artifact: string,
+  opts: { expectedFrames: number; namePattern: string },
+): Promise<string> {
+  const real = await assertWithinOutputDir(outputDir, artifact);
+  const dirStat = await lstat(real);
+  if (!dirStat.isDirectory()) {
+    throw new Error(`capture frames ${artifact} is not a directory — refusing to encode it`);
+  }
+  if (opts.expectedFrames <= 0) throw new Error('capture frames: expected frame count is not positive');
+
+  const wanted = new Set<string>();
+  for (let i = 0; i < opts.expectedFrames; i++) wanted.add(frameFileName(opts.namePattern, i));
+
+  const present = await readdir(real);
+  const extra = present.filter((n) => !wanted.has(n));
+  if (extra.length > 0) {
+    throw new Error(
+      `capture frames ${artifact} holds ${extra.length} unexpected entr${extra.length === 1 ? 'y' : 'ies'}` +
+        ` (first: ${JSON.stringify(extra[0]!.slice(0, 64))}) — refusing to encode it`,
+    );
+  }
+
+  let total = 0;
+  for (const name of wanted) {
+    let st;
+    try {
+      st = await lstat(join(real, name));
+    } catch {
+      throw new Error(`capture frames ${artifact} is missing ${name}`);
+    }
+    // lstat, deliberately: a symlink must fail HERE rather than be followed by ffmpeg later.
+    if (!st.isFile()) throw new Error(`capture frame ${name} is not a regular file — refusing to encode it`);
+    if (st.size > MAX_ARTIFACT_FILE_BYTES) {
+      throw new Error(`capture frame ${name} is ${st.size} bytes, over the ${MAX_ARTIFACT_FILE_BYTES} cap`);
+    }
+    total += st.size;
+    if (total > MAX_ARTIFACT_TOTAL_BYTES) {
+      throw new Error(`capture frames ${artifact} exceed the ${MAX_ARTIFACT_TOTAL_BYTES} total cap`);
+    }
+  }
+  return real;
+}
+
 /**
  * Parse + validate the container's result JSON. Rejects anything malformed rather than trusting a
  * shape from untrusted code — the result is written by the trusted entrypoint, but it lands on a
@@ -413,7 +515,15 @@ export async function writeCaptureInput(
 
 /** Read + validate the container's result off the output mount. */
 export async function readCaptureResult(outputDir: string): Promise<ContainerCaptureResult> {
-  const raw = await readFile(join(outputDir, CAPTURE_RESULT_FILENAME), 'utf8');
+  // result.json is itself an artifact on the container-writable mount, so it gets the same
+  // treatment as the artifacts it names. Without this, `symlink('/dev/zero', '/output/result.json')`
+  // — no capability required, and the entrypoint's own write follows the link and leaves it in
+  // place — makes THIS read allocate gigabytes per second until the backend process, which holds
+  // every tenant's database and storage credentials, is OOM-killed. Measured on Node 22: 6.8 GB of
+  // external buffer in 2.5 s, still climbing. Confinement rejects the escape and the regular-file
+  // check rejects a device planted inside.
+  const real = await assertRegularArtifact(outputDir, CAPTURE_RESULT_FILENAME, MAX_RESULT_BYTES);
+  const raw = await readFile(real, 'utf8');
   return parseCaptureResult(raw);
 }
 

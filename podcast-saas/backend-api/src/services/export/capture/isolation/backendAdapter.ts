@@ -64,6 +64,7 @@ export function toBackendSpec(spec: ContainerCaptureSpec, servedSimUrl: string):
     // The backend seeds mulberry32 from this; a null hash means "no stable seed" → empty string.
     configHash: spec.configHash ?? '',
     posterKey: spec.posterKey ?? '',
+    warmupFrames: spec.warmupFrames,
   };
 }
 

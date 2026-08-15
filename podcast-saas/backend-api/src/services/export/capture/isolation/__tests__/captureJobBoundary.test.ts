@@ -13,7 +13,11 @@ import { join } from 'node:path';
 
 import type { RendererIdentity, SimCaptureWindow } from '../../../types.js';
 import {
+  assertFrameSet,
+  assertRegularArtifact,
   assertWithinOutputDir,
+  frameFileName,
+  MAX_RESULT_BYTES,
   buildCaptureSpec,
   parseCaptureResult,
   writeCaptureInput,
@@ -288,6 +292,143 @@ describe('the container cannot aim the trusted reader at an arbitrary host file'
     const root = await mkdtemp(join(tmpdir(), 'boundary-missing-'));
     try {
       await expect(assertWithinOutputDir(root, 'section.mp4')).rejects.toThrow(/not readable/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * The rest of the output boundary. The artifact-NAME allowlist and directory confinement closed the
+ * first two escapes; these cover what was still open one level down, each with a concrete primitive:
+ *
+ *   result.json itself   — a symlink to a character device makes the trusted reader allocate
+ *                          without bound (measured: ~6.8 GB in 2.5 s on Node 22) until the process
+ *                          holding every tenant's credentials is OOM-killed.
+ *   entries inside frames/ — ffmpeg opens each frame in the HOST namespace and follows symlinks, so
+ *                          confining only the directory still let any host file that decodes as an
+ *                          image be encoded into the served MP4.
+ *
+ * The container is already dead when these run, so verify-then-use has no TOCTOU gap.
+ */
+describe('the output boundary below the artifact name', () => {
+  const NAME_PATTERN = 'frame-%06d.jpg';
+
+  async function frames(root: string, count: number): Promise<string> {
+    const { mkdir: md, writeFile: wf } = await import('node:fs/promises');
+    const dir = join(root, 'frames');
+    await md(dir, { recursive: true });
+    for (let i = 0; i < count; i++) await wf(join(dir, frameFileName(NAME_PATTERN, i)), `f${i}`);
+    return dir;
+  }
+
+  it('frameFileName expands the trusted printf pattern', () => {
+    expect(frameFileName('frame-%06d.jpg', 0)).toBe('frame-000000.jpg');
+    expect(frameFileName('frame-%06d.jpg', 42)).toBe('frame-000042.jpg');
+    expect(() => frameFileName('frame.jpg', 0)).toThrow(/%0Nd/);
+  });
+
+  it('refuses a result.json that is a symlink out of the output dir', async () => {
+    const { symlink, writeFile: wf, mkdir: md } = await import('node:fs/promises');
+    const root = await mkdtemp(join(tmpdir(), 'boundary-result-'));
+    try {
+      const out = join(root, 'output');
+      await md(out, { recursive: true });
+      await wf(join(root, 'secret.env'), 'DATABASE_URL=postgres://real');
+      await symlink(join(root, 'secret.env'), join(out, 'result.json'));
+      await expect(readCaptureResult(out)).rejects.toThrow(/outside the output directory/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a result.json larger than the cap, before parsing it', async () => {
+    const { writeFile: wf, mkdir: md } = await import('node:fs/promises');
+    const root = await mkdtemp(join(tmpdir(), 'boundary-big-'));
+    try {
+      const out = join(root, 'output');
+      await md(out, { recursive: true });
+      await wf(join(out, 'result.json'), Buffer.alloc(MAX_RESULT_BYTES + 1, 0x20));
+      await expect(readCaptureResult(out)).rejects.toThrow(/over the .* cap/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts an honest result.json of ordinary size', async () => {
+    const { writeFile: wf, mkdir: md } = await import('node:fs/promises');
+    const root = await mkdtemp(join(tmpdir(), 'boundary-ok-'));
+    try {
+      const out = join(root, 'output');
+      await md(out, { recursive: true });
+      await wf(join(out, 'result.json'), JSON.stringify(okResult()));
+      await expect(readCaptureResult(out)).resolves.toMatchObject({ sectionId: 'sec-1', gate: 'passed' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a frames directory holding a SYMLINK where a frame should be', async () => {
+    const { symlink, writeFile: wf, unlink } = await import('node:fs/promises');
+    const root = await mkdtemp(join(tmpdir(), 'boundary-frames-'));
+    try {
+      const dir = await frames(root, 3);
+      await wf(join(root, 'host-secret.jpg'), 'JPEGBYTES');
+      // The exact attack: a link named like a legitimate frame. ffmpeg would have opened it.
+      await unlink(join(dir, 'frame-000001.jpg'));
+      await symlink(join(root, 'host-secret.jpg'), join(dir, 'frame-000001.jpg'));
+
+      await expect(
+        assertFrameSet(root, 'frames', { expectedFrames: 3, namePattern: NAME_PATTERN }),
+      ).rejects.toThrow(/not a regular file/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses an unexpected extra entry, and a missing frame', async () => {
+    const { writeFile: wf, unlink } = await import('node:fs/promises');
+    const root = await mkdtemp(join(tmpdir(), 'boundary-count-'));
+    try {
+      const dir = await frames(root, 3);
+      await wf(join(dir, 'frame-000009.jpg'), 'extra');
+      await expect(
+        assertFrameSet(root, 'frames', { expectedFrames: 3, namePattern: NAME_PATTERN }),
+      ).rejects.toThrow(/unexpected entr/);
+
+      await unlink(join(dir, 'frame-000009.jpg'));
+      await unlink(join(dir, 'frame-000002.jpg'));
+      await expect(
+        assertFrameSet(root, 'frames', { expectedFrames: 3, namePattern: NAME_PATTERN }),
+      ).rejects.toThrow(/missing frame-000002\.jpg/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts exactly the frame set the trusted side expects', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'boundary-good-'));
+    try {
+      await frames(root, 5);
+      await expect(
+        assertFrameSet(root, 'frames', { expectedFrames: 5, namePattern: NAME_PATTERN }),
+      ).resolves.toContain('frames');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a frames path that is a regular file, and a clip path that is a directory', async () => {
+    const { writeFile: wf, mkdir: md } = await import('node:fs/promises');
+    const root = await mkdtemp(join(tmpdir(), 'boundary-kind-'));
+    try {
+      await wf(join(root, 'frames'), 'not a directory');
+      await expect(
+        assertFrameSet(root, 'frames', { expectedFrames: 1, namePattern: NAME_PATTERN }),
+      ).rejects.toThrow(/not a directory/);
+
+      await md(join(root, 'section.mp4'), { recursive: true });
+      await expect(assertRegularArtifact(root, 'section.mp4')).rejects.toThrow(/not a regular file/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
