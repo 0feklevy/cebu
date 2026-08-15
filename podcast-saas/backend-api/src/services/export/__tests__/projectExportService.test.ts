@@ -465,6 +465,35 @@ describe('run — the happy path (Phase 1: poster fallback for every sim window)
       expect(row.error ?? '').not.toMatch(/could not be rendered/i);
     });
 
+    it('a cancel that lands during the master upload does NOT publish a ready export', async () => {
+      // The status fence alone let cancellation lose a race it must always win: the row was still
+      // legitimately in-flight, so the final write published `ready` with an output_key anyway —
+      // a video that exists, downloads, and is billed for, after the user said no.
+      const assembler = stubAssembler();
+      const exportId = await newExport('queued', { policy: 'allow_poster' });
+      const storageSpy = storage;
+      // Set the flag at the last possible moment: after assembly, as the master is uploaded.
+      const originalUpload = storageSpy.uploadFile.bind(storageSpy);
+      storageSpy.uploadFile = async (key: string, ...rest: unknown[]) => {
+        if (key.endsWith('master.mp4')) {
+          await pg.query(`UPDATE project_exports SET cancel_requested = true WHERE id = $1`, [exportId]);
+        }
+        return (originalUpload as (...a: unknown[]) => Promise<unknown>)(key, ...rest);
+      };
+      try {
+        await withCapture(assembler, {
+          name: 'fake', isAvailable: async () => false, captureSection: vi.fn(),
+        }).run(exportId).catch(() => {});
+      } finally {
+        storageSpy.uploadFile = originalUpload;
+      }
+
+      const row = await exportRow(exportId);
+      expect(row.status).not.toBe('ready');
+      // The load-bearing assertion: nothing points at a master.
+      expect(row.output_key).toBeNull();
+    });
+
     it('the policy is read from the ROW, so a redelivery cannot change the answer', async () => {
       const exportId = await newExport('queued', { policy: 'forbid' });
       const { degradation_policy } = await one<{ degradation_policy: string }>(

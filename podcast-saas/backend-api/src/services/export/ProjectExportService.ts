@@ -594,12 +594,23 @@ export class ProjectExportService {
         .where(and(
           eq(project_exports.id, exportId),
           inArray(project_exports.status, [...EXPORT_IN_FLIGHT_STATUSES]),
+          // …AND nobody asked to stop. The status fence alone let a cancellation lose a race it
+          // should always win: a user pressing stop during the master upload set the flag on a row
+          // that was still legitimately in-flight, so this write published `ready` with an
+          // `output_key` anyway. The video then exists, is downloadable, and is billed for — after
+          // the user said no. Making the flag part of the predicate means the publish is refused by
+          // the database itself, not by a check that could be raced.
+          eq(project_exports.cancel_requested, false),
         ))
         .returning({ id: project_exports.id });
       if (!readyRow) {
-        // The fence held: someone reaped or superseded this run. The uploaded master is an
-        // orphan at a write-once key — harmless, reapable — and the row's owner keeps its word.
+        // The fence held: this run was reaped, superseded, or cancelled while it finished. The
+        // uploaded master is an orphan at a write-once key — harmless, reapable, and never pointed
+        // at by `output_key` — and the row's owner keeps its word.
         logger.warn({ exportId }, 'export: finished but no longer owns its row — not publishing');
+        // A cancellation that arrived this late still has to reach a terminal state, and the runner
+        // is the only writer of one.
+        await this.throwIfCancelRequested(exportId);
         return;
       }
       logger.info({ exportId, projectId: job.project_id, outputKey }, 'project export ready');
