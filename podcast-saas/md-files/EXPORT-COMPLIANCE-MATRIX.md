@@ -1,12 +1,13 @@
 # Linear video export — compliance matrix
 
-Branch `fix/export-final-e2e-acceptance`, head `36d93b2`. Every state below was decided by reading
+Branch `fix/export-final-e2e-acceptance`, head `a89fef0`, 19 commits ahead of `origin/main`. Every state below was decided by reading
 the code, not a plan or a commit message; each row names the evidence. A requirement that is
 implemented, exported and unit-tested but reachable from nowhere real is PARTIAL, never COMPLETE.
 
-**Verdict: NOT READY — EXTERNAL VALIDATION REQUIRED.** The capture is correct and proven on the real
-host. It cannot meet the production time budget on the current hardware, and that is a purchasing
-decision, not a code change. Everything that does not depend on it has been built.
+**Verdict: NOT READY — REQUIREMENTS REMAIN.** Local requirements are still open (§Remaining below),
+so the stronger verdict is not available yet. The capture itself is correct and proven on the real
+host, and the throughput gap is a purchasing decision rather than a code change — but that is not
+sufficient while local work remains.
 
 ---
 
@@ -144,3 +145,86 @@ decision is a dedicated GPU capture pool, and it needs its own spike (§4.2 belo
 
 Nothing above may be met by weakening the cage, relaxing the gate, raising a timeout to hide a hang,
 or letting a strict export publish a still.
+
+---
+
+## Update — the eight-commit pass (head `a89fef0`)
+
+Eight commits landed after the matrix above was first written. What follows supersedes the rows they
+touch, adds the requirements the earlier matrix omitted, and states what remains.
+
+### Closed by this pass
+
+| id | requirement | evidence |
+|---|---|---|
+| 0.3a | migration 059 SHIPPED — it existed, was reviewed, and was registered nowhere | `migrate.ts`, `check-db.ts`; `migration059.test.ts` (10 tests) |
+| 0.3b | registration drift cannot recur, in either direction, with ordering | same file — three generalised guards, not per-migration assertions |
+| 0.3c | 059 backfill idempotent BY CONSTRUCTION, not by accident | scoped inside the column-creation branch; the test ages the row first |
+| 3.1a | `warmupFrames` reaches the compositor; ONE default | `beginFrameCapture.test.ts` proves 0 and 7 at provider level |
+| 4.2e | renderer identity read from an ISOLATED WORLD, not page-writable state | the fake page claims an RTX 4090; the assertion requires SwiftShader |
+| 4.2f | renderer profile is a typed field on the wire; unknown FAILS | `assertRendererProfileName`, `configFromEnv` |
+| 3.0b | cost split returns as validated data, reaching the host on exit 0 | `parseCaptureCost` — bounded, finite, advisory, discarded whole if malformed |
+| 0.1d | a QUEUED ffmpeg pass honours cancellation, with no slot leak | `ffmpegLimit.test.ts` — 6 saturation tests; mutation fails 3 |
+| 0.1h | cancellation decided atomically in the terminal transition | `CASE WHEN cancel_requested` in the same statement |
+| 1.1a | `result.json` refuses symlink at the NAME, hardlink via `nlink`, O_NOFOLLOW read | `captureJobBoundary.test.ts`; mutation fails 2 |
+| 1.3b | frame entries refuse symlink AND hardlink before ffmpeg opens them | same |
+| 1.3d/1.4b | frames and clip PROBED — streams, codec, pix_fmt, dimensions, fps, duration, count | `artifactProbe.ts`; `artifactProbe.realMedia.test.ts` against real ffmpeg output |
+| 1.4c | every ffmpeg, including the provider's encode, under the global limiter | `runFfmpegLimited` wraps `encodeFramesToClip` |
+| 0.2b | artifact ownership released in `finally` on every path | `ProjectExportService` upload try/finally |
+| 2.4a | the plan is FROZEN at creation and that plan executes | migration 060, `planFingerprint.ts`, worker calls no planner; mutation fails 2 |
+| 2.4b | `plan` is write-once; runtime → `effective_plan`, failure → `failure` | `assertNotFrozenColumn` refuses either frozen column |
+| 2.5a | consent bound to the fingerprint, signed, expiring, per user and project | `consentToken.ts`, 12 tests |
+| 2.5b | naked `allow_degraded` starts nothing | `exportEndpoints.test.ts` |
+| 2.5c | preview endpoint: no row, no enqueue, sections named, will vs may | `GET .../export/preview` |
+| 2.6a–c | authoritative progress: phase, section, capture stage, frame counters | migration 061; monotonicity and no-pre-increment tests; mutation fails 1 |
+| 2.6d | `degraded_windows` counts substitutions, not warnings | column written with the terminal state |
+| 5.1a | `WORKER_QUEUES` allowlist; unknown name is a startup error | `resolveWorkerQueues`, 5 tests |
+| 5.1b | `project_export` can never run inline, whatever the driver says | `NEVER_INLINE`; `enqueueJob` throws |
+| 5.1c | durable awaitable enqueue, singleton per export, truthful 503 | `enqueueProjectExport`; the row is marked failed, not left queued |
+| 7.0e | active-export discovery + server capability | `GET .../export/current`, registered before `:exportId`, 5 tests |
+
+### Requirements the earlier matrix omitted, now recorded
+
+| id | requirement | state |
+|---|---|---|
+| 6.x | **Phase 6 capture cache** | **BLOCKED BY ORDER** — the plan forbids caching until uncached production capture is proven, and it is not. Not implemented, deliberately; the key design (package digest, entry, section identity, config hash, duration, fps, size, DPR, warmup, algorithm and gate versions, dependency-registry hash, Chrome version, image digest, renderer identity, encode settings) is recorded here so it is not re-derived later. Never key on `configHash` alone. |
+| 7.2 | capability endpoint | COMPLETE — `export/current` carries `export_enabled` and `live_capture_configured` |
+| 7.3 | generated-client reconciliation, duplicate handwritten export methods removed | NOT DONE |
+| 8.4a | rollout cohort / percentage | NOT DONE |
+| 8.4b | monitoring and automatic rollout stop | NOT DONE |
+| 0.2c | janitor for orphaned artifacts + orphan metrics | NOT DONE |
+| 5.4 | worker shutdown drain, container removal verified | NOT DONE |
+| 5.2b | global scheduler slots, per-org limits, backlog cap | NOT DONE (per-job admission control IS done) |
+| 7.1b | image DIGEST enforcement (tag is accepted today) | NOT DONE |
+
+### Remaining local requirements — why the verdict is REQUIREMENTS REMAIN
+
+1. Two CTAs, staged progress rendering, and consent naming sections **in the UI** (7.0b–d). The
+   backend contract they need is complete; the React work is not.
+2. Generated client reconciliation (7.3).
+3. Package-fetch cancellation inside the fetch loop (0.1g).
+4. Expiry derived from one admitted-cost formula rather than a raised constant (0.3c).
+5. Global capacity, shutdown drain, janitor and orphan metrics (5.2b, 5.4, 0.2c).
+6. Image digest enforcement, rollout cohort, monitoring/autostop (7.1b, 8.4a–b).
+
+### Verified on the real host at this head
+
+- Image `podcast-saas/export-worker:v8` built from `a89fef0`.
+- **`FLOWVID_SMOKE=PASS`** — Stages A–E, mechanism `sys-admin`.
+- Throughput unchanged and still the blocker: 96.8 % of a frame is software rasterisation.
+
+### Suite results at this head
+
+| check | result |
+|---|---|
+| `pnpm --filter shared build` | clean |
+| `pnpm --filter backend-api typecheck` | clean |
+| `pnpm --filter backend-api lint` | 46 problems, **0 errors** |
+| `pnpm --filter backend-api test` | **2489 passed**, 18 skipped, 0 failed |
+| `pnpm --filter client-web typecheck` | clean |
+| `pnpm --filter client-web lint` | 84 problems, **0 errors** |
+| `pnpm --filter client-web test` | **1389 passed**, 0 failed |
+| migration tests | 164 passed |
+| adversarial boundary tests | 181 passed |
+| mutation / consent / cancellation | 65 passed |
+| `git diff --check` | clean |
