@@ -13,6 +13,7 @@ import { join } from 'node:path';
 
 import type { RendererIdentity, SimCaptureWindow } from '../../../types.js';
 import {
+  assertWithinOutputDir,
   buildCaptureSpec,
   parseCaptureResult,
   writeCaptureInput,
@@ -215,6 +216,80 @@ describe('writeCaptureInput / readCaptureResult (mount I/O)', () => {
       ).rejects.toThrow(/unsafe/);
     } finally {
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * `result.json` is written on a mount the untrusted container can write, and its `framesDir` /
+ * `clipPath` tell a PRIVILEGED reader which file to open: the provider copies the clip and
+ * `ProjectExportService` uploads those bytes to storage as the section's MP4. So the two fields are
+ * an instruction from untrusted code to a trusted reader, and validating them as "a string" is not
+ * validation. Two independent escapes had to be closed:
+ *
+ *   traversal — `join('/out', '../../../etc/passwd')` is `/etc/passwd`; `join` only ignores a
+ *               LEADING slash, it never confines.
+ *   symlink   — the mount is container-writable, so a link named exactly `section.mp4` pointing at
+ *               a host file is followed by both `copyFile` and ffmpeg.
+ */
+describe('the container cannot aim the trusted reader at an arbitrary host file', () => {
+  const escapes = [
+    '../../../../etc/passwd',
+    '../.env',
+    '/etc/passwd',
+    'frames/../../..',
+    './frames',
+    'frames/',
+    'section.mp4.bak',
+    '',
+  ];
+
+  it.each(escapes)('parseCaptureResult refuses clipPath %j', (bad) => {
+    expect(() => parseCaptureResult(JSON.stringify(okResult({ clipPath: bad, framesDir: null })))).toThrow(
+      /must name a known artifact|bad clipPath/,
+    );
+  });
+
+  it.each(escapes)('parseCaptureResult refuses framesDir %j', (bad) => {
+    expect(() => parseCaptureResult(JSON.stringify(okResult({ framesDir: bad })))).toThrow(
+      /must name a known artifact|bad framesDir/,
+    );
+  });
+
+  it('still accepts the two legitimate artifact names', () => {
+    expect(parseCaptureResult(JSON.stringify(okResult({ framesDir: 'frames' }))).framesDir).toBe('frames');
+    expect(
+      parseCaptureResult(JSON.stringify(okResult({ framesDir: null, clipPath: 'section.mp4' }))).clipPath,
+    ).toBe('section.mp4');
+  });
+
+  it('assertWithinOutputDir follows a symlink and refuses the one that leaves the output dir', async () => {
+    const { symlink, writeFile: wf, mkdir: md } = await import('node:fs/promises');
+    const root = await mkdtemp(join(tmpdir(), 'boundary-confine-'));
+    try {
+      const outputDir = join(root, 'output');
+      await md(outputDir, { recursive: true });
+      const secret = join(root, 'secret.env');
+      await wf(secret, 'DATABASE_URL=postgres://real');
+
+      // The attack: a link named exactly like a legitimate artifact, pointing outside.
+      await symlink(secret, join(outputDir, 'section.mp4'));
+      await expect(assertWithinOutputDir(outputDir, 'section.mp4')).rejects.toThrow(/outside the output directory/);
+
+      // The honest case still resolves, and returns a real path the caller can read.
+      await md(join(outputDir, 'frames'), { recursive: true });
+      await expect(assertWithinOutputDir(outputDir, 'frames')).resolves.toContain('frames');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('assertWithinOutputDir refuses an artifact that does not exist rather than guessing', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'boundary-missing-'));
+    try {
+      await expect(assertWithinOutputDir(root, 'section.mp4')).rejects.toThrow(/not readable/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 });

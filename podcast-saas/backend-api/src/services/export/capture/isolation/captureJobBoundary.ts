@@ -31,8 +31,8 @@
  */
 
 import { spawn } from 'node:child_process';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { dirname, join, sep } from 'node:path';
 
 import type { RendererIdentity, SimCaptureWindow } from '../../types.js';
 
@@ -273,6 +273,55 @@ function isRendererIdentity(v: unknown): v is RendererIdentity {
 }
 
 /**
+ * The only artifact names the container may hand back. `result.json` names WHERE its output is, and
+ * the trusted side then reads that path — so the field is an instruction from untrusted code to a
+ * privileged reader, and an allowlist is the only safe shape for it. Anything else (a traversal, an
+ * absolute path, a second directory level) is refused rather than sanitised: there is no legitimate
+ * reason for the entrypoint to name anything but these two, and "sanitise" invites a bypass.
+ */
+const ALLOWED_ARTIFACT_PATHS = new Set(['frames', 'section.mp4']);
+
+/**
+ * Reject any artifact path that is not one of the two names above.
+ *
+ * Without this, `join(outputDir, result.clipPath)` in the provider escapes on `../` — `join` only
+ * ignores a leading `/`, it does not confine — and the trusted worker would `copyFile` an arbitrary
+ * host file into the section clip, which `ProjectExportService` then uploads to storage and serves.
+ * That is arbitrary host-file exfiltration through the export artifact, driven entirely by a string
+ * the untrusted container chose. Path confinement at read time (`assertWithinOutputDir`) closes the
+ * symlink half of the same hole; this closes the name half.
+ */
+export function assertArtifactPath(value: unknown, field: 'framesDir' | 'clipPath'): asserts value is string {
+  if (typeof value !== 'string') throw new Error(`parseCaptureResult: bad ${field}`);
+  if (!ALLOWED_ARTIFACT_PATHS.has(value)) {
+    throw new Error(`parseCaptureResult: ${field} must name a known artifact, got ${JSON.stringify(value.slice(0, 64))}`);
+  }
+}
+
+/**
+ * Resolve an artifact inside the job's output directory, following no symlink out of it.
+ *
+ * The output mount is writable by the container, so it can plant a symlink named exactly `frames`
+ * or `section.mp4` pointing anywhere on the host; `copyFile` and ffmpeg both follow symlinks, so the
+ * name allowlist alone is not enough. `realpath` collapses every link in the chain, including
+ * intermediate ones, and the result must still sit under the real output directory.
+ */
+export async function assertWithinOutputDir(outputDir: string, artifact: string): Promise<string> {
+  const rootReal = await realpath(outputDir);
+  let targetReal: string;
+  try {
+    targetReal = await realpath(join(rootReal, artifact));
+  } catch (err) {
+    throw new Error(`capture artifact ${artifact} is not readable: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  const prefix = rootReal.endsWith(sep) ? rootReal : rootReal + sep;
+  if (targetReal !== rootReal && !targetReal.startsWith(prefix)) {
+    throw new Error(`capture artifact ${artifact} resolves outside the output directory — refusing to read it`);
+  }
+  return targetReal;
+}
+
+/**
  * Parse + validate the container's result JSON. Rejects anything malformed rather than trusting a
  * shape from untrusted code — the result is written by the trusted entrypoint, but it lands on a
  * mount the browser could in principle also write, so it is treated as untrusted input.
@@ -286,8 +335,8 @@ export function parseCaptureResult(raw: unknown): ContainerCaptureResult {
   if (typeof o.frameCount !== 'number' || !Number.isInteger(o.frameCount) || o.frameCount < 0) {
     throw new Error('parseCaptureResult: bad frameCount');
   }
-  if (o.framesDir !== null && typeof o.framesDir !== 'string') throw new Error('parseCaptureResult: bad framesDir');
-  if (o.clipPath !== null && typeof o.clipPath !== 'string') throw new Error('parseCaptureResult: bad clipPath');
+  if (o.framesDir !== null && o.framesDir !== undefined) assertArtifactPath(o.framesDir, 'framesDir');
+  if (o.clipPath !== null && o.clipPath !== undefined) assertArtifactPath(o.clipPath, 'clipPath');
   if (typeof o.rendererString !== 'string') throw new Error('parseCaptureResult: bad rendererString');
   if (o.gate !== 'passed' && o.gate !== 'failed') throw new Error(`parseCaptureResult: bad gate ${String(o.gate)}`);
   if (!isRendererIdentity(o.rendererIdentity)) throw new Error('parseCaptureResult: bad rendererIdentity');

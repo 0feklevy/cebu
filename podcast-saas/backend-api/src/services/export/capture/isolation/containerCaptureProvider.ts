@@ -42,6 +42,7 @@ import {
 } from '../captureTypes.js';
 import {
   DockerCaptureBoundary,
+  assertWithinOutputDir,
   buildCaptureSpec,
   writeCaptureInput,
   type CaptureInputFile,
@@ -377,11 +378,16 @@ export class ContainerCaptureProvider implements SimCaptureBackend {
       // same lifecycle every other capture backend's clip has.
       const clipOut = await mkdtemp(join(base, `clip-${spec.sectionId.slice(0, 8)}-`));
       const clipPath = join(clipOut, 'section.mp4');
+      // `result.json` is written by the untrusted side, so the paths in it are an instruction from
+      // untrusted code to a privileged reader. The name is allowlisted at parse time; this resolves
+      // symlinks and refuses anything that lands outside the job's own output directory. Both halves
+      // are needed: the mount is container-writable, so a symlink named exactly `section.mp4` would
+      // otherwise let `copyFile` pull an arbitrary host file into the clip the service then uploads.
       if (result.clipPath) {
-        await copyFile(join(outputDir, result.clipPath), clipPath);
+        await copyFile(await assertWithinOutputDir(outputDir, result.clipPath), clipPath);
       } else if (result.framesDir) {
         await encodeFramesToClip(
-          join(outputDir, result.framesDir),
+          await assertWithinOutputDir(outputDir, result.framesDir),
           containerSpec.output.namePattern,
           spec.fps,
           { width: spec.width, height: spec.height },
