@@ -18,6 +18,25 @@ function cropConcurrency(): number {
   return Math.max(1, Number(process.env.QUEUE_CROP_CONCURRENCY ?? '2'));
 }
 
+/**
+ * How many jobs of a given kind this worker runs at once.
+ *
+ * `project_export` is deliberately serial. A crop is I/O-bound and two of them interleave happily,
+ * but an export with a simulation section runs a capture container that is allowed `--cpus 2` — on
+ * the 2-vCPU worker host that is the whole machine. Two concurrent exports do not finish in the same
+ * total time; they contend, each takes longer than the pair would have taken in sequence, and both
+ * move closer to their wall-clock kill. Serialising is what makes the per-section time budget mean
+ * anything.
+ *
+ * `QUEUE_EXPORT_CONCURRENCY` raises it for a host that genuinely has the cores.
+ */
+function concurrencyFor(name: JobName): number {
+  if (name === 'project_export') {
+    return Math.max(1, Number(process.env.QUEUE_EXPORT_CONCURRENCY ?? '1'));
+  }
+  return cropConcurrency();
+}
+
 /** Enqueue a durable job. Never throws; falls back to `inline()` if the send fails. */
 export function pgBossSend<N extends JobName>(
   name: N,
@@ -51,7 +70,7 @@ export async function registerWorkers(
 ): Promise<void> {
   for (const name of names) {
     const run = handlers[name] as (payload: unknown) => Promise<unknown>;
-    await boss.work(name, { localConcurrency: cropConcurrency() }, async (jobs) => {
+    await boss.work(name, { localConcurrency: concurrencyFor(name) }, async (jobs) => {
       for (const job of jobs) {
         await run(job.data); // throwing fails the job → pg-boss retries with backoff
       }

@@ -248,8 +248,8 @@ describe('ContainerCaptureProvider.captureSection', () => {
         await access(join(io.inputDir, 'index.html'));
         await access(join(io.inputDir, 'app.js'));
         // Mimic a clip-emitting container backend.
-        await writeFile(join(io.outputDir, 'clip.mp4'), Buffer.from('fake-mp4-bytes'));
-        return okResult({ clipPath: 'clip.mp4' });
+        await writeFile(join(io.outputDir, 'section.mp4'), Buffer.from('fake-mp4-bytes'));
+        return okResult({ clipPath: 'section.mp4' });
       },
     };
     const provider = new ContainerCaptureProvider(testConfig(scratch), boundary, fakeStorage());

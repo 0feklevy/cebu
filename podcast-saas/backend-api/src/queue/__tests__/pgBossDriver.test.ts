@@ -91,3 +91,36 @@ describe('registerWorkers', () => {
     await expect(captured!([{ data: { videoFileId: 'x' } }])).rejects.toThrow('crop failed');
   });
 });
+
+/**
+ * Concurrency is per job KIND, not one number for the whole worker. An export with a simulation
+ * section runs a capture container allowed `--cpus 2`; on the 2-vCPU worker host that is the entire
+ * machine, so two concurrent exports contend rather than parallelise and both move closer to their
+ * wall-clock kill. Crops are I/O-bound and keep their 2.
+ */
+describe('project_export runs serially, crops do not', () => {
+  const noopHandlers = { crop: async () => {}, project_export: async () => {} } as never;
+
+  it('registers project_export with localConcurrency 1 and crop with 2', async () => {
+    const work = vi.fn(async () => 'worker-id');
+    delete process.env.QUEUE_EXPORT_CONCURRENCY;
+    delete process.env.QUEUE_CROP_CONCURRENCY;
+
+    await registerWorkers({ work } as never, ['crop', 'project_export'], noopHandlers);
+
+    const byName = Object.fromEntries(work.mock.calls.map((c) => [c[0] as string, c[1] as { localConcurrency: number }]));
+    expect(byName.project_export.localConcurrency).toBe(1);
+    expect(byName.crop.localConcurrency).toBe(2);
+  });
+
+  it('an operator with real cores can raise it', async () => {
+    const work = vi.fn(async () => 'worker-id');
+    process.env.QUEUE_EXPORT_CONCURRENCY = '3';
+    try {
+      await registerWorkers({ work } as never, ['project_export'], noopHandlers);
+      expect((work.mock.calls[0][1] as { localConcurrency: number }).localConcurrency).toBe(3);
+    } finally {
+      delete process.env.QUEUE_EXPORT_CONCURRENCY;
+    }
+  });
+});

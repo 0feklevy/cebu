@@ -18,7 +18,7 @@ import type {
   SimCaptureBackend,
 } from '../../captureTypes.js';
 import type { RendererIdentity } from '../../../types.js';
-import { backendToDriver, toBackendSpec, RELOCATED_FRAMES_DIR } from '../backendAdapter.js';
+import { backendToDriver, toBackendSpec, RELOCATED_CLIP_FILE, RELOCATED_FRAMES_DIR } from '../backendAdapter.js';
 import type { ContainerCaptureSpec } from '../captureJobBoundary.js';
 
 const RENDERER: RendererIdentity = {
@@ -154,8 +154,12 @@ describe('backendToDriver', () => {
       });
 
       expect(result.framesDir).toBeNull();
-      expect(result.clipPath).toBe('sec-7.mp4');
-      expect(await readFile(join(outputDir, 'sec-7.mp4'), 'utf8')).toBe('MP4');
+      // The relocated clip takes the ONE canonical name, not the backend's (`sec-7.mp4`). The
+      // trusted side allowlists the artifact names it will resolve, so normalising here makes the
+      // two ends agree by construction instead of by convention — and stops a backend-chosen
+      // filename from being the thing a privileged reader resolves.
+      expect(result.clipPath).toBe(RELOCATED_CLIP_FILE);
+      expect(await readFile(join(outputDir, RELOCATED_CLIP_FILE), 'utf8')).toBe('MP4');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

@@ -145,9 +145,15 @@ export interface SimCaptureBackend {
   isAvailable(): Promise<boolean>;
   /**
    * Capture one scripted simulation section.
+   *
+   * `signal` is the export job's cancellation signal. It is optional so every existing backend still
+   * satisfies the contract, but a backend that spawns a process MUST honour it: a capture is the
+   * longest-running thing an export does — minutes of pinned CPU — so a cancellation that cannot
+   * reach it means the user's "stop" leaves the host burning both cores until the wall clock fires.
+   *
    * @throws {CaptureUnavailable} when no browser can run here (poster-fallback signal).
    */
-  captureSection(spec: CaptureSpec): Promise<CaptureResult>;
+  captureSection(spec: CaptureSpec, signal?: AbortSignal): Promise<CaptureResult>;
 }
 
 /**

@@ -32,7 +32,14 @@ const DLQ_SUFFIX = '-dead';
 const QUEUE_OPTIONS: Record<(typeof PGBOSS_JOB_NAMES)[number], QueueOptions> = {
   crop: { retryLimit: 3, retryDelay: 30, retryBackoff: true, expireInSeconds: 30 * 60 },
   video_generate: { retryLimit: 2, retryDelay: 60, retryBackoff: true, expireInSeconds: 45 * 60 },
-  project_export: { retryLimit: 2, retryDelay: 60, retryBackoff: true, expireInSeconds: 60 * 60 },
+  // An export's worst case is the SUM of its sections' wall-clock caps, and each of those is up to
+  // 600 s (`wallClockCapSec`) — so a project with more than six simulation windows could legitimately
+  // still be working when a 60-minute expiry fired. Expiring a job that is genuinely progressing is
+  // the worst outcome available: pg-boss retries it, and the retry redoes every expensive capture
+  // from the start. The expiry must therefore stay ABOVE what the per-section caps already permit.
+  // This is not a timeout raised to hide a hang — the hang is caught by the per-section wall clock,
+  // which is unchanged; this only stops the queue from interrupting honest work.
+  project_export: { retryLimit: 2, retryDelay: 60, retryBackoff: true, expireInSeconds: 3 * 60 * 60 },
 };
 
 function connectionString(): string {

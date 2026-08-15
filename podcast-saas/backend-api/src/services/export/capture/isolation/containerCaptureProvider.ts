@@ -286,7 +286,7 @@ export class ContainerCaptureProvider implements SimCaptureBackend {
     return this.available;
   }
 
-  async captureSection(spec: CaptureSpec): Promise<CaptureResult> {
+  async captureSection(spec: CaptureSpec, signal?: AbortSignal): Promise<CaptureResult> {
     if (!(await this.isAvailable())) {
       throw new CaptureUnavailable('container capture: worker image is not runnable on this host');
     }
@@ -357,10 +357,14 @@ export class ContainerCaptureProvider implements SimCaptureBackend {
         'export(container-capture): input staged — running worker container',
       );
 
+      // The export job's cancellation signal, not a fresh one. A capture is the longest-running
+      // thing an export does; passing `new AbortController().signal` here meant a cancelled export
+      // kept both vCPUs pinned until the wall clock killed the container. The boundary already
+      // knows how to stop a container on abort — it was simply never told.
       const result: ContainerCaptureResult = await this.boundary.runCapture(
         containerSpec,
         { inputDir, outputDir },
-        new AbortController().signal,
+        signal ?? new AbortController().signal,
       );
 
       if (result.status === 'failed' || result.gate === 'failed') {

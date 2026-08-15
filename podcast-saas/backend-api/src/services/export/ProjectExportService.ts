@@ -38,7 +38,7 @@ import { and, eq, inArray, lt, or, sql } from 'drizzle-orm';
 import { createReadStream } from 'node:fs';
 import { mkdtemp, readFile, rm, stat, statfs } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { db } from '../../db/index.js';
 import { project_exports } from '../../db/schema.js';
@@ -364,7 +364,7 @@ export class ProjectExportService {
             simpleUi: w.simpleUi, autoScript: w.autoScript, uiHide: w.uiHide ?? [],
             durationSec: w.endSec - w.startSec, fps: plan.grid.fps,
             width: plan.grid.w, height: plan.grid.h, configHash: w.configHash ?? '', posterKey: w.posterKey ?? '',
-          });
+          }, abort.signal);
 
           if (result.gate === 'failed' || !result.clipPath) {
             logger.warn(
@@ -389,6 +389,13 @@ export class ProjectExportService {
           // the section id: audit-only (the splice keys off `storageKey`), honest about origin.
           const clipKey = `exports/${job.project_id}/${exportId}/sections/${w.sectionId}.mp4`;
           await this.storage.uploadFile(clipKey, await readFile(result.clipPath), 'video/mp4', IMMUTABLE_CACHE_CONTROL);
+          // The clip had to outlive the capture job's own scratch directory, so the backend leaves it
+          // in a sibling temp dir and the OWNERSHIP passes here, to the code that consumes it. Once
+          // the bytes are in storage nothing needs the local copy, and "the OS tmp reaper will get
+          // it" is not true when the operator points EXPORT_CAPTURE_WORKDIR at a real directory —
+          // which is exactly what the container-capture setup requires. Left alone, every captured
+          // section leaks an MP4 onto the worker host permanently.
+          await rm(dirname(result.clipPath), { recursive: true, force: true }).catch(() => {});
           const clip: ClipWindow = {
             kind: 'clip', sectionId: w.sectionId, label: w.label, startSec: w.startSec, endSec: w.endSec,
             sourceVideoFileId: w.sectionId, storageKey: clipKey,
