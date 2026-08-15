@@ -154,6 +154,10 @@ function throwIfCancelled(signal?: AbortSignal): void {
  */
 function runFfmpegPass(args: string[], opts: RunFfmpegOpts = {}): Promise<string> {
   throwIfCancelled(opts.signal);
+  // The signal goes to the LIMITER, not only into the task body: a pass waiting behind the global
+  // FFMPEG_CONCURRENCY cap has not spawned anything yet, so nothing inside the body can observe an
+  // abort that arrives while it queues. Without this, pressing stop while other encodes hold the
+  // slots let this pass start anyway and run to completion.
   return runFfmpegLimited(() => new Promise<string>((resolve, reject) => {
     const proc = spawn('ffmpeg', ['-hide_banner', '-nostdin', '-nostats', ...args], {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -192,7 +196,7 @@ function runFfmpegPass(args: string[], opts: RunFfmpegOpts = {}): Promise<string
         reject(new ExportGateError('ffmpeg-exit', `ffmpeg exited ${code}: ${stderrTail.slice(-600)}`));
       }
     });
-  }));
+  }), opts.signal);
 }
 
 /** ffprobe → parsed JSON. Any failure is the 'probe' gate. */

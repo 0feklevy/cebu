@@ -451,11 +451,29 @@ export class ProjectExportService {
           logger.info({ exportId, section: name(w), clipKey }, 'export: sim window captured');
           captured.push(clip);
         } catch (err) {
-          // Cancellation is NEVER degradation. It arrives here as an abort from the same signal the
-          // capture was given, and a generic catch that turned it into a poster would publish a
-          // slideshow for a user who pressed stop. Rethrow before any policy is consulted.
+          // Cancellation is NEVER degradation, and the test for it must not depend on WHAT the
+          // backend threw. Checking `err.name === 'AbortError'` was not enough: nothing in the
+          // container capture stack produces that name — an aborted container exits non-zero and
+          // the boundary reports "exited 137 with no readable result.json". So a mid-capture cancel
+          // fell straight through to the policy branch and, under the default `forbid`, was written
+          // as `failed` with "could not be rendered, you can try again" — telling the user their
+          // simulation is broken when in fact they pressed stop.
+          //
+          // The SIGNAL is the authority here, not the error's spelling. It is the same controller
+          // the capture was handed, so if it is aborted this window ended because the user asked it
+          // to, whatever error the failure happened to surface as.
           if (err instanceof Error && err.name === 'AbortError') throw err;
           if (err instanceof ExportRefused) throw err;
+          // Ask the ROW, not the error. Two things are true here that made the old
+          // `err.name === 'AbortError'` check useless: nothing in the container capture stack
+          // produces that name (an aborted container exits non-zero and the boundary reports
+          // "exited 137 with no readable result.json"), and the in-memory signal lags — the cancel
+          // poll runs on the heartbeat, so a user who pressed stop one second ago has set the flag
+          // but not yet aborted the controller. Either way the window ended because they asked it
+          // to, and under the default `forbid` policy this failure would otherwise be written as
+          // `failed` with "your simulation could not be rendered" — blaming the render for a
+          // decision the user made.
+          await this.throwIfCancelRequested(exportId);
 
           const failReason = err instanceof CaptureGateFailed
             ? `${err.message} (renderer "${err.rendererString}")`

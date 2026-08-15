@@ -431,6 +431,40 @@ describe('run — the happy path (Phase 1: poster fallback for every sim window)
       expect(warnings.join(' ')).not.toMatch(/simulation capture failed/i);
     });
 
+    it('a cancel DURING capture ends as cancelled — with the error the REAL backend throws', async () => {
+      // The earlier version of this test injected an `AbortError` from the fake backend, so it
+      // passed while the production path could not possibly reach it: nothing in the container
+      // capture stack produces that name. An aborted container exits non-zero and the boundary
+      // reports "exited 137 with no readable result.json" — a plain Error. Under the default
+      // `forbid` policy that fell through to the strict branch and was written as `failed`, telling
+      // the user their simulation could not be rendered when in fact they had pressed stop.
+      //
+      // So this fake throws exactly what the real one does: an ordinary error, after the cancel
+      // flag is set. The signal, not the error's spelling, has to be what decides.
+      const assembler = stubAssembler();
+      const exportId = await newExport('queued', { policy: 'forbid' });
+      const backend: SimCaptureBackend = {
+        name: 'fake',
+        isAvailable: async () => true,
+        captureSection: async () => {
+          await pg.query(`UPDATE project_exports SET cancel_requested = true WHERE id = $1`, [exportId]);
+          // Give the service's cancel poll a beat to observe the flag and abort the controller.
+          await new Promise((r) => setTimeout(r, EXPORT_HEARTBEAT_MS > 50 ? 60 : 5));
+          throw new Error('export capture container exited 137 with no readable result.json');
+        },
+      };
+
+      await expect(withCapture(assembler, backend).run(exportId)).rejects.toMatchObject({
+        code: 'export_cancelled',
+      });
+      const row = await exportRow(exportId);
+      expect(row.status).toBe('cancelled');
+      expect(row.output_key).toBeNull();
+      expect(row.error).toMatch(/cancelled/i);
+      // And it must NOT read as a broken simulation.
+      expect(row.error ?? '').not.toMatch(/could not be rendered/i);
+    });
+
     it('the policy is read from the ROW, so a redelivery cannot change the answer', async () => {
       const exportId = await newExport('queued', { policy: 'forbid' });
       const { degradation_policy } = await one<{ degradation_policy: string }>(

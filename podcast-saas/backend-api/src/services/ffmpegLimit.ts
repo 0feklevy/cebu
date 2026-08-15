@@ -27,10 +27,30 @@ function release(): void {
   }
 }
 
-/** Run an ffmpeg/ffprobe task under the global concurrency cap (FFMPEG_CONCURRENCY, default 2). */
-export async function runFfmpegLimited<T>(task: () => Promise<T>): Promise<T> {
+/** Thrown when a queued task is cancelled before it ever reaches a slot. */
+class QueuedTaskAborted extends Error {
+  constructor() {
+    super('ffmpeg task was cancelled before it started');
+    // Spelled the way `classifyExportFailure` recognises cancellation.
+    this.name = 'AbortError';
+  }
+}
+
+/**
+ * Run an ffmpeg/ffprobe task under the global concurrency cap (FFMPEG_CONCURRENCY, default 2).
+ *
+ * `signal` matters most for the task that is still WAITING. A caller that only attaches its abort
+ * listener inside the task body cannot be interrupted while queued — and worse, attaching to an
+ * already-aborted signal never fires the listener at all — so a user who pressed stop while two
+ * other encodes held the slots would have their pass start anyway and run to completion. On the
+ * measured 2-vCPU host that is minutes of work nobody wanted. Checked before the wait, again after
+ * the slot is granted, and released to the next waiter either way.
+ */
+export async function runFfmpegLimited<T>(task: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (signal?.aborted) throw new QueuedTaskAborted();
   await acquire();
   try {
+    if (signal?.aborted) throw new QueuedTaskAborted();
     return await task();
   } finally {
     release();
