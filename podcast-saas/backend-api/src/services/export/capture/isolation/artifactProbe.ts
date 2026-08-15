@@ -70,9 +70,12 @@ async function ffprobeJson(
           opts.signal?.removeEventListener('abort', onAbort);
           fn();
         };
+        // Same discipline as the encode: kill, but settle only on 'close', so the global ffmpeg
+        // slot is never handed to the next task while this child is still dying.
+        let killReason: string | null = null;
         const kill = (why: string): void => {
+          killReason = why;
           proc.kill('SIGKILL');
-          finish(() => reject(new ProbeFailed(path, why)));
         };
         const timer = setTimeout(() => kill(`timed out after ${opts.timeoutMs ?? PROBE_TIMEOUT_MS} ms`),
           opts.timeoutMs ?? PROBE_TIMEOUT_MS);
@@ -83,6 +86,7 @@ async function ffprobeJson(
         proc.on('error', (e) => finish(() => reject(new ProbeFailed(path, e.message))));
         proc.on('close', (code) => {
           finish(() => {
+            if (killReason) return reject(new ProbeFailed(path, killReason));
             if (code !== 0) return reject(new ProbeFailed(path, `ffprobe exited ${code}: ${err.slice(-300)}`));
             try {
               resolve(JSON.parse(out) as Record<string, unknown>);
@@ -169,6 +173,29 @@ export interface ExpectedVideo {
  * the viewer to the simulation rather than to the encoder.
  */
 export function assertClipMatches(probed: ProbedVideo, want: ExpectedVideo, label: string): void {
+  // Exactly one stream, and it is video. A capture clip has no business carrying audio, subtitles
+  // or attachments — an extra stream is the container smuggling bytes into an artifact the service
+  // uploads and serves verbatim.
+  if (probed.streams !== 1) {
+    throw new Error(`${label}: clip carries ${probed.streams} streams; a capture clip has exactly one video stream`);
+  }
+  // The encode pins h264/yuv420p — anything else means these are not the encoder's bytes, or the
+  // assembler's gate is about to reject what the capture pipeline just certified.
+  if (probed.codec !== 'h264') {
+    throw new Error(`${label}: clip codec is ${probed.codec || 'unknown'}, not h264`);
+  }
+  if (probed.pixFmt !== 'yuv420p') {
+    throw new Error(`${label}: clip pixel format is ${probed.pixFmt || 'unknown'}, not yuv420p`);
+  }
+  // Unknown is not success. A container that strips the frame count or duration from its output
+  // must not pass BECAUSE the number is missing — that inverts the check into a reward for
+  // withholding it.
+  if (probed.frames === null) {
+    throw new Error(`${label}: clip reports no frame count — refusing to accept an unverifiable clip`);
+  }
+  if (!(probed.durationSec > 0)) {
+    throw new Error(`${label}: clip reports no duration — refusing to accept an unverifiable clip`);
+  }
   if (probed.width !== want.width || probed.height !== want.height) {
     throw new Error(
       `${label}: clip is ${probed.width}x${probed.height}, not the requested ${want.width}x${want.height}`,
@@ -177,12 +204,12 @@ export function assertClipMatches(probed: ProbedVideo, want: ExpectedVideo, labe
   if (Math.abs(probed.fps - want.fps) > 0.01) {
     throw new Error(`${label}: clip runs at ${probed.fps.toFixed(3)} fps, not ${want.fps}`);
   }
-  if (probed.frames !== null && Math.abs(probed.frames - want.frames) > 1) {
+  if (Math.abs(probed.frames - want.frames) > 1) {
     throw new Error(`${label}: clip holds ${probed.frames} frames, not the expected ${want.frames}`);
   }
   const wantSec = want.frames / want.fps;
   const oneFrame = 1 / want.fps;
-  if (probed.durationSec > 0 && Math.abs(probed.durationSec - wantSec) > oneFrame + 0.001) {
+  if (Math.abs(probed.durationSec - wantSec) > oneFrame + 0.001) {
     throw new Error(
       `${label}: clip runs ${probed.durationSec.toFixed(3)}s, not ${wantSec.toFixed(3)}s (±1 frame)`,
     );

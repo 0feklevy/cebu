@@ -9,7 +9,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { logger } from '../../../../../lib/logger.js';
-import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -410,5 +410,60 @@ describe('the provider forwards what the trusted side decided', () => {
     } finally {
       infoSpy.mockRestore();
     }
+  });
+});
+
+/**
+ * The provider consumes artifacts and owns temporary directories — two things the first hardening
+ * pass left half-done. Probing only the first and last frame let a wrong-sized MIDDLE frame reach
+ * the viewer; a throw after clipOut was created leaked it onto the host forever.
+ */
+describe('the provider validates every frame and leaks no clip directory', () => {
+  it('rejects a wrong-sized MIDDLE frame, not just the ends', async () => {
+    scratch = await mkdtemp(join(tmpdir(), 'ccp-mid-'));
+    const boundary = {
+      async runCapture(spec: ContainerCaptureSpec, io: CaptureIo): Promise<ContainerCaptureResult> {
+        const frames = join(io.outputDir, 'frames');
+        await mkdir(frames, { recursive: true });
+        const n = Math.round(spec.durationSec * spec.fps);
+        for (let i = 0; i < n; i++) {
+          await writeFile(join(frames, `frame-${String(i).padStart(6, '0')}.jpg`), Buffer.from(`f${i}`));
+        }
+        return okResult({ framesDir: 'frames', clipPath: null, frameCount: n });
+      },
+    };
+    // Wrong size for ONE frame in the MIDDLE, keyed by name rather than call order: probing only
+    // the first and last would never open this file, which is exactly the gap under test.
+    const total = Math.round(SPEC.durationSec * SPEC.fps);
+    const badName = `frame-${String(Math.floor(total / 2)).padStart(6, '0')}.jpg`;
+    const probes = {
+      probeImage: async (path: string) => (path.endsWith(badName)
+        ? { codec: 'mjpeg', width: 16, height: 16 }
+        : { codec: 'mjpeg', width: SPEC.width, height: SPEC.height }),
+      probeClip: async () => ({ streams: 1, codec: 'h264', pixFmt: 'yuv420p', width: SPEC.width, height: SPEC.height, fps: SPEC.fps, durationSec: 2, frames: 60 }),
+    };
+    const provider = new ContainerCaptureProvider(testConfig(scratch), boundary, fakeStorage(), probes);
+    await expect(provider.captureSection(SPEC)).rejects.toThrow(/16x16, not the requested/);
+  });
+
+  it('deletes the clip directory when a later step throws — no orphan on the host', async () => {
+    scratch = await mkdtemp(join(tmpdir(), 'ccp-leak-'));
+    const boundary = {
+      async runCapture(_spec: ContainerCaptureSpec, io: CaptureIo): Promise<ContainerCaptureResult> {
+        await writeFile(join(io.outputDir, 'section.mp4'), Buffer.from('mp4'));
+        return okResult({ clipPath: 'section.mp4' });
+      },
+    };
+    // A clip whose probe FAILS the match: the clipOut directory has been created by then.
+    const probes = {
+      probeImage: async () => ({ codec: 'mjpeg', width: SPEC.width, height: SPEC.height }),
+      probeClip: async () => ({ streams: 1, codec: 'h264', pixFmt: 'yuv420p', width: 2, height: 2, fps: SPEC.fps, durationSec: 2, frames: 60 }),
+    };
+    const before = (await readdir(scratch)).filter((n) => n.startsWith('clip-'));
+    const provider = new ContainerCaptureProvider(testConfig(scratch), boundary, fakeStorage(), probes);
+    await expect(provider.captureSection(SPEC)).rejects.toThrow(/2x2/);
+    const after = (await readdir(scratch)).filter((n) => n.startsWith('clip-'));
+    // MUTATION TARGET: drop the catch that rm's clipOut and this directory survives.
+    expect(after).toEqual(before);
   });
 });

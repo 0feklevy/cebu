@@ -435,23 +435,70 @@ export async function assertRegularArtifact(
   }
 
   const real = await assertWithinOutputDir(outputDir, artifact);
-  // O_NOFOLLOW closes the gap between the check above and the read below: the descriptor refuses a
-  // symlink at open time, and everything after is done through THAT descriptor, so the name cannot
-  // be swapped underneath us. (The container is already dead here; this removes the race anyway,
-  // because "no attacker is running right now" is a weaker property than "there is no race".)
-  const handle = await fsOpen(real, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+  const handle = await openArtifactHandle(real, artifact, maxBytes);
+  await handle.close();
+  return real;
+}
+
+/**
+ * Open an artifact through O_NOFOLLOW and validate it THROUGH THE DESCRIPTOR.
+ *
+ * The earlier shape opened the fd, fstat'd it, and closed it — and the caller then re-opened the
+ * same PATHNAME with `readFile`, which reintroduced the exact check-to-use gap the descriptor was
+ * bought to close: the name could be swapped between the validated open and the consuming one. The
+ * handle is now the product, not the proof: the caller reads from it and closes it, and nothing
+ * consuming an artifact ever resolves its name twice.
+ */
+export async function openArtifactHandle(realPath: string, label: string, maxBytes: number) {
+  const handle = await fsOpen(realPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
   try {
     const st = await handle.stat();
     if (!st.isFile()) {
-      throw new Error(`capture artifact ${artifact} is not a regular file — refusing to read it`);
+      throw new Error(`capture artifact ${label} is not a regular file — refusing to read it`);
+    }
+    if (st.nlink !== 1) {
+      throw new Error(`capture artifact ${label} has ${st.nlink} links — refusing to read an aliased file`);
     }
     if (st.size > maxBytes) {
-      throw new Error(`capture artifact ${artifact} is ${st.size} bytes, over the ${maxBytes} cap`);
+      throw new Error(`capture artifact ${label} is ${st.size} bytes, over the ${maxBytes} cap`);
     }
+    return handle;
+  } catch (err) {
+    await handle.close().catch(() => {});
+    throw err;
+  }
+}
+
+/**
+ * Validate an artifact and read it, from ONE open. The convenience wrapper for small artifacts
+ * (result.json) where the content, not a stream, is what the caller wants.
+ */
+export async function readArtifactBytes(
+  outputDir: string,
+  artifact: string,
+  maxBytes: number,
+): Promise<Buffer> {
+  // Name checks first (literal lstat: symlink, nlink), then confinement, then ONE open that is also
+  // the read. `assertRegularArtifact` is not used here because its handle is closed on return.
+  const literal = join(outputDir, artifact);
+  const linkStat = await lstat(literal).catch((err: unknown) => {
+    throw new Error(
+      `capture artifact ${artifact} is not readable: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
+  });
+  if (linkStat.isSymbolicLink()) throw new Error(`capture artifact ${artifact} is a symlink — refusing to follow it`);
+  if (!linkStat.isFile()) throw new Error(`capture artifact ${artifact} is not a regular file — refusing to read it`);
+  if (linkStat.nlink !== 1) {
+    throw new Error(`capture artifact ${artifact} has ${linkStat.nlink} links — refusing to read an aliased file`);
+  }
+  const real = await assertWithinOutputDir(outputDir, artifact);
+  const handle = await openArtifactHandle(real, artifact, maxBytes);
+  try {
+    return await handle.readFile();
   } finally {
     await handle.close();
   }
-  return real;
 }
 
 /** Expand a trusted printf frame pattern (`frame-%06d.jpg`) for one index. */
@@ -481,6 +528,18 @@ export async function assertFrameSet(
   artifact: string,
   opts: { expectedFrames: number; namePattern: string },
 ): Promise<string> {
+  // lstat the NAME THE CONTAINER GAVE before any resolution: `assertWithinOutputDir` realpaths, so
+  // a symlink named exactly `frames` pointing at another directory INSIDE the output mount would
+  // resolve, pass confinement, and be encoded — a set of frames nobody validated under this name.
+  const literalStat = await lstat(join(outputDir, artifact)).catch((err: unknown) => {
+    throw new Error(
+      `capture frames ${artifact} is not readable: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
+  });
+  if (literalStat.isSymbolicLink()) {
+    throw new Error(`capture frames ${artifact} is a symlink — refusing to follow it`);
+  }
   const real = await assertWithinOutputDir(outputDir, artifact);
   const dirStat = await lstat(real);
   if (!dirStat.isDirectory()) {
@@ -672,8 +731,7 @@ export async function readCaptureResult(
   // every tenant's database and storage credentials, is OOM-killed. Measured on Node 22: 6.8 GB of
   // external buffer in 2.5 s, still climbing. Confinement rejects the escape and the regular-file
   // check rejects a device planted inside.
-  const real = await assertRegularArtifact(outputDir, CAPTURE_RESULT_FILENAME, MAX_RESULT_BYTES);
-  const raw = await readFile(real, 'utf8');
+  const raw = (await readArtifactBytes(outputDir, CAPTURE_RESULT_FILENAME, MAX_RESULT_BYTES)).toString('utf8');
   const parsed = parseCaptureResult(raw);
   if (spec) assertResultMatchesSpec(parsed, spec);
   return parsed;
@@ -726,6 +784,12 @@ export class DockerCaptureBoundary implements CaptureJobBoundary {
   constructor(private readonly config: DockerCaptureBoundaryConfig) {}
 
   async runCapture(spec: ContainerCaptureSpec, io: CaptureIo, signal: AbortSignal): Promise<ContainerCaptureResult> {
+    if (signal.aborted) {
+      // Cancelled before anything started: nothing to stop, nothing to clean. Launching the
+      // container and then stopping it would spend a cold Chrome start on a job nobody wants —
+      // and `docker stop` on a container that does not exist yet is a race, not a cleanup.
+      throw new Error('export capture was cancelled before the container started');
+    }
     const dockerBin = this.config.dockerBin ?? 'docker';
     const containerName = `export-capture-${spec.sectionId}-${Date.now().toString(36)}`;
 

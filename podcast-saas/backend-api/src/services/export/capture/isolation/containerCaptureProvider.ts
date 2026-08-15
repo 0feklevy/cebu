@@ -25,7 +25,9 @@
  */
 
 import { spawn } from 'node:child_process';
-import { copyFile, mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
+import { createWriteStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -42,8 +44,11 @@ import {
 } from '../captureTypes.js';
 import {
   DockerCaptureBoundary,
+  MAX_ARTIFACT_FILE_BYTES,
   assertFrameSet,
   assertRendererProfileName,
+  assertWithinOutputDir,
+  openArtifactHandle,
   assertRegularArtifact,
   frameFileName,
   buildCaptureSpec,
@@ -180,9 +185,13 @@ function encodeFramesToClip(
     // single slow or pathological input holds this promise — and therefore the whole export job —
     // open forever, since `close`/`error` were the only ways out.
     const done = (fn: () => void) => { if (!settled) { settled = true; clearTimeout(timer); signal?.removeEventListener('abort', onAbort); fn(); } };
+    // On timeout/abort the child is killed but the promise settles only in the 'close' handler:
+    // settling here would release the global ffmpeg slot while the dying process still holds CPU
+    // and file descriptors, so a burst of cancellations could briefly run more ffmpeg than the cap.
+    let killReason: string | null = null;
     const kill = (why: string) => {
+      killReason = why;
       proc.kill('SIGKILL');
-      done(() => reject(new Error(`container capture: frame encode ${why}`)));
     };
     const timer = setTimeout(() => kill(`exceeded ${opts.timeoutMs} ms`), Math.max(1, opts.timeoutMs));
     const onAbort = () => kill('was cancelled');
@@ -193,7 +202,8 @@ function encodeFramesToClip(
     proc.on('error', (err) => done(() => reject(err)));
     proc.on('close', (code) => {
       done(() => {
-        if (code === 0) resolve();
+        if (killReason) reject(new Error(`container capture: frame encode ${killReason}`));
+        else if (code === 0) resolve();
         else reject(new Error(`container capture: frame encode exited ${code}: ${stderr.slice(-400)}`));
       });
     });
@@ -452,31 +462,50 @@ export class ContainerCaptureProvider implements SimCaptureBackend {
       // same lifecycle every other capture backend's clip has.
       const clipOut = await mkdtemp(join(base, `clip-${spec.sectionId.slice(0, 8)}-`));
       const clipPath = join(clipOut, 'section.mp4');
+      // From here to the return, clipOut is THIS function's to clean up: on any throw — probe
+      // mismatch, encode failure, cancellation — an un-deleted clipOut is a permanent leak on the
+      // worker host, because ownership only transfers to the service with a successful return.
+      try {
       // `result.json` is written by the untrusted side, so the paths in it are an instruction from
-      // untrusted code to a privileged reader. The name is allowlisted at parse time; this resolves
-      // symlinks and refuses anything that lands outside the job's own output directory. Both halves
-      // are needed: the mount is container-writable, so a symlink named exactly `section.mp4` would
-      // otherwise let `copyFile` pull an arbitrary host file into the clip the service then uploads.
+      // untrusted code to a privileged reader. The name is allowlisted at parse time, confined by
+      // realpath, and CONSUMED THROUGH the validated O_NOFOLLOW descriptor — copying by pathname
+      // after a separate check reintroduced the exact swap window the descriptor closes.
       if (result.clipPath) {
-        await copyFile(await assertRegularArtifact(outputDir, result.clipPath), clipPath);
+        const real = await assertWithinOutputDir(outputDir, result.clipPath);
+        const handle = await openArtifactHandle(real, result.clipPath, MAX_ARTIFACT_FILE_BYTES);
+        try {
+          await pipeline(handle.createReadStream(), createWriteStream(clipPath, { flags: 'wx' }));
+        } finally {
+          await handle.close();
+        }
       } else if (result.framesDir) {
         // Confining the DIRECTORY was not enough. ffmpeg opens each `frame-%06d.jpg` itself, in the
         // host namespace, following every symlink — so a link inside a confined directory still
-        // reaches any host file, and one that decodes as an image lands in the MP4 that gets served.
-        // `assertFrameSet` lstats every entry against the count the TRUSTED side expects.
+        // reaches any host file. `assertFrameSet` lstats every entry against the count the TRUSTED
+        // side expects…
         const framesReal = await assertFrameSet(outputDir, result.framesDir, {
           expectedFrames: expectedFrameCount(containerSpec),
           namePattern: containerSpec.output.namePattern,
         });
-        // Every check so far has been about names, sizes and paths — none of it reads a pixel. A
-        // container that writes correctly-named 320x180 files, or files that are not images at all,
-        // satisfies all of them, and the first person to notice would be a viewer watching a
-        // stretched section of their finished video. Probe the first and last frame: enough to
-        // catch a wrong size or an undecodable file, cheap enough not to become its own bottleneck.
+        // …and then EVERY frame is copied through its own validated O_NOFOLLOW descriptor into a
+        // trusted-only directory, and probed there. Two gaps close at once: ffmpeg never reads the
+        // container-writable mount (so nothing can be swapped between validation and encode), and
+        // every frame is decode-validated — probing only the first and last let a wrong-sized or
+        // undecodable MIDDLE frame through, to be discovered by a viewer mid-video. The probes run
+        // under the global ffmpeg cap; at production frame counts this is seconds against a capture
+        // that takes minutes.
         const expectedFrames = expectedFrameCount(containerSpec);
-        for (const index of [0, expectedFrames - 1]) {
+        const trustedFrames = join(jobDir, 'trusted-frames');
+        await mkdir(trustedFrames, { recursive: true });
+        for (let index = 0; index < expectedFrames; index++) {
           const name = frameFileName(containerSpec.output.namePattern, index);
-          const probed = await this.probes.probeImage(join(framesReal, name), { signal });
+          const handle = await openArtifactHandle(join(framesReal, name), name, MAX_ARTIFACT_FILE_BYTES);
+          try {
+            await pipeline(handle.createReadStream(), createWriteStream(join(trustedFrames, name), { flags: 'wx' }));
+          } finally {
+            await handle.close();
+          }
+          const probed = await this.probes.probeImage(join(trustedFrames, name), { signal });
           if (probed.width !== spec.width || probed.height !== spec.height) {
             throw new Error(
               `container capture: ${name} is ${probed.width}x${probed.height}, not the requested ${spec.width}x${spec.height}`,
@@ -485,7 +514,7 @@ export class ContainerCaptureProvider implements SimCaptureBackend {
         }
 
         await encodeFramesToClip(
-          framesReal,
+          trustedFrames,
           containerSpec.output.namePattern,
           spec.fps,
           { width: spec.width, height: spec.height },
@@ -534,6 +563,13 @@ export class ContainerCaptureProvider implements SimCaptureBackend {
         reason: result.reason ?? undefined,
         cost: result.cost ?? undefined,
       };
+      } catch (err) {
+        // Ownership of clipOut transfers only with a successful return. Any throw before that —
+        // probe mismatch, encode failure, cancellation — and the directory is ours to delete, or it
+        // is a permanent leak on the worker host.
+        await rm(clipOut, { recursive: true, force: true }).catch(() => {});
+        throw err;
+      }
     } finally {
       await rm(jobDir, { recursive: true, force: true }).catch(() => {});
     }

@@ -265,7 +265,10 @@ describe('DockerCaptureBoundary — termination paths (cancellation and the wall
     expect((outcome as Error).message).toMatch(/exited 137/);
   }, 25_000);
 
-  it('a signal already aborted BEFORE the call still terminates the container and settles', async () => {
+  it('a signal already aborted BEFORE the call never runs docker at all', async () => {
+    // The old behaviour launched the container and then stopped it — a cold Chrome start spent on
+    // a job nobody wants, and `docker stop` racing a container that may not exist yet. Cancelled
+    // before the start means NOTHING starts.
     const { dockerBin, inputDir, outputDir, log } = await lifecycleDocker();
     const controller = new AbortController();
     controller.abort();
@@ -273,9 +276,11 @@ describe('DockerCaptureBoundary — termination paths (cancellation and the wall
       .runCapture(SPEC, { inputDir, outputDir }, controller.signal)
       .catch((e: unknown) => e as Error);
 
-    expect(log()).toMatch(/^stop /m);
-    expect(log()).toContain('run-exit');
     expect(outcome).toBeInstanceOf(Error);
+    expect((outcome as Error).message).toMatch(/cancelled before the container started/);
+    // MUTATION TARGET: remove the early guard and docker runs — this log stops being empty.
+    expect(log()).not.toContain('run-exit');
+    expect(log()).not.toMatch(/^run /m);
   }, 20_000);
 });
 

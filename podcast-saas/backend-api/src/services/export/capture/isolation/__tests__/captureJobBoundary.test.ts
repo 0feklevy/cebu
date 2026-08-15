@@ -15,6 +15,7 @@ import type { RendererIdentity, SimCaptureWindow } from '../../../types.js';
 import {
   assertFrameSet,
   assertResultMatchesSpec,
+  readArtifactBytes,
   assertRegularArtifact,
   assertWithinOutputDir,
   frameFileName,
@@ -538,5 +539,52 @@ describe('a result must match the spec that asked for it', () => {
       .toThrow(/exactly one of frames or a clip, got 2/);
     expect(() => assertResultMatchesSpec(okResult({ framesDir: null, clipPath: null }), spec()))
       .toThrow(/exactly one of frames or a clip, got 0/);
+  });
+});
+
+/**
+ * The boundary below the boundary — the cases the audit named as still open after the first
+ * hardening pass, each written to fail against that pass.
+ */
+describe('the descriptor is the product, not the proof', () => {
+  it('refuses a TOP-LEVEL symlink named frames, before any resolution', async () => {
+    // `assertWithinOutputDir` realpaths, so a link named exactly `frames` pointing at another
+    // directory INSIDE the mount would resolve, pass confinement, and be encoded — a set of frames
+    // nobody validated under this name.
+    const { symlink, mkdir: md, writeFile: wf } = await import('node:fs/promises');
+    const root = await mkdtemp(join(tmpdir(), 'boundary-topsym-'));
+    try {
+      const other = join(root, 'other-dir');
+      await md(other, { recursive: true });
+      await wf(join(other, 'frame-000000.jpg'), 'x');
+      await symlink(other, join(root, 'frames'));
+      await expect(
+        assertFrameSet(root, 'frames', { expectedFrames: 1, namePattern: 'frame-%06d.jpg' }),
+      ).rejects.toThrow(/is a symlink/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('readArtifactBytes reads from the validated open — and enforces the same name checks', async () => {
+    const { writeFile: wf, mkdir: md, link } = await import('node:fs/promises');
+    const root = await mkdtemp(join(tmpdir(), 'boundary-fd-'));
+    try {
+      const out = join(root, 'output');
+      await md(out, { recursive: true });
+      await wf(join(out, 'result.json'), '{"ok":true}');
+      expect((await readArtifactBytes(out, 'result.json', 1024)).toString()).toBe('{"ok":true}');
+
+      // Over the cap: refused by the fstat on the SAME descriptor the read would use.
+      await wf(join(out, 'big.json'), 'x'.repeat(2048));
+      await expect(readArtifactBytes(out, 'big.json', 1024)).rejects.toThrow(/over the 1024 cap/);
+
+      // Aliased: refused before the open.
+      await wf(join(root, 'secret'), 'SECRET');
+      await link(join(root, 'secret'), join(out, 'aliased.json'));
+      await expect(readArtifactBytes(out, 'aliased.json', 1024)).rejects.toThrow(/has 2 links/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

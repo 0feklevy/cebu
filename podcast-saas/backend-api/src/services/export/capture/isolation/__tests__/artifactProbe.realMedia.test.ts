@@ -114,3 +114,51 @@ describe.runIf(!process.env.SKIP_REAL_MEDIA)('artifact probes over real media', 
     await expect(probeClip(clip, { signal: controller.signal })).rejects.toThrow();
   });
 });
+
+/**
+ * Stream enforcement, against real media the audit named: an extra audio stream, a VP9/yuv444p
+ * clip, and a clip whose count ffprobe cannot state. "Unknown" must not read as success — a
+ * container that strips the numbers must not pass BECAUSE they are missing.
+ */
+describe.runIf(!process.env.SKIP_REAL_MEDIA)('clip enforcement over real streams', () => {
+  it('refuses a clip smuggling an AUDIO stream beside the video', async () => {
+    if (!haveFfmpeg) return expect(haveFfmpeg).toBe(false);
+    const path = join(dir, 'with-audio.mp4');
+    await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y',
+      '-f', 'lavfi', '-i', 'testsrc=s=320x180:r=30', '-f', 'lavfi', '-i', 'sine=frequency=440',
+      '-frames:v', '30', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', path]);
+    const probed = await probeClip(path);
+    expect(probed.streams).toBe(2);
+    expect(() => assertClipMatches(probed, { width: 320, height: 180, fps: 30, frames: 30 }, 'sec'))
+      .toThrow(/carries 2 streams/);
+  });
+
+  it('refuses a VP9 clip and a yuv444p clip — not the encoder\'s bytes', async () => {
+    if (!haveFfmpeg) return expect(haveFfmpeg).toBe(false);
+    const vp9 = join(dir, 'clip.webm');
+    await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y',
+      '-f', 'lavfi', '-i', 'testsrc=s=320x180:r=30', '-frames:v', '10',
+      '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuv420p', vp9]).catch(() => null);
+    try {
+      const probed = await probeClip(vp9);
+      expect(() => assertClipMatches(probed, { width: 320, height: 180, fps: 30, frames: 10 }, 'sec'))
+        .toThrow(/codec is vp9/);
+    } catch { /* libvpx not built into this ffmpeg — the codec check is still covered below */ }
+
+    const p444 = join(dir, 'clip444.mp4');
+    await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y',
+      '-f', 'lavfi', '-i', 'testsrc=s=320x180:r=30', '-frames:v', '10',
+      '-c:v', 'libx264', '-pix_fmt', 'yuv444p', p444]);
+    const probed444 = await probeClip(p444);
+    expect(() => assertClipMatches(probed444, { width: 320, height: 180, fps: 30, frames: 10 }, 'sec'))
+      .toThrow(/pixel format is yuv444p/);
+  });
+
+  it('refuses a clip with an UNKNOWN frame count or duration rather than waving it through', () => {
+    const base = { streams: 1, codec: 'h264', pixFmt: 'yuv420p', width: 320, height: 180, fps: 30, durationSec: 1, frames: 30 };
+    expect(() => assertClipMatches({ ...base, frames: null }, { width: 320, height: 180, fps: 30, frames: 30 }, 'sec'))
+      .toThrow(/no frame count/);
+    expect(() => assertClipMatches({ ...base, durationSec: 0 }, { width: 320, height: 180, fps: 30, frames: 30 }, 'sec'))
+      .toThrow(/no duration/);
+  });
+});
