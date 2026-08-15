@@ -91,6 +91,52 @@ export const SELF_APPLIED_SWITCHES = [
 export const GL_SWITCHES = ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] as const;
 
 /**
+ * The two renderer profiles, and the reason this is a typed allowlist rather than a passthrough.
+ *
+ * Software rasterisation is ~97 % of a captured frame's cost (measured: 5193 ms of 5366 ms at
+ * 640×360), so hardware rendering is the only lever that changes the throughput picture. But moving
+ * the same image onto a GPU host does NOTHING on its own — `GL_SWITCHES` pins SwiftShader, so the
+ * capture would keep rasterising in software on an expensive machine and the only visible change
+ * would be the bill. That failure is silent, which is why the mode is explicit and verified after
+ * the fact rather than assumed from the hardware.
+ *
+ * `--use-angle=gl` stays forbidden in both profiles: it is the flag that breaks WebGL outright on a
+ * GPU-less box, and the hardware path must be reached deliberately, not by relaxing a guard.
+ */
+export const RENDERER_PROFILES = {
+  swiftshader: GL_SWITCHES,
+  // Vulkan through ANGLE, which is what a real GPU actually exposes to headless Chrome. Every switch
+  // here must be proven on the target image before this profile is selected in production.
+  hardware: ['--use-angle=vulkan', '--enable-features=Vulkan'] as const,
+} as const;
+
+export type RendererProfile = keyof typeof RENDERER_PROFILES;
+
+/** Read the operator's chosen profile. Anything unrecognised is the safe, shipped one. */
+export function resolveRendererProfile(value = process.env.EXPORT_CAPTURE_RENDERER): RendererProfile {
+  return value === 'hardware' ? 'hardware' : 'swiftshader';
+}
+
+/**
+ * Fail closed when hardware was asked for and software is what ran.
+ *
+ * The whole point of the hardware profile is the ~97 % of frame cost that SwiftShader spends. If the
+ * driver is missing, the device is not exposed, or a flag was wrong, Chrome falls back to SwiftShader
+ * and reports it in the renderer string — and everything still WORKS, just as slowly as before, on a
+ * machine chosen for being fast. Left unchecked that is an invisible regression paid for by the
+ * hour; checked, it is a loud failure on the first capture.
+ */
+export function assertRendererMatchesProfile(profile: RendererProfile, rendererString: string): void {
+  if (profile !== 'hardware') return;
+  if (/swiftshader|llvmpipe|software/i.test(rendererString)) {
+    throw new CaptureStageError(
+      'sanity_gate',
+      `renderer profile "hardware" was requested but the capture rendered in software: ${rendererString.slice(0, 160)}`,
+    );
+  }
+}
+
+/**
  * Flags that MUST NEVER appear. `--site-per-process` makes `--deterministic-mode` refuse to start
  * (measured); `--disable-gpu` and `--use-angle=gl`/`--in-process-gpu`/`--single-process` all break
  * WebGL on a GPU-less box in one silent way or another (plan §4 "The trap that will actually bite
@@ -114,6 +160,8 @@ export interface BeginFrameFlagOptions {
   width: number;
   /** Capture height in px. */
   height: number;
+  /** Which renderer profile to assemble for. Defaults to the shipped software one. */
+  profile?: RendererProfile;
   /** Extra flags to append (validated against the forbidden list). */
   extra?: readonly string[];
 }
@@ -129,7 +177,7 @@ export function assembleBeginFrameFlags(opts: BeginFrameFlagOptions): string[] {
     '--deterministic-mode',
     ...DETERMINISTIC_MODE_SWITCHES,
     ...SELF_APPLIED_SWITCHES,
-    ...GL_SWITCHES,
+    ...RENDERER_PROFILES[opts.profile ?? 'swiftshader'],
     `--window-size=${opts.width},${opts.height}`,
     ...(opts.extra ?? []),
   ];
@@ -257,6 +305,8 @@ export interface BeginFrameBackendOptions {
   platform?: NodeJS.Platform;
   /** Canvas-region gate sample grid (gridN × gridN). Default 24. */
   gridN?: number;
+  /** Renderer profile override; defaults to EXPORT_CAPTURE_RENDERER, then swiftshader. */
+  rendererProfile?: string;
   /** How many frames across the capture to sample for the gate. Default 6 (min 2). */
   sampleCount?: number;
   log?: (message: string) => void;
@@ -362,9 +412,11 @@ export class BeginFrameBackend implements SimCaptureBackend {
     await mkdir(profileDir, { recursive: true });
 
     // Policy: the pinned flag set (validated against the forbidden list) + the profile location.
+    const rendererProfile = resolveRendererProfile(this.opts.rendererProfile);
     const flags = assembleBeginFrameFlags({
       width: spec.width,
       height: spec.height,
+      profile: rendererProfile,
       extra: [`--user-data-dir=${profileDir}`, '--no-first-run'],
     });
 
@@ -603,6 +655,10 @@ export class BeginFrameBackend implements SimCaptureBackend {
           `= sim ${ms(cost.sim / kept)} + flush ${ms(cost.flush / kept)} ` +
           `+ raster ${ms(cost.raster / kept)} + write ${ms(cost.write / kept)} (over ${kept} frames)`,
       );
+
+      // Fail closed BEFORE the gate: if hardware was asked for and SwiftShader answered, the
+      // capture is correct and the machine is wasted, which no gate would ever notice.
+      assertRendererMatchesProfile(rendererProfile, webgl.renderer);
 
       const gate = evaluateSanityGate({ simPainted: run.sawPainted, webgl, frames: samples });
       log(`gate ${gate.gate}${gate.reason ? `: ${gate.reason}` : ''} (renderer="${webgl.renderer}")`);

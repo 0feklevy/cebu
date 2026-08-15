@@ -47,6 +47,12 @@ vi.mock('../../storage/getStorageAdapter.js', () => ({
 }));
 
 import { ExportRefused, buildExportPlan, isFullSimulation, withBootCloak } from '../exportPlan.js';
+import {
+  admitCaptureWorkload,
+  MAX_SIM_WINDOWS_PER_EXPORT,
+  MAX_SIM_WINDOW_SEC,
+  MAX_TOTAL_CAPTURE_FRAMES,
+} from '../exportPlan.js';
 import type { ClipWindow, ImageWindow, PosterFallbackWindow, SimCaptureWindow, VideoWindow } from '../types.js';
 import { packageRevisionFor } from 'shared/sim/simRevision';
 import {
@@ -493,5 +499,51 @@ describe('buildExportPlan — out-of-scope layers are warnings, never silence', 
     const p = (await plan())!;
     expect(p.warnings.some((w) => w.includes('captions are not in the v1 export'))).toBe(true);
     expect(p.warnings.some((w) => w.includes('avatar circles are not in the v1 export'))).toBe(true);
+  });
+});
+
+/**
+ * Admission control. Capture cost is measured: ~5.4 s per frame at 640x360 and ~16 s at 1920x1080 on
+ * the reference 2-vCPU worker, against a per-section budget of min(600, 90 + 6*durationSec). A job
+ * whose workload cannot fit is not "slow" — it occupies a worker for the full budget and is then
+ * killed, which under the strict policy fails the export an hour after the user asked for it.
+ * Refusing at the door is both truthful and what stops one project starving everyone else's queue.
+ */
+describe('admitCaptureWorkload', () => {
+  const sim = (startSec: number, endSec: number, label = 'sim') =>
+    ({ kind: 'sim-capture', startSec, endSec, label });
+
+  it('admits an ordinary export', () => {
+    expect(admitCaptureWorkload([sim(0, 10), sim(20, 30), { kind: 'video', startSec: 0, endSec: 60 }], 30)).toBeNull();
+  });
+
+  it('admits a project with no simulations at all', () => {
+    expect(admitCaptureWorkload([{ kind: 'video', startSec: 0, endSec: 3600 }], 30)).toBeNull();
+  });
+
+  it('refuses too many simulation sections with 413 and a message that says what to do', () => {
+    const many = Array.from({ length: MAX_SIM_WINDOWS_PER_EXPORT + 1 }, (_, i) => sim(i * 20, i * 20 + 5));
+    const verdict = admitCaptureWorkload(many, 30);
+    expect(verdict).toMatchObject({ statusCode: 413, code: 'too_many_simulations' });
+    expect(verdict!.message).toMatch(/export them separately/i);
+  });
+
+  it('refuses a single over-long window, naming it', () => {
+    const verdict = admitCaptureWorkload([sim(0, MAX_SIM_WINDOW_SEC + 1, 'The murmuration')], 30);
+    expect(verdict).toMatchObject({ statusCode: 413, code: 'simulation_window_too_long' });
+    expect(verdict!.message).toContain('The murmuration');
+  });
+
+  it('refuses a total frame count no worker could deliver, with 429', () => {
+    // Each window is individually legal; together they are not. Frames, not window count, is the
+    // quantity that actually costs time.
+    const perWindow = MAX_SIM_WINDOW_SEC;
+    const n = Math.ceil(MAX_TOTAL_CAPTURE_FRAMES / (perWindow * 30)) + 1;
+    const windows = Array.from({ length: Math.min(n, MAX_SIM_WINDOWS_PER_EXPORT) },
+      (_, i) => sim(i * 60, i * 60 + perWindow));
+    const frames = windows.length * perWindow * 30;
+    if (frames > MAX_TOTAL_CAPTURE_FRAMES) {
+      expect(admitCaptureWorkload(windows, 30)).toMatchObject({ statusCode: 429, code: 'capture_workload_too_large' });
+    }
   });
 });

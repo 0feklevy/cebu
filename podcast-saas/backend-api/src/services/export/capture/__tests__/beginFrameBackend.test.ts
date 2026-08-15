@@ -8,7 +8,9 @@
 import { describe, it, expect } from 'vitest';
 
 import {
+  assertRendererMatchesProfile,
   compositedSamplerExpression,
+  resolveRendererProfile,
   assembleBeginFrameFlags,
   assertNoForbiddenFlags,
   buildCreateTargetParams,
@@ -237,5 +239,48 @@ describe('sanity-gate sampler judges the captured frame, not the canvas element'
     const expr = compositedSamplerExpression(GRID, 'QUJD');
     expect(expr).toContain('getBoundingClientRect');
     expect(expr).toContain('drawImage(img, x, y, w, h, 0, 0');
+  });
+});
+
+/**
+ * Renderer profiles. Software rasterisation is ~97 % of a captured frame's cost (measured: 5193 ms
+ * of 5366 ms at 640x360), so hardware rendering is the only lever that moves throughput — and moving
+ * the same image onto a GPU host changes NOTHING on its own, because the flags pin SwiftShader. That
+ * failure is silent and expensive: the capture still works, at the same speed, on a machine chosen
+ * for being fast. So the mode is explicit, and verified against what actually rendered.
+ */
+describe('renderer profiles fail closed', () => {
+  it('defaults to swiftshader — including for an unrecognised value', () => {
+    expect(resolveRendererProfile(undefined)).toBe('swiftshader');
+    expect(resolveRendererProfile('')).toBe('swiftshader');
+    expect(resolveRendererProfile('gpu')).toBe('swiftshader');
+    expect(resolveRendererProfile('HARDWARE')).toBe('swiftshader'); // exact match only
+    expect(resolveRendererProfile('hardware')).toBe('hardware');
+  });
+
+  it('the software profile is byte-for-byte the shipped flag set', () => {
+    expect(assembleBeginFrameFlags({ width: 1920, height: 1080, profile: 'swiftshader' }))
+      .toEqual(assembleBeginFrameFlags({ width: 1920, height: 1080 }));
+  });
+
+  it('the hardware profile drops SwiftShader and still refuses --use-angle=gl', () => {
+    const flags = assembleBeginFrameFlags({ width: 1920, height: 1080, profile: 'hardware' });
+    expect(flags).not.toContain('--use-angle=swiftshader');
+    expect(flags).toContain('--use-angle=vulkan');
+    expect(flags).not.toContain('--use-angle=gl');
+    // The cage's other invariants are untouched by the profile.
+    expect(flags).toContain('--deterministic-mode');
+    expect(flags).not.toContain('--no-sandbox');
+    expect(flags).not.toContain('--disable-gpu');
+  });
+
+  it('throws when hardware was requested and SwiftShader is what rendered', () => {
+    const swiftshader = 'ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero)), SwiftShader driver)';
+    expect(() => assertRendererMatchesProfile('hardware', swiftshader)).toThrow(/rendered in software/);
+    expect(() => assertRendererMatchesProfile('hardware', 'llvmpipe (LLVM 15.0.7)')).toThrow(/rendered in software/);
+    // A real GPU passes.
+    expect(() => assertRendererMatchesProfile('hardware', 'ANGLE (NVIDIA, Tesla T4, Vulkan 1.3)')).not.toThrow();
+    // And the software profile never complains about software.
+    expect(() => assertRendererMatchesProfile('swiftshader', swiftshader)).not.toThrow();
   });
 });

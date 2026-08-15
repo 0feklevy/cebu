@@ -43,6 +43,12 @@ const SPEC: ContainerCaptureSpec = {
   wallClockTimeoutSec: 30,
 };
 
+/**
+ * A PASSING result has to be internally consistent with the spec that asked for it — the frames are
+ * about to be encoded at that size, so a 0×0 viewport on a success is a contradiction, not a
+ * diagnostic. (A FAILED result keeps 0×0: a capture that died before it had a page reports that
+ * honestly, and rejecting it would replace the real reason with a complaint about its viewport.)
+ */
 const FAILED_RESULT = {
   resultVersion: 1,
   sectionId: 'sec-1',
@@ -55,6 +61,17 @@ const FAILED_RESULT = {
   reason: 'backend module X exports neither createBackend() nor a default backend',
   rendererIdentity: { imageDigest: 'img', headlessShellVersion: 'v', viewport: { w: 0, h: 0 }, dpr: 1 },
   failure: { code: 'capture_failed', detail: 'backend module X exports neither createBackend() nor a default backend' },
+};
+
+/**
+ * A PASSING result has to be internally consistent with the spec that asked for it — those frames
+ * are about to be encoded at that size, so a 0×0 viewport on a success is a contradiction rather
+ * than a diagnostic. A FAILED result keeps 0×0: a capture that died before it had a page reports
+ * that honestly, and rejecting it would replace the real reason with a complaint about its viewport.
+ */
+const PASSING_IDENTITY = {
+  ...FAILED_RESULT,
+  rendererIdentity: { imageDigest: 'img', headlessShellVersion: 'v', viewport: { w: 640, h: 360 }, dpr: 1 },
 };
 
 let scratch: string;
@@ -119,7 +136,7 @@ describe('DockerCaptureBoundary — non-zero exit diagnostics (Mutation E)', () 
 
   it('exit 1 + an "ok" result.json ⇒ throws on the contradiction — a dead container is never a success', async () => {
     const { dockerBin, inputDir, outputDir } = await stubDocker({
-      result: { ...FAILED_RESULT, status: 'ok', gate: 'passed', framesDir: 'frames', frameCount: 30, reason: null },
+      result: { ...PASSING_IDENTITY, status: 'ok', gate: 'passed', framesDir: 'frames', frameCount: 30, reason: null },
       exitCode: 1,
     });
     await expect(
@@ -143,7 +160,7 @@ describe('DockerCaptureBoundary — non-zero exit diagnostics (Mutation E)', () 
 
   it('exit 0 + a valid result ⇒ resolves normally (the happy path is untouched)', async () => {
     const { dockerBin, inputDir, outputDir } = await stubDocker({
-      result: { ...FAILED_RESULT, status: 'ok', gate: 'passed', framesDir: 'frames', frameCount: 30, reason: null, failure: null },
+      result: { ...PASSING_IDENTITY, status: 'ok', gate: 'passed', framesDir: 'frames', frameCount: 30, reason: null, failure: null },
       exitCode: 0,
     });
     const result = await boundary(dockerBin).runCapture(SPEC, { inputDir, outputDir }, new AbortController().signal);

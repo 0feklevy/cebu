@@ -23,7 +23,8 @@ import { logger } from '../../lib/logger.js';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { enqueueJob } from '../../queue/index.js';
-import { ExportRefused, buildExportPlan } from '../../services/export/exportPlan.js';
+import { ExportRefused, admitCaptureWorkload, buildExportPlan } from '../../services/export/exportPlan.js';
+import { EXPORT_GRID } from '../../services/export/types.js';
 
 /**
  * SHIPS DARK until Phase 2: the feature flag gates the POST, and OFF answers 404 — exactly what
@@ -129,6 +130,23 @@ export async function registerExportRoutes(app: FastifyInstance): Promise<void> 
         throw err;
       }
       if (!plan) return reply.code(404).send({ message: 'Project not found' });
+
+      // ADMISSION before enqueue. An export whose capture workload cannot finish inside the
+      // per-section budgets is not a job that might be slow — it is a promise the system cannot
+      // keep, and letting it in occupies the worker for the full budget before failing. Refusing at
+      // the door is both truthful and the only thing that stops one impossible project from
+      // starving every other tenant's queue.
+      const inadmissible = admitCaptureWorkload(plan.timeline, EXPORT_GRID.fps);
+      if (inadmissible) {
+        logger.info(
+          { projectId: project.id, code: inadmissible.code, detail: inadmissible.detail },
+          'export: refused before enqueue — capture workload not admissible',
+        );
+        return reply.code(inadmissible.statusCode).send({
+          code: inadmissible.code,
+          message: inadmissible.message,
+        });
+      }
 
       // CONSENT is for degradation that is KNOWN BEFORE THE RUN — a window the planner already
       // resolved to a poster because the package cannot be captured. A `sim-capture` window is the

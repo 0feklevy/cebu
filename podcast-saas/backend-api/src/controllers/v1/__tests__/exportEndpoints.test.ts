@@ -20,6 +20,7 @@ const PROJECT_ID = 'proj-1';
 const EXPORT_ID = 'exp-1';
 
 const mocks = vi.hoisted(() => ({
+  admit: vi.fn(() => null),
   // The row the controller writes — the frozen degradation policy is asserted on it.
   values: vi.fn(),
   findFirst: vi.fn(),
@@ -65,7 +66,14 @@ vi.mock('../../../services/export/exportPlan.js', () => {
       readonly retryable = false,
     ) { super(message); this.name = 'ExportRefused'; }
   }
-  return { ExportRefused, buildExportPlan: mocks.buildExportPlan };
+  // The real admission arithmetic, not a stub: these tests care whether the CONTROLLER consults it
+  // and translates its verdict into the right status code, and a stub that always admits would hide
+  // exactly that. `mocks.admit` lets one test drive a refusal without inventing a giant plan.
+  return {
+    ExportRefused,
+    buildExportPlan: mocks.buildExportPlan,
+    admitCaptureWorkload: (...args: unknown[]) => mocks.admit(...args),
+  };
 });
 vi.mock('../../../services/export/ProjectExportService.js', () => ({
   liveExportFor: mocks.liveExportFor,
@@ -148,6 +156,26 @@ describe('POST /projects/:id/export', () => {
     expect(res.statusCode).toBe(202);
     expect(mocks.insert).toHaveBeenCalled();
     expect(mocks.enqueueJob).toHaveBeenCalledWith('project_export', { exportId: EXPORT_ID });
+  });
+
+  it('refuses an inadmissible capture workload BEFORE enqueueing anything', async () => {
+    // Measured cost makes some jobs impossible rather than slow: at 1080p a frame is ~16 s on the
+    // reference worker, against a per-section budget of 90 + 6·duration. Such a job would occupy a
+    // worker for its full budget, be killed, and — under the strict policy — fail. Refusing at the
+    // door is truthful, and it is what stops one project starving every other tenant's queue.
+    mocks.admit.mockReturnValueOnce({
+      admitted: false,
+      statusCode: 413,
+      code: 'too_many_simulations',
+      message: 'This project has 40 simulation sections…',
+      detail: 'sim windows 40 > 12',
+    });
+    const res = await post();
+    expect(res.statusCode).toBe(413);
+    expect(res.json()).toMatchObject({ code: 'too_many_simulations' });
+    // MUTATION TARGET: move the check after the insert and these two stop holding.
+    expect(mocks.insert).not.toHaveBeenCalled();
+    expect(mocks.enqueueJob).not.toHaveBeenCalled();
   });
 
   it('records the STRICT policy on the row by default', async () => {

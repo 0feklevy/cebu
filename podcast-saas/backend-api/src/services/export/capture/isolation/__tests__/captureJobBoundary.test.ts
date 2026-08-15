@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import type { RendererIdentity, SimCaptureWindow } from '../../../types.js';
 import {
   assertFrameSet,
+  assertResultMatchesSpec,
   assertRegularArtifact,
   assertWithinOutputDir,
   frameFileName,
@@ -432,5 +433,54 @@ describe('the output boundary below the artifact name', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * Binding the result to the spec. `parseCaptureResult` proves the JSON is well-SHAPED; these prove
+ * it is well-FOUNDED. The container authors every field, so on its own the result is a claim: it can
+ * name another section, report a frame count that does not fill the window, or report a viewport it
+ * never rendered at. Each corrupts something downstream — the wrong clip spliced into the timeline,
+ * a clip too short for its window, a 320x180 render stretched across a 1080p frame — and none of
+ * them looks like a failure when it happens.
+ */
+describe('a result must match the spec that asked for it', () => {
+  const spec = (over: Partial<ContainerCaptureSpec> = {}): ContainerCaptureSpec =>
+    buildCaptureSpec(simWindow(), { ...OPTS, ...over });
+
+  it('accepts an honest result', () => {
+    expect(() => assertResultMatchesSpec(okResult(), spec())).not.toThrow();
+  });
+
+  it('refuses a result for a DIFFERENT section — the wrong clip in the timeline', () => {
+    expect(() => assertResultMatchesSpec(okResult({ sectionId: 'sec-other' }), spec()))
+      .toThrow(/is for section .*not sec-1/);
+  });
+
+  it('refuses a passing result whose frame count does not fill the window', () => {
+    // 15 s at 30 fps = 450 frames. 449 leaves a gap the assembler would silently stretch or pad.
+    expect(() => assertResultMatchesSpec(okResult({ frameCount: 449 }), spec()))
+      .toThrow(/claims 449 frames.*needs 450/);
+  });
+
+  it('allows a FAILING result to stop early — an incomplete run is not a lie', () => {
+    expect(() => assertResultMatchesSpec(okResult({ gate: 'failed', frameCount: 12 }), spec())).not.toThrow();
+  });
+
+  it('refuses a viewport or DPR the capture never rendered at', () => {
+    const smallViewport = okResult({
+      rendererIdentity: { ...RENDERER, viewport: { w: 320, h: 180 } },
+    });
+    expect(() => assertResultMatchesSpec(smallViewport, spec())).toThrow(/viewport 320×180/);
+
+    const wrongDpr = okResult({ rendererIdentity: { ...RENDERER, dpr: 2 } });
+    expect(() => assertResultMatchesSpec(wrongDpr, spec())).toThrow(/DPR 2/);
+  });
+
+  it('refuses a passing result with both artifact forms, or neither', () => {
+    expect(() => assertResultMatchesSpec(okResult({ framesDir: 'frames', clipPath: 'section.mp4' }), spec()))
+      .toThrow(/exactly one of frames or a clip, got 2/);
+    expect(() => assertResultMatchesSpec(okResult({ framesDir: null, clipPath: null }), spec()))
+      .toThrow(/exactly one of frames or a clip, got 0/);
   });
 });

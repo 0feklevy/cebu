@@ -424,6 +424,50 @@ export async function assertFrameSet(
 }
 
 /**
+ * Cross-check a parsed result against the spec that produced it.
+ *
+ * `parseCaptureResult` proves the JSON is well-SHAPED; this proves it is well-FOUNDED. The container
+ * authors every field, so on its own the result is a claim, not a measurement: it can name another
+ * section, report a frame count that does not match the window that was asked for, or report a
+ * viewport it never rendered at. Each of those quietly corrupts something downstream — the wrong
+ * section's clip spliced into the timeline, a clip whose duration does not fill its window, a
+ * 320×180 render stretched across a 1080p frame — and none of them look like a failure at the time.
+ *
+ * Frame count is checked only for a PASSING result: a failed capture legitimately stops early, and
+ * its own count is not a lie, just an incomplete run.
+ */
+export function assertResultMatchesSpec(result: ContainerCaptureResult, spec: ContainerCaptureSpec): void {
+  if (result.sectionId !== spec.sectionId) {
+    throw new Error(
+      `capture result is for section ${JSON.stringify(result.sectionId.slice(0, 64))}, not ${spec.sectionId}`,
+    );
+  }
+  // Everything below describes FRAMES, so it is checked only where frames exist. A capture that
+  // died before it had a page honestly reports a 0×0 viewport and no frames, and that diagnostic
+  // must survive to be read — rejecting it here would replace the real reason ("backend module
+  // exports neither createBackend() nor a default") with a complaint about its viewport.
+  if (result.gate === 'passed' && result.status === 'ok') {
+    const got = result.rendererIdentity.viewport;
+    if (got.w !== spec.width || got.h !== spec.height) {
+      throw new Error(`capture result reports viewport ${got.w}×${got.h}, not the requested ${spec.width}×${spec.height}`);
+    }
+    if (result.rendererIdentity.dpr !== 1) {
+      // The capture flags pin --force-device-scale-factor=1; anything else means the frames are not
+      // the size the encoder is about to assume.
+      throw new Error(`capture result reports DPR ${result.rendererIdentity.dpr}, not the pinned 1`);
+    }
+    const want = expectedFrameCount(spec);
+    if (result.frameCount !== want) {
+      throw new Error(`capture result claims ${result.frameCount} frames for a passing capture; the window needs ${want}`);
+    }
+    const forms = [result.framesDir, result.clipPath].filter((v) => v !== null).length;
+    if (forms !== 1) {
+      throw new Error(`a passing capture must produce exactly one of frames or a clip, got ${forms}`);
+    }
+  }
+}
+
+/**
  * Parse + validate the container's result JSON. Rejects anything malformed rather than trusting a
  * shape from untrusted code — the result is written by the trusted entrypoint, but it lands on a
  * mount the browser could in principle also write, so it is treated as untrusted input.
@@ -514,7 +558,10 @@ export async function writeCaptureInput(
 }
 
 /** Read + validate the container's result off the output mount. */
-export async function readCaptureResult(outputDir: string): Promise<ContainerCaptureResult> {
+export async function readCaptureResult(
+  outputDir: string,
+  spec?: ContainerCaptureSpec,
+): Promise<ContainerCaptureResult> {
   // result.json is itself an artifact on the container-writable mount, so it gets the same
   // treatment as the artifacts it names. Without this, `symlink('/dev/zero', '/output/result.json')`
   // — no capability required, and the entrypoint's own write follows the link and leaves it in
@@ -524,7 +571,9 @@ export async function readCaptureResult(outputDir: string): Promise<ContainerCap
   // check rejects a device planted inside.
   const real = await assertRegularArtifact(outputDir, CAPTURE_RESULT_FILENAME, MAX_RESULT_BYTES);
   const raw = await readFile(real, 'utf8');
-  return parseCaptureResult(raw);
+  const parsed = parseCaptureResult(raw);
+  if (spec) assertResultMatchesSpec(parsed, spec);
+  return parsed;
 }
 
 // ── The boundary interface + the docker-backed implementation ───────────────────────────────────
@@ -593,7 +642,7 @@ export class DockerCaptureBoundary implements CaptureJobBoundary {
     });
 
     const exit = await this.spawnDocker(dockerBin, argv, containerName, spec.wallClockTimeoutSec, signal);
-    if (exit.code === 0) return readCaptureResult(io.outputDir);
+    if (exit.code === 0) return readCaptureResult(io.outputDir, spec);
 
     // Non-zero exit. The entrypoint promises a `failed` result.json for ANY failure — honour that
     // promise on the trusted side instead of discarding it (the v0.1.22 incident hid its root
@@ -601,7 +650,7 @@ export class DockerCaptureBoundary implements CaptureJobBoundary {
     // FAILURE, never as a success — an `ok` result next to a non-zero exit is itself an error.
     let onDisk: ContainerCaptureResult | null;
     try {
-      onDisk = await readCaptureResult(io.outputDir);
+      onDisk = await readCaptureResult(io.outputDir, spec);
     } catch {
       onDisk = null; // no readable artifact — fall through to the stderr-carrying error
     }
