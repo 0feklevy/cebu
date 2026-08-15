@@ -47,7 +47,8 @@ import type { StorageService } from '../storage/StorageService.js';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import { IMMUTABLE_CACHE_CONTROL } from 'shared/sim/simRevision';
 
-import { ExportRefused, buildExportPlan } from './exportPlan.js';
+import { ExportRefused } from './exportPlan.js';
+import { assertFrozenPlan } from './planFingerprint.js';
 import type { ExportPhase, ExportPlan, LinearAssembler, PosterFallbackWindow, ClipWindow } from './types.js';
 import { CaptureUnavailable, CaptureGateFailed, type SimCaptureBackend } from './capture/captureTypes.js';
 
@@ -275,7 +276,20 @@ export class ProjectExportService {
   }
 
   /** A status/progress write that must not resurrect a row this run no longer owns. */
+  /**
+   * The columns a running job may write. `plan` is deliberately absent: it is the frozen snapshot,
+   * written once by the controller, and the fingerprint stored beside it is only meaningful while
+   * nothing rewrites it. A future edit that tries will fail here rather than silently invalidate
+   * every verification downstream.
+   */
+  private assertNotFrozenColumn(patch: Record<string, unknown>): void {
+    if ('plan' in patch || 'plan_fingerprint' in patch) {
+      throw new Error('export: the frozen plan snapshot is write-once — use effective_plan for runtime results');
+    }
+  }
+
   private async fencedUpdate(exportId: string, values: Partial<typeof project_exports.$inferInsert>): Promise<void> {
+    this.assertNotFrozenColumn(values as Record<string, unknown>);
     await db.update(project_exports)
       .set({ ...values, updated_at: new Date() })
       .where(and(
@@ -325,16 +339,26 @@ export class ProjectExportService {
     let workDir: string | null = null;
     try {
       // ─── planning ───────────────────────────────────────────────────────────────────────────
-      logger.info({ exportId, projectId: job.project_id }, 'export: run started — planning');
-      const plan = await buildExportPlan(job.project_id, this.storage);
-      if (!plan) throw new ExportRefused('The project no longer exists.', 404, 'project_missing', false);
-
-      // The plan is stored BEFORE any work: it is the only artefact that can answer "why does
-      // the master look like that?" after the work directory is gone. Fenced, like every write.
-      await this.fencedUpdate(exportId, {
-        plan: plan as unknown as Record<string, unknown>,
-        objects_total: plan.timeline.length,
-      });
+      //
+      // Nothing is planned here. The controller froze the exact plan whose consequences it
+      // described to the user, and this run executes THAT — verbatim, verified. Re-planning was the
+      // whole problem: the project stays editable between the answer and the render, so a second
+      // plan could retime a section, pick up a republished simulation, or drop a clip, and the video
+      // the user consented to was only ever probably the video they got.
+      logger.info({ exportId, projectId: job.project_id }, 'export: run started — loading the frozen snapshot');
+      if (!job.plan) {
+        // A row from before the snapshot existed, or one whose plan never landed. Refusing beats
+        // re-planning: re-planning is exactly the behaviour this replaced.
+        throw new ExportRefused(
+          'This export was created before the current version and can no longer be run. Start a new one.',
+          409, 'export_snapshot_missing', false,
+        );
+      }
+      assertFrozenPlan(job.plan, job.plan_fingerprint, job.project_id);
+      const plan = job.plan as unknown as ExportPlan;
+      // `objects_total` was already written with the snapshot; the count is re-derived rather than
+      // re-planned so a stored row and a running job cannot disagree about how much work there is.
+      await this.fencedUpdate(exportId, { objects_total: plan.timeline.length });
       logger.info({
         exportId,
         windows: plan.timeline.length,
@@ -509,7 +533,11 @@ export class ProjectExportService {
       }
       plan.timeline = captured;
       await this.fencedUpdate(exportId, {
-        plan: plan as unknown as Record<string, unknown>,
+        // NOT `plan`. The snapshot is what we were ASKED to make and must survive the run intact;
+        // what the run actually did — substitutions, renderer identity, warnings — is a different
+        // fact and lives in its own column. Merging them destroyed the first question anyone asks
+        // after a bad export.
+        effective_plan: plan as unknown as Record<string, unknown>,
         objects_done: done,
       });
       await this.throwIfCancelRequested(exportId);
@@ -594,7 +622,11 @@ export class ProjectExportService {
           quality_state: degraded ? 'degraded' : 'full',
           output_key: outputKey,
           objects_done: total,
-          plan: plan as unknown as Record<string, unknown>,
+          // NOT `plan`. The snapshot is what we were ASKED to make and must survive the run intact;
+        // what the run actually did — substitutions, renderer identity, warnings — is a different
+        // fact and lives in its own column. Merging them destroyed the first question anyone asks
+        // after a bad export.
+        effective_plan: plan as unknown as Record<string, unknown>,
           finished_at: new Date(),
           updated_at: new Date(),
         })
@@ -649,9 +681,7 @@ export class ProjectExportService {
       // the reason the run stopped.
       await db.update(project_exports).set({
         status: terminalStatus, error: terminalError, finished_at: new Date(), updated_at: new Date(),
-        plan: sql`COALESCE(${project_exports.plan}, '{}'::jsonb) || ${JSON.stringify({
-          failure: { code: failure.code, retryable: failure.retryable, phase, detail: failure.detail.slice(0, 4000) },
-        })}::jsonb`,
+        failure: { code: failure.code, retryable: failure.retryable, phase, detail: failure.detail.slice(0, 4000) },
       }).where(and(
         eq(project_exports.id, exportId),
         inArray(project_exports.status, [...EXPORT_IN_FLIGHT_STATUSES]),

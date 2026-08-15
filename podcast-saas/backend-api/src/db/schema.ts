@@ -1433,6 +1433,16 @@ export const project_exports = pgTable(
     // 'forbid' is the default because the product contract is a full-quality render — a capture
     // failure fails the export instead of silently shipping stills.
     degradation_policy: text('degradation_policy').notNull().default('forbid'),
+    // The FROZEN execution snapshot's identity: SHA-256 over a canonical form of `plan`, domain
+    // separated. The worker verifies it before running, and consent is issued against it — so
+    // "the plan the user agreed to" stops being a claim about timing.
+    plan_fingerprint: text('plan_fingerprint'),
+    // What the run actually did. Kept SEPARATE so `plan` is never rewritten: runtime results used
+    // to be merged into it, which overwrote the record of what we were asked to make with the
+    // record of what happened — the first thing anyone needs after a bad export.
+    effective_plan: jsonb('effective_plan'),
+    // Why a run stopped. Also separate, for the same reason.
+    failure: jsonb('failure'),
     objects_total:    integer('objects_total').notNull().default(0),
     objects_done:     integer('objects_done').notNull().default(0),
     plan:             jsonb('plan'),

@@ -25,6 +25,7 @@ import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { enqueueJob } from '../../queue/index.js';
 import { ExportRefused, admitCaptureWorkload, buildExportPlan } from '../../services/export/exportPlan.js';
 import { EXPORT_GRID } from '../../services/export/types.js';
+import { fingerprintPlan } from '../../services/export/planFingerprint.js';
 
 /**
  * SHIPS DARK until Phase 2: the feature flag gates the POST, and OFF answers 404 — exactly what
@@ -42,9 +43,14 @@ const isMissingTable = (err: unknown): boolean =>
 
 /** The poll/response shape. `warnings` come from the stored plan — the honest omission record. */
 function exportBody(row: typeof project_exports.$inferSelect, downloadUrl: string | null) {
-  const plan = row.plan as { warnings?: unknown } | null;
-  const warnings = Array.isArray(plan?.warnings)
-    ? plan.warnings.filter((w): w is string => typeof w === 'string')
+  // Warnings describe what the run DID, so they come from `effective_plan` — the frozen snapshot
+  // records what was asked for and never changes. Before the run produces one, the snapshot's own
+  // planning warnings are the honest answer.
+  const runtime = row.effective_plan as { warnings?: unknown } | null;
+  const frozen = row.plan as { warnings?: unknown } | null;
+  const source = Array.isArray(runtime?.warnings) ? runtime.warnings : frozen?.warnings;
+  const warnings = Array.isArray(source)
+    ? source.filter((w): w is string => typeof w === 'string')
     : [];
   const terminal = row.status === 'ready';
   return {
@@ -174,15 +180,24 @@ export async function registerExportRoutes(app: FastifyInstance): Promise<void> 
         // whatever failed, with no way to know what had been agreed to, and a retry or duplicate
         // delivery had no answer at all.
         const degradationPolicy = request.body?.allow_degraded === true ? 'allow_poster' : 'forbid';
+        // THE SNAPSHOT. The plan computed above — the exact one whose consequences were just
+        // described to the user — is what the worker will execute. Storing it here, with its
+        // fingerprint, is what closes the gap in which the project could be edited between the
+        // answer and the render: the worker no longer re-plans, so there is nothing to drift.
+        const planSnapshot = plan as unknown as Record<string, unknown>;
+        const planFingerprint = fingerprintPlan(planSnapshot);
         const [row] = await db.insert(project_exports).values({
           project_id: project.id,
           requested_by: user.id,
           status: 'queued',
           degradation_policy: degradationPolicy,
+          plan: planSnapshot,
+          plan_fingerprint: planFingerprint,
+          objects_total: Array.isArray(plan.timeline) ? plan.timeline.length : 0,
         }).returning();
         enqueueJob('project_export', { exportId: row.id });
         logger.info(
-          { projectId: project.id, exportId: row.id, degradationPolicy },
+          { projectId: project.id, exportId: row.id, degradationPolicy, planFingerprint },
           'export: accepted — job enqueued',
         );
         return reply.code(202).send({ export_id: row.id, status: 'queued' });
