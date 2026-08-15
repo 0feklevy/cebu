@@ -125,6 +125,7 @@ cat > "$INPUT/capture-spec.json" <<'JSON'
   "width": 640,
   "height": 360,
   "warmupFrames": 30,
+  "rendererProfile": "swiftshader",
   "posterKey": null,
   "output": { "format": "jpeg", "quality": 80, "frameDir": "frames", "namePattern": "frame-%06d.jpg" },
   "wallClockTimeoutSec": 180
@@ -229,6 +230,7 @@ cat > "$IN_D/capture-spec.json" <<'JSON'
   "width": 640,
   "height": 360,
   "warmupFrames": 30,
+  "rendererProfile": "swiftshader",
   "posterKey": null,
   "output": { "format": "jpeg", "quality": 80, "frameDir": "frames", "namePattern": "frame-%06d.jpg" },
   "wallClockTimeoutSec": 180
@@ -385,6 +387,7 @@ cat > "$IN_E/capture-spec.json" <<'JSON'
   "width": 640,
   "height": 360,
   "warmupFrames": 30,
+  "rendererProfile": "swiftshader",
   "posterKey": null,
   "output": { "format": "jpeg", "quality": 80, "frameDir": "frames", "namePattern": "frame-%06d.jpg" },
   "wallClockTimeoutSec": 240
