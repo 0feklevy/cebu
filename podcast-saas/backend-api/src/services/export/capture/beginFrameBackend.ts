@@ -304,8 +304,6 @@ export interface BeginFrameBackendOptions {
   platform?: NodeJS.Platform;
   /** Canvas-region gate sample grid (gridN × gridN). Default 24. */
   gridN?: number;
-  /** Renderer profile override; defaults to EXPORT_CAPTURE_RENDERER, then swiftshader. */
-  rendererProfile?: string;
   /** How many frames across the capture to sample for the gate. Default 6 (min 2). */
   sampleCount?: number;
   log?: (message: string) => void;
@@ -411,7 +409,20 @@ export class BeginFrameBackend implements SimCaptureBackend {
     await mkdir(profileDir, { recursive: true });
 
     // Policy: the pinned flag set (validated against the forbidden list) + the profile location.
-    const rendererProfile = resolveRendererProfile(this.opts.rendererProfile);
+    //
+    // FROM THE SPEC, and required. This used to fall back to EXPORT_CAPTURE_RENDERER read inside
+    // the container — the untrusted side deciding what the trusted side believed it was buying —
+    // and empty defaulted to software, which is the silent fallback the hardware profile exists to
+    // make loud. The spec is authored by the trusted side and verified against the frozen plan, so
+    // it is the only acceptable source; anything else fails before a browser is launched.
+    const rendererProfile = spec.rendererProfile;
+    if (rendererProfile !== 'swiftshader' && rendererProfile !== 'hardware') {
+      throw new CaptureStageError(
+        'backend_load',
+        `capture spec names no valid renderer profile (got ${JSON.stringify(String(rendererProfile ?? '')).slice(0, 34)}); ` +
+          'the trusted side must decide the renderer — the container environment does not',
+      );
+    }
     const flags = assembleBeginFrameFlags({
       width: spec.width,
       height: spec.height,

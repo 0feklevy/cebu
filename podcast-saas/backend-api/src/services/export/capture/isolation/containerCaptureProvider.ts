@@ -43,6 +43,7 @@ import {
 import {
   DockerCaptureBoundary,
   assertFrameSet,
+  assertRendererProfileName,
   assertRegularArtifact,
   frameFileName,
   buildCaptureSpec,
@@ -379,11 +380,14 @@ export class ContainerCaptureProvider implements SimCaptureBackend {
       fps: spec.fps,
       width: spec.width,
       height: spec.height,
-      warmupFrames: DEFAULT_WARMUP_FRAMES,
-      // The TRUSTED side decides what a job renders with; the container is told, and refuses a name
-      // it does not know. Reading the environment inside the container would have put the choice on
-      // the wrong side of the boundary.
-      rendererProfile: this.config.rendererProfile,
+      // The spec's value when the caller names one (the controlled-experiment path the plan
+      // demands), the shipped default otherwise — resolved HERE, once, for the container path.
+      warmupFrames: spec.warmupFrames ?? DEFAULT_WARMUP_FRAMES,
+      // The JOB's frozen choice wins; the provider's env-resolved config covers only direct callers
+      // (diagnostic scripts) that carry no plan. An operator flipping EXPORT_CAPTURE_RENDERER after
+      // enqueue must not change what an already-created job renders with — the plan was described,
+      // consented to and fingerprinted under one profile, and it runs under that profile.
+      rendererProfile: assertRendererProfileName(spec.rendererProfile ?? this.config.rendererProfile),
       wallClockTimeoutSec: wallClockCapSec(spec.durationSec),
     });
 
@@ -509,8 +513,17 @@ export class ContainerCaptureProvider implements SimCaptureBackend {
         },
         `container capture ${spec.sectionId}`,
       );
+      // The cost split rides the SUCCESS log, structured, on the host — the run that answers "why
+      // is this slow" is the one that worked, and until this line the validated numbers stopped at
+      // the boundary parse and reached no log or metric anything could read.
       logger.info(
-        { section: spec.sectionId, frameCount: result.frameCount, renderer: result.rendererString },
+        {
+          section: spec.sectionId,
+          frameCount: result.frameCount,
+          renderer: result.rendererString,
+          rendererProfile: containerSpec.rendererProfile,
+          cost: result.cost,
+        },
         'export(container-capture): section captured',
       );
       return {
@@ -519,6 +532,7 @@ export class ContainerCaptureProvider implements SimCaptureBackend {
         rendererString: result.rendererString,
         gate: 'passed',
         reason: result.reason ?? undefined,
+        cost: result.cost ?? undefined,
       };
     } finally {
       await rm(jobDir, { recursive: true, force: true }).catch(() => {});

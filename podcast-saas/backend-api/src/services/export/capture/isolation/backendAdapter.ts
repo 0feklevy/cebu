@@ -65,6 +65,7 @@ export function toBackendSpec(spec: ContainerCaptureSpec, servedSimUrl: string):
     configHash: spec.configHash ?? '',
     posterKey: spec.posterKey ?? '',
     warmupFrames: spec.warmupFrames,
+    rendererProfile: spec.rendererProfile,
   };
 }
 

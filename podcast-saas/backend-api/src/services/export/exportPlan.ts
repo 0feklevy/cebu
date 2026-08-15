@@ -608,6 +608,8 @@ export async function buildExportPlan(
   }
 
   return {
+    // Frozen with the plan: the profile this export was described and consented to under.
+    rendererProfile: (process.env.EXPORT_CAPTURE_RENDERER?.trim() === 'hardware' ? 'hardware' : 'swiftshader') as 'swiftshader' | 'hardware',
     projectId,
     grid: EXPORT_GRID,
     timeline,

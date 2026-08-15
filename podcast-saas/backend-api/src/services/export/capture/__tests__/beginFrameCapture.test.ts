@@ -28,6 +28,7 @@ const SPEC: CaptureSpec = {
   height: 360,
   configHash: 'cfg',
   posterKey: 'poster',
+  rendererProfile: 'swiftshader' as const,
 };
 
 interface FakeOptions {

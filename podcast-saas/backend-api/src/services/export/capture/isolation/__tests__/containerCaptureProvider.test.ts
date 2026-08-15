@@ -7,7 +7,8 @@
  * The docker execution itself is Linux-checklist territory (runbook §7), same as the boundary.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { logger } from '../../../../../lib/logger.js';
 import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -342,5 +343,72 @@ describe('ContainerCaptureProvider.captureSection', () => {
 
   it('exposes the package-size ceiling as a real, testable constant', () => {
     expect(MAX_PACKAGE_BYTES).toBe(256 * 1024 * 1024);
+  });
+});
+
+/**
+ * The provider half of the trusted contract — the links that were missing even though every piece
+ * existed. `warmupFrames` was hardcoded to the default here, so the value a controlled experiment
+ * set never reached the container; the cost split was parsed and validated at the boundary and then
+ * reached no log or metric anything could read.
+ */
+describe('the provider forwards what the trusted side decided', () => {
+  it.each([0, 7])('warmupFrames=%i from the CALLER reaches the container spec', async (warmupFrames) => {
+    scratch = await mkdtemp(join(tmpdir(), 'ccp-warmup-'));
+    let seen: ContainerCaptureSpec | null = null;
+    const boundary = {
+      async runCapture(spec: ContainerCaptureSpec, io: CaptureIo): Promise<ContainerCaptureResult> {
+        seen = spec;
+        await writeFile(join(io.outputDir, 'section.mp4'), Buffer.from('mp4'));
+        return okResult({ clipPath: 'section.mp4' });
+      },
+    };
+    const provider = new ContainerCaptureProvider(testConfig(scratch), boundary, fakeStorage(), probesFor(SPEC));
+    await provider.captureSection({ ...SPEC, warmupFrames });
+    expect(seen!.warmupFrames).toBe(warmupFrames);
+  });
+
+  it('the JOB\'s renderer profile beats the provider\'s env-resolved config', async () => {
+    // An operator flipping EXPORT_CAPTURE_RENDERER after enqueue must not change what an
+    // already-consented job renders with.
+    scratch = await mkdtemp(join(tmpdir(), 'ccp-prof-'));
+    let seen: ContainerCaptureSpec | null = null;
+    const boundary = {
+      async runCapture(spec: ContainerCaptureSpec, io: CaptureIo): Promise<ContainerCaptureResult> {
+        seen = spec;
+        await writeFile(join(io.outputDir, 'section.mp4'), Buffer.from('mp4'));
+        return okResult({ clipPath: 'section.mp4' });
+      },
+    };
+    const provider = new ContainerCaptureProvider(
+      { ...testConfig(scratch), rendererProfile: 'swiftshader' }, boundary, fakeStorage(), probesFor(SPEC));
+    await provider.captureSection({ ...SPEC, rendererProfile: 'hardware' });
+    expect(seen!.rendererProfile).toBe('hardware');
+  });
+
+  it('the cost split reaches the HOST log on the happy path — observability, not just parsing', async () => {
+    scratch = await mkdtemp(join(tmpdir(), 'ccp-cost-'));
+    const infoSpy = vi.spyOn(logger, 'info');
+    try {
+      const cost = { simMs: 153, flushMs: 19, rasterMs: 5193, writeMs: 1, frames: 60 };
+      const boundary = {
+        async runCapture(_spec: ContainerCaptureSpec, io: CaptureIo): Promise<ContainerCaptureResult> {
+          await writeFile(join(io.outputDir, 'section.mp4'), Buffer.from('mp4'));
+          return { ...okResult({ clipPath: 'section.mp4' }), cost };
+        },
+      };
+      const provider = new ContainerCaptureProvider(testConfig(scratch), boundary, fakeStorage(), probesFor(SPEC));
+      const result = await provider.captureSection(SPEC);
+
+      // On the returned result, so the service can persist it…
+      expect(result.cost).toEqual(cost);
+      // …and in a structured host log entry, so "why is this slow" has an answer without a rebuild.
+      const costLog = infoSpy.mock.calls.find(
+        (c) => typeof c[1] === 'string' && c[1].includes('section captured'),
+      );
+      expect(costLog?.[0]).toMatchObject({ cost });
+    } finally {
+      infoSpy.mockRestore();
+    }
   });
 });

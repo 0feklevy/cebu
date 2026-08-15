@@ -449,6 +449,9 @@ export class ProjectExportService {
             simpleUi: w.simpleUi, autoScript: w.autoScript, uiHide: w.uiHide ?? [],
             durationSec: w.endSec - w.startSec, fps: plan.grid.fps,
             width: plan.grid.w, height: plan.grid.h, configHash: w.configHash ?? '', posterKey: w.posterKey ?? '',
+            // From the FROZEN plan, not the current environment: legacy snapshots that predate the
+            // field read as software, which is the profile they actually ran under.
+            rendererProfile: plan.rendererProfile === 'hardware' ? 'hardware' : 'swiftshader',
           }, abort.signal);
 
           if (result.gate === 'failed' || !result.clipPath) {

@@ -75,6 +75,13 @@ export interface CaptureSpec {
   readonly warmupFrames?: number;
   /** Poster identity the caller falls back to if capture is unavailable/fails. Opaque here. */
   readonly posterKey: string;
+  /**
+   * Which renderer this capture must use. Optional in the TYPE so backends that do not render
+   * (poster paths, tests of other concerns) need not carry it, but `BeginFrameBackend` REQUIRES it:
+   * the value used to be read from the container's own environment, which put the choice on the
+   * untrusted side of the boundary and meant the trusted side's `hardware` never reached the flags.
+   */
+  readonly rendererProfile?: 'swiftshader' | 'hardware';
 }
 
 /**
