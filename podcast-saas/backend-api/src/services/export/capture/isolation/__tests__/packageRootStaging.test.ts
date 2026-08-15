@@ -188,6 +188,70 @@ describe('staging a NESTED LEGACY package (the failing production shape)', () =>
   });
 });
 
+describe('the INPUT MOUNT the container actually gets (offline closure, end to end)', () => {
+  /** The production entry, with the CDN import map and the external font stylesheet. */
+  const CDN_ENTRY = `<!doctype html>
+<link rel="stylesheet" href="./css/style.css">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded" />
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+            "three/addons/":"https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"}}
+</script>
+<script type="module" src="./src/main.js"></script>
+<script src="../bridge.js?v=1"></script>`;
+
+  const cdnStorage = storageOf({
+    [`${PREFIX}/bridge.js`]: '/* bridge */',
+    [`${PREFIX}/boids-3d/index.html`]: CDN_ENTRY,
+    [`${PREFIX}/boids-3d/src/main.js`]: "import * as THREE from 'three';",
+    [`${PREFIX}/boids-3d/css/style.css`]: 'canvas{display:block}',
+  });
+
+  it('stages three.js locally and hands the container an entry with NO external URL left in it', async () => {
+    scratch = await mkdtemp(join(tmpdir(), 'pkgroot-'));
+    const { boundary, seen } = capturingBoundary();
+    let stagedEntry = '';
+    const spy = {
+      async runCapture(spec: ContainerCaptureSpec, io: CaptureIo): Promise<ContainerCaptureResult> {
+        const { readFile } = await import('node:fs/promises');
+        stagedEntry = await readFile(join(io.inputDir, 'boids-3d', 'index.html'), 'utf8');
+        return boundary.runCapture(spec, io);
+      },
+    };
+    const provider = new ContainerCaptureProvider(testConfig(scratch), spy, cdnStorage);
+    await provider.captureSection(specFor(`${PREFIX}/boids-3d/index.html`));
+
+    // The v0.1.26 assertion, at the mount: nothing the container serves points off-origin.
+    expect(stagedEntry).not.toContain('cdn.jsdelivr.net');
+    expect(stagedEntry).not.toContain('fonts.googleapis.com');
+    expect(stagedEntry).toContain('/__flowvid_vendor/three/0.169.0/build/three.module.js');
+    // The package's own relative references survive untouched.
+    expect(stagedEntry).toContain('./css/style.css');
+    expect(stagedEntry).toContain('../bridge.js?v=1');
+
+    // The vendored module graph is physically present on the mount, at the package ROOT.
+    expect(seen.staged).toContain('__flowvid_vendor/three/0.169.0/build/three.module.js');
+    expect(seen.staged).toContain('__flowvid_vendor/three/0.169.0/examples/jsm/controls/OrbitControls.js');
+    // …and the package itself is still whole.
+    expect(seen.staged).toContain('bridge.js');
+    expect(seen.staged).toContain('boids-3d/src/main.js');
+    expect(seen.spec?.entryPath).toBe('boids-3d/index.html');
+  });
+
+  it('REFUSES to capture a package whose boot dependency nothing trusts, with the URL in the error', async () => {
+    scratch = await mkdtemp(join(tmpdir(), 'pkgroot-'));
+    const { boundary } = capturingBoundary();
+    const unsupported = storageOf({
+      [`${PREFIX}/index.html`]:
+        '<script type="importmap">{"imports":{"d3":"https://cdn.jsdelivr.net/npm/d3@7/+esm"}}</script>',
+    });
+    const provider = new ContainerCaptureProvider(testConfig(scratch), boundary, unsupported);
+    await expect(provider.captureSection(specFor(`${PREFIX}/index.html`))).rejects.toThrow(
+      /no trusted pack satisfies[\s\S]*d3/,
+    );
+  });
+});
+
 describe('the other three supported layouts still stage correctly', () => {
   const cases = [
     {

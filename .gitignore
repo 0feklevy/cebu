@@ -27,3 +27,9 @@ darwin-avatar/
 # shipment. Local evidence, not source; and ship's own preflight refuses to start on a
 # dirty tree, so tracking these would make every shipment block the next one.
 /.claude/ship/
+
+# Trusted simulation dependency packs are VENDORED ON PURPOSE and must ship in the repo/image:
+# the capture container has no network, so `build/three.module.js` being swallowed by the generic
+# `build/` rule above would publish a registry whose files do not exist — every capture would fail
+# at materialise() with "vendored file missing on disk".
+!podcast-saas/backend-api/vendor/sim-deps/**

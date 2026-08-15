@@ -183,7 +183,8 @@ export class CaptureStageError extends Error {
 /**
  * Make UNTRUSTED text (sim-controlled stderr, container-reported reasons) safe to carry in one
  * error message or result field: strip C0/C1 control characters and the Unicode line/paragraph
- * separators (terminal-escape and log-injection smuggling), cap the LINE count, keep the TAIL of
+ * separators AND the bidi format controls (terminal-escape, log-injection and right-to-left
+ * override smuggling — U+202E can visually reverse a log line the team reads), cap the LINE count, keep the TAIL of
  * the bytes (the newest evidence wins). Shared by the transport and the docker boundary so the
  * caps cannot drift apart.
  */
@@ -194,7 +195,7 @@ export function sanitizeUntrustedText(
   const maxBytes = opts.maxBytes ?? 2_048;
   const maxLines = opts.maxLines ?? 40;
   // eslint-disable-next-line no-control-regex -- stripping control characters IS the point
-  const stripped = raw.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u2028\u2029]/g, '');
+  const stripped = raw.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '');
   const lines = stripped.split('\n').filter((l) => l.trim().length > 0);
   const tail = lines.slice(-maxLines).join('\n');
   return tail.length > maxBytes ? `…${tail.slice(-maxBytes)}` : tail;
