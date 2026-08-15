@@ -270,6 +270,11 @@ echo "=== STAGE E: offline dependency closure (three.js, WebGL, network-none) ==
 WORK_E="$(mktemp -d /tmp/flowvid-capture-smoke-e.XXXXXX)"
 IN_E="$WORK_E/input"; OUT_E="$WORK_E/output"
 mkdir -p "$IN_E/scene/src" "$OUT_E"
+# The vendor step WRITES into the input tree, and it runs as uid 1000 while this script usually
+# runs under sudo — so the directory it must write into would otherwise be root-owned and the
+# materialisation dies with EACCES before Chrome is ever started. Made writable here and returned
+# to read-only below, which is how production mounts it anyway.
+chmod -R a+rwX "$IN_E"
 trap 'rm -rf "$WORK" "$WORK_D" "$WORK_E"' EXIT
 
 # The trusted closure, materialised by the SAME code the provider runs. Node resolves the backend's
@@ -385,6 +390,10 @@ cat > "$IN_E/capture-spec.json" <<'JSON'
   "wallClockTimeoutSec": 240
 }
 JSON
+
+# Everything under the input tree was just written by this script (root under sudo); the rewrite
+# step runs as uid 1000 and edits the entry document in place, so ownership has to allow it.
+chmod -R a+rwX "$IN_E"
 
 # The offline rewrite the provider performs, applied here through the SAME shared function.
 docker run --rm --network none --user 1000:1000 \

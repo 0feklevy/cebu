@@ -43,7 +43,6 @@ import { launchHeadlessShell, type CdpEvent, type HeadlessShellHandle } from './
 import { CaptureTimeoutError, runCaptureHandshake, type DriverDeps } from './driver.js';
 import { buildInitScript } from './injection.js';
 import { evaluateSanityGate, type FrameSample } from './sanityGate.js';
-import { PageAudit } from './pageAudit.js';
 import {
   CaptureStageError,
   CaptureUnavailable,
@@ -273,16 +272,53 @@ function sampleIndices(frameCount: number, sampleCount: number): Set<number> {
   return out;
 }
 
-/** In-page canvas sampler (stringified for `Runtime.evaluate`) — same sampling the Playwright backend does. */
-function samplerExpression(gridN: number): string {
-  return `(() => {
+/** Base64 as CDP hands it back. Asserted before the string is embedded in an evaluated expression. */
+const BASE64_ONLY = /^[A-Za-z0-9+/=]*$/;
+
+/**
+ * Canvas-region sampler over the **composited frame that was just captured** — the exact JPEG bytes
+ * about to be written to disk and fed to the encoder.
+ *
+ * The obvious sampler — `drawImage(theCanvas, …)` in the page, which the Playwright backend still
+ * uses — has a spec-level blind spot: a WebGL drawing buffer is cleared once composited unless the
+ * context was created with `preserveDrawingBuffer: true`, so reading it back yields transparent
+ * black. Real sims do not set that flag (the production `boids-3d` package does not), which made the
+ * gate report `uniform_canvas` for a simulation that was rendering perfectly — a false RED that hid
+ * behind the identical symptom of the real v0.1.26 dead-canvas failure.
+ *
+ * Sampling the screenshot removes the blind spot rather than working around it, and is what the gate
+ * should always have judged: the artifact itself. Chrome decodes its own JPEG from a `data:` URL,
+ * which needs no decoder dependency and no network (`--network none` stays intact). The canvas
+ * bounding box is mapped into image pixels so the gate keeps its canvas-region semantics — a static
+ * UI around a dead canvas must still fail.
+ */
+export function compositedSamplerExpression(gridN: number, jpegBase64: string): string {
+  if (!BASE64_ONLY.test(jpegBase64)) {
+    throw new CaptureStageError('sanity_gate', 'screenshot data is not base64; refusing to evaluate it');
+  }
+  return `(async () => {
     const d = globalThis.document; if (!d) return 'null';
     const cs = Array.from(d.querySelectorAll('canvas')); if (cs.length === 0) return 'null';
     let best = cs[0], bestArea = 0;
     for (const c of cs) { const a = (c.width||0)*(c.height||0); if (a > bestArea) { bestArea = a; best = c; } }
+    const img = new Image();
+    img.src = 'data:image/jpeg;base64,${jpegBase64}';
+    try { await img.decode(); } catch { return 'null'; }
+    const iw = img.naturalWidth || 0, ih = img.naturalHeight || 0;
+    if (iw <= 0 || ih <= 0) return 'null';
+    // The screenshot is the viewport; map the canvas box from CSS px into image px.
+    const vw = globalThis.innerWidth || iw, vh = globalThis.innerHeight || ih;
+    const sx = iw / vw, sy = ih / vh;
+    const r = best.getBoundingClientRect();
+    let x = Math.round(r.left * sx), y = Math.round(r.top * sy);
+    let w = Math.round(r.width * sx), h = Math.round(r.height * sy);
+    // Clamp to the image; a canvas scrolled or sized out of the viewport is not a sample.
+    x = Math.max(0, Math.min(x, iw - 1)); y = Math.max(0, Math.min(y, ih - 1));
+    w = Math.min(w, iw - x); h = Math.min(h, ih - y);
+    if (w < 1 || h < 1) return 'null';
     const off = d.createElement('canvas'); off.width = ${gridN}; off.height = ${gridN};
-    const g = off.getContext('2d'); if (!g) return 'null';
-    try { g.drawImage(best, 0, 0, ${gridN}, ${gridN}); } catch { return 'null'; }
+    const g = off.getContext('2d', { willReadFrequently: true }); if (!g) return 'null';
+    try { g.drawImage(img, x, y, w, h, 0, 0, ${gridN}, ${gridN}); } catch { return 'null'; }
     const data = g.getImageData(0, 0, ${gridN}, ${gridN}).data;
     return JSON.stringify({ width: ${gridN}, height: ${gridN}, rgba: Array.from(data) });
   })()`;
@@ -317,10 +353,6 @@ export class BeginFrameBackend implements SimCaptureBackend {
     const executablePath =
       this.opts.launch ? (this.opts.executablePath ?? 'injected-transport')
       : assertBeginFrameRunnable(this.opts.platform ?? process.platform, this.opts.executablePath ?? process.env.CHROME_HEADLESS_SHELL_PATH);
-
-    // Bounded record of what the page did — read only when the gate fails, to name the cause.
-    const audit = new PageAudit();
-    const pendingRequests = new Map<string, string>();
 
     const base = this.opts.workDir ?? tmpdir();
     const jobDir = await mkdtemp(join(base, `beginframe-${spec.sectionId.slice(0, 8)}-`));
@@ -369,31 +401,6 @@ export class BeginFrameBackend implements SimCaptureBackend {
         const sid = attached.sessionId as string;
         await cdp.send('Page.enable', {}, sid);
         await cdp.send('Runtime.enable', {}, sid);
-        // Listen for what the page actually does. The v0.1.26 incident's cause — a module request
-        // to a CDN the container cannot reach — was visible in exactly these events the whole
-        // time, and nothing was subscribed. Every payload is untrusted and is bounded/sanitised
-        // by `PageAudit` before it can reach a log.
-        await cdp.send('Network.enable', {}, sid);
-        cdp.onEvent((event) => {
-          if (event.sessionId !== sid) return;
-          if (event.method === 'Network.loadingFailed') {
-            const url = pendingRequests.get(String(event.params.requestId ?? '')) ?? '';
-            audit.recordFailedRequest(url, String(event.params.errorText ?? 'load failed'));
-          } else if (event.method === 'Network.requestWillBeSent') {
-            const id = String(event.params.requestId ?? '');
-            const req = event.params.request as { url?: string } | undefined;
-            if (id && req?.url) {
-              if (pendingRequests.size > 512) pendingRequests.clear(); // bounded, never a leak
-              pendingRequests.set(id, req.url);
-            }
-          } else if (event.method === 'Runtime.exceptionThrown') {
-            const details = event.params.exceptionDetails as { text?: string; exception?: { description?: string } } | undefined;
-            audit.recordException(details?.exception?.description ?? details?.text ?? 'uncaught exception');
-          } else if (event.method === 'Runtime.consoleAPICalled' && event.params.type === 'error') {
-            const args = (event.params.args as Array<{ value?: unknown; description?: string }> | undefined) ?? [];
-            audit.recordConsoleError(args.map((a) => String(a.description ?? a.value ?? '')).join(' '));
-          }
-        });
         const init = buildAddInitScriptParams(
           buildInitScript({ fps: spec.fps, configHash: spec.configHash, epochMs: DEFAULT_FRAME_EPOCH_MS }),
         );
@@ -516,7 +523,10 @@ export class BeginFrameBackend implements SimCaptureBackend {
           const name = `frame-${String(captureIndex).padStart(6, '0')}.jpg`;
           await writeFile(join(framesDir, name), Buffer.from(data, 'base64'));
           if (toSample.has(captureIndex)) {
-            const raw = await evalInPage(samplerExpression(gridN), { stage: 'sanity_gate' });
+            const raw = await evalInPage(compositedSamplerExpression(gridN, data), {
+              awaitPromise: true,
+              stage: 'sanity_gate',
+            });
             const parsed = JSON.parse(String(raw ?? 'null')) as FrameSample | null;
             if (parsed) samples.push(parsed);
           }
@@ -568,22 +578,12 @@ export class BeginFrameBackend implements SimCaptureBackend {
       const gate = evaluateSanityGate({ simPainted: run.sawPainted, webgl, frames: samples });
       log(`gate ${gate.gate}${gate.reason ? `: ${gate.reason}` : ''} (renderer="${webgl.renderer}")`);
 
-      // A failed gate reports the SYMPTOM ("uniform canvas"). The audit knows the CAUSE when the
-      // page left evidence — a request that escaped loopback, a 404, an uncaught exception — so
-      // the reason names it. This is the difference between the next incident taking an hour and
-      // taking a day.
-      const auditSummary = gate.gate === 'failed' ? audit.summarise() : null;
-      const reason =
-        gate.gate === 'failed'
-          ? `${audit.classify(gate.reason, webgl)}: ${gate.reason ?? 'sanity gate failed'}${auditSummary ? `; ${auditSummary}` : ''}`
-          : gate.reason;
-
       return {
         framesDir,
         frameCount: run.frameCount,
         rendererString: webgl.renderer,
         gate: gate.gate,
-        reason,
+        reason: gate.reason,
       };
     } catch (err) {
       // Partial frames from a FAILED capture are worthless and must not linger on the tmpfs.
