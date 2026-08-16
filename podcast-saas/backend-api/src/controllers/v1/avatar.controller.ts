@@ -9,7 +9,6 @@
 //                 generated for any viewer of any video; reused everywhere.
 // At runtime the avatar prefers basic, then global extended, over generating new.
 import { randomUUID } from 'crypto';
-import AdmZip from 'adm-zip';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { rateLimit } from '../../lib/rateLimit.js';
@@ -38,6 +37,7 @@ import { analyzeAndGenerateImage, generateLibraryImage } from '../../services/av
 import { insertVisual, listVisuals, updateVisual, deleteVisual, syncBasicLibrary, storeImageBuffer, storeSimulationHtml } from '../../services/avatar/libraryService.js';
 import { saveTurns, getTurns, getProfile, extractAndSaveFacts, type Turn } from '../../services/avatar/memoryService.js';
 import { avatarProjectAllowedAsync } from '../../services/avatar/avatarAccess.js';
+import { assertSafeZipArchive } from '../../services/security/zipGuard.js';
 import { editableProject } from '../../services/collabAccess.js';
 import { signMemoryToken, verifyMemoryToken } from '../../services/avatar/memoryToken.js';
 import { CHARACTERS, DEFAULT_CHARACTER_ID } from '../../services/avatar/characters.js';
@@ -140,12 +140,13 @@ function normalizeUploadedVisualSpec(parsed: unknown, filename: string): { type:
   return null;
 }
 
+// Bound the archive on its DECLARED headers first. This is the earliest point a library ZIP is
+// parsed, and it runs on an authenticated-but-user-controlled upload. A ZipLimitError propagates
+// out of processFile and lands in the per-file `rejected[]` list with its reason, so the uploader
+// is told WHY the bundle was refused instead of getting "needs an HTML entry file".
 function zipHasHtml(buffer: Buffer): boolean {
-  try {
-    return new AdmZip(buffer).getEntries().some((entry) => !entry.isDirectory && /\.html?$/i.test(entry.entryName));
-  } catch {
-    return false;
-  }
+  const zip = assertSafeZipArchive(buffer, { label: 'Avatar library ZIP' });
+  return zip.getEntries().some((entry) => !entry.isDirectory && /\.html?$/i.test(entry.entryName));
 }
 
 // Cap on the caption transcript inlined into a session's KNOWLEDGE block — bounds the

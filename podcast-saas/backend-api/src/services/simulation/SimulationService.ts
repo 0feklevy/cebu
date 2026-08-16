@@ -1,4 +1,3 @@
-import AdmZip from 'adm-zip';
 import { createHash } from 'crypto';
 import { z } from 'zod';
 import type { StorageService } from '../storage/StorageService.js';
@@ -7,6 +6,7 @@ import { db } from '../../db/index.js';
 import { simulations, system_prompts } from '../../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { logger } from '../../lib/logger.js';
+import { assertSafeZipArchive } from '../security/zipGuard.js';
 import { CAPTURE_AUTHORING_RULES } from 'shared/sim/captureAuthoring';
 import { buildUiControlsPromptBlock, type SimUiSelection } from './SimUiControls.js';
 import { buildChildRuntimeSource } from './simRuntimeChild.js';
@@ -3332,7 +3332,11 @@ export class SimulationService {
   }
 
   private extractZip(buf: Buffer): Map<string, Buffer> {
-    const zip   = new AdmZip(buf);
+    // Bound the archive on its DECLARED headers before anything is inflated: `entry.getData()`
+    // below allocates whatever the central directory claims, and this buffer came off an upload
+    // route. normalizeSimulationPath still runs per entry, but it only sees names the guard has
+    // already cleared, and only after the whole archive has been accepted.
+    const zip   = assertSafeZipArchive(buf, { label: 'Simulation ZIP' });
     const files = new Map<string, Buffer>();
     for (const entry of zip.getEntries()) {
       if (entry.isDirectory) continue;
