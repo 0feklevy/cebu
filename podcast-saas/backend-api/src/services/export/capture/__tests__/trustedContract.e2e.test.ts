@@ -69,7 +69,14 @@ describe('the renderer profile crosses the wire, not the environment', () => {
       const seen: string[][] = [];
       const backend = new BeginFrameBackend({
         workDir: scratch,
-        launch: (async (opts: { flags?: readonly string[] } | undefined) => {
+        // SYNCHRONOUS, because the real `launchHeadlessShell` is synchronous: it returns a
+        // `HeadlessShellHandle`, and `captureSection` calls it inside a plain try/catch with no
+        // `await`. An `async` double returns a rejected promise instead of throwing, so that
+        // try/catch cannot see it — the rejection escapes as an UNHANDLED error after the test has
+        // already passed. Vitest then exits non-zero with "Errors 1" while reporting every test
+        // green, which fails the release gate for a reason no failing assertion explains. The
+        // `as never` cast is what let the shape mismatch through the type checker.
+        launch: ((opts: { flags?: readonly string[] } | undefined) => {
           seen.push([...(opts?.flags ?? [])]);
           throw new Error('stop after flag assembly — the observation above is the test');
         }) as never,
@@ -92,7 +99,9 @@ describe('the renderer profile crosses the wire, not the environment', () => {
     try {
       const backend = new BeginFrameBackend({
         workDir: scratch,
-        launch: (async () => { throw new Error('must not launch'); }) as never,
+        // Synchronous for the same reason as above — a rejected promise here would escape unhandled
+        // the moment this guard ever fired, turning a clear failure into an unexplained exit code.
+        launch: (() => { throw new Error('must not launch'); }) as never,
       });
       const good = toBackendSpec(containerSpec('hardware'), 'http://127.0.0.1:1/pkg/index.html');
       for (const bad of [undefined, '', 'gpu', 'HARDWARE']) {
