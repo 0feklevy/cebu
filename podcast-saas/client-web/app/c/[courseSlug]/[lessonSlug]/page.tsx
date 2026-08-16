@@ -27,7 +27,10 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
 export default async function LessonPage({ params }: Params) {
   const { courseSlug, lessonSlug } = await params;
   const result = await getLessonPage(courseSlug, lessonSlug);
-  if (result.status === 'redirect') permanentRedirect(result.redirectUrl);
+  // `as Route` — the redirect target is chosen by the server at request time and is not in the
+  // route table, so typedRoutes cannot type it. Matches the `as Route` casts already used for
+  // server-computed hrefs below. Next 15.5 began enforcing the branded type on redirect helpers.
+  if (result.status === 'redirect') permanentRedirect(result.redirectUrl as Route);
   if (result.status !== 'ok') notFound();
 
   const l = result.data;

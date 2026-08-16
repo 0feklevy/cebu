@@ -19,7 +19,11 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
 export default async function CoursePage({ params }: Params) {
   const { courseSlug } = await params;
   const result = await getCoursePage(courseSlug);
-  if (result.status === 'redirect') permanentRedirect(result.redirectUrl);
+  // `as Route` because typedRoutes cannot express a target the SERVER chooses at request time —
+  // this URL comes back from the course API, not from the route table. Same escape hatch the rest
+  // of this file already uses for server-computed hrefs. Next 15.5 started enforcing the branded
+  // type on the redirect helpers, which is what surfaced it.
+  if (result.status === 'redirect') permanentRedirect(result.redirectUrl as Route);
   if (result.status !== 'ok') notFound(); // 'gone' is served as 410 by middleware before this
 
   const c = result.data;
