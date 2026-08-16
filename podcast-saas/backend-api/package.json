@@ -36,7 +36,7 @@
     "@fastify/multipart": "^8.3.0",
     "@google/genai": "^1.0.0",
     "@trigger.dev/sdk": "^3.1.0",
-    "adm-zip": "^0.5.10",
+    "adm-zip": "^0.6.0",
     "drizzle-orm": "^0.31.4",
     "fastify": "^4.28.0",
     "firebase-admin": "^12.3.0",
