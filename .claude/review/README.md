@@ -4,9 +4,10 @@ A coordinated multi-agent review system for the FlowVid monorepo. It finds bugs,
 performance problems, UX and a11y gaps, contract drift, and pipeline defects across the whole
 stack, then produces **one** ranked report and an optional, safe auto-fix pass.
 
-**Design principle: optimise and improve, do no damage.** Reviewers are structurally incapable of
-editing source — `.claude/hooks/fleet-guard.mjs` denies it at the tool layer, not in a prompt. See
-*Hard rules* in [PROTOCOL.md](PROTOCOL.md).
+**Design principle: optimise and improve, do no damage.** Reviewers are told not to edit source,
+and `.claude/hooks/fleet-guard.mjs` denies it at the tool layer as well — **when the hook is
+active**. Only the secrets floor is unconditional; see *What is enforced* below and
+*What is actually guaranteed* in [PROTOCOL.md](PROTOCOL.md).
 
 ---
 
@@ -90,12 +91,21 @@ Fastify over Postgres.
 
 ---
 
-## What is enforced, not merely requested
+## What is enforced — two hooks, two different guarantees
 
-`.claude/hooks/fleet-guard.mjs` runs as a `PreToolUse` hook on every fleet agent and **denies**:
+**Unconditional.** `.claude/settings.json` registers the guard in `secrets` mode as a project-wide
+`PreToolUse` hook. It applies to every agent *and* the main session, whether or not the agent
+declares hooks of its own, and **denies**:
 
 - reading, writing, or shelling out to `.env`/`.env.*` and credential files (`.env.example` is allowed);
-- printing environment or secret values;
+- printing or expanding environment or secret values — by another name, another reader,
+  redirection, or shell expansion.
+
+**Conditional.** Everything below is declared in each agent's *frontmatter* (`readonly`, or
+`writer` for `review-fixer`). Frontmatter hooks only execute in a **trusted workspace**, so in a
+headless or untrusted run they do not fire at all and the secrets floor is all you have. When they
+do fire, the guard **denies**:
+
 - `git commit`/`push`/`tag`/`reset --hard`/`clean -f`/`rebase`;
 - `db:migrate`, `db:studio`, `drizzle-kit`, `psql`, `pg_dump`, `DROP TABLE`, `TRUNCATE`;
 - `rm -rf`, `rmdir`, `shred`;
@@ -106,14 +116,24 @@ Fastify over Postgres.
 `review-fixer` runs the same guard in `writer` mode: it may edit source, but every other
 prohibition still applies — including no commits.
 
-Verify it yourself at any time:
+Verify the guard's *logic* at any time:
 
 ```bash
-echo '{"tool_name":"Read","tool_input":{"file_path":"/x/.env"}}' | node .claude/hooks/fleet-guard.mjs readonly
+node .claude/hooks/fleet-guard.mjs readonly <<'PAYLOAD'
+{"tool_name":"Read","tool_input":{"file_path":"/x/.env"}}
+PAYLOAD
 ```
 
-Frontmatter hooks require workspace trust. If the folder is untrusted the agents still run, but
-the guard is skipped — so trust the workspace, or treat the prompt-level rules as the only defence.
+(The payload goes in a **heredoc** on purpose. Piping it from `echo` puts the filename on the
+command line, where the project-wide secrets floor denies your shell call before the guard under
+test can answer.)
+
+A `deny` verdict proves the guard works. It does **not** prove the guard is wired into your
+session: frontmatter hooks require workspace trust, and a non-interactive run has no trust dialog
+to accept, so reviewers there run with the secrets floor only — `Edit` unblocked, the `Write`
+allowlist unapplied, Bash not an allowlist. This has been observed, not theorised. Trust the
+workspace, or treat the prompt-level rules in PROTOCOL.md as the only defence and hold yourself to
+them.
 
 ---
 
