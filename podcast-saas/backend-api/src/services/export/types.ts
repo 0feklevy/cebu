@@ -202,6 +202,13 @@ export interface ExportPlanFailure {
 export interface ExportPlan {
   projectId: string;
   grid: ExportGrid;
+  /**
+   * The renderer every capture in this export must use, resolved from the TRUSTED side's
+   * environment when the plan is frozen. On the plan — and therefore under the fingerprint —
+   * because an operator flipping EXPORT_CAPTURE_RENDERER after enqueue must not change what an
+   * already-consented job renders with.
+   */
+  rendererProfile?: 'swiftshader' | 'hardware';
   /** Every resolved window, absolute times, ordered by startSec. */
   timeline: ExportWindow[];
   /** Every audio asset window. */

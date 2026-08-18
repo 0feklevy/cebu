@@ -8,6 +8,9 @@
 import { describe, it, expect } from 'vitest';
 
 import {
+  assertRendererMatchesProfile,
+  compositedSamplerExpression,
+  resolveRendererProfile,
   assembleBeginFrameFlags,
   assertNoForbiddenFlags,
   buildCreateTargetParams,
@@ -152,5 +155,132 @@ describe('host refusal (honest — where this cannot capture, it says so)', () =
     expect(typeof backend.captureSection).toBe('function');
     expect(typeof backend.isAvailable).toBe('function');
     expect(backend.name).toBe('begin-frame');
+  });
+});
+
+/**
+ * The gate sampler. This is the v0.1.27 false-RED: a WebGL drawing buffer is cleared once
+ * composited unless the context asked for `preserveDrawingBuffer`, so the old sampler — which read
+ * back the canvas ELEMENT — saw transparent black and called a perfectly rendering simulation
+ * `uniform_canvas`. Proven on the real Ubuntu host: three.js loaded offline, `rendererString` was a
+ * live SwiftShader string, 60 frames differed and showed the scene, and the gate still failed.
+ *
+ * The fake page below is the exact discriminator: reading the canvas element yields zeros, decoding
+ * the captured JPEG yields content. A sampler that passes only if it looked at the screenshot.
+ */
+describe('sanity-gate sampler judges the captured frame, not the canvas element', () => {
+  const GRID = 4;
+
+  /** Runs a generated sampler expression against a page whose canvas read-back is blank. */
+  async function runSampler(expr: string): Promise<{ result: unknown; drewFrom: string[] }> {
+    const drewFrom: string[] = [];
+    const canvasEl = {
+      __kind: 'canvas-element',
+      width: 640,
+      height: 360,
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 640, height: 360 }),
+    };
+    const makeOffscreen = () => ({
+      width: 0,
+      height: 0,
+      getContext: () => ({
+        drawImage: (src: { __kind?: string }) => {
+          drewFrom.push(src?.__kind ?? 'unknown');
+        },
+        // Zeros for the canvas element (the cleared drawing buffer), content for the screenshot.
+        getImageData: () => ({
+          data: drewFrom.includes('decoded-screenshot')
+            ? Array.from({ length: GRID * GRID * 4 }, (_, i) => (i * 37) % 256)
+            : new Array(GRID * GRID * 4).fill(0),
+        }),
+      }),
+    });
+    const g = globalThis as unknown as Record<string, unknown>;
+    const saved = { document: g.document, Image: g.Image, innerWidth: g.innerWidth, innerHeight: g.innerHeight };
+    g.document = { querySelectorAll: () => [canvasEl], createElement: () => makeOffscreen() };
+    g.innerWidth = 640;
+    g.innerHeight = 360;
+    g.Image = class {
+      __kind = 'decoded-screenshot';
+      src = '';
+      naturalWidth = 640;
+      naturalHeight = 360;
+      async decode(): Promise<void> {}
+    };
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
+      const result = await (new Function(`return (${expr});`)() as Promise<unknown>);
+      return { result, drewFrom };
+    } finally {
+      Object.assign(globalThis, saved);
+    }
+  }
+
+  it('samples the decoded screenshot — a rendering WebGL sim without preserveDrawingBuffer passes', async () => {
+    const { result, drewFrom } = await runSampler(compositedSamplerExpression(GRID, 'QUJD'));
+
+    expect(drewFrom).toEqual(['decoded-screenshot']); // NOT the canvas element
+    const parsed = JSON.parse(String(result)) as { width: number; rgba: number[] };
+    expect(parsed.width).toBe(GRID);
+    expect(new Set(parsed.rgba).size).toBeGreaterThan(1); // content, not a uniform frame
+  });
+
+  it('embeds the frame as a data: URL — no network, so --network none is untouched', () => {
+    const expr = compositedSamplerExpression(GRID, 'QUJD');
+    expect(expr).toContain("'data:image/jpeg;base64,QUJD'");
+    expect(expr).not.toMatch(/https?:/);
+  });
+
+  it('refuses to evaluate screenshot data that is not base64 (no expression injection)', () => {
+    expect(() => compositedSamplerExpression(GRID, "'); fetch('http://x'); ('")).toThrow(/not base64/);
+  });
+
+  it('keeps canvas-region semantics: the box is mapped into image pixels, not the whole viewport', () => {
+    const expr = compositedSamplerExpression(GRID, 'QUJD');
+    expect(expr).toContain('getBoundingClientRect');
+    expect(expr).toContain('drawImage(img, x, y, w, h, 0, 0');
+  });
+});
+
+/**
+ * Renderer profiles. Software rasterisation is ~97 % of a captured frame's cost (measured: 5193 ms
+ * of 5366 ms at 640x360), so hardware rendering is the only lever that moves throughput — and moving
+ * the same image onto a GPU host changes NOTHING on its own, because the flags pin SwiftShader. That
+ * failure is silent and expensive: the capture still works, at the same speed, on a machine chosen
+ * for being fast. So the mode is explicit, and verified against what actually rendered.
+ */
+describe('renderer profiles fail closed', () => {
+  it('defaults to swiftshader — including for an unrecognised value', () => {
+    expect(resolveRendererProfile(undefined)).toBe('swiftshader');
+    expect(resolveRendererProfile('')).toBe('swiftshader');
+    expect(resolveRendererProfile('gpu')).toBe('swiftshader');
+    expect(resolveRendererProfile('HARDWARE')).toBe('swiftshader'); // exact match only
+    expect(resolveRendererProfile('hardware')).toBe('hardware');
+  });
+
+  it('the software profile is byte-for-byte the shipped flag set', () => {
+    expect(assembleBeginFrameFlags({ width: 1920, height: 1080, profile: 'swiftshader' }))
+      .toEqual(assembleBeginFrameFlags({ width: 1920, height: 1080 }));
+  });
+
+  it('the hardware profile drops SwiftShader and still refuses --use-angle=gl', () => {
+    const flags = assembleBeginFrameFlags({ width: 1920, height: 1080, profile: 'hardware' });
+    expect(flags).not.toContain('--use-angle=swiftshader');
+    expect(flags).toContain('--use-angle=vulkan');
+    expect(flags).not.toContain('--use-angle=gl');
+    // The cage's other invariants are untouched by the profile.
+    expect(flags).toContain('--deterministic-mode');
+    expect(flags).not.toContain('--no-sandbox');
+    expect(flags).not.toContain('--disable-gpu');
+  });
+
+  it('throws when hardware was requested and SwiftShader is what rendered', () => {
+    const swiftshader = 'ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero)), SwiftShader driver)';
+    expect(() => assertRendererMatchesProfile('hardware', swiftshader)).toThrow(/rendered in software/);
+    expect(() => assertRendererMatchesProfile('hardware', 'llvmpipe (LLVM 15.0.7)')).toThrow(/rendered in software/);
+    // A real GPU passes.
+    expect(() => assertRendererMatchesProfile('hardware', 'ANGLE (NVIDIA, Tesla T4, Vulkan 1.3)')).not.toThrow();
+    // And the software profile never complains about software.
+    expect(() => assertRendererMatchesProfile('swiftshader', swiftshader)).not.toThrow();
   });
 });

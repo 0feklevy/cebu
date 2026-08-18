@@ -66,8 +66,22 @@ export interface CaptureSpec {
    * capture is byte-reproducible (plan §4 "Determinism of the simulation itself").
    */
   readonly configHash: string;
+  /**
+   * Discarded warmup frames before the kept capture. Optional so existing callers keep
+   * `DEFAULT_WARMUP_FRAMES`, but when the boundary spec names a value it must ARRIVE here: the
+   * container spec carried a `warmupFrames` field that the backend never read, so the number an
+   * operator or an experiment set was silently ignored and every run used the default.
+   */
+  readonly warmupFrames?: number;
   /** Poster identity the caller falls back to if capture is unavailable/fails. Opaque here. */
   readonly posterKey: string;
+  /**
+   * Which renderer this capture must use. Optional in the TYPE so backends that do not render
+   * (poster paths, tests of other concerns) need not carry it, but `BeginFrameBackend` REQUIRES it:
+   * the value used to be read from the container's own environment, which put the choice on the
+   * untrusted side of the boundary and meant the trusted side's `hardware` never reached the flags.
+   */
+  readonly rendererProfile?: 'swiftshader' | 'hardware';
 }
 
 /**
@@ -75,6 +89,27 @@ export interface CaptureSpec {
  * the screenshot backend emits a directory of numbered PNGs; a backend that pipes straight to
  * ffmpeg emits a clip path.
  */
+/**
+ * Where a captured frame's wall clock went, in milliseconds, averaged over the kept frames.
+ *
+ * ADVISORY ONLY. This crosses the trust boundary from the container, so nothing may branch on it:
+ * it exists to answer "why is this slow", and the answer it gave — 96.8 % of a frame is
+ * rasterisation — is what turned the hardware question from a guess into a decision. Every field is
+ * validated finite, non-negative and bounded before it is stored or logged.
+ */
+export interface CaptureCostBreakdown {
+  /** Advancing the page's virtual clock: the simulation's own JavaScript. */
+  readonly simMs: number;
+  /** The uncaptured compositor turn between kept frames. */
+  readonly flushMs: number;
+  /** beginFrame with a screenshot: rasterisation plus readback plus JPEG encode. */
+  readonly rasterMs: number;
+  /** Writing the JPEG to disk. */
+  readonly writeMs: number;
+  /** Frames the averages are over. */
+  readonly frames: number;
+}
+
 export interface CaptureResult {
   /** Directory of numbered, zero-padded frame PNGs (screenshot backend). */
   readonly framesDir?: string;
@@ -95,6 +130,8 @@ export interface CaptureResult {
   readonly gate: 'passed' | 'failed';
   /** Why the gate failed, or any non-fatal note on a pass. */
   readonly reason?: string;
+  /** Advisory per-frame cost split. Absent when the backend did not measure one. */
+  readonly cost?: CaptureCostBreakdown;
 }
 
 /**
@@ -145,9 +182,15 @@ export interface SimCaptureBackend {
   isAvailable(): Promise<boolean>;
   /**
    * Capture one scripted simulation section.
+   *
+   * `signal` is the export job's cancellation signal. It is optional so every existing backend still
+   * satisfies the contract, but a backend that spawns a process MUST honour it: a capture is the
+   * longest-running thing an export does — minutes of pinned CPU — so a cancellation that cannot
+   * reach it means the user's "stop" leaves the host burning both cores until the wall clock fires.
+   *
    * @throws {CaptureUnavailable} when no browser can run here (poster-fallback signal).
    */
-  captureSection(spec: CaptureSpec): Promise<CaptureResult>;
+  captureSection(spec: CaptureSpec, signal?: AbortSignal): Promise<CaptureResult>;
 }
 
 /**

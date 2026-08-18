@@ -7,8 +7,9 @@
  * The docker execution itself is Linux-checklist territory (runbook §7), same as the boundary.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
-import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { logger } from '../../../../../lib/logger.js';
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -31,6 +32,27 @@ import {
 } from '../containerCaptureProvider.js';
 
 // ── parseServedSimUrl ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * Probes that report exactly what the spec asked for.
+ *
+ * These suites drive the provider with fake frame bytes ('a', 'b'), so running a real `ffprobe` over
+ * them would only prove that ffprobe rejects text. The pixel-reading half is exercised for real by
+ * the end-to-end encode test; here it is stubbed to AGREE, so a staging or parsing regression is
+ * what fails, not the fixture. The values are derived from the spec rather than hard-coded, because
+ * a stub that always says 1920x1080 would quietly pass a provider that stopped checking.
+ */
+function probesFor(spec: { width: number; height: number; fps: number; durationSec: number }) {
+  const frames = Math.round(spec.durationSec * spec.fps);
+  return {
+    probeImage: async () => ({ codec: 'mjpeg', width: spec.width, height: spec.height }),
+    probeClip: async () => ({
+      streams: 1, codec: 'h264', pixFmt: 'yuv420p',
+      width: spec.width, height: spec.height, fps: spec.fps,
+      durationSec: frames / spec.fps, frames,
+    }),
+  };
+}
 
 describe('parseServedSimUrl', () => {
   const REV_UUID = '11111111-2222-4333-8444-555555555555';
@@ -84,7 +106,7 @@ describe('configFromEnv', () => {
       EXPORT_CAPTURE_MEMORY_MB: 'not-a-number',
     });
     expect(config).toMatchObject({
-      image: 'podcast-saas/export-worker:1.2.3',
+      image: 'podcast-saas/export-worker:1.2.3', rendererProfile: 'swiftshader',
       workDir: null,
       user: '10001:10001',
       cpus: '2',
@@ -193,6 +215,7 @@ function fakeStorage(): StorageService {
 function testConfig(workDir: string): ContainerCaptureConfig {
   return {
     image: 'podcast-saas/export-worker:test',
+    rendererProfile: 'swiftshader',
     workDir,
     user: '10001:10001',
     cpus: '2',
@@ -217,7 +240,7 @@ function okResult(partial: Partial<ContainerCaptureResult>): ContainerCaptureRes
     gate: 'passed',
     reason: null,
     rendererIdentity: {
-      image: 'podcast-saas/export-worker:test',
+      image: 'podcast-saas/export-worker:test', rendererProfile: 'swiftshader',
       chromeHeadlessShellVersion: 'test',
       viewport: '1920x1080',
       dpr: 1,
@@ -248,11 +271,11 @@ describe('ContainerCaptureProvider.captureSection', () => {
         await access(join(io.inputDir, 'index.html'));
         await access(join(io.inputDir, 'app.js'));
         // Mimic a clip-emitting container backend.
-        await writeFile(join(io.outputDir, 'clip.mp4'), Buffer.from('fake-mp4-bytes'));
-        return okResult({ clipPath: 'clip.mp4' });
+        await writeFile(join(io.outputDir, 'section.mp4'), Buffer.from('fake-mp4-bytes'));
+        return okResult({ clipPath: 'section.mp4' });
       },
     };
-    const provider = new ContainerCaptureProvider(testConfig(scratch), boundary, fakeStorage());
+    const provider = new ContainerCaptureProvider(testConfig(scratch), boundary, fakeStorage(), probesFor(SPEC));
 
     const result = await provider.captureSection(SPEC);
 
@@ -281,7 +304,7 @@ describe('ContainerCaptureProvider.captureSection', () => {
         return okResult({ gate: 'failed', reason: 'all frames byte-identical', frameCount: 60 });
       },
     };
-    const provider = new ContainerCaptureProvider(testConfig(scratch), boundary, fakeStorage());
+    const provider = new ContainerCaptureProvider(testConfig(scratch), boundary, fakeStorage(), probesFor(SPEC));
 
     const result = await provider.captureSection(SPEC);
     expect(result.gate).toBe('failed');
@@ -297,7 +320,7 @@ describe('ContainerCaptureProvider.captureSection', () => {
       },
     };
     const config = { ...testConfig(scratch), dockerBin: '/nonexistent-docker-binary' };
-    const provider = new ContainerCaptureProvider(config, boundary, fakeStorage());
+    const provider = new ContainerCaptureProvider(config, boundary, fakeStorage(), probesFor(SPEC));
 
     await expect(provider.captureSection(SPEC)).rejects.toBeInstanceOf(CaptureUnavailable);
   });
@@ -320,5 +343,127 @@ describe('ContainerCaptureProvider.captureSection', () => {
 
   it('exposes the package-size ceiling as a real, testable constant', () => {
     expect(MAX_PACKAGE_BYTES).toBe(256 * 1024 * 1024);
+  });
+});
+
+/**
+ * The provider half of the trusted contract — the links that were missing even though every piece
+ * existed. `warmupFrames` was hardcoded to the default here, so the value a controlled experiment
+ * set never reached the container; the cost split was parsed and validated at the boundary and then
+ * reached no log or metric anything could read.
+ */
+describe('the provider forwards what the trusted side decided', () => {
+  it.each([0, 7])('warmupFrames=%i from the CALLER reaches the container spec', async (warmupFrames) => {
+    scratch = await mkdtemp(join(tmpdir(), 'ccp-warmup-'));
+    let seen: ContainerCaptureSpec | null = null;
+    const boundary = {
+      async runCapture(spec: ContainerCaptureSpec, io: CaptureIo): Promise<ContainerCaptureResult> {
+        seen = spec;
+        await writeFile(join(io.outputDir, 'section.mp4'), Buffer.from('mp4'));
+        return okResult({ clipPath: 'section.mp4' });
+      },
+    };
+    const provider = new ContainerCaptureProvider(testConfig(scratch), boundary, fakeStorage(), probesFor(SPEC));
+    await provider.captureSection({ ...SPEC, warmupFrames });
+    expect(seen!.warmupFrames).toBe(warmupFrames);
+  });
+
+  it('the JOB\'s renderer profile beats the provider\'s env-resolved config', async () => {
+    // An operator flipping EXPORT_CAPTURE_RENDERER after enqueue must not change what an
+    // already-consented job renders with.
+    scratch = await mkdtemp(join(tmpdir(), 'ccp-prof-'));
+    let seen: ContainerCaptureSpec | null = null;
+    const boundary = {
+      async runCapture(spec: ContainerCaptureSpec, io: CaptureIo): Promise<ContainerCaptureResult> {
+        seen = spec;
+        await writeFile(join(io.outputDir, 'section.mp4'), Buffer.from('mp4'));
+        return okResult({ clipPath: 'section.mp4' });
+      },
+    };
+    const provider = new ContainerCaptureProvider(
+      { ...testConfig(scratch), rendererProfile: 'swiftshader' }, boundary, fakeStorage(), probesFor(SPEC));
+    await provider.captureSection({ ...SPEC, rendererProfile: 'hardware' });
+    expect(seen!.rendererProfile).toBe('hardware');
+  });
+
+  it('the cost split reaches the HOST log on the happy path — observability, not just parsing', async () => {
+    scratch = await mkdtemp(join(tmpdir(), 'ccp-cost-'));
+    const infoSpy = vi.spyOn(logger, 'info');
+    try {
+      const cost = { simMs: 153, flushMs: 19, rasterMs: 5193, writeMs: 1, frames: 60 };
+      const boundary = {
+        async runCapture(_spec: ContainerCaptureSpec, io: CaptureIo): Promise<ContainerCaptureResult> {
+          await writeFile(join(io.outputDir, 'section.mp4'), Buffer.from('mp4'));
+          return { ...okResult({ clipPath: 'section.mp4' }), cost };
+        },
+      };
+      const provider = new ContainerCaptureProvider(testConfig(scratch), boundary, fakeStorage(), probesFor(SPEC));
+      const result = await provider.captureSection(SPEC);
+
+      // On the returned result, so the service can persist it…
+      expect(result.cost).toEqual(cost);
+      // …and in a structured host log entry, so "why is this slow" has an answer without a rebuild.
+      const costLog = infoSpy.mock.calls.find(
+        (c) => typeof c[1] === 'string' && c[1].includes('section captured'),
+      );
+      expect(costLog?.[0]).toMatchObject({ cost });
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+});
+
+/**
+ * The provider consumes artifacts and owns temporary directories — two things the first hardening
+ * pass left half-done. Probing only the first and last frame let a wrong-sized MIDDLE frame reach
+ * the viewer; a throw after clipOut was created leaked it onto the host forever.
+ */
+describe('the provider validates every frame and leaks no clip directory', () => {
+  it('rejects a wrong-sized MIDDLE frame, not just the ends', async () => {
+    scratch = await mkdtemp(join(tmpdir(), 'ccp-mid-'));
+    const boundary = {
+      async runCapture(spec: ContainerCaptureSpec, io: CaptureIo): Promise<ContainerCaptureResult> {
+        const frames = join(io.outputDir, 'frames');
+        await mkdir(frames, { recursive: true });
+        const n = Math.round(spec.durationSec * spec.fps);
+        for (let i = 0; i < n; i++) {
+          await writeFile(join(frames, `frame-${String(i).padStart(6, '0')}.jpg`), Buffer.from(`f${i}`));
+        }
+        return okResult({ framesDir: 'frames', clipPath: null, frameCount: n });
+      },
+    };
+    // Wrong size for ONE frame in the MIDDLE, keyed by name rather than call order: probing only
+    // the first and last would never open this file, which is exactly the gap under test.
+    const total = Math.round(SPEC.durationSec * SPEC.fps);
+    const badName = `frame-${String(Math.floor(total / 2)).padStart(6, '0')}.jpg`;
+    const probes = {
+      probeImage: async (path: string) => (path.endsWith(badName)
+        ? { codec: 'mjpeg', width: 16, height: 16 }
+        : { codec: 'mjpeg', width: SPEC.width, height: SPEC.height }),
+      probeClip: async () => ({ streams: 1, codec: 'h264', pixFmt: 'yuv420p', width: SPEC.width, height: SPEC.height, fps: SPEC.fps, durationSec: 2, frames: 60 }),
+    };
+    const provider = new ContainerCaptureProvider(testConfig(scratch), boundary, fakeStorage(), probes);
+    await expect(provider.captureSection(SPEC)).rejects.toThrow(/16x16, not the requested/);
+  });
+
+  it('deletes the clip directory when a later step throws — no orphan on the host', async () => {
+    scratch = await mkdtemp(join(tmpdir(), 'ccp-leak-'));
+    const boundary = {
+      async runCapture(_spec: ContainerCaptureSpec, io: CaptureIo): Promise<ContainerCaptureResult> {
+        await writeFile(join(io.outputDir, 'section.mp4'), Buffer.from('mp4'));
+        return okResult({ clipPath: 'section.mp4' });
+      },
+    };
+    // A clip whose probe FAILS the match: the clipOut directory has been created by then.
+    const probes = {
+      probeImage: async () => ({ codec: 'mjpeg', width: SPEC.width, height: SPEC.height }),
+      probeClip: async () => ({ streams: 1, codec: 'h264', pixFmt: 'yuv420p', width: 2, height: 2, fps: SPEC.fps, durationSec: 2, frames: 60 }),
+    };
+    const before = (await readdir(scratch)).filter((n) => n.startsWith('clip-'));
+    const provider = new ContainerCaptureProvider(testConfig(scratch), boundary, fakeStorage(), probes);
+    await expect(provider.captureSection(SPEC)).rejects.toThrow(/2x2/);
+    const after = (await readdir(scratch)).filter((n) => n.startsWith('clip-'));
+    // MUTATION TARGET: drop the catch that rm's clipOut and this directory survives.
+    expect(after).toEqual(before);
   });
 });

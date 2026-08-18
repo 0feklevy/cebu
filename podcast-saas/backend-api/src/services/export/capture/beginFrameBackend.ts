@@ -43,12 +43,10 @@ import { launchHeadlessShell, type CdpEvent, type HeadlessShellHandle } from './
 import { CaptureTimeoutError, runCaptureHandshake, type DriverDeps } from './driver.js';
 import { buildInitScript } from './injection.js';
 import { evaluateSanityGate, type FrameSample } from './sanityGate.js';
-import { PageAudit } from './pageAudit.js';
 import {
   CaptureStageError,
   CaptureUnavailable,
   DEFAULT_FRAME_EPOCH_MS,
-  DEFAULT_WARMUP_FRAMES,
   frameCountFor,
   type CaptureResult,
   type CaptureSpec,
@@ -92,6 +90,52 @@ export const SELF_APPLIED_SWITCHES = [
 export const GL_SWITCHES = ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] as const;
 
 /**
+ * The two renderer profiles, and the reason this is a typed allowlist rather than a passthrough.
+ *
+ * Software rasterisation is ~97 % of a captured frame's cost (measured: 5193 ms of 5366 ms at
+ * 640×360), so hardware rendering is the only lever that changes the throughput picture. But moving
+ * the same image onto a GPU host does NOTHING on its own — `GL_SWITCHES` pins SwiftShader, so the
+ * capture would keep rasterising in software on an expensive machine and the only visible change
+ * would be the bill. That failure is silent, which is why the mode is explicit and verified after
+ * the fact rather than assumed from the hardware.
+ *
+ * `--use-angle=gl` stays forbidden in both profiles: it is the flag that breaks WebGL outright on a
+ * GPU-less box, and the hardware path must be reached deliberately, not by relaxing a guard.
+ */
+export const RENDERER_PROFILES = {
+  swiftshader: GL_SWITCHES,
+  // Vulkan through ANGLE, which is what a real GPU actually exposes to headless Chrome. Every switch
+  // here must be proven on the target image before this profile is selected in production.
+  hardware: ['--use-angle=vulkan', '--enable-features=Vulkan'] as const,
+} as const;
+
+export type RendererProfile = keyof typeof RENDERER_PROFILES;
+
+/** Read the operator's chosen profile. Anything unrecognised is the safe, shipped one. */
+export function resolveRendererProfile(value = process.env.EXPORT_CAPTURE_RENDERER): RendererProfile {
+  return value === 'hardware' ? 'hardware' : 'swiftshader';
+}
+
+/**
+ * Fail closed when hardware was asked for and software is what ran.
+ *
+ * The whole point of the hardware profile is the ~97 % of frame cost that SwiftShader spends. If the
+ * driver is missing, the device is not exposed, or a flag was wrong, Chrome falls back to SwiftShader
+ * and reports it in the renderer string — and everything still WORKS, just as slowly as before, on a
+ * machine chosen for being fast. Left unchecked that is an invisible regression paid for by the
+ * hour; checked, it is a loud failure on the first capture.
+ */
+export function assertRendererMatchesProfile(profile: RendererProfile, rendererString: string): void {
+  if (profile !== 'hardware') return;
+  if (/swiftshader|llvmpipe|software/i.test(rendererString)) {
+    throw new CaptureStageError(
+      'sanity_gate',
+      `renderer profile "hardware" was requested but the capture rendered in software: ${rendererString.slice(0, 160)}`,
+    );
+  }
+}
+
+/**
  * Flags that MUST NEVER appear. `--site-per-process` makes `--deterministic-mode` refuse to start
  * (measured); `--disable-gpu` and `--use-angle=gl`/`--in-process-gpu`/`--single-process` all break
  * WebGL on a GPU-less box in one silent way or another (plan §4 "The trap that will actually bite
@@ -115,6 +159,8 @@ export interface BeginFrameFlagOptions {
   width: number;
   /** Capture height in px. */
   height: number;
+  /** Which renderer profile to assemble for. Defaults to the shipped software one. */
+  profile?: RendererProfile;
   /** Extra flags to append (validated against the forbidden list). */
   extra?: readonly string[];
 }
@@ -130,7 +176,7 @@ export function assembleBeginFrameFlags(opts: BeginFrameFlagOptions): string[] {
     '--deterministic-mode',
     ...DETERMINISTIC_MODE_SWITCHES,
     ...SELF_APPLIED_SWITCHES,
-    ...GL_SWITCHES,
+    ...RENDERER_PROFILES[opts.profile ?? 'swiftshader'],
     `--window-size=${opts.width},${opts.height}`,
     ...(opts.extra ?? []),
   ];
@@ -273,16 +319,53 @@ function sampleIndices(frameCount: number, sampleCount: number): Set<number> {
   return out;
 }
 
-/** In-page canvas sampler (stringified for `Runtime.evaluate`) — same sampling the Playwright backend does. */
-function samplerExpression(gridN: number): string {
-  return `(() => {
+/** Base64 as CDP hands it back. Asserted before the string is embedded in an evaluated expression. */
+const BASE64_ONLY = /^[A-Za-z0-9+/=]*$/;
+
+/**
+ * Canvas-region sampler over the **composited frame that was just captured** — the exact JPEG bytes
+ * about to be written to disk and fed to the encoder.
+ *
+ * The obvious sampler — `drawImage(theCanvas, …)` in the page, which the Playwright backend still
+ * uses — has a spec-level blind spot: a WebGL drawing buffer is cleared once composited unless the
+ * context was created with `preserveDrawingBuffer: true`, so reading it back yields transparent
+ * black. Real sims do not set that flag (the production `boids-3d` package does not), which made the
+ * gate report `uniform_canvas` for a simulation that was rendering perfectly — a false RED that hid
+ * behind the identical symptom of the real v0.1.26 dead-canvas failure.
+ *
+ * Sampling the screenshot removes the blind spot rather than working around it, and is what the gate
+ * should always have judged: the artifact itself. Chrome decodes its own JPEG from a `data:` URL,
+ * which needs no decoder dependency and no network (`--network none` stays intact). The canvas
+ * bounding box is mapped into image pixels so the gate keeps its canvas-region semantics — a static
+ * UI around a dead canvas must still fail.
+ */
+export function compositedSamplerExpression(gridN: number, jpegBase64: string): string {
+  if (!BASE64_ONLY.test(jpegBase64)) {
+    throw new CaptureStageError('sanity_gate', 'screenshot data is not base64; refusing to evaluate it');
+  }
+  return `(async () => {
     const d = globalThis.document; if (!d) return 'null';
     const cs = Array.from(d.querySelectorAll('canvas')); if (cs.length === 0) return 'null';
     let best = cs[0], bestArea = 0;
     for (const c of cs) { const a = (c.width||0)*(c.height||0); if (a > bestArea) { bestArea = a; best = c; } }
+    const img = new Image();
+    img.src = 'data:image/jpeg;base64,${jpegBase64}';
+    try { await img.decode(); } catch { return 'null'; }
+    const iw = img.naturalWidth || 0, ih = img.naturalHeight || 0;
+    if (iw <= 0 || ih <= 0) return 'null';
+    // The screenshot is the viewport; map the canvas box from CSS px into image px.
+    const vw = globalThis.innerWidth || iw, vh = globalThis.innerHeight || ih;
+    const sx = iw / vw, sy = ih / vh;
+    const r = best.getBoundingClientRect();
+    let x = Math.round(r.left * sx), y = Math.round(r.top * sy);
+    let w = Math.round(r.width * sx), h = Math.round(r.height * sy);
+    // Clamp to the image; a canvas scrolled or sized out of the viewport is not a sample.
+    x = Math.max(0, Math.min(x, iw - 1)); y = Math.max(0, Math.min(y, ih - 1));
+    w = Math.min(w, iw - x); h = Math.min(h, ih - y);
+    if (w < 1 || h < 1) return 'null';
     const off = d.createElement('canvas'); off.width = ${gridN}; off.height = ${gridN};
-    const g = off.getContext('2d'); if (!g) return 'null';
-    try { g.drawImage(best, 0, 0, ${gridN}, ${gridN}); } catch { return 'null'; }
+    const g = off.getContext('2d', { willReadFrequently: true }); if (!g) return 'null';
+    try { g.drawImage(img, x, y, w, h, 0, 0, ${gridN}, ${gridN}); } catch { return 'null'; }
     const data = g.getImageData(0, 0, ${gridN}, ${gridN}).data;
     return JSON.stringify({ width: ${gridN}, height: ${gridN}, rgba: Array.from(data) });
   })()`;
@@ -318,10 +401,6 @@ export class BeginFrameBackend implements SimCaptureBackend {
       this.opts.launch ? (this.opts.executablePath ?? 'injected-transport')
       : assertBeginFrameRunnable(this.opts.platform ?? process.platform, this.opts.executablePath ?? process.env.CHROME_HEADLESS_SHELL_PATH);
 
-    // Bounded record of what the page did — read only when the gate fails, to name the cause.
-    const audit = new PageAudit();
-    const pendingRequests = new Map<string, string>();
-
     const base = this.opts.workDir ?? tmpdir();
     const jobDir = await mkdtemp(join(base, `beginframe-${spec.sectionId.slice(0, 8)}-`));
     const framesDir = join(jobDir, 'frames');
@@ -330,9 +409,24 @@ export class BeginFrameBackend implements SimCaptureBackend {
     await mkdir(profileDir, { recursive: true });
 
     // Policy: the pinned flag set (validated against the forbidden list) + the profile location.
+    //
+    // FROM THE SPEC, and required. This used to fall back to EXPORT_CAPTURE_RENDERER read inside
+    // the container — the untrusted side deciding what the trusted side believed it was buying —
+    // and empty defaulted to software, which is the silent fallback the hardware profile exists to
+    // make loud. The spec is authored by the trusted side and verified against the frozen plan, so
+    // it is the only acceptable source; anything else fails before a browser is launched.
+    const rendererProfile = spec.rendererProfile;
+    if (rendererProfile !== 'swiftshader' && rendererProfile !== 'hardware') {
+      throw new CaptureStageError(
+        'backend_load',
+        `capture spec names no valid renderer profile (got ${JSON.stringify(String(rendererProfile ?? '')).slice(0, 34)}); ` +
+          'the trusted side must decide the renderer — the container environment does not',
+      );
+    }
     const flags = assembleBeginFrameFlags({
       width: spec.width,
       height: spec.height,
+      profile: rendererProfile,
       extra: [`--user-data-dir=${profileDir}`, '--no-first-run'],
     });
 
@@ -369,37 +463,27 @@ export class BeginFrameBackend implements SimCaptureBackend {
         const sid = attached.sessionId as string;
         await cdp.send('Page.enable', {}, sid);
         await cdp.send('Runtime.enable', {}, sid);
-        // Listen for what the page actually does. The v0.1.26 incident's cause — a module request
-        // to a CDN the container cannot reach — was visible in exactly these events the whole
-        // time, and nothing was subscribed. Every payload is untrusted and is bounded/sanitised
-        // by `PageAudit` before it can reach a log.
-        await cdp.send('Network.enable', {}, sid);
-        cdp.onEvent((event) => {
-          if (event.sessionId !== sid) return;
-          if (event.method === 'Network.loadingFailed') {
-            const url = pendingRequests.get(String(event.params.requestId ?? '')) ?? '';
-            audit.recordFailedRequest(url, String(event.params.errorText ?? 'load failed'));
-          } else if (event.method === 'Network.requestWillBeSent') {
-            const id = String(event.params.requestId ?? '');
-            const req = event.params.request as { url?: string } | undefined;
-            if (id && req?.url) {
-              if (pendingRequests.size > 512) pendingRequests.clear(); // bounded, never a leak
-              pendingRequests.set(id, req.url);
-            }
-          } else if (event.method === 'Runtime.exceptionThrown') {
-            const details = event.params.exceptionDetails as { text?: string; exception?: { description?: string } } | undefined;
-            audit.recordException(details?.exception?.description ?? details?.text ?? 'uncaught exception');
-          } else if (event.method === 'Runtime.consoleAPICalled' && event.params.type === 'error') {
-            const args = (event.params.args as Array<{ value?: unknown; description?: string }> | undefined) ?? [];
-            audit.recordConsoleError(args.map((a) => String(a.description ?? a.value ?? '')).join(' '));
-          }
-        });
         const init = buildAddInitScriptParams(
           buildInitScript({ fps: spec.fps, configHash: spec.configHash, epochMs: DEFAULT_FRAME_EPOCH_MS }),
         );
         await cdp.send(init.method, { ...init.params }, sid);
         return sid;
       });
+
+      // Where the capture loop's wall clock actually goes. Measured because the answer decides an
+      // infrastructure question and could not be inferred: a cost dominated by `sim` is the
+      // simulation's own JS on the CPU, which a GPU would barely improve, while a cost dominated by
+      // `raster` is SwiftShader software rendering, which is exactly what a GPU replaces. Four
+      // buckets, monotonic clock, no allocation per frame.
+      const cost = { sim: 0, flush: 0, raster: 0, write: 0 };
+      const timed = async <T>(bucket: keyof typeof cost, fn: () => Promise<T>): Promise<T> => {
+        const t0 = performance.now();
+        try {
+          return await fn();
+        } finally {
+          cost[bucket] += performance.now() - t0;
+        }
+      };
 
       // Runtime.evaluate wrapper: an in-page exception is a real failure at the calling stage.
       const evalInPage = async (
@@ -499,24 +583,29 @@ export class BeginFrameBackend implements SimCaptureBackend {
           return batch;
         },
         stepFrame: async (virtualFrame) => {
-          if (pendingStepFlush) await beginFrame(false); // the PREVIOUS uncaptured frame's compositor turn
+          if (pendingStepFlush) await timed('flush', () => beginFrame(false)); // the PREVIOUS uncaptured frame
           pendingStepFlush = false;
-          await evalInPage(
-            `globalThis.__SIM_CLOCK__ && globalThis.__SIM_CLOCK__.advanceToFrame(${virtualFrame})`,
-            { stage: 'begin_frame' },
+          await timed('sim', () =>
+            evalInPage(
+              `globalThis.__SIM_CLOCK__ && globalThis.__SIM_CLOCK__.advanceToFrame(${virtualFrame})`,
+              { stage: 'begin_frame' },
+            ),
           );
           pendingStepFlush = true;
         },
         captureFrame: async (captureIndex) => {
           pendingStepFlush = false; // THIS frame's single beginFrame is the screenshot one
-          const data = await beginFrame(true);
+          const data = await timed('raster', () => beginFrame(true));
           if (!data) {
             throw new CaptureStageError('screenshot', `beginFrame returned no screenshotData at frame ${captureIndex}`);
           }
           const name = `frame-${String(captureIndex).padStart(6, '0')}.jpg`;
-          await writeFile(join(framesDir, name), Buffer.from(data, 'base64'));
+          await timed('write', () => writeFile(join(framesDir, name), Buffer.from(data, 'base64')));
           if (toSample.has(captureIndex)) {
-            const raw = await evalInPage(samplerExpression(gridN), { stage: 'sanity_gate' });
+            const raw = await evalInPage(compositedSamplerExpression(gridN, data), {
+              awaitPromise: true,
+              stage: 'sanity_gate',
+            });
             const parsed = JSON.parse(String(raw ?? 'null')) as FrameSample | null;
             if (parsed) samples.push(parsed);
           }
@@ -541,7 +630,10 @@ export class BeginFrameBackend implements SimCaptureBackend {
           uiHide: spec.uiHide,
           fps: spec.fps,
           durationSec: spec.durationSec,
-          warmupFrames: DEFAULT_WARMUP_FRAMES,
+          // Passed through VERBATIM, including 0 and including undefined. `runCaptureHandshake`
+          // owns the single default; applying one here too meant two places could disagree, and a
+          // deliberate 0 had to survive both of them to mean anything.
+          warmupFrames: spec.warmupFrames,
         });
       } catch (err) {
         if (err instanceof CaptureTimeoutError) {
@@ -555,35 +647,89 @@ export class BeginFrameBackend implements SimCaptureBackend {
         throw err;
       }
 
+      // RENDERER IDENTITY, read where the page cannot reach it.
+      //
+      // This used to read `globalThis.__SIM_CAPTURE__.webgl`, which the simulation's own code can
+      // overwrite — the object lives in the page's world, so any package could have reported
+      // "NVIDIA RTX" while SwiftShader did the work, and `assertRendererMatchesProfile` would have
+      // been satisfied by a string the untrusted side chose. That is not a hypothetical for the
+      // hardware profile: its entire purpose is to catch a silent fall back to software, and the
+      // check was reading the one field the fallback's beneficiary controls.
+      //
+      // An ISOLATED WORLD has its own JS globals and prototypes while sharing the DOM, so a context
+      // created here is not reachable by page script: `getContext('webgl')` and
+      // `WEBGL_debug_renderer_info` resolve to the browser's real implementations. The page probe is
+      // still consulted for `attempted` — whether the SIMULATION tried to make a context is a fact
+      // about the page and belongs to the page — but never for identity.
       const webgl = await stage('sanity_gate', async () => {
+        const tree = await cdp.send('Page.getFrameTree', {}, sessionId);
+        const frameId = ((tree.frameTree as { frame?: { id?: string } } | undefined)?.frame?.id) ?? '';
+        // `grantUniveralAccess` is spelled that way in the CDP protocol itself; false is the point —
+        // the probe world must not be handed access back into the page's.
+        const world = await cdp.send('Page.createIsolatedWorld',
+          { frameId, worldName: 'flowvid-capture-probe', grantUniveralAccess: false },
+          sessionId);
+        const trusted = await cdp.send('Runtime.evaluate', {
+          expression: `JSON.stringify((() => {
+            try {
+              const c = document.createElement('canvas');
+              const gl = c.getContext('webgl2') || c.getContext('webgl');
+              if (!gl) return { ok: false, renderer: '' };
+              const ext = gl.getExtension('WEBGL_debug_renderer_info');
+              const renderer = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+              return { ok: true, renderer: String(renderer || '') };
+            } catch { return { ok: false, renderer: '' }; }
+          })())`,
+          contextId: world.executionContextId as number,
+          returnByValue: true,
+        }, sessionId);
+        const identity = JSON.parse(
+          String((trusted.result as { value?: unknown } | undefined)?.value ?? '{"ok":false,"renderer":""}'),
+        ) as { ok: boolean; renderer: string };
+
+        // Page-sourced, and used ONLY for "did the simulation ask for a context" — advisory, never
+        // identity, and coerced to a boolean so a hostile value cannot carry anything else.
         const raw = await evalInPage(
           `JSON.stringify((() => { const c = globalThis.__SIM_CAPTURE__; const r = c && c.webgl;
-             return r ? { attempted: !!r.attempted, ok: !!r.ok, renderer: String(r.renderer || '') }
-                      : { attempted: false, ok: false, renderer: '' }; })())`,
+             return { attempted: !!(r && r.attempted) }; })())`,
           { stage: 'sanity_gate' },
         );
-        return JSON.parse(String(raw)) as { attempted: boolean; ok: boolean; renderer: string };
+        const page = JSON.parse(String(raw)) as { attempted: boolean };
+        return { attempted: !!page.attempted, ok: identity.ok, renderer: identity.renderer };
       });
+
+      const kept = Math.max(1, run.frameCount);
+      const ms = (v: number) => Math.round(v);
+      // Returned as DATA on the result, so it survives an exit-0 run and reaches the trusted side
+      // through the same validated channel as everything else. It is also logged, but the log is a
+      // convenience — stderr is untrusted text here, never a channel anything reads back.
+      const costBreakdown = {
+        simMs: ms(cost.sim / kept),
+        flushMs: ms(cost.flush / kept),
+        rasterMs: ms(cost.raster / kept),
+        writeMs: ms(cost.write / kept),
+        frames: kept,
+      };
+      log(
+        `cost/frame ${costBreakdown.simMs + costBreakdown.flushMs + costBreakdown.rasterMs + costBreakdown.writeMs}ms ` +
+          `= sim ${costBreakdown.simMs} + flush ${costBreakdown.flushMs} ` +
+          `+ raster ${costBreakdown.rasterMs} + write ${costBreakdown.writeMs} (over ${kept} frames)`,
+      );
+
+      // Fail closed BEFORE the gate: if hardware was asked for and SwiftShader answered, the
+      // capture is correct and the machine is wasted, which no gate would ever notice.
+      assertRendererMatchesProfile(rendererProfile, webgl.renderer);
 
       const gate = evaluateSanityGate({ simPainted: run.sawPainted, webgl, frames: samples });
       log(`gate ${gate.gate}${gate.reason ? `: ${gate.reason}` : ''} (renderer="${webgl.renderer}")`);
-
-      // A failed gate reports the SYMPTOM ("uniform canvas"). The audit knows the CAUSE when the
-      // page left evidence — a request that escaped loopback, a 404, an uncaught exception — so
-      // the reason names it. This is the difference between the next incident taking an hour and
-      // taking a day.
-      const auditSummary = gate.gate === 'failed' ? audit.summarise() : null;
-      const reason =
-        gate.gate === 'failed'
-          ? `${audit.classify(gate.reason)}: ${gate.reason ?? 'sanity gate failed'}${auditSummary ? `; ${auditSummary}` : ''}`
-          : gate.reason;
 
       return {
         framesDir,
         frameCount: run.frameCount,
         rendererString: webgl.renderer,
         gate: gate.gate,
-        reason,
+        reason: gate.reason,
+        cost: costBreakdown,
       };
     } catch (err) {
       // Partial frames from a FAILED capture are worthless and must not linger on the tmpfs.
@@ -604,5 +750,17 @@ export class BeginFrameBackend implements SimCaptureBackend {
  * default backend", every capture container exiting 1 before any capture code ran).
  */
 export function createBackend(): SimCaptureBackend {
-  return new BeginFrameBackend();
+  // With no `log`, the backend's diagnostics — including the per-frame cost breakdown that decides
+  // the renderer-hardware question — are discarded, which is exactly what happened: the constructor
+  // took no options, so every stage line and every measurement written by this file went nowhere.
+  //
+  // stderr is the right channel and the only one available: the container writes its result to a
+  // file, and the trusted side already treats this stream as UNTRUSTED diagnostic text (it is
+  // sanitised and length-capped, never parsed as a control signal). So this is observable without
+  // becoming an input.
+  return new BeginFrameBackend({
+    log: (message) => {
+      process.stderr.write(`[capture] ${message}\n`);
+    },
+  });
 }

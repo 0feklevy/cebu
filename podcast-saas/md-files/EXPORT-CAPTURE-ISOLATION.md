@@ -397,7 +397,7 @@ every capture's `RendererIdentity`, so "why do these two exports differ?" stays 
 
 ---
 
-## 8. The trusted-side caller and the single-VM deployment shape
+## 8b. The trusted-side caller and the single-VM deployment shape
 
 The caller this document kept referring to ("the caller owns download, `writeCaptureInput`,
 reading the frames…") now exists: `capture/isolation/containerCaptureProvider.ts`. It implements
@@ -604,3 +604,49 @@ with **every non-loopback request actively failed** (stronger than an absent net
 cannot mask a missing dependency). Reports the WebGL renderer string, external-request attempts,
 and writes frames to inspect. macOS substitutes `Page.captureScreenshot` for `beginFrame`, which
 does not exist there — the container/beginFrame path is Stages A–E on Linux.
+
+### Where the vendored bytes live, and why
+
+Three placements were possible. The pack ships **in the repository, inside the backend image**.
+
+| | A — export-worker image | **B — repository / backend image (chosen)** | C — inside each simulation package |
+|---|---|---|---|
+| who can read the bytes | the container only | the trusted side, the tests, and the container | the container only |
+| adding a version | rebuild + redeploy the worker image | a commit | republish every package that wants it |
+| capture-time cost | none | copied into `/input` per section | already in the package |
+| storage cost | one copy per image tag | one copy in git | one copy **per package** |
+| legacy packages | works | works | needs every old package rebuilt |
+| unit-testable | no | **yes** — tests read the real bytes | no |
+| pinning / rollback | image tag | commit + per-file SHA-256 | per revision |
+| CDN independence | full | full | full |
+
+**B wins on the one axis that decides it:** the *trusted side* is what stages `/input`, so it must be
+able to READ the bytes. In A they live only in the worker image, so the provider would have to ask
+the container for them — inverting the trust direction the whole isolation design rests on. B also
+makes the pack unit-testable: `offlineClosure.test.ts` asserts against the real 1.2 MB
+`three.module.js`, not a stub, which is how the "the pack ships broken" `.gitignore` bug was caught.
+
+C is the right long-term answer for NEW packages (§3B) and the wrong one for existing ones: it would
+require republishing every historical package to make it capturable, which is precisely the migration
+this compatibility layer exists to avoid. The end state is therefore **both** — B for backwards
+compatibility, C for future packages once publish-time closure ships.
+
+The cost is ~1.5 MB of third-party bytes in git and per capture job. Measured, not estimated: the
+pack is 17 files / 1,524,980 bytes, against a 32 MB cap.
+
+### Production rollout sequence
+
+1. Merge the PR; let the release workflow build and tag `APP_VERSION`.
+2. On the host, build the export-worker from the **exact released SHA** — never a stale tag:
+   `sudo docker build -f deploy/docker/export-worker.Dockerfile --build-arg CHROME_HEADLESS_SHELL_VERSION=<pin> -t podcast-saas/export-worker:<version> .`
+3. Record the image ID/digest and the in-image vendor pack identity.
+4. Run `./deploy/scripts/export-worker-smoke.sh podcast-saas/export-worker:<version> sys-admin` and
+   require `FLOWVID_SMOKE=PASS` (A–E).
+5. Verify ONE real section with `capture-one-section.ts --section-id <uuid>`; require `gate=passed`,
+   a non-empty `rendererString`, and frames that differ.
+6. Point `EXPORT_CAPTURE_IMAGE` at the new tag and recreate the worker so it re-reads its
+   environment; confirm the running container's env actually changed.
+7. Only then run one real export, and inspect the final MP4 at each simulation window.
+
+Rollback is the same list with the previous image tag: nothing in the capture path is stateful, so
+repointing `EXPORT_CAPTURE_IMAGE` and recreating the worker is the whole procedure.

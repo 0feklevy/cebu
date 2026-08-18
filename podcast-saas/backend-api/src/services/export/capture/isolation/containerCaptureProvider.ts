@@ -25,7 +25,9 @@
  */
 
 import { spawn } from 'node:child_process';
-import { copyFile, mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
+import { createWriteStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -42,7 +44,15 @@ import {
 } from '../captureTypes.js';
 import {
   DockerCaptureBoundary,
+  MAX_ARTIFACT_FILE_BYTES,
+  assertFrameSet,
+  assertRendererProfileName,
+  assertWithinOutputDir,
+  openArtifactHandle,
+  assertRegularArtifact,
+  frameFileName,
   buildCaptureSpec,
+  expectedFrameCount,
   writeCaptureInput,
   type CaptureInputFile,
   type CaptureJobBoundary,
@@ -51,6 +61,14 @@ import {
 } from './captureJobBoundary.js';
 import { isStageablePackagePath, parseSimPackageKey, type SimPackageKey } from './simPackageKey.js';
 import { prepareOfflinePackage } from '../dependencies/offlinePackage.js';
+import { assertClipMatches, probeClip, probeImage, type ProbedImage, type ProbedVideo } from './artifactProbe.js';
+
+/** The pixel-reading half of artifact validation, injectable so unit fakes need not be real media. */
+export interface ArtifactProbes {
+  probeImage(path: string, opts?: { signal?: AbortSignal }): Promise<ProbedImage>;
+  probeClip(path: string, opts?: { signal?: AbortSignal }): Promise<ProbedVideo>;
+}
+import { runFfmpegLimited } from '../../../ffmpegLimit.js';
 
 // ── servedUrl → storage keys ────────────────────────────────────────────────────────────────────
 
@@ -139,8 +157,13 @@ function encodeFramesToClip(
   fps: number,
   dims: { width: number; height: number },
   clipPath: string,
+  opts: { timeoutMs: number; signal?: AbortSignal } = { timeoutMs: ENCODE_TIMEOUT_MS },
 ): Promise<void> {
-  return new Promise((resolve, reject) => {
+  // Through the GLOBAL cap, like every other ffmpeg in the process. This encode was the one
+  // exception, so a burst of captures could put an unbounded number of x264 runs on a host whose
+  // whole point is that it has two cores — and the limiter that exists to prevent exactly that
+  // never saw them.
+  return runFfmpegLimited(() => new Promise<void>((resolve, reject) => {
     const args = [
       '-hide_banner', '-nostdin', '-nostats', '-y',
       // -framerate BEFORE -i: image2's input rate, so no frames are dropped or duplicated.
@@ -156,13 +179,35 @@ function encodeFramesToClip(
     ];
     const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
     let stderr = '';
-    proc.stderr.on('data', (d) => { stderr += String(d); });
-    proc.on('error', reject);
+    let settled = false;
+    // ffmpeg reads the frame files itself, on the TRUSTED host. Every input it opens has already
+    // been lstat'd as a regular file, but an encode still needs its own ceiling: without one, a
+    // single slow or pathological input holds this promise — and therefore the whole export job —
+    // open forever, since `close`/`error` were the only ways out.
+    const done = (fn: () => void) => { if (!settled) { settled = true; clearTimeout(timer); signal?.removeEventListener('abort', onAbort); fn(); } };
+    // On timeout/abort the child is killed but the promise settles only in the 'close' handler:
+    // settling here would release the global ffmpeg slot while the dying process still holds CPU
+    // and file descriptors, so a burst of cancellations could briefly run more ffmpeg than the cap.
+    let killReason: string | null = null;
+    const kill = (why: string) => {
+      killReason = why;
+      proc.kill('SIGKILL');
+    };
+    const timer = setTimeout(() => kill(`exceeded ${opts.timeoutMs} ms`), Math.max(1, opts.timeoutMs));
+    const onAbort = () => kill('was cancelled');
+    const signal = opts.signal;
+    if (signal?.aborted) { kill('was cancelled'); return; }
+    signal?.addEventListener('abort', onAbort, { once: true });
+    proc.stderr.on('data', (d) => { if (stderr.length < 8192) stderr += String(d); });
+    proc.on('error', (err) => done(() => reject(err)));
     proc.on('close', (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`container capture: frame encode exited ${code}: ${stderr.slice(-400)}`));
+      done(() => {
+        if (killReason) reject(new Error(`container capture: frame encode ${killReason}`));
+        else if (code === 0) resolve();
+        else reject(new Error(`container capture: frame encode exited ${code}: ${stderr.slice(-400)}`));
+      });
     });
-  });
+  }), opts.signal);
 }
 
 // ── Configuration ───────────────────────────────────────────────────────────────────────────────
@@ -178,6 +223,11 @@ export type EnvSandboxMechanism = (typeof ENV_SANDBOX_MECHANISMS)[number];
 
 export interface ContainerCaptureConfig {
   image: string;
+  /**
+   * Which renderer every capture from this provider must use. Resolved ONCE, on the trusted side,
+   * from `EXPORT_CAPTURE_RENDERER`; the container never reads the environment for it.
+   */
+  rendererProfile: 'swiftshader' | 'hardware';
   /** Host-visible parent for input/output mounts; null = os tmpdir (bare-metal backend only). */
   workDir: string | null;
   user: string;
@@ -217,8 +267,18 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): ContainerCa
       `allowed: ${ENV_SANDBOX_MECHANISMS.join(', ')}`,
     );
   }
+  // Same shape as the sandbox mechanism above, for the same reason: an operator typo must be a
+  // startup error, not a silent fallback to the slow path on a machine bought for the fast one.
+  const rawRenderer = env.EXPORT_CAPTURE_RENDERER?.trim();
+  const rendererProfile = (rawRenderer || 'swiftshader') as 'swiftshader' | 'hardware';
+  if (rendererProfile !== 'swiftshader' && rendererProfile !== 'hardware') {
+    throw new Error(
+      `EXPORT_CAPTURE_RENDERER: unknown value ${JSON.stringify(rawRenderer)}; allowed: swiftshader, hardware`,
+    );
+  }
   return {
     image,
+    rendererProfile,
     workDir: env.EXPORT_CAPTURE_WORKDIR?.trim() || null,
     user: env.EXPORT_CAPTURE_USER?.trim() || '10001:10001',
     cpus: env.EXPORT_CAPTURE_CPUS?.trim() || '2',
@@ -250,6 +310,13 @@ export function boundaryConfigFrom(config: ContainerCaptureConfig): DockerCaptur
 }
 
 /** Per-section hard wall clock: handshake+warmup slack plus real-time-scaled capture, capped. */
+/**
+ * Ceiling on the trusted-host frame encode. It runs AFTER the container is gone, so it is outside
+ * the capture wall clock entirely — without its own bound it is an unbounded operation inside a
+ * bounded job.
+ */
+export const ENCODE_TIMEOUT_MS = 10 * 60 * 1000;
+
 export function wallClockCapSec(durationSec: number): number {
   return Math.min(600, Math.ceil(90 + durationSec * 6));
 }
@@ -260,10 +327,17 @@ export class ContainerCaptureProvider implements SimCaptureBackend {
   readonly name = 'container-beginframe';
   private available: boolean | null = null;
 
+  /**
+   * `probes` is injectable for the same reason `boundary` and `storage` are: the unit suite drives
+   * this class with fake frame bytes, and a real `ffprobe` over 'a' and 'b' proves nothing except
+   * that ffprobe works. The DEFAULT is the real implementation, so production always measures; the
+   * end-to-end encode test exercises that path against genuine frames.
+   */
   constructor(
     private readonly config: ContainerCaptureConfig,
     private readonly boundary: CaptureJobBoundary = new DockerCaptureBoundary(boundaryConfigFrom(config)),
     private readonly storage: StorageService = getStorageAdapter(),
+    private readonly probes: ArtifactProbes = { probeImage, probeClip },
   ) {}
 
   /** Cheap preflight: the docker binary answers and the pinned image is present on this host. */
@@ -285,7 +359,7 @@ export class ContainerCaptureProvider implements SimCaptureBackend {
     return this.available;
   }
 
-  async captureSection(spec: CaptureSpec): Promise<CaptureResult> {
+  async captureSection(spec: CaptureSpec, signal?: AbortSignal): Promise<CaptureResult> {
     if (!(await this.isAvailable())) {
       throw new CaptureUnavailable('container capture: worker image is not runnable on this host');
     }
@@ -316,7 +390,14 @@ export class ContainerCaptureProvider implements SimCaptureBackend {
       fps: spec.fps,
       width: spec.width,
       height: spec.height,
-      warmupFrames: DEFAULT_WARMUP_FRAMES,
+      // The spec's value when the caller names one (the controlled-experiment path the plan
+      // demands), the shipped default otherwise — resolved HERE, once, for the container path.
+      warmupFrames: spec.warmupFrames ?? DEFAULT_WARMUP_FRAMES,
+      // The JOB's frozen choice wins; the provider's env-resolved config covers only direct callers
+      // (diagnostic scripts) that carry no plan. An operator flipping EXPORT_CAPTURE_RENDERER after
+      // enqueue must not change what an already-created job renders with — the plan was described,
+      // consented to and fingerprinted under one profile, and it runs under that profile.
+      rendererProfile: assertRendererProfileName(spec.rendererProfile ?? this.config.rendererProfile),
       wallClockTimeoutSec: wallClockCapSec(spec.durationSec),
     });
 
@@ -356,10 +437,14 @@ export class ContainerCaptureProvider implements SimCaptureBackend {
         'export(container-capture): input staged — running worker container',
       );
 
+      // The export job's cancellation signal, not a fresh one. A capture is the longest-running
+      // thing an export does; passing `new AbortController().signal` here meant a cancelled export
+      // kept both vCPUs pinned until the wall clock killed the container. The boundary already
+      // knows how to stop a container on abort — it was simply never told.
       const result: ContainerCaptureResult = await this.boundary.runCapture(
         containerSpec,
         { inputDir, outputDir },
-        new AbortController().signal,
+        signal ?? new AbortController().signal,
       );
 
       if (result.status === 'failed' || result.gate === 'failed') {
@@ -377,15 +462,64 @@ export class ContainerCaptureProvider implements SimCaptureBackend {
       // same lifecycle every other capture backend's clip has.
       const clipOut = await mkdtemp(join(base, `clip-${spec.sectionId.slice(0, 8)}-`));
       const clipPath = join(clipOut, 'section.mp4');
+      // From here to the return, clipOut is THIS function's to clean up: on any throw — probe
+      // mismatch, encode failure, cancellation — an un-deleted clipOut is a permanent leak on the
+      // worker host, because ownership only transfers to the service with a successful return.
+      try {
+      // `result.json` is written by the untrusted side, so the paths in it are an instruction from
+      // untrusted code to a privileged reader. The name is allowlisted at parse time, confined by
+      // realpath, and CONSUMED THROUGH the validated O_NOFOLLOW descriptor — copying by pathname
+      // after a separate check reintroduced the exact swap window the descriptor closes.
       if (result.clipPath) {
-        await copyFile(join(outputDir, result.clipPath), clipPath);
+        const real = await assertWithinOutputDir(outputDir, result.clipPath);
+        const handle = await openArtifactHandle(real, result.clipPath, MAX_ARTIFACT_FILE_BYTES);
+        try {
+          await pipeline(handle.createReadStream(), createWriteStream(clipPath, { flags: 'wx' }));
+        } finally {
+          await handle.close();
+        }
       } else if (result.framesDir) {
+        // Confining the DIRECTORY was not enough. ffmpeg opens each `frame-%06d.jpg` itself, in the
+        // host namespace, following every symlink — so a link inside a confined directory still
+        // reaches any host file. `assertFrameSet` lstats every entry against the count the TRUSTED
+        // side expects…
+        const framesReal = await assertFrameSet(outputDir, result.framesDir, {
+          expectedFrames: expectedFrameCount(containerSpec),
+          namePattern: containerSpec.output.namePattern,
+        });
+        // …and then EVERY frame is copied through its own validated O_NOFOLLOW descriptor into a
+        // trusted-only directory, and probed there. Two gaps close at once: ffmpeg never reads the
+        // container-writable mount (so nothing can be swapped between validation and encode), and
+        // every frame is decode-validated — probing only the first and last let a wrong-sized or
+        // undecodable MIDDLE frame through, to be discovered by a viewer mid-video. The probes run
+        // under the global ffmpeg cap; at production frame counts this is seconds against a capture
+        // that takes minutes.
+        const expectedFrames = expectedFrameCount(containerSpec);
+        const trustedFrames = join(jobDir, 'trusted-frames');
+        await mkdir(trustedFrames, { recursive: true });
+        for (let index = 0; index < expectedFrames; index++) {
+          const name = frameFileName(containerSpec.output.namePattern, index);
+          const handle = await openArtifactHandle(join(framesReal, name), name, MAX_ARTIFACT_FILE_BYTES);
+          try {
+            await pipeline(handle.createReadStream(), createWriteStream(join(trustedFrames, name), { flags: 'wx' }));
+          } finally {
+            await handle.close();
+          }
+          const probed = await this.probes.probeImage(join(trustedFrames, name), { signal });
+          if (probed.width !== spec.width || probed.height !== spec.height) {
+            throw new Error(
+              `container capture: ${name} is ${probed.width}x${probed.height}, not the requested ${spec.width}x${spec.height}`,
+            );
+          }
+        }
+
         await encodeFramesToClip(
-          join(outputDir, result.framesDir),
+          trustedFrames,
           containerSpec.output.namePattern,
           spec.fps,
           { width: spec.width, height: spec.height },
           clipPath,
+          { timeoutMs: ENCODE_TIMEOUT_MS, signal },
         );
       } else {
         return {
@@ -395,9 +529,30 @@ export class ContainerCaptureProvider implements SimCaptureBackend {
           reason: 'container produced neither a clip nor a frames directory',
         };
       }
+      // And the clip itself, against the window it has to fill. A clip short by two frames leaves a
+      // gap the assembler covers by stretching or repeating — visible, and blamed on the simulation.
       await stat(clipPath);
+      assertClipMatches(
+        await this.probes.probeClip(clipPath, { signal }),
+        {
+          width: spec.width,
+          height: spec.height,
+          fps: spec.fps,
+          frames: expectedFrameCount(containerSpec),
+        },
+        `container capture ${spec.sectionId}`,
+      );
+      // The cost split rides the SUCCESS log, structured, on the host — the run that answers "why
+      // is this slow" is the one that worked, and until this line the validated numbers stopped at
+      // the boundary parse and reached no log or metric anything could read.
       logger.info(
-        { section: spec.sectionId, frameCount: result.frameCount, renderer: result.rendererString },
+        {
+          section: spec.sectionId,
+          frameCount: result.frameCount,
+          renderer: result.rendererString,
+          rendererProfile: containerSpec.rendererProfile,
+          cost: result.cost,
+        },
         'export(container-capture): section captured',
       );
       return {
@@ -406,7 +561,15 @@ export class ContainerCaptureProvider implements SimCaptureBackend {
         rendererString: result.rendererString,
         gate: 'passed',
         reason: result.reason ?? undefined,
+        cost: result.cost ?? undefined,
       };
+      } catch (err) {
+        // Ownership of clipOut transfers only with a successful return. Any throw before that —
+        // probe mismatch, encode failure, cancellation — and the directory is ours to delete, or it
+        // is a permanent leak on the worker host.
+        await rm(clipOut, { recursive: true, force: true }).catch(() => {});
+        throw err;
+      }
     } finally {
       await rm(jobDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -421,6 +584,6 @@ export class ContainerCaptureProvider implements SimCaptureBackend {
 export function resolveConfiguredCaptureProvider(): SimCaptureBackend | null {
   const config = configFromEnv();
   if (!config) return null;
-  logger.info({ image: config.image }, 'export: container capture provider configured');
+  logger.info({ image: config.image, rendererProfile: config.rendererProfile }, 'export: container capture provider configured');
   return new ContainerCaptureProvider(config);
 }

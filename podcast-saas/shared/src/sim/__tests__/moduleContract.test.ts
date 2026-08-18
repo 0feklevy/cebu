@@ -39,8 +39,27 @@ const simSources = readdirSync(SIM_DIR)
   .filter((f) => f.endsWith('.ts'))
   .sort();
 
-/** `from './x'`, `from "./x"` — the specifier of every static import/export in a module. */
-const SPECIFIER_RE = /\bfrom\s+['"]([^'"]+)['"]/g;
+/**
+ * The specifier of every static import/export in a module — ANCHORED TO THE DECLARATION, not to
+ * the word `from`.
+ *
+ * An unanchored /\bfrom\s+'…'/ matches any quoted phrase following the word "from" anywhere in the
+ * file, and these modules carry long prose. Stripping comments (below) handles prose that lives in
+ * a COMMENT; it cannot handle prose that lives in a RUNTIME STRING. `captureAuthoring.ts` embeds
+ * authoring guidance whose text contains the literal counter-example `import x from 'https://…'`
+ * inside a template literal — advice telling package authors NOT to do that — and the unanchored
+ * form reported it as a real CDN dependency, failing the external-dependency contract below.
+ * Anchoring covers both cases at once, and is the narrower rule: a specifier is only a specifier
+ * when it terminates an actual import/export declaration.
+ *
+ * Safe for this directory, and checked rather than assumed: every static import here is
+ * single-line and begins its own line, there are no bare side-effect imports, and ESM forbids a
+ * static import anywhere but the top level. The anchored form finds all 19 real specifiers; the
+ * unanchored form found 25, the extra 6 being prose. Dynamic `import('x')` is matched by neither.
+ * The backtick in the character class is what stops a template literal on an `export const` line
+ * from reopening the same hole.
+ */
+const SPECIFIER_RE = /^\s*(?:import|export)\b[^'"`]*?\bfrom\s+['"]([^'"]+)['"]/gm;
 
 /**
  * Block comments are removed before scanning. These files carry long design rationales, and the
@@ -98,6 +117,32 @@ describe('src/sim is a Node16 ESM module graph', () => {
       }
     }
     expect(external).toEqual([]);
+  });
+
+  /**
+   * REGRESSION GUARD for the extractor itself, not for the module graph.
+   *
+   * The contract above is only as good as `specifiersOf`, and its failure mode is the one that
+   * actually happened: a file whose PROSE contains something shaped like an import is read as
+   * importing it. `captureAuthoring.ts` is authoring guidance whose text deliberately quotes the
+   * counter-example `import x from 'https://…'` — the very thing it tells package authors not to
+   * write — inside a template literal, where comment-stripping cannot reach. The unanchored
+   * matcher reported that string as a live CDN dependency and failed the whole release gate.
+   *
+   * These two assertions are deliberately paired. The first fails if the anchoring regresses; the
+   * second fails if someone "fixes" the first by deleting the guidance text instead, which would
+   * make the guard vacuous.
+   */
+  it('reads a specifier only from a real declaration, never from prose in a runtime string', () => {
+    const authoring = 'captureAuthoring.ts';
+    expect(simSources).toContain(authoring);
+
+    // The counter-example text is still there — otherwise this guard proves nothing.
+    const raw = readFileSync(join(SIM_DIR, authoring), 'utf8');
+    expect(raw).toMatch(/from\s+'https:\/\//);
+
+    // …and it is still not mistaken for a dependency.
+    expect(specifiersOf(authoring).filter((s) => !s.startsWith('.') && !s.startsWith('node:'))).toEqual([]);
   });
 });
 

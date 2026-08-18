@@ -38,7 +38,7 @@ import { and, eq, inArray, lt, or, sql } from 'drizzle-orm';
 import { createReadStream } from 'node:fs';
 import { mkdtemp, readFile, rm, stat, statfs } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { db } from '../../db/index.js';
 import { project_exports } from '../../db/schema.js';
@@ -47,7 +47,8 @@ import type { StorageService } from '../storage/StorageService.js';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import { IMMUTABLE_CACHE_CONTROL } from 'shared/sim/simRevision';
 
-import { ExportRefused, buildExportPlan } from './exportPlan.js';
+import { ExportRefused } from './exportPlan.js';
+import { assertFrozenPlan } from './planFingerprint.js';
 import type { ExportPhase, ExportPlan, LinearAssembler, PosterFallbackWindow, ClipWindow } from './types.js';
 import { CaptureUnavailable, CaptureGateFailed, type SimCaptureBackend } from './capture/captureTypes.js';
 
@@ -115,6 +116,41 @@ export function classifyExportFailure(err: unknown): ExportFailure {
     userMessage: 'The export failed. No video was published; you can try again.',
     detail: detailOf(err),
   };
+}
+
+/** The two answers to "may this export ship a still instead of a live simulation?". */
+export type DegradationPolicy = 'forbid' | 'allow_poster';
+
+/**
+ * Read the policy frozen on the row. Anything unrecognised — an older row, a hand-edited value —
+ * reads as `forbid`, because the failure direction matters: guessing `allow_poster` ships a
+ * slideshow the user never agreed to, while guessing `forbid` at worst fails an export the user can
+ * retry with explicit consent.
+ */
+export function degradationPolicyOf(row: { degradation_policy?: string | null }): DegradationPolicy {
+  return row.degradation_policy === 'allow_poster' ? 'allow_poster' : 'forbid';
+}
+
+/**
+ * A simulation window could not be captured while the export was forbidden from degrading.
+ *
+ * This is the whole point of the strict contract: the user asked for a video of their simulations,
+ * and a still image is not a worse version of that — it is a different artifact. Publishing one
+ * anyway is the failure the entire capture incident exists to prevent, and it is worse than
+ * publishing nothing, because nothing is visible and a silent slideshow is not.
+ */
+export class StrictCaptureFailed extends ExportRefused {
+  constructor(section: string, reason: string, retryable: boolean) {
+    super(
+      `The simulation "${section}" could not be rendered, so the export was stopped. `
+        + 'No video was published. You can try again, or export with still images instead.',
+      422,
+      'capture_failed_strict',
+      retryable,
+    );
+    this.detail = `${section}: ${reason}`;
+  }
+  detail: string;
 }
 
 // ── The assembler seam ────────────────────────────────────────────────────────────────────────
@@ -240,7 +276,20 @@ export class ProjectExportService {
   }
 
   /** A status/progress write that must not resurrect a row this run no longer owns. */
+  /**
+   * The columns a running job may write. `plan` is deliberately absent: it is the frozen snapshot,
+   * written once by the controller, and the fingerprint stored beside it is only meaningful while
+   * nothing rewrites it. A future edit that tries will fail here rather than silently invalidate
+   * every verification downstream.
+   */
+  private assertNotFrozenColumn(patch: Record<string, unknown>): void {
+    if ('plan' in patch || 'plan_fingerprint' in patch) {
+      throw new Error('export: the frozen plan snapshot is write-once — use effective_plan for runtime results');
+    }
+  }
+
   private async fencedUpdate(exportId: string, values: Partial<typeof project_exports.$inferInsert>): Promise<void> {
+    this.assertNotFrozenColumn(values as Record<string, unknown>);
     await db.update(project_exports)
       .set({ ...values, updated_at: new Date() })
       .where(and(
@@ -290,16 +339,26 @@ export class ProjectExportService {
     let workDir: string | null = null;
     try {
       // ─── planning ───────────────────────────────────────────────────────────────────────────
-      logger.info({ exportId, projectId: job.project_id }, 'export: run started — planning');
-      const plan = await buildExportPlan(job.project_id, this.storage);
-      if (!plan) throw new ExportRefused('The project no longer exists.', 404, 'project_missing', false);
-
-      // The plan is stored BEFORE any work: it is the only artefact that can answer "why does
-      // the master look like that?" after the work directory is gone. Fenced, like every write.
-      await this.fencedUpdate(exportId, {
-        plan: plan as unknown as Record<string, unknown>,
-        objects_total: plan.timeline.length,
-      });
+      //
+      // Nothing is planned here. The controller froze the exact plan whose consequences it
+      // described to the user, and this run executes THAT — verbatim, verified. Re-planning was the
+      // whole problem: the project stays editable between the answer and the render, so a second
+      // plan could retime a section, pick up a republished simulation, or drop a clip, and the video
+      // the user consented to was only ever probably the video they got.
+      logger.info({ exportId, projectId: job.project_id }, 'export: run started — loading the frozen snapshot');
+      if (!job.plan) {
+        // A row from before the snapshot existed, or one whose plan never landed. Refusing beats
+        // re-planning: re-planning is exactly the behaviour this replaced.
+        throw new ExportRefused(
+          'This export was created before the current version and can no longer be run. Start a new one.',
+          409, 'export_snapshot_missing', false,
+        );
+      }
+      assertFrozenPlan(job.plan, job.plan_fingerprint, job.project_id);
+      const plan = job.plan as unknown as ExportPlan;
+      // `objects_total` was already written with the snapshot; the count is re-derived rather than
+      // re-planned so a stored row and a running job cannot disagree about how much work there is.
+      await this.fencedUpdate(exportId, { objects_total: plan.timeline.length });
       logger.info({
         exportId,
         windows: plan.timeline.length,
@@ -328,6 +387,9 @@ export class ProjectExportService {
       // per-section fact, and calling it N times would launch N browsers to learn one answer.
       const backend = this.captureProvider;
       const canCapture = backend ? await backend.isAvailable().catch(() => false) : false;
+      // The policy the user actually agreed to, read from the row rather than re-derived. A retry,
+      // a restart, or a duplicate delivery of this job therefore honours the same answer.
+      const policy = degradationPolicyOf(job);
       logger.info(
         { exportId, captureBackend: backend != null, captureAvailable: canCapture },
         'export: capturing phase started',
@@ -335,19 +397,42 @@ export class ProjectExportService {
 
       let done = 0;
       const captured: ExportPlan['timeline'] = [];
+      const totalWindows = plan.timeline.length;
       for (const w of plan.timeline) {
-        done += 1;
-        // Advisory per-window progress so the client's bar advances during the (slow) capture phase
-        // instead of sitting at 0% until it ends. Unfenced like the assembler's counter: a lost
-        // write costs one poll tick, not correctness — the FENCED status writes are what gate.
+        // Progress names what is happening NOW and counts only what is FINISHED. The counter used
+        // to be incremented before each window, so a project reported "3 of 4 done" while the third
+        // had not started — and if the run then failed, the user had been told it was nearly there.
         void db.update(project_exports)
-          .set({ objects_done: done, updated_at: new Date() })
+          .set({
+            current_phase: 'capturing',
+            phase_done: done,
+            phase_total: totalWindows,
+            current_section_id: w.kind === 'sim-capture' ? w.sectionId : null,
+            current_section_label: w.kind === 'sim-capture' ? (w.label ?? null) : null,
+            capture_stage: w.kind === 'sim-capture' ? 'starting' : null,
+            frames_done: 0,
+            frames_total: w.kind === 'sim-capture' ? Math.round((w.endSec - w.startSec) * plan.grid.fps) : 0,
+            updated_at: new Date(),
+          })
           .where(eq(project_exports.id, exportId))
           .catch((err: unknown) => logger.debug({ err, exportId }, 'export: capture progress write failed'));
-        if (w.kind !== 'sim-capture') { captured.push(w); continue; }
+        if (w.kind !== 'sim-capture') {
+          captured.push(w);
+          done += 1;
+          continue;
+        }
         await this.throwIfCancelRequested(exportId);
 
         if (!canCapture || !backend || !w.servedUrl) {
+          if (policy === 'forbid') {
+            // Strict mode: infrastructure that cannot render is a truthful, RETRYABLE failure, not
+            // grounds to quietly ship a still. The user asked for the simulation.
+            throw new StrictCaptureFailed(
+              name(w),
+              !w.servedUrl ? 'the simulation has no capturable package' : 'no capture backend is available on this host',
+              Boolean(w.servedUrl),
+            );
+          }
           logger.info({ exportId, section: name(w) }, 'export: sim window degraded — capture unavailable');
           captured.push(toPoster(w));
           plan.warnings.push(
@@ -364,7 +449,10 @@ export class ProjectExportService {
             simpleUi: w.simpleUi, autoScript: w.autoScript, uiHide: w.uiHide ?? [],
             durationSec: w.endSec - w.startSec, fps: plan.grid.fps,
             width: plan.grid.w, height: plan.grid.h, configHash: w.configHash ?? '', posterKey: w.posterKey ?? '',
-          });
+            // From the FROZEN plan, not the current environment: legacy snapshots that predate the
+            // field read as software, which is the profile they actually ran under.
+            rendererProfile: plan.rendererProfile === 'hardware' ? 'hardware' : 'swiftshader',
+          }, abort.signal);
 
           if (result.gate === 'failed' || !result.clipPath) {
             logger.warn(
@@ -388,7 +476,21 @@ export class ProjectExportService {
           // captured sim travels the identical, already-verified path. `sourceVideoFileId` carries
           // the section id: audit-only (the splice keys off `storageKey`), honest about origin.
           const clipKey = `exports/${job.project_id}/${exportId}/sections/${w.sectionId}.mp4`;
-          await this.storage.uploadFile(clipKey, await readFile(result.clipPath), 'video/mp4', IMMUTABLE_CACHE_CONTROL);
+          // OWNERSHIP. The clip has to outlive the capture job's own scratch directory, so the
+          // backend leaves it in a sibling temp dir and this is the code that owns it from here.
+          // The release is in `finally`, not after the upload: an upload failure, a DB error, a
+          // cancellation and a throw are all paths that used to leave the file behind, and "the OS
+          // tmp reaper will get it" is simply false when EXPORT_CAPTURE_WORKDIR points at a real
+          // directory — which is exactly what container capture requires. Every captured section
+          // leaked an MP4 onto the worker host, permanently, on those paths.
+          const clipDir = dirname(result.clipPath);
+          try {
+            await this.storage.uploadFile(clipKey, await readFile(result.clipPath), 'video/mp4', IMMUTABLE_CACHE_CONTROL);
+          } finally {
+            await rm(clipDir, { recursive: true, force: true }).catch((e: unknown) =>
+              logger.warn({ e, exportId, clipDir }, 'export: capture clip cleanup failed — orphan left on disk'),
+            );
+          }
           const clip: ClipWindow = {
             kind: 'clip', sectionId: w.sectionId, label: w.label, startSec: w.startSec, endSec: w.endSec,
             sourceVideoFileId: w.sectionId, storageKey: clipKey,
@@ -397,6 +499,41 @@ export class ProjectExportService {
           logger.info({ exportId, section: name(w), clipKey }, 'export: sim window captured');
           captured.push(clip);
         } catch (err) {
+          // Cancellation is NEVER degradation, and the test for it must not depend on WHAT the
+          // backend threw. Checking `err.name === 'AbortError'` was not enough: nothing in the
+          // container capture stack produces that name — an aborted container exits non-zero and
+          // the boundary reports "exited 137 with no readable result.json". So a mid-capture cancel
+          // fell straight through to the policy branch and, under the default `forbid`, was written
+          // as `failed` with "could not be rendered, you can try again" — telling the user their
+          // simulation is broken when in fact they pressed stop.
+          //
+          // The SIGNAL is the authority here, not the error's spelling. It is the same controller
+          // the capture was handed, so if it is aborted this window ended because the user asked it
+          // to, whatever error the failure happened to surface as.
+          if (err instanceof Error && err.name === 'AbortError') throw err;
+          if (err instanceof ExportRefused) throw err;
+          // Ask the ROW, not the error. Two things are true here that made the old
+          // `err.name === 'AbortError'` check useless: nothing in the container capture stack
+          // produces that name (an aborted container exits non-zero and the boundary reports
+          // "exited 137 with no readable result.json"), and the in-memory signal lags — the cancel
+          // poll runs on the heartbeat, so a user who pressed stop one second ago has set the flag
+          // but not yet aborted the controller. Either way the window ended because they asked it
+          // to, and under the default `forbid` policy this failure would otherwise be written as
+          // `failed` with "your simulation could not be rendered" — blaming the render for a
+          // decision the user made.
+          await this.throwIfCancelRequested(exportId);
+
+          const failReason = err instanceof CaptureGateFailed
+            ? `${err.message} (renderer "${err.rendererString}")`
+            : err instanceof Error ? err.message : String(err);
+
+          if (policy === 'forbid') {
+            // Every strict failure lands here: unavailable, exception, timeout, missing clip,
+            // invalid artifact, failed gate. None of them may publish a master.
+            logger.warn({ err, exportId, section: name(w) }, 'export: strict mode — capture failed, failing the export');
+            throw new StrictCaptureFailed(name(w), failReason, !(err instanceof CaptureGateFailed));
+          }
+
           logger.warn({ err, exportId, section: name(w) }, 'export: sim window degraded — capture failed');
           if (!(err instanceof CaptureUnavailable)) {
             // A real render failure (gate-hard, crash, timeout). One window failing must never fail
@@ -410,10 +547,21 @@ export class ProjectExportService {
           }
           captured.push(toPoster(w));
         }
+        // Counted here, after the window resolved — captured or substituted. Monotonic, and never
+        // ahead of the work.
+        done += 1;
+        void db.update(project_exports)
+          .set({ objects_done: done, phase_done: done, updated_at: new Date() })
+          .where(eq(project_exports.id, exportId))
+          .catch((err: unknown) => logger.debug({ err, exportId }, 'export: capture progress write failed'));
       }
       plan.timeline = captured;
       await this.fencedUpdate(exportId, {
-        plan: plan as unknown as Record<string, unknown>,
+        // NOT `plan`. The snapshot is what we were ASKED to make and must survive the run intact;
+        // what the run actually did — substitutions, renderer identity, warnings — is a different
+        // fact and lives in its own column. Merging them destroyed the first question anyone asks
+        // after a bad export.
+        effective_plan: plan as unknown as Record<string, unknown>,
         objects_done: done,
       });
       await this.throwIfCancelRequested(exportId);
@@ -496,21 +644,43 @@ export class ProjectExportService {
         .set({
           status: 'ready',
           quality_state: degraded ? 'degraded' : 'full',
+          // A COUNT of real substitutions. Counting warnings told users their export was degraded
+          // when the only "warning" was a planning advisory about a poster that was never used.
+          degraded_windows: plan.timeline.filter((w) => w.kind === 'poster-fallback').length,
+          current_phase: 'uploading',
+          capture_stage: null,
+          current_section_id: null,
+          current_section_label: null,
           output_key: outputKey,
           objects_done: total,
-          plan: plan as unknown as Record<string, unknown>,
+          // NOT `plan`. The snapshot is what we were ASKED to make and must survive the run intact;
+        // what the run actually did — substitutions, renderer identity, warnings — is a different
+        // fact and lives in its own column. Merging them destroyed the first question anyone asks
+        // after a bad export.
+        effective_plan: plan as unknown as Record<string, unknown>,
           finished_at: new Date(),
           updated_at: new Date(),
         })
         .where(and(
           eq(project_exports.id, exportId),
           inArray(project_exports.status, [...EXPORT_IN_FLIGHT_STATUSES]),
+          // …AND nobody asked to stop. The status fence alone let a cancellation lose a race it
+          // should always win: a user pressing stop during the master upload set the flag on a row
+          // that was still legitimately in-flight, so this write published `ready` with an
+          // `output_key` anyway. The video then exists, is downloadable, and is billed for — after
+          // the user said no. Making the flag part of the predicate means the publish is refused by
+          // the database itself, not by a check that could be raced.
+          eq(project_exports.cancel_requested, false),
         ))
         .returning({ id: project_exports.id });
       if (!readyRow) {
-        // The fence held: someone reaped or superseded this run. The uploaded master is an
-        // orphan at a write-once key — harmless, reapable — and the row's owner keeps its word.
+        // The fence held: this run was reaped, superseded, or cancelled while it finished. The
+        // uploaded master is an orphan at a write-once key — harmless, reapable, and never pointed
+        // at by `output_key` — and the row's owner keeps its word.
         logger.warn({ exportId }, 'export: finished but no longer owns its row — not publishing');
+        // A cancellation that arrived this late still has to reach a terminal state, and the runner
+        // is the only writer of one.
+        await this.throwIfCancelRequested(exportId);
         return;
       }
       logger.info({ exportId, projectId: job.project_id, outputKey }, 'project export ready');
@@ -527,15 +697,22 @@ export class ProjectExportService {
       // A HONOURED CANCELLATION IS NOT A FAILURE. `cancelled` is its own terminal status: the
       // system did exactly what the user asked, and folding that into `failed` would make every
       // cancel read as a defect — in the UI, in the logs, and in any error-rate metric.
-      const terminal = failure.code === 'export_cancelled' ? 'cancelled' : 'failed';
+      // …and the decision is made BY THE DATABASE, atomically, not by this process's view of the
+      // world. `cancel_requested` can be set at any moment, including between the throw and this
+      // write, so a check-then-write here loses the race and records a defect for a user who simply
+      // pressed stop. `CASE` evaluates the flag in the same statement that writes the status.
+      const terminalStatus = failure.code === 'export_cancelled'
+        ? sql`'cancelled'`
+        : sql`CASE WHEN ${project_exports.cancel_requested} THEN 'cancelled' ELSE 'failed' END`;
+      const terminalError = failure.code === 'export_cancelled'
+        ? sql`${stored}`
+        : sql`CASE WHEN ${project_exports.cancel_requested} THEN ${EXPORT_CANCELLED_MESSAGE} ELSE ${stored} END`;
       // FENCED like the success path: a reaped run must not overwrite its successor's terminal
       // state. `plan` is merged, not replaced — the planning phase's real plan survives next to
       // the reason the run stopped.
       await db.update(project_exports).set({
-        status: terminal, error: stored, finished_at: new Date(), updated_at: new Date(),
-        plan: sql`COALESCE(${project_exports.plan}, '{}'::jsonb) || ${JSON.stringify({
-          failure: { code: failure.code, retryable: failure.retryable, phase, detail: failure.detail.slice(0, 4000) },
-        })}::jsonb`,
+        status: terminalStatus, error: terminalError, finished_at: new Date(), updated_at: new Date(),
+        failure: { code: failure.code, retryable: failure.retryable, phase, detail: failure.detail.slice(0, 4000) },
       }).where(and(
         eq(project_exports.id, exportId),
         inArray(project_exports.status, [...EXPORT_IN_FLIGHT_STATUSES]),

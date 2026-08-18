@@ -13,6 +13,13 @@ import { join } from 'node:path';
 
 import type { RendererIdentity, SimCaptureWindow } from '../../../types.js';
 import {
+  assertFrameSet,
+  assertResultMatchesSpec,
+  readArtifactBytes,
+  assertRegularArtifact,
+  assertWithinOutputDir,
+  frameFileName,
+  MAX_RESULT_BYTES,
   buildCaptureSpec,
   parseCaptureResult,
   writeCaptureInput,
@@ -50,6 +57,7 @@ const OPTS = {
   width: 1920,
   height: 1080,
   warmupFrames: 30,
+  rendererProfile: 'swiftshader' as const,
   wallClockTimeoutSec: 120,
 };
 
@@ -215,6 +223,368 @@ describe('writeCaptureInput / readCaptureResult (mount I/O)', () => {
       ).rejects.toThrow(/unsafe/);
     } finally {
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * `result.json` is written on a mount the untrusted container can write, and its `framesDir` /
+ * `clipPath` tell a PRIVILEGED reader which file to open: the provider copies the clip and
+ * `ProjectExportService` uploads those bytes to storage as the section's MP4. So the two fields are
+ * an instruction from untrusted code to a trusted reader, and validating them as "a string" is not
+ * validation. Two independent escapes had to be closed:
+ *
+ *   traversal — `join('/out', '../../../etc/passwd')` is `/etc/passwd`; `join` only ignores a
+ *               LEADING slash, it never confines.
+ *   symlink   — the mount is container-writable, so a link named exactly `section.mp4` pointing at
+ *               a host file is followed by both `copyFile` and ffmpeg.
+ */
+describe('the container cannot aim the trusted reader at an arbitrary host file', () => {
+  const escapes = [
+    '../../../../etc/passwd',
+    '../.env',
+    '/etc/passwd',
+    'frames/../../..',
+    './frames',
+    'frames/',
+    'section.mp4.bak',
+    '',
+  ];
+
+  it.each(escapes)('parseCaptureResult refuses clipPath %j', (bad) => {
+    expect(() => parseCaptureResult(JSON.stringify(okResult({ clipPath: bad, framesDir: null })))).toThrow(
+      /must name a known artifact|bad clipPath/,
+    );
+  });
+
+  it.each(escapes)('parseCaptureResult refuses framesDir %j', (bad) => {
+    expect(() => parseCaptureResult(JSON.stringify(okResult({ framesDir: bad })))).toThrow(
+      /must name a known artifact|bad framesDir/,
+    );
+  });
+
+  it('still accepts the two legitimate artifact names', () => {
+    expect(parseCaptureResult(JSON.stringify(okResult({ framesDir: 'frames' }))).framesDir).toBe('frames');
+    expect(
+      parseCaptureResult(JSON.stringify(okResult({ framesDir: null, clipPath: 'section.mp4' }))).clipPath,
+    ).toBe('section.mp4');
+  });
+
+  it('assertWithinOutputDir follows a symlink and refuses the one that leaves the output dir', async () => {
+    const { symlink, writeFile: wf, mkdir: md } = await import('node:fs/promises');
+    const root = await mkdtemp(join(tmpdir(), 'boundary-confine-'));
+    try {
+      const outputDir = join(root, 'output');
+      await md(outputDir, { recursive: true });
+      const secret = join(root, 'secret.env');
+      await wf(secret, 'DATABASE_URL=postgres://real');
+
+      // The attack: a link named exactly like a legitimate artifact, pointing outside.
+      await symlink(secret, join(outputDir, 'section.mp4'));
+      await expect(assertWithinOutputDir(outputDir, 'section.mp4')).rejects.toThrow(/outside the output directory/);
+
+      // The honest case still resolves, and returns a real path the caller can read.
+      await md(join(outputDir, 'frames'), { recursive: true });
+      await expect(assertWithinOutputDir(outputDir, 'frames')).resolves.toContain('frames');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('assertWithinOutputDir refuses an artifact that does not exist rather than guessing', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'boundary-missing-'));
+    try {
+      await expect(assertWithinOutputDir(root, 'section.mp4')).rejects.toThrow(/not readable/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * The rest of the output boundary. The artifact-NAME allowlist and directory confinement closed the
+ * first two escapes; these cover what was still open one level down, each with a concrete primitive:
+ *
+ *   result.json itself   — a symlink to a character device makes the trusted reader allocate
+ *                          without bound (measured: ~6.8 GB in 2.5 s on Node 22) until the process
+ *                          holding every tenant's credentials is OOM-killed.
+ *   entries inside frames/ — ffmpeg opens each frame in the HOST namespace and follows symlinks, so
+ *                          confining only the directory still let any host file that decodes as an
+ *                          image be encoded into the served MP4.
+ *
+ * The container is already dead when these run, so verify-then-use has no TOCTOU gap.
+ */
+describe('the output boundary below the artifact name', () => {
+  const NAME_PATTERN = 'frame-%06d.jpg';
+
+  async function frames(root: string, count: number): Promise<string> {
+    const { mkdir: md, writeFile: wf } = await import('node:fs/promises');
+    const dir = join(root, 'frames');
+    await md(dir, { recursive: true });
+    for (let i = 0; i < count; i++) await wf(join(dir, frameFileName(NAME_PATTERN, i)), `f${i}`);
+    return dir;
+  }
+
+  it('frameFileName expands the trusted printf pattern', () => {
+    expect(frameFileName('frame-%06d.jpg', 0)).toBe('frame-000000.jpg');
+    expect(frameFileName('frame-%06d.jpg', 42)).toBe('frame-000042.jpg');
+    expect(() => frameFileName('frame.jpg', 0)).toThrow(/%0Nd/);
+  });
+
+  it('refuses a result.json that is a symlink out of the output dir', async () => {
+    const { symlink, writeFile: wf, mkdir: md } = await import('node:fs/promises');
+    const root = await mkdtemp(join(tmpdir(), 'boundary-result-'));
+    try {
+      const out = join(root, 'output');
+      await md(out, { recursive: true });
+      await wf(join(root, 'secret.env'), 'DATABASE_URL=postgres://real');
+      await symlink(join(root, 'secret.env'), join(out, 'result.json'));
+      // Refused at the NAME, before any resolution: a top-level symlink whose target happened to
+      // sit inside the output directory would otherwise pass a check applied only after realpath.
+      await expect(readCaptureResult(out)).rejects.toThrow(/is a symlink/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a result.json larger than the cap, before parsing it', async () => {
+    const { writeFile: wf, mkdir: md } = await import('node:fs/promises');
+    const root = await mkdtemp(join(tmpdir(), 'boundary-big-'));
+    try {
+      const out = join(root, 'output');
+      await md(out, { recursive: true });
+      await wf(join(out, 'result.json'), Buffer.alloc(MAX_RESULT_BYTES + 1, 0x20));
+      await expect(readCaptureResult(out)).rejects.toThrow(/over the .* cap/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts an honest result.json of ordinary size', async () => {
+    const { writeFile: wf, mkdir: md } = await import('node:fs/promises');
+    const root = await mkdtemp(join(tmpdir(), 'boundary-ok-'));
+    try {
+      const out = join(root, 'output');
+      await md(out, { recursive: true });
+      await wf(join(out, 'result.json'), JSON.stringify(okResult()));
+      await expect(readCaptureResult(out)).resolves.toMatchObject({ sectionId: 'sec-1', gate: 'passed' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a frames directory holding a SYMLINK where a frame should be', async () => {
+    const { symlink, writeFile: wf, unlink } = await import('node:fs/promises');
+    const root = await mkdtemp(join(tmpdir(), 'boundary-frames-'));
+    try {
+      const dir = await frames(root, 3);
+      await wf(join(root, 'host-secret.jpg'), 'JPEGBYTES');
+      // The exact attack: a link named like a legitimate frame. ffmpeg would have opened it.
+      await unlink(join(dir, 'frame-000001.jpg'));
+      await symlink(join(root, 'host-secret.jpg'), join(dir, 'frame-000001.jpg'));
+
+      await expect(
+        assertFrameSet(root, 'frames', { expectedFrames: 3, namePattern: NAME_PATTERN }),
+      ).rejects.toThrow(/is a symlink/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a HARD link where a frame should be — nothing to resolve, so realpath cannot see it', async () => {
+    const { link, writeFile: wf, unlink } = await import('node:fs/promises');
+    const root = await mkdtemp(join(tmpdir(), 'boundary-hardlink-'));
+    try {
+      const dir = await frames(root, 3);
+      await wf(join(root, 'host-secret.jpg'), 'JPEGBYTES');
+      await unlink(join(dir, 'frame-000001.jpg'));
+      // A hard link IS the file — same inode, no link to follow, confinement sees nothing wrong.
+      // The only tell is that the inode is reachable under another name.
+      await link(join(root, 'host-secret.jpg'), join(dir, 'frame-000001.jpg'));
+
+      await expect(
+        assertFrameSet(root, 'frames', { expectedFrames: 3, namePattern: NAME_PATTERN }),
+      ).rejects.toThrow(/has 2 links/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a hard-linked result.json for the same reason', async () => {
+    const { link, writeFile: wf, mkdir: md } = await import('node:fs/promises');
+    const root = await mkdtemp(join(tmpdir(), 'boundary-hardlink2-'));
+    try {
+      const out = join(root, 'output');
+      await md(out, { recursive: true });
+      await wf(join(root, 'secret.env'), 'DATABASE_URL=postgres://real');
+      await link(join(root, 'secret.env'), join(out, 'result.json'));
+      await expect(readCaptureResult(out)).rejects.toThrow(/has 2 links/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a FIFO and a socket named as an artifact', async () => {
+    // A FIFO makes a privileged reader block forever; a socket is simply not a capture artifact.
+    // Neither is a symlink, so the link checks miss both — `isFile()` is what catches them.
+    const { mkdir: md } = await import('node:fs/promises');
+    const { execFileSync } = await import('node:child_process');
+    const root = await mkdtemp(join(tmpdir(), 'boundary-fifo-'));
+    try {
+      const out = join(root, 'output');
+      await md(out, { recursive: true });
+      try {
+        execFileSync('mkfifo', [join(out, 'result.json')]);
+      } catch {
+        return; // no mkfifo on this host; the isFile() assertion below is covered by the dir case
+      }
+      await expect(readCaptureResult(out)).rejects.toThrow(/not a regular file/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses an unexpected extra entry, and a missing frame', async () => {
+    const { writeFile: wf, unlink } = await import('node:fs/promises');
+    const root = await mkdtemp(join(tmpdir(), 'boundary-count-'));
+    try {
+      const dir = await frames(root, 3);
+      await wf(join(dir, 'frame-000009.jpg'), 'extra');
+      await expect(
+        assertFrameSet(root, 'frames', { expectedFrames: 3, namePattern: NAME_PATTERN }),
+      ).rejects.toThrow(/unexpected entr/);
+
+      await unlink(join(dir, 'frame-000009.jpg'));
+      await unlink(join(dir, 'frame-000002.jpg'));
+      await expect(
+        assertFrameSet(root, 'frames', { expectedFrames: 3, namePattern: NAME_PATTERN }),
+      ).rejects.toThrow(/missing frame-000002\.jpg/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts exactly the frame set the trusted side expects', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'boundary-good-'));
+    try {
+      await frames(root, 5);
+      await expect(
+        assertFrameSet(root, 'frames', { expectedFrames: 5, namePattern: NAME_PATTERN }),
+      ).resolves.toContain('frames');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a frames path that is a regular file, and a clip path that is a directory', async () => {
+    const { writeFile: wf, mkdir: md } = await import('node:fs/promises');
+    const root = await mkdtemp(join(tmpdir(), 'boundary-kind-'));
+    try {
+      await wf(join(root, 'frames'), 'not a directory');
+      await expect(
+        assertFrameSet(root, 'frames', { expectedFrames: 1, namePattern: NAME_PATTERN }),
+      ).rejects.toThrow(/not a directory/);
+
+      await md(join(root, 'section.mp4'), { recursive: true });
+      await expect(assertRegularArtifact(root, 'section.mp4')).rejects.toThrow(/not a regular file/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * Binding the result to the spec. `parseCaptureResult` proves the JSON is well-SHAPED; these prove
+ * it is well-FOUNDED. The container authors every field, so on its own the result is a claim: it can
+ * name another section, report a frame count that does not fill the window, or report a viewport it
+ * never rendered at. Each corrupts something downstream — the wrong clip spliced into the timeline,
+ * a clip too short for its window, a 320x180 render stretched across a 1080p frame — and none of
+ * them looks like a failure when it happens.
+ */
+describe('a result must match the spec that asked for it', () => {
+  const spec = (over: Partial<ContainerCaptureSpec> = {}): ContainerCaptureSpec =>
+    buildCaptureSpec(simWindow(), { ...OPTS, ...over });
+
+  it('accepts an honest result', () => {
+    expect(() => assertResultMatchesSpec(okResult(), spec())).not.toThrow();
+  });
+
+  it('refuses a result for a DIFFERENT section — the wrong clip in the timeline', () => {
+    expect(() => assertResultMatchesSpec(okResult({ sectionId: 'sec-other' }), spec()))
+      .toThrow(/is for section .*not sec-1/);
+  });
+
+  it('refuses a passing result whose frame count does not fill the window', () => {
+    // 15 s at 30 fps = 450 frames. 449 leaves a gap the assembler would silently stretch or pad.
+    expect(() => assertResultMatchesSpec(okResult({ frameCount: 449 }), spec()))
+      .toThrow(/claims 449 frames.*needs 450/);
+  });
+
+  it('allows a FAILING result to stop early — an incomplete run is not a lie', () => {
+    expect(() => assertResultMatchesSpec(okResult({ gate: 'failed', frameCount: 12 }), spec())).not.toThrow();
+  });
+
+  it('refuses a viewport or DPR the capture never rendered at', () => {
+    const smallViewport = okResult({
+      rendererIdentity: { ...RENDERER, viewport: { w: 320, h: 180 } },
+    });
+    expect(() => assertResultMatchesSpec(smallViewport, spec())).toThrow(/viewport 320×180/);
+
+    const wrongDpr = okResult({ rendererIdentity: { ...RENDERER, dpr: 2 } });
+    expect(() => assertResultMatchesSpec(wrongDpr, spec())).toThrow(/DPR 2/);
+  });
+
+  it('refuses a passing result with both artifact forms, or neither', () => {
+    expect(() => assertResultMatchesSpec(okResult({ framesDir: 'frames', clipPath: 'section.mp4' }), spec()))
+      .toThrow(/exactly one of frames or a clip, got 2/);
+    expect(() => assertResultMatchesSpec(okResult({ framesDir: null, clipPath: null }), spec()))
+      .toThrow(/exactly one of frames or a clip, got 0/);
+  });
+});
+
+/**
+ * The boundary below the boundary — the cases the audit named as still open after the first
+ * hardening pass, each written to fail against that pass.
+ */
+describe('the descriptor is the product, not the proof', () => {
+  it('refuses a TOP-LEVEL symlink named frames, before any resolution', async () => {
+    // `assertWithinOutputDir` realpaths, so a link named exactly `frames` pointing at another
+    // directory INSIDE the mount would resolve, pass confinement, and be encoded — a set of frames
+    // nobody validated under this name.
+    const { symlink, mkdir: md, writeFile: wf } = await import('node:fs/promises');
+    const root = await mkdtemp(join(tmpdir(), 'boundary-topsym-'));
+    try {
+      const other = join(root, 'other-dir');
+      await md(other, { recursive: true });
+      await wf(join(other, 'frame-000000.jpg'), 'x');
+      await symlink(other, join(root, 'frames'));
+      await expect(
+        assertFrameSet(root, 'frames', { expectedFrames: 1, namePattern: 'frame-%06d.jpg' }),
+      ).rejects.toThrow(/is a symlink/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('readArtifactBytes reads from the validated open — and enforces the same name checks', async () => {
+    const { writeFile: wf, mkdir: md, link } = await import('node:fs/promises');
+    const root = await mkdtemp(join(tmpdir(), 'boundary-fd-'));
+    try {
+      const out = join(root, 'output');
+      await md(out, { recursive: true });
+      await wf(join(out, 'result.json'), '{"ok":true}');
+      expect((await readArtifactBytes(out, 'result.json', 1024)).toString()).toBe('{"ok":true}');
+
+      // Over the cap: refused by the fstat on the SAME descriptor the read would use.
+      await wf(join(out, 'big.json'), 'x'.repeat(2048));
+      await expect(readArtifactBytes(out, 'big.json', 1024)).rejects.toThrow(/over the 1024 cap/);
+
+      // Aliased: refused before the open.
+      await wf(join(root, 'secret'), 'SECRET');
+      await link(join(root, 'secret'), join(out, 'aliased.json'));
+      await expect(readArtifactBytes(out, 'aliased.json', 1024)).rejects.toThrow(/has 2 links/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 });

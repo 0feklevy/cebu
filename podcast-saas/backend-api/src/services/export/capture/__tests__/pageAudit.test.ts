@@ -89,3 +89,32 @@ describe('PageAudit — the page is UNTRUSTED', () => {
     expect(audit.summarise()!.length).toBeLessThan(1_000);
   });
 });
+
+describe('PageAudit — webgl_context_failed (the renderer boundary)', () => {
+  it('a probe that ASKED for a context and did not get one is a renderer problem, not a dead scene', () => {
+    const audit = new PageAudit();
+    // No failed request, no exception — the page ran fine and WebGL simply did not initialise.
+    expect(audit.classify('every sampled canvas frame is uniform', { attempted: true, ok: false }))
+      .toBe('webgl_context_failed');
+  });
+
+  it('a WORKING context leaves the gate symptom alone — the scene really is the problem', () => {
+    const audit = new PageAudit();
+    expect(audit.classify('every sampled canvas frame is uniform', { attempted: true, ok: true }))
+      .toBe('uniform_canvas');
+    expect(audit.classify('the canvas did not change across frames', { attempted: true, ok: true }))
+      .toBe('static_canvas');
+  });
+
+  it('a missing DEPENDENCY still outranks a failed context — it is why the context was never made', () => {
+    const audit = new PageAudit();
+    audit.recordFailedRequest('https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js', 'net::ERR_FAILED');
+    expect(audit.classify('uniform', { attempted: true, ok: false })).toBe('external_dependency_blocked');
+  });
+
+  it('a sim that never attempts WebGL is not reported as a renderer failure', () => {
+    const audit = new PageAudit();
+    expect(audit.classify('every sampled canvas frame is uniform', { attempted: false, ok: false }))
+      .toBe('uniform_canvas');
+  });
+});

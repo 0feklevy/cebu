@@ -346,3 +346,26 @@ describe('review round 2 — the tokenizer and multiple import maps', () => {
     ).rejects.toBeInstanceOf(ExternalDependencyBlocked);
   });
 });
+
+describe('vendor caps — a dependency pack cannot dominate a capture job', () => {
+  const capped = async (overrides: Record<string, unknown>) => {
+    const real = await loadTrustedRegistry();
+    const three = real.descriptors().find((d) => d.name === 'three')!;
+    return new TrustedDependencyRegistry(registryRoot(real), [{ ...three, ...overrides }]);
+  };
+
+  it('refuses a pack with too MANY files', async () => {
+    const three = (await loadTrustedRegistry()).descriptors().find((d) => d.name === 'three')!;
+    const many = Object.fromEntries(
+      Array.from({ length: 401 }, (_, i) => [`f${i}.js`, { bytes: 1, sha256: '0'.repeat(64) }]),
+    );
+    const reg = await capped({ files: many });
+    await expect(reg.materialise(reg.descriptors()[0]!)).rejects.toThrow(/exceeds the 400 cap/);
+    expect(Object.keys(three.files).length).toBeLessThan(400); // the real pack is well inside it
+  });
+
+  it('refuses a single file over the per-file cap before reading it', async () => {
+    const reg = await capped({ files: { 'build/three.module.js': { bytes: 9 * 1024 * 1024, sha256: '0'.repeat(64) } } });
+    await expect(reg.materialise(reg.descriptors()[0]!)).rejects.toThrow(/over the per-file cap/);
+  });
+});

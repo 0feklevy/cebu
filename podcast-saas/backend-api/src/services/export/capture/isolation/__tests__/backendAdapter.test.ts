@@ -18,7 +18,7 @@ import type {
   SimCaptureBackend,
 } from '../../captureTypes.js';
 import type { RendererIdentity } from '../../../types.js';
-import { backendToDriver, toBackendSpec, RELOCATED_FRAMES_DIR } from '../backendAdapter.js';
+import { backendToDriver, toBackendSpec, RELOCATED_CLIP_FILE, RELOCATED_FRAMES_DIR } from '../backendAdapter.js';
 import type { ContainerCaptureSpec } from '../captureJobBoundary.js';
 
 const RENDERER: RendererIdentity = {
@@ -43,6 +43,7 @@ function containerSpec(overrides: Partial<ContainerCaptureSpec> = {}): Container
     width: 1920,
     height: 1080,
     warmupFrames: 30,
+  rendererProfile: 'swiftshader' as const,
     posterKey: 'posters/p/s/poster.jpg',
     output: { format: 'jpeg', quality: 80, frameDir: 'frames', namePattern: 'frame-%06d.jpg' },
     wallClockTimeoutSec: 120,
@@ -154,10 +155,46 @@ describe('backendToDriver', () => {
       });
 
       expect(result.framesDir).toBeNull();
-      expect(result.clipPath).toBe('sec-7.mp4');
-      expect(await readFile(join(outputDir, 'sec-7.mp4'), 'utf8')).toBe('MP4');
+      // The relocated clip takes the ONE canonical name, not the backend's (`sec-7.mp4`). The
+      // trusted side allowlists the artifact names it will resolve, so normalising here makes the
+      // two ends agree by construction instead of by convention — and stops a backend-chosen
+      // filename from being the thing a privileged reader resolves.
+      expect(result.clipPath).toBe(RELOCATED_CLIP_FILE);
+      expect(await readFile(join(outputDir, RELOCATED_CLIP_FILE), 'utf8')).toBe('MP4');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * The warmup contract. `ContainerCaptureSpec.warmupFrames` existed, was carried across the boundary,
+ * and was then DROPPED: `toBackendSpec` never copied it and the backend read the constant instead.
+ * So any value an operator or a controlled experiment set was silently ignored — and a benchmark
+ * that believed it varied warmup was in fact measuring the default every time. One authority now.
+ */
+describe('warmupFrames survives the boundary', () => {
+  it('toBackendSpec forwards the requested count', () => {
+    expect(toBackendSpec(containerSpec({ warmupFrames: 3 }), 'http://127.0.0.1:1/e').warmupFrames).toBe(3);
+    expect(toBackendSpec(containerSpec({ warmupFrames: 0 }), 'http://127.0.0.1:1/e').warmupFrames).toBe(0);
+  });
+
+  it('the backend actually RECEIVES it — the assertion the old code would fail', async () => {
+    let seen: number | undefined = -1;
+    const backend: SimCaptureBackend = {
+      name: 'warmup-probe',
+      async isAvailable() { return true; },
+      async captureSection(spec): Promise<BackendCaptureResult> {
+        seen = spec.warmupFrames;
+        return { framesDir: undefined, clipPath: undefined, frameCount: 0, rendererString: '', gate: 'failed' };
+      },
+    };
+    await backendToDriver(backend, { rendererIdentity: RENDERER }).drive({
+      entryUrl: 'http://127.0.0.1:9/e',
+      spec: containerSpec({ warmupFrames: 7 }),
+      outputDir: join(tmpdir(), 'warmup-probe-out'),
+      signal: new AbortController().signal,
+    });
+    expect(seen).toBe(7);
   });
 });

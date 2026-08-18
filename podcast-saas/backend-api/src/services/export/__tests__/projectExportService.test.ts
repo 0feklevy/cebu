@@ -45,7 +45,9 @@ import {
 import { ExportRefused } from '../exportPlan.js';
 import type { StorageService } from '../../storage/StorageService.js';
 import type { ExportPlan, LinearAssembler } from '../types.js';
-import type { SimCaptureBackend } from '../capture/captureTypes.js';
+import { CaptureGateFailed, type SimCaptureBackend } from '../capture/captureTypes.js';
+import { fingerprintPlan } from '../planFingerprint.js';
+import { buildExportPlan } from '../exportPlan.js';
 
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'db', 'migrations');
 
@@ -72,10 +74,15 @@ interface ExportRowView {
     warnings?: string[];
     failure?: { code: string; retryable: boolean; phase: string; detail: string };
   } | null;
+  /** What the run actually did. `plan` is the frozen snapshot and never changes. */
+  effective_plan: { timeline?: unknown[]; warnings?: string[] } | null;
+  /** Why a run stopped, in its own column rather than merged over the snapshot. */
+  failure: { code?: string; retryable?: boolean; phase?: string; detail?: string } | null;
   finished_at: string | null;
 }
 const exportRow = (id: string): Promise<ExportRowView> =>
-  one<ExportRowView>(`SELECT status, quality_state, error, output_key, objects_total, objects_done, plan, finished_at
+  one<ExportRowView>(`SELECT status, quality_state, error, output_key, objects_total, objects_done,
+                             plan, effective_plan, failure, finished_at
                         FROM project_exports WHERE id = $1`, [id]);
 
 /** Poll (real timers) until a condition holds — the suite's only concession to async intervals. */
@@ -120,11 +127,60 @@ async function seed(): Promise<void> {
     [section.id, `https://cdn.test/simulations/x/index.html?section=${section.id}&v=h1`]);
 }
 
-async function newExport(status = 'queued', opts: { cancelRequested?: boolean; staleMinutes?: number } = {}): Promise<string> {
+/**
+ * Most tests here are about claiming, fencing, heartbeats, assembly and cancellation — not the
+ * degradation policy — and they were written when a failed capture always fell back to a poster.
+ * They therefore state `allow_poster` explicitly, which is what their assertions assume. The strict
+ * default is exercised deliberately by the outcome-matrix tests further down.
+ */
+/**
+ * A row as the CONTROLLER makes one: with the plan frozen and fingerprinted. The worker no longer
+ * plans, so a row without a snapshot is not a valid job — it is a row from before the snapshot
+ * existed, and the runner refuses it rather than re-planning, which is the behaviour the snapshot
+ * replaced. Building the plan here with the real builder keeps these tests on the production path.
+ *
+ * `policy` defaults to `allow_poster` because most tests here are about claiming, fencing,
+ * heartbeats and assembly, and were written when a failed capture always fell back to a poster. The
+ * strict default is exercised deliberately by the outcome-matrix tests.
+ */
+async function newExport(
+  status = 'queued',
+  opts: {
+    cancelRequested?: boolean;
+    staleMinutes?: number;
+    policy?: 'forbid' | 'allow_poster';
+    /** Freeze a DIFFERENT plan than the project currently implies (drift and tamper cases). */
+    planOverride?: Record<string, unknown>;
+    /** Store a fingerprint that does not match the plan (the tamper case). */
+    fingerprintOverride?: string | null;
+    /** Store no snapshot at all (the legacy-row case). */
+    withoutSnapshot?: boolean;
+  } = {},
+): Promise<string> {
+  let plan: Record<string, unknown> | null = null;
+  let fingerprint: string | null = null;
+  if (!opts.withoutSnapshot) {
+    // Planned with the SAME storage the run uses: the drift fixture counts HEADs, so planning
+    // against a second instance would consume the first one somewhere the run cannot see.
+    // A project the planner REFUSES (branching, no media) still needs a row here: those tests are
+    // about what the runner does with a snapshot, and since the runner no longer plans, the refusal
+    // they were written against is now the controller's answer to the POST. A minimal valid
+    // snapshot keeps the row runnable so the behaviour under test is the behaviour observed.
+    plan = opts.planOverride
+      ?? ((await buildExportPlan(projectId, storage).catch(() => ({
+        projectId, grid: { w: 1920, h: 1080, fps: 30 }, timeline: [], warnings: [], audio: [], sources: [],
+      }))) as unknown as Record<string, unknown>);
+    fingerprint = opts.fingerprintOverride === undefined ? fingerprintPlan(plan) : opts.fingerprintOverride;
+  }
   const { id } = await one<{ id: string }>(
-    `INSERT INTO project_exports (project_id, status, cancel_requested, updated_at)
-     VALUES ($1,$2,$3, now() - ($4 || ' minutes')::interval) RETURNING id`,
-    [projectId, status, opts.cancelRequested ?? false, String(opts.staleMinutes ?? 0)]);
+    `INSERT INTO project_exports
+       (project_id, status, cancel_requested, updated_at, degradation_policy, plan, plan_fingerprint, objects_total)
+     VALUES ($1,$2,$3, now() - ($4 || ' minutes')::interval, $5, $6::jsonb, $7, $8) RETURNING id`,
+    [projectId, status, opts.cancelRequested ?? false, String(opts.staleMinutes ?? 0),
+     opts.policy ?? 'allow_poster',
+     plan ? JSON.stringify(plan) : null,
+     fingerprint,
+     Array.isArray((plan as { timeline?: unknown[] } | null)?.timeline) ? (plan as { timeline: unknown[] }).timeline.length : 0]);
   return id;
 }
 
@@ -173,6 +229,9 @@ function stubAssembler(impl?: LinearAssembler['assemble']) {
 
 let storage: ReturnType<typeof fakeStorage>;
 
+const withCapture = (assembler: LinearAssembler, backend: SimCaptureBackend): ProjectExportService =>
+    new ProjectExportService(storage, assembler, backend);
+
 const service = (assembler: LinearAssembler): ProjectExportService =>
   new ProjectExportService(storage, assembler);
 
@@ -215,12 +274,12 @@ describe('run — the happy path (Phase 1: poster fallback for every sim window)
     ]);
 
     // Phase 1 capturing: the sim-capture window became poster-fallback, recorded as a warning.
-    const kinds = row.plan!.timeline!.map((w) => w.kind).sort();
+    const kinds = row.effective_plan!.timeline!.map((w) => w.kind).sort();
     expect(kinds).toEqual(['poster-fallback', 'video']);
     // Wording note: with no capture backend injected (the default), every sim window becomes its
     // poster still. Asserted on the stable phrase, not the exact sentence, so a reword of the
     // reason does not break a test whose intent is 'the user is told the sim became a still'.
-    expect(row.plan!.warnings!.some((w) => w.includes('poster still'))).toBe(true);
+    expect(row.effective_plan!.warnings!.some((w) => w.includes('poster still'))).toBe(true);
 
     // The assembler received the SUBSTITUTED plan — it must never see a sim-capture window.
     const seen = assembler.assemble.mock.calls[0][0];
@@ -234,8 +293,7 @@ describe('run — the happy path (Phase 1: poster fallback for every sim window)
   // question is whether the service does the right thing with what a backend returns — capture a
   // clip and splice it, or degrade to the poster, loudly.
   describe('with a capture backend injected', () => {
-    const withCapture = (assembler: LinearAssembler, backend: SimCaptureBackend): ProjectExportService =>
-      new ProjectExportService(storage, assembler, backend);
+    // (hoisted to module scope so the outcome-matrix tests can use the same wiring)
 
     it('a gated clip is uploaded to the section key and spliced — the window is NOT a poster', async () => {
       const assembler = stubAssembler();
@@ -292,9 +350,9 @@ describe('run — the happy path (Phase 1: poster fallback for every sim window)
       const row = await exportRow(exportId);
       expect(row.status).toBe('ready');            // one bad window never fails the whole export
       expect(row.quality_state).toBe('degraded');
-      const simWin = row.plan!.timeline!.find((w) => w.sectionId === scriptedSectionId);
+      const simWin = row.effective_plan!.timeline!.find((w) => w.sectionId === scriptedSectionId);
       expect(simWin?.kind).toBe('poster-fallback');
-      expect(row.plan!.warnings!.some((w) => w.includes('sanity gate'))).toBe(true);
+      expect(row.effective_plan!.warnings!.some((w) => w.includes('sanity gate'))).toBe(true);
       // No captured clip was uploaded — only the master.
       expect(storage.uploads.map((u) => u.key)).not.toContain(
         `exports/${projectId}/${exportId}/sections/${scriptedSectionId}.mp4`);
@@ -312,6 +370,252 @@ describe('run — the happy path (Phase 1: poster fallback for every sim window)
       expect(row.quality_state).toBe('degraded');
       // isAvailable() false means captureSection is NEVER called — no browser launched to learn it.
       expect(captureSection).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * The outcome matrix. The product contract is a video OF THE SIMULATIONS: under the default
+   * policy a capture that does not happen must fail the export, because a still image is not a
+   * lesser version of the requested artifact, it is a different one — and shipping it silently is
+   * exactly the failure the whole capture incident exists to prevent. Publishing nothing is better
+   * than publishing a slideshow, because nothing is visible and a silent slideshow is not.
+   */
+  describe('degradation policy — the outcome matrix', () => {
+    const strictFailure = async (exportId: string) => {
+      const row = await exportRow(exportId);
+      expect(row.status).toBe('failed');
+      // The load-bearing assertion: NO master was published, at any key.
+      expect(row.output_key).toBeNull();
+      return row;
+    };
+
+    it('FORBID + unavailable provider fails the export and publishes no master', async () => {
+      const assembler = stubAssembler();
+      const captureSection = vi.fn();
+      const backend: SimCaptureBackend = { name: 'fake', isAvailable: async () => false, captureSection };
+      const exportId = await newExport('queued', { policy: 'forbid' });
+
+      await expect(withCapture(assembler, backend).run(exportId)).rejects.toMatchObject({
+        code: 'capture_failed_strict',
+      });
+      const row = await strictFailure(exportId);
+      expect(row.error).toMatch(/could not be rendered/i);
+      expect(captureSection).not.toHaveBeenCalled();
+    });
+
+    it('FORBID + a capture exception fails the export and publishes no master', async () => {
+      const assembler = stubAssembler();
+      const backend: SimCaptureBackend = {
+        name: 'fake',
+        isAvailable: async () => true,
+        captureSection: async () => { throw new Error('chrome crashed at begin_frame'); },
+      };
+      const exportId = await newExport('queued', { policy: 'forbid' });
+      await expect(withCapture(assembler, backend).run(exportId)).rejects.toMatchObject({
+        code: 'capture_failed_strict',
+      });
+      await strictFailure(exportId);
+    });
+
+    it('FORBID + a FAILED GATE fails the export — a dead canvas is never published', async () => {
+      const assembler = stubAssembler();
+      const backend: SimCaptureBackend = {
+        name: 'fake',
+        isAvailable: async () => true,
+        captureSection: async () => {
+          throw new CaptureGateFailed('every sampled canvas frame is uniform', 'SwiftShader', 450);
+        },
+      };
+      const exportId = await newExport('queued', { policy: 'forbid' });
+      await expect(withCapture(assembler, backend).run(exportId)).rejects.toMatchObject({
+        code: 'capture_failed_strict',
+        // A gate failure is deterministic: the same package fails the same way, so retrying is a
+        // waste of ten minutes of CPU rather than a second chance.
+        retryable: false,
+      });
+      await strictFailure(exportId);
+    });
+
+    it('ALLOW_POSTER keeps the per-window fallback and records the exact warning', async () => {
+      const assembler = stubAssembler();
+      const backend: SimCaptureBackend = {
+        name: 'fake',
+        isAvailable: async () => true,
+        captureSection: async () => { throw new Error('chrome crashed at begin_frame'); },
+      };
+      const exportId = await newExport('queued', { policy: 'allow_poster' });
+      await withCapture(assembler, backend).run(exportId);
+
+      const row = await exportRow(exportId);
+      expect(row.status).toBe('ready');
+      expect(row.quality_state).toBe('degraded');
+      const warnings = row.effective_plan?.warnings ?? [];
+      expect(warnings.join(' ')).toMatch(/simulation capture failed/i);
+      expect(warnings.join(' ')).toMatch(/chrome crashed at begin_frame/);
+    });
+
+    it('CANCELLATION is never degradation, even where a poster was permitted', async () => {
+      const assembler = stubAssembler();
+      const abortErr = Object.assign(new Error('aborted'), { name: 'AbortError' });
+      const backend: SimCaptureBackend = {
+        name: 'fake',
+        isAvailable: async () => true,
+        captureSection: async () => { throw abortErr; },
+      };
+      // allow_poster: the ONE policy under which a lazy catch would have turned a user pressing
+      // stop into a published slideshow.
+      const exportId = await newExport('queued', { policy: 'allow_poster' });
+      await expect(withCapture(assembler, backend).run(exportId)).rejects.toMatchObject({ name: 'AbortError' });
+
+      const row = await exportRow(exportId);
+      expect(row.status).toBe('cancelled');
+      expect(row.output_key).toBeNull();
+      // The planner's own advisory ("no poster exists for this configuration") is fine and
+      // predates the run. What must NOT appear is a DEGRADATION record — a claim that this window
+      // was exported as a still, which is what a lazy catch would have written for a cancellation.
+      const warnings = row.effective_plan?.warnings ?? [];
+      expect(warnings.join(' ')).not.toMatch(/exported as its poster still/i);
+      expect(warnings.join(' ')).not.toMatch(/simulation capture failed/i);
+    });
+
+    it('a cancel DURING capture ends as cancelled — with the error the REAL backend throws', async () => {
+      // The earlier version of this test injected an `AbortError` from the fake backend, so it
+      // passed while the production path could not possibly reach it: nothing in the container
+      // capture stack produces that name. An aborted container exits non-zero and the boundary
+      // reports "exited 137 with no readable result.json" — a plain Error. Under the default
+      // `forbid` policy that fell through to the strict branch and was written as `failed`, telling
+      // the user their simulation could not be rendered when in fact they had pressed stop.
+      //
+      // So this fake throws exactly what the real one does: an ordinary error, after the cancel
+      // flag is set. The signal, not the error's spelling, has to be what decides.
+      const assembler = stubAssembler();
+      const exportId = await newExport('queued', { policy: 'forbid' });
+      const backend: SimCaptureBackend = {
+        name: 'fake',
+        isAvailable: async () => true,
+        captureSection: async () => {
+          await pg.query(`UPDATE project_exports SET cancel_requested = true WHERE id = $1`, [exportId]);
+          // Give the service's cancel poll a beat to observe the flag and abort the controller.
+          await new Promise((r) => setTimeout(r, EXPORT_HEARTBEAT_MS > 50 ? 60 : 5));
+          throw new Error('export capture container exited 137 with no readable result.json');
+        },
+      };
+
+      await expect(withCapture(assembler, backend).run(exportId)).rejects.toMatchObject({
+        code: 'export_cancelled',
+      });
+      const row = await exportRow(exportId);
+      expect(row.status).toBe('cancelled');
+      expect(row.output_key).toBeNull();
+      expect(row.error).toMatch(/cancelled/i);
+      // And it must NOT read as a broken simulation.
+      expect(row.error ?? '').not.toMatch(/could not be rendered/i);
+    });
+
+    it('a cancel that lands during the master upload does NOT publish a ready export', async () => {
+      // The status fence alone let cancellation lose a race it must always win: the row was still
+      // legitimately in-flight, so the final write published `ready` with an output_key anyway —
+      // a video that exists, downloads, and is billed for, after the user said no.
+      const assembler = stubAssembler();
+      const exportId = await newExport('queued', { policy: 'allow_poster' });
+      const storageSpy = storage;
+      // Set the flag at the last possible moment: after assembly, as the master is uploaded.
+      const originalUpload = storageSpy.uploadFile.bind(storageSpy);
+      storageSpy.uploadFile = async (key: string, ...rest: unknown[]) => {
+        if (key.endsWith('master.mp4')) {
+          await pg.query(`UPDATE project_exports SET cancel_requested = true WHERE id = $1`, [exportId]);
+        }
+        return (originalUpload as (...a: unknown[]) => Promise<unknown>)(key, ...rest);
+      };
+      try {
+        await withCapture(assembler, {
+          name: 'fake', isAvailable: async () => false, captureSection: vi.fn(),
+        }).run(exportId).catch(() => {});
+      } finally {
+        storageSpy.uploadFile = originalUpload;
+      }
+
+      const row = await exportRow(exportId);
+      expect(row.status).not.toBe('ready');
+      // The load-bearing assertion: nothing points at a master.
+      expect(row.output_key).toBeNull();
+    });
+
+    it('the policy is read from the ROW, so a redelivery cannot change the answer', async () => {
+      const exportId = await newExport('queued', { policy: 'forbid' });
+      const { degradation_policy } = await one<{ degradation_policy: string }>(
+        `SELECT degradation_policy FROM project_exports WHERE id = $1`, [exportId]);
+      expect(degradation_policy).toBe('forbid');
+    });
+  });
+
+  /**
+   * Progress that can be believed.
+   *
+   * The counter was incremented BEFORE each window, so a project reported "3 of 4 done" while the
+   * third had not started — and if the run then failed, the user had been told it was nearly
+   * finished. During a simulation capture, which is minutes long, nothing moved at all and the only
+   * honest thing the UI could show was a spinner.
+   */
+  describe('progress is monotonic and never ahead of the work', () => {
+    it('names the section it is working on, and counts it only once it is finished', async () => {
+      const seen: Array<{ done: number; section: string | null; total: number }> = [];
+      const assembler = stubAssembler();
+      const exportId = await newExport();
+      const backend: SimCaptureBackend = {
+        name: 'fake',
+        isAvailable: async () => true,
+        captureSection: async () => {
+          // Mid-capture: the row must name THIS section and must not have counted it yet.
+          const row = await one<{ phase_done: number; current_section_label: string | null; phase_total: number }>(
+            `SELECT phase_done, current_section_label, phase_total FROM project_exports WHERE id = $1`, [exportId]);
+          seen.push({ done: row.phase_done, section: row.current_section_label, total: row.phase_total });
+          throw new Error('stop here — the observation above is the test');
+        },
+      };
+      await withCapture(assembler, backend).run(exportId).catch(() => {});
+
+      expect(seen).toHaveLength(1);
+      expect(seen[0]!.section).toBe('Scripted sim');
+      // NOT counted while running. MUTATION TARGET: increment before the window and this breaks.
+      expect(seen[0]!.done).toBeLessThan(seen[0]!.total);
+    });
+
+    it('never moves backwards across the whole run', async () => {
+      const assembler = stubAssembler();
+      const exportId = await newExport();
+      const samples: number[] = [];
+      const poll = setInterval(() => {
+        void one<{ phase_done: number }>(`SELECT phase_done FROM project_exports WHERE id = $1`, [exportId])
+          .then((r) => samples.push(r.phase_done))
+          .catch(() => {});
+      }, 5);
+      try {
+        await service(assembler).run(exportId);
+      } finally {
+        clearInterval(poll);
+      }
+      // Assembly must not reset a counter the capture phase already advanced.
+      for (let i = 1; i < samples.length; i++) expect(samples[i]!).toBeGreaterThanOrEqual(samples[i - 1]!);
+    });
+
+    it('degraded_windows counts real substitutions, not warnings', async () => {
+      const assembler = stubAssembler();
+      const backend: SimCaptureBackend = {
+        name: 'fake',
+        isAvailable: async () => true,
+        captureSection: async () => { throw new Error('capture failed'); },
+      };
+      const exportId = await newExport('queued', { policy: 'allow_poster' });
+      await withCapture(assembler, backend).run(exportId);
+
+      const row = await one<{ degraded_windows: number }>(
+        `SELECT degraded_windows FROM project_exports WHERE id = $1`, [exportId]);
+      const warnings = (await exportRow(exportId)).effective_plan?.warnings ?? [];
+      expect(row.degraded_windows).toBe(1);
+      // The planner's advisories are also in `warnings`, so the two numbers differ — which is the
+      // whole point: counting warnings reported degradation where none happened.
+      expect(warnings.length).toBeGreaterThanOrEqual(row.degraded_windows);
     });
   });
 
@@ -412,7 +716,7 @@ describe('run — cancellation', () => {
     expect(row.status).toBe('cancelled');
     expect(row.error).toContain(EXPORT_CANCELLED_MESSAGE);
     expect(row.error).toContain('[export_cancelled]');
-    expect(row.plan!.failure).toMatchObject({ code: 'export_cancelled', retryable: false });
+    expect(row.failure).toMatchObject({ code: 'export_cancelled', retryable: false });
     expect(assembler.assemble).not.toHaveBeenCalled();
     expect(storage.uploads).toHaveLength(0);
   });
@@ -425,7 +729,7 @@ describe('run — cancellation', () => {
     await expect(service(assembler).run(exportId)).rejects.toThrow();
     const row = await exportRow(exportId);
     expect(row.status).toBe('cancelled');
-    expect(row.plan!.failure).toMatchObject({ code: 'export_cancelled', retryable: false, phase: 'assembling' });
+    expect(row.failure).toMatchObject({ code: 'export_cancelled', retryable: false, phase: 'assembling' });
     expect(storage.uploads).toHaveLength(0);
   });
 });
@@ -443,7 +747,7 @@ describe('run — the ingest gate (source identity)', () => {
     expect(row.status).toBe('failed');
     // MUTATION TARGET: skip the ingest assertion and this run sails through to `ready` — a
     // master spliced from two generations of one file.
-    expect(row.plan!.failure).toMatchObject({ code: 'source_changed', retryable: true, phase: 'assembling' });
+    expect(row.failure).toMatchObject({ code: 'source_changed', retryable: true, phase: 'assembling' });
     expect(assembler.assemble).not.toHaveBeenCalled();
     expect(storage.uploads).toHaveLength(0);
   });
@@ -458,28 +762,66 @@ describe('run — failure classification', () => {
     const row = await exportRow(exportId);
     expect(row.status).toBe('failed');
     expect(row.error).toContain('[unknown]');
-    expect(row.plan!.failure).toMatchObject({ code: 'unknown', retryable: true, phase: 'assembling' });
-    expect(row.plan!.failure!.detail).toContain('ffmpeg exploded');
+    expect(row.failure).toMatchObject({ code: 'unknown', retryable: true, phase: 'assembling' });
+    expect(row.failure!.detail).toContain('ffmpeg exploded');
     // The plan written at planning time SURVIVES the failure, merged rather than replaced.
-    expect(row.plan!.timeline!.length).toBeGreaterThan(0);
+    expect(row.effective_plan!.timeline!.length).toBeGreaterThan(0);
     expect(row.output_key).toBeNull();
   });
 
-  it('a branching refusal is recorded NOT retryable, with its own code, in the planning phase', async () => {
-    await pg.query(`INSERT INTO branch_sequences (project_id, label, is_entry, sort_order) VALUES ($1,'A',true,0)`,
-      [projectId]);
+  it('a row with NO frozen snapshot is refused, not re-planned', async () => {
+    // Planning refusals (branching, missing media) are now answered by the POST, before a row
+    // exists — `exportEndpoints.test.ts` covers that. What remains here is the runner's own
+    // contract: it executes a snapshot or it stops. Re-planning is precisely what the snapshot
+    // replaced, so a legacy row must not quietly get a second, different plan.
     const assembler = stubAssembler();
-    const exportId = await newExport();
-    await expect(service(assembler).run(exportId)).rejects.toThrow(/branching/i);
+    const exportId = await newExport('queued', { withoutSnapshot: true });
+
+    await expect(service(assembler).run(exportId)).rejects.toMatchObject({ code: 'export_snapshot_missing' });
 
     const row = await exportRow(exportId);
     expect(row.status).toBe('failed');
-    // MUTATION TARGET: classify branching as retryable and this fails — "try again" is provably
-    // false advice for a project that has branching.
-    expect(row.plan!.failure).toMatchObject({
-      code: 'export_branching_unsupported', retryable: false, phase: 'planning',
-    });
+    expect(row.failure).toMatchObject({ code: 'export_snapshot_missing', retryable: false, phase: 'planning' });
     expect(assembler.assemble).not.toHaveBeenCalled();
+    expect(row.output_key).toBeNull();
+  });
+
+  it('a snapshot EDITED after it was stored is refused — the fingerprint is what makes freezing real', async () => {
+    const assembler = stubAssembler();
+    // Stored fingerprint belongs to a different plan: exactly what a hand-edit, a bad migration or
+    // a partial write would produce.
+    const exportId = await newExport('queued', { fingerprintOverride: 'a'.repeat(64) });
+
+    await expect(service(assembler).run(exportId)).rejects.toThrow(/fingerprint mismatch/);
+    const row = await exportRow(exportId);
+    expect(row.status).toBe('failed');
+    expect(assembler.assemble).not.toHaveBeenCalled();
+  });
+
+  it('a snapshot belonging to ANOTHER project never runs under this row', async () => {
+    const assembler = stubAssembler();
+    const foreign = { projectId: '00000000-0000-4000-8000-000000000000', grid: { w: 1920, h: 1080, fps: 30 },
+      timeline: [], warnings: [], audio: [], sources: [] };
+    const exportId = await newExport('queued', { planOverride: foreign });
+
+    await expect(service(assembler).run(exportId)).rejects.toThrow(/not /);
+    expect((await exportRow(exportId)).status).toBe('failed');
+  });
+
+  it('EDITING THE PROJECT after enqueue does not change what runs', async () => {
+    // The whole point of the snapshot. The row is created, then the timeline is retimed — the run
+    // must still produce what the user was shown, not what the project says now.
+    const assembler = stubAssembler();
+    const exportId = await newExport();
+    const before = await one<{ plan: { timeline: unknown[] } }>(
+      `SELECT plan FROM project_exports WHERE id = $1`, [exportId]);
+
+    await pg.query(`UPDATE timeline_sections SET label = label || ' (edited)', end_sec = end_sec + 7 WHERE project_id = $1`, [projectId]);
+    await service(assembler).run(exportId);
+
+    const after = await exportRow(exportId);
+    expect(after.plan).toEqual(before.plan);              // untouched by the run
+    expect(after.status).toBe('ready');
   });
 
   it('classifyExportFailure: refusals pass through; the unknown is retryable', () => {

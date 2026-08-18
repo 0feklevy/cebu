@@ -54,6 +54,86 @@ import {
  * identical attempt, with nothing changed, could succeed. A branching project is `false` —
  * pressing the same button again cannot help; the project has to change first.
  */
+/**
+ * Admission control for the capture phase — the arithmetic that says whether a job CAN finish.
+ *
+ * Capture cost is measured, not guessed: on the reference 2-vCPU worker one frame of a real
+ * simulation costs about 5.4 s at 640×360 and about 16 s at 1920×1080, of which ~97 % is SwiftShader
+ * software rasterisation. Against a per-section budget of `min(600, 90 + 6·durationSec)` that means
+ * a ten-second 1080p window needs roughly 83 minutes and gets 150 seconds.
+ *
+ * Enqueueing such a job is not optimism, it is a promise the system cannot keep: it occupies the
+ * worker for the full budget, is killed, and — under the strict policy — fails. Rejecting it at the
+ * door with a truthful reason is strictly kinder than failing it an hour later, and it is the only
+ * thing that keeps one impossible project from starving every other tenant's queue.
+ *
+ * These are deliberately generous ceilings, not the measured cost: the point is to refuse the
+ * absurd, not to predict the achievable. The real per-section wall clock still governs each capture.
+ */
+export const MAX_SIM_WINDOWS_PER_EXPORT = Number(process.env.EXPORT_MAX_SIM_WINDOWS ?? '12');
+/** Longest single simulation window the server will admit, whatever the UI allows. */
+export const MAX_SIM_WINDOW_SEC = Number(process.env.EXPORT_MAX_SIM_WINDOW_SEC ?? '15');
+/** Total captured frames across the whole export. */
+export const MAX_TOTAL_CAPTURE_FRAMES = Number(process.env.EXPORT_MAX_TOTAL_FRAMES ?? '2700');
+
+export interface AdmissionVerdict {
+  admitted: boolean;
+  /** 413 for "too large to ever run", 429 for "too much at once". */
+  statusCode: 413 | 429;
+  code: string;
+  message: string;
+  detail: string;
+}
+
+/** Decide whether an export's capture workload is admissible. Pure — the caller does the refusing. */
+export function admitCaptureWorkload(
+  windows: readonly { kind: string; startSec: number; endSec: number; label?: string | null }[],
+  fps: number,
+): AdmissionVerdict | null {
+  const sims = windows.filter((w) => w.kind === 'sim-capture');
+  if (sims.length === 0) return null;
+
+  if (sims.length > MAX_SIM_WINDOWS_PER_EXPORT) {
+    return {
+      admitted: false,
+      statusCode: 413,
+      code: 'too_many_simulations',
+      message:
+        `This project has ${sims.length} simulation sections, and an export can render at most `
+        + `${MAX_SIM_WINDOWS_PER_EXPORT}. Split it into shorter projects and export them separately.`,
+      detail: `sim windows ${sims.length} > ${MAX_SIM_WINDOWS_PER_EXPORT}`,
+    };
+  }
+
+  const tooLong = sims.find((w) => w.endSec - w.startSec > MAX_SIM_WINDOW_SEC);
+  if (tooLong) {
+    const secs = Math.round(tooLong.endSec - tooLong.startSec);
+    return {
+      admitted: false,
+      statusCode: 413,
+      code: 'simulation_window_too_long',
+      message:
+        `The simulation "${tooLong.label ?? 'section'}" runs for ${secs} seconds, and a single `
+        + `simulation can be rendered for at most ${MAX_SIM_WINDOW_SEC}. Shorten it and try again.`,
+      detail: `window ${secs}s > ${MAX_SIM_WINDOW_SEC}s`,
+    };
+  }
+
+  const frames = sims.reduce((n, w) => n + Math.round((w.endSec - w.startSec) * fps), 0);
+  if (frames > MAX_TOTAL_CAPTURE_FRAMES) {
+    return {
+      admitted: false,
+      statusCode: 429,
+      code: 'capture_workload_too_large',
+      message:
+        'This export would render more simulation frames than one job is allowed to. '
+        + 'Shorten the simulation sections, or export fewer of them at a time.',
+      detail: `total frames ${frames} > ${MAX_TOTAL_CAPTURE_FRAMES}`,
+    };
+  }
+  return null;
+}
+
 export class ExportRefused extends Error {
   constructor(
     message: string,
@@ -528,6 +608,8 @@ export async function buildExportPlan(
   }
 
   return {
+    // Frozen with the plan: the profile this export was described and consented to under.
+    rendererProfile: (process.env.EXPORT_CAPTURE_RENDERER?.trim() === 'hardware' ? 'hardware' : 'swiftshader') as 'swiftshader' | 'hardware',
     projectId,
     grid: EXPORT_GRID,
     timeline,

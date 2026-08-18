@@ -36,6 +36,11 @@ import { simulations, sim_revisions } from '../../db/schema.js';
 import type { StorageService, StoredObjectHead } from '../storage/StorageService.js';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import { logger } from '../../lib/logger.js';
+import { loadTrustedRegistry } from '../export/capture/dependencies/trustedRegistry.js';
+import {
+  validateCaptureCompatibility,
+  type CaptureCompatibilityReport,
+} from '../export/capture/dependencies/captureCompatibility.js';
 import { canaryReportPrepareMs } from 'shared/sim/prepareBudget';
 import { bridgeAckCapableFromMetadata, requiresImportMapsFromMetadata } from 'shared/sim/bridgeCapability';
 import { createHash } from 'node:crypto';
@@ -371,6 +376,39 @@ export class RevisionService {
    * Verification happens BEFORE the manifest is written, so a package that fails leaves no manifest
    * at all. A revision whose manifest exists is a revision whose bytes were checked.
    */
+  /**
+   * Read the revision's own bytes back and ask whether they can render with NO network.
+   *
+   * Reads from storage rather than trusting an in-memory copy: the verdict must describe what was
+   * actually published. A read failure is reported as its own reason rather than being swallowed —
+   * an unreadable package is not a compatible one.
+   */
+  private async checkCaptureCompatibility(
+    rev: SimRevisionRecord,
+    storagePrefix: string,
+    manifest: SimManifest,
+  ): Promise<CaptureCompatibilityReport> {
+    const files = new Map<string, Buffer>();
+    try {
+      for (const file of manifest.files) {
+        // Only what the module graph and the document can reference — posters and canary evidence
+        // are not part of what renders.
+        if (file.role === 'poster' || file.role === 'canary') continue;
+        files.set(file.path, await this.storage.readObject(revisionFileKey(storagePrefix, rev.id, file.path)));
+      }
+    } catch (err) {
+      return {
+        verdict: 'incompatible',
+        reasons: [`capture compatibility could not be evaluated: ${err instanceof Error ? err.message : String(err)}`],
+        requiredPacks: [],
+        external: [],
+        missingLocalRefs: [],
+      };
+    }
+    const registry = await loadTrustedRegistry();
+    return validateCaptureCompatibility({ entryPath: manifest.entry, files }, registry.descriptors());
+  }
+
   async validate(
     simulationId: string,
     rev: SimRevisionRecord,
@@ -379,6 +417,29 @@ export class RevisionService {
   ): Promise<{ ok: boolean; problems: ManifestProblem[]; verified: VerificationReport }> {
     const problems = validateManifest(opts.manifest, opts.referencedPaths ?? new Set());
     const verified = await this.verifyStoredBytes(rev, storagePrefix, opts.manifest);
+
+    // CAPTURE COMPATIBILITY — asked HERE, before the revision can become active, because the
+    // alternative is what the v0.1.26 incident actually was: a package naming a CDN published
+    // green, served fine in the viewer (which has a network), and only failed months later inside
+    // the network-less capture container as a dead black canvas with no explanation. Generation
+    // guidance can ask authors not to do this; only a gate can stop it shipping unnoticed.
+    const capture = await this.checkCaptureCompatibility(rev, storagePrefix, opts.manifest);
+    if (capture.verdict === 'incompatible') {
+      await this.markFailed(
+        simulationId,
+        rev.id,
+        'validating',
+        JSON.stringify({ captureCompatibility: capture.reasons }).slice(0, 4000),
+      );
+      return {
+        ok: false,
+        problems: [
+          ...problems,
+          ...capture.reasons.map((reason: string) => ({ code: 'capture-incompatible' as ManifestProblem['code'], detail: reason })),
+        ],
+        verified,
+      };
+    }
 
     if (problems.length > 0 || verified.problems.length > 0) {
       await this.markFailed(

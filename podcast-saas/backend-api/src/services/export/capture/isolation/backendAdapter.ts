@@ -20,7 +20,7 @@
  */
 
 import { cp, copyFile, mkdir } from 'node:fs/promises';
-import { basename, join } from 'node:path';
+import { join } from 'node:path';
 
 import type {
   CaptureResult as BackendCaptureResult,
@@ -34,6 +34,15 @@ import type { SimCaptureDriver } from './containerEntrypoint.js';
 
 /** Output-relative directory the relocated frames land in. */
 export const RELOCATED_FRAMES_DIR = 'frames';
+
+/**
+ * The ONE name a relocated clip may have. Previously the adapter kept `basename(result.clipPath)`,
+ * so the artifact name in `result.json` was chosen by the in-container backend — and the trusted
+ * side then resolved that name against its output directory. Normalising here means the trusted
+ * side's allowlist (`ALLOWED_ARTIFACT_PATHS`) matches by construction rather than by agreement, and
+ * one fewer string crosses the boundary carrying a filename's worth of freedom.
+ */
+export const RELOCATED_CLIP_FILE = 'section.mp4';
 
 export interface BackendAdapterOptions {
   /** The capture-environment identity (image digest, headless-shell version, viewport, DPR). */
@@ -55,6 +64,8 @@ export function toBackendSpec(spec: ContainerCaptureSpec, servedSimUrl: string):
     // The backend seeds mulberry32 from this; a null hash means "no stable seed" → empty string.
     configHash: spec.configHash ?? '',
     posterKey: spec.posterKey ?? '',
+    warmupFrames: spec.warmupFrames,
+    rendererProfile: spec.rendererProfile,
   };
 }
 
@@ -75,6 +86,9 @@ export function backendToDriver(backend: SimCaptureBackend, opts: BackendAdapter
         status: 'ok',
         framesDir,
         clipPath,
+        // Advisory, and it must reach the host on the SUCCESS path too — the run that answers
+        // "why is this slow" is the one that worked.
+        cost: result.cost ?? null,
         frameCount: result.frameCount,
         rendererString: result.rendererString,
         gate: result.gate,
@@ -105,9 +119,8 @@ async function relocateArtifacts(
     framesDir = RELOCATED_FRAMES_DIR;
   }
   if (result.clipPath) {
-    const name = basename(result.clipPath);
-    await copyFile(result.clipPath, join(outputDir, name));
-    clipPath = name;
+    await copyFile(result.clipPath, join(outputDir, RELOCATED_CLIP_FILE));
+    clipPath = RELOCATED_CLIP_FILE;
   }
   return { framesDir, clipPath };
 }

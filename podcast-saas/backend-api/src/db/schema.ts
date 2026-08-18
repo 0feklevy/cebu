@@ -1428,6 +1428,34 @@ export const project_exports = pgTable(
     // full | degraded. A column, not a plan-jsonb derivation: "is this master the full
     // composition?" is the one fact every poll needs, answered without parsing the plan.
     quality_state:    text('quality_state').notNull().default('full'),
+    // forbid | allow_poster. FROZEN at creation and never rewritten: consent was given for the
+    // project as it was then, and a retry or a duplicate delivery must honour the same answer.
+    // 'forbid' is the default because the product contract is a full-quality render — a capture
+    // failure fails the export instead of silently shipping stills.
+    degradation_policy: text('degradation_policy').notNull().default('forbid'),
+    // The FROZEN execution snapshot's identity: SHA-256 over a canonical form of `plan`, domain
+    // separated. The worker verifies it before running, and consent is issued against it — so
+    // "the plan the user agreed to" stops being a claim about timing.
+    plan_fingerprint: text('plan_fingerprint'),
+    // What the run actually did. Kept SEPARATE so `plan` is never rewritten: runtime results used
+    // to be merged into it, which overwrote the record of what we were asked to make with the
+    // record of what happened — the first thing anyone needs after a bad export.
+    effective_plan: jsonb('effective_plan'),
+    // Why a run stopped. Also separate, for the same reason.
+    failure: jsonb('failure'),
+    // Progress the poll can say something true with. `objects_done/total` alone could not: a
+    // simulation capture is minutes long and the counter sat still throughout it.
+    current_phase: text('current_phase'),
+    phase_done: integer('phase_done').notNull().default(0),
+    phase_total: integer('phase_total').notNull().default(0),
+    current_section_id: uuid('current_section_id'),
+    current_section_label: text('current_section_label'),
+    capture_stage: text('capture_stage'),
+    frames_done: integer('frames_done').notNull().default(0),
+    frames_total: integer('frames_total').notNull().default(0),
+    // Real poster-fallback windows, not warnings: warnings include planning advisories that are
+    // not degradation, so counting them told users their export was degraded when nothing was.
+    degraded_windows: integer('degraded_windows').notNull().default(0),
     objects_total:    integer('objects_total').notNull().default(0),
     objects_done:     integer('objects_done').notNull().default(0),
     plan:             jsonb('plan'),

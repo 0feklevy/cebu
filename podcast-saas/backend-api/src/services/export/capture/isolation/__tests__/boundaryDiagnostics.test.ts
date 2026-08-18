@@ -38,11 +38,18 @@ const SPEC: ContainerCaptureSpec = {
   width: 640,
   height: 360,
   warmupFrames: 5,
+  rendererProfile: 'swiftshader' as const,
   posterKey: null,
   output: { format: 'jpeg', quality: 80, frameDir: 'frames', namePattern: 'frame-%06d.jpg' },
   wallClockTimeoutSec: 30,
 };
 
+/**
+ * A PASSING result has to be internally consistent with the spec that asked for it — the frames are
+ * about to be encoded at that size, so a 0×0 viewport on a success is a contradiction, not a
+ * diagnostic. (A FAILED result keeps 0×0: a capture that died before it had a page reports that
+ * honestly, and rejecting it would replace the real reason with a complaint about its viewport.)
+ */
 const FAILED_RESULT = {
   resultVersion: 1,
   sectionId: 'sec-1',
@@ -55,6 +62,17 @@ const FAILED_RESULT = {
   reason: 'backend module X exports neither createBackend() nor a default backend',
   rendererIdentity: { imageDigest: 'img', headlessShellVersion: 'v', viewport: { w: 0, h: 0 }, dpr: 1 },
   failure: { code: 'capture_failed', detail: 'backend module X exports neither createBackend() nor a default backend' },
+};
+
+/**
+ * A PASSING result has to be internally consistent with the spec that asked for it — those frames
+ * are about to be encoded at that size, so a 0×0 viewport on a success is a contradiction rather
+ * than a diagnostic. A FAILED result keeps 0×0: a capture that died before it had a page reports
+ * that honestly, and rejecting it would replace the real reason with a complaint about its viewport.
+ */
+const PASSING_IDENTITY = {
+  ...FAILED_RESULT,
+  rendererIdentity: { imageDigest: 'img', headlessShellVersion: 'v', viewport: { w: 640, h: 360 }, dpr: 1 },
 };
 
 let scratch: string;
@@ -96,7 +114,7 @@ process.exit(${behavior.exitCode});
 
 function boundary(dockerBin: string): DockerCaptureBoundary {
   return new DockerCaptureBoundary({
-    image: 'podcast-saas/export-worker:test',
+    image: 'podcast-saas/export-worker:test', rendererProfile: 'swiftshader',
     user: '1000:1000',
     cpus: '2',
     memoryMb: 2048,
@@ -119,7 +137,7 @@ describe('DockerCaptureBoundary — non-zero exit diagnostics (Mutation E)', () 
 
   it('exit 1 + an "ok" result.json ⇒ throws on the contradiction — a dead container is never a success', async () => {
     const { dockerBin, inputDir, outputDir } = await stubDocker({
-      result: { ...FAILED_RESULT, status: 'ok', gate: 'passed', framesDir: 'frames', frameCount: 30, reason: null },
+      result: { ...PASSING_IDENTITY, status: 'ok', gate: 'passed', framesDir: 'frames', frameCount: 30, reason: null },
       exitCode: 1,
     });
     await expect(
@@ -143,7 +161,7 @@ describe('DockerCaptureBoundary — non-zero exit diagnostics (Mutation E)', () 
 
   it('exit 0 + a valid result ⇒ resolves normally (the happy path is untouched)', async () => {
     const { dockerBin, inputDir, outputDir } = await stubDocker({
-      result: { ...FAILED_RESULT, status: 'ok', gate: 'passed', framesDir: 'frames', frameCount: 30, reason: null, failure: null },
+      result: { ...PASSING_IDENTITY, status: 'ok', gate: 'passed', framesDir: 'frames', frameCount: 30, reason: null, failure: null },
       exitCode: 0,
     });
     const result = await boundary(dockerBin).runCapture(SPEC, { inputDir, outputDir }, new AbortController().signal);
@@ -247,7 +265,10 @@ describe('DockerCaptureBoundary — termination paths (cancellation and the wall
     expect((outcome as Error).message).toMatch(/exited 137/);
   }, 25_000);
 
-  it('a signal already aborted BEFORE the call still terminates the container and settles', async () => {
+  it('a signal already aborted BEFORE the call never runs docker at all', async () => {
+    // The old behaviour launched the container and then stopped it — a cold Chrome start spent on
+    // a job nobody wants, and `docker stop` racing a container that may not exist yet. Cancelled
+    // before the start means NOTHING starts.
     const { dockerBin, inputDir, outputDir, log } = await lifecycleDocker();
     const controller = new AbortController();
     controller.abort();
@@ -255,9 +276,11 @@ describe('DockerCaptureBoundary — termination paths (cancellation and the wall
       .runCapture(SPEC, { inputDir, outputDir }, controller.signal)
       .catch((e: unknown) => e as Error);
 
-    expect(log()).toMatch(/^stop /m);
-    expect(log()).toContain('run-exit');
     expect(outcome).toBeInstanceOf(Error);
+    expect((outcome as Error).message).toMatch(/cancelled before the container started/);
+    // MUTATION TARGET: remove the early guard and docker runs — this log stops being empty.
+    expect(log()).not.toContain('run-exit');
+    expect(log()).not.toMatch(/^run /m);
   }, 20_000);
 });
 
