@@ -24,7 +24,7 @@ import { ApiKeyService } from '../../services/secrets/ApiKeyService.js';
 import { UsageTrackingService } from '../../services/usage/UsageTrackingService.js';
 import {
   getSessionToken, isAnamConfigured, listAnamResource, upsertVideoPersona,
-  enrichAvatarConfigFromAnam, buildAvatarDisplay, describeAvatar, getPersona,
+  enrichAvatarConfigFromAnam, buildAvatarDisplay, peekAvatarLook,
   ensureKnowledgeGroup, ensureKnowledgeTool, uploadKnowledgeDocument, listKnowledgeDocuments, deleteKnowledgeDocument, listSystemTools,
   type AvatarPersonaConfig,
 } from '../../services/avatar/anamService.js';
@@ -41,6 +41,11 @@ import { assertSafeZipArchive } from '../../services/security/zipGuard.js';
 import { editableProject } from '../../services/collabAccess.js';
 import { signMemoryToken, verifyMemoryToken } from '../../services/avatar/memoryToken.js';
 import { CHARACTERS, DEFAULT_CHARACTER_ID } from '../../services/avatar/characters.js';
+import { beginStartTrace } from '../../services/avatar/startTelemetry.js';
+import { verifyStatefulPersona, bakedStateFor, hashTranscript, bakedCharacterId } from '../../services/avatar/personaFingerprint.js';
+import { withTranscriptKnowledge, scheduleSelfHeal, type BakeInput } from '../../services/avatar/personaBake.js';
+import { startIdempotencyKey, withStartIdempotency } from '../../services/avatar/startIdempotency.js';
+import { scheduleDisplayResolve } from '../../services/avatar/displayIdentity.js';
 import { logger } from '../../lib/logger.js';
 
 // Read avatar_config defensively: normally a jsonb object, but tolerate a legacy
@@ -149,10 +154,6 @@ function zipHasHtml(buffer: Buffer): boolean {
   return zip.getEntries().some((entry) => !entry.isDirectory && /\.html?$/i.test(entry.entryName));
 }
 
-// Cap on the caption transcript inlined into a session's KNOWLEDGE block — bounds the
-// per-session prompt size while covering the full script of typical videos.
-const TRANSCRIPT_KNOWLEDGE_MAX_CHARS = 24_000;
-
 export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> {
   // ── Public: health ─────────────────────────────────────────────────────────
   app.get('/api/v1/avatar/health', async () => ({
@@ -164,65 +165,133 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
   }));
 
   // ── Public: start an avatar session (applies the video's saved persona config) ─
+  //
+  // Every phase of this handler is timed into ONE redacted structured line (see
+  // services/avatar/startTelemetry.ts). The endpoint used to log only failures, which is why
+  // the "very very slow" report could not be attributed to a phase. The trace is the only log
+  // this handler emits: it carries durations, the persona path taken and the outcome, and it
+  // cannot carry a token, key, transcript, prompt or persona body by construction.
   app.post('/api/v1/avatar/start', { preHandler: [firebaseAuthOptionalMiddleware] }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const body = (request.body ?? {}) as { character_id?: string; projectId?: string };
+    const body = (request.body ?? {}) as { character_id?: string; projectId?: string; startKey?: unknown };
+    const trace = beginStartTrace({
+      projectId: body.projectId,
+      characterId: body.character_id,
+      authenticated: Boolean(request.dbUser),
+    });
     let cfg: AvatarPersonaConfig | undefined;
     let apiKey: string | undefined;
+    let characterId: string;
+    let selfHeal: BakeInput | null = null;
     if (body.projectId) {
-      const project = await db.query.projects.findFirst({ where: eq(projects.id, body.projectId), columns: { avatar_config: true, visibility: true, created_by: true } }).catch(() => null);
-      if (!project) return reply.code(404).send({ message: 'Project not found' });
-      if (!(await avatarProjectAllowedAsync(body.projectId, project, request.dbUser ?? null))) {
+      const project = await trace.time('project_read', () => db.query.projects.findFirst({ where: eq(projects.id, body.projectId!), columns: { avatar_config: true, visibility: true, created_by: true } }).catch(() => null));
+      if (!project) {
+        trace.finish({ outcome: 'not_found', status: 404 });
         return reply.code(404).send({ message: 'Project not found' });
       }
-      cfg = (project.avatar_config as AvatarPersonaConfig | null) ?? undefined;
-      apiKey = await resolveAnamKeyForProject(body.projectId).catch(() => undefined);
-      // Resolve the selected avatar's display name/image (and default voice) from
-      // Anam when they were not persisted — otherwise the popup falls back to the
-      // default character's image/name (the "always Einstein" bug). Only when a
-      // custom avatar is chosen but its identity fields are missing.
-      if (cfg?.avatarId && (!cfg.avatarName || !cfg.avatarImageUrl || !cfg.voiceId)) {
-        cfg = await enrichAvatarConfigFromAnam(cfg, apiKey).catch(() => cfg);
+      const allowed = await trace.time('authorize', () => avatarProjectAllowedAsync(body.projectId!, project, request.dbUser ?? null));
+      if (!allowed) {
+        trace.finish({ outcome: 'not_found', status: 404 });
+        return reply.code(404).send({ message: 'Project not found' });
       }
-      // The video's caption transcript (SEO/CC pipeline) is the avatar's DEFAULT
-      // knowledge: inline it into the session's KNOWLEDGE block (after any user-written
-      // knowledge) so the avatar can answer about the actual spoken content. When the
-      // saved persona was baked WITHOUT the RAG knowledge tool, prefer an ephemeral
-      // session for this start — the stateful persona wouldn't know the video at all.
-      const transcript = await getProjectTranscript(body.projectId).catch(() => null);
-      if (transcript) {
-        const userKnowledge = cfg?.knowledge?.trim();
-        const block =
-          'VIDEO TRANSCRIPT — the exact spoken content of the video the viewer is watching. ' +
-          `Base your answers about the video on it:\n${transcript.slice(0, TRANSCRIPT_KNOWLEDGE_MAX_CHARS)}`;
-        cfg = { ...(cfg ?? {}), knowledge: userKnowledge ? `${userKnowledge}\n\n${block}` : block };
-        if (cfg.personaId && !cfg.knowledgeToolId) cfg = { ...cfg, personaId: undefined };
+      cfg = asPersonaConfig(project.avatar_config);
+      // The character a REQUEST asks for selects this session's character; the character the
+      // project's persona was BAKED as comes from the config alone (see bakedCharacterId) — a
+      // request could otherwise redefine what the saved persona is and re-bake it on every start.
+      characterId = body.character_id ?? bakedCharacterId(cfg);
+
+      // THE DECISION, taken BEFORE any further read. A saved persona is referenced by id (one
+      // vendor round-trip, ~118-byte body) exactly while the recorded fingerprint still describes
+      // this config — same prompt, greeting, avatar/voice/brain, tools AND transcript revision.
+      // Anything else falls back to an inline persona for THIS start and schedules a re-bake, so
+      // the video is on the fast path from the next start onwards. The old code guessed from
+      // `knowledgeToolId` alone and threw the pre-baked personaId away on every start — the
+      // measured cause of the slow start.
+      const verdict = verifyStatefulPersona(cfg);
+      const healthy = verdict === 'healthy';
+
+      // A healthy start needs NOTHING from the transcript or from the account listings: the
+      // persona already carries this exact script and its own avatar/voice. Reading captions for
+      // every video in the project and then discarding the result was pure latency. On the
+      // fallback path the transcript read and the key read are independent of each other and both
+      // legal only after authorization, so they run concurrently.
+      const transcriptPromise = healthy
+        ? null
+        : trace.time('transcript_read', () => getProjectTranscript(body.projectId!).catch(() => null));
+      apiKey = await trace.time('key_read', () => resolveAnamKeyForProject(body.projectId, project.created_by).catch(() => undefined));
+
+      if (healthy) {
+        trace.path('stateful');
+      } else {
+        trace.path('ephemeral');
+        if (verdict === 'never_fingerprinted') trace.flag('fingerprint_absent');
+        else if (verdict !== 'no_persona') trace.flag('fingerprint_miss');
+        // Resolve the selected avatar's display name/image (and default voice) from Anam when they
+        // were not persisted — otherwise the popup falls back to the default character's
+        // image/name (the "always Einstein" bug). Only reachable on the fallback path, where an
+        // inline persona has to name a concrete avatar and voice anyway.
+        const enrichPromise = cfg.avatarId && (!cfg.avatarName || !cfg.avatarImageUrl || !cfg.voiceId)
+          ? trace.time('persona_enrich', () => enrichAvatarConfigFromAnam(cfg!, apiKey).catch(() => cfg!))
+          : Promise.resolve(cfg);
+        const [transcript, enriched] = await Promise.all([transcriptPromise!, enrichPromise]);
+        cfg = enriched;
+        // The video's caption transcript is the avatar's DEFAULT knowledge — inline it so this
+        // session can still answer about the actual spoken content while the persona is unusable.
+        selfHeal = { projectId: body.projectId, characterId: bakedCharacterId(cfg), cfg, transcript, apiKey };
+        cfg = withTranscriptKnowledge(cfg, transcript);
+        if (transcript) trace.flag('transcript_inlined');
+        if (cfg.personaId) cfg = { ...cfg, personaId: undefined };
       }
+    } else {
+      trace.path('global');
+      characterId = body.character_id ?? DEFAULT_CHARACTER_ID;
     }
-    const characterId = body.character_id ?? cfg?.characterId ?? DEFAULT_CHARACTER_ID;
+    // Dedupe only what is safe to dedupe: repeated asks from ONE popup open by ONE caller. Two
+    // viewers of the same video always mint their own token — an Anam token is single-use per
+    // stream, so sharing one refuses the second viewer's connection.
+    const idempotencyKey = startIdempotencyKey({
+      projectId: body.projectId ?? null,
+      callerId: request.dbUser?.id ?? request.ip,
+      startKey: body.startKey,
+    });
     try {
-      const info = await getSessionToken(characterId, cfg, apiKey);
-      // Display identity must describe the avatar the session ACTUALLY uses. When the
-      // config didn't pin one (defaults resolved live from the account), look the
-      // resolved avatar up so the popup shows its real name/portrait — never a stale
-      // hardcoded character (the "pnina but labeled Einstein" mismatch).
+      const minted = await trace.time('mint', () => withStartIdempotency(idempotencyKey, () => getSessionToken(characterId, cfg, apiKey)));
+      const info = minted.value;
+      if (minted.replayed) trace.flag('idempotent_replay');
+      // Display identity must describe the avatar the session ACTUALLY uses — never a stale
+      // hardcoded character (the "pnina but labeled Einstein" mismatch). It is pure cosmetics,
+      // so it NEVER holds the minted token: answer from what is already known (the pinned avatar,
+      // the persisted personaDisplay, or the bounded look cache), otherwise resolve it after the
+      // response and persist it so the next open has the real face.
       let displayCfg = cfg;
       if (!displayCfg?.avatarId) {
-        // A stateful (personaId-only) session doesn't expose its avatar — ask Anam.
-        const sessionAvatarId = info.avatarId ||
-          (cfg?.personaId ? (await getPersona(cfg.personaId, apiKey).catch(() => null))?.avatarId ?? '' : '');
-        if (sessionAvatarId) {
-          const look = await describeAvatar(sessionAvatarId, apiKey).catch(() => null);
-          displayCfg = {
-            ...(displayCfg ?? {}),
-            avatarId: sessionAvatarId,
-            avatarName: look?.displayName || info.personaName || '',
-            avatarVariantName: look?.variantName || '',
-            avatarImageUrl: look?.imageUrl || '',
-          };
+        const stopDisplay = trace.mark('display');
+        const sessionAvatarId = info.avatarId || cfg?.personaDisplay?.avatarId || '';
+        const known = (sessionAvatarId ? peekAvatarLook(sessionAvatarId, apiKey) : undefined)
+          ?? (cfg?.personaDisplay?.avatarId && (!sessionAvatarId || cfg.personaDisplay.avatarId === sessionAvatarId)
+                ? cfg.personaDisplay
+                : undefined);
+        if (known) {
+          displayCfg = { ...(displayCfg ?? {}), personaDisplay: known };
+          trace.flag('display_cached');
+        } else if (body.projectId && (info.avatarId || cfg?.personaId)) {
+          const scheduled = scheduleDisplayResolve({
+            projectId: body.projectId,
+            avatarId: info.avatarId,
+            personaId: cfg?.personaId,
+            apiKey,
+          });
+          if (scheduled) trace.flag('display_deferred');
         }
+        stopDisplay();
       }
+      // Re-bake in the background so the NEXT viewer gets the one-round-trip path. Scheduling is
+      // synchronous and bounded (single-flight per project, backoff after failure); the work
+      // itself runs after this response.
+      if (selfHeal && scheduleSelfHeal(selfHeal)) trace.flag('self_heal_queued');
+      trace.finish({ outcome: 'ok', status: 200 });
       return reply.send({
         provider: 'anam',
+        correlationId: trace.correlationId,
         sessionToken: info.token,
         characterId: info.characterId,
         voiceSensitivity: info.voiceSensitivity,
@@ -230,7 +299,10 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
       });
     } catch (err) {
       const status = (err as { status?: number }).status ?? 500;
-      logger.warn({ err }, '[Avatar] start failed');
+      // Deliberately NO free-form error log here: an Anam failure detail can echo the request
+      // (persona body, prompt). The trace line carries the correlation id + status, and
+      // anamService logs the vendor failure with a redacted, bounded reason.
+      trace.finish({ outcome: 'error', status });
       return reply.code(status).send({ message: status >= 500 ? 'Avatar session failed' : (err as Error).message });
     }
   });
@@ -768,11 +840,20 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
       // speaker/side) can never be stored — that mis-mapping is what breaks "his wave / her
       // wave". Mirrors the read-path self-heal in buildPlayerConfig. (avatar-circles-fix)
       const savedCircles = incoming.avatarCircles ?? existing.avatarCircles;
+      // The persona is baked WITH the caption transcript (exactly as an inline session would carry
+      // it), and the transcript revision is recorded, so a start can tell whether the saved persona
+      // still knows the current video without reading captions itself.
+      const transcript = await getProjectTranscript(project.id).catch(() => null);
       const effectiveBase: AvatarPersonaConfig = {
         ...incoming,
         knowledgeGroupId: existing.knowledgeGroupId,
         knowledgeToolId: existing.knowledgeToolId,
         transcriptDocId: existing.transcriptDocId,
+        transcriptHash: hashTranscript(transcript),
+        personaDisplay: existing.personaDisplay,
+        // Record the character this persona is baked as, so a later start derives the same
+        // fingerprint from the stored config alone.
+        characterId,
         avatarCircles: savedCircles
           ? (normalizeAvatarCircles(savedCircles as unknown as AvatarCirclesLike) as unknown as AvatarPersonaConfig['avatarCircles'])
           : savedCircles,
@@ -785,14 +866,19 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
       // and store its id for this video, so the session loads it exactly.
       let personaId: string | undefined;
       let personaError: string | undefined;
+      let personaBaked: AvatarPersonaConfig['personaBaked'];
       try {
-        personaId = await upsertVideoPersona(characterId, effective, apiKey, existing.personaId);
+        personaId = await upsertVideoPersona(characterId, withTranscriptKnowledge(effective, transcript), apiKey, existing.personaId);
+        // Recorded ONLY after the vendor accepted the upsert: this record is what later starts
+        // trust when they skip the inline persona body.
+        personaBaked = bakedStateFor(effective, existing.personaBaked?.revision ?? 0);
       } catch (e) {
         personaError = (e as Error).message; // non-fatal: still save config, session falls back
         personaId = undefined;
+        personaBaked = undefined;
       }
 
-      const toSave: AvatarPersonaConfig = { ...effective, ...(personaId ? { personaId } : {}) };
+      const toSave: AvatarPersonaConfig = { ...effective, ...(personaId && personaBaked ? { personaId, personaBaked } : {}) };
       await db.update(projects).set({ avatar_config: toSave, updated_at: new Date() }).where(eq(projects.id, project.id));
       return reply.send({ ok: true, config: toSave, personaId, personaError });
     },

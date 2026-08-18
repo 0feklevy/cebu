@@ -28,6 +28,8 @@ import {
   type AvatarPersonaConfig,
 } from './avatar/anamService.js';
 import { DEFAULT_CHARACTER_ID } from './avatar/characters.js';
+import { bakedStateFor, hashTranscript } from './avatar/personaFingerprint.js';
+import { withTranscriptKnowledge } from './avatar/personaBake.js';
 
 type VideoRow = typeof video_files.$inferSelect;
 
@@ -166,6 +168,13 @@ async function patchAvatarConfig(projectId: string, patch: Partial<AvatarPersona
 }
 
 async function propagateToAvatar(project: typeof projects.$inferSelect, transcript: string): Promise<void> {
+  // Record the new transcript REVISION before anything can fail. /avatar/start compares it with
+  // the revision the saved persona was baked from: if this write lands and every Anam call below
+  // then fails, start sees "the persona predates this script" and inlines the fresh transcript
+  // instead of confidently answering from a stale one. Recording it late would invert that safety.
+  await patchAvatarConfig(project.id, { transcriptHash: hashTranscript(transcript) })
+    .catch((err) => logger.warn({ projectId: project.id, err: (err as Error).message?.slice(0, 120) }, '[transcript-propagation] could not record the transcript revision'));
+
   const apiKey = (await resolveAnamKeyForProject(project.id).catch(() => undefined)) || ANAM_ENV.ANAM_API_KEY;
   if (!apiKey) return; // No Anam configured → no knowledge-document system to push to.
 
@@ -198,15 +207,23 @@ async function propagateToAvatar(project: typeof projects.$inferSelect, transcri
     return;
   }
 
-  // If a persona already exists, re-bake it so the RAG tool is attached to live
-  // sessions immediately (otherwise it takes effect on the next avatar save).
-  if (merged.personaId && merged.avatarId && merged.voiceId) {
+  // If a persona already exists, re-bake it so the RAG tool AND the new transcript reach live
+  // sessions immediately (otherwise it takes effect on the next avatar save) — and so the recorded
+  // fingerprint matches again, which is what lets the next start use the one-round-trip path.
+  //
+  // The old guard also required avatarId && voiceId to be present in the config, which skipped
+  // every video that INHERITS its avatar/voice from the base character persona: those personas
+  // never followed the script. upsertVideoPersona resolves inherited avatar/voice/brain itself and
+  // raises a clear 400 when nothing can be resolved, so the id alone is the right condition.
+  if (merged.personaId) {
     try {
       const characterId = merged.characterId ?? DEFAULT_CHARACTER_ID;
-      const personaId = await upsertVideoPersona(characterId, merged, apiKey, merged.personaId);
-      if (personaId && personaId !== merged.personaId) {
-        await patchAvatarConfig(project.id, { personaId });
-      }
+      const personaId = await upsertVideoPersona(characterId, withTranscriptKnowledge(merged, transcript), apiKey, merged.personaId);
+      // Marked baked ONLY after the vendor accepted the upsert.
+      await patchAvatarConfig(project.id, {
+        ...(personaId && personaId !== merged.personaId ? { personaId } : {}),
+        personaBaked: bakedStateFor(merged, merged.personaBaked?.revision ?? 0),
+      });
     } catch (err) {
       logger.warn({ projectId: project.id, err: (err as Error).message?.slice(0, 120) }, '[transcript-propagation] persona refresh skipped');
     }

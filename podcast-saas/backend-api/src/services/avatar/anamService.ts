@@ -3,11 +3,63 @@
 // system prompt, knowledge, first greeting, language, avatar, voice, LLM — is
 // driven from here (per-video `avatar_config`), via the documented fields of
 // POST /v1/auth/session-token's `personaConfig` (override / ephemeral mode).
-import { createHash } from 'crypto';
 import { CHARACTERS, DEFAULT_CHARACTER_ID } from './characters.js';
 import { logger } from '../../lib/logger.js';
 
 const ANAM_BASE = 'https://api.anam.ai/v1';
+
+/**
+ * Per-operation deadlines. Not one Anam call used to pass a `signal`: against a non-responding
+ * socket a bare fetch was still pending after 12 seconds, holding a request, a database connection
+ * and the viewer's popup for all of it. The shape below is the one already used by
+ * services/course/transcript.ts:30-36 — an AbortController plus a timer, cleared on completion.
+ *
+ * Mutable so tests can shrink the deadlines; production values are these.
+ */
+export const ANAM_TIMEOUTS = {
+  read:   8_000,    // GET personas / avatars / voices / llms / tools / knowledge listings
+  mint:  15_000,    // POST /auth/session-token — a viewer is watching a spinner
+  write: 20_000,    // persona / tool / knowledge-group upserts
+  upload: 60_000,   // multipart document upload
+};
+
+type AnamOp = 'read' | 'mint' | 'write' | 'upload';
+
+function timeoutError(op: AnamOp, ms: number): Error & { status: number; timedOut: true } {
+  const err = new Error(`Anam ${op} timed out after ${ms}ms`) as Error & { status: number; timedOut: true };
+  err.status = 504;
+  err.timedOut = true;
+  return err;
+}
+
+export function isAnamTimeout(err: unknown): boolean {
+  return Boolean((err as { timedOut?: boolean } | null)?.timedOut);
+}
+
+/** fetch with a deadline and real cancellation. Throws a 504-shaped error when the deadline hits. */
+async function anamFetchDeadline(url: string, init: RequestInit, op: AnamOp): Promise<Response> {
+  const ms = ANAM_TIMEOUTS[op];
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { ...init, signal: ctrl.signal });
+  } catch (err) {
+    if (ctrl.signal.aborted) throw timeoutError(op, ms);
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * A short, bounded classification of a vendor failure body. The raw body is NEVER logged: a
+ * validation error can quote the request back, and the request contains the system prompt and the
+ * video transcript. Only a recognised snake_case error code (or 'unrecognized') passes.
+ */
+function vendorCode(detail: string): string {
+  const match = /"(?:error|code|type)"\s*:\s*"([a-z0-9_.-]{1,64})"/i.exec(detail ?? '');
+  return match ? match[1] : 'unrecognized';
+}
 
 export const ANAM_ENV = {
   ANAM_API_KEY:               process.env.ANAM_API_KEY ?? '',
@@ -80,6 +132,31 @@ export interface AvatarCirclesConfig {
   showCenterCircle?: boolean;
 }
 
+/**
+ * What was ACTUALLY baked into `personaId`, recorded only after a successful vendor upsert.
+ * The start path trusts a stored persona exactly as far as this record still describes the
+ * current config (see services/avatar/personaFingerprint.ts).
+ */
+export interface BakedPersona {
+  fingerprint: string;      // personaFingerprint() of the semantic config at bake time
+  toolIds: string[];        // the exact tool ids attached to the vendor persona
+  transcriptHash: string;   // the caption-transcript revision the persona knows
+  revision: number;         // monotonic bake counter for this video
+  bakedAt: string;          // ISO timestamp
+}
+
+/**
+ * COSMETIC identity of the avatar a stateful session resolves to — the popup's name and portrait.
+ * Deliberately separate from the persona fields: it is excluded from the fingerprint, so caching
+ * a face can never invalidate a persona (and drag every start back onto the slow path).
+ */
+export interface PersonaDisplay {
+  avatarId: string;
+  displayName: string;
+  variantName: string;
+  imageUrl: string;
+}
+
 // Everything controllable from podcast-saas video settings.
 export interface AvatarPersonaConfig {
   avatarCircles?: AvatarCirclesConfig; // audio-reactive circles shown during b-roll
@@ -106,6 +183,9 @@ export interface AvatarPersonaConfig {
   knowledgeToolId?: string;          // the RAG tool wrapping that group (server-managed)
   transcriptDocId?: string;          // auto-uploaded caption-transcript doc id (server-managed)
   toolIds?: string[];                // selected system tools (end_call, change_language, …)
+  transcriptHash?: string;           // revision of the caption transcript now propagated (server-managed)
+  personaBaked?: BakedPersona;       // what personaId was baked from (server-managed)
+  personaDisplay?: PersonaDisplay;   // cosmetic name/portrait of the resolved avatar (server-managed)
 }
 
 export interface SessionInfo {
@@ -145,13 +225,12 @@ interface AnamVoiceResource {
   description?: string;
 }
 
-// Anam session tokens are effectively single-use per stream — reusing one whose
-// session was already consumed makes the engine refuse the WebSocket. So we only
-// cache for a few seconds: just long enough to dedupe React StrictMode's
-// double-mount (two near-simultaneous /start calls), never across real reopens.
-interface CachedToken { token: string; issuedAt: number; }
-const tokenCache = new Map<string, CachedToken>();
-const TOKEN_REUSE_MS = 6000;
+// NOTE: there is deliberately no token cache here. Anam session tokens are effectively single-use
+// per stream, and a cache keyed on the persona config is CONFIG-GLOBAL: every viewer of a given
+// video produces the same config, so two people opening the same public video seconds apart were
+// handed the same token and the second stream was refused. Deduping a double-mounted popup is a
+// per-popup-open concern and lives in startIdempotency.ts, keyed on a client value scoped to the
+// project and caller. See tokenReuse.test.ts.
 
 function cleanLabel(value?: string): string {
   return (value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
@@ -235,6 +314,22 @@ export async function enrichAvatarConfigFromAnam(
 }
 
 export function buildAvatarDisplay(_characterId: string, cfg: AvatarPersonaConfig | undefined, voiceSensitivity: number): AvatarDisplay | undefined {
+  // A video that pinned an avatar carries its identity inline; a stateful session that resolved its
+  // avatar on an earlier start carries it in the cosmetic `personaDisplay` record. Either way the
+  // popup shows the face the session ACTUALLY uses without a vendor call on this request.
+  if (!cfg?.avatarId && cfg?.personaDisplay?.avatarId) {
+    const d = cfg.personaDisplay;
+    const name = d.displayName?.trim() || cfg.name?.trim() || 'the avatar';
+    const variantName = d.variantName?.trim();
+    return {
+      displayName: name,
+      nametag: [name, variantName].filter(Boolean).join(' · ') || name,
+      portrait: d.imageUrl?.trim() || undefined,
+      startingLabel: `Connecting to ${name}...`,
+      leaveLabel: 'End conversation',
+      voiceSensitivity,
+    };
+  }
   if (!cfg?.avatarId) return { voiceSensitivity };
   const displayName = cfg.avatarName?.trim() || cfg.name?.trim() || 'the avatar';
   const variant = cfg.avatarVariantName?.trim();
@@ -334,6 +429,31 @@ export async function resolveDefaultAvatarVoice(apiKey?: string): Promise<Defaul
   return v;
 }
 
+// A described avatar is a name, a variant and a portrait URL — cosmetics that change only when
+// someone edits the Anam dashboard. Describing one costs a full paged account listing, so results
+// are cached per {key, avatarId} with a TTL and a hard entry cap. `peekAvatarLook` is the
+// synchronous read used on the request path: a hit means the popup gets the real face with no
+// vendor call at all, a miss means the lookup happens after the response.
+const AVATAR_LOOK_TTL_MS = 3_600_000;
+const AVATAR_LOOK_MAX_ENTRIES = 500;
+const _avatarLookCache = new Map<string, { v: PersonaDisplay; at: number }>();
+
+function lookCacheKey(avatarId: string, apiKey?: string): string {
+  return `${(apiKey || ANAM_ENV.ANAM_API_KEY).slice(-8)}:${avatarId}`;
+}
+
+/** Cached avatar identity, or undefined on a miss. Synchronous — safe on the response path. */
+export function peekAvatarLook(avatarId: string, apiKey?: string): PersonaDisplay | undefined {
+  if (!avatarId) return undefined;
+  const hit = _avatarLookCache.get(lookCacheKey(avatarId, apiKey));
+  if (!hit) return undefined;
+  if (Date.now() - hit.at >= AVATAR_LOOK_TTL_MS) {
+    _avatarLookCache.delete(lookCacheKey(avatarId, apiKey));
+    return undefined;
+  }
+  return hit.v;
+}
+
 /** Look up an avatar's live display identity (name/variant/image) from the account listing. */
 export async function describeAvatar(
   avatarId: string,
@@ -343,7 +463,13 @@ export async function describeAvatar(
   const { data } = await listAnamResource('avatars', apiKey);
   const avatar = (data as AnamAvatarResource[]).find((a) => a.id === avatarId);
   if (!avatar) return null;
-  return { displayName: avatar.displayName ?? '', variantName: avatar.variantName ?? '', imageUrl: avatar.imageUrl ?? '' };
+  const look = { displayName: avatar.displayName ?? '', variantName: avatar.variantName ?? '', imageUrl: avatar.imageUrl ?? '' };
+  if (_avatarLookCache.size >= AVATAR_LOOK_MAX_ENTRIES) {
+    const oldest = _avatarLookCache.keys().next().value;   // insertion-ordered
+    if (oldest) _avatarLookCache.delete(oldest);
+  }
+  _avatarLookCache.set(lookCacheKey(avatarId, apiKey), { v: { avatarId, ...look }, at: Date.now() });
+  return look;
 }
 
 // Builds the personaConfig sent to Anam. v4 requires a COMPLETE persona at token time:
@@ -431,11 +557,21 @@ export function isAnamConfigured(): boolean {
 }
 
 async function mintSessionToken(key: string, personaConfig: Record<string, unknown>): Promise<{ ok: true; token: string } | { ok: false; status: number; detail: string }> {
-  const res = await fetch(`${ANAM_BASE}/auth/session-token`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ clientLabel: 'podcast-saas-avatar', personaConfig }),
-  });
+  let res: Response;
+  try {
+    res = await anamFetchDeadline(`${ANAM_BASE}/auth/session-token`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clientLabel: 'podcast-saas-avatar', personaConfig }),
+    }, 'mint');
+  } catch (err) {
+    // A timed-out or failed mint is reported as a DEFINITE failure and is never retried here.
+    // Unlike the GETs below, this POST is not idempotent: after an ambiguous timeout the vendor may
+    // already have minted a token we never received, so a retry can mint twice — two billed
+    // sessions, and a second concurrency slot held until it expires on its own. Fail fast and let
+    // the viewer press start again, which is a decision a human makes once.
+    return { ok: false, status: isAnamTimeout(err) ? 504 : 502, detail: isAnamTimeout(err) ? 'timeout' : 'network_error' };
+  }
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
     return { ok: false, status: res.status, detail };
@@ -451,7 +587,7 @@ async function mintSessionToken(key: string, personaConfig: Record<string, unkno
 async function mintWithToolFallback(key: string, personaConfig: Record<string, unknown>) {
   let minted = await mintSessionToken(key, personaConfig);
   if (!minted.ok && minted.status === 400 && personaConfig.toolIds) {
-    logger.warn({ detail: minted.detail.slice(0, 160) }, '[Anam] session-token 400 with toolIds — retrying without them');
+    logger.warn({ code: vendorCode(minted.detail) }, '[Anam] session-token 400 with toolIds — retrying without them');
     const { toolIds: _toolIds, ...rest } = personaConfig;
     minted = await mintSessionToken(key, rest);
   }
@@ -492,15 +628,6 @@ export async function getSessionToken(characterId: string, cfg?: AvatarPersonaCo
   let resolvedAvatarId = (typeof personaConfig.avatarId === 'string' ? personaConfig.avatarId : '') || cfg?.avatarId || '';
   const personaName = typeof personaConfig.name === 'string' ? personaConfig.name : undefined;
 
-  // Cache by the exact config + key so identical rapid requests (e.g. React
-  // StrictMode double-mount) reuse one token, but different per-video configs
-  // (or different BYOK keys) each get their own.
-  const cacheKey = createHash('sha1').update(`${key.slice(-8)}:${JSON.stringify(personaConfig)}`).digest('hex');
-  const cached = tokenCache.get(cacheKey);
-  if (cached && Date.now() - cached.issuedAt < TOKEN_REUSE_MS) {
-    return { token: cached.token, characterId: id, voiceSensitivity, avatarId: resolvedAvatarId || undefined, personaName };
-  }
-
   let minted = await mintWithToolFallback(key, personaConfig);
 
   // Rebuild a full inline ephemeral persona (same brain, via the base character persona's
@@ -524,7 +651,9 @@ export async function getSessionToken(characterId: string, cfg?: AvatarPersonaCo
   }
 
   if (!minted.ok) {
-    logger.warn({ status: minted.status, detail: minted.detail }, '[Anam] session-token request failed');
+    // The raw body is not logged: a persona-validation error quotes the request back, and the
+    // request carries the system prompt and the video transcript.
+    logger.warn({ status: minted.status, code: vendorCode(minted.detail) }, '[Anam] session-token request failed');
     const err = new Error(`Anam API error (${minted.status})${minted.detail ? `: ${minted.detail.slice(0, 200)}` : ''}`) as Error & { status: number };
     err.status = minted.status;
     throw err;
@@ -539,7 +668,6 @@ export async function getSessionToken(characterId: string, cfg?: AvatarPersonaCo
     throw err;
   }
 
-  tokenCache.set(cacheKey, { token: minted.token, issuedAt: Date.now() });
   return { token: minted.token, characterId: id, voiceSensitivity, avatarId: resolvedAvatarId || undefined, personaName };
 }
 
@@ -548,9 +676,14 @@ interface AnamPersona { id?: string; avatarId?: string; voiceId?: string; llmId?
 export async function getPersona(personaId: string, apiKey?: string): Promise<AnamPersona | null> {
   const key = apiKey || ANAM_ENV.ANAM_API_KEY;
   if (!key || !personaId) return null;
-  const res = await fetch(`${ANAM_BASE}/personas/${personaId}`, { headers: { Authorization: `Bearer ${key}` } });
-  if (!res.ok) return null;
-  return res.json() as Promise<AnamPersona>;
+  // Idempotent read: a deadline here can only cost information, never a duplicate side effect.
+  try {
+    const res = await anamFetchDeadline(`${ANAM_BASE}/personas/${personaId}`, { headers: { Authorization: `Bearer ${key}` } }, 'read');
+    if (!res.ok) return null;
+    return await (res.json() as Promise<AnamPersona>);
+  } catch {
+    return null;
+  }
 }
 
 // Create (or update) a real Anam persona for a video from the chosen settings —
@@ -614,16 +747,19 @@ export async function upsertVideoPersona(
   if (toolIds.length) payload.toolIds = [...new Set(toolIds)];
 
   const doReq = (method: string, url: string) =>
-    fetch(url, { method, headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    anamFetchDeadline(url, { method, headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }, 'write');
 
+  // A definite error response on the UPDATE means the stored persona is gone (deleted in the
+  // dashboard) — falling back to a create is right. A TIMEOUT is not a definite error: the vendor
+  // may have applied the update we never heard about, and creating on top of that would leave two
+  // personas for one video. So the timeout propagates (anamFetchDeadline throws) and no create runs.
   let res = existingPersonaId
     ? await doReq('PUT', `${ANAM_BASE}/personas/${existingPersonaId}`)
     : await doReq('POST', `${ANAM_BASE}/personas`);
-  // The stored persona may have been deleted in Anam — fall back to create.
   if (!res.ok && existingPersonaId) res = await doReq('POST', `${ANAM_BASE}/personas`);
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
-    logger.warn({ status: res.status, detail }, '[Anam] persona upsert failed');
+    logger.warn({ status: res.status, code: vendorCode(detail) }, '[Anam] persona upsert failed');
     const e = new Error(`Anam persona ${existingPersonaId ? 'update' : 'create'} failed (${res.status})${detail ? `: ${detail.slice(0, 200)}` : ''}`) as Error & { status: number };
     e.status = res.status; throw e;
   }
@@ -635,8 +771,8 @@ export async function upsertVideoPersona(
 
 const RAG_DESC = 'Search the uploaded knowledge documents to answer the viewer’s questions about this video. Use it whenever a question might be answered by the provided material.';
 
-async function anamFetch(path: string, apiKey: string, init?: RequestInit): Promise<Response> {
-  return fetch(`${ANAM_BASE}${path}`, { ...init, headers: { Authorization: `Bearer ${apiKey}`, ...(init?.headers ?? {}) } });
+async function anamFetch(path: string, apiKey: string, init?: RequestInit, op: AnamOp = 'read'): Promise<Response> {
+  return anamFetchDeadline(`${ANAM_BASE}${path}`, { ...init, headers: { Authorization: `Bearer ${apiKey}`, ...(init?.headers ?? {}) } }, op);
 }
 
 // Ensure a knowledge group exists for this video; returns its id.
@@ -649,7 +785,7 @@ export async function ensureKnowledgeGroup(name: string, apiKey?: string, existi
   }
   const res = await anamFetch('/knowledge/groups', key, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name.slice(0, 120) }),
-  });
+  }, 'write');
   if (!res.ok) throw new Error(`Anam knowledge group create failed (${res.status})`);
   return ((await res.json()) as { id: string }).id;
 }
@@ -666,10 +802,10 @@ export async function ensureKnowledgeTool(groupId: string, name: string, apiKey?
   };
   const body = JSON.stringify({ name: toolName, type: 'SERVER_RAG', description: RAG_DESC, config });
   if (existingId) {
-    const res = await anamFetch(`/tools/${existingId}`, key, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body });
+    const res = await anamFetch(`/tools/${existingId}`, key, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body }, 'write');
     if (res.ok) return existingId;
   }
-  const res = await anamFetch('/tools', key, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+  const res = await anamFetch('/tools', key, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }, 'write');
   if (!res.ok) throw new Error(`Anam knowledge tool create failed (${res.status})`);
   return ((await res.json()) as { id: string }).id;
 }
@@ -680,7 +816,7 @@ export async function uploadKnowledgeDocument(groupId: string, buffer: Buffer, f
   if (!key) throw new Error('No Anam API key available.');
   const fd = new FormData();
   fd.append('file', new Blob([buffer], { type: contentType || 'application/octet-stream' }), filename);
-  const res = await anamFetch(`/knowledge/groups/${groupId}/documents`, key, { method: 'POST', body: fd });
+  const res = await anamFetch(`/knowledge/groups/${groupId}/documents`, key, { method: 'POST', body: fd }, 'upload');
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
     throw new Error(`Anam document upload failed (${res.status})${detail ? `: ${detail.slice(0, 200)}` : ''}`);
@@ -700,7 +836,7 @@ export async function listKnowledgeDocuments(groupId: string, apiKey?: string): 
 export async function deleteKnowledgeDocument(docId: string, apiKey?: string): Promise<boolean> {
   const key = apiKey || ANAM_ENV.ANAM_API_KEY;
   if (!key) return false;
-  const res = await anamFetch(`/knowledge/documents/${docId}`, key, { method: 'DELETE' });
+  const res = await anamFetch(`/knowledge/documents/${docId}`, key, { method: 'DELETE' }, 'write');
   return res.ok;
 }
 
@@ -728,12 +864,20 @@ export async function listAnamResource(
   const MAX_PAGES = 6; // up to 600 items — plenty for any picker
   const all: unknown[] = [];
   for (let page = 1; page <= MAX_PAGES; page++) {
-    const res = await fetch(`${ANAM_BASE}/${kind}?page=${page}&perPage=${PER_PAGE}`, {
-      headers: { Authorization: `Bearer ${key}` },
-    });
+    // Idempotent, paged read: on a deadline or a vendor error we return the pages already
+    // collected rather than failing the caller — every consumer degrades to "no options" cleanly.
+    let res: Response;
+    try {
+      res = await anamFetchDeadline(`${ANAM_BASE}/${kind}?page=${page}&perPage=${PER_PAGE}`, {
+        headers: { Authorization: `Bearer ${key}` },
+      }, 'read');
+    } catch (err) {
+      logger.warn({ kind, page, timedOut: isAnamTimeout(err) }, '[Anam] resource list aborted');
+      break;
+    }
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
-      logger.warn({ kind, status: res.status, detail }, '[Anam] resource list failed');
+      logger.warn({ kind, status: res.status, code: vendorCode(detail) }, '[Anam] resource list failed');
       break;
     }
     const json = (await res.json()) as { data?: unknown[]; meta?: { lastPage?: number } };
