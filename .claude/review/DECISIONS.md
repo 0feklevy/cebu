@@ -5,13 +5,33 @@ reviewer on 2026-08-19 and have moved to `DECISIONS-ARCHIVE.md` with their reaso
 corrections intact. What remains below is **execution state** — work that is specified, partly
 built, and blocked only on being finished or on you flipping a switch.
 
-Last updated: **2026-08-19, overnight run** · branch `fix/night-audit-2026-08-15`
-Shipped: **PR #31, #32 and #33 merged · v0.1.28 tagged and built** — the production deploy is still
-waiting on your environment approval.
+Last updated: **2026-08-19, end of the overnight run** · all work merged, nothing left on a branch.
+Shipped: **PR #31, #32, #33 and #34 merged · v0.1.29 tagged, built and drafted.**
 
 **Out of scope this session:** payments, paywalls, locked videos, paid playlists, Stripe,
 entitlements — by your instruction. 24 findings carry `OUT_OF_SCOPE_BILLING` in the ledger rather
 than being deleted, so nothing is lost if it is picked up later.
+
+---
+
+## 🔴 Production is NOT running this code — the deploy fails on the VM
+
+Correcting what this file said before: the v0.1.28 deploy was **not** waiting for your approval.
+You approved it, it ran, and it **failed 32 seconds in** — at the step *"Pin VM checkout to the
+release commit"*, after which *"Fail fast if the VM checkout could not be pinned"* aborted the run
+(GitHub Actions run `32149868485`).
+
+**Nothing is broken in production.** That step is git-only by design, so the containers were left
+untouched and the site is still serving the previously deployed version. But it does mean:
+
+- every code fix from PRs #32 and #34 is **merged, tagged and built — and not live**;
+- `v0.1.28` and `v0.1.29` both exist as **draft releases with images already on GHCR**;
+- the blocker is on the **VM**, not in this repository, and diagnosing it needs SSH — which is
+  out of bounds for this session, so it is yours.
+
+`v0.1.29` was deliberately cut with **`deploy=false`**: plan → verify → images → tag → draft, and
+stop. It needed no approval and carried no production risk. When the VM is fixed, re-dispatch the
+release workflow with `deploy=true`, or deploy the existing `v0.1.29` images directly.
 
 ---
 
