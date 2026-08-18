@@ -4,7 +4,7 @@ import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import { Readable } from 'stream';
 import { dirname, extname } from 'path';
-import { and, eq, lt } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { logger } from './lib/logger.js';
 import { TRUST_PROXY_HOPS } from './config/trustProxy.js';
 import { LOCAL_STORAGE_BASE_DIR } from './services/storage/localStoragePaths.js';
@@ -42,10 +42,13 @@ import { registerAdminBillingRoutes } from './controllers/admin/v1/billing.contr
 import { firebaseAuthMiddleware, firebaseAuthOptionalMiddleware } from './middleware/firebase-auth.js';
 import { canServeMediaKey } from './services/storage/mediaAccess.js';
 import { splitMediaTokenPrefix } from './services/storage/mediaToken.js';
+import { apiErrorHandler } from './lib/apiErrorHandler.js';
 import { hlsCacheControlForKey } from './services/video/hlsVersioning.js';
 import { startHlsRetentionSweep } from './services/video/hlsRetention.js';
 import { startDuplicationSweep } from './services/project/ProjectDuplicationService.js';
 import { startExportSweep } from './services/export/ProjectExportService.js';
+import { startHlsRecoverySweep, sweepStuckTranscodes } from './services/video/hlsRecovery.js';
+import { startCorpusIngestionSweep } from './services/ingestion/corpusRecovery.js';
 import { registerExportRoutes } from './controllers/v1/export.controller.js';
 
 // Phase 2+ stub routes
@@ -92,22 +95,17 @@ function getLocalStorageContentType(key: string): string {
   return 'application/octet-stream';
 }
 
-// On startup, fail any HLS transcode left mid-flight by a previous restart so it can
-// be retried instead of sitting at 'processing' forever (there was no graceful drain).
+// Fail any HLS transcode left mid-flight so it can be retried instead of sitting at 'processing'
+// forever (there was no graceful drain). The rule itself lives in `services/video/hlsRecovery.ts`
+// — it is shared with the REPEATING sweep started in `build()`, and this file cannot be imported
+// by a test (module scope opens listeners and a database connection), so a copy here would be an
+// untestable second definition of the same predicate.
+//
+// This boot call is now only the FIRST pass, not the only one. It used to be the only one, and it
+// demanded thirty minutes of staleness, so a transcode orphaned five minutes before the restart
+// was too young for it and nothing ever looked again (job-queue-003).
 async function recoverStuckTranscodes(): Promise<void> {
-  const cutoff = new Date(Date.now() - 30 * 60 * 1000); // 30 minutes
-  const recovered = await db
-    .update(video_files)
-    .set({
-      hls_status: 'failed',
-      hls_error: 'Interrupted by process restart',
-      hls_finished_at: new Date(),
-    })
-    .where(and(eq(video_files.hls_status, 'processing'), lt(video_files.hls_started_at, cutoff)))
-    .returning({ id: video_files.id });
-  if (recovered.length > 0) {
-    logger.warn({ count: recovered.length }, 'Recovered stuck HLS transcodes on startup');
-  }
+  await sweepStuckTranscodes();
 }
 
 // Simulation ingestion runs in-process after the upload 202s; a restart (or a crash in
@@ -520,6 +518,18 @@ async function build() {
   // same deploy/crash strands its row in an in-flight status where the partial unique index
   // blocks every future export of that project. Same reaper shape, same staleness rule.
   startExportSweep();
+  // And the fifth, which is a different failure from the four above (job-queue-003): HLS recovery
+  // was the one that ran ONLY at boot. A transcode orphaned minutes before a deploy is younger
+  // than the stale window at boot, and the boot pass was the last thing that would ever look at
+  // it — so it stayed at 'processing' for the life of the database. Live transcodes now beat a
+  // heartbeat (`beatHlsHeartbeat`), which is what makes repeating the sweep safe rather than a
+  // way to kill an honest long encode.
+  startHlsRecoverySweep();
+  // And the sixth (observability-002): corpus ingestion runs fire-and-forget off the upload
+  // request and its only writers are its own happy path and its own catch — neither of which runs
+  // when the process dies. There was no sweep at all, so a crash mid-ingest left the row at
+  // 'processing' with nothing anywhere that would ever clear it.
+  startCorpusIngestionSweep();
 
   // Local upload endpoint — receives PUT from client for large video files in dev
   app.put<{ Params: { '*': string } }>(
@@ -583,22 +593,8 @@ async function build() {
   // Phase 2+ stubs (return 501 Not Implemented)
   await registerPhase2StubRoutes(app);
 
-  // Global error handler
-  app.setErrorHandler((err, _req, reply) => {
-    const statusCode = (err as { statusCode?: number }).statusCode ?? 500;
-
-    if (statusCode >= 500) {
-      logger.error({ err }, 'Unhandled server error');
-    }
-
-    // Default to a neutral type (was 'llm_error', which mislabelled every storage/DB
-    // failure as an LLM error). For 5xx, return a generic message so internal detail
-    // (Postgres/R2/fs paths, connection strings) is logged but never sent to clients.
-    const error_type = (err as { error_type?: string }).error_type ?? 'server_error';
-    const message = statusCode >= 500 ? 'Internal server error' : (err.message ?? 'Request failed');
-
-    reply.code(statusCode).send({ error_type, message });
-  });
+  // Global error handler — see lib/apiErrorHandler.ts (extracted so it is directly testable).
+  app.setErrorHandler(apiErrorHandler);
 
   return app;
 }

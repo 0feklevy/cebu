@@ -8,6 +8,7 @@ import { BillingService } from '../../services/billing/BillingService.js';
 import { enqueueCaptionsForProject, getCaptionStatusForProject } from '../../services/captions/CaptionService.js';
 import { requireProjectAccess } from '../../services/projectAccess.js';
 import { editableProject, isCollaborator } from '../../services/collabAccess.js';
+import { requireUuidParams } from '../../lib/uuidParam.js';
 
 import type { AccessProject } from '../../services/projectAccess.js';
 
@@ -22,6 +23,18 @@ async function projectReadable(
   return isCollaborator('project', project.id, dbUser);
 }
 
+/**
+ * backend-001. `:id` goes straight into `eq(projects.id, …)` against a `uuid` column, and
+ * Postgres REFUSES a malformed literal at bind time (SQLSTATE 22P02) rather than missing — so
+ * `/api/v1/projects/banana/player-config` raised a driver error with no `statusCode` and the
+ * global handler turned it into a 500. These guards answer 404 before the query is built, with
+ * each route's own not-found body: these routes already 404-rather-than-403 so a private
+ * project's existence is not confirmed, and a distinguishable "malformed id" body would hand
+ * back exactly the oracle that choice denies.
+ */
+const projectIdIsUuid = requireUuidParams('id', 'Project not found');
+const videoIdIsUuid = requireUuidParams('videoId', 'Captions not available');
+
 // Public (optional-auth) endpoint — returns player config for a project's viewer
 // page, or a `locked` paywall stub when the project is paid and the viewer has
 // not purchased it.
@@ -29,7 +42,7 @@ async function projectReadable(
 export async function registerPlayerRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { id: string } }>(
     '/api/v1/projects/:id/player-config',
-    { preHandler: [firebaseAuthOptionalMiddleware] },
+    { preHandler: [projectIdIsUuid, firebaseAuthOptionalMiddleware] },
     async (request, reply: FastifyReply) => {
       const projectId = request.params.id;
       const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
@@ -71,7 +84,7 @@ export async function registerPlayerRoutes(app: FastifyInstance): Promise<void> 
   // project 404s here and the CC button never lights up. (cc fix)
   app.get<{ Params: { id: string }; Querystring: { share?: string } }>(
     '/api/v1/projects/:id/captions',
-    { preHandler: [firebaseAuthOptionalMiddleware] },
+    { preHandler: [projectIdIsUuid, firebaseAuthOptionalMiddleware] },
     async (request, reply: FastifyReply) => {
       const projectId = request.params.id;
       const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
@@ -102,7 +115,7 @@ export async function registerPlayerRoutes(app: FastifyInstance): Promise<void> 
   // Public for free videos; gated for paid content via the project's access.
   app.get<{ Params: { videoId: string }; Querystring: { share?: string } }>(
     '/api/v1/videos/:videoId/captions.vtt',
-    { preHandler: [firebaseAuthOptionalMiddleware] },
+    { preHandler: [videoIdIsUuid, firebaseAuthOptionalMiddleware] },
     async (request, reply: FastifyReply) => {
       const video = await db.query.video_files.findFirst({
         where: eq(video_files.id, request.params.videoId),
@@ -135,7 +148,7 @@ export async function registerPlayerRoutes(app: FastifyInstance): Promise<void> 
   // bypassing the failed-retry cooldown. Requires auth (project owner action).
   app.post<{ Params: { id: string } }>(
     '/api/v1/projects/:id/captions/retry',
-    { preHandler: [firebaseAuthMiddleware] },
+    { preHandler: [projectIdIsUuid, firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const projectId = request.params.id;
       // Ownership check: only the project owner/collaborator may force a (billable)
