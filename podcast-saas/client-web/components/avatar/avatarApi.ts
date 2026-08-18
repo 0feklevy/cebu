@@ -219,13 +219,31 @@ export const saveMyAnamKey = (apiKey: string) =>
 // so a start nobody is waiting for should be stopped, not merely ignored. (This
 // wastes a mint, not a concurrency slot: the backend creates no Anam session, the
 // SDK's startSession does, browser-side.)
-export const startAvatarSession = (characterId?: string, projectId?: string, signal?: AbortSignal) =>
+export const startAvatarSession = (
+  characterId?: string,
+  projectId?: string,
+  signal?: AbortSignal,
+  /**
+   * ONE POPUP OPEN, ONE MINT — the client half of the server's idempotency (anam-backend-003).
+   *
+   * The server has deduped concurrent starts for a while via `startIdempotencyKey`, but it
+   * requires a caller-supplied `startKey` of 8+ characters and returns un-deduped without one —
+   * and this function never sent one. So the mechanism existed, its tests passed by supplying a
+   * key the product does not generate, and two simultaneous starts both minted. An adversarial
+   * review caught the row being marked "fixed" when it was not.
+   *
+   * The caller passes the identity of the OPEN, not of the request: a React StrictMode double
+   * mount, a double click, or a retry of the same popup open must collapse to one mint, while a
+   * genuinely new open must not. `AvatarPopup` already creates exactly such a value per open.
+   */
+  startKey?: string,
+) =>
   // `correlationId` is the backend's start-trace id (services/avatar/startTelemetry.ts).
   // It is the join key between the server's phase timings and the client's — without it
   // the two halves of a slow open cannot be lined up against each other.
   jsonFetch<{ provider: string; sessionToken: string; characterId: string; voiceSensitivity?: number; avatarDisplay?: AvatarDisplay; correlationId?: string }>(
     '/api/v1/avatar/start',
-    { method: 'POST', body: JSON.stringify({ character_id: characterId, projectId }), signal },
+    { method: 'POST', body: JSON.stringify({ character_id: characterId, projectId, startKey }), signal },
     true,
   );
 

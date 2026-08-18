@@ -85,9 +85,14 @@ export function AvatarPopup({ open, onClose, projectId, videoTitle, characterId 
     // Fetch the (lazy) Anam SDK chunk alongside the token rather than after it, so the
     // code split cannot show up as click-to-first-frame latency. Static asset only.
     preloadAnamSdk();
+    // ONE OPEN, ONE MINT (anam-backend-003). The server dedupes concurrent starts, but only when
+    // the caller names the open — and nothing named it, so the mechanism was inert and a
+    // StrictMode double mount or a double click minted twice. The identity is per OPEN, not per
+    // request: a retry of this same open must collapse, a genuinely new open must not.
+    const startKey = `open-${trace.id}`;
     // Pass projectId so the server applies the video's saved persona config and
     // lets it choose the character; omit character_id so the config wins.
-    startAvatarSession(undefined, projectId, abort.signal)
+    startAvatarSession(undefined, projectId, abort.signal, startKey)
       .then((data) => {
         if (abort.signal.aborted) return;
         trace.join(data.correlationId);
