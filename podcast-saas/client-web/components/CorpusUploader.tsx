@@ -45,11 +45,24 @@ export function CorpusUploader({ files, urls, onFilesChange, onUrlsChange }: Pro
   return (
     <div className="space-y-4">
       {/* Drop zone */}
+      {/*
+        A dropzone is a BUTTON that also accepts a drop. As a plain `<div onClick>` the file
+        picker was mouse-only: Tab never reached it and Enter/Space did nothing, so a keyboard
+        user could not add corpus files at all. Same shape SimulationUploader already uses.
+      */}
       <div
         onDrop={handleDrop}
         onDragOver={(e) => e.preventDefault()}
         onClick={() => fileRef.current?.click()}
-        className="cursor-pointer rounded-lg border-2 border-dashed border-border p-5 text-center transition-colors hover:border-primary/50 sm:p-8"
+        role="button"
+        tabIndex={0}
+        aria-label="Upload PDFs, audio, or images"
+        onKeyDown={(e) => {
+          if (e.key !== 'Enter' && e.key !== ' ') return;
+          e.preventDefault();
+          fileRef.current?.click();
+        }}
+        className="cursor-pointer rounded-lg border-2 border-dashed border-border p-5 text-center transition-colors hover:border-primary/50 focus-ring sm:p-8"
       >
         <div className="text-3xl mb-2">📄</div>
         <p className="text-sm font-medium">Drop PDFs, audio, or images here</p>
@@ -93,7 +106,7 @@ export function CorpusUploader({ files, urls, onFilesChange, onUrlsChange }: Pro
               <span className="text-lg">{f.name.endsWith('.pdf') ? '📄' : f.type.startsWith('audio') ? '🎵' : '🖼'}</span>
               <span className="flex-1 truncate">{f.name}</span>
               <span className="shrink-0 text-xs text-muted-foreground">{(f.size / 1024).toFixed(0)} KB</span>
-              <button onClick={() => removeFile(i)} className="text-muted-foreground hover:text-destructive ml-2">✕</button>
+              <button onClick={() => removeFile(i)} aria-label={`Remove ${f.name}`} className="text-muted-foreground hover:text-destructive ml-2 focus-ring">✕</button>
             </li>
           ))}
           {urls.map((u, i) => {
@@ -102,7 +115,7 @@ export function CorpusUploader({ files, urls, onFilesChange, onUrlsChange }: Pro
               <li key={`url-${i}`} className="flex min-w-0 items-center gap-2 rounded-lg bg-card px-3 py-2 text-sm">
                 <span className="text-lg">{isYt ? '▶️' : '🔗'}</span>
                 <span className="flex-1 truncate text-primary">{u}</span>
-                <button onClick={() => removeUrl(i)} className="text-muted-foreground hover:text-destructive ml-2">✕</button>
+                <button onClick={() => removeUrl(i)} aria-label={`Remove ${u}`} className="text-muted-foreground hover:text-destructive ml-2 focus-ring">✕</button>
               </li>
             );
           })}

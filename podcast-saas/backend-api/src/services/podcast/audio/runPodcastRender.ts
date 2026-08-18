@@ -77,11 +77,12 @@ export async function runPodcastRenderJob(payload: { renderId: string }): Promis
  *   `failed`, which is also terminal — so the delivery that arrived afterwards was refused by
  *   `runPodcastRenderJob`'s CAS (`status NOT IN ('ready','failed')`) and the render was gone.
  *
- * The queued row is left QUEUED and re-driven instead. Re-driving is not optional: neither
- * `podcast_render` nor `podcast_mix_export` is in `PGBOSS_JOB_NAMES`, so both always run on the
- * inline driver, whose `setImmediate` dies with the process — merely sparing the row would trade
- * "killed on every deploy" for "waits forever". The re-delivery is safe to duplicate because the
- * job body claims by CAS: a second delivery for a row someone already claimed does nothing.
+ * The queued row is left QUEUED and re-driven instead. Re-driving remains right even now that both
+ * render kinds are in `PGBOSS_JOB_NAMES` (job-queue-005): under QUEUE_DRIVER=inline — every local
+ * dev box and every test — the delivery is still a `setImmediate` that dies with the process, and
+ * a row whose delivery was lost is indistinguishable from one whose delivery has not landed yet.
+ * A redundant re-drive against the durable queue is now collapsed by the renderId singleton key,
+ * and the job body claims by CAS regardless: a second delivery for a claimed row does nothing.
  */
 export async function recoverStuckPodcastRenders(): Promise<void> {
   const staleThreshold = new Date(Date.now() - STALE_MS);
@@ -131,10 +132,11 @@ export async function recoverStuckPodcastRenders(): Promise<void> {
     .limit(REDRIVE_LIMIT);
 
   // DRIP, DO NOT DUMP. `enqueueJob` on the inline driver is `setImmediate` with no concurrency
-  // limiter (queue/inlineDriver.ts), and neither podcast job is in PGBOSS_JOB_NAMES — so this loop
-  // runs in the API process. Firing the whole page at once would start up to REDRIVE_LIMIT
-  // simultaneous TTS + ffmpeg renders on a 2-vCPU host, during boot, before the server is even
-  // listening: a self-inflicted outage triggered by the recovery path that exists to prevent one.
+  // limiter (queue/inlineDriver.ts), so on QUEUE_DRIVER=inline — every dev box — this loop runs in
+  // the API process. Firing the whole page at once would start up to REDRIVE_LIMIT simultaneous
+  // TTS + ffmpeg renders on a 2-vCPU host, during boot, before the server is even listening: a
+  // self-inflicted outage triggered by the recovery path that exists to prevent one. On the durable
+  // driver the queue's localConcurrency bounds it instead, and the stagger costs nothing there.
   //
   // The stagger is deliberately dumb rather than clever. A real concurrency limiter belongs in the
   // driver, where it would cover every caller; putting one here would only hide the driver's gap

@@ -12,9 +12,10 @@
  *   • claimed_at NOT NULL and older than the stale window → a process claimed it and died → FAIL it;
  *   • claimed_at NOT NULL and inside the window          → someone may still be running it → LEAVE;
  *   • claimed_at IS NULL                                  → queued, untouched → LEAVE IT QUEUED and
- *     re-drive it. `podcast_render` / `podcast_mix_export` are NOT in PGBOSS_JOB_NAMES, so they
- *     always run on the inline driver, whose `setImmediate` dies with the process. Leaving the row
- *     alone without re-enqueueing would replace "killed on every deploy" with "hangs forever".
+ *     re-drive it. Both render kinds are durable now (job-queue-005), but QUEUE_DRIVER=inline is
+ *     still the default here and on every dev box, and there its `setImmediate` dies with the
+ *     process. Leaving the row alone without re-enqueueing would replace "killed on every deploy"
+ *     with "hangs forever".
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';

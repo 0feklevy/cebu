@@ -8,7 +8,28 @@ import type { MetadataOptions } from '../services/generateVideoMetadata.js';
  * is `inline` (see inlineDriver.ts) and behaviour is identical to the historical
  * `setImmediate(runX(...))` producers.
  */
-export type JobName = 'transcode' | 'captions' | 'crop' | 'metadata' | 'podcast_script' | 'podcast_render' | 'podcast_clips' | 'podcast_mix_export' | 'video_generate' | 'project_duplicate' | 'project_export';
+/**
+ * Every job kind, as a VALUE as well as a type.
+ *
+ * It is a runtime array because "which jobs exist" is something the system has to be able to check
+ * against "which jobs are durable" — a union type cannot be iterated, and while it could not, the
+ * answer to that question went unasked and eight job kinds sat on the inline driver (job-queue-005).
+ */
+export const JOB_NAMES = [
+  'transcode',
+  'captions',
+  'crop',
+  'metadata',
+  'podcast_script',
+  'podcast_render',
+  'podcast_clips',
+  'podcast_mix_export',
+  'video_generate',
+  'project_duplicate',
+  'project_export',
+] as const;
+
+export type JobName = (typeof JOB_NAMES)[number];
 
 export interface JobPayloads {
   transcode: { videoFileId: string };

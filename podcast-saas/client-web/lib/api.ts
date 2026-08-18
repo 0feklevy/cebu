@@ -1,5 +1,6 @@
 'use client';
 
+import { z } from 'zod';
 import { ClientV1Api } from 'shared/src/generated/client-v1';
 import type { StartedExport } from 'shared/src/generated/client-v1';
 import { auth } from './firebase';
@@ -25,16 +26,58 @@ async function authHeaders(): Promise<Record<string, string>> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-export async function createShareToken(
-  projectId: string,
-): Promise<{ shareToken: string; shareUrl: string }> {
+/**
+ * The share endpoints are the one project boundary `ClientV1Api` does not cover, so these two
+ * schemas are all that stands between the server's JSON and the link a user copies out of the
+ * share sheet (types-010). They used to be `as` casts, which the compiler cannot enforce: a body
+ * missing `shareToken` rendered `/v/undefined` and a numeric one rendered a plausible link to
+ * nothing, in both cases with the button flipped to its "shared" state and no error anywhere.
+ *
+ * `.min(1)` on purpose — an empty token is not a token, and it would build `${origin}/v/`, which
+ * resolves to a real (wrong) page rather than a 404.
+ */
+const ShareLinkSchema = z.object({
+  shareToken: z.string().min(1),
+  shareUrl:   z.string().min(1),
+});
+const ShareStatusSchema = z.object({
+  shareToken: z.string().min(1).nullable(),
+  shareUrl:   z.string().min(1).nullable(),
+});
+export type ShareLink = z.infer<typeof ShareLinkSchema>;
+export type ShareStatus = z.infer<typeof ShareStatusSchema>;
+
+const NOT_SHARED: ShareStatus = { shareToken: null, shareUrl: null };
+
+export async function createShareToken(projectId: string): Promise<ShareLink> {
   const headers = await authHeaders();
   const r = await fetch(`${BASE}/api/v1/projects/${projectId}/share`, {
     method: 'POST',
     headers,
   });
   if (!r.ok) throw new Error(`Failed to create share link: ${r.status}`);
-  return r.json() as Promise<{ shareToken: string; shareUrl: string }>;
+  const parsed = ShareLinkSchema.safeParse(await r.json().catch(() => null));
+  if (!parsed.success) throw new Error('The server returned an unusable share link.');
+  return parsed.data;
+}
+
+/**
+ * Read the project's current share state. Unlike creation this runs unattended on page load, so a
+ * failure of any kind — transport, status, or shape — resolves to "not shared" rather than
+ * throwing: that is what the caller already did with its `.catch(() => {})`. What is new is that a
+ * malformed token can no longer be ADOPTED. Previously a non-string flowed through
+ * `if (d.shareToken) setShareToken(d.shareToken)` and became the copied link.
+ */
+export async function getShareToken(projectId: string): Promise<ShareStatus> {
+  try {
+    const headers = await authHeaders();
+    const r = await fetch(`${BASE}/api/v1/projects/${projectId}/share`, { headers });
+    if (!r.ok) return NOT_SHARED;
+    const parsed = ShareStatusSchema.safeParse(await r.json().catch(() => null));
+    return parsed.success ? parsed.data : NOT_SHARED;
+  } catch {
+    return NOT_SHARED;
+  }
 }
 
 export async function revokeShareToken(projectId: string): Promise<void> {

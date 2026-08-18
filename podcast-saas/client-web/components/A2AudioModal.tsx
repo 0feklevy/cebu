@@ -5,6 +5,7 @@ import { Music, Wand2, X, Play, Pause, Loader2, Sparkles, Upload, Trash2, Volume
 import type { AudioFile, TimelineSection } from 'shared/src/generated/client-v1';
 import { api } from '../lib/api';
 import { auth } from '../lib/firebase';
+import { PANEL_EDGE_GAP_PX, clampedPanelWidth } from '../lib/floatingPanel';
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
 
@@ -188,7 +189,7 @@ export function A2AudioModal({
       <div
         className="fixed overflow-hidden rounded-xl border bg-card shadow-2xl"
         style={{
-          right: 24, bottom: 164, width: 380,
+          right: PANEL_EDGE_GAP_PX, bottom: 164, width: clampedPanelWidth(380),
           zIndex: 801, borderColor: '#bbf7d0',
           fontFamily: 'system-ui, -apple-system, sans-serif',
           maxHeight: 'calc(100vh - 200px)',

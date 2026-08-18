@@ -5,6 +5,10 @@
  * the render-ready view models over HTTP with ISR caching.
  */
 import 'server-only';
+import type { z } from 'zod';
+import {
+  CourseViewSchema, LessonViewSchema,
+} from 'shared/src/types/course-view';
 import type {
   CourseView, LessonView, SitemapUrlEntry, VideoSitemapEntry,
 } from 'shared/src/types/course-view';
@@ -20,11 +24,29 @@ export type PageResult<T> =
   | { status: 'gone' }
   | { status: 'redirect'; redirectUrl: string };
 
-async function getPage<T>(path: string, tags: string[]): Promise<PageResult<T>> {
+/**
+ * `CourseViewSchema` / `LessonViewSchema` exist to validate exactly this boundary and were never
+ * called — this function cast instead (types-003). These are the PUBLIC `/c/` pages: the body is
+ * rendered server-side, `seo` becomes the page metadata and `jsonLd` becomes the structured data
+ * a crawler reads, so a body that does not match produced `undefined` in a meta tag or a 500 from
+ * the SSR render rather than anything a reader could act on.
+ *
+ * A body that fails to parse is NOT_FOUND, not a course: the caller already has that branch, and
+ * a 404 is a better answer than half a page. The schemas are non-strict, so a backend that ADDS a
+ * field still parses — a validator that broke on additive change would simply be reverted.
+ */
+async function getPage<T>(path: string, tags: string[], schema: z.ZodType<T>): Promise<PageResult<T>> {
   const res = await fetch(`${BACKEND}${path}`, {
     next: { revalidate: REVALIDATE_SECONDS, tags },
   });
-  if (res.status === 200) return { status: 'ok', data: (await res.json()) as T };
+  if (res.status === 200) {
+    const parsed = schema.safeParse(await res.json().catch(() => null));
+    if (parsed.success) return { status: 'ok', data: parsed.data };
+    // Loud, because this is drift between two things that are supposed to be the same contract —
+    // and silently serving a 404 for a course that IS published would otherwise be invisible.
+    console.error(`[courseApi] ${path} did not match its schema:`, parsed.error.issues.slice(0, 5));
+    return { status: 'not_found' };
+  }
   if (res.status === 410) return { status: 'gone' };
   if (res.status === 409) {
     const body = (await res.json().catch(() => ({}))) as { redirectUrl?: string };
@@ -34,13 +56,14 @@ async function getPage<T>(path: string, tags: string[]): Promise<PageResult<T>> 
 }
 
 export function getCoursePage(slug: string): Promise<PageResult<CourseView>> {
-  return getPage<CourseView>(`/api/v1/public/courses/${encodeURIComponent(slug)}`, ['courses', `course:${slug}`]);
+  return getPage(`/api/v1/public/courses/${encodeURIComponent(slug)}`, ['courses', `course:${slug}`], CourseViewSchema);
 }
 
 export function getLessonPage(slug: string, lessonSlug: string): Promise<PageResult<LessonView>> {
-  return getPage<LessonView>(
+  return getPage(
     `/api/v1/public/courses/${encodeURIComponent(slug)}/lessons/${encodeURIComponent(lessonSlug)}`,
     ['courses', `course:${slug}`],
+    LessonViewSchema,
   );
 }
 

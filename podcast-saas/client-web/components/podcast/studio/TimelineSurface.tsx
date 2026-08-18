@@ -126,25 +126,28 @@ export function TimelineSurface(props: Props) {
     const onMove = (e: MouseEvent) => {
       const it = interRef.current;
       if (!it) return;
+      // ONE undo checkpoint per gesture, taken on the FIRST move — the only moment the draft still
+      // holds the pre-drag timeline. `apply(snapshot)` pushes the draft's CURRENT timeline onto the
+      // undo stack, so checkpointing on mouseup (as this used to) recorded the already-dragged
+      // state: ⌘Z popped an entry identical to what was on screen, the block never moved back, and
+      // the pre-gesture position was unreachable for the rest of the session.
+      const checkpoint = !movedRef.current;
       movedRef.current = true;
       const ms = pxToMs(e.clientX);
       if (it.kind === 'scrub') { props.onSeek(ms); return; }
       if (it.kind === 'move') {
         const desired = ms - it.grabDx;
         const snapped = snapStart(desired, { placements, timeline: it.base, laneOf, index: it.index, pxPerSec: zoomRef.current, playheadMs });
-        props.onApply(moveBlock(it.base, it.index, snapped, durMap, sticky, laneOf), false);
+        props.onApply(moveBlock(it.base, it.index, snapped, durMap, sticky, laneOf), checkpoint);
       } else if (it.kind === 'trim') {
         const p = placements[it.index];
         const deltaMs = it.edge === 'in' ? ms - p.startMs : ms - (p.startMs + (p.outMs - p.inMs));
-        props.onApply(trimBlock(it.base, it.index, it.edge, deltaMs, durMap, sticky, laneOf), false);
+        props.onApply(trimBlock(it.base, it.index, it.edge, deltaMs, durMap, sticky, laneOf), checkpoint);
       }
     };
     const onUp = () => {
-      const it = interRef.current;
-      if (it && (it.kind === 'move' || it.kind === 'trim') && movedRef.current) {
-        // Commit a single undo checkpoint for the whole gesture.
-        props.onApply(timeline, true);
-      }
+      // No apply here: the gesture's last mousemove already applied the final timeline and
+      // scheduled its save, and the undo checkpoint was taken on the first move (above).
       interRef.current = null;
       force((n) => n + 1);
     };

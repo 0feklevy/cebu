@@ -108,6 +108,14 @@ export function PlaylistViewer({ shareToken, playlistId, permalinkSlug }: Props)
     setPendingNextPos(null);
   }, []);
 
+  // Cancel, pick and back-to-lobby all route through clearCountdown; unmount routes through
+  // nothing. Leaving the page inside the up-next window — the six seconds in which the card is on
+  // screen, and so the six seconds in which a viewer decides to go — otherwise stranded a 1 Hz
+  // interval calling setState on a torn-down tree for the life of the tab. (frontend-003)
+  useEffect(() => () => {
+    if (countdownTimer.current) { clearInterval(countdownTimer.current); countdownTimer.current = null; }
+  }, []);
+
   // ── navigation ────────────────────────────────────────────────────────────
   const startAt = useCallback((displayPos: number, newOrder?: number[]) => {
     clearCountdown();

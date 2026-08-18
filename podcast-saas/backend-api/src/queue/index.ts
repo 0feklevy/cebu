@@ -9,9 +9,11 @@ import { pgBossSend } from './pgBossDriver.js';
  * Background-job producer entrypoint.
  *
  * `QUEUE_DRIVER=inline` (default) preserves the historical `setImmediate(runX(...))`
- * behaviour for every job. `QUEUE_DRIVER=pgboss` routes the durable job names
- * (PGBOSS_JOB_NAMES — Phase B: `crop`) through pg-boss while every other job still runs
- * inline. pg-boss failures fall back to inline, so a job is never lost.
+ * behaviour for every job — the single-process form for local dev and tests.
+ * `QUEUE_DRIVER=pgboss` routes PGBOSS_JOB_NAMES through pg-boss; since job-queue-005 that is
+ * EVERY job kind, because every one of them either spends money on a third-party API or runs for
+ * minutes, and an inline job dies with the process that accepted it. pg-boss send failures still
+ * fall back to inline, so a job is never lost — except `project_export`, see NEVER_INLINE.
  *
  * The inline queue is built lazily so the registry → service → queue import cycle resolves at
  * runtime; the pg-boss module is only loaded once a durable job is actually enqueued.
@@ -68,8 +70,13 @@ export class ExportQueueUnavailable extends Error {
  *
  * Awaitable, because the controller has to answer honestly: a fire-and-forget send that fails leaves
  * a `queued` row nothing will ever pick up, and the user watches a progress bar for a job that does
- * not exist. Singleton on the export id, so a duplicate delivery cannot start a second render of the
- * same row. And no fallback — see NEVER_INLINE.
+ * not exist. And no fallback — see NEVER_INLINE.
+ *
+ * The export id is the singleton key, and the queue's `short` policy is what makes that mean
+ * something (job-queue-006 — under pg-boss's default `standard` policy the key was inert). What it
+ * buys is precise: a second delivery arriving while the first is still WAITING is collapsed. It is
+ * not the guard against a second render — that is `ProjectExportService.claim()`, which refuses a
+ * live encode, and which holds whether or not this key exists.
  */
 export async function enqueueProjectExport(exportId: string): Promise<void> {
   if (QUEUE_DRIVER !== 'pgboss') {
@@ -80,8 +87,8 @@ export async function enqueueProjectExport(exportId: string): Promise<void> {
     const boss = await getBoss();
     const id = await boss.send('project_export', { exportId }, { singletonKey: exportId });
     if (!id) {
-      // pg-boss returns null when the singleton key already has a job in flight — that is the
-      // duplicate-delivery case, and it is success: the work is already queued exactly once.
+      // Under the `short` policy pg-boss answers null when this key already has a job WAITING to
+      // start — the duplicate-delivery case, and it is success: the work is already queued once.
       logger.info({ exportId }, 'export: already queued (singleton) — not enqueued twice');
     }
   } catch (err) {

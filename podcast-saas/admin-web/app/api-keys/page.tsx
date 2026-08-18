@@ -131,6 +131,7 @@ export default function ApiKeysPage() {
                 {entry.status?.set && (
                   <button
                     onClick={() => deleteKey(id)}
+                    aria-label={`Remove ${label} key`}
                     disabled={entry.deleting}
                     className="text-xs px-2 py-1 text-destructive border border-destructive/40 rounded hover:bg-destructive/10 transition-colors disabled:opacity-60"
                   >
@@ -142,6 +143,12 @@ export default function ApiKeysPage() {
               <div className="space-y-2">
                 <input
                   type="password"
+                  // The provider heading sits in a sibling <div> with no programmatic link, and a
+                  // placeholder ("sk-ant-…") is not a name — so this field announced as an
+                  // unlabelled password box and a screen-reader user had no way to tell WHICH
+                  // provider's secret they were about to overwrite. Four near-identical secret
+                  // fields on one page make that a real chance of writing the wrong key.
+                  aria-label={`${label} API key`}
                   value={entry.draft}
                   onChange={(e) => update(id, { draft: e.target.value, testResult: null })}
                   placeholder={placeholder}
@@ -166,6 +173,7 @@ export default function ApiKeysPage() {
                 <div className="flex gap-2 justify-end">
                   <button
                     onClick={() => testKey(id)}
+                    aria-label={`Test ${label} key`}
                     disabled={!entry.draft.trim() || entry.testing}
                     className="px-3 py-1.5 text-sm border border-border rounded-md hover:bg-accent/50 transition-colors disabled:opacity-40"
                   >
@@ -173,6 +181,7 @@ export default function ApiKeysPage() {
                   </button>
                   <button
                     onClick={() => saveKey(id)}
+                    aria-label={`Save ${label} key`}
                     disabled={!entry.draft.trim() || entry.saving}
                     className="px-3 py-1.5 text-sm bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors disabled:opacity-40"
                   >

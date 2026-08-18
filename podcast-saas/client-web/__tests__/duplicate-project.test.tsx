@@ -370,8 +370,12 @@ describe('HomeHero specifics', () => {
 
     await waitFor(() => expect(screen.getByText(/Photosynthesis \(copy\)/)).toBeTruthy());
     await waitFor(() => {
-      const cached = JSON.parse(localStorage.getItem('hero_projects_v1') ?? '[]') as Array<{ id: string }>;
-      expect(cached.some((p) => p.id === 'proj-2')).toBe(true);
+      // The cache envelope carries the uid it was written under, so a sign-in as somebody else
+      // cannot be seeded with this account's list (HomeHero.readCachedProjects).
+      const cached = JSON.parse(localStorage.getItem('hero_projects_v1') ?? 'null') as
+        { uid: string; items: Array<{ id: string }> } | null;
+      expect(cached?.uid).toBe('u1');
+      expect(cached?.items.some((p) => p.id === 'proj-2')).toBe(true);
     });
   });
 });

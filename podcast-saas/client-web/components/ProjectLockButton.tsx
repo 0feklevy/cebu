@@ -46,7 +46,7 @@ export function ProjectLockButton({ projectId }: { projectId: string }) {
         <div className="floating-panel fixed right-3 top-[58px] z-[10000] w-[min(340px,calc(100vw-24px))] overflow-hidden rounded-xl sm:right-4">
           <div className="flex items-center justify-between border-b border-border bg-muted px-4 py-2.5">
             <p className="text-sm font-semibold text-foreground">Pricing</p>
-            <button onClick={() => setOpen(false)} className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground">
+            <button onClick={() => setOpen(false)} aria-label="Close pricing" title="Close pricing" className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground focus-ring">
               <X size={14} strokeWidth={1.8} aria-hidden />
             </button>
           </div>

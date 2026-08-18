@@ -6,6 +6,7 @@ import { useAuth } from '../lib/firebase';
 import { api } from '../lib/api';
 import { VideoPlayer } from './VideoPlayer';
 import type { VideoPlayerHandle } from './VideoPlayer';
+import { commitOptimistic } from './failureSurface';
 import type { Clip } from '../hooks/useClipSequence';
 import { TimelinePanel } from './TimelinePanel';
 import { GuidedTour, type TourStep } from './GuidedTour';
@@ -649,11 +650,19 @@ export function VideoEditor({ projectId }: Props) {
     const name = renameDraft.trim();
     setRenamingSimId(null);
     if (!id || !name) return;
+    // Captured BEFORE the optimistic write, because there is no "next list refresh" in an editor
+    // session — loadData runs on mount and on an explicit reload, nowhere else. A swallowed
+    // rejection therefore left the Library showing a name the server never accepted, for the whole
+    // session, with the user believing it was saved. (frontend-editor-002)
+    const previous = simulations.find(s => s.id === id);
     setSimulations(prev => prev.map(s => s.id === id ? { ...s, name } : s)); // optimistic
-    try {
-      const updated = await api.updateSimulation(projectId, id, { name });
-      setSimulations(prev => prev.map(s => s.id === id ? updated : s));
-    } catch { /* revert on next list refresh */ }
+    await commitOptimistic({
+      request:   () => api.updateSimulation(projectId, id, { name }),
+      reconcile: (updated) => setSimulations(prev => prev.map(s => s.id === id ? updated : s)),
+      rollback:  () => { if (previous) setSimulations(prev => prev.map(s => s.id === id ? previous : s)); },
+      report:    (message) => setLibraryFeedback({ tone: 'error', message }),
+      failureText: 'Could not rename the simulation.',
+    });
   };
 
   const confirmDeleteSim = async () => {

@@ -1,9 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Download, Loader2, X } from 'lucide-react';
 import { PodcastButton } from '../PodcastChrome';
+import { useEscapeToClose } from '../../../lib/useEscapeToClose';
 
 const FORMATS: { key: 'mp4' | 'mp3' | 'wav'; label: string; note: string }[] = [
   { key: 'mp4', label: 'MP4', note: 'Single-channel video-container audio — best for uploads.' },
@@ -14,13 +15,16 @@ const FORMATS: { key: 'mp4' | 'mp3' | 'wav'; label: string; note: string }[] = [
 export function ExportDialog({ onClose, onExport }: { onClose: () => void; onExport: (fmt: 'mp4' | 'mp3' | 'wav') => Promise<void> }) {
   const [fmt, setFmt] = useState<'mp4' | 'mp3' | 'wav'>('mp4');
   const [busy, setBusy] = useState(false);
+  const titleId = useId();
+  // Suspended while the export is running, for the same reason the backdrop below is.
+  useEscapeToClose(onClose, !busy);
   return createPortal(
     <div className="fixed inset-0 z-[850] flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => !busy && onClose()} />
-      <div className="relative z-10 w-full max-w-md rounded-lg border border-border bg-card p-5 shadow-modal">
+      <div role="dialog" aria-modal="true" aria-labelledby={titleId} className="relative z-10 w-full max-w-md rounded-lg border border-border bg-card p-5 shadow-modal">
         <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-base font-semibold text-foreground">Export the mix</h2>
-          <button onClick={() => !busy && onClose()} className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted focus-ring"><X size={17} aria-hidden /></button>
+          <h2 id={titleId} className="text-base font-semibold text-foreground">Export the mix</h2>
+          <button onClick={() => !busy && onClose()} aria-label="Close export dialog" title="Close" className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted focus-ring"><X size={17} aria-hidden /></button>
         </div>
         <div className="mb-4 space-y-2">
           {FORMATS.map((f) => (

@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom';
 import Link from 'next/link';
 import { ArrowLeft, Check, Copy, ExternalLink, Eye, Film, Globe, Link2, Loader2, Lock, Share2, Unlink2, X } from 'lucide-react';
 import { TourButton } from './TourButton';
-import { api, createShareToken, revokeShareToken } from '../lib/api';
+import { api, createShareToken, getShareToken, revokeShareToken } from '../lib/api';
 import { PermalinkEditor } from './PermalinkEditor';
 import { ProjectSettingsPanel } from './ProjectSettingsPanel';
 import { ExportProgressPanel } from './ExportProgressPanel';
@@ -30,8 +30,6 @@ const STATUS_LABELS: Record<string, string> = {
 interface Props {
   projectId: string;
 }
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
 
 export function ProjectHeader({ projectId }: Props) {
   const { loading: authLoading } = useAuth();
@@ -60,18 +58,11 @@ export function ProjectHeader({ projectId }: Props) {
     // project.status, which stays 'draft' even after a clip is uploaded).
     api.listVideos(projectId).then(vs => setHasMainVideo(vs.some(v => !v.is_broll))).catch(() => {});
 
-    // Check for an existing share token
-    import('../lib/firebase').then(({ auth: fa }) => {
-      fa.currentUser?.getIdToken().then(token => {
-        fetch(`${API_URL}/api/v1/projects/${projectId}/share`, {
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-        }).then(async r => {
-          if (r.ok) {
-            const d = await r.json() as { shareToken?: string | null };
-            if (d.shareToken) setShareToken(d.shareToken);
-          }
-        }).catch(() => {});
-      });
+    // Check for an existing share token. The read is validated in lib/api (types-010) — this used
+    // to be an inline fetch whose body was `as`-cast, so a mistyped or renamed `shareToken` was
+    // adopted verbatim and became the link the copy button handed the user.
+    getShareToken(projectId).then(({ shareToken: tok }) => {
+      if (tok) setShareToken(tok);
     });
   }, [projectId, authLoading]);
 

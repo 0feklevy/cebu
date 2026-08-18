@@ -127,6 +127,7 @@ export default function ControlsPage() {
             </div>
             <input
               type="number"
+              aria-label="Anonymous User Limit"
               min={0}
               max={100}
               value={form.anonymous_user_limit}
@@ -220,6 +221,7 @@ export default function ControlsPage() {
             </div>
             <input
               type="number"
+              aria-label="Simulation telemetry sample rate"
               min={0}
               max={1}
               step={0.01}
@@ -305,7 +307,7 @@ function FlagCard({
           </div>
           <div className="text-xs text-muted-foreground mt-0.5">{description}</div>
         </div>
-        <Toggle checked={enabled} onChange={onToggle} danger={danger && enabled} />
+        <Toggle label={title} checked={enabled} onChange={onToggle} danger={danger && enabled} />
       </div>
       {children}
     </div>
@@ -313,10 +315,19 @@ function FlagCard({
 }
 
 function Toggle({
+  label,
   checked,
   onChange,
   danger,
 }: {
+  /**
+   * REQUIRED, not optional. The visible title lives in a sibling <div> inside FlagCard with no
+   * programmatic relationship to this button, so without it every switch on this page — including
+   * Maintenance Mode — announces as "switch, on" and nothing more. Typed as required so a new
+   * FlagCard cannot ship an anonymous kill switch. Same fix ChoiceCard already applies to its
+   * <select> (`aria-label={title}`).
+   */
+  label: string;
   checked: boolean;
   onChange: (v: boolean) => void;
   danger?: boolean;
@@ -325,6 +336,7 @@ function Toggle({
     <button
       type="button"
       role="switch"
+      aria-label={label}
       aria-checked={checked}
       onClick={() => onChange(!checked)}
       className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
