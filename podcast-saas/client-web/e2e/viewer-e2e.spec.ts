@@ -362,6 +362,33 @@ async function bootViewer(page: Page, config: object, opts?: { simdebug?: boolea
     return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
   });
 
+  // ── PIN THE HARDWARE PROFILE, for the same reason vitest.setup.ts does ────────────────────
+  //
+  // `navigator.hardwareConcurrency` reports the real machine, and `canWarmUnpaused()`
+  // (lib/simCapability.ts) turns it into the resident-pool tier: `'all'` above 4 cores,
+  // `'window'` at or below. So this suite's behaviour depended on where it ran — every developer
+  // laptop resolved `'all'` and passed, while a 2-core CI runner resolved `'window'`.
+  //
+  // That is not a hypothesis. The unit suite hit exactly this, root-caused it, and pinned the
+  // value in `vitest.setup.ts` with the note "a suite that answers differently on different
+  // hardware is not testing the product; it is testing the hardware". The Playwright suite never
+  // got the same treatment because it had never actually RUN in CI — it was wired to no workflow
+  // (test-quality-013). The first real CI run reddened precisely two tests, both tier-dependent:
+  // the predictive planner never ran, and no HIDDEN sim frame existed for the hidden-frame
+  // assertions to be about. Both fail LOUDLY rather than vacuously, which is why the cause was
+  // legible instead of silent.
+  //
+  // Pinned ABOVE the ≤4 threshold, matching the unit suite's default, so both suites answer the
+  // same question. `SIM_E2E_CORES` probes the low-end path deliberately, the same way
+  // `SIM_TEST_CORES` does for vitest.
+  const PIN_CORES = Number(process.env.SIM_E2E_CORES) || 8;
+  await page.addInitScript((cores: number) => {
+    Object.defineProperty(Navigator.prototype, 'hardwareConcurrency', {
+      get: () => cores,
+      configurable: true,
+    });
+  }, PIN_CORES);
+
   // Bind each E2E_STATE report to the iframe that sent it. contentWindow IS reachable
   // cross-origin (contentDocument is not), so identity comparison works.
   await page.addInitScript(() => {
