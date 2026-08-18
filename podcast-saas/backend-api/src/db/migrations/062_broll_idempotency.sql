@@ -35,8 +35,35 @@
 -- CREATE UNIQUE INDEX CONCURRENTLY statement, verified through the catalog (indisunique, indisready,
 -- indisvalid) BEFORE any code depends on it — never code first, index second.
 
--- Fail fast rather than queue behind a long transaction: a deploy that cannot get the lock promptly
--- should abort and leave the previous version serving, not hold the table hostage.
+-- ── Why 3 seconds, derived rather than guessed ───────────────────────────────────────────────
+--
+-- This value does NOT bound how long our work takes. Both statements below are fast by
+-- construction:
+--
+--   • The ALTER is metadata-only. Since PG11, ADD COLUMN with a NON-VOLATILE default does not
+--     rewrite the table — the default is recorded in the catalog and materialised on read. `now()`
+--     is STABLE, not volatile, so all three columns qualify. O(1) regardless of row count.
+--   • The UPDATE is bounded by rows in a live status (`enhancing`…`transcoding`) that still carry
+--     attempts = 0. That is in-flight generation jobs, not history — tens of rows, not millions.
+--
+-- What the timeout actually bounds is how long we wait to ACQUIRE the ACCESS EXCLUSIVE lock, and
+-- that is the number that matters, because of what a pending ACCESS EXCLUSIVE request does to
+-- everyone else: it QUEUES AHEAD of subsequent readers. One long-running transaction holding a
+-- conflicting lock on video_generation_jobs is enough to make our ALTER wait, and every SELECT that
+-- arrives behind it then waits too — on a table the b-roll pipeline polls constantly. So the real
+-- question is "how many seconds of stalled reads is a deploy allowed to cause", not "how long does
+-- ALTER TABLE take".
+--
+-- 3s: long enough to ride out an ordinary short transaction and succeed on the first try, short
+-- enough that the worst case is a brief stall rather than a pile-up. On timeout the whole file
+-- rolls back (the runner is transactional), the deploy fails loudly, and the previous version keeps
+-- serving — which is the correct outcome, because the alternative is holding a hot table hostage
+-- while nobody can read it.
+--
+-- Recorded against D-11c, which flagged this number as a guess. It was, when 062 still built two
+-- indexes on the hot timeline_sections table and the timeout had to cover a build of unknown
+-- duration. Those index builds are gone, so the number now has a much smaller job and this is the
+-- argument for it.
 SET LOCAL lock_timeout = '3s';
 
 -- ── The lease ────────────────────────────────────────────────────────────────────────────────
