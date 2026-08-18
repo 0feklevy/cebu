@@ -4,6 +4,32 @@ import { db } from '../db/index.js';
 import { users, orgs, collaborators } from '../db/schema.js';
 import { eq, and, isNull } from 'drizzle-orm';
 import type { DecodedIdToken } from 'firebase-admin/auth';
+import { logger } from '../lib/logger.js';
+import { classifyAuthFailure, AUTH_FAILURE_LEVEL } from './authFailureReason.js';
+
+/**
+ * observability-004 — say WHY a token was rejected.
+ *
+ * Both middlewares used to end in a bare `catch` that emitted nothing, so an expired token, a
+ * drifted container clock, a deployment pointed at the wrong Firebase project, and a missing
+ * FIREBASE_* env were all the same event from outside: a 401, or a silently anonymous request.
+ * Three of those four fail EVERY request in the fleet.
+ *
+ * The reply is unchanged in both — this only adds the line that says what happened. The token is
+ * never a field; `classifyAuthFailure` also scrubs it out of the vendor's own message.
+ */
+function logAuthFailure(err: unknown, token: string | undefined, where: 'required' | 'optional'): void {
+  const failure = classifyAuthFailure(err, token);
+  const payload = {
+    evt: 'auth_verify_failed',
+    reason: failure.reason,
+    vendorCode: failure.vendorCode,
+    detail: failure.detail,
+    middleware: where,
+  };
+  const level = AUTH_FAILURE_LEVEL[failure.reason];
+  logger[level](payload, '[Auth] token verification failed');
+}
 
 // Emails listed in ADMIN_EMAILS (comma-separated) are auto-granted admin on every login.
 function isAdminEmail(email: string | undefined): boolean {
@@ -57,11 +83,21 @@ export async function firebaseAuthMiddleware(
     return reply.code(401).send({ error_type: 'connection_error', message: 'No auth token' });
   }
 
+  // The verify is its OWN try. It used to share one with the user upsert below, which meant a
+  // Postgres outage was reported to the client as "Invalid auth token" and logged nothing at all —
+  // an auth incident that was really a database incident. The reply is unchanged (see the second
+  // catch); what is now different is that the log says which of the two happened.
+  let decoded: DecodedIdToken;
   try {
     const admin = getFirebaseAdmin();
-    const decoded = await admin.auth().verifyIdToken(token);
-    request.firebaseUser = decoded;
+    decoded = await admin.auth().verifyIdToken(token);
+  } catch (err) {
+    logAuthFailure(err, token, 'required');
+    return reply.code(401).send({ error_type: 'connection_error', message: 'Invalid auth token' });
+  }
+  request.firebaseUser = decoded;
 
+  try {
     // Upsert the user row and their personal org
     const existing = await db.query.users.findFirst({
       where: eq(users.firebase_uid, decoded.uid),
@@ -118,7 +154,14 @@ export async function firebaseAuthMiddleware(
         ))
         .catch(() => {});
     }
-  } catch {
+  } catch (err) {
+    // The token was GOOD; persisting the session was not. Same reply as before (changing it is a
+    // behaviour change this stream is not making), but no longer indistinguishable in the log:
+    // `reason` says the credential verified and the database is what failed.
+    logger.error(
+      { evt: 'auth_verify_failed', reason: 'session_persist_failed', uid: decoded.uid, err },
+      '[Auth] token verified but the session could not be persisted',
+    );
     return reply.code(401).send({ error_type: 'connection_error', message: 'Invalid auth token' });
   }
 }
@@ -138,7 +181,10 @@ export async function firebaseAuthOptionalMiddleware(
       where: eq(users.firebase_uid, decoded.uid),
     });
     if (existing) request.dbUser = existing;
-  } catch {
-    // Optional: silently fail
+  } catch (err) {
+    // Still falls through to anonymous — that is this middleware's contract and it is unchanged.
+    // But "silently" was the bug: a fleet-wide verify outage looked exactly like ordinary
+    // unauthenticated traffic, on the routes where that difference matters most.
+    logAuthFailure(err, authHeader.slice(7), 'optional');
   }
 }

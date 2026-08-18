@@ -66,7 +66,19 @@ export async function canServeMediaKey(
   if (!scope) return false;
 
   // 1. Scoped token — no DB hit; the normal path for every player/ffmpeg URL.
-  if (token && verifyMediaToken(scope, token)) return true;
+  //
+  // A misconfigured ENCRYPTION_KEY makes `verifyMediaToken` THROW (security-004) rather than
+  // verify against a truncated/empty secret. That must deny and stay denied: this function is
+  // documented never to throw, and the fail-open branch below is justified by "the token path
+  // already covers every URL we mint ourselves" — a claim that is exactly false when the signing
+  // key is broken. So a key error is caught HERE and answered `false`, never allowed to fall
+  // through into the availability-biased catch.
+  try {
+    if (token && verifyMediaToken(scope, token)) return true;
+  } catch (err) {
+    logger.error({ err, key }, '[mediaAccess] media token secret is unusable — denying');
+    return false;
+  }
 
   try {
     const project = await resolveProjectForKey(key);

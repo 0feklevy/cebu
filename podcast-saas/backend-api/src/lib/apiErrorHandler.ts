@@ -8,6 +8,7 @@
 
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { logger } from './logger.js';
+import { safeRequestPath } from './logFields.js';
 import { isUuidSyntaxError } from './uuidParam.js';
 
 /**
@@ -38,7 +39,10 @@ import { isUuidSyntaxError } from './uuidParam.js';
 export function apiErrorHandler(err: Error, request: FastifyRequest, reply: FastifyReply): void {
   if (isUuidSyntaxError(err)) {
     logger.warn(
-      { err, method: request.method, url: request.url },
+      // `safeRequestPath`, never `request.url`: the SSE routes carry the caller's Firebase id
+      // token in `?token=`, and this warning fires on exactly the kind of bad URL a stream can
+      // produce. See lib/logFields.ts.
+      { err, method: request.method, path: safeRequestPath(request) },
       'Malformed identifier rejected by Postgres (22P02)',
     );
     reply.code(400).send({ error_type: 'invalid_identifier', message: 'Invalid identifier' });
@@ -48,7 +52,13 @@ export function apiErrorHandler(err: Error, request: FastifyRequest, reply: Fast
   const statusCode = (err as { statusCode?: number }).statusCode ?? 500;
 
   if (statusCode >= 500) {
-    logger.error({ err }, 'Unhandled server error');
+    // Name the request. `{ err }` alone left an operator with a stack trace and no way to tell
+    // which endpoint produced it — and, with observability-003 in place, the pino mixin adds the
+    // correlation id here too, so this line joins the request line and any job the request started.
+    logger.error(
+      { err, method: request.method, path: safeRequestPath(request) },
+      'Unhandled server error',
+    );
   }
 
   // Default to a neutral type (was 'llm_error', which mislabelled every storage/DB

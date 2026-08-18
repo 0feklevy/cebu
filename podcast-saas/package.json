@@ -16,7 +16,6 @@
     "dev:backend": "pnpm --filter backend-api dev",
     "dev:client": "pnpm --filter client-web dev",
     "dev:admin": "pnpm --filter admin-web dev",
-    "generate": "pnpm --filter backend-api generate && pnpm --filter shared build",
     "db:migrate": "pnpm --filter backend-api db:migrate",
     "db:studio": "pnpm --filter backend-api db:studio",
     "lint": "pnpm -r lint",

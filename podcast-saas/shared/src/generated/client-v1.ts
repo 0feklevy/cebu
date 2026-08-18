@@ -518,14 +518,78 @@ export interface AudioFile {
   created_at: string;
 }
 
+/**
+ * The persisted Minimal-UI selection (`sim_meta.uiControls`).
+ *
+ * Structural on purpose. The authoritative `SimUiSelection` lives in each side's own
+ * `simUiControls` module (client-web/lib, backend-api/src/services/simulation), and this is a
+ * description of the JSONB that was written, not a third owner of the contract: `kind` is widened
+ * to `string` so a real `SimUiSelection` assigns INTO it, never the other way round. Readers that
+ * need the narrow union keep going through `getStoredSelection`, which sanitizes untrusted JSON.
+ */
+export interface SimMetaUiControls {
+  controls: Array<{ selector: string; kind: string; label: string; hidden?: boolean }>;
+  show:     string[];
+  hide:     string[];
+}
+
+/**
+ * `timeline_sections.sim_meta` — the bridge-generation PROVENANCE record, as the server writes it.
+ *
+ * Every field is optional, and that is the honest shape of this column rather than laziness. It is
+ * untyped JSONB with four distinct populations in it at once:
+ *
+ *   • `{}` — a section that has never been generated;
+ *   • the mechanical Minimal-UI write (`planVersion: '7'`, no LLM fields);
+ *   • the LLM write (`planVersion: '7'`, the full `BridgeGenerationResult` provenance);
+ *   • pre-7 "BridgePlan" rows still in the table, which SectionEditor still renders.
+ *
+ * The previous declaration described ONLY the fourth, and declared its fields REQUIRED — so it
+ * matched no row the current code writes, and the readers that needed the real fields cast past
+ * it (`simMeta as unknown as Record<string, unknown>`; "uiControls is not declared on the
+ * generated SimMeta type yet"). types-001. `shared/src/__tests__/simMetaShape.test.ts` holds the
+ * literal objects both write sites build, annotated with this type, so a drift between the two
+ * fails `pnpm --filter shared typecheck`.
+ */
 export interface SimMeta {
-  targetControlId:     string | null;
-  confidence:          number;
-  warnings:            string[];
-  hideControlIds:      string[];
-  hideButtonIds:       string[];
-  hideSelectorStrings: string[];
-  animation: {
+  // ── Written by every planVersion-7 generation ────────────────────────────────
+  /** '7' for anything the current controller writes; '5' and below are legacy BridgePlan rows. */
+  planVersion?:         string;
+  /** 'llm' when a prompt built the bridge, 'mechanical' for a hide-only Minimal-UI pass. */
+  generatedBy?:         string;
+  /** ISO timestamp of the write. */
+  generatedAt?:         string;
+  bridgeHash?:          string;
+  /** True when the published bridge honours `startScript.params` (hideSelectors at runtime). */
+  supportsRuntimeParams?: boolean;
+  /** The user's Minimal-UI selection, persisted at generation time. */
+  uiControls?:          SimMetaUiControls;
+
+  // ── LLM path only (from BridgeGenerationResult) ──────────────────────────────
+  /** The prompt the bridge was BUILT from — compared against `sim_prompt` by the canReuse gate. */
+  prompt?:              string;
+  sourceHash?:          string;
+  provider?:            string;
+  model?:               string;
+  confidence?:          number;
+  confidenceLevel?:     'high' | 'medium' | 'low';
+  contextTruncated?:    boolean;
+  retryCount?:          number;
+  retryReason?:         string | null;
+  warnings?:            string[];
+  validationErrors?:    string[];
+  validationWarnings?:  string[];
+  runtimeValidated?:    boolean;
+  conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
+
+  // ── Legacy BridgePlan (planVersion <= 5) ─────────────────────────────────────
+  // Kept, not deleted: these rows are still in the table and SectionEditor's "Last generation"
+  // card still renders them. Dropping them here would only push that reader back to casting.
+  targetControlId?:     string | null;
+  hideControlIds?:      string[];
+  hideButtonIds?:       string[];
+  hideSelectorStrings?: string[];
+  animation?: {
     enabled:      boolean;
     controllerId: string | null;
     min:          number;
@@ -534,7 +598,6 @@ export interface SimMeta {
     intervalMs:   number;
     showOptimal:  boolean;
   } | null;
-  planVersion: string;
 }
 
 export interface VideoGenerationJob {
@@ -690,14 +753,19 @@ export interface PlaylistSummary extends Playlist {
 }
 
 // Public play-config — each item carries its full project PlayerConfig.
-// PlayerConfig is intentionally loosely typed here (the viewer owns the precise shape).
+//
+// The viewer owns PlayerConfig's precise shape, and that is deliberate: restating a 60-field
+// player contract here would give it two owners. What was NOT deliberate is expressing "the viewer
+// owns it" as `any` (types-012) — `any` does not say "unspecified", it switches type checking OFF
+// for every expression downstream of it, so `item.config.segmnets.length` compiles. `unknown` says
+// the same thing about ownership and keeps the compiler on: a reader must narrow, exactly as
+// client-web's own copy of this type does by declaring `config: PlayerConfig`.
 export interface PlaylistPlayItem {
   project_id: string;
   title: string | null;
   description: string | null;
   thumbnail_url: string | null;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  config: any;
+  config: unknown;
 }
 
 export interface PlaylistPlayConfig {

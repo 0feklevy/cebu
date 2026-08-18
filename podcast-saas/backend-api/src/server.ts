@@ -40,8 +40,11 @@ import { registerAdminUsersRoutes } from './controllers/admin/v1/users.controlle
 import { registerAdminPipelineStatsRoutes } from './controllers/admin/v1/pipeline-stats.controller.js';
 import { registerAdminBillingRoutes } from './controllers/admin/v1/billing.controller.js';
 import { firebaseAuthMiddleware, firebaseAuthOptionalMiddleware } from './middleware/firebase-auth.js';
+import { registerCorrelationId } from './middleware/correlationId.js';
 import { canServeMediaKey } from './services/storage/mediaAccess.js';
 import { splitMediaTokenPrefix } from './services/storage/mediaToken.js';
+import { assertEncryptionKeyEnv } from './services/security/encryptionKey.js';
+import { GLOBAL_MULTIPART_FILE_LIMIT_BYTES } from './services/security/uploadLimits.js';
 import { apiErrorHandler } from './lib/apiErrorHandler.js';
 import { hlsCacheControlForKey } from './services/video/hlsVersioning.js';
 import { startHlsRetentionSweep } from './services/video/hlsRetention.js';
@@ -50,6 +53,7 @@ import { startExportSweep } from './services/export/ProjectExportService.js';
 import { startHlsRecoverySweep, sweepStuckTranscodes } from './services/video/hlsRecovery.js';
 import { startCorpusIngestionSweep } from './services/ingestion/corpusRecovery.js';
 import { registerExportRoutes } from './controllers/v1/export.controller.js';
+import { registerHealthRoutes } from './controllers/v1/health.controller.js';
 
 // Phase 2+ stub routes
 import { registerPhase2StubRoutes } from './controllers/stubs.js';
@@ -180,6 +184,18 @@ async function build() {
     trustProxy: TRUST_PROXY_HOPS,
   });
 
+  // observability-003 — FIRST, before any plugin that registers its own hooks.
+  //
+  // This opens the per-request AsyncLocalStorage scope that the pino mixin reads (lib/logger.ts),
+  // so every line emitted while serving a request — controller, service, vendor retry, and any
+  // inline job the request schedules — carries the same `cid`. It also writes the one
+  // request-completion line: Fastify runs with `logger: false` here, so before this there was no
+  // request log at all, and a failing request left behind only whatever a service happened to say.
+  //
+  // Ordering is load-bearing: hooks run in registration order, so anything registered above this
+  // would log outside the scope and its lines would carry no id.
+  registerCorrelationId(app);
+
   await app.register(cors, {
     // App + admin public origins, plus the local dev origins ONLY outside production.
     // (browserOrigins() includes localhost:3000/3001 only when NODE_ENV !== 'production',
@@ -193,28 +209,22 @@ async function build() {
     crossOriginResourcePolicy: { policy: 'cross-origin' }, // allow video/HLS segments cross-origin
   });
 
+  // The global ceiling is the PROXY's body limit, not a number picked out of the air
+  // (performance-005). 10 GB was neither a real capability nor a real bound: every byte of a
+  // multipart request crosses nginx, whose `client_max_body_size` is smaller, so the only thing
+  // the larger number achieved was that a route which forgot its own limit had none. Routes that
+  // need less declare it per route (see services/security/uploadLimits.ts); the direct-to-storage
+  // paths (presigned PUT, S3 multipart) never pass through this plugin and keep their own cap.
   await app.register(multipart, {
-    limits: { fileSize: 10 * 1024 * 1024 * 1024 }, // 10 GB (overridden per-route where needed)
+    limits: { fileSize: GLOBAL_MULTIPART_FILE_LIMIT_BYTES },
   });
 
-  // Health check — reports degraded (503) when the database is unreachable so the
-  // platform load balancer can pull the instance instead of routing traffic to it.
-  app.get('/health', async (_req, reply) => {
-    try {
-      await checkDatabaseConnection();
-    } catch {
-      return reply.code(503).send({
-        status: 'degraded',
-        reason: 'db_unavailable',
-        timestamp: new Date().toISOString(),
-      });
-    }
-    return {
-      status: 'ok',
-      timestamp: new Date().toISOString(),
-      version: process.env.npm_package_version ?? '0.1.0',
-    };
-  });
+  // Health check (observability-008). `/health` keeps its old contract for the platform load
+  // balancer and the docker-compose healthcheck — 200/503 on whether THIS process can serve a
+  // request, i.e. the database — but its body now reports the queue and the worker too, which is
+  // where work on this system actually dies. `/health/ready` is the strict aggregate for humans
+  // and alerting and must not be wired to the load balancer; see health.controller.ts.
+  registerHealthRoutes(app);
 
   // Per-object media authorization for the video/HLS serve+proxy routes
   // (security-002 — fiji's checkVideoAccess pattern). Strips the optional
@@ -601,9 +611,14 @@ async function build() {
 
 async function start() {
   try {
-    // Fail closed: never run in production on the in-source encryption fallback key.
-    if (process.env.NODE_ENV === 'production' && !process.env.ENCRYPTION_KEY) {
-      logger.error('ENCRYPTION_KEY must be set in production — refusing to start');
+    // Fail closed: never run in production on the in-source encryption fallback key, and never
+    // run ANYWHERE on a key that is set but unusable. A non-hex value decodes to a truncated or
+    // empty buffer and `createHmac` signs with it silently, so a mistyped key used to mean media
+    // tokens signed with no secret at all (security-004). The message names the variable.
+    try {
+      assertEncryptionKeyEnv();
+    } catch (err) {
+      logger.error({ err }, (err as Error).message);
       process.exit(1);
     }
 

@@ -12,6 +12,12 @@ import { logger } from '../../lib/logger.js';
 import { randomUUID } from 'crypto';
 import { enqueueCropForProject } from '../../services/crop/runCropAnalysis.js';
 import { enqueueJob } from '../../queue/index.js';
+import {
+  humanBytes,
+  parseNginxSize,
+  PROXY_BODY_LIMIT_BYTES,
+  streamUploadMaxFileBytes,
+} from '../../services/security/uploadLimits.js';
 
 /**
  * Kick off background processing for a freshly-uploaded (or replaced) video on the WRITE
@@ -62,40 +68,16 @@ const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES) || TEN_GB;
 // So the route's limit is derived from the proxy's, and the over-limit answer is an
 // immediate 413 with a message that names the number — never bytes accepted and dropped.
 
-/** nginx size syntax: bare bytes, or a `k`/`m`/`g` suffix. Returns null if unparseable. */
-export function parseNginxSize(value: string | undefined): number | null {
-  if (!value) return null;
-  const m = /^(\d+)\s*([kmg])?$/i.exec(value.trim());
-  if (!m) return null;
-  const scale = { k: 1024, m: 1024 ** 2, g: 1024 ** 3 }[(m[2] ?? '').toLowerCase()] ?? 1;
-  const bytes = Number(m[1]) * scale;
-  return bytes > 0 ? bytes : null;
-}
+// The derivation itself now lives in services/security/uploadLimits.ts, where the other four
+// upload routes read it too — one derivation, so the proxy limit and every app limit cannot
+// drift apart. Re-exported here because this is where it was introduced and where its tests
+// (videoUploadLimits.test.ts) still address it.
+export { parseNginxSize, streamUploadMaxFileBytes, PROXY_BODY_LIMIT_BYTES, humanBytes };
 
-/** Multipart envelope overhead (boundaries, part headers, the `file_size` field). */
-const MULTIPART_ENVELOPE_ALLOWANCE = 64 * 1024;
-
-/**
- * The largest FILE this route may accept, given both constraints. It is the smaller of the
- * app cap and what fits inside the proxy's whole-body limit once the multipart envelope is
- * accounted for — a file at exactly the proxy limit is still one boundary too big for it.
- */
-export function streamUploadMaxFileBytes(i: { proxyBodyLimitBytes: number; appMaxBytes: number }): number {
-  return Math.max(1, Math.min(i.appMaxBytes, i.proxyBodyLimitBytes - MULTIPART_ENVELOPE_ALLOWANCE));
-}
-
-/** What nginx will pass through as one request body. */
-const PROXY_BODY_LIMIT_BYTES = parseNginxSize(process.env.MAX_UPLOAD_SIZE) ?? 2 * 1024 ** 3;
 const STREAM_MAX_FILE_BYTES = streamUploadMaxFileBytes({
   proxyBodyLimitBytes: PROXY_BODY_LIMIT_BYTES,
   appMaxBytes: MAX_UPLOAD_BYTES,
 });
-
-function humanBytes(n: number): string {
-  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(1)} GB`;
-  if (n >= 1024 ** 2) return `${Math.round(n / 1024 ** 2)} MB`;
-  return `${Math.round(n / 1024)} KB`;
-}
 
 /** One wording for every streaming-route rejection, so the client can show the real number. */
 function tooLargeForProxy(observed: number): { message: string } {
@@ -593,7 +575,14 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  // POST /api/v1/projects/:id/videos/:videoId/retranscode — re-trigger HLS for a stuck video
+  // POST /api/v1/projects/:id/videos/:videoId/retranscode — re-trigger HLS for a stuck video.
+  //
+  // NO IN-REPO CALLER, DELIBERATELY (types-008). An audit flagged this as dead weight; it is not.
+  // Unlike a dead type, a registered route is REACHABLE — this is the operator escape hatch for a
+  // video whose `hls_status` is wedged, invoked by hand against the API. Its sibling `/recrop`
+  // reached a UI button and this one never did, which is what makes it look accidental rather
+  // than intentional. Deleting it would remove the only repair path for a failure mode this
+  // service demonstrably has, so it stays and says so here instead.
   app.post<{ Params: { id: string; videoId: string } }>(
     '/api/v1/projects/:id/videos/:videoId/retranscode',
     { preHandler: [firebaseAuthMiddleware] },

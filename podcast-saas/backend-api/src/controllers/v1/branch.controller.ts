@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { z } from 'zod';
 import { db } from '../../db/index.js';
 import {
   projects, video_files,
@@ -20,6 +21,36 @@ const DESTINATION_TYPES = [
 type DestinationType = (typeof DESTINATION_TYPES)[number];
 
 const BEHAVIORS = ['continue', 'pause', 'loop'] as const;
+
+/**
+ * The updatable columns of `branch_edges`, typed to the columns they land in (types-005).
+ *
+ * This replaces a key-only whitelist. Every field mirrors `db/schema.ts`: the uuid refs are
+ * uuid-shaped so a malformed id is a 400 instead of a Postgres 22P02 rendered as a 500;
+ * `sort_order` is a non-null integer because the column is; `destination_type` is the same enum
+ * the CHECK constraint (`branch_edges_dest_type_chk`) and the POST sibling already enforce, so
+ * a non-string can no longer skate past a `typeof`-guarded check.
+ *
+ * Unknown keys are STRIPPED, not rejected — the editor round-trips whole edge rows through
+ * `updateBranchEdge(…, Partial<BranchEdge>)`, so `id`/`project_id`/`created_at` arrive routinely
+ * and must be ignored, exactly as the previous whitelist ignored them.
+ */
+const EdgePatchSchema = z.object({
+  choice_point_id:    z.string().uuid().nullable(),
+  label:              z.string().nullable(),
+  description:        z.string().nullable(),
+  thumbnail_url:      z.string().nullable(),
+  sort_order:         z.number().int(),
+  destination_type:   z.enum(DESTINATION_TYPES),
+  dest_sequence_id:   z.string().uuid().nullable(),
+  dest_project_id:    z.string().uuid().nullable(),
+  dest_playlist_id:   z.string().uuid().nullable(),
+  dest_url:           z.string().nullable(),
+  dest_simulation_id: z.string().uuid().nullable(),
+  dest_quiz_id:       z.string().uuid().nullable(),
+  trigger_event:      z.string().nullable(),
+  trigger_match:      z.record(z.unknown()).nullable(),
+}).partial();
 
 /** Load a project the requester may edit (owner or collaborator), or send 404. */
 async function ownedProject(request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) {
@@ -395,16 +426,21 @@ export async function registerBranchRoutes(app: FastifyInstance): Promise<void> 
       });
       if (!existing) return reply.code(404).send({ message: 'Edge not found' });
 
-      const b = request.body ?? {};
-      if (typeof b.destination_type === 'string' && !DESTINATION_TYPES.includes(b.destination_type as DestinationType)) {
-        return reply.code(400).send({ message: `destination_type must be one of ${DESTINATION_TYPES.join(', ')}` });
+      // The schema is the whitelist AND the validator (types-005). The old code did the first half
+      // only — it filtered KEYS and copied VALUES verbatim, so `destination_type: null` slipped past
+      // the `typeof === 'string' && ...` enum guard (any non-string short-circuits it) and reached a
+      // NOT NULL column, and `sort_order: 'first'` reached an `integer` one. Those surface as driver
+      // errors with no `statusCode`, which server.ts renders as a 500: an author's typo reported as
+      // a server fault. `.strict()` is deliberately NOT used — unknown keys are dropped, matching the
+      // previous whitelist behaviour, so an editor that posts a whole edge row still patches cleanly.
+      const parsed = EdgePatchSchema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        const issue = parsed.error.issues[0];
+        return reply.code(400).send({
+          message: `Invalid ${issue.path.join('.') || 'body'}: ${issue.message}`,
+        });
       }
-      // Whitelist updatable columns.
-      const allowed = ['choice_point_id', 'label', 'description', 'thumbnail_url', 'sort_order', 'destination_type',
-        'dest_sequence_id', 'dest_project_id', 'dest_playlist_id', 'dest_url', 'dest_simulation_id', 'dest_quiz_id',
-        'trigger_event', 'trigger_match'];
-      const patch: Record<string, unknown> = {};
-      for (const k of allowed) if (k in b) patch[k] = b[k];
+      const patch: Record<string, unknown> = parsed.data;
 
       const [updated] = await db.update(branch_edges).set(patch).where(eq(branch_edges.id, existing.id)).returning();
       return reply.send(updated);

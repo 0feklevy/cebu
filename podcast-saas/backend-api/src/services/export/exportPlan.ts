@@ -36,7 +36,7 @@ import {
   DEFAULT_PRESENTATION_CONFIG, computeConfigHash, derivePackageRevision, variantKeyFor,
   variantParamOf,
 } from 'shared/sim/simIdentity';
-import { buildMainSegmentTimeline, resolveSectionPlacement } from 'shared';
+import { buildMainSegmentTimeline, resolveSectionPlacement, sortTimelineSections } from 'shared';
 import {
   parsePosterVariants, posterIdentityString, selectPosterVariant,
   type PosterFormat, type PosterKey,
@@ -216,19 +216,36 @@ export async function buildExportPlan(
   const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
   if (!project) return null;
 
-  const [allVideos, sections, imageRows, audioRows, sequenceRows] = await Promise.all([
+  const [allVideos, sectionRows, imageRows, audioRows, sequenceRows] = await Promise.all([
     db.query.video_files.findMany({
       where: eq(video_files.project_id, projectId),
       orderBy: [asc(video_files.created_at)],
     }),
     db.query.timeline_sections.findMany({
       where: eq(timeline_sections.project_id, projectId),
-      orderBy: [asc(timeline_sections.start_sec)],
+      // The SAME total order the player build and the editor read in. `start_sec` ALONE — what
+      // this was — ties for every b-roll row of a project, because on that track `start_sec` is a
+      // source in-point and is almost always 0. A tie lets Postgres return them in any order it
+      // likes, and this array's order is load-bearing here: `translateContractPlan` breaks a
+      // same-priority layer tie on the window's index in `plan.timeline`. So two exports of one
+      // unchanged project could show different overlapping clips, and neither had to agree with
+      // the viewer. `id` is the primary key, so nothing can tie.
+      orderBy: [
+        asc(timeline_sections.sort_order),
+        asc(timeline_sections.start_sec),
+        asc(timeline_sections.global_offset_sec),
+        asc(timeline_sections.id),
+      ],
     }),
     db.query.image_files.findMany({ where: eq(image_files.project_id, projectId) }),
     db.query.audio_files.findMany({ where: eq(audio_files.project_id, projectId) }),
     db.query.branch_sequences.findMany({ where: eq(branch_sequences.project_id, projectId) }),
   ]);
+
+  // Re-applied IN MEMORY for the reason buildPlayerConfig states: the order is a contract and
+  // `compareTimelineSections` is its one owner; the `ORDER BY` above is the optimisation that lets
+  // Postgres do the work. This is what makes the plan a deterministic function of the project.
+  const sections = sortTimelineSections(sectionRows);
 
   // Branching: REFUSED, v1 (plan doc). `retryable: false` — the identical attempt cannot succeed;
   // the refusal names the reason so the row (and the user) holds the real answer, not a generic.
