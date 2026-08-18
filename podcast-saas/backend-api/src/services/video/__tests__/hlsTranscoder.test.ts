@@ -57,7 +57,7 @@ describe('buildTierArgs', () => {
     const tier = TIERS[0]!;
     expect(buildTierArgs(tier, ctx(30))).toEqual([
       '-i', '/work/source.mp4',
-      '-vf', 'scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2',
+      '-vf', 'scale=trunc(iw*sar/2)*2:ih,setsar=1,scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2,setsar=1',
       '-c:v', 'libx264',
       '-preset', 'fast',
       '-profile:v', 'baseline',

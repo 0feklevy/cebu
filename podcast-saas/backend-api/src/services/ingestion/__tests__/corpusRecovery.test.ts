@@ -132,7 +132,10 @@ describe('sweepStuckCorpusIngestions', () => {
     expect((await corpusRow(stranded)).extracted_md).toBe('half a paper');
   });
 
-  it('is idempotent across two instances sweeping at once', async () => {
+  // See the sibling note in hlsRecovery.test.ts: this survives deleting the outer-WHERE CAS, so it
+  // pins sequential idempotence, not concurrency safety. Renamed rather than deleted — the
+  // property is real and worth a test; the old name claimed a stronger one.
+  it('a second sweep after a first finds nothing left to fail (sequential, NOT a concurrency proof)', async () => {
     await corpus(CORPUS_STALE_AFTER_MS + 60_000);
 
     const [a, b] = await Promise.all([sweepStuckCorpusIngestions(), sweepStuckCorpusIngestions()]);

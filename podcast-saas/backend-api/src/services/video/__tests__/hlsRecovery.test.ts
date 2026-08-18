@@ -126,7 +126,13 @@ describe('sweepStuckTranscodes', () => {
     expect((await videoRow(pending)).hls_status).toBe('pending');
   });
 
-  it('is idempotent across two instances sweeping at once — the second reaps nothing', async () => {
+  // NAMED FOR WHAT IT PROVES, after an adversarial reviewer showed the earlier name was a lie:
+  // this passed with the outer-WHERE CAS deleted, so it does NOT demonstrate concurrency safety.
+  // Two SEQUENTIAL sweeps cannot both reap a row simply because the first one moved it out of
+  // `processing` — the predicate no longer matches. That is worth pinning; it is just not the
+  // concurrency proof it was labelled as. A real one needs two Postgres SESSIONS with barriers,
+  // which PGlite cannot express, and is recorded as an open gap rather than faked here.
+  it('a second sweep after a first finds nothing left to reap (sequential, NOT a concurrency proof)', async () => {
     // The pooler forbids advisory locks, so the CAS in the UPDATE is the whole guard.
     await transcoding(60 * 60_000);
 
