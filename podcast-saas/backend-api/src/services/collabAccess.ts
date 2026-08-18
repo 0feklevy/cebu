@@ -9,11 +9,39 @@ import { collaborators, projects, playlists } from '../db/schema.js';
  *   - deleting the project/playlist            (owner only)
  *   - managing collaborators (invite/remove)   (owner only; a collaborator may remove themself)
  *
- * Matching is by resolved user_id OR lowercased invited_email, so invites work
- * for people who haven't signed up yet (users.email is nullable — guard for it).
+ * AUTHORIZATION IS BY RESOLVED user_id ONLY (security-003 follow-up).
+ *
+ * `invited_email` records WHO AN INVITATION IS ADDRESSED TO. It is not a credential and must never
+ * be matched against the requester's address to grant access. An email on a user row is only ever
+ * "the string this account was registered with" — Firebase mints that string for whoever types it
+ * into a sign-up form — so authorizing on it means anyone who LEARNS an invited address inherits
+ * the invitation, which is broad EDIT authority over someone else's content.
+ *
+ * The address becomes authority at exactly one place: the migration-042 claim in
+ * `firebaseAuthMiddleware`, which binds `user_id` only for a token asserting
+ * `email_verified === true`. Reading `user_id` here is what makes that gate mean something —
+ * a63aa4e added the gate, but while this file still matched on the raw column the gate was simply
+ * routed around: the claim UPDATE never ran and access was granted anyway.
+ *
+ * So `user_id` is the single source of collaborator authority, and the verified claim is its single
+ * writer. Anything that sets `user_id` without proof of the address reopens the hole.
+ * Covered by `__tests__/collabAccess.verifiedIdentity.test.ts`.
  */
 
+/**
+ * `email` is carried because callers pass `request.dbUser` wholesale — it is deliberately NOT read
+ * by anything in this module. See the note above before reintroducing an email match here.
+ */
 export type CollabUser = { id: string; email: string | null };
+
+/**
+ * The ONE predicate deciding which collaborator rows belong to a user. Both the SQL-fragment path
+ * and the row-level path go through it so they cannot drift apart — they previously carried
+ * duplicate copies of the matching rule, and a fix to one would have left the other open.
+ */
+function collaboratorIsUser(user: CollabUser): SQL {
+  return eq(collaborators.user_id, user.id);
+}
 
 /** SQL predicate: a collaborators row exists for (content_type, content_id) matching this user. */
 export function collaboratorExists(
@@ -25,17 +53,11 @@ export function collaboratorExists(
     typeof contentId === 'string'
       ? eq(collaborators.content_id, contentId)
       : sql`${collaborators.content_id} = ${contentId}`;
-  const matchUser = user.email
-    ? or(
-        eq(collaborators.user_id, user.id),
-        eq(collaborators.invited_email, user.email.toLowerCase()),
-      )!
-    : eq(collaborators.user_id, user.id);
   return exists(
     db
       .select({ one: sql`1` })
       .from(collaborators)
-      .where(and(eq(collaborators.content_type, contentType), idCond, matchUser)),
+      .where(and(eq(collaborators.content_type, contentType), idCond, collaboratorIsUser(user))),
   );
 }
 
@@ -88,9 +110,9 @@ export async function editablePlaylist(playlistId: string, user: CollabUser) {
 }
 
 /**
- * Batch: of the given content ids, which is this user a collaborator on (by resolved
- * user_id only — invites are claimed to user_id at signup/invite time, so this is
- * complete for signed-in users; use where only a userId is available, no email).
+ * Batch: of the given content ids, which is this user a collaborator on. Matches resolved user_id,
+ * which is now simply what every check in this module does — this function was already correct when
+ * the others were not, and it is the shape they were fixed to.
  */
 export async function collaboratorContentIds(
   contentType: 'project' | 'playlist',
@@ -115,17 +137,11 @@ export async function isCollaborator(
   contentId: string,
   user: CollabUser,
 ): Promise<boolean> {
-  const matchUser = user.email
-    ? or(
-        eq(collaborators.user_id, user.id),
-        eq(collaborators.invited_email, user.email.toLowerCase()),
-      )!
-    : eq(collaborators.user_id, user.id);
   const row = await db.query.collaborators.findFirst({
     where: and(
       eq(collaborators.content_type, contentType),
       eq(collaborators.content_id, contentId),
-      matchUser,
+      collaboratorIsUser(user),
     ),
   });
   return !!row;
