@@ -9,6 +9,7 @@
  *       APPROVE | DENY         → the approval handshake (written by `ship approve|deny`)
  *       ci/failed.log          → failed-step logs, downloaded on failure only
  *       release/…              → release-report.json/md, gate.json, state.json, …
+ *       plan/…                 → the pre-approval snapshot (stale by design; never the verdict)
  *       audit/…                → audit-report.json/md, audit-verdict.json, …
  *       SHIP-REPORT.md         → the one file a human or Claude needs to read
  *
@@ -33,6 +34,14 @@ export interface RunPaths {
   denyFile: string;
   ciDir: string;
   releaseDir: string;
+  /**
+   * The PRE-approval `release-artifacts` snapshot, kept deliberately OUTSIDE releaseDir.
+   * At approval time the deploy job has not run, so that snapshot's gate.json is the passing
+   * pre-deploy gate and its state.json still says AWAITING_APPROVAL. readArtifact() recurses
+   * one directory down, so a copy anywhere under release/ would let the finished run's verdict
+   * be read from files that predate the deployment.
+   */
+  planDir: string;
   auditDir: string;
 }
 
@@ -50,6 +59,7 @@ export function runPaths(root: string, runId: string): RunPaths {
     denyFile: join(dir, 'DENY'),
     ciDir: join(dir, 'ci'),
     releaseDir: join(dir, 'release'),
+    planDir: join(dir, 'plan'),
     auditDir: join(dir, 'audit'),
   };
 }

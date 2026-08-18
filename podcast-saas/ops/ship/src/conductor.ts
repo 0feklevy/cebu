@@ -894,7 +894,9 @@ export class Conductor {
 
   /** The version the release plan chose, so the approval prompt can name it. */
   private async readPlannedVersion(runId: number): Promise<string | undefined> {
-    const dir = join(this.d.paths.releaseDir, 'plan');
+    // paths.planDir, NOT a subdirectory of releaseDir: this snapshot predates the deployment
+    // and readArtifact() would otherwise find its stale gate.json/state.json when the run ends.
+    const dir = this.d.paths.planDir;
     const ok = await this.d.gh.downloadArtifact(runId, 'release-artifacts', dir);
     if (!ok) return undefined;
     const plan = readArtifact<{ nextTag?: string }>(dir, 'plan.json');

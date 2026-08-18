@@ -67,21 +67,31 @@ export async function collectRunEvidence(args: {
   }
 
   // Deterministic artifacts — the release engine's own JSON reports.
+  //
+  // EVERY published name is downloaded, because the names are complements, not alternatives:
+  // `release-report` is uploaded as `release-artifacts/release-report.*` (release.yml:565) and
+  // therefore carries neither gate.json nor state.json, which live only in `release-artifacts`.
+  // Stopping at the first name that downloaded left the conductor without the gate verdict and
+  // without the final state, so a rolled-back post-deploy gate was reported as a failed deploy —
+  // the wrong cause, at the moment cause matters most.
   const available = await gh.listArtifactNames(runId);
-  let got = false;
+  let downloaded = 0;
+  const failedNames: string[] = [];
   for (const name of artifactNames) {
+    // A name this run never published is not a gap: the list carries per-run and generic
+    // spellings of the same artifact, and only one of them can exist.
     if (available.length > 0 && !available.includes(name)) continue;
-    if (await gh.downloadArtifact(runId, name, destDir)) {
-      got = true;
-      break; // the first name in preference order is enough
-    }
+    if (await gh.downloadArtifact(runId, name, destDir)) downloaded += 1;
+    else failedNames.push(name);
   }
-  if (!got) {
+  if (downloaded === 0) {
     notes.push(
       available.length === 0
         ? `run ${runId} published no artifacts (it failed before the upload step)`
         : `none of [${artifactNames.join(', ')}] could be downloaded from run ${runId}; available: ${available.join(', ')}`,
     );
+  } else if (failedNames.length > 0) {
+    notes.push(`run ${runId} published [${failedNames.join(', ')}] but they could not be downloaded; the report is missing whatever they carried`);
   }
 
   for (const f of listFilesShallow(destDir)) evidence.push(relative(runDir, f));

@@ -48,6 +48,11 @@ services:
       STORAGE_BACKEND: supabase
       # ISR revalidation is server-to-server on the internal network (not browser-visible).
       REVALIDATE_URL: http://client-web:3000/api/revalidate
+      # The SAME value nginx gets below. The proxied streaming upload route derives its own
+      # ceiling from it (video.controller.ts), so the app refuses an over-limit upload straight
+      # away with a message that names the number, instead of accepting bytes nginx will drop
+      # at `client_max_body_size`. One knob, two enforcers — they cannot drift apart.
+      MAX_UPLOAD_SIZE: ${MAX_UPLOAD_SIZE:-2g}
     volumes:
       - media_work:/app/backend-api/.work   # scratch space for ffmpeg / transcoding
     networks: [edge]
@@ -173,6 +178,7 @@ services:
       DOMAIN_APP: ${DOMAIN_APP}
       DOMAIN_API: ${DOMAIN_API}
       DOMAIN_ADMIN: ${DOMAIN_ADMIN}
+      # Keep in step with the backend's copy above — see the note there.
       MAX_UPLOAD_SIZE: ${MAX_UPLOAD_SIZE:-2g}
     volumes:
       - ./nginx/templates:/etc/nginx/templates:ro

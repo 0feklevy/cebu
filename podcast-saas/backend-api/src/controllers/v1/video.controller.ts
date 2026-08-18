@@ -38,10 +38,73 @@ const MULTIPART_PART_SIZE = 8 * 1024 * 1024;
 // bucket limit is raised/lowered. Keep these in sync with the dashboard value.
 const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES) || TEN_GB;
 
+// ── The proxied streaming route's REAL ceiling ────────────────────────────────
+//
+// `MAX_UPLOAD_BYTES` above is the bucket's cap, and it applies to the paths where the
+// browser talks to storage directly (presigned PUT, S3 multipart) — those never touch our
+// reverse proxy. The multipart STREAMING route does: every byte crosses nginx, whose
+// `client_max_body_size` is `MAX_UPLOAD_SIZE` (deploy/.env, default `2g`; the http-level
+// safety default in deploy/nginx/nginx.conf is `2g` too). Advertising 10 GB on a route
+// nginx refuses above 2 GB means the client uploads and then dies at the proxy with a 413
+// it cannot explain.
+//
+// nginx is the honest constraint here, and it is not raised, for three reasons:
+//   1. `proxy_request_buffering` is on (nginx default; nothing in deploy/nginx disables it),
+//      so nginx spools the WHOLE body to VM disk before the backend sees a byte — and
+//      uploadStreamWithFallback then writes a second copy to local disk. A 10 GB proxied
+//      upload needs ~20 GB of transient VM disk this host does not have.
+//   2. Files that big already have a path that never crosses nginx: presigned single-PUT
+//      and S3 multipart go browser→bucket, and keep the full MAX_UPLOAD_BYTES cap.
+//   3. This route is the client's documented *fallback* (client-web VideoUploader:
+//      "Legacy path: stream the file through the API … Used as a fallback"), so it does not
+//      need to carry the largest uploads.
+//
+// So the route's limit is derived from the proxy's, and the over-limit answer is an
+// immediate 413 with a message that names the number — never bytes accepted and dropped.
+
+/** nginx size syntax: bare bytes, or a `k`/`m`/`g` suffix. Returns null if unparseable. */
+export function parseNginxSize(value: string | undefined): number | null {
+  if (!value) return null;
+  const m = /^(\d+)\s*([kmg])?$/i.exec(value.trim());
+  if (!m) return null;
+  const scale = { k: 1024, m: 1024 ** 2, g: 1024 ** 3 }[(m[2] ?? '').toLowerCase()] ?? 1;
+  const bytes = Number(m[1]) * scale;
+  return bytes > 0 ? bytes : null;
+}
+
+/** Multipart envelope overhead (boundaries, part headers, the `file_size` field). */
+const MULTIPART_ENVELOPE_ALLOWANCE = 64 * 1024;
+
+/**
+ * The largest FILE this route may accept, given both constraints. It is the smaller of the
+ * app cap and what fits inside the proxy's whole-body limit once the multipart envelope is
+ * accounted for — a file at exactly the proxy limit is still one boundary too big for it.
+ */
+export function streamUploadMaxFileBytes(i: { proxyBodyLimitBytes: number; appMaxBytes: number }): number {
+  return Math.max(1, Math.min(i.appMaxBytes, i.proxyBodyLimitBytes - MULTIPART_ENVELOPE_ALLOWANCE));
+}
+
+/** What nginx will pass through as one request body. */
+const PROXY_BODY_LIMIT_BYTES = parseNginxSize(process.env.MAX_UPLOAD_SIZE) ?? 2 * 1024 ** 3;
+const STREAM_MAX_FILE_BYTES = streamUploadMaxFileBytes({
+  proxyBodyLimitBytes: PROXY_BODY_LIMIT_BYTES,
+  appMaxBytes: MAX_UPLOAD_BYTES,
+});
+
 function humanBytes(n: number): string {
   if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(1)} GB`;
   if (n >= 1024 ** 2) return `${Math.round(n / 1024 ** 2)} MB`;
   return `${Math.round(n / 1024)} KB`;
+}
+
+/** One wording for every streaming-route rejection, so the client can show the real number. */
+function tooLargeForProxy(observed: number): { message: string } {
+  return {
+    message:
+      `Video is too large for the upload proxy (${humanBytes(observed)}). ` +
+      `The maximum for this route is ${humanBytes(STREAM_MAX_FILE_BYTES)}. ` +
+      'Larger videos must use the direct-to-storage upload.',
+  };
 }
 
 // Accept a client-measured duration only when it's a sane, positive number of seconds (≤24h).
@@ -130,21 +193,35 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
   // POST /api/v1/projects/:id/videos/upload — multipart stream directly to storage
   app.post<{ Params: { id: string } }>(
     '/api/v1/projects/:id/videos/upload',
-    { preHandler: [firebaseAuthMiddleware], bodyLimit: TEN_GB },
+    { preHandler: [firebaseAuthMiddleware], bodyLimit: PROXY_BODY_LIMIT_BYTES },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
       const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
+      // Earliest possible refusal: the declared envelope size, before a single part is read.
+      // nginx would 413 this same request; answering here means the client gets a message
+      // that names the limit instead of a proxy error page, and we never start spooling a
+      // body we cannot keep.
+      const declared = Number(request.headers['content-length']);
+      if (Number.isFinite(declared) && declared > PROXY_BODY_LIMIT_BYTES) {
+        return reply.code(413).send(tooLargeForProxy(declared));
+      }
+
       let fileSize = 0;
 
       // Read field parts before the file to capture file_size
       // FormData order from client: file_size field → file
-      const parts = request.parts({ limits: { fileSize: TEN_GB } });
+      const parts = request.parts({ limits: { fileSize: STREAM_MAX_FILE_BYTES } });
 
       for await (const part of parts) {
         if (part.type === 'field' && part.fieldname === 'file_size') {
           fileSize = parseInt(part.value as string) || 0;
+          // The client sends file_size BEFORE the file part, so this refuses while the body
+          // is still arriving rather than after the whole transfer.
+          if (fileSize > STREAM_MAX_FILE_BYTES) {
+            return reply.code(413).send(tooLargeForProxy(fileSize));
+          }
           continue;
         }
 
