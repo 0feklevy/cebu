@@ -166,3 +166,89 @@ jobs:
               exit 1
             fi
           done
+
+  # ── Viewer end-to-end ──────────────────────────────────────────────────────────
+  # The ONLY suite that drives the real production viewer: the real Next route, the
+  # real React components, the real useProjectPlayer, the real pooled iframes and the
+  # real generated bridge. It existed, passed locally, and was invoked by nothing — so
+  # the viewer's end-to-end behaviour had zero automated coverage while looking, from
+  # the outside, like a covered surface (audit test-quality-013).
+  #
+  # IT RUNS AGAINST AN APP THIS JOB STARTS, ON LOOPBACK — never the deployed site.
+  # `playwright.viewer.config.ts` refuses a non-loopback VIEWER_E2E_BASE_URL outright, so
+  # this cannot drift into pointing a media-playing, DOM-mutating browser suite at
+  # production the way this package's DEFAULT config (https://flowvidco.com) would.
+  #
+  # ONE JOB PER ENGINE, not one job running three. The suite is `workers: 1` and
+  # `fullyParallel: false` by design (a shared sim pool and per-frame sampling make
+  # parallel workers meaningless), so three engines in one job serialise into a runtime
+  # no sensible job timeout covers. Splitting them keeps the three-engine signal — the
+  # sim runtime's riskiest surfaces (rVFC, MessageChannel timing, WebGL context loss)
+  # genuinely diverge between engines — while each job stays inside its budget.
+  viewer-e2e:
+    name: Viewer end-to-end (${{ matrix.engine }}, real app on loopback)
+    needs: guard
+    if: ${{ needs.guard.outputs.skip != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false # one engine's regression must not hide the other two
+      matrix:
+        engine: [chromium, firefox, webkit]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: podcast-saas/package.json
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: podcast-saas/pnpm-lock.yaml
+      # Full workspace, not --filter client-web: the suite regenerates its sim fixture by
+      # running backend-api's gen-sim-fixture.ts, so backend-api's dependencies must exist.
+      - name: Install workspace (frozen)
+        run: pnpm install --frozen-lockfile
+      # shared/sim/* resolves through shared's exports map to its BUILT dist. Without this
+      # the spec's `shared/src/csp` import and the fixture generator both fail during
+      # COLLECTION — the exact failure playwright.production.config.ts documents.
+      - name: Build shared
+        run: pnpm --filter shared build
+      # The suite synthesises its own HLS + mp4 media with ffmpeg and fails loudly without it.
+      - name: Ensure ffmpeg
+        run: ffmpeg -version >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y ffmpeg; }
+      - name: Install Playwright browser (${{ matrix.engine }})
+        run: pnpm --filter client-web exec playwright install --with-deps ${{ matrix.engine }}
+      - name: Viewer e2e against a locally started app
+        env:
+          # The opt-in that lets the config start its own `next dev` on loopback. Without it
+          # the config starts nothing — the audited default that protects a developer's
+          # .next directory from being clobbered by a second Next server.
+          VIEWER_E2E_START_SERVER: '1'
+          NEXT_TELEMETRY_DISABLED: '1'
+        run: pnpm --filter client-web test:e2e:viewer --project=${{ matrix.engine }}
+      # FAIL CLOSED. A Playwright run that collects zero specs exits 0, and a report that was
+      # never written is indistinguishable from a clean one unless something insists on
+      # reading it — the false green the production audit already had to fix once.
+      - name: The suite must have actually run
+        run: |
+          node -e '
+            const fs = require("fs");
+            const p = "client-web/e2e-results/viewer-e2e.json";
+            if (!fs.existsSync(p)) { console.error("::error::no viewer-e2e report at " + p + " — the suite did not run"); process.exit(1); }
+            const r = JSON.parse(fs.readFileSync(p, "utf8"));
+            const walk = (s) => [...(s.specs || []), ...((s.suites || []).flatMap(walk))];
+            const specs = (r.suites || []).flatMap(walk);
+            if (specs.length === 0) { console.error("::error::viewer-e2e collected 0 specs — a green run that proved nothing"); process.exit(1); }
+            console.log("viewer-e2e collected " + specs.length + " specs");
+          '
+      - uses: actions/upload-artifact@v6
+        if: failure()
+        with:
+          name: viewer-e2e-evidence-${{ matrix.engine }}
+          path: |
+            podcast-saas/client-web/e2e-results/viewer-e2e.json
+            podcast-saas/client-web/test-results
+          if-no-files-found: ignore

@@ -10,6 +10,7 @@
     "build": "next build",
     "start": "next start",
     "test:smoke": "playwright test",
+    "test:e2e:viewer": "playwright test --config=playwright.viewer.config.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"

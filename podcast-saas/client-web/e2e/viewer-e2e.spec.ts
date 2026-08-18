@@ -35,12 +35,22 @@ import { join, extname, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import type { AddressInfo } from 'node:net';
 import { fixtureIsFresh } from './fixtureSources';
+import { resolveViewerE2eTarget } from './viewerE2eTarget';
 import { SIM_FADE_MS } from '../lib/sim/protocol';
 
-const BASE = process.env.VIEWER_E2E_BASE_URL ?? 'http://localhost:3000';
+// The SAME resolver the config uses, so the spec and the config can never disagree about where
+// the app is — and so this spec inherits the loopback-only guarantee rather than re-deriving it.
+const BASE = resolveViewerE2eTarget();
 const API_ORIGIN = process.env.VIEWER_E2E_API_URL ?? 'http://localhost:8080';
 const FIXTURE_DIR = resolve(__dirname, '../../.sim-fixture');
 const BACKEND = resolve(__dirname, '../../backend-api');
+
+/**
+ * Wall clock for `beforeAll` — fixture build + ffmpeg media + a cold dev-mode route compile.
+ * Deliberately far larger than the per-test timeout: none of this is the viewer's behaviour, and a
+ * setup cost that trips the test clock reports a green suite's absence as a viewer failure.
+ */
+const SETUP_BUDGET_MS = 10 * 60 * 1000;
 
 /** Section ids baked into the generated fixture package (see gen-sim-fixture.ts). */
 const S = {
@@ -161,6 +171,12 @@ const REPORTER = `<script>(function(){
 })()</script>`;
 
 test.beforeAll(async () => {
+  // This hook is NOT a test, and must not be measured like one. It builds the sim fixture from
+  // backend-api's generator, encodes two pieces of media with ffmpeg, and (when the config started
+  // the app itself) waits for `next dev` to compile the viewer route on first request. On a loaded
+  // machine the fixture build alone lands within seconds of the 90s per-test budget, so sharing
+  // that budget made the whole suite fail as "timeout" for reasons that were pure setup cost.
+  test.setTimeout(SETUP_BUDGET_MS);
   ensureFixture();
   ensureMedia();
   server = createServer((req, res) => {
@@ -220,6 +236,12 @@ test.beforeAll(async () => {
       `viewer-e2e: no application at ${BASE}. Start client-web (pnpm dev) or set VIEWER_E2E_BASE_URL.`,
     );
   }
+  // WARM THE VIEWER ROUTE. In dev mode Next compiles a route on its FIRST request, and that
+  // compile is billed to whoever asks first — which was `page.goto` inside the first test, on the
+  // per-test clock. It exceeded it and surfaced as `net::ERR_ABORTED; maybe frame was detached?`,
+  // a message that says nothing about the real cause. Paying it here, once, on the setup budget
+  // makes the first test cost what every later test costs.
+  await fetch(`${BASE}/projects/e2e-project/view`).catch(() => null);
 });
 
 test.afterAll(async () => { await new Promise<void>((r) => server.close(() => r())); });
