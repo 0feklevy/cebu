@@ -8,6 +8,7 @@ import { eq, and } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { editableProject, type CollabUser } from '../../services/collabAccess.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
+import { tooLargeMessage, UPLOAD_MAX_BYTES } from '../../services/security/uploadLimits.js';
 import {
   deriveEntryRelPath,
   getSimulationContentType,
@@ -804,12 +805,37 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
       const activeForZip = await activePackageOr409(sim, reply);
       if ('sent' in activeForZip) return reply;
 
+      // BOUNDED WHILE READING (security-007 / performance-005). Every entry is held in memory by
+      // AdmZip and `toBuffer()` then serialises the lot into a SECOND full-size allocation, so peak
+      // heap here is roughly twice the package. Nothing bounded that: the 250 MB cap applies to one
+      // UPLOAD, while the legacy branch below zips the whole `storage_prefix`, which accumulates
+      // every revision the simulation has ever had plus its captured posters. One GET could
+      // therefore OOM the API.
+      //
+      // adm-zip has no streaming writer — `writeZip` goes through `compressToBuffer` as well — so
+      // the honest fix without taking on a new zip dependency is to REFUSE before the heap fills:
+      // sum as we read, and bail the moment the running total crosses the cap. The remaining
+      // objects are never fetched, so a refusal costs the cap rather than the package.
+      let zippedBytes = 0;
+      const wouldExceed = (n: number): boolean => {
+        zippedBytes += n;
+        return zippedBytes > UPLOAD_MAX_BYTES.simulationZip;
+      };
+      const tooLarge = () =>
+        reply.code(413).send({
+          message:
+            `${tooLargeMessage('This simulation package', zippedBytes, UPLOAD_MAX_BYTES.simulationZip)} ` +
+            'Download it from object storage directly, or remove unused assets and re-upload.',
+        });
+
       if (activeForZip.pkg) {
         if (activeForZip.pkg.files.length === 0) {
           return reply.code(404).send({ message: 'No simulation files found — try re-uploading the simulation.' });
         }
         for (const f of activeForZip.pkg.files) {
-          zip.addFile(f.relPath, await storage.readObject(f.key));
+          const buf = await storage.readObject(f.key);
+          if (wouldExceed(buf.length)) return tooLarge();
+          zip.addFile(f.relPath, buf);
         }
         return reply
           .header('Content-Type', 'application/zip')
@@ -829,6 +855,7 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
         const relativePath = key.slice(prefix.length).replace(/^\/+/, '');
         if (!relativePath) continue;
         const buf = await storage.readObject(key);
+        if (wouldExceed(buf.length)) return tooLarge();
         zip.addFile(relativePath, buf);
       }
 

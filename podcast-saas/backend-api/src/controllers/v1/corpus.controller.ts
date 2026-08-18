@@ -5,7 +5,15 @@ import { corpora } from '../../db/schema.js';
 import { eq, and } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { editableProject } from '../../services/collabAccess.js';
-import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
+import { uploadFileFromDisk } from '../../services/storage/uploadFromDisk.js';
+import {
+  declaredTooLarge,
+  PROXY_BODY_LIMIT_BYTES,
+  tooLargeMessage,
+  UPLOAD_MAX_BYTES,
+  UploadTooLargeError,
+  withBoundedTempFile,
+} from '../../services/security/uploadLimits.js';
 import { CorpusBuilder } from '../../services/ingestion/CorpusBuilder.js';
 import { MARKITDOWN_EXTENSIONS } from '../../services/ingestion/DocumentIngester.js';
 import { logger } from '../../lib/logger.js';
@@ -53,6 +61,13 @@ export async function registerCorpusRoutes(app: FastifyInstance): Promise<void> 
   // POST /api/v1/projects/:id/corpus
   app.post<{ Params: { id: string } }>(
     '/api/v1/projects/:id/corpus',
+    // NO `bodyLimit` HERE, DELIBERATELY. It looks like the obvious guard and it is the opposite
+    // of one: Fastify's multipart parser bypasses `bodyLimit` entirely — which is exactly why the
+    // declared-size check and the bounded spool below exist — while RAISING the ceiling for every
+    // other content type on this route from Fastify's 1 MiB default to the proxy limit. And the
+    // body is parsed BEFORE preHandler runs, so an anonymous caller gets a 401 with the payload
+    // already materialised in the heap. An adversarial reviewer demonstrated it with a standalone
+    // app: 401 returned, `req.body` already at 4 MiB. Adding it bought nothing and opened a hole.
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser!;
@@ -62,11 +77,25 @@ export async function registerCorpusRoutes(app: FastifyInstance): Promise<void> 
       const contentType = request.headers['content-type'] ?? '';
 
       if (contentType.includes('multipart/form-data')) {
-        // File upload
+        // File upload.
+        //
+        // BOUNDED AND SPOOLED TO DISK (performance-002). `detectSourceType` accepts `audio/*` and
+        // `video/*`, so this route takes MEDIA, and it used to take it with `await
+        // data.toBuffer()` and no ceiling at all — a whole video into the Node heap on a 2-vCPU
+        // host, then handed to the uploader as a second reference to the same bytes. The part now
+        // streams to a temp file, cut off at the ceiling as it goes, and the upload reads back
+        // from that file; peak heap is one chunk, and `file_size` comes from the bytes actually
+        // written rather than from a buffer we no longer keep.
+        const declared = declaredTooLarge(request.headers['content-length'], UPLOAD_MAX_BYTES.corpusSource);
+        if (declared !== null) {
+          return reply
+            .code(413)
+            .send({ message: tooLargeMessage('Corpus source', declared, UPLOAD_MAX_BYTES.corpusSource) });
+        }
+
         const data = await request.file();
         if (!data) return reply.code(400).send({ message: 'No file provided' });
 
-        const buffer = await data.toBuffer();
         const filename = data.filename;
         const mime = data.mimetype;
 
@@ -76,9 +105,20 @@ export async function registerCorpusRoutes(app: FastifyInstance): Promise<void> 
         const storagePath = `projects/${project.id}/corpus/${Date.now()}_${corpusObjectName(filename)}`;
 
         let storageUrl: string;
+        let fileSize: number;
         try {
-          storageUrl = await getStorageAdapter().uploadFile(storagePath, buffer, mime);
+          const uploaded = await withBoundedTempFile(
+            data.file,
+            { limitBytes: UPLOAD_MAX_BYTES.corpusSource, what: 'Corpus source' },
+            async ({ path, bytes }) => ({
+              url: await uploadFileFromDisk(storagePath, path, mime),
+              bytes,
+            }),
+          );
+          storageUrl = uploaded.url;
+          fileSize = uploaded.bytes;
         } catch (err) {
+          if (err instanceof UploadTooLargeError) return reply.code(413).send({ message: err.message });
           return reply.code(500).send({ message: `Failed to upload file: ${(err as Error).message}` });
         }
 
@@ -89,7 +129,7 @@ export async function registerCorpusRoutes(app: FastifyInstance): Promise<void> 
             source_type: sourceType,
             source_url: filename,
             storage_url: storageUrl,
-            metadata: { filename, mime, file_size: buffer.length },
+            metadata: { filename, mime, file_size: fileSize },
             ingestion_status: 'pending',
           })
           .returning();

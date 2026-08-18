@@ -17,6 +17,14 @@ import {
 } from '../../services/podcastAccess.js';
 import { PodcastVoiceService, DEFAULT_TEACHER_VOICE_ID, DEFAULT_LEARNER_VOICE_ID } from '../../services/podcast/PodcastVoiceService.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
+import {
+  declaredTooLarge,
+  PROXY_BODY_LIMIT_BYTES,
+  readStreamBounded,
+  tooLargeMessage,
+  UPLOAD_MAX_BYTES,
+  UploadTooLargeError,
+} from '../../services/security/uploadLimits.js';
 import { PDFIngester } from '../../services/ingestion/PDFIngester.js';
 import { DocumentIngester } from '../../services/ingestion/DocumentIngester.js';
 import { WebIngester } from '../../services/ingestion/WebIngester.js';
@@ -385,16 +393,45 @@ export async function registerPodcastRoutes(app: FastifyInstance): Promise<void>
   );
 
   // POST .../episodes/:epId/sources/upload — multipart file → store + extract
+  //
+  // BOUNDED, BUT STILL IN THE HEAP (performance-003), and deliberately so. Unlike the audio and
+  // corpus routes, the bytes here have a second consumer that CANNOT take a path: `extractSourceText`
+  // hands the buffer to PDFIngester/DocumentIngester, which parse in memory. Spooling to disk would
+  // only move the allocation, not remove it. So the ceiling here IS the memory budget, and it is set
+  // an order of magnitude lower than the media routes' (UPLOAD_MAX_BYTES.podcastSource) — a podcast
+  // source is a document, and a document larger than that would kill the parse, not the transfer.
+  // What changed is that there is now a ceiling at all: this was `await data.toBuffer()` under a
+  // 10 GB global limit.
   app.post<{ Params: { showId: string; epId: string } }>(
     '/api/v1/podcasts/:showId/episodes/:epId/sources/upload',
+    // NO `bodyLimit` HERE, DELIBERATELY. It looks like the obvious guard and it is the opposite
+    // of one: Fastify's multipart parser bypasses `bodyLimit` entirely — which is exactly why the
+    // declared-size check and the bounded spool below exist — while RAISING the ceiling for every
+    // other content type on this route from Fastify's 1 MiB default to the proxy limit. And the
+    // body is parsed BEFORE preHandler runs, so an anonymous caller gets a 401 with the payload
+    // already materialised in the heap. An adversarial reviewer demonstrated it with a standalone
+    // app: 401 returned, `req.body` already at 4 MiB. Adding it bought nothing and opened a hole.
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const loaded = await ownedEpisodeInShow(request.params.showId, request.params.epId, request.dbUser!);
       if (!loaded) return reply.code(404).send({ message: 'Episode not found' });
 
+      const declared = declaredTooLarge(request.headers['content-length'], UPLOAD_MAX_BYTES.podcastSource);
+      if (declared !== null) {
+        return reply
+          .code(413)
+          .send({ message: tooLargeMessage('Podcast source', declared, UPLOAD_MAX_BYTES.podcastSource) });
+      }
+
       const data = await request.file();
       if (!data) return reply.code(400).send({ message: 'No file provided' });
-      const buffer = await data.toBuffer();
+      let buffer: Buffer;
+      try {
+        buffer = await readStreamBounded(data.file, UPLOAD_MAX_BYTES.podcastSource, 'Podcast source');
+      } catch (err) {
+        if (err instanceof UploadTooLargeError) return reply.code(413).send({ message: err.message });
+        throw err;
+      }
       const filename = data.filename;
       const mime = data.mimetype;
 
