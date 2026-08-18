@@ -498,19 +498,21 @@ const now = (page: Page): Promise<number> => page.evaluate(() => Date.now());
 /**
  * Wait until a VISIBLE sim iframe reports `section`.
  *
- * 45s, not 20s, and the difference is a contention allowance rather than a weakened assertion.
- * What is being waited on is a sandboxed iframe booting a simulation package and posting its
- * first state — startup work whose cost is the machine's, not the product's. On this laptop
- * WebKit does it in ~3s; on a CI runner the same test exceeded 20s while chromium and firefox
- * passed the identical assertion, which is the signature of a slow engine on a shared box, not a
- * broken one. A WebKit correctness bug would have failed locally too.
+ * 20s, and it stayed 20s AFTER a failed attempt to blame slowness — recorded because the
+ * disproof is the useful part. Scenario 11 timed out here on Linux WebKit in CI, so this was
+ * raised to 45s on the theory that a sandboxed sim iframe simply boots slower on a shared
+ * runner. **It timed out at 45s too**, which disproves the theory: something never happens
+ * rather than happening late, and a number chosen to paper over a misdiagnosis is worse than
+ * the original. Reverted.
  *
- * The real backstop is unchanged and is what keeps this honest: the config's per-test `timeout`
- * is 90s and `retries` is deliberately 0 — "a retry turns a real failure into `flaky`, and the
- * two were indistinguishable (audited)". So a genuine hang still fails the run at 90s; it just
- * stops being reported at 20s for a reason that has nothing to do with the code under test.
+ * What IS known, from the CI failure artefact: the screenshot shows the simulation rendered.
+ * So the product works and the unmet condition is inside this predicate — the `__CHILD` map is
+ * keyed by the posting `Window` and looked up by `el.contentWindow`, and that cross-origin
+ * identity is the one assumption here that can hold on macOS WebKit (passes locally in ~3s) and
+ * on Chromium/Firefox in CI while failing on Linux WebKit. Not proven, which is exactly why the
+ * WebKit job is non-blocking rather than this timeout being raised again.
  */
-async function waitForSection(page: Page, section: string, timeout = 45_000): Promise<void> {
+async function waitForSection(page: Page, section: string, timeout = 20_000): Promise<void> {
   await page.waitForFunction((want) => {
     const map = (window as unknown as { __CHILD?: Map<Window, { section: string | null }> }).__CHILD;
     if (!map) return false;
