@@ -120,6 +120,11 @@ const FAKE_SIM = {
   bridge_functions: [],
   status: 'ready',
   error: null,
+  // LEGACY: no revision pointer, so this package really is served from the mutable prefix and
+  // every path below it stays exactly as it was. Stated explicitly rather than left undefined —
+  // the whole revisioned-refusal block turns on this column.
+  active_revision_id: null,
+  active_revision_entry_key: null,
 };
 
 const BRIDGE_CONTENT   = '(function(){ /* combined bridge */ })();';
@@ -481,6 +486,206 @@ describe('POST …/replace — bridge-compatibility gate', () => {
 
     expect(res.statusCode).toBe(409);
     expect(res.json().compatibility.structural.join(' ')).toContain('app.js');
+    expect(mockStorage.uploadFile).not.toHaveBeenCalled();
+  });
+});
+
+// ── Revisioned packages: replace is REFUSED, not silently written to a dead prefix ────────────
+//
+// audit simulation-001. A revisioned simulation is served from
+// `<prefix>/revisions/<id>/…` and nothing reads `<prefix>/` any more — so a replace "succeeded",
+// returned 202, flipped the row back to 'ready' and changed NOTHING a viewer can see. The refusal
+// has to land before multipart parsing, before the CAS claim and before any storage write, so a
+// blocked call cannot mutate the database, storage or the live package in any way.
+
+const ACTIVE_REV  = 'rev-9f3caaaa1111';
+const REV_ROOT    = `${PREFIX}/revisions/${ACTIVE_REV}`;
+const REVISIONED_SIM = {
+  ...FAKE_SIM,
+  active_revision_id:        ACTIVE_REV,
+  active_revision_entry_key: `${REV_ROOT}/package/index.html`,
+};
+
+/** The bridge the ACTIVE revision actually serves — it binds anchors the legacy copy never had. */
+const ACTIVE_BRIDGE = `(function(){ var __SECTIONS__ = {
+/* @@SIM_BRIDGE:${SECTION_ID}@@ */
+'${SECTION_ID}': function (params) {
+  var panel = document.querySelector('.active-only-panel');
+  if (window.app && window.app.rig) window.app.tune(2);
+  return function cleanup() {};
+},
+/* @@/SIM_BRIDGE:${SECTION_ID}@@ */
+}; })();`;
+
+const ACTIVE_MANIFEST = {
+  manifestVersion: 1,
+  simulationId:  SIM_ID,
+  projectId:     PROJECT_ID,
+  revisionId:    ACTIVE_REV,
+  revisionNumber: 3,
+  bridgeProtocolVersion: 2,
+  runtimeProtocolVersion: 1,
+  entry:   'package/index.html',
+  runtime: ['package/bridge.js'],
+  files: [
+    { path: 'package/index.html', role: 'entry',   hash: 'a'.repeat(64), bytes: 10, contentType: 'text/html', cacheControl: 'no-cache' },
+    { path: 'package/app.js',     role: 'asset',   hash: 'b'.repeat(64), bytes: 10, contentType: 'application/javascript', cacheControl: 'immutable' },
+    { path: 'package/bridge.js',  role: 'runtime', hash: 'c'.repeat(64), bytes: 10, contentType: 'application/javascript', cacheControl: 'immutable' },
+  ],
+  variants: [],
+  posters: [],
+};
+
+/**
+ * Storage where the LEGACY bridge and the ACTIVE revision's bridge DISAGREE.
+ *
+ * That disagreement is the whole point: a check that reads the legacy copy calls the upload
+ * compatible, and the package it would actually have to keep working says otherwise.
+ */
+function primeRevisionedStorage(activeBridge = ACTIVE_BRIDGE) {
+  mockStorage.readObject.mockImplementation(async (key: string) => {
+    if (key === `${PREFIX}/bridge.js`)                return Buffer.from(REAL_BRIDGE);       // legacy, stale
+    if (key === `${REV_ROOT}/manifest.json`)          return Buffer.from(JSON.stringify(ACTIVE_MANIFEST));
+    if (key === `${REV_ROOT}/package/bridge.js`)      return Buffer.from(activeBridge);
+    throw new Error(`NoSuchKey: ${key}`);
+  });
+}
+
+describe('POST …/replace — revisioned package (simulation-001)', () => {
+  beforeEach(() => {
+    mockSimulations.findFirst.mockResolvedValue({ ...REVISIONED_SIM });
+    primeRevisionedStorage();
+  });
+
+  it('refuses with a stable SIM_REVISION_WRITE_UNSUPPORTED 409 and mutates nothing', async () => {
+    const app = await makeApp();
+    const { payload, headers } = zipRequest({ 'index.html': NEW_INDEX_HTML, 'app.js': COMPATIBLE_APP_JS });
+
+    const res = await app.inject({ method: 'POST', url: URL_PATH, payload, headers });
+
+    expect(res.statusCode).toBe(409);
+    const body = res.json();
+    expect(body.code).toBe('SIM_REVISION_WRITE_UNSUPPORTED');
+    expect(body.activeRevisionId).toBe(ACTIVE_REV);
+    expect(body.operation).toBe('replace');
+    expect(typeof body.message).toBe('string');
+
+    // ZERO mutation: no CAS claim, no row write, no upload, no delete.
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(mockStorage.uploadFile).not.toHaveBeenCalled();
+    expect(mockStorage.deleteFile).not.toHaveBeenCalled();
+    expect(mockStorage.deleteWithPrefix).not.toHaveBeenCalled();
+    // …and nothing was even read: the refusal precedes the compatibility gate's storage read.
+    expect(mockStorage.readObject).not.toHaveBeenCalled();
+    expect(mockTimelineSections.findMany).not.toHaveBeenCalled();
+  });
+
+  it('refuses BEFORE multipart parsing — a bundle with no file part still gets the revision code', async () => {
+    const app = await makeApp();
+    // Without the guard this body 400s on '"file" (ZIP) or "files" bundle is required', which is
+    // only reachable AFTER the multipart stream has been consumed. Getting the 409 instead is the
+    // proof that nothing was parsed.
+    const { payload, headers } = multipartPayload([{ name: 'name', content: 'ignored' }]);
+
+    const res = await app.inject({ method: 'POST', url: URL_PATH, payload, headers });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe('SIM_REVISION_WRITE_UNSUPPORTED');
+  });
+
+  it('refuses before the entry-name rule — the revision code wins over the rename 409', async () => {
+    const app = await makeApp();
+    const { payload, headers } = zipRequest({ 'main.html': NEW_INDEX_HTML, 'app.js': 'x' });
+
+    const res = await app.inject({ method: 'POST', url: URL_PATH, payload, headers });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe('SIM_REVISION_WRITE_UNSUPPORTED');
+    expect(res.json().expectedEntryFile).toBeUndefined();
+  });
+
+  it('refuses regardless of row status — a revisioned sim is never replaceable', async () => {
+    mockSimulations.findFirst.mockResolvedValue({ ...REVISIONED_SIM, status: 'failed' });
+    const app = await makeApp();
+    const { payload, headers } = zipRequest({ 'index.html': NEW_INDEX_HTML, 'app.js': COMPATIBLE_APP_JS });
+
+    const res = await app.inject({ method: 'POST', url: URL_PATH, payload, headers });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe('SIM_REVISION_WRITE_UNSUPPORTED');
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+});
+
+// ── The compatibility READ path reads the ACTIVE bytes (simulation-003) ──────────────────────
+//
+// Publication derives from the active revision; the gate used to read `<prefix>/bridge.js`, which
+// for a revisioned package is a stale copy nobody serves. Same upload, two different answers —
+// and the wrong one is the permissive one.
+
+describe('POST …/replace?dry_run=true — compatibility reads the ACTIVE revision', () => {
+  beforeEach(() => {
+    mockSimulations.findFirst.mockResolvedValue({ ...REVISIONED_SIM });
+    mockTimelineSections.findMany.mockResolvedValue([]);
+    primeRevisionedStorage();
+  });
+
+  it('reads the active manifest and package/bridge.js — never the legacy copy', async () => {
+    const app = await makeApp();
+    // These files satisfy the LEGACY bridge exactly. Against the ACTIVE bridge they are broken.
+    const { payload, headers } = zipRequest({ 'index.html': NEW_INDEX_HTML, 'app.js': COMPATIBLE_APP_JS });
+
+    const res = await app.inject({ method: 'POST', url: `${URL_PATH}?dry_run=true`, payload, headers });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.compatibility.compatible).toBe(false);
+    const broken = body.compatibility.sections.find((s: { status: string }) => s.status === 'broken');
+    expect(JSON.stringify(broken.missing)).toContain('active-only-panel');
+
+    const read = mockStorage.readObject.mock.calls.map((c) => c[0] as string);
+    expect(read).toContain(`${REV_ROOT}/manifest.json`);
+    expect(read).toContain(`${REV_ROOT}/package/bridge.js`);
+    expect(read).not.toContain(`${PREFIX}/bridge.js`);
+
+    // A preflight is read-only whatever it decides.
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(mockStorage.uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('tells the caller the preflight is informational — replace itself is unsupported', async () => {
+    const app = await makeApp();
+    const { payload, headers } = zipRequest({ 'index.html': NEW_INDEX_HTML, 'app.js': COMPATIBLE_APP_JS });
+
+    const res = await app.inject({ method: 'POST', url: `${URL_PATH}?dry_run=true`, payload, headers });
+
+    expect(res.json().replaceSupported).toBe(false);
+    expect(res.json().code).toBe('SIM_REVISION_WRITE_UNSUPPORTED');
+  });
+
+  it('a legacy package still reports against its own mutable bridge', async () => {
+    mockSimulations.findFirst.mockResolvedValue({ ...FAKE_SIM });
+    primeBridge(REAL_BRIDGE);
+    const app = await makeApp();
+    const { payload, headers } = zipRequest({ 'index.html': NEW_INDEX_HTML, 'app.js': COMPATIBLE_APP_JS });
+
+    const res = await app.inject({ method: 'POST', url: `${URL_PATH}?dry_run=true`, payload, headers });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().compatibility.compatible).toBe(true);
+    expect(res.json().replaceSupported).toBe(true);
+    expect(mockStorage.readObject.mock.calls.map((c) => c[0])).toContain(`${PREFIX}/bridge.js`);
+  });
+
+  it('refuses to answer when the active revision cannot be read — never "compatible" by default', async () => {
+    mockStorage.readObject.mockRejectedValue(new Error('NoSuchKey'));
+    const app = await makeApp();
+    const { payload, headers } = zipRequest({ 'index.html': NEW_INDEX_HTML, 'app.js': COMPATIBLE_APP_JS });
+
+    const res = await app.inject({ method: 'POST', url: `${URL_PATH}?dry_run=true`, payload, headers });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe('SIM_ACTIVE_REVISION_UNREADABLE');
     expect(mockStorage.uploadFile).not.toHaveBeenCalled();
   });
 });

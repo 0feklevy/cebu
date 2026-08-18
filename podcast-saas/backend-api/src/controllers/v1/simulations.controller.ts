@@ -24,6 +24,12 @@ import {
   checkReplaceCompatibility,
   describeIncompatibility,
 } from '../../services/simulation/SimBridgeContract.js';
+import { refuseRevisionWrite } from '../../services/simulation/revisionWriteGuard.js';
+import {
+  ActiveRevisionUnreadable,
+  readReplaceCompatibilitySource,
+  type ReplaceCompatibilitySource,
+} from '../../services/simulation/replaceCompatibilitySource.js';
 import { LLMService } from '../../services/llm/LLMService.js';
 import { ApiKeyService } from '../../services/secrets/ApiKeyService.js';
 import { UsageTrackingService } from '../../services/usage/UsageTrackingService.js';
@@ -245,6 +251,10 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
   // Mirrors the upload endpoint's multipart contract (one ZIP in "file" OR a "files"
   // bundle + optional "manifest"; "name" is tolerated but ignored) and its caps.
   // Semantics:
+  //   - LEGACY PACKAGES ONLY. A simulation with an `active_revision_id` serves from an immutable
+  //     revision prefix, so an in-place swap would write bytes nothing reads: refused up front
+  //     with 409 `SIM_REVISION_WRITE_UNSUPPORTED` (audit simulation-001). `?dry_run=true` still
+  //     answers — read-only, and against the ACTIVE revision's bytes (audit simulation-003).
   //   - only a 'ready' (or previously 'failed'-replace) sim can be swapped; the row is
   //     CAS-claimed to 'processing' for the swap and set back to 'ready'/'failed' after
   //   - the new bundle MUST contain an HTML file at the SAME relative path as the current
@@ -272,6 +282,29 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
         where: and(eq(simulations.id, request.params.simId), eq(simulations.project_id, project.id)),
       });
       if (!sim) return reply.code(404).send({ message: 'Simulation not found' });
+
+      // ── REVISIONED PACKAGES REFUSE THE IN-PLACE SWAP (audit simulation-001) ─────────
+      //
+      // Everything below this line writes into the mutable prefix, which a simulation with an
+      // active revision does not serve. The old code did all of it and returned 202. The refusal
+      // therefore has to come FIRST: before `request.parts()` consumes the multipart stream,
+      // before the status CAS claims the row, and before any storage call — so a blocked replace
+      // cannot touch the database, storage, or the live package in any way.
+      //
+      // `?dry_run=true` is deliberately exempt. It is a read-only preflight that mutates nothing,
+      // and it is the one place a caller can still learn whether an upload would fit the package
+      // — answered, since simulation-003, against the ACTIVE revision's bytes. Its response says
+      // `replaceSupported: false` so the report is never mistaken for a green light.
+      const isDryRun = request.query?.dry_run === 'true';
+      const revisionRefusal = refuseRevisionWrite(sim, 'replace');
+      if (revisionRefusal && !isDryRun) {
+        logger.info(
+          { simId: sim.id, activeRevisionId: revisionRefusal.activeRevisionId },
+          'Simulation replace refused — package publishes from immutable revisions',
+        );
+        return reply.code(409).send(revisionRefusal);
+      }
+
       // 'failed' is allowed so a failed replace can be retried; a failed INITIAL upload has
       // no entry_file and is rejected by the entry-path check below.
       if (sim.status !== 'ready' && sim.status !== 'failed') {
@@ -352,9 +385,27 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
         return reply.code(400).send({ message: 'Replacement bundle appears to be empty' });
       }
 
+      // ── What the upload is judged AGAINST (audit simulation-003) ───────────────────
+      //
+      // The entry path and the bridge both have to describe the package that is actually SERVED.
+      // For a legacy simulation that is the mutable prefix, as before. For a revisioned one it is
+      // the active revision's manifest and its `package/bridge.js` — reading `<prefix>/bridge.js`
+      // there answers the question against a stale copy nobody loads, and the wrong answer is the
+      // permissive one. A revision that cannot be read produces a refusal, never a default verdict.
+      let source: ReplaceCompatibilitySource;
+      try {
+        source = await readReplaceCompatibilitySource(storage, sim);
+      } catch (err) {
+        if (err instanceof ActiveRevisionUnreadable) {
+          logger.error({ simId: sim.id, revisionId: err.revisionId, err }, 'Replace preflight: active revision unreadable');
+          return reply.code(409).send({ code: err.code, message: err.message, activeRevisionId: err.revisionId });
+        }
+        throw err;
+      }
+
       // Same-entry-name rule: sections' simulation_url points at the exact current entry
       // path, so the replacement must ship an HTML file at that same relative path.
-      const entryRelPath = deriveEntryRelPath(sim.entry_file, sim.storage_prefix);
+      const entryRelPath = source.entryRelPath;
       if (!entryRelPath) {
         return reply.code(409).send({
           message: 'Cannot determine the current entry file of this simulation — delete it and upload the files as a new simulation instead.',
@@ -378,25 +429,28 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
       //
       // This runs on the DECODED UPLOAD BEFORE the CAS claim and before processReplace, so a
       // refusal cannot touch storage, the DB row, or the live simulation in any way.
-      const bridgeJs = await storage
-        .readObject(`${sim.storage_prefix}/bridge.js`)
-        .then((b) => b.toString('utf-8'))
-        .catch(() => '');   // no bridge generated yet ⇒ nothing to preserve ⇒ always compatible
-
       const pkgSections = await db.query.timeline_sections.findMany({
         where: eq(timeline_sections.simulation_id, sim.id),
         columns: { id: true, sim_meta: true },
       });
 
       const compatibility = checkReplaceCompatibility({
-        bridgeJs,
+        bridgeJs: source.bridgeJs,
         bundle: { files: fileMap, entryRelPath },
         sections: pkgSections.map((s) => ({ id: s.id, simMeta: s.sim_meta })),
       });
 
-      // Preflight: report only, mutate nothing.
-      if (request.query?.dry_run === 'true') {
-        return reply.code(200).send({ compatibility, message: describeIncompatibility(compatibility) });
+      // Preflight: report only, mutate nothing. `replaceSupported` is what stops a compatible
+      // report on a revisioned package reading as permission to replace it — the answer to
+      // "would these files fit?" and the answer to "may I write them?" are now different answers.
+      if (isDryRun) {
+        return reply.code(200).send({
+          compatibility,
+          message: describeIncompatibility(compatibility),
+          replaceSupported: revisionRefusal === null,
+          ...(revisionRefusal ? { code: revisionRefusal.code, activeRevisionId: revisionRefusal.activeRevisionId } : {}),
+          comparedAgainst: { origin: source.origin, revisionId: source.revisionId, bridgeKey: source.bridgeKey },
+        });
       }
 
       if (!compatibility.compatible) {
@@ -824,20 +878,55 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
       const entries = (owned.sim.guidance as GuidanceEntryStored[] | null) ?? [];
       const meta = (owned.sim.guidance_meta as Record<string, unknown> | null) ?? {};
       const language = (meta.language as string | undefined) ?? 'en';
+
+      const origin = request.headers.origin;
+      const openStream = () => {
+        reply.raw.setHeader('Access-Control-Allow-Origin', origin ?? '*');
+        reply.raw.setHeader('Access-Control-Allow-Credentials', 'true');
+        reply.raw.setHeader('Content-Type', 'text/event-stream');
+        reply.raw.setHeader('Cache-Control', 'no-cache');
+        reply.raw.setHeader('Connection', 'keep-alive');
+        reply.raw.setHeader('X-Accel-Buffering', 'no');
+      };
+      const sendEvent = (event: string, data: object) => {
+        try { reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch { /* closed */ }
+      };
+
+      // ── REVISIONED PACKAGES REFUSE THE GUIDANCE PUBLISH (audit simulation-002) ──────
+      //
+      // publishGuidance writes guidance.js, the cue audio and the re-injected entry HTML into the
+      // mutable prefix, which a revisioned simulation does not serve — so the whole run "succeeded"
+      // and the guidance never played. The refusal is emitted BEFORE `guidance_status` is touched,
+      // before the voice is resolved or a single character is sent to TTS, and before any upload.
+      //
+      // AND IT IS EMITTED ON THE STREAM, NOT INSTEAD OF IT. A pre-SSE JSON 409 never reaches an
+      // EventSource's 'error' listener: the browser fails the connection and the editor shows its
+      // generic "Connection lost", which describes a network fault the user does not have. So the
+      // stream is established first and the refusal arrives as a NAMED error event, carrying the
+      // same stable code the replace endpoint returns.
+      const revisionRefusal = refuseRevisionWrite(owned.sim, 'publish-guidance');
+      if (revisionRefusal) {
+        openStream();
+        sendEvent('connected', {});
+        sendEvent('error', {
+          error: revisionRefusal.message,
+          errorType: 'revision_write_unsupported',
+          code: revisionRefusal.code,
+          activeRevisionId: revisionRefusal.activeRevisionId,
+        });
+        logger.info(
+          { simId: owned.sim.id, activeRevisionId: revisionRefusal.activeRevisionId },
+          'Guidance publish refused — package publishes from immutable revisions',
+        );
+        try { reply.raw.end(); } catch { /* already closed */ }
+        return;
+      }
+
       if (entries.filter(e => e.enabled).length === 0) {
         return reply.code(400).send({ message: 'No enabled guidance cues to publish — generate a draft first' });
       }
 
-      const origin = request.headers.origin;
-      reply.raw.setHeader('Access-Control-Allow-Origin', origin ?? '*');
-      reply.raw.setHeader('Access-Control-Allow-Credentials', 'true');
-      reply.raw.setHeader('Content-Type', 'text/event-stream');
-      reply.raw.setHeader('Cache-Control', 'no-cache');
-      reply.raw.setHeader('Connection', 'keep-alive');
-      reply.raw.setHeader('X-Accel-Buffering', 'no');
-      const sendEvent = (event: string, data: object) => {
-        try { reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch { /* closed */ }
-      };
+      openStream();
       sendEvent('connected', {});
       const keepAlive = setInterval(() => { try { reply.raw.write(': keep-alive\n\n'); } catch { /* closed */ } }, 15_000);
       const controller = new AbortController();
