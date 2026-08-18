@@ -20,7 +20,7 @@
  *
  * The named mutation tests:
  *   • "converges to exactly one section" (×6) fails if the section insert loses its
- *     `generation_job_id` key or its ON CONFLICT arm;
+ *     job-row lock (SELECT ... FOR UPDATE) or the `section_id IS NULL` fence;
  *   • "does not re-submit …" fails if the `attempts`-based poison check is dropped — that mutation
  *     is a SECOND CHARGE from the paid provider, not just a duplicate row;
  *   • "a second delivery does nothing" fails if the CAS claim is weakened to a read-then-write;
@@ -180,10 +180,19 @@ const jobRow = (id: string): Promise<JobView> => one<JobView>(
   `SELECT status, error, section_id, video_file_id, external_task_id, claimed_by, attempts
      FROM video_generation_jobs WHERE id=$1`, [id]);
 
-/** Every section this generation produced. The whole suite is about this being length 1. */
+/**
+ * Every section this generation produced. The whole suite is about this being length 1.
+ *
+ * Reached THROUGH the job row, because that is where the provenance lives: finalisation writes
+ * video_generation_jobs.section_id under a row lock. An earlier draft carried a
+ * timeline_sections.generation_job_id column; it was dropped, so a join is the only honest way to
+ * ask this question now.
+ */
 async function sectionsFor(jobId: string): Promise<Array<{ id: string; global_offset_sec: number }>> {
-  return rows(`SELECT id, global_offset_sec FROM timeline_sections
-                WHERE generation_job_id=$1 ORDER BY id`, [jobId]);
+  return rows(`SELECT s.id, s.global_offset_sec
+                 FROM timeline_sections s
+                 JOIN video_generation_jobs j ON j.section_id = s.id
+                WHERE j.id=$1 ORDER BY s.id`, [jobId]);
 }
 async function brollSections(): Promise<Array<{ id: string }>> {
   return rows(`SELECT id FROM timeline_sections WHERE project_id=$1 AND track='broll' ORDER BY id`,
@@ -358,11 +367,16 @@ describe('the crash matrix — every stage converges to exactly one section', ()
     await expect(runVideoGenerate(jobId, FAST)).rejects.toBeInstanceOf(SimulatedCrash);
     await rewindCrash(jobId);
     const videoFileId = (await jobRow(jobId)).video_file_id!;
+    // A previous attempt's section, attached the way finalisation attaches one: the row itself
+    // carries no provenance, so the link is video_generation_jobs.section_id. The re-run must ADOPT
+    // this row under the job-row lock, never create a second one and never overwrite it — the user
+    // may already have moved or trimmed it.
     const orphan = await one<{ id: string }>(
       `INSERT INTO timeline_sections (project_id, video_file_id, start_sec, end_sec, type, track,
-                                      global_offset_sec, generation_job_id)
-       VALUES ($1,$2,0,7.5,'broll','broll',12,$3) RETURNING id`,
-      [projectId, videoFileId, jobId]);
+                                      global_offset_sec)
+       VALUES ($1,$2,0,7.5,'broll','broll',12) RETURNING id`,
+      [projectId, videoFileId]);
+    await rows(`UPDATE video_generation_jobs SET section_id=$1 WHERE id=$2`, [orphan.id, jobId]);
 
     await runVideoGenerate(jobId, FAST);
 

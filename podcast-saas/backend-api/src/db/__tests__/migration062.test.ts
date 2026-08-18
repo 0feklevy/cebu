@@ -104,13 +104,18 @@ afterEach(async () => { await pg.close(); });
 describe('062 — shape', () => {
   beforeEach(applyForward);
 
-  it('timeline_sections carries a nullable generation provenance column', async () => {
-    const [col] = await rows<{ is_nullable: string; data_type: string }>(
-      `SELECT is_nullable, data_type FROM information_schema.columns
-        WHERE table_name='timeline_sections' AND column_name='generation_job_id'`);
-    expect(col).toBeDefined();
-    expect(col.is_nullable).toBe('YES');
-    expect(col.data_type).toBe('uuid');
+  it('does NOT add a provenance column to timeline_sections — the invariant lives on the job row', async () => {
+    // An earlier draft of 062 added timeline_sections.generation_job_id with a partial unique
+    // index. It is deliberately absent, and this test pins that: the product lets a user manually
+    // re-insert a previously generated asset, so "this asset appears once in the timeline" is not
+    // true; every section predating the change carries no provenance and so could never have
+    // collided; and it cost a write lock on a hot table. Finalisation serialises on the job row
+    // instead. If someone re-adds the column, this fails and they must revisit that reasoning.
+    const found = await rows<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_name='timeline_sections' AND column_name='generation_job_id'`,
+    );
+    expect(found).toEqual([]);
   });
 
   it('video_generation_jobs gains the lease columns with honest defaults', async () => {
@@ -125,69 +130,31 @@ describe('062 — shape', () => {
   });
 });
 
-describe('062 — the uniqueness that makes a duplicate section impossible', () => {
+describe('062 — the lock it is allowed to take', () => {
   beforeEach(applyForward);
 
-  it('refuses a SECOND section for the same generation', async () => {
-    const { projectId, videoFileId } = await seed();
-    const jobId = await newJob(projectId);
-    await insertSection(projectId, videoFileId, jobId);
-    await expect(insertSection(projectId, videoFileId, jobId)).rejects.toMatchObject({ code: '23505' });
+  it('sets a short lock_timeout, so a deploy fails fast instead of holding the table', async () => {
+    // The runner wraps each file in ONE transaction, so every lock this file takes is held until
+    // COMMIT. A deploy that cannot get its locks promptly must abort and leave the previous
+    // version serving, rather than queueing behind a long transaction on a hot table.
+    const sql = forwardSql;
+    expect(sql).toMatch(/SET lock_timeout/i);
   });
 
-  it('never refuses a hand-made section — NULL provenance is not a key', async () => {
-    const { projectId, videoFileId } = await seed();
-    // Three sections nobody generated. A TOTAL unique index would allow exactly one of these
-    // per database; the partial one is why the editor still works.
-    await insertSection(projectId, videoFileId, null);
-    await insertSection(projectId, videoFileId, null);
-    await insertSection(projectId, videoFileId, null);
-    const [{ n }] = await rows<{ n: string }>(
-      `SELECT count(*) AS n FROM timeline_sections WHERE generation_job_id IS NULL`);
-    expect(Number(n)).toBe(3);
+  it('touches no table but video_generation_jobs', async () => {
+    // The blast radius IS the point of the rework: timeline_sections is hot and must not be
+    // locked by this migration at all.
+    const sql = forwardSql;
+    const altered = [...sql.matchAll(/ALTER TABLE\s+(\w+)/gi)].map((m) => m[1]);
+    const indexed = [...sql.matchAll(/CREATE\s+(?:UNIQUE\s+)?INDEX[^(]*ON\s+(\w+)/gi)].map((m) => m[1]);
+    expect([...new Set([...altered, ...indexed])]).toEqual(['video_generation_jobs']);
   });
 
-  it('two DIFFERENT generations may each have their own section', async () => {
-    const { projectId, videoFileId } = await seed();
-    const a = await newJob(projectId, 0);
-    const b = await newJob(projectId, 10);
-    await insertSection(projectId, videoFileId, a);
-    await insertSection(projectId, videoFileId, b);
-    const [{ n }] = await rows<{ n: string }>(
-      `SELECT count(*) AS n FROM timeline_sections WHERE generation_job_id IS NOT NULL`);
-    expect(Number(n)).toBe(2);
-  });
-
-  it('ON CONFLICT DO NOTHING is inferable from the partial index — the runner depends on it', async () => {
-    // The job body inserts with `ON CONFLICT (generation_job_id) WHERE generation_job_id IS NOT NULL
-    // DO NOTHING`. Postgres can only infer a PARTIAL index when the predicate is spelled out; if the
-    // index or the predicate ever drift apart this fails with 42P10 rather than silently
-    // degrading into an unguarded insert.
-    const { projectId, videoFileId } = await seed();
-    const jobId = await newJob(projectId);
-    await insertSection(projectId, videoFileId, jobId);
-    const inserted = await rows<{ id: string }>(
-      `INSERT INTO timeline_sections (project_id, video_file_id, start_sec, end_sec, type, track,
-                                      global_offset_sec, generation_job_id)
-       VALUES ($1,$2,0,5,'broll','broll',0,$3)
-       ON CONFLICT (generation_job_id) WHERE generation_job_id IS NOT NULL DO NOTHING
-       RETURNING id`,
-      [projectId, videoFileId, jobId]);
-    expect(inserted).toEqual([]); // conflict swallowed, nothing inserted
-    const [{ n }] = await rows<{ n: string }>(
-      `SELECT count(*) AS n FROM timeline_sections WHERE generation_job_id=$1`, [jobId]);
-    expect(Number(n)).toBe(1);
-  });
-
-  it('deleting the job keeps the b-roll and frees the key', async () => {
-    // SET NULL, not CASCADE: the section outlives the bookkeeping row that made it.
-    const { projectId, videoFileId } = await seed();
-    const jobId = await newJob(projectId);
-    const sectionId = await insertSection(projectId, videoFileId, jobId);
-    await pg.query(`DELETE FROM video_generation_jobs WHERE id=$1`, [jobId]);
-    const row = await one<{ generation_job_id: string | null }>(
-      `SELECT generation_job_id FROM timeline_sections WHERE id=$1`, [sectionId]);
-    expect(row.generation_job_id).toBeNull();
+  it('adds no index — the in-flight scan filters on status alone and has no ORDER BY', async () => {
+    // A performance index, not a correctness condition. Adding one would put a second lock in this
+    // file for no measured benefit. Add it only after EXPLAIN on representative volume.
+    const sql = forwardSql;
+    expect(sql).not.toMatch(/CREATE\s+INDEX/i);
   });
 });
 
@@ -244,7 +211,7 @@ describe('062 — runner hygiene', () => {
     expect(await snapshot()).toEqual(before);
   });
 
-  it('rolls back cleanly to the pre-062 shape', async () => {
+  it('rolls back the lease columns cleanly', async () => {
     const before = await snapshot();
     await applyForwardToHead();
     await pg.exec(rollbackSql);

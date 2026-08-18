@@ -11,10 +11,16 @@
  * why the symptom was "a clip plays where I never put one", intermittently.
  *
  * THE THREE THINGS THAT FIX IT, IN ORDER OF AUTHORITY
- *   1. A DATABASE CONSTRAINT. `timeline_sections.generation_job_id` + the partial unique index
- *      `uniq_timeline_sections_generation_job` (migration 062). However many times this function
- *      runs, in however many processes, the second section cannot exist. Everything below is an
- *      optimisation on top of a guarantee that no longer depends on it.
+ *   1. THE JOB ROW ITSELF. Finalisation locks `video_generation_jobs` with SELECT ... FOR UPDATE,
+ *      re-checks the claim and `section_id` AFTER the wait, and commits behind a fence requiring
+ *      both. A second delivery blocks on that lock and then observes the result instead of racing
+ *      it; a run that lost its lease rolls its INSERT back. An earlier draft put a partial unique
+ *      index on `timeline_sections` instead. Dropped, for three reasons: the product lets a user
+ *      manually re-insert a previously generated asset, so "this asset appears once in the
+ *      timeline" is simply not true and enforcing it would break a supported action; every section
+ *      predating the change carries no provenance, so the constraint could never have fixed an
+ *      existing row; and it cost a write lock on a hot table. The invariant is a property of THIS
+ *      JOB, so it belongs on this job’s row.
  *   2. A LEASE. `claim()` is a conditional UPDATE from an in-flight status whose claim is absent or
  *      whose heartbeat has gone `VIDEO_GEN_STALE_AFTER_MS` quiet — the `ProjectExportService`
  *      discipline, which itself copies `ProjectDuplicationService`. A live run beats `updated_at`
@@ -345,9 +351,37 @@ export async function runVideoGenerate(
       : job.original_prompt;
 
     const sectionId = await db.transaction(async (tx) => {
-      // ON CONFLICT names the partial index's column AND its predicate — Postgres cannot infer a
-      // partial unique index from the column alone. A previous attempt's section is adopted, never
-      // duplicated and never overwritten (the user may already have moved or trimmed it).
+      // THE JOB ROW IS THE SERIALISATION POINT, not a unique index on timeline_sections.
+      //
+      // Locking it first is what closes the window a bare read-then-insert leaves open: a second
+      // delivery blocks here until the first commits, and then observes its result instead of
+      // racing it. The transaction is deliberately short — it holds this row and nothing else.
+      //
+      // A unique key on the SECTION would be the wrong invariant anyway. The product lets a user
+      // manually re-insert a previously generated asset, so `this asset appears once in the
+      // timeline` is not true and must not be enforced. What must hold is narrower: ONE AUTOMATIC
+      // FINALISATION PUBLISHES AT MOST ONE ROW. That is a property of this job, so it belongs on
+      // this job's row. It also would not have helped the rows that already exist: every section
+      // written before this change carries no provenance at all, so it could never have collided.
+      const [locked] = await tx.select({
+        id: video_generation_jobs.id,
+        status: video_generation_jobs.status,
+        claimed_by: video_generation_jobs.claimed_by,
+        section_id: video_generation_jobs.section_id,
+      })
+        .from(video_generation_jobs)
+        .where(eq(video_generation_jobs.id, job_id))
+        .for('update');
+
+      // Re-checked AFTER the wait, never before it: the row we blocked on may have been finished,
+      // reclaimed, or deleted by whoever held the lock.
+      if (!locked) throw new Error(`b-roll generation ${job_id} vanished before finalisation`);
+      if (locked.claimed_by !== token) throw new LostVideoGenerationClaim(job_id);
+
+      // A predecessor already published. Adopt its section rather than making a second one — the
+      // user may have moved or trimmed it since, and overwriting would discard that.
+      if (locked.section_id) return locked.section_id;
+
       const [inserted] = await tx.insert(timeline_sections).values({
         project_id: job.project_id,
         video_file_id: videoFileId,
@@ -357,24 +391,15 @@ export async function runVideoGenerate(
         label,
         track: 'broll',
         global_offset_sec: job.target_global_offset_sec,
-        generation_job_id: job_id,
-      })
-        .onConflictDoNothing({
-          target: timeline_sections.generation_job_id,
-          where: sql`generation_job_id IS NOT NULL`,
-        })
-        .returning({ id: timeline_sections.id });
+      }).returning({ id: timeline_sections.id });
 
-      const existingSection = inserted ?? (await tx.select({ id: timeline_sections.id })
-        .from(timeline_sections)
-        .where(eq(timeline_sections.generation_job_id, job_id)))[0];
-      if (!existingSection) {
-        throw new Error(`b-roll section for generation ${job_id} neither inserted nor found`);
-      }
-
+      // Fenced on BOTH the claim and section_id IS NULL. The second clause is not redundant with
+      // the lock: it makes the guarantee a property the database enforces rather than one that
+      // depends on this function having taken the lock. If it fails, the INSERT above rolls back
+      // with it, so a run that lost its lease publishes nothing at all.
       const [stillOurs] = await tx.update(video_generation_jobs)
         .set({
-          section_id: existingSection.id,
+          section_id: inserted.id,
           status: 'ready',
           finished_at: new Date(),
           updated_at: new Date(),
@@ -382,11 +407,12 @@ export async function runVideoGenerate(
         .where(and(
           eq(video_generation_jobs.id, job_id),
           eq(video_generation_jobs.claimed_by, token),
+          isNull(video_generation_jobs.section_id),
         ))
         .returning({ id: video_generation_jobs.id });
       if (!stillOurs) throw new LostVideoGenerationClaim(job_id);
 
-      return existingSection.id;
+      return inserted.id;
     });
 
     logger.info({ job_id, sectionId, videoFileId }, 'B-roll generation complete');

@@ -675,11 +675,6 @@ export const timeline_sections = pgTable('timeline_sections', {
   //
   // NO `.references()` here, and the omission is deliberate. The real FK
   // (→ video_generation_jobs(id) ON DELETE SET NULL) is declared in 062 and enforced by the
-  // engine; declaring it on BOTH sides in Drizzle closes a cycle — video_generation_jobs.section_id
-  // already points back here — and TypeScript answers a circular table initializer with TS7022,
-  // collapsing `timeline_sections` to `any` and silently un-typing every consumer of it in the
-  // codebase. `project_exports.current_section_id` is a plain uuid for exactly this reason.
-  generation_job_id: uuid('generation_job_id'),
   created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
