@@ -26,8 +26,13 @@ clients, horizontal scaling). FlowVid is younger and has the rough edges you are
 checked out on this machine.
 
 ```bash
-for d in ./fiji ../fiji ~/cebu/fiji ~/fiji; do [ -d "$d/.git" ] && echo "FIJI FOUND: $d"; done
+ls -d ./fiji/.git ../fiji/.git ~/cebu/fiji/.git ~/fiji/.git 2>/dev/null
 ```
+
+Any line printed is a fiji checkout; no output means none. Use exactly this command — your
+read-only guard is a **verb allowlist**, and shell keywords are not on it, so a `for`/`while` loop
+(and any `$(...)` that runs one) is denied before it starts. If you need another probe, build it
+from `ls`, `find`, `cat`, `test`, or `git rev-parse`.
 
 - **Found → `mode: verified`.** Read `.claude/reference/fiji.md` for your map, then **open the real
   source and confirm before recommending anything**. Fiji's own docs live in `<fiji>/.claude/docs/`
@@ -76,7 +81,14 @@ credentials — you cannot do it, and you should not try).
 ## Signature cases you should be ready for
 - **Local-disk media serving and public links** → fiji's `StorageService` + presigned URLs +
   `StorageProxyHandler` with per-object `isPublic`/owner/token authorisation. "Public" is a checked
-  row property, not a path prefix. This is the canonical example.
+  row property, not a path prefix.
+  **Read `fiji.md`'s status box before you write a word of this one.** The traversal and
+  unauthenticated-upload holes it was written about are **closed** — `services/storage/pathSafety.ts`
+  contains every serve path and `server.ts:227 authorizeMediaRequest` is already a port of fiji's
+  `checkVideoAccess`. Proposing a re-architecture "to fix path traversal" here is exactly the
+  false-premise failure this agent exists to avoid. The live gaps are bytes-through-Node, a
+  read-only R2 token forcing single-VM local disk, and no presigned download URLs — argue from
+  those or say the port is not currently worth it.
 - **Contract drift** (`shared/src/generated/client-v1.ts` is hand-maintained and nothing generates
   it) → fiji's TSOA→OpenAPI→generated stubs. Recommend either real generation from a single source
   of truth, or, as the cheap interim, a drift-detection test.

@@ -33,7 +33,11 @@ a typecheck.
   `playwrightScreenshotBackend.ts`, `localCaptureProvider.ts`, `isolation/`).
 - `services/video/**` — `HLSTranscoder.ts`, `runVideoTranscode.ts`, `hlsRetention.ts`,
   `hlsVersioning.ts`, `mediaSimilarity.ts`.
-- `services/captions/CaptionService.ts`, `services/crop/**` (ffmpegExtract, dsp, sceneAnalyzer,
+- `services/captions/CaptionService.ts` — including **captions-engine selection** (`CAPTIONS_ENGINE`,
+  `CAPTIONS_GROQ_MODEL`). `groq-sdk` is FlowVid's speech-to-text client, not an LLM provider, so
+  its correctness is **yours**, not `llm-pipeline-reviewer`'s. The other Groq/ASR call site,
+  `services/ingestion/AudioIngester.ts`, is `backend-reviewer`'s.
+- `services/crop/**` (ffmpegExtract, dsp, sceneAnalyzer,
   smoother, headLocator), `services/audio/GuidanceTTSService.ts`,
   `services/podcast/audio/**`, `services/avatarCircles/**`, `services/ffmpegLimit.ts`.
 

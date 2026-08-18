@@ -9,8 +9,12 @@
 > reasoning about the wrong engine. Drift in the knowledge base is a *bug class*, so it gets a
 > single owner file and an auditor (`fleet-maintainer`).
 >
-> **Last verified:** 2026-08-14 against `feat/agent-fleet-upgrade`.
+> **Last verified:** 2026-08-18 against `fix/night-audit-2026-08-15` @ `ef651a9`.
 > **How to re-verify:** run `fleet-maintainer`. Do not hand-edit facts without re-checking them.
+>
+> **Counts in this file drift, and a stale count has already produced a confident wrong finding.**
+> Every number below is dated to the stamp above. Before you cite one in a finding, re-measure it —
+> each row that carries a count also carries the command that produces it.
 
 ---
 
@@ -58,14 +62,14 @@ Workspace packages (`podcast-saas/pnpm-workspace.yaml`): `backend-api`, `client-
 | HTTP server | **Fastify 4** (`@fastify/cors`, `helmet`, `multipart`, `compress`) | ~~Express~~ |
 | Routes | **Hand-registered `register*Routes(app)` functions**, not decorators | ~~TSOA controllers~~ |
 | Database | **PostgreSQL** via `drizzle-orm/postgres-js` + `postgres` driver | ~~MySQL / mysql2~~ |
-| Schema | `pg-core`: `pgTable`, `uuid`, `jsonb` (**52** tables, 145 uuid columns) | ~~utf8mb4, AUTO_INCREMENT~~ |
-| Migrations | 58 forward `.sql` + 12 `.rollback.sql` + a commented-out `phase2-schema.sql` (71 files), **hardcoded ordered list** in `db/migrate.ts` | ~~drizzle-kit auto-apply~~ |
+| Schema | `pg-core`: `pgTable`, `uuid`, `jsonb` — **52** `pgTable` declarations and **146** `uuid(` columns, all in `db/schema.ts`. Re-count with `grep -o` on that one file | ~~utf8mb4, AUTO_INCREMENT~~ |
+| Migrations | **62** forward `.sql` + **16** `.rollback.sql` + `phase2-schema.sql` = **79** files on disk; the **hardcoded ordered list** in `db/migrate.ts` (exported as `MIGRATION_FILES`) holds the **62** forward files only. Two different numbers — see §4 | ~~drizzle-kit auto-apply~~ |
 | Background jobs | **pg-boss 12** (`queue/pgBossDriver.ts`) + an inline driver for dev | ~~Trigger.dev~~ (dep present, check before asserting) |
 | Auth | **Firebase Admin** (`middleware/firebase-auth.ts`) | — |
 | Storage | R2 / Supabase-S3 adapters **plus a local-disk fallback** | — |
-| Frontends | **Next.js 15.1 App Router**, React, Tailwind | — |
+| Frontends | **Next.js 15.5.23 App Router**, React, Tailwind | — |
 | API client | **Hand-written** `shared/src/generated/client-v1.ts` (dir is named `generated`, nothing generates it) | ~~codegen output~~ |
-| Tests | **Vitest** (128 `*.test.ts` under `backend-api/src`, excluding `_archive/`) + **Playwright** (9 configs in client-web) | — |
+| Tests | **Vitest** — **176** `*.test.ts` under `backend-api/src` excluding the 3 in `_archive/`, 71 in `client-web`, 24 in `shared`; + **Playwright** (9 configs in client-web). This number moved **twice during the audit that produced it** — treat it as a floor at the stamp above and **measure, never quote** | ~~128, the figure two prior versions of this row carried~~ |
 | Deploy | **Docker Compose + nginx + systemd** on a VM (`podcast-saas/deploy/`) | ~~GoDaddy Node.js Hosting~~ |
 | LLM providers | **Three**: Anthropic, OpenAI, Google GenAI (`services/llm/*Provider.ts`) | ~~Groq is a fourth LLM provider~~ |
 | Speech-to-text | **Groq** (`groq-sdk`) — used only for transcription in `services/captions/CaptionService.ts` and `services/ingestion/AudioIngester.ts`. There is no `GroqProvider`; it is **not** part of the LLM abstraction. | — |
@@ -91,7 +95,7 @@ Workspace packages (`podcast-saas/pnpm-workspace.yaml`): `backend-api`, `client-
 | `.../src/controllers/v1/**` (27 files) | public API: projects, video, export, podcast*, simulations, share, billing, stripe-webhook … | `backend-reviewer` |
 | `.../src/controllers/admin/v1/**` (7) | admin API: settings, system-prompts, llm-config, users, pipeline-stats | `backend-reviewer` + `security-reviewer` |
 | `.../src/middleware/**` | `firebase-auth.ts`, `firebase-admin-required.ts`, `rate-limit.ts` | `security-reviewer` |
-| `.../src/db/**` | `schema.ts`, `migrations/` (71 sql), `migrate.ts`, `backfill/`, `jsonb.ts` | `database-reviewer` |
+| `.../src/db/**` | `schema.ts`, `migrations/` (79 `.sql`, of which 62 forward), `migrate.ts`, `backfill/`, `jsonb.ts` | `database-reviewer` |
 | `.../src/queue/**` | pg-boss driver, inline driver, `registry.ts`, `startWorker.ts` | `job-queue-reviewer` |
 | `.../src/jobs/**` | `corpus.ingest`, `video.generate`, `video.transcode` | `job-queue-reviewer` |
 | `.../src/services/export/**` | `LinearAssembler`, `ffmpegGraph`, `exportPlan`, `capture/` | `media-pipeline-reviewer` |
@@ -127,12 +131,21 @@ Workspace packages (`podcast-saas/pnpm-workspace.yaml`): `backend-api`, `client-
   in `schema_migrations`. **The ordered file list is hardcoded in that file** — a new `.sql` that
   is not added to the list silently never runs. That divergence is what
   `ops/release/src/migration-audit.ts` reports as `migrations.not-in-runner` / `missing-file`.
-  **Verified clean on 2026-08-14** (run `2026-08-13T2227`): all 58 forward migrations are present in
-  the runner list, order matches filename sort, no drift in either direction. Re-check it anyway —
-  it is cheap and the failure is silent.
-- The runner records a migration as applied even when the file's transaction rolled back on a
-  tolerated error code, so genuinely-new DDL in such a file is dropped and can never be retried
-  (finding `database-003`, `migrate.ts:49`).
+  **Verified clean on 2026-08-18**: all **62** forward migrations (`001_initial.sql` …
+  `062_broll_idempotency.sql`) are present in the runner list, order matches filename sort, no drift
+  in either direction. Re-check it anyway — it is cheap and the failure is silent.
+- **`migrations/` holds 79 `.sql` files but the runner list holds 62. That is not drift.** The other
+  17 are 16 `*.rollback.sql` (never applied forward) and `phase2-schema.sql`. Compare the *sets* of
+  forward files, never the two totals — an agent that subtracted them has already filed a false
+  finding.
+- The runner wraps each file and its `schema_migrations` row in **one explicit transaction**, aborts
+  the whole run on checksum drift before applying anything, serializes deploys with a session-level
+  advisory lock, and **refuses to start** unless `MIGRATION_DATABASE_URL` names a session-mode
+  endpoint (a transaction pooler makes the lock a no-op silently).
+- ~~The runner records a migration as applied even when the file's transaction rolled back on a
+  tolerated error code~~ — **fixed** on `fix/night-audit-2026-08-15`. `42701`/`42P07`/`23505` are no
+  longer tolerated; a failing migration fails the run with nothing recorded. Do not re-file
+  `database-003`.
 - Because each file is one transaction, `CREATE INDEX CONCURRENTLY` in a migration is a **CRITICAL**
   finding, not a nit.
 - Policy is **expand/contract**: the previous app image must keep working after a migration, since
@@ -189,4 +202,9 @@ is a browser-visible admin bypass flag — verify how production resolves it bef
 
 No `.env` reads. No commits, pushes, tags, or resets. No migrations, `psql`, or `db:studio`.
 No dependency installs or codegen. No starting/stopping servers or containers. No remote/SSH.
-These are enforced by `.claude/hooks/fleet-guard.mjs`, not merely requested.
+
+`.claude/hooks/fleet-guard.mjs` backs these, but only the **secrets** half is unconditional (it is
+registered project-wide in `.claude/settings.json`). The read-only policy lives in each agent's
+frontmatter, and frontmatter hooks do not execute in an untrusted or non-interactive workspace — so
+in a headless run `Edit` is not blocked for reviewers. **These rules bind you regardless of whether
+anything is enforcing them.** See *What is actually guaranteed* in `.claude/review/PROTOCOL.md`.

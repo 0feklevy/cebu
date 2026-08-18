@@ -27,7 +27,7 @@
 | DB | **MongoDB** + Mongoose | **Postgres**/Supabase + Drizzle |
 | Frontend | React + **Vite** (fijiweb, fijiadmin) | **Next.js** App Router (client-web, admin-web) |
 | Auth | **Firebase** + scoped RS256 artifact tokens | Firebase middleware (`firebaseAuthMiddleware`) |
-| Storage | **Multi-cloud `StorageService`** (S3/GCP/Azure) + presigned URLs + auth proxy | R2 read-only → **local-disk fallback served via raw `path.join`** ⚠️ |
+| Storage | **Multi-cloud `StorageService`** (S3/GCP/Azure) + presigned URLs + auth proxy | R2 read-only → **local-disk fallback**, served through `safeLocalPath()` containment + per-object authorization. Bytes still stream through Node. |
 | API client | **Generated** from OpenAPI (`generate-stubs:web/admin`) | **Hand-maintained** `client-v1.ts` (drifts) |
 | Real-time | fijicomm (Socket.io, Redis adapter) | n/a |
 | Deploy | Docker Compose + nginx reverse proxy | GoDaddy Node.js Hosting (single app) |
@@ -49,11 +49,37 @@ Mongoose/TSOA/Express code verbatim.
 
 ---
 
-## ★ Storage & public links — the headline pattern (solves podcast-saas's P0)
+## ★ Storage & public links — the headline pattern
+> The heading here used to read "solves podcast-saas's P0". Those P0s are fixed; read the status
+> box below before citing this section.
 
-**Fiji never serves user media by `path.join(localDir, userKey)`.** That single decision is why
-fiji has none of podcast-saas's local-storage problems (P0-1/P0-2 traversal, R2-read-only fallback,
-unbounded buffering). The model has three pillars:
+**Fiji never serves user media by `path.join(localDir, userKey)`.** It maps a request path to an
+**object-store key**, so the traversal class cannot exist and "public" is a checked row property.
+
+> **Status of the podcast-saas side, re-verified 2026-08-18 on `fix/night-audit-2026-08-15`.**
+> The **traversal holes this section was written about are CLOSED.** Do not propose a
+> re-architecture to fix them; propose it, if at all, on the grounds that survive below.
+> * `podcast-saas/backend-api/src/services/storage/pathSafety.ts:9` `safeLocalPath()` resolves the
+>   key under the base dir and returns `null` on escape; `keyHasTraversal()` rejects any `..`
+>   segment. Both are unit-tested in `services/storage/__tests__/pathSafety.test.ts`.
+> * Every serve route goes through it — `server.ts:284` (`/local-storage/*`), `:305`
+>   (`/hls-public/*`), `:375` (`/video-raw/*`, registered at `:370`), `:536` (the upload path), and
+>   `controllers/sim-public.controller.ts:191`. There is **no raw `join()` on a request key** left
+>   in a serve path.
+> * "Public" is no longer only a prefix: `server.ts:227` `authorizeMediaRequest()` does per-object
+>   authorization (scoped token OR public/unlisted project OR owner/collaborator) for `hls/`,
+>   `videos/` and `exports/`. Its own comment names this as a port of fiji's `checkVideoAccess`.
+>   `PUBLIC_LOCAL_PREFIXES` (`server.ts:253`) now covers only genuinely public asset classes, and
+>   `keyHasTraversal` runs **before** the public-prefix branch.
+> * `PUT /local-storage/upload/*` (`server.ts:526`) returns **404 when `NODE_ENV=production`** and
+>   requires `firebaseAuthMiddleware` otherwise, with `safeLocalPath` on the destination.
+>
+> **What is still true, and is the only honest basis for porting fiji here:** bytes stream through
+> Node instead of a presigned direct-to-cloud transfer; the R2 token is read-only so the durable
+> path is local disk on one VM (no horizontal scale, no CDN); and there are no presigned download
+> URLs. Those are *architecture and scaling* arguments, not a vulnerability.
+
+The model has three pillars:
 
 ### 1. `StorageService` — multi-cloud object storage abstraction
 `fijiserver/src/services/StorageService.ts` (static class). Verified surface:
@@ -89,26 +115,38 @@ unbounded buffering). The model has three pillars:
   the artifact from MongoDB and allow only if **`artifact.isPublic`**, OR the requester is the
   **owner**, OR an **admin**, OR presents a **valid scoped artifact token**, OR is localhost (internal
   services). Otherwise **403**. → "Public link" = the `isPublic` flag on a real record, evaluated at
-  serve time — *not* a path prefix like podcast-saas's `startsWith('hls/')`.
+  serve time. podcast-saas reached the same property by a different route: `authorizeMediaRequest`
+  (`server.ts:227`) resolves the project behind a `hls/`/`videos/`/`exports/` key and checks
+  token / public-or-unlisted / owner-or-collaborator. A bare prefix test now only gates the
+  genuinely-public asset classes in `PUBLIC_LOCAL_PREFIXES`.
 - Content-Type from an extension allow-list (`getContentTypeFromPath`).
 
-### Why podcast-saas hits problems fiji doesn't
-- podcast-saas `server.ts:104/127/187/312` does `readFile(join(LOCAL_STORAGE_BASE_DIR, key))` guarded
-  only by `key.startsWith('hls/')` → `hls/../../etc/passwd` escapes (P0-2). Fiji's key→object-store
-  mapping + per-object auth removes the entire class.
-- podcast-saas `PUT /local-storage/upload/*` (P0-1) writes the request body to a client-controlled FS
-  path with no auth. Fiji uses **presigned PUT to cloud** — the server only signs a server-built key;
-  the client can't pick an arbitrary path, and the upload doesn't touch the app's disk.
-- podcast-saas R2 token is read-only → fragile local fallback. Fiji writes to a **writable** bucket via
-  presigned PUT, with a clean delete abstraction (`StorageService.deleteFile`) — no "delete is a no-op"
-  bug (podcast-saas `backend-003`).
+### Where podcast-saas still differs — and where it no longer does
+- ~~podcast-saas serves `readFile(join(LOCAL_STORAGE_BASE_DIR, key))` guarded only by
+  `key.startsWith('hls/')`, so `hls/../../etc/passwd` escapes (P0-2).~~ **FIXED.** Containment is
+  `safeLocalPath()` + `keyHasTraversal()` and authorization is per-object (`authorizeMediaRequest`,
+  a deliberate port of fiji's `checkVideoAccess`). Fiji's key→object-store mapping removes the
+  class *structurally*; podcast-saas removes it *by containment check*. Both are closed; only the
+  second one can regress, so the argument for fiji's shape here is **defence in depth**, not a
+  live hole.
+- ~~podcast-saas `PUT /local-storage/upload/*` (P0-1) writes the request body to a client-controlled
+  FS path with no auth.~~ **FIXED.** It is 404 in production, Firebase-authenticated otherwise, and
+  the destination goes through `safeLocalPath`. Fiji's presigned PUT is still the better shape —
+  the upload never touches the app's disk at all — but this is now a scaling argument.
+- **Still true:** podcast-saas's R2 token is read-only, so the durable write path is local disk on a
+  single VM — no CDN, no horizontal scale, and every byte streams through Node. Fiji writes to a
+  **writable** bucket via presigned PUT, with a clean delete abstraction
+  (`StorageService.deleteFile`) — no "delete is a no-op" bug (podcast-saas `backend-003`).
+- **Still true:** no presigned download URLs. Fiji's browser fetches from cloud/CDN; podcast-saas's
+  fetches from Node.
 
-**Port for podcast-saas (concrete):** introduce a `StorageService`-style abstraction with a writable
+**Port for podcast-saas (concrete):** the interim step — `resolve()` containment plus auth plus a
+checked `is_public`/owner/token — **has already been done** (`pathSafety.ts`, `authorizeMediaRequest`).
+What remains is the durable half: introduce a `StorageService`-style abstraction over a **writable**
 object store (real R2 write creds, or S3/Supabase Storage), issue **presigned upload URLs** from the
-backend with **server-constructed keys**, serve media as **presigned download URLs** (or a
-`/storage/proxy` that maps key→object-store + checks a DB `is_public`/owner/token), and **delete the
-raw `/local-storage/*` + `/local-storage/upload/*` FS routes** (or, as an interim, add resolve()-
-containment + auth + `is_public` checks — see review FIX_PLAN P0-1/P0-2).
+backend with **server-constructed keys**, serve media as **presigned download URLs**, and then retire
+the `/local-storage/*` + `/local-storage/upload/*` FS routes. Justify it on scale, cost, and
+single-VM durability — **not** on traversal, which is closed.
 
 ---
 

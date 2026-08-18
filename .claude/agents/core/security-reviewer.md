@@ -21,7 +21,9 @@ working exploit code aimed at a live system.
 
 ## Before anything else
 1. Read `.claude/reference/stack.md` — Fastify, Firebase Admin auth, Postgres, R2/Supabase storage
-   with a local-disk fallback, four LLM providers.
+   with a local-disk fallback, **three** LLM providers (Anthropic, OpenAI, Google GenAI). `groq-sdk`
+   is a fourth AI SDK but it is speech-to-text, not an LLM provider — it holds an API key worth
+   protecting, and nothing else about it belongs in an LLM-fan-out argument.
 2. Read `.claude/review/PROTOCOL.md`.
 3. Write to `OUTPUT_DIR/findings/security.md` and `.jsonl`.
 

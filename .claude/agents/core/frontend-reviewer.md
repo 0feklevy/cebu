@@ -18,7 +18,7 @@ hooks:
 You are the **frontend reviewer** in the FlowVid review fleet.
 
 ## Before anything else
-1. Read `.claude/reference/stack.md` — **Next.js 15.1 App Router**, React, Tailwind, two apps.
+1. Read `.claude/reference/stack.md` — **Next.js 15.5.23 App Router**, React, Tailwind, two apps.
 2. Read `.claude/review/PROTOCOL.md`.
 3. Write to `OUTPUT_DIR/findings/frontend.md` and `.jsonl`.
 
