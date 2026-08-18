@@ -47,6 +47,17 @@ async function invalidate(course: Course, previousSlug?: string | null): Promise
   });
 }
 
+/**
+ * A 23505 from the course slug index specifically — not any unique violation on this table, so a
+ * future constraint cannot be silently swallowed by the retry loop below.
+ */
+function isCourseSlugConflict(err: unknown): boolean {
+  const e = err as { code?: string; constraint_name?: string; constraint?: string; message?: string } | null;
+  if (!e || e.code !== '23505') return false;
+  const named = e.constraint_name ?? e.constraint ?? '';
+  return named === 'uniq_courses_host_slug' || (named === '' && (e.message ?? '').includes('uniq_courses_host_slug'));
+}
+
 export const CoursePublishingService = {
   async validateSlugAvailability(user: AuthUser, slug: string, excludeId?: string): Promise<{ available: boolean; normalized: string }> {
     const normalized = normalizeAuthorSlug(slug);
@@ -55,19 +66,48 @@ export const CoursePublishingService = {
     return { available: !taken, normalized };
   },
 
+  /**
+   * ALLOCATE AGAINST THE NAMESPACE THE INDEX ENFORCES, NOT THE ONE THE CALLER CAN SEE.
+   *
+   * This used to dedupe against `listByOrg(user.orgId)`, but `uniq_courses_host_slug` is
+   * `(COALESCE(canonical_host,'@platform'), slug)` — GLOBAL across organizations. Two tenants who
+   * both created "Intro to Physics" both allocated `intro-to-physics`, and the second INSERT threw
+   * a raw 23505 straight out of the endpoint: a 500 on a first-run action, caused by data the user
+   * is not allowed to see and can do nothing about.
+   *
+   * The INDEX is the correct half. `/api/v1/public/courses/:slug` resolves through
+   * `findByPlatformSlug` with no tenant segment, so a per-org index would let one URL address two
+   * courses — silently wrong instead of loudly wrong. `validateSlugAvailability` and `changeSlug`
+   * already ask the host-global question; `createCourse` was the lone dissenter. Hence no
+   * migration: the allocator was moved to the namespace that already exists.
+   *
+   * AND THE READ IS STILL A READ. Two creates that interleave both see the pre-insert namespace and
+   * can still pick the same slug, so the insert is retried against a freshly-read namespace when
+   * the index rejects it. That is what makes this correct rather than merely less likely to fail;
+   * new courses are always created on the platform host, so `null` is the host every time.
+   */
   async createCourse(user: AuthUser, input: {
     title?: string | null; description?: string | null; subtitle?: string | null;
     kind?: 'single' | 'playlist'; slug?: string | null; language?: string;
   }): Promise<Course> {
-    const taken = new Set((await CourseRepository.listByOrg(user.orgId)).map((c) => c.slug));
-    const { slug } = allocateSlug(input.title, randomUUID(), taken, 'c', input.slug ?? null);
-    const course = await CourseRepository.create({
-      org_id: user.orgId, created_by: user.id,
-      kind: input.kind ?? 'single',
-      title: input.title ?? null, description: input.description ?? null, subtitle: input.subtitle ?? null,
-      slug, language: input.language ?? 'en', publish_state: 'draft',
-    });
-    return course;
+    // Bounded: each attempt re-reads the namespace and moves at least one step further along the
+    // -2, -3, … ladder, so a retry can only lose to a slug allocated in the same instant. Five is
+    // far past any real concurrency on one title; beyond that, failing loudly beats spinning.
+    const MAX_ATTEMPTS = 5;
+    for (let attempt = 1; ; attempt++) {
+      const taken = new Set(await CourseRepository.slugsForHost(null));
+      const { slug } = allocateSlug(input.title, randomUUID(), taken, 'c', input.slug ?? null);
+      try {
+        return await CourseRepository.create({
+          org_id: user.orgId, created_by: user.id,
+          kind: input.kind ?? 'single',
+          title: input.title ?? null, description: input.description ?? null, subtitle: input.subtitle ?? null,
+          slug, language: input.language ?? 'en', publish_state: 'draft',
+        });
+      } catch (err) {
+        if (!isCourseSlugConflict(err) || attempt >= MAX_ATTEMPTS) throw err;
+      }
+    }
   },
 
   async updateCourseContent(user: AuthUser, id: string, patch: Partial<Pick<Course,

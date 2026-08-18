@@ -1,12 +1,13 @@
 import { createHash } from 'crypto';
 import type { FastifyInstance, FastifyReply } from 'fastify';
-import { and, desc, eq, inArray, isNotNull } from 'drizzle-orm';
+import { and, desc, eq, isNotNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
 import { podcast_renders, podcast_episodes, podcast_scripts } from '../../db/schema.js';
 import type { PodcastRender } from '../../db/schema.js';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { ownedEpisodeInShow } from '../../services/podcastAccess.js';
+import { claimEpisodeRender } from '../../services/podcast/episodeJobClaim.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { enqueueJob } from '../../queue/index.js';
 import { rateLimit } from '../../lib/rateLimit.js';
@@ -22,7 +23,6 @@ function hashBody(body: PodcastScriptBody): string {
 }
 
 const DL_TTL = 6 * 60 * 60; // presigned download URL lifetime
-const ACTIVE_RENDER = ['queued', 'synthesizing', 'stitching', 'encoding'] as const;
 
 async function withUrls(storage: ReturnType<typeof getStorageAdapter>, r: PodcastRender) {
   const [mp4, mp3, wav] = await Promise.all([
@@ -73,34 +73,28 @@ export async function registerPodcastRenderRoutes(app: FastifyInstance): Promise
         writeEpisodeMemory(loaded.episode.id, script.id, request.dbUser!.id).catch(() => {});
       }
 
-      // Don't start a second render for the same episode while one is in flight (double cost + seed/cache races).
-      const inflight = await db.query.podcast_renders.findFirst({
-        where: and(eq(podcast_renders.episode_id, loaded.episode.id), inArray(podcast_renders.status, [...ACTIVE_RENDER])),
+      // Don't start a second render for the same episode while one is in flight (double cost +
+      // seed/cache races). This used to be a bare read followed by a bare insert, so two deliveries
+      // of one click both saw an empty in-flight set and both started a billable render.
+      // `claimEpisodeRender` does the check, the reuse short-circuit and the insert inside one
+      // transaction that holds the EPISODE row — see services/podcast/episodeJobClaim.ts.
+      const claim = await claimEpisodeRender(loaded.episode.id, {
+        version: script.version,
+        contentHash: script.content_hash,
       });
-      if (inflight) return reply.code(202).send({ render_id: inflight.id, already_running: true });
-
-      // Short-circuit: if the newest ready render already matches the approved script, reuse it.
-      const latestReady = await db.query.podcast_renders.findFirst({
-        where: and(eq(podcast_renders.episode_id, loaded.episode.id), eq(podcast_renders.status, 'ready')),
-        orderBy: [desc(podcast_renders.created_at)],
-      });
-      if (latestReady && latestReady.script_hash && latestReady.script_hash === script.content_hash) {
-        return reply.code(202).send({ render_id: latestReady.id, unchanged: true });
+      if (claim.outcome === 'already_running') {
+        return reply.code(202).send({ render_id: claim.renderId, already_running: true });
+      }
+      // The newest ready master already matches the approved script — hand it back rather than
+      // pay for an identical one.
+      if (claim.outcome === 'unchanged') {
+        return reply.code(202).send({ render_id: claim.renderId, unchanged: true });
       }
 
-      const [render] = await db.insert(podcast_renders).values({
-        episode_id: loaded.episode.id,
-        script_version: script.version,
-        status: 'queued',
-        script_hash: script.content_hash,
-      }).returning();
-
-      await db.update(podcast_episodes)
-        .set({ status: 'rendering', updated_at: new Date() })
-        .where(eq(podcast_episodes.id, loaded.episode.id));
-
-      enqueueJob('podcast_render', { renderId: render.id });
-      return reply.code(202).send({ render_id: render.id });
+      // AFTER the commit, never inside it: a job delivered for a row that then rolls back is a
+      // worker chasing a render that does not exist.
+      enqueueJob('podcast_render', { renderId: claim.renderId });
+      return reply.code(202).send({ render_id: claim.renderId });
     },
   );
 

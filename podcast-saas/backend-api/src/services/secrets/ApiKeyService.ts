@@ -72,17 +72,33 @@ export class ApiKeyService {
   ): Promise<void> {
     const encrypted = encryptKey(plainKey);
 
-    // Upsert: delete old then insert
-    await db.delete(api_keys).where(
-      and(eq(api_keys.provider, provider), isNull(api_keys.user_id)),
-    );
-    await db.insert(api_keys).values({
-      provider,
-      encrypted_key: encrypted,
-      created_by: createdBy,
+    // ONE TRANSACTION, because the two statements are one fact.
+    //
+    // This used to be a bare DELETE followed by a bare INSERT. The delete committed on its own, so
+    // anything that stopped the insert — a `created_by` FK that no longer resolves, a dropped
+    // connection, a pod evicted between the two — left the platform with NO key for this provider
+    // and every tenant's calls failing, with no copy of the secret anywhere to restore from.
+    // Losing the NEW key is an inconvenience; losing the OLD one is an outage, so the only
+    // acceptable outcomes are "replaced" and "unchanged".
+    //
+    // Deliberately NOT an ON CONFLICT upsert: `api_keys` has no unique key on
+    // (provider, user_id IS NULL) to conflict against, and adding one would have to reckon with
+    // rows this table has accumulated since migration 001. Delete-then-insert inside a
+    // transaction needs no schema change and gives the same guarantee.
+    await db.transaction(async (tx) => {
+      await tx.delete(api_keys).where(
+        and(eq(api_keys.provider, provider), isNull(api_keys.user_id)),
+      );
+      await tx.insert(api_keys).values({
+        provider,
+        encrypted_key: encrypted,
+        created_by: createdBy,
+      });
     });
 
-    // Invalidate cache
+    // Only AFTER the commit. Dropping the cache entry before the write is durable would publish a
+    // rotation that never happened: the next reader would re-load from the DB and, on a rollback,
+    // re-cache the OLD key — harmless — but on a partial write would cache nothing at all.
     this.cache.delete(`system:${provider}`);
   }
 

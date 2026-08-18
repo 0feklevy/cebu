@@ -18,7 +18,7 @@ import { and, desc, eq, isNotNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
 import {
-  podcast_scripts, podcast_episodes, podcast_mixes, podcast_clips, podcast_mix_snapshots, podcast_renders,
+  podcast_scripts, podcast_episodes, podcast_mixes, podcast_clips, podcast_mix_snapshots,
 } from '../../db/schema.js';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { ownedEpisodeInShow } from '../../services/podcastAccess.js';
@@ -26,10 +26,9 @@ import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { enqueueJob } from '../../queue/index.js';
 import { rateLimit } from '../../lib/rateLimit.js';
 import { revoicePodcastTurn } from '../../services/podcast/audio/revoiceTurn.js';
+import { claimMixExport, claimMixGeneration } from '../../services/podcast/episodeJobClaim.js';
 import { MixTimelineSchema, layoutMix, type PodcastScriptBody, type MixTimeline } from 'shared';
 import { logger } from '../../lib/logger.js';
-
-const ACTIVE_RENDER = ['queued', 'synthesizing', 'stitching', 'encoding'] as const;
 
 function scriptHash(body: PodcastScriptBody): string {
   const canonical = body.turns.map((t) => `${t.speaker}|${t.overlap ? 1 : 0}|${t.text}`).join('\n');
@@ -105,27 +104,17 @@ export async function registerPodcastStudioRoutes(app: FastifyInstance): Promise
       const latest = await latestScriptWithBody(episodeId);
       if (!latest?.body_json) return reply.code(409).send({ message: 'Generate and approve a script first.' });
 
-      const existing = await db.query.podcast_mixes.findFirst({ where: eq(podcast_mixes.episode_id, episodeId) });
-      if (existing?.status === 'generating') return reply.code(202).send({ mix_id: existing.id, already_running: true });
-
-      // Upsert the mix row; snapshot the current draft before rebuilding over it.
-      let mixId: string;
-      if (existing) {
-        mixId = existing.id;
-        if (existing.timeline_json) {
-          await db.insert(podcast_mix_snapshots).values({
-            mix_id: existing.id, name: `Before rebuild · ${new Date().toISOString().slice(0, 10)}`,
-            kind: 'pre_rebuild', script_version: existing.script_version, timeline_json: existing.timeline_json,
-          });
-        }
-        await db.update(podcast_mixes).set({ status: 'generating', progress: null, error: null, claimed_at: null, updated_at: new Date() }).where(eq(podcast_mixes.id, existing.id));
-      } else {
-        const [row] = await db.insert(podcast_mixes).values({ episode_id: episodeId, status: 'generating' }).returning({ id: podcast_mixes.id });
-        mixId = row.id;
+      // Read-then-write used to live here: two deliveries of one click both saw a mix that was not
+      // `generating` and both enqueued a full per-turn TTS pass — and on a FIRST build they raced
+      // the podcast_mixes(episode_id) unique constraint into a 500. The upsert and the snapshot now
+      // happen under the episode row lock (services/podcast/episodeJobClaim.ts).
+      const claim = await claimMixGeneration(episodeId);
+      if (claim.outcome === 'already_running') {
+        return reply.code(202).send({ mix_id: claim.mixId, already_running: true });
       }
 
-      enqueueJob('podcast_clips', { mixId });
-      return reply.code(202).send({ mix_id: mixId });
+      enqueueJob('podcast_clips', { mixId: claim.mixId });
+      return reply.code(202).send({ mix_id: claim.mixId });
     },
   );
 
@@ -266,27 +255,16 @@ export async function registerPodcastStudioRoutes(app: FastifyInstance): Promise
       const { totalMs } = layoutMix(timeline, (id) => durById.get(id) ?? 0);
       if (totalMs <= 0) return reply.code(409).send({ message: 'The mix is empty.' });
 
-      const inflight = await db.query.podcast_renders.findFirst({
-        where: and(eq(podcast_renders.episode_id, episodeId), eq(podcast_renders.kind, 'mix')),
-        orderBy: [desc(podcast_renders.created_at)],
-      });
-      if (inflight && ACTIVE_RENDER.includes(inflight.status as typeof ACTIVE_RENDER[number])) {
-        return reply.code(202).send({ render_id: inflight.id, already_running: true });
+      // The in-flight check, the freeze snapshot and the render row are one atomic step under the
+      // episode row lock. As a read-then-write, two deliveries of one click both froze a snapshot
+      // and both queued a paid master; a failed render insert also used to strand its snapshot.
+      const claim = await claimMixExport(episodeId, mix, parsed.data.format);
+      if (claim.outcome === 'already_running') {
+        return reply.code(202).send({ render_id: claim.renderId, already_running: true });
       }
 
-      const [snapshot] = await db.insert(podcast_mix_snapshots).values({
-        mix_id: mix.id, name: `Export · ${parsed.data.format.toUpperCase()} · ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`,
-        kind: 'export', script_version: mix.script_version, timeline_json: mix.timeline_json,
-      }).returning({ id: podcast_mix_snapshots.id });
-
-      const [render] = await db.insert(podcast_renders).values({
-        episode_id: episodeId, script_version: mix.script_version, status: 'queued',
-        script_hash: mix.script_hash, kind: 'mix', format: parsed.data.format, mix_snapshot_id: snapshot.id,
-      }).returning({ id: podcast_renders.id });
-      await db.update(podcast_mix_snapshots).set({ render_id: render.id }).where(eq(podcast_mix_snapshots.id, snapshot.id));
-
-      enqueueJob('podcast_mix_export', { renderId: render.id });
-      return reply.code(202).send({ render_id: render.id });
+      enqueueJob('podcast_mix_export', { renderId: claim.renderId });
+      return reply.code(202).send({ render_id: claim.renderId });
     },
   );
 }
