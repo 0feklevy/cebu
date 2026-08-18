@@ -380,7 +380,26 @@ export async function runVideoGenerate(
 
       // A predecessor already published. Adopt its section rather than making a second one — the
       // user may have moved or trimmed it since, and overwriting would discard that.
-      if (locked.section_id) return locked.section_id;
+      //
+      // ADOPTION STILL HAS TO TERMINATE THE JOB. Returning here without the terminal UPDATE left
+      // the row in-flight while this function reported {status:'ready'} in memory — so startup
+      // recovery could reclaim it, forever. The two paths differ only in WHICH section they name;
+      // both must end the row.
+      if (locked.section_id) {
+        const adopted = locked.section_id;
+        const [stillOursAdopting] = await tx.update(video_generation_jobs)
+          .set({ status: 'ready', finished_at: new Date(), updated_at: new Date() })
+          .where(and(
+            eq(video_generation_jobs.id, job_id),
+            eq(video_generation_jobs.claimed_by, token),
+            // Fenced on the section we actually observed under the lock: if anything moved it
+            // between the SELECT and here, this run is not the one entitled to finish the row.
+            eq(video_generation_jobs.section_id, adopted),
+          ))
+          .returning({ id: video_generation_jobs.id });
+        if (!stillOursAdopting) throw new LostVideoGenerationClaim(job_id);
+        return adopted;
+      }
 
       const [inserted] = await tx.insert(timeline_sections).values({
         project_id: job.project_id,

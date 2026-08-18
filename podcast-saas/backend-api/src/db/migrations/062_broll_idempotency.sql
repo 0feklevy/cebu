@@ -37,7 +37,7 @@
 
 -- Fail fast rather than queue behind a long transaction: a deploy that cannot get the lock promptly
 -- should abort and leave the previous version serving, not hold the table hostage.
-SET lock_timeout = '3s';
+SET LOCAL lock_timeout = '3s';
 
 -- ── The lease ────────────────────────────────────────────────────────────────────────────────
 --

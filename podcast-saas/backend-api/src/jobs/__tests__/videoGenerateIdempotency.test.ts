@@ -359,7 +359,7 @@ describe('the crash matrix — every stage converges to exactly one section', ()
     expect(await brollSections()).toHaveLength(1);
   });
 
-  it('crash after SECTION INSERTION (the row exists, the job never finished): adopts it', async () => {
+  it('a LINKED PREDECESSOR section is adopted AND the job row is terminated', async () => {
     // The state a pre-062 run could leave, and the state any non-atomic finalisation would leave.
     // The re-run must ADOPT the orphan rather than insert its twin.
     const jobId = await newJob();
@@ -384,7 +384,21 @@ describe('the crash matrix — every stage converges to exactly one section', ()
     expect(sections).toHaveLength(1);
     expect(sections[0].id).toBe(orphan.id);           // adopted, not replaced
     expect(await brollSections()).toHaveLength(1);
-    expect((await jobRow(jobId)).section_id).toBe(orphan.id);
+
+    // LINKAGE IS NOT ENOUGH, and asserting only linkage is what let the bug through the first time.
+    // The adoption branch used to return from inside the transaction, before the terminal UPDATE:
+    // the function reported ready in memory while the ROW stayed in-flight, so startup recovery
+    // could reclaim it forever. Assert the row actually ended.
+    const finished = await jobRow(jobId);
+    expect(finished.section_id).toBe(orphan.id);
+    expect(finished.status).toBe('ready');
+    expect(finished.finished_at).not.toBeNull();
+
+    // …and that adopting did no vendor work: no re-submit, no re-download, no re-transcode.
+    const callsAfterAdopt = { ...svc.calls };
+    await runVideoGenerate(jobId, FAST);
+    expect(svc.calls).toEqual(callsAfterAdopt);
+    expect(await brollSections()).toHaveLength(1);
   });
 
   it('crash after COMPLETION: the redelivery is a no-op', async () => {

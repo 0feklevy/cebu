@@ -138,7 +138,11 @@ describe('062 — the lock it is allowed to take', () => {
     // COMMIT. A deploy that cannot get its locks promptly must abort and leave the previous
     // version serving, rather than queueing behind a long transaction on a hot table.
     const sql = forwardSql;
-    expect(sql).toMatch(/SET lock_timeout/i);
+    // SET LOCAL, not SET. The runner reuses one connection for every migration in the run, so a
+    // bare SET survives COMMIT and silently imposes this timeout on every later file. SET LOCAL
+    // is scoped to the transaction the runner already wraps each file in.
+    expect(sql).toMatch(/SET\s+LOCAL\s+lock_timeout/i);
+    expect(sql).not.toMatch(/(?<!LOCAL\s)\bSET\s+lock_timeout/i);
   });
 
   it('touches no table but video_generation_jobs', async () => {
