@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
-import type { PlayerConfig, PlayerSegment, SimulationOverlay, TimelineSeg, BrollClip, ImageOverlayItem, AudioCutaway, PlayerBranchSequence, PlayerChoicePoint, PlayerBranchEdge } from './types';
+import type { PlayerConfig, PlayerSegment, SimulationOverlay, TimelineSeg, BrollClip, ClipOverlay, ImageOverlayItem, AudioCutaway, PlayerBranchSequence, PlayerChoicePoint, PlayerBranchEdge } from './types';
 import { releaseAvatarElement } from '../../lib/avatarAudioGraph';
 import type { SimStartScriptParams } from '../../lib/simUiControls';
 import { canWarmUnpaused, learnCanEmitPaint } from '../../lib/simCapability';
@@ -556,6 +556,31 @@ export function useProjectPlayer(
   const activeSimUrlRef = useRef<string | null>(null);
   const resumeActionRef = useRef<'resume' | 'backToVideo'>('resume');
   const simReturnGlobalSecRef = useRef(0);
+  // ── FLAT-OVERLAY CONFIG REVISIONS (broll-player-001) ────────────────────────────────────
+  //
+  // `onTick` is `useCallback(fn, [])` — frozen at mount — so every flat-overlay updater it calls
+  // closes over the MOUNT-TIME `config` object. `ViewerPage` replaces that object post-mount (its
+  // fetch effect re-runs whenever the auth context hands it a fresh `getIdToken` identity, and
+  // calls `setConfig` with the new payload), so reading the parameter meant an editorial
+  // correction landed in React state and was then ignored for the rest of the session: the viewer
+  // played the clip list it fetched on first load, forever.
+  //
+  // The lanes therefore read `overlayConfigRef` — the COMMITTED revision — exactly as the segment
+  // and timeline branches of the same function read `segmentsRef` / `timelineRef`.
+  //
+  // A bare "latest config" ref is NOT the fix. Read mid-shot it deletes or swaps the clip the
+  // viewer is currently watching (a deleted clip tears down its live hls instance on the next
+  // timeupdate — a visible cut to main video mid-shot). So `pendingOverlayConfigRef` holds the
+  // newest revision React has handed us, and `commitOverlayConfig` promotes it only at a shot
+  // boundary — atomically, for every lane and for the prewarm plan at once, so the schedule and
+  // the prewarm plan can never be reading two different revisions.
+  //
+  // STRUCTURAL main-timeline data (segments, timeline, branching) is deliberately NOT routed
+  // through here: it stays session-snapshotted at mount, which is the existing contract.
+  const overlayConfigRef = useRef<PlayerConfig>(config);
+  const pendingOverlayConfigRef = useRef<PlayerConfig>(config);
+  pendingOverlayConfigRef.current = config;
+
   const activeBrollRef  = useRef<BrollClip | null>(null);
   const audioCutawayRef = useRef<HTMLAudioElement | null>(null);
   const activeAudioCutawayIdRef = useRef<string | null>(null);
@@ -763,7 +788,9 @@ export function useProjectPlayer(
       video.muted = mutedRef.current;
     }
     if (audioCutawayRef.current) {
-      const active = (config.audio_cutaways ?? []).find((cut) => cut.id === activeAudioCutawayIdRef.current);
+      // The COMMITTED revision, for the same reason the lane itself reads it: a correction must
+      // not change the gain of the cutaway already playing. It reaches the next one.
+      const active = (overlayConfigRef.current.audio_cutaways ?? []).find((cut) => cut.id === activeAudioCutawayIdRef.current);
       audioCutawayRef.current.volume = Math.max(0, Math.min(1, (active?.broll_volume ?? 1) * volume));
       audioCutawayRef.current.muted = mutedRef.current;
     }
@@ -771,7 +798,7 @@ export function useProjectPlayer(
       guidanceAudioRef.current.volume = volume;
       guidanceAudioRef.current.muted = mutedRef.current;
     }
-  }, [config.audio_cutaways, refs.videoA, refs.videoB]);
+  }, [refs.videoA, refs.videoB]);
 
   // ── controls reveal ───────────────────────────────────────────────────────
   const hideControls = () => {
@@ -2348,7 +2375,8 @@ export function useProjectPlayer(
   const updateBrollOverlay = (gt: number) => {
     if (branching) return;  // flat overlays disabled in branching mode (Phase 2)
     // Merge broll_clips and clip_overlays — both use the same video overlay mechanism
-    const brollClips = [...(config.broll_clips ?? []), ...(config.clip_overlays ?? [])];
+    const cfg = overlayConfigRef.current;
+    const brollClips = [...(cfg.broll_clips ?? []), ...(cfg.clip_overlays ?? [])];
     const clip = brollClips.find((b) => {
       const brollEnd = b.global_offset_sec + (b.end_sec - b.start_sec);
       return gt >= b.global_offset_sec && gt < brollEnd;
@@ -2392,7 +2420,7 @@ export function useProjectPlayer(
   // ── audio cutaway (audio-only broll) ─────────────────────────────────────
   const updateAudioCutaway = (gt: number, isPlaying: boolean) => {
     if (branching) return;  // flat overlays disabled in branching mode (Phase 2)
-    const cuts: AudioCutaway[] = config.audio_cutaways ?? [];
+    const cuts: AudioCutaway[] = overlayConfigRef.current.audio_cutaways ?? [];
     const active = cuts.find(c => {
       const end = c.global_offset_sec + (c.end_sec - c.start_sec);
       return gt >= c.global_offset_sec && gt < end;
@@ -2434,7 +2462,7 @@ export function useProjectPlayer(
 
   const updateImageOverlay = (gt: number) => {
     if (branching) return;  // flat overlays disabled in branching mode (Phase 2)
-    const overlays = config.image_overlays ?? [];
+    const overlays = overlayConfigRef.current.image_overlays ?? [];
     const active = overlays.find(
       (o) => gt >= o.global_offset_sec && gt < o.global_offset_sec + o.duration_sec,
     ) ?? null;
@@ -2443,6 +2471,90 @@ export function useProjectPlayer(
       activeImageIdRef.current = active?.id ?? null;
       merge({ activeImageOverlay: active ?? null });
     }
+  };
+
+  // ── committing a flat-overlay revision (broll-player-001) ─────────────────────────────────
+
+  /** The b-roll lane as the scheduler sees it: generated clips and manual clip overlays. */
+  const flatBrollLaneOf = (cfg: PlayerConfig): Array<BrollClip | ClipOverlay> =>
+    [...(cfg.broll_clips ?? []), ...(cfg.clip_overlays ?? [])];
+
+  /**
+   * Is any lane still MID-SHOT at `gt` under the COMMITTED revision?
+   *
+   * The pin is per shot, not per poll, and it is evaluated against `gt` rather than against "is
+   * something active right now" — so it releases on the very tick the shot's own boundary passes.
+   * Testing liveness instead would hold the revision back one extra tick and clip the first ~250ms
+   * off a corrected clip that starts exactly where the old one ended.
+   */
+  const overlayShotInProgress = (gt: number): boolean => {
+    const cfg = overlayConfigRef.current;
+    const clip = activeBrollRef.current;
+    if (clip && gt >= clip.global_offset_sec && gt < clip.global_offset_sec + (clip.end_sec - clip.start_sec)) return true;
+    const cutId = activeAudioCutawayIdRef.current;
+    if (cutId) {
+      const cut = (cfg.audio_cutaways ?? []).find((c) => c.id === cutId);
+      if (cut && gt >= cut.global_offset_sec && gt < cut.global_offset_sec + (cut.end_sec - cut.start_sec)) return true;
+    }
+    const imgId = activeImageIdRef.current;
+    if (imgId) {
+      const img = (cfg.image_overlays ?? []).find((o) => o.id === imgId);
+      if (img && gt >= img.global_offset_sec && gt < img.global_offset_sec + img.duration_sec) return true;
+    }
+    return false;
+  };
+
+  /** Drop a standby warmed from a superseded revision; the next prewarm rebuilds it. */
+  const discardStandbyBroll = () => {
+    if (hlsBrollStandbyRef.current) {
+      hlsBrollStandbyRef.current.stopLoad();
+      hlsBrollStandbyRef.current.detachMedia();
+      hlsBrollStandbyRef.current.destroy();
+      hlsBrollStandbyRef.current = null;
+    }
+    standbyBrollClipIdRef.current = null;
+  };
+
+  /**
+   * Promote the newest published revision — every flat-overlay lane at once — but only where no
+   * shot is on screen at `gt`. A revision that lands mid-shot is not dropped; it simply waits for
+   * the boundary, which is what makes an editorial correction unable to flash or swap mid-shot.
+   */
+  const commitOverlayConfig = (gt: number) => {
+    const next = pendingOverlayConfigRef.current;
+    const prev = overlayConfigRef.current;
+    if (next === prev) return;
+    if (overlayShotInProgress(gt)) return;      // pinned — the shot plays out under `prev`
+
+    overlayConfigRef.current = next;
+
+    // The warm standby was chosen from `prev`. `prewarmBroll` dedupes on clip ID ALONE, so a clip
+    // whose url or placement was corrected under the same id would otherwise keep its stale warm
+    // buffer for the rest of the session and play the superseded media. Discarding it here — in
+    // the same step that moves the revision — is what keeps the schedule and the prewarm plan on
+    // ONE revision instead of letting them drift apart.
+    const warmId = standbyBrollClipIdRef.current;
+    if (warmId) {
+      const was = flatBrollLaneOf(prev).find((c) => c.id === warmId);
+      const now = flatBrollLaneOf(next).find((c) => c.id === warmId);
+      const unchanged = !!was && !!now
+        && now.hls_url === was.hls_url
+        && now.global_offset_sec === was.global_offset_sec
+        && now.start_sec === was.start_sec
+        && now.end_sec === was.end_sec;
+      if (!unchanged) discardStandbyBroll();
+    }
+  };
+
+  /**
+   * ONE flat-overlay pass. Every caller (the tick and all three seek paths) goes through this so
+   * the commit point and the three lanes can never be wired up inconsistently at a later edit.
+   */
+  const updateFlatOverlays = (gt: number, isPlaying: boolean) => {
+    commitOverlayConfig(gt);
+    updateBrollOverlay(gt);
+    updateImageOverlay(gt);
+    updateAudioCutaway(gt, isPlaying);
   };
 
   // ── HLS helpers ───────────────────────────────────────────────────────────
@@ -2741,14 +2853,12 @@ export function useProjectPlayer(
 
     if (!userPausedRef.current && !swappingRef.current) {
       updateSimOverlay(idx, t);
-      updateBrollOverlay(gt);
-      updateImageOverlay(gt);
-      updateAudioCutaway(gt, !videoRef.current?.paused);
+      updateFlatOverlays(gt, !videoRef.current?.paused);
 
       // Pre-warm next broll clip 15s before its start (flat overlays are disabled in
       // branching mode — their global offsets don't map onto per-sequence timelines).
       if (!branching) {
-        const brollClips = config.broll_clips ?? [];
+        const brollClips = overlayConfigRef.current.broll_clips ?? [];
         const nextBroll = brollClips.find((b) =>
           gt < b.global_offset_sec && gt + 15 >= b.global_offset_sec
         ) ?? null;
@@ -3645,8 +3755,7 @@ export function useProjectPlayer(
           merge({ showResumeBtn: false, resumeAction: 'resume' });
         }
         updateSimOverlay(targetIdx, localTime);
-        updateBrollOverlay(targetGlobal); updateImageOverlay(targetGlobal);
-        updateAudioCutaway(targetGlobal, wasPlayingRef.current);
+        updateFlatOverlays(targetGlobal, wasPlayingRef.current);
         if (wasPlayingRef.current && localTime < targetSeg.duration - 0.01) safePlay(videoRef.current!);
       } else {
         loadSegment(targetIdx, localTime, wasPlayingRef.current);
@@ -3846,8 +3955,7 @@ export function useProjectPlayer(
         if (targetIdx === curIdxRef.current) {
           videoRef.current!.currentTime = Math.min(localTime, tl[targetIdx].duration);
           updateSimOverlay(targetIdx, localTime);
-          updateBrollOverlay(newGlobal); updateImageOverlay(newGlobal);
-          updateAudioCutaway(newGlobal, wasPlaying);
+          updateFlatOverlays(newGlobal, wasPlaying);
           if (wasPlaying && localTime < tl[targetIdx].duration - 0.01) safePlay(videoRef.current!);
         } else {
           loadSegment(targetIdx, localTime, wasPlaying);
@@ -3959,8 +4067,7 @@ export function useProjectPlayer(
         // leaves the key alone while the handoff is still holding.
         merge({ showResumeBtn: false, showSimOverlay: false, simBootStalled: false, simColdCover: false, activeSimUrl: null, resumeAction: 'resume', controlsVisible: true, globalTime: targetGlobal });
         setProgress(targetGlobal);
-        updateBrollOverlay(targetGlobal); updateImageOverlay(targetGlobal);
-        updateAudioCutaway(targetGlobal, wasPlayingRef.current);
+        updateFlatOverlays(targetGlobal, wasPlayingRef.current);
       };
 
       const issueSeek = () => {
