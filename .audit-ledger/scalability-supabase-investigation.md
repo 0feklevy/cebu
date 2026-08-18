@@ -586,3 +586,238 @@ made it painful and it is already decoupled.
 7. Bound the playlist fan-out (`playlists.controller.ts:620`) and paginate
    `GET /api/v1/projects`.
 8. Guard `QUEUE_PGBOSS_LISTEN` with `describeTransactionPooler` (`pgBoss.ts:75`).
+
+---
+
+# DILEMMAS — for a reviewer, not resolved here
+
+Each states the problem, what I verified, the real options, what I lean toward and why, and the
+evidence that would decide it. None of these should be actioned from this document alone.
+
+---
+
+## D1. Where does the app tier get its headroom: move the inline jobs, or buy vCPUs?
+
+**Problem.** Eight of eleven job types run inside the API process (`queue/index.ts:49-53`,
+`inlineDriver.ts:22`, enqueue sites listed in §2 #1). The obvious fix is to add them to
+`PGBOSS_JOB_NAMES` (`pgBoss.ts:22`) so they land in the `worker` container. But the worker runs on
+the *same 2-vCPU VM*. Moving ffmpeg from the API container to the worker container does not create
+CPU; it relocates contention.
+
+**What I verified.** `FFMPEG_CONCURRENCY` defaults to 2 **per process** (`ffmpegLimit.ts:8`), so
+the current layout permits 4 concurrent ffmpeg processes on 2 vCPUs, plus a capture container that
+is granted `cpus: 2` (`docker-compose.export-worker.yml:50`). `project_export` is deliberately
+serialised to 1 (`pgBossDriver.ts:33-38`) with a written rationale about exactly this contention.
+`crop` defaults to 2 (`pgBossDriver.ts:17-19`).
+
+**Options.**
+- **(a) Move the jobs, don't add hardware.** The API's event loop stops competing with ffmpeg, so
+  request latency becomes predictable and an OOM in a transcode no longer takes down every
+  in-flight request (the 2026‑08‑13 incident named at `pgBoss.ts:18-20`). But transcodes and
+  captions now queue behind exports in the same worker, so *upload → playable* latency gets worse
+  and more variable. Total throughput is unchanged.
+- **(b) Add vCPUs first (2 → 4 or 8), change nothing.** Buys real headroom for everything at once,
+  including the ~10× capture problem. But it leaves the API process still able to OOM itself on a
+  large transcode, and it is recurring cost.
+- **(c) Both, in order: move the jobs, then size the VM from the resulting queue depth.**
+- **(d) Move the jobs *and* split the worker into two queues** (`WORKER_QUEUES` already supports
+  this — `pgBossDriver.ts:99-113`): one process for `project_export`, one for media jobs. Costs a
+  third Node process's RSS on a box whose memory I could not measure.
+
+**I lean toward (c), starting with (a).** The isolation argument is about *blast radius*, not
+throughput, and blast radius is the thing that produces incidents. Sizing decisions made before
+the jobs are isolated will be sized against a noisy signal.
+
+**Evidence that decides it.** (1) The VM's actual memory and current CPU steal/idle under real
+traffic — `free -m`, and 24 h of `docker stats` or host CPU. (2) Measured p50/p95 of
+*upload → HLS ready* today; if it is already minutes, (a)'s latency cost is irrelevant. (3) Whether
+the export capture's ~10× slowness is CPU-bound at all — if it is memory- or IO-bound, adding vCPUs
+buys less than it looks.
+
+---
+
+## D2. What replaces the `/sim-public` proxy — and does it change the storage vendor?
+
+**Problem.** `SupabaseStorageAdapter.getSimPublicUrl` (`:434-441`) routes **every** simulation
+asset URL through the app server, and the text half of them pay a Supabase S3 GET + sha1 + brotli
+per request with `Cache-Control: no-cache` (§5.2). The proxy exists for one concrete reason,
+documented in that method: Supabase's public bucket serves `text/html` as `text/plain`, so an
+iframe pointed at the bucket renders source.
+
+**What I verified.** Binary assets already 302 to the bucket (`sim-public.controller.ts:234-243`).
+Verified revision keys already get `immutable` (`:154`, `shared/src/sim/simRevision.ts:308-311`) —
+so the modern publish path is largely fixed and the exposure is legacy/replaced packages. There is
+**no** `proxy_cache` in nginx (grepped both config files) and no CDN in front of the API origin.
+R2's adapter returns bucket URLs directly for sims (`R2StorageAdapter.ts:329`), i.e. R2 does not
+have the MIME problem.
+
+**Options.**
+- **(a) Cache in front of the existing proxy.** An nginx `proxy_cache` zone keyed on the sim path,
+  or an in-process LRU of `{bytes, etag}`. Cheapest; removes the S3 GET and the sha1 from the
+  repeat path. Leaves the app server on the byte path, so it does not fix the *bandwidth* ceiling.
+- **(b) Put a CDN (Cloudflare) in front of `api.flowvidco.com`.** Fixes bandwidth and repeat
+  requests globally without touching code — but it caches *the API origin*, so every non-sim route
+  needs explicit `Cache-Control: no-store` discipline or you will cache an authenticated response.
+  That is a real footgun on a codebase where most routes set no cache headers at all.
+- **(c) Move sim packages (only) to R2, keep media on Supabase Storage.** Removes the proxy
+  entirely for sims because R2 serves correct MIME. Cost: two live storage backends, and
+  `getStorageAdapter()` is a **single process-wide singleton** (`getStorageAdapter.ts:7,55-108`) —
+  it cannot currently return different adapters for different prefixes. That is a real refactor,
+  and `keyFromPublicUrl` / `publicUrlKeys.ts` would need to reverse two URL shapes at once.
+- **(d) Supabase Pro + a custom storage domain**, which lifts the HTML downgrade, then point sims
+  straight at the bucket. Smallest code change of all; a plan/vendor decision I cannot price.
+
+**I lean toward (a) now and (d) if the plan allows it** — (a) is hours of work and removes the
+per-request S3 GET immediately; (d) deletes the proxy rather than optimising it. I would treat (b)
+as attractive but gated on an explicit cache-header audit of every route, and (c) as the largest
+change for a benefit (d) may deliver for free.
+
+**Evidence that decides it.** (1) How many *text* files a representative published package has,
+and what fraction of live `simulations` rows have an active `sim_revisions` row (§6.3 item 4) —
+if most packages are revisioned, the `immutable` path already covers them and this drops in
+priority. (2) Whether the Supabase plan already includes the custom-domain storage feature. (3)
+Current Supabase Storage request counts on the dashboard: `viewers × text files` is the number to
+compare against the plan's included requests.
+
+---
+
+## D3. `view_count`: exact and contended, or cheap and approximate?
+
+**Problem.** Three public paths do `UPDATE … SET view_count = view_count + 1` on a single
+`projects`/`playlists` row (`permalink.controller.ts:91`, `:108`, `share.controller.ts:43`,
+`playlists.controller.ts:205`). Concurrent viewers of the same project serialise on that tuple, and
+each increment bloats a table carrying five indexes (§3.1).
+
+**What I verified.** It is fire-and-forget (`.catch(() => {})`), so a failed increment is already
+silently tolerated — the code has *already* decided this number need not be exact. It is read by
+`admin/v1/pipeline-stats.controller.ts:28-29` as a `sum(view_count)` and surfaced in the player
+config. No rate limit guards any of the three paths.
+
+**Options.**
+- **(a) Leave it.** Correct today; the ceiling is "one popular video".
+- **(b) Insert-only counter table + periodic rollup** (`project_view_events` → hourly `SUM` into
+  `projects.view_count`). No contention, but a new unbounded table — exactly the §4 problem this
+  document argues against creating more of, unless it ships with retention from day one.
+- **(c) In-process buffered increment**: accumulate in a `Map`, flush every N seconds. Almost free,
+  loses at most N seconds of counts on a crash, no new table. Works because there is exactly one
+  API container today — and stops being sufficient the moment there are two.
+- **(d) Sampled counting** (increment with probability p, multiply on read). Cheapest; the number
+  becomes visibly approximate, which is a product decision, not an engineering one.
+- **(e) Derive views from `branch_path_events` / `sim_rum_events`** rather than maintaining a
+  counter — folds into D4.
+
+**I lean toward (c).** It matches what the code already believes (the count is best-effort), needs
+no schema change, and is ~30 lines. But it is explicitly a bet that the deployment stays
+single-API-container, and that bet should be made consciously rather than inherited.
+
+**Evidence that decides it.** (1) Is a view count shown to creators as a *product* number they
+would dispute? (2) Peak simultaneous viewers of a single project — from access logs, `host=` and
+path, over the busiest hour. Below ~20 this whole dilemma is theoretical; above ~100 it is the
+first DB-side wall.
+
+---
+
+## D4. Retention on the analytics tables — what promise is being made to creators?
+
+**Problem.** `branch_path_events` (per viewer interaction), `token_usage` (per generation),
+`avatar_conversations` (per chat turn) have no retention, no archival, no partition (§4). The
+codebase has one worked example of the right answer — `sim_rum_events`, with a CHECK-bounded
+window, a batched sweep and an hourly timer (`RumService.ts:239-263`, `server.ts:509`) — and its
+migration header argues the general principle. Nobody applied it to the other three.
+
+**What I verified.** `branch_path_events` grows at `viewers × interactions`, which is faster than
+anything else in the schema. The `branch/analytics` endpoint reads the whole table for a project
+into Node (`branch.controller.ts:494`). `token_usage` reads are windowed and index-covered
+(`LLMService.ts:146-150`, `RateLimitService.ts:20-25`), so its growth is a *size* problem only.
+`avatar_conversations` is the memory backing an avatar persona, so deleting it changes product
+behaviour, not just storage.
+
+**Options.**
+- **(a) Retention window only** (copy `reapRumEvents`). Simplest; destroys lifetime totals.
+- **(b) Retention + a rollup table** (daily per-project/per-edge counts kept forever, raw events
+  aged out). Preserves the analytics product; one more table and one more job.
+- **(c) Partition by month** and detach old partitions. Best for very large volumes; the migration
+  runner cannot express `CREATE INDEX CONCURRENTLY` (`migrate.ts:79-95`) but partitioning itself is
+  fine — still, this is the heaviest option and premature without §6.3 item 3.
+- **(d) Nothing for `token_usage`** (it is a cost ledger; people want history) and (a)/(b) for the
+  other two.
+
+**I lean toward (b) for `branch_path_events`, (d) for `token_usage`, and a separate product
+conversation for `avatar_conversations`** — because that last one is not telemetry, it is the
+avatar's memory, and truncating it changes what the feature does.
+
+**Evidence that decides it.** (1) `pg_total_relation_size` per table today (§6.3 item 3) — if
+`branch_path_events` is 40 MB this can wait a year. (2) Whether branching analytics is a shipped,
+promised feature or an internal debug endpoint. (3) Whether `avatar_profiles.facts`
+(`schema.ts:872-876`) already carries the durable memory, in which case the raw turn log *is*
+disposable.
+
+---
+
+## D5. `prepare: false`, or move the web tier onto the session pooler?
+
+**Problem.** `db/index.ts:28-33` leaves postgres-js at its default `prepare: true` while
+`DATABASE_URL` is documented as the 6543 transaction pooler (§1.3). Two different fixes exist and
+they pull in opposite directions.
+
+**What I verified.** No `prepare` option anywhere in `backend-api/src`. `parseDbUrl`
+(`db/index.ts:12-24`) discards the URL query string, so no `?pgbouncer=true`-style hint can reach
+the driver. The app is round-trip-heavy: 11–17 queries per player-config request (§3.2), 3 per
+authenticated request before the handler runs (§3.7). pg-boss already has its own session-mode
+endpoint, so the two concerns are separable.
+
+**Options.**
+- **(a) `prepare: false`.** One line. Removes the failure class entirely and keeps the transaction
+  pooler's connection headroom. Cost: Postgres re-plans every statement. On a workload of many
+  small, simple, index-covered queries that is a small per-query cost — but it is paid 11–17 times
+  per player-config request, so it is not zero.
+- **(b) Point `DATABASE_URL` at the 5432 session pooler and keep prepared statements.** Recovers
+  plan caching and every other session feature. Cost: each app connection becomes a real Postgres
+  backend, so the two ×10 pools become 20 backends instead of 20 pooler clients — which is fine at
+  today's size and is exactly the headroom you give up first when you grow.
+- **(c) `prepare: false` now, revisit if `pg_stat_statements` shows planning time is material.**
+
+**I lean toward (c).** The failure mode of (a) being wrong is a small latency cost you can measure;
+the failure mode of leaving it unset is a class of errors that appears under load and looks like a
+database outage. But I will not assert that Supavisor is currently *failing* on this — I could not
+verify it from the checkout, and asserting it would be exactly the kind of guess this review is
+supposed to avoid.
+
+**Evidence that decides it.** (1) Production logs: any occurrence of `prepared statement`.
+(2) `pg_stat_statements`: compare `total_plan_time` to `total_exec_time` for the top queries
+before and after — if planning is under a few percent, (a) is free and the dilemma dissolves.
+
+---
+
+## D6. Uploads: keep them streaming through the API, or move to presigned direct-to-bucket?
+
+**Problem.** Three upload routes buffer whole files into the Node heap
+(`audio.controller.ts:67`, `corpus.controller.ts:69`, `podcast.controller.ts:397`) under a 10 GB
+global multipart ceiling (`server.ts:198`) — already filed as `performance-001/002/003/010`. The
+straightforward fix is to make them stream, matching `video.controller.ts:161`. The *structural*
+fix is to stop uploading through the app server at all.
+
+**What I verified.** The adapter already implements the full direct-upload surface —
+`getPresignedUploadUrl`, `createMultipartUpload`, `getPresignedUploadPartUrl`,
+`completeMultipartUpload` (`SupabaseStorageAdapter.ts:205-265`) — so the capability is built. The
+audio route needs the bytes on local disk anyway to run `ffprobe` for duration, and the routes
+enforce mime/size server-side today.
+
+**Options.**
+- **(a) Stream (the filed fix) + per-route size caps.** Small, safe, keeps every current
+  invariant. Bytes still cross the 2-vCPU box, so the bandwidth ceiling is unchanged.
+- **(b) Presigned direct-to-bucket for large media, keeping (a) for small files.** Removes the app
+  server from the byte path entirely — the single biggest structural win available in §5. Cost:
+  validation moves *after* the upload (a job probes the object and can reject it), the client
+  gains a multi-step upload flow, and the trust boundary changes — a presigned PUT is a capability
+  handed to the browser, so key derivation and prefix scoping must be airtight
+  (`storage/prefixScope.ts` and `pathSafety.ts` exist and would be load-bearing).
+- **(c) (a) now, (b) only for raw video.** Raw video is the only genuinely multi-GB content.
+
+**I lean toward (c).** (a) is already scoped and reviewed; (b) is worth doing exactly once, for
+the one content type whose size justifies the trust-boundary change.
+
+**Evidence that decides it.** (1) Actual p95 upload size per route from the `video_files.file_size`
+and `audio_files` columns. (2) Whether uploads and playback contend in practice — do upload spikes
+correlate with player-config latency in the nginx access log (`rt=` / `urt=` are already logged,
+`deploy/nginx/nginx.conf:15-18`)? If they do not, (b)'s urgency drops sharply.
