@@ -31,7 +31,12 @@ import { AudioStudio } from '../components/podcast/studio/AudioStudio';
 
 const EMPTY_TIMELINE = { version: 1, clips: [] };
 const WELL_PAST_ANY_BOUND_MS = 15 * 60 * 1000;
-const ESCAPE = /try again|rebuild|check again/i;
+// The stalled screen offers TWO controls now, and the distinction matters: "Start over" calls
+// rebuild, which the server refuses for a row still `generating`, so it cannot be the only exit.
+// "Keep watching" resumes the poll and is the one that always works. Tests name them separately.
+const ESCAPE = /start over/i;
+const KEEP_WATCHING = /keep watching/i;
+const keepWatchingButton = () => screen.queryByRole('button', { name: KEEP_WATCHING });
 
 function studio(over: Record<string, unknown> = {}) {
   return {
@@ -107,6 +112,8 @@ describe('podcast studio — stuck build', () => {
     // Something to read and something to press, in the branch that was previously spinner-only.
     expect(spinnerText()).toBeNull();
     expect(escapeButton()).toBeTruthy();
+    // The control that can actually recover a build the server will not restart.
+    expect(keepWatchingButton()).toBeTruthy();
 
     // And the poll really stopped.
     const pollsAtGiveUp = apiMock.getPodcastStudio.mock.calls.length;

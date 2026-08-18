@@ -57,6 +57,12 @@ export function AudioStudio({ showId, episodeId, initial, turns, onReloadScript 
   const [staleTurnIds, setStaleTurnIds] = useState<Set<string>>(new Set());
   /** The build's clip counter stopped moving for BUILD_STALL_LIMIT_MS — stop polling, offer a way out. */
   const [buildStalled, setBuildStalled] = useState(false);
+  /**
+   * Bumped to restart polling after a stall. Needed because clearing `buildStalled` alone cannot
+   * revive the poll: the effect keys on the progress heartbeat, and a genuinely stuck build never
+   * changes it — so the "stopped moving" screen was TERMINAL, with no in-app path off it.
+   */
+  const [pollNonce, setPollNonce] = useState(0);
   const clipsById = useMemo(() => new Map(clips.map((c) => [c.id, c])), [clips]);
   const turnsById = useMemo(() => new Map(turns.map((t) => [t.id, t])), [turns]);
   const durMap = useMemo(() => new Map(clips.map((c) => [c.id, c.duration_ms])), [clips]);
@@ -138,12 +144,24 @@ export function AudioStudio({ showId, episodeId, initial, turns, onReloadScript 
   useEffect(() => {
     if (!generating) { setBuildStalled(false); return; }
     setBuildStalled(false);
-    const lastMovedAt = Date.now();
+    // OBSERVED progress, not elapsed time. A first draft assigned `lastMovedAt` once at effect
+    // entry and never updated it, which made this a FLAT three-minute timeout wearing a stall
+    // detector's name — and `mix.progress` is null at the start of every build, so the effect's
+    // heartbeat dependency could not reset it either. Any build whose first clip took longer than
+    // three minutes (a queued job waiting for a worker, one long TTS line, a slow provider) was
+    // declared stopped while it was working perfectly. An adversarial reviewer caught it.
+    //
+    // The mark now moves whenever the server reports different progress, so the bound only fires
+    // when nothing has actually happened for BUILD_STALL_LIMIT_MS.
+    let lastSeen = `${buildProgress?.done ?? -1}/${buildProgress?.total ?? -1}`;
+    let lastMovedAt = Date.now();
     const iv = setInterval(async () => {
       try {
         const fresh = await api.getPodcastStudio(showId, episodeId);
         setData(fresh);
         setClips(fresh.clips);
+        const seen = `${fresh.mix?.progress?.done ?? -1}/${fresh.mix?.progress?.total ?? -1}`;
+        if (seen !== lastSeen) { lastSeen = seen; lastMovedAt = Date.now(); }
         if (fresh.mix?.status === 'ready' && fresh.mix.timeline) draft.reseed(fresh.mix.timeline as MixTimeline, fresh.mix.rev);
       } catch { /* keep polling */ }
       // Nothing else in this branch can end the spinner — there is no cancel, and a worker that
@@ -152,7 +170,7 @@ export function AudioStudio({ showId, episodeId, initial, turns, onReloadScript 
     }, 2500);
     return () => clearInterval(iv);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [generating, buildHeartbeat, showId, episodeId]);
+  }, [generating, buildHeartbeat, showId, episodeId, pollNonce]);
 
   const scriptChanged = data.latest_script_hash != null && data.mix?.script_hash != null && data.latest_script_hash !== data.mix.script_hash;
 
@@ -285,10 +303,22 @@ export function AudioStudio({ showId, episodeId, initial, turns, onReloadScript 
             {prog?.total
               ? `${prog.done ?? 0} of ${prog.total} clips finished, then nothing for several minutes.`
               : 'Nothing has happened for several minutes.'}
-            {' '}Rebuilding picks it up again.
+            {' '}It may still be running — keep watching, or start it over.
           </p>
           {err && <p className="mb-4 text-sm text-destructive">{err}</p>}
-          <PodcastButton onClick={rebuild}><Scissors size={15} strokeWidth={2} aria-hidden /> Try again</PodcastButton>
+          {/*
+            TWO buttons, because one of them could not work. "Rebuild" alone was the only offer,
+            and the server answers 202 `already_running` for a row still in `generating` — so the
+            screen promised a recovery it could not perform and had no other exit. Resuming the
+            poll is the honest first move: the build genuinely may still be alive, and this is the
+            only control that can prove it either way.
+          */}
+          <div className="flex items-center justify-center gap-2">
+            <PodcastButton onClick={() => { setBuildStalled(false); setPollNonce((n) => n + 1); }}>
+              Keep watching
+            </PodcastButton>
+            <PodcastButton onClick={rebuild}><Scissors size={15} strokeWidth={2} aria-hidden /> Start over</PodcastButton>
+          </div>
         </div>
       );
     }

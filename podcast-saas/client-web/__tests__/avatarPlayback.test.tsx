@@ -71,6 +71,9 @@ vi.mock('../components/avatar/avatarApi', () => ({
 }));
 
 import { AvatarConversation } from '../components/avatar/AvatarConversation';
+// Anchored to the constant, not a literal: the watchdog moved 20s -> 30s and a hardcoded 21_000
+// silently stopped reaching it, so the test would have gone green by not arriving.
+import { CONNECT_WATCHDOG_MS } from '../components/avatar/anamConnectPolicy';
 
 /** What the browser's autoplay policy does to a play() call in a given test. */
 type Policy = 'allow' | 'block-unmuted' | 'block-all';
@@ -218,7 +221,7 @@ describe('AvatarConversation — audible playback and evidence-based spinner', (
     emit(anam.AnamEvent.VIDEO_STREAM_STARTED, {});
     await flush();
 
-    await act(async () => { await vi.advanceTimersByTimeAsync(21_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(CONNECT_WATCHDOG_MS + 1_000); });
     expect(screen.getByText(/⚠/)).toBeTruthy();
   });
 });
