@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
+import { maxTestWorkers } from '../vitest.workers.mjs';
 
 // Unit/regression tests for admin-web (jsdom). admin-web has no Playwright suite; everything
 // under __tests__/ runs here.
@@ -29,6 +30,9 @@ export default defineConfig({
     // test in twenty seconds rather than a minute. If a test in these suites ever legitimately needs
     // more than this, the test is doing something that belongs in backend-api or in Playwright.
     testTimeout: 20_000,
+    // Bounded so `pnpm -r test` (release:verify) cannot ask four suites for the whole machine
+    // each — see ../vitest.workers.mjs for the arithmetic and why it is half, not all.
+    maxWorkers: maxTestWorkers(),
     hookTimeout: 20_000,
     include: ['__tests__/**/*.test.{ts,tsx}', 'lib/**/*.test.{ts,tsx}'],
     exclude: ['node_modules/**', '.next/**'],

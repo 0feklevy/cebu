@@ -102,7 +102,14 @@ step "3/9 Typecheck (all workspaces)"; pnpm -r typecheck; ok "typecheck"
 step "4/9 Lint (all workspaces, non-interactive)"; pnpm -r lint; ok "lint"
 
 # ── 5. Tests ───────────────────────────────────────────────────────────────────
-step "5/9 Tests"; pnpm -r test; ok "tests"
+# `pnpm -r test` starts EVERY workspace's suite at once, and each vitest process sizes its worker
+# pool from the machine's core count believing it has the machine to itself — so four suites on a
+# 10-core host ask for ~9 workers each, ~36 threads on 10 cores. No single suite is oversubscribed
+# from its own point of view, which is why it went unnoticed from inside one; the symptom was
+# tests timing out with passing assertions. 2 per suite is the budget for the one caller that runs
+# them concurrently (see ../../vitest.workers.mjs); a standalone workspace run keeps the larger
+# default rather than being crippled to protect this case.
+step "5/9 Tests"; VITEST_MAX_WORKERS="${VITEST_MAX_WORKERS:-2}" pnpm -r test; ok "tests"
 
 # ── 6. Clean stale build output ────────────────────────────────────────────────
 step "6/9 Removing stale .next output"; rm -rf "${REPO_DIR}/client-web/.next" "${REPO_DIR}/admin-web/.next"; ok "cleaned"
