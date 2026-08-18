@@ -105,6 +105,7 @@ vi.mock('../../../services/transcriptPropagation.js', () => ({ getProjectTranscr
 vi.mock('../../../services/avatar/anamKey.js', () => ({ resolveAnamKeyForProject: svc.resolveAnamKeyForProject }));
 
 import { registerAvatarRoutes } from '../avatar.controller.js';
+import { resetBurstShield } from '../../../services/usage/avatarBudget.js';
 
 async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify();
@@ -121,6 +122,7 @@ describe('POST /avatar/start — phase instrumentation', () => {
   beforeEach(() => {
     mocks.logLines.length = 0;
     vi.clearAllMocks();
+    resetBurstShield();
     mocks.projects.findFirst.mockResolvedValue({
       id: PROJECT_ID,
       visibility: 'public',

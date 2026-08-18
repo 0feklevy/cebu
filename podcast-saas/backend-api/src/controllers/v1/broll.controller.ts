@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, asc } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { video_generation_jobs, timeline_sections, video_files } from '../../db/schema.js';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
@@ -9,7 +9,10 @@ import { enqueueJob } from '../../queue/index.js';
 import { rateLimit } from '../../lib/rateLimit.js';
 import { assertGenerationAllowed } from '../../services/llm/systemAi.js';
 import { moderateGenerationInput } from '../../services/llm/ContentModerationService.js';
-import { AppError, MAX_TIMELINE_SEC, timelineSectionViolations } from 'shared';
+import {
+  AppError, MAX_TIMELINE_SEC, timelineSectionViolations,
+  buildMainSegmentTimeline, deriveAnchorForAbsoluteSec,
+} from 'shared';
 import { logger } from '../../lib/logger.js';
 
 const ALLOWED_MODELS = ['kling', 'veo'] as const;
@@ -74,6 +77,28 @@ export async function registerBrollRoutes(app: FastifyInstance): Promise<void> {
         throw err;
       }
 
+      // ── WHERE THE FINISHED CLIP GOES, decided NOW (D-01) ────────────────────
+      //
+      // `target_global_offset_sec` is an absolute second on the concatenated main timeline, and
+      // this job runs for up to twenty-five minutes. The timeline is editable that whole time: a
+      // re-transcode of any main video slides every frame after it, and the second the author aimed
+      // at stops being the moment they aimed at. Resolving the anchor at COMPLETION would read the
+      // moved timeline and reproduce exactly that drift with a wider window, so it is resolved ONCE,
+      // here, against the timeline the author was looking at when they pressed the button — and the
+      // finaliser copies it onto the published section verbatim.
+      //
+      // Null when the project has no main video yet: there is nothing to anchor to, the job still
+      // runs, and the section it publishes falls back to the absolute second exactly as before.
+      const projectVideos = await db.query.video_files.findMany({
+        where: eq(video_files.project_id, project.id),
+        orderBy: [asc(video_files.created_at)],
+        columns: { id: true, duration_sec: true, is_broll: true },
+      });
+      const anchor = deriveAnchorForAbsoluteSec(
+        buildMainSegmentTimeline(projectVideos ?? []),
+        target_global_offset_sec,
+      );
+
       // Create job record
       const [job] = await db.insert(video_generation_jobs).values({
         project_id: project.id,
@@ -82,6 +107,8 @@ export async function registerBrollRoutes(app: FastifyInstance): Promise<void> {
         enhance_enabled: enhance,
         target_duration_sec,
         target_global_offset_sec,
+        target_anchor_video_file_id: anchor?.anchor_video_file_id ?? null,
+        target_anchor_offset_sec: anchor?.anchor_offset_sec ?? null,
         status: 'queued',
       }).returning();
 
@@ -198,7 +225,27 @@ export async function registerBrollRoutes(app: FastifyInstance): Promise<void> {
       const violations = timelineSectionViolations(row);
       if (violations.length > 0) return reply.code(400).send({ message: violations[0]!.message });
 
-      const [section] = await db.insert(timeline_sections).values(row).returning();
+      // NEW WRITES ARE ANCHORED (D-01). "Use Existing" places a clip at a second the author is
+      // looking at right now, so expressing that as a segment offset records an intent rather than
+      // canonising a drift — the distinction the ruling draws between this and a backfill. Null
+      // anchor when the project has no main video: nothing to anchor to, and the row keeps working
+      // exactly as it does today.
+      const projectVideos = await db.query.video_files.findMany({
+        where: eq(video_files.project_id, project.id),
+        orderBy: [asc(video_files.created_at)],
+        columns: { id: true, duration_sec: true, is_broll: true },
+      });
+      const anchor = deriveAnchorForAbsoluteSec(
+        buildMainSegmentTimeline(projectVideos ?? []),
+        global_offset_sec,
+      );
+
+      const [section] = await db.insert(timeline_sections).values({
+        ...row,
+        anchor_video_file_id: anchor?.anchor_video_file_id ?? null,
+        anchor_offset_sec: anchor?.anchor_offset_sec ?? null,
+        placement_mode: anchor ? 'segment' : 'legacy_absolute',
+      }).returning();
 
       return reply.code(201).send(section);
     },

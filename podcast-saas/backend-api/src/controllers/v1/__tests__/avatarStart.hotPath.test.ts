@@ -98,6 +98,7 @@ vi.mock('../../../services/transcriptPropagation.js', () => ({ getProjectTranscr
 vi.mock('../../../services/avatar/anamKey.js', () => ({ resolveAnamKeyForProject: svc.resolveAnamKeyForProject }));
 
 import { registerAvatarRoutes } from '../avatar.controller.js';
+import { resetBurstShield } from '../../../services/usage/avatarBudget.js';
 import { bakedStateFor, hashTranscript } from '../../../services/avatar/personaFingerprint.js';
 import { resetPersonaBakeState } from '../../../services/avatar/personaBake.js';
 import { resetDisplayResolveState } from '../../../services/avatar/displayIdentity.js';
@@ -145,6 +146,7 @@ describe('POST /avatar/start — the healthy path does the minimum', () => {
   beforeEach(() => {
     mocks.logLines.length = 0;
     vi.clearAllMocks();
+    resetBurstShield();
     resetPersonaBakeState();
     resetDisplayResolveState();
     svc.avatarProjectAllowedAsync.mockResolvedValue(true);
@@ -176,9 +178,13 @@ describe('POST /avatar/start — the healthy path does the minimum', () => {
     expect(svc.resolveAnamKeyForProject).toHaveBeenCalledWith(PROJECT_ID, 'owner-1');
   });
 
-  it('the whole healthy start is: one project read, the auth gate, the key read, the mint', async () => {
+  it('the whole healthy start is: one project read, the auth gate, the cost reservation, the key read, the mint', async () => {
     await start(HEALTHY);
-    expect(Object.keys(startLine().phasesMs as object).sort()).toEqual(['authorize', 'key_read', 'mint', 'project_read']);
+    // `reserve` joined this list when D-03 made the start buy its own worst-case cost before the
+    // vendor is called. It is a PHASE rather than an invisible side effect on purpose: it is the
+    // only new I/O on the hot path, and the trace is the sole place a slow start is attributable.
+    expect(Object.keys(startLine().phasesMs as object).sort())
+      .toEqual(['authorize', 'key_read', 'mint', 'project_read', 'reserve']);
     expect(startLine().path).toBe('stateful');
   });
 });
@@ -187,6 +193,7 @@ describe('POST /avatar/start — the fallback path parallelizes only what is ind
   beforeEach(() => {
     mocks.logLines.length = 0;
     vi.clearAllMocks();
+    resetBurstShield();
     resetPersonaBakeState();
     resetDisplayResolveState();
     svc.avatarProjectAllowedAsync.mockResolvedValue(true);

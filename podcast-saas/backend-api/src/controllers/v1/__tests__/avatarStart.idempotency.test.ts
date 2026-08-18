@@ -81,6 +81,7 @@ vi.mock('../../../services/transcriptPropagation.js', () => ({ getProjectTranscr
 vi.mock('../../../services/avatar/anamKey.js', () => ({ resolveAnamKeyForProject: svc.resolveAnamKeyForProject }));
 
 import { registerAvatarRoutes } from '../avatar.controller.js';
+import { resetBurstShield } from '../../../services/usage/avatarBudget.js';
 import { resetStartIdempotency } from '../../../services/avatar/startIdempotency.js';
 import { resetPersonaBakeState } from '../../../services/avatar/personaBake.js';
 import { bakedStateFor, hashTranscript } from '../../../services/avatar/personaFingerprint.js';
@@ -106,6 +107,7 @@ function tokenOf(res: { payload: string }): string {
 describe('POST /avatar/start — one token per viewer', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetBurstShield();
     resetStartIdempotency();
     resetPersonaBakeState();
     svc.mints.n = 0;

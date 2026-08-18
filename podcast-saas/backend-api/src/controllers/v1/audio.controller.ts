@@ -2,7 +2,8 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
 import { audio_files, timeline_sections, video_files } from '../../db/schema.js';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, asc } from 'drizzle-orm';
+import { buildMainSegmentTimeline, deriveAnchorForAbsoluteSec } from 'shared';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { editableProject } from '../../services/collabAccess.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
@@ -224,6 +225,23 @@ export async function registerAudioRoutes(app: FastifyInstance): Promise<void> {
       });
       if (!videoFile) return reply.code(404).send({ message: 'Video file not found' });
 
+      // ANCHORED ON CREATION, the same way a b-roll is (D-01, "same abstraction for audio
+      // cutaways"). An audio cutaway is positioned by its own absolute second and therefore drifts
+      // by the same mechanism: re-transcode a main video and the cutaway keeps firing at the second
+      // it was dropped at, which is now a different moment. A NEW row is the author placing it
+      // against the timeline in front of them, so recording that as a segment offset is an intent,
+      // not the backfill the ruling forbids. Null anchor when the project has no main video —
+      // nothing to anchor to, and the row behaves exactly as it did before.
+      const projectVideos = await db.query.video_files.findMany({
+        where: eq(video_files.project_id, project.id),
+        orderBy: [asc(video_files.created_at)],
+        columns: { id: true, duration_sec: true, is_broll: true },
+      });
+      const anchor = deriveAnchorForAbsoluteSec(
+        buildMainSegmentTimeline(projectVideos ?? []),
+        body.data.global_offset_sec,
+      );
+
       const [section] = await db
         .insert(timeline_sections)
         .values({
@@ -234,6 +252,9 @@ export async function registerAudioRoutes(app: FastifyInstance): Promise<void> {
           type:                'audio',
           track:               'audio',
           global_offset_sec:   body.data.global_offset_sec,
+          anchor_video_file_id: anchor?.anchor_video_file_id ?? null,
+          anchor_offset_sec:    anchor?.anchor_offset_sec ?? null,
+          placement_mode:       anchor ? 'segment' : 'legacy_absolute',
           clip_source_audio_id: body.data.audio_file_id,
           broll_volume:        1.0,
           label:               audioFile.filename,

@@ -661,6 +661,31 @@ export const timeline_sections = pgTable('timeline_sections', {
   camera_movement: text('camera_movement').notNull().default('zoom_in'),
   // Audio-only cutaway (migration 020) — broll section backed by uploaded audio file
   clip_source_audio_id: uuid('clip_source_audio_id').references(() => audio_files.id, { onDelete: 'set null' }),
+  // ── Segment-relative placement (migration 063, D-01) ───────────────────────────────────────
+  //
+  // `global_offset_sec` above is an ABSOLUTE second, and that is the defect: re-transcode a main
+  // video to a slightly different length and every b-roll after it still fires at the second it was
+  // saved at, which is now a different moment. The number was never wrong; it stopped meaning what
+  // the author intended.
+  //
+  // The anchor is a MAIN VIDEO SEGMENT plus a time inside it, so the overlay moves with the content
+  // it was placed over. It is its own column pair rather than a reuse of `video_file_id`, because on
+  // a b-roll row `video_file_id` already means the b-roll SOURCE asset — a video that has no
+  // position on the main timeline at all.
+  //
+  // NULLABLE, and `placement_mode` defaults to 'legacy_absolute': this is the expand half of an
+  // expand/contract rollout. `resolveSectionPlacement` (shared) reads the anchor first and falls
+  // back to `global_offset_sec`, so one deploy serves both populations. NOTHING is backfilled —
+  // mapping a row's absolute second onto today's segments would canonise a placement that is
+  // already wrong. See `planAnchorBackfill` for the dry run that reports instead of converting.
+  //
+  // ON DELETE SET NULL rather than CASCADE: deleting a main video must not delete the b-roll
+  // overlays an author placed over it. A row left with `placement_mode='segment'` and a NULL anchor
+  // is precisely why the mode is a stored column and not a computed `anchor_video_file_id != null` —
+  // it is the difference between "was anchored, lost its host" and "was never anchored".
+  anchor_video_file_id: uuid('anchor_video_file_id').references(() => video_files.id, { onDelete: 'set null' }),
+  anchor_offset_sec: real('anchor_offset_sec'),
+  placement_mode: text('placement_mode').notNull().default('legacy_absolute'),   // 'segment' | 'legacy_absolute'
   // Which b-roll GENERATION produced this row (migration 062). NULL for every hand-made section.
   //
   // This is the idempotency key of the generation pipeline, not a display field: a `video_generate`
@@ -702,6 +727,19 @@ export const video_generation_jobs = pgTable('video_generation_jobs', {
   enhance_enabled: boolean('enhance_enabled').notNull().default(true),
   target_duration_sec: real('target_duration_sec').notNull(),
   target_global_offset_sec: real('target_global_offset_sec').notNull(),
+  // WHERE THE FINISHED CLIP GOES — captured AT ENQUEUE TIME (migration 063, D-01).
+  //
+  // `target_global_offset_sec` alone is an absolute second, and this job can take twenty-five
+  // minutes. The timeline is editable that whole time: re-transcode a main video, or drop another
+  // clip in, and the second the author aimed at is no longer the moment they aimed at. Inferring
+  // the anchor at COMPLETION would read the moved timeline and recreate exactly that race, so the
+  // anchor is resolved once, from the timeline the author was looking at when they pressed the
+  // button, and the finaliser copies it onto the section verbatim.
+  //
+  // Nullable: a project with no main video has nothing to anchor to, and the job still runs. The
+  // section it publishes then falls back to `legacy_absolute`, which is the pre-063 behaviour.
+  target_anchor_video_file_id: uuid('target_anchor_video_file_id').references(() => video_files.id, { onDelete: 'set null' }),
+  target_anchor_offset_sec: real('target_anchor_offset_sec'),
   external_task_id: text('external_task_id'),
   status: text('status').notNull().default('queued'),
   // queued | enhancing | submitting | generating | downloading | transcoding | ready | failed

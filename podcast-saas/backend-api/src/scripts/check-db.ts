@@ -80,6 +80,8 @@ const MIGRATION_FILES = [
   '060_export_plan_snapshot.sql',
   '061_export_progress.sql',
   '062_broll_idempotency.sql',
+  '063_segment_relative_placement.sql',
+  '064_avatar_cost_meter.sql',
 ];
 
 type Row = Record<string, unknown>;

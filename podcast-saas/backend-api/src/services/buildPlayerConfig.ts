@@ -73,7 +73,10 @@ import { decideBudget } from 'shared/sim/closedLoop';
 // The ONE place that knows what a `timeline_sections` row is. This file used to answer that
 // question separately at each emit site with a hand-written filter, and the filters were not
 // disjoint — see the note above `overlayLanes` below.
-import { classifyTimelineSection, groupTimelineSectionsByLane, sortTimelineSections } from 'shared';
+import {
+  classifyTimelineSection, groupTimelineSectionsByLane, sortTimelineSections,
+  buildMainSegmentTimeline, resolveSectionPlacement,
+} from 'shared';
 
 /** The simulation columns this file reads. Named so the degraded-read catch cannot drift from it. */
 interface SimRowShape {
@@ -592,9 +595,12 @@ export async function buildPlayerConfig(
   // a partition. Which bucket a hybrid lands in is decided explicitly in that module (`track` beats
   // `type`, because `type` is the column the section editor rewrites behind the user's back).
   //
-  // NOT changed here: how either lane COMPUTES its offset. The b-roll lane still uses the stored
-  // `global_offset_sec`; the clip lane still derives one from the main-duration running sum. Those
-  // two disagree, and reconciling them is D-01 — blocked on a product decision.
+  // AND, since D-01, how each lane computes its offset is no longer decided here either. Every lane
+  // below places its rows through `resolveSectionPlacement`, the ONE resolver the export planner and
+  // the editor also call. The b-roll lane used to read the stored `global_offset_sec` and the clip
+  // lane used to re-derive a running sum of `duration_sec` inline; those two representations of the
+  // same authored moment come apart the moment a main video is re-transcoded, and each surface
+  // having written the derivation out by hand is what let them come apart DIFFERENTLY.
   const overlayLanes = groupTimelineSectionsByLane(sections);
 
   const hybrids = sections.filter((s) => classifyTimelineSection(s) === 'broll_clip_hybrid');
@@ -628,6 +634,37 @@ export async function buildPlayerConfig(
   // makes those four surfaces agree; it invents nothing and needs no migration.
   const allVideoMap = new Map(allVideos.map((v) => [v.id, v]));
 
+  // ── The main segment timeline (D-01) ────────────────────────────────────────
+  //
+  // The concatenation of this project's main videos: segment i owns `[start_i, start_i + dur_i)`,
+  // half-open, so a placement exactly on a seam belongs to the LATER segment and has one answer
+  // instead of two. Built ONCE here and handed to every lane, and built by the shared helper rather
+  // than by the running sum that used to sit inline below — the export planner builds it from the
+  // same function off the same `created_at ASC` query, which is what stops the viewer and the export
+  // disagreeing about what second a clip is at.
+  const mainTimeline = buildMainSegmentTimeline(allVideos);
+
+  /**
+   * WHERE ONE ROW SITS, and the only place this file answers that.
+   *
+   * Dual read, anchor first: a row carrying `placement_mode='segment'` is placed by its anchor pair
+   * and therefore MOVES WITH ITS HOST when that host is re-transcoded; every legacy row falls back
+   * to its stored `global_offset_sec` and behaves exactly as it did before this change. A row whose
+   * anchor cannot be resolved — most plausibly because its host video was deleted, which sets the
+   * FK to NULL — also falls back, and says why, because a b-roll that quietly vanished from the
+   * viewer would be far worse than one playing at a stale second.
+   */
+  const placementOf = (s: (typeof sections)[number]) => {
+    const at = resolveSectionPlacement(s, mainTimeline);
+    if (at.degradation) {
+      logger.warn(
+        { projectId: project.id, sectionId: s.id, degradation: at.degradation, absoluteSec: at.absoluteSec },
+        'buildPlayerConfig: section placement degraded — played at its fallback second',
+      );
+    }
+    return at.absoluteSec;
+  };
+
   // Build broll_clips from broll sections — each broll section points to a source video.
   const brollClips = overlayLanes.broll
     .map((s) => {
@@ -658,7 +695,7 @@ export async function buildPlayerConfig(
       return {
         id:                s.id,
         hls_url,
-        global_offset_sec: s.global_offset_sec ?? 0,
+        global_offset_sec: placementOf(s),
         start_sec:         s.start_sec,
         end_sec:           s.end_sec,
         label:             s.label,
@@ -668,14 +705,6 @@ export async function buildPlayerConfig(
     .filter(Boolean);
 
   // Build clip_overlays from clip sections — user-trimmed library videos shown as overlay.
-  // Compute each main video's global offset (cumulative sum of durations).
-  let globalOff = 0;
-  const videoGlobalOffsets = new Map<string, number>();
-  for (const v of mainVideos) {
-    videoGlobalOffsets.set(v.id, globalOff);
-    globalOff += v.duration_sec ?? 0;
-  }
-
   const clipOverlays = overlayLanes.clip_video
     .map((s) => {
       const srcVideo = allVideoMap.get(s.clip_source_video_id!);
@@ -687,14 +716,16 @@ export async function buildPlayerConfig(
           : null;
       if (!hls_url) return null;
 
-      const vidOffset = videoGlobalOffsets.get(s.video_file_id) ?? 0;
       const sectionDuration = s.end_sec - s.start_sec;
       const clipIn = s.clip_in_sec ?? 0;
 
       return {
         id:                s.id,
         hls_url,
-        global_offset_sec: vidOffset + s.start_sec,
+        // `segmentStart(host) + start_sec` — the same running sum as before, now stated once in the
+        // resolver. The `?? 0` this replaced turned a host outside the main timeline into second
+        // zero without a word; the resolver still places it there but says so.
+        global_offset_sec: placementOf(s),
         start_sec:         clipIn,
         end_sec:           clipIn + sectionDuration,
         label:             s.label,
@@ -710,11 +741,10 @@ export async function buildPlayerConfig(
     .map((s) => {
       const img = imageFileMap.get(s.clip_source_image_id!);
       if (!img) return null;
-      const vidOffset = videoGlobalOffsets.get(s.video_file_id) ?? 0;
       return {
         id:                s.id,
         image_url:         img.original_url,
-        global_offset_sec: vidOffset + s.start_sec,
+        global_offset_sec: placementOf(s),
         duration_sec:      s.end_sec - s.start_sec,
         camera_movement:   s.camera_movement ?? 'zoom_in',
         crop_x:            img.crop_x,
@@ -736,7 +766,9 @@ export async function buildPlayerConfig(
       return {
         id:                s.id,
         audio_url:         af.url,
-        global_offset_sec: s.global_offset_sec ?? 0,
+        // The SAME abstraction as b-roll, per the ruling: an audio cutaway is placed by its own
+        // offset on whichever track it sits on, so it drifts the same way and anchors the same way.
+        global_offset_sec: placementOf(s),
         start_sec:         s.start_sec,
         end_sec:           s.end_sec,
         label:             s.label,

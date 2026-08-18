@@ -41,11 +41,27 @@ async function one<T>(sql: string, params: unknown[] = []): Promise<T> {
 }
 const applyForward = (): Promise<unknown> => pg.exec(forwardSql);
 
-/** 062 and then every migration after it — none today, but the loop keeps the suite honest. */
+/** Every migration after 062 — 063 today, and whatever follows it. */
+const AFTER = ALL.slice(ALL.indexOf(TARGET) + 1);
+
+/** 062 and then every migration after it, so "idempotent" is tested against the real head. */
 const applyForwardToHead = async (): Promise<void> => {
   await applyForward();
-  for (const f of ALL.slice(ALL.indexOf(TARGET) + 1)) {
-    await pg.exec(readFileSync(join(MIGRATIONS_DIR, f), 'utf-8'));
+  for (const f of AFTER) await pg.exec(readFileSync(join(MIGRATIONS_DIR, f), 'utf-8'));
+};
+
+/**
+ * Undo everything applied AFTER 062, newest first, so 062's own rollback is measured against the
+ * schema 062 alone produced.
+ *
+ * This used to be a no-op because 062 was the head. It stopped being one the moment 063 landed, and
+ * the failure it produced was the honest one: 062's rollback drops 062's columns and nothing else,
+ * so the snapshot still carried 063's. Rolling the later files back first is what the test always
+ * meant — a missing `.rollback.sql` is a real gap and fails loudly rather than being skipped.
+ */
+const rollbackAfter = async (): Promise<void> => {
+  for (const f of [...AFTER].reverse()) {
+    await pg.exec(readFileSync(join(MIGRATIONS_DIR, f.replace(/\.sql$/, '.rollback.sql')), 'utf-8'));
   }
 };
 
@@ -148,7 +164,11 @@ describe('062 — the lock it is allowed to take', () => {
   it('touches no table but video_generation_jobs', async () => {
     // The blast radius IS the point of the rework: timeline_sections is hot and must not be
     // locked by this migration at all.
-    const sql = forwardSql;
+    // COMMENTS STRIPPED FIRST. This file argues its case in prose, and the prose says the words
+    // `ALTER TABLE` — most recently in "how long does ALTER TABLE take", which the bare regex read
+    // as a migration altering a table called `take`. Scanning the executable statements is what the
+    // assertion always meant; scanning the whole file made it fail on an edit to a sentence.
+    const sql = forwardSql.replace(/--[^\n]*/g, '');
     const altered = [...sql.matchAll(/ALTER TABLE\s+(\w+)/gi)].map((m) => m[1]);
     const indexed = [...sql.matchAll(/CREATE\s+(?:UNIQUE\s+)?INDEX[^(]*ON\s+(\w+)/gi)].map((m) => m[1]);
     expect([...new Set([...altered, ...indexed])]).toEqual(['video_generation_jobs']);
@@ -218,6 +238,7 @@ describe('062 — runner hygiene', () => {
   it('rolls back the lease columns cleanly', async () => {
     const before = await snapshot();
     await applyForwardToHead();
+    await rollbackAfter();
     await pg.exec(rollbackSql);
     expect(await snapshot()).toEqual(before);
   });

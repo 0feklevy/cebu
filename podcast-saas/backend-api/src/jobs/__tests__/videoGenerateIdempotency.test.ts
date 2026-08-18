@@ -626,3 +626,84 @@ describe('recoverStuckVideoGenerations', () => {
     }
   });
 });
+
+// ── The anchor is captured at ENQUEUE, and the finaliser copies it (D-01) ──────────────────────
+
+describe('runVideoGenerate — segment-relative placement', () => {
+  /**
+   * THE RACE THIS CLOSES. A generation runs for up to twenty-five minutes and the timeline is
+   * editable the whole time. `target_global_offset_sec` alone is an absolute second, so the obvious
+   * fix — work the anchor out when the job FINISHES — reads a timeline the author may never have
+   * seen, and reproduces the drift the anchor exists to prevent with a wider window.
+   *
+   * The test drives that directly: enqueue against one timeline, CHANGE the timeline while the job
+   * is "running", then finish it. An implementation that re-derived at completion would write an
+   * anchor computed from the second layout, which is a different segment and a different offset —
+   * so asserting the ORIGINAL pair is an assertion only the correct implementation can satisfy.
+   */
+  async function twoMainVideos(): Promise<{ a: string; b: string }> {
+    const a = await one<{ id: string }>(
+      `INSERT INTO video_files (project_id, filename, file_size, storage_key, status, duration_sec, created_at)
+       VALUES ($1,'a.mp4',10,$2,'ready',30, now() - interval '2 hours') RETURNING id`,
+      [projectId, `videos/${projectId}/a.mp4`]);
+    const b = await one<{ id: string }>(
+      `INSERT INTO video_files (project_id, filename, file_size, storage_key, status, duration_sec, created_at)
+       VALUES ($1,'b.mp4',10,$2,'ready',40, now() - interval '1 hour') RETURNING id`,
+      [projectId, `videos/${projectId}/b.mp4`]);
+    return { a: a.id, b: b.id };
+  }
+
+  async function anchoredJob(anchorId: string, anchorOffset: number, absolute: number): Promise<string> {
+    const r = await one<{ id: string }>(
+      `INSERT INTO video_generation_jobs (project_id, model, original_prompt, enhance_enabled,
+                                          target_duration_sec, target_global_offset_sec,
+                                          target_anchor_video_file_id, target_anchor_offset_sec)
+       VALUES ($1,'kling','a cat on a roof',false,5,$2,$3,$4) RETURNING id`,
+      [projectId, absolute, anchorId, anchorOffset]);
+    svc.currentJobId = r.id;
+    return r.id;
+  }
+
+  it('publishes the section with the anchor the JOB carries, not one re-derived at completion', async () => {
+    const { a, b } = await twoMainVideos();
+    // The author aimed at second 40 — ten seconds into B, while A was thirty seconds long.
+    const jobId = await anchoredJob(b, 10, 40);
+
+    // …and then re-cut A while the generation was in flight. Second 40 is now fifteen seconds into
+    // B, so a completion-time derivation would store (B, 15) and the clip would land five seconds
+    // from where it was placed.
+    await pg.query(`UPDATE video_files SET duration_sec = 25 WHERE id = $1`, [a]);
+
+    await runVideoGenerate(jobId, FAST);
+
+    const sec = await one<{
+      anchor_video_file_id: string; anchor_offset_sec: number;
+      placement_mode: string; global_offset_sec: number;
+    }>(`SELECT s.anchor_video_file_id, s.anchor_offset_sec, s.placement_mode, s.global_offset_sec
+          FROM timeline_sections s JOIN video_generation_jobs j ON j.section_id = s.id
+         WHERE j.id = $1`, [jobId]);
+
+    expect(sec.anchor_video_file_id).toBe(b);
+    expect(sec.anchor_offset_sec).toBe(10);          // NOT 15
+    expect(sec.placement_mode).toBe('segment');
+    // The absolute rides along untouched as the dual read's fallback, so an application rollback
+    // finds exactly the row the pre-D-01 code would have written.
+    expect(sec.global_offset_sec).toBe(40);
+  });
+
+  it('publishes a LEGACY row when the job carries no anchor — a job enqueued before 063', async () => {
+    await twoMainVideos();
+    const jobId = await newJob({ offset: 12 });
+    await runVideoGenerate(jobId, FAST);
+
+    const sec = await one<{
+      anchor_video_file_id: string | null; placement_mode: string; global_offset_sec: number;
+    }>(`SELECT s.anchor_video_file_id, s.placement_mode, s.global_offset_sec
+          FROM timeline_sections s JOIN video_generation_jobs j ON j.section_id = s.id
+         WHERE j.id = $1`, [jobId]);
+
+    expect(sec).toEqual({
+      anchor_video_file_id: null, placement_mode: 'legacy_absolute', global_offset_sec: 12,
+    });
+  });
+});

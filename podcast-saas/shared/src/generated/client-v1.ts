@@ -448,6 +448,27 @@ export interface TimelineSection {
   clip_source_image_id: string | null;  // image clip: which uploaded image to show
   camera_movement: string;              // image clip: 'zoom_in' | 'zoom_out' | 'pan_right' | 'pan_left' | 'dolly_in' | 'drift'
   clip_source_audio_id: string | null;  // audio cutaway: which uploaded audio file to play
+  // ── Segment-relative placement (D-01) ──────────────────────────────────────────────────────
+  //
+  // `global_offset_sec` above is an absolute second, and an absolute second stops meaning what its
+  // author meant the moment a main video is re-transcoded to a different length. The anchor is a
+  // MAIN VIDEO SEGMENT plus a time inside it, so the overlay moves with the content it was placed
+  // over. Optional here because they arrive with migration 063 and nothing on the client writes
+  // them: the server derives the anchor from the `global_offset_sec` a drag already sends.
+  //
+  // NOTE FOR THE CLIENT: on a broll or audio row, `global_offset_sec` as SERVED by GET /sections is
+  // the RESOLVED second, not the raw column — the editor and the viewer have to lay the same
+  // overlay out at the same place, and the resolver is the only thing that knows where that is.
+  anchor_video_file_id?: string | null;
+  anchor_offset_sec?: number | null;
+  placement_mode?: 'segment' | 'legacy_absolute';
+  placement?: {
+    absolute_sec: number;
+    source: 'anchor' | 'absolute' | 'native_host';
+    containing_segment_id: string | null;
+    post_roll_sec: number;                 // seconds past the end of the main timeline; 0 inside it
+    degradation: string | null;            // non-null when the anchor could not be used
+  };
   created_at: string;
 }
 
@@ -527,6 +548,11 @@ export interface VideoGenerationJob {
   enhance_enabled: boolean;
   target_duration_sec: number;
   target_global_offset_sec: number;
+  // Resolved AT ENQUEUE (D-01) and copied verbatim onto the published section: this job can finish
+  // twenty-five minutes after the author chose the spot, and inferring the anchor at completion
+  // would read a timeline they never saw. Null when the project had no main video to anchor to.
+  target_anchor_video_file_id?: string | null;
+  target_anchor_offset_sec?: number | null;
   external_task_id: string | null;
   status:
     | 'queued' | 'enhancing' | 'submitting' | 'generating'

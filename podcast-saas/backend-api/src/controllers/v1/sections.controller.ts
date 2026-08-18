@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
-import { timeline_sections, simulations, video_files } from '../../db/schema.js';
+import { timeline_sections, simulations, video_files, branch_sequences } from '../../db/schema.js';
 import { eq, and, asc } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { editableProject } from '../../services/collabAccess.js';
@@ -26,7 +26,9 @@ import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { logger } from '../../lib/logger.js';
 import {
   newTimelineSectionViolations, sortTimelineSections, timelineSectionViolations,
-  type TimelineSectionLike,
+  anchorPlacementViolations, buildMainSegmentTimeline, deriveAnchorForAbsoluteSec, isAnchorable,
+  planAnchorBackfill, resolveSectionPlacement,
+  type MainSegmentTimeline, type PlacementSectionLike, type TimelineSectionLike,
 } from 'shared';
 import { LLMService } from '../../services/llm/LLMService.js';
 import { ApiKeyService } from '../../services/secrets/ApiKeyService.js';
@@ -234,6 +236,17 @@ const SECTION_FIELDS = {
   clip_source_image_id: zId.nullish(),
   camera_movement: z.string().max(64).optional(),
   clip_source_audio_id: zId.nullish(),
+  // ── Segment-relative placement (D-01) ──────────────────────────────────────────────────────
+  //
+  // A client MAY send the anchor explicitly; nothing in the product does yet, and it does not have
+  // to. When a request moves an overlay — sets `global_offset_sec` to a value it did not already
+  // have — the handler derives the anchor itself from the project's live timeline. That is the
+  // ruling's "author drag (keep current visible location)": the author is asserting, right now,
+  // where they can see the clip, so expressing that as a segment offset canonises nothing that was
+  // not just chosen. It is also why no client change is needed to start anchoring.
+  anchor_video_file_id: zId.nullish(),
+  anchor_offset_sec: zSeconds.nullish(),
+  placement_mode: z.enum(['segment', 'legacy_absolute']).optional(),
 } as const;
 
 /** `track` defaults here rather than at the insert so the row rules see the EFFECTIVE track. */
@@ -249,6 +262,185 @@ const CreateSectionSchema = z.object({
  * is deliberately absent: this endpoint has never moved a section between host videos.
  */
 const PatchSectionSchema = z.object({ ...SECTION_FIELDS, track: zTrack.optional() }).partial();
+
+// ── Segment-relative placement (D-01) ─────────────────────────────────────────
+//
+// A b-roll's position used to be an ABSOLUTE second on the concatenated main timeline. That
+// timeline is not stable — re-transcode a main video to a slightly different length and every frame
+// after it slides while the overlay does not, so the clip still fires at second 47 and second 47 is
+// now a different moment. An ANCHOR (a main segment + a time inside it) fixes that by being
+// re-resolved against the live timeline on every read.
+//
+// This controller is one of the four surfaces that must agree about where a row sits, and it agrees
+// by calling `resolveSectionPlacement` and nothing else. It is also where rows BECOME anchored:
+// nothing is backfilled, so a row acquires its anchor the first time an author places or moves it.
+
+/**
+ * The project's main timeline — the concatenation the anchors are relative to.
+ *
+ * DEGRADES rather than fails, for the same reason `withServedSimUrls` does: a write that 500s after
+ * validating tells the client its edit did not happen. Losing the timeline only costs the anchor —
+ * the row still stores its absolute second and reads back exactly as it does today.
+ */
+async function mainTimelineFor(projectId: string): Promise<MainSegmentTimeline> {
+  try {
+    const videos = await db.query.video_files.findMany({
+      where: eq(video_files.project_id, projectId),
+      orderBy: [asc(video_files.created_at)],
+      columns: { id: true, duration_sec: true, is_broll: true },
+    });
+    return buildMainSegmentTimeline(videos ?? []);
+  } catch (err) {
+    logger.error({ err, projectId }, 'sections: main timeline unavailable — placement falls back to absolute seconds');
+    return buildMainSegmentTimeline([]);
+  }
+}
+
+/**
+ * The placement columns a write should store, or null to leave them untouched.
+ *
+ * `global_offset_sec` rides along because the two representations must AGREE at rest: the stored
+ * absolute is the dual read's fallback, and a fallback that disagrees with the anchor is a row that
+ * moves the day the anchor stops resolving. Every write that sets an anchor therefore also writes
+ * the second that anchor resolves to.
+ */
+type AnchorWrite = {
+  anchor_video_file_id: string | null;
+  anchor_offset_sec: number | null;
+  placement_mode: 'segment' | 'legacy_absolute';
+  global_offset_sec?: number;
+};
+
+/**
+ * What this write does to the row's placement.
+ *
+ * THREE CASES, and the middle one is the whole rollout:
+ *
+ *  1. THE CLIENT SAID SO. An explicit `anchor_video_file_id` / `anchor_offset_sec` / `placement_mode`
+ *     is honoured verbatim. Nothing in the product sends these yet; the contract exists so an
+ *     editor that learns about segments does not need a second endpoint.
+ *  2. THE AUTHOR PLACED IT. An anchorable row (b-roll or audio cutaway) whose `global_offset_sec`
+ *     this request is SETTING TO A NEW VALUE gets its anchor derived from the live timeline. This
+ *     is the ruling's "author drag — keep current visible location", and it is deliberately not a
+ *     backfill: the author is asserting, at this instant, where they can see the clip, so writing
+ *     that down as a segment offset canonises nothing that was not just chosen. A drag on an
+ *     ALREADY-anchored row re-derives too, and must: the dual read takes the anchor first, so an
+ *     anchor left pointing at the old moment would make the drag appear to do nothing.
+ *  3. NOTHING ELSE. A PATCH that does not move the row, or one that re-sends the same offset (the
+ *     undo/redo restore posts a section's whole stored body back), leaves the placement columns
+ *     alone. Untouched rows are never converted — that is the ruling, and the reason is that
+ *     mapping an absolute second that has ALREADY drifted onto today's segments would make the
+ *     drift permanent.
+ */
+function anchorWriteFor(opts: {
+  next: PlacementSectionLike;
+  timeline: MainSegmentTimeline;
+  explicit: {
+    anchor_video_file_id?: string | null;
+    anchor_offset_sec?: number | null;
+    placement_mode?: 'segment' | 'legacy_absolute';
+  };
+  /** True when this request gives `global_offset_sec` a value it did not already hold. */
+  offsetMoved: boolean;
+  /**
+   * True on POST. It decides which of the two inputs wins when a request supplies both an offset
+   * and an anchor, and the asymmetry is not arbitrary: on CREATE there is no prior state, so a
+   * supplied anchor cannot be a replay of one — it is the caller's intent and is honoured. On
+   * UPDATE it can be, and usually is (the undo/redo restore posts a whole earlier snapshot back),
+   * so a moved offset wins there.
+   */
+  create?: boolean;
+}): AnchorWrite | null {
+  const { next, timeline, explicit, offsetMoved, create } = opts;
+
+  // DERIVATION WINS ON AN UPDATE WHENEVER THE OFFSET MOVED, even if the request also named an
+  // anchor. The hazard it closes is a client sending a NEW `global_offset_sec` next to a STALE
+  // anchor — exactly what the undo/redo restore does when it replays a snapshot taken before the
+  // last drag. Honouring the anchor there would silently discard the move; deriving honours it. A
+  // client that sends a CONSISTENT pair loses nothing, because deriving from its own offset
+  // reproduces its own anchor. To set an anchor directly on an existing row, send it alone.
+  if (offsetMoved && isAnchorable(next) && !(create && explicit.anchor_video_file_id !== undefined)) {
+    const absolute = next.global_offset_sec;
+    if (typeof absolute !== 'number' || !Number.isFinite(absolute)) return null;
+    const derived = deriveAnchorForAbsoluteSec(timeline, absolute);
+    // No main video to anchor to. The row keeps its absolute second and stays legacy — the "no host
+    // to anchor to" case, whose honest answer is to change nothing.
+    if (!derived) return null;
+    return {
+      anchor_video_file_id: derived.anchor_video_file_id,
+      anchor_offset_sec: derived.anchor_offset_sec,
+      placement_mode: 'segment',
+    };
+  }
+
+  const saidId = explicit.anchor_video_file_id !== undefined;
+  const saidOffset = explicit.anchor_offset_sec !== undefined;
+  const saidMode = explicit.placement_mode !== undefined;
+  if (!saidId && !saidOffset && !saidMode) return null;
+
+  const id = saidId ? (explicit.anchor_video_file_id ?? null) : (next.anchor_video_file_id ?? null);
+  const off = saidOffset ? (explicit.anchor_offset_sec ?? null) : (next.anchor_offset_sec ?? null);
+  const mode = explicit.placement_mode ?? (id !== null && off !== null ? 'segment' : 'legacy_absolute');
+  const write: AnchorWrite = { anchor_video_file_id: id, anchor_offset_sec: off, placement_mode: mode };
+
+  // Keep the fallback truthful: if this anchor resolves, the stored absolute becomes the second it
+  // resolves to. Otherwise the row would carry two positions and quietly jump between them the day
+  // the anchor stopped resolving.
+  if (mode === 'segment' && id !== null && off !== null) {
+    const seg = timeline.byId.get(id);
+    if (seg) write.global_offset_sec = seg.startSec + off;
+  }
+  return write;
+}
+
+/** The row's placement, resolved — attached to every section this controller returns. */
+type PlacedSection<T> = T & {
+  placement: {
+    absolute_sec: number;
+    source: string;
+    containing_segment_id: string | null;
+    post_roll_sec: number;
+    degradation: string | null;
+  };
+};
+
+/**
+ * Attach the RESOLVED placement, and — for the two lanes positioned by their own offset — serve the
+ * resolved second AS `global_offset_sec`.
+ *
+ * That overwrite is the point. The editor lays its overlay track out from this field, and the
+ * viewer lays the same overlays out from `resolveSectionPlacement`; if the editor kept reading the
+ * raw column while the viewer read the anchor, the two would show an anchored clip at two different
+ * seconds the moment its host was re-transcoded — the D-01 bug, reintroduced on the surface where
+ * the author would be actively looking at it.
+ *
+ * It changes NOTHING for any row that exists today: a `legacy_absolute` row resolves to exactly its
+ * stored `global_offset_sec`. And it keeps the write round-trip consistent — the editor PATCHes back
+ * the second it was displaying, which `anchorWriteFor` reads as "keep it where I can see it".
+ *
+ * `placement.absolute_sec` carries the same number explicitly, with the rule that produced it, so a
+ * client (or an operator reading the response) can tell an anchored row from a legacy one and see
+ * when an anchor has stopped resolving.
+ */
+function placeSections<T extends PlacementSectionLike>(
+  rows: readonly T[],
+  timeline: MainSegmentTimeline,
+): Array<PlacedSection<T>> {
+  return rows.map((row) => {
+    const at = resolveSectionPlacement(row, timeline);
+    return {
+      ...row,
+      ...(isAnchorable(row) ? { global_offset_sec: at.absoluteSec } : {}),
+      placement: {
+        absolute_sec: at.absoluteSec,
+        source: at.source,
+        containing_segment_id: at.containingSegmentId,
+        post_roll_sec: at.postRollSec,
+        degradation: at.degradation,
+      },
+    } as PlacedSection<T>;
+  });
+}
 
 export async function registerSectionsRoutes(app: FastifyInstance): Promise<void> {
   // GET /api/v1/projects/:id/sections
@@ -279,9 +471,65 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       // contract between two surfaces, and `compareTimelineSections` is the one place it is stated.
       const sections = sortTimelineSections(rows);
 
+      // Placement is RESOLVED here rather than left to the client (D-01). An anchored overlay's
+      // absolute second is a function of the project's live video durations, and the editor must
+      // read it through the same resolver the viewer and the export use — otherwise a re-transcode
+      // moves the clip in the player and not in the editor, which is the bug wearing a new hat.
+      const placed = placeSections(sections, await mainTimelineFor(project.id));
+
       // The stored URL is what this section last published; the SERVED url is what is live now.
       // The editor renders the served one and writes back only the stored one (audit §9.6).
-      return reply.send(await withServedSimUrls(project.id, sections));
+      return reply.send(await withServedSimUrls(project.id, placed));
+    },
+  );
+
+  /**
+   * GET /api/v1/projects/:id/sections/placement-report — THE DRY RUN. Reads; writes nothing.
+   *
+   * The ruling forbids a silent backfill, and the reason is worth restating at the endpoint that
+   * exists because of it: converting a row means reading its absolute second, asking TODAY's
+   * timeline which segment that lands in, and recording the answer as the author's intent. If the
+   * row has already drifted — the entire premise of D-01 — that records the DRIFTED position,
+   * permanently, and the original intent stops being recoverable. A migration that "fixed"
+   * everything would freeze every row's current mistake.
+   *
+   * So this nominates and explains, and a human decides. Three populations are excluded outright,
+   * because for them the mapping is not merely risky but meaningless: rows at or after a segment
+   * whose duration has not landed, rows whose second is outside the timeline and its legal tail,
+   * and every row of a BRANCHED project — where playback is a graph and "the cumulative sum of
+   * durations" is not the timeline at all.
+   */
+  app.get<{ Params: { id: string } }>(
+    '/api/v1/projects/:id/sections/placement-report',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const project = await editableProject(request.params.id, user);
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+
+      const [rows, timeline, sequences] = await Promise.all([
+        db.query.timeline_sections.findMany({ where: eq(timeline_sections.project_id, project.id) }),
+        mainTimelineFor(project.id),
+        db.query.branch_sequences.findMany({
+          where: eq(branch_sequences.project_id, project.id),
+          columns: { id: true },
+        }).catch(() => []),
+      ]);
+
+      const report = planAnchorBackfill(rows ?? [], timeline, { branched: (sequences ?? []).length > 0 });
+      return reply.send({
+        project_id: project.id,
+        main_timeline: {
+          total_sec: timeline.totalSec,
+          segment_count: timeline.segments.length,
+          has_unknown_duration: timeline.hasUnknownDuration,
+          segments: timeline.segments.map((seg) => ({
+            video_file_id: seg.id, start_sec: seg.startSec, end_sec: seg.endSec,
+            duration_known: seg.durationKnown,
+          })),
+        },
+        ...report,
+      });
     },
   );
 
@@ -311,6 +559,9 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       clip_source_image_id?: string | null;
       camera_movement?: string;
       clip_source_audio_id?: string | null;
+      anchor_video_file_id?: string | null;
+      anchor_offset_sec?: number | null;
+      placement_mode?: 'segment' | 'legacy_absolute';
     };
   }>(
     '/api/v1/projects/:id/sections',
@@ -354,6 +605,9 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
         clip_source_image_id,
         camera_movement,
         clip_source_audio_id,
+        anchor_video_file_id,
+        anchor_offset_sec,
+        placement_mode,
       } = parsed.data;
 
       const videoFile = await db.query.video_files.findFirst({
@@ -368,6 +622,33 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
           where: and(eq(simulations.id, simulation_id), eq(simulations.project_id, project.id)),
         });
         resolvedSimUrl = resolveSimEntryUrl(sim?.entry_file ?? null);
+      }
+
+      // NEW WRITES ARE ANCHORED. A fresh row's `global_offset_sec` is the author placing it at this
+      // instant, against the timeline they are looking at, so expressing that as a segment offset
+      // records an intent rather than canonising a drift — the distinction the ruling draws between
+      // this and a backfill.
+      const timeline = await mainTimelineFor(project.id);
+      const anchor = anchorWriteFor({
+        next: parsed.data as PlacementSectionLike,
+        timeline,
+        explicit: { anchor_video_file_id, anchor_offset_sec, placement_mode },
+        offsetMoved: typeof global_offset_sec === 'number',
+        create: true,
+      });
+
+      if (anchor?.anchor_video_file_id && !timeline.byId.has(anchor.anchor_video_file_id)) {
+        // Tenancy, and it has to be checked here: the FK proves the video EXISTS, not that it
+        // belongs to this project — the same gap that let a b-roll source from another project be
+        // accepted and then silently dropped by the player. An anchor pointing outside this
+        // project's main timeline can never resolve, so it is refused rather than stored.
+        return reply.code(400).send({ message: 'anchor_video_file_id is not a main video of this project' });
+      }
+      const anchorViolations = anchorPlacementViolations(
+        { ...parsed.data, ...(anchor ?? {}) } as PlacementSectionLike, timeline,
+      );
+      if (anchorViolations.length > 0) {
+        return reply.code(400).send({ message: anchorViolations[0]!.message });
       }
 
       const [section] = await db
@@ -399,13 +680,18 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
           clip_source_image_id: clip_source_image_id ?? null,
           camera_movement: camera_movement ?? 'zoom_in',
           clip_source_audio_id: clip_source_audio_id ?? null,
+          anchor_video_file_id: anchor?.anchor_video_file_id ?? null,
+          anchor_offset_sec: anchor?.anchor_offset_sec ?? null,
+          placement_mode: anchor?.placement_mode ?? 'legacy_absolute',
+          ...(anchor?.global_offset_sec !== undefined ? { global_offset_sec: anchor.global_offset_sec } : {}),
         })
         .returning();
 
-      // The SAME shape GET /sections returns. A duplicated section is spliced straight into editor
-      // state by the caller, so a bare row here would arrive with no served url, no capability
-      // floor and no ack record — for a section that may already be a fully revisioned package.
-      return reply.code(201).send(await servedSection(project.id, section));
+      // The SAME shape GET /sections returns — placement included, for the same reason the served
+      // sim fields are: the caller splices this response straight into editor state, and a row that
+      // came back carrying a raw offset while its neighbours carry resolved ones would put one clip
+      // on the editor's timeline at a second the viewer does not agree with.
+      return reply.code(201).send(await servedSection(project.id, placeSections([section], timeline)[0]!));
     },
   );
 
@@ -434,6 +720,9 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       camera_movement?: string;
       track?: 'main' | 'broll' | 'audio';
       clip_source_audio_id?: string | null;
+      anchor_video_file_id?: string | null;
+      anchor_offset_sec?: number | null;
+      placement_mode?: 'segment' | 'legacy_absolute';
     }>;
   }>(
     '/api/v1/projects/:id/sections/:sid',
@@ -454,7 +743,12 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       const parsed = PatchSectionSchema.safeParse(request.body);
       if (!parsed.success) return reply.code(400).send({ message: firstZodMessage(parsed.error) });
 
-      const { simulation_id, sim_script, sim_prompt, sim_meta, clip_source_video_id, clip_in_sec, broll_volume, clip_source_image_id, camera_movement, clip_source_audio_id, ...rest } = parsed.data;
+      const {
+        simulation_id, sim_script, sim_prompt, sim_meta, clip_source_video_id, clip_in_sec,
+        broll_volume, clip_source_image_id, camera_movement, clip_source_audio_id,
+        anchor_video_file_id, anchor_offset_sec, placement_mode,
+        ...rest
+      } = parsed.data;
 
       // When simulation_id is provided AND changed, denormalize entry_file → simulation_url.
       // If simulation_id is unchanged, leave simulation_url alone — this preserves the
@@ -514,6 +808,39 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       );
       if (introduced.length > 0) return reply.code(400).send({ message: introduced[0]!.message });
 
+      // ── Placement (D-01) ────────────────────────────────────────────────────
+      //
+      // "Moved" means THIS REQUEST GAVE `global_offset_sec` A VALUE IT DID NOT ALREADY HOLD, and the
+      // comparison is deliberately against the STORED column rather than the resolved second. The
+      // undo/redo restore posts a section's entire stored body back; on an unanchored row that is a
+      // no-op and must stay one, so an untouched row is never converted behind the author's back.
+      // On an ALREADY-anchored row the editor is posting back the RESOLVED second it was displaying
+      // (see `placeSections`), which differs from the stored column exactly when the host has been
+      // re-transcoded — and re-anchoring there is right: it pins the clip to the moment the author
+      // can see, which is what the restore was asking for.
+      const timeline = await mainTimelineFor(project.id);
+      const nextRow = { ...existing, ...patch } as PlacementSectionLike;
+      const anchor = anchorWriteFor({
+        next: nextRow,
+        timeline,
+        explicit: { anchor_video_file_id, anchor_offset_sec, placement_mode },
+        offsetMoved:
+          rest.global_offset_sec !== undefined && rest.global_offset_sec !== existing.global_offset_sec,
+      });
+      if (anchor) {
+        if (anchor.anchor_video_file_id && !timeline.byId.has(anchor.anchor_video_file_id)) {
+          return reply.code(400).send({ message: 'anchor_video_file_id is not a main video of this project' });
+        }
+        const anchorViolations = anchorPlacementViolations({ ...nextRow, ...anchor }, timeline);
+        if (anchorViolations.length > 0) {
+          return reply.code(400).send({ message: anchorViolations[0]!.message });
+        }
+        patch.anchor_video_file_id = anchor.anchor_video_file_id;
+        patch.anchor_offset_sec    = anchor.anchor_offset_sec;
+        patch.placement_mode       = anchor.placement_mode;
+        if (anchor.global_offset_sec !== undefined) patch.global_offset_sec = anchor.global_offset_sec;
+      }
+
       const [updated] = await db
         .update(timeline_sections)
         .set(patch)
@@ -521,8 +848,10 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
         .returning();
 
       // Enriched, for the reason spelled out on `withServedSimUrls`: a drag, a trim, a move and an
-      // undo/redo restore all splice THIS response into the editor's section state.
-      return reply.send(await servedSection(project.id, updated));
+      // undo/redo restore all splice THIS response into the editor's section state — which is also
+      // why the resolved placement rides along, so the editor's copy of the row agrees with the
+      // viewer's about what second it is at.
+      return reply.send(await servedSection(project.id, placeSections([updated], timeline)[0]!));
     },
   );
 

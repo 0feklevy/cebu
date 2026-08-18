@@ -401,6 +401,15 @@ export async function runVideoGenerate(
         return adopted;
       }
 
+      // THE ANCHOR IS THE ONE CAPTURED AT ENQUEUE, copied across verbatim (D-01).
+      //
+      // Not re-derived here, and that is the point. This code runs up to twenty-five minutes after
+      // the author chose the spot, on a timeline they may have re-cut since; asking "which segment
+      // is second 47 in?" NOW would answer about a timeline the author never saw, which is the same
+      // race the anchor exists to end, just moved later. `target_global_offset_sec` still rides
+      // along as the legacy fallback, so a job enqueued before this column existed — or one for a
+      // project that had no main video at the time — publishes exactly the row it used to.
+      const anchored = job.target_anchor_video_file_id != null && job.target_anchor_offset_sec != null;
       const [inserted] = await tx.insert(timeline_sections).values({
         project_id: job.project_id,
         video_file_id: videoFileId,
@@ -410,6 +419,9 @@ export async function runVideoGenerate(
         label,
         track: 'broll',
         global_offset_sec: job.target_global_offset_sec,
+        anchor_video_file_id: job.target_anchor_video_file_id ?? null,
+        anchor_offset_sec: job.target_anchor_offset_sec ?? null,
+        placement_mode: anchored ? 'segment' : 'legacy_absolute',
       }).returning({ id: timeline_sections.id });
 
       // Fenced on BOTH the claim and section_id IS NULL. The second clause is not redundant with

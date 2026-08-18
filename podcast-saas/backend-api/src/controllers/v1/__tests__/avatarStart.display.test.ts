@@ -94,6 +94,7 @@ vi.mock('../../../services/transcriptPropagation.js', () => ({ getProjectTranscr
 vi.mock('../../../services/avatar/anamKey.js', () => ({ resolveAnamKeyForProject: svc.resolveAnamKeyForProject }));
 
 import { registerAvatarRoutes } from '../avatar.controller.js';
+import { resetBurstShield } from '../../../services/usage/avatarBudget.js';
 import { bakedStateFor, hashTranscript } from '../../../services/avatar/personaFingerprint.js';
 import { resetPersonaBakeState } from '../../../services/avatar/personaBake.js';
 import { pendingDisplayResolves, resetDisplayResolveState } from '../../../services/avatar/displayIdentity.js';
@@ -130,6 +131,7 @@ describe('POST /avatar/start — cosmetics never hold the token', () => {
     mocks.logLines.length = 0;
     mocks.writes.length = 0;
     vi.clearAllMocks();
+    resetBurstShield();
     resetPersonaBakeState();
     resetDisplayResolveState();
     svc.avatarProjectAllowedAsync.mockResolvedValue(true);

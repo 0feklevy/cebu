@@ -104,6 +104,7 @@ vi.mock('../../../services/transcriptPropagation.js', () => ({ getProjectTranscr
 vi.mock('../../../services/avatar/anamKey.js', () => ({ resolveAnamKeyForProject: svc.resolveAnamKeyForProject }));
 
 import { registerAvatarRoutes } from '../avatar.controller.js';
+import { resetBurstShield } from '../../../services/usage/avatarBudget.js';
 import { pendingPersonaBakes, resetPersonaBakeState } from '../../../services/avatar/personaBake.js';
 
 const SAVED: AvatarPersonaConfig = {
@@ -156,6 +157,7 @@ describe('POST /avatar/start — the stored persona is used when it still descri
     mocks.logLines.length = 0;
     mocks.writes.length = 0;
     vi.clearAllMocks();
+    resetBurstShield();
     resetPersonaBakeState();
     svc.avatarProjectAllowedAsync.mockResolvedValue(true);
     svc.resolveAnamKeyForProject.mockResolvedValue('anam_sk_test');

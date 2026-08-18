@@ -21,9 +21,10 @@
  *      the player, because the b-roll source map was built from `is_broll` videos only. No log, no
  *      warning, no counter. The census confirmed the whole chain end to end.
  *
- * None of these tests touch how an offset is COMPUTED. The b-roll lane's stored offset and the clip
- * lane's derived one disagree, and reconciling them is a blocked product decision (D-01); the
- * assertions below pin each row to ONE lane and one order, never to a re-anchored position.
+ * None of these tests touch how an offset is COMPUTED — that is D-01, and it lives in
+ * `buildPlayerConfig.placement.test.ts`. The assertions below pin each row to ONE lane and one
+ * order. Every fixture here is `placement_mode = 'legacy_absolute'` by omission, so an offset
+ * asserted below is the stored one and these tests keep meaning what they meant.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { buildPlayerConfig } from '../buildPlayerConfig.js';
@@ -163,8 +164,9 @@ describe('the malformed hybrid row', () => {
   });
 
   it('keeps the STORED offset of the b-roll lane — no re-anchoring', async () => {
-    // D-01 is blocked. This pins that making the lanes disjoint did not quietly change
-    // where a clip sits: the surviving copy is the one the viewer already played.
+    // This pins that neither making the lanes disjoint nor D-01 quietly changed where a LEGACY clip
+    // sits: the row carries no anchor, so the dual read falls through to the stored second and the
+    // surviving copy is the one the viewer already played.
     const c = await config();
     expect(c.broll_clips[0]!.global_offset_sec).toBe(60);
     expect(c.broll_clips[0]!.start_sec).toBe(0);

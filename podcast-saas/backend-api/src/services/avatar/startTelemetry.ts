@@ -25,6 +25,7 @@ import { logger } from '../../lib/logger.js';
 export type StartPhase =
   | 'project_read'      // the single projects row (avatar_config + visibility + owner)
   | 'authorize'         // visibility / collaborator gate
+  | 'reserve'           // weighted cost reservation taken before the vendor is called (D-03)
   | 'key_read'          // BYOK key resolution
   | 'transcript_read'   // captions → inline knowledge (fallback path only)
   | 'persona_enrich'    // Anam avatar/voice account listings (fallback path only)
@@ -45,16 +46,21 @@ export type StartFlag =
   | 'idempotent_replay'    // returned the token of an in-flight start with the same client key
   | 'transcript_inlined'   // the caption transcript rode inline in the persona body
   | 'display_cached'       // name/portrait came from persisted metadata or the bounded cache
-  | 'display_deferred';    // name/portrait resolution moved off the response path
+  | 'display_deferred'     // name/portrait resolution moved off the response path
+  | 'capability_ok'        // a valid short-lived spend capability, bound to THIS project, was presented
+  | 'capability_absent'    // none presented — admitted only because the capability mode is not `enforce`
+  | 'budget_shadow_denied';// the durable meter would have refused this start; shadow mode let it run
 
 const PHASES: ReadonlySet<string> = new Set<StartPhase>([
-  'project_read', 'authorize', 'key_read', 'transcript_read', 'persona_enrich', 'mint', 'display',
+  'project_read', 'authorize', 'reserve', 'key_read', 'transcript_read', 'persona_enrich', 'mint',
+  'display',
 ]);
 const OUTCOMES: ReadonlySet<string> = new Set<StartOutcome>(['ok', 'not_found', 'error']);
 const PATHS: ReadonlySet<string> = new Set<StartPathKind>(['stateful', 'ephemeral', 'global', 'unknown']);
 const FLAGS: ReadonlySet<string> = new Set<StartFlag>([
   'fingerprint_absent', 'fingerprint_miss', 'self_heal_queued', 'idempotent_replay',
   'transcript_inlined', 'display_cached', 'display_deferred',
+  'capability_ok', 'capability_absent', 'budget_shadow_denied',
 ]);
 
 /** The complete set of keys this module may ever emit. Pinned by startTelemetry.test.ts. */
