@@ -8,7 +8,7 @@ import {
   listAvatarTools, listKnowledgeDocs, uploadKnowledgeDoc, deleteKnowledgeDoc,
   type AvatarPersonaConfig, type AnamResource, type AnamTool, type KnowledgeDoc,
 } from './avatarApi';
-import { CHARACTER_META } from './characters';
+import { CHARACTER_META, DEFAULT_CHARACTER_ID } from './characters';
 import { GuidedTour, type TourStep } from '../GuidedTour';
 import './avatar.css';
 
@@ -234,7 +234,11 @@ export function AvatarSettingsModal({ open, onClose, projectId, videoTitle, embe
   };
 
   if (!open) return null;
-  const character = cfg.characterId ?? 'einstein';
+  // The one legitimate client-side use of the default: the saved config genuinely records a
+  // character (the server normalizes it on write), so an unset one means "not chosen yet" and the
+  // picker shows what the server would store. Imported, not re-hardcoded — this literal was one of
+  // three independent copies of the default.
+  const character = cfg.characterId ?? DEFAULT_CHARACTER_ID;
 
   const providers = [...new Set(voices.map((v) => v.provider).filter(Boolean) as string[])].sort();
   const countries = [...new Set(voices.map((v) => v.country).filter(Boolean) as string[])].sort();

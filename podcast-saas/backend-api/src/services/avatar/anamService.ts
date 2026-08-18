@@ -521,30 +521,53 @@ export async function describeAvatar(
 // llmId back to a legacy persona) must heal on its own within the TTL rather than needing a deploy.
 const DEAD_PERSONA_TTL_MS = 600_000;      // 10 min — long enough to cover a viewing session
 const DEAD_PERSONA_MAX_ENTRIES = 500;
-const _deadPersonaCache = new Map<string, { reason: PersonaRepair['reason']; at: number }>();
+const _deadPersonaCache = new Map<string, { reason: PersonaRepair['reason']; at: number; strikes: number }>();
 
 function deadKey(personaId: string, apiKey?: string): string {
   return `${(apiKey || ANAM_ENV.ANAM_API_KEY).slice(-8)}:${personaId}`;
 }
 
+/**
+ * How many refusals in a row before a persona is treated as dead.
+ *
+ * TWO, not one, and the asymmetry is the whole point. A persona genuinely deleted in the Anam
+ * dashboard fails EVERY time, so it reaches the threshold on the very next open and the saving is
+ * kept. A transient 400 — a vendor blip, a deploy on their side — fails once, and the cost of not
+ * condemning it is exactly one extra round trip. The cost of condemning it wrongly is that every
+ * viewer for the next TEN MINUTES gets an avatar that has forgotten the video, because the
+ * substituted ephemeral persona carries no knowledge tool.
+ */
+const DEAD_PERSONA_STRIKES = 2;
+
 /** Record that the vendor refused this stored persona. Called only after a real mint said so. */
 export function markPersonaUnusable(personaId: string, apiKey: string | undefined, reason: PersonaRepair['reason']): void {
   if (!personaId) return;
+  const k = deadKey(personaId, apiKey);
+  const prior = _deadPersonaCache.get(k);
+  // Re-insert rather than mutate in place: Map preserves INSERTION order, so `set` on an existing
+  // key does not move it, and the eviction below would then drop a hot entry ahead of a cold one.
+  if (prior) _deadPersonaCache.delete(k);
   if (_deadPersonaCache.size >= DEAD_PERSONA_MAX_ENTRIES) {
     const oldest = _deadPersonaCache.keys().next().value;   // insertion-ordered
     if (oldest) _deadPersonaCache.delete(oldest);
   }
-  _deadPersonaCache.set(deadKey(personaId, apiKey), { reason, at: Date.now() });
+  const fresh = !prior || Date.now() - prior.at >= DEAD_PERSONA_TTL_MS;
+  _deadPersonaCache.set(k, { reason, at: Date.now(), strikes: fresh ? 1 : prior.strikes + 1 });
 }
 
-/** Why this persona is known-dead, or undefined. Synchronous — safe on the request path. */
+/**
+ * Why this persona is known-dead, or undefined.
+ *
+ * Undefined until it has failed `DEAD_PERSONA_STRIKES` times inside the TTL — a single refusal is
+ * recorded but not acted on. Synchronous, so it is safe on the request path.
+ */
 export function peekUnusablePersona(personaId: string, apiKey?: string): PersonaRepair['reason'] | undefined {
   if (!personaId) return undefined;
   const k = deadKey(personaId, apiKey);
   const hit = _deadPersonaCache.get(k);
   if (!hit) return undefined;
   if (Date.now() - hit.at >= DEAD_PERSONA_TTL_MS) { _deadPersonaCache.delete(k); return undefined; }
-  return hit.reason;
+  return hit.strikes >= DEAD_PERSONA_STRIKES ? hit.reason : undefined;
 }
 
 /** A stateful mint that SUCCEEDED with a non-legacy token proves the persona is alive again
@@ -722,12 +745,37 @@ export async function getSessionToken(characterId: string, cfg?: AvatarPersonaCo
   // refuse is not worth a second doomed mint. Skip straight to the inline persona — but ONLY if a
   // complete one can be assembled, because when it cannot, that doomed mint is still this start's
   // only chance and must not be taken away from it.
+  // THE SKIP IS NOT FREE, AND AN EARLIER DRAFT PRICED IT AT ZERO. The substituted ephemeral
+  // persona is NOT equivalent to the stored one: it carries no `toolIds`, so it has no knowledge
+  // tool and therefore no video transcript, and the stateful path deliberately never read the
+  // transcript to put in a KNOWLEDGE block either. The avatar that comes back has the base
+  // character's personality and none of THIS video's material.
+  //
+  // So a single TRANSIENT vendor 400 must not buy that trade for ten minutes. It previously did:
+  // one blip condemned a healthy persona process-wide, and every viewer for the next ten minutes
+  // got a degraded avatar that had forgotten the video. Requiring repeated failures keeps the
+  // saving for the case it was written for — a persona genuinely deleted in the dashboard, which
+  // fails EVERY time — while a blip costs one extra round trip and nothing else.
   let personaRepair: PersonaRepair | undefined;
   const storedPersonaId = typeof personaConfig.personaId === 'string' ? personaConfig.personaId : '';
   const knownDeadReason = storedPersonaId ? peekUnusablePersona(storedPersonaId, key) : undefined;
   if (knownDeadReason) {
     const ephemeral = await buildPersonaConfig(id, { ...(cfg ?? {}), personaId: undefined }, key, resolveLlm);
-    if (ephemeral.avatarId && ephemeral.voiceId && ephemeral.llmId) {
+    // Only substitute something at least as CAPABLE, not merely as complete.
+    //
+    // The comparison is against the BAKED RECORD, not against `personaConfig`. A stateful config
+    // is `{ personaId, maxSessionLengthSeconds }` and never carries `toolIds` — the tools live on
+    // the vendor-side persona that id references — so a guard reading `personaConfig.toolIds` is
+    // always vacuously true. A first draft did exactly that and a mutation check caught it: the
+    // guard could be deleted with every test still green, which is the definition of decorative.
+    //
+    // `personaBaked.toolIds` is what this server recorded attaching, so a non-empty list means the
+    // stored persona knows this video. An ephemeral rebuild with no tools would answer about the
+    // base character instead, which is the degradation worth paying an extra round trip to avoid.
+    const storedHasKnowledge = Boolean(cfg?.personaBaked?.toolIds?.length);
+    const ephemeralToolIds = Array.isArray(ephemeral.toolIds) ? ephemeral.toolIds : [];
+    const keepsKnowledge = !storedHasKnowledge || ephemeralToolIds.length > 0;
+    if (ephemeral.avatarId && ephemeral.voiceId && ephemeral.llmId && keepsKnowledge) {
       personaRepair = { personaId: storedPersonaId, reason: knownDeadReason, discovered: false };
       personaConfig = ephemeral;
     }

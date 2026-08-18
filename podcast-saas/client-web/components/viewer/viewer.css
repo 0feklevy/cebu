@@ -1,8 +1,13 @@
+@import './layers.css';
+
 /* ── Controls bar ─────────────────────────────────────── */
 .viewer-controls-bar {
   position: absolute;
   left: 0; right: 0; bottom: 0;
-  z-index: 55;
+  z-index: var(--z-viewer-controls);
+  /* ONE spacing rhythm for the whole control row, consumed by `.viewer-ctrl-row` and by the
+     CC/settings pair inside `.viewer-caption-wrap` so the two can never drift apart. */
+  --viewer-ctrl-gap: 14px;
   padding: 0 clamp(18px, 3vw, 34px) max(20px, env(safe-area-inset-bottom));
   padding-top: 58px;
   background: linear-gradient(transparent, rgba(0,0,0,.85) 60%);
@@ -47,7 +52,7 @@
   transition: width .1s linear;
 }
 .viewer-progress-buf  { background: rgba(255,255,255,.22); width: 0; }
-.viewer-progress-fill { background: #3b82f6; width: 0; z-index: 1; }
+.viewer-progress-fill { background: #3b82f6; width: 0; z-index: var(--z-ctl-track); }
 
 .viewer-progress-thumb {
   position: absolute;
@@ -56,7 +61,7 @@
   margin: -10px 0 0 -10px;
   background: #fff;
   border-radius: 50%;
-  z-index: 2;
+  z-index: var(--z-ctl-marker);
   pointer-events: none;
   opacity: 0;
   transition: opacity .15s;
@@ -72,7 +77,7 @@
   position: absolute;
   inset: 0;
   pointer-events: none;
-  z-index: 1;
+  z-index: var(--z-ctl-track);
 }
 .viewer-seg-marker {
   position: absolute;
@@ -99,7 +104,7 @@
   position: absolute;
   inset: 0;
   pointer-events: none;
-  z-index: 2;
+  z-index: var(--z-ctl-marker);
 }
 .viewer-timeline-divider {
   position: absolute;
@@ -115,7 +120,7 @@
 .viewer-ctrl-row {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: var(--viewer-ctrl-gap);
   min-height: 48px;
 }
 .viewer-ctrl-btn {
@@ -148,6 +153,15 @@
   display: flex;
   align-items: center;
   flex-shrink: 0;
+}
+/* OWNER REPORT (v0.1.28): "the setting is too close to cc". The CC button and its settings
+   gear sat flush against each other — 0px — while every other adjacent pair in the row was a
+   full `--viewer-ctrl-gap` apart. The rhythm here is the CONTROL ROW'S OWN gap, not a new
+   value. Scoped to the caption wrap: `.viewer-volume-wrap` shares the rule above, and a gap
+   there would open permanent dead space beside the mute button, whose popover is `width: 0`
+   until it expands. */
+.viewer-caption-wrap {
+  gap: var(--viewer-ctrl-gap);
 }
 .viewer-ctrl-btn--small {
   width: 40px;
@@ -199,8 +213,15 @@
   opacity: .45;
   cursor: default;
 }
+/* OWNER REPORT (v0.1.28): "the cc settings is with lower z-index below the video bar".
+   Four labelled rows tall, opening 54px above the control row — so this panel's box reaches up
+   past the seek bar every time. With no z-index it painted in the `z-index: auto` step of the
+   controls bar's stacking context, which is BEFORE the positive-z step that holds the fill, the
+   section markers, the scrub thumb and the clip dividers — so the bar was drawn through the
+   panel. `--z-ctl-popover` is the rung that sits above all of them by construction. */
 .viewer-cc-menu {
   position: absolute;
+  z-index: var(--z-ctl-popover);
   right: 0;
   bottom: 54px;
   width: min(360px, calc(100vw - 24px));
@@ -240,7 +261,7 @@
   position: absolute;
   left: 50%;
   bottom: 44px;
-  z-index: 44;
+  z-index: var(--z-viewer-captions);
   transform: translateX(-50%);
   width: min(86%, 920px);
   text-align: center;
@@ -267,7 +288,7 @@
   position: absolute;
   right: clamp(12px, 2.6vw, 24px);
   bottom: max(14px, env(safe-area-inset-bottom));
-  z-index: 70;
+  z-index: var(--z-viewer-floating);
   pointer-events: none;
   transition: bottom .28s ease, transform .28s ease;
 }
@@ -286,7 +307,7 @@
 .sim-overlay {
   position: absolute;
   inset: 0;
-  z-index: 20;
+  z-index: var(--z-viewer-sim);
   opacity: 0;
   pointer-events: none;
   transition: opacity .2s ease;
@@ -328,7 +349,7 @@
 .sim-wait-affordance {
   position: absolute;
   inset: 0;
-  z-index: 21;
+  z-index: var(--z-viewer-sim-wait);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -386,7 +407,7 @@
   right: 0;
   bottom: 0;
   height: 84px;
-  z-index: 54;
+  z-index: var(--z-viewer-sim-hover);
 }
 
 /* Keyboard focus indicator — the dark-on-dark default outline is invisible over the player
@@ -405,7 +426,7 @@
   position: absolute;
   top: 16px;
   right: 16px;
-  z-index: 72;
+  z-index: var(--z-viewer-top);
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -471,7 +492,7 @@
 .sim-resume-btn {
   top: 16px;
   right: 16px;
-  z-index: 72;
+  z-index: var(--z-viewer-top);
 }
 
 /* Guided Simulation — on-screen narration caption (plays over the sim overlay) */
@@ -480,7 +501,7 @@
   left: 50%;
   bottom: 108px;
   transform: translateX(-50%);
-  z-index: 36;
+  z-index: var(--z-viewer-guidance);
   max-width: 78%;
   padding: 12px 20px;
   background: rgba(8, 10, 18, 0.82);
@@ -503,13 +524,13 @@
 
 /* ── Responsive ───────────────────────────────────────── */
 @media (max-width: 500px) {
-  .viewer-controls-bar { padding: 0 12px max(14px, env(safe-area-inset-bottom)) 12px; padding-top: 48px; gap: 8px; }
+  .viewer-controls-bar { padding: 0 12px max(14px, env(safe-area-inset-bottom)) 12px; padding-top: 48px; gap: 8px; --viewer-ctrl-gap: 8px; }
   .viewer-progress-wrap { padding: 11px 0 8px; }
   .viewer-progress-track { height: 6px; }
   .viewer-root.controls-visible .viewer-progress-wrap:hover .viewer-progress-track,
   .viewer-root.controls-visible .viewer-progress-wrap:focus .viewer-progress-track { height: 7px; }
   .viewer-progress-thumb { width: 18px; height: 18px; margin: -9px 0 0 -9px; opacity: 1; }
-  .viewer-ctrl-row { gap: 8px; min-height: 44px; }
+  .viewer-ctrl-row { min-height: 44px; }
   .viewer-ctrl-btn { width: 42px; height: 42px; }
   .viewer-icon { width: 24px; height: 24px; }
   .viewer-time-display { font-size: 13px; }
@@ -598,7 +619,7 @@
 .viewer-choice-overlay {
   position: absolute;
   inset: 0;
-  z-index: 76;
+  z-index: var(--z-viewer-modal);
   display: flex;
   align-items: center;
   justify-content: center;

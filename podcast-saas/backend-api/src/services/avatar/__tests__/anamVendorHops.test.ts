@@ -109,9 +109,16 @@ describe('a vendor-deleted persona is repaired, not rediscovered on every open',
     expect(info.personaRepair).toEqual({ personaId: 'p-legacy-1', reason: 'legacy-token', discovered: true });
   });
 
-  it('the SECOND open of the same dead persona skips the doomed mint entirely', async () => {
+  it('a persona that fails REPEATEDLY is skipped — on the third open, not the second', async () => {
+    // Two strikes, not one. See DEAD_PERSONA_STRIKES: a persona genuinely deleted in the dashboard
+    // fails every time and so reaches the threshold immediately, while a transient blip does not
+    // buy ten minutes of a degraded avatar for every viewer.
     const calls = mockAnam(account((p) => (p.personaId === 'p-dead-2' ? STALE_400 : TOKEN_200)));
-    await getSessionToken('einstein', { personaId: 'p-dead-2' });
+    await getSessionToken('einstein', { personaId: 'p-dead-2' });   // strike 1
+    expect(mints(calls)).toHaveLength(2);
+
+    calls.length = 0;
+    await getSessionToken('einstein', { personaId: 'p-dead-2' });   // strike 2 — still tries
     expect(mints(calls)).toHaveLength(2);
 
     calls.length = 0;
@@ -122,6 +129,27 @@ describe('a vendor-deleted persona is repaired, not rediscovered on every open',
     expect(info.personaRepair).toEqual({ personaId: 'p-dead-2', reason: 'stale-400', discovered: false });
   });
 
+  it('a SINGLE transient 400 does not condemn a healthy persona', async () => {
+    // THE REGRESSION THIS GUARDS. An earlier draft condemned on the first refusal, so one vendor
+    // blip disabled a working persona process-wide for ten minutes — and the substituted ephemeral
+    // persona carries no knowledge tool, so every viewer in that window got an avatar that had
+    // forgotten the video. Found by adversarial review, not by this suite, because every test here
+    // used a PERMANENTLY dead persona.
+    let refusals = 0;
+    const calls = mockAnam(account((p) => {
+      if (p.personaId === 'p-blip' && refusals === 0) { refusals += 1; return STALE_400; }
+      return TOKEN_200;
+    }));
+    await getSessionToken('einstein', { personaId: 'p-blip' });     // the blip
+    calls.length = 0;
+
+    const info = await getSessionToken('einstein', { personaId: 'p-blip' });
+    // The vendor is healthy again, so the stored persona must be used — statefully, with its tools.
+    expect(mints(calls)).toHaveLength(1);
+    expect(pc(mints(calls)[0]).personaId).toBe('p-blip');
+    expect(info.personaRepair).toBeUndefined();
+  });
+
   it('remembering one dead persona does not condemn a different, healthy one', async () => {
     const calls = mockAnam(account((p) => (p.personaId === 'p-dead-3' ? STALE_400 : TOKEN_200)));
     await getSessionToken('einstein', { personaId: 'p-dead-3' });
@@ -130,6 +158,24 @@ describe('a vendor-deleted persona is repaired, not rediscovered on every open',
     expect(mints(calls)).toHaveLength(1);
     expect(pc(mints(calls)[0]).personaId).toBe('p-healthy-3');   // still minted statefully
     expect(info.personaRepair).toBeUndefined();
+  });
+
+  it('does NOT skip a persona whose KNOWLEDGE the ephemeral rebuild cannot carry', async () => {
+    // The substitution is only a saving if what replaces the persona is as capable. A stored
+    // persona with knowledge tools knows THIS video; an ephemeral rebuild with none answers as the
+    // base character. Better to pay the doomed round trip than to serve an avatar that has
+    // forgotten the material — which is what "it keeps connecting as Einstein" looks like from
+    // the outside.
+    const calls = mockAnam(account((p) => (p.personaId === 'p-tooled' ? STALE_400 : TOKEN_200)));
+    const cfg = { personaId: 'p-tooled', personaBaked: { fingerprint: 'f', toolIds: ['tool-knowledge-1'], transcriptHash: 'h', revision: 1, bakedAt: '2026-01-01T00:00:00Z' } };
+    await getSessionToken('einstein', cfg);   // strike 1
+    await getSessionToken('einstein', cfg);   // strike 2 — now condemned by the strike rule
+    calls.length = 0;
+
+    // Condemned, but NOT skipped: the ephemeral rebuild carries no tools, so the stateful mint is
+    // still attempted rather than silently trading knowledge for a round trip.
+    await getSessionToken('einstein', cfg);
+    expect(pc(mints(calls)[0]).personaId).toBe('p-tooled');
   });
 
   it('does NOT skip the stateful mint when no complete ephemeral persona can be built', async () => {

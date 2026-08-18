@@ -1,0 +1,91 @@
+/* ── THE VIEWER'S STACKING LADDER ────────────────────────────────────────────────────────────
+ *
+ * ONE place that decides what paints above what in the player. Everything below is a NAMED RUNG,
+ * and the CSS that needs a z-index reads a rung rather than picking a number.
+ *
+ * WHY THIS FILE EXISTS
+ *   The values were previously scattered as bare integers across viewer.css and simLayers.css —
+ *   1, 2, 3, 4, 20, 21, 22, 36, 44, 54, 55, 70, 72, 76 — with nothing saying which was meant to be
+ *   above which. Reading the numbers told you the outcome but never the intent, so there was no way
+ *   to add a layer correctly except by guessing and looking. The caption-settings panel is what a
+ *   guess looks like when it goes wrong: it was given no z-index at all, which reads as "on top"
+ *   and is not (see THE CONTROLS-BAR BAND below).
+ *
+ * HOW TO ADD A LAYER
+ *   Add a rung here, next to the ones it must sit between, and say in one line what it is. Do not
+ *   write a bare number in a rule. If two things need to be adjacent, the gaps in the numbering are
+ *   deliberate room to insert between them without renumbering anything.
+ *
+ * TWO BANDS ARE **LOCAL**, NOT GLOBAL
+ *   A `z-index` only ever competes inside its own stacking context. `--z-ctl-*` and `--z-sim-*`
+ *   are compared against their siblings and NOTHING else — their small values do not put them near
+ *   the bottom of the player, they put them in order inside a parent that is already placed.
+ */
+
+:root {
+  /* ── GLOBAL BAND — direct children of `.viewer-root` ───────────────────────────────────────
+   * These compete with each other. Higher wins, top of this list is furthest back.             */
+
+  --z-viewer-sim:        20;  /* the simulation surface: `.sim-overlay` / `.sim-presentation`   */
+  --z-viewer-sim-wait:   21;  /* legacy wait/stall scrim, over the sim it is waiting for        */
+  --z-viewer-sim-surface: 22; /* overlay-mode cover + recovery, over the resident pool at 20    */
+  --z-viewer-guidance:   36;  /* guided-sim narration caption                                   */
+  --z-viewer-captions:   44;  /* closed-caption text, over the video and the sim                */
+  --z-viewer-sim-hover:  54;  /* bottom strip that re-reveals the controls over a sim           */
+  --z-viewer-controls:   55;  /* the controls bar — see the controls-bar band below             */
+  --z-viewer-floating:   70;  /* bottom-right floating action ("Ask!")                          */
+  --z-viewer-top:        72;  /* top-right controls: resume, playlist, fullscreen               */
+  --z-viewer-modal:      76;  /* branching decision overlay — takes the whole frame             */
+
+  /* EVERY sim layer sits BELOW `--z-viewer-sim-hover` and `--z-viewer-controls` on purpose. A
+   * recovery surface raised above the controls would trap the viewer on a broken section with no
+   * way to seek out of it, which is the one thing a failure surface must never do. */
+
+  /* ── CONTROLS-BAR BAND — inside `.viewer-controls-bar` ─────────────────────────────────────
+   * `.viewer-controls-bar` is positioned AND has a z-index, so it is a stacking context: these
+   * values are sealed inside it and are only ever compared with one another.
+   *
+   * The rung that matters is the popover. Per CSS 2.1 Appendix E a positioned descendant with
+   * `z-index: auto` paints in step 8, and positioned descendants with a POSITIVE z-index paint in
+   * step 9 — after it. So a panel with no z-index does not float above the bar's contents, it
+   * sinks below every part of the seek bar, whose fill, markers, thumb and dividers all carry
+   * positive values. That is exactly how the caption-settings panel ended up with the progress bar
+   * drawn through it (owner report, v0.1.28). A popover must name this rung. */
+
+  --z-ctl-track:   1;  /* played-progress fill and the section marker bands                     */
+  --z-ctl-marker:  2;  /* scrub thumb and clip-transition dividers, over the track              */
+  --z-ctl-popover: 3;  /* menus opened FROM the bar (caption settings) — above all of the above  */
+
+  /* ── SIM-PRESENTATION BAND — inside `.sim-presentation` ────────────────────────────────────
+   * That element sets `isolation: isolate`, so these four are sealed in and can never leak into
+   * the global band above. Bottom to top, this is the crossfade itself.                        */
+
+  --z-sim-outgoing: 1;  /* the outgoing valid content (usually empty — the video shows through) */
+  --z-sim-incoming: 2;  /* the incoming live iframe                                             */
+  --z-sim-cover:    3;  /* poster / neutral cover held over the incoming frame until it paints  */
+  --z-sim-recovery: 4;  /* recovery surface, above the cover so its actions read against it     */
+}
+
+/* ── WHAT IS DELIBERATELY *NOT* ON THIS LADDER ───────────────────────────────────────────────
+ *
+ * (a) LAYERS OWNED BY TSX, not CSS. These are set as inline styles or Tailwind classes because
+ *     they are per-instance or swapped imperatively at runtime, and a `var()` in a slot that JS
+ *     overwrites would be a lie about who decides. They still belong to the global band above, so
+ *     the map is recorded here rather than nowhere:
+ *
+ *       -1 / 1 / 2  video A/B and the b-roll standby slot   VideoLayer.tsx, useProjectPlayer.ts
+ *                   (roles are SWAPPED by assigning `.style.zIndex`, and useCropOverlay.ts parses
+ *                    the result back with `parseInt` — these must stay bare integers)
+ *        8          active b-roll overlay slot              HLSPlayerShell.tsx
+ *        9          animated still-image overlay            HLSPlayerShell.tsx
+ *       10          tap-feedback flash                      HLSPlayerShell.tsx
+ *       12          avatar circles                          AvatarCirclesOverlay.tsx
+ *       24          start-screen thumbnail cover            HLSPlayerShell.tsx
+ *       25          start (play) button                     HLSPlayerShell.tsx
+ *       30          top-left home hover zone                HLSPlayerShell.tsx
+ *
+ * (b) SELF-CONTAINED PAIRS whose z-index means "above my one sibling" and nothing more:
+ *     `.sim-overlay-spinner` (above `.sim-cold-poster`, pinned by coldSeekPoster.test.tsx) and
+ *     `SimPoolOverlay`'s per-frame 1/2 (which frame of the resident pool is showing). Naming a rung
+ *     for those would imply they take part in an ordering they are sealed away from.
+ */

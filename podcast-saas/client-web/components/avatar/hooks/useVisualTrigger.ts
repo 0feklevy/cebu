@@ -5,7 +5,11 @@ import { analyzeVisual, type VisualResult } from '../avatarApi';
 
 export type VisualTriggerResult =
   | { handled: true; reason: 'shown' | 'intent_locked_no_match' | 'generation_started' }
-  | { handled: false; reason: 'fallback_image_allowed' };
+  // `caption` is the one useful thing the classify produced on this branch: it decided an IMAGE
+  // is wanted, wrote the caption for it, and handed the work on. Carrying it to the image call
+  // lets the viewer be told what is coming while the render runs, instead of watching nothing.
+  // Presentation only — the prompt behind it is deliberately NOT carried across the wire.
+  | { handled: false; reason: 'fallback_image_allowed'; caption?: string };
 
 function quickDetectRequestedType(msg: string): string | null {
   if (/\b(simulation|simulate)\b/i.test(msg)) return 'simulation';
@@ -86,7 +90,7 @@ export function useVisualTrigger(
     } catch {
       inFlightRef.current = false;
       if (localRequestedType && localRequestedType !== 'image') return { handled: true, reason: 'intent_locked_no_match' };
-      return { handled: false, reason: 'fallback_image_allowed' };
+      return { handled: false, reason: 'fallback_image_allowed', caption: undefined };
     } finally {
       inFlightRef.current = false;
     }
@@ -100,7 +104,8 @@ export function useVisualTrigger(
 
     if (result.type === 'none' || result.type === 'image') {
       if (explicitNonImage) return { handled: true, reason: 'intent_locked_no_match' };
-      return { handled: false, reason: 'fallback_image_allowed' };
+      const caption = result.type === 'image' ? (result as { caption?: string }).caption : undefined;
+      return { handled: false, reason: 'fallback_image_allowed', caption };
     }
 
     if (explicitNonImage && result.type !== requestedType) return { handled: true, reason: 'intent_locked_no_match' };

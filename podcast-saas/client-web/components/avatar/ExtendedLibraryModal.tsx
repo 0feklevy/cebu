@@ -44,7 +44,11 @@ const TYPE_COLORS: Record<string, string> = { equation: '#ce93d8', chart: '#4fc3
 // Editor-facing gallery (styled to match darwin-avatar's Visual Library) to follow
 // & organize the avatar's Library. Basic = assets you put in the video; Extended =
 // visuals the avatar generated. Both are preferred over fresh generation at runtime.
-export function ExtendedLibraryModal({ open, onClose, projectId, characterId = 'einstein' }: Props) {
+// `characterId` has no default on purpose: this modal always names a project, and the server tags
+// generated/uploaded visuals with THAT project's configured persona (avatar.controller.ts,
+// projectCharacterId). A local 'einstein' here only ever overrode a configured persona with a
+// value nobody chose.
+export function ExtendedLibraryModal({ open, onClose, projectId, characterId }: Props) {
   const [items, setItems] = useState<LibraryItem[]>([]);
   const [typeCounts, setTypeCounts] = useState<Record<string, number>>({});
   const [total, setTotal] = useState(0);

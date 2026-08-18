@@ -242,16 +242,32 @@ export const endAvatarSession = (characterId: string): void => {
   }).catch(() => {});
 };
 
+// withAuth=true, for the SAME reason startAvatarSession and getPublicLibrary carry it, and it is
+// the difference between b-rolls appearing and never appearing.
+//
+// Both endpoints run `allowedProjectForBillable` (avatar.controller.ts), which reads
+// `request.dbUser` and answers 404 for a project whose visibility is `private` —
+// `projects.visibility` is `notNull().default('private')` (db/schema.ts), so that is EVERY
+// project until its owner publishes it. `request.dbUser` comes from firebaseAuthOptionalMiddleware
+// reading the Authorization header, and without the header the project's OWN OWNER is anonymous
+// here. The 404 was then swallowed by the `.catch()` below and returned as a perfectly ordinary
+// "no visual for this message", so the failure was invisible: the avatar connected, listened and
+// answered, and not one visual ever appeared. Not late — never.
+//
+// Anonymous viewers of public/unlisted projects are unaffected: no signed-in user means no
+// token means no header, exactly as before.
 export const analyzeVisual = (message: string, characterId: string, context?: string, projectId?: string) =>
   jsonFetch<VisualResultWithBank>(
     '/api/v1/avatar/visual/analyze',
     { method: 'POST', body: JSON.stringify({ message, characterId, context, projectId }) },
+    true,
   ).catch(() => ({ type: 'none' } as VisualResultWithBank));
 
 export const analyzeImage = (userMessage: string, characterId: string, context?: string, projectId?: string) =>
   jsonFetch<ImageAnalysisResult>(
     '/api/v1/avatar/image/analyze',
     { method: 'POST', body: JSON.stringify({ userMessage, characterId, conversationContext: context, projectId }) },
+    true,
   ).catch(() => ({ shouldGenerate: false, imageUrl: null, altText: '', caption: '', imageType: 'realistic' as const }));
 
 // Loads memory AND mints the capability token used to persist turns. withAuth=true so an

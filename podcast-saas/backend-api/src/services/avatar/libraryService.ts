@@ -24,12 +24,25 @@ export function normalizeKey(s: string): string {
     .slice(0, 300);
 }
 
-// Scope predicate: this project's assets + the global library.
+// Scope predicate for the RUNTIME lookups: a project sees ONLY its own visuals.
+//
+// This used to be `project_id = $1 OR project_id IS NULL`, and every runtime write went to the
+// `project_id IS NULL` half — so one global bucket held every visual the avatar had ever generated
+// for anybody, and every project read out of it. On a project's FIRST visual its own library is
+// still empty, which makes that bucket the only candidate pool, and `findRelevantLibraryVisual`
+// lets an extended row qualify on a two-token overlap computed over a bag that includes the row's
+// `lookup_key` — a raw 300-char slice of the ORIGINATING project's conversation. Two connective
+// English words were enough, so unrelated projects deterministically landed on the same stranger's
+// row every time (owner report: a geometry-points diagram served to a chaos-theory-and-birds
+// project, "always the same, the first time, whatever the project").
+//
+// c1219ad fixed the same leak for editor-created rows and for both library LIST endpoints
+// (`includeGlobal: false`) but never touched this predicate or the runtime writes, so the library
+// UI showed a project its own visuals while the avatar kept serving other projects' at
+// conversation time. A project's library is access-controlled per project visibility
+// (avatarAccess.ts), so this was also a cross-tenant read of private content.
 function projectScope(projectId?: string | null) {
-  if (projectId) {
-    return or(eq(avatar_visuals.project_id, projectId), isNull(avatar_visuals.project_id));
-  }
-  return isNull(avatar_visuals.project_id);
+  return projectId ? eq(avatar_visuals.project_id, projectId) : isNull(avatar_visuals.project_id);
 }
 
 export interface FindVisualOpts {
@@ -244,7 +257,7 @@ export async function listVisuals(opts: ListVisualsOpts): Promise<{
   const limit = Math.min(60, Math.max(1, opts.limit ?? 24));
 
   const conds = [];
-  if (opts.projectId && opts.includeGlobal) conds.push(projectScope(opts.projectId));
+  if (opts.projectId && opts.includeGlobal) conds.push(or(eq(avatar_visuals.project_id, opts.projectId), isNull(avatar_visuals.project_id))!);
   else if (opts.projectId) conds.push(eq(avatar_visuals.project_id, opts.projectId));
   else conds.push(isNull(avatar_visuals.project_id));
   if (opts.scope) conds.push(eq(avatar_visuals.scope, opts.scope));
