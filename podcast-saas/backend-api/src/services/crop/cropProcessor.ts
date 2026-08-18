@@ -28,6 +28,7 @@ import {
 } from './speaker.js';
 import {
   regionMotionSeries, windowedActiveRegions, calibrateGenderRegion,
+  calibrateGenderRegionByActivity, speechCorrelatedMotion,
 } from './activeSpeaker.js';
 import { bhattacharyya } from './dsp.js';
 import { DebounceState, applyDebounce } from './debounce.js';
@@ -170,7 +171,14 @@ export async function processVideoCrop(
       const sk = skinPerFrame[i], sa = salPerFrame[i], mo = motionPerFrame[i];
       for (let x = 0; x < PROFILE_COLS; x++) { skinS[x] += sk[x]; salS[x] += sa[x]; actS[x] += mo[x]; }
     }
-    const hm = locateHeads(skinS, salS, actS);
+    // Head localization gets the audio too. Skin and saliency answer "a person is HERE";
+    // only motion correlated with the speech envelope answers "this person is SPEAKING",
+    // and that distinction is the owner-reported D-16 symptom (a big static face winning
+    // the frame over whoever is actually talking). Zero-filled — hence ignored by
+    // locateHeads — when the track is silent or failed to decode.
+    const segMotionAll = motionPerFrame.slice(f0, f1);
+    const speechS = hasAudio ? speechCorrelatedMotion(segMotionAll, env.slice(f0, f1)) : undefined;
+    const hm = locateHeads(skinS, salS, actS, speechS);
 
     if (hm.isTwoShot && hasAudio && f1 - f0 >= 4) {
       twoShotSegs++;
@@ -178,13 +186,17 @@ export async function processVideoCrop(
       lastHeads.length = 0; lastHeads.push(...heads);
 
       // AV-correlation within this shot only.
-      const segMotion = motionPerFrame.slice(f0, f1);
       const segEnv = env.slice(f0, f1);
-      const motionL = regionMotionSeries(segMotion, heads[0]);
-      const motionR = regionMotionSeries(segMotion, heads[1]);
+      const motionL = regionMotionSeries(segMotionAll, heads[0]);
+      const motionR = regionMotionSeries(segMotionAll, heads[1]);
       const avActive = windowedActiveRegions(motionL, motionR, segEnv);
       const segLabels = labels.slice(f0, f1);
-      const genderRegion = calibrateGenderRegion(segLabels, avActive);
+      // The gender→region map drives every frame the AV correlator could not name — the
+      // majority of them on real footage — so it is worth more evidence than the AV votes
+      // alone. Prefer the per-region activity contrast over all confidently-pitched frames,
+      // and fall back to the AV votes when the two genders do not separate.
+      const genderRegion = calibrateGenderRegionByActivity(segLabels, motionL, motionR)
+        ?? calibrateGenderRegion(segLabels, avActive);
       lastCal = `male→r${genderRegion.male ?? '?'} female→r${genderRegion.female ?? '?'}`;
 
       const debounce = new DebounceState();
