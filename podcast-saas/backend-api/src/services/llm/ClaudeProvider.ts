@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { LLMProvider, type LLMOptions, type LLMResponse } from './LLMProvider.js';
 import { AppError, LLMErrorType } from 'shared';
+import { isAdaptiveOnlyClaudeModel } from './claudeModels.js';
 
 export class ClaudeProvider extends LLMProvider {
   readonly providerName = 'claude' as const;
@@ -29,19 +30,13 @@ export class ClaudeProvider extends LLMProvider {
     ];
   }
 
-  /**
-   * Newest Claude models (Opus 4.7/4.8, Fable 5) reject `temperature` and
-   * `budget_tokens` with a 400 and use adaptive thinking + `output_config.effort`
-   * instead. Everything older keeps the classic thinking-budget / temperature path.
-   */
-  private isAdaptiveOnly(model: string): boolean {
-    return model === 'claude-opus-4-7' || model === 'claude-opus-4-8' || model === 'claude-fable-5';
-  }
-
   async sendMessage(opts: LLMOptions): Promise<LLMResponse> {
     if (!this.client) throw new AppError(LLMErrorType.LLM_ERROR, 'Claude not configured', 500);
 
-    const adaptiveOnly = this.isAdaptiveOnly(opts.model);
+    // Adaptive-only models reject `temperature` and `budget_tokens` with a 400.
+    // The classification is shared with LLMService so the two cannot drift
+    // (llm-pipeline-009).
+    const adaptiveOnly = isAdaptiveOnlyClaudeModel(opts.model);
     const isFable = opts.model === 'claude-fable-5';
     const thinkingBudget = opts.thinkingBudgetTokens ?? 0;
     const useLegacyThinking = !adaptiveOnly && thinkingBudget > 0;
@@ -91,18 +86,38 @@ export class ClaudeProvider extends LLMProvider {
           ]
         : [{ role: 'user', content: opts.userPrompt }];
 
+      // Prompt caching is a PREFIX match — only a byte-identical leading span is
+      // ever read back (llm-pipeline-007). Three shapes:
+      //
+      //   prefix declared  → cache the frozen head, leave the per-call tail out
+      //                      of the cached span so it stops invalidating it;
+      //   cacheable:false  → mark nothing. For a prompt that is unique per call
+      //                      (the podcast passes embed the draft's turns) the
+      //                      old blanket cache_control bought a 1.25x
+      //                      cache-write premium on every request for an entry
+      //                      no later request could read;
+      //   default          → cache the whole system prompt, as before. Callers
+      //                      like SimulationService.buildContextPrompt sort
+      //                      their sources deterministically *so that* this
+      //                      caches across refinement turns; silently dropping
+      //                      it would regress a working, valuable cache.
+      const ephemeral = { type: 'ephemeral' } as const;
+      const cachePrefix = opts.systemPromptCachePrefix?.trim() ? opts.systemPromptCachePrefix : null;
+      const cacheable = opts.systemPromptCacheable !== false;
+      const system = !cacheable
+        ? [{ type: 'text', text: opts.systemPrompt }]
+        : cachePrefix
+          ? [
+              { type: 'text', text: cachePrefix, cache_control: ephemeral },
+              { type: 'text', text: opts.systemPrompt },
+            ]
+          : [{ type: 'text', text: opts.systemPrompt, cache_control: ephemeral }];
+
       const body = {
         model: opts.model,
         max_tokens: maxTokens,
         ...modelParams,
-        system: [
-          {
-            type: 'text',
-            text: opts.systemPrompt,
-            // Prompt caching: mark system prompt as ephemeral cache
-            cache_control: { type: 'ephemeral' },
-          },
-        ],
+        system,
         messages,
       };
 
@@ -113,8 +128,12 @@ export class ClaudeProvider extends LLMProvider {
         { signal: opts.abortSignal },
       );
 
+      let abortedMidStream = false;
       for await (const event of stream) {
-        if (opts.abortSignal?.aborted) break;
+        if (opts.abortSignal?.aborted) {
+          abortedMidStream = true;
+          break;
+        }
 
         if (event.type === 'content_block_delta') {
           if (event.delta.type === 'text_delta') {
@@ -137,19 +156,37 @@ export class ClaudeProvider extends LLMProvider {
       }
 
       const content = chunks.join('');
+      const usage = {
+        input: inputTokens,
+        output: outputTokens,
+        cached_input: cachedTokens,
+        cost_cents: this.estimateCostCents(opts.model, inputTokens, outputTokens, cachedTokens),
+      };
+
+      // Breaking out of the stream leaves `chunks` holding HALF AN ANSWER. This
+      // used to be returned as a normal success with stopReason 'end_turn', so a
+      // truncated script was indistinguishable from a complete one downstream —
+      // it passed assertNotTruncated, parsed as JSON, and was written
+      // (llm-pipeline-014). Fail instead, and carry the partial usage on the
+      // error so LLMService.usageFromError still meters the attempt.
+      if (abortedMidStream) {
+        throw new AppError(LLMErrorType.ABORTED, 'Request aborted mid-stream', 499, {
+          usage,
+          model: opts.model,
+          partialChars: content.length,
+        });
+      }
 
       return {
         content,
         model: opts.model,
         stopReason,
-        usage: {
-          input: inputTokens,
-          output: outputTokens,
-          cached_input: cachedTokens,
-          cost_cents: this.estimateCostCents(opts.model, inputTokens, outputTokens, cachedTokens),
-        },
+        usage,
       };
     } catch (err: unknown) {
+      // Already classified (the mid-stream abort above) — do not re-wrap it as a
+      // generic provider error, which would hide ABORTED and drop the usage.
+      if (err instanceof AppError) throw err;
       if ((err as { name?: string }).name === 'AbortError') {
         throw new AppError(LLMErrorType.ABORTED, 'Request aborted', 499);
       }

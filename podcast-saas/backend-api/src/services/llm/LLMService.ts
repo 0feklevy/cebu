@@ -5,6 +5,8 @@ import { LLMProvider, type TaskType, type TokenUsage, type EffortLevel, type LLM
 import { ClaudeProvider } from './ClaudeProvider.js';
 import { OpenAIProvider } from './OpenAIProvider.js';
 import { GeminiProvider } from './GeminiProvider.js';
+import { isAdaptiveOnlyClaudeModel } from './claudeModels.js';
+import { callDeadlineAt, linkAbortWithDeadline } from './deadline.js';
 import { ApiKeyService } from '../secrets/ApiKeyService.js';
 import { UsageTrackingService } from '../usage/UsageTrackingService.js';
 import { db } from '../../db/index.js';
@@ -14,6 +16,12 @@ import { AppError, LLMErrorType } from 'shared';
 import { logger } from '../../lib/logger.js';
 
 export interface SendStructuredOpts<T> {
+  /**
+   * Absolute wall-clock deadline (ms) for the WHOLE call including every retry. Normally left
+   * unset — `sendStructured` stamps one and shares it — but a caller with its own tighter budget
+   * (ScriptRoom's per-pass controller, for instance) can supply it so the two agree.
+   */
+  deadlineAt?: number;
   task: TaskType;
   systemPrompt: string;
   userPrompt: string;
@@ -106,8 +114,6 @@ function usageFromError(err: unknown): TokenUsage {
   };
 }
 
-const ADAPTIVE_MODELS = new Set(['claude-opus-4-7', 'claude-opus-4-8', 'claude-fable-5']);
-
 // Tasks recorded for cost visibility but exempt from the per-user rolling-24h
 // generation cap: the moderation pre-screen and cheap automatic background work
 // (post-transcode metadata, SEO summaries, ingestion captions, prompt utilities)
@@ -162,9 +168,15 @@ export class LLMService {
     const MAX_PARSE_RETRIES = 2;
     let lastError: AppError | undefined;
 
+    // ONE budget for the whole call, stamped here and shared by every attempt below. Creating it
+    // inside the attempt gave each retry a fresh 15 minutes, so this loop plus the creative-refusal
+    // retry could legitimately run 45-60 minutes — a backstop that permits three quarters of an
+    // hour is not one. See services/llm/deadline.ts.
+    const withDeadline = { ...opts, deadlineAt: opts.deadlineAt ?? callDeadlineAt() };
+
     for (let attempt = 0; attempt <= MAX_PARSE_RETRIES; attempt++) {
       try {
-        return await this._sendStructuredOnce(opts, attempt);
+        return await this._sendStructuredOnce(withDeadline, attempt);
       } catch (err) {
         if (err instanceof AppError && err.error_type === LLMErrorType.PARSING_ERROR) {
           lastError = err;
@@ -243,7 +255,10 @@ export class LLMService {
 
     const tier = TASK_TIER[opts.task];
     const isClaude = provider.providerName === 'claude';
-    const isAdaptiveModel = ADAPTIVE_MODELS.has(model);
+    // Shared with ClaudeProvider so the two classifications cannot drift, and so
+    // a model id newer than this file is not handed a rejected `temperature`
+    // (llm-pipeline-009).
+    const isAdaptiveModel = isAdaptiveOnlyClaudeModel(model);
     // Thinking is wanted for complex + creative work on Claude. On adaptive-only
     // models we signal adaptive thinking (no token budget); on older Claude models
     // we pass the classic thinking budget.
@@ -280,6 +295,8 @@ export class LLMService {
 
     // Every ATTEMPT is metered, not just every success (llm-pipeline-005).
     const response = await this.callProvider(provider, model, opts, {
+      // Shared across retries — see callProvider. `opts.deadlineAt` is stamped by the public entry.
+      deadlineAt: opts.deadlineAt,
       model,
       systemPrompt: opts.systemPrompt,
       userPrompt,
@@ -395,10 +412,11 @@ export class LLMService {
    * bypass; the row also carries whatever partial usage the provider attached to
    * the error.
    *
-   * (Note: today the providers throw bare AppErrors without usage details on a
-   * mid-stream failure, so such a row lands with zero tokens and zero cost — a
-   * truthful "an attempt happened that we could not price". Claude and Gemini
-   * already return normally on abort, so those keep their real partial usage.)
+   * (Note: OpenAI and Gemini still throw bare AppErrors without usage details on
+   * a mid-stream failure, so such a row lands with zero tokens and zero cost — a
+   * truthful "an attempt happened that we could not price". Claude attaches the
+   * partial usage to its ABORTED error (llm-pipeline-014), so an aborted Claude
+   * stream is metered with the tokens it actually consumed.)
    */
   private async callProvider(
     provider: LLMProvider,
@@ -406,8 +424,21 @@ export class LLMService {
     opts: { task: TaskType; userId: string | null; projectId: string | null },
     payload: Parameters<LLMProvider['sendMessage']>[0],
   ): Promise<LLMResponse> {
+    // Every provider call gets a wall-clock backstop, because several callers pass a signal that
+    // can never abort (llm-pipeline-006). Whichever fires first — the caller or the deadline — wins.
+    //
+    // THE BUDGET IS PER CALL, NOT PER ATTEMPT, and a first draft got that wrong. This method is
+    // invoked once per attempt: `sendStructured` retries a parse failure (MAX_PARSE_RETRIES) and
+    // again on a creative refusal, so a fresh 15-minute deadline per attempt meant a single
+    // `sendStructured` could legitimately run 45-60 minutes — a backstop that permits three
+    // quarters of an hour is not a backstop. An adversarial reviewer caught it.
+    //
+    // `payload.deadlineAt` is stamped ONCE by the public entry point and threaded through every
+    // attempt, so the retries share one wall-clock budget. When it is absent (a direct internal
+    // caller) the behaviour is unchanged: a fresh backstop for this one call.
+    const deadline = linkAbortWithDeadline(payload.abortSignal, payload.deadlineAt);
     try {
-      const response = await provider.sendMessage(payload);
+      const response = await provider.sendMessage({ ...payload, abortSignal: deadline.signal });
       // Record usage before any branch on the response — a refused or truncated
       // call is still billed, so it must be tracked for cost/quota accuracy.
       await this.recordUsage(provider.providerName, model, opts, response.usage);
@@ -415,6 +446,8 @@ export class LLMService {
     } catch (err) {
       await this.recordUsage(provider.providerName, model, opts, usageFromError(err));
       throw err;
+    } finally {
+      deadline.dispose();
     }
   }
 

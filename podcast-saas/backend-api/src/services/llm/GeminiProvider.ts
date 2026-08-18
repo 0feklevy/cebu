@@ -41,10 +41,21 @@ export class GeminiProvider extends LLMProvider {
         { role: 'user', parts: [{ text: opts.userPrompt }] },
       ];
 
+      // THE SIGNAL MUST REACH THE SDK, not just the loop below.
+      //
+      // `if (opts.abortSignal?.aborted) break;` inside the `for await` cannot run while the loop is
+      // SUSPENDED waiting for the next chunk — which is exactly the state a stalled provider leaves
+      // it in. So the one case the deadline exists for, a stream that stops producing bytes without
+      // closing the socket, was the one case Gemini could not escape: the abort fired, nothing
+      // observed it, and the job hung until stale-claim recovery noticed. An adversarial reviewer
+      // caught it after the deadline work claimed to cover "all callers"; it covered Claude and
+      // OpenAI. `abortSignal` here is passed through the SDK's request options so the underlying
+      // fetch is actually cancelled.
       const response = await this.client.models.generateContentStream({
         model: opts.model,
         contents,
         config: {
+          ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
           systemInstruction: opts.systemPrompt,
           maxOutputTokens: opts.maxTokens ?? 8192,
           temperature: opts.temperature ?? 0.7,
