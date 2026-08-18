@@ -8,6 +8,7 @@ import { SectionEditor } from './SectionEditor';
 import { A2AudioModal } from './A2AudioModal';
 import { api } from '../lib/api';
 import { MIN_CIRCLE_SECTION_SEC, makeCircleSection, normalizeCircleSections, type CircleSection } from '../lib/circleSections';
+import { PANEL_EDGE_GAP_PX, clampedPanelWidth } from '../lib/floatingPanel';
 
 // ─── constants ────────────────────────────────────────────────────────────────
 
@@ -422,7 +423,7 @@ function formatDuration(s: number): string {
   return `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`;
 }
 
-function AudioGainPopover({
+export function AudioGainPopover({
   projectId,
   section,
   onUpdate,
@@ -476,9 +477,9 @@ function AudioGainPopover({
       <div
         className="fixed overflow-hidden rounded-lg border bg-card shadow-xl"
         style={{
-          right: 24,
+          right: PANEL_EDGE_GAP_PX,
           bottom: 156,
-          width: 320,
+          width: clampedPanelWidth(320),
           zIndex: 701,
           borderColor: '#d1fae5',
           fontFamily: 'system-ui, -apple-system, sans-serif',

@@ -141,7 +141,7 @@ export function AvatarConversation({ characterId, projectId, sessionToken, displ
 
   const visualVisibleRef = useRef(false);
 
-  const { imageUrl, altText, caption, imageType, visible: imageVisible, trigger: triggerImage, reset: resetImage, dismiss: dismissImage, setDirectImage } =
+  const { imageUrl, altText, caption, imageType, visible: imageVisible, pending: imagePending, pendingCaption, trigger: triggerImage, reset: resetImage, dismiss: dismissImage, dismissPending, setDirectImage } =
     useImageTrigger(characterId, projectId, () => visualVisibleRef.current);
   const { visual, visible: visualVisible, trigger: triggerVisual, reset: resetVisual, dismiss: dismissVisual } =
     useVisualTrigger(characterId, projectId, setDirectImage);
@@ -188,12 +188,19 @@ export function AvatarConversation({ characterId, projectId, sessionToken, displ
     if (videoStarted) return;
     const t = setTimeout(() => {
       if (leftRef.current) return;
+      // THE VENDOR'S ERROR OUTRANKS THE GUESS, and an earlier draft got this backwards.
+      // Fitting the SDK's retry budget inside this window makes the real error arrive FIRST;
+      // it does not stop this timer from then overwriting it. `setJoinError` here is
+      // unconditional, so a genuine "Concurrency limit reached" that reached the screen at
+      // 9s was replaced at 20s by "…reported no error" — the exact false diagnosis this
+      // watchdog was rewritten to stop making, reintroduced one layer up. Functional update
+      // so the decision is made against the CURRENT error, not one captured at effect time.
       const settled = connectSettledRef.current;
       tr.mark('watchdog', { connectSettled: settled });
       const seconds = Math.round(CONNECT_WATCHDOG_MS / 1000);
-      setJoinError(settled
+      setJoinError((existing) => existing || (settled
         ? `Could not start the avatar — the session opened, but no video arrived within ${seconds} seconds. Please try again.`
-        : `Could not start the avatar — Anam did not complete the connection within ${seconds} seconds, and reported no error. Please try again.`);
+        : `Could not start the avatar — Anam did not complete the connection within ${seconds} seconds, and reported no error. Please try again.`));
     }, CONNECT_WATCHDOG_MS);
     return () => clearTimeout(t);
   }, [videoStarted, tr]);
@@ -217,7 +224,7 @@ export function AvatarConversation({ characterId, projectId, sessionToken, displ
       const snippet = content.slice(0, 400);
       const ctx = lastUserMsgRef.current || undefined;
       triggerVisualRef.current(snippet, ctx).then((result) => {
-        if (!result.handled && result.reason === 'fallback_image_allowed') triggerImageRef.current(snippet, ctx).catch(() => {});
+        if (!result.handled && result.reason === 'fallback_image_allowed') triggerImageRef.current(snippet, ctx, result.caption).catch(() => {});
       }).catch(() => {});
     };
     const id = setInterval(check, 2_500);
@@ -335,12 +342,12 @@ export function AvatarConversation({ characterId, projectId, sessionToken, displ
         resetVisualRef.current();
         resetImageRef.current();
         triggerVisualRef.current(text, text).then((result) => {
-          if (!result.handled && result.reason === 'fallback_image_allowed') triggerImageRef.current(text).catch(() => {});
+          if (!result.handled && result.reason === 'fallback_image_allowed') triggerImageRef.current(text, undefined, result.caption).catch(() => {});
         }).catch(() => {});
       } else if (event.role === 'persona') {
         const ctx = lastUserMsgRef.current || undefined;
         triggerVisualRef.current(text, ctx).then((result) => {
-          if (!result.handled && result.reason === 'fallback_image_allowed') triggerImageRef.current(text, ctx).catch(() => {});
+          if (!result.handled && result.reason === 'fallback_image_allowed') triggerImageRef.current(text, ctx, result.caption).catch(() => {});
         }).catch(() => {});
       }
     });
@@ -360,7 +367,7 @@ export function AvatarConversation({ characterId, projectId, sessionToken, displ
         const snippet = content.slice(0, 400);
         const ctx = lastUserMsgRef.current || undefined;
         triggerVisualRef.current(snippet, ctx).then((result) => {
-          if (!result.handled && result.reason === 'fallback_image_allowed') triggerImageRef.current(snippet, ctx).catch(() => {});
+          if (!result.handled && result.reason === 'fallback_image_allowed') triggerImageRef.current(snippet, ctx, result.caption).catch(() => {});
         }).catch(() => {});
       }, 1000);
     });
@@ -531,6 +538,19 @@ export function AvatarConversation({ characterId, projectId, sessionToken, displ
 
       {visual && visual.type !== 'simulation' && (
         <VisualPanel visual={visual} visible={visualVisible} onDismiss={dismissVisual} />
+      )}
+      {/*
+        THE SECONDS BETWEEN ASKING AND SEEING, GIVEN A FACE.
+
+        A fresh b-roll is a classify completion plus a gpt-image-1 render plus an upload; it is
+        seconds by construction and this component cannot make it not be. It can stop the viewer
+        having to guess whether anything is happening, which is what the report
+        "לוקח להם זמן להיטען" is about as much as the latency itself.
+
+        Rendered only when no real visual holds the slot, so progress never displaces a result.
+      */}
+      {imagePending && !visual && !imageUrl && (
+        <VisualPanel visual={{ type: 'image_loading', caption: pendingCaption }} visible onDismiss={dismissPending} />
       )}
       {visual?.type === 'simulation' && (
         <SimulationOverlay

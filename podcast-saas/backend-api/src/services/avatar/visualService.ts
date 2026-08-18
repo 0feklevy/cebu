@@ -7,6 +7,7 @@ import {
   storeSimulationHtml, type AvatarVisualRow,
 } from './libraryService.js';
 import { detectVisualIntent, extractTopic, isFallbackTypeAllowed, type VisualIntent } from './visualIntent.js';
+import { rememberImageClassification } from './visualClassifyMemo.js';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import { getOpenAIClient, isGenerationPaused, recordChatUsage } from '../llm/systemAi.js';
 import { logger } from '../../lib/logger.js';
@@ -281,15 +282,16 @@ export async function analyzeVisual(
       }
       const result: VisualResult = { type: 'simulation', html, caption };
 
-      // Background: persist to the GLOBAL extended library (project_id = null) so
-      // every viewer of every video can reuse it.
+      // Background: persist to THIS PROJECT's extended library. It used to be written with
+      // project_id = null — one global pool every other project then read out of, which is how a
+      // stranger's visual became a project's first visual (see libraryService.projectScope).
       if (!options?.adminContext) {
-        isDuplicateVisual(storeKey, 'simulation', characterId, null).then(async (dup) => {
+        isDuplicateVisual(storeKey, 'simulation', characterId, projectId).then(async (dup) => {
           if (dup) return;
           try {
-            const stored = await storeSimulationHtml(html, null);
+            const stored = await storeSimulationHtml(html, projectId);
             await insertVisual({
-              projectId: null, scope: 'extended', source: 'generated', characterId,
+              projectId, scope: 'extended', source: 'generated', characterId,
               visualType: 'simulation', lookupKey: storeKey, caption,
               simStoragePrefix: stored.prefix, simEntryUrl: stored.url,
               visualSpec: { type: 'simulation', caption, simTopic },
@@ -309,7 +311,7 @@ export async function analyzeVisual(
     const latex = repairLatexBackslashes((classification.latex as string) ?? '');
     if (!latex) return { ...BLANK, _intentRequestedType: intent.requestedType } as VisualResultWithBank;
     const result: VisualResult = { type: 'equation', latex, caption: (classification.caption as string) ?? '' };
-    storeFast(latex, 'equation', characterId, result.caption, result);
+    storeFast(latex, 'equation', characterId, result.caption, result, projectId);
     return { ...result, _intentRequestedType: intent.requestedType } as VisualResultWithBank;
   }
 
@@ -323,7 +325,7 @@ export async function analyzeVisual(
       caption: (classification.caption as string) ?? '',
     };
     if (!result.labels.length) return { ...BLANK, _intentRequestedType: intent.requestedType } as VisualResultWithBank;
-    storeFast(`${result.title} ${result.labels.join(' ')}`, 'chart', characterId, result.caption, result);
+    storeFast(`${result.title} ${result.labels.join(' ')}`, 'chart', characterId, result.caption, result, projectId);
     return { ...result, _intentRequestedType: intent.requestedType } as VisualResultWithBank;
   }
 
@@ -332,16 +334,26 @@ export async function analyzeVisual(
     if (!mermaidCode) return { ...BLANK, _intentRequestedType: intent.requestedType } as VisualResultWithBank;
     const caption = (classification.caption as string) ?? '';
     const result: VisualResult = { type: 'diagram', html: buildMermaidHtml(mermaidCode), caption };
-    storeFast(`${mermaidCode.slice(0, 200)} ${caption.slice(0, 100)}`, 'diagram', characterId, caption, result);
+    storeFast(`${mermaidCode.slice(0, 200)} ${caption.slice(0, 100)}`, 'diagram', characterId, caption, result, projectId);
     return { ...result, _intentRequestedType: intent.requestedType } as VisualResultWithBank;
   }
 
   if (resolvedType === 'image') {
+    const dallePrompt = (classification.dallePrompt as string) ?? '';
+    const imageType = (classification.imageType as 'realistic' | 'diagram') ?? 'realistic';
+    const caption = (classification.caption as string) ?? '';
+    // This branch does not render anything: it tells the caller "an image is what you want" and
+    // hands back a prompt the CLIENT cannot use, because rendering lives on /image/analyze where
+    // an image's real cost is metered. The client's only move is a second request — which used to
+    // run a SECOND classify completion to rediscover exactly the three values just computed here,
+    // in front of the viewer, every time. Park them so that call can skip its classify.
+    // See visualClassifyMemo.ts for why this is server-side state and not a response field.
+    rememberImageClassification(message, characterId, projectId, { dallePrompt, imageType, caption });
     return {
       type: 'image',
-      dallePrompt: (classification.dallePrompt as string) ?? '',
-      imageType: (classification.imageType as 'realistic' | 'diagram') ?? 'realistic',
-      caption: (classification.caption as string) ?? '',
+      dallePrompt,
+      imageType,
+      caption,
       _intentRequestedType: intent.requestedType,
     } as unknown as VisualResultWithBank;
   }
@@ -349,16 +361,17 @@ export async function analyzeVisual(
   return { ...BLANK, _intentRequestedType: intent.requestedType } as VisualResultWithBank;
 }
 
-// Dedup + store a fast-render visual to the GLOBAL extended library (project_id =
-// null) so it is reusable across every viewer and video. Fire-and-forget.
+// Dedup + store a fast-render visual to THIS PROJECT's extended library. Fire-and-forget.
+// It used to be stored with project_id = null — a global pool shared by every project on the
+// platform, which every project's runtime lookup then read from.
 function storeFast(
   key: string, type: string, characterId: string,
-  caption: string, result: VisualResult,
+  caption: string, result: VisualResult, projectId: string | null,
 ): void {
-  isDuplicateVisual(key, type, characterId, null).then((dup) => {
+  isDuplicateVisual(key, type, characterId, projectId).then((dup) => {
     if (dup) return;
     insertVisual({
-      projectId: null, scope: 'extended', source: 'generated', characterId,
+      projectId, scope: 'extended', source: 'generated', characterId,
       visualType: type, lookupKey: key,
       caption, altText: caption.split('.')[0] ?? '',
       visualSpec: result as unknown as Record<string, unknown>,

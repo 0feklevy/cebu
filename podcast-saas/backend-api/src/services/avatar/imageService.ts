@@ -8,6 +8,7 @@ import { db } from '../../db/index.js';
 import { avatar_visuals } from '../../db/schema.js';
 import { MODELS } from './models.js';
 import { findVisual, incrementUseCount, insertVisual, storeImageB64 } from './libraryService.js';
+import { takeImageClassification } from './visualClassifyMemo.js';
 import { getOpenAIClient, isGenerationPaused, recordChatUsage, recordImageUsage } from '../llm/systemAi.js';
 import { logger } from '../../lib/logger.js';
 
@@ -104,38 +105,53 @@ export async function analyzeAndGenerateImage(
       };
     }
 
-    // Step 1: GPT classify — only on bank miss
-    const classifyResp = await openai.chat.completions.create({
-      model: MODELS.imageClassify,
-      response_format: { type: 'json_object' },
-      max_tokens: 500,
-      temperature: 0.4,
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT + `\n\nCharacter domain knowledge: ${CHARACTER_KNOWLEDGE[characterId] ?? ''}` },
-        {
-          role: 'user',
-          content:
-            `Character: ${characterId}\n` +
-            `Content to visualize: "${userMessage}"\n` +
-            `Conversation context: ${conversationContext ?? 'none'}\n` +
-            `Realistic image style suffix (use only for "realistic" type): "${realisticStyle}"`,
-        },
-      ],
-    });
-
-    await recordChatUsage({
-      userId: null, // viewer sessions are anonymous
-      projectId: projectId ?? null,
-      model: MODELS.imageClassify,
-      task: 'avatar_image_classify',
-      usage: classifyResp.usage,
-    });
-
+    // Step 1: GPT classify — only on bank miss, and only when this turn's visual analyze has
+    // not ALREADY classified it. On the common path it has: the client reaches this endpoint
+    // precisely because /visual/analyze answered `{type:'image'}`, which means a gpt-4.1-mini
+    // completion has just run on this same message and written the prompt, the type and the
+    // caption. Recomputing them was a second completion the viewer waited out for nothing.
+    // The memo is in-process and single-use, so a miss simply costs what it always did.
     let c: GptClassification;
-    try {
-      c = JSON.parse(classifyResp.choices[0]?.message?.content ?? '{}') as GptClassification;
-    } catch {
-      return BLANK;
+    const parked = takeImageClassification(userMessage, characterId, projectId);
+    if (parked) {
+      c = {
+        should_generate: true,
+        image_type: parked.imageType,
+        caption: parked.caption,
+        dalle_prompt: parked.dallePrompt,
+      };
+    } else {
+      const classifyResp = await openai.chat.completions.create({
+        model: MODELS.imageClassify,
+        response_format: { type: 'json_object' },
+        max_tokens: 500,
+        temperature: 0.4,
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT + `\n\nCharacter domain knowledge: ${CHARACTER_KNOWLEDGE[characterId] ?? ''}` },
+          {
+            role: 'user',
+            content:
+              `Character: ${characterId}\n` +
+              `Content to visualize: "${userMessage}"\n` +
+              `Conversation context: ${conversationContext ?? 'none'}\n` +
+              `Realistic image style suffix (use only for "realistic" type): "${realisticStyle}"`,
+          },
+        ],
+      });
+
+      await recordChatUsage({
+        userId: null, // viewer sessions are anonymous
+        projectId: projectId ?? null,
+        model: MODELS.imageClassify,
+        task: 'avatar_image_classify',
+        usage: classifyResp.usage,
+      });
+
+      try {
+        c = JSON.parse(classifyResp.choices[0]?.message?.content ?? '{}') as GptClassification;
+      } catch {
+        return BLANK;
+      }
     }
     if (!c.should_generate || !c.dalle_prompt) return BLANK;
 
@@ -171,7 +187,7 @@ export async function analyzeAndGenerateImage(
     if (!b64Low) return BLANK;
 
     const altText = c.caption?.split('.')[0] ?? '';
-    const { url: lowUrl, key } = await storeImageB64(b64Low, null);
+    const { url: lowUrl, key } = await storeImageB64(b64Low, projectId ?? null);
 
     const result: ImageAnalysisResult = {
       shouldGenerate: true,
@@ -181,10 +197,13 @@ export async function analyzeAndGenerateImage(
       imageType: c.image_type ?? 'realistic',
     };
 
-    // Step 4: store to the GLOBAL extended library (project_id = null) so the
-    // generated image is reusable by every viewer of every video.
+    // Step 4: store to THIS PROJECT's extended library. It used to be written with
+    // project_id = null — a global pool every other project's runtime lookup read from, so an
+    // image generated from one project's conversation became another project's first visual
+    // (see libraryService.projectScope). `lookup_key` here is a raw slice of this project's
+    // conversation, which is precisely the content that must not travel.
     const savedRow = await insertVisual({
-      projectId: null, scope: 'extended', source: 'generated', characterId,
+      projectId: projectId ?? null, scope: 'extended', source: 'generated', characterId,
       visualType: 'image', lookupKey,
       caption: c.caption ?? '', altText,
       imageUrl: lowUrl, imageKey: key,
@@ -201,7 +220,7 @@ export async function analyzeAndGenerateImage(
           const b64High = await genImage(openai, { model: MODELS.imageGeneration, prompt: dallePrompt, quality: 'high', size: '1536x1024', n: 1 });
           await recordImageUsage({ userId: null, projectId: projectId ?? null, model: MODELS.imageGeneration, task: 'avatar_image', quality: 'high' });
           if (!b64High) return;
-          const high = await storeImageB64(b64High, null);
+          const high = await storeImageB64(b64High, projectId ?? null);
           await db.update(avatar_visuals).set({ image_url: high.url, image_key: high.key }).where(eq(avatar_visuals.id, rowId));
         } catch (err) {
           logger.warn({ err: (err as Error).message, rowId }, '[AvatarImage] BG upgrade failed');

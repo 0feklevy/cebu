@@ -9,7 +9,7 @@ vi.mock('../lib/firebase', () => ({
   auth: { currentUser: { getIdToken: () => Promise.resolve('test-id-token') } },
 }));
 
-import { startAvatarSession, getPublicLibrary, analyzeVisual } from '../components/avatar/avatarApi';
+import { startAvatarSession, getPublicLibrary, analyzeVisual, analyzeImage } from '../components/avatar/avatarApi';
 
 type Captured = { url: string; headers: Record<string, string> };
 
@@ -46,9 +46,27 @@ describe('avatarApi auth headers', () => {
     expect(captured[0].headers.Authorization).toBe('Bearer test-id-token');
   });
 
-  it('analyzeVisual stays anonymous (no visibility gate; IP rate-limited server-side)', async () => {
+  // WAS: "analyzeVisual stays anonymous (no visibility gate; IP rate-limited server-side)".
+  //
+  // The premise was false, and it was false at the time it was written: `/visual/analyze` and
+  // `/image/analyze` became billable and picked up `allowedProjectForBillable` — the SAME
+  // visibility gate the two tests above exist for — and its denial for a private project is the
+  // same masked 404. `projects.visibility` defaults to `private`, so this applied to every
+  // unpublished video, and avatarApi's `.catch()` turned the 404 into `{type:'none'}`, which the
+  // trigger hooks read as "nothing worth showing". That is the owner's "b-rolls do not work".
+  //
+  // The test was not merely stale: it PINNED the bug, and would have failed the fix.
+  it('analyzeVisual sends the Firebase token (private-project owners get their b-rolls)', async () => {
     await analyzeVisual('hello', 'char-1', undefined, 'proj-1');
     expect(captured).toHaveLength(1);
-    expect(captured[0].headers.Authorization).toBeUndefined();
+    expect(captured[0].url).toContain('/api/v1/avatar/visual/analyze');
+    expect(captured[0].headers.Authorization).toBe('Bearer test-id-token');
+  });
+
+  it('analyzeImage sends it too — the image half of the same gate', async () => {
+    await analyzeImage('hello', 'char-1', undefined, 'proj-1');
+    expect(captured).toHaveLength(1);
+    expect(captured[0].url).toContain('/api/v1/avatar/image/analyze');
+    expect(captured[0].headers.Authorization).toBe('Bearer test-id-token');
   });
 });

@@ -400,6 +400,9 @@ ${configBlocks}
   _guideRaf(_loop);
 
   window.addEventListener('message', function (e) {
+    // Only our own parent — see the guard note on the combined bridge (simulation-004). Without it
+    // any window holding a handle to this document could close the gate and silence every cue.
+    if (e.source !== window.parent) return;
     var d = e.data || {};
     if (d.type === 'guidanceInit' && d.firedIds) { for (var i = 0; i < d.firedIds.length; i++) _fired[d.firedIds[i]] = true; }
     else if (d.type === 'guidanceFired' && d.ids) { for (var j = 0; j < d.ids.length; j++) _fired[d.ids[j]] = true; }

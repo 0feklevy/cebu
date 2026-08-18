@@ -47,8 +47,18 @@ export default function AvatarAdminPage() {
 
   const del = async (id: string) => {
     if (!confirm('Delete this visual?')) return;
-    await deleteAvatarVisual(id);
-    setItems((prev) => prev.filter((i) => i.id !== id));
+    setError(null);
+    try {
+      await deleteAvatarVisual(id);
+      setItems((prev) => prev.filter((i) => i.id !== id));
+    } catch (e) {
+      // The same banner every other failed call on this page uses. Unhandled, a rejected DELETE
+      // left a stack trace in a console nobody was reading and a row that had not moved — which
+      // reads exactly like a click that never registered, and invites clicking it again.
+      // (frontend-editor-001)
+      const detail = e instanceof Error ? e.message.trim() : '';
+      setError(detail ? `Could not delete this visual. (${detail})` : 'Could not delete this visual.');
+    }
   };
 
   return (

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Download, History, RotateCcw, X } from 'lucide-react';
 import { timeAgo } from '../PodcastChrome';
@@ -8,6 +8,7 @@ import type { PodcastMixSnapshotInfo } from 'shared';
 import type { PodcastRender } from 'shared/src/generated/client-v1';
 import { api } from '../../../lib/api';
 import { renderDownloadUrl } from './renderUrl';
+import { useEscapeToClose } from '../../../lib/useEscapeToClose';
 
 const KIND_LABEL: Record<string, string> = { manual: 'Saved', export: 'Export', pre_rebuild: 'Before rebuild' };
 
@@ -21,6 +22,8 @@ export function VersionsDrawer({ showId, episodeId, snapshots, onClose, onRestor
   // Resolve each export snapshot's render → presigned download URL (renders carry
   // the URLs; snapshots only carry render_id). Fetched once when the drawer opens.
   const [rendersById, setRendersById] = useState<Record<string, PodcastRender>>({});
+  const titleId = useId();
+  useEscapeToClose(onClose);
   useEffect(() => {
     let cancelled = false;
     api.listPodcastRenders(showId, episodeId)
@@ -32,10 +35,10 @@ export function VersionsDrawer({ showId, episodeId, snapshots, onClose, onRestor
   return createPortal(
     <div className="fixed inset-0 z-[840] flex justify-end">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
-      <div className="relative z-10 flex h-full w-full max-w-sm flex-col border-l border-border bg-card shadow-modal">
+      <div role="dialog" aria-modal="true" aria-labelledby={titleId} className="relative z-10 flex h-full w-full max-w-sm flex-col border-l border-border bg-card shadow-modal">
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
-          <h2 className="flex items-center gap-2 text-sm font-semibold text-foreground"><History size={16} aria-hidden /> Versions</h2>
-          <button onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted focus-ring"><X size={17} aria-hidden /></button>
+          <h2 id={titleId} className="flex items-center gap-2 text-sm font-semibold text-foreground"><History size={16} aria-hidden /> Versions</h2>
+          <button onClick={onClose} aria-label="Close versions" title="Close versions" className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted focus-ring"><X size={17} aria-hidden /></button>
         </div>
         <div className="fine-scrollbar flex-1 overflow-y-auto p-3">
           {snapshots.length === 0 ? (

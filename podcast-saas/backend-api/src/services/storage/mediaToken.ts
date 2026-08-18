@@ -6,17 +6,22 @@
 // Scope = the first two key segments (`hls/{videoFileId}` or `videos/{projectId}`),
 // so one token authorizes exactly one video's media and nothing else.
 
-import { createHmac, timingSafeEqual, scryptSync } from 'crypto';
+import { createHmac, timingSafeEqual } from 'crypto';
+import { encryptionKeyOrDevFallback } from '../security/encryptionKey.js';
 
 const DAY_SEC = 24 * 60 * 60;
 // Minimum validity of a default mint, in days. Media URLs are re-minted per config fetch.
 const MIN_TTL_DAYS = 7;
 
+/**
+ * The HMAC secret. Delegated to `encryptionKeyOrDevFallback` so a present-but-misconfigured
+ * ENCRYPTION_KEY THROWS here instead of silently decoding to a truncated or empty key —
+ * `Buffer.from('not-hex', 'hex')` is a zero-length buffer and `createHmac` signs happily with
+ * it, which meant a mistyped key produced media tokens anyone could forge (security-004).
+ * Absent (dev) still derives the documented fallback.
+ */
 function getMediaSecret(): Buffer {
-  const hex = process.env.ENCRYPTION_KEY;
-  if (hex) return Buffer.from(hex, 'hex');
-  // Dev fallback (mirrors ApiKeyService) — set ENCRYPTION_KEY in prod.
-  return scryptSync('dev-secret-change-in-prod', 'podcast-saas-media-salt', 32);
+  return encryptionKeyOrDevFallback('podcast-saas-media-salt');
 }
 
 /** The token scope for a storage key: its first two path segments, or null if unsupported. */

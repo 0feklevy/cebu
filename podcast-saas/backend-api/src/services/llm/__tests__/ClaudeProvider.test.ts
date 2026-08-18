@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ClaudeProvider } from '../ClaudeProvider.js';
+import { LLMErrorType } from 'shared';
 
 // ── Mock the Anthropic SDK ──────────────────────────────────────────────────────
 
@@ -219,9 +220,10 @@ describe('ClaudeProvider', () => {
 
       controller.abort();
 
-      // Aborted streams return partial content, not an error (break in loop)
-      const result = await promise;
-      expect(result.content).toBeDefined();
+      // An aborted stream holds at most half an answer. Returning it as a
+      // success made a truncated script indistinguishable from a complete one
+      // downstream (llm-pipeline-014), so it now fails instead.
+      await expect(promise).rejects.toMatchObject({ error_type: LLMErrorType.ABORTED });
     });
   });
 });

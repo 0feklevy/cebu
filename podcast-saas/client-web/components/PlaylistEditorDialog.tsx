@@ -7,6 +7,7 @@ import {
   Loader2, Plus, Search, Sparkles, Trash2, Unlink2, Upload, X, Play,
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { failureMessage } from './failureSurface';
 import { LockPriceControl } from './LockPriceControl';
 import { PermalinkEditor } from './PermalinkEditor';
 import { CollaboratorsSection } from './CollaboratorsSection';
@@ -56,6 +57,16 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
   const [allProjects, setAllProjects] = useState<Project[]>([]);
   const [query, setQuery] = useState('');
   const [saving, setSaving] = useState(false);
+  /**
+   * The one place this dialog tells the user a write did not happen.
+   *
+   * Every mutation below used to end in `catch { /* ignore *\/ }`, so the only difference between
+   * "saved" and "silently refused" was that the dialog stayed open — which also happens on a
+   * successful banner upload. (frontend-editor-003 / ui-ux-011)
+   */
+  const [error, setError] = useState<string | null>(null);
+  /** A load that failed leaves every field blank; saving from that state would overwrite the real playlist. */
+  const [loadFailed, setLoadFailed] = useState(false);
 
   const [bannerUrl, setBannerUrl] = useState<string | null>(null);
   const [bannerPrompt, setBannerPrompt] = useState('');
@@ -76,6 +87,8 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
     let cancelled = false;
     setLoading(true);
     setQuery('');
+    setError(null);
+    setLoadFailed(false);
     Promise.all([api.getPlaylist(playlistId), api.listProjects(), api.getPlaylistShare(playlistId)])
       .then(([pl, projects, share]) => {
         if (cancelled) return;
@@ -93,7 +106,14 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
         setAllProjects(projects);
         setShareUrl(share.shareUrl);
       })
-      .catch(() => { /* ignore */ })
+      .catch((err) => {
+        if (cancelled) return;
+        // Blank fields over a failed load look exactly like an empty playlist, and Save would then
+        // write those blanks over the real one. Say so, and refuse the write.
+        console.error('Playlist load failed', err);
+        setLoadFailed(true);
+        setError(failureMessage(err, 'Could not load this playlist. Close and reopen it to try again.'));
+      })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [open, playlistId]);
@@ -117,8 +137,14 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
   };
 
   const handleSave = useCallback(async () => {
-    if (!playlistId) return;
+    if (!playlistId || loadFailed) return;
     setSaving(true);
+    setError(null);
+    // Two writes and no transaction between them. When the second fails the first has ALREADY
+    // landed, so the playlist keeps its new settings and its old video list — and the message has
+    // to name which half the user is actually holding, or it is lying about their data.
+    // (frontend-editor-003)
+    let settingsSaved = false;
     try {
       await api.updatePlaylist(playlistId, {
         title: title.trim() || 'Untitled playlist',
@@ -128,11 +154,20 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
         banner_prompt: bannerPrompt.trim() || null,
         banner_provider: bannerUrl ? bannerProvider : null,
       });
+      settingsSaved = true;
       await api.setPlaylistItems(playlistId, items.map((i) => i.project_id));
       onChanged();
       onClose();
-    } catch { /* ignore */ } finally { setSaving(false); }
-  }, [playlistId, title, description, autoplay, showSidebar, allowShuffle, bannerUrl, bannerPrompt, bannerProvider, items, onChanged, onClose]);
+    } catch (err) {
+      console.error('Playlist save failed', err);
+      // Half of it really did land, so the list behind the dialog is stale either way.
+      if (settingsSaved) onChanged();
+      setError(failureMessage(err, settingsSaved
+        ? 'Saved the playlist settings, but could not save its videos — the video list is unchanged.'
+        : 'Could not save this playlist.'));
+      // Deliberately still open: closing is the gesture that means "that worked".
+    } finally { setSaving(false); }
+  }, [playlistId, loadFailed, title, description, autoplay, showSidebar, allowShuffle, bannerUrl, bannerPrompt, bannerProvider, items, onChanged, onClose]);
 
   const applyBanner = (pl: { banner_url: string | null; banner_prompt: string | null; banner_provider: string | null }) => {
     setBannerUrl(pl.banner_url);
@@ -162,24 +197,40 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
   const handleCreateShare = async () => {
     if (!playlistId) return;
     setShareLoading(true);
+    setError(null);
     try {
       await api.setPlaylistItems(playlistId, items.map((i) => i.project_id));
       setShareUrl((await api.createPlaylistShare(playlistId)).shareUrl);
       onChanged();
-    } catch { /* ignore */ } finally { setShareLoading(false); }
+    } catch (err) {
+      console.error('Playlist share create failed', err);
+      setError(failureMessage(err, 'Could not create a private link.'));
+    } finally { setShareLoading(false); }
   };
 
   const handleRevokeShare = async () => {
     if (!playlistId) return;
     setShareLoading(true);
+    setError(null);
     try { await api.revokePlaylistShare(playlistId); setShareUrl(null); }
-    catch { /* ignore */ } finally { setShareLoading(false); }
+    catch (err) {
+      console.error('Playlist share revoke failed', err);
+      // shareUrl deliberately untouched: the link still works, and showing it as gone would be the
+      // exact opposite of the truth about a URL anyone who has it can still open. (ui-ux-011)
+      setError(failureMessage(err, 'Could not revoke the private link — it is still live.'));
+    }
+    finally { setShareLoading(false); }
   };
 
   const handleDelete = async () => {
     if (!playlistId) return;
     if (!window.confirm('Delete this playlist? This cannot be undone.')) return;
-    try { await api.deletePlaylist(playlistId); onChanged(); onClose(); } catch { /* ignore */ }
+    setError(null);
+    try { await api.deletePlaylist(playlistId); onChanged(); onClose(); }
+    catch (err) {
+      console.error('Playlist delete failed', err);
+      setError(failureMessage(err, 'Could not delete this playlist.'));
+    }
   };
 
   return (
@@ -517,17 +568,25 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
           )}
 
           {/* ── Footer ── */}
-          <footer className="flex shrink-0 items-center justify-end gap-2.5 border-t border-border px-5 py-3">
-            <button onClick={onClose}
-              className="h-9 rounded-lg border border-border px-4 text-sm font-medium text-foreground transition-colors hover:bg-muted focus-ring">
-              Cancel
-            </button>
-            <button onClick={handleSave} disabled={saving}
-              className="inline-flex h-9 items-center gap-2 rounded-lg px-5 text-sm font-semibold text-white shadow-sm transition-all hover:opacity-90 disabled:opacity-40 focus-ring"
-              style={{ background: 'linear-gradient(135deg,#a855f7,#6366f1)' }}>
-              {saving && <Loader2 size={14} className="animate-spin" />}
-              Save changes
-            </button>
+          <footer className="flex shrink-0 flex-col gap-2 border-t border-border px-5 py-3">
+            {/* Every failed write in this dialog lands here, next to the button that caused it. */}
+            {error && (
+              <p role="alert" className="rounded-lg bg-destructive/10 px-3 py-2 text-xs font-medium leading-5 text-destructive">
+                {error}
+              </p>
+            )}
+            <div className="flex items-center justify-end gap-2.5">
+              <button onClick={onClose}
+                className="h-9 rounded-lg border border-border px-4 text-sm font-medium text-foreground transition-colors hover:bg-muted focus-ring">
+                Cancel
+              </button>
+              <button onClick={handleSave} disabled={saving || loadFailed}
+                className="inline-flex h-9 items-center gap-2 rounded-lg px-5 text-sm font-semibold text-white shadow-sm transition-all hover:opacity-90 disabled:opacity-40 focus-ring"
+                style={{ background: 'linear-gradient(135deg,#a855f7,#6366f1)' }}>
+                {saving && <Loader2 size={14} className="animate-spin" />}
+                Save changes
+              </button>
+            </div>
           </footer>
         </Dialog.Content>
       </Dialog.Portal>

@@ -11,7 +11,24 @@
  *      each half of the frame, which guarantees two well-separated heads instead
  *      of two peaks piled up near the middle.
  *
- * Person energy = skin (faces) ×2 + saliency ×0.6 + persistent motion ×1.0.
+ * Person energy is scored two ways, depending on what the audio track allows:
+ *
+ *   • AUDIO-BLIND (no audio / silent track): skin ×2 + saliency ×0.6 + motion ×1.0.
+ *     Every term here answers "is a person HERE". None answers "is this person SPEAKING",
+ *     and skin is the heaviest, so a big well-lit static face outscores whoever is
+ *     actually talking. That is the owner-reported D-16 symptom — "if the woman talks and
+ *     there are 2 people in the frame, it shows the man and not the woman" — in its
+ *     permanent form: when the two-shot gate then misses, `dominantColumn` pins ONE column
+ *     for the whole shot and the entire video sits on the wrong person.
+ *
+ *   • SPEECH-AWARE (the normal case — the crop pass decodes the full audio track): the
+ *     dominant term becomes motion correlated with the speech envelope
+ *     (`speechCorrelatedMotion`), which is the only available signal that distinguishes a
+ *     talker from a listener. Skin drops to a supporting prior, which is also what stops a
+ *     deep skin tone from scoring ~0 on the 1990s RGB rule and losing the frame outright.
+ *
+ * The audio-blind weights are kept verbatim so a video whose audio fails to decode gets
+ * exactly the behaviour it got before, rather than an untested third one.
  */
 
 import { PROFILE_COLS } from './sceneAnalyzer.js';
@@ -20,6 +37,16 @@ const HEAD_WINDOW = 0.09;       // ± window (norm.) used to pool per-head motio
 const SECOND_HEAD_MIN = 0.28;   // 2nd head must reach this fraction of the 1st to count
 const MIN_SEPARATION = 0.20;    // two heads must be at least this far apart (norm.)
 const VALLEY_RATIO = 0.88;      // dip between heads must fall below this × weaker peak
+
+/** Person-energy weights when no usable speech signal exists (unchanged legacy behaviour). */
+const AUDIO_BLIND = { skin: 2.0, saliency: 0.6, motion: 1.0, speech: 0 };
+/** Person-energy weights when motion can be correlated against the speech envelope. */
+const SPEECH_AWARE = { skin: 1.0, saliency: 0.5, motion: 0.4, speech: 2.2 };
+/** Same split for the single-dominant-column fallback (saliency there is person-gated). */
+const DOMINANT_AUDIO_BLIND = { skin: 2.0, saliency: 0.6, motion: 1.2, speech: 0 };
+const DOMINANT_SPEECH_AWARE = { skin: 1.0, saliency: 0.5, motion: 0.5, speech: 2.5 };
+/** A column with at least this much normalised speech-correlated motion counts as a person. */
+const SPEECH_PERSON_GATE = 0.20;
 
 export interface HeadModel {
   heads: number[];              // 0..2 stable head centres, sorted left→right (0..1)
@@ -30,11 +57,18 @@ export function locateHeads(
   skinSum: Float64Array,
   salSum: Float64Array,
   actSum: Float64Array,
+  speechSum?: Float64Array,
 ): HeadModel {
   const n = PROFILE_COLS;
   const sk = normCopy(skinSum), sa = normCopy(salSum), ac = normCopy(actSum);
+  // `speechCorrelatedMotion` returns all-zero for a silent/undecodable/too-short track,
+  // which is the signal that there is nothing to weigh — fall back to the legacy weights.
+  const sp = speechSum && hasEnergy(speechSum) ? normCopy(speechSum) : null;
+  const w = sp ? SPEECH_AWARE : AUDIO_BLIND;
   const profile = new Float64Array(n);
-  for (let x = 0; x < n; x++) profile[x] = sk[x] * 2.0 + sa[x] * 0.6 + ac[x] * 1.0;
+  for (let x = 0; x < n; x++) {
+    profile[x] = sk[x] * w.skin + sa[x] * w.saliency + ac[x] * w.motion + (sp ? sp[x] * w.speech : 0);
+  }
   const smoothed = boxBlur(profile, Math.max(2, Math.floor(n * 0.04)));
 
   // Strongest peak in each half (exclude the dead-centre column gap).
@@ -70,21 +104,29 @@ export function locateHeads(
   // by skin and up-weights motion, so with several candidates the MOVING / speaking subject wins
   // and static captions are discounted. (backend-102 — the fix for "crop lands on the wrong thing".)
   void left; void right; void mid;
-  const only = dominantColumn(sk, sa, ac, n);
+  const only = dominantColumn(sk, sa, ac, sp, n);
   return { heads: only >= 0 ? [only / (n - 1)] : [], isTwoShot: false };
 }
 
 /**
- * Strongest single "person energy" column across the full usable frame width.
- * energy = skin×2 + (saliency gated by skin)×0.6 + motion×1.2
- *   • skin gate discounts high-saliency / low-skin columns → on-screen text & graphics.
- *   • motion up-weight makes the moving / speaking subject win over static bystanders.
+ * Strongest single "person energy" column across the full usable frame width. This is the
+ * value that gets held for an ENTIRE shot when the two-shot gate does not fire, so getting
+ * it wrong is not a wobble — it is a whole video framed on the wrong person.
+ *
+ *   • the person gate discounts high-saliency / low-skin columns → on-screen text &
+ *     graphics. It accepts speech-correlated motion as evidence of a person too, so a
+ *     speaker whose skin tone the RGB rule scores ~0 on is no longer gated out.
+ *   • with audio, speech-correlated motion is the heaviest term: the person TALKING wins
+ *     over a bystander who merely moves, and over a larger, better-lit static face.
  */
-function dominantColumn(sk: Float64Array, sa: Float64Array, ac: Float64Array, n: number): number {
+function dominantColumn(
+  sk: Float64Array, sa: Float64Array, ac: Float64Array, sp: Float64Array | null, n: number,
+): number {
+  const w = sp ? DOMINANT_SPEECH_AWARE : DOMINANT_AUDIO_BLIND;
   const energy = new Float64Array(n);
   for (let x = 0; x < n; x++) {
-    const skinGate = sk[x] > 0.15 ? 1 : 0.35;
-    energy[x] = sk[x] * 2.0 + sa[x] * 0.6 * skinGate + ac[x] * 1.2;
+    const personGate = (sk[x] > 0.15 || (sp !== null && sp[x] > SPEECH_PERSON_GATE)) ? 1 : 0.35;
+    energy[x] = sk[x] * w.skin + sa[x] * w.saliency * personGate + ac[x] * w.motion + (sp ? sp[x] * w.speech : 0);
   }
   const smoothed = boxBlur(energy, Math.max(2, Math.floor(n * 0.05)));
   // Exclude the extreme edges — the crop window can't centre there anyway.
@@ -113,6 +155,11 @@ function argmaxRange(a: Float64Array, lo: number, hi: number): { idx: number; va
   let idx = -1, val = -Infinity;
   for (let x = lo; x <= hi && x < a.length; x++) if (a[x] > val) { val = a[x]; idx = x; }
   return { idx, val: idx >= 0 ? val : 0 };
+}
+
+function hasEnergy(a: Float64Array): boolean {
+  for (let i = 0; i < a.length; i++) if (a[i] > 0) return true;
+  return false;
 }
 
 function normCopy(a: Float64Array): Float64Array {

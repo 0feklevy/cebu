@@ -94,6 +94,21 @@ function parseTime(str: string): number | null {
   return m * 60 + s;
 }
 
+/**
+ * Read one SSE frame's `data`, or null if it isn't the JSON we expect.
+ *
+ * SSE frames are just text, and anything between the browser and the app — a proxy, an ingress, an
+ * auth layer — can write HTML or a plain sentence into an open stream. Every consumer of this is an
+ * event listener, and an exception thrown inside a listener does NOT reach the code that dispatched
+ * it: the browser reports it and moves on, silently skipping whatever the rest of that handler was
+ * going to do (close the stream, clear the busy flag). `lib/sse-client.ts` already parses the
+ * project stream this way; the EventSource path here did not. (frontend-002)
+ */
+function parseStreamFrame<T>(data: unknown): T | null {
+  if (typeof data !== 'string') return null;
+  try { return JSON.parse(data) as T; } catch { return null; }
+}
+
 function saveBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -1014,35 +1029,38 @@ export function SectionEditor({
     guidanceEsRef.current = es;
     let handled = false;
 
-    es.addEventListener('status', (e: MessageEvent) => {
-      setGuidanceStatusMsg((JSON.parse(e.data) as { status: string }).status);
-    });
-    es.addEventListener('done', (e: MessageEvent) => {
-      const data = JSON.parse(e.data) as { simulation: Simulation };
-      applyGuidanceSim(data.simulation);
-      setGuidanceBusy(false);
-      setGuidanceStatusMsg(null);
-      es.close();
-      guidanceEsRef.current = null;
-    });
-    es.addEventListener('error', (e: MessageEvent) => {
-      if (!e.data || handled) return;
-      handled = true;
-      setGuidanceError((JSON.parse(e.data) as { error: string }).error || 'Guidance generation failed');
-      setGuidanceBusy(false);
-      setGuidanceStatusMsg(null);
-      es.close();
-      guidanceEsRef.current = null;
-    });
-    es.onerror = () => {
+    // Every exit from the run goes through here, so there is exactly one place that can leave the
+    // panel busy or the stream open — and it always does neither. (frontend-002)
+    const finish = (error: string | null) => {
       if (handled) return;
       handled = true;
-      setGuidanceError('Connection lost. Please try again.');
+      setGuidanceError(error);
       setGuidanceBusy(false);
       setGuidanceStatusMsg(null);
       es.close();
       guidanceEsRef.current = null;
     };
+
+    es.addEventListener('status', (e: MessageEvent) => {
+      // A junk progress line is not a reason to abandon a run that is still going.
+      const data = parseStreamFrame<{ status?: string }>(e.data);
+      if (data?.status) setGuidanceStatusMsg(data.status);
+    });
+    es.addEventListener('done', (e: MessageEvent) => {
+      const data = parseStreamFrame<{ simulation?: Simulation }>(e.data);
+      if (!data?.simulation) {
+        finish('The server ended the run with an unreadable response. Please try again.');
+        return;
+      }
+      applyGuidanceSim(data.simulation);
+      finish(null);
+    });
+    es.addEventListener('error', (e: MessageEvent) => {
+      // No `data` ⇒ this is EventSource's own transport error, which `onerror` below owns.
+      if (!e.data) return;
+      finish(parseStreamFrame<{ error?: string }>(e.data)?.error || 'Guidance generation failed');
+    });
+    es.onerror = () => finish('Connection lost. Please try again.');
   };
 
   const saveGuidanceDraft = async (entries: GuidanceEntry[]) => {

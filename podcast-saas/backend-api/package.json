@@ -24,7 +24,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "lint": "eslint src"
+    "lint": "eslint src",
+    "bench:crop": "tsx bench/crop/turn.ts && tsx bench/crop/smooth.ts && tsx bench/crop/frames.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.38.0",
@@ -45,11 +46,9 @@
     "openai": "^4.86.0",
     "pg-boss": "^12.23.0",
     "pino": "^9.3.2",
-    "pino-pretty": "^11.2.1",
     "postgres": "^3.4.4",
     "shared": "file:../shared",
     "stripe": "^22.2.0",
-    "tsoa": "^6.4.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
@@ -60,6 +59,7 @@
     "@vitest/coverage-v8": "^4.1.7",
     "drizzle-kit": "^0.22.8",
     "eslint": "^9.39.4",
+    "pino-pretty": "^11.2.1",
     "tsx": "^4.16.2",
     "typescript": "^5.5.4",
     "typescript-eslint": "^8.60.1",

@@ -3,6 +3,7 @@ import { db } from '../../../db/index.js';
 import { projects, video_files, simulations, token_usage, playlists, users, billing_transactions } from '../../../db/schema.js';
 import { sql, gte, and, eq } from 'drizzle-orm';
 import { firebaseAdminRequired } from '../../../middleware/firebase-admin-required.js';
+import { readQueueDepths } from '../../../queue/queueHealth.js';
 
 export async function registerAdminPipelineStatsRoutes(app: FastifyInstance): Promise<void> {
   app.get(
@@ -11,7 +12,14 @@ export async function registerAdminPipelineStatsRoutes(app: FastifyInstance): Pr
     async (_req: FastifyRequest, reply: FastifyReply) => {
       const since30d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
+      // Queue depth, including the DEAD-LETTER queues (job-queue-009). Those queues were created
+      // and never read: a job that exhausted its retries was copied there and nothing — no code
+      // path, no endpoint, no log line — ever looked. A poison export just stopped existing, while
+      // the user's row said "processing" forever. `readQueueDepths` returns null rather than
+      // throwing (or lying with zeroes) when the durable queue is not configured or unreachable,
+      // so the rest of this response still answers.
       const [
+        queueDepths,
         projectTotal,
         projectRecent,
         projectViews,
@@ -23,6 +31,7 @@ export async function registerAdminPipelineStatsRoutes(app: FastifyInstance): Pr
         userRecent,
         revenueRows,
       ] = await Promise.all([
+        readQueueDepths(),
         db.select({ count: sql<number>`count(*)::int` }).from(projects),
         db.select({ count: sql<number>`count(*)::int` }).from(projects).where(gte(projects.created_at, since30d)),
         db.select({ total: sql<number>`coalesce(sum(view_count), 0)::int` }).from(projects),
@@ -67,6 +76,9 @@ export async function registerAdminPipelineStatsRoutes(app: FastifyInstance): Pr
       const ai = aiRows[0];
 
       return reply.send({
+        // null = the durable queue is not configured here, or could not be reached. Deliberately
+        // distinguishable from "nothing is dead", which is what a zero would have claimed.
+        queues: queueDepths,
         projects: {
           total: projectTotal[0]?.count ?? 0,
           recent_30d: projectRecent[0]?.count ?? 0,

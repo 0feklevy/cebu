@@ -8,6 +8,15 @@ import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { editableProject } from '../../services/collabAccess.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { uploadWithFallback } from '../../services/storage/uploadWithFallback.js';
+import { uploadFileFromDisk } from '../../services/storage/uploadFromDisk.js';
+import {
+  declaredTooLarge,
+  PROXY_BODY_LIMIT_BYTES,
+  tooLargeMessage,
+  UPLOAD_MAX_BYTES,
+  UploadTooLargeError,
+  withBoundedTempFile,
+} from '../../services/security/uploadLimits.js';
 import { probeMediaDuration } from '../../services/video/HLSTranscoder.js';
 import { ApiKeyService } from '../../services/secrets/ApiKeyService.js';
 import { randomUUID } from 'crypto';
@@ -35,8 +44,7 @@ async function probeUploadedAudioDuration(buf: Buffer, ext: string): Promise<num
   const inputPath = join(workDir, `source${ext || '.audio'}`);
   try {
     await writeFile(inputPath, buf);
-    const duration = await probeMediaDuration(inputPath);
-    return Number.isFinite(duration) && duration > 0 ? duration : null;
+    return await probeAudioFileDuration(inputPath);
   } catch {
     return null;
   } finally {
@@ -44,17 +52,48 @@ async function probeUploadedAudioDuration(buf: Buffer, ext: string): Promise<num
   }
 }
 
+/** ffprobe a file already on disk. Never throws — an unreadable duration is simply unknown. */
+async function probeAudioFileDuration(path: string): Promise<number | null> {
+  try {
+    const duration = await probeMediaDuration(path);
+    return Number.isFinite(duration) && duration > 0 ? duration : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function registerAudioRoutes(app: FastifyInstance): Promise<void> {
   const storage = getStorageAdapter();
 
   // POST /api/v1/projects/:id/audio — upload an audio file
+  //
+  // BOUNDED AND SPOOLED TO DISK (performance-001). This used to be `await data.toBuffer()` with no
+  // ceiling of any kind: the whole file entered the Node heap, was written to a temp file anyway
+  // for the ffprobe, and was then handed to the uploader as a second reference to the same bytes.
+  // Two concurrent uploads of a large file were an OOM kill of the API on the 2-vCPU host.
+  //
+  // Now the part streams straight to the temp file the probe already needed, cut off at the
+  // ceiling as it goes, and the upload reads back from that file — so peak heap is one 64 KiB
+  // chunk no matter how big the audio is, and nothing over the limit is ever written to storage.
   app.post<{ Params: { id: string } }>(
     '/api/v1/projects/:id/audio',
+    // NO `bodyLimit` HERE, DELIBERATELY. It looks like the obvious guard and it is the opposite
+    // of one: Fastify's multipart parser bypasses `bodyLimit` entirely — which is exactly why the
+    // declared-size check and the bounded spool below exist — while RAISING the ceiling for every
+    // other content type on this route from Fastify's 1 MiB default to the proxy limit. And the
+    // body is parsed BEFORE preHandler runs, so an anonymous caller gets a 401 with the payload
+    // already materialised in the heap. An adversarial reviewer demonstrated it with a standalone
+    // app: 401 returned, `req.body` already at 4 MiB. Adding it bought nothing and opened a hole.
     { preHandler: [firebaseAuthMiddleware] },
     async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
       const user = request.dbUser!;
       const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
+
+      const declared = declaredTooLarge(request.headers['content-length'], UPLOAD_MAX_BYTES.audio);
+      if (declared !== null) {
+        return reply.code(413).send({ message: tooLargeMessage('Audio file', declared, UPLOAD_MAX_BYTES.audio) });
+      }
 
       const data = await request.file();
       if (!data) return reply.code(400).send({ message: 'No file uploaded' });
@@ -65,23 +104,34 @@ export async function registerAudioRoutes(app: FastifyInstance): Promise<void> {
 
       const ext = extname(data.filename || 'audio').replace(/[^a-z0-9.]/gi, '').toLowerCase() || '.mp3';
       const key = `audio/${project.id}/${randomUUID()}${ext}`;
-      const buf = await data.toBuffer();
-      const durationSec = await probeUploadedAudioDuration(buf, ext);
+      const contentType = data.mimetype.split(';')[0].trim();
 
-      const url = await uploadWithFallback(key, buf, data.mimetype.split(';')[0].trim());
+      try {
+        return await withBoundedTempFile(
+          data.file,
+          { limitBytes: UPLOAD_MAX_BYTES.audio, what: 'Audio file', suffix: ext || '.audio' },
+          async ({ path }) => {
+            const durationSec = await probeAudioFileDuration(path);
+            const url = await uploadFileFromDisk(key, path, contentType);
 
-      const [row] = await db
-        .insert(audio_files)
-        .values({
-          project_id:  project.id,
-          filename:    data.filename || `audio${ext}`,
-          storage_key: key,
-          url,
-          duration_sec: durationSec,
-        })
-        .returning();
+            const [row] = await db
+              .insert(audio_files)
+              .values({
+                project_id:  project.id,
+                filename:    data.filename || `audio${ext}`,
+                storage_key: key,
+                url,
+                duration_sec: durationSec,
+              })
+              .returning();
 
-      return reply.code(201).send(row);
+            return reply.code(201).send(row);
+          },
+        );
+      } catch (err) {
+        if (err instanceof UploadTooLargeError) return reply.code(413).send({ message: err.message });
+        throw err;
+      }
     },
   );
 

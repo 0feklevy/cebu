@@ -121,8 +121,15 @@ const anam = vi.hoisted(() => {
     createCalls: [] as Array<{ token: string; options: CapturedClientOptions | undefined }>,
     listeners: new Map<string, Array<(...a: unknown[]) => void>>(),
     streamCalls: [] as string[],
-    /** 'resolve' — the SDK reports a live session. 'hang' — it never answers at all. */
-    stream: 'resolve' as 'resolve' | 'hang',
+    /**
+     * 'resolve' — the SDK reports a live session. 'hang' — it never answers at all.
+     * 'reject'  — the SDK throws the vendor's OWN error, which is the case that matters:
+     *             the whole point of fitting the retry budget inside the watchdog is that
+     *             this error reaches the screen, and nothing exercised it until now.
+     */
+    stream: 'resolve' as 'resolve' | 'hang' | 'reject',
+    /** The message the SDK rejects with under `stream: 'reject'`. */
+    streamError: 'Concurrency limit reached',
   };
   return { AnamEvent, state };
 });
@@ -139,7 +146,9 @@ vi.mock('@anam-ai/js-sdk', () => ({
       },
       streamToVideoElement: (id: string) => {
         anam.state.streamCalls.push(id);
-        return anam.state.stream === 'hang' ? new Promise<void>(() => {}) : Promise.resolve();
+        if (anam.state.stream === 'hang') return new Promise<void>(() => {});
+        if (anam.state.stream === 'reject') return Promise.reject(new Error(anam.state.streamError));
+        return Promise.resolve();
       },
       stopStreaming: async () => {},
       muteInputAudio: () => {},
@@ -162,7 +171,12 @@ vi.mock('../components/avatar/avatarApi', () => ({
   saveMemory: vi.fn(),
 }));
 
-import { __resetPreconnectForTests } from '../components/avatar/anamConnectPolicy';
+import {
+  __resetPreconnectForTests,
+  ANAM_SESSION_START_POLICY,
+  CONNECT_WATCHDOG_MS,
+  worstCaseSessionStartMs,
+} from '../components/avatar/anamConnectPolicy';
 import { AvatarConversation } from '../components/avatar/AvatarConversation';
 import { AvatarPopup } from '../components/avatar/AvatarPopup';
 import { AskAvatarButton } from '../components/avatar/AskAvatarButton';
@@ -198,6 +212,7 @@ describe('avatar connect — policy, watchdog, prime bound, instrumentation', ()
     anam.state.listeners.clear();
     anam.state.streamCalls = [];
     anam.state.stream = 'resolve';
+    anam.state.streamError = 'Concurrency limit reached';
     api.startCalls = 0;
     FakeAudioContext.resumeHangs = false;
     playHangs = false;
@@ -284,7 +299,7 @@ describe('avatar connect — policy, watchdog, prime bound, instrumentation', ()
     anam.state.stream = 'hang';
     render(<AvatarConversation characterId="einstein" projectId="p1" sessionToken="tok" onLeave={() => {}} />);
     await flush();
-    await advance(25_000);
+    await advance(CONNECT_WATCHDOG_MS + 5_000);
 
     const msg = screen.getByText(/could not/i).textContent ?? '';
     expect(msg).not.toMatch(/concurrency/i);
@@ -298,7 +313,7 @@ describe('avatar connect — policy, watchdog, prime bound, instrumentation', ()
     anam.state.stream = 'resolve';
     render(<AvatarConversation characterId="einstein" projectId="p1" sessionToken="tok" onLeave={() => {}} />);
     await flush();
-    await advance(25_000);
+    await advance(CONNECT_WATCHDOG_MS + 5_000);
 
     expect(screen.getByText(/could not/i).textContent ?? '').toMatch(/no video/i);
   });
@@ -373,5 +388,55 @@ describe('avatar connect — policy, watchdog, prime bound, instrumentation', ()
       perf.mark = realMark;
       perf.measure = realMeasure;
     }
+  });
+});
+
+describe("the vendor's own error outranks the watchdog's guess", () => {
+  // REGRESSION GUARD. Fitting the SDK's retry budget inside the watchdog makes the real error
+  // arrive FIRST; it never stopped the timer from then overwriting it. An adversarial reviewer
+  // proved the shipped code did exactly that, and every existing test passed through it because
+  // none of them ever made the SDK reject — `stream` only had 'resolve' and 'hang'.
+  it('keeps a vendor error on screen after the watchdog fires', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+    anam.state.stream = 'reject';
+    anam.state.streamError = 'Concurrency limit reached';
+    render(<AvatarConversation characterId="einstein" projectId="p1" sessionToken="tok" onLeave={() => {}} />);
+    await flush();
+
+    // The vendor's diagnosis is what the viewer sees.
+    expect(screen.getByText(/Concurrency limit reached/i)).toBeTruthy();
+
+    // …and it is STILL what they see once the watchdog has had its turn.
+    await advance(CONNECT_WATCHDOG_MS + 1_000);
+    expect(screen.getByText(/Concurrency limit reached/i)).toBeTruthy();
+    expect(screen.queryByText(/reported no error/i)).toBeNull();
+  });
+
+  it('still speaks when there is no vendor error to defer to', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+    // The watchdog must not become silent — it is the only message on a truly hung connect.
+    anam.state.stream = 'hang';
+    render(<AvatarConversation characterId="einstein" projectId="p1" sessionToken="tok" onLeave={() => {}} />);
+    await flush();
+    await advance(CONNECT_WATCHDOG_MS + 1_000);
+    expect(screen.getByText(/could not start the avatar/i)).toBeTruthy();
+  });
+});
+
+describe('the connect budget does not abort a healthy-but-slow start', () => {
+  // A 7s per-attempt timeout was chosen purely to fit two attempts under a 20s watchdog, with no
+  // data. Its real effect is that a start legitimately taking 7-10s — which succeeded before —
+  // aborts and fails. These pin the invariant WITHOUT pinning the arithmetic to a lucky pair.
+  it('never gives an attempt less time than the SDK would have', async () => {
+    const { DEFAULT_START_SESSION_REQUEST_TIMEOUT_MS } = await import(
+      '@anam-ai/js-sdk/dist/module/lib/constants.js'
+    ) as { DEFAULT_START_SESSION_REQUEST_TIMEOUT_MS: number };
+    expect(ANAM_SESSION_START_POLICY.requestTimeoutMs).toBeGreaterThanOrEqual(
+      DEFAULT_START_SESSION_REQUEST_TIMEOUT_MS,
+    );
+  });
+
+  it('keeps the ordering invariant by the watchdog being wider, not the attempt narrower', () => {
+    expect(worstCaseSessionStartMs()).toBeLessThan(CONNECT_WATCHDOG_MS);
   });
 });

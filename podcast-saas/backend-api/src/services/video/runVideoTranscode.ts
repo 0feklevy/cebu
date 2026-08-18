@@ -5,7 +5,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { db, video_files } from '../../db/index.js';
 import { timeline_sections } from '../../db/schema.js';
-import { eq, and, gt, sql } from 'drizzle-orm';
+import { eq, and, gt, inArray, sql } from 'drizzle-orm';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import { transcodeToHLS, extractWaveformPeaks } from './HLSTranscoder.js';
 import { previousHlsTreeToGc } from './hlsVersioning.js';
@@ -48,6 +48,20 @@ export async function runVideoTranscode(video_file_id: string): Promise<{ hls_ma
   const ext = video.storage_key.split('.').pop() ?? 'mp4';
   const inputPath = join(workDir, `source.${ext}`);
 
+  // What a FAILED run has to undo (media-006). Both stay null until the transcoder actually
+  // begins work under this run's prefix, so a failure that never wrote anything — a download
+  // error, an unreadable source — still retires nothing and clears nothing.
+  //
+  // `runPrefix`: the versioned tree this run may have put bytes under. A failure used to leave
+  // every uploaded tier of it in object storage permanently: the caller's `hls_master_key`
+  // never flips to a failed run, so `previousHlsTreeToGc` (which reads that pointer) can never
+  // see it, and nothing else ever looks at it again.
+  // `published360pKey`: the early-playback pointer this run wrote. It is the ONE thing a failed
+  // run publishes, and every consumer (video.controller, buildPlayerConfig, SitemapService)
+  // falls back to it when `hls_master_key` is null, without consulting `hls_status`.
+  let runPrefix: string | null = null;
+  let published360pKey: string | null = null;
+
   try {
     console.log(`[HLS] ⬇ Downloading source from storage_key=${video.storage_key}`);
     const downloadUrl = await storage.getPresignedDownloadUrl(video.storage_key, 3600);
@@ -70,6 +84,9 @@ export async function runVideoTranscode(video_file_id: string): Promise<{ hls_ma
       storageKeyPrefix,
       storage,
       onTierStart: async (tierName) => {
+        // From the first tier onward this run may own bytes under its prefix (a tier throwing
+        // mid-upload leaves partial segments behind), so from here a failure must clean up.
+        runPrefix = storageKeyPrefix;
         console.log(`[HLS] ⚙ TIER START: ${tierName}  (${video_file_id})`);
         logger.info({ video_file_id, tierName }, 'HLS tier starting');
         await db
@@ -85,6 +102,7 @@ export async function runVideoTranscode(video_file_id: string): Promise<{ hls_ma
             .update(video_files)
             .set({ hls_360p_key: tierKey })
             .where(eq(video_files.id, video_file_id));
+          published360pKey = tierKey;
           console.log(`[HLS] ● 360p ready — early playback available  (${video_file_id})`);
         }
       },
@@ -125,7 +143,21 @@ export async function runVideoTranscode(video_file_id: string): Promise<{ hls_ma
             end_sec: sql`LEAST(${timeline_sections.end_sec}, ${result.durationSec})`,
             start_sec: sql`LEAST(${timeline_sections.start_sec}, ${result.durationSec})`,
           })
-          .where(and(eq(timeline_sections.video_file_id, video_file_id), gt(timeline_sections.end_sec, result.durationSec)));
+          .where(and(
+            eq(timeline_sections.video_file_id, video_file_id),
+            gt(timeline_sections.end_sec, result.durationSec),
+            // THE TRACK PREDICATE IS LOAD-BEARING, and its absence silently destroyed user data.
+            // `video_file_id` does not mean the same thing on every track. On `main` and `broll`
+            // rows it is the media whose in/out points start_sec/end_sec address — the rows this
+            // clamp is for. On an `audio` cutaway it is only the HOST the cutaway hangs from: the
+            // row's start/end are offsets into the AUDIO file (exportPlan.ts and
+            // buildPlayerConfig.ts both consume them that way), and the client posts the first
+            // main video as the host regardless of length. So a 60-second music bed attached to a
+            // 12-second video was rewritten to end at 12 the moment that video was replaced or
+            // re-transcoded — in the player AND in the exported MP4, permanently, with the
+            // original length gone from the row and nothing surfaced to the user.
+            inArray(timeline_sections.track, ['main', 'broll']),
+          ));
       } catch (err) {
         logger.warn({ err, video_file_id }, 'timeline cut-to-fit clamp failed (non-fatal)');
       }
@@ -164,10 +196,30 @@ export async function runVideoTranscode(video_file_id: string): Promise<{ hls_ma
     console.error(`[HLS] ✗ STATUS → failed  error="${message}"  (${video_file_id})`);
     logger.error({ video_file_id, err }, 'HLS transcode failed');
 
+    // Un-publish before un-storing (media-006). This run's own 360p key is the only pointer a
+    // failed run ever wrote, and it aims into a tree that is about to be queued for deletion —
+    // so it goes first, and only this run's key is touched: a previous, still-complete tree's
+    // pointer is none of a failed attempt's business.
     await db
       .update(video_files)
-      .set({ hls_status: 'failed', hls_error: message, hls_finished_at: new Date() })
+      .set({
+        hls_status: 'failed',
+        hls_error: message,
+        hls_finished_at: new Date(),
+        ...(published360pKey ? { hls_360p_key: null } : {}),
+      })
       .where(eq(video_files.id, video_file_id));
+
+    // Then hand the partial tree to the same grace-period sweep a superseded tree uses. NOT an
+    // inline delete: a viewer who started on the early-playback 360p URL still holds segment
+    // URLs into it. Best-effort — a bookkeeping failure must not replace the real error, but it
+    // does mean the tree leaks, so it is logged as such.
+    if (runPrefix) {
+      await retireHlsRun(video_file_id, runPrefix).catch((e: unknown) => {
+        logger.warn({ err: e, video_file_id, prefix: runPrefix },
+          'failed to record the partial HLS tree of a failed run — it will not be swept');
+      });
+    }
 
     throw err;
   } finally {

@@ -377,11 +377,24 @@ export function VideoUploader({ projectId, onUploaded, replaceVideoId }: Props) 
 
   return (
     <div className="space-y-3">
+      {/*
+        A dropzone is a BUTTON that also accepts a drop. As a plain `<div onClick>` this carried a
+        `focus-ring` class it could never show, because nothing could focus it: Tab skipped it and
+        Enter/Space did nothing, leaving video upload mouse-only. Matches SimulationUploader.
+      */}
       <div
         onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
         onDragLeave={() => setDragging(false)}
         onDrop={(e) => { e.preventDefault(); setDragging(false); handleFiles(e.dataTransfer.files); }}
         onClick={() => inputRef.current?.click()}
+        role="button"
+        tabIndex={0}
+        aria-label="Upload video files"
+        onKeyDown={(e) => {
+          if (e.key !== 'Enter' && e.key !== ' ') return;
+          e.preventDefault();
+          inputRef.current?.click();
+        }}
         className={`rounded-lg border-2 border-dashed px-4 py-5 text-center cursor-pointer transition-colors focus-ring sm:px-6 sm:py-8 ${
           dragging ? 'border-violet-400 bg-violet-50' : 'border-border bg-card/70 hover:border-violet-300 hover:bg-muted/30'
         }`}

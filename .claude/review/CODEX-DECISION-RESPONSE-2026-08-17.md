@@ -1,4 +1,4 @@
-# Decision response for Claude — 2026-08-17 · updated 2026-08-18
+# Decision response for Claude — 2026-08-17 · updated 2026-08-19
 
 I reviewed the decisions against `fix/night-audit-2026-08-15` at `a63aa4e`, including the
 editor, viewer, export, auth/collaboration, avatar, and simulation-revision paths. Treat the
@@ -619,3 +619,359 @@ graceful stop של 30 שניות. לכן גם לאחר תיקון הקוד נד�
   gate.
 
 לאחר היישום והקבלה, D-10 נענתה ויש להעבירה לארכיון. אין צורך להמתין לתשובת בעלים נוספת.
+
+# עדכון מחייב — 2026-08-19: D-13, D-14, D-16 ו-D-17
+
+בדקתי את ארבע ההחלטות מול ה-commit המחויב `1bb3cceb5c2fc25ee30ab30b0e08b9a6b62f3cbc`.
+ה-worktree הפעיל כולל כרגע עשרות שינויים מקבילים ולא מחויבים, ולכן אינו בסיס שחזור אמין ולא שימש
+כהוכחה שהחלטה כבר יושמה. במקום שבו הפסיקה שלהלן שונה מן ה-`RULING` הזמני שבתוך
+`DECISIONS.md`, הפסיקה כאן גוברת. אין כאן אישור deploy ל-production.
+
+## D-13 — Shape B מאושר, אבל הפסיקה הזמנית אינה בטוחה כפי שנכתבה
+
+הבחירה היא **conditional GET על נתיבי ה-config הקיימים**, ב-60 שניות עם jitter, ולא endpoint
+נפרד ל-revision ולא SSE בשלב הזה. עם זאת, אני דוחה ארבעה חלקים מן ההצעה הזמנית: cache לפי
+`projectId` בלבד, החלפה של כל `PlayerConfig`, הטענה ש-diff לבדו שומר כתוביות, והטענה שזהו נתיב
+takedown. המימוש ב-`HEAD` עדיין אינו קיים; `410a658` פתר רק את ה-stale closure ואת ההחלפה
+באמצע shot.
+
+### חוזה ה-HTTP המאושר
+
+1. בצע קודם את כל בדיקות visibility, share/permalink, entitlement וזהות הצופה. רק לאחר שהוחלט איזו
+   representation מותרת לצופה מותר לבדוק cache או להחזיר `304`. צופה שאיבד גישה חייב לקבל את
+   ה-`404`/locked העדכני, לעולם לא `304` של תשובה ישנה.
+2. סדר את ה-JSON פעם אחת, חשב **strong ETag מן הבתים המדויקים שנשלחו**, ושמור את אותם בתים לצד
+   ה-tag. השווה `If-None-Match` לפי כללי weak comparison, באמצעות ה-helper שכבר קיים
+   ב-`sim-public.controller.ts:70-80`; `304` הוא ללא body.
+3. הוסף `Cache-Control: private, no-cache`. שמור והשלם, בלי לדרוס, את
+   `Vary: Origin, Authorization, Accept-Encoding`. זהו revalidation cache, לא הרשאה ל-CDN לשתף
+   payload אישי.
+4. production הוא cross-origin. יש לחשוף `ETag` ב-CORS, להתיר במפורש `If-None-Match`, ולהגדיר
+   `Access-Control-Max-Age` מוגבל כדי שכל poll אנונימי לא יהפוך גם ל-`OPTIONS`. ה-client מטפל
+   ב-`304` **לפני** `!response.ok`.
+5. בדיקת קבלה עוברת דרך nginx גם עם gzip וגם עם identity encoding. `app.inject` לבדו אינו מוכיח
+   שה-ETag שהדפדפן רואה חוזר עד ה-backend ללא שינוי סמנטי.
+
+### ה-cache איננו `projectId → payload`
+
+`buildPlayerConfig` תלוי בצופה. ב-`buildPlayerConfig.ts:868-900` הרשאת collaborator של
+`requesterUserId` יכולה להפוך destination פרטי ל-enabled ולהכניס את ה-share token שלו ל-payload.
+`player.controller.ts` ו-`permalink.controller.ts` מעבירים זהות צופה, בעוד `share.controller.ts`
+בונה במפורש כ-anonymous. לכן cache פר-פרויקט עלול למסור לצופה אנונימי token שנבנה לבעלים או
+ל-collaborator.
+
+היישום המועדף הוא לפצל את הבנייה לשני שלבים: core שאינו תלוי בצופה וניתן לשיתוף לפי project,
+ואחריו decoration תלוי-הרשאה. ה-ETag מחושב תמיד מן ה-representation הסופית. אם הפיצול גדול מדי
+לגל הזה, מותר cache סופי רק לפי **audience variant מלא**; privileged/user-specific variants יכולים
+להישאר ללא cache. אסור להשתמש ב-token גולמי כמפתח.
+
+ה-cache עצמו חייב להיות bounded LRU, עם TTL של כחמש שניות ו-promise single-flight לכל key, כדי
+שאלף misses בו-זמניים לא יבנו אלף configs. יש לתעד שהוא per-process בלבד; nginx אינו מפעיל
+`proxy_cache`. זמן ה-staleness המובטח הוא poll + jitter + TTL — בקירוב עד 65–71 שניות, לא “60
+שניות” מדויקות.
+
+אין לשים bearer של Avatar בתוך ה-JSON הזה. `jti` ו-expiry אקראיים היו משנים את ה-ETag בכל fetch,
+מבטלים `304`, וב-cache שיתופי אף משתפים credential בין צופים. D-14 מגדירה את מסירת ה-capability
+בנפרד.
+
+### ה-client מעדכן overlays, לא את כל הסשן
+
+`diff-before-setState` אינו מספיק. כאשר b-roll באמת משתנה, ה-payload שונה ולכן `setConfig` עדיין
+מוסר ל-`HLSPlayerShell` מערך `segments` חדש. האפקט ב-`HLSPlayerShell.tsx:249-253` מאפס אז את
+`captionState`, את כל ה-cues ואת `captionsEnabled` — בדיוק בזמן שהעדכון האמיתי מגיע.
+
+לכן:
+
+- השאר את main segments, timeline, branching ו-runtime flags כ-session snapshot, כפי ש-
+  `useProjectPlayer.ts:568-582` כבר מבטיח;
+- החל בזמן אמת רק bundle אטומי של `broll_clips`,‏ `clip_overlays`,‏ `image_overlays` ו-
+  `audio_cutaways`, דרך מנגנון ה-boundary-safe של `410a658`;
+- הוסף `timeline_revision`/base fingerprint ל-bundle. offsets שנבנו מול timeline חדש אינם חוקיים
+  מול timeline ישן. אם ה-base אינו תואם, השאר את snapshot הנוכחי והצג “reload to apply”; אל תערבב;
+- בצע reconciliation של captions לפי segment id, status ו-VTT URL. שינוי overlay בלבד חייב לשמר
+  caption toggle, cues והפניות `segments`; שינוי caption אמיתי מעדכן רק את ה-segment המתאים.
+
+ETag הוא זהות של כל תשובת HTTP, לא revision בטוח של timeline. הוא משתנה גם בגלל global sim flags,
+telemetry-derived budgets וטוקני media שמתחלפים לפי יום; אסור לפרש כל ETag חדש כהרשאה להחליף כל
+state חי.
+
+### תזמון, שגיאות ו-analytics
+
+- שמור את poll ה-5 שניות רק ל-bootstrap עד שיש segment מוכן. לאחר מכן עבור ל-recursive
+  `setTimeout` של 60 שניות ±10%, שנקבע רק לאחר השלמת הבקשה הקודמת. אין overlapping requests.
+- poll רק כשהמסמך visible והסשן באמת פעיל/מנגן. בחזרה ל-visible או ל-play בצע revalidation מיידי
+  ומדוכא-debounce. בטל בקשה ישנה ב-`AbortController` בעת unmount, שינוי route או שינוי auth.
+- לאחר bootstrap, שגיאת רשת/5xx משאירה את ה-config הטוב האחרון ומנסה שוב עם backoff; היא אינה
+  מחליפה נגן עובד במסך fatal. `404`, revocation ו-locked הם transitions מפורשים ונפרדים.
+- memoize את callbacks ואת value של Firebase auth, אבל השאר dependency מפורש על `user.uid`/auth
+  revision. אחרת תיקון ה-render המקרי יהפוך login או שינוי הרשאה לבלתי נראה.
+- config revalidation **אינו view**. כיום share, permalink ו-playlist-share מעלים `view_count` בכל
+  GET. העבר counting לאירוע session idempotent נפרד, או לכל הפחות אל תעדכן אותו בבקשת
+  revalidation. אסור להפוך צופה אחד לכ-60 צפיות ול-write אחד לדקה.
+
+ה-subscription חייב לכסות direct project, share token, permalink, playlist lesson ו-course lesson
+תחת ההרשאה המקורית של כל surface. `PlaylistViewer` ו-`LessonPlayer` עדיין מקבלים config פעם אחת;
+אסור לעקוף זכויות playlist/course באמצעות polling ישיר של project. אפשר לפרוס direct/share/
+permalink תחילה, אבל D-13 נשארת `PARTIAL` עד ששני ה-surfaces האחרים מכוסים או מוחרגים במפורש
+כהחלטת מוצר.
+
+### גבול האבטחה
+
+D-13 מספקת freshness עריכתי בלבד. הטענה “takedown לא עובר כאן כי storage revocation היא
+server-side” אינה נכונה כרגע: `SupabaseStorageAdapter.getPublicUrl` מחזיר כתובת public קבועה, ולכן
+מי שכבר קיבל אותה יכול להמשיך לקרוא bytes גם אחרי ביטול share. אין להציג את SLA של ה-poll כ-
+security revocation; סגירת byte gate/private storage היא work item נפרד.
+
+### קבלה
+
+נדרשות בדיקות ל-authorization-before-304, בידוד שני viewers בעלי branch access שונה, cache
+single-flight ו-bound, CORS/gzip E2E, `304` ללא שינוי state, b-roll 200 תוך שמירת captions, base
+revision שאינו תואם, hidden/paused/resume, בקשה איטית ללא overlap, refresh failure לא-קטלני,
+locked/revoked transition, ואפס גידול ב-`view_count` בגלל polls. רק לאחר מכן ניתן לארכב D-13.
+
+## D-14 — מקבל async shadow ו-one-round-trip enforce; דוחה את המנגנון הזמני
+
+היעד נכון: shadow אינו צריך להוסיף latency למסלול המשתמש, ו-enforce חייב לבצע reserve אטומי לפני
+vendor call. אבל אין לאשר את ה-CTE הפשוט, maintained counter, capability בתוך config, או הטענה
+ש-`jti` נותן replay protection. ב-`HEAD` אף אחד מן השינויים האלה טרם יושם, ושני מתגי enforce
+חייבים להישאר כבויים.
+
+המספר 8–10 protocol exchanges למסלול ה-DB הנוכחי סביר לפי הקוד; 50–200ms הוא אומדן בלבד. יש
+telemetry סביב `reserve`, ולכן יש למדוד p50/p95/p99 לפני ואחרי ולא להציג את האומדן כעובדת production.
+
+### shadow הוא observer נפרד, לא “אותן writes בלי await”
+
+החלטה: **כן ל-asynchronous shadow**, אבל באמצעות queue מוגבל, לא `void promise` לכל request.
+
+- process-local burst shield וה-env kill switch נשארים סינכרוניים לפני כל עבודה;
+- אחרי authorization, רשום observation ל-queue עם 1–2 workers, קיבולת התחלתית 32 ו-statement
+  timeout. מעבר לקיבולת מפילים observation — לא את בקשת המשתמש;
+- מדוד `submitted`,‏ `completed`,‏ `dropped`,‏ `failed`, queue depth ו-DB latency. dropped samples
+  הם missing data מוטה בזמן עומס, לא “noise” ולא “אותה accuracy”. אין לקבוע caps מ-run שבו שיעור
+  האובדן או הקורלציה שלו לעומס אינם מקובלים;
+- shadow חייב לצבור attempted units גם אחרי ה-cap ולהעריך `wouldDeny` בנפרד. הקוד הנוכחי זורק
+  `Refused` ומגלגל את כל הטרנזקציה לאחור, ולכן הזנב שאמור לכייל את ה-cap כלל אינו נשמר;
+- ה-DB kill switch ב-shadow נקרא במסלול רענון עצמאי שאינו יכול להיזרק יחד עם observation. cache
+  של עד כשתי שניות אפשרי רק אם מתועדת חשיפה של עד שתי שניות ומצב startup/DB-failure מוגדר.
+
+Queue של 32 workers אינו מאושר: pool ה-DB הוא בערך 10, ו-32 queries תקועות יכולות לחנוק את כל
+האפליקציה. המספר 32 הוא קיבולת תור, לא concurrency.
+
+### enforce הוא DB call יחיד, אבל all-or-nothing אמיתי
+
+הבחירה היא RPC/function טרנזקציונית ב-Postgres, pooler-safe, בקריאה אחת מן השרת. בתוך הפונקציה:
+
+1. נעל את bucket rows בסדר dimension קנוני;
+2. קרא את kill switch;
+3. טפל ב-idempotent reservation קיים;
+4. בדוק את כל hourly caps ואת global/project concurrency;
+5. רק אם כולם עוברים, עדכן את **כל** המונים והכנס/חדש lease;
+6. אם אחד נכשל, גלגל את כל השינויים לאחור והחזר `deniedBy` ו-`retryAfter` מובנים.
+
+Multi-row `UPSERT … RETURNING` רגיל אינו מספיק: rows מוקדמים יכולים להתעדכן לפני ש-row מאוחר
+נכשל, ו-outer join אינו מחזיר אותם לאחור. אסור שבקשה שנדחתה תצרוך budget בממדים האחרים.
+
+`avatar_session_leases` נשאר מקור האמת. `/avatar/end` אינו אמין ואינו מפחית usage, ולכן maintained
+counter פשוט לעולם לא יורד כאשר lease פג ויכול לגדול לנצח. מותר להשתמש ב-counter רק אם expiry,
+reconciliation ו-crash recovery מוכחים. ברירת המחדל היא lock סדרתי על global/project guard rows,
+ספירה indexed של leases חיים בתוך אותה function, ו-idempotent insert. ה-kill-switch נקרא באותה
+קריאת enforce; cache של שתי שניות אינו חוסך שם round trip ורק מעכב stop.
+
+DB unavailable או timeout ב-enforce מחזיר `503` עם `Retry-After`; cap אמיתי מחזיר `429` עם הממד
+שנחסם. אין fail-open לקריאה billable.
+
+### capability נשאר מחוץ ל-config ומקבל זהות נכונה
+
+הבחירה היא **להשאיר ולחזק את `/api/v1/avatar/capability`, ולבצע לו prefetch ברקע בעת טעינת
+העמוד**, לא בעת לחיצה על Ask Avatar. ב-direct public אפשר לבצע במקביל ל-config; ב-share,
+permalink, playlist ו-course מבצעים מיד לאחר שיש את grant/project של ה-surface. רענון נעשה לפני
+expiry. כך אין hop במסלול הלחיצה, אין bearer ב-ETag/cache של D-13, ואין token חדש בכל poll.
+
+ה-endpoint חייב לשחזר את gate המדויק של surface המקורי: unlisted דורש share token תקין;
+permalink דורש את ה-slug שנפתר; playlist/course דורשים parent grant תקף וחברות של הפרויקט. בדיקת
+`visibility !== private` אינה מספיקה — כיום היא מתייחסת ל-unlisted כ-public-by-UUID. לאחר שכל
+ה-surfaces מחוברים יש לצמצם endpoint shapes מיותרים, לא להשאיר mint חלופי חלש יותר.
+
+ה-token עצמו דורש secret ייעודי ב-production, `aud=avatar`, scopes מפורשים, project, grant/
+entitlement shape, expiry קצר ומזהה viewer/session. `uid` של authenticated token חייב להתאים למבקש
+הנוכחי; הוא אינו “advisory”. TTL של כ-10 דקות הוא ברירת התחלה, לא תחליף ל-revocation.
+
+`jti` הוא bucket של metering, **לא replay protection ולא lease id**. capability אחת יכולה לשמש
+כמה פתיחות popup, ותוקף יכול לשחזר אותה עד expiry. עבור start, זהות ה-reservation היא נגזרת של
+`capability.jti + client startKey + project + caller + operation`. `startKey` נדרש ב-enforce:
+
+- retry של אותה פתיחה מחויב פעם אחת ומקבל את אותה תוצאת idempotency;
+- שתי פתיחות אמיתיות תחת capability אחת מקבלות שני leases;
+- reservation/idempotency מוכרעים לפני vendor call ובאותו סדר, כך ש-retry אינו מחויב פעמיים לפני
+  שה-cache של vendor token נבדק;
+- capability שמוחזרת מ-`/avatar/start` חייבת להיות מוכרת ל-client ולשמש את visual/image/reconnect;
+  כיום type ה-client וה-reconnect מתעלמים ממנה.
+
+### rollout וקבלה
+
+הסדר המחייב הוא:
+
+1. schema + function אטומית ובדיקות concurrency אמיתיות;
+2. shadow observer אסינכרוני + metrics במשך כמה ימי traffic מייצג;
+3. חיבור capability בכל client surface, refresh ו-reconnect;
+4. E2E אמיתי עם `AVATAR_CAPABILITY_MODE=enforce` בעוד budget עדיין shadow;
+5. רק לאחר כיול ו-review של caps — `AVATAR_BUDGET_MODE=enforce`.
+
+בדיקות הקבלה כוללות later-dimension rollback, מאות reservations מקבילים באותו cap, expiry שמחזיר
+capacity, over-cap shadow שנשמר ב-observation, queue loss metrics, אותו `startKey` מחויב פעם אחת,
+שני popups תחת token אחד נספרים פעמיים, DB failure ל-503, kill propagation SLA, ו-E2E של
+direct/share/permalink/playlist/course עבור start, visual, image, reconnect ו-token expiry. עד אז
+D-14 היא `PARTIAL` ואין להפוך אף מתג enforce.
+
+## D-16 — הפסיקה הזמנית צרה מדי; חסום auto-publish לא-אמין, לא release לא קשור
+
+המסקנה “ה-crop אינו מושלם” נכונה אבל ממעיטה: הוא **נראה שגוי על תוכן נפוץ**. עם זאת, התיוג P0
+אינו תואם ל-P0 המוצרי של outage/data-loss. ההחלטה היא לא לחסום release שאינו קשור ל-crop, אבל גם
+לא לפרסם אוטומטית או לשווק כ-production-quality מסלול vertical שאין לו fallback ו-preview.
+
+הפסיקה הזמנית גם מתארת את התיקון לא נכון: ה-backend כבר מפריד smoothing לפי shot. ה-client הוא
+שמאבד את הגבולות, מבצע linear interpolation ביניהם ומוסיף EMA של `0.06` לכל rAF. לכן אותה נקודת
+cut מתייצבת בכ-1.63s ב-30Hz,‏ 0.82s ב-60Hz ו-0.41s ב-120Hz. בנוסף, ה-Gaussian האופליין הוא
+zero-phase ומתחיל לנוע **לפני** שהדובר החדש התחיל. אי אפשר לפתור זאת ב“עוד shot awareness” בצד
+אחד או ב-reweight קטן.
+
+### חוזה temporal אחד
+
+1. JSON ה-crop נושא discontinuity/shot boundaries מפורשים.
+2. hard camera/scene cut הוא discontinuity: ה-frame הראשון אחרי החיתוך מוצג ב-target החדש ללא
+   interpolation, ללא EMA מ-`0.5` וללא pan דרך החיתוך.
+3. בתוך אותו shot התנועה causal בלבד — לעולם אינה מקדימה את הראיה. interjection קצר של בערך שנייה
+   נשאר על הדובר הקודם; switch שכבר עבר commit חייב להגיע לחלון של הדובר החדש בתוך לכל היותר
+   כ-300ms, בלי לעצור באמצע בין פנים.
+4. יש smoothing authority אחת. ההעדפה היא שה-backend יפיק track סופי, וה-renderer רק יכבד אותו
+   ואת discontinuities. אם נשאר smoothing ב-client, הוא delta-time-normalized ואינו חוצה cut.
+5. הסר את reset-to-centre בתחילת segment; התחל מן ה-keyframe התקף הראשון.
+
+את threshold ה-interjection ואת settle target מכיילים על reel של אותו קטע בארבע גרסאות ובחירת
+עריכה אנושית. אין פשוט להקטין Gaussian ל-0.4 ולהחליף drift ב-whip-pan.
+
+### localization ו-fallback לפני tuning
+
+- תקן מיד את הטרנספורמציה בין analysis coordinates לממדי HLS אחרי padding. עבור 4:3,
+  `crop_x=0.2` במקור חייב להפוך ל-`0.275` בתמונה המרופדת; original fallback ו-HLS חייבים להציג
+  אותו subject.
+- reset את motion reference בגבול shot; ה-frame הראשון אחרי cut אינו ראיית motion מול ה-shot
+  הישן.
+- no-audio two-shot, slide/screen-share או head confidence לא אמין מקבלים mode מפורש של
+  wide/contain/letterbox. אין למרכז crop בעמק שבין שני אנשים ואין לחתוך טקסט בכוח.
+- הוסף per-video/per-section opt-out ו-preview לפני publish. confidence score יכול להפוך gate רק
+  לאחר שנמצא שהוא מפריד good/bad על corpus מתויג; אין להמציא מספר ולקרוא לו ביטחון.
+- אל “תן יותר משקל ל-motion-correlated-with-audio” כפתרון localization. correlation מניחה שכבר
+  קיימים head tracks נכונים ויכולה לבחור מאזין שזז. skin heuristic של RGB, ובפרט `skin×2`, מוחלף
+  ב-face/person detector שנבדק על skin tones מגוונים.
+
+ה-`FaceHook` הקיים אינו חיבור מוכן: הוא מוסיף Gaussian ל-`interestX`, בעוד `locateHeads` אינו מקבל
+boxes. detector חדש חייב להזין head boxes/tracks מפורשים ל-`HeadModel`, ורק אז active-speaker
+logic יכול לבחור ביניהם. את 4/12.5/25fps משווים על footage מסומן; אין להעלות sampling לפני תיקון
+buffering/RSS ורק מפני שה-decode cost דומה.
+
+### הגנות production
+
+עד שיש מדידה על host של 2 vCPU, `QUEUE_CROP_CONCURRENCY=1`. הוסף heartbeat ל-claim, deadline/
+cancellation, ושנה את audio extraction כך שלא יחזיק את כל המסלול בשלושה עותקים. שני crop jobs
+אינם רשאים לתפוס את שני slots הגלובליים ולחסום export/transcode/captions. Vertical export נשאר
+מחוץ ל-roadmap המאושר עד שה-gate הזה עובר; artifact מיוצא אינו ניתן לתיקון בסיבוב מסך.
+
+ה-repro שבמסמך הוא ראיה, לא test harness מחויב. לפני סגירה יש להתחייב את הבדיקות וה-fixtures.
+הקבלה כוללת 30/60/120Hz זהים בגבול cut, segment שמתחיל ב-keyframe הראשון, interjection של שנייה
+שאינו עוזב פנים, turn של 1.5–2s שמגיע לאחר commit ואינו עוצר באמצע, 4:3 parity, no-audio
+two-shot ו-slide שעוברים ל-wide, corpus אמיתי מתויג ומגוון שמדווח face-center error, active-speaker
+coverage ו-false-two-shot, וכן RSS/runtime ו-duplicate-lease tests על סביבת production דומה.
+
+## D-17 — לפצל ל-knowledge correctness ול-visual retrieval; לא לקבל את תיאור המצב הזמני
+
+הטענה “text retrieval is defensibly simple” נכונה רק לפרויקט יחיד-מקטע שקצר מ-24k תווים. בפרויקט
+מרובה מקטעים או branching, מסלולי prompt ו-RAG יכולים לדעת מקטעים שונים, ו-head truncation מסומן
+למודל כ“התוכן המדויק”. לכן D-17a היא correctness ולא polish.
+
+מצד שני, חלק מן המסמך כבר stale: `559ed28` תיקן את runtime visual scope. ב-`HEAD`,‏
+`projectScope` קורא רק את הפרויקט עצמו וה-runtime writes שומרים `projectId`; המבחן
+`visualProjectScope.test.ts` עבר 6/6. אין ליישם מחדש “per-project eligibility”. יש לבצע census
+read-only לשורות legacy עם `project_id IS NULL`, לא להקצות אותן אוטומטית לפרויקט כלשהו, ולסגור
+את management predicate הישן שמאפשר טיפול ב-global row לפי UUID.
+
+### D-17a — KnowledgeSnapshot קנוני קודם לכל שיפור retrieval
+
+צור `KnowledgeSnapshot` versioned אחד לפרויקט. הוא נבנה מכל non-broll segment בסדר timeline
+דטרמיניסטי, שומר segment/video/sequence ids וטווחי cue, ומייצג branching כמסלולים/צמתים — לא
+כ-concatenation שקרי של ענפים חלופיים. כל שינוי captions בונה snapshot חדש מלא; אין “longest wins”
+ואין “last captioned wins”.
+
+אותו snapshot וה-hash שלו מזינים את ארבעת המקומות: config save/bake, start fallback, prompt
+context ו-RAG document. העלאת RAG נעשית draft → upload/validate → CAS activate מול expected
+snapshot; מוחקים document ישן רק אחרי activation, כדי ששתי עבודות caption מקבילות לא ימחקו זו
+לזו ידע.
+
+ה-prompt אינו מכנה excerpt חלקי “the exact spoken content”. הוא כולל summary/version/provenance
+אמיתיים ומציין במפורש כאשר גוף מלא אינו inline. שמור VTT timing, ושלח בפתיחת Avatar את
+`segmentId`,‏ `videoId`,‏ `currentTime` וחלון cues סביב ה-playhead דרך dynamic context — לא דרך
+persona baked שתלויה בזמן. עבור שאלה רחבה, RAG פועל על כל ה-snapshot; עבור “מה נאמר עכשיו?” חלון
+ה-playhead קודם.
+
+השלב הראשון הוא hybrid: summary bounded + playhead window + full canonical RAG. בדיקה מבוקרת על
+שאלות שחומר התשובה שלהן נמצא רק אחרי 24k קובעת אם vendor RAG מספיק. אם הוא אינו מחזיר מקור
+בעקביות, מוסיפים app-owned chunk retrieval; אין פשוט להעלות cap ולשלם על transcript שטוח בכל turn.
+
+עד שהדבר מיושם, Ask Avatar בפרויקט multi-segment/branching מסומן unsupported או מוגבל במפורש
+ל-segment הנוכחי. אין להציג תשובה כלל-פרויקטלית שעשויה להגיע מן הענף הלא נכון. זו חסימת feature
+מקומית, לא חסימת release של שאר המוצר.
+
+### D-17b — visual request אחד, relevance לפני popularity
+
+ה-end state הוא coordinator אחד לכל conversational turn:
+
+1. explicit visual request יכול להתחיל מיד;
+2. בקשה רגילה נאספת מן user question ומה-final avatar reply ומייצרת לכל היותר החלטת visual אחת
+   ו-generation אחת;
+3. כל callback נוסף של אותה תשובה deduped לפי `turnId`; מעבר ל-turn הבא או interrupt מבטל תוצאה
+   ישנה, שלעולם אינה מוצגת בשיחה החדשה;
+4. ה-storage/cache fingerprint נגזר מאותו normalized request שבאמת יצר את הוויזואל. אין לשמור
+   image שנוצר מן avatar reply תחת previous user utterance;
+5. cache hit עדיין עובר intent/relevance gate. “hi” אינו עוקף classifier רק מפני שקיים key ישן.
+
+ב-retrieval, שאל תחילה את curated/basic assets של הפרויקט לפי relevance, ורק אחר כך generated.
+השתמש ב-tags/caption/alt text עריכים וב-index מתאים (FTS/trigram או embedding שנמדד), לא ב-raw
+filename בשלושה שדות. `use_count` הוא לכל היותר tiebreak אחרי relevance; לעולם לא בוחרים top 400
+לפי popularity ורק אז מחפשים בהם התאמה. הוסף character policy מפורש: כרגע שאילתת relevance אינה
+מסננת `character_id`, ולכן persona אחת יכולה לקבל asset בסגנון אחרת באותו פרויקט.
+
+ה-scale המתוקן של באג top-400 הוא יותר מ-400 rows **באותו פרויקט**, לא 40 דקות traffic של כל
+הפלטפורמה; ה-cross-project pool כבר נסגר.
+
+### honesty, safety, memory ועלות
+
+- הסר `chart` מיד מן classifier. הוא חוזר רק כאשר כל מספר חולץ ממקור ב-KnowledgeSnapshot, נושא
+  provenance/citation, ועובר schema validation מלאה. shape-valid hallucination עדיין שקרית.
+- viewer-generated visual/image עובר moderation לפני paid generation. שירות moderation הכללי
+  תוקן ב-`9d06762`, אבל מסלולי Avatar עדיין אינם קוראים לו. במסלול אנונימי moderation failure
+  הוא fail-closed עם metric/alert; אין לשמור globally תוצר שלא עבר gate.
+- memory מקבל sequence מפורש וסדר יציב, max של 4,000 תווים גם ב-schema שעל החוט, TTL/delete/
+  consent לעובדות אישיות, ו-session secret מחוץ ל-query string/logs. metering שכבר נוסף אינו פותר
+  shuffled replay או retention אינסופי.
+- image low-quality אינו משודרג אוטומטית ל-high בעלות גבוהה אם אף אחד לא שמר/שב והשתמש בו.
+  upgrade נעשה על owner save או reuse מוכח, וניקוי מוחק את object הישן. budget cap אינו הצדקה
+  לבזבז בתוך ה-cap.
+- stored generated simulation מקבל sandbox זהה למסלול הטרי; אין `allow-same-origin` רק מפני
+  שהפריט הגיע מן bank. בדיקות `postMessage` מאמתות גם `source` וגם origin היכן שאפשר.
+
+### סדר וקבלה
+
+הסדר המחייב הוא: canonical snapshot + playhead correctness; אחריו one-turn coordinator ומפתח cache;
+אחריו relevance-first retrieval; ורק אז tuning של מודל/embeddings. chart ו-avatar generation ללא
+moderation נסגרים/מושבתים לפני rollout ציבורי, גם אם שאר שיפורי האיכות הם “next wave”.
+
+בדיקות הקבלה כוללות permutations של short/long/last-captioned segments שמפיקים snapshot/hash זהה,
+caption jobs מתחרים, branch שאינו מכניס ידע מענף לא-נגיש, שאלה אחרי 24k, ושאלת playhead. בצד
+הוויזואלי: 400 generated + basic רלוונטי, high-use irrelevant מול low-use relevant, filename
+גנרי ללא tags, character boundary, callback fan-out שמפיק call אחד, תוצאה איטית שאינה חוצה turn,
+charts עם provenance או disabled, והוכחה חוזרת שפרויקט A אינו רואה B וש-legacy NULL אינו נכנס
+ל-runtime. יש להוסיף eval set אמיתי עם expected source/visual-or-none ולדווח grounded-answer rate,
+precision@1, no-visual precision, stale-result rate, latency ועלות ל-turn.
+
+לאחר D-17a ניתן לסגור את correctness של הידע. D-17b נסגרת רק לאחר ה-eval וה-gates; לא נכון
+לסגור את שתיהן תחת “next-wave quality, not a blocker”.

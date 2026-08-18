@@ -34,6 +34,22 @@ export const CourseRepository = {
     return db.query.courses.findMany({ where: eq(courses.org_id, orgId) });
   },
 
+  /**
+   * Every slug already taken on one canonical host — the namespace
+   * `uniq_courses_host_slug` actually enforces, which is GLOBAL across organizations
+   * (`COALESCE(canonical_host,'@platform'), slug`). Deliberately NOT org-scoped: the
+   * public lookup (`findByPlatformSlug`) has no tenant segment, so one slug on one host
+   * addresses exactly one course, and an allocator that reads a narrower set than the
+   * index enforces can only ever produce a 23505 the caller did not ask for.
+   */
+  async slugsForHost(canonicalHost: string | null): Promise<string[]> {
+    const rows = await db.query.courses.findMany({
+      where: canonicalHost === null ? isNull(courses.canonical_host) : eq(courses.canonical_host, canonicalHost),
+      columns: { slug: true },
+    });
+    return rows.map((r) => r.slug);
+  },
+
   async create(values: NewCourse): Promise<Course> {
     const [row] = await db.insert(courses).values(values).returning();
     return row;

@@ -110,7 +110,8 @@ function harness(): {
   pump();
 
   return {
-    send: (m) => { const data = structuredClone(m); for (const l of [...listeners]) l({ data }); },
+    // `source: ctx.parent` — the bridge ignores messages from any other window (simulation-004).
+    send: (m) => { const data = structuredClone(m); for (const l of [...listeners]) l({ data, source: ctx.parent }); },
     advance,
     pump,
     probe: () => (ctx.__probe as { runs: number; impulses: number; ticks: number; cleanups?: number })
@@ -221,7 +222,7 @@ describe('auto-script resume and one-shot demo timers', () => {
     ctx.window = ctx;
     vm.createContext(ctx);
     vm.runInContext(bridge, ctx as vm.Context, { filename: 'bridge.js' });
-    for (const l of [...listeners]) l({ data: { type: 'startScript', script: 'sec-args-0002', params: {}, token: 1 } });
+    for (const l of [...listeners]) l({ data: { type: 'startScript', script: 'sec-args-0002', params: {}, token: 1 }, source: ctx.parent });
     now = 100;
     for (const [, t] of [...timers]) if (t.due <= now) t.fn(...t.args);
 

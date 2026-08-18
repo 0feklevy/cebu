@@ -153,6 +153,8 @@ export function BrollPanel({ projectId, mark, videos, jobs, onNewJob, onJobUpdat
         </div>
         <button
           onClick={onClose}
+          aria-label="Close B-roll panel"
+          title="Close B-roll panel"
           className="flex h-8 w-8 items-center justify-center rounded-lg shell-muted transition-colors shell-hover hover:text-[hsl(var(--shell-foreground))] focus-ring"
         >
           <X size={15} strokeWidth={1.9} aria-hidden />

@@ -281,6 +281,8 @@ const BRIDGE_TEMPLATE = /* js */ `;(function(){
     if(fn){try{_cancel=fn()||null;}catch(e){}}
   }
   window.addEventListener('message',function(e){
+    // Only our own parent — see the guard note on the combined bridge (simulation-004).
+    if(e.source!==window.parent)return;
     var d=e.data||{};
     if(d.type==='startScript')startScript(d.script||'auto');
     if(d.type==='stopScript'&&_cancel){try{_cancel();}catch(e){}_cancel=null;}
@@ -306,7 +308,9 @@ const BRIDGE_TEMPLATE = /* js */ `;(function(){
 //    because a stopped loop simply never requests a frame while paused).
 //  - While paused, callbacks are queued (each function once) instead of scheduled; on resume
 //    they are re-scheduled via the NATIVE rAF, so frame timestamps stay native — never fabricated.
-//  - Accepts any origin, matching the existing bridge listener pattern.
+//  - Accepts messages only from window.parent, matching the bridge listener (simulation-004).
+//    Origin is deliberately NOT pinned: the gate is stored inside the entry HTML at publication
+//    time, and the export capture backend posts from the document itself.
 //  - Exposes window.__SIM_ENV parsed once from the iframe's own URL query params
 //    (lowend / dpr / mem / section) — an enabler sims may consult later.
 //  - v3: answers {type:'listSimControls'} with {type:'simControlsList', controls} — a runtime
@@ -615,6 +619,8 @@ const RAF_GATE_TEMPLATE = /* js */ `;(function () {
   // "paused" (and applyMuteAll below only mutes <video>/<audio> elements, not AudioContext
   // output). Generated sims are rAF-driven by construction; uploaded sims should be too.
   window.addEventListener('message', function (e) {
+    // Only our own parent — see the guard note on the combined bridge (simulation-004).
+    if (e.source !== window.parent) return;
     var d = (e && e.data) || {};
     if (d.type === 'simPause') { paused = true; }
     else if (d.type === 'simResume') { if (paused) { paused = false; flush(); } }
@@ -1230,6 +1236,8 @@ export function wrapBridgeMainBody(mainBody: string): string {
     '  }',
     '  window.SimAPI = { start: startScript, stop: stopScript };',
     "  window.addEventListener('message', e => {",
+    '    // Only our own parent — see the guard note on the combined bridge (simulation-004).',
+    '    if (e.source !== window.parent) return;',
     '    const { type, script, params } = e.data || {};',
     "    if (type === 'startScript')  startScript(script || 'main', params);",
     "    if (type === 'stopScript')   stopScript();",
@@ -1799,6 +1807,15 @@ export function wrapBridgeCombined(entries: Map<string, string>, opts?: WrapBrid
     '  }',
     '  window.SimAPI = { start: startScript, stop: stopScript };',
     "  window.addEventListener('message', function(e) {",
+    '    // ONLY OUR OWN PARENT (simulation-004). `frame-ancestors` stops an attacker page from',
+    '    // FRAMING a sim; it does not stop one holding a handle to it — window.open() on the public',
+    "    // /sim-public URL, or a third-party frame nested inside the customer's own package posting",
+    '    // to window.parent. Either could swap the running section, stop it, or force a hide set.',
+    '    // SOURCE, NOT ORIGIN: these bytes are STORED at publication time, so an origin allow-list',
+    '    // baked in here would freeze the deploy topology into every published package forever; and',
+    '    // the export capture backend navigates straight to the sim URL and self-posts, so its',
+    "    // messages carry the SIM's origin (source === window === window.parent, which passes).",
+    '    if (e.source !== window.parent) return;',
     '    var d = e.data || {}; var type = d.type; var script = d.script; var params = d.params;',
     "    if (type === 'startScript')  startScript(script || 'main', params, d.token);",
     "    if (type === 'stopScript')   stopScript();",

@@ -135,6 +135,56 @@ export function tailPadSec(grid: ExportGrid): number {
 export const SPLICED_VIDEO_KINDS: readonly TimelineWindowKind[] = ['video', 'clip', 'sim-capture'];
 
 // ---------------------------------------------------------------------------
+// Input seek (media-008)
+// ---------------------------------------------------------------------------
+
+/**
+ * The smallest source in-point worth seeking to. A seek is not free (index lookup, keyframe
+ * re-anchor) and below a few seconds there is no decode to save, so sources played from the
+ * start — the base video's first window, every sim capture, every looped still — emit exactly
+ * the input arguments and the trims they did before.
+ */
+export const MIN_INPUT_SEEK_SEC = 5;
+
+/**
+ * Where to seek an input whose needed source position is `sourceInSec`, or 0 for "do not seek".
+ * THE ONE place the position is decided, so the graph builders and their tests cannot disagree.
+ *
+ * INPUT seek (`-ss` BEFORE `-i`), not output seek. Output seek decodes everything before the
+ * target and throws it away, which is the entire cost being removed here. Input seek jumps to
+ * the keyframe at or before the target and — under `-accurate_seek`, ffmpeg's default when
+ * transcoding — decodes and discards forward to the exact position.
+ *
+ * IT SEEKS TO THE EXACT IN-POINT, and the branch's `trim=start=` becomes 0. That is not a
+ * shortcut, it is the accurate spelling, and the difference was measured on ffmpeg 8.1.2
+ * (2s window at 20.017s of a 30 fps source, 2s GOP, output frames hashed against a full
+ * reference decode):
+ *
+ *   trim=start=20.017, no seek                    → reference frame 601   (the baseline)
+ *   -ss 20.017 + trim=start=0                     → reference frame 601   ✅ byte-identical
+ *   -ss 19.017 + trim=start=1  (a 1s "safety" backoff) → reference frame 602   ❌ one frame late
+ *
+ * The backoff loses a frame because it rounds TWICE: accurate seek returns the first frame at
+ * or after the seek point (up to one source-frame period late), and the residual `trim=start=`
+ * then applies its own `>=` against that already-shifted grid. Seeking to the exact in-point
+ * applies the same single `>=` the old `trim=start=` applied, at the same position — so the
+ * spliced frames are the same frames.
+ *
+ * That exactness is why `buildVideoSpine` seeks only inputs consumed by ONE window: a shared
+ * (`split=N`) input can carry only one seek, so every other window's residual trim would round
+ * a second time against the shifted grid and could land a frame late. See its call site.
+ */
+export function inputSeekSec(sourceInSec: number): number {
+  if (!Number.isFinite(sourceInSec) || sourceInSec < MIN_INPUT_SEEK_SEC) return 0;
+  return sourceInSec;
+}
+
+/** `-i path`, preceded by an input seek when there is one to make. */
+function seekedInputArgs(seekSec: number, path: string): string[] {
+  return seekSec > 0 ? ['-ss', fmtSec(seekSec), '-i', path] : ['-i', path];
+}
+
+// ---------------------------------------------------------------------------
 // Formatting helpers
 // ---------------------------------------------------------------------------
 
@@ -270,10 +320,25 @@ export function buildVideoSpine(timeline: TimelineWindow[], grid: ExportGrid): B
 
   // window index → label of the normalised branch it trims from
   const branchOf = new Map<number, string>();
+  // window index → the input seek already applied to its input, which its trim must not repeat
+  const seekOf = new Map<number, number>();
 
   for (const [sourcePath, windows] of sharedUse) {
     const inputIdx = inputs.length;
-    inputs.push({ args: ['-i', sourcePath] });
+    // Seek the input to the frame this window actually starts on, instead of decoding the file
+    // from frame 0 to get there (media-008): a ten-second b-roll cut from minute 45 of its
+    // master used to decode forty-five minutes of H.264 first. Measured on a 10-minute source
+    // with a 2s window at 9:00 — 6.70s of user CPU before, 0.10s after, byte-identical output.
+    //
+    // SINGLE-WINDOW INPUTS ONLY, deliberately. One input carries one `-ss`, so a source spliced
+    // N times (the base video under overlays — the split=N discipline above) would have to give
+    // its other windows a residual `trim=start=`, and that rounds a second time against a grid
+    // the seek has already shifted by up to one source frame. Exactness wins: a shared source
+    // keeps decoding from 0, which for the base video is nearly all needed anyway. The case this
+    // gives up is a source used more than once AND only from deep inside itself.
+    const seekSec = windows.length === 1 ? inputSeekSec(timeline[windows[0]!]!.sourceInSec ?? 0) : 0;
+    for (const wIdx of windows) seekOf.set(wIdx, seekSec);
+    inputs.push({ args: seekedInputArgs(seekSec, sourcePath) });
     const srcLabel = `src${inputIdx}`;
     // A source consumed exclusively by sim-capture windows is a recording: it gets
     // the start_time=0 variant of the chain (late first frames, sparse VFR).
@@ -331,7 +396,9 @@ export function buildVideoSpine(timeline: TimelineWindow[], grid: ExportGrid): B
   const windowLabels: string[] = [];
   timeline.forEach((w, i) => {
     const from = branchOf.get(i)!;
-    const inSec = w.sourceInSec ?? 0;
+    // Source-local in-point MINUS the input seek: after `-ss` the stream's timestamps are
+    // rebased so the seek position is 0, so seek + this residual is the original in-point.
+    const inSec = (w.sourceInSec ?? 0) - (seekOf.get(i) ?? 0);
     const dur = windowDur(w);
     const label = `[w${i}]`;
     parts.push(
@@ -542,8 +609,13 @@ export function buildAudioMixBatch(
     const dur = windowDur(w);
     if (!(dur > EPS)) throw new Error(`buildAudioMixBatch: window ${i} has non-positive duration`);
     if (w.startSec < -EPS) throw new Error(`buildAudioMixBatch: window ${i} has negative startSec`);
-    inputs.push({ args: ['-i', w.sourcePath] });
-    const inSec = w.sourceInSec ?? 0;
+    // Same input seek as the video spine (media-008): a bed or a narration take placed from
+    // deep inside its master decoded everything before it, per window, on every export. Every
+    // mix input is single-use by construction (one `-i` per window), so the seek is always the
+    // exact in-point and `atrim=start=` always becomes 0 — the accurate form.
+    const seekSec = inputSeekSec(w.sourceInSec ?? 0);
+    inputs.push({ args: seekedInputArgs(seekSec, w.sourcePath) });
+    const inSec = (w.sourceInSec ?? 0) - seekSec;
     const gain = w.gainDb != null && w.gainDb !== 0 ? `volume=${w.gainDb.toFixed(2)}dB,` : '';
     const delayMs = Math.max(0, Math.round(w.startSec * 1000));
     // The FIRST branch is the mix's duration anchor: `amix duration=first` ends the

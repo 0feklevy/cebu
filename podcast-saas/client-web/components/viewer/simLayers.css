@@ -1,33 +1,30 @@
 /* ── Safe simulation presentation layers ─────────────────────────────────────────────────────
  *
  * WHERE THIS SITS IN THE VIEWER STACK
- *   1/2  video A / video B          (VideoLayer)
- *   8    b-roll overlay
- *   9    still-image overlay
- *   12   avatar circles
- *   20   THIS COMPONENT             (same band as the legacy `.sim-overlay` it supersedes)
- *   21   legacy wait affordance     (retired into this component's `coverFallback` slot)
- *   24   start-screen thumbnail
- *   25   start button
- *   54   sim hover strip
- *   55   controls bar
+ *   `./layers.css` is the single ladder for the whole player; this component takes the
+ *   `--z-viewer-sim` rung, one step under the legacy wait affordance. Read that file for the rungs
+ *   above and below — they are NOT restated here, because two copies of a stacking order is how the
+ *   order stops being knowable.
  *
- * `isolation: isolate` gives the three layers their own stacking context, so their local z values
- * (1/2/3/4) can never leak into the viewer's numbering. Everything inside this component composites
- * strictly between 20 and 21 globally — which is why the controls bar (55) and the hover strip (54)
- * stay reachable even while the recovery surface is up. A component that raised its recovery UI to
- * a global z above the controls would trap the user on a broken section with no way to seek out of
- * it, which is the one thing a failure surface must never do.
+ * `isolation: isolate` gives the three layers their own stacking context, so their local rungs
+ * (`--z-sim-outgoing` … `--z-sim-recovery`) can never leak into the viewer's numbering. Everything
+ * inside this component composites strictly between `--z-viewer-sim` and `--z-viewer-sim-wait`
+ * globally — which is why the controls bar and the hover strip stay reachable even while the
+ * recovery surface is up. A component that raised its recovery UI above `--z-viewer-controls` would
+ * trap the user on a broken section with no way to seek out of it, which is the one thing a failure
+ * surface must never do.
  *
  * The ROOT is pointer-transparent. Only two things opt back in: the revealed live frame (so the
  * simulation is interactive) and the recovery surface (so its actions are clickable). A cover never
  * takes pointer events — the user must be able to scrub through a section that is still covered.
  */
 
+@import './layers.css';
+
 .sim-presentation {
   position: absolute;
   inset: 0;
-  z-index: 20;
+  z-index: var(--z-viewer-sim);
   isolation: isolate;
   pointer-events: none;
 }
@@ -44,7 +41,7 @@
    beneath is valid — a cold seek, a sim-first project before any video decoded — and the black
    there is deliberate: it hides whatever the compositor last left in that rectangle. */
 .sim-layer-bottom {
-  z-index: 1;
+  z-index: var(--z-sim-outgoing);
 }
 .sim-layer-bottom[data-fill='opaque'] {
   background: #000;
@@ -58,7 +55,7 @@
    it can prepare and render off-screen. Removing it from the box tree stops the rAF and the frame
    never reaches SECTION_PRESENTED, which turns preparation into a deadlock. */
 .sim-layer-middle {
-  z-index: 2;
+  z-index: var(--z-sim-incoming);
   transition: opacity 0.2s ease;
   will-change: opacity;
 }
@@ -81,7 +78,7 @@
 
 /* ── Top: poster / neutral cover ──────────────────────────────────────────────────────────── */
 .sim-layer-top {
-  z-index: 3;
+  z-index: var(--z-sim-cover);
   transition: opacity 0.2s ease;
 }
 /* Opaque covers paint their own background so a `object-fit: contain` poster's letterbox bars are
@@ -130,7 +127,7 @@
    visible underneath, which is what makes "keep the poster" an obviously available choice rather
    than an abstract one. */
 .sim-layer-recovery {
-  z-index: 4;
+  z-index: var(--z-sim-recovery);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -180,12 +177,12 @@
  * parent changes and every warmed iframe would be destroyed each time a modern package handed back
  * to video — the exact cost the pool exists to avoid.
  *
- * z 22 sits above the pool (20) and the legacy wait affordance (21), and below the start screen
- * (24/25), the hover strip (54) and the controls bar (55) — so a covered or failed section is
- * always still seekable.
+ * `--z-viewer-sim-surface` sits above the pool (`--z-viewer-sim`) and the legacy wait affordance
+ * (`--z-viewer-sim-wait`), and below the start screen, the hover strip and the controls bar — so a
+ * covered or failed section is always still seekable.
  */
 .sim-presentation--overlay {
-  z-index: 22;
+  z-index: var(--z-viewer-sim-surface);
 }
 
 /* With no `incoming`, the middle layer is an empty box. It must not intercept anything: the frame

@@ -290,7 +290,9 @@ function bootBridge(bridge: string, search: string) {
   );
   run(fakeWindow, fakeDocument, { search }, raf, noopTimer, () => {}, noopTimer, () => {});
 
-  const post = (data: unknown) => messageListeners.forEach((fn) => fn({ data }));
+  // `source: fakeWindow.parent` — the bridge ignores messages from any other window (simulation-004).
+  const post = (data: unknown) =>
+    messageListeners.forEach((fn) => fn({ data, source: fakeWindow.parent }));
   return { posted, post, runs };
 }
 

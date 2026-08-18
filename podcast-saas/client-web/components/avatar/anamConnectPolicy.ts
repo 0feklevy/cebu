@@ -35,14 +35,26 @@
  * connection, one 503 from a persona pool that is refilling), which is what the retry
  * is for; a third attempt against an endpoint that has already failed twice is
  * unlikely to be the one that works and is certain to be the one that blows the
- * budget. 7s per attempt, not 10s: two attempts at 7s plus one backoff is 14,250ms,
- * which leaves 5,750ms of headroom under the watchdog for the signalling and WebRTC
- * phases that follow — phases the watchdog also covers.
+ * budget. That is a defensible reduction: it removes an attempt whose expected value
+ * is low, and it cannot fail a start that would otherwise have succeeded on attempt 1.
  *
- * These numbers are deliberately conservative in the direction of NOT aborting a
- * healthy-but-slow start, because the real distribution of POST /v1/engine/session is
- * not measured yet. connectTelemetry.ts is what will measure it; when it has, this is
- * the one place to retune.
+ * THE PER-ATTEMPT TIMEOUT IS THE SDK'S OWN 10s, and an earlier draft narrowing it to
+ * 7s was WRONG — recorded because the reasoning matters more than the number. It was
+ * chosen only to fit two attempts inside a 20s watchdog, with no data about the real
+ * distribution of POST /v1/engine/session. Its actual effect is that a start which
+ * legitimately takes 7-10s, and which succeeded before, now aborts at 7s, retries, and
+ * fails at ~14s. Trading a HEALTHY start for a tidier arithmetic is the wrong trade,
+ * and it is the opposite of the complaint this work exists to answer: it converts slow
+ * into broken.
+ *
+ * The ordering invariant is preserved by widening the WATCHDOG instead, which costs a
+ * failing start a few more seconds of spinner and costs a healthy one nothing:
+ *
+ *     worst case = 2 x 10,000 + 250 backoff = 20,250ms  <  CONNECT_WATCHDOG_MS (30,000)
+ *
+ * The distribution is still unmeasured. connectTelemetry.ts is what will measure it;
+ * when it has, this is the one place to retune — and the retune should narrow the
+ * timeout only once real p99 data says a 10s start does not exist.
  */
 
 /**
@@ -68,7 +80,8 @@ export interface AnamSessionStartPolicy {
  */
 export const ANAM_SESSION_START_POLICY: AnamSessionStartPolicy = Object.freeze({
   retry: Object.freeze({ maxAttempts: 2, initialBackoffMs: 250, maxBackoffMs: 1_000 }),
-  requestTimeoutMs: 7_000,
+  requestTimeoutMs: 10_000,   // the SDK's own default — deliberately NOT narrowed, see the header
+
 });
 
 /**
@@ -90,7 +103,7 @@ export function worstCaseSessionStartMs(policy: AnamSessionStartPolicy = ANAM_SE
  * whole connect — session start, signalling, ICE, first frame — so it must be strictly
  * larger than worstCaseSessionStartMs(), which is only the first of those.
  */
-export const CONNECT_WATCHDOG_MS = 20_000;
+export const CONNECT_WATCHDOG_MS = 30_000;   // > worstCaseSessionStartMs() = 20,250ms, with room for signalling + ICE
 
 /**
  * Budget for the best-effort pre-connect element prime. It is not a deadline the prime

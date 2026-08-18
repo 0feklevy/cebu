@@ -26,7 +26,7 @@ import {
   getSessionToken, isAnamConfigured, listAnamResource, upsertVideoPersona,
   enrichAvatarConfigFromAnam, buildAvatarDisplay, peekAvatarLook,
   ensureKnowledgeGroup, ensureKnowledgeTool, uploadKnowledgeDocument, listKnowledgeDocuments, deleteKnowledgeDocument, listSystemTools,
-  type AvatarPersonaConfig,
+  type AvatarPersonaConfig, type AvatarDisplay,
 } from '../../services/avatar/anamService.js';
 import { getProjectTranscript } from '../../services/transcriptPropagation.js';
 import { encryptKey } from '../../services/secrets/ApiKeyService.js';
@@ -63,6 +63,59 @@ function asPersonaConfig(v: unknown): AvatarPersonaConfig {
     try { const o = JSON.parse(v); if (o && typeof o === 'object' && !Array.isArray(o)) return o as AvatarPersonaConfig; } catch { /* ignore */ }
   }
   return {};
+}
+
+/**
+ * THE CHARACTER A PROJECT-SCOPED AVATAR CALL RUNS AS.
+ *
+ * The project's configured persona lives in exactly one place — `projects.avatar_config` — and
+ * where a project is named it is the authority. Every route here used to resolve the character as
+ * `caller ?? DEFAULT_CHARACTER_ID`, or on `/avatar/start` as `caller ?? project`, so a client that
+ * sent its OWN local default ('einstein', hardcoded in three client components) silently replaced
+ * the persona the owner had configured. A client-side default is not a choice — it is the absence
+ * of one — and it must never outrank a configured one.
+ *
+ * The caller is still honoured where the project expresses no preference (and on the project-less
+ * global path, which has no config to consult): that is a real selection, not a default.
+ *
+ * Deliberately the same normalization as `bakedCharacterId`, so the character a session runs as
+ * and the character the persona was BAKED as cannot drift apart for a project that configured one.
+ */
+function projectCharacterId(cfg: AvatarPersonaConfig | undefined, requested?: string): string {
+  const configured = cfg?.characterId?.trim();
+  if (configured && CHARACTERS[configured]) return configured;
+  if (requested && CHARACTERS[requested]) return requested;
+  return DEFAULT_CHARACTER_ID;
+}
+
+/**
+ * THE NAME THE POPUP SHOWS.
+ *
+ * `buildAvatarDisplay` answers from the avatar the session actually uses — a pinned `avatarId`, or
+ * a `personaDisplay` resolved on an earlier start. Until one of those exists (the first open of a
+ * video that never pinned an avatar, or a background resolve that failed) it answers with the
+ * voice sensitivity ALONE, and a nameless display is not neutral on the other end: the client's
+ * `characterMeta()` fills every hole from its own CHARACTER_META, whose first entry is Einstein.
+ * That is how a project whose persona is called "Pnina" kept rendering "Ask Albert Einstein".
+ *
+ * The project's own name for the persona is already in the config; a session that minted an
+ * inline persona also carries one. Either is a truthful answer, and both beat the client guessing.
+ */
+function namedAvatarDisplay(
+  display: AvatarDisplay | undefined,
+  cfg: AvatarPersonaConfig | undefined,
+  personaName?: string,
+): AvatarDisplay | undefined {
+  if (display?.displayName?.trim()) return display;
+  const name = cfg?.avatarName?.trim() || cfg?.name?.trim() || personaName?.trim();
+  if (!name) return display;
+  return {
+    ...(display ?? {}),
+    displayName: name,
+    nametag: name,
+    startingLabel: `Connecting to ${name}...`,
+    leaveLabel: display?.leaveLabel ?? 'End conversation',
+  };
 }
 
 const AVATAR_LIBRARY_UPLOAD_MAX_BYTES = 250 * 1024 * 1024;
@@ -365,15 +418,18 @@ async function reserveBillable(
 async function allowedProjectForBillable(
   request: FastifyRequest,
   projectId: string | null,
-): Promise<{ allowed: boolean; ownerId: string | null }> {
-  if (!projectId) return { allowed: true, ownerId: null };
+): Promise<{ allowed: boolean; ownerId: string | null; cfg: AvatarPersonaConfig | undefined }> {
+  if (!projectId) return { allowed: true, ownerId: null, cfg: undefined };
   const project = await db.query.projects.findFirst({
     where: eq(projects.id, projectId),
-    columns: { visibility: true, created_by: true },
+    // `avatar_config` rides along on a read this gate already performs: the visual and image
+    // routes need the project's configured character, and paying a second query for a field
+    // sitting in the row we just fetched would be the only reason not to consult it.
+    columns: { visibility: true, created_by: true, avatar_config: true },
   }).catch(() => null);
-  if (!project) return { allowed: false, ownerId: null };
+  if (!project) return { allowed: false, ownerId: null, cfg: undefined };
   const allowed = await avatarProjectAllowedAsync(projectId, project, request.dbUser ?? null);
-  return { allowed, ownerId: project.created_by ?? null };
+  return { allowed, ownerId: project.created_by ?? null, cfg: asPersonaConfig(project.avatar_config) };
 }
 
 /** The capability presented with a request: body field first, then the header. */
@@ -490,10 +546,14 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
       }
       ownerId = project.created_by ?? null;
       cfg = asPersonaConfig(project.avatar_config);
-      // The character a REQUEST asks for selects this session's character; the character the
-      // project's persona was BAKED as comes from the config alone (see bakedCharacterId) — a
-      // request could otherwise redefine what the saved persona is and re-bake it on every start.
-      characterId = body.character_id ?? bakedCharacterId(cfg);
+      // The PROJECT's configured character decides (projectCharacterId). `body.character_id ??
+      // bakedCharacterId(cfg)` had it the other way round: the caller won, so the reconnect in
+      // AvatarConversation — which echoes back whatever the first start resolved — and any client
+      // shipping its own 'einstein' default could override the persona the owner configured.
+      // A request may still SELECT a character on a project that names none; that is a choice,
+      // not a default. The character the persona was BAKED as still comes from the config alone
+      // (bakedCharacterId), so a request can never redefine the saved persona and re-bake it.
+      characterId = projectCharacterId(cfg, body.character_id);
 
       // THE DECISION, taken BEFORE any further read. A saved persona is referenced by id (one
       // vendor round-trip, ~118-byte body) exactly while the recorded fingerprint still describes
@@ -539,7 +599,10 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
       }
     } else {
       trace.path('global');
-      characterId = body.character_id ?? DEFAULT_CHARACTER_ID;
+      // No project, so no configured persona to be authoritative: the caller's choice is the only
+      // signal, and 'einstein' is the honest fallback. This is the ONLY start path where a
+      // client-supplied character decides unconditionally.
+      characterId = projectCharacterId(undefined, body.character_id);
     }
     // Reserve the session's WORST-CASE cost before the vendor is called. `/avatar/end` is a no-op
     // any client may simply never send, so nothing here is ever given back early — the lease
@@ -618,7 +681,11 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
         sessionToken: info.token,
         characterId: info.characterId,
         voiceSensitivity: info.voiceSensitivity,
-        avatarDisplay: buildAvatarDisplay(info.characterId, displayCfg, info.voiceSensitivity),
+        avatarDisplay: namedAvatarDisplay(
+          buildAvatarDisplay(info.characterId, displayCfg, info.voiceSensitivity),
+          displayCfg,
+          info.personaName,
+        ),
       });
     } catch (err) {
       const status = (err as { status?: number }).status ?? 500;
@@ -675,7 +742,12 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
 
     const message = body.message.slice(0, 4000);
     const context = body.context?.slice(0, MAX_CONTEXT_CHARS);
-    const characterId = body.characterId && CHARACTERS[body.characterId] ? body.characterId : DEFAULT_CHARACTER_ID;
+    // The project's configured character decides which persona the visual is styled and captioned
+    // for. This route used to ignore the project entirely and take the caller's word — so a video
+    // configured as somebody else got Einstein's visual vocabulary whenever the client sent its
+    // own default. `gate.cfg` is undefined only on the project-less path, where the caller's
+    // choice (else the default) is all there is.
+    const characterId = projectCharacterId(gate.cfg, body.characterId);
     // Keep the project's basic library fresh so it's preferred at retrieval (throttled).
     if (body.projectId) syncBasicLibrary(body.projectId).catch(() => {});
     try {
@@ -718,7 +790,8 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
 
     const userMessage = body.userMessage.slice(0, 4000);
     const context = body.conversationContext?.slice(0, MAX_CONTEXT_CHARS);
-    const characterId = body.characterId && CHARACTERS[body.characterId] ? body.characterId : DEFAULT_CHARACTER_ID;
+    // Same rule as visual/analyze: where a project is named, the project decides.
+    const characterId = projectCharacterId(gate.cfg, body.characterId);
     if (body.projectId) syncBasicLibrary(body.projectId).catch(() => {});
     try {
       const result = await analyzeAndGenerateImage(userMessage, characterId, context, body.projectId ?? null);
@@ -835,7 +908,11 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
     if (!reserved.ok) return reply;
 
     try {
-      await saveTurns(sessionKey, characterId ?? DEFAULT_CHARACTER_ID, projectId ?? null, turns as Turn[]);
+      // Normalized rather than stored verbatim: this is a free-text field on the wire, and the
+      // column is the one an operator reads to see which persona a conversation belonged to.
+      // Not read back from the project — turn persistence is a per-turn beacon and does not
+      // justify a project read; the session key the client derives already pins the character.
+      await saveTurns(sessionKey, projectCharacterId(undefined, characterId), projectId ?? null, turns as Turn[]);
       extractAndSaveFacts(sessionKey, turns as Turn[]).catch(() => {});
       return reply.send({ ok: true });
     } catch {
@@ -892,7 +969,9 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
       try {
         const res = await generateLibraryImage({
           prompt: body.prompt ?? body.dallePrompt!, dallePrompt: body.dallePrompt,
-          characterId: body.characterId && CHARACTERS[body.characterId] ? body.characterId : DEFAULT_CHARACTER_ID,
+          // Tag and style the generated visual as the persona this PROJECT is configured with,
+          // not as whatever the editor modal's local default happened to be ('einstein').
+          characterId: projectCharacterId(asPersonaConfig(project.avatar_config), body.characterId),
           caption: body.caption, createdBy: request.dbUser!.id, projectId: project.id,
         });
         return reply.send({ ok: true, item: res!.row, imageUrl: res!.imageUrl });
@@ -915,7 +994,7 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
       try {
         const res = await generateLibrarySimulation({
           prompt: body.prompt, caption: body.caption,
-          characterId: body.characterId && CHARACTERS[body.characterId] ? body.characterId : DEFAULT_CHARACTER_ID,
+          characterId: projectCharacterId(asPersonaConfig(project.avatar_config), body.characterId),
           createdBy: request.dbUser!.id, projectId: project.id,
         });
         return reply.send({ ok: true, item: res!.row, simulationUrl: res!.simulationUrl });
@@ -939,7 +1018,11 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
 
       const accepted: AvatarLibraryUploadAccepted[] = [];
       const rejected: AvatarLibraryUploadRejected[] = [];
-      let characterId = DEFAULT_CHARACTER_ID;
+      const projectCfg = asPersonaConfig(project.avatar_config);
+      // Seeded from the project's configured persona rather than DEFAULT_CHARACTER_ID; a
+      // `characterId` field in the multipart body may still refine it only when the project
+      // itself names none (see projectCharacterId).
+      let characterId = projectCharacterId(projectCfg);
       let scope: 'basic' | 'extended' = 'extended';
       let totalBytes = 0;
 
@@ -1069,7 +1152,7 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
 
       for await (const part of parts) {
         if (part.type === 'field') {
-          if (part.fieldname === 'characterId' && typeof part.value === 'string' && CHARACTERS[part.value]) characterId = part.value;
+          if (part.fieldname === 'characterId' && typeof part.value === 'string') characterId = projectCharacterId(projectCfg, part.value);
           if (part.fieldname === 'scope' && (part.value === 'basic' || part.value === 'extended')) scope = part.value;
           continue;
         }
@@ -1240,7 +1323,10 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
       if (!parsed.success) return reply.code(400).send({ message: parsed.error.message });
       const incoming = parsed.data as AvatarPersonaConfig;
       const existing = (project.avatar_config as AvatarPersonaConfig | null) ?? {};
-      const characterId = incoming.characterId ?? existing.characterId ?? DEFAULT_CHARACTER_ID;
+      // Normalized on the WRITE so the stored config, the persona bake and every later read agree
+      // on one value — bakedCharacterId() normalizes on read, so an unrecognized id used to mean
+      // the config said one thing and the fingerprint another.
+      const characterId = projectCharacterId({ characterId: incoming.characterId ?? existing.characterId });
       const apiKey = await resolveAnamKeyForProject(project.id).catch(() => undefined);
       const avatarChanged = Boolean(incoming.avatarId && incoming.avatarId !== existing.avatarId);
       const staleExistingVoice = Boolean(avatarChanged && existing.voiceId && incoming.voiceId === existing.voiceId);

@@ -13,12 +13,23 @@ import { startWorker } from './queue/startWorker.js';
 import { stopBoss } from './queue/pgBoss.js';
 import { logger } from './lib/logger.js';
 import { assertPublicOriginsForProd } from './config/publicOrigins.js';
+import { assertEncryptionKeyEnv } from './services/security/encryptionKey.js';
 
 // The worker WRITES browser-visible asset URLs into the DB at job completion
 // (thumbnails, banners, captions, …). Fail closed if the public origins are
 // misconfigured so it can never poison the database with localhost URLs.
 try {
   assertPublicOriginsForProd();
+} catch (err) {
+  logger.error({ err }, (err as Error).message);
+  process.exit(1);
+}
+
+// Those URLs carry scoped media tokens (LocalStorageAdapter.getPresignedDownloadUrl → mintMediaToken),
+// so the worker signs with ENCRYPTION_KEY just as the web tier does. Same gate, same reason
+// (security-004): a set-but-unusable key would otherwise persist tokens signed with no secret.
+try {
+  assertEncryptionKeyEnv();
 } catch (err) {
   logger.error({ err }, (err as Error).message);
   process.exit(1);

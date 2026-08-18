@@ -27,9 +27,12 @@
  */
 
 import { spawn } from 'child_process';
+import { createWriteStream } from 'fs';
 import { open, writeFile, mkdir } from 'fs/promises';
 import { join, extname } from 'path';
+import { pipeline } from 'stream/promises';
 import { runFfmpegLimited } from '../ffmpegLimit.js';
+import { fetchWithRetry } from '../../lib/fetchWithRetry.js';
 import { logger } from '../../lib/logger.js';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import {
@@ -760,9 +763,93 @@ export async function assembleResolved(
 // The contract seam: createLinearAssembler()
 // ---------------------------------------------------------------------------
 
-/** The one storage capability the assembler needs — injectable for tests. */
+/**
+ * The storage capabilities the assembler needs — injectable for tests.
+ *
+ * `getPresignedDownloadUrl` is the one that matters in production and is optional only so a
+ * unit test can inject a two-line double: see `materialiseSource` for why `readObject` alone
+ * is not good enough for a real master.
+ */
 export interface AssemblerStorage {
   readObject(key: string): Promise<Buffer>;
+  getPresignedDownloadUrl?(key: string, ttlSeconds: number): Promise<string>;
+}
+
+/** TTL of a source's download URL. An hour: the same figure every other download path uses. */
+const SOURCE_URL_TTL_SEC = 3600;
+
+/**
+ * Stream one object from its presigned URL straight into `destPath`. Throws on any failure —
+ * the caller decides whether that is fatal.
+ */
+async function streamObjectToFile(
+  storage: Required<Pick<AssemblerStorage, 'getPresignedDownloadUrl'>>,
+  key: string,
+  destPath: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const url = await storage.getPresignedDownloadUrl(key, SOURCE_URL_TTL_SEC);
+  // Minting the URL can take a round trip, and `fetchWithRetry` would answer an
+  // already-aborted signal with three retries and their backoff before giving up.
+  throwIfCancelled(signal);
+  const res = await fetchWithRetry(url, signal ? { signal } : undefined);
+  if (!res.ok || !res.body) {
+    throw new Error(`storage responded ${res.status} for ${key}`);
+  }
+  // Never `await res.arrayBuffer()` here: that is the same full-object heap allocation this
+  // whole path exists to remove. `writeFile` below truncates, so a half-written file left by a
+  // mid-stream failure is not a hazard for the fallback.
+  await pipeline(res.body as unknown as NodeJS.ReadableStream, createWriteStream(destPath));
+}
+
+/**
+ * Put one storage object on local disk, WITHOUT holding it in the heap (media-007).
+ *
+ * `readObject` resolves with the entire object as a single Buffer — R2StorageAdapter collects
+ * every chunk and `Buffer.concat`s them — so materialising sources through it meant the whole
+ * of each source master (the podcast's own main video, gigabytes of it) was resident in the
+ * heap before a byte reached disk, on the same small worker that then has to run x264. The
+ * bytes are only ever wanted as a FILE for ffmpeg to open, so they stream straight to one:
+ * presigned URL → `pipeline` → disk, exactly as `runVideoTranscode` fetches its HLS source.
+ *
+ * THE BUFFERED READ REMAINS AS A FALLBACK, and it is not defensive padding — it is load-bearing
+ * for one deployment shape. `LocalStorageAdapter.getPresignedDownloadUrl` does not presign; it
+ * returns a URL into this API's own serve routes, and those authorize per prefix. Sim POSTER
+ * keys live under `simulations/…`, which is neither a public local prefix nor one
+ * `mediaKeyScope` mints a token for, so that URL answers 401 to an unauthenticated worker while
+ * `readObject` reads the same bytes straight off disk. Cloud adapters (R2, Supabase) presign
+ * properly for every key, so in production the fallback never runs — and when it does run it
+ * says so, because it costs exactly the memory this function exists to save.
+ */
+export async function materialiseSource(
+  storage: AssemblerStorage,
+  key: string,
+  destPath: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  throwIfCancelled(signal);
+  if (typeof storage.getPresignedDownloadUrl === 'function') {
+    try {
+      await streamObjectToFile(
+        storage as Required<Pick<AssemblerStorage, 'getPresignedDownloadUrl'>>,
+        key, destPath, signal,
+      );
+      throwIfCancelled(signal);
+      return;
+    } catch (err) {
+      // An abort mid-download is the user pressing stop, not a storage failure — and it must
+      // never be "recovered" by downloading the object a second time.
+      throwIfCancelled(signal);
+      if (err instanceof ExportCancelledError) throw err;
+      logger.warn(
+        { err, key },
+        'export: could not stream this source from storage — falling back to a buffered read, ' +
+        'which holds the whole object in memory',
+      );
+    }
+  }
+  await writeFile(destPath, await storage.readObject(key));
+  throwIfCancelled(signal);
 }
 
 /** A storage key's extension, when it is a sane one — ffmpeg sniffs formats from it. */
@@ -814,12 +901,12 @@ export function createLinearAssembler(
 
       const translated = translateContractPlan(plan, localPathOf);
 
-      // Materialise sources sequentially — the encode dominates the wall clock, and
-      // sequential downloads keep peak memory to one object.
+      // Materialise sources sequentially — the encode dominates the wall clock, and one
+      // download at a time keeps peak disk/network pressure predictable. Peak MEMORY is no
+      // longer a function of source size at all: each object streams to its file (media-007).
       for (const key of translated.keys) {
         throwIfCancelled(signal);
-        const bytes = await storage.readObject(key);
-        await writeFile(keyPaths.get(key)!, bytes);
+        await materialiseSource(storage, key, keyPaths.get(key)!, signal);
       }
 
       const result = await assembleResolved(

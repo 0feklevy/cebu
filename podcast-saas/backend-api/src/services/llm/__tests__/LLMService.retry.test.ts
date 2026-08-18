@@ -79,7 +79,9 @@ describe('LLMService retry on PARSING_ERROR', () => {
 
     expect(result.data).toEqual({ answer: 'ok' });
     expect(spy).toHaveBeenCalledTimes(1);
-    expect(spy).toHaveBeenCalledWith(BASE_OPTS, 0);
+    // `objectContaining`, because sendStructured now stamps a `deadlineAt` onto the opts it forwards.
+    // ONE SHARED DEADLINE across all attempts is the point — asserted directly below.
+    expect(spy).toHaveBeenCalledWith(expect.objectContaining(BASE_OPTS), 0);
   });
 
   it('retries up to 2 times on PARSING_ERROR, succeeds on 3rd attempt', async () => {
@@ -93,9 +95,16 @@ describe('LLMService retry on PARSING_ERROR', () => {
 
     expect(result.data).toEqual({ answer: 'ok' });
     expect(spy).toHaveBeenCalledTimes(3);
-    expect(spy).toHaveBeenNthCalledWith(1, BASE_OPTS, 0);
-    expect(spy).toHaveBeenNthCalledWith(2, BASE_OPTS, 1);
-    expect(spy).toHaveBeenNthCalledWith(3, BASE_OPTS, 2);
+    expect(spy).toHaveBeenNthCalledWith(1, expect.objectContaining(BASE_OPTS), 0);
+    expect(spy).toHaveBeenNthCalledWith(2, expect.objectContaining(BASE_OPTS), 1);
+    expect(spy).toHaveBeenNthCalledWith(3, expect.objectContaining(BASE_OPTS), 2);
+
+    // THE POINT OF THE CHANGE: all three attempts carry the SAME absolute deadline, so the retries
+    // share one wall-clock budget. Creating it per attempt gave each retry a fresh 15 minutes, and
+    // this loop plus the creative-refusal retry could then legitimately run 45-60 minutes.
+    const deadlines = spy.mock.calls.map((c) => (c[0] as { deadlineAt?: number }).deadlineAt);
+    expect(deadlines.every((d) => typeof d === 'number')).toBe(true);
+    expect(new Set(deadlines).size).toBe(1);
   });
 
   it('throws PARSING_ERROR after all 3 attempts fail', async () => {

@@ -28,6 +28,12 @@ export default defineConfig({
       // build.
       { find: /^shared\/sim\/(.*)$/, replacement: resolve(HERE, '../shared/src/sim/$1.ts') },
       { find: '@', replacement: fileURLToPath(new URL('.', import.meta.url)) },
+      // `server-only` is a Next BUILD MARKER that Next aliases inside its own bundler; nothing
+      // installs it, so vite cannot resolve the specifier and any test importing a server module
+      // (lib/courseApi.ts) died at load time instead of running. Aliased to an empty stub — the
+      // real guarantee still comes from `next build`, which is where the marker means something.
+      { find: /^server-only$/, replacement: resolve(HERE, '__tests__/stubs/server-only.ts') },
+
     ],
   },
   test: {

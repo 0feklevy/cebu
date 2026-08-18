@@ -17,6 +17,16 @@ import { MixPlayer } from './mixEngine';
 import { setClipField, splitBlock } from './interactions';
 import { renderDownloadUrl } from './renderUrl';
 
+/**
+ * How long the studio waits on a build that is not moving before it stops and hands control back.
+ *
+ * Measured from the last time the clip counter CHANGED, not from the start of the build:
+ * synthesising one clip per line legitimately takes many minutes on a long episode, and a flat
+ * timeout would interrupt healthy builds. A counter that has not moved in this long is a build
+ * nothing is going to finish. (ui-ux-002)
+ */
+const BUILD_STALL_LIMIT_MS = 3 * 60 * 1000;
+
 async function sha256(s: string): Promise<string> {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
   return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -45,6 +55,14 @@ export function AudioStudio({ showId, episodeId, initial, turns, onReloadScript 
   const [showVersions, setShowVersions] = useState(false);
   const [exportJob, setExportJob] = useState<{ renderId: string; format: 'mp4' | 'mp3' | 'wav'; status: 'rendering' | 'ready' | 'failed'; url: string | null; error: string | null } | null>(null);
   const [staleTurnIds, setStaleTurnIds] = useState<Set<string>>(new Set());
+  /** The build's clip counter stopped moving for BUILD_STALL_LIMIT_MS — stop polling, offer a way out. */
+  const [buildStalled, setBuildStalled] = useState(false);
+  /**
+   * Bumped to restart polling after a stall. Needed because clearing `buildStalled` alone cannot
+   * revive the poll: the effect keys on the progress heartbeat, and a genuinely stuck build never
+   * changes it — so the "stopped moving" screen was TERMINAL, with no in-app path off it.
+   */
+  const [pollNonce, setPollNonce] = useState(0);
   const clipsById = useMemo(() => new Map(clips.map((c) => [c.id, c])), [clips]);
   const turnsById = useMemo(() => new Map(turns.map((t) => [t.id, t])), [turns]);
   const durMap = useMemo(() => new Map(clips.map((c) => [c.id, c.duration_ms])), [clips]);
@@ -116,19 +134,43 @@ export function AudioStudio({ showId, episodeId, initial, turns, onReloadScript 
 
   // ── Generation polling ──────────────────────────────────────────────────────
   const generating = data.mix?.status === 'generating';
+  const buildProgress = (data.mix?.progress ?? null) as { done?: number; total?: number } | null;
+  /**
+   * The build's heartbeat, and a DEPENDENCY of the poll below: every time the clip counter moves,
+   * the effect restarts and the stall clock starts over. That is what makes the bound "no progress
+   * for a while" instead of "this took too long".
+   */
+  const buildHeartbeat = `${buildProgress?.done ?? -1}/${buildProgress?.total ?? -1}`;
   useEffect(() => {
-    if (!generating) return;
+    if (!generating) { setBuildStalled(false); return; }
+    setBuildStalled(false);
+    // OBSERVED progress, not elapsed time. A first draft assigned `lastMovedAt` once at effect
+    // entry and never updated it, which made this a FLAT three-minute timeout wearing a stall
+    // detector's name — and `mix.progress` is null at the start of every build, so the effect's
+    // heartbeat dependency could not reset it either. Any build whose first clip took longer than
+    // three minutes (a queued job waiting for a worker, one long TTS line, a slow provider) was
+    // declared stopped while it was working perfectly. An adversarial reviewer caught it.
+    //
+    // The mark now moves whenever the server reports different progress, so the bound only fires
+    // when nothing has actually happened for BUILD_STALL_LIMIT_MS.
+    let lastSeen = `${buildProgress?.done ?? -1}/${buildProgress?.total ?? -1}`;
+    let lastMovedAt = Date.now();
     const iv = setInterval(async () => {
       try {
         const fresh = await api.getPodcastStudio(showId, episodeId);
         setData(fresh);
         setClips(fresh.clips);
+        const seen = `${fresh.mix?.progress?.done ?? -1}/${fresh.mix?.progress?.total ?? -1}`;
+        if (seen !== lastSeen) { lastSeen = seen; lastMovedAt = Date.now(); }
         if (fresh.mix?.status === 'ready' && fresh.mix.timeline) draft.reseed(fresh.mix.timeline as MixTimeline, fresh.mix.rev);
       } catch { /* keep polling */ }
+      // Nothing else in this branch can end the spinner — there is no cancel, and a worker that
+      // died mid-run leaves `status: 'generating'` in the row for good. (ui-ux-002)
+      if (Date.now() - lastMovedAt >= BUILD_STALL_LIMIT_MS) { setBuildStalled(true); clearInterval(iv); }
     }, 2500);
     return () => clearInterval(iv);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [generating, showId, episodeId]);
+  }, [generating, buildHeartbeat, showId, episodeId, pollNonce]);
 
   const scriptChanged = data.latest_script_hash != null && data.mix?.script_hash != null && data.latest_script_hash !== data.mix.script_hash;
 
@@ -249,7 +291,37 @@ export function AudioStudio({ showId, episodeId, initial, turns, onReloadScript 
 
   // ── Render ───────────────────────────────────────────────────────────────────
   if (generating) {
-    const prog = data.mix?.progress as { done?: number; total?: number } | null;
+    const prog = buildProgress;
+    // The Rebuild button lives in the OTHER branch, so a build stuck on `generating` had no way
+    // back to it. This is that way back. (ui-ux-002)
+    if (buildStalled) {
+      return (
+        <div className="rounded-xl border border-border py-14 text-center">
+          <AlertTriangle size={24} className="mx-auto mb-3 text-amber-500" strokeWidth={2} aria-hidden />
+          <p className="mb-1 text-sm font-semibold text-foreground">This build has stopped moving</p>
+          <p className="mb-5 text-sm text-muted-foreground">
+            {prog?.total
+              ? `${prog.done ?? 0} of ${prog.total} clips finished, then nothing for several minutes.`
+              : 'Nothing has happened for several minutes.'}
+            {' '}It may still be running — keep watching, or start it over.
+          </p>
+          {err && <p className="mb-4 text-sm text-destructive">{err}</p>}
+          {/*
+            TWO buttons, because one of them could not work. "Rebuild" alone was the only offer,
+            and the server answers 202 `already_running` for a row still in `generating` — so the
+            screen promised a recovery it could not perform and had no other exit. Resuming the
+            poll is the honest first move: the build genuinely may still be alive, and this is the
+            only control that can prove it either way.
+          */}
+          <div className="flex items-center justify-center gap-2">
+            <PodcastButton onClick={() => { setBuildStalled(false); setPollNonce((n) => n + 1); }}>
+              Keep watching
+            </PodcastButton>
+            <PodcastButton onClick={rebuild}><Scissors size={15} strokeWidth={2} aria-hidden /> Start over</PodcastButton>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="rounded-xl border border-border py-14 text-center">
         <Loader2 size={26} className="mx-auto mb-3 animate-spin text-primary" aria-hidden />

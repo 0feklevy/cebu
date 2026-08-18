@@ -37,7 +37,35 @@ export const CHARACTER_META: Record<string, CharacterMeta> = {
   },
 };
 
+/**
+ * The default is a LAST RESORT for a session whose character the server has already resolved —
+ * never a stand-in for one it has not. See PENDING_CHARACTER_META.
+ */
 export const DEFAULT_CHARACTER_ID = 'einstein';
+
+/**
+ * THE IDENTITY TO SHOW BEFORE THE SERVER HAS SAID WHOSE AVATAR THIS IS.
+ *
+ * The popup renders a name, a portrait and a "Connecting to …" label from the moment it opens,
+ * but it learns the video's actual persona only when POST /api/v1/avatar/start answers — the
+ * slowest call in the product. Seeding that gap from DEFAULT_CHARACTER_ID meant every viewer of
+ * every video, whatever persona its owner had configured, spent the whole connect looking at
+ * "Ask Albert Einstein", Einstein's portrait and "Connecting to Einstein…". That is the reported
+ * bug, and it is not a display detail: it is the product asserting an identity it does not know.
+ *
+ * So: name nobody until somebody is named. `startingLabel` still says what is happening.
+ */
+export const PENDING_CHARACTER_META: CharacterMeta = {
+  id: '',
+  displayName: 'the avatar',
+  nametag: '',
+  emoji: '✨',
+  portrait: '',
+  startingLabel: 'Connecting…',
+  leaveLabel: 'End conversation',
+  voiceSensitivity: 0.5,
+};
+
 function compactOverride(overrides?: CharacterMetaOverride): CharacterMetaOverride {
   if (!overrides) return {};
   return {
@@ -53,5 +81,21 @@ function compactOverride(overrides?: CharacterMetaOverride): CharacterMetaOverri
 
 export function characterMeta(id?: string, overrides?: CharacterMetaOverride): CharacterMeta {
   const base = CHARACTER_META[id ?? DEFAULT_CHARACTER_ID] ?? CHARACTER_META[DEFAULT_CHARACTER_ID];
-  return { ...base, ...compactOverride(overrides) };
+  const over = compactOverride(overrides);
+  // A `displayName` from the server describes the avatar the SESSION actually uses. When that is
+  // not this character's own name, the character's portrait, emoji and labels belong to somebody
+  // else and must not be inherited: merging them produced the exact mismatch the owner reported —
+  // the name "Pnina" over Einstein's face, and "Connecting to Einstein…" for a video whose
+  // configured persona is not Einstein and whose avatar simply had no portrait to send.
+  const renamed = Boolean(over.displayName && over.displayName !== base.displayName);
+  const ground: CharacterMeta = renamed
+    ? {
+        ...base,
+        nametag: over.displayName!,
+        emoji: PENDING_CHARACTER_META.emoji,
+        portrait: '',
+        startingLabel: `Connecting to ${over.displayName}…`,
+      }
+    : base;
+  return { ...ground, ...over };
 }

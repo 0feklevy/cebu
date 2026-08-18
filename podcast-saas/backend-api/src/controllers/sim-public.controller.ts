@@ -10,7 +10,7 @@ import { safeLocalPath, keyHasTraversal } from '../services/storage/pathSafety.j
 import { serveLocalFile } from '../services/storage/serveFile.js';
 import { getStorageAdapter } from '../services/storage/getStorageAdapter.js';
 import { cacheControlForKey } from 'shared/sim/simRevision';
-import { isVerifiedRevisionKey } from '../services/simulation/revisionIdentity.js';
+import { revisionServingFacts, isRevisionStatusPublic } from '../services/simulation/revisionIdentity.js';
 import { LocalStorageAdapter } from '../services/storage/LocalStorageAdapter.js';
 import { getSimulationContentType } from '../services/simulation/SimulationService.js';
 import { browserOrigins } from '../config/publicOrigins.js';
@@ -45,7 +45,8 @@ const SIM_BOOT_SNIPPET =
   'for(var i=0;i<s.length;i++){var x=s[i];if(typeof x==="string"&&!/[{}<\\\\]/.test(x))r.push(x+"{display:none !important}")}' +
   'if(r.length){var st=document.createElement("style");st.id="__simBootHide";st.textContent=r.join("\\n");' +
   '(document.head||document.documentElement).appendChild(st)}}' +
-  'window.addEventListener("message",function(e){var d=e.data||{};' +
+  // Only our own parent may clear the boot cloak (simulation-004) — see the bridge/gate guards.
+  'window.addEventListener("message",function(e){if(e.source!==window.parent)return;var d=e.data||{};' +
   'if(d&&d.type==="clearBootHide"){var el=document.getElementById("__simBootHide");if(el)el.remove()}});' +
   '}catch(e){}})()</script>';
 
@@ -147,7 +148,18 @@ export async function registerSimPublicRoutes(app: FastifyInstance): Promise<voi
       // with that id belonging to the simulation named in the same key. It fails closed on any
       // doubt, including a database fault, so anything unverified keeps today's `no-cache`
       // behaviour byte for byte.
-      const isRevision = await isVerifiedRevisionKey(key);
+      const revision = await revisionServingFacts(key);
+      // PUBLICATION GATE (simulation-007). A revision prefix is inside `simulations/`, so this
+      // unauthenticated route served a `draft`/`uploading`/`validating`/`failed` revision's bytes
+      // exactly like the active one — an aborted publication left a customer's unpublished package
+      // world-readable forever, since `RevisionService.gc()` has no production caller. 404 rather
+      // than 403: the correct answer to "does this URL name something the public may read" is that
+      // it names nothing. Checked BEFORE the storage read, so the bytes are never fetched, and
+      // before the binary branch, which would otherwise hand out the bucket's own public URL.
+      if (revision.verified && !isRevisionStatusPublic(revision.status)) {
+        return reply.code(404).send({ message: 'Not found' });
+      }
+      const isRevision = revision.verified;
       const isEntryDocument = /\.html?$/i.test(key);
       // The entry document is never immutable even inside a revision: injectSimBootSnippet runs
       // at SERVE time (below), so served bytes are not stored bytes — and the CSP

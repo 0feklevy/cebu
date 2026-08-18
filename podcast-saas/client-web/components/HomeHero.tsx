@@ -262,15 +262,35 @@ function WorkspaceSkeleton() {
 
 const PROJECTS_CACHE_KEY = 'hero_projects_v1';
 
-function readCachedProjects(): Project[] {
+/**
+ * THE CACHE BELONGS TO AN ACCOUNT, NOT TO A BROWSER.
+ *
+ * This used to be a bare `Project[]` under one global key, written on every successful list and
+ * never cleared — `signOutUser` only calls Firebase's `signOut`. On a shared machine the next
+ * account to sign in was seeded with the previous one's list before its own fetch returned, and
+ * the header counts and the "Continue latest" link render OUTSIDE the loading gate: a brand-new
+ * user's first view of the product said "1 projects / 1 ready" and linked to
+ * `/projects/{someone else's uuid}/editor`.
+ *
+ * The envelope carries the uid it was written under and a read for any other uid returns nothing.
+ * A pre-envelope array cannot be attributed to anybody, so it is dropped rather than trusted.
+ */
+interface ProjectsCacheEnvelope { uid: string; items: Project[] }
+
+function readCachedProjects(uid: string | null | undefined): Project[] {
+  if (!uid) return [];
   try {
     const raw = localStorage.getItem(PROJECTS_CACHE_KEY);
-    return raw ? (JSON.parse(raw) as Project[]) : [];
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as ProjectsCacheEnvelope | Project[];
+    if (Array.isArray(parsed)) return [];
+    return parsed.uid === uid && Array.isArray(parsed.items) ? parsed.items : [];
   } catch { return []; }
 }
 
-function writeCachedProjects(items: Project[]) {
-  try { localStorage.setItem(PROJECTS_CACHE_KEY, JSON.stringify(items)); } catch { /* quota */ }
+function writeCachedProjects(uid: string | null | undefined, items: Project[]) {
+  if (!uid) return;
+  try { localStorage.setItem(PROJECTS_CACHE_KEY, JSON.stringify({ uid, items })); } catch { /* quota */ }
 }
 
 export function HomeHero() {
@@ -282,11 +302,12 @@ export function HomeHero() {
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
 
-  // Seed from the client-side cache after hydration (avoids an SSR mismatch).
+  // Seed from the client-side cache after hydration (avoids an SSR mismatch). Keyed on the uid, so
+  // a sign-out/sign-in as somebody else re-seeds from THEIR cache (empty, for a new account)
+  // instead of leaving the previous account's list on screen until the fetch returns.
   useEffect(() => {
-    const cached = readCachedProjects();
-    if (cached.length) setProjects(cached);
-  }, []);
+    setProjects(readCachedProjects(user?.uid));
+  }, [user?.uid]);
 
   useEffect(() => {
     if (authLoading) return;
@@ -304,7 +325,7 @@ export function HomeHero() {
       .then((items) => {
         if (!cancelled) {
           setProjects(items);
-          writeCachedProjects(items);
+          writeCachedProjects(user?.uid, items);
         }
       })
       .catch(() => {
@@ -415,7 +436,7 @@ export function HomeHero() {
                           onDelete={(id) => {
                             setProjects(prev => {
                               const next = prev.filter(p => p.id !== id);
-                              writeCachedProjects(next);
+                              writeCachedProjects(user?.uid, next);
                               return next;
                             });
                           }}
@@ -428,7 +449,7 @@ export function HomeHero() {
                               setProjects(prev => {
                                 if (prev.some(p => p.id === copy.id)) return prev;
                                 const next = [copy, ...prev];
-                                writeCachedProjects(next);
+                                writeCachedProjects(user?.uid, next);
                                 return next;
                               });
                             }).catch(() => { /* the next list refresh picks it up */ });

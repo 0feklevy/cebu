@@ -45,7 +45,8 @@ async function drive(steps: object[], settleMs = 700): Promise<Posted[]> {
   ]);
   // The SAME policy main() emits with — an unpolicied bridge is a different fixture entirely.
   vm.runInContext(delayedAckBridge(entries, DELAYED_ACK_POLICY), ctx as vm.Context);
-  for (const st of steps) listeners.forEach((f) => f({ data: st }));
+  // `source: ctx.parent` — the bridge ignores messages from any other window (simulation-004).
+  for (const st of steps) listeners.forEach((f) => f({ data: st, source: ctx.parent }));
   await new Promise((r) => setTimeout(r, settleMs));
   return posted.filter((m) => m.type === 'SCRIPT_APPLIED');
 }

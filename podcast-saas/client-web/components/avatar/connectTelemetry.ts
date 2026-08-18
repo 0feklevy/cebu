@@ -52,6 +52,16 @@ export type ConnectPhase =
   | 'watchdog';
 
 export interface ConnectTrace {
+  /**
+   * Stable identity of THIS popup open. Survives a re-render and a StrictMode double mount,
+   * because the trace object does; a genuinely new open makes a new trace and a new id.
+   *
+   * Doubles as the server's start-idempotency key (anam-backend-003): the dedupe existed but
+   * required the caller to name the open, and nothing did — so two simultaneous starts each
+   * minted a billable session. Reusing the trace id rather than minting a second uuid keeps one
+   * notion of "this open" across the client trace and the server's dedupe.
+   */
+  readonly id: string;
   /** Record a phase. First occurrence wins; later duplicates are ignored. */
   mark(phase: ConnectPhase, data?: Record<string, unknown>): void;
   /** Attach the backend's correlationId so the two halves of the trace join. */
@@ -73,13 +83,24 @@ function safe(fn: () => void): void {
 
 const MARK = (phase: ConnectPhase) => `anam:${phase}`;
 
+/** 22 url-safe chars — comfortably over the server's 8-char floor, and not a secret. */
+function traceId(): string {
+  try {
+    const c = globalThis.crypto;
+    if (c && typeof c.randomUUID === 'function') return c.randomUUID();
+  } catch { /* fall through */ }
+  return `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
+}
+
 export function beginConnectTrace(): ConnectTrace {
   const t0 = now();
   const offsets: Record<string, number> = {};
   const seen = new Set<ConnectPhase>();
+  const id = traceId();
   let cid: string | undefined;
 
   return {
+    id,
     join(correlationId) {
       if (typeof correlationId === 'string' && correlationId.length > 0 && correlationId.length <= 64) cid = correlationId;
     },

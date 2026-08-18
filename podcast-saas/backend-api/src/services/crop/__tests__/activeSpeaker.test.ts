@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   regionMotionSeries, windowedActiveRegions, calibrateGenderRegion,
+  calibrateGenderRegionByActivity,
 } from '../activeSpeaker.js';
 import { PROFILE_COLS } from '../sceneAnalyzer.js';
 
@@ -74,5 +75,53 @@ describe('calibrateGenderRegion', () => {
     const av: Array<0 | 1 | null> = [1, 1, 1];
     // male wins the contested region 1, female pushed to region 0
     expect(calibrateGenderRegion(labels, av)).toEqual({ male: 1, female: 0 });
+  });
+});
+
+describe('calibrateGenderRegionByActivity', () => {
+  /**
+   * The D-16 scene: the LEFT head is a listener who nods constantly (high, flat motion);
+   * the RIGHT head is the woman actually talking (motion rises only while she speaks).
+   * Raw magnitude says "left"; each region measured against its own baseline says "right".
+   */
+  function nodderVsTalker(N = 120) {
+    const labels: Array<{ label: string; conf: number }> = [];
+    const motionL = new Float64Array(N);
+    const motionR = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      const femaleTurn = i % 40 < 30;                    // she holds the floor 75% of the time
+      labels.push({ label: femaleTurn ? 'female' : 'male', conf: 0.8 });
+      motionL[i] = 300 + 40 * Math.sin(i * 0.41);        // nodding, indifferent to who speaks
+      motionR[i] = femaleTurn ? 90 : 10;                 // rises only while she talks
+    }
+    return { labels, motionL, motionR };
+  }
+
+  it('maps the talker to her own region even when the listener moves far more', () => {
+    const { labels, motionL, motionR } = nodderVsTalker();
+    expect(calibrateGenderRegionByActivity(labels, motionL, motionR)).toEqual({ male: 0, female: 1 });
+  });
+
+  it('declines when the two genders do not separate — a coin flip would drive most frames', () => {
+    // Same-gender hosts: pitch carries no information, so both regions look alike per label.
+    const N = 120;
+    const labels = Array.from({ length: N }, (_, i) => ({ label: i % 2 ? 'male' : 'female', conf: 0.8 }));
+    const motionL = new Float64Array(N).fill(100);
+    const motionR = Float64Array.from({ length: N }, (_, i) => 50 + (i % 7));
+    expect(calibrateGenderRegionByActivity(labels, motionL, motionR)).toBeNull();
+  });
+
+  it('declines when a region carries no motion at all, or the shot is too short', () => {
+    const { labels, motionL } = nodderVsTalker();
+    expect(calibrateGenderRegionByActivity(labels, motionL, new Float64Array(120))).toBeNull();
+    expect(calibrateGenderRegionByActivity(labels.slice(0, 4), motionL.slice(0, 4), motionL.slice(0, 4))).toBeNull();
+  });
+
+  it('declines when only one gender was heard', () => {
+    const N = 60;
+    const labels = Array.from({ length: N }, () => ({ label: 'female', conf: 0.8 }));
+    const motionL = new Float64Array(N).fill(10);
+    const motionR = Float64Array.from({ length: N }, (_, i) => 50 + i);
+    expect(calibrateGenderRegionByActivity(labels, motionL, motionR)).toBeNull();
   });
 });

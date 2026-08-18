@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { startAvatarSession, isAbortError, type AvatarDisplay } from './avatarApi';
-import { characterMeta, DEFAULT_CHARACTER_ID } from './characters';
+import { characterMeta, PENDING_CHARACTER_META } from './characters';
 import { AvatarConversation } from './AvatarConversation';
 import { preloadAnamSdk } from './anamSdk';
 import { beginConnectTrace, type ConnectTrace } from './connectTelemetry';
@@ -14,18 +14,27 @@ interface Props {
   onClose: () => void;
   projectId?: string;
   videoTitle?: string | null;
+  /**
+   * A character the CALLER already knows this video runs as. No viewer surface passes one — the
+   * video's persona is a server fact and arrives with the start — and it deliberately has no
+   * default any more: a client-side fallback here is indistinguishable from a real choice by the
+   * time it reaches the screen, and 'einstein' is what every viewer of every video used to see.
+   */
   characterId?: string;
 }
 
 // Full-screen popup shown above the video. Pauses every other <video> on the page
 // while open (and resumes them on close), then runs the live avatar conversation.
-export function AvatarPopup({ open, onClose, projectId, videoTitle, characterId = DEFAULT_CHARACTER_ID }: Props) {
+export function AvatarPopup({ open, onClose, projectId, videoTitle, characterId }: Props) {
   const [token, setToken] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [resolvedCharacter, setResolvedCharacter] = useState(characterId);
+  const [resolvedCharacter, setResolvedCharacter] = useState<string | undefined>(characterId);
   const [avatarDisplay, setAvatarDisplay] = useState<AvatarDisplay | undefined>();
   const pausedVideos = useRef<HTMLVideoElement[]>([]);
-  const meta = characterMeta(resolvedCharacter, avatarDisplay);
+  // Until the start has answered there is no persona to name, and naming one anyway is the bug.
+  const meta = resolvedCharacter || avatarDisplay?.displayName
+    ? characterMeta(resolvedCharacter, avatarDisplay)
+    : PENDING_CHARACTER_META;
 
   /**
    * t0 for the click-to-first-frame trace (anam-latency-001, client half). It has to
@@ -76,9 +85,14 @@ export function AvatarPopup({ open, onClose, projectId, videoTitle, characterId 
     // Fetch the (lazy) Anam SDK chunk alongside the token rather than after it, so the
     // code split cannot show up as click-to-first-frame latency. Static asset only.
     preloadAnamSdk();
+    // ONE OPEN, ONE MINT (anam-backend-003). The server dedupes concurrent starts, but only when
+    // the caller names the open — and nothing named it, so the mechanism was inert and a
+    // StrictMode double mount or a double click minted twice. The identity is per OPEN, not per
+    // request: a retry of this same open must collapse, a genuinely new open must not.
+    const startKey = `open-${trace.id}`;
     // Pass projectId so the server applies the video's saved persona config and
     // lets it choose the character; omit character_id so the config wins.
-    startAvatarSession(undefined, projectId, abort.signal)
+    startAvatarSession(undefined, projectId, abort.signal, startKey)
       .then((data) => {
         if (abort.signal.aborted) return;
         trace.join(data.correlationId);
@@ -163,7 +177,10 @@ export function AvatarPopup({ open, onClose, projectId, videoTitle, characterId 
               </p>
               <button className="avatar-btn avatar-btn--secondary" style={{ marginTop: 18 }} onClick={onClose}>Close</button>
             </div>
-          ) : !token ? (
+          ) : !token || !resolvedCharacter ? (
+            // Both arrive from the SAME start response, so requiring the character here costs no
+            // extra wait — it just removes the only way a conversation could run without knowing
+            // whose it is (and hand '' to the memory session key and to /avatar/end).
             <div className="avatar-popup-status">
               <span className="avatar-spinner" />
               <p style={{ color: 'rgba(255,255,255,0.6)', marginTop: 14 }}>{meta.startingLabel}</p>

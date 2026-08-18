@@ -56,6 +56,13 @@ services:
     volumes:
       - media_work:/app/backend-api/.work   # scratch space for ffmpeg / transcoding
     networks: [edge]
+    # Docker SIGKILLs `stop_grace_period` after SIGTERM, and the DEFAULT IS 10 SECONDS — which is
+    # a third of the way into this process's own drain. The shutdown path is app.close() (in-flight
+    # HTTP), then drainInlineJobs() (25 s), then stopBoss() (30 s): 75 s of budget, declared in
+    # backend-api/src/queue/shutdownBudget.ts, where a test asserts this number covers it. Until
+    # this line existed every `docker compose up -d` killed in-flight jobs mid-write (job-queue-004).
+    # It is a CEILING, not a delay: the process exits the moment its drain finishes.
+    stop_grace_period: 90s
     healthcheck:
       test: ['CMD', 'curl', '-fsS', 'http://localhost:8080/health']
       interval: 15s
@@ -86,6 +93,10 @@ services:
     volumes:
       - media_work:/app/backend-api/.work
     networks: [internal]
+    # Same reason as the backend (job-queue-004). The worker serves no HTTP and runs no inline
+    # queue, so its whole drain is stopBoss()'s 30 s graceful stop — but Docker's 10 s default cut
+    # even that in half, and this is the container that holds the ffmpeg/capture work.
+    stop_grace_period: 45s
     # No HTTP port to probe. The worker is PID 1, so if it crashes the container exits
     # and `restart: unless-stopped` brings it back — that IS the liveness guarantee.
 

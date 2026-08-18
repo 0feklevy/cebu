@@ -219,13 +219,31 @@ export const saveMyAnamKey = (apiKey: string) =>
 // so a start nobody is waiting for should be stopped, not merely ignored. (This
 // wastes a mint, not a concurrency slot: the backend creates no Anam session, the
 // SDK's startSession does, browser-side.)
-export const startAvatarSession = (characterId?: string, projectId?: string, signal?: AbortSignal) =>
+export const startAvatarSession = (
+  characterId?: string,
+  projectId?: string,
+  signal?: AbortSignal,
+  /**
+   * ONE POPUP OPEN, ONE MINT — the client half of the server's idempotency (anam-backend-003).
+   *
+   * The server has deduped concurrent starts for a while via `startIdempotencyKey`, but it
+   * requires a caller-supplied `startKey` of 8+ characters and returns un-deduped without one —
+   * and this function never sent one. So the mechanism existed, its tests passed by supplying a
+   * key the product does not generate, and two simultaneous starts both minted. An adversarial
+   * review caught the row being marked "fixed" when it was not.
+   *
+   * The caller passes the identity of the OPEN, not of the request: a React StrictMode double
+   * mount, a double click, or a retry of the same popup open must collapse to one mint, while a
+   * genuinely new open must not. `AvatarPopup` already creates exactly such a value per open.
+   */
+  startKey?: string,
+) =>
   // `correlationId` is the backend's start-trace id (services/avatar/startTelemetry.ts).
   // It is the join key between the server's phase timings and the client's — without it
   // the two halves of a slow open cannot be lined up against each other.
   jsonFetch<{ provider: string; sessionToken: string; characterId: string; voiceSensitivity?: number; avatarDisplay?: AvatarDisplay; correlationId?: string }>(
     '/api/v1/avatar/start',
-    { method: 'POST', body: JSON.stringify({ character_id: characterId, projectId }), signal },
+    { method: 'POST', body: JSON.stringify({ character_id: characterId, projectId, startKey }), signal },
     true,
   );
 
@@ -242,16 +260,32 @@ export const endAvatarSession = (characterId: string): void => {
   }).catch(() => {});
 };
 
+// withAuth=true, for the SAME reason startAvatarSession and getPublicLibrary carry it, and it is
+// the difference between b-rolls appearing and never appearing.
+//
+// Both endpoints run `allowedProjectForBillable` (avatar.controller.ts), which reads
+// `request.dbUser` and answers 404 for a project whose visibility is `private` —
+// `projects.visibility` is `notNull().default('private')` (db/schema.ts), so that is EVERY
+// project until its owner publishes it. `request.dbUser` comes from firebaseAuthOptionalMiddleware
+// reading the Authorization header, and without the header the project's OWN OWNER is anonymous
+// here. The 404 was then swallowed by the `.catch()` below and returned as a perfectly ordinary
+// "no visual for this message", so the failure was invisible: the avatar connected, listened and
+// answered, and not one visual ever appeared. Not late — never.
+//
+// Anonymous viewers of public/unlisted projects are unaffected: no signed-in user means no
+// token means no header, exactly as before.
 export const analyzeVisual = (message: string, characterId: string, context?: string, projectId?: string) =>
   jsonFetch<VisualResultWithBank>(
     '/api/v1/avatar/visual/analyze',
     { method: 'POST', body: JSON.stringify({ message, characterId, context, projectId }) },
+    true,
   ).catch(() => ({ type: 'none' } as VisualResultWithBank));
 
 export const analyzeImage = (userMessage: string, characterId: string, context?: string, projectId?: string) =>
   jsonFetch<ImageAnalysisResult>(
     '/api/v1/avatar/image/analyze',
     { method: 'POST', body: JSON.stringify({ userMessage, characterId, conversationContext: context, projectId }) },
+    true,
   ).catch(() => ({ shouldGenerate: false, imageUrl: null, altText: '', caption: '', imageType: 'realistic' as const }));
 
 // Loads memory AND mints the capability token used to persist turns. withAuth=true so an

@@ -98,10 +98,22 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
     return () => mq.removeEventListener('change', sync);
   }, []);
 
-  // Sync from project
+  // Sync from project — but never over a field the user has since typed into.
+  //
+  // `onProjectChange` hands the new row up to ProjectHeader, which passes it straight back down, so
+  // ANY server-side title/description change re-runs this effect. Unconditional assignment made it
+  // the last writer in that commit, which silently undid the ui-ux-202 guard in `generateDetails`:
+  // that guard keeps a hand edit made during the ~90s poll, and this effect then overwrote it with
+  // the AI title anyway. Comparing against what was last synced tells a pristine field (adopt the
+  // server value) apart from a dirtied one (leave the author's text alone).
+  const syncedMetaRef = useRef<{ title: string; desc: string } | null>(null);
   useEffect(() => {
-    setTitle(project?.title ?? '');
-    setDesc(project?.topic ?? '');
+    const nextTitle = project?.title ?? '';
+    const nextDesc = project?.topic ?? '';
+    const synced = syncedMetaRef.current;
+    syncedMetaRef.current = { title: nextTitle, desc: nextDesc };
+    setTitle(prev => (synced === null || prev === synced.title ? nextTitle : prev));
+    setDesc(prev => (synced === null || prev === synced.desc ? nextDesc : prev));
   }, [project?.title, project?.topic]);
 
   // Abort in-flight generate polls when the project changes or the component unmounts, so a

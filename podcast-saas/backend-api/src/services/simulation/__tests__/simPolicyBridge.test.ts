@@ -257,7 +257,9 @@ function makeBridgeHarness(source: string = BRIDGE) {
    */
   const send = (msg: Record<string, unknown>): void => {
     const data = structuredClone(msg);
-    for (const l of [...winListeners]) l({ data });
+    // `source` is what a real parent post carries, and the bridge now requires it: a message whose
+    // source is not this document's parent is ignored (simulation-004).
+    for (const l of [...winListeners]) l({ data, source: ctx.parent });
   };
 
   const state = (): Record<string, unknown> => (ctx[STATE_GLOBAL] as Record<string, unknown>) ?? {};

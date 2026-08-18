@@ -22,6 +22,7 @@ import type { TimelineSection, ImageFile } from 'shared/src/generated/client-v1'
 import { EditorSimPool } from './EditorSimPool';
 import { ImageOverlay } from './ImageOverlay';
 import { AvatarCirclesOverlay } from './viewer/AvatarCirclesOverlay';
+import { releaseAvatarElement } from '../lib/avatarAudioGraph';
 import type { AvatarCirclesConfig } from './viewer/types';
 
 export type { Clip };
@@ -225,6 +226,26 @@ function MultiClipPlayer({ clips, timelineDuration, onTimeUpdate, sectionLabel, 
   // and putting it in the subscription effect's deps would re-subscribe on every frame tick.
   const hookRef = useRef(hook);
   hookRef.current = hook;
+
+  // ── avatar-circle audio taps ──────────────────────────────────────────────
+  // `AvatarCirclesOverlay` taps whichever <video> it is handed, into a module-level Map that is
+  // deliberately NOT weak (syncAvatarGains iterates it every frame). So the element that owns the
+  // tap owns its release: without this, every project switch in the editor strands two more
+  // permanently-connected source/gain nodes — and the detached <video> behind them — on the one
+  // AudioContext the page gets. The viewer pairs its taps the same way in useProjectPlayer's
+  // cleanup (perf-006); this is the editor's half. (frontend-001)
+  //
+  // The elements are captured at mount, not read in the cleanup: useEditorPlayback pins the same
+  // pair for the component's whole life, and a passive cleanup can run after React has already
+  // detached the host refs.
+  useEffect(() => {
+    const videoA = hookRef.current.videoARef.current;
+    const videoB = hookRef.current.videoBRef.current;
+    return () => {
+      releaseAvatarElement(videoA);
+      releaseAvatarElement(videoB);
+    };
+  }, []);
 
   useImperativeHandle(imperativeRef, () => ({
     seek: (globalSec: number) => hook.seek(globalSec),

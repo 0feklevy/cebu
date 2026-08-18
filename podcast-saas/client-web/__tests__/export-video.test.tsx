@@ -82,6 +82,10 @@ vi.mock('@/lib/api', () => ({
   api,
   getApiClient: () => api,
   createShareToken: vi.fn(),
+  // The header's mount-time share read. It used to be an inline `fetch` inside the component, so
+  // this factory never had to name it; it is a validated `lib/api` function now (types-010) and a
+  // module factory that omits it makes the component throw on render.
+  getShareToken: vi.fn(async () => ({ shareToken: null, shareUrl: null })),
   revokeShareToken: vi.fn(),
   startProjectExport: startExport,
   // The real guard's logic, verbatim — duck-typed on `code`, exactly like lib/api.ts.

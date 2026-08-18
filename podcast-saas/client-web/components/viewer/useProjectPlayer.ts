@@ -3731,7 +3731,23 @@ export function useProjectPlayer(
       const targetSeg = tl[targetIdx];
       const localTime = Math.max(0, targetGlobal - targetSeg.offset);
 
-      if (targetIdx === curIdxRef.current) {
+      // NOT WHILE A SWAP INTO THIS SEGMENT IS STILL IN FLIGHT.
+      //
+      // `loadSegment` sets `curIdxRef` at T0 but promotes the standby only from `finishSwap`, so
+      // between the two this test says "same segment" while `videoRef.current` is still the
+      // OUTGOING element. Two things then went wrong together: the seek below assigned the NEW
+      // segment's local time to the OLD segment's media (and played it), and `swapGenRef.current++`
+      // cancelled the in-flight swap — which nothing re-arms, because `swappingRef` is cleared
+      // only inside `finishSwap`. The player was then wedged permanently: the wrong segment on
+      // screen, and `onTick`'s whole overlay/sim/residency block skipped for the rest of the
+      // session (a b-roll revealed by this very call stays at opacity 1 forever). Reproduced by
+      // two ordinary scrubs — one across a boundary, one landing in the same segment before its
+      // media became playable.
+      //
+      // Re-issuing the load is the correct answer rather than merely skipping the bump: it mints a
+      // fresh generation, re-arms the completion path on the standby (whose source is already
+      // attached, so nothing reloads), and lands the viewer at the position they released.
+      if (targetIdx === curIdxRef.current && !swappingRef.current) {
         swapGenRef.current++;
         // A scrub retargets the media the handoff was waiting on, so its evidence rule can never
         // be satisfied and its retry would seek back to where the viewer just left.
@@ -3952,7 +3968,12 @@ export function useProjectPlayer(
         merge({ globalTime: newGlobal });
         showControls();
 
-        if (targetIdx === curIdxRef.current) {
+        // Same in-flight-swap rule as `endScrub` — see the note there. `curIdxRef` is already the
+        // incoming segment while `videoRef.current` is still the outgoing element, so an arrow key
+        // pressed inside the swap window seeks and PLAYS the previous segment's media at the new
+        // segment's time. (No `swapGenRef` bump here, so this path did not wedge — it just showed
+        // and sounded the wrong shot, then discarded the seek when the swap landed.)
+        if (targetIdx === curIdxRef.current && !swappingRef.current) {
           videoRef.current!.currentTime = Math.min(localTime, tl[targetIdx].duration);
           updateSimOverlay(targetIdx, localTime);
           updateFlatOverlays(newGlobal, wasPlaying);

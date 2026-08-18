@@ -14,27 +14,51 @@ import { logger } from '../lib/logger.js';
  * already idempotent (DB CAS claims), so pg-boss's at-least-once delivery is safe.
  */
 
-function cropConcurrency(): number {
-  return Math.max(1, Number(process.env.QUEUE_CROP_CONCURRENCY ?? '2'));
-}
-
 /**
- * How many jobs of a given kind this worker runs at once.
+ * How many jobs of a given kind this worker runs at once — declared per queue, because the answer
+ * is a property of the WORK, not of the worker.
  *
- * `project_export` is deliberately serial. A crop is I/O-bound and two of them interleave happily,
- * but an export with a simulation section runs a capture container that is allowed `--cpus 2` — on
- * the 2-vCPU worker host that is the whole machine. Two concurrent exports do not finish in the same
- * total time; they contend, each takes longer than the pair would have taken in sequence, and both
- * move closer to their wall-clock kill. Serialising is what makes the per-section time budget mean
- * anything.
+ * SERIAL (1) is for anything that wants the CPU: an ffmpeg encode, a TTS-then-stitch render, or an
+ * export's capture container (allowed `--cpus 2`, which on the 2-vCPU worker host is the whole
+ * machine). Two of those do not finish in the same total time as one after the other; they contend,
+ * each takes longer than the pair would have taken in sequence, and both move closer to their
+ * wall-clock kill. `ffmpegLimit` bounds the ffmpeg PROCESSES globally, but it does not stop this
+ * worker from holding several half-finished jobs — each with its temp files, its downloaded source
+ * and its claim — while none of them progresses.
  *
- * `QUEUE_EXPORT_CONCURRENCY` raises it for a host that genuinely has the cores.
+ * TWO is for the I/O-bound kinds: a crop, a byte copy, or a job that spends its life waiting on
+ * someone else's HTTP response (Groq, OpenAI, the writers' room). Serialising those would idle the
+ * box for no gain.
+ *
+ * Before Phase E every queue except project_export silently inherited crop's number; with eight
+ * more queues that would have meant up to twenty concurrent handlers on a two-core host.
  */
+const QUEUE_CONCURRENCY: Record<JobName, number> = {
+  // CPU-bound — one at a time.
+  transcode: 1,
+  podcast_render: 1,
+  podcast_clips: 1,
+  podcast_mix_export: 1,
+  project_export: 1,
+  // I/O- or provider-bound — two interleave happily.
+  crop: 2,
+  captions: 2,
+  metadata: 2,
+  podcast_script: 2,
+  video_generate: 2,
+  project_duplicate: 2,
+};
+
+/** Per-queue env overrides, kept for the two knobs that already shipped. */
+const CONCURRENCY_ENV: Partial<Record<JobName, string>> = {
+  crop: 'QUEUE_CROP_CONCURRENCY',
+  project_export: 'QUEUE_EXPORT_CONCURRENCY',
+};
+
 function concurrencyFor(name: JobName): number {
-  if (name === 'project_export') {
-    return Math.max(1, Number(process.env.QUEUE_EXPORT_CONCURRENCY ?? '1'));
-  }
-  return cropConcurrency();
+  const envKey = CONCURRENCY_ENV[name];
+  const raw = envKey ? process.env[envKey] : undefined;
+  return Math.max(1, Number(raw ?? QUEUE_CONCURRENCY[name]));
 }
 
 /** Enqueue a durable job. Never throws; falls back to `inline()` if the send fails. */
@@ -73,13 +97,23 @@ export function pgBossSend<N extends JobName>(
  * wakes a worker and starts a provider poll before the lease turns it away. One key per generation
  * removes that pile-up for free.
  *
- * Only for job kinds where two sends genuinely mean ONE piece of work. `metadata` and the podcast
- * jobs get no key: a second request there is a second request, and silently swallowing it would be
- * a bug wearing a deduplication costume.
+ * Only for job kinds where two sends genuinely mean ONE piece of work. `metadata`, `captions`,
+ * `podcast_script`, `podcast_clips` and `project_duplicate` get no key: a second request there is a
+ * second request — `captions` even carries a `force` flag a collapse would discard — and silently
+ * swallowing it would be a bug wearing a deduplication costume. Those queues stay on the `standard`
+ * policy, so there is no index to swallow anything either.
  */
-function singletonKeyFor<N extends JobName>(name: N, payload: JobPayloads[N]): string | undefined {
+export function singletonKeyFor<N extends JobName>(name: N, payload: JobPayloads[N]): string | undefined {
   if (name === 'crop') return (payload as JobPayloads['crop']).videoFileId;
   if (name === 'video_generate') return (payload as JobPayloads['video_generate']).jobId;
+  // Two sends for one video file mean one HLS ladder, and `runVideoTranscode` has no CAS claim of
+  // its own, so a queued duplicate would genuinely double-encode rather than bow out.
+  if (name === 'transcode') return (payload as JobPayloads['transcode']).videoFileId;
+  // `recoverStuckPodcastRenders` re-drives every untouched queued render on EVERY boot, so a
+  // restart loop stacks one delivery per boot on the same row. Same cost argument as
+  // video_generate: the key removes the pile-up, the CAS claim remains the correctness guard.
+  if (name === 'podcast_render') return (payload as JobPayloads['podcast_render']).renderId;
+  if (name === 'podcast_mix_export') return (payload as JobPayloads['podcast_mix_export']).renderId;
   return undefined;
 }
 
