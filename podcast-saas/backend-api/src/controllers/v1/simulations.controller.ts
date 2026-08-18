@@ -17,19 +17,24 @@ import {
 } from '../../services/simulation/SimulationService.js';
 import {
   GuidanceService,
+  guidancePublishMeta,
   type GuidanceEntryStored,
 } from '../../services/simulation/GuidanceService.js';
 import { scanSimUiControls } from '../../services/simulation/SimUiControls.js';
+import { readActiveRevisionId } from '../../services/simulation/RevisionDerivation.js';
 import {
   checkReplaceCompatibility,
   describeIncompatibility,
 } from '../../services/simulation/SimBridgeContract.js';
-import { refuseRevisionWrite } from '../../services/simulation/revisionWriteGuard.js';
 import {
   ActiveRevisionUnreadable,
   readReplaceCompatibilitySource,
   type ReplaceCompatibilitySource,
 } from '../../services/simulation/replaceCompatibilitySource.js';
+import {
+  readActiveRevisionPackage,
+  type ActivePackageView,
+} from '../../services/simulation/activeRevisionPackage.js';
 import { LLMService } from '../../services/llm/LLMService.js';
 import { ApiKeyService } from '../../services/secrets/ApiKeyService.js';
 import { UsageTrackingService } from '../../services/usage/UsageTrackingService.js';
@@ -87,6 +92,30 @@ function parseManifestPaths(value: unknown): string[] | null {
 
 export async function registerSimulationsRoutes(app: FastifyInstance): Promise<void> {
   const storage = getStorageAdapter();
+
+  /**
+   * The package a simulation is ACTUALLY serving, for every read path (audit D-04).
+   *
+   * `null` for a legacy simulation — the caller keeps its storage-listing path, which for that
+   * simulation is correct. An unreadable active revision is surfaced as its own 409 rather than as
+   * an empty file list: "this package has no files" and "its manifest could not be read" are
+   * different answers and only one of them is true.
+   */
+  const activePackageOr409 = async (
+    sim: typeof simulations.$inferSelect,
+    reply: FastifyReply,
+  ): Promise<{ pkg: ActivePackageView | null } | { sent: true }> => {
+    try {
+      return { pkg: await readActiveRevisionPackage(storage, sim) };
+    } catch (err) {
+      if (err instanceof ActiveRevisionUnreadable) {
+        logger.error({ simId: sim.id, revisionId: err.revisionId, err }, 'Active revision unreadable');
+        await reply.code(409).send({ code: err.code, message: err.message, activeRevisionId: err.revisionId });
+        return { sent: true };
+      }
+      throw err;
+    }
+  };
 
   // entry_file is stored as a storage key on new rows and a full URL on old rows —
   // always hand the client a working public URL.
@@ -251,10 +280,11 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
   // Mirrors the upload endpoint's multipart contract (one ZIP in "file" OR a "files"
   // bundle + optional "manifest"; "name" is tolerated but ignored) and its caps.
   // Semantics:
-  //   - LEGACY PACKAGES ONLY. A simulation with an `active_revision_id` serves from an immutable
-  //     revision prefix, so an in-place swap would write bytes nothing reads: refused up front
-  //     with 409 `SIM_REVISION_WRITE_UNSUPPORTED` (audit simulation-001). `?dry_run=true` still
-  //     answers — read-only, and against the ACTIVE revision's bytes (audit simulation-003).
+  //   - TWO PUBLICATION SHAPES, ONE CONTRACT (audit D-04). A LEGACY simulation is swapped in place
+  //     under its mutable prefix, exactly as before. A simulation with an `active_revision_id` is
+  //     served from an immutable revision prefix, so the swap is expressed as a NEW revision
+  //     derived from the active one — customer files replaced, the LIVE bridge and guidance
+  //     carried across, made live by one compare-and-set. Either way the client sees 202 + poll.
   //   - only a 'ready' (or previously 'failed'-replace) sim can be swapped; the row is
   //     CAS-claimed to 'processing' for the swap and set back to 'ready'/'failed' after
   //   - the new bundle MUST contain an HTML file at the SAME relative path as the current
@@ -283,27 +313,7 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
       });
       if (!sim) return reply.code(404).send({ message: 'Simulation not found' });
 
-      // ── REVISIONED PACKAGES REFUSE THE IN-PLACE SWAP (audit simulation-001) ─────────
-      //
-      // Everything below this line writes into the mutable prefix, which a simulation with an
-      // active revision does not serve. The old code did all of it and returned 202. The refusal
-      // therefore has to come FIRST: before `request.parts()` consumes the multipart stream,
-      // before the status CAS claims the row, and before any storage call — so a blocked replace
-      // cannot touch the database, storage, or the live package in any way.
-      //
-      // `?dry_run=true` is deliberately exempt. It is a read-only preflight that mutates nothing,
-      // and it is the one place a caller can still learn whether an upload would fit the package
-      // — answered, since simulation-003, against the ACTIVE revision's bytes. Its response says
-      // `replaceSupported: false` so the report is never mistaken for a green light.
       const isDryRun = request.query?.dry_run === 'true';
-      const revisionRefusal = refuseRevisionWrite(sim, 'replace');
-      if (revisionRefusal && !isDryRun) {
-        logger.info(
-          { simId: sim.id, activeRevisionId: revisionRefusal.activeRevisionId },
-          'Simulation replace refused — package publishes from immutable revisions',
-        );
-        return reply.code(409).send(revisionRefusal);
-      }
 
       // 'failed' is allowed so a failed replace can be retried; a failed INITIAL upload has
       // no entry_file and is rejected by the entry-path check below.
@@ -440,15 +450,15 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
         sections: pkgSections.map((s) => ({ id: s.id, simMeta: s.sim_meta })),
       });
 
-      // Preflight: report only, mutate nothing. `replaceSupported` is what stops a compatible
-      // report on a revisioned package reading as permission to replace it — the answer to
-      // "would these files fit?" and the answer to "may I write them?" are now different answers.
+      // Preflight: report only, mutate nothing. `replaceSupported` stays on the response — it was
+      // the field that told a caller a compatible report on a revisioned package was not permission
+      // to replace it, and dropping it would silently turn "false" into "undefined" for any client
+      // still reading it. Both shapes are supported now, so both answer true.
       if (isDryRun) {
         return reply.code(200).send({
           compatibility,
           message: describeIncompatibility(compatibility),
-          replaceSupported: revisionRefusal === null,
-          ...(revisionRefusal ? { code: revisionRefusal.code, activeRevisionId: revisionRefusal.activeRevisionId } : {}),
+          replaceSupported: true,
           comparedAgainst: { origin: source.origin, revisionId: source.revisionId, bridgeKey: source.bridgeKey },
         });
       }
@@ -477,26 +487,85 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
         return reply.code(409).send({ message: 'Simulation is busy — try again shortly' });
       }
 
-      // Process asynchronously so the response returns quickly (mirrors the upload endpoint)
-      svc.processReplace({ projectId: project.id, simId: sim.id, files: fileMap, entryRelPath })
-        .then(async ({ entryKey, bridgeFunctions, deletedStale, preservedGenerated }) => {
-          await db
-            .update(simulations)
-            .set({ entry_file: entryKey, bridge_functions: bridgeFunctions, status: 'ready', error: null })
-            .where(eq(simulations.id, sim.id));
-          logger.info(
-            { simId: sim.id, entryKey, deletedStale: deletedStale.length, preservedGenerated: preservedGenerated.length },
-            'Simulation files replaced',
-          );
-        })
-        .catch(async (err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          await db
-            .update(simulations)
-            .set({ status: 'failed', error: msg })
-            .where(eq(simulations.id, sim.id));
-          logger.error({ simId: sim.id, err }, 'Simulation replace failed');
+      // Process asynchronously so the response returns quickly (mirrors the upload endpoint).
+      //
+      // The two shapes differ in WHERE the terminal status is written. The legacy swap writes it
+      // here, after the last upload; the revisioned one writes it INSIDE the activation
+      // transaction, so a lost compare-and-set can never leave a package live with a row that
+      // still says `processing`. Only the failure path is shared — and it must be, because a
+      // claimed row with no terminal write is a simulation nobody can replace again.
+      // ── THE PACKAGE MUST NOT HAVE CHANGED SHAPE UNDER US (audit D-04) ────────────────────
+      //
+      // `active_revision_id` decides whether these bytes are served from the mutable prefix or
+      // from an immutable revision, and the two are published by different code below. An earlier
+      // draft took it from the row loaded at HANDLER ENTRY — the same time-of-check bug this
+      // branch has now shipped three times, in the one path whose whole purpose is to close it.
+      //
+      // The distance from handler entry to here spans the entire multipart upload, ZIP
+      // extraction, the compatibility read and the status CAS: a window measured in the SIZE OF
+      // THE UPLOAD, not in milliseconds. Status does not exclude anything — the row stays `ready`
+      // for almost all of it.
+      //
+      // Re-reading and simply routing on the NEW value is not enough either, and that is the
+      // subtler half. The compatibility gate above already read the base package and answered
+      // "these files work against that bridge". If the pointer moved since, that answer is about
+      // a DIFFERENT package: a legacy-validated upload would be published into a revision derived
+      // from a bridge nobody checked it against. Passing a stale compatibility verdict forward is
+      // how you ship a broken simulation with a green check next to it.
+      //
+      // So a change is a CONFLICT, not a branch. The client re-uploads against the package that
+      // now exists — the same shape as any other optimistic-concurrency failure, and cheap
+      // compared to publishing something unvalidated.
+      const activeRevisionIdNow = await readActiveRevisionId(sim.id);
+      const activeRevisionIdAtEntry = sim.active_revision_id ?? null;
+      if (activeRevisionIdNow !== activeRevisionIdAtEntry) {
+        // The row is already CLAIMED (`processing`) at this point, and a claimed row with no
+        // terminal write is a simulation nobody can ever replace again. Hand it back before
+        // answering — to `ready`, not `failed`: nothing was written and nothing is wrong with the
+        // package, so leaving a red error on it would be a lie the owner has to clear by hand.
+        await db
+          .update(simulations)
+          .set({ status: 'ready', error: null })
+          .where(and(eq(simulations.id, sim.id), eq(simulations.status, 'processing')));
+        return reply.code(409).send({
+          code: 'SIM_PACKAGE_CHANGED_DURING_UPLOAD',
+          message:
+            'This simulation was published to a new revision while your files were uploading, so the ' +
+            'compatibility check ran against a package that is no longer current. Nothing was written. ' +
+            'Re-upload to check against the current package.',
         });
+      }
+      const isRevisioned = activeRevisionIdNow !== null;
+
+      const publication = isRevisioned
+        ? svc.replaceIntoRevision({ projectId: project.id, simId: sim.id, files: fileMap, entryRelPath })
+            .then(({ revisionId, revisionNumber, carriedForward, droppedFromBase }) => {
+              logger.info(
+                { simId: sim.id, revisionId, revisionNumber,
+                  carriedForward: carriedForward.length, droppedFromBase: droppedFromBase.length },
+                'Simulation files replaced into a new revision',
+              );
+            })
+        : svc.processReplace({ projectId: project.id, simId: sim.id, files: fileMap, entryRelPath })
+            .then(async ({ entryKey, bridgeFunctions, deletedStale, preservedGenerated }) => {
+              await db
+                .update(simulations)
+                .set({ entry_file: entryKey, bridge_functions: bridgeFunctions, status: 'ready', error: null })
+                .where(eq(simulations.id, sim.id));
+              logger.info(
+                { simId: sim.id, entryKey, deletedStale: deletedStale.length, preservedGenerated: preservedGenerated.length },
+                'Simulation files replaced',
+              );
+            });
+
+      publication.catch(async (err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        await db
+          .update(simulations)
+          .set({ status: 'failed', error: msg })
+          .where(eq(simulations.id, sim.id));
+        logger.error({ simId: sim.id, err }, 'Simulation replace failed');
+      });
 
       return reply.code(202).send(serializeSim(claimed));
     },
@@ -515,6 +584,26 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
         where: and(eq(simulations.id, request.params.simId), eq(simulations.project_id, project.id)),
       });
       if (!sim) return reply.code(404).send({ message: 'Simulation not found' });
+
+      // REVISION-AWARE (audit D-04). Listing the storage prefix of a revisioned package returns
+      // every revision's every file plus the captured posters — so the Files tab showed four
+      // copies of index.html under machine-generated directories and none of them was marked as
+      // the live one. The active revision's manifest is the authoritative list of what is served.
+      const active = await activePackageOr409(sim, reply);
+      if ('sent' in active) return reply;
+      if (active.pkg) {
+        // The SAME row shape the legacy branch returns, deliberately: what changes here is WHICH
+        // files are listed, not what a file looks like on the wire. `key` stays the storage key the
+        // `file-content` proxy takes, and it is a revision key — which that route already accepts,
+        // because a revision prefix is inside `storage_prefix`.
+        return reply.send(active.pkg.files.map(f => ({
+          key:      f.key,
+          filename: f.relPath.split('/').pop() ?? f.relPath,
+          ext:      (f.relPath.split('.').pop() ?? '').toLowerCase(),
+          url:      storage.getSimPublicUrl(f.key),
+          isText:   isTextSimulationFile(f.relPath),
+        })));
+      }
 
       const prefix = sim.storage_prefix.endsWith('/') ? sim.storage_prefix : sim.storage_prefix + '/';
 
@@ -657,11 +746,23 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
       });
       if (!sim) return reply.code(404).send({ message: 'Simulation not found' });
 
-      const entryRelPath = deriveEntryRelPath(sim.entry_file, sim.storage_prefix);
-      if (!entryRelPath) {
-        return reply.code(404).send({ message: 'Simulation has no readable entry file' });
+      // REVISION-AWARE (audit D-04). `entry_file` names the pre-revision copy of the entry
+      // document; for a revisioned package the player loads the ACTIVE revision's entry, and
+      // scanning the old one offered the picker controls from a document nobody serves — the same
+      // stale read that made the replace-compatibility gate answer about the wrong bytes.
+      const activeForControls = await activePackageOr409(sim, reply);
+      if ('sent' in activeForControls) return reply;
+
+      let entryKey: string;
+      if (activeForControls.pkg) {
+        entryKey = activeForControls.pkg.entryKey;
+      } else {
+        const entryRelPath = deriveEntryRelPath(sim.entry_file, sim.storage_prefix);
+        if (!entryRelPath) {
+          return reply.code(404).send({ message: 'Simulation has no readable entry file' });
+        }
+        entryKey = `${sim.storage_prefix}/${entryRelPath}`;
       }
-      const entryKey = `${sim.storage_prefix}/${entryRelPath}`;
 
       // Read via the storage API; fall back to the public URL when the storage token
       // denies GetObject (write-only R2 token) — same path the file-content route uses.
@@ -692,6 +793,30 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
       });
       if (!sim) return reply.code(404).send({ message: 'Simulation not found' });
 
+      const zip = new AdmZip();
+      const safeName = sim.name.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'simulation';
+
+      // REVISION-AWARE (audit D-04). Zipping the whole prefix shipped every revision the package
+      // has ever had plus its captured posters — so a download → edit → replace round-trip grew
+      // the package on every pass, and the archive's `revisions/<id>/package/index.html` was not a
+      // path anybody could upload back. The ZIP is the LIVE package, at the paths the customer
+      // uploaded it under.
+      const activeForZip = await activePackageOr409(sim, reply);
+      if ('sent' in activeForZip) return reply;
+
+      if (activeForZip.pkg) {
+        if (activeForZip.pkg.files.length === 0) {
+          return reply.code(404).send({ message: 'No simulation files found — try re-uploading the simulation.' });
+        }
+        for (const f of activeForZip.pkg.files) {
+          zip.addFile(f.relPath, await storage.readObject(f.key));
+        }
+        return reply
+          .header('Content-Type', 'application/zip')
+          .header('Content-Disposition', `attachment; filename="${safeName}.zip"`)
+          .send(zip.toBuffer());
+      }
+
       const allKeys = (await storage.listObjects(sim.storage_prefix)).sort();
       const prefix = sim.storage_prefix.endsWith('/') ? sim.storage_prefix : sim.storage_prefix + '/';
       const keys = allKeys.filter(k => k.startsWith(prefix));
@@ -700,7 +825,6 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
         return reply.code(404).send({ message: 'No simulation files found — try re-uploading the simulation.' });
       }
 
-      const zip = new AdmZip();
       for (const key of keys) {
         const relativePath = key.slice(prefix.length).replace(/^\/+/, '');
         if (!relativePath) continue;
@@ -708,7 +832,6 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
         zip.addFile(relativePath, buf);
       }
 
-      const safeName = sim.name.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'simulation';
       return reply
         .header('Content-Type', 'application/zip')
         .header('Content-Disposition', `attachment; filename="${safeName}.zip"`)
@@ -892,36 +1015,6 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
         try { reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch { /* closed */ }
       };
 
-      // ── REVISIONED PACKAGES REFUSE THE GUIDANCE PUBLISH (audit simulation-002) ──────
-      //
-      // publishGuidance writes guidance.js, the cue audio and the re-injected entry HTML into the
-      // mutable prefix, which a revisioned simulation does not serve — so the whole run "succeeded"
-      // and the guidance never played. The refusal is emitted BEFORE `guidance_status` is touched,
-      // before the voice is resolved or a single character is sent to TTS, and before any upload.
-      //
-      // AND IT IS EMITTED ON THE STREAM, NOT INSTEAD OF IT. A pre-SSE JSON 409 never reaches an
-      // EventSource's 'error' listener: the browser fails the connection and the editor shows its
-      // generic "Connection lost", which describes a network fault the user does not have. So the
-      // stream is established first and the refusal arrives as a NAMED error event, carrying the
-      // same stable code the replace endpoint returns.
-      const revisionRefusal = refuseRevisionWrite(owned.sim, 'publish-guidance');
-      if (revisionRefusal) {
-        openStream();
-        sendEvent('connected', {});
-        sendEvent('error', {
-          error: revisionRefusal.message,
-          errorType: 'revision_write_unsupported',
-          code: revisionRefusal.code,
-          activeRevisionId: revisionRefusal.activeRevisionId,
-        });
-        logger.info(
-          { simId: owned.sim.id, activeRevisionId: revisionRefusal.activeRevisionId },
-          'Guidance publish refused — package publishes from immutable revisions',
-        );
-        try { reply.raw.end(); } catch { /* already closed */ }
-        return;
-      }
-
       if (entries.filter(e => e.enabled).length === 0) {
         return reply.code(400).send({ message: 'No enabled guidance cues to publish — generate a draft first' });
       }
@@ -940,31 +1033,44 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
           simId: owned.sim.id, projectId: owned.project.id,
           entries, language, existing: entries,
           entryKey: owned.sim.entry_file,   // authoritative entry-file storage key
+          meta,                             // so a revisioned publish writes the new meta in-tx
           onEvent: sendEvent, signal: controller.signal,
         });
         if (!controller.signal.aborted) {
-          const newMeta = { ...meta, guidanceHash: result.guidanceHash, language: result.language, publishedAt: new Date().toISOString() };
-          const [updated] = await db.update(simulations)
-            .set({ guidance: result.entries, guidance_meta: newMeta, guidance_status: 'ready', guidance_error: null })
-            .where(eq(simulations.id, owned.sim.id)).returning();
+          // ── REVISIONED: the row was already written, inside the activation transaction ──────
+          //
+          // Nothing to do here but report it. In particular NOT the `?g=` rewrite below: the
+          // served URL of every section is composed from `active_revision_entry_key`
+          // (`resolveSimulationUrl`), so the pointer flip already busted every section's cache in
+          // the one row update that made the guidance live. Appending `g=` would additionally
+          // write a value into `timeline_sections.simulation_url`, whose documented meaning is
+          // "what THIS section published" — a per-section rewrite of a package-level fact.
+          if (result.simulation) {
+            sendEvent('done', { simulation: serializeSim(result.simulation) });
+          } else {
+            const newMeta = guidancePublishMeta(meta, result);
+            const [updated] = await db.update(simulations)
+              .set({ guidance: result.entries, guidance_meta: newMeta, guidance_status: 'ready', guidance_error: null })
+              .where(eq(simulations.id, owned.sim.id)).returning();
 
-          // Bust the iframe cache for every section using this sim so the freshly-injected
-          // guidance.js is actually loaded (the entry HTML changed but section URLs did not).
-          // Append/replace a `g=<guidanceHash>` query param on each section's simulation_url.
-          const usingSecs = await db.query.timeline_sections.findMany({
-            where: eq(timeline_sections.simulation_id, owned.sim.id),
-          });
-          for (const sec of usingSecs) {
-            if (!sec.simulation_url) continue;
-            const [base, query] = sec.simulation_url.split('?');
-            const params = new URLSearchParams(query ?? '');
-            params.set('g', result.guidanceHash);
-            await db.update(timeline_sections)
-              .set({ simulation_url: `${base}?${params.toString()}` })
-              .where(eq(timeline_sections.id, sec.id));
+            // LEGACY ONLY. Bust the iframe cache for every section using this sim so the
+            // freshly-injected guidance.js is actually loaded (the entry HTML changed in place but
+            // section URLs did not). Append/replace a `g=<guidanceHash>` query param.
+            const usingSecs = await db.query.timeline_sections.findMany({
+              where: eq(timeline_sections.simulation_id, owned.sim.id),
+            });
+            for (const sec of usingSecs) {
+              if (!sec.simulation_url) continue;
+              const [base, query] = sec.simulation_url.split('?');
+              const params = new URLSearchParams(query ?? '');
+              params.set('g', result.guidanceHash);
+              await db.update(timeline_sections)
+                .set({ simulation_url: `${base}?${params.toString()}` })
+                .where(eq(timeline_sections.id, sec.id));
+            }
+
+            sendEvent('done', { simulation: serializeSim(updated) });
           }
-
-          sendEvent('done', { simulation: serializeSim(updated) });
         }
       } catch (err) {
         if (!controller.signal.aborted) {

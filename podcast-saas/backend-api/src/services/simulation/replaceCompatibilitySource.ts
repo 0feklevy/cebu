@@ -28,17 +28,12 @@ import { PACKAGE_SUBDIR, revisionFileKey, revisionManifestKey } from 'shared/sim
 import type { SimManifest as SimPackageManifest } from 'shared/sim/simManifest';
 import { deriveEntryRelPath } from './SimulationService.js';
 
-/** The active revision's package could not be read, so no compatibility verdict is possible. */
-export class ActiveRevisionUnreadable extends Error {
-  readonly code = 'SIM_ACTIVE_REVISION_UNREADABLE';
-  constructor(readonly revisionId: string, readonly detail: string) {
-    super(
-      `The active package revision (${revisionId}) could not be read, so this upload cannot be ` +
-      `checked against the bridge that is actually being served: ${detail}`,
-    );
-    this.name = 'ActiveRevisionUnreadable';
-  }
-}
+// The gate READS what a derivation WRITES, so both speak one vocabulary for where a customer file
+// lives inside a revision, and one error type for "the package being served cannot be read".
+export { bundleRelPathForManifestPath } from './revisionPackagePaths.js';
+export { ActiveRevisionUnreadable } from './RevisionDerivation.js';
+import { bundleRelPathForManifestPath } from './revisionPackagePaths.js';
+import { ActiveRevisionUnreadable } from './RevisionDerivation.js';
 
 export interface ReplaceCompatibilitySource {
   /** Where the bytes came from — `revision` whenever the simulation has an active revision. */
@@ -51,23 +46,6 @@ export interface ReplaceCompatibilitySource {
   entryRelPath: string | null;
   /** The revision the bytes describe, when `origin === 'revision'`. */
   revisionId: string | null;
-}
-
-/**
- * A manifest path → the path the CUSTOMER's own bundle uses for the same file.
- *
- * Customer bytes are nested under `package/` inside a revision (see `revisionPathForLegacy`) so a
- * customer file named `manifest.json` cannot shadow ours. The uploaded bundle has no such nesting,
- * so the two have to be translated rather than compared directly — otherwise every entry-name check
- * against a revisioned package fails on a prefix the user never typed.
- */
-export function bundleRelPathForManifestPath(manifestPath: string): string | null {
-  const path = manifestPath.replace(/^\/+/, '').trim();
-  if (!path) return null;
-  const marker = `${PACKAGE_SUBDIR}/`;
-  if (path.startsWith(marker)) return path.slice(marker.length) || null;
-  // A revision published before the `package/` nesting: the manifest path IS the bundle path.
-  return path;
 }
 
 /**

@@ -18,6 +18,15 @@ import {
 // import this module. RevisionMigration DOES (deriveEntryRelPath/getSimulationContentType), so its
 // helpers are pulled in lazily inside uploadSectionBridge — same pattern as GuidanceService.
 import { RevisionService, type RevisionDbTx } from './RevisionService.js';
+// The ONE staging primitive every in-place writer becomes: derive from the ACTIVE revision →
+// transform → draft/upload/validate → compare-and-set activate (audit D-04). NOT circular:
+// RevisionDerivation imports RevisionService and the schema, never this module.
+import { deriveRevision, derivedCapabilities, type DerivedFile } from './RevisionDerivation.js';
+import {
+  bundleRelPathForManifestPath,
+  manifestPathForBundleRel,
+  packageRootRelPath,
+} from './revisionPackagePaths.js';
 import {
   BRIDGE_CAPABILITIES_KEY,
   detectBridgeCapabilities,
@@ -2643,6 +2652,193 @@ export class SimulationService {
       'Simulation files replaced',
     );
     return { entryUrl, entryKey, bridgeFunctions, uploadedCount: entries.length, deletedStale, preservedGenerated };
+  }
+
+  /**
+   * REPLACE, FOR A PACKAGE THAT PUBLISHES FROM IMMUTABLE REVISIONS (audit D-04).
+   *
+   * `processReplace` above overwrites the mutable prefix in place. A simulation with an
+   * `active_revision_id` does not serve that prefix, so running it there wrote bytes nobody reads
+   * and reported success — the defect 9a79c56 made loud. This is the operation it was refusing to
+   * do: the same product behaviour (the customer's new files, the SAME entry name, the generated
+   * runtime preserved and re-wired) expressed as a NEW revision that a compare-and-set makes live.
+   *
+   * WHAT COMBINES WITH WHAT
+   *   - every uploaded file becomes package content of the new revision;
+   *   - the LIVE runtime — `bridge.js` with every section body published so far, `guidance.js` with
+   *     the published cues — is carried across from the ACTIVE revision, because it is system-owned
+   *     and was never in the customer's bundle. That is the whole point of "replace" rather than
+   *     "upload a new simulation": section scripts and guidance survive a file swap;
+   *   - the uploaded entry document is re-wired to both, with their CURRENT hashes, plus the head
+   *     rAF gate. An upload that itself contains `bridge.js` or `guidance.js` wins over the carried
+   *     copy — those are the customer's bytes at that path and silently discarding them would be a
+   *     different operation than the one they asked for;
+   *   - a base file that the upload does not contain and that is not runtime is DROPPED. In the
+   *     legacy path that was a stale-key delete; here it is simply a file the new revision does not
+   *     contain, which is the same outcome without a delete that can half-fail.
+   *
+   * NOTHING IS WRITTEN OUTSIDE THE NEW REVISION'S PREFIX — no upload to the mutable prefix, no
+   * delete anywhere, and the base revision's bytes are untouched so a rollback still has a package
+   * to return to.
+   *
+   * THE ROW'S `status` MOVES INSIDE THE ACTIVATION TRANSACTION. A replace claims the row as
+   * `processing`; if the terminal `ready` were a second statement after `activate()` resolved, a
+   * lost compare-and-set or a crash in between would leave a simulation that is live and a row
+   * that says it is still working — a package permanently unreplaceable because the status gate
+   * never clears. `onActivated` runs inside the same transaction as the pointer flip, so the two
+   * commit together or neither does.
+   */
+  async replaceIntoRevision(opts: {
+    projectId:    string;
+    simId:        string;
+    files:        Map<string, Buffer>;
+    entryRelPath: string;
+    signal?:      AbortSignal;
+  }): Promise<{
+    revisionId:      string;
+    revisionNumber:  number;
+    entryKey:        string;
+    bridgeFunctions: BridgeFunction[];
+    /** Bundle paths taken from the ACTIVE revision because the upload did not supply them. */
+    carriedForward:  string[];
+    /** Bundle paths the ACTIVE revision had that the new one does not. */
+    droppedFromBase: string[];
+  }> {
+    const { files, entryRelPath } = opts;
+    if (files.size === 0) throw new Error('Replacement bundle appears to be empty');
+    if (!files.has(entryRelPath)) {
+      throw new Error(
+        `Replacement bundle must contain the entry file "${entryRelPath}" — upload with the same entry HTML name`,
+      );
+    }
+
+    // Filled by the transform, read by the activation hook. The transform always runs first, and
+    // `deriveRevision` never reaches the hook when it does not.
+    const bridgeFunctions: BridgeFunction[] = [];
+    const carriedForward: string[] = [];
+    let droppedFromBase: string[] = [];
+
+    const result = await deriveRevision({
+      storage: this.storage,
+      revisions: this.revisions(),
+      simulationId: opts.simId,
+      projectId: opts.projectId,
+      createdBy: 'simulation-replace',
+      trigger: 'replace',
+      signal: opts.signal,
+      transform: async (base) => {
+        // THE NEW REVISION IS ALWAYS `package/`-NESTED, and that is a correctness requirement here
+        // rather than a convention.
+        //
+        // A replace rebuilds the whole customer package from an uploaded bundle, so every path —
+        // the upload's and the runtime carried across — is re-derived from its bundle-relative
+        // name. Preserving a pre-nesting base's FLAT layout would put customer paths at the
+        // revision root, where a bundle containing `manifest.json` composes the same key as the
+        // revision's own manifest: `validate()` writes ours last, so the customer's file would be
+        // silently replaced by our manifest AFTER byte verification had already passed it. The
+        // `package/` subdirectory exists precisely so a customer name cannot shadow ours.
+        //
+        // Re-nesting is safe because it moves EVERY file together — the break
+        // `revisionPathForLegacy` warns about came from hoisting SOME files (runtime into a
+        // sibling `runtime/`) while leaving the entry behind, which changed what the entry's own
+        // relative references resolved to. A uniform shift changes nothing relative.
+        const toManifestPath = (rel: string): string => manifestPathForBundleRel(rel, true);
+        const uploaded = new Set(files.keys());
+
+        // ── Runtime carried forward from the LIVE revision ────────────────────────────────────
+        const carried: DerivedFile[] = [];
+        const carriedBytes = new Map<string, Buffer>();
+        for (const f of base.manifest.files ?? []) {
+          if (f.role !== 'runtime') continue;
+          const rel = bundleRelPathForManifestPath(f.path);
+          if (!rel || uploaded.has(rel)) continue;
+          const bytes = await base.read(f.path);
+          carriedBytes.set(rel, bytes);
+          carried.push({
+            // Re-derived from the bundle name, like every other file — carrying `f.path` verbatim
+            // would leave a pre-nesting base's `bridge.js` at the revision root while the entry
+            // moved into `package/`, and the entry's `./bridge.js` would 404.
+            manifestPath: toManifestPath(rel), role: 'runtime', contentType: f.contentType,
+            read: async () => bytes,
+          });
+          carriedForward.push(rel);
+        }
+        droppedFromBase = (base.manifest.files ?? [])
+          .filter((f) => f.role === 'asset' || f.role === 'entry')
+          .map((f) => bundleRelPathForManifestPath(f.path))
+          .filter((rel): rel is string => rel !== null && !uploaded.has(rel));
+
+        // ── The entry document, re-wired to whichever runtime the new revision will contain ────
+        const runtimeText = (rel: string): string | null => {
+          const fromUpload = files.get(rel);
+          if (fromUpload) return fromUpload.toString('utf-8');
+          const fromBase = carriedBytes.get(rel);
+          return fromBase ? fromBase.toString('utf-8') : null;
+        };
+        const bridgeJs = runtimeText('bridge.js');
+        const guidanceJs = runtimeText('guidance.js');
+
+        let html = injectRafGate(files.get(entryRelPath)!.toString('utf-8'));
+        if (bridgeJs !== null) {
+          html = injectBridgeScriptTag(html, packageRootRelPath(entryRelPath, 'bridge.js'), computeBridgeHash(bridgeJs));
+        } else {
+          html = injectInlineBridge(html, bridgeFunctions);
+        }
+        if (guidanceJs !== null) {
+          // Lazy import — a static SimulationService⇄GuidanceService import would be circular.
+          const { injectGuidanceScriptTag, computeGuidanceHash } = await import('./GuidanceService.js');
+          html = injectGuidanceScriptTag(html, packageRootRelPath(entryRelPath, 'guidance.js'), computeGuidanceHash(guidanceJs));
+        }
+
+        const uploadedFiles: DerivedFile[] = [...files.entries()].map(([rel, bytes]) => {
+          const isEntry = rel === entryRelPath;
+          const isRuntime = rel === 'bridge.js' || rel === 'guidance.js';
+          const finalBytes = isEntry ? Buffer.from(html, 'utf-8') : bytes;
+          return {
+            manifestPath: toManifestPath(rel),
+            role: isEntry ? 'entry' : isRuntime ? 'runtime' : 'asset',
+            contentType: getSimulationContentType(rel),
+            read: async () => finalBytes,
+          };
+        });
+
+        return {
+          files: [...uploadedFiles, ...carried],
+          entryManifestPath: toManifestPath(entryRelPath),
+          metadata: {
+            // Read off the bytes that are about to be published, not off the input — the injections
+            // above strip and add script tags, so the record has to describe the document a viewer
+            // will actually load (audit P0.5 / P0.8, same rule as assembleSectionBridgeArtifacts).
+            [BRIDGE_CAPABILITIES_KEY]: derivedCapabilities({
+              baseMetadata: base.metadata, bridgeJs, entryHtml: html,
+            }),
+            replacedFileCount: files.size,
+          },
+        };
+      },
+      onActivated: async (tx) => {
+        await tx
+          .update(simulations)
+          .set({ status: 'ready', error: null, bridge_functions: bridgeFunctions })
+          .where(eq(simulations.id, opts.simId));
+      },
+    });
+
+    logger.info(
+      { simId: opts.simId, projectId: opts.projectId, revisionId: result.revisionId,
+        revisionNumber: result.revisionNumber, uploaded: files.size,
+        carriedForward: carriedForward.length, droppedFromBase: droppedFromBase.length },
+      'Simulation files replaced into a new revision',
+    );
+
+    return {
+      revisionId: result.revisionId,
+      revisionNumber: result.revisionNumber,
+      entryKey: result.entryKey,
+      bridgeFunctions,
+      carriedForward,
+      droppedFromBase,
+    };
   }
 
   // ── AI-powered per-section bridge generation ──────────────────────────────────

@@ -15,8 +15,23 @@ import {
   type SimManifest,
 } from './SimulationService.js';
 import { db } from '../../db/index.js';
-import { system_prompts } from '../../db/schema.js';
+import { simulations, system_prompts } from '../../db/schema.js';
 import { logger } from '../../lib/logger.js';
+// The ONE staging primitive (audit D-04). Guidance and replace derive their new revision through
+// the same four steps; only the transform differs.
+import {
+  deriveRevision,
+  derivedCapabilities,
+  readActiveRevisionId,
+  type DerivedFile,
+} from './RevisionDerivation.js';
+import {
+  bundleRelPathForManifestPath,
+  isPackageNested,
+  manifestPathForBundleRel,
+  packageRootRelPath,
+} from './revisionPackagePaths.js';
+import { BRIDGE_CAPABILITIES_KEY } from 'shared/sim/bridgeCapability';
 
 // ── Public types ────────────────────────────────────────────────────────────
 
@@ -52,6 +67,36 @@ export interface GuidancePublishResult {
   entries:      GuidanceEntryStored[];   // audioUrl filled in for enabled entries
   guidanceHash: string;
   language:     string;
+  /**
+   * The revision this publication activated, or null when the package is legacy and was written in
+   * place. Not decoration: the caller uses it to decide whether the `?g=` section-URL cache bust is
+   * still needed. For a revisioned package it is not — the new revision's URL IS the bust.
+   */
+  revisionId:   string | null;
+  /**
+   * The simulations row, when it was written INSIDE the activation transaction (revisioned
+   * packages). Null for the legacy path, where the caller still owns the row write.
+   */
+  simulation:   typeof simulations.$inferSelect | null;
+}
+
+/**
+ * `guidance_meta` after a publication.
+ *
+ * One function because it is now written from two places — the caller for a legacy package, this
+ * service inside the activation transaction for a revisioned one — and two copies would drift on
+ * the next field added.
+ */
+export function guidancePublishMeta(
+  existing: Record<string, unknown> | null | undefined,
+  result: { guidanceHash: string; language: string },
+): Record<string, unknown> {
+  return {
+    ...(existing ?? {}),
+    guidanceHash: result.guidanceHash,
+    language: result.language,
+    publishedAt: new Date().toISOString(),
+  };
 }
 
 type OnEvent = (event: string, data: object) => void;
@@ -521,12 +566,27 @@ export class GuidanceService {
     };
   }
 
-  /** Step B — synthesize audio for enabled cues, assemble guidance.js, inject into entry HTML. */
+  /**
+   * Step B — synthesize audio for enabled cues, assemble guidance.js, inject into entry HTML.
+   *
+   * TWO PUBLICATION SHAPES, ONE DECISION POINT (audit D-04). A LEGACY package really is served from
+   * its mutable prefix, so it is written there exactly as before. A package with an
+   * `active_revision_id` is served from an immutable revision prefix, and writing the same bytes
+   * into the mutable one is what made "Publish guidance" succeed while the guidance never played —
+   * so it DERIVES a new revision instead and makes it live with a compare-and-set.
+   *
+   * The branch is taken HERE, immediately before the write, from a fresh read of the pointer — not
+   * from the row the request loaded. A simulation that gained its first revision while the audio
+   * was being synthesised (minutes, for a long draft) would otherwise take the legacy branch and
+   * reproduce the defect through the one door left open for it.
+   */
   async publishGuidance(opts: {
     simId: string; projectId: string;
     entries: GuidanceEntryStored[]; language?: string;
     existing?: GuidanceEntryStored[] | null;
     entryKey?: string;   // authoritative entry-file storage key (from the simulation row)
+    /** The row's current `guidance_meta`, so a revisioned publish can write the new one in-tx. */
+    meta?: Record<string, unknown> | null;
     onEvent?: OnEvent; signal?: AbortSignal;
   }): Promise<GuidancePublishResult> {
     const { simId, projectId, onEvent } = opts;
@@ -571,6 +631,14 @@ export class GuidanceService {
     const guidanceHash = computeGuidanceHash(guidanceJs);
     const guidanceKey = `${prefix}/guidance.js`;
 
+    const activeRevisionId = await readActiveRevisionId(simId);
+    if (activeRevisionId) {
+      return this.publishIntoRevision({
+        simId, projectId, language, published, guidanceJs, guidanceHash,
+        meta: opts.meta ?? null, onEvent, signal: opts.signal,
+      });
+    }
+
     await withGuidanceLock(guidanceKey, async () => {
       await this.storage.uploadFile(guidanceKey, Buffer.from(guidanceJs, 'utf-8'), 'application/javascript');
 
@@ -612,6 +680,133 @@ export class GuidanceService {
     });
 
     logger.info({ simId, published: published.filter(e => e.enabled).length }, 'Guidance published');
-    return { entries: published, guidanceHash, language };
+    return { entries: published, guidanceHash, language, revisionId: null, simulation: null };
+  }
+
+  /**
+   * Publish guidance into a NEW revision derived from the one that is live (audit D-04).
+   *
+   * WHAT CHANGES AND WHAT DOES NOT
+   * Every file of the active revision is carried across byte-for-byte except two: `guidance.js`,
+   * which is this publication's output, and the entry document, which gains the tag that loads it
+   * (and the head rAF gate, idempotently). `bridge.js` and every customer asset are the SAME BYTES
+   * — so a package's section scripts survive a guidance publish exactly as they did when guidance
+   * was written in place.
+   *
+   * NO `?g=` REWRITE. The legacy path appends `g=<hash>` to the `simulation_url` of every section
+   * using the simulation, because the entry HTML changed underneath a URL that did not. A revision
+   * does not have that problem: `resolveSimulationUrl` builds the served URL from
+   * `active_revision_entry_key`, so the pointer flip changes the URL of every section at once. An
+   * N-row rewrite here would be slower, non-atomic, and would write a value into the column whose
+   * documented meaning is "what THIS section published".
+   *
+   * THE CUE AUDIO STAYS OUTSIDE THE REVISION, deliberately. It is uploaded to
+   * `<prefix>/guidance/<lang>/<id>.<textHash>.mp3` — content-addressed by the narration it was
+   * synthesised from, and referenced by absolute URL from the entries baked into `guidance.js`.
+   * Copying it into each revision would re-upload every clip on every publication and, worse, make
+   * a rollback silently drop the audio of cues the older revision predates. Content-addressing is
+   * what makes the mutable location safe here: no two narrations share a key, so nothing is ever
+   * overwritten in place.
+   */
+  private async publishIntoRevision(opts: {
+    simId: string; projectId: string; language: string;
+    published: GuidanceEntryStored[];
+    guidanceJs: string; guidanceHash: string;
+    meta: Record<string, unknown> | null;
+    onEvent?: OnEvent; signal?: AbortSignal;
+  }): Promise<GuidancePublishResult> {
+    const { simId, projectId, language, published, guidanceJs, guidanceHash } = opts;
+    opts.onEvent?.('status', { status: 'Publishing a new package revision…', type: 'progress' });
+
+    const newMeta = guidancePublishMeta(opts.meta, { guidanceHash, language });
+    let simulation: typeof simulations.$inferSelect | null = null;
+
+    const result = await deriveRevision({
+      storage: this.storage,
+      simulationId: simId,
+      projectId,
+      createdBy: 'guidance-publish',
+      trigger: 'guidance-publish',
+      signal: opts.signal,
+      transform: async (base) => {
+        const nested = isPackageNested(base.entryManifestPath);
+        const guidanceManifestPath = manifestPathForBundleRel('guidance.js', nested);
+        const entryBundleRel =
+          bundleRelPathForManifestPath(base.entryManifestPath) ?? base.entryManifestPath;
+
+        const entryHtml = injectGuidanceScriptTag(
+          injectRafGate((await base.read(base.entryManifestPath)).toString('utf-8')),
+          packageRootRelPath(entryBundleRel, 'guidance.js'),
+          guidanceHash,
+        );
+
+        const files: DerivedFile[] = [];
+        for (const f of base.manifest.files ?? []) {
+          // Posters and canary evidence are the BASE's, keyed on the base's package revision; a
+          // derived revision has none until it is captured and canaried again.
+          if (f.role === 'poster' || f.role === 'canary') continue;
+          if (f.path === base.entryManifestPath || f.path === guidanceManifestPath) continue;
+          files.push({
+            manifestPath: f.path, role: f.role, contentType: f.contentType,
+            read: () => base.read(f.path),
+          });
+        }
+        files.push({
+          manifestPath: guidanceManifestPath, role: 'runtime', contentType: 'application/javascript',
+          read: async () => Buffer.from(guidanceJs, 'utf-8'),
+        });
+        files.push({
+          manifestPath: base.entryManifestPath, role: 'entry', contentType: 'text/html; charset=utf-8',
+          read: async () => Buffer.from(entryHtml, 'utf-8'),
+        });
+
+        const bridgeManifestPath = manifestPathForBundleRel('bridge.js', nested);
+        const bridgeJs = base.byPath.has(bridgeManifestPath)
+          ? (await base.read(bridgeManifestPath)).toString('utf-8')
+          : null;
+
+        return {
+          files,
+          entryManifestPath: base.entryManifestPath,
+          metadata: {
+            // The bridge is carried unchanged, so its half of the record is unchanged; the entry
+            // document is re-detected because this publication just rewrote it.
+            [BRIDGE_CAPABILITIES_KEY]: derivedCapabilities({
+              baseMetadata: base.metadata, bridgeJs, entryHtml,
+            }),
+            guidanceHash,
+            guidanceCues: published.filter((e) => e.enabled).length,
+          },
+        };
+      },
+      // INSIDE the activation transaction, after the pointer flip. Written afterwards it would be a
+      // second transaction that can fail on its own — leaving a package whose bytes carry the
+      // guidance and a row that still says `publishing`, which no retry clears and no reader can
+      // tell from a genuinely stuck job.
+      onActivated: async (tx) => {
+        const [row] = await tx
+          .update(simulations)
+          .set({
+            guidance: published,
+            guidance_meta: newMeta,
+            guidance_status: 'ready',
+            guidance_error: null,
+          })
+          .where(eq(simulations.id, simId))
+          .returning();
+        if (!row) throw new Error('The simulation was removed while its guidance was being published.');
+        simulation = row;
+      },
+    });
+
+    logger.info(
+      { simId, revisionId: result.revisionId, revisionNumber: result.revisionNumber,
+        published: published.filter(e => e.enabled).length },
+      'Guidance published into a new revision',
+    );
+    return {
+      entries: published, guidanceHash, language,
+      revisionId: result.revisionId, simulation,
+    };
   }
 }

@@ -33,6 +33,13 @@ const mocks = vi.hoisted(() => {
     mockSystemPrompts:    { findFirst: vi.fn() },
     mockTimelineSections: { findMany: vi.fn() },
     mockUpdate, mockUpdateSet, mockUpdateWhere, mockUpdateReturning,
+    // The publication reads the pointer through db.select() and stages the draft inside
+    // db.transaction(). Both are hand-driven here: this suite proves the ENDPOINT's contract —
+    // which path a request enters, and that an error always arrives ON the stream. The bytes, the
+    // compare-and-set and the transaction boundary are proved against a real database in
+    // `services/simulation/__tests__/revisionDerivation.test.ts`.
+    mockSelectWhere:  vi.fn(),
+    mockTransaction:  vi.fn(),
     mockSynthesize:   vi.fn(),
     mockResolveVoice: vi.fn(),
     mockStorage: {
@@ -55,11 +62,14 @@ vi.mock('../../../db/index.js', () => ({
       timeline_sections: mocks.mockTimelineSections,
     },
     update: mocks.mockUpdate,
+    select: vi.fn(() => ({ from: vi.fn(() => ({ where: mocks.mockSelectWhere })) })),
+    transaction: mocks.mockTransaction,
   },
 }));
 
 vi.mock('../../../db/schema.js', () => ({
   simulations:       Symbol('simulations'),
+  sim_revisions:     Symbol('sim_revisions'),
   timeline_sections: Symbol('timeline_sections'),
   system_prompts:    Symbol('system_prompts'),
   api_keys:          Symbol('api_keys'),
@@ -68,6 +78,7 @@ vi.mock('../../../db/schema.js', () => ({
 
 vi.mock('drizzle-orm', () => ({
   eq:      vi.fn(() => ({ type: 'eq' })),
+  isNotNull: vi.fn(() => ({ type: 'isNotNull' })),
   and:     vi.fn(() => ({ type: 'and' })),
   or:      vi.fn(() => ({ type: 'or' })),
   desc:    vi.fn(() => ({ type: 'desc' })),
@@ -151,10 +162,29 @@ const LEGACY_SIM = {
   active_revision_entry_key: null,
 };
 
+const REV_ROOT = `${PREFIX}/revisions/${ACTIVE_REV}`;
 const REVISIONED_SIM = {
   ...LEGACY_SIM,
   active_revision_id:        ACTIVE_REV,
-  active_revision_entry_key: `${PREFIX}/revisions/${ACTIVE_REV}/package/index.html`,
+  active_revision_entry_key: `${REV_ROOT}/package/index.html`,
+};
+
+/** The manifest of the revision that is LIVE — the authoritative list a derivation starts from. */
+const ACTIVE_MANIFEST = {
+  manifestVersion: 1,
+  simulationId: SIM_ID, projectId: PROJECT_ID,
+  revisionId: ACTIVE_REV, revisionNumber: 3,
+  bridgeProtocolVersion: 2, runtimeProtocolVersion: 1,
+  entry: 'package/index.html',
+  runtime: ['package/bridge.js'],
+  files: [
+    { path: 'package/index.html', role: 'entry',   hash: 'a'.repeat(64), bytes: 10, contentType: 'text/html; charset=utf-8', cacheControl: 'no-cache' },
+    { path: 'package/bridge.js',  role: 'runtime', hash: 'c'.repeat(64), bytes: 10, contentType: 'application/javascript', cacheControl: 'immutable' },
+  ],
+  variants: [{ variantKey: 'main', configHashes: [] }],
+  posters: [], qualityProfiles: ['high'], externalDependencies: [],
+  generatedFrom: {}, canary: { classification: null, ranAt: null, engine: null },
+  createdAt: new Date(0).toISOString(), createdBy: 'test',
 };
 
 async function makeApp() {
@@ -188,6 +218,10 @@ beforeEach(() => {
   mockSimulations.findFirst.mockResolvedValue({ ...LEGACY_SIM });
   mockTimelineSections.findMany.mockResolvedValue([]);
   mockUpdateReturning.mockResolvedValue([{ ...LEGACY_SIM, guidance_status: 'ready' }]);
+
+  // Legacy by default: no pointer, so nothing reaches db.transaction().
+  mocks.mockSelectWhere.mockResolvedValue([{ storage_prefix: PREFIX, active_revision_id: null }]);
+  mocks.mockTransaction.mockRejectedValue(new Error('REVISION_STAGING_REACHED'));
 
   mockResolveVoice.mockResolvedValue({ voiceId: 'voice-1', modelId: 'eleven_flash' });
   mockSynthesize.mockResolvedValue(Buffer.from('ID3-fake-mp3'));
@@ -223,50 +257,95 @@ describe('publish-guidance — legacy package', () => {
   });
 });
 
-// ── (2) Revisioned package — refuse, on the stream, having changed nothing ────
+// ── (2) Revisioned package — publish INTO A NEW REVISION, never into the dead prefix ─────────
+//
+// audit D-04. `publishGuidance` used to write guidance.js, the cue audio and the re-injected entry
+// HTML into the mutable prefix, which a revisioned simulation does not serve: the run "succeeded"
+// and the guidance never played. It now derives a new revision instead. Two endpoint-level
+// properties are pinned here, and both were bought at a cost worth keeping:
+//
+//   - NOT ONE BYTE reaches the mutable prefix except the content-addressed cue audio, which is
+//     deliberately revision-independent; and
+//   - a failure arrives as a NAMED event on an ESTABLISHED stream. A pre-SSE JSON error never
+//     reaches an EventSource's 'error' listener — the browser fails the connection and the editor
+//     shows "Connection lost", which describes a network fault the user does not have.
 
-describe('publish-guidance — revisioned package (simulation-002)', () => {
+describe('publish-guidance — revisioned package (audit D-04)', () => {
   beforeEach(() => {
     mockSimulations.findFirst.mockResolvedValue({ ...REVISIONED_SIM });
+    mocks.mockSelectWhere.mockResolvedValue([{ storage_prefix: PREFIX, active_revision_id: ACTIVE_REV }]);
+    // The bytes a derivation reads: the live manifest and the files it names. The LEGACY copies
+    // stay in the fixture too, so a path that reached for them would still find something — which
+    // is the point: nothing below may write over them.
+    mockStorage.readObject.mockImplementation(async (key: string) => {
+      if (key === `${PREFIX}/index.html`)          return Buffer.from('<html><head></head><body>legacy</body></html>');
+      if (key === `${PREFIX}/guidance.js`)         return Buffer.from('/* legacy guidance */');
+      if (key === `${REV_ROOT}/manifest.json`)     return Buffer.from(JSON.stringify(ACTIVE_MANIFEST));
+      if (key === `${REV_ROOT}/package/index.html`) return Buffer.from('<html><head></head><body>live</body></html>');
+      if (key === `${REV_ROOT}/package/bridge.js`) return Buffer.from('/* live bridge */');
+      throw new Error(`NoSuchKey: ${key}`);
+    });
   });
 
-  it('establishes the SSE stream and emits a NAMED error event carrying the stable code', async () => {
+  it('no longer refuses — it synthesizes and enters revision staging', async () => {
     const app = await makeApp();
 
     const res = await app.inject({ method: 'GET', url: URL_PATH });
 
-    // The stream is REAL: a 200 with the event-stream content type, so the browser's EventSource
-    // stays open long enough to deliver the payload to the 'error' listener.
+    expect(res.statusCode).toBe(200);
+    // The operation is actually attempted now: the voice is resolved and the cue is synthesized.
+    expect(mockResolveVoice).toHaveBeenCalled();
+    expect(mockSynthesize).toHaveBeenCalledTimes(1);
+    // `db.transaction` is reached only by `createDraft` — entering it is what says the publication
+    // took the revision path rather than the in-place one.
+    expect(mocks.mockTransaction).toHaveBeenCalled();
+  });
+
+  it('writes NOTHING to the mutable prefix but the content-addressed cue audio', async () => {
+    const app = await makeApp();
+
+    await app.inject({ method: 'GET', url: URL_PATH });
+
+    const uploaded = mockStorage.uploadFile.mock.calls.map((c) => c[0] as string);
+    // THE DEFECT, stated as an assertion: the two files the old code wrote to a prefix nobody
+    // serves. Their absence here is the fix; their presence was the bug.
+    expect(uploaded).not.toContain(`${PREFIX}/guidance.js`);
+    expect(uploaded).not.toContain(`${PREFIX}/index.html`);
+    // Everything that IS written to the mutable prefix is cue audio, keyed by narration hash.
+    expect(uploaded.every((k) => k.startsWith(`${PREFIX}/guidance/`))).toBe(true);
+    expect(mockStorage.deleteFile).not.toHaveBeenCalled();
+  });
+
+  it('delivers a staging failure as a NAMED event on an ESTABLISHED stream, never as a bare 409', async () => {
+    const app = await makeApp();
+
+    const res = await app.inject({ method: 'GET', url: URL_PATH });
+
+    // The stream is REAL: 200 + event-stream, so the browser's EventSource stays open long enough
+    // to hand the payload to the 'error' listener.
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toContain('text/event-stream');
 
     const events = parseSse(res.payload);
     expect(events[0][0]).toBe('connected');
-
     const errorFrame = events.find(([name]) => name === 'error');
-    expect(errorFrame, 'the refusal must arrive as a named SSE error event').toBeDefined();
-    expect(errorFrame![1].code).toBe('SIM_REVISION_WRITE_UNSUPPORTED');
-    expect(errorFrame![1].activeRevisionId).toBe(ACTIVE_REV);
+    expect(errorFrame, 'the failure must arrive as a named SSE error event').toBeDefined();
     // The editor renders `data.error`; an empty one is the "Connection lost" experience again.
     expect(String(errorFrame![1].error).length).toBeGreaterThan(0);
-
     expect(events.map(([name]) => name)).not.toContain('done');
   });
 
-  it('mutates NOTHING — no guidance_status write, no upload, no TTS', async () => {
+  it('does not mark the guidance ready when the publication fails', async () => {
     const app = await makeApp();
 
     await app.inject({ method: 'GET', url: URL_PATH });
 
-    expect(mockUpdate).not.toHaveBeenCalled();
-    expect(mockUpdateSet).not.toHaveBeenCalled();
-    expect(mockStorage.uploadFile).not.toHaveBeenCalled();
-    expect(mockStorage.deleteFile).not.toHaveBeenCalled();
-    expect(mockResolveVoice).not.toHaveBeenCalled();
-    expect(mockSynthesize).not.toHaveBeenCalled();
+    expect(mockUpdateSet).toHaveBeenCalledWith(expect.objectContaining({ guidance_status: 'publishing' }));
+    expect(mockUpdateSet).toHaveBeenCalledWith(expect.objectContaining({ guidance_status: 'error' }));
+    expect(mockUpdateSet).not.toHaveBeenCalledWith(expect.objectContaining({ guidance_status: 'ready' }));
   });
 
-  it('refuses ahead of the empty-draft 400, so the client always gets the stream', async () => {
+  it('still refuses an empty draft with the ordinary 400 — nothing is billed', async () => {
     mockSimulations.findFirst.mockResolvedValue({
       ...REVISIONED_SIM,
       guidance: [{ ...CUE, enabled: false }],
@@ -275,8 +354,8 @@ describe('publish-guidance — revisioned package (simulation-002)', () => {
 
     const res = await app.inject({ method: 'GET', url: URL_PATH });
 
-    expect(res.headers['content-type']).toContain('text/event-stream');
-    const errorFrame = parseSse(res.payload).find(([name]) => name === 'error');
-    expect(errorFrame![1].code).toBe('SIM_REVISION_WRITE_UNSUPPORTED');
+    expect(res.statusCode).toBe(400);
+    expect(mockSynthesize).not.toHaveBeenCalled();
+    expect(mockStorage.uploadFile).not.toHaveBeenCalled();
   });
 });

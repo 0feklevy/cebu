@@ -33,6 +33,12 @@ const mocks = vi.hoisted(() => {
     // The bridge-compatibility gate reads this package's sections for their Minimal-UI selection.
     mockTimelineSections: { findMany: vi.fn() },
     mockUpdate, mockUpdateSet, mockUpdateWhere, mockUpdateReturning,
+    // `deriveRevision` reads the pointer through db.select() and stages the draft inside
+    // db.transaction(). Both are hand-driven here: this suite proves ROUTING and the endpoint
+    // contract, while `services/simulation/__tests__/revisionDerivation.test.ts` drives the real
+    // staging against PGlite, where a transaction is a transaction.
+    mockSelectWhere: vi.fn(),
+    mockTransaction: vi.fn(),
     mockStorage: {
       uploadFile:      vi.fn(),
       readObject:      vi.fn(),
@@ -53,11 +59,14 @@ vi.mock('../../../db/index.js', () => ({
       timeline_sections: mocks.mockTimelineSections,
     },
     update: mocks.mockUpdate,
+    select: vi.fn(() => ({ from: vi.fn(() => ({ where: mocks.mockSelectWhere })) })),
+    transaction: mocks.mockTransaction,
   },
 }));
 
 vi.mock('../../../db/schema.js', () => ({
   simulations:       Symbol('simulations'),
+  sim_revisions:     Symbol('sim_revisions'),
   timeline_sections: Symbol('timeline_sections'),
   system_prompts:    Symbol('system_prompts'),
   api_keys:          Symbol('api_keys'),
@@ -66,6 +75,7 @@ vi.mock('../../../db/schema.js', () => ({
 
 vi.mock('drizzle-orm', () => ({
   eq:      vi.fn(() => ({ type: 'eq' })),
+  isNotNull: vi.fn(() => ({ type: 'isNotNull' })),
   and:     vi.fn(() => ({ type: 'and' })),
   or:      vi.fn(() => ({ type: 'or' })),
   desc:    vi.fn(() => ({ type: 'desc' })),
@@ -207,6 +217,9 @@ beforeEach(() => {
   mockTimelineSections.findMany.mockResolvedValue([]);
   // CAS claim succeeds by default.
   mockUpdateReturning.mockResolvedValue([{ ...FAKE_SIM, status: 'processing' }]);
+  // Legacy by default — no pointer to read, and nothing ever calls db.transaction().
+  mocks.mockSelectWhere.mockResolvedValue([{ storage_prefix: PREFIX, active_revision_id: null }]);
+  mocks.mockTransaction.mockRejectedValue(new Error('REVISION_STAGING_REACHED'));
   primeStorage();
 });
 
@@ -371,6 +384,11 @@ const COMPATIBLE_APP_JS = `
   window.app = { rig: {}, setMode: function (n) { this.mode = n; } };
   var el = document.createElement('div'); el.className = 'controls-scroll';
 `;
+/** Files that satisfy the ACTIVE revision's bridge — `.active-only-panel` and `window.app.tune`. */
+const ACTIVE_COMPATIBLE_APP_JS = `
+  window.app = { rig: {}, tune: function (n) { this.mode = n; } };
+  var el = document.createElement('div'); el.className = 'active-only-panel';
+`;
 /** The "change was too big" version: the panel class and the API method were renamed. */
 const BROKEN_APP_JS = `
   window.app = { camera: {}, applyMode: function (n) { this.mode = n; } };
@@ -490,13 +508,15 @@ describe('POST …/replace — bridge-compatibility gate', () => {
   });
 });
 
-// ── Revisioned packages: replace is REFUSED, not silently written to a dead prefix ────────────
+// ── Revisioned packages: the swap is PUBLISHED AS A NEW REVISION (audit D-04) ─────────────────
 //
-// audit simulation-001. A revisioned simulation is served from
-// `<prefix>/revisions/<id>/…` and nothing reads `<prefix>/` any more — so a replace "succeeded",
-// returned 202, flipped the row back to 'ready' and changed NOTHING a viewer can see. The refusal
-// has to land before multipart parsing, before the CAS claim and before any storage write, so a
-// blocked call cannot mutate the database, storage or the live package in any way.
+// A revisioned simulation is served from `<prefix>/revisions/<id>/…` and nothing reads `<prefix>/`
+// any more — so the original in-place swap "succeeded", returned 202, flipped the row back to
+// 'ready' and changed NOTHING a viewer could see. 9a79c56 refused it; this is the operation it was
+// refusing to do. What this suite pins is the ENDPOINT's half: which code path the request enters,
+// which checks it is subject to, and that no byte reaches the mutable prefix on the way. The bytes
+// themselves, the compare-and-set and the transaction boundary are proved against a real database
+// in `services/simulation/__tests__/revisionDerivation.test.ts`.
 
 const ACTIVE_REV  = 'rev-9f3caaaa1111';
 const REV_ROOT    = `${PREFIX}/revisions/${ACTIVE_REV}`;
@@ -551,69 +571,150 @@ function primeRevisionedStorage(activeBridge = ACTIVE_BRIDGE) {
   });
 }
 
-describe('POST …/replace — revisioned package (simulation-001)', () => {
+describe('POST …/replace — the routing pointer is read LATE, not at handler entry', () => {
+  /**
+   * The bug this pins, which shipped and was caught in adversarial review.
+   *
+   * Routing was decided from `sim.active_revision_id` on the row loaded at handler entry. The
+   * distance from there to the publication call spans the whole multipart upload, ZIP extraction,
+   * the compatibility read and the status CAS — a window measured in the SIZE OF THE UPLOAD. A
+   * simulation that gains its FIRST revision inside that window was routed down the legacy path
+   * and wrote to a prefix nobody serves: `simulation-002`, reintroduced by the change whose
+   * purpose was to close it. Status does not exclude it — the row stays `ready` for nearly all of
+   * that span.
+   *
+   * The two mocks below are deliberately INCONSISTENT with each other, and that is the whole
+   * test: `findFirst` (handler entry) says legacy, `select` (the late read) says revisioned.
+   *
+   * WHY THE ANSWER IS 409 AND NOT "route to the revision path". Re-reading and simply routing on
+   * the new value is not enough. The compatibility gate has already read the base package and
+   * answered "these files work against that bridge" — if the pointer moved since, that answer is
+   * about a DIFFERENT package, and publishing on it would ship an unvalidated simulation with a
+   * green check next to it. A change is a conflict, not a branch.
+   */
   beforeEach(() => {
-    mockSimulations.findFirst.mockResolvedValue({ ...REVISIONED_SIM });
-    primeRevisionedStorage();
+    // Handler entry sees a package with NO revision — the state when the request began.
+    mockSimulations.findFirst.mockResolvedValue({ ...FAKE_SIM, active_revision_id: null });
+    primeBridge(REAL_BRIDGE); // compatibility validates against the LEGACY bridge, as it would have
+    // The late read sees the revision that was created while the upload was in flight.
+    mocks.mockSelectWhere.mockResolvedValue([{ storage_prefix: PREFIX, active_revision_id: ACTIVE_REV }]);
   });
 
-  it('refuses with a stable SIM_REVISION_WRITE_UNSUPPORTED 409 and mutates nothing', async () => {
+  it('refuses with a conflict instead of publishing against a package that moved', async () => {
     const app = await makeApp();
     const { payload, headers } = zipRequest({ 'index.html': NEW_INDEX_HTML, 'app.js': COMPATIBLE_APP_JS });
 
     const res = await app.inject({ method: 'POST', url: URL_PATH, payload, headers });
 
     expect(res.statusCode).toBe(409);
-    const body = res.json();
-    expect(body.code).toBe('SIM_REVISION_WRITE_UNSUPPORTED');
-    expect(body.activeRevisionId).toBe(ACTIVE_REV);
-    expect(body.operation).toBe('replace');
-    expect(typeof body.message).toBe('string');
+    expect(res.json().code).toBe('SIM_PACKAGE_CHANGED_DURING_UPLOAD');
 
-    // ZERO mutation: no CAS claim, no row write, no upload, no delete.
-    expect(mockUpdate).not.toHaveBeenCalled();
+    // NOTHING was written anywhere — not to the mutable prefix (that is simulation-002 again),
+    // and not into a revision derived from a bridge these files were never checked against.
+    expect(mockStorage.uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('hands the claim back as `ready`, not `failed` — nothing is wrong with the package', async () => {
+    const app = await makeApp();
+    const { payload, headers } = zipRequest({ 'index.html': NEW_INDEX_HTML, 'app.js': COMPATIBLE_APP_JS });
+
+    await app.inject({ method: 'POST', url: URL_PATH, payload, headers });
+
+    // A claimed row with no terminal write is a simulation nobody can replace again; a row left
+    // `failed` is a red error the owner has to clear by hand for something that was not their fault.
+    expect(mockUpdateSet).toHaveBeenCalledWith(expect.objectContaining({ status: 'ready', error: null }));
+    expect(mockUpdateSet).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'failed' }));
+  });
+});
+
+describe('POST …/replace — revisioned package', () => {
+  beforeEach(() => {
+    mockSimulations.findFirst.mockResolvedValue({ ...REVISIONED_SIM });
+    primeRevisionedStorage();
+    mocks.mockSelectWhere.mockResolvedValue([{ storage_prefix: PREFIX, active_revision_id: ACTIVE_REV }]);
+  });
+
+  it('enters the revision staging path and writes NOTHING to the mutable prefix', async () => {
+    const app = await makeApp();
+    // Compatible against the ACTIVE bridge (it binds `.active-only-panel` and `window.app.rig`).
+    const { payload, headers } = zipRequest({
+      'index.html': NEW_INDEX_HTML,
+      'app.js': ACTIVE_COMPATIBLE_APP_JS,
+    });
+
+    const res = await app.inject({ method: 'POST', url: URL_PATH, payload, headers });
+
+    // The endpoint contract is unchanged: claim the row, 202, client polls.
+    expect(res.statusCode).toBe(202);
+    expect(mockUpdateSet).toHaveBeenCalledWith(expect.objectContaining({ status: 'processing' }));
+
+    // `db.transaction` is reached ONLY by `createDraft` — so the sentinel surfacing as the row's
+    // terminal error is what proves the request entered revision staging. An implementation that
+    // fell back to the in-place swap would have set `status: 'ready'` and uploaded to `<prefix>/`.
+    await vi.waitFor(() => {
+      expect(mockUpdateSet).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'failed',
+        error: expect.stringContaining('REVISION_STAGING_REACHED'),
+      }));
+    });
+    expect(mockUpdateSet).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'ready' }));
+
+    // THE DEFECT: not one byte to the prefix nobody serves, and nothing deleted anywhere.
     expect(mockStorage.uploadFile).not.toHaveBeenCalled();
     expect(mockStorage.deleteFile).not.toHaveBeenCalled();
     expect(mockStorage.deleteWithPrefix).not.toHaveBeenCalled();
-    // …and nothing was even read: the refusal precedes the compatibility gate's storage read.
-    expect(mockStorage.readObject).not.toHaveBeenCalled();
-    expect(mockTimelineSections.findMany).not.toHaveBeenCalled();
   });
 
-  it('refuses BEFORE multipart parsing — a bundle with no file part still gets the revision code', async () => {
+  it('parses the multipart body now, instead of refusing before it', async () => {
     const app = await makeApp();
-    // Without the guard this body 400s on '"file" (ZIP) or "files" bundle is required', which is
-    // only reachable AFTER the multipart stream has been consumed. Getting the 409 instead is the
-    // proof that nothing was parsed.
+    // Reaching the "no file part" 400 is only possible AFTER the stream has been consumed — which
+    // the blanket refusal short-circuited. This is the observable difference.
     const { payload, headers } = multipartPayload([{ name: 'name', content: 'ignored' }]);
 
     const res = await app.inject({ method: 'POST', url: URL_PATH, payload, headers });
 
-    expect(res.statusCode).toBe(409);
-    expect(res.json().code).toBe('SIM_REVISION_WRITE_UNSUPPORTED');
+    expect(res.statusCode).toBe(400);
+    expect(res.json().message).toContain('"file" (ZIP) or "files" bundle is required');
   });
 
-  it('refuses before the entry-name rule — the revision code wins over the rename 409', async () => {
+  it('applies the entry-name rule against the ACTIVE manifest, not the legacy row', async () => {
     const app = await makeApp();
     const { payload, headers } = zipRequest({ 'main.html': NEW_INDEX_HTML, 'app.js': 'x' });
 
     const res = await app.inject({ method: 'POST', url: URL_PATH, payload, headers });
 
     expect(res.statusCode).toBe(409);
-    expect(res.json().code).toBe('SIM_REVISION_WRITE_UNSUPPORTED');
-    expect(res.json().expectedEntryFile).toBeUndefined();
+    // `package/index.html` in the manifest → `index.html` in the customer's bundle. A check that
+    // read `entry_file` off the row would coincidentally agree here; a check that forgot to strip
+    // the `package/` nesting would demand a file name nobody typed.
+    expect(res.json().expectedEntryFile).toBe('index.html');
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(mockStorage.uploadFile).not.toHaveBeenCalled();
   });
 
-  it('refuses regardless of row status — a revisioned sim is never replaceable', async () => {
-    mockSimulations.findFirst.mockResolvedValue({ ...REVISIONED_SIM, status: 'failed' });
+  it('is subject to the same busy-row gate as a legacy package', async () => {
+    mockSimulations.findFirst.mockResolvedValue({ ...REVISIONED_SIM, status: 'processing' });
     const app = await makeApp();
+    const { payload, headers } = zipRequest({ 'index.html': NEW_INDEX_HTML, 'app.js': ACTIVE_COMPATIBLE_APP_JS });
+
+    const res = await app.inject({ method: 'POST', url: URL_PATH, payload, headers });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().message).toContain('wait for it to finish');
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it('still refuses an upload that would break the ACTIVE bridge', async () => {
+    const app = await makeApp();
+    // Satisfies the LEGACY bridge and not the active one — the simulation-003 fixture.
     const { payload, headers } = zipRequest({ 'index.html': NEW_INDEX_HTML, 'app.js': COMPATIBLE_APP_JS });
 
     const res = await app.inject({ method: 'POST', url: URL_PATH, payload, headers });
 
     expect(res.statusCode).toBe(409);
-    expect(res.json().code).toBe('SIM_REVISION_WRITE_UNSUPPORTED');
+    expect(res.json().compatibility.compatible).toBe(false);
     expect(mockUpdate).not.toHaveBeenCalled();
+    expect(mockStorage.uploadFile).not.toHaveBeenCalled();
   });
 });
 
@@ -628,6 +729,7 @@ describe('POST …/replace?dry_run=true — compatibility reads the ACTIVE revis
     mockSimulations.findFirst.mockResolvedValue({ ...REVISIONED_SIM });
     mockTimelineSections.findMany.mockResolvedValue([]);
     primeRevisionedStorage();
+    mocks.mockSelectWhere.mockResolvedValue([{ storage_prefix: PREFIX, active_revision_id: ACTIVE_REV }]);
   });
 
   it('reads the active manifest and package/bridge.js — never the legacy copy', async () => {
@@ -653,14 +755,18 @@ describe('POST …/replace?dry_run=true — compatibility reads the ACTIVE revis
     expect(mockStorage.uploadFile).not.toHaveBeenCalled();
   });
 
-  it('tells the caller the preflight is informational — replace itself is unsupported', async () => {
+  it('reports the preflight as actionable — a revisioned package is replaceable now', async () => {
     const app = await makeApp();
     const { payload, headers } = zipRequest({ 'index.html': NEW_INDEX_HTML, 'app.js': COMPATIBLE_APP_JS });
 
     const res = await app.inject({ method: 'POST', url: `${URL_PATH}?dry_run=true`, payload, headers });
 
-    expect(res.json().replaceSupported).toBe(false);
-    expect(res.json().code).toBe('SIM_REVISION_WRITE_UNSUPPORTED');
+    // The field stays on the response — a client still reading it must see `true`, not
+    // `undefined`. And the preflight is still exactly that: read-only.
+    expect(res.json().replaceSupported).toBe(true);
+    expect(res.json().code).toBeUndefined();
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(mockStorage.uploadFile).not.toHaveBeenCalled();
   });
 
   it('a legacy package still reports against its own mutable bridge', async () => {
