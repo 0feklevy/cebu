@@ -10,7 +10,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const dbMock = vi.hoisted(() => ({
-  rows: [] as Array<{ id: string }>,
+  rows: [] as Array<{ id: string; status?: string }>,
   throws: false,
   /** Every (revisionId, simulationId) pair the identity check actually asked the database about. */
   queries: [] as Array<{ revisionId: string; simulationId: string }>,
@@ -32,7 +32,11 @@ vi.mock('../../../db/index.js', () => ({
   },
 }));
 vi.mock('../../../db/schema.js', () => ({
-  sim_revisions: { id: 'sim_revisions.id', simulation_id: 'sim_revisions.simulation_id' },
+  sim_revisions: {
+    id: 'sim_revisions.id',
+    simulation_id: 'sim_revisions.simulation_id',
+    status: 'sim_revisions.status',
+  },
 }));
 // The mocked `and`/`eq` carry the compared values through to the fake `where`, so the assertions
 // below can prove BOTH halves of the predicate are applied rather than trusting the call shape.
@@ -50,6 +54,7 @@ vi.mock('../../../lib/logger.js', () => ({
 
 import {
   isVerifiedRevisionKey, revisionCoordsFromKey, resetRevisionIdentityCacheForTest,
+  revisionServingFacts, isRevisionStatusPublic,
 } from '../revisionIdentity.js';
 
 const SIM = '22222222-2222-4222-a222-222222222222';
@@ -136,5 +141,56 @@ describe('isVerifiedRevisionKey — the row must exist AND belong to this simula
     await isVerifiedRevisionKey(revisionKey());
     await isVerifiedRevisionKey(revisionKey());
     expect(dbMock.queries.length).toBe(1);
+  });
+});
+
+/**
+ * simulation-007 — the same row also answers "was this revision ever published?", which the
+ * unauthenticated /sim-public route needs and never asked.
+ */
+describe('revisionServingFacts — status travels with the existence answer', () => {
+  it('returns the row status on the same round trip that verifies it', async () => {
+    dbMock.rows = [{ id: REV, status: 'failed' }];
+    expect(await revisionServingFacts(revisionKey())).toEqual({ verified: true, status: 'failed' });
+    expect(dbMock.queries.length, 'status cost a second query').toBe(1);
+  });
+
+  it('memoises the status, so every asset of one revision does not re-ask', async () => {
+    dbMock.rows = [{ id: REV, status: 'draft' }];
+    await revisionServingFacts(revisionKey());
+    const again = await revisionServingFacts(`simulations/proj-1/${SIM}/revisions/${REV}/package/a.css`);
+    expect(again).toEqual({ verified: true, status: 'draft' });
+    expect(dbMock.queries.length).toBe(1);
+  });
+
+  it('reports an unverified key with no status rather than guessing one', async () => {
+    dbMock.rows = [];
+    expect(await revisionServingFacts(revisionKey())).toEqual({ verified: false, status: null });
+    expect(await revisionServingFacts('simulations/proj-1/sim-1/index.html'))
+      .toEqual({ verified: false, status: null });
+  });
+
+  // Availability bias, stated: a database fault must not 404 every revisioned simulation.
+  it('reports unverified (gate open) when the database throws', async () => {
+    dbMock.throws = true;
+    expect(await revisionServingFacts(revisionKey())).toEqual({ verified: false, status: null });
+    expect(logged.warn).toHaveBeenCalled();
+  });
+});
+
+describe('isRevisionStatusPublic — only never-published statuses are withheld', () => {
+  it.each(['draft', 'uploading', 'validating', 'failed'])('withholds %s', (status) => {
+    expect(isRevisionStatusPublic(status)).toBe(false);
+  });
+
+  // `retired`/`rolled_back` bytes WERE served and are retained for rollback (mustRetainBytes);
+  // `canary_passed` is what the pre-activation canary drives. Withdrawing any of them is a separate
+  // product decision, not this gate.
+  it.each(['active', 'retired', 'rolled_back', 'canary_passed'])('serves %s', (status) => {
+    expect(isRevisionStatusPublic(status)).toBe(true);
+  });
+
+  it('serves a key with no revision row at all — legacy packages have no status', () => {
+    expect(isRevisionStatusPublic(null)).toBe(true);
   });
 });

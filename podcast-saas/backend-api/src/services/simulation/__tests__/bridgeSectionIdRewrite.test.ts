@@ -108,6 +108,7 @@ function runSection(source: string, section: string): string[] {
   ctx.window = ctx;
   vm.createContext(ctx);
   vm.runInContext(source, ctx as vm.Context, { filename: 'bridge.js' });
-  for (const l of [...listeners]) l({ data: { type: 'startScript', script: section, params: {}, token: 1 } });
+  // `source: ctx.parent` — the bridge ignores messages from any other window (simulation-004).
+  for (const l of [...listeners]) l({ data: { type: 'startScript', script: section, params: {}, token: 1 }, source: ctx.parent });
   return (ctx.__ran as string[] | undefined) ?? [];
 }
