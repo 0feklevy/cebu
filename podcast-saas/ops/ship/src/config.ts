@@ -17,7 +17,11 @@ export interface ShipConfig {
     audit: string;
     rollback: string;
   };
-  /** GitHub Actions artifact names, in download preference order. */
+  /**
+   * GitHub Actions artifact names to collect. ALL of them are downloaded — they are
+   * complementary parts of one evidence set, not fallbacks for each other (see collect.ts).
+   * A name the run did not publish is skipped silently.
+   */
   artifacts: {
     release: readonly string[];
     audit: readonly string[];

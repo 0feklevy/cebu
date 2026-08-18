@@ -1,376 +1,137 @@
-# CLAUDE.md — Node.js Hosting
+# CLAUDE.md — FlowVid
 
-This project is built to deploy on Node.js Hosting, a managed Node.js hosting platform. Use this file as context when helping build, debug, or prepare this app for deployment.
+> **This file was wrong for a long time.** It described GoDaddy Node.js Hosting with a managed
+> **MySQL** database, `npm start`, and "monorepos are not supported" — none of which is true of this
+> project. Because tooling loads `CLAUDE.md` by default, that boilerplate was fed to every assistant
+> that opened the repo, and produced confident advice about the wrong database engine, the wrong
+> package manager and the wrong deployment model. Every fact below was verified against the source
+> on 2026-08-16. If you change the stack, change this file in the same commit.
 
-## Platform Overview
+FlowVid turns source material into narrated video: a Next.js viewer and editor, a Fastify API, a
+background worker, and a pipeline that renders interactive WebGL simulations into linear video.
 
-Node.js Hosting is a managed Node.js PaaS that supports Node.js applications and static sites. Customers upload their project folder through the GoDaddy interface — no Docker, no CI/CD pipelines, no infrastructure config needed. The platform handles SSL, CDN, and server-side compute automatically.
+---
 
-## Deployment Flow
+## 1. Shape of the repository
 
-1. Customer uploads their project folder via the Node.js Hosting UI
-2. The platform installs dependencies and builds the app
-3. The app is deployed to a private preview environment (requires GoDaddy auth to view)
-4. Once ready, the customer can publish to production and connect a custom domain
-
-## Requirements
-
-### package.json
-
-Every project must have a valid `package.json` in the root directory with a `start` script. This is how the platform knows how to run the app.
-
-```json
-{
-  "name": "my-app",
-  "version": "1.0.0",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "dependencies": {
-    "express": "^4.18.0"
-  }
-}
-```
-
-The platform runs `npm install` followed by `npm start` to boot the application.
-
-### Entry Point
-
-The app needs a clear entry point referenced by the `start` script. Common patterns:
-
-- `node server.js`
-- `node index.js`
-- `node app.js`
-- `next start` (for Next.js apps)
-
-### Port Binding
-
-The app must listen on the port provided by the `PORT` environment variable. Do not hardcode a port.
-
-```javascript
-const port = process.env.PORT || 3000;
-app.listen(port, () => {
-  console.log(\`Server running on port \${port}\`);
-});
-```
-
-### Static Sites
-
-For static sites with no server-side logic, include a simple server that serves the static files:
-
-```javascript
-const express = require('express');
-const path = require('path');
-const app = express();
-const port = process.env.PORT || 3000;
-
-app.use(express.static(path.join(__dirname, 'public')));
-
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
-
-app.listen(port);
-```
-
-## Supported Frameworks
-
-Node.js Hosting supports any Node.js application or framework that can run via `npm start`. This includes but is not limited to:
-
-- Express.js
-- Next.js
-- Fastify
-- Nuxt.js
-- Remix
-- Nest.js
-- Hono
-- Koa
-- Static sites served via a Node.js server
-
-If your framework produces a production build and can start via a `"start"` script, it will work on Node.js Hosting.
-
-## Single Application Per Upload
-
-Node.js Hosting expects a single application per upload. Monorepos and multi-app setups are not supported unless a single `npm start` command at the root boots everything the app needs.
-
-If your project is a monorepo, extract the specific app you want to deploy into its own folder with its own `package.json` and upload that folder instead.
-
-For example, if your repo has a structure like `packages/api` and `packages/web`, upload just `packages/web` as a standalone project with its own complete `package.json` and `start` script.
-
-## Project Structure
-
-The platform is flexible with structure. As long as the root contains a valid `package.json` with a `start` script, the app will deploy. A typical structure looks like:
+The git root is one level **above** the application.
 
 ```
-my-app/
-├── package.json        # Required — must include "start" script
-├── server.js           # Entry point (or index.js, app.js, etc.)
-├── public/             # Static assets (if applicable)
-│   ├── index.html
-│   ├── styles.css
-│   └── script.js
-├── routes/             # API routes (if applicable)
-├── views/              # Templates (if applicable)
-├── .env.example        # Document required env vars (do not upload .env)
-└── CLAUDE.md           # This file
+cebu/                        ← git root
+├── .claude/                 ← agent fleet, review protocol, reference docs
+└── podcast-saas/            ← the application, and the pnpm workspace root
+    ├── backend-api/         ← Fastify API + queue worker
+    ├── client-web/          ← Next.js viewer/editor
+    ├── admin-web/           ← Next.js admin console
+    ├── shared/              ← shared types, sim runtime contract, hand-written API clients
+    ├── ops/release/         ← deterministic release audits
+    ├── ops/ship/            ← ship conductor (drives the release workflows)
+    └── deploy/              ← Docker Compose, nginx, systemd
 ```
 
-## Environment Variables
-
-- `PORT` is provided automatically by the platform. Always use `process.env.PORT`.
-- Any additional environment variables needed by the app can be configured through the Node.js Hosting UI after upload.
-- Never commit secrets or `.env` files in the upload folder.
-
-## What the Platform Handles
-
-You do not need to configure or worry about:
-
-- SSL/TLS certificates — provisioned automatically
-- CDN — included out of the box
-- Process management — the platform manages restarts and uptime
-- Server infrastructure — fully managed compute
-
-## Deploying from AI Coding Tools
-
-Many customers build their apps using AI-powered tools like Replit, Lovable, Bolt, Cursor, or Claude. These apps can be deployed on Node.js Hosting, but often need small adjustments before they're ready.
-
-### How to get your code onto Node.js Hosting
-
-1. Export or download your project as a zip from the AI tool
-2. Unzip the folder locally
-3. Check and fix the common issues below
-4. Upload the folder through the Node.js Hosting UI
-
-### Common issues and fixes
-
-**Missing or incomplete `package.json`**
-Some AI tools don't generate a complete `package.json`. Make sure yours exists in the root and includes a `"start"` script. If it's missing, create one:
-
-```json
-{
-  "name": "my-app",
-  "version": "1.0.0",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "dependencies": {}
-}
-```
-
-Then run `npm install` locally to generate the correct dependencies.
-
-**Hardcoded ports**
-AI tools often hardcode a port like `3000` or `8080`. Replace any hardcoded port with `process.env.PORT`:
-
-```javascript
-// Before (common in AI-generated code)
-app.listen(3000);
-
-// After (ready for Node.js Hosting)
-app.listen(process.env.PORT || 3000);
-```
-
-**Dependencies in the wrong place**
-AI tools sometimes put production dependencies under `"devDependencies"`. Move anything the app needs at runtime into `"dependencies"`.
-
-**Missing entry point**
-Make sure the file referenced in your `"start"` script actually exists. AI tools sometimes generate a `main.js` but the start script points to `index.js`, or vice versa.
-
-**Replit-specific files**
-Replit projects often include `.replit` and `replit.nix` config files. These are not needed and can be removed before upload. Focus on having a clean `package.json` with the correct `"start"` script.
-
-**Lovable / Bolt exports**
-These tools often export frontend-only apps with no server. If your export doesn't include a server file, add a simple one to serve your static files:
-
-```javascript
-const express = require('express');
-const path = require('path');
-const app = express();
-const port = process.env.PORT || 3000;
-
-app.use(express.static(path.join(__dirname, 'dist')));
-
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
-});
-
-app.listen(port);
-```
-
-Make sure to add `express` to your dependencies: `npm install express --save`
-
-### Quick validation
-
-Before uploading, run this locally to confirm everything works:
+**The pnpm workspace root is `podcast-saas/`, not the git root.** Every command needs `-C`:
 
 ```bash
-npm install
-npm start
+pnpm -C podcast-saas --filter backend-api typecheck
+pnpm -C podcast-saas --filter client-web  test
+pnpm -C podcast-saas -r lint
 ```
 
-If your app starts and is accessible at `http://localhost:3000` (or whatever port), it's ready for Node.js Hosting.
+Workspace members (`pnpm-workspace.yaml`): `backend-api`, `client-web`, `admin-web`, `shared`,
+`ops/release`, `ops/ship`.
 
-## Framework Setup Examples
+## 2. The stack
 
-### Express.js
-Ensure `express` is in `dependencies` (not `devDependencies`) and the `start` script points to your server file.
+| Layer | What it actually is |
+|---|---|
+| Package manager | **pnpm 11.4.0**, Node **>= 22** |
+| HTTP server | **Fastify 4** — routes are hand-registered `register*Routes(app)` functions |
+| Database | **PostgreSQL** via `drizzle-orm/postgres-js` and the `postgres` driver |
+| Schema | `pg-core` — `pgTable`, `uuid`, `jsonb`. 52 tables |
+| Migrations | Plain `.sql` files applied by `backend-api/src/db/migrate.ts` from a **hardcoded ordered list** |
+| Background jobs | **pg-boss 12**, plus an in-process inline driver for development |
+| Auth | **Firebase Admin** |
+| Storage | Cloudflare R2 / Supabase S3 adapters, with a local-disk fallback that is **refused in production** |
+| Frontends | **Next.js 15.1 App Router**, React 19, Tailwind |
+| Deployment | **Docker Compose + nginx + systemd** on a VM |
 
-### Next.js
-Use `next build` as a `build` script and `next start` as the `start` script:
+Three LLM providers — Anthropic, OpenAI, Google GenAI. `groq-sdk` is present but is **speech-to-text
+only**; it is not part of the LLM abstraction.
 
-```json
-{
-  "scripts": {
-    "build": "next build",
-    "start": "next start"
-  }
-}
-```
-
-Next.js apps work out of the box with server-side rendering, API routes, and static generation.
-
-### Nuxt.js
-Similar to Next.js — build then start:
-
-```json
-{
-  "scripts": {
-    "build": "nuxt build",
-    "start": "node .output/server/index.mjs"
-  }
-}
-```
-
-### Remix
-```json
-{
-  "scripts": {
-    "build": "remix build",
-    "start": "remix-serve build"
-  }
-}
-```
-
-### Fastify
-Same pattern as Express — bind to `process.env.PORT` and use `0.0.0.0` as the host:
-
-```javascript
-fastify.listen({ port: process.env.PORT || 3000, host: '0.0.0.0' });
-```
-
-### Nest.js
-```json
-{
-  "scripts": {
-    "build": "nest build",
-    "start": "node dist/main"
-  }
-}
-```
-
-### Network Connectivity
-
-Only outbound connections on ports 80 (HTTP) and 443 (HTTPS) are allowed from the container. Connections to GoDaddy databases are also supported.
-
-Do not rely on arbitrary outbound ports or external services reachable only on non-standard ports — those connections will be blocked at runtime. Design the app to communicate over HTTP/HTTPS only.
-
-## Database (Managed MySQL)
-
-Node.js Hosting includes a managed MySQL database for every app. The platform provisions the database automatically and injects connection credentials as environment variables — no manual setup required.
-
-### Environment Variables
-
-The following environment variables are available at runtime:
-
-| Variable | Description |
-|----------|-------------|
-| `DB_HOST` | Database hostname |
-| `DB_PORT` | Database port (typically 3306) |
-| `DB_NAME` | Database name |
-| `DB_USER` | Database username |
-| `DB_PASSWORD` | Database password |
-
-These are set automatically by the platform. Do not hardcode database credentials — always read from `process.env`.
-
-### Connecting to the Database
-
-Install the `mysql2` driver:
+## 3. Running it
 
 ```bash
-npm install mysql2
+pnpm -C podcast-saas install --frozen-lockfile
+pnpm -C podcast-saas --filter shared build     # ← required before backend tests
+pnpm -C podcast-saas dev                        # all packages in parallel
 ```
 
-Basic connection example:
+**Build `shared` first.** The backend resolves `shared` through its `dist/`, so on a fresh checkout
+the backend test suite fails with module-resolution errors until `shared` has been built once. This
+is the single most common false alarm in this repo.
 
-```javascript
-const mysql = require('mysql2/promise');
+## 4. Verification
 
-async function query(sql, params) {
-  const connection = await mysql.createConnection({
-    host: process.env.DB_HOST,
-    port: Number(process.env.DB_PORT || '3306'),
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME
-  });
+`pnpm -C podcast-saas release:verify` is the real gate, and it is what CI runs. Nine steps: frozen
+install → build shared → typecheck → non-interactive lint → tests → clean `.next` → production
+builds of both frontends with explicit public URLs → scan the bundles for localhost references.
 
-  try {
-    const [rows] = await connection.execute(sql, params);
-    return rows;
-  } finally {
-    await connection.end();
-  }
-}
+Individually:
+
+```bash
+pnpm -C podcast-saas -r typecheck
+pnpm -C podcast-saas -r lint
+pnpm -C podcast-saas -r test
 ```
 
-### Best Practices
+### Browser tests — read this before running any
 
-- **Use short-lived connections** — open a connection per request and close it in a `finally` block.
-- **Use parameterized queries** — never interpolate user input directly into SQL strings.
-- **Preview and publish share the same database** — both environments connect to the same MySQL instance. Plan migrations and schema changes accordingly.
-- **Use an ORM if preferred** — `mysql2` works with ORMs like Prisma and Drizzle that support MySQL.
+`client-web` has nine Playwright configs. **Never run the bare `playwright test` or the
+`test:smoke` script.** The default config has no `testMatch` and its base URL defaults to the live
+production site, so the bare command collects every spec in `e2e/` and aims 363 tests at
+production. Always name a config explicitly:
 
-### Importing Data
+```bash
+cd podcast-saas/client-web
+npx playwright test -c playwright.sim.config.ts       --project=chromium
+npx playwright test -c playwright.transport.config.ts --project=chromium
+npx playwright test -c playwright.protocol.config.ts  --project=chromium
+```
 
-You can import a `.sql` dump file (up to 100 MB) through the Node.js Hosting UI. The import replaces existing tables, so back up data if needed.
+`playwright.production.config.ts` is the only one CI invokes, and it targets the deployed site
+deliberately.
 
-### External Databases
+## 5. Things that will mislead you
 
-Only the managed MySQL database and GoDaddy-hosted databases are reachable from the container. External databases on arbitrary hosts and non-standard ports (e.g. 3306, 5432) are **not reachable** because the platform only allows outbound traffic on ports 80 (HTTP) and 443 (HTTPS). If your external database is accessible over HTTPS (e.g. PlanetScale, Neon, Turso, Supabase), store the connection URL in Secrets through the Node.js Hosting UI and access it via `process.env.YOUR_SECRET_NAME` in your code.
+- **`backend-api/tsoa.json` exists and nothing imports `tsoa`.** There is no TSOA/OpenAPI pipeline.
+- **`shared/src/generated/` is hand-maintained.** Nothing generates `client-v1.ts` or `admin-v1.ts`,
+  so a backend route change does not break the build. Contract drift is silent — check both sides.
+- **The root `generate` script points at a script `backend-api` does not define.** It cannot succeed.
+- **`podcast-saas/package.json` still carries a `workspaces` array** alongside `pnpm-workspace.yaml`,
+  left over from an earlier setup. pnpm uses the yaml file.
+- **A new `.sql` file that is not added to the ordered list in `migrate.ts` silently never runs.**
+  The release engine's migration audit is what catches that.
 
-## Pre-Upload Checklist
+## 6. Configuration
 
-Before uploading to Node.js Hosting, verify:
+`podcast-saas/.env.example` documents the variable names. **Never open or print `.env` itself.**
+Groups: `DATABASE_URL`; `FIREBASE_*` and the `NEXT_PUBLIC_FIREBASE_*` browser keys; `ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, `GROQ_API_KEY`; `ANAM_*`, `ELEVENLABS_API_KEY`;
+`STORAGE_BACKEND`, `R2_*`, `SUPABASE_S3_*`; `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
+`PLATFORM_FEE_PERCENT`; `BACKEND_API_URL`, `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_APP_URL`,
+`PUBLIC_SITE_URL`; `ENCRYPTION_KEY`; `PORT`, `NODE_ENV`, `LOG_LEVEL`, `ADMIN_EMAILS`.
 
-- [ ] `package.json` exists in the root directory
-- [ ] `package.json` has a `"start"` script
-- [ ] All production dependencies are in `"dependencies"` (not `"devDependencies"`)
-- [ ] App listens on `process.env.PORT`
-- [ ] No hardcoded ports, secrets, database credentials, or local file paths
-- [ ] If using the managed database, `mysql2` is in `"dependencies"` and code reads `DB_*` env vars
-- [ ] App runs locally with `npm install && npm start`
-- [ ] If using a build step, `"build"` script is defined in `package.json`
-- [ ] All outbound connections use HTTP (port 80) or HTTPS (port 443)
+A server secret appearing under a `NEXT_PUBLIC_*` name is a leak — those are compiled into the
+browser bundle.
 
-## Troubleshooting
+## 7. Safety rules that are not negotiable
 
-### App won't start
-- Check that `"start"` script exists in `package.json`
-- Make sure the entry point file referenced in `"start"` actually exists
-- Verify all dependencies are listed under `"dependencies"`
+- `DATABASE_URL` stays local. **Never** run migrations, seeds or resets against production.
+- Never commit `.env`, and never print an environment value.
+- Do not start, stop or deploy anything from a development machine.
+- Local-disk storage is refused in production by an explicit guard; do not try to work around it.
 
-### Port errors
-- Never hardcode a port number — always use `process.env.PORT`
-- For frameworks that need a host, bind to `0.0.0.0` not `localhost`
+---
 
-### Missing modules
-- Ensure all required packages are in `"dependencies"`, not `"devDependencies"`
-- The platform runs `npm install --production` so dev dependencies are not installed
-
-### Build failures
-- If the app needs a build step (TypeScript, Next.js, etc.), add a `"build"` script
-- Check that build output paths match what the `"start"` script expects
-
-## Getting Help
-
-If you run into issues deploying, reach out through the Node.js Hosting interface or contact GoDaddy support.
+*Deeper detail — the subsystem map, review protocol and known-sensitive areas — lives in
+`../.claude/reference/stack.md`.*

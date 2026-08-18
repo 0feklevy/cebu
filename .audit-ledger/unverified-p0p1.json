@@ -1,0 +1,306 @@
+[
+ {
+  "id": "anam-backend-001",
+  "sev": "P1",
+  "title": "The saved Anam persona is thrown away on every start, forcing a slow ephemeral mint (1 RTT/118B -> up to 6 RTT/29705B)",
+  "file": "podcast-saas/backend-api/src/controllers/v1/avatar.controller.ts",
+  "line": 197,
+  "domain": "anam-backend"
+ },
+ {
+  "id": "anam-backend-002",
+  "sev": "P1",
+  "title": "No timeout on any Anam fetch - a slow vendor hangs /avatar/start for minutes",
+  "file": "podcast-saas/backend-api/src/services/avatar/anamService.ts",
+  "line": 434,
+  "domain": "anam-backend"
+ },
+ {
+  "id": "anam-backend-003",
+  "sev": "P1",
+  "title": "The 6s tokenCache does not dedupe a simultaneous double-mount; two concurrent /start calls both mint",
+  "file": "podcast-saas/backend-api/src/services/avatar/anamService.ts",
+  "line": 498,
+  "domain": "anam-backend"
+ },
+ {
+  "id": "anam-frontend-001",
+  "sev": "P1",
+  "title": "Closed/abandoned avatar popup leaks the allocated Anam session, holding a concurrency slot for future opens",
+  "file": "podcast-saas/client-web/components/avatar/AvatarPopup.tsx",
+  "line": 47,
+  "domain": "anam-frontend"
+ },
+ {
+  "id": "anam-frontend-003",
+  "sev": "P1",
+  "title": "Avatar video has no muted attribute; SDK relies on native autoPlay with no fallback or error surface",
+  "file": "podcast-saas/client-web/components/avatar/AvatarConversation.tsx",
+  "line": 291,
+  "domain": "anam-frontend"
+ },
+ {
+  "id": "anam-latency-001",
+  "sev": "P1",
+  "title": "Avatar start-to-frame latency has zero instrumentation — every number in the waterfall is reasoned, not measured",
+  "file": "podcast-saas/backend-api/src/controllers/v1/avatar.controller.ts",
+  "line": 166,
+  "domain": "anam-latency"
+ },
+ {
+  "id": "anam-latency-003",
+  "sev": "P1",
+  "title": "/avatar/start re-fetches the avatar's display identity from Anam on every session start instead of caching it",
+  "file": "podcast-saas/backend-api/src/controllers/v1/avatar.controller.ts",
+  "line": 208,
+  "domain": "anam-latency"
+ },
+ {
+  "id": "broll-data-001",
+  "sev": "P1",
+  "title": "B-roll absolute offsets are anchored to video_files.duration_sec, which is overwritten after the offsets are stored",
+  "file": "podcast-saas/backend-api/src/services/buildPlayerConfig.ts",
+  "line": 587,
+  "domain": "broll-data"
+ },
+ {
+  "id": "broll-data-002",
+  "sev": "P1",
+  "title": "One section can be emitted into broll_clips and clip_overlays at two different offsets, and the player concatenates both lists",
+  "file": "podcast-saas/backend-api/src/services/buildPlayerConfig.ts",
+  "line": 591,
+  "domain": "broll-data"
+ },
+ {
+  "id": "broll-data-003",
+  "sev": "P1",
+  "title": "The section query has no deterministic order, and b-roll is ordered by a column that is not its timeline position",
+  "file": "podcast-saas/backend-api/src/services/buildPlayerConfig.ts",
+  "line": 191,
+  "domain": "broll-data"
+ },
+ {
+  "id": "broll-player-001",
+  "sev": "P1",
+  "title": "onTick's b-roll/audio/image overlay logic is frozen to the FIRST config the player ever received, and config provably changes post-mount",
+  "file": "podcast-saas/client-web/components/viewer/useProjectPlayer.ts",
+  "line": 2712,
+  "domain": "broll-player"
+ },
+ {
+  "id": "config-001",
+  "sev": "P1",
+  "title": "Live streaming upload route admits 10 GB; nginx's documented default rejects anything over 2 GB first",
+  "file": "podcast-saas/backend-api/src/controllers/v1/video.controller.ts",
+  "line": 133,
+  "domain": "config-deploy"
+ },
+ {
+  "id": "database-001",
+  "sev": "P1",
+  "title": "Migration runner marks a file applied after its transaction rolled back",
+  "file": "podcast-saas/backend-api/src/db/migrate.ts",
+  "line": 58,
+  "domain": "database"
+ },
+ {
+  "id": "fleet-001",
+  "sev": "P0",
+  "title": "llm-pipeline-reviewer's description claims a fourth LLM provider (Groq) that does not exist; contradicts stack.md:70-71",
+  "file": ".claude/agents/domain/llm-pipeline-reviewer.md",
+  "line": 3,
+  "domain": "fleet"
+ },
+ {
+  "id": "fleet-002",
+  "sev": "P0",
+  "title": "task-tracker has no hooks: block, so it runs with unrestricted Bash and no readonly guard",
+  "file": ".claude/agents/meta/task-tracker.md",
+  "line": 1,
+  "domain": "fleet"
+ },
+ {
+  "id": "fleet-003",
+  "sev": "P0",
+  "title": "Guard bypass G6: glob/brace-expanded secret paths (cat podcast-saas/.en*) defeat commandTouchesSecret in every mode including the settings.json secrets floor",
+  "file": ".claude/hooks/fleet-guard.mjs",
+  "line": 95,
+  "domain": "fleet"
+ },
+ {
+  "id": "fleet-004",
+  "sev": "P0",
+  "title": "Guard bypass G1: segments() does not split on a single & so any second command after it is never verb-checked in readonly mode",
+  "file": ".claude/hooks/fleet-guard.mjs",
+  "line": 110,
+  "domain": "fleet"
+ },
+ {
+  "id": "fleet-005",
+  "sev": "P0",
+  "title": "Guard bypass G2/G3: command substitution $(...) and backticks are not segment boundaries, giving reviewers a full shell escape behind any allowlisted verb",
+  "file": ".claude/hooks/fleet-guard.mjs",
+  "line": 117,
+  "domain": "fleet"
+ },
+ {
+  "id": "fleet-006",
+  "sev": "P1",
+  "title": "Guard bypass G4: awk is allowlisted with no guard on system(), getline < or |\"cmd\", giving arbitrary shell execution",
+  "file": ".claude/hooks/fleet-guard.mjs",
+  "line": 132,
+  "domain": "fleet"
+ },
+ {
+  "id": "fleet-007",
+  "sev": "P1",
+  "title": "Guard bypass G5: sed --in-place long flag evades the -i check, reopening the source-edit channel for reviewers",
+  "file": ".claude/hooks/fleet-guard.mjs",
+  "line": 147,
+  "domain": "fleet"
+ },
+ {
+  "id": "fleet-008",
+  "sev": "P1",
+  "title": "database-reviewer says schema.ts has 53 pgTables; the real count is 52 and stack.md:61 says 52",
+  "file": ".claude/agents/core/database-reviewer.md",
+  "line": 36,
+  "domain": "fleet"
+ },
+ {
+  "id": "fleet-009",
+  "sev": "P1",
+  "title": "database-reviewer calls it a 71-file migration runner; migrate.ts:25 hardcodes 58 entries (71 is the on-disk file count)",
+  "file": ".claude/agents/core/database-reviewer.md",
+  "line": 3,
+  "domain": "fleet"
+ },
+ {
+  "id": "fleet-010",
+  "sev": "P1",
+  "title": "Backend test count is 128 in stack.md and test-quality-reviewer.md:21,70; the true count today is 136",
+  "file": ".claude/reference/stack.md",
+  "line": 68,
+  "domain": "fleet"
+ },
+ {
+  "id": "fleet-011",
+  "sev": "P1",
+  "title": "fiji.md claims FlowVid serves local media via raw path.join; server.ts:11,284,305,375,536 routes every serve through safeLocalPath(), so fiji-advisor's canonical case rests on a fixed premise",
+  "file": ".claude/reference/fiji.md",
+  "line": 30,
+  "domain": "fleet"
+ },
+ {
+  "id": "fleet-012",
+  "sev": "P1",
+  "title": "security-reviewer states 'four LLM providers'; there are three (ClaudeProvider, OpenAIProvider, GeminiProvider)",
+  "file": ".claude/agents/core/security-reviewer.md",
+  "line": 24,
+  "domain": "fleet"
+ },
+ {
+  "id": "fleet-013",
+  "sev": "P1",
+  "title": "dependency-auditor states 'the four LLM SDKs'; package.json has three LLM SDKs plus groq-sdk which is ASR",
+  "file": ".claude/agents/domain/dependency-auditor.md",
+  "line": 40,
+  "domain": "fleet"
+ },
+ {
+  "id": "fleet-014",
+  "sev": "P1",
+  "title": "Write allowlist anchors agent-memory at the repo root, denying the path the runtime actually uses (podcast-saas/client-web/.claude/agent-memory/)",
+  "file": ".claude/hooks/fleet-guard.mjs",
+  "line": 250,
+  "domain": "fleet"
+ },
+ {
+  "id": "fleet-015",
+  "sev": "P1",
+  "title": "Guard denies node .claude/hooks/fleet-guard.test.mjs, so fleet-maintainer cannot run the regression suite its own prompt (fleet-maintainer.md:63) mandates",
+  "file": ".claude/hooks/fleet-guard.mjs",
+  "line": 155,
+  "domain": "fleet"
+ },
+ {
+  "id": "fleet-016",
+  "sev": "P1",
+  "title": "fiji-advisor's mandatory Step 0 probe uses a for-loop; readonly guard denies 'for', so the agent cannot establish verified vs unverified mode",
+  "file": ".claude/agents/meta/fiji-advisor.md",
+  "line": 29,
+  "domain": "fleet"
+ },
+ {
+  "id": "fleet-017",
+  "sev": "P1",
+  "title": "Coverage gap: podcast-saas/ops/ship/** is named by zero agent files; the only assignment is a two-owner matrix row whose owners both scope elsewhere",
+  "file": ".claude/reference/stack.md",
+  "line": 112,
+  "domain": "fleet"
+ },
+ {
+  "id": "fleet-018",
+  "sev": "P1",
+  "title": "Coverage gap: backend-api/src/scripts/** (29 production-data scripts) is named by zero agent files; backend-reviewer's enumerated scope omits it",
+  "file": ".claude/reference/stack.md",
+  "line": 105,
+  "domain": "fleet"
+ },
+ {
+  "id": "fleet-019",
+  "sev": "P1",
+  "title": "Only the settings.json secrets hook is firing; per-agent frontmatter readonly hooks are inactive, so the live 16-agent run has no Bash allowlist or Write confinement",
+  "file": ".claude/review/PROTOCOL.md",
+  "line": 200,
+  "domain": "fleet"
+ },
+ {
+  "id": "job-queue-001",
+  "sev": "P1",
+  "title": "A retried or restart-recovered b-roll job re-downloads and appends a SECOND timeline section",
+  "file": "podcast-saas/backend-api/src/jobs/video.generate.ts",
+  "line": 58,
+  "domain": "job-queue"
+ },
+ {
+  "id": "scripts-ship-001",
+  "sev": "P1",
+  "title": "Conductor never downloads gate.json/state.json — artifact preference order picks the one artifact containing neither",
+  "file": "podcast-saas/ops/ship/src/config.ts",
+  "line": 53,
+  "domain": "scripts-ship"
+ },
+ {
+  "id": "scripts-ship-009",
+  "sev": "P1",
+  "title": "pnpm backfill:storage overwrites every cloud object from local disk with no dry-run, scope limit or confirmation",
+  "file": "podcast-saas/backend-api/src/scripts/backfill-storage.ts",
+  "line": 53,
+  "domain": "scripts-ship"
+ },
+ {
+  "id": "simulation-003",
+  "sev": "P1",
+  "title": "Bridge generation reads its source context from the legacy prefix but publishes a copy of the active revision",
+  "file": "podcast-saas/backend-api/src/services/simulation/SimulationService.ts",
+  "line": 2677,
+  "domain": "simulation"
+ },
+ {
+  "id": "test-quality-002",
+  "sev": "P1",
+  "title": "stripe-webhook.controller.ts has zero tests — no proof of signature wiring, payment_status gating, or replay/idempotency",
+  "file": "podcast-saas/backend-api/src/controllers/v1/stripe-webhook.controller.ts",
+  "line": 19,
+  "domain": "test-quality"
+ },
+ {
+  "id": "test-quality-013",
+  "sev": "P1",
+  "title": "The only Playwright suite covering the real production viewer cannot run in CI and is invoked by no workflow",
+  "file": "podcast-saas/client-web/playwright.viewer.config.ts",
+  "line": 11,
+  "domain": "test-quality"
+ }
+]

@@ -2,9 +2,11 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
-import { startAvatarSession, type AvatarDisplay } from './avatarApi';
+import { startAvatarSession, isAbortError, type AvatarDisplay } from './avatarApi';
 import { characterMeta, DEFAULT_CHARACTER_ID } from './characters';
 import { AvatarConversation } from './AvatarConversation';
+import { preloadAnamSdk } from './anamSdk';
+import { beginConnectTrace, type ConnectTrace } from './connectTelemetry';
 import './avatar.css';
 
 interface Props {
@@ -25,6 +27,15 @@ export function AvatarPopup({ open, onClose, projectId, videoTitle, characterId 
   const pausedVideos = useRef<HTMLVideoElement[]>([]);
   const meta = characterMeta(resolvedCharacter, avatarDisplay);
 
+  /**
+   * t0 for the click-to-first-frame trace (anam-latency-001, client half). It has to
+   * start HERE: this is the first instant the viewer is waiting, and everything below
+   * — the token round trip, the SDK chunk, the vendor session, the first frame — is
+   * measured as an offset from it. The backend's correlationId is attached the moment
+   * the start responds, which is what joins this trace to the server's phase timings.
+   */
+  const traceRef = useRef<ConnectTrace | null>(null);
+
   // Pause/resume other videos on the page.
   useEffect(() => {
     if (!open) return;
@@ -44,30 +55,49 @@ export function AvatarPopup({ open, onClose, projectId, videoTitle, characterId 
   }, [open]);
 
   // Fetch a session token when opened.
+  //
+  // The start is CANCELLED, not just ignored, when the popup closes while it is in
+  // flight. The old `cancelled` flag let the request run to completion and then threw
+  // the resolved token away — no leak (the backend opens no Anam session; the SDK's
+  // startSession does that browser-side, and stopStreaming releases it), but a wasted
+  // mint and the one-to-six vendor round-trips behind it, on the slowest endpoint in
+  // the product. In React StrictMode it was wasted on every single open, because the
+  // throwaway first mount issued a start of its own.
   useEffect(() => {
     if (!open) { setToken(null); setError(null); setAvatarDisplay(undefined); return; }
-    let cancelled = false;
+    const abort = new AbortController();
+    const trace = beginConnectTrace();
+    traceRef.current = trace;
+    trace.mark('popup-open');
     setError(null);
     setToken(null);
     setResolvedCharacter(characterId);
     setAvatarDisplay(undefined);
+    // Fetch the (lazy) Anam SDK chunk alongside the token rather than after it, so the
+    // code split cannot show up as click-to-first-frame latency. Static asset only.
+    preloadAnamSdk();
     // Pass projectId so the server applies the video's saved persona config and
     // lets it choose the character; omit character_id so the config wins.
-    startAvatarSession(undefined, projectId)
+    startAvatarSession(undefined, projectId, abort.signal)
       .then((data) => {
-        if (!cancelled) {
-          setToken(data.sessionToken);
-          setResolvedCharacter(data.characterId ?? characterId);
-          setAvatarDisplay(data.avatarDisplay ?? (data.voiceSensitivity != null ? { voiceSensitivity: data.voiceSensitivity } : undefined));
-        }
+        if (abort.signal.aborted) return;
+        trace.join(data.correlationId);
+        trace.mark('token');
+        setToken(data.sessionToken);
+        setResolvedCharacter(data.characterId ?? characterId);
+        setAvatarDisplay(data.avatarDisplay ?? (data.voiceSensitivity != null ? { voiceSensitivity: data.voiceSensitivity } : undefined));
       })
       .catch((e) => {
+        // A cancellation is not a failure: nobody is waiting for it, and it must not
+        // reach the viewer's screen or the operator's log as one.
+        if (isAbortError(e) || abort.signal.aborted) return;
+        trace.mark('connect-failed', { at: 'token' });
         // Keep the real error in the console for operators; show viewers a friendly,
         // generic message (no server internals / env-var names). (ui-ux-205)
         console.error('[AvatarPopup] failed to start avatar session:', e);
-        if (!cancelled) setError("The avatar couldn't start right now. Please try again in a moment.");
+        setError("The avatar couldn't start right now. Please try again in a moment.");
       });
-    return () => { cancelled = true; };
+    return () => { abort.abort(); };
   }, [open, characterId, projectId]);
 
   const panelRef = useRef<HTMLDivElement>(null);
@@ -139,7 +169,7 @@ export function AvatarPopup({ open, onClose, projectId, videoTitle, characterId 
               <p style={{ color: 'rgba(255,255,255,0.6)', marginTop: 14 }}>{meta.startingLabel}</p>
             </div>
           ) : (
-            <AvatarConversation characterId={resolvedCharacter} projectId={projectId} sessionToken={token} display={avatarDisplay} onLeave={onClose} />
+            <AvatarConversation characterId={resolvedCharacter} projectId={projectId} sessionToken={token} display={avatarDisplay} trace={traceRef.current ?? undefined} onLeave={onClose} />
           )}
         </div>
       </div>

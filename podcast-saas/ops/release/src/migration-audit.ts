@@ -89,7 +89,26 @@ export function splitSqlStatements(sql: string): string[] {
 
 const excerptOf = (stmt: string) => (stmt.length > 120 ? `${stmt.slice(0, 117)}…` : stmt);
 
-export function classifyStatement(stmt: string): ClassifiedStatement | null {
+/**
+ * Tables this migration CREATES, lowercased. An index built on one of them cannot block anyone:
+ * the runner wraps each file in a transaction, so the table does not exist for any other session
+ * until the whole file commits, and it holds no rows anyone else has ever been able to write.
+ */
+export function tablesCreatedIn(statements: readonly string[]): Set<string> {
+  const out = new Set<string>();
+  for (const stmt of statements) {
+    for (const m of stmt.matchAll(/\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"?([a-zA-Z0-9_]+)"?/gi)) {
+      out.add(m[1].toLowerCase());
+    }
+  }
+  return out;
+}
+
+export function classifyStatement(
+  stmt: string,
+  /** From tablesCreatedIn() over the SAME file. Omitted = assume nothing is new, i.e. warn. */
+  createdInThisFile: ReadonlySet<string> = new Set(),
+): ClassifiedStatement | null {
   const s = stmt.toUpperCase();
   const mk = (cls: StatementClass, reason: string): ClassifiedStatement => ({ class: cls, excerpt: excerptOf(stmt), reason });
 
@@ -118,7 +137,18 @@ export function classifyStatement(stmt: string): ClassifiedStatement | null {
     return mk('compat-risk', 'NOT NULL column without DEFAULT — fails on non-empty tables and breaks previous-image inserts.');
   }
   if (/\bCREATE\s+(UNIQUE\s+)?INDEX\b/.test(s)) {
-    return mk('lock-risk', 'Non-concurrent index build takes a write lock for its duration.');
+    // Only a build on a PRE-EXISTING table can stall a deploy. Across this repo's 62 forward
+    // migrations, ~85 index builds are non-concurrent and only 9 touch a table that already
+    // existed — so warning on all of them is alarm fatigue, and the one warning that matters gets
+    // read with the same shrug as the 76 that do not.
+    const target = /\bON\s+"?([A-Z0-9_]+)"?/.exec(s)?.[1]?.toLowerCase();
+    if (target && createdInThisFile.has(target)) return null;
+    return mk(
+      'lock-risk',
+      `Non-concurrent index build on pre-existing table${target ? ` "${target}"` : ''} — takes a write lock for its duration. ` +
+        'CREATE INDEX CONCURRENTLY cannot be used here (the runner wraps each file in a transaction); ' +
+        'build it out-of-band in a quiet window if the table is large.',
+    );
   }
   if (/\bDROP\s+INDEX\b/.test(s)) return mk('lock-risk', 'Dropping an index can regress query plans.');
   return null; // additive / neutral (CREATE TABLE, ADD COLUMN with default, etc.)
@@ -219,7 +249,10 @@ export function auditMigrations(input: MigrationAuditInput): MigrationAuditResul
   // --- per-file classification ------------------------------------------------
   const newMigrations: AuditedMigration[] = newFiles.map((f) => {
     const statements = splitSqlStatements(f.content);
-    const classes = statements.map(classifyStatement).filter((c): c is ClassifiedStatement => c !== null);
+    const createdHere = tablesCreatedIn(statements);
+    const classes = statements
+      .map((stmt) => classifyStatement(stmt, createdHere))
+      .filter((c): c is ClassifiedStatement => c !== null);
     const tables = [
       ...new Set(
         [...f.content.matchAll(/\b(?:CREATE|ALTER|DROP)\s+TABLE\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?"?([a-zA-Z0-9_]+)"?/gi)]

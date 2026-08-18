@@ -9,7 +9,6 @@
 //                 generated for any viewer of any video; reused everywhere.
 // At runtime the avatar prefers basic, then global extended, over generating new.
 import { randomUUID } from 'crypto';
-import AdmZip from 'adm-zip';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { rateLimit } from '../../lib/rateLimit.js';
@@ -25,7 +24,7 @@ import { ApiKeyService } from '../../services/secrets/ApiKeyService.js';
 import { UsageTrackingService } from '../../services/usage/UsageTrackingService.js';
 import {
   getSessionToken, isAnamConfigured, listAnamResource, upsertVideoPersona,
-  enrichAvatarConfigFromAnam, buildAvatarDisplay, describeAvatar, getPersona,
+  enrichAvatarConfigFromAnam, buildAvatarDisplay, peekAvatarLook,
   ensureKnowledgeGroup, ensureKnowledgeTool, uploadKnowledgeDocument, listKnowledgeDocuments, deleteKnowledgeDocument, listSystemTools,
   type AvatarPersonaConfig,
 } from '../../services/avatar/anamService.js';
@@ -38,10 +37,22 @@ import { analyzeAndGenerateImage, generateLibraryImage } from '../../services/av
 import { insertVisual, listVisuals, updateVisual, deleteVisual, syncBasicLibrary, storeImageBuffer, storeSimulationHtml } from '../../services/avatar/libraryService.js';
 import { saveTurns, getTurns, getProfile, extractAndSaveFacts, type Turn } from '../../services/avatar/memoryService.js';
 import { avatarProjectAllowedAsync } from '../../services/avatar/avatarAccess.js';
+import { assertSafeZipArchive } from '../../services/security/zipGuard.js';
 import { editableProject } from '../../services/collabAccess.js';
 import { signMemoryToken, verifyMemoryToken } from '../../services/avatar/memoryToken.js';
 import { CHARACTERS, DEFAULT_CHARACTER_ID } from '../../services/avatar/characters.js';
+import { beginStartTrace } from '../../services/avatar/startTelemetry.js';
+import { verifyStatefulPersona, bakedStateFor, hashTranscript, bakedCharacterId } from '../../services/avatar/personaFingerprint.js';
+import { withTranscriptKnowledge, scheduleSelfHeal, type BakeInput } from '../../services/avatar/personaBake.js';
+import { startIdempotencyKey, withStartIdempotency } from '../../services/avatar/startIdempotency.js';
+import { scheduleDisplayResolve } from '../../services/avatar/displayIdentity.js';
 import { logger } from '../../lib/logger.js';
+import {
+  capabilityMode, capabilityTtlSec, signAvatarCapability, verifyAvatarCapability,
+  type AvatarCapabilityPayload,
+} from '../../services/avatar/avatarCapability.js';
+import { hashSubject, killSwitchEngaged, type AvatarDimension, type AvatarOp } from '../../services/usage/avatarBudget.js';
+import { reserveAvatarSpend } from '../../services/usage/avatarBudgetRuntime.js';
 
 // Read avatar_config defensively: normally a jsonb object, but tolerate a legacy
 // double-encoded JSON string so a merge-write never spreads a string into
@@ -140,17 +151,248 @@ function normalizeUploadedVisualSpec(parsed: unknown, filename: string): { type:
   return null;
 }
 
+// Bound the archive on its DECLARED headers first. This is the earliest point a library ZIP is
+// parsed, and it runs on an authenticated-but-user-controlled upload. A ZipLimitError propagates
+// out of processFile and lands in the per-file `rejected[]` list with its reason, so the uploader
+// is told WHY the bundle was refused instead of getting "needs an HTML entry file".
 function zipHasHtml(buffer: Buffer): boolean {
-  try {
-    return new AdmZip(buffer).getEntries().some((entry) => !entry.isDirectory && /\.html?$/i.test(entry.entryName));
-  } catch {
-    return false;
-  }
+  const zip = assertSafeZipArchive(buffer, { label: 'Avatar library ZIP' });
+  return zip.getEntries().some((entry) => !entry.isDirectory && /\.html?$/i.test(entry.entryName));
 }
 
-// Cap on the caption transcript inlined into a session's KNOWLEDGE block — bounds the
-// per-session prompt size while covering the full script of typical videos.
-const TRANSCRIPT_KNOWLEDGE_MAX_CHARS = 24_000;
+// ── Strict request bodies for the public avatar surface ──────────────────────────────────────
+//
+// These endpoints previously read whatever they were handed with a cast, which is how an
+// arbitrary `projectId` reached a private library and how an unbounded `context` string reached a
+// paid prompt as free input. `.strict()` refuses unknown keys as well: on a surface where the body
+// selects what gets paid for, an ignored field is a field nobody is checking.
+//
+// The long text fields are capped TWICE on purpose. The zod cap refuses an absurd payload outright
+// (cost-DoS by input size); the slice inside the handler preserves the existing truncation, so an
+// ordinary long question is still answered rather than 400'd.
+const CapabilityField = z.string().min(1).max(4096).optional();
+
+const StartBody = z.object({
+  projectId: z.string().uuid().optional(),
+  character_id: z.string().min(1).max(64).optional(),
+  startKey: z.string().min(1).max(200).optional(),
+  capability: CapabilityField,
+}).strict();
+
+const EndBody = z.object({
+  character_id: z.string().min(1).max(64).optional(),
+  capability: CapabilityField,
+}).strict();
+
+const VisualAnalyzeBody = z.object({
+  message: z.string().min(1).max(16_000),
+  characterId: z.string().min(1).max(64).optional(),
+  context: z.string().max(24_000).optional(),
+  projectId: z.string().uuid().optional(),
+  capability: CapabilityField,
+}).strict();
+
+const ImageAnalyzeBody = z.object({
+  userMessage: z.string().min(1).max(16_000),
+  characterId: z.string().min(1).max(64).optional(),
+  conversationContext: z.string().max(24_000).optional(),
+  projectId: z.string().uuid().optional(),
+  capability: CapabilityField,
+}).strict();
+
+const CapabilityMintBody = z.object({
+  projectId: z.string().uuid(),
+  /** The project's share token, for an unlisted project reached through its link. */
+  share: z.string().min(8).max(200).optional(),
+}).strict();
+
+/** Conversation context is prompt input somebody pays for; bound it before it becomes tokens. */
+const MAX_CONTEXT_CHARS = 12_000;
+
+// ── Cost control for the three BILLABLE public avatar endpoints (D-03) ───────────────────────
+//
+// `/avatar/start` mints a paid vendor session; `/avatar/visual/analyze` and `/avatar/image/analyze`
+// run paid model calls and reach a project's private visual library. All three were open to any
+// caller who could POST, bounded only by a per-process, per-IP request counter that reset on every
+// deploy and counted a two-image call the same as a no-op.
+//
+// Requiring Firebase auth is NOT the fix and is deliberately not done here: anonymous avatar use is
+// intentional (public and shared viewers expose Ask Avatar, and guests sign in anonymously), so a
+// throwaway anonymous account satisfies any such check while a real-account requirement would be a
+// feature regression. What is actually missing is a CAPABILITY — proof that this caller passed the
+// visibility/share-token gate for THIS project — and a spend budget that survives a deploy.
+//
+// The layers, in the order they run, cheapest first:
+//   1. kill switch          — env, then the database row inside the meter.
+//   2. capability           — verified against the request's own projectId (avatarCapability.ts).
+//   3. project gate         — the same visibility rule the avatar library GET already applies.
+//   4. burst shield         — the old in-process limiter, demoted: weighted now, and layered over
+//                             every dimension rather than the IP alone.
+//   5. durable meter        — Postgres, atomic, reserved BEFORE the vendor call (avatarBudget*).
+
+const CAPABILITY_HEADER = 'x-avatar-capability';
+
+/** Constant subject for the platform-wide budget. Not personal data, hashed only for uniformity. */
+const GLOBAL_SUBJECT = 'platform';
+
+interface BillablePreflight {
+  capability: AvatarCapabilityPayload | null;
+  /** Identity the concurrency lease is keyed by. Never the raw IP. */
+  leaseId: string;
+  /**
+   * The per-popup-open metering layer — populated ONLY when a real capability was presented.
+   *
+   * Without one there is no honest per-session identity: the best available substitute is
+   * (address, project), which merges every viewer behind one NAT watching one video into a single
+   * bucket and would turn the second student in a classroom away. Leaving the layer out instead
+   * costs nothing, because it is a sub-partition of the `ip` layer, which still applies.
+   */
+  meterJti: string | null;
+}
+
+/**
+ * The I/O-FREE half of the guard: kill switch, capability, and the rule that a public caller must
+ * name a project. Runs before any database read so a flood is refused without one.
+ *
+ * Returns null when the request has already been answered.
+ */
+function preflightBillable(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  input: { projectId: string | null; capabilityToken: string | null; deniedBody: unknown },
+): BillablePreflight | null {
+  // ── THE EMERGENCY STOP, HONOURED WHERE ITS DOCSTRING SAYS IT IS ──────────────────────────
+  //
+  // `killSwitchEngaged`'s contract is "before the capability check, before the limiter and before
+  // any read, so a runaway costs nothing while it is engaged". It was only ever consulted inside
+  // the reservation — which on `/avatar/start` runs after the project read, the authorization
+  // (which can touch the collaborators table), the transcript read, the key read and
+  // `enrichAvatarConfigFromAnam`, a VENDOR ROUND TRIP. An operator pulling the emergency stop
+  // during an incident still paid a database and vendor call for every inbound request, which is
+  // most of what the stop exists to prevent.
+  //
+  // Proven, not argued: an adversarial reviewer added `expect(projectsFindFirst).not.toBeCalled()`
+  // to the kill-switch test and got "called 3 times". The old test asserted only 503 and
+  // nothing-spent, both of which a switch consulted on the handler's LAST line satisfies.
+  //
+  // This is the process-local env switch, checked with no I/O. Its database twin
+  // (`avatar_budget_state.killed`) still binds inside the meter, and still binds in shadow mode —
+  // shadow means "do not enforce the BUDGETS", never "ignore the emergency stop".
+  if (killSwitchEngaged()) {
+    reply.code(503).header('Retry-After', '60').send(input.deniedBody);
+    return null;
+  }
+
+  const mode = capabilityMode();
+  const capability = mode === 'off'
+    ? null
+    : verifyAvatarCapability(input.capabilityToken, { projectId: input.projectId });
+
+  // A capability names a project, so it can only be REQUIRED where there is one to name. The
+  // project-less path is not exempted by oversight: it is already restricted to a signed-in,
+  // non-anonymous account (mayStartWithoutProject) and metered per uid, and demanding a
+  // project-bound credential there would be satisfied by a capability for ANY project — a check
+  // that cannot fail is worse than no check, because it reads like one.
+  if (mode === 'enforce' && input.projectId && !capability) {
+    reply.code(401).send(input.deniedBody);
+    return null;
+  }
+
+  // The concurrency lease always needs SOME identity. With a capability it is the nonce, so one
+  // popup open holds one lease however many times it retries. Without one it falls back to
+  // (address, project): coarse, and it undercounts a NAT'd audience — but leases are the soft
+  // safety bound on live vendor sessions, not the money limit, and the money limit is exact.
+  const leaseSource = capability?.j ?? `anon|${request.ip}|${input.projectId ?? 'global'}`;
+  return {
+    capability,
+    leaseId: hashSubject('jti', leaseSource),
+    meterJti: capability ? hashSubject('jti', capability.j) : null,
+  };
+}
+
+/**
+ * The metered half: reserve weighted cost across every layer BEFORE the vendor is called. Answers
+ * the request itself (with `Retry-After`) on refusal and returns false.
+ */
+async function reserveBillable(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  op: AvatarOp,
+  input: {
+    leaseId: string;
+    meterJti: string | null;
+    projectId: string | null;
+    ownerId: string | null;
+    deniedBody: unknown;
+    /** Only a session-minting op takes out a concurrency lease. */
+    takesLease?: boolean;
+  },
+): Promise<{ ok: true; shadowDeniedBy?: string } | { ok: false }> {
+  const subjects: Partial<Record<AvatarDimension, string>> = {
+    ip: hashSubject('ip', request.ip),
+    global: hashSubject('global', GLOBAL_SUBJECT),
+  };
+  if (input.meterJti) subjects.jti = input.meterJti;
+  if (request.dbUser?.id) subjects.uid = hashSubject('uid', request.dbUser.id);
+  if (input.projectId) subjects.project = hashSubject('project', input.projectId);
+  if (input.ownerId) subjects.owner = hashSubject('owner', input.ownerId);
+
+  const verdict = await reserveAvatarSpend({
+    op,
+    subjects,
+    leaseJti: input.takesLease ? input.leaseId : undefined,
+  });
+
+  if (verdict.allowed) return { ok: true, shadowDeniedBy: verdict.shadowDeniedBy };
+
+  // A structured line with no raw IP, no project id and no token — the denial is attributable by
+  // layer, which is what an operator needs, and by nothing else.
+  logger.warn({ evt: 'avatar_spend_denied', op, deniedBy: verdict.deniedBy, status: verdict.status },
+    '[Avatar] billable call refused');
+  reply.code(verdict.status)
+    .header('Retry-After', String(Math.max(1, verdict.retryAfterSec)))
+    .send(input.deniedBody);
+  return { ok: false };
+}
+
+/**
+ * The project gate for a BILLABLE call. Identical in rule to the avatar library GET (security-004):
+ * public and unlisted are part of the viewer experience, private is owner/collaborator only. It
+ * also returns the owner so the reservation can meter the account that will be billed.
+ *
+ * A denial is 404, never 403, so a private project's existence is not revealed by a paid endpoint.
+ */
+async function allowedProjectForBillable(
+  request: FastifyRequest,
+  projectId: string | null,
+): Promise<{ allowed: boolean; ownerId: string | null }> {
+  if (!projectId) return { allowed: true, ownerId: null };
+  const project = await db.query.projects.findFirst({
+    where: eq(projects.id, projectId),
+    columns: { visibility: true, created_by: true },
+  }).catch(() => null);
+  if (!project) return { allowed: false, ownerId: null };
+  const allowed = await avatarProjectAllowedAsync(projectId, project, request.dbUser ?? null);
+  return { allowed, ownerId: project.created_by ?? null };
+}
+
+/** The capability presented with a request: body field first, then the header. */
+function capabilityTokenOf(request: FastifyRequest, bodyValue: string | undefined): string | null {
+  if (typeof bodyValue === 'string' && bodyValue) return bodyValue;
+  const header = request.headers[CAPABILITY_HEADER];
+  return typeof header === 'string' && header ? header : null;
+}
+
+/**
+ * A public caller must name a project. The global, project-less avatar was a bodyless POST that
+ * minted a paid vendor session for anybody — it is gone for anonymous callers, including
+ * Firebase-anonymous ones, because a disposable anonymous account is not a bound on anything. A
+ * signed-in, non-anonymous account keeps it: that path is attributable and already metered per uid.
+ */
+function mayStartWithoutProject(request: FastifyRequest): boolean {
+  const user = request.dbUser;
+  return Boolean(user && !user.is_anonymous);
+}
 
 export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> {
   // ── Public: health ─────────────────────────────────────────────────────────
@@ -162,66 +404,217 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
     characters: Object.keys(CHARACTERS),
   }));
 
+
+  // ── Public: mint a short-lived spend capability for one project ────────────
+  //
+  // This is the mint the ruling asks for: it runs the visibility AND share-token checks first and
+  // only then issues a credential. A project UUID is not a capability — it is a name, it is in
+  // every URL, and for an unlisted project it is the one thing a link-holder is not supposed to be
+  // able to hand around. What comes back is bound to this project, carries a nonce so the meter
+  // can bill one popup open rather than one video, and expires.
+  //
+  // It is a POST because it MINTS; it is optional-auth because anonymous viewing is the point.
+  app.post('/api/v1/avatar/capability', { preHandler: [firebaseAuthOptionalMiddleware] }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const parsed = CapabilityMintBody.safeParse(request.body ?? {});
+    if (!parsed.success) return reply.code(400).send({ message: 'projectId is required' });
+    const { projectId, share } = parsed.data;
+    // Minting is cheap (one indexed read) but not free, and it is the one route on this surface a
+    // caller can hit without a capability — so it keeps a plain per-IP shield of its own, keyed by
+    // the hashed IP so no raw address is held even in process memory.
+    if (!rateLimit(`avatar-cap:${hashSubject('ip', request.ip)}`, 60, 60_000)) {
+      return reply.code(429).header('Retry-After', '60').send({ message: 'Too many requests' });
+    }
+    const project = await db.query.projects.findFirst({
+      where: eq(projects.id, projectId),
+      columns: { visibility: true, created_by: true, share_token: true },
+    }).catch(() => null);
+    if (!project) return reply.code(404).send({ message: 'Project not found' });
+
+    // A valid share token admits a link-holder to an unlisted project; otherwise the ordinary
+    // viewer gate decides. Both are checked BEFORE anything is signed.
+    const viaShare = Boolean(share && project.share_token && share === project.share_token);
+    const allowed = viaShare || await avatarProjectAllowedAsync(projectId, project, request.dbUser ?? null);
+    if (!allowed) return reply.code(404).send({ message: 'Project not found' });
+
+    const minted = signAvatarCapability({ projectId, uid: request.dbUser?.id ?? null });
+    return reply.send({ capability: minted.token, expiresAt: minted.expiresAt, ttlSec: capabilityTtlSec() });
+  });
+
   // ── Public: start an avatar session (applies the video's saved persona config) ─
+  //
+  // Every phase of this handler is timed into ONE redacted structured line (see
+  // services/avatar/startTelemetry.ts). The endpoint used to log only failures, which is why
+  // the "very very slow" report could not be attributed to a phase. The trace is the only log
+  // this handler emits: it carries durations, the persona path taken and the outcome, and it
+  // cannot carry a token, key, transcript, prompt or persona body by construction.
   app.post('/api/v1/avatar/start', { preHandler: [firebaseAuthOptionalMiddleware] }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const body = (request.body ?? {}) as { character_id?: string; projectId?: string };
+    const parsedStart = StartBody.safeParse(request.body ?? {});
+    if (!parsedStart.success) return reply.code(400).send({ message: 'Invalid request body' });
+    const body = parsedStart.data;
+    const trace = beginStartTrace({
+      projectId: body.projectId,
+      characterId: body.character_id,
+      authenticated: Boolean(request.dbUser),
+    });
+    // The bodyless global mint is gone for public callers (D-03). It cost real money and named
+    // nothing: no project to authorize against, no owner to bill, no visibility to check.
+    if (!body.projectId && !mayStartWithoutProject(request)) {
+      trace.finish({ outcome: 'error', status: 400 });
+      return reply.code(400).send({ message: 'projectId is required' });
+    }
+    const pre = preflightBillable(request, reply, {
+      projectId: body.projectId ?? null,
+      capabilityToken: capabilityTokenOf(request, body.capability),
+      deniedBody: { message: 'Avatar capability required' },
+    });
+    if (!pre) {
+      trace.finish({ outcome: 'error', status: 401 });
+      return reply;
+    }
+    trace.flag(pre.capability ? 'capability_ok' : 'capability_absent');
     let cfg: AvatarPersonaConfig | undefined;
     let apiKey: string | undefined;
+    let characterId: string;
+    let ownerId: string | null = null;
+    let selfHeal: BakeInput | null = null;
     if (body.projectId) {
-      const project = await db.query.projects.findFirst({ where: eq(projects.id, body.projectId), columns: { avatar_config: true, visibility: true, created_by: true } }).catch(() => null);
-      if (!project) return reply.code(404).send({ message: 'Project not found' });
-      if (!(await avatarProjectAllowedAsync(body.projectId, project, request.dbUser ?? null))) {
+      const project = await trace.time('project_read', () => db.query.projects.findFirst({ where: eq(projects.id, body.projectId!), columns: { avatar_config: true, visibility: true, created_by: true } }).catch(() => null));
+      if (!project) {
+        trace.finish({ outcome: 'not_found', status: 404 });
         return reply.code(404).send({ message: 'Project not found' });
       }
-      cfg = (project.avatar_config as AvatarPersonaConfig | null) ?? undefined;
-      apiKey = await resolveAnamKeyForProject(body.projectId).catch(() => undefined);
-      // Resolve the selected avatar's display name/image (and default voice) from
-      // Anam when they were not persisted — otherwise the popup falls back to the
-      // default character's image/name (the "always Einstein" bug). Only when a
-      // custom avatar is chosen but its identity fields are missing.
-      if (cfg?.avatarId && (!cfg.avatarName || !cfg.avatarImageUrl || !cfg.voiceId)) {
-        cfg = await enrichAvatarConfigFromAnam(cfg, apiKey).catch(() => cfg);
+      const allowed = await trace.time('authorize', () => avatarProjectAllowedAsync(body.projectId!, project, request.dbUser ?? null));
+      if (!allowed) {
+        trace.finish({ outcome: 'not_found', status: 404 });
+        return reply.code(404).send({ message: 'Project not found' });
       }
-      // The video's caption transcript (SEO/CC pipeline) is the avatar's DEFAULT
-      // knowledge: inline it into the session's KNOWLEDGE block (after any user-written
-      // knowledge) so the avatar can answer about the actual spoken content. When the
-      // saved persona was baked WITHOUT the RAG knowledge tool, prefer an ephemeral
-      // session for this start — the stateful persona wouldn't know the video at all.
-      const transcript = await getProjectTranscript(body.projectId).catch(() => null);
-      if (transcript) {
-        const userKnowledge = cfg?.knowledge?.trim();
-        const block =
-          'VIDEO TRANSCRIPT — the exact spoken content of the video the viewer is watching. ' +
-          `Base your answers about the video on it:\n${transcript.slice(0, TRANSCRIPT_KNOWLEDGE_MAX_CHARS)}`;
-        cfg = { ...(cfg ?? {}), knowledge: userKnowledge ? `${userKnowledge}\n\n${block}` : block };
-        if (cfg.personaId && !cfg.knowledgeToolId) cfg = { ...cfg, personaId: undefined };
+      ownerId = project.created_by ?? null;
+      cfg = asPersonaConfig(project.avatar_config);
+      // The character a REQUEST asks for selects this session's character; the character the
+      // project's persona was BAKED as comes from the config alone (see bakedCharacterId) — a
+      // request could otherwise redefine what the saved persona is and re-bake it on every start.
+      characterId = body.character_id ?? bakedCharacterId(cfg);
+
+      // THE DECISION, taken BEFORE any further read. A saved persona is referenced by id (one
+      // vendor round-trip, ~118-byte body) exactly while the recorded fingerprint still describes
+      // this config — same prompt, greeting, avatar/voice/brain, tools AND transcript revision.
+      // Anything else falls back to an inline persona for THIS start and schedules a re-bake, so
+      // the video is on the fast path from the next start onwards. The old code guessed from
+      // `knowledgeToolId` alone and threw the pre-baked personaId away on every start — the
+      // measured cause of the slow start.
+      const verdict = verifyStatefulPersona(cfg);
+      const healthy = verdict === 'healthy';
+
+      // A healthy start needs NOTHING from the transcript or from the account listings: the
+      // persona already carries this exact script and its own avatar/voice. Reading captions for
+      // every video in the project and then discarding the result was pure latency. On the
+      // fallback path the transcript read and the key read are independent of each other and both
+      // legal only after authorization, so they run concurrently.
+      const transcriptPromise = healthy
+        ? null
+        : trace.time('transcript_read', () => getProjectTranscript(body.projectId!).catch(() => null));
+      apiKey = await trace.time('key_read', () => resolveAnamKeyForProject(body.projectId, project.created_by).catch(() => undefined));
+
+      if (healthy) {
+        trace.path('stateful');
+      } else {
+        trace.path('ephemeral');
+        if (verdict === 'never_fingerprinted') trace.flag('fingerprint_absent');
+        else if (verdict !== 'no_persona') trace.flag('fingerprint_miss');
+        // Resolve the selected avatar's display name/image (and default voice) from Anam when they
+        // were not persisted — otherwise the popup falls back to the default character's
+        // image/name (the "always Einstein" bug). Only reachable on the fallback path, where an
+        // inline persona has to name a concrete avatar and voice anyway.
+        const enrichPromise = cfg.avatarId && (!cfg.avatarName || !cfg.avatarImageUrl || !cfg.voiceId)
+          ? trace.time('persona_enrich', () => enrichAvatarConfigFromAnam(cfg!, apiKey).catch(() => cfg!))
+          : Promise.resolve(cfg);
+        const [transcript, enriched] = await Promise.all([transcriptPromise!, enrichPromise]);
+        cfg = enriched;
+        // The video's caption transcript is the avatar's DEFAULT knowledge — inline it so this
+        // session can still answer about the actual spoken content while the persona is unusable.
+        selfHeal = { projectId: body.projectId, characterId: bakedCharacterId(cfg), cfg, transcript, apiKey };
+        cfg = withTranscriptKnowledge(cfg, transcript);
+        if (transcript) trace.flag('transcript_inlined');
+        if (cfg.personaId) cfg = { ...cfg, personaId: undefined };
       }
+    } else {
+      trace.path('global');
+      characterId = body.character_id ?? DEFAULT_CHARACTER_ID;
     }
-    const characterId = body.character_id ?? cfg?.characterId ?? DEFAULT_CHARACTER_ID;
+    // Reserve the session's WORST-CASE cost before the vendor is called. `/avatar/end` is a no-op
+    // any client may simply never send, so nothing here is ever given back early — the lease
+    // expires on its own clock. Placed after the authorization gate (so an unauthorized caller is
+    // never metered) and before the mint (so a refusal costs no money).
+    const reserved = await trace.time('reserve', () => reserveBillable(request, reply, 'start', {
+      leaseId: pre.leaseId,
+      meterJti: pre.meterJti,
+      projectId: body.projectId ?? null,
+      ownerId,
+      takesLease: true,
+      deniedBody: { message: 'Avatar is busy — try again shortly' },
+    }));
+    if (!reserved.ok) {
+      trace.finish({ outcome: 'error', status: reply.statusCode });
+      return reply;
+    }
+    if (reserved.shadowDeniedBy) trace.flag('budget_shadow_denied');
+
+    // Dedupe only what is safe to dedupe: repeated asks from ONE popup open by ONE caller. Two
+    // viewers of the same video always mint their own token — an Anam token is single-use per
+    // stream, so sharing one refuses the second viewer's connection.
+    const idempotencyKey = startIdempotencyKey({
+      projectId: body.projectId ?? null,
+      callerId: request.dbUser?.id ?? request.ip,
+      startKey: body.startKey,
+    });
     try {
-      const info = await getSessionToken(characterId, cfg, apiKey);
-      // Display identity must describe the avatar the session ACTUALLY uses. When the
-      // config didn't pin one (defaults resolved live from the account), look the
-      // resolved avatar up so the popup shows its real name/portrait — never a stale
-      // hardcoded character (the "pnina but labeled Einstein" mismatch).
+      const minted = await trace.time('mint', () => withStartIdempotency(idempotencyKey, () => getSessionToken(characterId, cfg, apiKey)));
+      const info = minted.value;
+      if (minted.replayed) trace.flag('idempotent_replay');
+      // Display identity must describe the avatar the session ACTUALLY uses — never a stale
+      // hardcoded character (the "pnina but labeled Einstein" mismatch). It is pure cosmetics,
+      // so it NEVER holds the minted token: answer from what is already known (the pinned avatar,
+      // the persisted personaDisplay, or the bounded look cache), otherwise resolve it after the
+      // response and persist it so the next open has the real face.
       let displayCfg = cfg;
       if (!displayCfg?.avatarId) {
-        // A stateful (personaId-only) session doesn't expose its avatar — ask Anam.
-        const sessionAvatarId = info.avatarId ||
-          (cfg?.personaId ? (await getPersona(cfg.personaId, apiKey).catch(() => null))?.avatarId ?? '' : '');
-        if (sessionAvatarId) {
-          const look = await describeAvatar(sessionAvatarId, apiKey).catch(() => null);
-          displayCfg = {
-            ...(displayCfg ?? {}),
-            avatarId: sessionAvatarId,
-            avatarName: look?.displayName || info.personaName || '',
-            avatarVariantName: look?.variantName || '',
-            avatarImageUrl: look?.imageUrl || '',
-          };
+        const stopDisplay = trace.mark('display');
+        const sessionAvatarId = info.avatarId || cfg?.personaDisplay?.avatarId || '';
+        const known = (sessionAvatarId ? peekAvatarLook(sessionAvatarId, apiKey) : undefined)
+          ?? (cfg?.personaDisplay?.avatarId && (!sessionAvatarId || cfg.personaDisplay.avatarId === sessionAvatarId)
+                ? cfg.personaDisplay
+                : undefined);
+        if (known) {
+          displayCfg = { ...(displayCfg ?? {}), personaDisplay: known };
+          trace.flag('display_cached');
+        } else if (body.projectId && (info.avatarId || cfg?.personaId)) {
+          const scheduled = scheduleDisplayResolve({
+            projectId: body.projectId,
+            avatarId: info.avatarId,
+            personaId: cfg?.personaId,
+            apiKey,
+          });
+          if (scheduled) trace.flag('display_deferred');
         }
+        stopDisplay();
       }
+      // Re-bake in the background so the NEXT viewer gets the one-round-trip path. Scheduling is
+      // synchronous and bounded (single-flight per project, backoff after failure); the work
+      // itself runs after this response.
+      if (selfHeal && scheduleSelfHeal(selfHeal)) trace.flag('self_heal_queued');
+      trace.finish({ outcome: 'ok', status: 200 });
       return reply.send({
         provider: 'anam',
+        correlationId: trace.correlationId,
+        // A start has already passed the visibility gate for this project, so it is a legitimate
+        // mint point and it hands the conversation its capability here rather than making the
+        // viewer ask for one again. The popup's two follow-on billable routes can therefore be
+        // switched to `enforce` without a second round-trip anywhere.
+        //
+        // Not a replacement for POST /avatar/capability: that route is the one a share-link or
+        // permalink viewer can call with its share token, and the one that will let the player
+        // config carry a capability minted at page load. This is the convenience path.
+        capability: body.projectId ? signAvatarCapability({ projectId: body.projectId, uid: request.dbUser?.id ?? null }).token : undefined,
         sessionToken: info.token,
         characterId: info.characterId,
         voiceSensitivity: info.voiceSensitivity,
@@ -229,52 +622,110 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
       });
     } catch (err) {
       const status = (err as { status?: number }).status ?? 500;
-      logger.warn({ err }, '[Avatar] start failed');
+      // Deliberately NO free-form error log here: an Anam failure detail can echo the request
+      // (persona body, prompt). The trace line carries the correlation id + status, and
+      // anamService logs the vendor failure with a redacted, bounded reason.
+      trace.finish({ outcome: 'error', status });
       return reply.code(status).send({ message: status >= 500 ? 'Avatar session failed' : (err as Error).message });
     }
   });
 
-  // ── Public: end session (no-op; token cache handles expiry) ─────────────────
-  app.post('/api/v1/avatar/end', async (_request, reply) => reply.send({ ok: true }));
+  // ── Public: end session ────────────────────────────────────────────────────
+  //
+  // Deliberately a NO-OP, and deliberately NOT a cost release. Any client can close the tab, lose
+  // its network or simply never send this, and a hostile one can send it while the vendor session
+  // it claims to have ended is still running. Trusting it to hand budget back would make "spend
+  // without paying" a one-line request. The session lease taken at start expires on its own clock
+  // instead (migration 064); reconciling against the vendor's real session records — should Anam
+  // ever expose them — is the only honest way to return cost early, and it is not this endpoint.
+  app.post('/api/v1/avatar/end', async (request: FastifyRequest, reply: FastifyReply) => {
+    if (!EndBody.safeParse(request.body ?? {}).success) return reply.code(400).send({ ok: false });
+    return reply.send({ ok: true });
+  });
 
   // ── Public: visual analysis ────────────────────────────────────────────────
-  app.post('/api/v1/avatar/visual/analyze', async (request: FastifyRequest, reply: FastifyReply) => {
-    const body = (request.body ?? {}) as { message?: string; characterId?: string; context?: string; projectId?: string };
-    if (!body.message || typeof body.message !== 'string') return reply.send({ type: 'none' });
-    // Unauthenticated + billable: per-IP rate limit + input cap to bound cost-DoS (security-003).
-    if (!rateLimit(`avatar-visual:${request.ip}`, 30, 60_000)) return reply.code(429).send({ type: 'none' });
+  app.post('/api/v1/avatar/visual/analyze', { preHandler: [firebaseAuthOptionalMiddleware] }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const NONE = { type: 'none' } as const;
+    const parsed = VisualAnalyzeBody.safeParse(request.body ?? {});
+    if (!parsed.success) return reply.send(NONE);
+    const body = parsed.data;
+    if (!body.projectId && !mayStartWithoutProject(request)) {
+      return reply.code(400).send(NONE);
+    }
+    const pre = preflightBillable(request, reply, {
+      projectId: body.projectId ?? null,
+      capabilityToken: capabilityTokenOf(request, body.capability),
+      deniedBody: NONE,
+    });
+    if (!pre) return reply;
+    // The project id used to be taken on trust, which let any caller point a paid call at any
+    // project and read its private avatar library. Gate it with the SAME rule the library GET
+    // already applies (avatarAccess.ts): public and unlisted are viewer-visible, private is not.
+    const gate = await allowedProjectForBillable(request, body.projectId ?? null);
+    if (!gate.allowed) return reply.code(404).send(NONE);
+
+    const reserved = await reserveBillable(request, reply, 'visual', {
+      leaseId: pre.leaseId,
+      meterJti: pre.meterJti,
+      projectId: body.projectId ?? null,
+      ownerId: gate.ownerId,
+      deniedBody: NONE,
+    });
+    if (!reserved.ok) return reply;
+
     const message = body.message.slice(0, 4000);
+    const context = body.context?.slice(0, MAX_CONTEXT_CHARS);
     const characterId = body.characterId && CHARACTERS[body.characterId] ? body.characterId : DEFAULT_CHARACTER_ID;
     // Keep the project's basic library fresh so it's preferred at retrieval (throttled).
     if (body.projectId) syncBasicLibrary(body.projectId).catch(() => {});
     try {
-      const result = await analyzeVisual(message, characterId, body.context, { projectId: body.projectId ?? null });
+      const result = await analyzeVisual(message, characterId, context, { projectId: body.projectId ?? null });
       return reply.send(result);
     } catch (err) {
       logger.warn({ err }, '[Avatar] visual/analyze failed');
-      return reply.send({ type: 'none' });
+      return reply.send(NONE);
     }
   });
 
   // ── Public: image analysis ─────────────────────────────────────────────────
-  app.post('/api/v1/avatar/image/analyze', async (request: FastifyRequest, reply: FastifyReply) => {
-    const body = (request.body ?? {}) as { userMessage?: string; characterId?: string; conversationContext?: string; projectId?: string };
-    if (!body.userMessage || typeof body.userMessage !== 'string') {
-      return reply.send({ shouldGenerate: false, imageUrl: null, altText: '', caption: '', imageType: 'realistic' });
+  app.post('/api/v1/avatar/image/analyze', { preHandler: [firebaseAuthOptionalMiddleware] }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const NO_IMAGE = { shouldGenerate: false, imageUrl: null, altText: '', caption: '', imageType: 'realistic' } as const;
+    const parsed = ImageAnalyzeBody.safeParse(request.body ?? {});
+    if (!parsed.success) return reply.send(NO_IMAGE);
+    const body = parsed.data;
+    if (!body.projectId && !mayStartWithoutProject(request)) {
+      return reply.code(400).send(NO_IMAGE);
     }
-    // Unauthenticated + runs billable gpt-image-1: tighter per-IP cap + input cap (security-003).
-    if (!rateLimit(`avatar-image:${request.ip}`, 10, 60_000)) {
-      return reply.code(429).send({ shouldGenerate: false, imageUrl: null, altText: '', caption: '', imageType: 'realistic' });
-    }
+    const pre = preflightBillable(request, reply, {
+      projectId: body.projectId ?? null,
+      capabilityToken: capabilityTokenOf(request, body.capability),
+      deniedBody: NO_IMAGE,
+    });
+    if (!pre) return reply;
+    const gate = await allowedProjectForBillable(request, body.projectId ?? null);
+    if (!gate.allowed) return reply.code(404).send(NO_IMAGE);
+
+    // This is the most expensive public call in the product — worst case one completion plus two
+    // gpt-image-1 renders — and it is weighted accordingly (avatarBudget.unitsFor).
+    const reserved = await reserveBillable(request, reply, 'image', {
+      leaseId: pre.leaseId,
+      meterJti: pre.meterJti,
+      projectId: body.projectId ?? null,
+      ownerId: gate.ownerId,
+      deniedBody: NO_IMAGE,
+    });
+    if (!reserved.ok) return reply;
+
     const userMessage = body.userMessage.slice(0, 4000);
+    const context = body.conversationContext?.slice(0, MAX_CONTEXT_CHARS);
     const characterId = body.characterId && CHARACTERS[body.characterId] ? body.characterId : DEFAULT_CHARACTER_ID;
     if (body.projectId) syncBasicLibrary(body.projectId).catch(() => {});
     try {
-      const result = await analyzeAndGenerateImage(userMessage, characterId, body.conversationContext, body.projectId ?? null);
+      const result = await analyzeAndGenerateImage(userMessage, characterId, context, body.projectId ?? null);
       return reply.send(result);
     } catch (err) {
       logger.warn({ err }, '[Avatar] image/analyze failed');
-      return reply.send({ shouldGenerate: false, imageUrl: null, altText: '', caption: '', imageType: 'realistic' });
+      return reply.send(NO_IMAGE);
     }
   });
 
@@ -321,6 +772,17 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
   app.get('/api/v1/avatar/memory', { preHandler: [firebaseAuthOptionalMiddleware] }, async (request: FastifyRequest, reply: FastifyReply) => {
     const { sessionKey, projectId } = request.query as { sessionKey?: string; projectId?: string };
     if (!sessionKey) return reply.send({ token: null, turns: [], profile: {} });
+
+    // A BURST SHIELD ON THE MINT ITSELF. This endpoint hands out a twelve-hour bearer that
+    // authorizes paid work on the POST below, and until now the `projectId`-less path handed one
+    // out with no gate whatsoever — one unauthenticated GET bought twelve hours of writes. The POST
+    // is now metered, which bounds the spend; this bounds the rate at which credentials for it are
+    // manufactured, so a caller cannot simply collect a fresh token per request and spread the
+    // spend across as many meter subjects as it likes. Same shape as the capability mint above.
+    if (!rateLimit(`avatar-mem:${hashSubject('ip', request.ip)}`, 60, 60_000)) {
+      return reply.code(429).header('Retry-After', '60').send({ token: null, turns: [], profile: {} });
+    }
+
     // Project-scoped visibility gate (no projectId = global avatar, always allowed).
     if (projectId) {
       const proj = await db.query.projects.findFirst({
@@ -349,6 +811,29 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
     if (!payload || payload.s !== sessionKey || payload.p !== (projectId ?? 'global')) {
       return reply.code(403).send({ ok: false });
     }
+
+    // ── THIS IS A BILLABLE ROUTE, and it was the only one on this surface that did not know it ──
+    //
+    // `extractAndSaveFacts` runs TWO OpenAI completions per accepted call. Until now this endpoint
+    // had no capability check, no kill switch, no burst shield and no reservation — while the three
+    // routes D-03 was opened for got all four. Found by the adversarial review of D-03 itself,
+    // which is the useful kind of finding: the fix was built and the same hole was left open one
+    // handler further down the same file.
+    //
+    // The memory token does not substitute for metering. It proves "you own this session key"; it
+    // says nothing about how much money that session may spend, and it is minted for TWELVE HOURS.
+    //
+    // Reserved AFTER the token check so an unauthorized caller cannot consume anyone's budget by
+    // being refused, and BEFORE `saveTurns`, so a refusal writes nothing at all.
+    const reserved = await reserveBillable(request, reply, 'memory', {
+      leaseId: `mem:${sessionKey}`,
+      meterJti: null,
+      projectId: projectId ?? null,
+      ownerId: null,
+      deniedBody: { ok: false },
+    });
+    if (!reserved.ok) return reply;
+
     try {
       await saveTurns(sessionKey, characterId ?? DEFAULT_CHARACTER_ID, projectId ?? null, turns as Turn[]);
       extractAndSaveFacts(sessionKey, turns as Turn[]).catch(() => {});
@@ -767,11 +1252,20 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
       // speaker/side) can never be stored — that mis-mapping is what breaks "his wave / her
       // wave". Mirrors the read-path self-heal in buildPlayerConfig. (avatar-circles-fix)
       const savedCircles = incoming.avatarCircles ?? existing.avatarCircles;
+      // The persona is baked WITH the caption transcript (exactly as an inline session would carry
+      // it), and the transcript revision is recorded, so a start can tell whether the saved persona
+      // still knows the current video without reading captions itself.
+      const transcript = await getProjectTranscript(project.id).catch(() => null);
       const effectiveBase: AvatarPersonaConfig = {
         ...incoming,
         knowledgeGroupId: existing.knowledgeGroupId,
         knowledgeToolId: existing.knowledgeToolId,
         transcriptDocId: existing.transcriptDocId,
+        transcriptHash: hashTranscript(transcript),
+        personaDisplay: existing.personaDisplay,
+        // Record the character this persona is baked as, so a later start derives the same
+        // fingerprint from the stored config alone.
+        characterId,
         avatarCircles: savedCircles
           ? (normalizeAvatarCircles(savedCircles as unknown as AvatarCirclesLike) as unknown as AvatarPersonaConfig['avatarCircles'])
           : savedCircles,
@@ -784,14 +1278,19 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
       // and store its id for this video, so the session loads it exactly.
       let personaId: string | undefined;
       let personaError: string | undefined;
+      let personaBaked: AvatarPersonaConfig['personaBaked'];
       try {
-        personaId = await upsertVideoPersona(characterId, effective, apiKey, existing.personaId);
+        personaId = await upsertVideoPersona(characterId, withTranscriptKnowledge(effective, transcript), apiKey, existing.personaId);
+        // Recorded ONLY after the vendor accepted the upsert: this record is what later starts
+        // trust when they skip the inline persona body.
+        personaBaked = bakedStateFor(effective, existing.personaBaked?.revision ?? 0);
       } catch (e) {
         personaError = (e as Error).message; // non-fatal: still save config, session falls back
         personaId = undefined;
+        personaBaked = undefined;
       }
 
-      const toSave: AvatarPersonaConfig = { ...effective, ...(personaId ? { personaId } : {}) };
+      const toSave: AvatarPersonaConfig = { ...effective, ...(personaId && personaBaked ? { personaId, personaBaked } : {}) };
       await db.update(projects).set({ avatar_config: toSave, updated_at: new Date() }).where(eq(projects.id, project.id));
       return reply.send({ ok: true, config: toSave, personaId, personaError });
     },

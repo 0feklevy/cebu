@@ -1,15 +1,44 @@
 /**
  * Zod schemas for the writers'-room pass outputs.
  *
- * Intermediate passes (story / materials / reviews) are permissive: their only
- * jobs are to parse as JSON and be forwarded to the next prompt, so we require
- * the load-bearing fields and `.catch()` the rest to avoid brittle re-generation.
+ * Intermediate passes (story / materials / reviews) stay permissive about the
+ * SHAPE of a field — a wrong-typed decorative field `.catch()`es to a safe
+ * default rather than costing a re-generation. They are NOT permissive about
+ * whether the pass produced anything: a pass output is only accepted when it
+ * carries the load-bearing content the next pass reads (llm-pipeline-003).
+ *
+ * Why the distinction matters: `story_json` is forwarded verbatim as STORY_JSON
+ * into Materials, Playwright, three reviewers, the rewrite, the compiler and the
+ * delivery director. When every field was `.catch()`ed, `{}` parsed into a
+ * fully-defaulted "Untitled Episode" with zero beats, was persisted, and then
+ * drove eight further creative-tier (Opus/Fable) passes off a beat sheet with no
+ * beats. Rejecting instead routes through the path PlaywrightDraftSchema already
+ * uses: LLMService raises PARSING_ERROR and retries that ONE pass with the
+ * JSON-only reinforcement, which is both cheaper and recoverable.
+ *
+ * The review schemas (Fact / Ear / Judge) are deliberately left permissive — see
+ * the note above them.
+ *
  * The FINAL body reuses the shared strict-ish PodcastScriptBody so the editor and
  * the audio stitcher receive clean, well-typed turns.
  */
 
 import { z } from 'zod';
 import { PodcastTurnSchema } from 'shared';
+
+/** A field is "present" only when it is a non-blank string. */
+const filled = (v: unknown): boolean => typeof v === 'string' && v.trim().length > 0;
+
+function requireFilled(
+  ctx: z.RefinementCtx,
+  value: unknown,
+  path: (string | number)[],
+  what: string,
+): void {
+  if (!filled(value)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path, message: `${what} is required and must not be blank` });
+  }
+}
 
 // ── Pass A — Story Architect ──────────────────────────────────────────────────
 
@@ -26,7 +55,7 @@ export const BeatSchema = z.object({
   transition_type: z.string().catch('').optional(),
 });
 
-export const StoryPlanSchema = z.object({
+const StoryPlanShape = z.object({
   episode_title: z.string().catch('Untitled Episode'),
   xy: z.string().catch(''),
   focus_sentence: z.string().catch(''),
@@ -48,11 +77,43 @@ export const StoryPlanSchema = z.object({
   })).catch([]),
   cut_list: z.array(z.string()).catch([]),
 });
+
+/**
+ * Pass A output. The beat sheet IS the deliverable: an "accepted" plan with no
+ * beats, no story world or no core concept is not a cheaper plan, it is a plan
+ * that makes every later pass improvise from nothing.
+ */
+export const StoryPlanSchema = StoryPlanShape.superRefine((plan, ctx) => {
+  requireFilled(ctx, plan.episode_title, ['episode_title'], 'episode_title');
+  requireFilled(ctx, plan.core_concept, ['core_concept'], 'core_concept');
+  requireFilled(ctx, plan.story_world, ['story_world'], 'story_world');
+  requireFilled(ctx, plan.cold_open, ['cold_open'], 'cold_open');
+
+  // `episode_title` .catch()es to the literal 'Untitled Episode'; accepting that
+  // would let the exact empty-plan case back in through the default.
+  if (plan.episode_title.trim() === 'Untitled Episode') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['episode_title'],
+      message: 'episode_title is the placeholder default — the architect pass produced no title',
+    });
+  }
+
+  if (plan.beats.length === 0) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['beats'], message: 'the beat sheet must contain at least one beat' });
+    return;
+  }
+  plan.beats.forEach((beat, i) => {
+    requireFilled(ctx, beat.id, ['beats', i, 'id'], 'beat id');
+    requireFilled(ctx, beat.name, ['beats', i, 'name'], 'beat name');
+    requireFilled(ctx, beat.content, ['beats', i, 'content'], 'beat content');
+  });
+});
 export type StoryPlan = z.infer<typeof StoryPlanSchema>;
 
 // ── Pass B — Materials Hunter ─────────────────────────────────────────────────
 
-export const MaterialsSchema = z.object({
+const MaterialsShape = z.object({
   spine: z.object({
     world: z.string().catch(''),
     mapping: z.array(z.object({
@@ -86,6 +147,15 @@ export const MaterialsSchema = z.object({
     correction: z.string().catch('').optional(),
   })).catch([]),
 });
+
+/**
+ * Pass B output. `grounding` may legitimately be empty (the prompt says so when
+ * there are no sources), but the analogy spine is the thing the playwright
+ * dramatises — an empty spine is an empty pass.
+ */
+export const MaterialsSchema = MaterialsShape.superRefine((materials, ctx) => {
+  requireFilled(ctx, materials.spine.world, ['spine', 'world'], 'spine.world');
+});
 export type Materials = z.infer<typeof MaterialsSchema>;
 
 // ── Pass C/E — Playwright draft (turns have no id yet) ────────────────────────
@@ -106,6 +176,11 @@ export const PlaywrightDraftSchema = z.object({
 export type PlaywrightDraft = z.infer<typeof PlaywrightDraftSchema>;
 
 // ── Pass D — reviews ──────────────────────────────────────────────────────────
+// Deliberately still permissive, unlike Story/Materials above. For a REVIEWER an
+// empty output degrading to verdict='needs_fixes' is fail-SAFE: it costs one
+// rewrite pass. Rejecting would instead 422 a run that has already paid for
+// seven passes. The asymmetry is the point — an empty PLAN corrupts everything
+// downstream, an empty REVIEW only over-corrects.
 
 export const FactAuditSchema = z.object({
   findings: z.array(z.object({

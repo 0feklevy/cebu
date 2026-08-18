@@ -275,7 +275,13 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
         }
         // Log the real (possibly upstream) error server-side; return a generic message so
         // provider/internal detail isn't surfaced to the client (backend-204 / security-404).
-        request.log.error({ err, projectId: project.id }, 'enhance-thumbnail-prompt failed');
+        //
+        // NOT `request.log` (observability-001). `server.ts` builds Fastify with `logger: false`,
+        // and Fastify then installs `abstract-logging`, whose every method is literally
+        // `function noop () {}` — so `request.log.error(...)` compiled, read like logging, and
+        // wrote nowhere. This path returns a deliberately generic 502, which made that discarded
+        // line the ONLY record the real cause was ever going to have.
+        logger.error({ err, projectId: project.id }, 'enhance-thumbnail-prompt failed');
         return reply.code(502).send({ message: 'Failed to enhance prompt. Please try again.' });
       }
     },
@@ -556,7 +562,9 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
         if ((err as { code?: string } | null)?.code === '42P01') {
           return reply.code(503).send({ message: 'Duplicating projects is temporarily unavailable.' });
         }
-        request.log.error({ err, projectId: project.id }, 'failed to start project duplication');
+        // See the note on the shared `logger` in the enhance-thumbnail handler above:
+        // `request.log` is a no-op under `logger: false` (observability-001).
+        logger.error({ err, projectId: project.id }, 'failed to start project duplication');
         return reply.code(500).send({ message: 'Could not start the duplication. Please try again.' });
       }
     },

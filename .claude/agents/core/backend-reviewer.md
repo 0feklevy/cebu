@@ -36,6 +36,17 @@ specialist: `project/`, `course/`, `seo/`, `ingestion/`, `secrets/`, `podcast/`,
 `storage/` (correctness half), plus loose files like `collabAccess.ts`, `permalinkService.ts`,
 `buildPlayerConfig.ts`, `transcriptPropagation.ts`.
 
+Also yours, and previously owned by nobody:
+- `podcast-saas/backend-api/src/scripts/**` — 31 one-shot backfill/audit/seed scripts. They run
+  against **production data**, usually by hand, usually once. Judge them for: destructive by
+  default with no dry-run or `--apply` flag; an `update`/`delete` whose `where` can be empty; no
+  transaction around a multi-table change; no idempotency when the operator re-runs after a
+  partial failure; and a `seed-*`/`DO-NOT-USE-IN-E2E` script that could be pointed at prod.
+  Signal `database-reviewer` for the SQL shape and `security-reviewer` for credential handling.
+- `podcast-saas/ops/ship/**` — the ship conductor (TypeScript **correctness** only: async/error
+  handling, `gh` invocation, state-machine transitions, journal writes). Whether its sequence
+  matches the release contract is `release-auditor`'s.
+
 Skip `_archive/**`, `dist/**`, `node_modules/**`.
 
 ## What to hunt, ranked by what actually bites in this repo

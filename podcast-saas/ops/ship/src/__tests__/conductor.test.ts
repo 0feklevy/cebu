@@ -7,7 +7,7 @@
  * unverifiable audit must never resolve to green, and a resume must never repeat a
  * side effect that already happened.
  */
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -119,18 +119,49 @@ class FakeGh {
   async listArtifactNames(runId: number): Promise<string[]> {
     return runId === AUDIT_RUN ? [`production-audit-${AUDIT_RUN}`] : ['release-report', 'release-artifacts'];
   }
-  async downloadArtifact(runId: number, _name: string, dest: string): Promise<boolean> {
+  /**
+   * Artifact NAMES decide contents here, exactly as .github/workflows/release.yml defines them.
+   * The fake used to ignore the name and drop every JSON into the destination whatever was
+   * asked for, which made the two release artifacts interchangeable — so a conductor that
+   * downloaded only `release-report` still "found" gate.json, and the bug where a rolled-back
+   * post-deploy gate is reported as `deploy-failed` was invisible to this suite.
+   *
+   *   release-report     ← report job, `path: release-artifacts/release-report.*`  (line 565)
+   *   release-artifacts   ← plan/verify/release-plan/deploy/publish jobs, whole dir; the report
+   *                         job never re-uploads it, so release-report.json is NOT inside it
+   */
+  downloadedArtifacts: string[] = [];
+
+  async downloadArtifact(runId: number, name: string, dest: string): Promise<boolean> {
+    this.downloadedArtifacts.push(name);
     mkdirSync(dest, { recursive: true });
     if (runId === AUDIT_RUN) {
       if (this.o.auditVerdict === null) return true; // downloaded, but no verdict inside
       writeFileSync(join(dest, 'audit-verdict.json'), JSON.stringify(this.o.auditVerdict ?? { verdict: 'PASS' }), 'utf8');
       return true;
     }
-    writeFileSync(join(dest, 'release-report.json'), JSON.stringify({ version: 'v0.2.0', previousVersion: 'v0.1.9' }), 'utf8');
-    writeFileSync(join(dest, 'plan.json'), JSON.stringify({ nextTag: 'v0.2.0' }), 'utf8');
-    if (this.o.gateJson) writeFileSync(join(dest, 'gate.json'), JSON.stringify(this.o.gateJson), 'utf8');
-    if (this.o.stateJson) writeFileSync(join(dest, 'state.json'), JSON.stringify(this.o.stateJson), 'utf8');
-    return true;
+    if (name === 'release-report') {
+      writeFileSync(join(dest, 'release-report.json'), JSON.stringify({ version: 'v0.2.0', previousVersion: 'v0.1.9' }), 'utf8');
+      writeFileSync(join(dest, 'release-report.md'), '# release\n', 'utf8');
+      return true;
+    }
+    if (name === 'release-artifacts') {
+      writeFileSync(join(dest, 'plan.json'), JSON.stringify({ nextTag: 'v0.2.0' }), 'utf8');
+      // Artifacts are a snapshot of the run SO FAR. Before approval the deploy job has not
+      // run, so the only gate.json in the bucket is the plan job's PRE-deploy gate (which
+      // passed, or the run would never have reached the approval gate) and state.json still
+      // says AWAITING_APPROVAL. Modelling that is the point: a conductor that reads the
+      // pre-approval snapshot at the END of the run reads a stale, passing gate.
+      if (!this.approved) {
+        writeFileSync(join(dest, 'gate.json'), JSON.stringify({ blocked: false, phase: 'pre-deploy' }), 'utf8');
+        writeFileSync(join(dest, 'state.json'), JSON.stringify({ state: 'AWAITING_APPROVAL' }), 'utf8');
+        return true;
+      }
+      if (this.o.gateJson) writeFileSync(join(dest, 'gate.json'), JSON.stringify(this.o.gateJson), 'utf8');
+      if (this.o.stateJson) writeFileSync(join(dest, 'state.json'), JSON.stringify(this.o.stateJson), 'utf8');
+      return true;
+    }
+    return false;
   }
 
   async pendingDeployments(): Promise<PendingDeployment[]> {
@@ -249,6 +280,46 @@ describe('a red gate stops the shipment', () => {
     expect(run.failure?.kind).toBe('gate-blocked');
     expect(run.failure?.summary).toMatch(/rolled back/i);
     expect(gh.dispatches).not.toContain(FAST.workflows.audit); // nothing new to audit
+  });
+
+  /**
+   * The verdict above is only as good as the evidence it was read from. `release-report`
+   * carries release-report.* and NOTHING else (release.yml:565), so a conductor that stops
+   * at the first artifact in preference order never sees gate.json or state.json and blames
+   * the deploy for what the gate decided — the wrong cause, at the moment cause matters most.
+   */
+  it('collects EVERY release artifact, not just the first name in preference order', async () => {
+    const gh = new FakeGh({
+      releaseConclusion: 'failure',
+      releaseJobs: [{ name: 'Deploy to production (digest-pinned)', status: 'completed', conclusion: 'failure' }],
+      gateJson: { blocked: true, shouldRollback: true, phase: 'post-deploy', counts: { critical: 1, high: 0, warning: 0 } },
+      stateJson: { state: 'ROLLED_BACK' },
+    });
+    const run = await ship(gh);
+
+    expect(run.failure?.evidence).toContain(join('release', 'release-report.json'));
+    expect(run.failure?.evidence).toContain(join('release', 'gate.json'));
+    expect(run.failure?.evidence).toContain(join('release', 'state.json'));
+  });
+
+  /**
+   * The pre-approval `release-artifacts` snapshot contains a PASSING pre-deploy gate.json and
+   * an AWAITING_APPROVAL state.json — the deploy job has not run yet. readArtifact() recurses
+   * one directory down, so leaving that snapshot anywhere under release/ makes the finished
+   * run's verdict readable from a file that predates the deployment.
+   */
+  it('never reads the pre-approval snapshot as the finished run verdict', async () => {
+    const gh = new FakeGh({
+      releaseConclusion: 'failure',
+      releaseJobs: [{ name: 'Deploy to production (digest-pinned)', status: 'completed', conclusion: 'failure' }],
+      gateJson: { blocked: true, shouldRollback: true, phase: 'post-deploy', counts: { critical: 2, high: 0, warning: 0 } },
+      stateJson: { state: 'ROLLED_BACK' },
+    });
+    await ship(gh);
+
+    const stale = JSON.parse(readFileSync(join(paths.releaseDir, 'gate.json'), 'utf8')) as { phase?: string };
+    expect(stale.phase).toBe('post-deploy');
+    expect(existsSync(join(paths.releaseDir, 'plan'))).toBe(false);
   });
 });
 

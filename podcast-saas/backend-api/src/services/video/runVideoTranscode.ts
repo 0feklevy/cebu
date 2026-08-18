@@ -13,6 +13,7 @@ import { retireHlsRun } from './hlsRetention.js';
 import { isSimilarMedia, parsePeaks } from './mediaSimilarity.js';
 import { enqueueCropForProject } from '../crop/runCropAnalysis.js';
 import { enqueueCaptionsForProject } from '../captions/CaptionService.js';
+import { beatHlsHeartbeat } from './hlsRecovery.js';
 import { fetchWithRetry } from '../../lib/fetchWithRetry.js';
 import { logger } from '../../lib/logger.js';
 
@@ -34,6 +35,14 @@ export async function runVideoTranscode(video_file_id: string): Promise<{ hls_ma
     .set({ hls_status: 'processing', hls_started_at: new Date() })
     .where(eq(video_files.id, video_file_id));
   console.log(`[HLS] ● STATUS → processing  (${video_file_id})`);
+
+  // Prove this run is still alive for as long as it is (job-queue-003). The reaper in
+  // `hlsRecovery.ts` runs on a timer now, not only at boot, and its death test is "nothing has
+  // touched `hls_started_at` for HLS_STALE_AFTER_MS". Without this beat that test degrades into
+  // "encoding has taken longer than the window", which would fail an honest long transcode out
+  // from under itself — the beat is what makes the repeating sweep safe. Unref'd, fenced on
+  // `hls_status='processing'`, and stopped in the `finally` below.
+  const stopHeartbeat = beatHlsHeartbeat(video_file_id);
 
   const workDir = await mkdtemp(join(tmpdir(), 'hls-'));
   const ext = video.storage_key.split('.').pop() ?? 'mp4';
@@ -162,6 +171,7 @@ export async function runVideoTranscode(video_file_id: string): Promise<{ hls_ma
 
     throw err;
   } finally {
+    stopHeartbeat();
     await rm(workDir, { recursive: true, force: true });
     console.log(`[HLS] 🧹 Cleaned up workDir=${workDir}`);
   }

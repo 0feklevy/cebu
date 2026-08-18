@@ -125,6 +125,15 @@ When `deploy.sh` finishes green, browse to `https://flowvidco.com`.
 | `deploy/.env`   | **No**     | Orchestration: `DOMAIN_*`, `APP_VERSION`, `LETSENCRYPT_EMAIL`, `MAX_UPLOAD_SIZE`, `NEXT_PUBLIC_FIREBASE_*` (build args) |
 | `.env` (root)   | **No**     | App runtime secrets loaded by `backend`/`worker` via `env_file` — including **`DATABASE_URL` (Supabase)**, plus Anthropic/OpenAI/Groq/Stripe/Supabase-Storage/Firebase-admin keys, etc. |
 
+`MAX_UPLOAD_SIZE` is handed to **both** nginx and the backend container. nginx enforces it as
+`client_max_body_size`; the backend derives the streaming upload route's own ceiling from the
+same value and answers `413` with the number in the message the moment a client declares more.
+Set it in one place, in nginx syntax (`2g`, `512m`). It bounds only uploads that stream through
+the API — presigned and S3-multipart uploads go browser→bucket and are bounded by the bucket's
+`file_size_limit` instead. Raising it costs transient VM disk: nginx buffers the whole body to
+disk before the backend sees it, and the backend writes its own copy, so budget about twice the
+limit.
+
 `docker-compose.yml` reads `deploy/.env` for `${...}` interpolation. The database is
 **external Supabase**: `DATABASE_URL` (and optional `QUEUE_DATABASE_URL`) come straight from
 root `.env` — the compose file does **not** override them and there is no Postgres container.

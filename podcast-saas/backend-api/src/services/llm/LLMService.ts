@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { ZodSchema } from 'zod';
 import JSON5 from 'json5';
-import { LLMProvider, type TaskType, type TokenUsage, type EffortLevel } from './LLMProvider.js';
+import { LLMProvider, type TaskType, type TokenUsage, type EffortLevel, type LLMResponse } from './LLMProvider.js';
 import { ClaudeProvider } from './ClaudeProvider.js';
 import { OpenAIProvider } from './OpenAIProvider.js';
 import { GeminiProvider } from './GeminiProvider.js';
@@ -36,6 +36,75 @@ export interface SendStructuredResult<T> {
 }
 
 type Tier = 'utility' | 'generation' | 'complex' | 'creative';
+
+export type ProviderName = 'claude' | 'openai' | 'gemini';
+
+/**
+ * Which provider actually serves each model id (llm-pipeline-001).
+ *
+ * admin_settings stores `default_provider` and the per-tier model ids as four
+ * INDEPENDENT columns, and no shipped default was self-consistent: migration 001
+ * seeds default_provider='gemini' next to utility_model='claude-haiku-4-5', and
+ * migration 047 sets complex_model='claude-opus-4-8' on every existing install
+ * without touching default_provider. A stock deploy therefore POSTed Anthropic
+ * model ids to Google's endpoint on the utility and complex tiers — the utility
+ * tier being the one the content-safety pre-screen runs on.
+ *
+ * Rather than validating the pair (which leaves the invalid pair expressible and
+ * only reports it), routing now DERIVES the provider from the model: the model id
+ * is the thing an admin actually chose, and exactly one provider can serve it.
+ * `default_provider` remains the fallback for model ids no provider claims
+ * (private previews, an admin's custom deployment name).
+ *
+ * Kept honest against the providers' own getAvailableModels() by
+ * LLMService.modelRegistry.test.ts.
+ */
+export const MODEL_PROVIDER: Readonly<Record<string, ProviderName>> = {
+  'claude-haiku-4-5': 'claude',
+  'claude-haiku-4-5-20251001': 'claude',
+  'claude-sonnet-4-5': 'claude',
+  'claude-sonnet-4-6': 'claude',
+  'claude-opus-4-7': 'claude',
+  'claude-opus-4-8': 'claude',
+  'claude-fable-5': 'claude',
+  'gpt-4o': 'openai',
+  'gpt-4o-mini': 'openai',
+  'gpt-4.1': 'openai',
+  'gemini-2.5-pro': 'gemini',
+  'gemini-2.5-flash': 'gemini',
+  'gemini-2.0-flash': 'gemini',
+  'gemini-1.5-flash': 'gemini',
+};
+
+/** The provider that serves `model`, or null when no provider claims the id. */
+export function providerForModel(model: string): ProviderName | null {
+  return MODEL_PROVIDER[model.trim()] ?? null;
+}
+
+/**
+ * Stop reasons that mean "the model ran out of output budget mid-answer"
+ * (llm-pipeline-004). Every wired provider spells this differently:
+ *   Claude  message_delta.stop_reason      → 'max_tokens'
+ *   OpenAI  choices[].finish_reason        → 'length'
+ *   Gemini  candidates[].finishReason      → 'MAX_TOKENS'
+ * Compared case-insensitively so Gemini's SCREAMING_CASE enum matches.
+ */
+const TRUNCATION_STOP_REASONS = new Set(['max_tokens', 'length']);
+
+export function isTruncatedStopReason(stopReason: string | undefined): boolean {
+  return !!stopReason && TRUNCATION_STOP_REASONS.has(stopReason.trim().toLowerCase());
+}
+
+/** Partial usage a provider attached to a thrown error, when it has any. */
+function usageFromError(err: unknown): TokenUsage {
+  const attached = err instanceof AppError ? (err.details?.usage as Partial<TokenUsage> | undefined) : undefined;
+  return {
+    input: Number(attached?.input ?? 0) || 0,
+    output: Number(attached?.output ?? 0) || 0,
+    cached_input: Number(attached?.cached_input ?? 0) || 0,
+    cost_cents: Number(attached?.cost_cents ?? 0) || 0,
+  };
+}
 
 const ADAPTIVE_MODELS = new Set(['claude-opus-4-7', 'claude-opus-4-8', 'claude-fable-5']);
 
@@ -77,6 +146,12 @@ export class LLMService {
   // returning a rotated key (its cache has a TTL), the provider is rebuilt instead
   // of serving the stale key until restart.
   private providerCache: Map<string, { key: string | null; provider: LLMProvider }> = new Map();
+
+  // One warn per distinct model/provider mismatch — a misrouted tier would
+  // otherwise log on every single call and be scrolled past. Per-instance rather
+  // than module-level: an LLMService is long-lived wherever it matters, and
+  // module-level state would leak between tests.
+  private readonly warnedMismatches = new Set<string>();
 
   constructor(
     private readonly apiKeyService: ApiKeyService,
@@ -203,7 +278,8 @@ export class LLMService {
       'LLM call starting',
     );
 
-    const response = await provider.sendMessage({
+    // Every ATTEMPT is metered, not just every success (llm-pipeline-005).
+    const response = await this.callProvider(provider, model, opts, {
       model,
       systemPrompt: opts.systemPrompt,
       userPrompt,
@@ -217,26 +293,6 @@ export class LLMService {
       abortSignal: opts.abortSignal,
     });
 
-    // Record usage first — a refused call is still billed, so it must be tracked
-    // for cost/quota accuracy before we branch on the refusal. Fail-open: a bad
-    // ledger row (e.g. FK violation) must not 500 an already-paid-for response.
-    try {
-      await this.usageTracking.record({
-        userId: opts.userId,
-        projectId: opts.projectId,
-        provider: provider.providerName,
-        model,
-        task: opts.task,
-        inputTokens: response.usage.input,
-        cachedInputTokens: response.usage.cached_input,
-        outputTokens: response.usage.output,
-        costCents: response.usage.cost_cents,
-        usedPersonalKey: false,
-      });
-    } catch (recordErr) {
-      logger.error({ err: recordErr, task: opts.task }, 'usage record failed (continuing)');
-    }
-
     // Safety refusal (Fable/Opus classifiers): surface as a distinct, non-parsing
     // error so it is NOT misdiagnosed as a JSON failure (which would waste parse
     // retries and escalate). sendStructured may retry a creative refusal on Opus.
@@ -248,6 +304,8 @@ export class LLMService {
         { refusal: true, model },
       );
     }
+
+    this.assertNotTruncated(response, model, opts.task);
 
     // Parse and validate
     const parsed = this.parseAndRepair(response.content, opts.schema);
@@ -275,7 +333,11 @@ export class LLMService {
     // collapse quality). A refusal fallback may force a specific model.
     if (tier === 'creative') {
       const provider = await this.getProvider('claude');
-      return { provider, model: forceModel ?? settings.podcast_model };
+      const model = forceModel ?? settings.podcast_model;
+      // This branch is Claude BY CONTRACT, so a non-Claude podcast_model cannot be
+      // honoured — say so instead of silently posting a foreign model id to Claude.
+      this.warnModelMismatch('creative', model, 'claude', 'claude');
+      return { provider, model };
     }
 
     if (forceModel) {
@@ -285,9 +347,6 @@ export class LLMService {
     // Escalate to complex tier on retries
     const effectiveTier =
       retryCount >= (settings.complex_min_retries ?? 2) ? 'complex' : tier;
-
-    const providerName = settings.default_provider;
-    const provider = await this.getProvider(providerName);
 
     let model: string;
     switch (effectiveTier) {
@@ -301,7 +360,115 @@ export class LLMService {
         model = settings.generation_model;
     }
 
+    // The provider is DERIVED from the model, so "gemini + claude-haiku-4-5" is no
+    // longer an expressible configuration (llm-pipeline-001). default_provider is
+    // the fallback only for model ids no provider claims.
+    const configured = settings.default_provider as ProviderName;
+    const owner = providerForModel(model);
+    this.warnModelMismatch(effectiveTier, model, configured, owner ?? configured);
+
+    const provider = await this.getProvider(owner ?? configured);
     return { provider, model };
+  }
+
+  /** One warn per distinct (tier, model, configured provider) mismatch. */
+  private warnModelMismatch(tier: Tier, model: string, configured: ProviderName, routedTo: ProviderName): void {
+    const owner = providerForModel(model);
+    if (!owner || owner === configured) return;
+    const key = `${tier}:${model}:${configured}`;
+    if (this.warnedMismatches.has(key)) return;
+    this.warnedMismatches.add(key);
+    logger.warn(
+      { event: 'llm_config_mismatch', tier, model, configured_provider: configured, routed_to: routedTo, served_by: owner },
+      `admin_settings pairs the ${tier} model "${model}" with provider "${configured}", which does not serve it — routing to "${routedTo}". Fix the pairing in the admin LLM config.`,
+    );
+  }
+
+  /**
+   * Call the provider and meter the attempt EITHER WAY (llm-pipeline-005).
+   *
+   * Usage used to be recorded only after a successful return, so a provider 5xx,
+   * a rate-limit, or an abort produced no token_usage row at all. Two consequences:
+   * the cost ledger under-reported real consumption, and — because the rolling-24h
+   * generation cap is a `count(*)` over token_usage — anything a user could make
+   * fail reliably was free against their cap. Recording the attempt closes the
+   * bypass; the row also carries whatever partial usage the provider attached to
+   * the error.
+   *
+   * (Note: today the providers throw bare AppErrors without usage details on a
+   * mid-stream failure, so such a row lands with zero tokens and zero cost — a
+   * truthful "an attempt happened that we could not price". Claude and Gemini
+   * already return normally on abort, so those keep their real partial usage.)
+   */
+  private async callProvider(
+    provider: LLMProvider,
+    model: string,
+    opts: { task: TaskType; userId: string | null; projectId: string | null },
+    payload: Parameters<LLMProvider['sendMessage']>[0],
+  ): Promise<LLMResponse> {
+    try {
+      const response = await provider.sendMessage(payload);
+      // Record usage before any branch on the response — a refused or truncated
+      // call is still billed, so it must be tracked for cost/quota accuracy.
+      await this.recordUsage(provider.providerName, model, opts, response.usage);
+      return response;
+    } catch (err) {
+      await this.recordUsage(provider.providerName, model, opts, usageFromError(err));
+      throw err;
+    }
+  }
+
+  /**
+   * Fail-open ledger write: a bad row (e.g. FK violation) must not 500 an
+   * already-paid-for response, nor mask the provider error we are unwinding.
+   */
+  private async recordUsage(
+    providerName: string,
+    model: string,
+    opts: { task: TaskType; userId: string | null; projectId: string | null },
+    usage: TokenUsage,
+  ): Promise<void> {
+    try {
+      await this.usageTracking.record({
+        userId: opts.userId,
+        projectId: opts.projectId,
+        provider: providerName,
+        model,
+        task: opts.task,
+        inputTokens: usage.input,
+        cachedInputTokens: usage.cached_input,
+        outputTokens: usage.output,
+        costCents: usage.cost_cents,
+        usedPersonalKey: false,
+      });
+    } catch (recordErr) {
+      logger.error({ err: recordErr, task: opts.task }, 'usage record failed (continuing)');
+    }
+  }
+
+  /**
+   * Refuse a response the model was cut off mid-way through (llm-pipeline-004).
+   *
+   * Nothing used to look at this: truncated text was returned from sendText as if
+   * complete (the guidance understanding doc is uploaded straight to storage and
+   * fed to the next pass), and truncated JSON went into parseAndRepair, where it
+   * was misdiagnosed as a JSON-format failure and burned two more full-price
+   * retries at the same max_tokens before 422-ing. LLM_ERROR is deliberate: it is
+   * NOT retried by sendStructured, because retrying with an unchanged token
+   * ceiling truncates again.
+   */
+  private assertNotTruncated(response: LLMResponse, model: string, task: TaskType): void {
+    if (!isTruncatedStopReason(response.stopReason)) return;
+    logger.error(
+      { task, model, stopReason: response.stopReason, chars: response.content.length },
+      'LLM output truncated at the token ceiling — refusing to treat a partial response as complete',
+    );
+    throw new AppError(
+      LLMErrorType.LLM_ERROR,
+      'The model hit its output limit and returned only part of an answer. Try a shorter input or raise max_tokens.',
+      502,
+      { truncated: true, model, stopReason: response.stopReason },
+    );
   }
 
   private async getProvider(name: string): Promise<LLMProvider> {
@@ -365,7 +532,7 @@ export class LLMService {
       opts.retryCount ?? 0,
     );
 
-    const response = await provider.sendMessage({
+    const response = await this.callProvider(provider, model, opts, {
       model,
       systemPrompt: opts.systemPrompt,
       userPrompt: opts.userPrompt,
@@ -376,22 +543,7 @@ export class LLMService {
       abortSignal: opts.abortSignal,
     });
 
-    try {
-      await this.usageTracking.record({
-        userId: opts.userId,
-        projectId: opts.projectId,
-        provider: provider.providerName,
-        model,
-        task: opts.task,
-        inputTokens: response.usage.input,
-        cachedInputTokens: response.usage.cached_input,
-        outputTokens: response.usage.output,
-        costCents: response.usage.cost_cents,
-        usedPersonalKey: false,
-      });
-    } catch (recordErr) {
-      logger.error({ err: recordErr, task: opts.task }, 'usage record failed (continuing)');
-    }
+    this.assertNotTruncated(response, model, opts.task);
 
     return { text: response.content, usage: response.usage, provider: provider.providerName, model };
   }

@@ -18,7 +18,9 @@ orchestrator merges, verifies, deduplicates, and routes them.
    merging and deduplication are deterministic instead of vibes.
 4. **Ownership is exclusive.** Each concern has exactly one owning agent. You do not report another
    agent's concern — you signal it.
-5. **The safety rules are enforced**, not requested (`.claude/hooks/fleet-guard.mjs`).
+5. **The safety rules are backed by a hook** (`.claude/hooks/fleet-guard.mjs`), not only by prose —
+   but read *What is actually guaranteed* in §5 before you rely on that. Only the secrets floor is
+   unconditional; the read-only policy needs a trusted workspace.
 
 ---
 
@@ -121,6 +123,8 @@ could…" is not P0 — it is a note.
 | Logging, SSE, metrics, error surfacing, debuggability | `observability-reviewer` |
 | docker-compose, nginx, CSP, origins, env contract | `config-deploy-reviewer` |
 | Release-run artefacts, gate decisions, rollback state | `release-auditor` |
+| `podcast-saas/ops/ship/**` — ship-conductor code: PR→CI→merge→release→approval→deploy sequencing, `gh` calls, event journal | `backend-reviewer` (TypeScript correctness) / `release-auditor` (does the sequence match the release contract) |
+| `podcast-saas/backend-api/src/scripts/**` — 31 one-shot backfill/audit/seed scripts that touch production data | `backend-reviewer` (correctness + destructive-by-default); signal `database-reviewer` on the SQL and `security-reviewer` on anything that reads prod credentials |
 | New SQL migrations, expand/contract safety, `migration-audit.json` | `migration-auditor` (release runs) / `database-reviewer` (code review) |
 | Failed release or red production audit → incident write-up | `incident-reporter` |
 | Cross-cutting architecture where a reference design exists | `fiji-advisor` |
@@ -157,7 +161,7 @@ Write findings expecting an adversary to read them. That is the point.
 
 ---
 
-## 5. Hard rules (enforced by `.claude/hooks/fleet-guard.mjs`)
+## 5. Hard rules (yours to obey; `.claude/hooks/fleet-guard.mjs` backs most of them)
 
 1. **Never open `.env` or `.env.*`.** `.env.example` only. This is blocked at the tool layer for
    Read, Write, Edit, and for shelling out (`cat .env`, `grep … .env`). Never print an environment
@@ -175,7 +179,9 @@ Write findings expecting an adversary to read them. That is the point.
 6. **Time-box.** Aim for ~15 high-value findings. When you have swept your scope, stop; do not pad.
 
 If the guard blocks you, it is telling you the approach is wrong — **do not look for a way around
-it.** Record what you wanted and why, and move on.
+it.** Record what you wanted and why, and move on. If the guard *fails* to block something on this
+list, that is a bug in the guard and a rule you must still keep: do it anyway and file it as a
+`fleet` finding.
 
 ### What the fleet guarantees to the user — stated precisely
 The first version of this section claimed reviewers were "structurally incapable of editing
@@ -193,14 +199,56 @@ sailed past it. The honest statement is narrower, and it is what the guard now a
   `.claude/reference/solutions/`, or agent memory; and **Bash is an allowlist** — a reviewer may
   run only read-only inspection, so shell write channels are closed by default rather than
   enumerated.
+  **Known inconsistency in the agent-memory clause.** The allowlist anchors memory at
+  `<repo-root>/.claude/agent-memory` (`fleet-guard.mjs:820`, resolved against `CLAUDE_PROJECT_DIR`).
+  The runtime does not: it writes to the nearest `.claude/` above the agent's working directory, and
+  memory has been observed landing in **four** roots at once — `cebu/.claude/agent-memory`,
+  `podcast-saas/.claude/agent-memory`, `podcast-saas/backend-api/.claude/agent-memory`, and
+  `podcast-saas/client-web/.claude/agent-memory`. Those writes only succeeded because the readonly
+  hook was inactive at the time; whenever it *is* active, a per-package memory write is denied. The
+  fix is in the hook (widen the prefix list to any `.claude/agent-memory` under the repo, or anchor
+  it on the memory root the runtime actually chose) — it is not something an agent may edit. If a
+  memory write is denied, say so and carry on; do not relocate your memory to get around it.
 - **State.** No commit/push/tag/reset/stash/restore, no migrations (including `tsx migrate.ts`, not
   just the `db:migrate` alias), no installs (including `pnpm -C … add`), no deletion, no
   process/container/remote control — in **both** modes.
 
-What it does not guarantee: frontmatter hooks are skipped until you accept the workspace trust
-dialog, and a determined agent with a novel technique may still find a gap. Treat the guard as
-defence in depth over the prompt-level rules, not as a substitute for them. Every run stays
-disposable: delete the run directory, or `git restore` the fixer's branch.
+#### What is actually guaranteed, and what merely usually happens
+
+The three bullets above describe what `fleet-guard.mjs` denies **when it runs**. It does not always
+run, and the difference is not a footnote — it is most of the enforcement:
+
+| Layer | Where it is declared | When it fires |
+|---|---|---|
+| **Secrets floor** (`secrets` mode) | `.claude/settings.json` → `hooks.PreToolUse` | **Always**, for every agent and the main session. This is the only part that is unconditional. |
+| **Readonly policy** (`readonly` mode: no `Edit`, `Write` allowlist, Bash verb allowlist) | each agent's **frontmatter** `hooks:` block | Only once the workspace is **trusted**. Frontmatter hooks come from repo files, so Claude Code will not execute them until a human accepts the trust dialog for this folder. |
+| **Writer policy** (`writer` mode) | `review-fixer`'s frontmatter | Same condition. |
+
+Consequences, stated plainly:
+
+- **In a non-interactive / headless run there is no trust dialog to accept.** Reviewers therefore
+  run with the secrets floor only: `Edit` is *not* blocked, the `Write` allowlist is *not* applied,
+  and Bash is *not* an allowlist. This has been observed, not theorised.
+- A **new agent added without a `hooks:` block** gets the secrets floor and nothing else, even in a
+  trusted interactive workspace. Frontmatter hooks are opt-in per agent by construction.
+- A determined agent with a novel technique may still find a gap in the parts that do run.
+
+So: **"reviewers cannot edit source" is a property of the prompt plus a hook that is usually but
+not always active — it is not a structural guarantee.** Write your prompts, and read this protocol,
+as though the guard might not be there. The rules in §5 bind you whether or not anything enforces
+them; if you would need the guard to stop you, you have already broken the protocol.
+
+To check which layer you are actually running under, ask the guard — it answers the same way it
+would for a real call:
+
+```bash
+echo '{"tool_name":"Edit","tool_input":{"file_path":"/x/a.ts"}}' | node .claude/hooks/fleet-guard.mjs readonly
+```
+
+A `deny` verdict proves the guard *works*; it does not prove it is *wired in* for your session.
+
+Every run stays disposable regardless: delete the run directory, or `git restore` the fixer's
+branch.
 
 Run `fleet-maintainer` after changing the guard; its job includes trying to break it.
 
@@ -209,12 +257,23 @@ Run `fleet-maintainer` after changing the guard; its job includes trying to brea
 ## 6. Read-only verification commands
 
 ```bash
-pnpm -C podcast-saas --filter backend-api typecheck    # also: client-web | admin-web | shared
-pnpm -C podcast-saas --filter backend-api test         # vitest, single run
+pnpm -C podcast-saas --filter backend-api typecheck
+pnpm -C podcast-saas --filter client-web  typecheck
+pnpm -C podcast-saas --filter admin-web   typecheck
+pnpm -C podcast-saas --filter shared      typecheck
+pnpm -C podcast-saas --filter backend-api test
 pnpm -C podcast-saas --filter backend-api lint
 git diff main...HEAD --stat && git status --short
 git log --oneline -20
 ```
+
+Run `pnpm -C podcast-saas --filter shared build` once before any backend suite, or you get
+module-resolution errors that look like bugs.
+
+**Do not append a `#` comment containing `|` to a command you intend to run.** The guard's lexer
+does not treat `#` as a comment — deliberately, since `"#"` can be a quoted argument — so
+`… typecheck  # also: client-web | admin-web` lexes as a three-stage pipeline and is denied on
+`admin-web`. Put alternatives on their own lines, as above.
 
 Prefer the `Grep`/`Glob`/`Read` tools over shelling out — they are faster and produce cleaner
 evidence. Note pre-existing failures as context; you are not responsible for them, but the report

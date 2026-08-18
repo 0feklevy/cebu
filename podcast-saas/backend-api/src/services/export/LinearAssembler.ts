@@ -30,6 +30,7 @@ import { spawn } from 'child_process';
 import { open, writeFile, mkdir } from 'fs/promises';
 import { join, extname } from 'path';
 import { runFfmpegLimited } from '../ffmpegLimit.js';
+import { logger } from '../../lib/logger.js';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import {
   buildVideoSpine,
@@ -42,6 +43,9 @@ import {
   MIX_BATCH,
   AUDIO_RATE,
   REQUIRED_FILTERS,
+  videoSourcePaths,
+  auditSourceShortfall,
+  describeShortfall,
   type ExportGrid,
   type ResolvedAssembly,
   type AudioWindow,
@@ -458,6 +462,49 @@ export async function assertMasterGates(
   return { durationSec: duration };
 }
 
+/**
+ * Duration of a file's FIRST VIDEO STREAM, or null when it cannot be read.
+ *
+ * Deliberately the video stream and not the container: the container's duration is the max
+ * over its tracks, so an AAC track padded out to a whole packet makes `format.duration`
+ * exceed the video by up to ~21ms — which is precisely the discrepancy the spine's tail pad
+ * exists to absorb, and precisely what this probe has to see to report it.
+ *
+ * DIAGNOSTIC ONLY. Every failure path returns null, because an export must never die on the
+ * probe that was only there to explain itself.
+ */
+async function probeVideoStreamSec(path: string): Promise<number | null> {
+  try {
+    const json = await runFfprobeJson(['-select_streams', 'v:0', '-show_streams', path]);
+    const stream = ((json.streams ?? []) as Array<{ duration?: string }>)[0];
+    const dur = parseFloat(stream?.duration ?? '');
+    return Number.isFinite(dur) && dur > 0 ? dur : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Report every planned window its own file cannot fill — whether the spine's tail pad
+ * absorbed it or the master gates are about to reject the export because of it. Returns the
+ * lines for the export's warnings; also logs each one.
+ *
+ * This is what keeps the spine's tail tolerance honest: it is narrow (TAIL_PAD_FRAMES at the
+ * grid rate) AND it is never used silently.
+ */
+async function auditAndLogShortSources(plan: ResolvedAssembly, grid: ExportGrid): Promise<string[]> {
+  const probed = new Map<string, number>();
+  for (const path of videoSourcePaths(plan.timeline)) {
+    const sec = await probeVideoStreamSec(path);
+    if (sec !== null) probed.set(path, sec);
+  }
+  return auditSourceShortfall(plan.timeline, grid, probed).map((finding) => {
+    const message = describeShortfall(finding);
+    logger.warn({ ...finding, message }, 'export: source is shorter than the window planned for it');
+    return message;
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Audio pipeline: batched mixes → two-pass loudnorm (mirrors ffmpegAudio.ts)
 // ---------------------------------------------------------------------------
@@ -672,6 +719,13 @@ export async function assembleResolved(
   //    mutes b-roll, and the export matches the viewer. Stored volumes surface as
   //    warnings, never as sound.
   const { mixableAudio, warnings } = mutedBrollAudit(plan.timeline, plan.audio ?? []);
+
+  // Tail-pad accountability (media-001): the spine holds a short source's last frame for at
+  // most TAIL_PAD_FRAMES frames, and every use of that tolerance is named here — in the log
+  // and in the export's own warnings — so a narrowly-absorbed rounding artefact is
+  // distinguishable from a window that was planned past the end of its source.
+  warnings.push(...(await auditAndLogShortSources(plan, grid)));
+  throwIfCancelled(signal);
   const audioWav = await buildAudioTrack(mixableAudio, totalSec, workDir, signal);
   throwIfCancelled(signal);
 

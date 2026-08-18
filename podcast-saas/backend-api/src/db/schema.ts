@@ -661,6 +661,45 @@ export const timeline_sections = pgTable('timeline_sections', {
   camera_movement: text('camera_movement').notNull().default('zoom_in'),
   // Audio-only cutaway (migration 020) — broll section backed by uploaded audio file
   clip_source_audio_id: uuid('clip_source_audio_id').references(() => audio_files.id, { onDelete: 'set null' }),
+  // ── Segment-relative placement (migration 063, D-01) ───────────────────────────────────────
+  //
+  // `global_offset_sec` above is an ABSOLUTE second, and that is the defect: re-transcode a main
+  // video to a slightly different length and every b-roll after it still fires at the second it was
+  // saved at, which is now a different moment. The number was never wrong; it stopped meaning what
+  // the author intended.
+  //
+  // The anchor is a MAIN VIDEO SEGMENT plus a time inside it, so the overlay moves with the content
+  // it was placed over. It is its own column pair rather than a reuse of `video_file_id`, because on
+  // a b-roll row `video_file_id` already means the b-roll SOURCE asset — a video that has no
+  // position on the main timeline at all.
+  //
+  // NULLABLE, and `placement_mode` defaults to 'legacy_absolute': this is the expand half of an
+  // expand/contract rollout. `resolveSectionPlacement` (shared) reads the anchor first and falls
+  // back to `global_offset_sec`, so one deploy serves both populations. NOTHING is backfilled —
+  // mapping a row's absolute second onto today's segments would canonise a placement that is
+  // already wrong. See `planAnchorBackfill` for the dry run that reports instead of converting.
+  //
+  // ON DELETE SET NULL rather than CASCADE: deleting a main video must not delete the b-roll
+  // overlays an author placed over it. A row left with `placement_mode='segment'` and a NULL anchor
+  // is precisely why the mode is a stored column and not a computed `anchor_video_file_id != null` —
+  // it is the difference between "was anchored, lost its host" and "was never anchored".
+  anchor_video_file_id: uuid('anchor_video_file_id').references(() => video_files.id, { onDelete: 'set null' }),
+  anchor_offset_sec: real('anchor_offset_sec'),
+  placement_mode: text('placement_mode').notNull().default('legacy_absolute'),   // 'segment' | 'legacy_absolute'
+  // Which b-roll GENERATION produced this row (migration 062). NULL for every hand-made section.
+  //
+  // This is the idempotency key of the generation pipeline, not a display field: a `video_generate`
+  // job is delivered at least once (pg-boss retries, startup re-drive), and without a key on the
+  // section a retry simply appended a second overlay at the same offset. SET NULL so deleting the
+  // finished job never deletes the b-roll.
+  //
+  // uniq_timeline_sections_generation_job — the PARTIAL unique index that makes a second section
+  // for one generation impossible — is declared in migration 062 only, for the same reason
+  // project_exports and project_duplications give for theirs: Drizzle's index builder has no WHERE
+  // clause, and a TOTAL unique index here would permit exactly ONE hand-made section per database.
+  //
+  // NO `.references()` here, and the omission is deliberate. The real FK
+  // (→ video_generation_jobs(id) ON DELETE SET NULL) is declared in 062 and enforced by the
   created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -688,10 +727,37 @@ export const video_generation_jobs = pgTable('video_generation_jobs', {
   enhance_enabled: boolean('enhance_enabled').notNull().default(true),
   target_duration_sec: real('target_duration_sec').notNull(),
   target_global_offset_sec: real('target_global_offset_sec').notNull(),
+  // WHERE THE FINISHED CLIP GOES — captured AT ENQUEUE TIME (migration 063, D-01).
+  //
+  // `target_global_offset_sec` alone is an absolute second, and this job can take twenty-five
+  // minutes. The timeline is editable that whole time: re-transcode a main video, or drop another
+  // clip in, and the second the author aimed at is no longer the moment they aimed at. Inferring
+  // the anchor at COMPLETION would read the moved timeline and recreate exactly that race, so the
+  // anchor is resolved once, from the timeline the author was looking at when they pressed the
+  // button, and the finaliser copies it onto the section verbatim.
+  //
+  // Nullable: a project with no main video has nothing to anchor to, and the job still runs. The
+  // section it publishes then falls back to `legacy_absolute`, which is the pre-063 behaviour.
+  target_anchor_video_file_id: uuid('target_anchor_video_file_id').references(() => video_files.id, { onDelete: 'set null' }),
+  target_anchor_offset_sec: real('target_anchor_offset_sec'),
   external_task_id: text('external_task_id'),
   status: text('status').notNull().default('queued'),
   // queued | enhancing | submitting | generating | downloading | transcoding | ready | failed
   error: text('error'),
+  // ── The lease (migration 062) ──────────────────────────────────────────────────────────────
+  // The job is delivered at least once and runs for up to ~25 minutes. These three columns are
+  // what stop two workers running it at the same time, and what let a run that DIED be told apart
+  // from one that is merely slow. Same shape and same numbers as project_exports/project_duplications.
+  //
+  // `updated_at` is the heartbeat, beaten on a timer by the live run.
+  updated_at: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  // `claimed_by` is a FENCING TOKEN, one value per RUN — every write after the claim carries
+  // `WHERE claimed_by = <my token>`, so a reclaimed run's writes become no-ops rather than races.
+  claimed_by: text('claimed_by'),
+  // Incremented BY THE CLAIM, so "has anyone run this row before?" is answerable without a race.
+  // It exists for exactly one decision: never re-submit to the paid provider after a crash that
+  // may already have submitted. Not a retry budget — pg-boss owns those.
+  attempts: integer('attempts').notNull().default(0),
   created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   finished_at: timestamp('finished_at', { withTimezone: true }),
 });
@@ -740,8 +806,17 @@ export const playlist_items = pgTable(
 );
 
 // Collaboration (migration 042) — invite users by email to co-edit a project or playlist.
-// Polymorphic like user_purchases. invited_email is lowercased; user_id is resolved at
-// invite time when the user exists, otherwise matched by email once they sign in.
+// Polymorphic like user_purchases. invited_email is lowercased.
+//
+// `invited_email` records WHO AN INVITATION IS ADDRESSED TO. It is NOT a credential, and nothing
+// may authorize on it. A row grants access only once `user_id` is set, and `user_id` is set only by
+// the auth middleware when the signing-in account presents a token with email_verified === true.
+// Invite creation always writes user_id = null, even when an account with that address already
+// exists — resolving it early would hand access to an address nobody has proven they own.
+//
+// The previous comment here described the opposite ("user_id is resolved at invite time when the
+// user exists, otherwise matched by email once they sign in"). That behaviour was removed: it let
+// an unverified account authorize by raw email match, which is broad edit authority.
 export const collaborators = pgTable(
   'collaborators',
   {

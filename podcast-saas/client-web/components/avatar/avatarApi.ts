@@ -213,12 +213,24 @@ export const saveMyAnamKey = (apiKey: string) =>
 // optional-auth visibility gate masks private projects as 404 for anonymous
 // callers, and without the token the owner IS anonymous here. Anonymous viewers
 // of public/unlisted projects are unaffected (no token → no header).
-export const startAvatarSession = (characterId?: string, projectId?: string) =>
-  jsonFetch<{ provider: string; sessionToken: string; characterId: string; voiceSensitivity?: number; avatarDisplay?: AvatarDisplay }>(
+// `signal` lets a caller CANCEL a start it no longer wants instead of letting it
+// complete and binning the result. /avatar/start is the most expensive endpoint in
+// the product — it mints a single-use token behind one to six vendor round-trips —
+// so a start nobody is waiting for should be stopped, not merely ignored. (This
+// wastes a mint, not a concurrency slot: the backend creates no Anam session, the
+// SDK's startSession does, browser-side.)
+export const startAvatarSession = (characterId?: string, projectId?: string, signal?: AbortSignal) =>
+  // `correlationId` is the backend's start-trace id (services/avatar/startTelemetry.ts).
+  // It is the join key between the server's phase timings and the client's — without it
+  // the two halves of a slow open cannot be lined up against each other.
+  jsonFetch<{ provider: string; sessionToken: string; characterId: string; voiceSensitivity?: number; avatarDisplay?: AvatarDisplay; correlationId?: string }>(
     '/api/v1/avatar/start',
-    { method: 'POST', body: JSON.stringify({ character_id: characterId, projectId }) },
+    { method: 'POST', body: JSON.stringify({ character_id: characterId, projectId }), signal },
     true,
   );
+
+/** True for the DOMException fetch raises when its AbortSignal fires. */
+export const isAbortError = (e: unknown): boolean => (e as { name?: string } | null)?.name === 'AbortError';
 
 export const endAvatarSession = (characterId: string): void => {
   fetch(`${BASE}/api/v1/avatar/end`, {

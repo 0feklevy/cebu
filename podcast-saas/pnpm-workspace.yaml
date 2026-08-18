@@ -11,3 +11,14 @@ allowBuilds:
   esbuild: true
   protobufjs: true
   sharp: true
+
+# Overrides live HERE, not under a "pnpm" key in package.json. pnpm 11 stopped reading that field
+# and only warns — an override placed there is silently ignored, which is worse than absent because
+# the audit still reports the advisory while the manifest claims it is pinned.
+overrides:
+  # websocket-driver <0.7.5: critical advisory (message corruption via abusable protocol length
+  # headers). Transitive only — faye-websocket -> @firebase/database, reached from `firebase` in
+  # both frontends and from `firebase-admin` in the backend. Bumping firebase itself is a
+  # major-version move for a dependency we use for auth, so the narrow patch is pinned instead.
+  # Remove this once firebase/firebase-admin ship a range that already satisfies it.
+  websocket-driver: '>=0.7.5'

@@ -1379,6 +1379,14 @@ export class ProjectDuplicationService {
           clip_source_image_id: ids.requireInternal(s.clip_source_image_id, 'timeline_sections.clip_source_image_id'),
           camera_movement: s.camera_movement,
           clip_source_audio_id: ids.requireInternal(s.clip_source_audio_id, 'timeline_sections.clip_source_audio_id'),
+          // The D-01 placement anchor is a reference too, and it is the one whose failure mode is
+          // silent: an unmapped `anchor_video_file_id` still POINTS at a real row, just one in the
+          // ORIGINAL project, so no FK complains — the copy's resolver simply cannot find it among
+          // its own segments, degrades to the stored absolute, and the duplicate quietly stops
+          // tracking its content. Remapped through the same allocator as the four references above.
+          anchor_video_file_id: ids.requireInternal(s.anchor_video_file_id, 'timeline_sections.anchor_video_file_id'),
+          anchor_offset_sec: s.anchor_offset_sec,
+          placement_mode: s.placement_mode,
         })));
       }
       if (snap.markers.length) {

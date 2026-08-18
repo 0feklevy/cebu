@@ -31,6 +31,13 @@ export class CorpusBuilder {
     const corpus = await db.query.corpora.findFirst({ where: eq(corpora.id, corpusId) });
     if (!corpus) throw new Error(`Corpus ${corpusId} not found`);
 
+    // From here until the `ready`/`failed` writes below, this row is `processing` and the ONLY
+    // things that will ever move it off again are the happy path and the catch at the bottom of
+    // this method. Neither runs when the process dies — and ingestion is fire-and-forget off the
+    // upload request (`corpus.controller.ts` does not await it) — so a crash or a deploy here used
+    // to strand the row at `processing` for the life of the database, with the upload UI polling
+    // that column forever. `services/ingestion/corpusRecovery.ts` is the sweep that now clears
+    // those rows; `server.ts` starts it (observability-002).
     await db.update(corpora).set({ ingestion_status: 'processing' }).where(eq(corpora.id, corpusId));
 
     sse?.emit({

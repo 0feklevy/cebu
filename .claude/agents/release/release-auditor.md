@@ -28,6 +28,12 @@ plainly, accurately, and with concrete next steps.
 - `vm-audit.json` (`flowvid.vm-audit/v1`), `browser-audit.json` (`flowvid.browser-audit/v1`),
   `csp-client-web.json` / `csp-admin-web.json`, `db-url-audit.json`, `migration-audit.json`
 - Source of truth for policies: `podcast-saas/ops/release/src/severity.ts`, `config.ts`, `PLAN.md`
+- **The ship conductor**, `podcast-saas/ops/ship/**` (`conductor.ts`, `run.ts`, `state.ts`,
+  `gh.ts`, `git.ts`, `journal.ts`, `report.ts`, `collect.ts`, `cli.ts`, `watch.mjs`). It sequences
+  PR → CI → merge → release → production approval → deploy → audit and decides **no** pass/fail of
+  its own. When a shipment stalls, the journal it streamed to `.claude/ship/runs/` is your first
+  read, and whether the sequence it drove matches `ops/release`'s contract is **your** call.
+  Its TypeScript correctness is `backend-reviewer`'s — signal, do not file.
 
 ## How to work
 1. Locate the artifacts you were pointed at (usually a downloaded `release-artifacts/` dir).

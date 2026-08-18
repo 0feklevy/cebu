@@ -1,6 +1,7 @@
 import { defineConfig, configDefaults } from 'vitest/config';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { maxTestWorkers } from '../vitest.workers.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -36,6 +37,9 @@ export default defineConfig({
     // "realistic timeout" 32691ce chose simply grew with the suite; the number tolerates a slower
     // DB boot under contention and weakens nothing.
     testTimeout: 60_000,
+    // Bounded so `pnpm -r test` (release:verify) cannot ask four suites for the whole machine
+    // each — see ../vitest.workers.mjs for the arithmetic and why it is half, not all.
+    maxWorkers: maxTestWorkers(),
     hookTimeout: 60_000,
     include: ['src/**/*.test.ts'],
     // src/_archive holds the retired v1 podcast pipeline. Its tests import a

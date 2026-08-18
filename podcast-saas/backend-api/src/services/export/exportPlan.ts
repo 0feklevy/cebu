@@ -4,10 +4,14 @@
  * Reads the project once and resolves the timeline EXACTLY as `buildPlayerConfig` does, because
  * the export's one promise is "what a viewer sees is what is exported":
  *
- *   • main segments ordered by `created_at ASC`, global offsets by cumulative `duration_sec`;
+ *   • main segments ordered by `created_at ASC`, laid out end to end by `buildMainSegmentTimeline`
+ *     — the SAME function the player build calls, so the two cannot lay them out differently;
  *   • the two time conventions, verbatim: a `main`-track section's `start_sec` is SEGMENT-LOCAL
  *     (absolute = the segment's offset + start_sec); `broll`/`audio` sections carry their own
- *     `global_offset_sec` and use `start_sec`/`end_sec` as the SOURCE in/out points;
+ *     position and use `start_sec`/`end_sec` as the SOURCE in/out points. Since D-01 that position
+ *     is read through `resolveSectionPlacement` — anchor first, stored `global_offset_sec` as the
+ *     fallback — rather than off the column directly, so an anchored overlay lands at the same
+ *     second here as in the viewer even after its host video is re-transcoded;
  *   • the exclusion predicate is THE predicate from the plan doc — the same expression the player
  *     computes at `useProjectPlayer.ts:1936` and calls RAW activation. Both of its halves import
  *     from shared (`variantParamOf`) so the two surfaces cannot drift.
@@ -32,6 +36,7 @@ import {
   DEFAULT_PRESENTATION_CONFIG, computeConfigHash, derivePackageRevision, variantKeyFor,
   variantParamOf,
 } from 'shared/sim/simIdentity';
+import { buildMainSegmentTimeline, resolveSectionPlacement } from 'shared';
 import {
   parsePosterVariants, posterIdentityString, selectPosterVariant,
   type PosterFormat, type PosterKey,
@@ -269,13 +274,35 @@ export async function buildExportPlan(
   const imageById = new Map(imageRows.map((i) => [i.id, i]));
   const audioById = new Map(audioRows.map((a) => [a.id, a]));
 
-  const videoGlobalOffsets = new Map<string, number>();
-  let globalOff = 0;
-  for (const v of mainVideos) {
-    videoGlobalOffsets.set(v.id, globalOff);
-    globalOff += v.duration_sec ?? 0;
-  }
-  const mainDurationSec = globalOff;
+  // ONE layout, shared with the player build (D-01). This used to be the same four lines written
+  // out here a second time; the export's whole promise is "what a viewer sees is what is exported",
+  // and two hand-written copies of the concatenation is precisely how that promise gets broken by a
+  // change to one of them. Segment i owns `[start_i, start_i + dur_i)`, half-open.
+  const mainTimeline = buildMainSegmentTimeline(allVideos);
+  const videoGlobalOffsets = new Map<string, number>(
+    mainTimeline.segments.map((seg) => [seg.id, seg.startSec]),
+  );
+  const mainDurationSec = mainTimeline.totalSec;
+
+  /**
+   * WHERE AN OFFSET-POSITIONED ROW SITS — b-roll and audio cutaways, the two lanes that carry their
+   * own position rather than inheriting their host's.
+   *
+   * Dual read, anchor first, identical to the player build because it is literally the same
+   * function: an anchored row is placed relative to its main segment and MOVES with that segment
+   * when it is re-transcoded; a legacy row falls back to its stored `global_offset_sec` and exports
+   * exactly where it does today. A degraded resolution becomes a warning, never a silent shift —
+   * an export that quietly put a clip somewhere else is worse than one that says it had to.
+   */
+  const placementOf = (s: (typeof sections)[number]): number => {
+    const at = resolveSectionPlacement(s, mainTimeline);
+    if (at.degradation) {
+      warnings.push(
+        `${s.label ?? `section ${s.id}`}: placement fell back (${at.degradation}) — exported at ${at.absoluteSec.toFixed(2)}s`,
+      );
+    }
+    return at.absoluteSec;
+  };
   /**
    * POST-ROLL (decided): a rendered sim window may extend past its host video's end — in the
    * viewer it would pause-wait there, which has no meaning in a linear file, so it plays its
@@ -503,7 +530,7 @@ export async function buildExportPlan(
       audio.push({
         source: 'audio',
         sectionId: s.id,
-        globalOffsetSec: s.global_offset_sec ?? 0,
+        globalOffsetSec: placementOf(s),
         sourceInSec: s.start_sec,
         sourceOutSec: s.end_sec,
         storageKey: af.storage_key,
@@ -519,12 +546,13 @@ export async function buildExportPlan(
         warnings.push(`${sectionName(s)} references a missing b-roll video — skipped`);
         continue;
       }
+      const brollStart = placementOf(s);
       const win: ClipWindow = {
         kind: 'clip',
         sectionId: s.id,
         label: s.label,
-        startSec: s.global_offset_sec ?? 0,
-        endSec: (s.global_offset_sec ?? 0) + (s.end_sec - s.start_sec),
+        startSec: brollStart,
+        endSec: brollStart + (s.end_sec - s.start_sec),
         sourceVideoFileId: src.id,
         storageKey: src.storage_key,
         sourceInSec: s.start_sec,

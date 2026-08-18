@@ -26,14 +26,30 @@ describe('PodcastTurnSchema — id safety + resilience', () => {
 });
 
 describe('pass-output schema resilience', () => {
-  it('StoryPlanSchema degrades garbage to safe defaults instead of throwing', () => {
-    const r = StoryPlanSchema.safeParse({ episode_title: 123, beats: 'nope', uses_user_analogy: 'yes' });
+  it('StoryPlanSchema degrades garbage in DECORATIVE fields instead of throwing', () => {
+    // Wrong-typed decorative fields still .catch() to safe defaults — that
+    // resilience is deliberate and costs nothing downstream.
+    const r = StoryPlanSchema.safeParse({
+      episode_title: 'How a matrix is a movie theatre',
+      core_concept: 'a matrix is an indexed grid',
+      story_world: 'a movie theatre at opening night',
+      cold_open: 'The usher has ninety seats and one flashlight.',
+      uses_user_analogy: 'yes',
+      callbacks: 'nope',
+      beats: [{ id: 'b1', name: 'The doors open', content: 'Nobody knows where to sit.' }],
+    });
     expect(r.success).toBe(true);
     if (r.success) {
-      expect(r.data.beats).toEqual([]);
-      expect(typeof r.data.episode_title).toBe('string');
       expect(r.data.uses_user_analogy).toBe(false);
+      expect(r.data.callbacks).toEqual([]);
     }
+  });
+
+  it('StoryPlanSchema does NOT degrade a garbage BEAT SHEET — it rejects (llm-pipeline-003)', () => {
+    // `beats: 'nope'` .catch()es to [], which used to be accepted and then drove
+    // eight further creative-tier passes off an empty plan.
+    const r = StoryPlanSchema.safeParse({ episode_title: 123, beats: 'nope', uses_user_analogy: 'yes' });
+    expect(r.success).toBe(false);
   });
 
   it('CompiledBodySchema tolerates turns with missing ids (validator assigns them later)', () => {

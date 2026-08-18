@@ -37,7 +37,9 @@ try to route around it.
 ## What to hunt, ranked
 1. **Known-vulnerable versions.** Take the direct dependencies that handle untrusted input first —
    `adm-zip` (zip-slip history), `@fastify/multipart`, `fastify`, `next`, `firebase-admin`,
-   `postgres`, `stripe`, the four LLM SDKs — and check the pinned range against published
+   `postgres`, `stripe`, and the four AI-vendor SDKs (`@anthropic-ai/sdk`, `openai`,
+   `@google/genai` are the three **LLM** providers; `groq-sdk` is **speech-to-text**, not a
+   fourth LLM provider) — and check the pinned range against published
    advisories. Cite the advisory and the exact version range. **Never assert a CVE from memory**:
    look it up, and if you cannot confirm it, mark `status: suspected`.
 2. **Runtime dependency in the wrong section.** Anything imported by shipped server code but listed

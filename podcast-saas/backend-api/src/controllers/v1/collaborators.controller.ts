@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
 import { collaborators, projects, playlists, users } from '../../db/schema.js';
-import { eq, and, asc, inArray, sql } from 'drizzle-orm';
+import { eq, and, asc, inArray } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { editableProject, editablePlaylist } from '../../services/collabAccess.js';
 
@@ -11,7 +11,12 @@ import { editableProject, editablePlaylist } from '../../services/collabAccess.j
  *
  * Listing is allowed for anyone who can edit the content (owner or collaborator);
  * inviting/removing is owner-only, except a collaborator may remove themself (leave).
- * Invites are matched by lowercased email, so they work before the invitee signs up.
+ *
+ * An invite is addressed to a lowercased email and is created PENDING, so it can be sent before the
+ * invitee has an account. The address never grants anything on its own: it becomes authority only
+ * when a token proving `email_verified` claims the row and sets `user_id` (migration-042 claim in
+ * firebaseAuthMiddleware). Both "can this user edit?" and "is this row the caller's own?" therefore
+ * read `user_id`, never the address — see the invariant note in `services/collabAccess.ts`.
  */
 
 const InviteSchema = z.object({ email: z.string().trim().email().max(320) });
@@ -96,18 +101,19 @@ function registerFor(app: FastifyInstance, type: ContentType, base: string) {
         return reply.code(400).send({ message: 'You are the owner of this ' + type });
       }
 
-      // Resolve to an existing account when possible (email match is case-insensitive).
-      const invitee = await db.query.users.findFirst({
-        where: sql`lower(${users.email}) = ${email}`,
-      });
-
+      // Created PENDING — never pre-resolved to an existing account by address (security-003
+      // follow-up). `user_id` IS the collaborator authority, so writing it here would hand that
+      // authority out on the strength of `users.email`, a string the account never had to prove.
+      // The invitee acquires it on their next authenticated request, and only if their token
+      // asserts email_verified (the migration-042 claim in firebaseAuthMiddleware) — so an invite
+      // to someone already signed in still lands, one request later, without this shortcut.
       const [row] = await db
         .insert(collaborators)
         .values({
           content_type:  type,
           content_id:    content.id,
           invited_email: email,
-          user_id:       invitee?.id ?? null,
+          user_id:       null,
           invited_by:    user.id,
         })
         .onConflictDoNothing()
@@ -136,10 +142,12 @@ function registerFor(app: FastifyInstance, type: ContentType, base: string) {
       });
       if (!row) return reply.code(404).send({ message: 'Not found' });
 
+      // "Themself" is the RESOLVED collaborator, not whoever holds the invited address — the same
+      // rule authorization uses. An unclaimed invite is removable by the owner only; letting an
+      // unverified account delete it would give the address-squatter a retry loop over the
+      // invitation, and the row is not theirs until they have proven the address.
       const isOwner = content.created_by === user.id;
-      const isSelf =
-        row.user_id === user.id ||
-        (!!user.email && row.invited_email === user.email.toLowerCase());
+      const isSelf = row.user_id === user.id;
       if (!isOwner && !isSelf) return reply.code(404).send({ message: 'Not found' });
 
       await db.delete(collaborators).where(eq(collaborators.id, row.id));
