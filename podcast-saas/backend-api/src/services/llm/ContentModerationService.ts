@@ -130,7 +130,10 @@ export async function moderateGenerationInput(
     }
   };
 
-  let verdict: { rejected: boolean; reason: string } | null = null;
+  // No initializer: every path through the block below either assigns this or returns/throws, so
+  // a `= null` seed is dead and `no-useless-assignment` says so. Left as a bare `let` rather than
+  // restructured, because the assignment genuinely happens inside a try whose catch always exits.
+  let verdict: { rejected: boolean; reason: string };
   try {
     const systemPrompt = await loadModerationPrompt();
 
@@ -156,11 +159,12 @@ export async function moderateGenerationInput(
       return;
     }
     const parsed = VerdictSchema.safeParse(raw);
-    verdict = parsed.success ? readVerdict(parsed.data) : null;
-    if (!verdict) {
+    const read = parsed.success ? readVerdict(parsed.data) : null;
+    if (!read) {
       noVerdict(parsed.success ? 'no_verdict_field' : 'malformed_verdict', match[0].slice(0, 160));
       return;
     }
+    verdict = read;
   } catch (err) {
     // A CONTENT_REJECTED thrown by noVerdict above must not be swallowed here.
     if (err instanceof AppError && err.error_type === LLMErrorType.CONTENT_REJECTED) throw err;

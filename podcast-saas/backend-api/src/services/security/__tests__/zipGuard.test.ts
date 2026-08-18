@@ -218,6 +218,11 @@ describe('assertSafeZipArchive — entry names', () => {
     const nasty = `a`.repeat(4000) + '\n\r\u001b[31m/../x';
     const err = expectRejection(() => assertSafeZipArchive(makeZipWithRawName(nasty)), 'entry_name');
     expect(err.message.length).toBeLessThan(400);
+    // Control characters are the SUBJECT of this assertion: it proves none of them survive into
+    // an error message that reaches a log. A rule that exists to catch a control character typed
+    // into a pattern BY ACCIDENT cannot tell that apart from a pattern whose entire purpose is to
+    // match them, so suppressing it here is the correct answer rather than a workaround.
+    // eslint-disable-next-line no-control-regex
     expect(err.message).not.toMatch(/[\u0000-\u001f]/);
   });
 });
