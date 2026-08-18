@@ -5,6 +5,7 @@ import type { StorageService } from '../storage/StorageService.js';
 import { uploadWithFallback } from '../storage/uploadWithFallback.js';
 import { HLS_IMMUTABLE_CACHE_CONTROL } from './hlsVersioning.js';
 import { runFfmpegLimited } from '../ffmpegLimit.js';
+import { aspectPreservingFitChain } from '../ffmpegAspect.js';
 import { logger } from '../../lib/logger.js';
 
 export interface QualityTier {
@@ -161,7 +162,15 @@ export interface TierEncodeContext {
 /**
  * The full ffmpeg argument list for one tier (everything except the leading '-y').
  *
- * GOP alignment is the load-bearing part: `-g`/`-keyint_min` pin the keyframe cadence to one
+ * GEOMETRY (media-002). The `-vf` comes from the shared `aspectPreservingFitChain`, which
+ * squares the pixels BEFORE fitting. Fitting straight onto the coded dimensions — what this
+ * builder used to do — computes the fit against the wrong shape AND lets a non-unity input
+ * SAR survive into the tier, so an anamorphic source (e.g. 1440x1080 SAR 4:3, DAR 16:9)
+ * came out with 160px black pillars each side AND stretched by 4/3 on top. See
+ * services/ffmpegAspect.ts for the scale-filter arithmetic; the export path
+ * (ffmpegGraph.videoNormChain) has always used this chain, and now both use the same one.
+ *
+ * GOP alignment is the other load-bearing part: `-g`/`-keyint_min` pin the keyframe cadence to one
  * segment length, `-sc_threshold 0` stops scene-cut keyframes from drifting it,
  * `-force_key_frames` puts a keyframe at every exact multiple of segmentSec regardless of fps
  * rounding, and `+cgop` closes each GOP so a segment never references frames outside itself.
@@ -172,7 +181,7 @@ export function buildTierArgs(tier: QualityTier, ctx: TierEncodeContext): string
   const gop = Math.round(ctx.fps * ctx.segmentSec);
   return [
     '-i', ctx.inputPath,
-    '-vf', `scale=${tier.width}:${tier.height}:force_original_aspect_ratio=decrease,pad=${tier.width}:${tier.height}:(ow-iw)/2:(oh-ih)/2`,
+    '-vf', aspectPreservingFitChain(tier.width, tier.height),
     '-c:v', 'libx264',
     '-preset', 'fast',
     '-profile:v', tier.profile,

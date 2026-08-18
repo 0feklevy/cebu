@@ -13,6 +13,10 @@
  *     is `split=N` once and trimmed per window.
  *   - Audio length is a function of ONE number (the window) via `apad` + `atrim` —
  *     an under-length source can never shorten the timeline cumulatively (§5).
+ *   - Video length is a function of the same ONE number, via `tpad` + `trim`: a source
+ *     that runs out a frame or two early holds its last frame to the window edge instead
+ *     of shortening the concat (media-001). The tolerance is TAIL_PAD_FRAMES frames at
+ *     the grid rate and nothing wider — a real gap still reaches the master gates.
  *   - Enable expressions come from ONE helper emitting the half-open `[start, end)`
  *     form `gte(t,S)*lt(t,E)`. The closed-interval operator draws BOTH sections on
  *     the frame at a shared boundary (measured: one frame of double-exposure at every
@@ -30,6 +34,7 @@
 // this module's graph builders (and their real-encode tests) operate on.
 // ---------------------------------------------------------------------------
 
+import { aspectPreservingFitChain } from '../ffmpegAspect.js';
 import type { ExportGrid } from './types.js';
 
 export type { ExportGrid };
@@ -95,6 +100,40 @@ export const AUDIO_RATE = 48000;
 
 const EPS = 1e-6;
 
+/**
+ * How far the video spine will hold a window's last frame to reach the window edge,
+ * in frames at the grid rate (media-001).
+ *
+ * WHY ANY TOLERANCE AT ALL. `trim` can only cut, never extend, so before this the spine's
+ * length was whatever the FILES happened to contain. A re-encoded file being a frame short
+ * of its probed CONTAINER duration is ordinary, not exceptional: AAC pads the audio track
+ * out to a whole 1024-sample packet, so `format.duration` — the number the planner stores
+ * and plans against — routinely exceeds the video stream by up to ~21ms. Each such window
+ * shortened the concat, the master's video stream came out short of its (exactly-planned)
+ * audio, and assertMasterGates rejected the ENTIRE export at the stream-agreement gate,
+ * naming a drift the user has no way to act on.
+ *
+ * WHY EXACTLY TWO FRAMES. One frame covers the AAC-padding case above. The second covers
+ * the `fps` filter's own tail: a VFR source whose final frame lands just short of the
+ * window edge contributes no frame for the last CFR slot. Three would start to be a
+ * duration the eye can catch on a freeze, and — more importantly — a gap that big is not
+ * a rounding artefact, it is a planning bug (a window planned past the end of its source),
+ * which must keep failing loudly. It does: the pad is capped, so a wider gap still reaches
+ * assertMasterGates and still fails the export by name.
+ *
+ * The pad is never silent either — see `auditSourceShortfall`, which the assembler runs
+ * over the probed sources and reports into the export's warnings and the log.
+ */
+export const TAIL_PAD_FRAMES = 2;
+
+/** The tail tolerance in seconds for a grid: TAIL_PAD_FRAMES frames at the grid rate. */
+export function tailPadSec(grid: ExportGrid): number {
+  return TAIL_PAD_FRAMES / grid.fps;
+}
+
+/** The window kinds spliced from a real media file (as opposed to a looped still). */
+export const SPLICED_VIDEO_KINDS: readonly TimelineWindowKind[] = ['video', 'clip', 'sim-capture'];
+
 // ---------------------------------------------------------------------------
 // Formatting helpers
 // ---------------------------------------------------------------------------
@@ -133,12 +172,9 @@ export function enableExpr(startSec: number, endSec: number): string {
 export function videoNormChain(grid: ExportGrid, variant: 'default' | 'capture' = 'default'): string {
   const { w, h, fps } = grid;
   const fpsStep = variant === 'capture' ? `fps=${fps}:start_time=0` : `fps=${fps}`;
-  return (
-    `scale=trunc(iw*sar/2)*2:ih,setsar=1,` +
-    `scale=${w}:${h}:force_original_aspect_ratio=decrease,` +
-    `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1,` +
-    `${fpsStep},format=yuv420p,settb=1/${fps * 1000}`
-  );
+  // Geometry from the shared helper so the HLS ladder cannot drift from it again
+  // (services/ffmpegAspect.ts — the emitted text is unchanged).
+  return `${aspectPreservingFitChain(w, h)},${fpsStep},format=yuv420p,settb=1/${fps * 1000}`;
 }
 
 /** The audio counterpart: healed timestamps, one sample format/rate/layout, one timebase. */
@@ -171,6 +207,8 @@ export interface BuiltGraph {
 export interface BuiltVideoSpine extends BuiltGraph {
   /** Exact frame count the spine must produce: round(totalSec × fps). */
   frameCount: number;
+  /** The tail tolerance this graph was built with (TAIL_PAD_FRAMES at the grid rate). */
+  tailPadSec: number;
 }
 
 function windowDur(w: { startSec: number; endSec: number }): number {
@@ -214,12 +252,13 @@ export function buildVideoSpine(timeline: TimelineWindow[], grid: ExportGrid): B
   const norm = videoNormChain(grid);
   const captureNorm = videoNormChain(grid, 'capture');
   const totalSec = timeline[timeline.length - 1]!.endSec;
+  const tailPad = tailPadSec(grid);
 
   const inputs: GraphInput[] = [];
   const parts: string[] = [];
 
   // Shared inputs for video-file sources (the split=N discipline).
-  const videoKinds: TimelineWindowKind[] = ['video', 'clip', 'sim-capture'];
+  const videoKinds = SPLICED_VIDEO_KINDS;
   const sharedUse = new Map<string, number[]>(); // sourcePath → window indices
   timeline.forEach((w, i) => {
     if (videoKinds.includes(w.kind)) {
@@ -276,14 +315,30 @@ export function buildVideoSpine(timeline: TimelineWindow[], grid: ExportGrid): B
     branchOf.set(i, `[${srcLabel}]`);
   });
 
-  // Trim every window from its (normalised) branch and reset PTS.
+  // Trim every window from its (normalised) branch, reset PTS, then PIN THE LENGTH.
+  //
+  // The second half is the video counterpart of audio's `apad,atrim=end=<window>`: the
+  // source trim can only cut, so on its own the branch is as long as the FILE happens to
+  // be. `tpad=stop_mode=clone` holds the last frame for the (narrow, grid-derived)
+  // tolerance and the closing `trim=end=<window dur>` cuts back to the window — a number
+  // that comes from the PLAN, never from the source. A source with frames to spare loses
+  // the cloned frames to that trim, so this is a no-op for healthy input; a source a frame
+  // or two short freezes its final frame instead of shortening the whole concat; a source
+  // shorter than that stays short and still fails assertMasterGates (media-001).
+  //
+  // `stop_mode=clone`, not tpad's default `add`: a held frame is invisible at these
+  // durations, whereas two frames of injected black at a splice seam is a visible flash.
   const windowLabels: string[] = [];
   timeline.forEach((w, i) => {
     const from = branchOf.get(i)!;
     const inSec = w.sourceInSec ?? 0;
     const dur = windowDur(w);
     const label = `[w${i}]`;
-    parts.push(`${from}trim=start=${fmtSec(inSec)}:end=${fmtSec(inSec + dur)},setpts=PTS-STARTPTS${label}`);
+    parts.push(
+      `${from}trim=start=${fmtSec(inSec)}:end=${fmtSec(inSec + dur)},setpts=PTS-STARTPTS,` +
+      `tpad=stop_mode=clone:stop_duration=${fmtSec(tailPad)},` +
+      `trim=end=${fmtSec(dur)},setpts=PTS-STARTPTS${label}`,
+    );
     windowLabels.push(label);
   });
 
@@ -295,7 +350,100 @@ export function buildVideoSpine(timeline: TimelineWindow[], grid: ExportGrid): B
     outLabel: '[vout]',
     totalSec,
     frameCount: Math.round(totalSec * grid.fps),
+    tailPadSec: tailPad,
   };
+}
+
+// ---------------------------------------------------------------------------
+// The tail pad is never silent
+// ---------------------------------------------------------------------------
+
+/** Distinct local paths of the spliced video sources, in first-use order. */
+export function videoSourcePaths(timeline: TimelineWindow[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const w of timeline) {
+    if (!w.sourcePath || !SPLICED_VIDEO_KINDS.includes(w.kind)) continue;
+    if (seen.has(w.sourcePath)) continue;
+    seen.add(w.sourcePath);
+    out.push(w.sourcePath);
+  }
+  return out;
+}
+
+/** One window whose source file cannot reach the end of the window it was planned for. */
+export interface SourceShortfall {
+  windowIndex: number;
+  kind: TimelineWindowKind;
+  sourcePath: string;
+  windowStartSec: number;
+  windowEndSec: number;
+  /** Source-local position the window needs to reach: sourceInSec + window duration. */
+  neededSec: number;
+  /** Probed duration of the source's video stream. */
+  sourceSec: number;
+  shortfallSec: number;
+  shortfallFrames: number;
+  /**
+   * true  → within TAIL_PAD_FRAMES; the spine holds the last frame and the export stands.
+   * false → beyond it; the spine stays short and the master gates will reject the export.
+   */
+  padded: boolean;
+}
+
+/**
+ * Which planned windows their own files cannot fill, given probed source durations.
+ *
+ * Pure: the caller does the probing (see `videoSourcePaths`) and the logging. A source with
+ * no entry in `sourceSec` is simply not audited — a diagnostic probe must never be able to
+ * fail an export. Image/poster windows are excluded: they are bounded at the input with
+ * `-loop 1 -t <dur>`, so their file length is irrelevant.
+ *
+ * This is what keeps the spine's tail tolerance from being a silent widening of the
+ * duration gate: every use of it is named, measured, and surfaced.
+ */
+export function auditSourceShortfall(
+  timeline: TimelineWindow[],
+  grid: ExportGrid,
+  sourceSec: ReadonlyMap<string, number>,
+): SourceShortfall[] {
+  const tol = tailPadSec(grid);
+  const found: SourceShortfall[] = [];
+  timeline.forEach((w, windowIndex) => {
+    if (!w.sourcePath || !SPLICED_VIDEO_KINDS.includes(w.kind)) return;
+    const have = sourceSec.get(w.sourcePath);
+    if (have === undefined || !Number.isFinite(have)) return;
+    const neededSec = (w.sourceInSec ?? 0) + windowDur(w);
+    const shortfallSec = neededSec - have;
+    if (!(shortfallSec > EPS)) return;
+    found.push({
+      windowIndex,
+      kind: w.kind,
+      sourcePath: w.sourcePath,
+      windowStartSec: w.startSec,
+      windowEndSec: w.endSec,
+      neededSec,
+      sourceSec: have,
+      shortfallSec,
+      shortfallFrames: shortfallSec * grid.fps,
+      padded: shortfallSec <= tol + EPS,
+    });
+  });
+  return found;
+}
+
+/** One human line for a shortfall — for the export's warnings list and for the log. */
+export function describeShortfall(s: SourceShortfall): string {
+  const frames = s.shortfallFrames.toFixed(2).replace(/\.?0+$/, '');
+  const head =
+    `${s.kind} window ${s.windowIndex} [${fmtSec(s.windowStartSec)}s, ${fmtSec(s.windowEndSec)}s) ` +
+    `needs ${fmtSec(s.neededSec)}s of ${s.sourcePath} but the file holds ${fmtSec(s.sourceSec)}s ` +
+    `— short by ${frames} frame(s)`;
+  return s.padded
+    ? `${head}; the spine held its last frame to the window edge (within the ` +
+      `${TAIL_PAD_FRAMES}-frame tail tolerance)`
+    : `${head}, BEYOND the ${TAIL_PAD_FRAMES}-frame tail tolerance — the window was planned ` +
+      `past the end of its source, and the export will fail its duration gate`;
 }
 
 export interface MutedBrollAudit {
@@ -445,7 +593,7 @@ export function buildSilenceAudio(totalSec: number): BuiltGraph {
  */
 export const REQUIRED_FILTERS: readonly string[] = [
   // video spine
-  'scale', 'setsar', 'pad', 'fps', 'format', 'settb', 'trim', 'setpts', 'split', 'concat', 'crop', 'color',
+  'scale', 'setsar', 'pad', 'fps', 'format', 'settb', 'trim', 'tpad', 'setpts', 'split', 'concat', 'crop', 'color',
   // audio mix + master
   'anullsrc', 'aresample', 'aformat', 'asettb', 'atrim', 'asetpts', 'apad', 'adelay', 'volume',
   'amix', 'alimiter', 'loudnorm',
