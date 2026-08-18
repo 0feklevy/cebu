@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { auditMigrations, classifyStatement, runnerListFromSource, sha256, splitSqlStatements } from '../migration-audit.js';
+import {
+  auditMigrations,
+  classifyStatement,
+  runnerListFromSource,
+  sha256,
+  splitSqlStatements,
+  tablesCreatedIn,
+} from '../migration-audit.js';
 
 const PATTERN = /^\d{3}_[a-z0-9_]+\.sql$/i;
 
@@ -147,5 +154,64 @@ describe('auditMigrations', () => {
     expect(incompatible?.severity).toBe('CRITICAL');
     expect(res.newMigrations[0].transactional).toBe(false);
     expect(res.newMigrations[0].tables).toContain('old_stuff');
+  });
+});
+
+describe('an index build only risks a lock when the table already exists', () => {
+  // Across the repo's 62 forward migrations, ~85 index builds are non-concurrent and only 9 touch a
+  // pre-existing table. Warning on all 85 is alarm fatigue: the operator learns to shrug at the
+  // class, and then shrugs at the one that would actually stall a deploy.
+
+  const create = (t: string) => new Set([t]);
+
+  it('is silent for an index on a table this same migration creates', () => {
+    // The runner wraps each file in a transaction, so `widgets` does not exist for any other
+    // session until the file commits, and no other session has ever been able to write a row to it.
+    // The lock is real and structurally uncontended.
+    expect(classifyStatement('CREATE INDEX idx ON widgets (a)', create('widgets'))).toBeNull();
+    expect(classifyStatement('CREATE UNIQUE INDEX idx ON widgets (a)', create('widgets'))).toBeNull();
+  });
+
+  it('still warns for an index on a table that predates this migration', () => {
+    const c = classifyStatement('CREATE INDEX idx ON timeline_sections (a)', create('widgets'));
+    expect(c?.class).toBe('lock-risk');
+    // The reason must NAME the table — an operator deciding whether to build out-of-band needs to
+    // know which table to go and count.
+    expect(c?.reason).toContain('timeline_sections');
+  });
+
+  it('warns when nothing is known about the file, so the default is conservative', () => {
+    expect(classifyStatement('CREATE INDEX idx ON x (a)')?.class).toBe('lock-risk');
+  });
+
+  it('CONCURRENTLY still outranks the suppression — it cannot run in the transaction at all', () => {
+    expect(classifyStatement('CREATE INDEX CONCURRENTLY idx ON widgets (a)', create('widgets'))?.class)
+      .toBe('runner-incompatible');
+  });
+
+  it('tablesCreatedIn reads CREATE TABLE with and without IF NOT EXISTS, case-insensitively', () => {
+    expect(tablesCreatedIn(['CREATE TABLE Foo (id uuid)', 'create table if not exists BAR (id uuid)']))
+      .toEqual(new Set(['foo', 'bar']));
+  });
+
+  it('tablesCreatedIn does not treat ALTER TABLE as a creation', () => {
+    // Otherwise an ALTER + index in one file would silence a genuine lock risk.
+    expect(tablesCreatedIn(['ALTER TABLE users ADD COLUMN a text'])).toEqual(new Set());
+  });
+
+  it('end to end: the audit reports no lock-risk for a new table + its index', () => {
+    const res = auditMigrations(
+      input({
+        diskFiles: [
+          { name: '046_token_usage_cost_precision.sql', content: 'ALTER TABLE token_usage ALTER COLUMN cost TYPE numeric(12,6);' },
+          {
+            name: '047_new_feature.sql',
+            content: 'CREATE TABLE IF NOT EXISTS widgets (id uuid PRIMARY KEY);\nCREATE INDEX widgets_id_idx ON widgets (id);',
+          },
+        ],
+      }),
+    );
+    const m = res.newMigrations.find((x) => x.name === '047_new_feature.sql');
+    expect(m?.classes.some((c) => c.class === 'lock-risk')).toBe(false);
   });
 });
