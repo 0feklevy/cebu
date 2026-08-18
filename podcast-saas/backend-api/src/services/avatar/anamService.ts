@@ -188,6 +188,29 @@ export interface AvatarPersonaConfig {
   personaDisplay?: PersonaDisplay;   // cosmetic name/portrait of the resolved avatar (server-managed)
 }
 
+/**
+ * A stored `personaId` this mint proved UNUSABLE at the vendor, and therefore must be replaced.
+ *
+ * verifyStatefulPersona() is purely local: it compares a fingerprint this server wrote against the
+ * config this server holds. It cannot see a persona someone deleted in the Anam dashboard — the
+ * fingerprint still matches, the config still looks healthy, and only the vendor's 400 (or a
+ * brainless "legacy" token) reveals the truth. Before this record existed the discovery was
+ * logged and dropped, so EVERY open of that video paid the doomed stateful mint plus the
+ * ephemeral rebuild, forever. The caller persists this (clear personaId + personaBaked, then
+ * re-bake) to make the repair durable across processes and restarts.
+ */
+export interface PersonaRepair {
+  /** The stored persona id that is no longer usable. */
+  personaId: string;
+  /** stale-400: the vendor rejected it as missing/invalid. legacy-token: it exists but has no
+   *  llmId brain, so the vendor mints a token the browser SDK refuses. */
+  reason: 'stale-400' | 'legacy-token';
+  /** true when THIS start paid the doomed vendor mint to find out; false when the in-process
+   *  registry already knew and skipped it. A caller that keeps seeing `discovered: true` for the
+   *  same project is a caller that is not persisting the repair. */
+  discovered: boolean;
+}
+
 export interface SessionInfo {
   token: string;
   characterId: string;
@@ -197,6 +220,9 @@ export interface SessionInfo {
   avatarId?: string;
   /** Ephemeral persona display name, when one was minted. */
   personaName?: string;
+  /** Set when the config's stored personaId turned out to be unusable at the vendor and this
+   *  session fell back to an inline persona. Persist the repair or the next open pays again. */
+  personaRepair?: PersonaRepair;
 }
 export interface AvatarDisplay {
   displayName?: string;
@@ -388,8 +414,15 @@ function tokenTypeClaim(token: string): string | null {
   }
 }
 
-/** Test/ops seam: forget the resolved-LLM cache (e.g. after rotating the account). */
-export function invalidateAnamLlmCache(): void { _llmIdCache.clear(); _defaultAvatarCache.clear(); }
+/** Test/ops seam: forget every per-process Anam cache — the resolved LLM, the live account
+ *  default avatar/voice, the paged resource listings, and the unusable-persona registry.
+ *  Use after rotating the account key or editing the Anam dashboard. */
+export function invalidateAnamLlmCache(): void {
+  _llmIdCache.clear();
+  _defaultAvatarCache.clear();
+  _resourceListCache.clear();
+  _deadPersonaCache.clear();
+}
 
 // Live account defaults: when neither the video config, the base character persona, nor the
 // ANAM_AVATAR_ID/ANAM_VOICE_ID env resolve an avatar/voice, fall back to the FIRST avatar
@@ -472,6 +505,54 @@ export async function describeAvatar(
   return look;
 }
 
+// ── Unusable-persona registry (anam-backend-010) ──────────────────────────────
+//
+// A persona deleted in the Anam dashboard is INVISIBLE to verifyStatefulPersona: that check is
+// local (personaFingerprint.ts) and compares the fingerprint this server wrote against the config
+// this server holds. Both still agree. Only the mint finds out — and the old code logged the
+// finding and threw it away, so every subsequent open of that video repeated the discovery:
+// a doomed stateful mint plus the ephemeral rebuild, two sequential vendor round trips.
+//
+// This registry is the in-process half of the repair: once a mint has proved a personaId dead,
+// later starts in this process build the inline persona directly and skip the doomed hop. It is
+// NOT the durable half — it dies with the process and every replica learns separately — which is
+// why getSessionToken also reports the finding on SessionInfo.personaRepair for the caller to
+// persist. Bounded and TTL'd in the same style as _avatarLookCache: a dashboard repair (adding an
+// llmId back to a legacy persona) must heal on its own within the TTL rather than needing a deploy.
+const DEAD_PERSONA_TTL_MS = 600_000;      // 10 min — long enough to cover a viewing session
+const DEAD_PERSONA_MAX_ENTRIES = 500;
+const _deadPersonaCache = new Map<string, { reason: PersonaRepair['reason']; at: number }>();
+
+function deadKey(personaId: string, apiKey?: string): string {
+  return `${(apiKey || ANAM_ENV.ANAM_API_KEY).slice(-8)}:${personaId}`;
+}
+
+/** Record that the vendor refused this stored persona. Called only after a real mint said so. */
+export function markPersonaUnusable(personaId: string, apiKey: string | undefined, reason: PersonaRepair['reason']): void {
+  if (!personaId) return;
+  if (_deadPersonaCache.size >= DEAD_PERSONA_MAX_ENTRIES) {
+    const oldest = _deadPersonaCache.keys().next().value;   // insertion-ordered
+    if (oldest) _deadPersonaCache.delete(oldest);
+  }
+  _deadPersonaCache.set(deadKey(personaId, apiKey), { reason, at: Date.now() });
+}
+
+/** Why this persona is known-dead, or undefined. Synchronous — safe on the request path. */
+export function peekUnusablePersona(personaId: string, apiKey?: string): PersonaRepair['reason'] | undefined {
+  if (!personaId) return undefined;
+  const k = deadKey(personaId, apiKey);
+  const hit = _deadPersonaCache.get(k);
+  if (!hit) return undefined;
+  if (Date.now() - hit.at >= DEAD_PERSONA_TTL_MS) { _deadPersonaCache.delete(k); return undefined; }
+  return hit.reason;
+}
+
+/** A stateful mint that SUCCEEDED with a non-legacy token proves the persona is alive again
+ *  (re-created under the same id, or a dashboard repair) — stop condemning it. */
+function clearPersonaUnusable(personaId: string, apiKey?: string): void {
+  if (personaId) _deadPersonaCache.delete(deadKey(personaId, apiKey));
+}
+
 // Builds the personaConfig sent to Anam. v4 requires a COMPLETE persona at token time:
 // either a pure stateful { personaId } (referencing a saved persona that itself carries an
 // llmId), or a full inline EPHEMERAL persona that includes a brain (llmId). The old
@@ -482,7 +563,10 @@ async function buildPersonaConfig(
   characterId: string,
   cfg: AvatarPersonaConfig | undefined,
   key: string,
-  defaultLlmId: string,
+  // B2: a THUNK, not a value. The stateful fast path below returns before any brain is needed,
+  // so a resolved-and-discarded llm id was a free-looking `await` that costs up to six sequential
+  // vendor round trips whenever ANAM_LLM_ID is unpinned or the caller is BYOK.
+  resolveLlm: () => Promise<string>,
 ): Promise<Record<string, unknown>> {
   const maxSessionLengthSeconds = cfg?.maxSessionLengthSeconds ?? 600;
 
@@ -503,8 +587,20 @@ async function buildPersonaConfig(
 
   // Resolve avatar/voice/llm: explicit cfg → base character persona's values (fetched once) →
   // env / resolved default. A complete inline persona WITH a brain mints a non-legacy token.
+  //
+  // anam-backend-005: this GET used to fire whenever `!cfg.llmId` — and no video config
+  // hand-picks an LLM, so that disjunct was true for every project and the base persona was
+  // fetched even when the video already pinned BOTH an avatar and a voice. It is fetched now only
+  // for what it is actually for: filling in a missing avatar or voice.
+  //
+  // Consequence, stated plainly: for a video that pins avatar+voice but no llmId, the brain now
+  // comes from the account default (ANAM_LLM_ID, else the first hosted LLM from GET /llms)
+  // instead of the base character persona's llmId. Both are brains on the same Anam account. The
+  // base persona's own llm is still honoured — but only as a LAST resort below, when nothing else
+  // supplies one, so the common case never pays a round trip for it.
   let baseAvatar = '', baseVoice = '', baseLlm = '';
-  if (entry.personaId && (!cfg?.avatarId || !cfg?.voiceId || !cfg?.llmId)) {
+  const needsBaseLook = !cfg?.avatarId?.trim() || !cfg?.voiceId?.trim();
+  if (entry.personaId && needsBaseLook) {
     const base = await getPersona(entry.personaId, key);
     baseAvatar = base?.avatarId ?? base?.avatar?.id ?? '';
     baseVoice  = base?.voiceId  ?? base?.voice?.id  ?? '';
@@ -512,7 +608,14 @@ async function buildPersonaConfig(
   }
   let avatarId = (cfg?.avatarId?.trim() || baseAvatar || ANAM_ENV.ANAM_AVATAR_ID).trim();
   let voiceId  = (cfg?.voiceId?.trim()  || baseVoice  || ANAM_ENV.ANAM_VOICE_ID).trim();
-  const llmId    = (cfg?.llmId?.trim()    || baseLlm    || defaultLlmId).trim();
+  let llmId    = (cfg?.llmId?.trim()    || baseLlm    || '').trim();
+  if (!llmId) llmId = (await resolveLlm()).trim();
+  if (!llmId && entry.personaId && !needsBaseLook) {
+    // Nothing pinned, and the account listing offered no hosted LLM. Only NOW is the base
+    // persona's own brain worth a round trip — the alternative is failing the start outright.
+    const base = await getPersona(entry.personaId, key);
+    llmId = (base?.llmId ?? base?.llm?.id ?? '').trim();
+  }
 
   // Live-account fallback: stale/absent character persona ids and no env avatar/voice →
   // resolve whatever the account offers NOW, so the default avatar always exists.
@@ -605,9 +708,30 @@ export async function getSessionToken(characterId: string, cfg?: AvatarPersonaCo
     throw err;
   }
 
-  // The brain to bake in so Anam mints a v4 (non-legacy) token.
-  const defaultLlmId = await resolveDefaultLlmId(key);
-  const personaConfig = await buildPersonaConfig(id, cfg, key, defaultLlmId);
+  // The brain to bake in so Anam mints a v4 (non-legacy) token — resolved LAZILY, and at most
+  // once per start. A healthy project mints statefully by personaId and never looks at a brain,
+  // so awaiting this up front bought nothing and cost a GET /llms paging crawl on every deploy's
+  // first stateful start (the cache is per PROCESS) and on every BYOK start (the env pin is a
+  // SERVER-account id, so a BYOK key can never use it).
+  let llmIdPromise: Promise<string> | undefined;
+  const resolveLlm = () => (llmIdPromise ??= resolveDefaultLlmId(key));
+
+  let personaConfig = await buildPersonaConfig(id, cfg, key, resolveLlm);
+
+  // anam-backend-010, in-process half: a persona this process has already watched the vendor
+  // refuse is not worth a second doomed mint. Skip straight to the inline persona — but ONLY if a
+  // complete one can be assembled, because when it cannot, that doomed mint is still this start's
+  // only chance and must not be taken away from it.
+  let personaRepair: PersonaRepair | undefined;
+  const storedPersonaId = typeof personaConfig.personaId === 'string' ? personaConfig.personaId : '';
+  const knownDeadReason = storedPersonaId ? peekUnusablePersona(storedPersonaId, key) : undefined;
+  if (knownDeadReason) {
+    const ephemeral = await buildPersonaConfig(id, { ...(cfg ?? {}), personaId: undefined }, key, resolveLlm);
+    if (ephemeral.avatarId && ephemeral.voiceId && ephemeral.llmId) {
+      personaRepair = { personaId: storedPersonaId, reason: knownDeadReason, discovered: false };
+      personaConfig = ephemeral;
+    }
+  }
   if (!personaConfig.personaId && !(personaConfig.avatarId && personaConfig.voiceId)) {
     const err = new Error(`No Anam persona configured for "${id}". Set ANAM_PERSONA_ID_${id.toUpperCase()} (or choose an avatar+voice in the video's Avatar settings).`) as Error & { status: number };
     err.status = 503;
@@ -638,8 +762,20 @@ export async function getSessionToken(characterId: string, cfg?: AvatarPersonaCo
   const legacyMinted = minted.ok && tokenTypeClaim(minted.token) === 'legacy';
   const staleRejected = !minted.ok && minted.status === 400 &&
     /invalid_persona_configuration|persona not found/i.test(minted.detail);
+  if (personaConfig.personaId && minted.ok && !legacyMinted) {
+    // It answered, and with a real v4 token: whatever we may have believed about this id before
+    // (re-created under the same id, or an llmId added back in the dashboard), it is alive now.
+    clearPersonaUnusable(String(personaConfig.personaId), key);
+  }
   if (personaConfig.personaId && (staleRejected || legacyMinted)) {
-    const fallback = await buildPersonaConfig(id, { ...(cfg ?? {}), personaId: undefined }, key, defaultLlmId);
+    // anam-backend-010: record it in-process AND hand it to the caller. The old code only logged
+    // here, and nothing outside this file read the flags — so the repair never became durable and
+    // every single open of the video repeated these two round trips.
+    const deadPersonaId = String(personaConfig.personaId);
+    const reason: PersonaRepair['reason'] = staleRejected ? 'stale-400' : 'legacy-token';
+    markPersonaUnusable(deadPersonaId, key, reason);
+    personaRepair = { personaId: deadPersonaId, reason, discovered: true };
+    const fallback = await buildPersonaConfig(id, { ...(cfg ?? {}), personaId: undefined }, key, resolveLlm);
     if (fallback.avatarId && fallback.voiceId && fallback.llmId) {
       logger.warn(
         { characterId: id, personaId: personaConfig.personaId, reason: staleRejected ? 'stale-400' : 'legacy-token' },
@@ -668,7 +804,7 @@ export async function getSessionToken(characterId: string, cfg?: AvatarPersonaCo
     throw err;
   }
 
-  return { token: minted.token, characterId: id, voiceSensitivity, avatarId: resolvedAvatarId || undefined, personaName };
+  return { token: minted.token, characterId: id, voiceSensitivity, avatarId: resolvedAvatarId || undefined, personaName, personaRepair };
 }
 
 interface AnamPersona { id?: string; avatarId?: string; voiceId?: string; llmId?: string; avatar?: { id?: string }; voice?: { id?: string }; llm?: { id?: string }; }
@@ -851,18 +987,51 @@ export async function listSystemTools(apiKey?: string): Promise<Array<{ id: stri
   return list.filter((t) => t.type === 'SYSTEM').map((t) => ({ id: t.id, name: t.name, description: t.description }));
 }
 
+// anam-backend-007: one listing is a SEQUENTIAL paged crawl — up to six round trips before the
+// caller sees anything — and it had no cache at all. Bounded and evicting in the same style as
+// _avatarLookCache above.
+//
+// Honest about what this buys, because a per-process cache is easy to oversell:
+//   • it is per PROCESS, so every replica warms independently and a deploy resets all of them;
+//   • the TTL is short (5 min) on purpose — these lists back the settings PICKERS, and an operator
+//     who adds a voice in the Anam dashboard must see it without waiting an hour;
+//   • so on a low-traffic deploy with more than 5 minutes between starts, the hit rate is ~0.
+// What it reliably collapses is BURSTS: enrichAvatarConfigFromAnam and resolveDefaultAvatarVoice
+// each ask for `avatars` + `voices`, so one ephemeral start can crawl the same two listings twice;
+// opening the video-settings panel fires avatars + voices + llms and refetches on every reopen;
+// and several viewers starting the same unbaked video within a few minutes now share one crawl.
+// It does NOT speed up the healthy stateful start, which already touches none of this.
+//
+// Callers that must see a dashboard edit immediately (the settings-picker proxy route) pass
+// `{ fresh: true }`: that bypasses the read and refreshes the entry. Note the precedent — the
+// live-defaults path above already caches the same two listings for a full HOUR — so five
+// minutes is the tighter of the two staleness windows this file accepts.
+const RESOURCE_LIST_TTL_MS = 300_000;
+const RESOURCE_LIST_MAX_ENTRIES = 64;      // 4 kinds × a handful of BYOK keys
+const _resourceListCache = new Map<string, { v: unknown[]; at: number }>();
+
 // Proxies Anam's resource-listing endpoints so the video-settings UI can offer
 // pickers of the account's available avatars / voices / LLMs / personas.
 // Anam caps perPage at 100, so we page through (up to a cap) to return them all.
 export async function listAnamResource(
   kind: 'avatars' | 'voices' | 'llms' | 'personas',
   apiKey?: string,
+  opts: { fresh?: boolean } = {},
 ): Promise<{ data: unknown[] }> {
   const key = apiKey || ANAM_ENV.ANAM_API_KEY;
   if (!key) return { data: [] };
+  const cacheKey = `${kind}:${key.slice(-8)}`;
+  if (!opts.fresh) {
+    const hit = _resourceListCache.get(cacheKey);
+    if (hit && Date.now() - hit.at < RESOURCE_LIST_TTL_MS) return { data: [...hit.v] };
+    if (hit) _resourceListCache.delete(cacheKey);
+  }
   const PER_PAGE = 100;
   const MAX_PAGES = 6; // up to 600 items — plenty for any picker
   const all: unknown[] = [];
+  // A crawl that stopped on a timeout or a vendor error returns a PARTIAL list. Serving that is
+  // fine (every consumer degrades to "fewer options"); pinning it for five minutes is not.
+  let complete = true;
   for (let page = 1; page <= MAX_PAGES; page++) {
     // Idempotent, paged read: on a deadline or a vendor error we return the pages already
     // collected rather than failing the caller — every consumer degrades to "no options" cleanly.
@@ -873,17 +1042,26 @@ export async function listAnamResource(
       }, 'read');
     } catch (err) {
       logger.warn({ kind, page, timedOut: isAnamTimeout(err) }, '[Anam] resource list aborted');
+      complete = false;
       break;
     }
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
       logger.warn({ kind, status: res.status, code: vendorCode(detail) }, '[Anam] resource list failed');
+      complete = false;
       break;
     }
     const json = (await res.json()) as { data?: unknown[]; meta?: { lastPage?: number } };
     const batch = json.data ?? [];
     all.push(...batch);
     if (batch.length < PER_PAGE || (json.meta?.lastPage != null && page >= json.meta.lastPage)) break;
+  }
+  if (complete) {
+    if (_resourceListCache.size >= RESOURCE_LIST_MAX_ENTRIES) {
+      const oldest = _resourceListCache.keys().next().value;   // insertion-ordered
+      if (oldest) _resourceListCache.delete(oldest);
+    }
+    _resourceListCache.set(cacheKey, { v: [...all], at: Date.now() });
   }
   return { data: all };
 }

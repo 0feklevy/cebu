@@ -41,9 +41,13 @@
  * round-trip at best and six at worst, i.e. always slower than fetching this chunk.
  * By the time AvatarConversation needs createClient the promise is already settled.
  *
- * Preloading a static chunk is free and side-effect-free: it mints nothing, opens
- * no session, and sends no request to Anam. Do not "preload" anything billable here.
+ * Preloading a static chunk is free and side-effect-free: it mints nothing and opens
+ * no session. As of anam-latency-007 the same warm ALSO opens the TLS connection to
+ * api.anam.ai (preconnectAnamApi) — a handshake, still no HTTP request and still
+ * nothing billable. Do not "preload" anything billable here.
  */
+
+import { preconnectAnamApi } from './anamConnectPolicy';
 
 export type AnamSdk = typeof import('@anam-ai/js-sdk');
 
@@ -62,7 +66,15 @@ export function loadAnamSdk(): Promise<AnamSdk> {
   return pending;
 }
 
-/** Fire-and-forget warm of the chunk. Safe on hover/focus/idle: no session, no mint. */
+/**
+ * Fire-and-forget warm of everything the connect will need that costs nothing: the code
+ * chunk AND the TLS handshake to the Anam API origin (anam-latency-007 — one cold
+ * DNS+TCP+TLS to a third-party origin, ~50-200ms, which was previously paid INSIDE the
+ * SDK's startSession on every first open). Both are pure latency removal: no session,
+ * no mint, no request to any of our routes, which is why hover is a safe trigger for
+ * this and not for /avatar/start.
+ */
 export function preloadAnamSdk(): void {
+  preconnectAnamApi();
   void loadAnamSdk().catch(() => { /* preload is best-effort; loadAnamSdk() will retry */ });
 }

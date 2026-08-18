@@ -220,7 +220,10 @@ export const saveMyAnamKey = (apiKey: string) =>
 // wastes a mint, not a concurrency slot: the backend creates no Anam session, the
 // SDK's startSession does, browser-side.)
 export const startAvatarSession = (characterId?: string, projectId?: string, signal?: AbortSignal) =>
-  jsonFetch<{ provider: string; sessionToken: string; characterId: string; voiceSensitivity?: number; avatarDisplay?: AvatarDisplay }>(
+  // `correlationId` is the backend's start-trace id (services/avatar/startTelemetry.ts).
+  // It is the join key between the server's phase timings and the client's — without it
+  // the two halves of a slow open cannot be lined up against each other.
+  jsonFetch<{ provider: string; sessionToken: string; characterId: string; voiceSensitivity?: number; avatarDisplay?: AvatarDisplay; correlationId?: string }>(
     '/api/v1/avatar/start',
     { method: 'POST', body: JSON.stringify({ character_id: characterId, projectId }), signal },
     true,

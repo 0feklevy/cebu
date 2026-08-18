@@ -4,6 +4,13 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Mic, MicOff, Hand, Volume2 } from 'lucide-react';
 import type { AnamClient } from '@anam-ai/js-sdk';
 import { loadAnamSdk, type AnamSdk } from './anamSdk';
+import {
+  ANAM_SESSION_START_POLICY,
+  CONNECT_WATCHDOG_MS,
+  PRIME_BUDGET_MS,
+  settleWithin,
+} from './anamConnectPolicy';
+import { beginConnectTrace, type ConnectTrace } from './connectTelemetry';
 import { characterMeta } from './characters';
 import { endAvatarSession, startAvatarSession, type AvatarDisplay } from './avatarApi';
 import { useVisualTrigger } from './hooks/useVisualTrigger';
@@ -21,6 +28,12 @@ interface Props {
   projectId?: string;
   sessionToken: string;
   display?: AvatarDisplay;
+  /**
+   * The trace AvatarPopup opened at click time. Optional so the component can still be
+   * mounted standalone (tests, future embeds); it opens its own rather than going dark,
+   * which only costs the popup->token leg of the span.
+   */
+  trace?: ConnectTrace;
   onLeave: () => void;
 }
 
@@ -51,12 +64,35 @@ const getVideoEl = () => document.getElementById(VIDEO_ELEMENT_ID) as HTMLVideoE
  * has already resolved once playback began, and the reset does not need a delay — so
  * it was 150ms of dead serial latency in front of every single connect, on the
  * slowest path in the product.
+ *
+ * BOUNDED, because the try/catch is not a bound. It catches REJECTIONS; it does
+ * nothing about a promise that simply never settles, and both of the promises awaited
+ * here can do exactly that: `audioCtx.resume()` stays pending while a UA keeps the
+ * context suspended, and `videoEl.play()` stays pending in a throttled or backgrounded
+ * tab. Either one parked this function forever, `streamToVideoElement` was then NEVER
+ * REACHED, and the viewer sat behind the spinner until the 20s watchdog fired on a
+ * session that had never been opened. One shared deadline covers both steps, so the
+ * whole prime can cost at most PRIME_BUDGET_MS; the srcObject reset then always runs,
+ * which matters because a reset left pending would otherwise land AFTER the SDK
+ * attached the real stream and wipe it.
+ *
+ * ON THE "USER ACTIVATION" JUSTIFICATION ABOVE: it does not hold on this path today.
+ * AvatarPopup renders this component only once the session token has arrived
+ * (AvatarPopup.tsx, `!token ? <spinner> : <AvatarConversation/>`), so the prime runs a
+ * full backend round trip — one vendor call plus two DB reads — after the click, while
+ * Chrome's transient activation window is 5s. The prime is therefore best-effort in
+ * the strictest sense, and attemptAudiblePlayback() plus the "Tap to enable sound"
+ * control remain the actual guarantee. Moving it ahead of the token fetch is not a
+ * matter of reordering two lines: the element it primes, <video id="anam-avatar-video">,
+ * is rendered by THIS component, which does not exist until the token does.
  */
 async function primeVideoElementForAutoplay(): Promise<void> {
+  const deadline = Date.now() + PRIME_BUDGET_MS;
+  const remaining = () => Math.max(0, deadline - Date.now());
   try {
     const ACtx = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     const audioCtx = new ACtx();
-    await audioCtx.resume();
+    await settleWithin(Promise.resolve(audioCtx.resume()), remaining());
     const dest = audioCtx.createMediaStreamDestination();
     const osc = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
@@ -65,7 +101,7 @@ async function primeVideoElementForAutoplay(): Promise<void> {
     const videoEl = getVideoEl();
     if (videoEl) {
       videoEl.srcObject = dest.stream;
-      await videoEl.play().catch(() => {});
+      await settleWithin(Promise.resolve(videoEl.play()).catch(() => {}), remaining());
       videoEl.srcObject = null;
     }
     osc.stop(); audioCtx.close();
@@ -73,10 +109,22 @@ async function primeVideoElementForAutoplay(): Promise<void> {
 }
 
 // Mic-only port of darwin-avatar/client/src/components/AnamConversationView.tsx.
-export function AvatarConversation({ characterId, projectId, sessionToken, display, onLeave }: Props) {
+export function AvatarConversation({ characterId, projectId, sessionToken, display, trace, onLeave }: Props) {
   const character = characterMeta(characterId, display);
   const clientRef = useRef<AnamClient | null>(null);
   const leftRef = useRef(false);
+
+  const traceRef = useRef<ConnectTrace | null>(null);
+  if (traceRef.current === null) traceRef.current = trace ?? beginConnectTrace();
+  const tr = traceRef.current;
+
+  /**
+   * Whether the SDK's connect promise has settled. `streamToVideoElement` awaits
+   * `startSessionIfNeeded` (AnamClient.js:271) and then starts the peer connection, so
+   * a settled promise means a session genuinely exists — which is exactly the fact the
+   * watchdog needs in order to describe the failure instead of guessing at it.
+   */
+  const connectSettledRef = useRef(false);
 
   const [micMuted, setMicMuted] = useState(false);
   const [interrupted, setInterrupted] = useState(false);
@@ -119,15 +167,36 @@ export function AvatarConversation({ characterId, projectId, sessionToken, displ
   const memoryRef = useRef(memory);
   useEffect(() => { memoryRef.current = memory; }, [memory]);
 
-  // Connection watchdog — if the avatar video hasn't started within ~20s (e.g. the
-  // engine WebSocket failed), surface a clear error + retry instead of hanging.
+  // ── Connection watchdog ───────────────────────────────────────────────────
+  // The bounded failure path: if no frame has been presented within
+  // CONNECT_WATCHDOG_MS, stop hanging and offer a retry.
+  //
+  // It no longer names a cause. The old copy blamed "the Anam engine WebSocket" and
+  // offered "an active session still holding your concurrency slot" — a diagnosis this
+  // component cannot make, and one the reconciliation refuted. Worse, it was usually
+  // the WRONG one and it was FIRST: a genuine concurrency failure surfaces by its own
+  // path (CoreApiRestClient throws ClientError 429 "Concurrency limit reached", which
+  // streamToVideoElement rethrows straight into setJoinError below), but under the
+  // vendor's default retry policy the SDK's worst case was 30,750ms against this 20s
+  // timer, so the guess reliably beat the real error to the screen and sent anyone
+  // debugging down a dead end. ANAM_SESSION_START_POLICY now fits inside this window,
+  // which is the change that actually lets the true error win the race.
+  //
+  // What is left is the one thing the client does know: which half of the connect it is
+  // stuck in.
   useEffect(() => {
     if (videoStarted) return;
     const t = setTimeout(() => {
-      if (!leftRef.current) setJoinError('Could not connect to the avatar — the Anam engine WebSocket failed (network, an active session still holding your concurrency slot, or an invalid persona). Please try again.');
-    }, 20_000);
+      if (leftRef.current) return;
+      const settled = connectSettledRef.current;
+      tr.mark('watchdog', { connectSettled: settled });
+      const seconds = Math.round(CONNECT_WATCHDOG_MS / 1000);
+      setJoinError(settled
+        ? `Could not start the avatar — the session opened, but no video arrived within ${seconds} seconds. Please try again.`
+        : `Could not start the avatar — Anam did not complete the connection within ${seconds} seconds, and reported no error. Please try again.`);
+    }, CONNECT_WATCHDOG_MS);
     return () => clearTimeout(t);
-  }, [videoStarted]);
+  }, [videoStarted, tr]);
 
   // Auto-visual: every 2.5s, if 10s elapsed since last visual while the avatar is still talking.
   useEffect(() => {
@@ -163,11 +232,17 @@ export function AvatarConversation({ characterId, projectId, sessionToken, displ
   // requestVideoFrameCallback presentation are the two signals that mean pixels moved.
   const evidenceCleanupRef = useRef<(() => void) | null>(null);
 
+  /** The one number the whole audit is about: a frame was demonstrably presented. */
+  const markFirstFrame = useCallback(() => {
+    tr.mark('first-frame');
+    setVideoStarted(true);
+  }, [tr]);
+
   const armFrameEvidence = useCallback(() => {
     const el = getVideoEl();
     if (!el) return;
     evidenceCleanupRef.current?.();
-    const settle = () => { evidenceCleanupRef.current?.(); setVideoStarted(true); };
+    const settle = () => { evidenceCleanupRef.current?.(); markFirstFrame(); };
     el.addEventListener('playing', settle);
     // Firefox ships neither request- nor cancelVideoFrameCallback (they are typed but
     // absent at runtime), so `playing` is the only evidence there — which is why both
@@ -180,7 +255,7 @@ export function AvatarConversation({ characterId, projectId, sessionToken, displ
       el.removeEventListener('playing', settle);
       if (handle !== undefined && typeof el.cancelVideoFrameCallback === 'function') el.cancelVideoFrameCallback(handle);
     };
-  }, []);
+  }, [markFirstFrame]);
 
   // ── Audible playback, explicitly ──────────────────────────────────────────
   // Nobody else does this: @anam-ai/js-sdk 4.15.0 assigns srcObject once
@@ -226,7 +301,7 @@ export function AvatarConversation({ characterId, projectId, sessionToken, displ
     client.addListener(AnamEvent.VIDEO_PLAY_STARTED, () => {
       // The SDK's own requestVideoFrameCallback — a genuinely presented frame.
       evidenceCleanupRef.current?.();
-      setVideoStarted(true);
+      markFirstFrame();
       setTimeout(() => { memoryRef.current.inject(client as unknown as { addContext?: (s: string) => void; isStreaming?: () => boolean }); }, 3000);
     });
     client.addListener(AnamEvent.VIDEO_STREAM_STARTED, () => {
@@ -289,7 +364,7 @@ export function AvatarConversation({ characterId, projectId, sessionToken, displ
         }).catch(() => {});
       }, 1000);
     });
-  }, [onLeave, armFrameEvidence, attemptAudiblePlayback]);
+  }, [onLeave, armFrameEvidence, attemptAudiblePlayback, markFirstFrame]);
 
   useEffect(() => {
     // React StrictMode (Next dev) mounts effects twice. Without this guard the
@@ -310,23 +385,39 @@ export function AvatarConversation({ characterId, projectId, sessionToken, displ
       try {
         sdk = await loadAnamSdk();
       } catch {
+        tr.mark('connect-failed', { at: 'sdk-load' });
         if (!cancelled) setJoinError('Could not load the avatar player. Please check your connection and try again.');
         return;
       }
       if (cancelled) return; // StrictMode threw away this mount — don't open a session
+      tr.mark('sdk-loaded');
 
       // v4 non-legacy construction: the persona is baked into the session token by the backend
       // (anamService.getSessionToken), so NEVER pass a personaConfig here — the SDK would then
       // error "This session token already contains a persona configuration". The "Legacy session
       // tokens are no longer supported" error is a BACKEND token-shape problem (a persona without
       // an llmId), fixed server-side — not here.
-      const client = sdk.createClient(sessionToken, { voiceDetection: { endOfSpeechSensitivity: character.voiceSensitivity } });
+      // `api` is NOT decoration: without it the SDK's own defaults apply — 3 attempts of
+      // 10s with jittered backoff — and its worst case (30,750ms) outlives this
+      // component's 20s watchdog, so the vendor's real error could never reach the
+      // screen. See anamConnectPolicy.ts for the arithmetic and the choice of numbers.
+      const client = sdk.createClient(sessionToken, {
+        voiceDetection: { endOfSpeechSensitivity: character.voiceSensitivity },
+        api: ANAM_SESSION_START_POLICY,
+      });
       clientRef.current = client;
       attachListeners(client, sdk.AnamEvent);
 
       await primeVideoElementForAutoplay();
       if (cancelled) return;
-      client.streamToVideoElement(VIDEO_ELEMENT_ID).catch((err: Error) => setJoinError(err.message ?? 'Failed to start avatar stream'));
+      tr.mark('primed');
+      tr.mark('connect-started');
+      client.streamToVideoElement(VIDEO_ELEMENT_ID)
+        .then(() => { connectSettledRef.current = true; tr.mark('connect-settled'); })
+        .catch((err: Error) => {
+          tr.mark('connect-failed', { at: 'stream' });
+          setJoinError(err.message ?? 'Failed to start avatar stream');
+        });
     })();
 
     return () => {
@@ -357,13 +448,21 @@ export function AvatarConversation({ characterId, projectId, sessionToken, displ
       const sdk = await loadAnamSdk(); // already resolved — the chunk was fetched on the first connect
       const data = await startAvatarSession(characterId, projectId);
       if (!data.sessionToken) throw new Error('No session token');
-      const newClient = sdk.createClient(data.sessionToken, { voiceDetection: { endOfSpeechSensitivity: data.voiceSensitivity ?? character.voiceSensitivity } });
+      const newClient = sdk.createClient(data.sessionToken, {
+        voiceDetection: { endOfSpeechSensitivity: data.voiceSensitivity ?? character.voiceSensitivity },
+        // The reconnect is the path a viewer reaches after something has ALREADY gone
+        // wrong; it is the last place that should be running on an unbounded default.
+        api: ANAM_SESSION_START_POLICY,
+      });
       clientRef.current = newClient;
       leftRef.current = false;
+      connectSettledRef.current = false;
       setLostConnection(false);
       setVideoStarted(false);
       attachListeners(newClient, sdk.AnamEvent);
-      newClient.streamToVideoElement(VIDEO_ELEMENT_ID).catch((err: Error) => { setJoinError(err.message ?? 'Reconnect failed'); setLostConnection(false); });
+      newClient.streamToVideoElement(VIDEO_ELEMENT_ID)
+        .then(() => { connectSettledRef.current = true; })
+        .catch((err: Error) => { setJoinError(err.message ?? 'Reconnect failed'); setLostConnection(false); });
     } catch {
       setJoinError('Reconnect failed. Please close and try again.');
       setLostConnection(false);
