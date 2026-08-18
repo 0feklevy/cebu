@@ -116,8 +116,16 @@ export function ViewerPage({ projectId }: Props) {
           setProcessing(false);
           // KEEP POLLING while anything is still transcoding. Stop only when every segment has
           // reached a terminal state — ready, failed, or carrying a fallback.
+          //
+          // The time bound must SURFACE, not just stop. A first draft of this fix simply called
+          // `stop()` after PROCESSING_LIMIT_MS, which put a long transcode — perfectly ordinary
+          // for a long video — straight back into the silent freeze this whole change exists to
+          // remove: the poll dies, the later segment never arrives, and the viewer hits the
+          // boundary with no spinner, no message and nothing to click. An adversarial reviewer
+          // caught it. Giving up quietly is the bug; giving up loudly is a decision the viewer
+          // can act on.
           if (pending.length === 0) stop();
-          else if (Date.now() - startedAt >= PROCESSING_LIMIT_MS) stop();
+          else if (Date.now() - startedAt >= PROCESSING_LIMIT_MS) { setStalled(true); stop(); }
         } else {
           setProcessing(true);
           if (Date.now() - startedAt >= PROCESSING_LIMIT_MS) { setStalled(true); stop(); }

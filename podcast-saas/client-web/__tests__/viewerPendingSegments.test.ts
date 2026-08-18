@@ -18,10 +18,9 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const SRC = readFileSync(
-  resolve(dirname(fileURLToPath(import.meta.url)), '../components/viewer/ViewerPage.tsx'),
-  'utf-8',
-);
+const HERE = dirname(fileURLToPath(import.meta.url));
+const SRC = readFileSync(resolve(HERE, '../components/viewer/ViewerPage.tsx'), 'utf-8');
+const SHARED_SRC = readFileSync(resolve(HERE, '../components/viewer/SharedViewerPage.tsx'), 'utf-8');
 
 type Seg = { hls_status?: string | null; fallback_url?: string | null };
 
@@ -66,5 +65,20 @@ describe('the viewer keeps polling while later segments are still transcoding', 
     expect(code).toMatch(/if \(pending\.length === 0\) stop\(\);/);
     // And readiness must no longer be a bare project-wide `some`.
     expect(code).not.toMatch(/const hasReady = data\.segments\.some/);
+  });
+
+  it('gives up LOUDLY when the time bound is reached, never silently', () => {
+    // A first draft called `stop()` bare after PROCESSING_LIMIT_MS, which put a long transcode —
+    // ordinary for a long video — straight back into the silent freeze this change removes.
+    const code = SRC.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    expect(code).toMatch(/PROCESSING_LIMIT_MS\) \{ setStalled\(true\); stop\(\); \}/);
+  });
+
+  it('SharedViewerPage carries the SAME rule — a shared link is how this bug is met', () => {
+    // The two surfaces had diverged after only one was fixed, and the shared link is precisely
+    // how a lecture gets watched while a later video is still transcoding.
+    const code = SHARED_SRC.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    expect(code).toMatch(/if \(pending\.length === 0\) stop\(\);/);
+    expect(code).not.toMatch(/const hasReady\s*=\s*data\.segments\.some/);
   });
 });
