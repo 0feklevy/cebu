@@ -107,7 +107,7 @@ step "4/9 Lint (all workspaces, non-interactive)"; pnpm -r lint; ok "lint"
 # 10-core host ask for ~9 workers each, ~36 threads on 10 cores. No single suite is oversubscribed
 # from its own point of view, which is why it went unnoticed from inside one; the symptom was
 # tests timing out with passing assertions. 2 per suite is the budget for the one caller that runs
-# them concurrently (see ../../vitest.workers.mjs); a standalone workspace run keeps the larger
+# them concurrently (see ../../shared/vitest.workers.mjs); a standalone workspace run keeps the larger
 # default rather than being crippled to protect this case.
 step "5/9 Tests"; VITEST_MAX_WORKERS="${VITEST_MAX_WORKERS:-2}" pnpm -r test; ok "tests"
 

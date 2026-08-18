@@ -1,5 +1,5 @@
 import { defineConfig } from 'vitest/config';
-import { maxTestWorkers } from '../vitest.workers.mjs';
+import { maxTestWorkers } from './vitest.workers.mjs';
 
 /**
  * `shared` had no test runner at all until now, so `pnpm -r test` walked straight past it and the
@@ -39,7 +39,7 @@ export default defineConfig({
     // more than this, the test is doing something that belongs in backend-api or in Playwright.
     testTimeout: 20_000,
     // Bounded so `pnpm -r test` (release:verify) cannot ask four suites for the whole machine
-    // each — see ../vitest.workers.mjs for the arithmetic and why it is half, not all.
+    // each — see shared/vitest.workers.mjs for the arithmetic and why it is half, not all.
     maxWorkers: maxTestWorkers(),
     hookTimeout: 20_000,
     include: ['src/**/__tests__/**/*.test.ts'],
