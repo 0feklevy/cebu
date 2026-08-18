@@ -57,6 +57,17 @@
   position: absolute; left: 14px; bottom: 14px; padding: 5px 12px; border-radius: 999px;
   background: rgba(0,0,0,0.5); color: #fff; font-size: 12px; font-weight: 600; backdrop-filter: blur(6px);
 }
+/* Shown only while the browser's autoplay policy has forced muted playback. One
+   click restores audio; it disappears the moment it succeeds. */
+.avatar-enable-audio {
+  position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+  display: inline-flex; align-items: center; gap: 8px; padding: 9px 18px; border-radius: 999px;
+  border: 1px solid rgba(129,140,248,0.55); background: rgba(10,12,20,0.82); color: #eef2ff;
+  font-size: 13px; font-weight: 600; cursor: pointer; backdrop-filter: blur(8px);
+  box-shadow: 0 10px 26px rgba(0,0,0,0.45);
+}
+.avatar-enable-audio:hover { background: rgba(30,34,54,0.92); border-color: rgba(129,140,248,0.85); }
+.avatar-enable-audio:focus-visible { outline: 2px solid #818cf8; outline-offset: 2px; }
 .avatar-warning {
   position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 20;
   background: rgba(232,119,98,0.92); color: #fff; padding: 6px 16px; border-radius: 8px; font-size: 13px; max-width: 360px; text-align: center;
