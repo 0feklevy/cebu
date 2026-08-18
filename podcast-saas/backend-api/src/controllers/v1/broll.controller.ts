@@ -9,24 +9,36 @@ import { enqueueJob } from '../../queue/index.js';
 import { rateLimit } from '../../lib/rateLimit.js';
 import { assertGenerationAllowed } from '../../services/llm/systemAi.js';
 import { moderateGenerationInput } from '../../services/llm/ContentModerationService.js';
-import { AppError } from 'shared';
+import { AppError, MAX_TIMELINE_SEC, timelineSectionViolations } from 'shared';
 import { logger } from '../../lib/logger.js';
 
 const ALLOWED_MODELS = ['kling', 'veo'] as const;
+
+/**
+ * A position on the timeline, in seconds.
+ *
+ * `.finite()` is the load-bearing word. `z.number()` accepts Infinity, and `JSON.parse('1e400')`
+ * IS Infinity — so `z.number().min(0)`, which is what these fields used to be, waved an infinite
+ * offset straight through (`Infinity >= 0`), past the interval guard, and into a Postgres `real`
+ * column, which stores infinities without complaint. The upper bound is the same 24 h ceiling the
+ * shared row rules use, so this endpoint and the generic sections endpoint agree on what a
+ * plausible time is.
+ */
+const zTimelineSeconds = z.number().finite().min(0).max(MAX_TIMELINE_SEC);
 
 const GenerateBodySchema = z.object({
   prompt: z.string().min(1).max(500),
   model: z.enum(ALLOWED_MODELS).default('kling'),
   enhance: z.boolean().default(true),
-  target_duration_sec: z.number().min(4).max(15),
-  target_global_offset_sec: z.number().min(0),
+  target_duration_sec: z.number().finite().min(4).max(15),
+  target_global_offset_sec: zTimelineSeconds,
 });
 
 const InsertExistingSchema = z.object({
   video_file_id: z.string().uuid(),
-  global_offset_sec: z.number().min(0),
-  start_sec: z.number().min(0).default(0),
-  end_sec: z.number().min(0).optional(),
+  global_offset_sec: zTimelineSeconds,
+  start_sec: zTimelineSeconds.default(0),
+  end_sec: zTimelineSeconds.optional(),
 });
 
 export async function registerBrollRoutes(app: FastifyInstance): Promise<void> {
@@ -161,14 +173,12 @@ export async function registerBrollRoutes(app: FastifyInstance): Promise<void> {
       });
       if (!videoFile) return reply.code(404).send({ message: 'Video not found' });
 
-      // Determine end_sec: use provided value or full video duration
+      // Determine end_sec: use provided value or full video duration. `duration_sec` is
+      // client-seeded on upload and only later overwritten by ffprobe, so it is not necessarily a
+      // sane number yet — which is why the row is checked below rather than trusted here.
       const end_sec = body.data.end_sec ?? (videoFile.duration_sec ?? 30);
 
-      if (start_sec >= end_sec) {
-        return reply.code(400).send({ message: 'start_sec must be less than end_sec' });
-      }
-
-      const [section] = await db.insert(timeline_sections).values({
+      const row = {
         project_id: project.id,
         video_file_id,
         start_sec,
@@ -177,7 +187,18 @@ export async function registerBrollRoutes(app: FastifyInstance): Promise<void> {
         label: videoFile.filename,
         track: 'broll',
         global_offset_sec,
-      }).returning();
+      };
+
+      // The census credits this endpoint with being able to produce exactly ONE shape — a true
+      // b-roll with a real position — which is what lets a malformed row in the wild be attributed
+      // to the generic sections API instead. Checking the row against the SHARED rule set makes
+      // that a guarantee rather than a reading of the code, and one that cannot drift away from the
+      // definition the player and the sections endpoints use. It subsumes the hand-rolled
+      // `start_sec >= end_sec` guard this replaces.
+      const violations = timelineSectionViolations(row);
+      if (violations.length > 0) return reply.code(400).send({ message: violations[0]!.message });
+
+      const [section] = await db.insert(timeline_sections).values(row).returning();
 
       return reply.code(201).send(section);
     },

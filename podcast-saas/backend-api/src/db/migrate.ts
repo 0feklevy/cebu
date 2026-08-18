@@ -1,6 +1,34 @@
 /**
  * Forward-only migration runner.
  *
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════
+ * DEPLOY PREREQUISITE — `MIGRATION_DATABASE_URL` MUST BE A SESSION-MODE ENDPOINT
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * Set `MIGRATION_DATABASE_URL` to Supabase's DIRECT connection or its SESSION-mode pooler
+ * (port 5432). NOT the transaction pooler (port 6543). A deploy that has not done this now FAILS
+ * FAST, before any DDL, with an error naming the variable — see `resolveMigrationUrl` below.
+ *
+ * WHY THIS IS A PREREQUISITE AND NOT A PREFERENCE. This runner serializes concurrent deploys with
+ * a SESSION-level advisory lock (`pg_advisory_lock`). A session-level lock is owned by ONE Postgres
+ * BACKEND and lives until that backend's session ends. Through a TRANSACTION pooler, a client
+ * connection is not a backend session: the pooler hands each transaction whichever backend happens
+ * to be free and returns it to the pool at COMMIT. So `postgres(url, { max: 1 })` pins one
+ * connection to the POOLER — it does not pin a Postgres backend. `pg_advisory_lock` can then be
+ * taken in one backend while the migrations run in another, and the unlock can miss a third.
+ *
+ * That failure is SILENT. `SELECT pg_advisory_lock(...)` returns successfully; the lock is real;
+ * it simply does not guard the thing it was meant to guard. Two concurrent deploys would each
+ * believe they held it, and could apply the same file at the same time — which is exactly the
+ * `CREATE TABLE IF NOT EXISTS schema_migrations` race, and every duplicate-DDL race after it, that
+ * the lock exists to prevent. There is no error to notice and nothing in the logs to read. The
+ * runner therefore refuses to start rather than proceed with a lock that does not lock.
+ *
+ * The documented `DATABASE_URL` for this deployment goes through the transaction pooler on 6543
+ * (deploy/.env.example and deploy/README.md both describe that layout), which is why defaulting to
+ * it was the defect and why the resolver below no longer treats it as good enough on its own.
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════
+ *
  * Every migration file and its `schema_migrations` tracker row are written inside ONE explicit
  * transaction, so the two can never disagree: either the schema change and the "I ran this" record
  * both land, or neither does and the next run retries the file.
@@ -14,7 +42,8 @@
  *
  * Three further guarantees:
  *   • a session-level ADVISORY LOCK serializes runners, so two concurrent deploys cannot race
- *     each other (nor race on `CREATE TABLE IF NOT EXISTS schema_migrations` itself);
+ *     each other (nor race on `CREATE TABLE IF NOT EXISTS schema_migrations` itself) — but ONLY on
+ *     a session-mode endpoint, which is what the DEPLOY PREREQUISITE above is about;
  *   • a CHECKSUM per applied file turns "somebody edited an already-applied migration" from an
  *     invisible divergence into a hard, named failure. Never edit an applied migration — if the
  *     schema needs repair, the answer is a NEW migration;
@@ -34,7 +63,7 @@ import { logger } from '../lib/logger.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const migrations = ['001_initial.sql', '002_audio_scenes.sql', '003_document_type.sql', '004_video_editor.sql', '005_hls_transcoding.sql', '006_hls_tier_progress.sql', '007_waveform_peaks.sql', '008_simulations.sql', '009_section_sim_ref.sql', '010_broll_generation.sql', '011_sim_prompt.sql', '012_broll_source_flag.sql', '013_sim_meta.sql', '014_clip_source.sql', '015_bridge_plan_prompt.sql', '016_share_token.sql', '017_broll_audio.sql', '018_image_clips.sql', '019_guidance.sql', '020_audio_files.sql', '021_playlists.sql', '022_smart_crop.sql', '023_playlist_banners.sql', '024_billing.sql', '025_video_metadata.sql', '026_crop_updated_at.sql', '027_view_counts.sql', '028_avatar.sql', '029_avatar_persona.sql', '030_course_publishing.sql', '031_captions.sql', '032_course_publishing_hardening.sql', '033_captions_vtt.sql', '034_project_seo.sql', '035_project_delete_cascade.sql', '036_project_visibility.sql', '037_branching.sql', '038_branch_analytics.sql', '039_perf_indexes.sql', '040_generation_limit.sql', '041_timeline_markers.sql', '042_collaborators.sql', '043_permalink_slugs.sql', '044_podcast_studio.sql', '045_podcast_audio_studio.sql', '046_token_usage_cost_precision.sql', '047_complex_model_opus.sql', '048_sim_pool_mode.sql', '049_sim_posters.sql', '050_sim_revisions.sql', '051_sim_rum.sql', '052_sim_scheduler.sql', '053_hls_retired_runs.sql', '054_sim_transition_coordinator.sql', '055_sim_bridge_ack_capable.sql', '056_project_duplication.sql', '057_sim_requires_import_maps.sql', '058_project_exports.sql', '059_export_degradation_policy.sql', '060_export_plan_snapshot.sql', '061_export_progress.sql'];
+const migrations = ['001_initial.sql', '002_audio_scenes.sql', '003_document_type.sql', '004_video_editor.sql', '005_hls_transcoding.sql', '006_hls_tier_progress.sql', '007_waveform_peaks.sql', '008_simulations.sql', '009_section_sim_ref.sql', '010_broll_generation.sql', '011_sim_prompt.sql', '012_broll_source_flag.sql', '013_sim_meta.sql', '014_clip_source.sql', '015_bridge_plan_prompt.sql', '016_share_token.sql', '017_broll_audio.sql', '018_image_clips.sql', '019_guidance.sql', '020_audio_files.sql', '021_playlists.sql', '022_smart_crop.sql', '023_playlist_banners.sql', '024_billing.sql', '025_video_metadata.sql', '026_crop_updated_at.sql', '027_view_counts.sql', '028_avatar.sql', '029_avatar_persona.sql', '030_course_publishing.sql', '031_captions.sql', '032_course_publishing_hardening.sql', '033_captions_vtt.sql', '034_project_seo.sql', '035_project_delete_cascade.sql', '036_project_visibility.sql', '037_branching.sql', '038_branch_analytics.sql', '039_perf_indexes.sql', '040_generation_limit.sql', '041_timeline_markers.sql', '042_collaborators.sql', '043_permalink_slugs.sql', '044_podcast_studio.sql', '045_podcast_audio_studio.sql', '046_token_usage_cost_precision.sql', '047_complex_model_opus.sql', '048_sim_pool_mode.sql', '049_sim_posters.sql', '050_sim_revisions.sql', '051_sim_rum.sql', '052_sim_scheduler.sql', '053_hls_retired_runs.sql', '054_sim_transition_coordinator.sql', '055_sim_bridge_ack_capable.sql', '056_project_duplication.sql', '057_sim_requires_import_maps.sql', '058_project_exports.sql', '059_export_degradation_policy.sql', '060_export_plan_snapshot.sql', '061_export_progress.sql', '062_broll_idempotency.sql'];
 
 /** The ordered list of migration files the runner applies. */
 export const MIGRATION_FILES: readonly string[] = migrations;
@@ -64,6 +93,149 @@ export const MIGRATION_LOCK_KEY = 4867221936;
  * implies. If a migration ever genuinely needs it, that is the work to do, and the escape hatch
  * should apply to a file holding that statement and nothing else.
  */
+
+// ── Which database the runner connects to (the DEPLOY PREREQUISITE, enforced) ─────────────────
+
+/** Supabase's transaction pooler. The one port this runner will not migrate through. */
+export const TRANSACTION_POOLER_PORT = '6543';
+
+/** Used only when nothing is configured at all — i.e. a developer's local Postgres. */
+export const DEFAULT_LOCAL_MIGRATION_URL = 'postgresql://postgres:postgres@localhost:5432/podcast_saas';
+
+/** Where a migration connection string may come from, in order of preference. */
+export type MigrationUrlSource =
+  | 'MIGRATION_DATABASE_URL'
+  | 'QUEUE_DATABASE_URL'
+  | 'DATABASE_URL'
+  | 'default';
+
+export interface ResolvedMigrationUrl {
+  url: string;
+  source: MigrationUrlSource;
+  /**
+   * Set whenever the URL did NOT come from `MIGRATION_DATABASE_URL`. The runner logs it at WARN,
+   * so a fallback is always something an operator can see in the deploy output — never a silent
+   * default that happens to work until it doesn't.
+   */
+  fallbackNote?: string;
+}
+
+/**
+ * Name the reason this connection string is transaction-pooled, or return null.
+ *
+ * DELIBERATELY NOT A HOSTNAME TEST. `*.pooler.supabase.com` serves BOTH modes — transaction on
+ * 6543 and SESSION on 5432 — and the session pooler is precisely what deploy/README.md instructs
+ * operators to point `QUEUE_DATABASE_URL` at, because pg-boss needs advisory locks for the same
+ * reason this runner does. Rejecting the host would reject the documented-correct configuration.
+ * The PORT (and the pooling parameters some tools append) is the signal that actually discriminates.
+ *
+ * An unparseable string is not judged: the driver will produce a better error about it than a
+ * guess from here would, and refusing to migrate over a URL we could not even read would turn a
+ * typo into a mystery.
+ */
+export function describeTransactionPooler(raw: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (parsed.port === TRANSACTION_POOLER_PORT) {
+    return `it connects on port ${TRANSACTION_POOLER_PORT}, which is Supabase's TRANSACTION pooler`;
+  }
+  const params = parsed.searchParams;
+  if ((params.get('pgbouncer') ?? '').toLowerCase() === 'true') {
+    return 'it carries `pgbouncer=true`, which names a transaction-pooled endpoint';
+  }
+  const poolMode = (params.get('pool_mode') ?? '').toLowerCase();
+  if (poolMode === 'transaction' || poolMode === 'statement') {
+    return `it carries \`pool_mode=${poolMode}\`, which is not a session-mode endpoint`;
+  }
+  return null;
+}
+
+function assertSessionMode(resolved: ResolvedMigrationUrl): ResolvedMigrationUrl {
+  const reason = describeTransactionPooler(resolved.url);
+  if (reason === null) return resolved;
+  throw new Error(
+    `Refusing to run migrations through a transaction pooler.\n` +
+      `  Connection string resolved from: ${resolved.source}\n` +
+      `  Why it was rejected: ${reason}.\n\n` +
+      `This runner serializes concurrent deploys with a SESSION-level advisory lock. A transaction ` +
+      `pooler hands each transaction whichever backend is free, so \`max: 1\` pins a POOLER ` +
+      `connection rather than a Postgres backend — the lock can be taken in one backend while the ` +
+      `migrations run in another. Nothing would error; the lock would simply serialize nothing, and ` +
+      `two concurrent deploys could apply the same file at the same time.\n\n` +
+      `Fix: set MIGRATION_DATABASE_URL to the DIRECT connection or the SESSION-mode pooler ` +
+      `(port 5432). Leave DATABASE_URL on :${TRANSACTION_POOLER_PORT} if the web tier wants it — ` +
+      `only the migration runner needs the session-mode endpoint. Nothing has been applied.`,
+  );
+}
+
+function present(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
+/**
+ * Choose the connection string the migration runner will use, and refuse a transaction pooler.
+ *
+ * Preference order, each step explicit rather than implied:
+ *
+ *   1. `MIGRATION_DATABASE_URL` — the intended answer. One variable whose only job is this, so a
+ *      deployment can move the web tier onto the transaction pooler without moving migrations.
+ *   2. `QUEUE_DATABASE_URL` — an accepted fallback, because the deploy contract ALREADY requires
+ *      this one to be session-mode: pg-boss uses LISTEN/NOTIFY and advisory locks, and
+ *      deploy/.env.example, deploy/README.md and queue/pgBoss.ts all say to point it at the
+ *      `:5432` session pooler or the direct connection. That is a verified property of the
+ *      variable's contract, not an assumption about a given deployment's value — and the check
+ *      below re-verifies the actual value anyway.
+ *   3. `DATABASE_URL` — last resort, and the one most likely to be the transaction pooler. Kept so
+ *      that single-endpoint deployments and local development keep working; it is checked exactly
+ *      as strictly as the others, so a 6543 value fails here instead of migrating unserialized.
+ *   4. A local default, for a developer who has configured nothing.
+ *
+ * Every branch runs through `assertSessionMode`. There is no path that skips the check.
+ */
+export function resolveMigrationUrl(env: NodeJS.ProcessEnv = process.env): ResolvedMigrationUrl {
+  const explicit = present(env.MIGRATION_DATABASE_URL);
+  if (explicit) {
+    return assertSessionMode({ url: explicit, source: 'MIGRATION_DATABASE_URL' });
+  }
+
+  const queue = present(env.QUEUE_DATABASE_URL);
+  if (queue) {
+    return assertSessionMode({
+      url: queue,
+      source: 'QUEUE_DATABASE_URL',
+      fallbackNote:
+        'MIGRATION_DATABASE_URL is unset — falling back to QUEUE_DATABASE_URL, which the deploy ' +
+        'contract already requires to be a session-mode or direct endpoint (pg-boss needs advisory ' +
+        'locks too). Set MIGRATION_DATABASE_URL to make the migration endpoint explicit.',
+    });
+  }
+
+  const app = present(env.DATABASE_URL);
+  if (app) {
+    return assertSessionMode({
+      url: app,
+      source: 'DATABASE_URL',
+      fallbackNote:
+        'Neither MIGRATION_DATABASE_URL nor QUEUE_DATABASE_URL is set — falling back to ' +
+        'DATABASE_URL. That is only safe while DATABASE_URL is a session-mode or direct endpoint; ' +
+        'the moment the web tier moves to the transaction pooler this deploy will (correctly) fail. ' +
+        'Set MIGRATION_DATABASE_URL now.',
+    });
+  }
+
+  return assertSessionMode({
+    url: DEFAULT_LOCAL_MIGRATION_URL,
+    source: 'default',
+    fallbackNote:
+      'No database URL is configured — using the local development default. This is never the ' +
+      'right answer in a deployed environment.',
+  });
+}
 
 /** A minimal driver seam: satisfied by postgres.js in production and by PGlite in the tests. */
 export interface MigrationClient {
@@ -245,8 +417,11 @@ async function runLocked(
  * Apply every pending migration. Serialized against other runners by a session-level advisory
  * lock, so concurrent deploys queue instead of racing.
  *
- * The lock MUST be held on a single session for its whole lifetime; the production client is
- * therefore configured with `max: 1`.
+ * The lock MUST be held on a single Postgres BACKEND SESSION for its whole lifetime. Two things
+ * are required for that, and `max: 1` alone is only the first:
+ *   • the client keeps one connection (`max: 1`), and
+ *   • that connection IS a backend session — i.e. a direct or session-mode endpoint, which
+ *     `resolveMigrationUrl` enforces. See the DEPLOY PREREQUISITE at the top of this file.
  */
 export async function runMigrations(opts: RunMigrationsOptions): Promise<MigrationRunSummary> {
   const { client } = opts;
@@ -281,10 +456,25 @@ export function postgresMigrationClient(sql: ReturnType<typeof postgres>): Migra
 }
 
 async function migrateCli(): Promise<void> {
-  const connectionString =
-    process.env.DATABASE_URL ?? 'postgresql://postgres:postgres@localhost:5432/podcast_saas';
+  // Resolve BEFORE connecting. A transaction-pooled URL throws here, so the deploy fails with a
+  // named variable and an explanation instead of running unserialized migrations that look fine.
+  let resolved: ResolvedMigrationUrl;
+  try {
+    resolved = resolveMigrationUrl(process.env);
+  } catch (err) {
+    logger.error({ err }, 'Migration aborted before connecting — no migrations were applied');
+    process.exit(1);
+    return;
+  }
+  if (resolved.fallbackNote) {
+    logger.warn({ source: resolved.source }, resolved.fallbackNote);
+  }
+  logger.info({ source: resolved.source }, 'Migration connection resolved');
+
   // max: 1 is load-bearing — the advisory lock and every BEGIN/COMMIT must be on ONE session.
-  const sql = postgres(connectionString, { max: 1 });
+  // It is only sufficient BECAUSE `resolveMigrationUrl` has guaranteed a session-mode endpoint:
+  // through a transaction pooler, one client connection is not one Postgres backend.
+  const sql = postgres(resolved.url, { max: 1 });
 
   let failed = false;
   try {

@@ -661,6 +661,25 @@ export const timeline_sections = pgTable('timeline_sections', {
   camera_movement: text('camera_movement').notNull().default('zoom_in'),
   // Audio-only cutaway (migration 020) — broll section backed by uploaded audio file
   clip_source_audio_id: uuid('clip_source_audio_id').references(() => audio_files.id, { onDelete: 'set null' }),
+  // Which b-roll GENERATION produced this row (migration 062). NULL for every hand-made section.
+  //
+  // This is the idempotency key of the generation pipeline, not a display field: a `video_generate`
+  // job is delivered at least once (pg-boss retries, startup re-drive), and without a key on the
+  // section a retry simply appended a second overlay at the same offset. SET NULL so deleting the
+  // finished job never deletes the b-roll.
+  //
+  // uniq_timeline_sections_generation_job — the PARTIAL unique index that makes a second section
+  // for one generation impossible — is declared in migration 062 only, for the same reason
+  // project_exports and project_duplications give for theirs: Drizzle's index builder has no WHERE
+  // clause, and a TOTAL unique index here would permit exactly ONE hand-made section per database.
+  //
+  // NO `.references()` here, and the omission is deliberate. The real FK
+  // (→ video_generation_jobs(id) ON DELETE SET NULL) is declared in 062 and enforced by the
+  // engine; declaring it on BOTH sides in Drizzle closes a cycle — video_generation_jobs.section_id
+  // already points back here — and TypeScript answers a circular table initializer with TS7022,
+  // collapsing `timeline_sections` to `any` and silently un-typing every consumer of it in the
+  // codebase. `project_exports.current_section_id` is a plain uuid for exactly this reason.
+  generation_job_id: uuid('generation_job_id'),
   created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -692,6 +711,20 @@ export const video_generation_jobs = pgTable('video_generation_jobs', {
   status: text('status').notNull().default('queued'),
   // queued | enhancing | submitting | generating | downloading | transcoding | ready | failed
   error: text('error'),
+  // ── The lease (migration 062) ──────────────────────────────────────────────────────────────
+  // The job is delivered at least once and runs for up to ~25 minutes. These three columns are
+  // what stop two workers running it at the same time, and what let a run that DIED be told apart
+  // from one that is merely slow. Same shape and same numbers as project_exports/project_duplications.
+  //
+  // `updated_at` is the heartbeat, beaten on a timer by the live run.
+  updated_at: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  // `claimed_by` is a FENCING TOKEN, one value per RUN — every write after the claim carries
+  // `WHERE claimed_by = <my token>`, so a reclaimed run's writes become no-ops rather than races.
+  claimed_by: text('claimed_by'),
+  // Incremented BY THE CLAIM, so "has anyone run this row before?" is answerable without a race.
+  // It exists for exactly one decision: never re-submit to the paid provider after a crash that
+  // may already have submitted. Not a retry budget — pg-boss owns those.
+  attempts: integer('attempts').notNull().default(0),
   created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   finished_at: timestamp('finished_at', { withTimezone: true }),
 });
@@ -740,8 +773,17 @@ export const playlist_items = pgTable(
 );
 
 // Collaboration (migration 042) — invite users by email to co-edit a project or playlist.
-// Polymorphic like user_purchases. invited_email is lowercased; user_id is resolved at
-// invite time when the user exists, otherwise matched by email once they sign in.
+// Polymorphic like user_purchases. invited_email is lowercased.
+//
+// `invited_email` records WHO AN INVITATION IS ADDRESSED TO. It is NOT a credential, and nothing
+// may authorize on it. A row grants access only once `user_id` is set, and `user_id` is set only by
+// the auth middleware when the signing-in account presents a token with email_verified === true.
+// Invite creation always writes user_id = null, even when an account with that address already
+// exists — resolving it early would hand access to an address nobody has proven they own.
+//
+// The previous comment here described the opposite ("user_id is resolved at invite time when the
+// user exists, otherwise matched by email once they sign in"). That behaviour was removed: it let
+// an unverified account authorize by raw email match, which is broad edit authority.
 export const collaborators = pgTable(
   'collaborators',
   {

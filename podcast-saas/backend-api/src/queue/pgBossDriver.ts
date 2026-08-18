@@ -56,9 +56,30 @@ export function pgBossSend<N extends JobName>(
     });
 }
 
-/** A stable per-target key so repeated triggers for the same video don't pile up in the queue. */
+/**
+ * A stable per-target key so repeated triggers for the same target don't pile up in the queue.
+ *
+ * WHAT THIS KEY IS, AND WHAT IT IS NOT.
+ * It collapses jobs that are still WAITING to start. It says nothing about a RETRY of a job that
+ * already ran, and nothing about two workers in different processes — which is exactly the pair of
+ * deliveries that used to append a second b-roll section. So this is NOT the idempotency guarantee
+ * for `video_generate`, and it is deliberately not written as though it were: that guarantee is
+ * `uniq_timeline_sections_generation_job` (migration 062) plus the runner's CAS lease, both of
+ * which hold whether or not this key exists, and both of which would still hold if pg-boss were
+ * swapped out tomorrow.
+ *
+ * It earns its place on COST. Startup recovery re-drives every in-flight generation on every boot,
+ * so a crash-looping worker otherwise queues one job per boot against the same row; each of those
+ * wakes a worker and starts a provider poll before the lease turns it away. One key per generation
+ * removes that pile-up for free.
+ *
+ * Only for job kinds where two sends genuinely mean ONE piece of work. `metadata` and the podcast
+ * jobs get no key: a second request there is a second request, and silently swallowing it would be
+ * a bug wearing a deduplication costume.
+ */
 function singletonKeyFor<N extends JobName>(name: N, payload: JobPayloads[N]): string | undefined {
   if (name === 'crop') return (payload as JobPayloads['crop']).videoFileId;
+  if (name === 'video_generate') return (payload as JobPayloads['video_generate']).jobId;
   return undefined;
 }
 

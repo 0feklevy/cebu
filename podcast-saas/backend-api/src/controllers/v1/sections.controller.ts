@@ -24,6 +24,10 @@ import {
 } from '../../services/simulation/simulationUrlResolver.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { logger } from '../../lib/logger.js';
+import {
+  newTimelineSectionViolations, sortTimelineSections, timelineSectionViolations,
+  type TimelineSectionLike,
+} from 'shared';
 import { LLMService } from '../../services/llm/LLMService.js';
 import { ApiKeyService } from '../../services/secrets/ApiKeyService.js';
 import { UsageTrackingService } from '../../services/usage/UsageTrackingService.js';
@@ -173,6 +177,79 @@ export const ERROR_MESSAGES: Record<string, string> = {
   generation_error: 'Generation failed. Please try again or simplify your prompt.',
 };
 
+// ── Section write schemas ─────────────────────────────────────────────────────
+//
+// These two endpoints were the only unvalidated writes into `timeline_sections`, and the table has
+// no CHECK constraint to fall back on. Every OTHER writer — the b-roll panel, the generator, the
+// audio-cutaway route — is a zod-validated endpoint that can produce exactly one shape, which is
+// why the malformed shapes the census counts can only have come from here.
+//
+// The split of responsibility below is deliberate:
+//   • the SCHEMAS check what a field IS — a number rather than a string, finite rather than NaN,
+//     a non-empty id, one of the three legal tracks;
+//   • `timelineSectionViolations` (shared) checks what a ROW is — ranges, the interval, and the
+//     field COMBINATIONS that decide which of the three shapes a row is.
+//
+// Ranges live on the row side rather than in the schema on purpose. It lets POST be strict (a fresh
+// row has no history, so every violation is one this request is introducing) while PATCH is held to
+// the weaker and correct rule that it may not make a row WORSE — see the note on the PATCH handler.
+//
+// Ids are `z.string().min(1)`, not `.uuid()`: the foreign keys already enforce existence, and
+// tightening the format here would be a second, redundant, and independently-driftable rule.
+
+/** Readable first-issue message from a Zod error, prefixed with the field path. */
+const firstZodMessage = (e: z.ZodError): string => {
+  const i = e.issues[0];
+  return i ? `${i.path.join('.') || 'request'}: ${i.message}` : 'Invalid request';
+};
+
+/** A second-valued field. Finiteness here; the legal RANGE is a row rule (see above). */
+const zSeconds = z.number().finite();
+const zId = z.string().min(1);
+const zTrack = z.enum(['main', 'broll', 'audio']);
+
+const SECTION_FIELDS = {
+  start_sec: zSeconds,
+  end_sec: zSeconds,
+  type: z.string().min(1).max(64),
+  label: z.string().max(1_000).nullish(),
+  notes: z.string().max(100_000).nullish(),
+  sort_order: z.number().int().nullish(),
+  simulation_url: z.string().max(4_096).nullish(),
+  // NOT `zId`: an EMPTY STRING is this field's documented "clear the simulation" signal, and both
+  // handlers already fold it to null (`simulation_id || null`). The clip source ids below have no
+  // such contract — they are cleared with an explicit null — so they stay non-empty.
+  simulation_id: z.string().max(255).nullish(),
+  sim_script: z.string().nullish(),
+  sim_prompt: z.string().nullish(),
+  sim_meta: z.unknown().optional(),
+  global_offset_sec: zSeconds.nullish(),
+  clip_source_video_id: zId.nullish(),
+  clip_in_sec: zSeconds.nullish(),
+  // NOT nullish: the column is NOT NULL with a default, so an explicit null here is a client bug
+  // that used to reach Postgres and fail there. It fails with a readable message instead.
+  broll_volume: z.number().finite().optional(),
+  simple_ui: z.boolean().optional(),
+  auto_script: z.boolean().optional(),
+  clip_source_image_id: zId.nullish(),
+  camera_movement: z.string().max(64).optional(),
+  clip_source_audio_id: zId.nullish(),
+} as const;
+
+/** `track` defaults here rather than at the insert so the row rules see the EFFECTIVE track. */
+const CreateSectionSchema = z.object({
+  ...SECTION_FIELDS,
+  video_file_id: zId,
+  track: zTrack.default('main'),
+});
+
+/**
+ * PATCH stays PARTIAL — every field optional, and a key that is absent stays absent in the parsed
+ * output, so the handler below can keep writing only what the request actually sent. `video_file_id`
+ * is deliberately absent: this endpoint has never moved a section between host videos.
+ */
+const PatchSectionSchema = z.object({ ...SECTION_FIELDS, track: zTrack.optional() }).partial();
+
 export async function registerSectionsRoutes(app: FastifyInstance): Promise<void> {
   // GET /api/v1/projects/:id/sections
   app.get<{ Params: { id: string } }>(
@@ -183,10 +260,24 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
-      const sections = await db.query.timeline_sections.findMany({
+      // `(sort_order, start_sec)` alone TIES — for every b-roll row of a project, because on that
+      // track `start_sec` is a source in-point and is almost always 0. A tie in ORDER BY lets
+      // Postgres return the rows in any order, run to run. The two extra keys make the order total
+      // (`id` is the primary key) and — the reason it matters — make it the SAME order the player
+      // build uses, so the editor and the viewer can no longer disagree about one project. It is a
+      // strict refinement of the previous key, so nothing that was already unambiguous moves.
+      const rows = await db.query.timeline_sections.findMany({
         where: eq(timeline_sections.project_id, project.id),
-        orderBy: [asc(timeline_sections.sort_order), asc(timeline_sections.start_sec)],
+        orderBy: [
+          asc(timeline_sections.sort_order),
+          asc(timeline_sections.start_sec),
+          asc(timeline_sections.global_offset_sec),
+          asc(timeline_sections.id),
+        ],
       });
+      // Re-applied in memory for the same reason `buildPlayerConfig` does it: the order is a
+      // contract between two surfaces, and `compareTimelineSections` is the one place it is stated.
+      const sections = sortTimelineSections(rows);
 
       // The stored URL is what this section last published; the SERVED url is what is live now.
       // The editor renders the served one and writes back only the stored one (audit §9.6).
@@ -229,6 +320,17 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
+      const parsed = CreateSectionSchema.safeParse(request.body);
+      if (!parsed.success) return reply.code(400).send({ message: firstZodMessage(parsed.error) });
+
+      // A fresh row has no history, so EVERY structural violation is one this request is
+      // introducing — which makes POST the strict end of the pair. This is the gate the census's
+      // three malformed populations all walked through: b-roll rows with no position at all, the
+      // `track='broll' + clip_source_video_id` hybrid the viewer emitted twice, and intervals that
+      // do not move forward.
+      const violations = timelineSectionViolations(parsed.data);
+      if (violations.length > 0) return reply.code(400).send({ message: violations[0]!.message });
+
       const {
         video_file_id,
         start_sec,
@@ -252,13 +354,7 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
         clip_source_image_id,
         camera_movement,
         clip_source_audio_id,
-      } = request.body;
-      if (!video_file_id || start_sec == null || end_sec == null || !type) {
-        return reply.code(400).send({ message: 'video_file_id, start_sec, end_sec, and type are required' });
-      }
-      if (start_sec >= end_sec) {
-        return reply.code(400).send({ message: 'start_sec must be less than end_sec' });
-      }
+      } = parsed.data;
 
       const videoFile = await db.query.video_files.findFirst({
         where: and(eq(video_files.id, video_file_id), eq(video_files.project_id, project.id)),
@@ -286,7 +382,8 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
           notes: notes ?? null,
           sort_order: sort_order ?? null,
           simulation_url: resolvedSimUrl,
-          simulation_id: simulation_id ?? null,
+          // `|| null`, matching PATCH: the empty string is the clear signal, and it is not a uuid.
+          simulation_id: simulation_id || null,
           sim_script: sim_script ?? null,
           // sim_prompt/sim_meta carry the simulation's generation prompt + bridge plan so a
           // duplicated simulation section keeps its full config instead of losing it. (duplicate-section)
@@ -354,11 +451,10 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       });
       if (!existing) return reply.code(404).send({ message: 'Section not found' });
 
-      const { simulation_id, sim_script, sim_prompt, sim_meta, clip_source_video_id, clip_in_sec, broll_volume, clip_source_image_id, camera_movement, clip_source_audio_id, ...rest } = request.body;
+      const parsed = PatchSectionSchema.safeParse(request.body);
+      if (!parsed.success) return reply.code(400).send({ message: firstZodMessage(parsed.error) });
 
-      if (rest.start_sec != null && rest.end_sec != null && rest.start_sec >= rest.end_sec) {
-        return reply.code(400).send({ message: 'start_sec must be less than end_sec' });
-      }
+      const { simulation_id, sim_script, sim_prompt, sim_meta, clip_source_video_id, clip_in_sec, broll_volume, clip_source_image_id, camera_movement, clip_source_audio_id, ...rest } = parsed.data;
 
       // When simulation_id is provided AND changed, denormalize entry_file → simulation_url.
       // If simulation_id is unchanged, leave simulation_url alone — this preserves the
@@ -398,6 +494,26 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
       if (camera_movement !== undefined)     patch.camera_movement      = camera_movement;
       if (clip_source_audio_id !== undefined) patch.clip_source_audio_id = clip_source_audio_id ?? null;
 
+      // THE ROW THAT WILL EXIST AFTER THIS WRITE — validated as a whole, because the shape rules are
+      // about field COMBINATIONS and a partial update can only be judged against what it merges into.
+      // This is what closes the hybrid from BOTH directions: `track` and `clip_source_video_id` can
+      // be set independently, in either order, and the request that completes the pair is caught
+      // whichever one it is. It is also what makes the interval check honest — the old one compared
+      // start to end only when the request happened to send both, so a one-sided trim could invert
+      // the window and nothing noticed.
+      //
+      // ONLY NEW violations are refused. A PATCH may repair a malformed row, or leave it exactly as
+      // malformed as it found it, but may not make it worse. Demanding a perfect result instead
+      // would brick the editor on every row the missing constraints already let through: the
+      // undo/redo restore path PATCHes a section's entire stored body back, so a single legacy
+      // b-roll row with a NULL offset would make every undo in that project fail — punishing the
+      // user for a defect this endpoint created.
+      const introduced = newTimelineSectionViolations(
+        existing as TimelineSectionLike,
+        { ...existing, ...patch } as TimelineSectionLike,
+      );
+      if (introduced.length > 0) return reply.code(400).send({ message: introduced[0]!.message });
+
       const [updated] = await db
         .update(timeline_sections)
         .set(patch)
@@ -428,12 +544,6 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
     });
   type GenerateSimScriptInput = z.infer<typeof GenerateSimScriptSchema>;
   type SectionRow = typeof timeline_sections.$inferSelect;
-
-  /** Readable first-issue message from a Zod error, prefixed with the field path. */
-  const firstZodMessage = (e: z.ZodError): string => {
-    const i = e.issues[0];
-    return i ? `${i.path.join('.') || 'request'}: ${i.message}` : 'Invalid request';
-  };
 
   /**
    * The ONE place sim-script generation decides what to do and persists the result — shared

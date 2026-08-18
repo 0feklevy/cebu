@@ -70,6 +70,10 @@ import { logger } from '../lib/logger.js';
 import { resolveRumSampleRate, resolveSimRuntimeFlags, fieldAggregates } from './simulation/RumService.js';
 import { simulationUrlResolver } from './simulation/simulationUrlResolver.js';
 import { decideBudget } from 'shared/sim/closedLoop';
+// The ONE place that knows what a `timeline_sections` row is. This file used to answer that
+// question separately at each emit site with a hand-written filter, and the filters were not
+// disjoint — see the note above `overlayLanes` below.
+import { classifyTimelineSection, groupTimelineSectionsByLane, sortTimelineSections } from 'shared';
 
 /** The simulation columns this file reads. Named so the degraded-read catch cannot drift from it. */
 interface SimRowShape {
@@ -181,14 +185,25 @@ export async function buildPlayerConfig(
   // player-config / share / playlist-item / course render), so the serial waits added up
   // (perf-003; scenes+branch_sequences folded in per loadperf-002/backend-110). Scenes and
   // sequences are filtered/used in memory below exactly as before.
-  const [allVideos, sections, imageRows, audioRows, allScenes, sequenceRows, simPoolMode, rumSampleRate, simRuntimeFlags, projectSimulations] = await Promise.all([
+  const [allVideos, sectionRows, imageRows, audioRows, allScenes, sequenceRows, simPoolMode, rumSampleRate, simRuntimeFlags, projectSimulations] = await Promise.all([
     db.query.video_files.findMany({
       where: eq(video_files.project_id, project.id),
       orderBy: [asc(video_files.created_at)],
     }),
     db.query.timeline_sections.findMany({
       where: eq(timeline_sections.project_id, project.id),
-      orderBy: [asc(timeline_sections.start_sec)],
+      // The SAME total order the editor reads in (`sections.controller` GET /sections), so the two
+      // surfaces cannot disagree about one project. `start_sec` ALONE — what this was — ties for
+      // every b-roll row of a project, because on that track `start_sec` is a source in-point and
+      // is almost always 0; a tie lets Postgres return them in any order it likes, and the viewer's
+      // `.find()` takes the first match. That is why "the wrong b-roll plays" was intermittent.
+      // `id` is the primary key, so this order is total and nothing can tie.
+      orderBy: [
+        asc(timeline_sections.sort_order),
+        asc(timeline_sections.start_sec),
+        asc(timeline_sections.global_offset_sec),
+        asc(timeline_sections.id),
+      ],
     }),
     db.query.image_files.findMany({ where: eq(image_files.project_id, project.id) }),
     db.query.audio_files.findMany({ where: eq(audio_files.project_id, project.id) }),
@@ -220,9 +235,15 @@ export async function buildPlayerConfig(
       }),
   ]);
 
+  // Re-applied IN MEMORY, not because the `ORDER BY` above is wrong but because this order is a
+  // contract and a contract needs one owner. `compareTimelineSections` is that owner; the SQL is an
+  // optimisation that lets Postgres do the work. Belt and braces here is cheap (one sort of a small
+  // per-project list) and it means the guarantee survives a driver, a cache or a caller that hands
+  // this function rows from anywhere else.
+  const sections = sortTimelineSections(sectionRows);
+
   // Main video segments (uploaded by user, not AI-generated broll sources)
   const mainVideos = allVideos.filter((v) => !v.is_broll);
-  const brollVideos = allVideos.filter((v) => v.is_broll);
 
   const simRows = new Map(projectSimulations.map((r) => [r.id, r]));
 
@@ -488,7 +509,13 @@ export async function buildPlayerConfig(
         : null;
     const fallback_url = hls_url;
 
-    // Only non-broll sections for this main video
+    // Only non-broll sections for this main video.
+    //
+    // DELIBERATELY NOT routed through `classifyTimelineSection`. Despite the name, this array is
+    // the segment's whole main-track section list — clips and plain video sections ride in it
+    // alongside the simulations, and the player reads `type` off each one. `track === 'main'` here
+    // is a SEGMENT-MEMBERSHIP test ("does this row belong to this video?"), not a shape dispatch,
+    // so swapping in the lane router would silently drop every main-track clip from the segment.
     const simulations = sections
       .filter((s) => s.video_file_id === v.id && s.track === 'main')
       .map((s) => {
@@ -552,19 +579,82 @@ export async function buildPlayerConfig(
   // video is uploaded (video.controller enqueueVideoProcessing) instead of on every
   // preview/share/course render, which was a per-render side-effect (review perf-002).
 
-  // Build broll_clips from broll sections — each broll section points to a broll video
-  const brollVideoMap = new Map(brollVideos.map((v) => [v.id, v]));
-  const brollClips = sections
-    .filter((s) => s.track === 'broll' && !s.clip_source_audio_id)
+  // ── Overlay dispatch ────────────────────────────────────────────────────────
+  //
+  // ONE partition, not four filters. The four `.filter()`s that used to stand here each re-derived
+  // "what is this row?" on their own, and two of them — `track==='broll' && !clip_source_audio_id`
+  // and `type==='clip' && clip_source_video_id` — were NOT disjoint. A row that is
+  // `track='broll' AND type='clip' AND clip_source_video_id IS NOT NULL` satisfied both and was
+  // emitted TWICE, at two different offsets, into the one array the viewer concatenates and
+  // `.find()`s over: the clip played twice, and the export and the editor each showed a third
+  // answer. Routing every row through `classifyTimelineSection` makes double emission structurally
+  // impossible rather than merely unlikely — a row is in exactly one bucket because the buckets are
+  // a partition. Which bucket a hybrid lands in is decided explicitly in that module (`track` beats
+  // `type`, because `type` is the column the section editor rewrites behind the user's back).
+  //
+  // NOT changed here: how either lane COMPUTES its offset. The b-roll lane still uses the stored
+  // `global_offset_sec`; the clip lane still derives one from the main-duration running sum. Those
+  // two disagree, and reconciling them is D-01 — blocked on a product decision.
+  const overlayLanes = groupTimelineSectionsByLane(sections);
+
+  const hybrids = sections.filter((s) => classifyTimelineSection(s) === 'broll_clip_hybrid');
+  if (hybrids.length > 0) {
+    // One line for the whole build, not one per row. These used to double-emit; now they play once,
+    // in the b-roll lane — but a row that is two shapes at once is still a data defect someone has
+    // to repair, and it was previously invisible from the outside.
+    logger.warn(
+      { projectId: project.id, sectionIds: hybrids.map((s) => s.id) },
+      'buildPlayerConfig: broll sections carry a clip source — played as broll, clip pointer ignored',
+    );
+  }
+
+  // Rows no lane can place — a clip section with no source. DEBUG, not warn: the editor's
+  // Add → "Existing clip" deliberately creates exactly this as a provisional row for the user to
+  // fill in, so it is a normal transient state on a project being edited, not an incident. It was
+  // previously indistinguishable from a row that had been silently swallowed.
+  if (overlayLanes.none.length > 0) {
+    logger.debug(
+      { projectId: project.id, sectionIds: overlayLanes.none.map((s) => s.id) },
+      'buildPlayerConfig: sections reference no placeable source — omitted from every overlay lane',
+    );
+  }
+
+  // Every video in the project by id — the source lookup for BOTH the b-roll lane and the clip
+  // lane. The b-roll lane used to have its own narrower map, built from `is_broll` videos only, and
+  // that is exactly what silently dropped a "Use Existing" b-roll sourced from a normal uploaded
+  // clip: the editor offers those videos, the API accepts them, the editor previews them, and the
+  // export resolves them through its own all-videos map — the player was the one surface that
+  // omitted them, with no log line, no warning field and no counter. One map for both lanes is what
+  // makes those four surfaces agree; it invents nothing and needs no migration.
+  const allVideoMap = new Map(allVideos.map((v) => [v.id, v]));
+
+  // Build broll_clips from broll sections — each broll section points to a source video.
+  const brollClips = overlayLanes.broll
     .map((s) => {
-      const brollVid = brollVideoMap.get(s.video_file_id);
-      if (!brollVid) return null;
+      const brollVid = allVideoMap.get(s.video_file_id);
+      if (!brollVid) {
+        // Reachable when the source belongs to another project (the FKs check existence, not
+        // tenancy) — the row is inert, but silence here is what made the parity bug invisible.
+        logger.warn(
+          { projectId: project.id, sectionId: s.id, videoFileId: s.video_file_id },
+          'buildPlayerConfig: broll section dropped — source video is not in this project',
+        );
+        return null;
+      }
       const hls_url = brollVid.hls_master_key
         ? storage.getPublicUrl(brollVid.hls_master_key)
         : brollVid.hls_360p_key
           ? storage.getPublicUrl(brollVid.hls_360p_key)
           : null;
-      if (!hls_url) return null;
+      if (!hls_url) {
+        // The export renders this one anyway, from `storage_key`. The viewer needs HLS and has
+        // none, so it still drops the row — but says so, exactly as the export already does.
+        logger.warn(
+          { projectId: project.id, sectionId: s.id, videoFileId: s.video_file_id, hlsStatus: brollVid.hls_status },
+          'buildPlayerConfig: broll section dropped — source video has no playable HLS rendition',
+        );
+        return null;
+      }
       return {
         id:                s.id,
         hls_url,
@@ -579,7 +669,6 @@ export async function buildPlayerConfig(
 
   // Build clip_overlays from clip sections — user-trimmed library videos shown as overlay.
   // Compute each main video's global offset (cumulative sum of durations).
-  const allVideoMap = new Map(allVideos.map((v) => [v.id, v]));
   let globalOff = 0;
   const videoGlobalOffsets = new Map<string, number>();
   for (const v of mainVideos) {
@@ -587,8 +676,7 @@ export async function buildPlayerConfig(
     globalOff += v.duration_sec ?? 0;
   }
 
-  const clipOverlays = sections
-    .filter((s) => s.type === 'clip' && s.clip_source_video_id)
+  const clipOverlays = overlayLanes.clip_video
     .map((s) => {
       const srcVideo = allVideoMap.get(s.clip_source_video_id!);
       if (!srcVideo) return null;
@@ -618,8 +706,7 @@ export async function buildPlayerConfig(
   // Build image_overlays from clip sections that reference an image file
   const imageFileMap = new Map(imageRows.map((img) => [img.id, img]));
 
-  const imageOverlays = sections
-    .filter((s) => s.type === 'clip' && s.clip_source_image_id)
+  const imageOverlays = overlayLanes.clip_image
     .map((s) => {
       const img = imageFileMap.get(s.clip_source_image_id!);
       if (!img) return null;
@@ -642,8 +729,7 @@ export async function buildPlayerConfig(
   // Build audio_cutaways from broll/audio sections backed by an audio file (audio-only cutaways)
   const audioFileMap = new Map(audioRows.map((a) => [a.id, a]));
 
-  const audioCutaways = sections
-    .filter((s) => (s.track === 'audio' || !!s.clip_source_audio_id) && s.clip_source_audio_id)
+  const audioCutaways = overlayLanes.audio_cutaway
     .map((s) => {
       const af = audioFileMap.get(s.clip_source_audio_id!);
       if (!af) return null;
