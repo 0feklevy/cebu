@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { defineConfig } from 'vitest/config';
-import { maxTestWorkers } from '../vitest.workers.mjs';
+import { maxTestWorkers } from '../shared/vitest.workers.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -50,7 +50,7 @@ export default defineConfig({
     // more than this, the test is doing something that belongs in backend-api or in Playwright.
     testTimeout: 20_000,
     // Bounded so `pnpm -r test` (release:verify) cannot ask four suites for the whole machine
-    // each — see ../vitest.workers.mjs for the arithmetic and why it is half, not all.
+    // each — see shared/vitest.workers.mjs for the arithmetic and why it is half, not all.
     maxWorkers: maxTestWorkers(),
     hookTimeout: 20_000,
     // Pins navigator hardware metrics — see the file's header for why a suite that reads the
