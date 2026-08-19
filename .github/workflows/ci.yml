@@ -233,8 +233,24 @@ jobs:
       - name: Build shared
         run: pnpm --filter shared build
       # The suite synthesises its own HLS + mp4 media with ffmpeg and fails loudly without it.
+      #
+      # The apt path is BOUNDED, and that bound is load-bearing: on 2026-08-19 an unhealthy Azure
+      # apt mirror stalled `apt-get update` indefinitely on two consecutive runs — six e2e jobs
+      # hung with zero tests executed until GitHub reaped the runners at ~45 minutes, reporting
+      # "cancelled" rather than anything that names the cause. `timeout` turns that stall into a
+      # fast, retryable failure, and a job that still cannot install ffmpeg fails in minutes with
+      # an error that says why — instead of silently eating the entire e2e budget.
       - name: Ensure ffmpeg
-        run: ffmpeg -version >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y ffmpeg; }
+        run: |
+          if ffmpeg -version >/dev/null 2>&1; then exit 0; fi
+          for attempt in 1 2 3; do
+            if timeout 120 sudo apt-get update -o Acquire::Retries=2 \
+               && timeout 240 sudo apt-get install -y -o Acquire::Retries=2 ffmpeg; then exit 0; fi
+            echo "apt attempt ${attempt} failed or stalled; retrying in 15s"
+            sleep 15
+          done
+          echo "::error::could not install ffmpeg — apt mirror unhealthy; re-run this job"
+          exit 1
       - name: Install Playwright browser (${{ matrix.engine }})
         run: pnpm --filter client-web exec playwright install --with-deps ${{ matrix.engine }}
       - name: Viewer e2e against a locally started app
