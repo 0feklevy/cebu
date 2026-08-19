@@ -83,6 +83,21 @@ services:
       NODE_ENV: production
       # DATABASE_URL / QUEUE_DATABASE_URL come from the root .env (Supabase) — no override.
       QUEUE_DRIVER: pgboss
+      # WHICH QUEUES THIS HOST CONSUMES. Empty (the default) means ALL of them, which is
+      # `resolveWorkerQueues`'s own behaviour for an unset value — so leaving it unset changes
+      # nothing for a single-host deployment.
+      #
+      # It exists because there was NO supported way to set it through a deploy. An operator who
+      # had moved `project_export` to a dedicated capture host had to hand-write a compose
+      # override on the VM — and `compose()` in deploy/scripts/_lib.sh passes `-f
+      # docker-compose.yml` explicitly, which disables docker-compose.override.yml auto-loading,
+      # so that file was both necessary and never applied by a deploy. It then sat untracked in
+      # the working tree and blocked the release's CHECK_REMOTE_STATUS. One stray file, two
+      # failed production deploys, and the routing would have silently reverted on the next one.
+      #
+      # Set it in deploy/.env (git-ignored, auto-loaded for ${...} interpolation). An unknown
+      # queue name is a startup error, not a silent omission.
+      WORKER_QUEUES: ${WORKER_QUEUES:-}
       # CRITICAL: the worker WRITES asset URLs into the DB at job completion. Without these
       # it would persist http://localhost:8080/... rows that break for every browser. Must
       # match the backend's public origins. Worker fails closed if any is localhost.
