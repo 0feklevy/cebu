@@ -83,12 +83,14 @@ body { background: #0d1117; display: flex; align-items: center; justify-content:
 
 function buildSimPrompt(topic: string, characterId: string): string {
   const charContext: Record<string, string> = {
+    // No persona to speak through: the visual serves the video's own subject, whatever it is.
+    guide:      'a clear explanatory visual for the subject at hand, with no historical persona',
     darwin:     'Charles Darwin — natural selection, evolution, finch beak variation, adaptation',
     einstein:   'Albert Einstein — special/general relativity, spacetime, E=mc², photoelectric effect, wave-particle duality',
     napoleon:   'Napoleon Bonaparte — military tactics, troop formations, artillery arcs, siege geometry',
     archimedes: 'Archimedes — lever/fulcrum, buoyancy/displacement, parabolic mirrors, gear ratios',
   };
-  const ctx = charContext[characterId] ?? 'a historical scientist';
+  const ctx = charContext[characterId] ?? charContext.guide!;
   return `You are generating a clean, interactive science simulation that fills the FULL browser viewport.
 
 Topic: "${topic}"

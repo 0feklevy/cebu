@@ -2,7 +2,7 @@
  * `characterId` answers WHICH PROMPT the session runs. It does not answer WHO THE OWNER CHOSE,
  * and for a long time those two facts travelled as one field.
  *
- * A project that configured no persona resolves to the fallback `einstein` — it must, because a
+ * A project that configured no persona resolves to the fallback character — it must, because a
  * session has to run as something — and the client, given only the id, rendered it as an
  * identity: "Ask Albert Einstein", the portrait, "Connecting to Einstein…", for a video whose
  * owner had picked nobody. The id was never wrong; it was answering a different question.
@@ -11,7 +11,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { resolveCharacter } from '../avatar.controller.js';
-import { CHARACTERS } from '../../../services/avatar/characters.js';
+import { CHARACTERS, DEFAULT_CHARACTER_ID } from '../../../services/avatar/characters.js';
 import { bakedCharacterId } from '../../../services/avatar/personaFingerprint.js';
 
 describe('resolveCharacter separates the routing id from its provenance', () => {
@@ -32,10 +32,12 @@ describe('resolveCharacter separates the routing id from its provenance', () => 
   });
 
   it('nothing configured and nothing requested is a DEFAULT, and says so', () => {
-    // The id is still einstein — the session must run as something. The `source` is what stops
-    // the client presenting that as the owner's choice.
+    // The id is still SOMETHING — the session must run as a character. The `source` is what stops
+    // the client presenting that as the owner's choice. Asserted against DEFAULT_CHARACTER_ID
+    // rather than a literal: which character is the fallback is a product decision that has
+    // already changed once (it was Einstein), and this test is about provenance, not identity.
     expect(resolveCharacter(undefined, undefined))
-      .toEqual({ id: 'einstein', source: 'default' });
+      .toEqual({ id: DEFAULT_CHARACTER_ID, source: 'default' });
     expect(resolveCharacter({}, undefined).source).toBe('default');
   });
 
@@ -89,7 +91,7 @@ describe('the config write never invents a character', () => {
   it('the bake still resolves to something concrete when nothing is stored', () => {
     // The invariant the old write-normalization was protecting: config and fingerprint must not
     // disagree. They cannot — there is one stored value and one normalizer.
-    expect(bakedCharacterId({ characterId: stored(undefined, undefined) })).toBe('einstein');
+    expect(bakedCharacterId({ characterId: stored(undefined, undefined) })).toBe(DEFAULT_CHARACTER_ID);
     expect(bakedCharacterId({ characterId: stored('darwin', undefined) })).toBe('darwin');
   });
 });
