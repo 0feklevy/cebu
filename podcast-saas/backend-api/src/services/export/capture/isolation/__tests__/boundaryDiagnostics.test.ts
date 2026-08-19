@@ -294,3 +294,66 @@ describe('sanitizeStderrTail — untrusted bytes, bounded and stripped', () => {
     expect(tail).toContain('line-99'); // the TAIL survives — the newest evidence wins
   });
 });
+
+/**
+ * The GPU grant is driven by the FROZEN spec, not by the worker's environment at run time.
+ *
+ * `rendererProfile` was fingerprinted into the plan the user saw; the boundary's config only names
+ * WHICH device a hardware capture gets. So a swiftshader job on a GPU worker runs with no device at
+ * all, and flipping the worker's env between enqueue and run cannot change what an existing job
+ * renders with — the job says `hardware` or it does not.
+ */
+describe('GPU grant follows the frozen rendererProfile', () => {
+  async function argvSeenBy(spec: ContainerCaptureSpec): Promise<string[]> {
+    const scratch = await mkdtemp(join(tmpdir(), 'gpu-grant-'));
+    const inputDir = join(scratch, 'in');
+    const outputDir = join(scratch, 'out');
+    await mkdir(inputDir, { recursive: true });
+    await mkdir(outputDir, { recursive: true });
+    const dockerBin = join(scratch, 'docker-stub.js');
+    const result = {
+      resultVersion: 1, sectionId: spec.sectionId, status: 'failed', framesDir: null, clipPath: null,
+      frameCount: 0, rendererString: '', gate: 'failed', reason: 'stub', cost: null,
+      rendererIdentity: { imageDigest: 'img', headlessShellVersion: 'v', viewport: { w: 0, h: 0 }, dpr: 1 },
+      failure: { code: 'capture_failed', detail: 'stub' },
+    };
+    await writeFile(
+      dockerBin,
+      `#!/usr/bin/env node
+const fs = require('fs'); const path = require('path');
+const out = process.argv.map(a => /^type=bind,src=(.+),dst=\\/output/.exec(a)).find(Boolean);
+if (out) {
+  fs.writeFileSync(path.join(out[1], 'argv.json'), JSON.stringify(process.argv.slice(2)));
+  fs.writeFileSync(path.join(out[1], 'result.json'), ${JSON.stringify(JSON.stringify(result))});
+}
+process.exit(1);
+`,
+      'utf8',
+    );
+    await chmod(dockerBin, 0o755);
+    const b = new DockerCaptureBoundary({
+      image: 'podcast-saas/export-worker:test', rendererProfile: 'swiftshader',
+      user: '1000:1000', cpus: '2', memoryMb: 2048, pidsLimit: 256, tmpfsScratchMb: 512,
+      stopTimeoutSec: 10, dockerBin,
+      gpuCdiDevice: 'nvidia.com/gpu=0',
+    });
+    await b.runCapture(spec, { inputDir, outputDir }, new AbortController().signal);
+    return JSON.parse(readFileSync(join(outputDir, 'argv.json'), 'utf8')) as string[];
+  }
+
+  it('hardware spec → exactly the configured CDI device; swiftshader spec → no device at all', async () => {
+    const soft = await argvSeenBy(SPEC);
+    expect(SPEC.rendererProfile).toBe('swiftshader');
+    expect(soft).not.toContain('--device');
+    expect(soft.join(' ')).not.toMatch(/nvidia/i);
+
+    const hard = await argvSeenBy({ ...SPEC, rendererProfile: 'hardware' });
+    expect(hard[hard.indexOf('--device') + 1]).toBe('nvidia.com/gpu=0');
+    // Same cage either way.
+    for (const argv of [soft, hard]) {
+      expect(argv.join(' ')).toContain('--network none');
+      expect(argv.join(' ')).toContain('--cap-drop ALL');
+      expect(argv.join(' ')).not.toContain('--privileged');
+    }
+  });
+});

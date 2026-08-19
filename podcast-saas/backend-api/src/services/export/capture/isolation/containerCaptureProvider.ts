@@ -59,6 +59,7 @@ import {
   type ContainerCaptureResult,
   type DockerCaptureBoundaryConfig,
 } from './captureJobBoundary.js';
+import { assertCdiDeviceName } from './containerRunArgs.js';
 import { isStageablePackagePath, parseSimPackageKey, type SimPackageKey } from './simPackageKey.js';
 import { prepareOfflinePackage } from '../dependencies/offlinePackage.js';
 import { assertClipMatches, probeClip, probeImage, type ProbedImage, type ProbedVideo } from './artifactProbe.js';
@@ -228,6 +229,8 @@ export interface ContainerCaptureConfig {
    * from `EXPORT_CAPTURE_RENDERER`; the container never reads the environment for it.
    */
   rendererProfile: 'swiftshader' | 'hardware';
+  /** CDI name of the one GPU hardware captures may use. Ignored entirely under swiftshader. */
+  gpuCdiDevice: string;
   /** Host-visible parent for input/output mounts; null = os tmpdir (bare-metal backend only). */
   workDir: string | null;
   user: string;
@@ -276,9 +279,15 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): ContainerCa
       `EXPORT_CAPTURE_RENDERER: unknown value ${JSON.stringify(rawRenderer)}; allowed: swiftshader, hardware`,
     );
   }
+  // Validated HERE, at config time on the trusted side, so a typo is a startup error rather than
+  // a docker error minutes into the first hardware capture. Only consulted when the profile is
+  // hardware; the default is the first (usually only) GPU.
+  const gpuCdiDevice = env.EXPORT_CAPTURE_GPU_CDI_DEVICE?.trim() || 'nvidia.com/gpu=0';
+  if (rendererProfile === 'hardware') assertCdiDeviceName(gpuCdiDevice);
   return {
     image,
     rendererProfile,
+    gpuCdiDevice,
     workDir: env.EXPORT_CAPTURE_WORKDIR?.trim() || null,
     user: env.EXPORT_CAPTURE_USER?.trim() || '10001:10001',
     cpus: env.EXPORT_CAPTURE_CPUS?.trim() || '2',
@@ -306,6 +315,7 @@ export function boundaryConfigFrom(config: ContainerCaptureConfig): DockerCaptur
     stopTimeoutSec: config.stopTimeoutSec,
     dockerBin: config.dockerBin,
     sandboxMechanism: config.sandboxMechanism,
+    gpuCdiDevice: config.gpuCdiDevice,
   };
 }
 

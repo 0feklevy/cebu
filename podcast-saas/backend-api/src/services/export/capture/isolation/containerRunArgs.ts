@@ -80,6 +80,16 @@ export interface ContainerRunSpec {
   pidsLimit: number;
   /** Size of the single RAM-backed scratch tmpfs mounted at /tmp, in MiB. */
   tmpfsScratchMb: number;
+  /**
+   * The ONE GPU this capture may use, as an explicit CDI device name (`nvidia.com/gpu=0` or a
+   * `GPU-<uuid>`), or null for none. CDI is the narrow grant: docker resolves the name against the
+   * host's generated spec and injects exactly that device's nodes and driver userspace — no
+   * `--gpus all`, no `--runtime` switch, and none of the toolkit's environment-variable activation
+   * (`NVIDIA_VISIBLE_DEVICES`) ever enters the untrusted container. `all` is refused by
+   * construction: a capture renders one section on one device, and the widest grant an argv can
+   * express should be the widest grant a capture can need.
+   */
+  gpu?: { cdiDevice: string } | null;
   /** Graceful window (seconds) before `docker stop`/the orchestrator escalates to SIGKILL. */
   stopTimeoutSec: number;
   /** Which sandbox grant to emit. Defaults to 'userns'. */
@@ -110,6 +120,21 @@ function isRootUser(user: string): boolean {
  * Throws on any spec that would weaken the contract (root user, missing seccomp profile, non-positive
  * quota, empty image/name/dirs) so a misconfiguration fails at assembly, not at container start.
  */
+/**
+ * The CDI device names a capture may be granted. Exactly one device, by index or by UUID —
+ * `nvidia.com/gpu=all` is refused on purpose (one section renders on one GPU, and the argv should
+ * not be able to say more than that), and anything that is not a CDI name at all (a path, a flag,
+ * an injection attempt) is refused before it reaches an argv.
+ */
+export function assertCdiDeviceName(value: string): void {
+  if (!/^nvidia\.com\/gpu=(\d{1,3}|GPU-[0-9a-fA-F][0-9a-fA-F-]{10,40})$/.test(value)) {
+    throw new Error(
+      `containerRunArgs: refusing GPU grant ${JSON.stringify(value.slice(0, 64))} — ` +
+        "expected one explicit CDI device (nvidia.com/gpu=<index> or nvidia.com/gpu=GPU-<uuid>; 'all' is never granted)",
+    );
+  }
+}
+
 export function buildContainerRunArgv(spec: ContainerRunSpec): string[] {
   const mechanism: SandboxMechanism = spec.sandboxMechanism ?? 'userns';
 
@@ -125,6 +150,7 @@ export function buildContainerRunArgv(spec: ContainerRunSpec): string[] {
     throw new Error('containerRunArgs: memoryMb, pidsLimit and tmpfsScratchMb must be positive');
   }
   if (!spec.cpus.trim()) throw new Error('containerRunArgs: cpus is required');
+  if (spec.gpu) assertCdiDeviceName(spec.gpu.cdiDevice);
   if (mechanism === 'seccomp-profile' && !spec.seccompProfilePath?.trim()) {
     throw new Error("containerRunArgs: sandboxMechanism 'seccomp-profile' requires seccompProfilePath");
   }
@@ -153,6 +179,15 @@ export function buildContainerRunArgv(spec: ContainerRunSpec): string[] {
     '--memory-swap', `${spec.memoryMb}m`, // equal to --memory ⇒ zero swap
     '--pids-limit', String(spec.pidsLimit),
   ];
+
+  // ── GPU: one explicit CDI device, or nothing ─────────────────────────────────────────────────
+  // Injected only when the frozen renderer profile asked for hardware (the caller decides; this
+  // layer only refuses a malformed or over-broad name). The rest of the cage is IDENTICAL in both
+  // modes — the grant adds device nodes and read-only driver mounts, never capabilities, network,
+  // or environment.
+  if (spec.gpu) {
+    argv.push('--device', spec.gpu.cdiDevice);
+  }
 
   // ── Privileges: drop everything, then grant ONLY what Chrome's sandbox needs ──────────────────
   argv.push('--cap-drop', 'ALL');
