@@ -40,6 +40,7 @@ import { mkdtemp, readFile, rm, stat, statfs } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
+import { deleteWithPrefixFallback } from '../storage/deleteWithFallback.js';
 import { db } from '../../db/index.js';
 import { project_exports } from '../../db/schema.js';
 import { logger } from '../../lib/logger.js';
@@ -684,6 +685,11 @@ export class ProjectExportService {
         return;
       }
       logger.info({ exportId, projectId: job.project_id, outputKey }, 'project export ready');
+      // The section intermediates are fully contained in the master that was just published, and
+      // nothing serves them — their only writer is this run. Deleted ONLY here, after the fence
+      // has proven this run still owns its row: a run that lost the fence must touch nothing,
+      // and a concurrent re-run cannot be affected because the prefix carries this exportId.
+      await deleteWithPrefixFallback(`exports/${job.project_id}/${exportId}/sections`).catch(() => {});
     } catch (err) {
       // THE FAILURE IS THE PRODUCT HERE — recorded, never flattened. The classification keeps
       // the real reason (code + retryability + the operator detail in the plan's failure block);

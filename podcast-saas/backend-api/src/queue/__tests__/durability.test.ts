@@ -141,10 +141,14 @@ describe('concurrency on the 2-vCPU worker', () => {
     const byName = Object.fromEntries(
       work.mock.calls.map((c) => [c[0] as string, (c[1] as { localConcurrency: number }).localConcurrency]),
     );
-    for (const heavy of ['transcode', 'podcast_render', 'podcast_clips', 'podcast_mix_export', 'project_export']) {
+    for (const heavy of ['transcode', 'podcast_render', 'podcast_clips', 'podcast_mix_export', 'project_export', 'crop']) {
       expect(byName[heavy], `${heavy} must not run two at a time`).toBe(1);
     }
-    // The I/O-bound ones keep their 2 — this is not a blanket serialisation.
-    expect(byName.crop).toBe(2);
+    // Crop joined that list: it is ffmpeg + frame analysis, i.e. CPU-bound, and two of them on a
+    // 2-vCPU host contend with each other. The decision record required 1 and the default said 2.
+    // This is still not a blanket serialisation — the genuinely I/O-bound queues keep their 2.
+    for (const io of ['captions', 'metadata', 'podcast_script', 'video_generate', 'project_duplicate']) {
+      expect(byName[io], `${io} is I/O-bound and should still interleave`).toBe(2);
+    }
   });
 });

@@ -147,12 +147,13 @@ describe('registerWorkers', () => {
  * Concurrency is per job KIND, not one number for the whole worker. An export with a simulation
  * section runs a capture container allowed `--cpus 2`; on the 2-vCPU worker host that is the entire
  * machine, so two concurrent exports contend rather than parallelise and both move closer to their
- * wall-clock kill. Crops are I/O-bound and keep their 2.
+ * wall-clock kill. Crop is CPU-bound too — ffmpeg plus frame analysis — so it is serialised as
+ * well; only the genuinely I/O-bound queues keep their 2.
  */
-describe('project_export runs serially, crops do not', () => {
+describe('the CPU-bound queues run serially', () => {
   const noopHandlers = { crop: async () => {}, project_export: async () => {} } as never;
 
-  it('registers project_export with localConcurrency 1 and crop with 2', async () => {
+  it('registers both project_export and crop with localConcurrency 1', async () => {
     const work = vi.fn(async () => 'worker-id');
     delete process.env.QUEUE_EXPORT_CONCURRENCY;
     delete process.env.QUEUE_CROP_CONCURRENCY;
@@ -161,7 +162,7 @@ describe('project_export runs serially, crops do not', () => {
 
     const byName = Object.fromEntries(work.mock.calls.map((c) => [c[0] as string, c[1] as { localConcurrency: number }]));
     expect(byName.project_export.localConcurrency).toBe(1);
-    expect(byName.crop.localConcurrency).toBe(2);
+    expect(byName.crop.localConcurrency).toBe(1);
   });
 
   it('an operator with real cores can raise it', async () => {

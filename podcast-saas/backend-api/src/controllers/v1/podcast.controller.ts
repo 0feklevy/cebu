@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { deleteWithFallback, deleteWithPrefixFallback } from '../../services/storage/deleteWithFallback.js';
 import { db } from '../../db/index.js';
 import {
   podcast_shows,
@@ -226,7 +227,21 @@ export async function registerPodcastRoutes(app: FastifyInstance): Promise<void>
     async (request, reply: FastifyReply) => {
       const show = await ownedShow(request.params.showId, request.dbUser!);
       if (!show) return reply.code(404).send({ message: 'Show not found' });
+      // Collect the episode ids BEFORE the delete — the FK cascade destroys the rows that name
+      // the storage keys. And note the two prefix shapes, because missing one is the trap this
+      // comment exists to prevent: sources live under `podcasts/{showId}/episodes/{epId}/…`,
+      // while renders, chunks, clips and previews live under `podcasts/{episodeId}/…`. A single
+      // sweep of the show prefix would silently miss everything except the sources.
+      const episodes = await db.query.podcast_episodes.findMany({
+        where: eq(podcast_episodes.show_id, show.id),
+        columns: { id: true },
+      });
       await db.delete(podcast_shows).where(eq(podcast_shows.id, show.id));
+      // Bytes after rows, best-effort — the helpers swallow and log their own errors.
+      await Promise.all([
+        deleteWithPrefixFallback(`podcasts/${show.id}`),
+        ...episodes.map((e) => deleteWithPrefixFallback(`podcasts/${e.id}`)),
+      ]);
       return reply.code(204).send();
     },
   );
@@ -322,6 +337,11 @@ export async function registerPodcastRoutes(app: FastifyInstance): Promise<void>
       const loaded = await ownedEpisodeInShow(request.params.showId, request.params.epId, request.dbUser!);
       if (!loaded) return reply.code(404).send({ message: 'Episode not found' });
       await db.delete(podcast_episodes).where(eq(podcast_episodes.id, loaded.episode.id));
+      // Both prefix shapes — see the show-delete comment above for why there are two.
+      await Promise.all([
+        deleteWithPrefixFallback(`podcasts/${loaded.episode.id}`),
+        deleteWithPrefixFallback(`podcasts/${loaded.show.id}/episodes/${loaded.episode.id}`),
+      ]);
       return reply.code(204).send();
     },
   );
@@ -467,9 +487,12 @@ export async function registerPodcastRoutes(app: FastifyInstance): Promise<void>
     async (request, reply: FastifyReply) => {
       const loaded = await ownedEpisodeInShow(request.params.showId, request.params.epId, request.dbUser!);
       if (!loaded) return reply.code(404).send({ message: 'Episode not found' });
-      await db
+      const [removed] = await db
         .delete(podcast_sources)
-        .where(and(eq(podcast_sources.id, request.params.sourceId), eq(podcast_sources.episode_id, loaded.episode.id)));
+        .where(and(eq(podcast_sources.id, request.params.sourceId), eq(podcast_sources.episode_id, loaded.episode.id)))
+        .returning({ storage_key: podcast_sources.storage_key });
+      // Uploaded source documents (kind='file') carry bytes; url/note sources have no key.
+      if (removed?.storage_key) await deleteWithFallback(removed.storage_key);
       return reply.code(204).send();
     },
   );

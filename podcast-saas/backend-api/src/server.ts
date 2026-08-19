@@ -51,6 +51,7 @@ import { startHlsRetentionSweep } from './services/video/hlsRetention.js';
 import { startDuplicationSweep } from './services/project/ProjectDuplicationService.js';
 import { startExportSweep } from './services/export/ProjectExportService.js';
 import { startHlsRecoverySweep, sweepStuckTranscodes } from './services/video/hlsRecovery.js';
+import { startRevisionGcSweep } from './services/simulation/revisionGcSweep.js';
 import { startCorpusIngestionSweep } from './services/ingestion/corpusRecovery.js';
 import { registerExportRoutes } from './controllers/v1/export.controller.js';
 import { registerHealthRoutes } from './controllers/v1/health.controller.js';
@@ -540,6 +541,11 @@ async function build() {
   // when the process dies. There was no sweep at all, so a crash mid-ingest left the row at
   // 'processing' with nothing anywhere that would ever clear it.
   startCorpusIngestionSweep();
+  // And the seventh, which is not a stuck-row reaper but a byte reclaimer: RevisionService.gc()
+  // — keep-2 floor, age grace, rows-before-bytes — existed fully implemented and was called by
+  // NOTHING in production, a fact two of its neighbours assert in their own comments. Superseded
+  // simulation revisions accumulated for the life of every live simulation.
+  startRevisionGcSweep();
 
   // Local upload endpoint — receives PUT from client for large video files in dev
   app.put<{ Params: { '*': string } }>(

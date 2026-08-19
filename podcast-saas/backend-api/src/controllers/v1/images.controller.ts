@@ -150,9 +150,16 @@ export async function registerImageRoutes(app: FastifyInstance): Promise<void> {
       const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
-      await db
+      // Row first, bytes after — and `.returning()` is what carries the key across the delete.
+      // This route used to remove only the row: the replace path sixty lines up GC'd the
+      // superseded object correctly, while an actual DELETE left its object in the bucket
+      // forever. Keys are never shared between rows (duplication re-mints them per project),
+      // so deleting the object cannot strand another reference.
+      const [removed] = await db
         .delete(image_files)
-        .where(and(eq(image_files.id, request.params.imageId), eq(image_files.project_id, project.id)));
+        .where(and(eq(image_files.id, request.params.imageId), eq(image_files.project_id, project.id)))
+        .returning({ storage_key: image_files.storage_key });
+      if (removed?.storage_key) await deleteWithFallback(removed.storage_key);
       return reply.code(204).send();
     },
   );

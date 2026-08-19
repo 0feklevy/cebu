@@ -12,6 +12,7 @@
  */
 
 import type OpenAI from 'openai';
+import { deleteSupersededThumbnail } from './storage/deleteSupersededThumbnail.js';
 import { randomUUID } from 'crypto';
 import { eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
@@ -163,9 +164,13 @@ export async function generateAiThumbnail(projectId: string, opts: AiThumbnailOp
   const thumbKey = `thumbnails/${projectId}/${randomUUID()}.png`;
   const thumbnailUrl = await uploadWithFallback(thumbKey, Buffer.from(b64, 'base64'), 'image/png');
 
+  const prev = await db.query.projects.findFirst({
+    where: eq(projects.id, projectId), columns: { thumbnail_key: true },
+  });
   await db.update(projects)
     .set({ thumbnail_url: thumbnailUrl, thumbnail_key: thumbKey, updated_at: new Date() })
     .where(eq(projects.id, projectId));
+  await deleteSupersededThumbnail(prev?.thumbnail_key, thumbKey);
 
   logger.info({ projectId, thumbnailUrl }, '[ai-thumbnail] ✓ generated');
   return thumbnailUrl;

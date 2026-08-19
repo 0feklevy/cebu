@@ -272,6 +272,13 @@ async function runCaptionJob(videoId: string, opts: { force?: boolean } = {}): P
       logger.warn({ videoId: video.id, err: (err as Error).message?.slice(0, 120) }, '[captions] storage backup failed (using DB only)');
     }
 
+    // Read the old backup key BEFORE the update, delete it AFTER — the same replace-then-GC
+    // shape the image-replace route uses. Every run minted `captions/{p}/{v}/{uuid}.vtt` and
+    // overwrote the pointer, so each regeneration stranded its predecessor forever. The deletion
+    // is safe because the same update writes `captions_vtt` (the DB source of truth) in the same
+    // statement — the course-lesson fallback that reads `captions_vtt_key` only when the DB VTT
+    // is null can never need the key being deleted.
+    const oldKey = video.captions_vtt_key ?? null;
     await db.update(video_files).set({
       captions_status: CAPTION_STATUS.ready,
       captions_vtt: vtt,          // DB is the source of truth
@@ -280,6 +287,9 @@ async function runCaptionJob(videoId: string, opts: { force?: boolean } = {}): P
       captions_source_hash: hash,
       captions_updated_at: new Date(),
     }).where(eq(video_files.id, video.id));
+    if (oldKey && oldKey !== key) {
+      await storage.deleteFile(oldKey).catch(() => {}); // best-effort, like the upload above
+    }
     logger.info({ videoId: video.id }, '[captions] ready');
 
     // Forward the transcript to SEO + the avatar's knowledge documents (best-effort).

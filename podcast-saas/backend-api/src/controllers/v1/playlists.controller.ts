@@ -2,6 +2,7 @@ import { randomBytes } from 'crypto';
 import { randomUUID } from 'crypto';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
+import { deleteWithPrefixFallback } from '../../services/storage/deleteWithFallback.js';
 import { db } from '../../db/index.js';
 import { playlists, playlist_items, projects, collaborators } from '../../db/schema.js';
 import { eq, and, asc, inArray, sql } from 'drizzle-orm';
@@ -469,6 +470,11 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
       await db.delete(collaborators).where(
         and(eq(collaborators.content_type, 'playlist'), eq(collaborators.content_id, playlist.id)),
       );
+      // Banner bytes, after the rows. The prefix — not the current `banner_storage_key` — because
+      // both banner writers mint a fresh uuid and overwrite the pointer without deleting the old
+      // object, so `playlist-banners/{id}/` holds every banner this playlist ever had. Deleting
+      // the playlist previously touched none of them.
+      await deleteWithPrefixFallback(`playlist-banners/${playlist.id}`);
       return reply.code(204).send();
     },
   );
