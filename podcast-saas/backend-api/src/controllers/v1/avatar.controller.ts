@@ -1350,10 +1350,23 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
       if (!parsed.success) return reply.code(400).send({ message: parsed.error.message });
       const incoming = parsed.data as AvatarPersonaConfig;
       const existing = (project.avatar_config as AvatarPersonaConfig | null) ?? {};
-      // Normalized on the WRITE so the stored config, the persona bake and every later read agree
-      // on one value — bakedCharacterId() normalizes on read, so an unrecognized id used to mean
-      // the config said one thing and the fingerprint another.
-      const characterId = projectCharacterId({ characterId: incoming.characterId ?? existing.characterId });
+      // STORE A CHARACTER ONLY WHEN SOMEONE ACTUALLY PICKED ONE.
+      //
+      // This used to run the value through `projectCharacterId`, which returns the DEFAULT when
+      // it is handed nothing. So saving the settings form at all — changing only the greeting,
+      // never touching the character picker — wrote `characterId: 'einstein'` into the project's
+      // config. From that moment the project was indistinguishable from one whose owner had
+      // deliberately chosen Einstein, and the viewer was shown "Ask Albert Einstein" on the
+      // strength of a choice nobody made. It is the same fabrication the start path had, one
+      // layer earlier and far more durable, because it persists.
+      //
+      // The invariant that normalization protected is kept: the config and the persona
+      // fingerprint must never disagree. They cannot, because there is still exactly one stored
+      // value and exactly one normalizer — `bakedCharacterId()`, which already maps an absent or
+      // unrecognized id to the default on READ. An unrecognized id is dropped rather than
+      // rewritten, so the config never claims a character the owner did not send.
+      const requestedCharacter = (incoming.characterId ?? existing.characterId)?.trim();
+      const characterId = requestedCharacter && CHARACTERS[requestedCharacter] ? requestedCharacter : undefined;
       const apiKey = await resolveAnamKeyForProject(project.id).catch(() => undefined);
       const avatarChanged = Boolean(incoming.avatarId && incoming.avatarId !== existing.avatarId);
       const staleExistingVoice = Boolean(avatarChanged && existing.voiceId && incoming.voiceId === existing.voiceId);
@@ -1393,7 +1406,11 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
       let personaError: string | undefined;
       let personaBaked: AvatarPersonaConfig['personaBaked'];
       try {
-        personaId = await upsertVideoPersona(characterId, withTranscriptKnowledge(effective, transcript), apiKey, existing.personaId);
+        // `bakedCharacterId` — the ONE normalizer — rather than the stored value, which is now
+        // legitimately absent when nobody chose a character. The persona must still be baked as
+        // something concrete, and this is the same function every later read uses to decide what
+        // that something is, so the config and the fingerprint cannot drift apart.
+        personaId = await upsertVideoPersona(bakedCharacterId(effective), withTranscriptKnowledge(effective, transcript), apiKey, existing.personaId);
         // Recorded ONLY after the vendor accepted the upsert: this record is what later starts
         // trust when they skip the inline persona body.
         personaBaked = bakedStateFor(effective, existing.personaBaked?.revision ?? 0);

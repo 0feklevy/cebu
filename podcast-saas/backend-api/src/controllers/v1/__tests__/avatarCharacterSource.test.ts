@@ -11,6 +11,8 @@
  */
 import { describe, it, expect } from 'vitest';
 import { resolveCharacter } from '../avatar.controller.js';
+import { CHARACTERS } from '../../../services/avatar/characters.js';
+import { bakedCharacterId } from '../../../services/avatar/personaFingerprint.js';
 
 describe('resolveCharacter separates the routing id from its provenance', () => {
   it('a project that configured a character owns the decision', () => {
@@ -40,5 +42,54 @@ describe('resolveCharacter separates the routing id from its provenance', () => 
   it('an unknown character id is not honoured from either side', () => {
     expect(resolveCharacter({ characterId: 'nobody-real' }, undefined).source).toBe('default');
     expect(resolveCharacter(undefined, 'nobody-real').source).toBe('default');
+  });
+});
+
+/**
+ * THE SAME FABRICATION, ONE LAYER EARLIER AND FAR MORE DURABLE.
+ *
+ * The config PUT used to run the character through `projectCharacterId`, which returns the
+ * DEFAULT when handed nothing. So saving the settings form at all — changing only the greeting,
+ * never opening the character picker — persisted `characterId: 'einstein'`. From then on the
+ * project was indistinguishable from one whose owner had deliberately chosen Einstein, and every
+ * viewer was shown "Ask Albert Einstein" on the strength of a choice nobody made.
+ *
+ * The rule the write must now obey, expressed against the same normalizer the read path uses.
+ */
+describe('the config write never invents a character', () => {
+  // The stored value, as the PUT handler now computes it.
+  const stored = (incoming?: string, existing?: string): string | undefined => {
+    const requested = (incoming ?? existing)?.trim();
+    return requested && CHARACTERS[requested] ? requested : undefined;
+  };
+
+  it('saving with no character chosen stores NOTHING — not the default', () => {
+    expect(stored(undefined, undefined)).toBeUndefined();
+    // …and that absence reads back as a default, never as a choice.
+    expect(resolveCharacter({ characterId: stored(undefined, undefined) }).source).toBe('default');
+  });
+
+  it('a character the owner picked is stored and reads back as configured', () => {
+    expect(stored('darwin', undefined)).toBe('darwin');
+    expect(resolveCharacter({ characterId: stored('darwin', undefined) }))
+      .toEqual({ id: 'darwin', source: 'configured' });
+  });
+
+  it('an existing choice survives a save that does not mention the character', () => {
+    expect(stored(undefined, 'napoleon')).toBe('napoleon');
+  });
+
+  it('an unrecognized id is DROPPED, not rewritten to the default', () => {
+    // Rewriting it would put a character in the config that the owner never sent — the same
+    // fabrication in a different disguise.
+    expect(stored('nobody-real', undefined)).toBeUndefined();
+    expect(resolveCharacter({ characterId: stored('nobody-real', undefined) }).source).toBe('default');
+  });
+
+  it('the bake still resolves to something concrete when nothing is stored', () => {
+    // The invariant the old write-normalization was protecting: config and fingerprint must not
+    // disagree. They cannot — there is one stored value and one normalizer.
+    expect(bakedCharacterId({ characterId: stored(undefined, undefined) })).toBe('einstein');
+    expect(bakedCharacterId({ characterId: stored('darwin', undefined) })).toBe('darwin');
   });
 });
