@@ -10,6 +10,7 @@ import { resolveSimPoolMode } from '../../lib/simPoolMode';
 // The media/timeline slop this file has always applied by hand. Named and shared so the EDITOR's
 // section predicates use the same tolerance instead of a second epsilon of their own (audit §9.6).
 import { SECTION_BOUNDARY_EPSILON_SEC } from '../../lib/sectionInterval';
+import { mergeSegmentUrls, shouldPrewarm } from './segmentReadiness';
 import { collectSimPool, bootHideFor, dynamicScriptFor, flattenSimOccurrences, packageKeyOf, planWindowResidency, sectionKeyOf, SIM_POOL_CAP, type SimPoolFrameSpec } from '../../lib/simPool';
 import { planResidency, type SimOccurrence } from 'shared/src/sim/occurrencePlanner';
 import { resolveBudget } from 'shared/src/sim/prepareBudget';
@@ -334,6 +335,21 @@ export function useProjectPlayer(
   // for non-branching projects.
   const segmentsRef = useRef<PlayerSegment[]>(initialSegments);
   const currentSequenceIdRef = useRef<string | null>(entrySequence?.id ?? null);
+
+  // A URL THAT ARRIVES AFTER MOUNT MUST REACH THE PLAYER.
+  //
+  // `segmentsRef` is seeded once from `initialSegments` and thereafter rewritten only on sequence
+  // navigation. So when the viewer's poll finally delivered a config in which a still-transcoding
+  // segment had become ready, the new URL never reached playback: the player kept its mount-time
+  // copy with `hls_url: null` and froze at that boundary — the exact failure the poll was added to
+  // prevent. The poll worked; nothing was listening.
+  //
+  // Fill in ONLY segments that currently have no URL, matched by id, across every sequence in the
+  // config so this stays correct after a branch navigation. A segment that already has a URL is
+  // never touched: rewriting one mid-playback is how a shot gets swapped out from under a viewer.
+  useEffect(() => {
+    segmentsRef.current = mergeSegmentUrls(segmentsRef.current, config);
+  }, [config]);
   const pathStackRef = useRef<Array<{ sequenceId: string; edgeId: string }>>([]);
   const activeChoiceRef = useRef<PlayerChoicePoint | null>(null);
   const choiceTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -2608,9 +2624,21 @@ export function useProjectPlayer(
 
   const prewarm = (segIdx: number) => {
     const id = segmentsRef.current[segIdx]?.id;
-    if (!id || standbyIdRef.current === id || !standbyRef.current) return;
+    const standby = standbyRef.current;
+    // Narrowed here only so TypeScript can see they are non-null below; the DECISION — including
+    // the URL check whose ordering was the bug — belongs to `shouldPrewarm`.
+    if (!id || !standby) return;
+    if (!shouldPrewarm({
+      segmentId: id,
+      claimedId: standbyIdRef.current,
+      url: getSegmentUrl(segIdx),
+      hasStandby: true,
+    })) return;
+    // The URL check lives inside `shouldPrewarm` — see there for why its ORDER was the bug.
+    // Leaving `standbyIdRef` untouched when there is no URL is what lets the next prewarm call
+    // (they are frequent — every timeupdate near the boundary) retry once the URL arrives.
     standbyIdRef.current = id;
-    attachHlsSource(standbyRef.current, segIdx, hlsStandbyRef.current);
+    attachHlsSource(standby, segIdx, hlsStandbyRef.current);
   };
 
   const swapVideos = () => {

@@ -1,84 +1,160 @@
 /**
- * A LECTURE SHARED RIGHT AFTER UPLOAD MUST NOT FREEZE AT THE FIRST BOUNDARY.
+ * A LECTURE SHARED RIGHT AFTER UPLOAD MUST NOT FREEZE — AND THE TEST MUST BE ABLE TO TELL.
  *
- * ViewerPage decided readiness with `segments.some(ready)` — per PROJECT — and tore down its
- * config poll in the same block. So a two-video lecture opened while video 2 was still
- * transcoding played video 1, froze on its last frame, and stayed there forever: the player
- * attaches nothing for a null URL and waits on a `canplay` that can never arrive, and the poll
- * that would have delivered video 2's URL was already gone.
+ * The previous version of this file is the reason there is a second round. It `readFileSync`'d
+ * `ViewerPage.tsx` and asserted on the SOURCE TEXT, and it re-declared the readiness predicates
+ * inside the test so it was checking its own copy rather than the shipped one. It had a case
+ * named `starts playback on the first ready segment` whose body asserted only that *some*
+ * segment was playable — a claim about scheduling that the assertion could not reach. The
+ * component never did that: `useProjectPlayer` seeds `currentSegIdx: 0` and attaches
+ * `segmentsRef.current[0]` unconditionally.
  *
- * Found by a fresh-eyes hunt, not by the 330-finding audit — it only appears where the readiness
- * gate and the segment-swap state machine meet, which no single-domain reviewer could see.
- *
- * The decision is pinned as a pure predicate so it is testable without a browser; ViewerPage is
- * asserted to still contain it.
+ * All four regressions below passed that suite. Every test here imports the real decision from
+ * `segmentReadiness.ts` — the same module the components call — so a test can no longer agree
+ * with a comment while the code does something else.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import {
+  isPlayableSegment,
+  isResolvedSegment,
+  entrySegmentOf,
+  readinessOf,
+  mergeSegmentUrls,
+  shouldPrewarm,
+} from '../components/viewer/segmentReadiness';
+import type { PlayerSegment } from '../components/viewer/types';
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const SRC = readFileSync(resolve(HERE, '../components/viewer/ViewerPage.tsx'), 'utf-8');
-const SHARED_SRC = readFileSync(resolve(HERE, '../components/viewer/SharedViewerPage.tsx'), 'utf-8');
+const seg = (over: Partial<PlayerSegment> & { id: string }): PlayerSegment =>
+  ({ hls_url: null, fallback_url: null, hls_status: 'processing', label: '', duration_sec: 10, simulations: [], ...over }) as PlayerSegment;
 
-type Seg = { hls_status?: string | null; fallback_url?: string | null };
+const ready = (id: string) => seg({ id, hls_status: 'ready', hls_url: `https://cdn/${id}.m3u8` });
+const processing = (id: string) => seg({ id, hls_status: 'processing' });
+const failed = (id: string) => seg({ id, hls_status: 'failed' });
 
-/** The shipped rule, mirrored: a segment is resolved when it can never change again. */
-const isResolved = (s: Seg) => s.hls_status === 'ready' || s.hls_status === 'failed' || Boolean(s.fallback_url);
-const playable = (segs: Seg[]) => segs.filter((s) => s.hls_status === 'ready' || s.fallback_url);
-const pending = (segs: Seg[]) => segs.filter((s) => !isResolved(s));
-
-describe('the viewer keeps polling while later segments are still transcoding', () => {
-  const ready = { hls_status: 'ready', fallback_url: null };
-  const processing = { hls_status: 'processing', fallback_url: null };
-  const failed = { hls_status: 'failed', fallback_url: null };
-
-  it('starts playback on the first ready segment', () => {
-    expect(playable([ready, processing]).length).toBeGreaterThan(0);
+describe('REGRESSION 1 — readiness is the ENTRY segment’s, never “any segment’s”', () => {
+  it('a ready LATER segment does not make an unready FIRST segment playable', () => {
+    // The exact shipped bug. Transcodes run concurrently, so video 2 finishing first is ordinary.
+    // `playable.length > 0` was true here, so the viewer dismissed the spinner and handed the
+    // player a segment 0 with no URL: no video, no spinner, no error.
+    const r = readinessOf({ segments: [processing('a'), ready('b')], branching: null });
+    expect(r.entryPlayable).toBe(false);
+    expect(r.pendingCount).toBe(1);
   });
 
-  it('does NOT stop polling while a later segment is still transcoding', () => {
-    // This is the bug: the old gate stopped here, so video 2's URL never arrived.
-    expect(pending([ready, processing])).toHaveLength(1);
+  it('is playable as soon as the FIRST segment is, even with later ones transcoding', () => {
+    const r = readinessOf({ segments: [ready('a'), processing('b')], branching: null });
+    expect(r.entryPlayable).toBe(true);
+    expect(r.pendingCount).toBe(1);            // and polling must continue
   });
 
-  it('stops polling once every segment has reached a terminal state', () => {
-    expect(pending([ready, ready])).toHaveLength(0);
-    expect(pending([ready, failed])).toHaveLength(0);      // a failed segment will not change
-    expect(pending([ready, { hls_status: 'processing', fallback_url: 'https://cdn/x.mp4' }])).toHaveLength(0);
+  it('a progressive fallback counts, an .m3u8-only “ready” flag is not required', () => {
+    expect(isPlayableSegment(seg({ id: 'a', hls_status: 'processing', fallback_url: 'https://cdn/a.mp4' }))).toBe(true);
   });
 
-  it('a single failed segment does not look like a healthy project', () => {
-    // `every(failed)` was the only error path, so one bad video among good ones was invisible —
-    // the lecture simply died at that video. It is now resolved (poll stops) but not playable,
-    // which is what lets the player surface it rather than hang.
-    const segs = [ready, failed];
-    expect(segs.every((s) => s.hls_status === 'failed')).toBe(false);
-    expect(playable(segs)).toHaveLength(1);
-    expect(pending(segs)).toHaveLength(0);
+  it('resolves the entry through the entry SEQUENCE when the project branches', () => {
+    const config = {
+      segments: [processing('flat')],
+      branching: {
+        entry_sequence_id: 'seq-2',
+        sequences: [
+          { id: 'seq-1', segments: [processing('x')] },
+          { id: 'seq-2', segments: [ready('entry'), processing('later')] },
+        ],
+      },
+    };
+    // Not sequences[0], and not config.segments — the sequence named by entry_sequence_id.
+    expect(entrySegmentOf(config as never)?.id).toBe('entry');
+    expect(readinessOf(config as never).entryPlayable).toBe(true);
   });
 
-  it('ViewerPage still carries this rule', () => {
-    const code = SRC.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
-    // The poll must be conditional on nothing being pending — not unconditional as before.
-    expect(code).toMatch(/if \(pending\.length === 0\) stop\(\);/);
-    // And readiness must no longer be a bare project-wide `some`.
-    expect(code).not.toMatch(/const hasReady = data\.segments\.some/);
+  it('falls back to the first sequence when the named entry is missing', () => {
+    const config = {
+      segments: [],
+      branching: { entry_sequence_id: 'nope', sequences: [{ id: 'seq-1', segments: [ready('first')] }] },
+    };
+    expect(entrySegmentOf(config as never)?.id).toBe('first');
+  });
+});
+
+describe('polling continues until every segment is terminal', () => {
+  it('“failed” is resolved but NOT playable — so it surfaces instead of hanging', () => {
+    expect(isResolvedSegment(failed('a'))).toBe(true);
+    expect(isPlayableSegment(failed('a'))).toBe(false);
   });
 
-  it('gives up LOUDLY when the time bound is reached, never silently', () => {
-    // A first draft called `stop()` bare after PROCESSING_LIMIT_MS, which put a long transcode —
-    // ordinary for a long video — straight back into the silent freeze this change removes.
-    const code = SRC.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
-    expect(code).toMatch(/PROCESSING_LIMIT_MS\) \{ setStalled\(true\); stop\(\); \}/);
+  it('stops polling only when nothing can change again', () => {
+    expect(readinessOf({ segments: [ready('a'), ready('b')], branching: null }).pendingCount).toBe(0);
+    expect(readinessOf({ segments: [ready('a'), failed('b')], branching: null }).pendingCount).toBe(0);
+    expect(readinessOf({ segments: [ready('a'), processing('b')], branching: null }).pendingCount).toBe(1);
   });
 
-  it('SharedViewerPage carries the SAME rule — a shared link is how this bug is met', () => {
-    // The two surfaces had diverged after only one was fixed, and the shared link is precisely
-    // how a lecture gets watched while a later video is still transcoding.
-    const code = SHARED_SRC.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
-    expect(code).toMatch(/if \(pending\.length === 0\) stop\(\);/);
-    expect(code).not.toMatch(/const hasReady\s*=\s*data\.segments\.some/);
+  it('one bad video among good ones is not a healthy project and not a dead one', () => {
+    const r = readinessOf({ segments: [ready('a'), failed('b')], branching: null });
+    expect(r.allFailed).toBe(false);
+    expect(r.entryPlayable).toBe(true);
+    expect(r.pendingCount).toBe(0);
+  });
+
+  it('every segment failed is a hard error, not a wait', () => {
+    expect(readinessOf({ segments: [failed('a'), failed('b')], branching: null }).allFailed).toBe(true);
+  });
+
+  it('a project with no segments is empty, not playable', () => {
+    const r = readinessOf({ segments: [], branching: null });
+    expect(r.empty).toBe(true);
+    expect(r.entryPlayable).toBe(false);
+  });
+});
+
+describe('REGRESSION 2 — a URL arriving after mount must reach the held timeline', () => {
+  it('fills in a segment that has since become ready', () => {
+    const held = [ready('a'), processing('b')];
+    const merged = mergeSegmentUrls(held, { segments: [ready('a'), ready('b')], branching: null } as never);
+    expect(merged[1].hls_url).toBe('https://cdn/b.m3u8');
+    expect(merged[1].hls_status).toBe('ready');
+  });
+
+  it('NEVER rewrites a segment that already has a URL — that is a shot swap mid-playback', () => {
+    const held = [seg({ id: 'a', hls_status: 'ready', hls_url: 'https://cdn/ORIGINAL.m3u8' })];
+    const merged = mergeSegmentUrls(held, { segments: [seg({ id: 'a', hls_status: 'ready', hls_url: 'https://cdn/DIFFERENT.m3u8' })], branching: null } as never);
+    expect(merged[0].hls_url).toBe('https://cdn/ORIGINAL.m3u8');
+  });
+
+  it('matches across branch sequences, so it survives a navigation', () => {
+    const held = [processing('deep')];
+    const merged = mergeSegmentUrls(held, {
+      segments: [],
+      branching: { entry_sequence_id: 's1', sequences: [{ id: 's1', segments: [ready('deep')] }] },
+    } as never);
+    expect(merged[0].hls_url).toBe('https://cdn/deep.m3u8');
+  });
+
+  it('returns the SAME array when nothing changed, so the caller can skip the write', () => {
+    const held = [ready('a')];
+    expect(mergeSegmentUrls(held, { segments: [ready('a')], branching: null } as never)).toBe(held);
+    expect(mergeSegmentUrls(held, { segments: [processing('a')], branching: null } as never)).toBe(held);
+  });
+});
+
+describe('REGRESSION 3 — the standby is never claimed for a segment with no URL', () => {
+  const base = { segmentId: 'b', claimedId: null as string | null, url: 'https://cdn/b.m3u8', hasStandby: true };
+
+  it('does not claim when the URL is still empty — which is what allows the retry', () => {
+    // The bug: the id was recorded first, the attach then no-opped on the empty URL, and the
+    // “already claimed” guard matched forever after. The URL arrived and nothing re-attached.
+    expect(shouldPrewarm({ ...base, url: '' })).toBe(false);
+  });
+
+  it('claims once the URL arrives on a later poll', () => {
+    expect(shouldPrewarm({ ...base, url: 'https://cdn/b.m3u8' })).toBe(true);
+  });
+
+  it('does not re-claim a segment it already holds', () => {
+    expect(shouldPrewarm({ ...base, claimedId: 'b' })).toBe(false);
+  });
+
+  it('needs a segment and a standby element', () => {
+    expect(shouldPrewarm({ ...base, segmentId: null })).toBe(false);
+    expect(shouldPrewarm({ ...base, hasStandby: false })).toBe(false);
   });
 });
