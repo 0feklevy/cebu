@@ -82,10 +82,32 @@ function asPersonaConfig(v: unknown): AvatarPersonaConfig {
  * and the character the persona was BAKED as cannot drift apart for a project that configured one.
  */
 function projectCharacterId(cfg: AvatarPersonaConfig | undefined, requested?: string): string {
+  return resolveCharacter(cfg, requested).id;
+}
+
+/**
+ * WHICH CHARACTER, AND WHETHER ANYONE ACTUALLY CHOSE IT.
+ *
+ * `characterId` alone answers only the first question. It is a ROUTING value — which prompt and
+ * voice this session runs as — and it is never empty, because a session must run as something.
+ * The client, given nothing else, treated it as an IDENTITY and rendered the character's name,
+ * portrait and "Connecting to …" label from it. So a project that configured no persona at all
+ * resolved to `einstein` here and every viewer of it was told, in the product's own voice, that
+ * they were talking to Albert Einstein — an identity its owner never picked.
+ *
+ * Those are two different facts and they now travel as two fields. `source` is what lets the
+ * client tell a real choice from this function's fallback, which is a distinction it cannot
+ * reconstruct from the id.
+ */
+export function resolveCharacter(
+  cfg: AvatarPersonaConfig | undefined,
+  requested?: string,
+): { id: string; source: 'configured' | 'requested' | 'default' } {
   const configured = cfg?.characterId?.trim();
-  if (configured && CHARACTERS[configured]) return configured;
-  if (requested && CHARACTERS[requested]) return requested;
-  return DEFAULT_CHARACTER_ID;
+  if (configured && CHARACTERS[configured]) return { id: configured, source: 'configured' };
+  // A request may still SELECT a character on a project that names none; that is a choice.
+  if (requested && CHARACTERS[requested]) return { id: requested, source: 'requested' };
+  return { id: DEFAULT_CHARACTER_ID, source: 'default' };
 }
 
 /**
@@ -531,6 +553,7 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
     let cfg: AvatarPersonaConfig | undefined;
     let apiKey: string | undefined;
     let characterId: string;
+    let characterSource: 'configured' | 'requested' | 'default';
     let ownerId: string | null = null;
     let selfHeal: BakeInput | null = null;
     if (body.projectId) {
@@ -553,7 +576,7 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
       // A request may still SELECT a character on a project that names none; that is a choice,
       // not a default. The character the persona was BAKED as still comes from the config alone
       // (bakedCharacterId), so a request can never redefine the saved persona and re-bake it.
-      characterId = projectCharacterId(cfg, body.character_id);
+      ({ id: characterId, source: characterSource } = resolveCharacter(cfg, body.character_id));
 
       // THE DECISION, taken BEFORE any further read. A saved persona is referenced by id (one
       // vendor round-trip, ~118-byte body) exactly while the recorded fingerprint still describes
@@ -602,7 +625,7 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
       // No project, so no configured persona to be authoritative: the caller's choice is the only
       // signal, and 'einstein' is the honest fallback. This is the ONLY start path where a
       // client-supplied character decides unconditionally.
-      characterId = projectCharacterId(undefined, body.character_id);
+      ({ id: characterId, source: characterSource } = resolveCharacter(undefined, body.character_id));
     }
     // Reserve the session's WORST-CASE cost before the vendor is called. `/avatar/end` is a no-op
     // any client may simply never send, so nothing here is ever given back early — the lease
@@ -680,6 +703,10 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
         capability: body.projectId ? signAvatarCapability({ projectId: body.projectId, uid: request.dbUser?.id ?? null }).token : undefined,
         sessionToken: info.token,
         characterId: info.characterId,
+        // The provenance of that id, so the client can tell "the owner chose Einstein" from
+        // "nobody chose anything and this is the fallback". Without it the two are identical on
+        // the wire and the client has to guess — which is how it guessed Einstein for everyone.
+        characterSource: characterSource,
         voiceSensitivity: info.voiceSensitivity,
         avatarDisplay: namedAvatarDisplay(
           buildAvatarDisplay(info.characterId, displayCfg, info.voiceSensitivity),

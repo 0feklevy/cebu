@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { startAvatarSession, isAbortError, type AvatarDisplay } from './avatarApi';
-import { characterMeta, PENDING_CHARACTER_META } from './characters';
+import { displayIdentity, type CharacterSource } from './characters';
 import { AvatarConversation } from './AvatarConversation';
 import { preloadAnamSdk } from './anamSdk';
 import { beginConnectTrace, type ConnectTrace } from './connectTelemetry';
@@ -30,11 +30,12 @@ export function AvatarPopup({ open, onClose, projectId, videoTitle, characterId 
   const [error, setError] = useState<string | null>(null);
   const [resolvedCharacter, setResolvedCharacter] = useState<string | undefined>(characterId);
   const [avatarDisplay, setAvatarDisplay] = useState<AvatarDisplay | undefined>();
+  const [characterSource, setCharacterSource] = useState<CharacterSource | undefined>();
   const pausedVideos = useRef<HTMLVideoElement[]>([]);
-  // Until the start has answered there is no persona to name, and naming one anyway is the bug.
-  const meta = resolvedCharacter || avatarDisplay?.displayName
-    ? characterMeta(resolvedCharacter, avatarDisplay)
-    : PENDING_CHARACTER_META;
+  // Until somebody is actually named — by the server, or by a character someone chose — name
+  // nobody. `resolvedCharacter` alone is not a name: it is always set once the start answers,
+  // and for an unconfigured project it is the fallback 'einstein'.
+  const meta = displayIdentity(resolvedCharacter, characterSource, avatarDisplay);
 
   /**
    * t0 for the click-to-first-frame trace (anam-latency-001, client half). It has to
@@ -73,7 +74,7 @@ export function AvatarPopup({ open, onClose, projectId, videoTitle, characterId 
   // the product. In React StrictMode it was wasted on every single open, because the
   // throwaway first mount issued a start of its own.
   useEffect(() => {
-    if (!open) { setToken(null); setError(null); setAvatarDisplay(undefined); return; }
+    if (!open) { setToken(null); setError(null); setAvatarDisplay(undefined); setCharacterSource(undefined); return; }
     const abort = new AbortController();
     const trace = beginConnectTrace();
     traceRef.current = trace;
@@ -82,6 +83,7 @@ export function AvatarPopup({ open, onClose, projectId, videoTitle, characterId 
     setToken(null);
     setResolvedCharacter(characterId);
     setAvatarDisplay(undefined);
+    setCharacterSource(characterId ? 'requested' : undefined);
     // Fetch the (lazy) Anam SDK chunk alongside the token rather than after it, so the
     // code split cannot show up as click-to-first-frame latency. Static asset only.
     preloadAnamSdk();
@@ -99,6 +101,7 @@ export function AvatarPopup({ open, onClose, projectId, videoTitle, characterId 
         trace.mark('token');
         setToken(data.sessionToken);
         setResolvedCharacter(data.characterId ?? characterId);
+        setCharacterSource(data.characterSource ?? (characterId ? 'requested' : undefined));
         setAvatarDisplay(data.avatarDisplay ?? (data.voiceSensitivity != null ? { voiceSensitivity: data.voiceSensitivity } : undefined));
       })
       .catch((e) => {
@@ -186,7 +189,7 @@ export function AvatarPopup({ open, onClose, projectId, videoTitle, characterId 
               <p style={{ color: 'rgba(255,255,255,0.6)', marginTop: 14 }}>{meta.startingLabel}</p>
             </div>
           ) : (
-            <AvatarConversation characterId={resolvedCharacter} projectId={projectId} sessionToken={token} display={avatarDisplay} trace={traceRef.current ?? undefined} onLeave={onClose} />
+            <AvatarConversation characterId={resolvedCharacter} identity={meta} projectId={projectId} sessionToken={token} display={avatarDisplay} trace={traceRef.current ?? undefined} onLeave={onClose} />
           )}
         </div>
       </div>

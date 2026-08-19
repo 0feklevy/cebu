@@ -241,7 +241,7 @@ export const startAvatarSession = (
   // `correlationId` is the backend's start-trace id (services/avatar/startTelemetry.ts).
   // It is the join key between the server's phase timings and the client's — without it
   // the two halves of a slow open cannot be lined up against each other.
-  jsonFetch<{ provider: string; sessionToken: string; characterId: string; voiceSensitivity?: number; avatarDisplay?: AvatarDisplay; correlationId?: string }>(
+  jsonFetch<{ provider: string; sessionToken: string; characterId: string; characterSource?: 'configured' | 'requested' | 'default'; voiceSensitivity?: number; avatarDisplay?: AvatarDisplay; correlationId?: string }>(
     '/api/v1/avatar/start',
     { method: 'POST', body: JSON.stringify({ character_id: characterId, projectId, startKey }), signal },
     true,

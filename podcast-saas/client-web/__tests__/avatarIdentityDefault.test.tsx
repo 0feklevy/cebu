@@ -44,6 +44,69 @@ describe('AvatarPopup — the project persona names the popup, never the client 
   const portraits = () =>
     Array.from(document.querySelectorAll('img')).map((i) => i.getAttribute('src') ?? '');
 
+  /**
+   * THE HOLE THE FIRST FIX LEFT, reported again by the owner as "still stuck on default".
+   *
+   * The old guard was `resolvedCharacter || avatarDisplay?.displayName`. `resolvedCharacter` is
+   * ALWAYS truthy once the start answers — the server must route the session to some prompt, and
+   * for a project that configured nothing that is the fallback 'einstein'. So the neutral branch
+   * was unreachable at exactly the moment it mattered, and the fallback was rendered as though
+   * the owner had picked it: "Ask Albert Einstein", the portrait, "Connecting to Einstein…".
+   *
+   * The server now says WHERE the id came from, and only a chosen character may be named.
+   */
+  it('a DEFAULTED character is never named, even after the start answers', async () => {
+    render(<AvatarPopup open onClose={() => {}} projectId="p1" videoTitle="The Edge of Chaos" />);
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => {
+      resolveStart({
+        provider: 'anam',
+        sessionToken: '',
+        characterId: 'einstein',        // routing: this session runs the einstein prompt
+        characterSource: 'default',     // …but nobody chose it
+      });
+      await Promise.resolve();
+    });
+
+    expect(document.body.textContent).not.toMatch(/einstein/i);
+    expect(portraits().some((src) => /einstein/i.test(src))).toBe(false);
+    expect(screen.getByText(/Ask the avatar/i)).toBeTruthy();
+  });
+
+  it('a CONFIGURED character is named — this is a real choice, not a fallback', async () => {
+    render(<AvatarPopup open onClose={() => {}} projectId="p1" videoTitle="The Edge of Chaos" />);
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => {
+      resolveStart({
+        provider: 'anam',
+        sessionToken: '',
+        characterId: 'einstein',
+        characterSource: 'configured',   // the owner picked Einstein
+      });
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText(/Ask Albert Einstein/i)).toBeTruthy();
+  });
+
+  it('a server-supplied name always wins, whatever the character id routes to', async () => {
+    render(<AvatarPopup open onClose={() => {}} projectId="p1" videoTitle="The Edge of Chaos" />);
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => {
+      resolveStart({
+        provider: 'anam',
+        sessionToken: '',
+        characterId: 'einstein',
+        characterSource: 'default',
+        avatarDisplay: { displayName: 'Pnina' },
+      });
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText(/Ask Pnina/i)).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/einstein/i);
+  });
+
   it('names no character while the start is still in flight', async () => {
     render(<AvatarPopup open onClose={() => {}} projectId="p1" videoTitle="The Edge of Chaos" />);
     await act(async () => { await Promise.resolve(); });
