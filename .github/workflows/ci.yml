@@ -243,6 +243,14 @@ jobs:
       - name: Ensure ffmpeg
         run: |
           if ffmpeg -version >/dev/null 2>&1; then exit 0; fi
+          # INSTALL FIRST, UPDATE ONLY IF THAT FAILS.
+          #
+          # `apt-get update` is the operation that actually hangs here — twice now, and the
+          # observed stall was always mid-refresh of an InRelease file from a sick mirror. The
+          # runner image ships with package lists already present, so the install usually
+          # succeeds without refreshing them at all. Trying it first means the common path never
+          # touches the flaky operation, and a genuinely stale list still gets one refresh.
+          if timeout 240 sudo apt-get install -y -o Acquire::Retries=2 ffmpeg; then exit 0; fi
           for attempt in 1 2 3; do
             if timeout 120 sudo apt-get update -o Acquire::Retries=2 \
                && timeout 240 sudo apt-get install -y -o Acquire::Retries=2 ffmpeg; then exit 0; fi
