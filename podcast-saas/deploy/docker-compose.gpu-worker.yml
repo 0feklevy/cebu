@@ -1,0 +1,55 @@
+# The DEDICATED GPU export orchestrator — a standalone stack for the capture host.
+#
+#   docker compose -f deploy/docker-compose.gpu-worker.yml up -d
+#
+# This host runs ONE thing: the project_export queue. The public API, the frontends and every other
+# queue stay on the production host; this file deliberately defines no web tier, no nginx, and no
+# port at all. The pairing is enforced on both sides — the production worker carries a WORKER_QUEUES
+# override that names every queue EXCEPT project_export, and this worker names ONLY project_export,
+# so exactly one process on earth consumes export jobs and it is the one with the GPU.
+#
+# WHY THE ORCHESTRATOR MAY HOLD THE DOCKER SOCKET: it is the TRUSTED side of the capture boundary —
+# it stages inputs, launches the hardened capture container, and validates artifacts. The socket is
+# root-equivalent, which is exactly why the PUBLIC backend must never hold it; this host serves no
+# HTTP and its one consumer is the queue. The capture container itself gets none of this: no socket,
+# no network, no env, and a GPU only when the job's renderer profile is hardware — as one explicit
+# CDI device, never `--gpus all`.
+#
+# ONE-TIME HOST SETUP:
+#   1. Build both images at the SAME pinned commit:
+#        docker build -f deploy/docker/backend.Dockerfile       -t podcast-saas/backend:<sha> .
+#        docker build -f deploy/docker/export-worker.Dockerfile -t podcast-saas/export-worker:<sha> \
+#          --build-arg CHROME_HEADLESS_SHELL_VERSION=<pin> .
+#   2. mkdir -p /var/lib/flowvid-capture && chown 1000:1000 /var/lib/flowvid-capture
+#   3. nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml   (once per driver update)
+#   4. Place the production runtime env (transferred securely, never committed) at the path
+#      env_file points to, chmod 600.
+#   5. export DOCKER_GID="$(getent group docker | cut -d: -f3)" APP_SHA=<sha>
+services:
+  export-orchestrator:
+    image: podcast-saas/backend:${APP_SHA:?export APP_SHA=<the pinned commit both images were built at>}
+    restart: unless-stopped
+    command: ['node', 'dist/worker.js']
+    env_file:
+      - ${PROD_RUNTIME_ENV:-/home/ubuntu/gpu-worker/prod.runtime}
+    environment:
+      NODE_ENV: production
+      QUEUE_DRIVER: pgboss
+      # THE point of this host: one queue, serially. Everything else is refused by the allowlist.
+      WORKER_QUEUES: project_export
+      QUEUE_EXPORT_CONCURRENCY: "1"
+      # Hardware rendering, as one explicit CDI device. The renderer identity check fails closed if
+      # SwiftShader answers, so a broken driver surfaces as a loud capture failure, not slow video.
+      EXPORT_CAPTURE_RENDERER: hardware
+      EXPORT_CAPTURE_GPU_CDI_DEVICE: nvidia.com/gpu=0
+      EXPORT_CAPTURE_IMAGE: podcast-saas/export-worker:${APP_SHA}
+      EXPORT_CAPTURE_WORKDIR: /var/lib/flowvid-capture
+      EXPORT_CAPTURE_USER: "1000:1000"
+      EXPORT_CAPTURE_SANDBOX_MECHANISM: sys-admin
+    group_add:
+      - "${DOCKER_GID:?export DOCKER_GID=$(getent group docker | cut -d: -f3)}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/lib/flowvid-capture:/var/lib/flowvid-capture
+    # The worker serves no HTTP; PID-1 crash + restart is the liveness story, same as production.
+    stop_grace_period: 45s
