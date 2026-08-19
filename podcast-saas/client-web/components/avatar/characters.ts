@@ -99,3 +99,39 @@ export function characterMeta(id?: string, overrides?: CharacterMetaOverride): C
     : base;
   return { ...ground, ...over };
 }
+
+/**
+ * Where the session's `characterId` came from — the server's own answer, not a guess.
+ * 'default' means nobody chose it; it is this product's internal fallback.
+ */
+export type CharacterSource = 'configured' | 'requested' | 'default';
+
+/**
+ * THE IDENTITY TO PUT ON SCREEN.
+ *
+ * `characterId` is a ROUTING value: which prompt and voice the session runs as. It is never
+ * empty, because a session must run as something. Treating it as an IDENTITY is what put "Ask
+ * Albert Einstein", Einstein's portrait and "Connecting to Einstein…" in front of every viewer of
+ * every project that had configured no persona at all.
+ *
+ * The popup's old guard (`resolvedCharacter || display?.displayName`) could not catch this,
+ * because `resolvedCharacter` is ALWAYS truthy once the start answers — so the neutral branch was
+ * unreachable at precisely the moment it was needed, and the fallback character was rendered as
+ * though the owner had picked it.
+ *
+ * The rule, in order:
+ *   1. a name the server supplied describes the avatar the session actually uses — always trust it;
+ *   2. otherwise a character someone genuinely CHOSE may lend its name and portrait;
+ *   3. otherwise name nobody. `startingLabel` still says what is happening.
+ */
+export function displayIdentity(
+  characterId: string | undefined,
+  source: CharacterSource | undefined,
+  display?: CharacterMetaOverride,
+): CharacterMeta {
+  if (display?.displayName?.trim()) return characterMeta(characterId, display);
+  if (characterId && source && source !== 'default') return characterMeta(characterId, display);
+  // Keep whatever non-identifying detail the server sent (voice sensitivity, labels) — just never
+  // a name, a face or a "Connecting to <somebody>…" for a somebody nobody chose.
+  return { ...PENDING_CHARACTER_META, ...compactOverride(display) };
+}

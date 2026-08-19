@@ -11,7 +11,7 @@ import {
   settleWithin,
 } from './anamConnectPolicy';
 import { beginConnectTrace, type ConnectTrace } from './connectTelemetry';
-import { characterMeta } from './characters';
+import { characterMeta, type CharacterMeta } from './characters';
 import { endAvatarSession, startAvatarSession, type AvatarDisplay } from './avatarApi';
 import { useVisualTrigger } from './hooks/useVisualTrigger';
 import { useImageTrigger } from './hooks/useImageTrigger';
@@ -25,6 +25,8 @@ type AnamEvents = AnamSdk['AnamEvent'];
 
 interface Props {
   characterId: string;
+  /** The identity the popup already resolved. Passed in so it is decided exactly once. */
+  identity?: CharacterMeta;
   projectId?: string;
   sessionToken: string;
   display?: AvatarDisplay;
@@ -109,8 +111,12 @@ async function primeVideoElementForAutoplay(): Promise<void> {
 }
 
 // Mic-only port of darwin-avatar/client/src/components/AnamConversationView.tsx.
-export function AvatarConversation({ characterId, projectId, sessionToken, display, trace, onLeave }: Props) {
-  const character = characterMeta(characterId, display);
+export function AvatarConversation({ characterId, identity, projectId, sessionToken, display, trace, onLeave }: Props) {
+  // The identity is RESOLVED BY THE POPUP and passed in. Recomputing it here from `characterId`
+  // alone reintroduced the bug one layer down: the popup would correctly show "Connecting…" and
+  // then the conversation, running its own `characterMeta(characterId, …)`, put Einstein's
+  // nametag over the stream for a project that had chosen nobody. One decision, one place.
+  const character = identity ?? characterMeta(characterId, display);
   const clientRef = useRef<AnamClient | null>(null);
   const leftRef = useRef(false);
 
