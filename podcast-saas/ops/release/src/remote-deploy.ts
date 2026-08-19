@@ -180,7 +180,18 @@ for lk in "$GIT_DIR_ABS/index.lock" "$GIT_DIR_ABS/shallow.lock" "$GIT_DIR_ABS/HE
   rm -f "$lk" && printf 'removed_stale_lock=%s\\n' "$lk"
 done
 if [ "$GIT_RUNNING" = no ] && [ -d "$GIT_DIR_ABS/refs" ]; then find "$GIT_DIR_ABS/refs" -type f -name '*.lock' -exec rm -f {} + 2>/dev/null || true; fi
-if [ -n "$(git -C "$REPO_DIR" status --porcelain 2>/dev/null)" ]; then fail CHECK_REMOTE_STATUS "the VM working tree has uncommitted changes; refusing to overwrite them"; fi
+DIRTY="$(git -C "$REPO_DIR" status --porcelain 2>/dev/null)"
+if [ -n "$DIRTY" ]; then
+  # NAME THE FILES. This refusal has now blocked two production deploys, and both times the
+  # message said only that the tree was dirty — so the operator had to SSH in to discover it was
+  # a single stray file. The list is bounded and the paths are already public repo paths, so
+  # printing them costs nothing and turns a dead end into an instruction.
+  DIRTY_N="$(printf '%s\n' "$DIRTY" | wc -l | tr -d ' ')"
+  printf 'dirty_files=%s\n' "$DIRTY_N"
+  printf '%s\n' "$DIRTY" | head -20 | while IFS= read -r line; do printf 'dirty: %s\n' "$line"; done
+  [ "$DIRTY_N" -gt 20 ] && printf 'dirty: … and %s more\n' "$((DIRTY_N - 20))"
+  fail CHECK_REMOTE_STATUS "the VM working tree has $DIRTY_N uncommitted change(s) (listed above as dirty:); refusing to overwrite them. Inspect them on the VM, then preserve or remove them — do not use git reset --hard, which would destroy whatever they are."
+fi
 LSOUT="$(bounded "$LS_TIMEOUT" git -C "$REPO_DIR" ls-remote --heads origin 2>&1)"; rc=$?
 if [ "$rc" != 0 ]; then
   if [ "$rc" = 124 ]; then fail CHECK_REMOTE_STATUS "GitHub is not reachable: git ls-remote origin timed out after $LS_TIMEOUT seconds"; fi

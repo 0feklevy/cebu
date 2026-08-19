@@ -1,6 +1,12 @@
 node_modules/
 .env
 *.env.local
+# Operational .env backups taken on a host before a risky change. They are never committed, and
+# leaving them merely UNTRACKED made them show up in `git status --porcelain` — which is what the
+# release's CHECK_REMOTE_STATUS reads, so one stray backup on the VM blocked production deploys
+# twice. Ignoring them keeps the safety check meaningful: a dirty tree then means real work.
+.env.backup*
+*.env.backup*
 .next/
 dist/
 build/

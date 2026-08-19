@@ -351,6 +351,46 @@ describe.runIf(hasBash && REAL_GIT)('REMOTE_SYNC_SCRIPT executed under bash (net
     expect(seen).toContain('BatchMode=yes'); // GIT_SSH_COMMAND was exported for the ssh transport too
   });
 
+  /**
+   * A DIRTY TREE MUST SAY WHICH FILES.
+   *
+   * This refusal blocked two production deploys. Both times the whole message was "the VM working
+   * tree has uncommitted changes", and both times the cause was ONE stray untracked file — but
+   * finding that out meant SSHing to the VM, because the failure named nothing. The refusal
+   * itself is right and stays; what changes is that it is now actionable from the log alone.
+   */
+  it('a dirty tree is refused BY NAME, with a count and a warning against reset --hard', () => {
+    const { dir, head } = makeRepo();
+    writeFileSync(join(dir, 'stray-backup.txt'), 'an operational artifact nobody committed\n');
+    const r = runScript(dir, head);
+
+    expect(r.code).not.toBe(0);
+    expect(r.stages).toEqual(['SSH_CONNECT', 'VERIFY_REMOTE_REPOSITORY', 'CHECK_REMOTE_STATUS']);
+    // The file itself, so the operator knows what they are dealing with without logging in.
+    expect(r.stdout).toContain('dirty: ?? stray-backup.txt');
+    expect(r.stdout).toContain('dirty_files=1');
+    // And the count travels into the failure line, not just the trace above it.
+    expect(r.stderr).toMatch(/1 uncommitted change/);
+    // The destructive "fix" is named as the thing NOT to do — the tree may hold real work.
+    expect(r.stderr).toMatch(/do not use git reset --hard/i);
+  });
+
+  it('a modified tracked file is reported the same way', () => {
+    const { dir, head } = makeRepo();
+    writeFileSync(join(dir, 'a.txt'), 'edited on the box\n');
+    const r = runScript(dir, head);
+    expect(r.code).not.toBe(0);
+    expect(r.stdout).toContain('dirty: ');
+    expect(r.stdout).toContain('a.txt');
+  });
+
+  it('a CLEAN tree still passes the check — the guard did not become unconditional', () => {
+    const { dir, head } = makeRepo();
+    const r = runScript(dir, head);
+    expect(r.code).toBe(0);
+    expect(r.stdout).not.toContain('dirty:');
+  });
+
   it('missing repository fails at VERIFY_REMOTE_REPOSITORY (containers never in scope)', () => {
     const r = runScript('/no/such/repo/here', SHA);
     expect(r.code).not.toBe(0);
