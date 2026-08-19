@@ -19,6 +19,29 @@ import { render, act, cleanup, screen } from '@testing-library/react';
 vi.mock('../lib/firebase', () => ({
   auth: { currentUser: { getIdToken: () => Promise.resolve('test-id-token') } },
 }));
+/**
+ * The conversation is doubled because this file is about the HEADER, not the stream.
+ *
+ * A non-empty session token is now required to get past the popup's "a 200 is not a session"
+ * check, and a non-empty token mounts the real conversation, which hands the token straight to
+ * the Anam SDK. The SDK decodes it as a JWT and rejects — asynchronously, as an UNHANDLED
+ * REJECTION that leaves every assertion green and fails the suite at the very end with
+ * "Errors 1 error". Nothing here needs a live session; stubbing the lazy SDK loader keeps the
+ * test on the thing it is actually asserting.
+ */
+vi.mock('../components/avatar/anamSdk', () => ({
+  preloadAnamSdk: () => {},
+  loadAnamSdk: async () => ({
+    createClient: () => ({
+      streamToVideoElement: async () => {},
+      addListener: () => {},
+      stopStreaming: async () => {},
+      muteInputAudio: () => {},
+      unmuteInputAudio: () => {},
+    }),
+    AnamEvent: {},
+  }),
+}));
 
 import { AvatarPopup } from '../components/avatar/AvatarPopup';
 import { displayIdentity } from '../components/avatar/characters';
