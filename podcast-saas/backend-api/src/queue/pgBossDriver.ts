@@ -40,8 +40,15 @@ const QUEUE_CONCURRENCY: Record<JobName, number> = {
   podcast_clips: 1,
   podcast_mix_export: 1,
   project_export: 1,
+  // Crop is NOT I/O-bound, which is why it is not in the group below. It runs ffmpeg plus frame
+  // analysis, so it is CPU-bound, and the production host has 2 vCPU — two crop workers there
+  // contend with each other and with whatever else is encoding. The decision record has said
+  // "QUEUE_CROP_CONCURRENCY=1 until measured on the 2-vCPU host" for some time; the default here
+  // said 2 and no deploy config overrode it, so the documented intent was simply not in force.
+  // Raising it again needs a measured RSS/runtime run on that host, not an assumption.
+  crop: 1,
+
   // I/O- or provider-bound — two interleave happily.
-  crop: 2,
   captions: 2,
   metadata: 2,
   podcast_script: 2,

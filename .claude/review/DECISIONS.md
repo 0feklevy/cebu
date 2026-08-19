@@ -58,7 +58,7 @@ there. The reviewer's D-14 ruling is explicit, and the order is not negotiable:
 |---|---|
 | **D-13** viewer config freshness | Conditional GET on the existing config routes, 60s ± jitter. Authorization must run **before** any `304`; the cache must be keyed by full audience variant, never by `projectId` alone; the client applies an **atomic overlay bundle** (b-roll, clip overlays, image overlays, audio cutaways) rather than replacing the session config; config revalidation must **not** count as a view (today share/permalink/playlist bump `view_count` on every GET, which would turn one viewer into ~60). Stays PARTIAL until the playlist and course surfaces are covered or explicitly excluded. |
 | **D-14** avatar spend control | Async shadow via a **bounded queue with 1–2 workers** (not `void promise` per request); enforce as a single transactional Postgres function with canonical lock ordering and true all-or-nothing rollback; leases stay the source of truth (a maintained counter never decrements, because `/avatar/end` is unreliable); the capability keeps its own endpoint, **prefetched at page load**, and stays out of the config JSON so it cannot poison the D-13 ETag. |
-| **D-16** vertical crop | The client half is fixed (`7c342ce`): frame-rate-independent smoothing, cuts adopted rather than eased across, segments starting on their first keyframe, and the 4:3 → padded-frame coordinate transform the ruling specified. Still open: explicit shot boundaries in the crop JSON, causal-only motion (the offline Gaussian is zero-phase and starts moving *before* the new speaker), replacing the RGB skin heuristic with a face/person detector tested on diverse skin tones, and a confidence gate + preview + opt-out before an unreliable crop auto-publishes. `QUEUE_CROP_CONCURRENCY=1` until measured on the 2-vCPU host. |
+| **D-16** vertical crop | The client half is fixed (`7c342ce`): frame-rate-independent smoothing, cuts adopted rather than eased across, segments starting on their first keyframe, and the 4:3 → padded-frame coordinate transform the ruling specified. Still open: explicit shot boundaries in the crop JSON, causal-only motion (the offline Gaussian is zero-phase and starts moving *before* the new speaker), replacing the RGB skin heuristic with a face/person detector tested on diverse skin tones, and a confidence gate + preview + opt-out before an unreliable crop auto-publishes. `QUEUE_CROP_CONCURRENCY=1` until measured on the 2-vCPU host — this is now the code default (it said 2, and nothing in deploy config overrode it, so the requirement had never actually been in force). |
 | **D-17** Avatar Ask quality | Split in two. **17a (correctness):** one canonical versioned `KnowledgeSnapshot` per project feeding all four consumers, with branching represented as paths rather than a false concatenation — until then, Ask Avatar on a multi-segment or branching project should be marked unsupported or scoped to the current segment. **17b (retrieval):** one visual decision per conversational turn, relevance before popularity, and `character_id` actually filtered. Two items close **before** any public rollout: remove `chart` from the classifier until numbers carry provenance, and route viewer-generated visuals through moderation (the service was fixed in `9d06762`; the avatar paths still do not call it). |
 
 ---
@@ -81,10 +81,25 @@ there. The reviewer's D-14 ruling is explicit, and the order is not negotiable:
 
 ## How to read the ledger
 
-334 findings tracked in `.audit-ledger/ledger.jsonl`. **No product P1 remains open.** Everything
-still open is P2 or P3, on a population where adversarial checking has moved **26 severities down
-and zero up** — so a P2 in that tail is most likely a P3, and the tail is not hiding a P0.
+334 findings tracked in `.audit-ledger/ledger.jsonl`. The previous summary here said *"No product
+P1 remains open"* and used the severity drift as if it bounded the unread tail. **Both were wrong**,
+and the external reviewer was right to call it. This is the state of the file, not a release
+promise:
 
-Rows marked `FIXED_SELF_VERIFIED` mean code-verified by the implementer and **not** adversarially
-re-verified. That distinction is load-bearing: it is exactly the gap that let `a63aa4e` and
-`anam-backend-003` both be recorded as fixed when they were not.
+| P1 disposition | count | what it actually means |
+|---|---:|---|
+| `FIXED_SELF_VERIFIED` | 32 | fixed and checked **by the implementer only** |
+| `OPEN_AUDIT_BLOCKER` | 3 | hook/environment limits no fleet agent may fix |
+| `OUT_OF_SCOPE_BILLING` | 2 | excluded by your instruction — **not** resolved |
+| `BLOCKED_DECIDED_NOT_IMPLEMENTED` | 1 | `broll-data-001`; its own residual says there is no schema or code |
+| `REFUTED` / `LIKELY_REFUTED` | 2 | the fleet caught itself |
+
+So a P1 *is* outstanding (`broll-data-001`), two more are parked rather than fixed, and **all 5 P0s
+and 34 of the 40 P1s were never adversarially re-verified** — only self-verified by whoever wrote
+the fix. That gap is exactly what let `a63aa4e` and `anam-backend-003` be recorded as fixed when
+they were not.
+
+**On the severity drift.** 23 severities moved down and none moved up. That is real evidence that
+reporters overstate — but the checked group was P0/P1 only, so it is **not a random sample** and
+bounds nothing about the 235 open P2/P3 findings that no verifier ever read. The honest sentence
+about the tail is: *235 findings are open and unverified.*
