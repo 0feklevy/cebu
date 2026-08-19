@@ -1,4 +1,6 @@
 .env
+.env.backup*
+*.env.backup*
 
 # Dependencies
 node_modules/
