@@ -46,6 +46,21 @@ services:
       ADMIN_ORIGIN: https://${DOMAIN_ADMIN}
       # Force cloud storage — never per-instance local disk in production.
       STORAGE_BACKEND: supabase
+      # ── Linear export: the GPU capture fleet ─────────────────────────────────────────────
+      # The renderer profile is stamped into the FROZEN plan at creation time — here, in the
+      # API — and the GPU orchestrator honours what the plan says, so changing this after a job
+      # is enqueued cannot change what that job renders with. 'hardware' is the production
+      # answer now that capture runs on the dedicated Tesla T4 worker; a plan frozen without it
+      # resolves to the software path and is killed by the per-section wall clock (measured:
+      # export 738bfc47, exit 137 at 136 s). The identity check still fails closed if a GPU job
+      # ever renders on SwiftShader/llvmpipe, so this cannot silently degrade.
+      EXPORT_CAPTURE_RENDERER: hardware
+      # Admission ceilings, calibrated against the real flagship project (11 sim windows,
+      # longest 27.2 s, 4,710 frames total) and the MEASURED GPU budget: a 10 s window renders
+      # in ~27 s against its 150 s wall clock. These bound the absurd, not the achievable; the
+      # per-section wall clock remains the correctness budget and is unchanged.
+      EXPORT_MAX_SIM_WINDOW_SEC: '30'
+      EXPORT_MAX_TOTAL_FRAMES: '6000'
       # ISR revalidation is server-to-server on the internal network (not browser-visible).
       REVALIDATE_URL: http://client-web:3000/api/revalidate
       # The SAME value nginx gets below. The proxied streaming upload route derives its own
@@ -90,6 +105,14 @@ services:
       NEXT_PUBLIC_APP_URL: https://${DOMAIN_ROOT}
       PUBLIC_SITE_URL: https://${DOMAIN_ROOT}
       STORAGE_BACKEND: supabase
+      # Every queue EXCEPT project_export. Exports are consumed ONLY by the dedicated GPU
+      # orchestrator (deploy/docker-compose.gpu-worker.yml): this host would capture on
+      # SwiftShader over 2 vCPUs and lose every section to the wall clock. The list is explicit
+      # rather than an exclusion because WORKER_QUEUES is an allowlist by design — and a static
+      # test (deployTopology.test.ts) asserts it equals PGBOSS_JOB_NAMES minus project_export,
+      # so adding a queue without updating this line fails the build instead of silently
+      # starving the new queue.
+      WORKER_QUEUES: "crop,video_generate,transcode,captions,metadata,podcast_script,podcast_render,podcast_clips,podcast_mix_export,project_duplicate"
     volumes:
       - media_work:/app/backend-api/.work
     networks: [internal]
