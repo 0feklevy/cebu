@@ -3,12 +3,13 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { extname } from 'path';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
-import { projects, hosts, video_files, simulations, audio_files, image_files, collaborators, project_duplications } from '../../db/schema.js';
+import { projects, hosts, video_files, simulations, audio_files, image_files, collaborators, project_duplications, avatar_visuals } from '../../db/schema.js';
 import { eq, and, inArray } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { editableProject, projectsEditableByWhere } from '../../services/collabAccess.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { uploadWithFallback } from '../../services/storage/uploadWithFallback.js';
+import { deleteSupersededThumbnail } from '../../services/storage/deleteSupersededThumbnail.js';
 import { deleteWithFallback, deleteWithPrefixFallback } from '../../services/storage/deleteWithFallback.js';
 import { deleteHlsRetirementRowsForVideo } from '../../services/video/hlsRetention.js';
 import { getOpenAIClient } from '../../services/llm/systemAi.js';
@@ -386,6 +387,8 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
         })
         .where(eq(projects.id, project.id))
         .returning();
+      // `project` was loaded before the update, so its thumbnail_key is the superseded one.
+      await deleteSupersededThumbnail(project.thumbnail_key, key);
 
       return reply.code(201).send(updated);
     },
@@ -430,11 +433,16 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       // Collect child media references BEFORE deleting (the cascade removes the rows).
-      const [videos, sims, audios, images] = await Promise.all([
+      const [videos, sims, audios, images, visuals] = await Promise.all([
         db.query.video_files.findMany({ where: eq(video_files.project_id, project.id) }),
         db.query.simulations.findMany({ where: eq(simulations.project_id, project.id) }),
         db.query.audio_files.findMany({ where: eq(audio_files.project_id, project.id) }),
         db.query.image_files.findMany({ where: eq(image_files.project_id, project.id) }),
+        // avatar_visuals cascades too, and its rows name real bytes: generated images under
+        // images/avatar/{projectId}/ and generated simulations under simulations/avatar/{uuid}/ —
+        // the latter deliberately NOT under any project-scoped prefix, so once the row is gone the
+        // bytes are unreachable by every sweep that will ever exist. Collected here or lost.
+        db.query.avatar_visuals.findMany({ where: eq(avatar_visuals.project_id, project.id) }),
       ]);
 
       // DB delete FIRST (cascades to child tables). Doing this before storage GC means a
@@ -461,8 +469,30 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
         ...audios.map(a => deleteWithFallback(a.storage_key)),
         // Image files
         ...images.map(i => deleteWithFallback(i.storage_key)),
-        // Project thumbnail
-        ...(project.thumbnail_key ? [deleteWithFallback(project.thumbnail_key)] : []),
+        // Crop analysis artifacts — crop/{videoId}.json, deterministic single objects that no
+        // delete path collected. Orphaned forever once the video rows are gone.
+        ...videos.map(v => deleteWithFallback(`crop/${v.id}.json`)),
+        // Avatar-visual bytes. The `source !== 'editor'` guard is the same one deleteVisual
+        // applies: editor-sourced ("basic") rows only MIRROR the project's own media, whose real
+        // keys are already being deleted via image_files/simulations above — deleting them twice
+        // is harmless, but deleting a mirror that pointed at media the project still legitimately
+        // owns would not be, so the guard stays load-bearing.
+        ...visuals.filter(av => av.source !== 'editor').flatMap(av => [
+          av.image_key ? deleteWithFallback(av.image_key) : null,
+          av.sim_storage_prefix ? deleteWithPrefixFallback(av.sim_storage_prefix) : null,
+        ].filter(Boolean)),
+        // Whole-prefix sweeps for the classes whose writers mint fresh uuids and never delete
+        // predecessors. The thumbnail prefix REPLACES the old single-key delete: four writers
+        // overwrite projects.thumbnail_key without GC, so the prefix holds every thumbnail the
+        // project ever had, and deleting only the current one stranded the rest.
+        deleteWithPrefixFallback(`thumbnails/${project.id}`),
+        // Caption VTT backups — captions/{projectId}/{videoId}/{uuid}.vtt, re-minted per run.
+        deleteWithPrefixFallback(`captions/${project.id}`),
+        // Uploaded corpus source documents.
+        deleteWithPrefixFallback(`projects/${project.id}/corpus`),
+        // Export masters and section intermediates. There is no per-export delete route, and the
+        // project_exports rows cascade — after this delete nothing will ever name these keys.
+        deleteWithPrefixFallback(`exports/${project.id}`),
         // Avatar b-roll circle images (avatar-circles/{projectId}/*) — previously never deleted.
         deleteWithPrefixFallback(`avatar-circles/${project.id}`),
       ]);

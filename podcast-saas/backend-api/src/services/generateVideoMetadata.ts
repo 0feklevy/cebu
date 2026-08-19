@@ -12,6 +12,7 @@
  * platform generation pause is on.
  */
 
+import { deleteSupersededThumbnail } from './storage/deleteSupersededThumbnail.js';
 import { spawn } from 'child_process';
 import { mkdtemp, rm } from 'fs/promises';
 import { join } from 'path';
@@ -148,6 +149,7 @@ async function generateVideoMetadataInner(projectId: string, videoFileId: string
       ...(title       ? { title }       : {}),
       ...(description ? { topic: description } : {}),
     }).where(eq(projects.id, projectId));
+    if (shouldWriteThumbnail) await deleteSupersededThumbnail(project.thumbnail_key, thumbKey);
 
     logger.info({ projectId, title, thumbnailUrl }, '[metadata] ✓ complete');
   } catch (err) {
@@ -195,9 +197,13 @@ export async function extractThumbnailAtTime(
     const thumbKey = `thumbnails/${projectId}/${randomUUID()}.jpg`;
     const thumbnailUrl = await uploadWithFallback(thumbKey, thumbBuf, 'image/jpeg');
 
+    const prev = await db.query.projects.findFirst({
+      where: eq(projects.id, projectId), columns: { thumbnail_key: true },
+    });
     await db.update(projects)
       .set({ thumbnail_url: thumbnailUrl, thumbnail_key: thumbKey })
       .where(eq(projects.id, projectId));
+    await deleteSupersededThumbnail(prev?.thumbnail_key, thumbKey);
 
     return thumbnailUrl;
   } finally {

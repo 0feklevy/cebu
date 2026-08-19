@@ -568,6 +568,11 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
       // The whole hls/{id}/ tree is gone — drop any pending grace-period retirement rows so
       // the retention sweep (migration 053) isn't left pointing at already-deleted prefixes.
       await deleteHlsRetirementRowsForVideo(videoFile.id);
+      // The derived artifacts nobody collected: the crop analysis (a single deterministic JSON)
+      // and every caption VTT backup this video ever had (the caption writer mints a fresh uuid
+      // per run and never deletes the predecessor).
+      await deleteWithFallback(`crop/${videoFile.id}.json`);
+      await deleteWithPrefixFallback(`captions/${project.id}/${videoFile.id}`);
 
       await db.delete(video_files).where(eq(video_files.id, videoFile.id));
 

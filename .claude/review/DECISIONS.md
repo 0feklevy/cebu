@@ -63,6 +63,44 @@ there. The reviewer's D-14 ruling is explicit, and the order is not negotiable:
 
 ---
 
+## 🟢 Storage volume — implemented this round, and what stays blocked
+
+A code-level audit mapped ~30 storage writers against 11 deleters. **Shipped now** (all
+delete-last, best-effort, behind the row deletes):
+
+- **Podcast show / episode / source delete** now remove their bytes — previously all three
+  cleaned nothing, and the FK cascade destroyed the rows naming the keys. Both prefix shapes are
+  swept (`podcasts/{showId}/…` for sources, `podcasts/{episodeId}/…` for renders/chunks/clips).
+- **Image delete** removes the object (the replace path always did; the delete path never).
+- **Playlist delete** sweeps `playlist-banners/{playlistId}` — covering every superseded banner.
+- **Project delete** additionally collects: avatar-visual bytes (with the same `source !==
+  'editor'` guard `deleteVisual` uses), `thumbnails/{id}` (all superseded, not just current),
+  `captions/{id}`, `projects/{id}/corpus`, `exports/{id}`, and `crop/{videoId}.json` per video.
+- **Video delete** removes its crop JSON and caption backups.
+- **Superseded thumbnails and caption backups are GC'd at the write** — four thumbnail writers
+  and the caption writer minted fresh uuids and never deleted predecessors.
+- **Export section intermediates are deleted once the master publishes** — only after the ready
+  fence proves the run still owns its row.
+- **`RevisionService.gc()` finally has a caller** — a 6-hourly sweep (keep-2 floor and age grace
+  are inside gc itself). It was fully implemented and called by nothing.
+
+**Owner action (config, one-time):** add the bucket lifecycle rule "abort incomplete multipart
+uploads after 7 days" in the Supabase dashboard — abandoned large-video uploads are billed but
+invisible to LIST, and no code can reach them. Documented in `.env.example`.
+
+**Blocked on the production census** — run `deploy/scripts/storage-census.sql` (read-only,
+aggregate-only, no PII) against production and bring the output: `branch_path_events` retention
+(needs a rollup design — a bare TTL silently changes owner-visible analytics), failed-duplication
+reaping (the census measures whether plan-driven reaping even suffices), `token_usage` rollup,
+and any TOAST-heavy column work. **No production number exists yet** — nothing in this section
+claims a byte count, deliberately.
+
+**Deliberately NOT done** (per the external reviewer, unchanged): cross-project media dedupe,
+revision dedupe by manifest_hash, avatar_visuals dedupe, podcast chunk pruning by "not in current
+mix", conversation/RUM TTL changes, plan-JSON normalization.
+
+---
+
 ## ⚪ Known and accepted, for the record
 
 - **`security-001`** — production HLS is served from a public bucket, so per-object authorization
