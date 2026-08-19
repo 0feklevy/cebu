@@ -1,9 +1,10 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import type { PlayerConfig, PlayerSegment } from './types';
+import type { PlayerConfig } from './types';
 import type { LockedContent } from 'shared/src/generated/client-v1';
 import { readPlayerConfigResponse } from './lockedResponse';
+import { readinessOf } from './segmentReadiness';
 import { HLSPlayerShell } from './HLSPlayerShell';
 import { branchNavigate } from './branchNavigate';
 import { PaywallOverlay } from '../PaywallOverlay';
@@ -90,30 +91,28 @@ export function SharedViewerPage({ shareToken, permalinkSlug }: Props) {
           return;
         }
 
-        // Readiness is per SEGMENT, not per project — the same rule as ViewerPage, and it must
-        // stay the same rule. An adversarial reviewer caught these two surfaces DIVERGING after
-        // only one of them was fixed: a shared link is exactly how a lecture gets watched while a
-        // later video is still transcoding, so the surface most likely to hit the bug had been
-        // left with it. `some()` admitted the project and `stop()` killed the only path that
-        // would ever deliver the rest, so the viewer played segment 1 and froze at the boundary.
-        const isResolved = (st: string | null | undefined, fb: string | null | undefined) =>
-          st === 'ready' || st === 'failed' || Boolean(fb);
-        const playable = data.segments.filter((s: PlayerSegment) => s.hls_status === 'ready' || s.fallback_url);
-        const pending = data.segments.filter((s: PlayerSegment) => !isResolved(s.hls_status, s.fallback_url));
-        const allFailed = data.segments.every((s) => s.hls_status === 'failed');
+        // Readiness is the ENTRY SEGMENT'S — the same rule as ViewerPage, from the same module,
+        // because these two surfaces have already diverged once. A shared link is exactly how a
+        // lecture gets watched while a later video is still transcoding, so this is the surface
+        // most likely to meet the bug.
+        //
+        // `playable.length > 0` was still wrong: transcodes run concurrently, so a later video can
+        // finish first and open the gate on a segment 0 with no URL. Playback always attaches
+        // index 0, so that produced a dead player with the spinner already gone.
+        const readiness = readinessOf(data);
 
-        if (allFailed) {
+        if (readiness.allFailed) {
           setError('Video processing failed — please contact the owner.');
           stop();
           return;
         }
 
-        if (playable.length > 0) {
+        if (readiness.entryPlayable) {
           setConfig(data);
           setProcessing(false);
-          // Keep polling until every segment is terminal; surface the give-up rather than
-          // stopping silently, which would put a long transcode back into the silent freeze.
-          if (pending.length === 0) stop();
+          // Keep polling until every segment is terminal, and surface the give-up — including
+          // once a config exists, which the old placement inside `if (!config)` could not do.
+          if (readiness.pendingCount === 0) stop();
           else if (Date.now() - startedAt >= PROCESSING_LIMIT_MS) { setStalled(true); stop(); }
         } else {
           setProcessing(true);
@@ -187,6 +186,24 @@ export function SharedViewerPage({ shareToken, permalinkSlug }: Props) {
 
   return (
     <div className="relative h-full w-full">
+      {/*
+        Reachable after playback has started — see ViewerPage for why that placement matters.
+        An overlay, not a replacement: a later segment being slow must not interrupt the video
+        the viewer is currently watching.
+      */}
+      {stalled && (
+        <div className="pointer-events-auto absolute inset-x-0 top-0 z-[60] flex flex-wrap items-center justify-center gap-3 bg-black/80 px-4 py-2 text-center backdrop-blur-sm">
+          <p className="text-xs leading-5 text-white/75">
+            A later part of this video is still processing.
+          </p>
+          <button
+            onClick={() => { setStalled(false); setRecheck((n) => n + 1); }}
+            className="rounded-md border border-white/25 px-3 py-1 text-xs font-medium text-white/85 transition-colors hover:bg-white/10 focus-ring"
+          >
+            Check again
+          </button>
+        </div>
+      )}
       <HLSPlayerShell
         config={config}
         onNavigate={branchNavigate}

@@ -1,9 +1,10 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import type { PlayerConfig, PlayerSegment } from './types';
+import type { PlayerConfig } from './types';
 import type { LockedContent } from 'shared/src/generated/client-v1';
 import { readPlayerConfigResponse } from './lockedResponse';
+import { readinessOf } from './segmentReadiness';
 import { HLSPlayerShell } from './HLSPlayerShell';
 import { branchNavigate } from './branchNavigate';
 import { PaywallOverlay } from '../PaywallOverlay';
@@ -43,6 +44,18 @@ export function ViewerPage({ projectId }: Props) {
   // fetches with no token and the owner is treated as anonymous (paid content
   // shows the paywall to its own creator).
   const { loading: authLoading, getIdToken } = useAuth();
+  // HELD IN A REF, AND DELIBERATELY NOT AN EFFECT DEPENDENCY.
+  //
+  // `FirebaseAuthProvider` builds its context `value` as a fresh object literal and declares
+  // `getIdToken` as a plain function in its body, so BOTH change identity on every provider
+  // render. With `getIdToken` in the dependency list below, each of those renders tore this poll
+  // down and rebuilt it: `startedAt` reset to now, `setStalled(false)` ran, and the effect's
+  // opening `check()` fired another request. The give-up bound could therefore be pushed out
+  // indefinitely and never surface, and the poll rate was bounded by nothing.
+  //
+  // A ref keeps the latest function without making the poll's lifetime depend on its identity.
+  const getIdTokenRef = useRef(getIdToken);
+  getIdTokenRef.current = getIdToken;
 
   useEffect(() => {
     if (authLoading) return;
@@ -53,7 +66,7 @@ export function ViewerPage({ projectId }: Props) {
     setStalled(false);
     const check = async () => {
       try {
-        const token = await getIdToken().catch(() => null);
+        const token = await getIdTokenRef.current().catch(() => null);
         const r = await fetch(`${API_URL}/api/v1/projects/${projectId}/player-config`, {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         });
@@ -84,47 +97,40 @@ export function ViewerPage({ projectId }: Props) {
           return;
         }
 
-        // READINESS IS PER SEGMENT, NOT PER PROJECT — and conflating them froze real lectures.
+        // READINESS IS THE ENTRY SEGMENT'S, NOT THE PROJECT'S — and not "any segment's".
         //
-        // `some()` admitted a project as soon as ONE video was ready, and `stop()` in the same
-        // block tore down the only mechanism that would ever deliver the others. So a two-video
-        // lecture opened while video 2 was still transcoding — the ordinary case for anyone who
-        // shares a link right after uploading — played video 1, froze on its last frame at the
-        // boundary, and stayed there forever: no spinner, no error, no retry, because the player
-        // attaches nothing for a null URL and waits on a `canplay` that cannot arrive.
+        // Two rounds of this bug. First `some(ready)` admitted a project as soon as ONE video was
+        // ready and tore down the poll, so a lecture opened while video 2 transcoded froze at the
+        // boundary forever. The fix kept polling — but still gated on `playable.length > 0`, which
+        // is the same mistake one step earlier: transcodes run concurrently, so video 2 can finish
+        // FIRST, and then the gate opened on a segment 0 that had no URL at all. The player always
+        // attaches index 0 (`currentSegIdx: 0`), so the viewer got a dead player with the spinner
+        // already dismissed. The comment here claimed playback "starts on the first ready segment";
+        // it never did, and the test asserted the comment rather than the behaviour.
         //
-        // Playback still STARTS on the first ready segment (waiting for the whole lecture would
-        // be a worse experience, and the first segment is genuinely watchable). What changed is
-        // that the poll now survives until every segment has resolved, so the later URLs arrive
-        // while the viewer is watching the earlier ones.
-        const isResolved = (st: string | null | undefined, fb: string | null | undefined) =>
-          st === 'ready' || st === 'failed' || Boolean(fb);
-        const playable = data.segments.filter((s: PlayerSegment) => s.hls_status === 'ready' || s.fallback_url);
-        const pending = data.segments.filter((s: PlayerSegment) => !isResolved(s.hls_status, s.fallback_url));
-        const allFailed = data.segments.every((s) => s.hls_status === 'failed');
+        // The rule now lives in `segmentReadiness.ts` and is exercised directly by tests.
+        const readiness = readinessOf(data);
 
-        if (allFailed) {
+        if (readiness.allFailed) {
           setError('Video processing failed. Please re-upload and try again.');
           stop();
           return;
         }
 
-        if (playable.length > 0) {
+        if (readiness.entryPlayable) {
           // Deliver what exists now. The committed-revision pinning in useProjectPlayer means a
-          // later config cannot swap a shot out from under a viewer mid-playback.
+          // later config cannot swap a shot out from under a viewer mid-playback, and
+          // useProjectPlayer's own sync effect fills in URLs that arrive after this point.
           setConfig(data);
           setProcessing(false);
-          // KEEP POLLING while anything is still transcoding. Stop only when every segment has
-          // reached a terminal state — ready, failed, or carrying a fallback.
+          // KEEP POLLING while anything is still transcoding.
           //
-          // The time bound must SURFACE, not just stop. A first draft of this fix simply called
-          // `stop()` after PROCESSING_LIMIT_MS, which put a long transcode — perfectly ordinary
-          // for a long video — straight back into the silent freeze this whole change exists to
-          // remove: the poll dies, the later segment never arrives, and the viewer hits the
-          // boundary with no spinner, no message and nothing to click. An adversarial reviewer
-          // caught it. Giving up quietly is the bug; giving up loudly is a decision the viewer
-          // can act on.
-          if (pending.length === 0) stop();
+          // The time bound must SURFACE, not just stop — and it must surface even once a config
+          // exists. `setStalled(true)` used to set state that nothing rendered, because the
+          // stalled branch sat inside `if (!config)`. That put the long-transcode case straight
+          // back into the silent freeze: poll dead, later segment never arriving, viewer at the
+          // boundary with nothing to read and nothing to press.
+          if (readiness.pendingCount === 0) stop();
           else if (Date.now() - startedAt >= PROCESSING_LIMIT_MS) { setStalled(true); stop(); }
         } else {
           setProcessing(true);
@@ -139,7 +145,7 @@ export function ViewerPage({ projectId }: Props) {
     check();
     intervalRef.current = setInterval(check, POLL_INTERVAL_MS);
     return stop;
-  }, [projectId, authLoading, getIdToken, recheck]);
+  }, [projectId, authLoading, recheck]);
 
   if (locked) {
     return (
@@ -194,6 +200,26 @@ export function ViewerPage({ projectId }: Props) {
 
   return (
     <div className="relative h-full w-full">
+      {/*
+        A later segment can stall AFTER playback has started, and that is precisely the case the
+        viewer cannot diagnose alone: the video plays, then stops at a boundary. Before this, the
+        notice lived inside `if (!config)` and so was unreachable exactly when it mattered. It is
+        an overlay rather than a replacement — interrupting a playing video to announce that a
+        LATER one is slow would be its own bug.
+      */}
+      {stalled && (
+        <div className="pointer-events-auto absolute inset-x-0 top-0 z-[60] flex flex-wrap items-center justify-center gap-3 bg-black/80 px-4 py-2 text-center backdrop-blur-sm">
+          <p className="text-xs leading-5 text-white/75">
+            A later part of this video is still processing.
+          </p>
+          <button
+            onClick={() => { setStalled(false); setRecheck((n) => n + 1); }}
+            className="rounded-md border border-white/25 px-3 py-1 text-xs font-medium text-white/85 transition-colors hover:bg-white/10 focus-ring"
+          >
+            Check again
+          </button>
+        </div>
+      )}
       <HLSPlayerShell
         config={config}
         onNavigate={branchNavigate}
