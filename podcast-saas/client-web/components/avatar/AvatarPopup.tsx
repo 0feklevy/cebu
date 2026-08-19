@@ -7,6 +7,7 @@ import { displayIdentity, type CharacterSource } from './characters';
 import { AvatarConversation } from './AvatarConversation';
 import { preloadAnamSdk } from './anamSdk';
 import { beginConnectTrace, type ConnectTrace } from './connectTelemetry';
+import { CONNECT_WATCHDOG_MS } from './anamConnectPolicy';
 import './avatar.css';
 
 interface Props {
@@ -31,6 +32,8 @@ export function AvatarPopup({ open, onClose, projectId, videoTitle, characterId 
   const [resolvedCharacter, setResolvedCharacter] = useState<string | undefined>(characterId);
   const [avatarDisplay, setAvatarDisplay] = useState<AvatarDisplay | undefined>();
   const [characterSource, setCharacterSource] = useState<CharacterSource | undefined>();
+  /** Bumped by "Try again" — re-runs the start effect from scratch. */
+  const [attempt, setAttempt] = useState(0);
   const pausedVideos = useRef<HTMLVideoElement[]>([]);
   // Until somebody is actually named — by the server, or by a character someone chose — name
   // nobody. `resolvedCharacter` alone is not a name: it is always set once the start answers,
@@ -98,11 +101,27 @@ export function AvatarPopup({ open, onClose, projectId, videoTitle, characterId 
       .then((data) => {
         if (abort.signal.aborted) return;
         trace.join(data.correlationId);
-        trace.mark('token');
-        setToken(data.sessionToken);
+        // IDENTITY FIRST, AND EVEN IF THE TOKEN IS UNUSABLE. The server has told us who this
+        // video's avatar is; that is true whether or not the vendor mint produced a session. It
+        // also means the failure screen below is headed "Ask <the actual persona>" rather than a
+        // nameless one, which is what a viewer needs to know they were in the right place.
         setResolvedCharacter(data.characterId ?? characterId);
         setCharacterSource(data.characterSource ?? (characterId ? 'requested' : undefined));
         setAvatarDisplay(data.avatarDisplay ?? (data.voiceSensitivity != null ? { voiceSensitivity: data.voiceSensitivity } : undefined));
+
+        // A 200 IS NOT A SESSION. The vendor mint can answer without a usable token, and this
+        // used to `setToken('')` — falsy, so the conversation never mounted, no error was set,
+        // and the popup sat on its spinner and its "Connecting…" label for the life of the tab.
+        // A viewer reported exactly that, and from outside it is indistinguishable from a screen
+        // that never finished loading.
+        if (!data.sessionToken) {
+          trace.mark('connect-failed', { at: 'token-empty' });
+          console.error('[AvatarPopup] start returned no session token');
+          setError("The avatar couldn't start right now. Please try again in a moment.");
+          return;
+        }
+        trace.mark('token');
+        setToken(data.sessionToken);
       })
       .catch((e) => {
         // A cancellation is not a failure: nobody is waiting for it, and it must not
@@ -114,8 +133,20 @@ export function AvatarPopup({ open, onClose, projectId, videoTitle, characterId 
         console.error('[AvatarPopup] failed to start avatar session:', e);
         setError("The avatar couldn't start right now. Please try again in a moment.");
       });
-    return () => { abort.abort(); };
-  }, [open, characterId, projectId]);
+    // AND BOUND THE WAIT ITSELF. The check above catches a start that answers uselessly; this
+    // catches one that does not answer at all — a hung vendor call, a proxy holding the
+    // connection, a network that goes away mid-flight. `fetch` has no timeout of its own, so
+    // without this the spinner is unbounded. Same constant the conversation uses for the stream
+    // phase, because it is the same promise to the viewer: you will not be left here.
+    const watchdog = setTimeout(() => {
+      if (abort.signal.aborted) return;
+      trace.mark('connect-failed', { at: 'token-timeout' });
+      abort.abort();
+      setError("The avatar is taking longer than expected to start.");
+    }, CONNECT_WATCHDOG_MS);
+
+    return () => { clearTimeout(watchdog); abort.abort(); };
+  }, [open, characterId, projectId, attempt]);
 
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -178,7 +209,15 @@ export function AvatarPopup({ open, onClose, projectId, videoTitle, characterId 
               <p style={{ color: 'rgba(255,255,255,0.5)', fontSize: 13, maxWidth: 360, textAlign: 'center' }}>
                 This video&apos;s avatar isn&apos;t available at the moment.
               </p>
-              <button className="avatar-btn avatar-btn--secondary" style={{ marginTop: 18 }} onClick={onClose}>Close</button>
+              <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
+                <button
+                  className="avatar-btn"
+                  onClick={() => { setError(null); setToken(null); setAttempt((n) => n + 1); }}
+                >
+                  Try again
+                </button>
+                <button className="avatar-btn avatar-btn--secondary" onClick={onClose}>Close</button>
+              </div>
             </div>
           ) : !token || !resolvedCharacter ? (
             // Both arrive from the SAME start response, so requiring the character here costs no

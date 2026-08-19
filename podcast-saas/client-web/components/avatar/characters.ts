@@ -13,6 +13,18 @@ export interface CharacterMeta {
 export type CharacterMetaOverride = Partial<Omit<CharacterMeta, 'id'>>;
 
 export const CHARACTER_META: Record<string, CharacterMeta> = {
+  // The default. No portrait, because there is no face to show and inventing one would be the
+  // same false claim in a picture. The emoji and the neutral name are what the header renders.
+  guide: {
+    id: 'guide',
+    displayName: 'your guide',
+    nametag: 'Guide',
+    emoji: '✨',
+    portrait: '',
+    startingLabel: 'Connecting…',
+    leaveLabel: 'End conversation',
+    voiceSensitivity: 0.5,
+  },
   einstein: {
     id: 'einstein',
     displayName: 'Albert Einstein',
@@ -41,7 +53,7 @@ export const CHARACTER_META: Record<string, CharacterMeta> = {
  * The default is a LAST RESORT for a session whose character the server has already resolved —
  * never a stand-in for one it has not. See PENDING_CHARACTER_META.
  */
-export const DEFAULT_CHARACTER_ID = 'einstein';
+export const DEFAULT_CHARACTER_ID = 'guide';
 
 /**
  * THE IDENTITY TO SHOW BEFORE THE SERVER HAS SAID WHOSE AVATAR THIS IS.
@@ -130,8 +142,21 @@ export function displayIdentity(
   display?: CharacterMetaOverride,
 ): CharacterMeta {
   if (display?.displayName?.trim()) return characterMeta(characterId, display);
-  if (characterId && source && source !== 'default') return characterMeta(characterId, display);
-  // Keep whatever non-identifying detail the server sent (voice sensitivity, labels) — just never
-  // a name, a face or a "Connecting to <somebody>…" for a somebody nobody chose.
+  // ONCE THE SERVER HAS ANSWERED, NAME WHOEVER IT SAID.
+  //
+  // This used to refuse to name a DEFAULTED character, which was right while the default was
+  // Einstein — a project that chose nothing should not be told it is talking to Albert Einstein.
+  // But suppressing the name only moved the dishonesty: the header read "Ask the avatar" and
+  // "Connecting…" while the persona behind it opened with "Guten Tag!" and insisted it was
+  // Einstein. The label and the behaviour disagreed, and the neutral copy read as a screen that
+  // had failed to finish loading.
+  //
+  // The default is now `guide`, which the interface can name truthfully, so the honest answer is
+  // simply to say who is on the other end. `source` is still reported by the server and still
+  // true; it is no longer needed to decide this, because there is no longer an identity worth
+  // hiding.
+  if (characterId) return characterMeta(characterId, display);
+  // Nothing resolved yet — the start has not answered. Name nobody; the label says what is
+  // happening. This is the window the whole rule exists for.
   return { ...PENDING_CHARACTER_META, ...compactOverride(display) };
 }

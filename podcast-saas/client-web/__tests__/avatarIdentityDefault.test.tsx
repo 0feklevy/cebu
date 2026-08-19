@@ -19,8 +19,32 @@ import { render, act, cleanup, screen } from '@testing-library/react';
 vi.mock('../lib/firebase', () => ({
   auth: { currentUser: { getIdToken: () => Promise.resolve('test-id-token') } },
 }));
+/**
+ * The conversation is doubled because this file is about the HEADER, not the stream.
+ *
+ * A non-empty session token is now required to get past the popup's "a 200 is not a session"
+ * check, and a non-empty token mounts the real conversation, which hands the token straight to
+ * the Anam SDK. The SDK decodes it as a JWT and rejects — asynchronously, as an UNHANDLED
+ * REJECTION that leaves every assertion green and fails the suite at the very end with
+ * "Errors 1 error". Nothing here needs a live session; stubbing the lazy SDK loader keeps the
+ * test on the thing it is actually asserting.
+ */
+vi.mock('../components/avatar/anamSdk', () => ({
+  preloadAnamSdk: () => {},
+  loadAnamSdk: async () => ({
+    createClient: () => ({
+      streamToVideoElement: async () => {},
+      addListener: () => {},
+      stopStreaming: async () => {},
+      muteInputAudio: () => {},
+      unmuteInputAudio: () => {},
+    }),
+    AnamEvent: {},
+  }),
+}));
 
 import { AvatarPopup } from '../components/avatar/AvatarPopup';
+import { displayIdentity } from '../components/avatar/characters';
 
 type Resolver = (body: Record<string, unknown>) => void;
 
@@ -55,22 +79,35 @@ describe('AvatarPopup — the project persona names the popup, never the client 
    *
    * The server now says WHERE the id came from, and only a chosen character may be named.
    */
-  it('a DEFAULTED character is never named, even after the start answers', async () => {
+  /**
+   * THE DEFAULT IS NAMED — because the default is now something nameable.
+   *
+   * An earlier version of this rule refused to name a DEFAULTED character, which was right while
+   * the default was Einstein: a project that chose nothing should not be told it is talking to
+   * Albert Einstein. But hiding the name only moved the dishonesty. The header read "Ask the
+   * avatar" and "Connecting…" while the persona behind it opened with "Guten Tag!" and insisted
+   * it was Einstein — and to a viewer that neutral copy read as a screen stuck loading, which is
+   * how it was reported.
+   *
+   * The default is now `guide`, whose prompt claims no biography, so the interface can simply say
+   * who is on the other end. What must never come back is Einstein by default.
+   */
+  it('a defaulted project is named as the neutral guide, never as Einstein', async () => {
     render(<AvatarPopup open onClose={() => {}} projectId="p1" videoTitle="The Edge of Chaos" />);
     await act(async () => { await Promise.resolve(); });
     await act(async () => {
       resolveStart({
         provider: 'anam',
-        sessionToken: '',
-        characterId: 'einstein',        // routing: this session runs the einstein prompt
-        characterSource: 'default',     // …but nobody chose it
+        sessionToken: 'tok',
+        characterId: 'guide',
+        characterSource: 'default',
       });
       await Promise.resolve();
     });
 
+    expect(screen.getByText(/Ask your guide/i)).toBeTruthy();
     expect(document.body.textContent).not.toMatch(/einstein/i);
     expect(portraits().some((src) => /einstein/i.test(src))).toBe(false);
-    expect(screen.getByText(/Ask the avatar/i)).toBeTruthy();
   });
 
   it('a CONFIGURED character is named — this is a real choice, not a fallback', async () => {
@@ -129,9 +166,23 @@ describe('AvatarPopup — the project persona names the popup, never the client 
       await Promise.resolve();
     });
 
-    expect(screen.getByText(/connecting to pnina/i)).toBeTruthy();
+    // The header names the persona even though the mint produced no usable token — the server
+    // told us whose avatar this is, and that is true whether or not a session exists.
+    expect(screen.getByText(/Ask Pnina/i)).toBeTruthy();
     expect(document.body.textContent).not.toMatch(/einstein/i);
     expect(portraits().some((src) => /einstein/i.test(src))).toBe(false);
+  });
+
+  /**
+   * The spinner LABEL is decided by the same pure rule, and is asserted against it directly
+   * rather than through a render — a render can only show the label while the popup is still
+   * waiting, and an empty token is now a failure rather than a permanent wait.
+   */
+  it('the connecting label follows the persona, not the routed character', () => {
+    expect(displayIdentity('einstein', 'default', { displayName: 'Pnina', startingLabel: 'Connecting to Pnina...' }).startingLabel)
+      .toMatch(/pnina/i);
+    // …and a renamed persona never inherits the routed character's face.
+    expect(displayIdentity('einstein', 'default', { displayName: 'Pnina' }).portrait).toBe('');
   });
 
   it('does not dress a renamed persona in the default character\'s face and labels', async () => {

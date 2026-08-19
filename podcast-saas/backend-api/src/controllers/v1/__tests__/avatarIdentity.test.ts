@@ -105,6 +105,7 @@ vi.mock('../../../services/transcriptPropagation.js', () => ({ getProjectTranscr
 vi.mock('../../../services/avatar/anamKey.js', () => ({ resolveAnamKeyForProject: svc.resolveAnamKeyForProject }));
 
 import { registerAvatarRoutes } from '../avatar.controller.js';
+import { DEFAULT_CHARACTER_ID } from '../../../services/avatar/characters.js';
 import { resetBurstShield } from '../../../services/usage/avatarBudget.js';
 import { bakedStateFor, hashTranscript } from '../../../services/avatar/personaFingerprint.js';
 import { resetPersonaBakeState } from '../../../services/avatar/personaBake.js';
@@ -194,6 +195,9 @@ describe('avatar routes — the project\'s configured persona is authoritative',
   it('a project that configured NO character still resolves to the default', async () => {
     const res = await post(baked({}), '/api/v1/avatar/start', { projectId: PROJECT_ID });
     expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.payload).characterId).toBe('einstein');
+    // The DEFAULT, not a literal — which character that is has changed once already.
+    expect(JSON.parse(res.payload).characterId).toBe(DEFAULT_CHARACTER_ID);
+    // …and the response says it was a default, so no client can present it as a choice.
+    expect(JSON.parse(res.payload).characterSource).toBe('default');
   });
 });
