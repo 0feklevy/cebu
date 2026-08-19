@@ -175,3 +175,73 @@ describe('buildContainerRunArgv — refusing to weaken the contract', () => {
     expect(() => buildContainerRunArgv({ ...BASE, tmpfsScratchMb: -1 })).toThrow(/positive/);
   });
 });
+
+/**
+ * The GPU grant. One explicit CDI device when — and only when — the caller asked for it; the cage
+ * is otherwise byte-identical in both modes. The failure this guards against is not "no GPU" (that
+ * is loud) but the opposite pair of quiet ones: a software capture inheriting device access nobody
+ * intended, and a hardware grant arriving via the toolkit's environment-variable activation, which
+ * would put an `-e NVIDIA_VISIBLE_DEVICES` into an argv whose whole design is that NOTHING
+ * environment-shaped crosses into the untrusted container.
+ */
+describe('the CDI GPU grant', () => {
+  it('software mode (gpu absent/null): not one GPU-shaped token in the argv', () => {
+    for (const argv of [buildContainerRunArgv(BASE), buildContainerRunArgv({ ...BASE, gpu: null })]) {
+      expect(argv).not.toContain('--device');
+      expect(argv).not.toContain('--gpus');
+      expect(argv).not.toContain('--runtime');
+      expect(argv).not.toContain('-e');
+      expect(argv).not.toContain('--env');
+      expect(argv.join(' ')).not.toMatch(/NVIDIA|nvidia/);
+    }
+  });
+
+  it('hardware mode: exactly one --device with the named CDI device, and nothing else changes', () => {
+    const soft = buildContainerRunArgv(BASE);
+    const hard = buildContainerRunArgv({ ...BASE, gpu: { cdiDevice: 'nvidia.com/gpu=0' } });
+
+    expect(hard.filter((a) => a === '--device')).toHaveLength(1);
+    expect(hard[hard.indexOf('--device') + 1]).toBe('nvidia.com/gpu=0');
+    // Still no env-var activation and no runtime switch — CDI is the whole grant.
+    expect(hard).not.toContain('--gpus');
+    expect(hard).not.toContain('--runtime');
+    expect(hard).not.toContain('-e');
+
+    // The cage is IDENTICAL minus the two grant tokens: same network, rootfs, caps, quotas.
+    const hardMinusGrant = hard.filter((a, i) => a !== '--device' && hard[i - 1] !== '--device');
+    expect(hardMinusGrant).toEqual(soft);
+  });
+
+  it('the cage survives the grant: every isolation flag is still present in hardware mode', () => {
+    const argv = buildContainerRunArgv({ ...BASE, gpu: { cdiDevice: 'nvidia.com/gpu=0' } });
+    const joined = argv.join(' ');
+    expect(joined).toContain('--network none');
+    expect(joined).toContain('--read-only');
+    expect(joined).toContain('--cap-drop ALL');
+    expect(joined).toContain('no-new-privileges:true');
+    expect(joined).toContain('--pids-limit');
+    expect(joined).toContain('--memory');
+    expect(joined).toContain('--stop-timeout');
+    expect(joined).not.toContain('--privileged');
+    expect(joined).not.toContain('--no-sandbox');
+  });
+
+  it('accepts an index or a GPU UUID; refuses "all", paths, and flag injection', () => {
+    expect(() => buildContainerRunArgv({ ...BASE, gpu: { cdiDevice: 'nvidia.com/gpu=1' } })).not.toThrow();
+    expect(() => buildContainerRunArgv({
+      ...BASE, gpu: { cdiDevice: 'nvidia.com/gpu=GPU-5fe4a884-0931-cfeb-5933-61f1fdfd0e28' },
+    })).not.toThrow();
+
+    for (const bad of [
+      'nvidia.com/gpu=all',          // one section renders on one GPU — the argv cannot say more
+      'nvidia.com/gpu=',
+      '/dev/nvidia0',
+      '--privileged',
+      'nvidia.com/gpu=0 --privileged',
+      'amd.com/gpu=0',
+      '',
+    ]) {
+      expect(() => buildContainerRunArgv({ ...BASE, gpu: { cdiDevice: bad } }), bad).toThrow(/refusing GPU grant/);
+    }
+  });
+});

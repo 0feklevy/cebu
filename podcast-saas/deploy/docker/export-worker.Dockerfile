@@ -70,7 +70,15 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 # Chrome's runtime shared libraries (headless still needs the graphics/ipc/font stack) + fonts so
-# generated sims render text/emoji deterministically. NO chrome-sandbox setuid binary is installed:
+# generated sims render text/emoji deterministically.
+#
+# The three glvnd packages (libglvnd0/libegl1/libglx0) exist for HARDWARE capture: the NVIDIA
+# driver's Vulkan ICD (libGLX_nvidia, injected by the container toolkit when a GPU is granted)
+# fails its internal init without the glvnd dispatch libraries, and the failure is maximally
+# quiet — the Vulkan loader reports "no drivers" and Chrome falls to NO WebGL context at all.
+# Bisected on the real Tesla T4 host: with these three, the full cage reports
+# "ANGLE (NVIDIA, Vulkan 1.4.329 (NVIDIA Tesla T4))"; without them, nothing does. They are inert
+# in SwiftShader mode (a few hundred KB, no daemon, no setuid), so one image serves both profiles. NO chrome-sandbox setuid binary is installed:
 # headless-shell uses the unprivileged USER-NAMESPACE sandbox, which needs no setuid helper — see the
 # runbook's "Chrome's own sandbox, kept" section.
 RUN apt-get update \
@@ -81,6 +89,7 @@ RUN apt-get update \
       libcups2 libdrm2 libgbm1 \
       libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxrandr2 libxkbcommon0 \
       libpango-1.0-0 libcairo2 libasound2 \
+      libglvnd0 libegl1 libglx0 \
       fonts-liberation fonts-noto-core fonts-noto-color-emoji fonts-noto-cjk \
  && rm -rf /var/lib/apt/lists/*
 

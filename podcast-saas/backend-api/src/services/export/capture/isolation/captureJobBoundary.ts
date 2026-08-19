@@ -767,6 +767,13 @@ export interface DockerCaptureBoundaryConfig {
   stopTimeoutSec: number;
   sandboxMechanism?: ContainerRunSpec['sandboxMechanism'];
   seccompProfilePath?: string;
+  /**
+   * The CDI device granted when — and only when — a capture's frozen rendererProfile is
+   * `hardware`. Software captures never see it: the grant is derived from the SPEC the controller
+   * froze, so flipping the worker's environment after enqueue cannot change what an existing job
+   * renders with.
+   */
+  gpuCdiDevice?: string;
   /** The docker (or podman) binary. */
   dockerBin?: string;
 }
@@ -806,6 +813,11 @@ export class DockerCaptureBoundary implements CaptureJobBoundary {
       stopTimeoutSec: this.config.stopTimeoutSec,
       sandboxMechanism: this.config.sandboxMechanism,
       seccompProfilePath: this.config.seccompProfilePath,
+      // From the FROZEN spec, not from the environment at run time: the profile was fingerprinted
+      // into the plan the user saw, and hardware is the only profile that earns a device.
+      gpu: spec.rendererProfile === 'hardware'
+        ? { cdiDevice: this.config.gpuCdiDevice ?? 'nvidia.com/gpu=0' }
+        : null,
     });
 
     const exit = await this.spawnDocker(dockerBin, argv, containerName, spec.wallClockTimeoutSec, signal);
