@@ -65,6 +65,15 @@ export interface AdminSimSurfaceProps {
   className?: string;
   style?: React.CSSProperties;
   sandbox?: string;
+  /**
+   * Permissions-Policy delegated to the frame (`allow="fullscreen"`, `autoplay`, …). Mirrors
+   * client-web's SimSurface prop of the same name; the agreement test renders both with it and
+   * compares the resulting DOM, so the two cannot drift on it.
+   *
+   * Distinct from `sandbox`: sandbox REMOVES capabilities from the document, `allow` DELEGATES ones
+   * the embedder holds. Omitted by default, so no surface gains a capability by accident.
+   */
+  allow?: string;
   /** Set false for a frame that must never take pointer input even while visible. */
   interactive?: boolean;
   /** Opt out of the fade for surfaces that have no transition. */
@@ -76,7 +85,7 @@ export interface AdminSimSurfaceProps {
 function AdminSimSurfaceImpl({
   src, srcDoc, bootHide, visible, onLoad,
   title = 'Interactive simulation',
-  className, style, sandbox, interactive = true, fade = true, children,
+  className, style, sandbox, allow, interactive = true, fade = true, children,
 }: AdminSimSurfaceProps) {
   if (!src && !srcDoc) return null;
 
@@ -94,6 +103,7 @@ function AdminSimSurfaceImpl({
         className={className}
         loading="eager"
         sandbox={sandbox ?? DEFAULT_SANDBOX}
+        allow={allow}
         style={{
           opacity: shown ? 1 : 0,
           ...(fade ? { transition: `opacity ${ADMIN_SIM_FADE_MS}ms ease` } : {}),

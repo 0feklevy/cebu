@@ -19,7 +19,7 @@
 
 SET LOCAL lock_timeout = '3s';
 
-CREATE TABLE library_shares (
+CREATE TABLE IF NOT EXISTS library_shares (
   id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id    uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   -- The public path segment. Carries the code as its suffix, so it IS the capability.
@@ -46,11 +46,11 @@ CREATE TABLE library_shares (
 
 -- The slug is the capability, so it must be globally unique across every share ever minted —
 -- including revoked ones, whose slug must never be reissued to a different project.
-CREATE UNIQUE INDEX uniq_library_shares_slug ON library_shares(slug);
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_library_shares_slug ON library_shares(slug);
 
 -- Phase 1 is one LIVE link per project. Partial, so revoked rows accumulate freely as the audit
 -- trail; lifting the one-link limit later (per-recipient scopes) drops this index and needs no
 -- second migration.
-CREATE UNIQUE INDEX uniq_library_shares_live ON library_shares(project_id) WHERE revoked_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_library_shares_live ON library_shares(project_id) WHERE revoked_at IS NULL;
 
-CREATE INDEX idx_library_shares_project ON library_shares(project_id);
+CREATE INDEX IF NOT EXISTS idx_library_shares_project ON library_shares(project_id);
