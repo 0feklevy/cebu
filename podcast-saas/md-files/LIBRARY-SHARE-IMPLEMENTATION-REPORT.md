@@ -1,6 +1,6 @@
 # Library Share — Phase 1 implementation report
 
-**Branch:** `feat/library-share-impl`, based on `origin/main` @ `6c7f9bb`. Two commits, not pushed.
+**Branch:** `feat/library-share-impl`, based on `origin/main` @ `6c7f9bb`. Not pushed, no PR.
 **Spec:** `podcast-saas/md-files/LIBRARY-SHARE-MINISITE-PLAN.md` §9 (Phase 1).
 **Migration number used: `065`** — reserved by the coordinator and independently re-verified (see below).
 
@@ -10,7 +10,7 @@
 
 | # | Item | Verdict | Evidence |
 |---|---|---|---|
-| 1 | Migration `065_library_shares.sql` + rollback | **DONE** | `backend-api/src/db/migrations/065_library_shares.sql`, `…rollback.sql`; appended to the ordered array in `migrate.ts` |
+| 1 | Migration `065_library_shares.sql` + rollback | **DONE** | `backend-api/src/db/migrations/065_library_shares.sql`, `…rollback.sql`; registered in **both** `migrate.ts` and `src/scripts/check-db.ts` — see §4.9 |
 | 2 | `library_shares` mirrored in `db/schema.ts` | **DONE** | `schema.ts`, declared beside `playlists` (before `playlist_items`) |
 | 3 | `shared/src/types/library-view.ts` (zod + inferred types) | **DONE** | New file, 128 lines; re-exported from `shared/src/index.ts` |
 | 4 | `LibraryShareService` — mint (idempotent), resolve, revoke | **DONE** | `backend-api/src/services/library/LibraryShareService.ts` |
@@ -108,7 +108,7 @@ tiles.
 | `pnpm -r typecheck` (6 projects) | **all Done, zero errors** |
 | `pnpm -r lint` | **0 errors** (87 pre-existing warnings, none in new files) |
 | `next build` (client-web, production origins) | **succeeds**; `/[slug]/library` and `/[slug]/library/[type]` both in the route table |
-| `backend-api` full vitest | see §6 |
+| `backend-api` full vitest | **240 passed / 3 skipped / 0 failed — 3546 tests** (after §4.1 and §4.9 were fixed) |
 
 ---
 
@@ -245,6 +245,27 @@ form, which is correct there — the two workspaces genuinely differ.
   prefixes it to `lib-media` instead. The reservation still does its actual job: a creator cannot
   claim `library` as a permalink.
 
+### 4.9 There is a SECOND migration registry the plan does not mention, and it is enforced
+
+The plan's §5.6 lists exactly one registration edit: append the filename to the array in
+`migrate.ts`. That is not sufficient. `backend-api/src/scripts/check-db.ts` carries its own ordered
+list of migration filenames, and two suites enforce it:
+
+* `src/db/__tests__/migration059.test.ts` → `EVERY migration file on disk is registered — no future
+  file can go unshipped`, which computes `missingFromRunner` **and** `missingFromCheck` and asserts
+  both are empty. Its comment says it was generalised from a real incident: a migration written,
+  reviewed and committed, listed by neither runner, so it would never have run anywhere.
+* `src/db/__tests__/migration050.test.ts` → `is registered with db:check, along with the 046-049 gap
+  it had drifted into`.
+
+Both went red on `065_library_shares.sql`, and both pass now that the filename is in
+`check-db.ts:85` as well. Like §4.1, this is a failure that would have reached CI on a file nobody
+would have thought to open.
+
+Together, §4.1 and §4.9 mean the plan's migration guidance is incomplete in two independent ways: it
+omits the idempotency requirement and it omits the second registry. Any future migration written
+from this plan alone will fail CI twice.
+
 ### 4.8 One plan claim confirmed correct and worth recording
 
 The §6.1 line-1360 correction was right, and so was the warning it superseded. `hls.js@^1.6.16` is a
@@ -294,6 +315,7 @@ client-web/__tests__/libraryMiniSite.test.tsx
 
 ```
 backend-api/src/db/migrate.ts                                   ordered array += '065_library_shares.sql'
+backend-api/src/scripts/check-db.ts                             the SECOND registry, += '065_library_shares.sql'
 backend-api/src/db/schema.ts                                    + library_shares table
 backend-api/src/server.ts                                       + import, + registerLibraryShareRoutes (line 595)
 backend-api/src/services/permalinkService.ts                    + 7 reserved slugs, + library_shares in permalinkSlugTaken
@@ -311,6 +333,15 @@ admin-web/components/AdminSimSurface.tsx                        + allow prop
 31 files, +2612 / −22.
 
 ---
+
+## 5a. One deliberate non-finding
+
+An independent checklist pass flagged `updateLibraryShare` in `client-web/lib/libraryShareClient.ts`
+as having no caller. That is correct and intended: plan §6.2 specifies `libraryShareClient.ts` as
+"**Four** authenticated wrappers", and §5.5 puts the `PATCH` route in Phase 1 while §9 puts the
+checkbox/expiry UI that drives it in Phase 2. The wrapper is the client half of a Phase-1 endpoint,
+not a placeholder for unfinished work — the alternative (shipping the route with no typed client)
+is the contract drift `CLAUDE.md` §5 warns about. Left in place deliberately.
 
 ## 6. Verification appendix
 
