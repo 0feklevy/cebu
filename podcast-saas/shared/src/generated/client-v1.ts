@@ -861,6 +861,64 @@ export interface BranchAnalytics {
   sequence_enter_counts: Record<string, number>;
 }
 
+// ── Multi-language dubbing (migration 067) ──────────────────────────────────
+
+/** A language this product can dub into. `code` is also the public URL suffix, 1:1. */
+export interface DubbingLanguageOption {
+  code: string;
+  /** English name, for a UI that has no better idea what the reader speaks. */
+  name: string;
+  /** The language's own name — what a viewer picking it should actually see. */
+  endonym: string;
+  /** Right-to-left script; the caption overlay needs it to set `dir`. */
+  rtl: boolean;
+}
+
+/** One video's dub in one language, as the creator's settings page sees it. */
+export interface ProjectDub {
+  id: string;
+  video_file_id: string;
+  language: string;
+  language_name: string;
+  language_endonym: string;
+  rtl: boolean;
+  provider: string;
+  /** queued | processing | completed | stale | failed — the vendor's own target statuses. */
+  status: string;
+  /**
+   * Whether this dub may actually be served. NOT the same as `status === 'completed'`: a
+   * watermarked dub is finished and paid for but is never published to viewers.
+   */
+  servable: boolean;
+  hls_url: string | null;
+  captions_url: string | null;
+  cost_cents: number | null;
+  error: string | null;
+  updated_at: string | null;
+}
+
+/** What a dubbing run would cost, shown BEFORE it is started. */
+export interface DubCostEstimate {
+  language_count: number;
+  total_duration_sec: number;
+  /** The headline figure the UI leads with, per source-minute per language. */
+  usd_per_minute_per_language: number;
+  /** Cost of dubbing this whole project into ONE language — multiply by the selection. */
+  usd_per_language: number;
+  estimated_usd: number;
+  estimated_credits: number;
+  /** True when the account's plan watermarks output, which makes a dub unpublishable. */
+  watermarked: boolean;
+  /** Set only when the plan watermarks — says what an operator must change. */
+  watermark_notice: string | null;
+}
+
+export interface ProjectDubsResponse {
+  dubs: ProjectDub[];
+  supported_languages: DubbingLanguageOption[];
+  estimate: DubCostEstimate;
+}
+
 export class ClientV1Api {
   private config: ApiConfig;
 
@@ -1757,5 +1815,26 @@ export class ClientV1Api {
 
   exportPodcastMix(showId: string, episodeId: string, format: 'mp4' | 'mp3' | 'wav'): Promise<{ render_id: string; already_running?: boolean }> {
     return this.request(`/api/v1/podcasts/${showId}/episodes/${episodeId}/studio/export`, { method: 'POST', body: { format } });
+  }
+
+  // ── Multi-language dubbing (migration 067) ────────────────────────────────
+
+  listProjectDubs(projectId: string): Promise<ProjectDubsResponse> {
+    return this.request(`/api/v1/projects/${projectId}/dubs`);
+  }
+
+  /**
+   * Queue a dub of every main video in the project into one language.
+   *
+   * THE ONLY BILLABLE CALL ON THIS CLIENT. Answers 202 — the work is queued, not done — and the
+   * returned rows start in `queued`. Requesting a language that already has a dub is a no-op
+   * rather than a second charge; `force` is what deliberately re-runs one.
+   */
+  createProjectDub(projectId: string, language: string, force = false): Promise<{ dubs: ProjectDub[] }> {
+    return this.request(`/api/v1/projects/${projectId}/dubs`, { method: 'POST', body: { language, force } });
+  }
+
+  deleteProjectDub(projectId: string, language: string): Promise<{ removed: number }> {
+    return this.request(`/api/v1/projects/${projectId}/dubs/${encodeURIComponent(language)}`, { method: 'DELETE' });
   }
 }

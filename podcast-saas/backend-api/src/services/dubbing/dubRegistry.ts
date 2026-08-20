@@ -97,10 +97,13 @@ export async function listServableDubsForVideo(videoId: string): Promise<VideoDu
 }
 
 export interface DubCostEstimate {
-  languages: string[];
+  /** How many target languages this figure covers. */
+  language_count: number;
   /** Total source seconds across every non-broll video in the project. */
   total_duration_sec: number;
   usd_per_minute_per_language: number;
+  /** Cost of dubbing this project into ONE language — the UI multiplies by the selection. */
+  usd_per_language: number;
   estimated_usd: number;
   estimated_credits: number;
   /** Whether the account's plan watermarks output — a watermarked dub is not published. */
@@ -116,7 +119,7 @@ export interface DubCostEstimate {
  * the arithmetic a creator is most likely to get wrong, and the reason this is surfaced in the UI
  * ahead of the run rather than in an invoice afterwards.
  */
-export async function estimateProjectDubCost(projectId: string, languages: string[]): Promise<DubCostEstimate> {
+export async function estimateProjectDubCost(projectId: string, languageCount = 1): Promise<DubCostEstimate> {
   const videos = await db.query.video_files.findMany({
     where: eq(video_files.project_id, projectId),
     columns: { id: true, is_broll: true, duration_sec: true },
@@ -129,15 +132,22 @@ export async function estimateProjectDubCost(projectId: string, languages: strin
   const usdPerCredit = dubbingUsdPerCredit();
   const cost = estimateDubbingCost({
     durationSec: totalSec,
-    languageCount: languages.length,
+    languageCount,
+    watermarked: policy.watermarked,
+    usdPerCredit,
+  });
+  const perLanguage = estimateDubbingCost({
+    durationSec: totalSec,
+    languageCount: 1,
     watermarked: policy.watermarked,
     usdPerCredit,
   });
 
   return {
-    languages,
+    language_count: languageCount,
     total_duration_sec: totalSec,
     usd_per_minute_per_language: usdPerMinutePerLanguage(policy.watermarked, usdPerCredit),
+    usd_per_language: perLanguage.usd,
     estimated_usd: cost.usd,
     estimated_credits: cost.credits,
     watermarked: policy.watermarked,

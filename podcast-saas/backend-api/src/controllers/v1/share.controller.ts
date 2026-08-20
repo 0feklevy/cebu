@@ -7,12 +7,16 @@ import { firebaseAuthMiddleware, firebaseAuthOptionalMiddleware } from '../../mi
 import { editableProject } from '../../services/collabAccess.js';
 import { buildPlayerConfig } from '../../services/buildPlayerConfig.js';
 import { BillingService } from '../../services/billing/BillingService.js';
+import { normalizeDubbingLanguage } from '../../services/dubbing/languages.js';
 
 export async function registerShareRoutes(app: FastifyInstance): Promise<void> {
 
   // ── Public (optional auth): GET /api/v1/share/:shareToken ─────────────────
   // Returns player config, or a `locked` paywall stub for paid, unpurchased content.
-  app.get<{ Params: { shareToken: string } }>(
+  // `?lang=he` serves that language's dubbed rendition and its matching captions (migration 067).
+  // An unknown or unfinished language falls back to the source track inside buildPlayerConfig, so
+  // a shared /he link keeps working when the dub is deleted rather than 404ing at the viewer.
+  app.get<{ Params: { shareToken: string }; Querystring: { lang?: string } }>(
     '/api/v1/share/:shareToken',
     { preHandler: [firebaseAuthOptionalMiddleware] },
     async (request, reply: FastifyReply) => {
@@ -35,7 +39,9 @@ export async function registerShareRoutes(app: FastifyInstance): Promise<void> {
         }
       }
 
-      const config = await buildPlayerConfig(project.id, null, project);
+      const config = await buildPlayerConfig(
+        project.id, null, project, normalizeDubbingLanguage(request.query.lang ?? ''),
+      );
       if (!config) return reply.code(404).send({ message: 'Shared video not found' });
 
       // Fire-and-forget view count increment
