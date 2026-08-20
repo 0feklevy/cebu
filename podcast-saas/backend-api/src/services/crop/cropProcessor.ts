@@ -7,11 +7,10 @@
  *   • accumulate global skin/saliency/activity sums.
  * Between passes:
  *   • locate the (≤2) stable head positions for the whole take (static camera).
- *   • self-calibrate the pitch threshold and label every window.
- *   • calibrate gender → head position from two-shot active frames.
+ *   • self-calibrate the pitch threshold and label every window (speech vs silence).
  * Pass 2 (no decode):
- *   • per two-shot frame pick the active head (calibrated gender → motion →
- *     midpoint), gate switches through the speaker debounce, emit crop x.
+ *   • per two-shot frame pick the active head from audio-visual correlation alone,
+ *     gate switches through the speaker debounce, emit crop x.
  *   • non-two-shot frames use the interest centroid.
  * Then per-shot median + Gaussian smoothing.
  *
@@ -27,8 +26,8 @@ import {
   SAMPLE_RATE, type SpeakerLabel, type ChunkPitch,
 } from './speaker.js';
 import {
-  regionMotionSeries, windowedActiveRegions, calibrateGenderRegion,
-  calibrateGenderRegionByActivity, speechCorrelatedMotion,
+  regionMotionSeries, windowedActiveRegions, speechCorrelatedMotion, headSpeechEvidence,
+  DEFAULT_AV, type AVConfig,
 } from './activeSpeaker.js';
 import { bhattacharyya } from './dsp.js';
 import { DebounceState, applyDebounce } from './debounce.js';
@@ -54,8 +53,9 @@ export interface CropMetadata {
     frames: number;
     heads: number[];
     two_shot: number;
-    av: number;        // frames cropped from direct AV-correlation
-    gender: number;    // frames cropped from gender→region mapping
+    av: number;        // frames cropped from direct windowed AV-correlation
+    evidence: number;  // frames cropped from the shot's dominant speech-correlated head
+    gender: number;    // always 0 — the gender→region gap-fill was removed; kept for schema stability
     hold: number;      // frames holding (silence / ambiguous)
     pitch_threshold_hz: number;
     calibration: string;
@@ -68,6 +68,9 @@ export interface CropOptions {
   faceHook?: FaceHook;
   sampleInterval?: number;
   onProgress?: (done: number, total: number) => void;
+  /** Override the active-speaker gate. Exists so the eval harness can sweep it; production
+   *  never passes it, and the defaults live in `activeSpeaker.ts` where they are argued for. */
+  av?: Partial<AVConfig>;
 }
 
 export function interestToCropX(interestX: number, vw: number, vh: number, aspect = CROP_ASPECT): number {
@@ -121,6 +124,7 @@ export async function processCropSource(
 ): Promise<CropMetadata> {
   const sampleInterval = options.sampleInterval ?? DEFAULT_SAMPLE_INTERVAL;
   const sampleFps = 1 / sampleInterval;
+  const avConfig: AVConfig = { ...DEFAULT_AV, ...options.av };
 
   const { width: W, height: H, durationSec } = await source.probe();
 
@@ -196,10 +200,9 @@ export async function processCropSource(
   const segments = buildFrameSegments(shotTimes, nFrames, sampleFps);
 
   // ── Pass 2 (per shot) ───────────────────────────────────────────────────────
-  const stats = { two_shot: 0, av: 0, gender: 0, hold: 0 };
+  const stats = { two_shot: 0, av: 0, evidence: 0, gender: 0, hold: 0 };
   let twoShotSegs = 0;
   const lastHeads: number[] = [];
-  let lastCal = 'n/a';
   const raw: Keyframe[] = new Array(nFrames);
 
   for (const [f0, f1] of segments) {
@@ -229,15 +232,17 @@ export async function processCropSource(
       const segEnv = env.slice(f0, f1);
       const motionL = regionMotionSeries(segMotionAll, heads[0]);
       const motionR = regionMotionSeries(segMotionAll, heads[1]);
-      const avActive = windowedActiveRegions(motionL, motionR, segEnv);
+      const avActive = windowedActiveRegions(motionL, motionR, segEnv, avConfig);
       const segLabels = labels.slice(f0, f1);
-      // The gender→region map drives every frame the AV correlator could not name — the
-      // majority of them on real footage — so it is worth more evidence than the AV votes
-      // alone. Prefer the per-region activity contrast over all confidently-pitched frames,
-      // and fall back to the AV votes when the two genders do not separate.
-      const genderRegion = calibrateGenderRegionByActivity(segLabels, motionL, motionR)
-        ?? calibrateGenderRegion(segLabels, avActive);
-      lastCal = `male→r${genderRegion.male ?? '?'} female→r${genderRegion.female ?? '?'}`;
+      // Which head carries this shot's speech-correlated motion. Computed once per shot over
+      // every frame in it, so it is the high-sample-count reading of the same evidence the
+      // 11-sample windowed correlator gives a noisy per-frame opinion about.
+      const evidence = speechS
+        ? ([0, 1] as const).map((k) => headSpeechEvidence(speechS, heads[k]))
+        : null;
+      const dominant: 0 | 1 | null = evidence === null || evidence[0] === evidence[1]
+        ? null
+        : (evidence[0] > evidence[1] ? 0 : 1);
 
       const debounce = new DebounceState();
       for (let i = f0; i < f1; i++) {
@@ -245,12 +250,30 @@ export async function processCropSource(
         const j = i - f0;
         const speaker = segLabels[j].label;
 
-        // Priority: AV-active (direct) → gender→region (gap-fill) → hold.
+        // Priority: windowed AV (direct) → this shot's dominant speaker by visual-speech
+        // evidence → hold.
+        //
+        // The slot the evidence term occupies used to hold a pitch-derived gender→region map,
+        // and that map is deleted. It cannot work on a same-gender pair — the dominant podcast
+        // format — because the pitch calibration correctly refuses to split two voices under
+        // 35 Hz apart, so every confident frame gets ONE label, the map assigns it one region
+        // and infers the other by complement, and both hosts' speech routes to the same head
+        // for the whole take.
+        //
+        // Deleting it outright is not enough on its own, and the eval harness is what showed
+        // why: measured over the fixture two-shots, the windowed correlator names 13-45% of
+        // frames and is right on 17-46% of those — below chance, because at 4 fps a listener
+        // nodding through ±12.5% of frame width carries more motion energy than a talker's
+        // mouth. Left alone with it, the debounce latches onto whichever head the first firing
+        // named and holds there for the take. So the gap-fill is replaced rather than removed:
+        // same evidence `locateHeads` uses to find the speaker at all, read per head over the
+        // whole shot. Being a constant vote it also costs a competing AV firing 0.8 s of
+        // sustained disagreement to overturn, which sparse noise cannot buy.
+        //
+        // Pitch keeps exactly one job — telling speech from silence — and that is an RMS test.
         let region: 0 | 1 | null = null;
         if (avActive[j] !== null) { region = avActive[j]; stats.av++; }
-        else if ((speaker === 'male' || speaker === 'female') && genderRegion[speaker] !== null) {
-          region = genderRegion[speaker]; stats.gender++;
-        }
+        else if (dominant !== null && speaker !== 'silence') { region = dominant; stats.evidence++; }
 
         let key: string;
         let candidate: number | null;
@@ -288,10 +311,11 @@ export async function processCropSource(
       heads: lastHeads.map((h) => Number(h.toFixed(3))),
       two_shot: stats.two_shot,
       av: stats.av,
+      evidence: stats.evidence,
       gender: stats.gender,
       hold: stats.hold,
       pitch_threshold_hz: Number(threshold.toFixed(1)),
-      calibration: `${twoShotSegs} two-shot seg(s); last ${lastCal}`,
+      calibration: `${twoShotSegs} two-shot seg(s); attribution=av_correlation`,
       shots: shotTimes.length,
       algo_version: algoVersion('v1'),
     },

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
-  regionMotionSeries, windowedActiveRegions, calibrateGenderRegion,
-  calibrateGenderRegionByActivity,
+  regionMotionSeries, windowedActiveRegions, speechCorrelatedMotion,
+  headSpeechEvidence, headColumns, nullSigma,
 } from '../activeSpeaker.js';
 import { PROFILE_COLS } from '../sceneAnalyzer.js';
 
@@ -59,69 +59,51 @@ describe('regionMotionSeries', () => {
   });
 });
 
-describe('calibrateGenderRegion', () => {
-  it('maps each gender to the region the AV detector flagged while they spoke', () => {
-    const N = 40;
-    const labels = Array.from({ length: N }, (_, i) => ({ label: i < 20 ? 'male' : 'female', conf: 0.8 }));
-    const av: Array<0 | 1 | null> = Array.from({ length: N }, (_, i) => (i < 20 ? 0 : 1));
-    expect(calibrateGenderRegion(labels, av)).toEqual({ male: 0, female: 1 });
-  });
-
-  it('resolves conflicts (both genders favouring one region) by vote strength', () => {
-    const labels = [
-      { label: 'male', conf: 0.9 }, { label: 'male', conf: 0.9 },   // strongly region 1
-      { label: 'female', conf: 0.4 },                                // weakly region 1
-    ];
-    const av: Array<0 | 1 | null> = [1, 1, 1];
-    // male wins the contested region 1, female pushed to region 0
-    expect(calibrateGenderRegion(labels, av)).toEqual({ male: 1, female: 0 });
+describe('nullSigma', () => {
+  it('reports the null SD of r for the window a halfWindow implies', () => {
+    // n = 2*hw + 1 samples → SD ≈ 1/√(n−1). The shipped hw of 5 gives 11 samples, SD 0.316,
+    // which is why the literal 0.12 minCorr it replaced was a 0.38σ bar on pure noise.
+    expect(nullSigma(5)).toBeCloseTo(1 / Math.sqrt(10), 12);
+    expect(nullSigma(10)).toBeCloseTo(1 / Math.sqrt(20), 12);
+    expect(nullSigma(10)).toBeLessThan(nullSigma(5));
   });
 });
 
-describe('calibrateGenderRegionByActivity', () => {
-  /**
-   * The D-16 scene: the LEFT head is a listener who nods constantly (high, flat motion);
-   * the RIGHT head is the woman actually talking (motion rises only while she speaks).
-   * Raw magnitude says "left"; each region measured against its own baseline says "right".
-   */
-  function nodderVsTalker(N = 120) {
-    const labels: Array<{ label: string; conf: number }> = [];
-    const motionL = new Float64Array(N);
-    const motionR = new Float64Array(N);
-    for (let i = 0; i < N; i++) {
-      const femaleTurn = i % 40 < 30;                    // she holds the floor 75% of the time
-      labels.push({ label: femaleTurn ? 'female' : 'male', conf: 0.8 });
-      motionL[i] = 300 + 40 * Math.sin(i * 0.41);        // nodding, indifferent to who speaks
-      motionR[i] = femaleTurn ? 90 : 10;                 // rises only while she talks
-    }
-    return { labels, motionL, motionR };
-  }
-
-  it('maps the talker to her own region even when the listener moves far more', () => {
-    const { labels, motionL, motionR } = nodderVsTalker();
-    expect(calibrateGenderRegionByActivity(labels, motionL, motionR)).toEqual({ male: 0, female: 1 });
-  });
-
-  it('declines when the two genders do not separate — a coin flip would drive most frames', () => {
-    // Same-gender hosts: pitch carries no information, so both regions look alike per label.
+describe('headSpeechEvidence', () => {
+  it('credits the head whose motion tracks the speech, not the one that moves most', () => {
+    // LEFT nods hard on its own clock; RIGHT moves less, but in time with the envelope.
+    // This is the D2a trap: raw motion energy names the listener.
     const N = 120;
-    const labels = Array.from({ length: N }, (_, i) => ({ label: i % 2 ? 'male' : 'female', conf: 0.8 }));
-    const motionL = new Float64Array(N).fill(100);
-    const motionR = Float64Array.from({ length: N }, (_, i) => 50 + (i % 7));
-    expect(calibrateGenderRegionByActivity(labels, motionL, motionR)).toBeNull();
+    const env = new Float64Array(N);
+    const frames: Float64Array[] = [];
+    for (let i = 0; i < N; i++) {
+      const e = 0.04 + 0.03 * Math.abs(Math.sin(i * 1.7));
+      env[i] = e;
+      const f = new Float64Array(PROFILE_COLS);
+      const nod = 6 * (1 + Math.sin(i * 0.41));
+      const talk = 2 * e * 20;
+      for (let x = 0; x < PROFILE_COLS; x++) {
+        const nx = x / (PROFILE_COLS - 1);
+        if (Math.abs(nx - 0.3) < 0.06) f[x] = nod;
+        if (Math.abs(nx - 0.7) < 0.06) f[x] = talk;
+      }
+      frames.push(f);
+    }
+    const speech = speechCorrelatedMotion(frames, env);
+    expect(headSpeechEvidence(speech, 0.7)).toBeGreaterThan(headSpeechEvidence(speech, 0.3));
   });
 
-  it('declines when a region carries no motion at all, or the shot is too short', () => {
-    const { labels, motionL } = nodderVsTalker();
-    expect(calibrateGenderRegionByActivity(labels, motionL, new Float64Array(120))).toBeNull();
-    expect(calibrateGenderRegionByActivity(labels.slice(0, 4), motionL.slice(0, 4), motionL.slice(0, 4))).toBeNull();
+  it('has no opinion when there is no speech-correlated motion anywhere', () => {
+    const empty = new Float64Array(PROFILE_COLS);
+    expect(headSpeechEvidence(empty, 0.3)).toBe(0);
+    expect(headSpeechEvidence(empty, 0.7)).toBe(0);
   });
 
-  it('declines when only one gender was heard', () => {
-    const N = 60;
-    const labels = Array.from({ length: N }, () => ({ label: 'female', conf: 0.8 }));
-    const motionL = new Float64Array(N).fill(10);
-    const motionR = Float64Array.from({ length: N }, (_, i) => 50 + i);
-    expect(calibrateGenderRegionByActivity(labels, motionL, motionR)).toBeNull();
+  it('pools the same columns regionMotionSeries does', () => {
+    const [lo, hi] = headColumns(0.5);
+    const frame = new Float64Array(PROFILE_COLS);
+    for (let x = lo; x <= hi; x++) frame[x] = 1;
+    expect(regionMotionSeries([frame], 0.5)[0]).toBe(hi - lo + 1);
+    expect(headSpeechEvidence(frame, 0.5)).toBe(hi - lo + 1);
   });
 });

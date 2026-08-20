@@ -17,9 +17,13 @@
 
 export type CropAlgo = 'v1' | 'v2';
 
-/** v1.0 — the shipped skin/saliency/motion pipeline as of the D-16 speech-correlation fix. */
+/**
+ * v1.0 — the shipped skin/saliency/motion pipeline as of the D-16 speech-correlation fix.
+ * v1.1 — gender gap-fill deleted, AV gate expressed in null-σ units, null-energy floor for
+ *        subject-free shots, adaptive shot detection.
+ */
 const VERSIONS: Record<CropAlgo, string> = {
-  v1: 'v1.0',
+  v1: 'v1.1',
   v2: 'v2.0',
 };
 

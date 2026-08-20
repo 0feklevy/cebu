@@ -24,15 +24,46 @@ const WINDOW_FRAC = 0.13;   // ± column window (norm.) pooled around each head 
 
 export interface AVConfig {
   halfWindow: number;       // frames each side of the centre frame for local correlation
-  minCorr: number;          // a correlation must clear this to count as "speaking"
-  margin: number;           // |corrL − corrR| must exceed this, else ambiguous (null)
+  /** "Speaking" bar, in null-distribution standard deviations of r (see nullSigma). */
+  minCorrSigma: number;
+  /** Lead one region must have over the other, in the same units; below it the frame is ambiguous. */
+  marginSigma: number;
   silenceFloorRel: number;  // window audio mean must exceed this × global mean
 }
 
+/**
+ * Standard deviation of Pearson's r under the null hypothesis for a window of `halfWindow`
+ * frames each side — n = 2·halfWindow + 1 samples, SD ≈ 1/√(n−1).
+ *
+ * The gate's thresholds are expressed as multiples of this rather than as bare correlations
+ * because a bare correlation means nothing without the sample count behind it. At the
+ * shipped halfWindow of 5 the window holds 11 samples and this SD is 0.32, so the literal
+ * 0.12 and 0.06 the file used to carry were a 0.38σ bar and a 0.19σ lead — thresholds that
+ * random noise clears constantly. Stating them in σ makes that visible in the source, and
+ * makes them still correct if the window size is ever changed.
+ */
+export function nullSigma(halfWindow: number): number {
+  return 1 / Math.sqrt(Math.max(1, 2 * halfWindow));
+}
+
+/**
+ * The σ multipliers are the sweep's answer, not a guess — `scripts/crop-eval/sweep-av.ts`
+ * scores an 80-point grid over halfWindow × minCorr × margin on the eval set, and these
+ * reproduce the grid's best mIoU and best subject-out-of-frame rate.
+ *
+ * The sweep's more important result is negative, and it is recorded here because it changes
+ * what the next fix should be: attribution accuracy never exceeds 0.499 at ANY point in the
+ * grid, against 0.500 for guessing. Raising the bar only converts wrong answers into
+ * abstentions — out-of-frame rises as fast as accuracy does — because the underlying signal,
+ * gross frame-difference motion pooled over ±12.5% of frame width at 4 fps, is torso and
+ * background, not lips: syllable-rate mouth motion is 3–8 Hz and aliases past the 2 Hz
+ * Nyquist this sampling allows. No threshold recovers information the signal never carried.
+ * The fix is a spatially specific signal (mouth-ROI lip activity), not a stricter gate.
+ */
 export const DEFAULT_AV: AVConfig = {
   halfWindow: 5,
-  minCorr: 0.12,
-  margin: 0.06,
+  minCorrSigma: 0.38,
+  marginSigma: 0.19,
   silenceFloorRel: 0.35,
 };
 
@@ -95,11 +126,8 @@ export function speechCorrelatedMotion(
 /** Pool per-frame motion energy into a time series for one head region. */
 export function regionMotionSeries(motionPerFrame: Float64Array[], headX: number): Float64Array {
   const n = motionPerFrame.length;
-  const cols = PROFILE_COLS;
-  const c = Math.round(headX * (cols - 1));
-  const win = Math.max(1, Math.floor(WINDOW_FRAC * cols));
-  const lo = Math.max(0, c - win), hi = Math.min(cols - 1, c + win);
   const out = new Float64Array(n);
+  const [lo, hi] = headColumns(headX);
   for (let i = 0; i < n; i++) {
     let s = 0;
     const m = motionPerFrame[i];
@@ -107,6 +135,30 @@ export function regionMotionSeries(motionPerFrame: Float64Array[], headX: number
     out[i] = s;
   }
   return out;
+}
+
+/** Column range pooled for one head centre — the single definition of "this head's region". */
+export function headColumns(headX: number): [number, number] {
+  const c = Math.round(headX * (PROFILE_COLS - 1));
+  const win = Math.max(1, Math.floor(WINDOW_FRAC * PROFILE_COLS));
+  return [Math.max(0, c - win), Math.min(PROFILE_COLS - 1, c + win)];
+}
+
+/**
+ * Total shot-level speech-correlated motion sitting under one head.
+ *
+ * `speechCorrelatedMotion` answers, per column, "does what moves here rise and fall with the
+ * speech?" over a whole shot. Summed under a head it becomes that head's share of the
+ * evidence that it did the talking during this shot — a slow, high-sample-count statistic,
+ * where the windowed per-frame correlation is a fast, 11-sample one that measurement shows
+ * lands below chance (see DEFAULT_AV). It is the same quantity `locateHeads` already trusts
+ * to find the speaker, read per head instead of per column.
+ */
+export function headSpeechEvidence(speechSum: Float64Array, headX: number): number {
+  const [lo, hi] = headColumns(headX);
+  let s = 0;
+  for (let x = lo; x <= hi; x++) s += speechSum[x];
+  return s;
 }
 
 /** Pearson correlation of two slices a[lo..hi], b[lo..hi]. */
@@ -137,6 +189,9 @@ export function windowedActiveRegions(
 ): Array<0 | 1 | null> {
   const n = env.length;
   const out: Array<0 | 1 | null> = new Array(n).fill(null);
+  const sigma = nullSigma(cfg.halfWindow);
+  const minCorr = cfg.minCorrSigma * sigma;
+  const margin = cfg.marginSigma * sigma;
 
   // Global audio mean (of non-trivial frames) → relative silence floor.
   let envMean = 0, envCount = 0;
@@ -157,118 +212,10 @@ export function windowedActiveRegions(
     const cL = pearson(motionL, env, lo, hi);
     const cR = pearson(motionR, env, lo, hi);
     const best = Math.max(cL, cR);
-    if (best < cfg.minCorr) continue;            // nobody's motion tracks audio
-    if (Math.abs(cL - cR) < cfg.margin) continue; // too close to call → hold
+    if (best < minCorr) continue;            // nobody's motion tracks audio
+    if (Math.abs(cL - cR) < margin) continue; // too close to call → hold
 
     out[i] = cL > cR ? 0 : 1;
   }
   return out;
-}
-
-/**
- * Calibrate gender → head region from how each region's motion RISES while that gender
- * holds the floor, measured over every confidently-pitched frame in the shot.
- *
- * Why this exists, and why it runs before the AV-vote version below.
- *
- * `calibrateGenderRegion` learns the map from `avActive` alone — the frames where the
- * ±1.25 s local correlation was confident enough to name a region. On real footage that is
- * a small minority of frames, and the map it trains then drives the *majority* of them
- * through the gap-filler. Measured end-to-end on the two-shot in `cropProcessor.test.ts`:
- * 45 of 240 frames were decided by direct AV correlation and 195 (81%) by this map — and
- * the map was INVERTED, so the crop sat on the listening man for the whole take while the
- * woman talked. That is the owner-reported D-16 symptom, and it survives correct head
- * localization: nothing downstream re-checks the map against the audio.
- *
- * The inversion has a mechanical cause. At 4 fps the "motion" being correlated is gross
- * head/body movement, not lip sync, so a listener who nods steadily produces far more
- * motion energy than a talker whose head is still — and over an 11-sample window two
- * oscillators correlate spuriously often enough to carry a sparse vote.
- *
- * So compare each region against ITS OWN average rather than against the other region.
- * A constantly-nodding listener has a high baseline and barely rises when the other person
- * speaks; a talker's region rises specifically while they hold the floor. Normalising by
- * the region's own mean is what removes the nodder's advantage, and using every
- * confidently-pitched frame rather than only the AV-confident ones is what makes the
- * estimate stable.
- *
- * Returns null — leaving the AV-vote calibration in charge — when the evidence is thin or
- * the two genders do not separate by `minMargin`. Same-gender hosts land there by design:
- * the pitch labels carry no information then, and a coin-flip map applied to 80% of frames
- * is exactly the failure this is meant to prevent.
- */
-export function calibrateGenderRegionByActivity(
-  labels: Array<{ label: string; conf: number }>,
-  motionL: Float64Array,
-  motionR: Float64Array,
-  minConf = 0.30,
-  minMargin = 0.08,
-  minFrames = 8,
-): { male: 0 | 1; female: 0 | 1 } | null {
-  const n = Math.min(labels.length, motionL.length, motionR.length);
-  if (n < minFrames) return null;
-
-  let meanL = 0, meanR = 0;
-  for (let i = 0; i < n; i++) { meanL += motionL[i]; meanR += motionR[i]; }
-  meanL /= n; meanR /= n;
-  if (meanL < 1e-9 || meanR < 1e-9) return null;   // a region with no motion at all → no opinion
-
-  const acc = { male: { l: 0, r: 0, w: 0 }, female: { l: 0, r: 0, w: 0 } };
-  for (let i = 0; i < n; i++) {
-    const { label, conf } = labels[i];
-    if (conf < minConf) continue;
-    const a = label === 'male' ? acc.male : label === 'female' ? acc.female : null;
-    if (a === null) continue;
-    a.l += (motionL[i] / meanL) * conf;
-    a.r += (motionR[i] / meanR) * conf;
-    a.w += conf;
-  }
-  if (acc.male.w <= 0 || acc.female.w <= 0) return null;
-
-  // "How much more does the RIGHT region rise than the LEFT one while this gender speaks."
-  const mScore = (acc.male.r - acc.male.l) / acc.male.w;
-  const fScore = (acc.female.r - acc.female.l) / acc.female.w;
-  if (fScore - mScore >= minMargin) return { male: 0, female: 1 };
-  if (mScore - fScore >= minMargin) return { male: 1, female: 0 };
-  return null;                                      // too close to call
-}
-
-/**
- * Calibrate gender → head region from the AV-active series. For each confident
- * gendered frame, vote for whichever region the AV detector flagged as speaking.
- * Far cleaner than raw motion argmax because avActive already rejects background
- * and listener motion.
- */
-export function calibrateGenderRegion(
-  labels: Array<{ label: string; conf: number }>,
-  avActive: Array<0 | 1 | null>,
-  minConf = 0.30,
-): { male: 0 | 1 | null; female: 0 | 1 | null } {
-  const male = [0, 0], female = [0, 0];
-  for (let i = 0; i < labels.length; i++) {
-    const a = avActive[i];
-    if (a === null) continue;
-    const { label, conf } = labels[i];
-    if (conf < minConf) continue;
-    if (label === 'male') male[a] += conf;
-    else if (label === 'female') female[a] += conf;
-  }
-  const mHas = male[0] + male[1] > 0;
-  const fHas = female[0] + female[1] > 0;
-  const mBest = (male[0] >= male[1] ? 0 : 1) as 0 | 1;
-  const fBest = (female[0] >= female[1] ? 0 : 1) as 0 | 1;
-
-  if (!mHas && !fHas) return { male: null, female: null };
-  if (mHas && fHas && mBest === fBest) {
-    // Both genders voted the same region — give it to the stronger, other to loser.
-    const contested = mBest;
-    const other = (1 - contested) as 0 | 1;
-    return male[contested] >= female[contested]
-      ? { male: contested, female: other }
-      : { male: other, female: contested };
-  }
-  return {
-    male: mHas ? mBest : ((fHas ? 1 - fBest : null) as 0 | 1 | null),
-    female: fHas ? fBest : ((mHas ? 1 - mBest : null) as 0 | 1 | null),
-  };
 }
