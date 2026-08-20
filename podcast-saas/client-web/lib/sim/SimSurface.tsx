@@ -40,6 +40,14 @@ export interface SimSurfaceProps {
   style?: React.CSSProperties;
   /** Extra sandbox tokens beyond the default set (the editor preview needs pointer lock). */
   sandbox?: string;
+  /**
+   * Permissions-Policy delegated to the frame (`allow="fullscreen"`, `autoplay`, …).
+   *
+   * Distinct from `sandbox`, and the distinction matters: sandbox REMOVES capabilities from the
+   * document, `allow` DELEGATES ones the embedder holds. Omitted by default, so no surface gains a
+   * capability by accident — a full-screen simulation on a phone asks for it explicitly.
+   */
+  allow?: string;
   /** Set false for a frame that must never take pointer input even while visible. */
   interactive?: boolean;
   /**
@@ -56,7 +64,7 @@ const DEFAULT_SANDBOX = 'allow-scripts allow-same-origin allow-forms';
 function SimSurfaceImpl({
   src, srcDoc, bootHide, visible, frameRef, onLoad,
   title = 'Interactive simulation',
-  className, style, sandbox, interactive = true, fade = true, children,
+  className, style, sandbox, allow, interactive = true, fade = true, children,
 }: SimSurfaceProps) {
   if (!src && !srcDoc) return null;
 
@@ -75,6 +83,7 @@ function SimSurfaceImpl({
         className={className}
         loading="eager"
         sandbox={sandbox ?? DEFAULT_SANDBOX}
+        allow={allow}
         style={{
           opacity: shown ? 1 : 0,
           ...(fade ? { transition: `opacity ${SIM_FADE_MS}ms ease` } : {}),

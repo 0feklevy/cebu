@@ -733,6 +733,29 @@ export interface PermalinkAvailability {
   message?: string;
 }
 
+// ── Library share (migration 065) ────────────────────────────────────────────
+//
+// The five routes of the materials mini-site. Declared here because this file is HAND-maintained
+// and nothing enforces it against the Fastify routes — a backend change does not break the build,
+// so an omission here is silent drift rather than a compile error.
+//
+// The public read is deliberately NOT a method on this client: `client-web/lib/libraryApi.ts`
+// fetches it server-side with ISR tags and validates it against `LibraryViewSchema`, and routing it
+// through the browser client would lose both. Its path is recorded here so the contract is
+// complete: GET /api/v1/public/library/:slug?type= → LibraryView | 404.
+
+export interface LibraryShareInfo {
+  /** The public path segment, `{title-slug}-{code13}`. Null when the project has no live link. */
+  slug: string | null;
+  /** Full public URL ({PUBLIC_SITE_URL}/{slug}/library), null when there is no link. */
+  url: string | null;
+  /** The code-free `/{permalink}/library` form — only when the project is public with a permalink. */
+  cleanUrl: string | null;
+  includeTypes: Array<'simulation' | 'image' | 'video' | 'audio'> | null;
+  expiresAt: string | null;
+  createdAt: string | null;
+}
+
 export interface PlaylistItem {
   id: string;
   project_id: string;
@@ -1514,6 +1537,35 @@ export class ClientV1Api {
       params.set('exclude_id', exclude.id);
     }
     return this.request(`/api/v1/permalink-availability?${params.toString()}`);
+  }
+
+  // ── Library share (migration 065) ───────────────────────────────────────
+  //
+  // The four OWNER routes. All four answer 404 (never 403) when the caller may not edit the
+  // project. The anonymous read that renders the page is fetched server-side by
+  // `client-web/lib/libraryApi.ts`, not from here — see the LibraryShareInfo header.
+
+  /** Current link state, or all-nulls when the project has no live link. */
+  getLibraryShare(projectId: string): Promise<LibraryShareInfo> {
+    return this.request(`/api/v1/projects/${projectId}/library-share`);
+  }
+
+  /** Mint. Idempotent — a second call returns the SAME slug, not a second link. 201. */
+  createLibraryShare(projectId: string): Promise<LibraryShareInfo> {
+    return this.request(`/api/v1/projects/${projectId}/library-share`, { method: 'POST' });
+  }
+
+  /** Change the type scope or the expiry. Dispatches an ISR purge for both URL forms. */
+  updateLibraryShare(
+    projectId: string,
+    patch: { includeTypes?: Array<'simulation' | 'image' | 'video' | 'audio'>; expiresAt?: string | null },
+  ): Promise<LibraryShareInfo> {
+    return this.request(`/api/v1/projects/${projectId}/library-share`, { method: 'PATCH', body: patch });
+  }
+
+  /** Revoke: stamps revoked_at and purges the page. 204. */
+  revokeLibraryShare(projectId: string): Promise<void> {
+    return this.request(`/api/v1/projects/${projectId}/library-share`, { method: 'DELETE' });
   }
 
   getPlaylistShare(playlistId: string): Promise<{ shareToken: string | null; shareUrl: string | null }> {

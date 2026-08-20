@@ -5,15 +5,16 @@
  * (WordPress/base44-style, e.g. https://science-of-awe.com/my-video). The
  * random share_token links (/v/:token, /pl/:token) remain the unlisted links.
  *
- * Slugs share ONE namespace across projects and playlists — both resolve at
- * the site root — so every check here spans both tables. Same-table races are
- * caught by the partial unique indexes (043); the public resolver breaks a
- * theoretical cross-table tie deterministically (project wins).
+ * Slugs share ONE namespace across projects, playlists and live library shares
+ * (migration 065) — all three resolve at the site root — so every check here
+ * spans all three tables. Same-table races are caught by the partial unique
+ * indexes (043, 065); the public resolver breaks a theoretical cross-table tie
+ * deterministically (project wins).
  */
 
 import { db } from '../db/index.js';
-import { projects, playlists } from '../db/schema.js';
-import { and, eq, like, ne, or, type SQL } from 'drizzle-orm';
+import { projects, playlists, library_shares } from '../db/schema.js';
+import { and, eq, isNull, like, ne, or, type SQL } from 'drizzle-orm';
 import { slugify, dedupeSlug } from './seo/SlugService.js';
 import { platformBaseUrl } from './course/CanonicalUrlService.js';
 
@@ -34,6 +35,11 @@ export const RESERVED_SLUGS = new Set([
   'course', 'courses', 'creator', 'creators', 'studio', 'app', 'www', 'static',
   'assets', 'public', 'images', 'media', 'files', 'downloads', 'feed', 'rss',
   'next', 'null', 'undefined', 'index',
+  // Library mini-site (migration 065). `app/[slug]/library/` is a static child of an existing
+  // dynamic segment, so it needs no reservation to FUNCTION — these are defensive. Without them a
+  // creator could claim the permalink `library`, which makes `/library/library` a real page and
+  // permanently blocks any future top-level `/library`.
+  'library', 'libraries', 'simulation', 'simulations', 'sound', 'sounds', 'sim',
 ]);
 
 export type SlugRejection = 'invalid' | 'reserved' | 'taken';
@@ -65,7 +71,17 @@ export interface SlugExclude {
   id: string;
 }
 
-/** True when `slug` is held by any project OR playlist other than the excluded row. */
+/**
+ * True when `slug` is held by any project, playlist OR live library share other than the excluded
+ * row.
+ *
+ * Library shares join this namespace because they resolve at the same root: a library slug is the
+ * first path segment of `/{slug}/library`. If a creator could claim a permalink identical to a live
+ * library slug, `/{x}/library` would have two possible meanings — the permalinked project's library
+ * and the share's — and which one won would depend on resolution order rather than on intent.
+ * Revoked shares are excluded: their slug is dead, and holding it hostage forever would be a
+ * namespace leak with no owner.
+ */
 export async function permalinkSlugTaken(slug: string, exclude?: SlugExclude): Promise<boolean> {
   const projectWhere: SQL | undefined = exclude?.type === 'project'
     ? and(eq(projects.slug, slug), ne(projects.id, exclude.id))
@@ -74,11 +90,15 @@ export async function permalinkSlugTaken(slug: string, exclude?: SlugExclude): P
     ? and(eq(playlists.slug, slug), ne(playlists.id, exclude.id))
     : eq(playlists.slug, slug);
 
-  const [proj, pl] = await Promise.all([
+  const [proj, pl, lib] = await Promise.all([
     db.query.projects.findFirst({ where: projectWhere, columns: { id: true } }),
     db.query.playlists.findFirst({ where: playlistWhere, columns: { id: true } }),
+    db.query.library_shares.findFirst({
+      where: and(eq(library_shares.slug, slug), isNull(library_shares.revoked_at)),
+      columns: { id: true },
+    }),
   ]);
-  return Boolean(proj || pl);
+  return Boolean(proj || pl || lib);
 }
 
 /** Full usability check. Returns null when the slug can be used, else the reason. */
