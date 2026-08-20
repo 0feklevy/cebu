@@ -42,6 +42,24 @@ export const RESERVED_SLUGS = new Set([
   'library', 'libraries', 'simulation', 'simulations', 'sound', 'sounds', 'sim',
 ]);
 
+/**
+ * The dubbing language codes that appear as a permalink SUFFIX — /{slug}/he (migration 067).
+ *
+ * NOT added to RESERVED_SLUGS, and the distinction matters. These are never top-level routes, so
+ * reserving them would forbid a perfectly good permalink (`/en` for a project about England) to
+ * prevent a collision that cannot happen: `/{slug}/{lang}` is two segments and `/{slug}` is one.
+ *
+ * What they DO constrain is the second segment. `isDubbingLanguageSuffix` is exported so any
+ * future route that wants to live at `/{slug}/{something}` can check whether that name is already
+ * spoken for by a translation, rather than discovering the overlap in production.
+ */
+export const PERMALINK_LANGUAGE_SUFFIXES = new Set(['en', 'es', 'he']);
+
+/** Whether a second path segment under a permalink names a dubbed language rather than a page. */
+export function isDubbingLanguageSuffix(segment: string): boolean {
+  return PERMALINK_LANGUAGE_SUFFIXES.has(segment.trim().toLowerCase());
+}
+
 export type SlugRejection = 'invalid' | 'reserved' | 'taken';
 
 export function rejectionMessage(reason: SlugRejection): string {

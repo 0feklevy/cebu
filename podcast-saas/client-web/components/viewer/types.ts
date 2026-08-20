@@ -59,6 +59,18 @@ export interface SimulationOverlay {
   type:           string;
 }
 
+/** A dubbed language this project can be watched in (migration 067). */
+export interface PlayerAudioLanguage {
+  /** BCP-47 base code — also the public URL suffix, 1:1. */
+  code: string;
+  /** English name, for a fallback rendering. */
+  name: string;
+  /** The language's own name — what a viewer choosing it should read. */
+  endonym: string;
+  /** Right-to-left script; the caption overlay sets `dir` from this. */
+  rtl: boolean;
+}
+
 export interface PlayerSegment {
   id: string;
   label: string;
@@ -227,6 +239,13 @@ export interface PlayerConfig {
   avatar_circles?: AvatarCirclesConfig | null;
   speaker_timeline?: SpeakerSpan[];
   branching?: PlayerBranchingConfig | null;
+  // ── Multi-language dubbing (migration 067) ──────────────────────────────────
+  // `language` is what is PLAYING — null is the original track. `available_languages` is what the
+  // switcher may offer and never includes the original, which the player adds itself as a distinct
+  // "back to the source" choice. The segment URLs above are ALREADY this language's rendition:
+  // the swap happens on the server, so audio and captions cannot come from different languages.
+  language?: string | null;
+  available_languages?: PlayerAudioLanguage[];
   // Kill switch (admin_settings / SIM_POOL_MODE): 'adaptive' = package-identity resident pool;
   // 'single' = conservative one-frame-on-activation fallback. A ?simpool= URL param overrides it.
   sim_pool_mode?: 'adaptive' | 'single';

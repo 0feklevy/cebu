@@ -60,6 +60,7 @@ import { registerHealthRoutes } from './controllers/v1/health.controller.js';
 import { registerPhase2StubRoutes } from './controllers/stubs.js';
 import { registerPlayerRoutes } from './controllers/v1/player.controller.js';
 import { registerShareRoutes }  from './controllers/v1/share.controller.js';
+import { registerDubbingRoutes } from './controllers/v1/dubbing.controller.js';
 import { registerPermalinkRoutes } from './controllers/v1/permalink.controller.js';
 import { registerLibraryShareRoutes } from './controllers/v1/library-share.controller.js';
 import { registerSimulationsRoutes } from './controllers/v1/simulations.controller.js';
@@ -590,6 +591,7 @@ async function build() {
   await registerAdminBillingRoutes(app);
 
   await registerPlayerRoutes(app);
+  await registerDubbingRoutes(app);
   await registerShareRoutes(app);
   await registerPermalinkRoutes(app);
   await registerLibraryShareRoutes(app);

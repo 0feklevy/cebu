@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => ({
   playlists:          { findMany: vi.fn() },
   simulations:        { findMany: vi.fn() },
   sim_posters:        { findMany: vi.fn() },
+  video_dubs:        { findMany: vi.fn() },
 }));
 
 vi.mock('../../db/index.js', () => ({ db: { query: mocks } }));
@@ -42,6 +43,7 @@ vi.mock('../../db/schema.js', () => ({
   playlists:            Symbol('playlists'),
   simulations:          Symbol('simulations'),
   sim_posters:          Symbol('sim_posters'),
+  video_dubs:          Symbol('video_dubs'),
 }));
 
 vi.mock('drizzle-orm', () => ({
@@ -145,6 +147,7 @@ beforeEach(() => {
   mocks.simulations.findMany.mockResolvedValue([]);
   // No posters captured is likewise the normal case — every section then emits poster_url: null.
   mocks.sim_posters.findMany.mockResolvedValue([]);
+  mocks.video_dubs.findMany.mockResolvedValue([]);
 });
 
 describe('buildPlayerConfig — ui_hide', () => {

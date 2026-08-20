@@ -9,6 +9,7 @@ import { enqueueCaptionsForProject, getCaptionStatusForProject } from '../../ser
 import { requireProjectAccess } from '../../services/projectAccess.js';
 import { editableProject, isCollaborator } from '../../services/collabAccess.js';
 import { requireUuidParams } from '../../lib/uuidParam.js';
+import { normalizeDubbingLanguage } from '../../services/dubbing/languages.js';
 
 import type { AccessProject } from '../../services/projectAccess.js';
 
@@ -40,7 +41,9 @@ const videoIdIsUuid = requireUuidParams('videoId', 'Captions not available');
 // not purchased it.
 
 export async function registerPlayerRoutes(app: FastifyInstance): Promise<void> {
-  app.get<{ Params: { id: string } }>(
+  // `?lang=he` serves that language's dubbed rendition and captions (migration 067); an unknown
+  // or unfinished language falls back to the source track rather than failing.
+  app.get<{ Params: { id: string }; Querystring: { lang?: string } }>(
     '/api/v1/projects/:id/player-config',
     { preHandler: [projectIdIsUuid, firebaseAuthOptionalMiddleware] },
     async (request, reply: FastifyReply) => {
@@ -73,7 +76,9 @@ export async function registerPlayerRoutes(app: FastifyInstance): Promise<void> 
         }
       }
 
-      const config = await buildPlayerConfig(projectId, request.dbUser?.id ?? null, project);
+      const config = await buildPlayerConfig(
+        projectId, request.dbUser?.id ?? null, project, normalizeDubbingLanguage(request.query.lang ?? ''),
+      );
       if (!config) return reply.code(404).send({ message: 'Project not found' });
       return reply.send(config);
     },

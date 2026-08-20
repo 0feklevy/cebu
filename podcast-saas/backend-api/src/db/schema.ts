@@ -1582,3 +1582,87 @@ export const project_exports = pgTable(
 
 export type ProjectExport = typeof project_exports.$inferSelect;
 export type NewProjectExport = typeof project_exports.$inferInsert;
+
+/**
+ * Multi-language dubbing — one row per (video, target language, provider) (migration 067).
+ *
+ * `video_files.captions_vtt` is a single text column with no language dimension, so the /he /es /en
+ * product plan cannot be expressed by widening that row. This is the child table that carries the
+ * language axis: the dubbed audio, the muxed video, the per-language HLS rendition, and — crucially
+ * — the captions THAT DUB PRODUCED.
+ *
+ * The captions column is not a convenience. Captions for a dubbed language must come from whatever
+ * produced the audio the viewer is hearing: two independent translations of one source diverge, and
+ * a viewer with captions on would read one wording while hearing another. So a row's `captions_vtt`
+ * and its `audio_key` are always two halves of the same translation.
+ *
+ * `uniqVideoLangProvider` is the last line of the double-billing defence — see the migration header
+ * for the other three layers and why a vendor with no idempotency key needs all four.
+ */
+export const video_dubs = pgTable(
+  'video_dubs',
+  {
+    id:              uuid('id').primaryKey().defaultRandom(),
+    video_file_id:   uuid('video_file_id').notNull().references(() => video_files.id, { onDelete: 'cascade' }),
+    target_language: text('target_language').notNull(),
+    provider:        text('provider').notNull().default('elevenlabs'),
+    el_project_id:   text('el_project_id'),
+    el_language_id:  text('el_language_id'),
+    /** Seam for the classic dubbing surface. Nothing writes it on the v2 path. */
+    el_dubbing_id:   text('el_dubbing_id'),
+    status:          text('status').notNull().default('queued'),
+    audio_key:       text('audio_key'),
+    muxed_video_key: text('muxed_video_key'),
+    hls_master_key:  text('hls_master_key'),
+    captions_vtt:    text('captions_vtt'),
+    source_hash:     text('source_hash'),
+    revision:        integer('revision'),
+    output_revision: integer('output_revision'),
+    billed_minutes:  doublePrecision('billed_minutes'),
+    cost_cents:      doublePrecision('cost_cents'),
+    /** Produced under a watermarking plan ⇒ never served to a viewer. See migration 067. */
+    watermarked:     boolean('watermarked').notNull().default(false),
+    error:           text('error'),
+    claimed_at:      timestamp('claimed_at', { withTimezone: true }),
+    created_at:      timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updated_at:      timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    uniqVideoLangProvider: unique('uniq_video_dubs_video_lang_provider').on(
+      t.video_file_id, t.target_language, t.provider,
+    ),
+    idxVideo:          index('idx_video_dubs_video').on(t.video_file_id),
+    idxStatusClaimed:  index('idx_video_dubs_status_claimed').on(t.status, t.claimed_at),
+    languageFormatChk: check('video_dubs_language_format_chk', sql`${t.target_language} ~ '^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})*$'`),
+    statusChk:         check('video_dubs_status_chk', sql`${t.status} IN ('queued', 'processing', 'completed', 'stale', 'failed')`),
+    providerChk:       check('video_dubs_provider_chk', sql`${t.provider} IN ('elevenlabs', 'whisper+llm')`),
+    // idx_video_dubs_el_project — the partial index (WHERE el_project_id IS NOT NULL) the crash
+    // recovery path uses — is declared in 067 only: Drizzle's index builder has no WHERE clause,
+    // and declaring it here without one would create a total index over a mostly-null column.
+  }),
+);
+
+export type VideoDub = typeof video_dubs.$inferSelect;
+export type NewVideoDub = typeof video_dubs.$inferInsert;
+
+/**
+ * The cluster-wide dubbing concurrency pool (migration 067).
+ *
+ * The vendor allows 3 concurrent dubbing jobs PER WORKSPACE, and this deployment is one workspace —
+ * so every tenant's dubs contend for the same three slots. That bound belongs to the account, not
+ * to a process, which is why pg-boss's `localConcurrency` cannot express it: that number is
+ * per-worker, and two worker containers each running "one at a time" are two concurrent jobs.
+ *
+ * Rows are fixed (seeded 1..3) and claimed with `FOR UPDATE SKIP LOCKED`, so two workers cannot
+ * take the same slot and a worker that finds none knows the pool is genuinely full. A slot is a
+ * LEASE that expires on its own — a crashed worker costs one lease period of throughput rather
+ * than permanently shrinking the pool.
+ */
+export const dubbing_slots = pgTable('dubbing_slots', {
+  slot_no:    integer('slot_no').primaryKey(),
+  /** The video_dubs.id currently holding this slot — diagnostics only. */
+  holder:     text('holder'),
+  /** NULL or in the past ⇒ free. */
+  expires_at: timestamp('expires_at', { withTimezone: true }),
+  updated_at: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
