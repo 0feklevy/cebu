@@ -25,6 +25,15 @@
  *   • pitch carries real information on the mixed-gender fixture and NONE on the
  *     same-gender one, which is what makes the gender gap-fill's damage measurable.
  *
+ * There is deliberately NO synthetic film grain. Two versions of it were tried and both
+ * produced artefacts that measured as algorithm behaviour: a per-frame global brightness
+ * offset turns a flat background into a histogram that jumps a whole bin at once, so the shot
+ * detector reads a cut on a static title card; and a pre-drawn noise field read at a
+ * frame-dependent offset scrolls, which is coherent motion, not noise. Frames are therefore
+ * clean, and the only thing that moves is what the scene says moves. That is a real limitation
+ * — nothing here exercises noise robustness — and it is the honest one, because the
+ * alternative was measuring the fixture generator instead of the pipeline.
+ *
  * Determinism: all randomness comes from a per-clip LCG seeded from the fixture id, so two
  * runs of the harness produce byte-identical frames, audio and scores.
  */
@@ -62,6 +71,8 @@ export interface EvalClip {
   durationSec: number;
   sampleFps: number;
   hasAudio: boolean;
+  /** Ground-truth cut times, for scoring shot detection directly. */
+  cuts: number[];
   labels: FrameLabel[];
   frame(index: number): Uint8Array;
   audio(): Float32Array;
@@ -191,10 +202,6 @@ function shade(rgb: Rgb, k: number): Rgb {
 
 function buildClip(scene: Scene): EvalClip {
   const nFrames = Math.round(scene.durationSec * SAMPLE_FPS);
-  const rnd = lcg(seedOf(scene.id));
-  // Pre-draw the per-frame film grain so `frame(i)` stays a pure function of `i`.
-  const grain = new Int8Array(nFrames * 8);
-  for (let i = 0; i < grain.length; i++) grain[i] = Math.round((rnd() - 0.5) * 6);
 
   const labels: FrameLabel[] = [];
   for (let i = 0; i < nFrames; i++) {
@@ -215,8 +222,9 @@ function buildClip(scene: Scene): EvalClip {
     durationSec: scene.durationSec,
     sampleFps: SAMPLE_FPS,
     hasAudio: !scene.silent,
+    cuts: [...(scene.cuts ?? [])],
     labels,
-    frame: (i: number) => renderFrame(scene, i, grain),
+    frame: (i: number) => renderFrame(scene, i),
     audio: () => renderAudio(scene),
   };
 }
@@ -228,11 +236,10 @@ function boxOf(scene: Scene, s: Subject, t: number): Box {
   return [cx - w / 2, s.y - h / 2, w, h];
 }
 
-function renderFrame(scene: Scene, i: number, grain: Int8Array): Uint8Array {
+function renderFrame(scene: Scene, i: number): Uint8Array {
   const t = i / SAMPLE_FPS;
   const frame = new Uint8Array(ANALYSIS_W * ANALYSIS_H * 3);
-  const g = grain[i % (grain.length || 1)] ?? 0;
-  fill(frame, [scene.bg[0] + g, scene.bg[1] + g, scene.bg[2] + g] as Rgb);
+  fill(frame, scene.bg);
 
   for (const d of scene.decor ?? []) {
     const mirrored = cutIndex(scene, t) % 2 === 1;

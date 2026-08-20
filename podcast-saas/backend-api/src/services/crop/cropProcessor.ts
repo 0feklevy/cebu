@@ -29,7 +29,7 @@ import {
   regionMotionSeries, windowedActiveRegions, speechCorrelatedMotion, headSpeechEvidence,
   DEFAULT_AV, type AVConfig,
 } from './activeSpeaker.js';
-import { bhattacharyya } from './dsp.js';
+import { blockHistogram, blockDistance, detectShotBoundaries } from './shotDetect.js';
 import { DebounceState, applyDebounce } from './debounce.js';
 import { smoothKeyframes, type Keyframe } from './smoother.js';
 import { algoVersion } from './algo.js';
@@ -38,9 +38,6 @@ export const CROP_ASPECT = 9 / 16;
 const DEFAULT_SAMPLE_INTERVAL = 0.25;  // 4 fps — fine enough for audio-visual correlation
 const ANALYSIS_W = 320;
 const ANALYSIS_H = 180;
-const SHOT_BINS = 32;
-const SHOT_THRESHOLD = 0.30;
-const SHOT_MIN_GAP = 0.5;
 
 export interface CropMetadata {
   video_id: string;
@@ -148,7 +145,9 @@ export async function processCropSource(
   const pitches: ChunkPitch[] = [];
   const times: number[] = [];
 
-  const shotTimes: number[] = [0];
+  // Per-frame distance to the previous frame; cuts are picked from it after the decode so the
+  // adaptive threshold can look both ways (see shotDetect.ts).
+  const shotScores: number[] = [];
   let prevGray: Uint8Array | null = null;
   let prevHist: Float64Array | null = null;
   const totalEstimate = Math.max(1, Math.round(durationSec * sampleFps)); // progress denominator only
@@ -164,12 +163,8 @@ export async function processCropSource(
     salPerFrame.push(p.saliency);
     interestXs.push(p.interestX);
 
-    // inline shot detection
-    const hist = grayHist(gray);
-    if (prevHist && bhattacharyya(prevHist, hist) > SHOT_THRESHOLD &&
-        t - shotTimes[shotTimes.length - 1] > SHOT_MIN_GAP) {
-      shotTimes.push(t);
-    }
+    const hist = blockHistogram(gray, ANALYSIS_W, ANALYSIS_H);
+    shotScores.push(prevHist ? blockDistance(prevHist, hist) : 0);
     prevHist = hist;
 
     // pitch
@@ -186,6 +181,7 @@ export async function processCropSource(
   });
 
   const nFrames = times.length;
+  const shotTimes = [0, ...detectShotBoundaries(shotScores, sampleInterval).map((i) => times[i])];
 
   // ── Between passes ────────────────────────────────────────────────────────────
   const threshold = hasAudio ? calibratePitchThreshold(pitches) : 160;
@@ -320,12 +316,6 @@ export async function processCropSource(
       algo_version: algoVersion('v1'),
     },
   };
-}
-
-function grayHist(frame: Uint8Array): Float64Array {
-  const h = new Float64Array(SHOT_BINS);
-  for (let i = 0; i < frame.length; i++) h[(frame[i] * SHOT_BINS) >> 8]++;
-  return h;
 }
 
 /** Convert shot-boundary timestamps to [startFrame, endFrame) index ranges. */
