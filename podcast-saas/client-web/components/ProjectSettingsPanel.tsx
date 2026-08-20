@@ -2,12 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Crop, Film, Image as ImageIcon, Layers, Loader2, Lock, Settings, Sparkles, Type, Upload, Users, X } from 'lucide-react';
+import { Crop, Film, Globe, Image as ImageIcon, Layers, Loader2, Lock, Settings, Sparkles, Type, Upload, Users, X } from 'lucide-react';
 import { api } from '../lib/api';
 import { LockPriceControl } from './LockPriceControl';
 import { CollaboratorsSection } from './CollaboratorsSection';
 import { AvatarSettingsModal } from './avatar/AvatarSettingsModal';
 import { AvatarCirclesSettings } from './avatar/AvatarCirclesSettings';
+import { DubbingSettings } from './dubbing/DubbingSettings';
 import { GuidedTour, type TourStep } from './GuidedTour';
 import { TourButton } from './TourButton';
 import type { Project, VideoFile } from 'shared/src/generated/client-v1';
@@ -29,7 +30,7 @@ const SETTINGS_TOUR_STEPS: TourStep[] = [
 
 export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Props) {
   const [open, setOpen] = useState(false);
-  const [page, setPage] = useState<'main' | 'avatar' | 'circles'>('main');
+  const [page, setPage] = useState<'main' | 'avatar' | 'circles' | 'dubbing'>('main');
   const [title, setTitle] = useState('');
   const [desc, setDesc] = useState('');
   const [savingMeta, setSavingMeta] = useState(false);
@@ -168,12 +169,13 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
     return () => window.removeEventListener('circles-manual-pick', close);
   }, []);
 
-  // Escape: on the avatar wizard page go back to main; otherwise close the panel
+  // Escape: on any sub-page (avatar, circles, dubbing) go back to main; otherwise close the panel.
+  // Written against `page !== 'main'` rather than a list of sub-pages so a new one inherits it.
   useEffect(() => {
     if (!open) return;
     // preventDefault marks the Escape as consumed so later listeners (e.g. the timeline's
     // circles-picking handler, registered after this one) don't also act on the same press.
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); if (page === 'avatar' || page === 'circles') setPage('main'); else setOpen(false); } };
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); if (page !== 'main') setPage('main'); else setOpen(false); } };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [open, page]);
@@ -504,6 +506,9 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
         {page === 'circles' && (
           <AvatarCirclesSettings projectId={projectId} duration={dur} onClose={() => setPage('main')} />
         )}
+        {page === 'dubbing' && (
+          <DubbingSettings projectId={projectId} onClose={() => setPage('main')} />
+        )}
 
         {/* ── Header ── */}
         <div style={{
@@ -721,6 +726,20 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
                   <span style={{ minWidth: 0 }}>
                     <span style={settingsActionTitle}>Avatar circles</span>
                     <span style={settingsActionSub}>Audio-reactive speaker circles during b-roll</span>
+                  </span>
+                  <span style={settingsActionArrow}>›</span>
+                </button>
+              </div>
+            </div>
+
+            <div data-tour="settings-dubbing" style={sectionCardStyle}>
+              {sectionHead(<Globe size={16} strokeWidth={2} />, 'Languages', 'Dub this video into other languages', '#0ea5e9')}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
+                <button onClick={() => setPage('dubbing')} style={settingsActionCard('#0369a1', 'rgba(14,165,233,0.1)', 'rgba(59,130,246,0.05)')}>
+                  <span style={settingsActionIcon('#0ea5e9')}><Globe size={15} strokeWidth={1.9} aria-hidden /></span>
+                  <span style={{ minWidth: 0 }}>
+                    <span style={settingsActionTitle}>Languages &amp; dubbing</span>
+                    <span style={settingsActionSub}>Dubbed audio and matching captions per language</span>
                   </span>
                   <span style={settingsActionArrow}>›</span>
                 </button>

@@ -36,6 +36,25 @@ interface Props {
   /** Notifies when the caption-settings menu opens/closes (so overlays like the
    *  "Ask!" button can hide and not overlap it). */
   onCaptionMenuOpenChange?: (open: boolean) => void;
+  /**
+   * Dubbed languages this video can be watched in — only ones with a COMPLETED, servable dub
+   * reach here (the server filters; see buildPlayerConfig). Empty means no switcher is drawn.
+   */
+  audioLanguages?: AudioLanguage[];
+  /** The language playing right now. Null is the original, which is always offered. */
+  currentLanguage?: string | null;
+  /** Navigate to `code`'s page, or to the original when null. */
+  onLanguageChange?: (code: string | null) => void;
+}
+
+/** One selectable audio language. `code` is also the public URL suffix, 1:1. */
+export interface AudioLanguage {
+  code: string;
+  /** English name, for a fallback rendering. */
+  name: string;
+  /** The language's own name — what someone choosing it should actually read. */
+  endonym: string;
+  rtl: boolean;
 }
 
 export interface CaptionStyle {
@@ -70,13 +89,28 @@ export function ControlsBar({
   onToggleCaptions,
   onCaptionStyleChange,
   onCaptionMenuOpenChange,
+  audioLanguages = [],
+  currentLanguage = null,
+  onLanguageChange,
 }: Props) {
   const tot = totalDuration || 1;
   const [volumeOpen, setVolumeOpen] = useState(false);
   const [captionMenuOpen, setCaptionMenuOpen] = useState(false);
   useEffect(() => { onCaptionMenuOpenChange?.(captionMenuOpen); }, [captionMenuOpen, onCaptionMenuOpenChange]);
   const volumePct = Math.round(volume * 100);
+
+  const hasLanguages = audioLanguages.length > 0 && Boolean(onLanguageChange);
+
+  /**
+   * The gear opens the settings menu; the CC button toggles captions.
+   *
+   * These had one disabled condition between them, which stops being right once the menu also
+   * holds the language list: a video with dubs but no caption track yet would hide the language
+   * switcher behind "captions unavailable". So the CC toggle keeps the caption condition, and the
+   * gear opens whenever it has ANYTHING to show.
+   */
   const captionDisabled = !captionsAvailable;
+  const menuDisabled = !captionsAvailable && !hasLanguages;
 
   return (
     <div className="viewer-controls-bar">
@@ -211,14 +245,59 @@ export function ControlsBar({
           <button
             className="viewer-ctrl-btn viewer-ctrl-btn--small"
             onClick={() => setCaptionMenuOpen((open) => !open)}
-            disabled={captionDisabled}
-            aria-label="Caption settings"
-            title="Caption settings"
+            disabled={menuDisabled}
+            aria-haspopup="menu"
+            aria-expanded={captionMenuOpen}
+            // The name follows what the menu actually contains, so a screen-reader user is not
+            // told "caption settings" by the only control that reaches the language list.
+            aria-label={hasLanguages ? 'Language and caption settings' : 'Caption settings'}
+            title={hasLanguages ? 'Language and caption settings' : 'Caption settings'}
           >
             <svg className="viewer-icon viewer-icon--small" viewBox="0 0 24 24"><path d="M19.4 13.5c.1-.5.1-1 .1-1.5s0-1-.1-1.5l2.1-1.6-2-3.5-2.5 1a7.6 7.6 0 0 0-2.6-1.5L14 2h-4l-.4 2.9A7.6 7.6 0 0 0 7 6.4l-2.5-1-2 3.5 2.1 1.6c-.1.5-.1 1-.1 1.5s0 1 .1 1.5l-2.1 1.6 2 3.5 2.5-1a7.6 7.6 0 0 0 2.6 1.5L10 22h4l.4-2.9a7.6 7.6 0 0 0 2.6-1.5l2.5 1 2-3.5-2.1-1.6ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z"/></svg>
           </button>
-          {captionMenuOpen && !captionDisabled && (
+          {captionMenuOpen && !menuDisabled && (
             <div className="viewer-cc-menu">
+              {/*
+                Audio language. First in the menu because it changes what you HEAR, which outranks
+                how the captions look, and because picking one navigates away — the caption-style
+                controls below would be pointless to adjust first.
+
+                A radio GROUP, not a select: the current language must be announced as chosen
+                (`checked`), every option is reachable by arrow keys for free, and the group's own
+                name comes from the fieldset's legend. Selecting one navigates to that language's
+                URL; the page reloads with that audio and its matching captions.
+              */}
+              {hasLanguages && (
+                <fieldset className="viewer-cc-langs">
+                  <legend>Audio language</legend>
+                  {[{ code: null, name: 'Original', endonym: 'Original', rtl: false }, ...audioLanguages].map((lang) => {
+                    const isCurrent = (lang.code ?? null) === (currentLanguage ?? null);
+                    return (
+                      <label key={lang.code ?? 'original'} lang={lang.code ?? undefined}>
+                        <input
+                          type="radio"
+                          name="viewer-audio-language"
+                          value={lang.code ?? ''}
+                          checked={isCurrent}
+                          // `aria-current` in addition to `checked`: the checked state says "this
+                          // is the selected radio", and this says "this is the page you are on",
+                          // which is what a viewer arriving on /he is actually being told.
+                          aria-current={isCurrent ? 'true' : undefined}
+                          onChange={() => { if (!isCurrent) onLanguageChange?.(lang.code); }}
+                        />
+                        <span dir={lang.rtl ? 'rtl' : undefined}>{lang.endonym}</span>
+                      </label>
+                    );
+                  })}
+                </fieldset>
+              )}
+
+              {/*
+                Caption styling, only when there ARE captions. The menu can now open on languages
+                alone, and offering font-size and colour controls for a caption track that does not
+                exist would be four controls that visibly do nothing.
+              */}
+              {captionsAvailable && (<>
               <label>
                 <span>Font size</span>
                 <select
@@ -263,6 +342,7 @@ export function ControlsBar({
                   onChange={(e) => onCaptionStyleChange({ ...captionStyle, textOpacity: Number(e.target.value) })}
                 />
               </label>
+              </>)}
             </div>
           )}
         </div>

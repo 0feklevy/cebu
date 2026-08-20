@@ -121,6 +121,16 @@ interface Props {
   /** Unlisted share-link token (/v/:token) — forwarded to the caption endpoints so
    *  share-link viewers of a non-public project can read caption status + VTT. (cc fix) */
   shareToken?: string | null;
+  /**
+   * Switch the player to a dubbed language, or back to the original with null.
+   *
+   * The shell does NOT change the audio itself. Each surface owns its own URL shape — a permalink
+   * gets /{slug}/{lang}, a share link gets ?lang= — so the wrapper navigates and the server hands
+   * back a player config whose segment URLs are already that language's rendition. One decision on
+   * the server picks both the audio and the captions, which is what makes it impossible for them
+   * to come from different languages. Omitted ⇒ no switcher is drawn.
+   */
+  onLanguageChange?: (code: string | null) => void;
 }
 
 // Auth headers for OUR backend caption endpoints. The player-config fetch already sends the
@@ -152,6 +162,7 @@ export function HLSPlayerShell({
   onCaptionMenuOpenChange,
   onNavigate,
   shareToken,
+  onLanguageChange,
 }: Props) {
   const videoARef             = useRef<HTMLVideoElement>(null);
   const videoBRef             = useRef<HTMLVideoElement>(null);
@@ -768,6 +779,9 @@ export function HLSPlayerShell({
         onToggleCaptions={() => { if (captionsAvailable) setCaptionsEnabled((enabled) => !enabled); }}
         onCaptionStyleChange={updateCaptionStyle}
         onCaptionMenuOpenChange={onCaptionMenuOpenChange}
+        audioLanguages={config.available_languages ?? []}
+        currentLanguage={config.language ?? null}
+        onLanguageChange={onLanguageChange}
       />
     </div>
   );

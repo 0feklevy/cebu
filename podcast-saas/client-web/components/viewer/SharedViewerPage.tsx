@@ -29,9 +29,17 @@ interface Props {
   shareToken?: string;
   /** Creator-controlled public permalink ({PUBLIC_SITE_URL}/{slug}, migration 043). */
   permalinkSlug?: string;
+  /**
+   * Dubbed language to play, from the URL suffix ({slug}/he) (migration 067).
+   *
+   * Passed to the config endpoint, which returns segment URLs already pointing at that language's
+   * rendition. An unknown or unfinished language falls back to the original server-side, so a
+   * stale /he link plays rather than 404ing.
+   */
+  language?: string;
 }
 
-export function SharedViewerPage({ shareToken, permalinkSlug }: Props) {
+export function SharedViewerPage({ shareToken, permalinkSlug, language }: Props) {
   const [config, setConfig]         = useState<PlayerConfig | null>(null);
   const [locked, setLocked]         = useState<LockedContent | null>(null);
   const [error, setError]           = useState<string | null>(null);
@@ -53,9 +61,12 @@ export function SharedViewerPage({ shareToken, permalinkSlug }: Props) {
     const check = async () => {
       try {
         const token = await auth.currentUser?.getIdToken().catch(() => null);
+        // The language rides as a query param on BOTH surfaces; only the permalink expresses it
+        // in the path, and that path segment is turned back into this param by the route.
+        const langQuery = language ? `?lang=${encodeURIComponent(language)}` : '';
         const configUrl = shareToken
-          ? `${API_URL}/api/v1/share/${shareToken}`
-          : `${API_URL}/api/v1/public/permalink/${permalinkSlug}/config`;
+          ? `${API_URL}/api/v1/share/${shareToken}${langQuery}`
+          : `${API_URL}/api/v1/public/permalink/${permalinkSlug}/config${langQuery}`;
         const r = await fetch(configUrl, {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         });
@@ -127,7 +138,37 @@ export function SharedViewerPage({ shareToken, permalinkSlug }: Props) {
     check();
     intervalRef.current = setInterval(check, POLL_INTERVAL_MS);
     return stop;
-  }, [shareToken, permalinkSlug, recheck]);
+  }, [shareToken, permalinkSlug, language, recheck]);
+
+  /**
+   * Switch audio language by navigating to that language's URL.
+   *
+   * A permalink expresses the language in the PATH ({slug}/he), which is the shareable form the
+   * product asked for. A share link cannot — its path is a random token, and /v/{token}/he would
+   * read as a second token — so it carries the language as a query param. Both end at the same
+   * server-side swap.
+   *
+   * A FULL DOCUMENT LOAD, deliberately, rather than a client-side `router.push`. The player owns
+   * live hls.js instances attached to two <video> elements, and a soft navigation would hand the
+   * shell a new config while those attachments survive — the exact shape of bug where the picture
+   * changes and the audio does not. A real load guarantees every media element is rebuilt. The
+   * cost is one page load on an action a viewer takes rarely and deliberately.
+   *
+   * PLAYBACK POSITION IS NOT PRESERVED. Carrying it across would mean writing the offset to the
+   * URL and having the player seek on mount, and there is no initial-seek entry point today —
+   * `useProjectPlayer` starts every segment at 0 and its only seek path is the progress bar's
+   * pointer handler. Adding one is a real change to a heavily-tested module, so it is called out
+   * in the report rather than done badly here. What costs nothing is the placement: the switcher
+   * lives inside a menu the viewer must open, so this is never an accidental click.
+   */
+  function changeLanguage(code: string | null): void {
+    const href = shareToken
+      ? (code ? `/v/${shareToken}?lang=${encodeURIComponent(code)}` : `/v/${shareToken}`)
+      : permalinkSlug
+        ? (code ? `/${permalinkSlug}/${encodeURIComponent(code)}` : `/${permalinkSlug}`)
+        : null;
+    if (href) window.location.assign(href);
+  }
 
   if (locked) {
     return (
@@ -209,6 +250,7 @@ export function SharedViewerPage({ shareToken, permalinkSlug }: Props) {
         onNavigate={branchNavigate}
         onCaptionMenuOpenChange={setCaptionMenuOpen}
         shareToken={shareToken ?? null}
+        onLanguageChange={changeLanguage}
         bottomRightOverlay={!captionMenuOpen ? <AskAvatarButton onClick={() => setAvatarOpen(true)} label="Ask!" /> : null}
       />
 
