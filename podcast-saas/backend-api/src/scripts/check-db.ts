@@ -82,6 +82,7 @@ const MIGRATION_FILES = [
   '062_broll_idempotency.sql',
   '063_segment_relative_placement.sql',
   '064_avatar_cost_meter.sql',
+  '066_crop_algo_version.sql',
 ];
 
 type Row = Record<string, unknown>;
