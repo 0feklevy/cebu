@@ -64,3 +64,56 @@ export async function dispatchInvalidation(event: CourseChangeEvent): Promise<vo
     logger.warn({ err, courseSlug: event.courseSlug }, 'publishing invalidation dispatch failed');
   }
 }
+
+// ── Library share (migration 065) ─────────────────────────────────────────────
+
+export interface LibraryShareChangeEvent {
+  /** The share's own slug — the coded form, always present. */
+  slug: string;
+  /** The `/{permalink}/library` alias, when the project is public with a permalink. */
+  cleanSlug?: string | null;
+}
+
+/**
+ * Pure: every ISR path the library mini-site occupies, for BOTH URL forms.
+ *
+ * This function is the whole reason a revoked link stops being served. `dispatchInvalidation` is
+ * the only thing in the repository that feeds `POST /api/revalidate`, so a cached route missing
+ * from this list is a route that is never purged — it simply expires on its own 60-second timer.
+ * The sub-routes are separate ISR entries, not tabs, so each one has to be named.
+ *
+ * `/og` is listed although Phase 1 does not serve it: purging a path that does not exist is a
+ * no-op, and the alternative is a Phase-2 route that ships already stale.
+ */
+export function computeLibraryInvalidationTargets(event: LibraryShareChangeEvent): InvalidationTargets {
+  const slugs = [event.slug, ...(event.cleanSlug ? [event.cleanSlug] : [])];
+  const paths = new Set<string>();
+  const tags = new Set<string>(['library-share']);
+
+  for (const slug of slugs) {
+    paths.add(`/${slug}/library`);
+    for (const seg of ['simulation', 'images', 'videos', 'sounds', 'og']) {
+      paths.add(`/${slug}/library/${seg}`);
+    }
+    tags.add(`library-share:${slug}`);
+  }
+
+  return { paths: [...paths], tags: [...tags] };
+}
+
+/** Best-effort dispatch of a library-share purge. Never throws; no-ops without REVALIDATE_URL. */
+export async function dispatchLibraryInvalidation(event: LibraryShareChangeEvent): Promise<void> {
+  const url = process.env.REVALIDATE_URL;
+  const secret = process.env.REVALIDATE_SECRET;
+  if (!url) return; // not configured (tests/local) → no-op
+  const targets = computeLibraryInvalidationTargets(event);
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(secret ? { 'x-revalidate-secret': secret } : {}) },
+      body: JSON.stringify(targets),
+    });
+  } catch (err) {
+    logger.warn({ err, slug: event.slug }, 'library share invalidation dispatch failed');
+  }
+}

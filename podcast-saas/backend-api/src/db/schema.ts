@@ -791,6 +791,34 @@ export const playlists = pgTable('playlists', {
   updated_at: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * One public link to a project's MATERIALS — simulations, images, video files and sounds
+ * (migration 065). Not `projects.share_token`: this capability opens a read-only materials page
+ * and nothing else, so minting it never publishes the video.
+ *
+ * `slug` is `slugify(projects.title) + '-' + code`, which puts the capability INSIDE the path
+ * segment. That is the load-bearing choice — it gives the ISR page exactly one cache key per
+ * share, so revoking is a complete purge, and it detaches the link from `projects.slug`, which
+ * the permalink editor lets the creator rewrite or clear at any moment.
+ *
+ * Writes zero bucket objects. The page re-emits URLs the materials already have.
+ */
+export const library_shares = pgTable('library_shares', {
+  id:            uuid('id').primaryKey().defaultRandom(),
+  project_id:    uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  slug:          text('slug').notNull(),
+  /** The 13-char base32 capability, also the slug suffix. NEVER emitted in a public response. */
+  code:          text('code').notNull(),
+  include_types: text('include_types').array().notNull(),
+  expires_at:    timestamp('expires_at', { withTimezone: true }),
+  revoked_at:    timestamp('revoked_at', { withTimezone: true }),
+  /** Cache-MISS counter, not a visitor counter — ISR caps it at one per path per 60s. */
+  render_count:  integer('render_count').notNull().default(0),
+  created_by:    uuid('created_by').references(() => users.id),
+  created_at:    timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updated_at:    timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const playlist_items = pgTable(
   'playlist_items',
   {

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { resolveCourseStatus } from '../PublicCourseQueryService.js';
-import { computeInvalidationTargets } from '../PublishingInvalidationService.js';
+import { computeInvalidationTargets, computeLibraryInvalidationTargets } from '../PublishingInvalidationService.js';
 import { vttToPlainText } from '../transcript.js';
 import type { Course } from '../../../db/schema.js';
 
@@ -40,6 +40,32 @@ describe('computeInvalidationTargets', () => {
   it('includes the previous slug paths on a slug change', () => {
     const t = computeInvalidationTargets({ type: 'course_changed', courseSlug: 'new', affectedLessonSlugs: [], previousCourseSlug: 'old' });
     expect(t.paths).toEqual(expect.arrayContaining(['/c/new', '/c/old']));
+  });
+});
+
+describe('computeLibraryInvalidationTargets — the library mini-site (065)', () => {
+  it('purges the page and all four sub-routes plus /og, for the coded form', () => {
+    const t = computeLibraryInvalidationTargets({ slug: 'chaos-abc' });
+    expect(t.paths).toEqual(expect.arrayContaining([
+      '/chaos-abc/library',
+      '/chaos-abc/library/simulation', '/chaos-abc/library/images',
+      '/chaos-abc/library/videos', '/chaos-abc/library/sounds', '/chaos-abc/library/og',
+    ]));
+    expect(t.tags).toEqual(expect.arrayContaining(['library-share', 'library-share:chaos-abc']));
+  });
+
+  it('purges BOTH slug forms when the clean permalink alias applies', () => {
+    const t = computeLibraryInvalidationTargets({ slug: 'chaos-abc', cleanSlug: 'my-video' });
+    expect(t.paths).toEqual(expect.arrayContaining(['/chaos-abc/library', '/my-video/library/images']));
+    expect(t.tags).toContain('library-share:my-video');
+    // Twelve paths, not six: a purge that covers only one form leaves the other serving a revoked
+    // link until its own 60-second window expires.
+    expect(t.paths).toHaveLength(12);
+  });
+
+  it('emits no clean-form paths when the project has no permalink', () => {
+    const t = computeLibraryInvalidationTargets({ slug: 'chaos-abc', cleanSlug: null });
+    expect(t.paths).toHaveLength(6);
   });
 });
 
