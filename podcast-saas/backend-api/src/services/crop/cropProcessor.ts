@@ -33,6 +33,7 @@ import {
 import { bhattacharyya } from './dsp.js';
 import { DebounceState, applyDebounce } from './debounce.js';
 import { smoothKeyframes, type Keyframe } from './smoother.js';
+import { algoVersion } from './algo.js';
 
 export const CROP_ASPECT = 9 / 16;
 const DEFAULT_SAMPLE_INTERVAL = 0.25;  // 4 fps — fine enough for audio-visual correlation
@@ -59,6 +60,7 @@ export interface CropMetadata {
     pitch_threshold_hz: number;
     calibration: string;
     shots: number;
+    algo_version: string;
   };
 }
 
@@ -74,21 +76,59 @@ export function interestToCropX(interestX: number, vw: number, vh: number, aspec
   return Math.max(half, Math.min(1 - half, interestX));
 }
 
-export async function processVideoCrop(
+/**
+ * The decode surface this pipeline needs, isolated behind an interface.
+ *
+ * Production passes `ffmpegSource`. The eval harness passes a generator of synthetic frames
+ * and PCM, which is what lets the whole real pipeline — analyzer, shot detection, head
+ * model, AV correlation, debounce, smoother — be scored headlessly against known-correct
+ * answers with no media files, no ffmpeg and no nondeterminism from a codec. Every stage
+ * below the decode is exercised by the harness exactly as production runs it; that is the
+ * point of the seam, and why it is an interface rather than a test-only mock.
+ */
+export interface CropSource {
+  probe(): Promise<{ width: number; height: number; durationSec: number }>;
+  audio(sampleRate: number): Promise<Float32Array>;
+  frames(
+    width: number,
+    height: number,
+    fps: number,
+    onFrame: (frame: Uint8Array, index: number) => void,
+  ): Promise<unknown>;
+}
+
+/** The production source: one streamed video decode + one buffered audio decode, both limited. */
+export function ffmpegSource(videoPath: string): CropSource {
+  return {
+    probe: () => runFfmpegLimited(() => probeVideo(videoPath)),
+    audio: (sr) => runFfmpegLimited(() => extractMonoPcm(videoPath, sr)),
+    frames: (w, h, fps, onFrame) => runFfmpegLimited(() => streamRgbFrames(videoPath, w, h, fps, onFrame)),
+  };
+}
+
+export function processVideoCrop(
   videoId: string,
   videoPath: string,
+  options: CropOptions = {},
+): Promise<CropMetadata> {
+  return processCropSource(videoId, ffmpegSource(videoPath), options);
+}
+
+export async function processCropSource(
+  videoId: string,
+  source: CropSource,
   options: CropOptions = {},
 ): Promise<CropMetadata> {
   const sampleInterval = options.sampleInterval ?? DEFAULT_SAMPLE_INTERVAL;
   const sampleFps = 1 / sampleInterval;
 
-  const { width: W, height: H, durationSec } = await runFfmpegLimited(() => probeVideo(videoPath));
+  const { width: W, height: H, durationSec } = await source.probe();
 
   // Audio is decoded up front because Pass 1 needs random access into the PCM per frame (pitch).
   // The video frames, by contrast, are consumed strictly in order, so they're STREAMED below
   // rather than buffered — the old code concatenated every decoded frame (~2.5 GB for a long
   // take) before this loop even started (perf-001).
-  const audio = await runFfmpegLimited(() => extractMonoPcm(videoPath, SAMPLE_RATE)).catch(() => new Float32Array(0));
+  const audio = await source.audio(SAMPLE_RATE).catch(() => new Float32Array(0));
   const hasAudio = audio.length > 0;
 
   const analyzer = new SceneAnalyzer(ANALYSIS_W, ANALYSIS_H, { faceHook: options.faceHook });
@@ -109,7 +149,7 @@ export async function processVideoCrop(
   let prevHist: Float64Array | null = null;
   const totalEstimate = Math.max(1, Math.round(durationSec * sampleFps)); // progress denominator only
 
-  await runFfmpegLimited(() => streamRgbFrames(videoPath, ANALYSIS_W, ANALYSIS_H, sampleFps, (frame, i) => {
+  await source.frames(ANALYSIS_W, ANALYSIS_H, sampleFps, (frame, i) => {
     const t = Number((i / sampleFps).toFixed(3));
     times.push(t);
     const gray = analyzer.toGray(frame);
@@ -139,7 +179,7 @@ export async function processVideoCrop(
 
     prevGray = gray;
     options.onProgress?.(i + 1, totalEstimate);
-  }));
+  });
 
   const nFrames = times.length;
 
@@ -253,6 +293,7 @@ export async function processVideoCrop(
       pitch_threshold_hz: Number(threshold.toFixed(1)),
       calibration: `${twoShotSegs} two-shot seg(s); last ${lastCal}`,
       shots: shotTimes.length,
+      algo_version: algoVersion('v1'),
     },
   };
 }
