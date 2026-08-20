@@ -33,7 +33,6 @@
 
 import { PROFILE_COLS } from './sceneAnalyzer.js';
 
-const HEAD_WINDOW = 0.09;       // ± window (norm.) used to pool per-head motion
 const SECOND_HEAD_MIN = 0.28;   // 2nd head must reach this fraction of the 1st to count
 const MIN_SEPARATION = 0.20;    // two heads must be at least this far apart (norm.)
 const VALLEY_RATIO = 0.88;      // dip between heads must fall below this × weaker peak
@@ -160,21 +159,6 @@ function dominantColumn(
   // Exclude the extreme edges — the crop window can't centre there anyway.
   const { idx } = argmaxRange(smoothed, Math.floor(n * 0.06), Math.floor(n * 0.94));
   return idx;
-}
-
-/** Index of the head with the most motion energy in this frame (or null). */
-export function activeHeadIndex(motion: Float64Array, heads: number[]): number | null {
-  if (heads.length === 0) return null;
-  const n = motion.length;
-  const win = Math.max(1, Math.floor(HEAD_WINDOW * n));
-  let bestIdx = 0, bestE = -1;
-  for (let h = 0; h < heads.length; h++) {
-    const c = Math.round(heads[h] * (n - 1));
-    let e = 0;
-    for (let x = Math.max(0, c - win); x <= Math.min(n - 1, c + win); x++) e += motion[x];
-    if (e > bestE) { bestE = e; bestIdx = h; }
-  }
-  return bestE > 1e-6 ? bestIdx : null;
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────────

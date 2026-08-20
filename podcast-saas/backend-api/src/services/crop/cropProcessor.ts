@@ -202,6 +202,8 @@ export async function processCropSource(
   let twoShotSegs = 0;
   const lastHeads: number[] = [];
   const raw: Keyframe[] = new Array(nFrames);
+  /** Times the debounce actually changed speaker — hard boundaries for the smoother. */
+  const switchTimes: number[] = [];
 
   for (const [f0, f1] of segments) {
     // Localize heads from THIS shot's accumulated profiles.
@@ -291,6 +293,7 @@ export async function processCropSource(
         const cx = committed ?? openingX;
         raw[i] = { t: times[i], x: interestToCropX(cx, W, H) };
       }
+      switchTimes.push(...debounce.commits);
       prevExitX = raw[f1 - 1]?.x ?? prevExitX;
     } else if (hm.heads.length === 1) {
       // Not a two-shot but locateHeads confidently found ONE dominant person. Use that
@@ -310,7 +313,7 @@ export async function processCropSource(
     }
   }
 
-  const keyframes = smoothKeyframes(raw, shotTimes, 1.2, sampleInterval);
+  const keyframes = smoothKeyframes(raw, shotTimes, 1.2, sampleInterval, switchTimes);
 
   return {
     video_id: videoId,
@@ -336,7 +339,7 @@ export async function processCropSource(
 }
 
 /** Convert shot-boundary timestamps to [startFrame, endFrame) index ranges. */
-function buildFrameSegments(shotTimes: number[], nFrames: number, sampleFps: number): Array<[number, number]> {
+export function buildFrameSegments(shotTimes: number[], nFrames: number, sampleFps: number): Array<[number, number]> {
   const bounds = Array.from(new Set(shotTimes)).sort((a, b) => a - b);
   const starts = bounds.map((t) => Math.max(0, Math.min(nFrames, Math.round(t * sampleFps))));
   const segs: Array<[number, number]> = [];

@@ -103,6 +103,7 @@ export function smoothKeyframes(
   shotTimes: number[],
   sigmaSec = 1.5,
   sampleInterval = 1.0,
+  switchTimes: number[] = [],
 ): Keyframe[] {
   if (keyframes.length < 2) return keyframes;
 
@@ -113,7 +114,11 @@ export function smoothKeyframes(
   const rampSamples = Math.max(0, Math.round(SWITCH_TRANSITION_SEC / sampleInterval) - 1);
   const out = xs.slice();
 
-  const bounds = Array.from(new Set(shotTimes)).sort((a, b) => a - b);
+  // Shot cuts and committed speaker switches are the same kind of event to this filter: a
+  // point the framing is meant to jump at. `findSwitches` below still catches a step the
+  // caller did not declare — the interest-centroid path relocating, say — but a two-shot
+  // switch no longer depends on that inference being right about it.
+  const bounds = Array.from(new Set([...shotTimes, ...switchTimes])).sort((a, b) => a - b);
   const totalDur = times[times.length - 1] + sampleInterval;
   const segments = toSegments(bounds, totalDur);
 
