@@ -131,7 +131,10 @@ async function runCropAnalysisInner(videoFileId: string): Promise<void> {
     await storage.uploadFile(key, Buffer.from(json), 'application/json');
 
     await db.update(video_files)
-      .set({ crop_status: 'ready', crop_key: key, crop_source_hash: hash, crop_error: null, crop_updated_at: new Date() })
+      .set({
+        crop_status: 'ready', crop_key: key, crop_source_hash: hash, crop_error: null,
+        crop_updated_at: new Date(), crop_algo_version: metadata.stats?.algo_version ?? algoVersion(),
+      })
       .where(eq(video_files.id, videoFileId));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
