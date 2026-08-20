@@ -59,7 +59,10 @@ export function rollUpByLanguage(
     const failed = rows.find((d) => d.status === 'failed');
     const total = Math.max(videoCount, rows.length);
 
-    let status: string | null = null;
+    // Null means "never requested", which is what makes the checkbox selectable. Every other
+    // branch is a real state, so the ladder assigns exactly once rather than initialising to a
+    // value it always overwrites.
+    let status: string | null;
     if (rows.length === 0) status = null;
     else if (failed) status = 'failed';
     else if (done === total && total > 0) status = 'completed';

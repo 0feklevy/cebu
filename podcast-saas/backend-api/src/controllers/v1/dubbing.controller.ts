@@ -20,7 +20,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { eq } from 'drizzle-orm';
 import { db } from '../../db/index.js';
-import { projects, video_files, video_dubs } from '../../db/schema.js';
+import { projects, video_files } from '../../db/schema.js';
 import { firebaseAuthMiddleware, firebaseAuthOptionalMiddleware } from '../../middleware/firebase-auth.js';
 import { editableProject, isCollaborator } from '../../services/collabAccess.js';
 import { requireProjectAccess } from '../../services/projectAccess.js';
