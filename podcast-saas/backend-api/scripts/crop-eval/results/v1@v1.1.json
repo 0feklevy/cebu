@@ -67,15 +67,15 @@
       "category": "no_subject",
       "scored_frames": 96,
       "total_frames": 96,
-      "m_iou": 0.4125,
-      "iou_at_50": 0,
+      "m_iou": 1,
+      "iou_at_50": 1,
       "out_of_frame": 0,
       "attribution": null,
       "attribution_frames": 0,
       "jitter": 0,
       "travel_per_sec": 0,
       "pinned_at_clamp": 0,
-      "near_centre": 0
+      "near_centre": 1
     },
     {
       "clip_id": "screen-share",
@@ -135,7 +135,7 @@
       "jitter": 0,
       "travel_per_sec": 0,
       "pinned_at_clamp": 0,
-      "near_centre": 1
+      "near_centre": 0
     },
     {
       "clip_id": "single-speaker-centre",
@@ -171,8 +171,8 @@
   "overall": {
     "scored_frames": 1664,
     "total_frames": 1824,
-    "m_iou": 0.6096,
-    "iou_at_50": 0.6214,
+    "m_iou": 0.6435,
+    "iou_at_50": 0.6791,
     "out_of_frame": 0.3305,
     "attribution": 0.4861,
     "attribution_frames": 864,
@@ -232,20 +232,20 @@
       "jitter": 0,
       "travel_per_sec": 0,
       "pinned_at_clamp": 0,
-      "near_centre": 1
+      "near_centre": 0
     },
     "no_subject": {
       "scored_frames": 224,
       "total_frames": 224,
-      "m_iou": 0.7482,
-      "iou_at_50": 0.5714,
+      "m_iou": 1,
+      "iou_at_50": 1,
       "out_of_frame": 0,
       "attribution": null,
       "attribution_frames": 0,
       "jitter": 0,
       "travel_per_sec": 0,
       "pinned_at_clamp": 0.5,
-      "near_centre": 0
+      "near_centre": 0.5
     },
     "same_gender": {
       "scored_frames": 240,

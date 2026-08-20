@@ -18,7 +18,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { locateHeads } from '../headLocator.js';
+import { locateHeads, fallbackColumn } from '../headLocator.js';
 import { PROFILE_COLS } from '../sceneAnalyzer.js';
 import { speechCorrelatedMotion } from '../activeSpeaker.js';
 
@@ -134,5 +134,59 @@ describe('speechCorrelatedMotion', () => {
     const flat = new Float64Array(N).fill(0.05);   // constant -> zero variance
     expect(Array.from(speechCorrelatedMotion(motion, flat)).every((v) => v === 0)).toBe(true);
     expect(Array.from(speechCorrelatedMotion(motion, new Float64Array(N))).every((v) => v === 0)).toBe(true);
+  });
+});
+
+describe('the null hypothesis — shots with nobody in them', () => {
+  const FRAMES = 96;
+
+  /** A title card: strong, broad saliency from text; no skin, no motion. */
+  function titleCard(): { sk: Float64Array; sa: Float64Array; ac: Float64Array } {
+    const sa = new Float64Array(PROFILE_COLS);
+    for (let x = Math.round(0.14 * PROFILE_COLS); x < Math.round(0.58 * PROFILE_COLS); x++) sa[x] = FRAMES;
+    return { sk: new Float64Array(PROFILE_COLS), sa, ac: new Float64Array(PROFILE_COLS) };
+  }
+
+  it('finds no head when only saliency carries energy', () => {
+    // Before the floor existed this returned a confident head at the left edge, which the
+    // 9:16 clamp turned into x = 0.158 — hard left, held for the whole shot.
+    const { sk, sa, ac } = titleCard();
+    expect(locateHeads(sk, sa, ac, undefined, FRAMES)).toEqual({ heads: [], isTwoShot: false });
+  });
+
+  it('declines to name a fallback column without motion, so the caller can centre', () => {
+    const { sa, ac } = titleCard();
+    expect(fallbackColumn(sa, ac, FRAMES)).toBeNull();
+  });
+
+  it('still finds a head from motion alone when the skin rule scores zero', () => {
+    // A deep skin tone under cool light: Kovač returns nothing, and motion is all there is.
+    const sk = new Float64Array(PROFILE_COLS);
+    const sa = new Float64Array(PROFILE_COLS);
+    const ac = new Float64Array(PROFILE_COLS);
+    bump(ac, 0.62, 400 * FRAMES, 4);
+    const hm = locateHeads(sk, sa, ac, undefined, FRAMES);
+    expect(hm.heads.length).toBe(1);
+    expect(hm.heads[0]).toBeCloseTo(0.62, 1);
+  });
+
+  it('names a fallback column when one region genuinely stands out', () => {
+    const sa = new Float64Array(PROFILE_COLS);
+    const ac = new Float64Array(PROFILE_COLS);
+    bump(ac, 0.7, 300 * FRAMES, 3);
+    expect(fallbackColumn(sa, ac, FRAMES)).toBeCloseTo(0.7, 1);
+  });
+
+  it('scales the floor with shot length, not frame count', () => {
+    // The same per-frame evidence must read the same whether the shot is 4 s or 40 s.
+    const sk = new Float64Array(PROFILE_COLS);
+    bump(sk, 0.4, 40 * 16, 3);
+    const short = locateHeads(sk, new Float64Array(PROFILE_COLS), new Float64Array(PROFILE_COLS), undefined, 16);
+    const skLong = new Float64Array(PROFILE_COLS);
+    bump(skLong, 0.4, 40 * 160, 3);
+    const long = locateHeads(skLong, new Float64Array(PROFILE_COLS), new Float64Array(PROFILE_COLS), undefined, 160);
+    expect(short.heads.length).toBe(1);
+    expect(long.heads.length).toBe(1);
+    expect(short.heads[0]).toBeCloseTo(long.heads[0], 6);
   });
 });

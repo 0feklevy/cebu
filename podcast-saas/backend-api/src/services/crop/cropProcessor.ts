@@ -20,7 +20,7 @@
 import { probeVideo, streamRgbFrames, extractMonoPcm } from './ffmpegExtract.js';
 import { runFfmpegLimited } from '../ffmpegLimit.js';
 import { SceneAnalyzer, PROFILE_COLS, type FaceHook } from './sceneAnalyzer.js';
-import { locateHeads } from './headLocator.js';
+import { locateHeads, fallbackColumn } from './headLocator.js';
 import {
   analyzeChunk, labelFromPitch, calibratePitchThreshold,
   SAMPLE_RATE, type SpeakerLabel, type ChunkPitch,
@@ -197,6 +197,8 @@ export async function processCropSource(
 
   // ── Pass 2 (per shot) ───────────────────────────────────────────────────────
   const stats = { two_shot: 0, av: 0, evidence: 0, gender: 0, hold: 0 };
+  /** Where the crop left the previous shot, so a cut between two shots of the same person holds. */
+  let prevExitX: number | null = null;
   let twoShotSegs = 0;
   const lastHeads: number[] = [];
   const raw: Keyframe[] = new Array(nFrames);
@@ -217,7 +219,7 @@ export async function processCropSource(
     // locateHeads — when the track is silent or failed to decode.
     const segMotionAll = motionPerFrame.slice(f0, f1);
     const speechS = hasAudio ? speechCorrelatedMotion(segMotionAll, env.slice(f0, f1)) : undefined;
-    const hm = locateHeads(skinS, salS, actS, speechS);
+    const hm = locateHeads(skinS, salS, actS, speechS, f1 - f0);
 
     if (hm.isTwoShot && hasAudio && f1 - f0 >= 4) {
       twoShotSegs++;
@@ -239,6 +241,10 @@ export async function processCropSource(
       const dominant: 0 | 1 | null = evidence === null || evidence[0] === evidence[1]
         ? null
         : (evidence[0] > evidence[1] ? 0 : 1);
+      // Carry the previous shot's framing across a cut when a head is close to where the crop
+      // already was; otherwise open on whichever head carries this shot's speech evidence.
+      const carried = prevExitX !== null ? heads.find((h) => Math.abs(h - prevExitX!) <= 0.10) : undefined;
+      const openingX = carried ?? heads[dominant ?? 0];
 
       const debounce = new DebounceState();
       for (let i = f0; i < f1; i++) {
@@ -278,18 +284,29 @@ export async function processCropSource(
         else { key = 'unclear'; candidate = null; stats.hold++; }
 
         const committed = applyDebounce(debounce, key, times[i], candidate);
-        const cx = committed !== null ? committed : (heads[0] + heads[1]) / 2;
+        // Before the first commit, frame a person rather than the gap between two of them.
+        // The midpoint of a two-shot is where nobody is sitting: a 9:16 window centred there
+        // is 31.6% of frame width aimed at the table, and it is on screen for as long as the
+        // debounce takes to name someone.
+        const cx = committed ?? openingX;
         raw[i] = { t: times[i], x: interestToCropX(cx, W, H) };
       }
+      prevExitX = raw[f1 - 1]?.x ?? prevExitX;
     } else if (hm.heads.length === 1) {
       // Not a two-shot but locateHeads confidently found ONE dominant person. Use that
       // located head (stable over the whole shot) instead of the noisy per-frame interest
       // centroid, which averages across faces/text/motion and lands in dead space (backend-107).
       const cx = hm.heads[0];
       for (let i = f0; i < f1; i++) raw[i] = { t: times[i], x: interestToCropX(cx, W, H) };
+      prevExitX = raw[f1 - 1].x;
     } else {
-      // No located head (single speaker / B-roll / animation with no clear peak) → interest centroid.
-      for (let i = f0; i < f1; i++) raw[i] = { t: times[i], x: interestToCropX(interestXs[i], W, H) };
+      // No person in this shot — title card, slate, screen recording, animation. Take one
+      // static framing from whatever stands out, and frame centre when nothing does. The
+      // per-frame interest centroid this replaces tracked a saliency map with no person in
+      // it, wandering across text for the length of the card.
+      const cx = fallbackColumn(salS, actS, f1 - f0) ?? 0.5;
+      for (let i = f0; i < f1; i++) raw[i] = { t: times[i], x: interestToCropX(cx, W, H) };
+      prevExitX = raw[f1 - 1].x;
     }
   }
 
