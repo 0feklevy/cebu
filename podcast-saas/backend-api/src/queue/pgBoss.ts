@@ -52,6 +52,10 @@ export const PGBOSS_JOB_NAMES = [
   'podcast_clips',
   'podcast_mix_export',
   'project_duplicate',
+  // dub: the most expensive job kind in the product. An inline dub lost to a deploy would lose the
+  // RESULT and keep the CHARGE — the same argument that made the eight above durable, only with a
+  // per-job cost measured in dollars per source-minute rather than fractions of a cent.
+  'dub',
 ] as const satisfies readonly JobName[];
 
 const DLQ_SUFFIX = '-dead';
@@ -143,6 +147,27 @@ export const QUEUE_OPTIONS: Record<
   // project copies every object in it, so the expiry is generous. No key: the duplicationId is
   // minted per request and nothing re-drives it.
   project_duplicate: { policy: 'standard', retryLimit: 2, retryDelay: 60, retryBackoff: true, expireInSeconds: 2 * 60 * 60 },
+
+  /**
+   * Dubbing. Two of these numbers are doing unusual work and both are about money.
+   *
+   * `policy: 'short'` with a singletonKey of the dub id, because two sends for one video_dubs row
+   * are unambiguously ONE piece of work — unlike `captions`, whose `force` flag makes a second
+   * request a genuinely different request. Collapsing duplicates here is free safety.
+   *
+   * `retryLimit: 8`, which is far above every other queue, and it is not a tolerance for failure.
+   * A retry here is overwhelmingly a DEFERRAL: the workspace's three vendor slots were busy, the
+   * handler threw `DubSlotUnavailable` without spending anything, and the row is still `queued`.
+   * With three slots shared across every tenant, a queue of ten dubs must be able to wait its turn
+   * rather than exhaust its retries waiting. Genuine failures do not consume these attempts —
+   * `DubbingService.run` swallows non-retryable vendor errors after recording them on the row, so
+   * a bad request fails once and stops.
+   *
+   * `expireInSeconds` clears the handler's own 2-hour STALE_CLAIM_MS, for the reason every other
+   * expiry here does: those two numbers answer the same question and disagreeing is how a live run
+   * gets retried underneath itself — which for this queue would mean a second invoice.
+   */
+  dub: { policy: 'short', retryLimit: 8, retryDelay: 120, retryBackoff: true, expireInSeconds: 3 * 60 * 60 },
 };
 
 function connectionString(): string {

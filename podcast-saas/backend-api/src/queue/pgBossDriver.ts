@@ -54,6 +54,12 @@ const QUEUE_CONCURRENCY: Record<JobName, number> = {
   podcast_script: 2,
   video_generate: 2,
   project_duplicate: 2,
+
+  // Dubbing spends most of its wall clock waiting on the vendor, but its tail is an ffmpeg mux
+  // plus a full HLS ladder — CPU-bound work on a 2-vCPU host. One at a time here; the number that
+  // actually bounds the VENDOR side is the three-row `dubbing_slots` pool, which is cluster-wide
+  // and which this per-process number cannot substitute for.
+  dub: 1,
 };
 
 /** Per-queue env overrides, kept for the two knobs that already shipped. */
@@ -121,6 +127,10 @@ export function singletonKeyFor<N extends JobName>(name: N, payload: JobPayloads
   // video_generate: the key removes the pile-up, the CAS claim remains the correctness guard.
   if (name === 'podcast_render') return (payload as JobPayloads['podcast_render']).renderId;
   if (name === 'podcast_mix_export') return (payload as JobPayloads['podcast_mix_export']).renderId;
+  // Two sends for one video_dubs row are one dub. Unlike `captions`, whose `force` flag makes a
+  // second request genuinely different, `force` here only bypasses the settled-status gates for a
+  // row that is already the singleton subject — collapsing two pending deliveries loses nothing.
+  if (name === 'dub') return (payload as JobPayloads['dub']).dubId;
   return undefined;
 }
 

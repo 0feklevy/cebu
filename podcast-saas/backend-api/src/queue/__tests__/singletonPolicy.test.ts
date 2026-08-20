@@ -38,6 +38,7 @@ const SAMPLE_PAYLOADS: { [N in JobName]: JobPayloads[N] } = {
   video_generate: { jobId: 'g1' },
   project_duplicate: { duplicationId: 'd1' },
   project_export: { exportId: 'e1' },
+  dub: { dubId: 'd1' },
 };
 
 describe('a queue that is sent a singletonKey must have a policy that honours it', () => {
