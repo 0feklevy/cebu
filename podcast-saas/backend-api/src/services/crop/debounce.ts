@@ -19,6 +19,14 @@ export class DebounceState {
   pendingSpeaker: string | null = null;
   pendingSince = 0;
   lastSpeechT = -999;
+  /**
+   * Times at which the active speaker actually changed. The smoother needs these: a committed
+   * switch is a discontinuity in the same sense a shot cut is, and blending across one is what
+   * turned a 0.20-wide step into a multi-second glide through the empty space between two
+   * people. Recording them here — rather than inferring them from the shape of the output —
+   * is what makes the boundary exact instead of a guess about which jumps looked deliberate.
+   */
+  readonly commits: number[] = [];
 }
 
 /**
@@ -50,6 +58,7 @@ export function applyDebounce(
     state.currentSpeaker = speaker;
     state.currentFaceX = faceXCandidate;
     state.pendingSpeaker = null;
+    state.commits.push(t);
     return state.currentFaceX;
   }
 
@@ -65,6 +74,7 @@ export function applyDebounce(
       state.currentSpeaker = speaker;
       state.currentFaceX = faceXCandidate;
       state.pendingSpeaker = null;
+      state.commits.push(t);
     }
   } else {
     state.pendingSpeaker = speaker;

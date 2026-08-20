@@ -427,6 +427,7 @@ export const video_files = pgTable('video_files', {
   crop_source_hash: text('crop_source_hash'),                    // idempotency: re-run when the source changes
   crop_error: text('crop_error'),
   crop_updated_at: timestamp('crop_updated_at', { withTimezone: true }),
+  crop_algo_version: text('crop_algo_version'),                  // which algorithm produced crop_key (migration 066)
   // Auto captions (migration 031) — generated as WebVTT from the source audio.
   captions_status: text('captions_status').notNull().default('none'), // none | processing | ready | failed
   captions_vtt_key: text('captions_vtt_key'),               // optional object-storage backup (legacy)

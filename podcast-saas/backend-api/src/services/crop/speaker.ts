@@ -18,8 +18,6 @@ const SILENCE_RMS = 0.005;
 const MIN_CONF = 0.30;
 const DEFAULT_THRESH_HZ = 160;
 const GRAY_ZONE_HZ = 10;
-const CAL_MIN_CONF = 0.35;
-const TWO_SHOT_MIN = 5;
 
 export type SpeakerLabel = 'male' | 'female' | 'silence' | 'unclear';
 
@@ -78,79 +76,4 @@ export function calibratePitchThreshold(pitches: ChunkPitch[]): number {
   const mid = (cLo + cHi) / 2;
   if (cHi - cLo >= 35 && mid >= 120 && mid <= 220) return mid;
   return DEFAULT_THRESH_HZ;
-}
-
-// ── position calibration (speaker gender → x) ──────────────────────────────────
-
-export interface CalFrame {
-  shotType: 'two_shot' | 'single' | 'no_face';
-  headXs: number[];
-  speaker: SpeakerLabel;
-  speakerConf: number;
-  activeX: number | null;
-}
-
-export class SpeakerCalibration {
-  femaleX: number | null = null;
-  maleX: number | null = null;
-  valid = false;
-  nFemale = 0;
-  nMale = 0;
-
-  /** Resolve the active-speaker head x in a two-shot, given the detected gender. */
-  speakerFaceX(speaker: SpeakerLabel, headXs: number[]): number | null {
-    if (!headXs.length || (speaker !== 'male' && speaker !== 'female')) return null;
-    const ref = speaker === 'female' ? this.femaleX : this.maleX;
-    if (ref === null) return null;
-    let best = headXs[0], bestD = Infinity;
-    for (const h of headXs) { const d = Math.abs(h - ref); if (d < bestD) { bestD = d; best = h; } }
-    return best;
-  }
-
-  summary(): string {
-    const f = this.femaleX !== null ? `${this.femaleX.toFixed(3)} (${this.nFemale})` : 'n/a';
-    const m = this.maleX !== null ? `${this.maleX.toFixed(3)} (${this.nMale})` : 'n/a';
-    return `female_x=${f} male_x=${m} valid=${this.valid}`;
-  }
-}
-
-function weightedMean(samples: Array<[number, number]>): number | null {
-  let wsum = 0, vsum = 0;
-  for (const [v, w] of samples) { const ww = Math.max(0, w); wsum += ww; vsum += v * ww; }
-  if (wsum < 1e-6) {
-    if (!samples.length) return null;
-    const vals = samples.map((s) => s[0]).sort((a, b) => a - b);
-    return vals[vals.length >> 1]; // median fallback
-  }
-  return vsum / wsum;
-}
-
-/**
- * Learn female_x / male_x from two-shot frames (active head + pitch) with a
- * single-speaker fallback. Self-calibrating: never assumes who sits where.
- */
-export function calibrate(frames: CalFrame[]): SpeakerCalibration {
-  const femaleTwo: Array<[number, number]> = [];
-  const maleTwo: Array<[number, number]> = [];
-  const femaleSingle: Array<[number, number]> = [];
-  const maleSingle: Array<[number, number]> = [];
-
-  for (const f of frames) {
-    if ((f.speaker !== 'male' && f.speaker !== 'female') || f.speakerConf < CAL_MIN_CONF) continue;
-    if (f.shotType === 'two_shot' && f.headXs.length >= 2 && f.activeX !== null) {
-      (f.speaker === 'female' ? femaleTwo : maleTwo).push([f.activeX, f.speakerConf]);
-    } else if (f.shotType === 'single' && f.headXs.length) {
-      (f.speaker === 'female' ? femaleSingle : maleSingle).push([f.headXs[0], f.speakerConf]);
-    }
-  }
-
-  const cal = new SpeakerCalibration();
-  const female = femaleTwo.length >= TWO_SHOT_MIN ? femaleTwo : femaleSingle;
-  const male = maleTwo.length >= TWO_SHOT_MIN ? maleTwo : maleSingle;
-  cal.nFemale = female.length;
-  cal.nMale = male.length;
-  cal.femaleX = female.length ? weightedMean(female) : null;
-  cal.maleX = male.length ? weightedMean(male) : null;
-  cal.valid = cal.femaleX !== null && cal.maleX !== null;
-  return cal;
 }

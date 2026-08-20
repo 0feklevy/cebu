@@ -70,18 +70,29 @@ export function probeVideo(inputPath: string): Promise<ProbeResult> {
  * of buffering the entire decoded stream. For a 60-min take at 320×180 / 4 fps the buffered
  * approach concatenated ~2.5 GB of raw RGB; this keeps peak usage at one frame (perf-001).
  *
- * `onFrame` runs synchronously inside the stdout 'data' handler, which naturally backpressures
- * ffmpeg (the OS pipe fills and ffmpeg blocks) so frames can't pile up. The Uint8Array passed to
- * `onFrame` is a view valid only for that call — consumers must copy anything they retain (the
- * crop analyzer's toGray() already allocates a fresh buffer). A trailing partial frame is
- * discarded.
+ * Frames are delivered strictly in order, one at a time, and never concurrently. `onFrame` may
+ * be synchronous, in which case this behaves exactly as it always has: the work happens in the
+ * stdout 'data' handler's microtask, before node can service the next read, so the OS pipe fills
+ * and ffmpeg blocks on its own.
+ *
+ * `onFrame` may also return a Promise — which is how a per-frame model inference rides this
+ * stream without a second decode. While that promise is pending stdout is PAUSED, so ffmpeg
+ * blocks on the pipe exactly as it does for a slow synchronous consumer and decoded frames
+ * cannot pile up behind the consumer. Inference wall time simply serialises into the decode
+ * pass; the memory contract is unchanged, which is the whole point of paying for it in latency
+ * instead. Do NOT replace the pause with buffering — that is the perf-001/perf-009
+ * anti-pattern this function exists to prevent.
+ *
+ * The Uint8Array passed to `onFrame` is a view valid until that call's promise settles —
+ * consumers must copy anything they retain beyond it (the crop analyzer's toGray() already
+ * allocates a fresh buffer). A trailing partial frame is discarded.
  */
 export function streamRgbFrames(
   inputPath: string,
   analysisWidth: number,
   analysisHeight: number,
   sampleFps: number,
-  onFrame: (frame: Uint8Array, index: number) => void,
+  onFrame: (frame: Uint8Array, index: number) => void | Promise<void>,
 ): Promise<{ width: number; height: number; count: number }> {
   return new Promise((resolve, reject) => {
     const frameBytes = analysisWidth * analysisHeight * 3;
@@ -95,32 +106,51 @@ export function streamRgbFrames(
       '-loglevel', 'error',
     ], { stdio: ['ignore', 'pipe', 'pipe'] });
 
-    let leftover: Buffer | null = null;
+    // `buf` accumulates raw stdout and `off` is how far the drain has consumed. They are only
+    // ever advanced inside `drain`, which is serialised on `chain`, so an async consumer holding
+    // a frame view across an await cannot have the position moved out from under it. A 'data'
+    // event arriving mid-await appends via concat, which leaves the earlier bytes — and any
+    // outstanding view into them — intact.
+    let buf: Buffer = Buffer.alloc(0);
+    let off = 0;
     let count = 0;
     let settled = false;
+    let chain: Promise<void> = Promise.resolve();
     const err: Buffer[] = [];
     const fail = (e: Error) => { if (settled) return; settled = true; try { proc.kill('SIGKILL'); } catch { /* already gone */ } reject(e); };
 
+    const drain = async (): Promise<void> => {
+      while (!settled && buf.length - off >= frameBytes) {
+        const frame = new Uint8Array(buf.buffer, buf.byteOffset + off, frameBytes);
+        off += frameBytes;
+        const result = onFrame(frame, count++);
+        if (result instanceof Promise) {
+          proc.stdout.pause();
+          try { await result; } finally { if (!settled) proc.stdout.resume(); }
+        }
+      }
+      // Compact only here, where nothing is in flight: drop the consumed prefix and copy the
+      // sub-frame remainder out of the pooled chunk so the next concat is safe.
+      buf = off < buf.length ? Buffer.from(buf.subarray(off)) : Buffer.alloc(0);
+      off = 0;
+    };
+
     proc.stdout.on('data', (d: Buffer) => {
       if (settled) return;
-      const buf = leftover ? Buffer.concat([leftover, d]) : d;
-      let off = 0;
-      while (buf.length - off >= frameBytes) {
-        const frame = new Uint8Array(buf.buffer, buf.byteOffset + off, frameBytes);
-        try { onFrame(frame, count++); }
-        catch (e) { fail(e as Error); return; }
-        off += frameBytes;
-      }
-      // Copy the sub-frame remainder out of the pooled chunk so the next concat is safe.
-      leftover = off < buf.length ? Buffer.from(buf.subarray(off)) : null;
+      buf = buf.length > 0 ? Buffer.concat([buf, d]) : d;
+      chain = chain.then(drain).catch((e) => fail(e as Error));
     });
     proc.stderr.on('data', (d: Buffer) => err.push(d));
     proc.on('error', fail);
     proc.on('close', (code) => {
-      if (settled) return;
-      settled = true;
-      if (code !== 0) return reject(new Error(`ffmpeg rgb stream failed: ${Buffer.concat(err).toString().slice(-400)}`));
-      resolve({ width: analysisWidth, height: analysisHeight, count });
+      // Wait for the last frame's consumer before reporting a count, or an async consumer's
+      // final inference would be dropped on the floor and the caller told it saw every frame.
+      void chain.then(() => {
+        if (settled) return;
+        settled = true;
+        if (code !== 0) return reject(new Error(`ffmpeg rgb stream failed: ${Buffer.concat(err).toString().slice(-400)}`));
+        resolve({ width: analysisWidth, height: analysisHeight, count });
+      });
     });
   });
 }

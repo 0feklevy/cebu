@@ -7,11 +7,10 @@
  *   • accumulate global skin/saliency/activity sums.
  * Between passes:
  *   • locate the (≤2) stable head positions for the whole take (static camera).
- *   • self-calibrate the pitch threshold and label every window.
- *   • calibrate gender → head position from two-shot active frames.
+ *   • self-calibrate the pitch threshold and label every window (speech vs silence).
  * Pass 2 (no decode):
- *   • per two-shot frame pick the active head (calibrated gender → motion →
- *     midpoint), gate switches through the speaker debounce, emit crop x.
+ *   • per two-shot frame pick the active head from audio-visual correlation alone,
+ *     gate switches through the speaker debounce, emit crop x.
  *   • non-two-shot frames use the interest centroid.
  * Then per-shot median + Gaussian smoothing.
  *
@@ -21,26 +20,24 @@
 import { probeVideo, streamRgbFrames, extractMonoPcm } from './ffmpegExtract.js';
 import { runFfmpegLimited } from '../ffmpegLimit.js';
 import { SceneAnalyzer, PROFILE_COLS, type FaceHook } from './sceneAnalyzer.js';
-import { locateHeads } from './headLocator.js';
+import { locateHeads, fallbackColumn } from './headLocator.js';
 import {
   analyzeChunk, labelFromPitch, calibratePitchThreshold,
   SAMPLE_RATE, type SpeakerLabel, type ChunkPitch,
 } from './speaker.js';
 import {
-  regionMotionSeries, windowedActiveRegions, calibrateGenderRegion,
-  calibrateGenderRegionByActivity, speechCorrelatedMotion,
+  regionMotionSeries, windowedActiveRegions, speechCorrelatedMotion, headSpeechEvidence,
+  DEFAULT_AV, type AVConfig,
 } from './activeSpeaker.js';
-import { bhattacharyya } from './dsp.js';
+import { blockHistogram, blockDistance, detectShotBoundaries } from './shotDetect.js';
 import { DebounceState, applyDebounce } from './debounce.js';
 import { smoothKeyframes, type Keyframe } from './smoother.js';
+import { algoVersion } from './algo.js';
 
 export const CROP_ASPECT = 9 / 16;
 const DEFAULT_SAMPLE_INTERVAL = 0.25;  // 4 fps — fine enough for audio-visual correlation
 const ANALYSIS_W = 320;
 const ANALYSIS_H = 180;
-const SHOT_BINS = 32;
-const SHOT_THRESHOLD = 0.30;
-const SHOT_MIN_GAP = 0.5;
 
 export interface CropMetadata {
   video_id: string;
@@ -53,12 +50,14 @@ export interface CropMetadata {
     frames: number;
     heads: number[];
     two_shot: number;
-    av: number;        // frames cropped from direct AV-correlation
-    gender: number;    // frames cropped from gender→region mapping
+    av: number;        // frames cropped from direct windowed AV-correlation
+    evidence: number;  // frames cropped from the shot's dominant speech-correlated head
+    gender: number;    // always 0 — the gender→region gap-fill was removed; kept for schema stability
     hold: number;      // frames holding (silence / ambiguous)
     pitch_threshold_hz: number;
     calibration: string;
     shots: number;
+    algo_version: string;
   };
 }
 
@@ -66,6 +65,9 @@ export interface CropOptions {
   faceHook?: FaceHook;
   sampleInterval?: number;
   onProgress?: (done: number, total: number) => void;
+  /** Override the active-speaker gate. Exists so the eval harness can sweep it; production
+   *  never passes it, and the defaults live in `activeSpeaker.ts` where they are argued for. */
+  av?: Partial<AVConfig>;
 }
 
 export function interestToCropX(interestX: number, vw: number, vh: number, aspect = CROP_ASPECT): number {
@@ -74,21 +76,60 @@ export function interestToCropX(interestX: number, vw: number, vh: number, aspec
   return Math.max(half, Math.min(1 - half, interestX));
 }
 
-export async function processVideoCrop(
+/**
+ * The decode surface this pipeline needs, isolated behind an interface.
+ *
+ * Production passes `ffmpegSource`. The eval harness passes a generator of synthetic frames
+ * and PCM, which is what lets the whole real pipeline — analyzer, shot detection, head
+ * model, AV correlation, debounce, smoother — be scored headlessly against known-correct
+ * answers with no media files, no ffmpeg and no nondeterminism from a codec. Every stage
+ * below the decode is exercised by the harness exactly as production runs it; that is the
+ * point of the seam, and why it is an interface rather than a test-only mock.
+ */
+export interface CropSource {
+  probe(): Promise<{ width: number; height: number; durationSec: number }>;
+  audio(sampleRate: number): Promise<Float32Array>;
+  frames(
+    width: number,
+    height: number,
+    fps: number,
+    onFrame: (frame: Uint8Array, index: number) => void,
+  ): Promise<unknown>;
+}
+
+/** The production source: one streamed video decode + one buffered audio decode, both limited. */
+export function ffmpegSource(videoPath: string): CropSource {
+  return {
+    probe: () => runFfmpegLimited(() => probeVideo(videoPath)),
+    audio: (sr) => runFfmpegLimited(() => extractMonoPcm(videoPath, sr)),
+    frames: (w, h, fps, onFrame) => runFfmpegLimited(() => streamRgbFrames(videoPath, w, h, fps, onFrame)),
+  };
+}
+
+export function processVideoCrop(
   videoId: string,
   videoPath: string,
   options: CropOptions = {},
 ): Promise<CropMetadata> {
+  return processCropSource(videoId, ffmpegSource(videoPath), options);
+}
+
+export async function processCropSource(
+  videoId: string,
+  source: CropSource,
+  options: CropOptions = {},
+): Promise<CropMetadata> {
   const sampleInterval = options.sampleInterval ?? DEFAULT_SAMPLE_INTERVAL;
   const sampleFps = 1 / sampleInterval;
+  const avConfig: AVConfig = { ...DEFAULT_AV, ...options.av };
 
-  const { width: W, height: H, durationSec } = await runFfmpegLimited(() => probeVideo(videoPath));
+  const { width: W, height: H, durationSec } = await source.probe();
 
   // Audio is decoded up front because Pass 1 needs random access into the PCM per frame (pitch).
   // The video frames, by contrast, are consumed strictly in order, so they're STREAMED below
   // rather than buffered — the old code concatenated every decoded frame (~2.5 GB for a long
   // take) before this loop even started (perf-001).
-  const audio = await runFfmpegLimited(() => extractMonoPcm(videoPath, SAMPLE_RATE)).catch(() => new Float32Array(0));
+  const audio = await source.audio(SAMPLE_RATE).catch(() => new Float32Array(0));
   const hasAudio = audio.length > 0;
 
   const analyzer = new SceneAnalyzer(ANALYSIS_W, ANALYSIS_H, { faceHook: options.faceHook });
@@ -104,12 +145,14 @@ export async function processVideoCrop(
   const pitches: ChunkPitch[] = [];
   const times: number[] = [];
 
-  const shotTimes: number[] = [0];
+  // Per-frame distance to the previous frame; cuts are picked from it after the decode so the
+  // adaptive threshold can look both ways (see shotDetect.ts).
+  const shotScores: number[] = [];
   let prevGray: Uint8Array | null = null;
   let prevHist: Float64Array | null = null;
   const totalEstimate = Math.max(1, Math.round(durationSec * sampleFps)); // progress denominator only
 
-  await runFfmpegLimited(() => streamRgbFrames(videoPath, ANALYSIS_W, ANALYSIS_H, sampleFps, (frame, i) => {
+  await source.frames(ANALYSIS_W, ANALYSIS_H, sampleFps, (frame, i) => {
     const t = Number((i / sampleFps).toFixed(3));
     times.push(t);
     const gray = analyzer.toGray(frame);
@@ -120,12 +163,8 @@ export async function processVideoCrop(
     salPerFrame.push(p.saliency);
     interestXs.push(p.interestX);
 
-    // inline shot detection
-    const hist = grayHist(gray);
-    if (prevHist && bhattacharyya(prevHist, hist) > SHOT_THRESHOLD &&
-        t - shotTimes[shotTimes.length - 1] > SHOT_MIN_GAP) {
-      shotTimes.push(t);
-    }
+    const hist = blockHistogram(gray, ANALYSIS_W, ANALYSIS_H);
+    shotScores.push(prevHist ? blockDistance(prevHist, hist) : 0);
     prevHist = hist;
 
     // pitch
@@ -139,9 +178,10 @@ export async function processVideoCrop(
 
     prevGray = gray;
     options.onProgress?.(i + 1, totalEstimate);
-  }));
+  });
 
   const nFrames = times.length;
+  const shotTimes = [0, ...detectShotBoundaries(shotScores, sampleInterval).map((i) => times[i])];
 
   // ── Between passes ────────────────────────────────────────────────────────────
   const threshold = hasAudio ? calibratePitchThreshold(pitches) : 160;
@@ -156,11 +196,14 @@ export async function processVideoCrop(
   const segments = buildFrameSegments(shotTimes, nFrames, sampleFps);
 
   // ── Pass 2 (per shot) ───────────────────────────────────────────────────────
-  const stats = { two_shot: 0, av: 0, gender: 0, hold: 0 };
+  const stats = { two_shot: 0, av: 0, evidence: 0, gender: 0, hold: 0 };
+  /** Where the crop left the previous shot, so a cut between two shots of the same person holds. */
+  let prevExitX: number | null = null;
   let twoShotSegs = 0;
   const lastHeads: number[] = [];
-  let lastCal = 'n/a';
   const raw: Keyframe[] = new Array(nFrames);
+  /** Times the debounce actually changed speaker — hard boundaries for the smoother. */
+  const switchTimes: number[] = [];
 
   for (const [f0, f1] of segments) {
     // Localize heads from THIS shot's accumulated profiles.
@@ -178,7 +221,7 @@ export async function processVideoCrop(
     // locateHeads — when the track is silent or failed to decode.
     const segMotionAll = motionPerFrame.slice(f0, f1);
     const speechS = hasAudio ? speechCorrelatedMotion(segMotionAll, env.slice(f0, f1)) : undefined;
-    const hm = locateHeads(skinS, salS, actS, speechS);
+    const hm = locateHeads(skinS, salS, actS, speechS, f1 - f0);
 
     if (hm.isTwoShot && hasAudio && f1 - f0 >= 4) {
       twoShotSegs++;
@@ -189,15 +232,21 @@ export async function processVideoCrop(
       const segEnv = env.slice(f0, f1);
       const motionL = regionMotionSeries(segMotionAll, heads[0]);
       const motionR = regionMotionSeries(segMotionAll, heads[1]);
-      const avActive = windowedActiveRegions(motionL, motionR, segEnv);
+      const avActive = windowedActiveRegions(motionL, motionR, segEnv, avConfig);
       const segLabels = labels.slice(f0, f1);
-      // The gender→region map drives every frame the AV correlator could not name — the
-      // majority of them on real footage — so it is worth more evidence than the AV votes
-      // alone. Prefer the per-region activity contrast over all confidently-pitched frames,
-      // and fall back to the AV votes when the two genders do not separate.
-      const genderRegion = calibrateGenderRegionByActivity(segLabels, motionL, motionR)
-        ?? calibrateGenderRegion(segLabels, avActive);
-      lastCal = `male→r${genderRegion.male ?? '?'} female→r${genderRegion.female ?? '?'}`;
+      // Which head carries this shot's speech-correlated motion. Computed once per shot over
+      // every frame in it, so it is the high-sample-count reading of the same evidence the
+      // 11-sample windowed correlator gives a noisy per-frame opinion about.
+      const evidence = speechS
+        ? ([0, 1] as const).map((k) => headSpeechEvidence(speechS, heads[k]))
+        : null;
+      const dominant: 0 | 1 | null = evidence === null || evidence[0] === evidence[1]
+        ? null
+        : (evidence[0] > evidence[1] ? 0 : 1);
+      // Carry the previous shot's framing across a cut when a head is close to where the crop
+      // already was; otherwise open on whichever head carries this shot's speech evidence.
+      const carried = prevExitX !== null ? heads.find((h) => Math.abs(h - prevExitX!) <= 0.10) : undefined;
+      const openingX = carried ?? heads[dominant ?? 0];
 
       const debounce = new DebounceState();
       for (let i = f0; i < f1; i++) {
@@ -205,12 +254,30 @@ export async function processVideoCrop(
         const j = i - f0;
         const speaker = segLabels[j].label;
 
-        // Priority: AV-active (direct) → gender→region (gap-fill) → hold.
+        // Priority: windowed AV (direct) → this shot's dominant speaker by visual-speech
+        // evidence → hold.
+        //
+        // The slot the evidence term occupies used to hold a pitch-derived gender→region map,
+        // and that map is deleted. It cannot work on a same-gender pair — the dominant podcast
+        // format — because the pitch calibration correctly refuses to split two voices under
+        // 35 Hz apart, so every confident frame gets ONE label, the map assigns it one region
+        // and infers the other by complement, and both hosts' speech routes to the same head
+        // for the whole take.
+        //
+        // Deleting it outright is not enough on its own, and the eval harness is what showed
+        // why: measured over the fixture two-shots, the windowed correlator names 13-45% of
+        // frames and is right on 17-46% of those — below chance, because at 4 fps a listener
+        // nodding through ±12.5% of frame width carries more motion energy than a talker's
+        // mouth. Left alone with it, the debounce latches onto whichever head the first firing
+        // named and holds there for the take. So the gap-fill is replaced rather than removed:
+        // same evidence `locateHeads` uses to find the speaker at all, read per head over the
+        // whole shot. Being a constant vote it also costs a competing AV firing 0.8 s of
+        // sustained disagreement to overturn, which sparse noise cannot buy.
+        //
+        // Pitch keeps exactly one job — telling speech from silence — and that is an RMS test.
         let region: 0 | 1 | null = null;
         if (avActive[j] !== null) { region = avActive[j]; stats.av++; }
-        else if ((speaker === 'male' || speaker === 'female') && genderRegion[speaker] !== null) {
-          region = genderRegion[speaker]; stats.gender++;
-        }
+        else if (dominant !== null && speaker !== 'silence') { region = dominant; stats.evidence++; }
 
         let key: string;
         let candidate: number | null;
@@ -219,22 +286,34 @@ export async function processVideoCrop(
         else { key = 'unclear'; candidate = null; stats.hold++; }
 
         const committed = applyDebounce(debounce, key, times[i], candidate);
-        const cx = committed !== null ? committed : (heads[0] + heads[1]) / 2;
+        // Before the first commit, frame a person rather than the gap between two of them.
+        // The midpoint of a two-shot is where nobody is sitting: a 9:16 window centred there
+        // is 31.6% of frame width aimed at the table, and it is on screen for as long as the
+        // debounce takes to name someone.
+        const cx = committed ?? openingX;
         raw[i] = { t: times[i], x: interestToCropX(cx, W, H) };
       }
+      switchTimes.push(...debounce.commits);
+      prevExitX = raw[f1 - 1]?.x ?? prevExitX;
     } else if (hm.heads.length === 1) {
       // Not a two-shot but locateHeads confidently found ONE dominant person. Use that
       // located head (stable over the whole shot) instead of the noisy per-frame interest
       // centroid, which averages across faces/text/motion and lands in dead space (backend-107).
       const cx = hm.heads[0];
       for (let i = f0; i < f1; i++) raw[i] = { t: times[i], x: interestToCropX(cx, W, H) };
+      prevExitX = raw[f1 - 1].x;
     } else {
-      // No located head (single speaker / B-roll / animation with no clear peak) → interest centroid.
-      for (let i = f0; i < f1; i++) raw[i] = { t: times[i], x: interestToCropX(interestXs[i], W, H) };
+      // No person in this shot — title card, slate, screen recording, animation. Take one
+      // static framing from whatever stands out, and frame centre when nothing does. The
+      // per-frame interest centroid this replaces tracked a saliency map with no person in
+      // it, wandering across text for the length of the card.
+      const cx = fallbackColumn(salS, actS, f1 - f0) ?? 0.5;
+      for (let i = f0; i < f1; i++) raw[i] = { t: times[i], x: interestToCropX(cx, W, H) };
+      prevExitX = raw[f1 - 1].x;
     }
   }
 
-  const keyframes = smoothKeyframes(raw, shotTimes, 1.2, sampleInterval);
+  const keyframes = smoothKeyframes(raw, shotTimes, 1.2, sampleInterval, switchTimes);
 
   return {
     video_id: videoId,
@@ -248,23 +327,19 @@ export async function processVideoCrop(
       heads: lastHeads.map((h) => Number(h.toFixed(3))),
       two_shot: stats.two_shot,
       av: stats.av,
+      evidence: stats.evidence,
       gender: stats.gender,
       hold: stats.hold,
       pitch_threshold_hz: Number(threshold.toFixed(1)),
-      calibration: `${twoShotSegs} two-shot seg(s); last ${lastCal}`,
+      calibration: `${twoShotSegs} two-shot seg(s); attribution=av_correlation`,
       shots: shotTimes.length,
+      algo_version: algoVersion('v1'),
     },
   };
 }
 
-function grayHist(frame: Uint8Array): Float64Array {
-  const h = new Float64Array(SHOT_BINS);
-  for (let i = 0; i < frame.length; i++) h[(frame[i] * SHOT_BINS) >> 8]++;
-  return h;
-}
-
 /** Convert shot-boundary timestamps to [startFrame, endFrame) index ranges. */
-function buildFrameSegments(shotTimes: number[], nFrames: number, sampleFps: number): Array<[number, number]> {
+export function buildFrameSegments(shotTimes: number[], nFrames: number, sampleFps: number): Array<[number, number]> {
   const bounds = Array.from(new Set(shotTimes)).sort((a, b) => a - b);
   const starts = bounds.map((t) => Math.max(0, Math.min(nFrames, Math.round(t * sampleFps))));
   const segs: Array<[number, number]> = [];
