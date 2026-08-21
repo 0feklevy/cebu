@@ -6,13 +6,18 @@ merged into `integration/night-run` over `origin/main` @ `6c7f9bb`: the Library 
 P1). Then the R-01…R-10 rulings were executed on top. Plans and per-feature reports are in
 `podcast-saas/md-files/`.
 
-**Status: PR #45 is MERGED** — merge commit `83e5c48`, 2026-08-21T09:33Z, under the
-merge-authorization rule the owner added to `autoMode.allow`; CI on `main` is green. **The release
-is deliberately NOT cut yet**: v0.1.32–v0.1.35 already sit as undeployed draft releases while
-production runs a pre-#32 build, so the bottleneck is the VM checkout pin, not a missing tag —
-cutting v0.1.36 now would add a ninth undeployed artifact. The ruling, the evidence, and the single
-dispatch that ships the whole backlog are in the codex **Part II, R-13**; the full post-merge
-execution order is **R-19**.
+**Status: SHIPPED. `v0.1.36` is live in production** — published 2026-08-21T11:07Z from run
+32473689948, digest-pinned, `HEALTHY -> BROWSER_VERIFIED`, `api.flowvidco.com/health` answering 200.
+
+R-13 played out exactly as ruled: one dispatch carried the **entire** backlog — PRs #36 through #47,
+twelve of them — rather than adding a ninth undeployed tag. That closes the deploy drought that had
+left v0.1.32–v0.1.35 stacked as drafts while production ran a pre-#32 build. The VM checkout pin,
+which killed the v0.1.28 attempt 32 seconds in, passed this time because the owner cleared the tree
+by census first (`git status --porcelain=v2` empty) rather than by `reset --hard`.
+
+Now live that was not before: the storage-leak fixes (#37), four avatar corrections (#39–#42), the
+dedicated GPU export host (#44), and the three features of this round — Library Share, Dubbing v2
+with the viewer language switcher, and crop v2's measurement harness plus its P1 fixes.
 
 The prior 2026-08 remediation round is closed and archived — PRs #31–#37 merged, v0.1.30 tagged and
 built; its full record is in `DECISIONS-ARCHIVE.md` (bottom section, dated 2026-08-19). Its items
@@ -30,19 +35,17 @@ one post-deploy measurement — and a four-round map (P3-F) sequencing all of it
 
 ---
 
-## 🔴 Still blocked on you — from the 2026-08-21 feature round (three items)
+## 🔴 Still open — post-release (2026-08-21, after v0.1.36)
 
-1. **ElevenLabs plan tier.** `ELEVENLABS_DUBBING_WATERMARKED` defaults to `true` and withholds every
-   dub from viewers. The vendor exposes no watermark field on any v2 response — it is a property of
-   the plan the API key belongs to — so this is a declared config fact, deliberately defaulting to
-   the inconvenient-but-safe value. Until you confirm a non-watermarking plan and set it to `false`,
-   dubs are produced, **billed**, and never published. Confirm the tier before anyone runs a real
-   dub, then run one ≤60s probe (R-02) before customer-facing use.
-2. **The 0-byte root `.env.local`.** The only cleanup deletion NOT executed, and deliberately so:
-   the repo's own secrets floor refuses any command that names an env file, so it could not even be
-   re-verified, let alone removed. That guard is correct and was not worked around. Delete it by
-   hand if you still want it gone.
-3. **Crop P2 needs real footage.** The face-detector step change is blocked on measurement, not on
+1. **The dubbing watermark flag is still `true` in production.** The tier question is ANSWERED —
+   the workspace is on the paid Creator plan ($22/mo), so output is not watermarked — but the
+   deployed environment still carries the safe default, which means every dub would be produced,
+   **billed**, and then withheld. Set `ELEVENLABS_DUBBING_WATERMARKED=false` on the VM, then run
+   the ≤60s probe dub (~$2.20) BEFORE any customer-facing use: it confirms the absence of a
+   watermark by ear and closes the top of `DUBBING-IMPLEMENTATION-REPORT.md` §7 — above all whether
+   the billable multipart create accepts `reference` or silently drops it. Until the probe runs,
+   nothing in the dubbing pipeline has ever met the live vendor API.
+2. **Crop P2 needs real footage.** The face-detector step change is blocked on measurement, not on
    feasibility: YuNet scores **zero detections** against the synthetic eval fixtures, so nothing about
    it can be scored until P0.3 exists (20–50 labelled catalogue clips). The dependency and model were
    removed rather than landing ~1,000 unverifiable lines. Supplying clips is the unblock, and R-08
@@ -152,17 +155,19 @@ and that no implementation begins without an explicit go-ahead.
 
 ## 🔴 Blocked on you — carried over from the 2026-08-19 round (two items, both small)
 
-1. **The production deploy fails on the VM, not in this repo.** The approved v0.1.28 deploy
-   failed 32 seconds in at *"Pin VM checkout"* — the working tree at `/home/ubuntu/cebu` holds
-   uncommitted changes, so the pin refuses. Containers were never touched; production still runs
-   the older version, and **every fix since PR #32 is merged, tagged, built — and not live.**
-   Do NOT clean the VM with `git reset --hard`: first a read-only census of
-   `git status --porcelain=v2` there, review what those files are, then preserve/commit/move
-   aside, then re-dispatch the release workflow with `deploy=true`. Needs SSH, which no session
-   here has.
-2. **One-time Supabase dashboard action:** bucket lifecycle rule *"abort incomplete multipart
-   uploads after 7 days."* Abandoned upload parts are billed but invisible to LIST, and no code
-   path can reach them. Documented in `.env.example`.
+1. ~~**The production deploy fails on the VM, not in this repo.**~~ **CLOSED 2026-08-21.** The
+   v0.1.28 attempt died 32 seconds in at *"Pin VM checkout"* because the working tree at
+   `/home/ubuntu/cebu` was dirty. The owner cleared it the prescribed way — a read-only
+   `git status --porcelain=v2` census first, never `reset --hard` — and it came back completely
+   empty. v0.1.36 then deployed through that same pin without incident. Keep the procedure: the
+   pin refuses a dirty tree on purpose, and the census is what makes the refusal cheap to resolve
+   instead of destructive.
+2. ~~**One-time Supabase dashboard action:** bucket lifecycle rule "abort incomplete multipart
+   uploads after 7 days."~~ **CLOSED 2026-08-21, no action needed.** Checked against the live
+   dashboard: Supabase exposes no per-bucket lifecycle UI, and aborts incomplete multipart uploads
+   automatically after **24 hours** — stricter than the 7-day rule we were going to configure. The
+   underlying risk (abandoned parts are billed but invisible to LIST, so no code path can reach
+   them) is therefore handled by the platform. Nothing to build, nothing to remember.
 
 ## 🟠 Standing constraints (do not change without a ruling)
 
@@ -184,8 +189,12 @@ and that no implementation begins without an explicit go-ahead.
 - **D-17 knowledge/retrieval** — KnowledgeSnapshot first; three feature gates before any public
   Avatar rollout (multi-segment scoping, `chart` off without provenance, moderation wired on the
   visual/image routes).
-- **Billing scope** — 24 findings parked as `OUT_OF_SCOPE_BILLING` in the ledger, including two
-  P1s. Parked is not fixed.
+- ~~**Billing scope** — 24 findings parked as `OUT_OF_SCOPE_BILLING`, including two P1s.~~
+  **DESCOPED by the owner, 2026-08-21: the billing feature is not currently relevant**, so the
+  parked findings stay parked deliberately rather than by neglect, and the planned billing review
+  round is cancelled. Two things to carry forward if that changes: "parked is not fixed" still
+  holds — the two P1s are real and unaddressed — and the money path that IS live today is dubbing,
+  which is guarded instead by the per-user monthly ceiling shipped in this round (R-03).
 - **A P1 with no implementation:** `broll-data-001` (b-roll offsets anchored to
   `video_files.duration_sec`) — decided, no schema or code yet.
 
@@ -193,7 +202,16 @@ and that no implementation begins without an explicit go-ahead.
 
 - Public-bucket HLS: revoked shares keep working until the signed-URL cutover (four ordered
   landings; a naive cutover is an outage).
-- Sim-capture export ~10× too slow on the 2-vCPU host; obvious levers spent.
-- The e2e WebKit lane is non-blocking by design (`__CHILD` keyed on Window identity); its one
-  failing test is documented in `ci.yml`.
+- Sim-capture export ~10× too slow on the 2-vCPU host. **This premise is now stale and awaits one
+  measurement to close.** PR #44 shipped a dedicated GPU export host
+  (`deploy/docker-compose.gpu-worker.yml`) that is the sole consumer of `project_export` — the
+  production worker's queue list excludes it — and that host went live with v0.1.36. The 2-vCPU
+  ceiling no longer describes where exports run. To close: run one real export and record
+  seconds-per-frame on the GPU host. If it meets budget, this item is resolved outright and the
+  Creator-Side Render Farm idea in Volume 2 demotes from "the fix" to a contingency.
+- The e2e WebKit lane is non-blocking by design (`__CHILD` keyed on Window identity). Its failure
+  is **flaky, not a fixed single test** — measured across four runs this round, including one on a
+  docs-only PR that touched no code: the same commit produced 1, 2, and 3 failures on different
+  runs. The `ci.yml` comment still describes one reproducible failure and should be corrected when
+  `__CHILD` is re-keyed onto something the child sends.
 - 235 ledger findings remain open and unverified (P2/P3-labelled, tail never adversarially read).
