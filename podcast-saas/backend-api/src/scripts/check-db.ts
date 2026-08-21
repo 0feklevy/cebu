@@ -87,6 +87,7 @@ const MIGRATION_FILES = [
   '067_video_dubs.sql',
   '068_project_source_language.sql',
   '069_placement_impact_review.sql',
+  '070_dub_stage_and_language_origin.sql',
 ];
 
 type Row = Record<string, unknown>;

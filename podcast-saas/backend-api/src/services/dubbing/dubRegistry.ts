@@ -16,6 +16,7 @@ import { publicApiOrigin } from '../../config/publicOrigins.js';
 import { DUB_STATUS, dubSourceHash, shouldSkipDub } from './DubbingService.js';
 import { normalizeDubbingLanguage, isSupportedDubbingLanguage, findDubbingLanguage } from './languages.js';
 import { estimateDubbingCost, usdPerMinutePerLanguage } from './cost.js';
+import { dubProgress, type DubProgress } from './stages.js';
 import { dubbingWatermarkPolicy, dubbingUsdPerCredit } from './config.js';
 
 export const DUB_PROVIDER_ELEVENLABS = 'elevenlabs';
@@ -51,6 +52,14 @@ export interface DubView {
   captions_url: string | null;
   cost_cents: number | null;
   error: string | null;
+  /**
+   * Where in the pipeline this dub is, as a stage, a sentence and a percentage.
+   *
+   * Computed on read rather than stored, because part of it is a function of the clock: a step that
+   * reports nothing of its own still advances the bar by having been running for four minutes. A
+   * stored percentage would freeze between polls and read as a stall.
+   */
+  progress: DubProgress;
   updated_at: Date | null;
 }
 
@@ -71,6 +80,12 @@ function toView(dub: VideoDub): DubView {
     hls_url: servable && dub.hls_master_key ? storage.getPublicUrl(dub.hls_master_key) : null,
     captions_url: servable && dub.captions_vtt ? dubCaptionUrl(dub.video_file_id, dub.target_language) : null,
     cost_cents: dub.cost_cents,
+    progress: dubProgress({
+      status: dub.status,
+      stage: dub.stage,
+      stageEnteredAtMs: dub.stage_entered_at?.getTime() ?? null,
+      nowMs: Date.now(),
+    }),
     // A watermark refusal is the creator's business; a raw vendor message is not something a
     // viewer-facing surface should ever carry, which is why only the creator listing reads this.
     error: dub.status === DUB_STATUS.failed ? dub.error : null,
