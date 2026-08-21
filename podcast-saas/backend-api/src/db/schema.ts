@@ -186,6 +186,8 @@ export const projects = pgTable('projects', {
   metadata_status: text('metadata_status').notNull().default('none'), // none|processing|ready|failed
   // Transcript-derived SEO (migration 034) — generated from the captions once ready.
   seo_description: text('seo_description'),
+  /** The language the project's video is already spoken in; null = undeclared, vendor auto-detects. */
+  source_language: text('source_language'),
   seo_keywords:    text('seo_keywords'),
   // View counter (migration 027)
   view_count: integer('view_count').notNull().default(0),

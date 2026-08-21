@@ -15,6 +15,13 @@
  *   • A watermarked plan produces dubs that are paid for and unpublishable. When the account is on
  *     one — or has simply never declared which it is on — the run button is disabled and says why,
  *     rather than letting someone spend real money on output no viewer will ever see.
+ *
+ *   • The source language is shown but never selectable. Dubbing a video into the language it is
+ *     already spoken in is a complete billable run that returns a degraded copy of the original,
+ *     and the row says so rather than vanishing — a language the creator expected to see and
+ *     cannot find is a bug report, whereas one that explains itself is an answer. The server
+ *     refuses it independently, because a disabled checkbox is advice and advice does not stop a
+ *     scripted client.
  */
 
 import { useCallback, useEffect, useState } from 'react';
@@ -36,6 +43,8 @@ interface LanguageRow {
   status: string | null;
   /** Every video in this language is finished AND servable. */
   ready: boolean;
+  /** The language the video is ALREADY in — shown, explained, and never selectable. */
+  isSource: boolean;
   total: number;
   done: number;
   error: string | null;
@@ -74,6 +83,7 @@ export function rollUpByLanguage(
       code: lang.code,
       name: lang.name,
       endonym: lang.endonym,
+      isSource: lang.is_source === true,
       status,
       ready: total > 0 && done === total,
       total,
@@ -95,11 +105,13 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 const STATUS_COLOR: Record<string, string> = {
-  queued: '#64748b',
-  processing: '#0ea5e9',
-  completed: '#16a34a',
-  partial: '#d97706',
-  failed: '#ef4444',
+  // Tokens, not hex. The same mistake the `/c/` pages made — hardcoded colours that look right in
+  // light mode and are unreadable in dark — and this panel had fourteen of them.
+  queued: 'hsl(var(--muted-foreground))',
+  processing: 'hsl(var(--primary))',
+  completed: 'hsl(var(--success, 142 71% 40%))',
+  partial: 'hsl(var(--warning, 38 92% 45%))',
+  failed: 'hsl(var(--destructive))',
 };
 
 export function DubbingSettings({ projectId, onClose }: Props) {
@@ -205,7 +217,7 @@ export function DubbingSettings({ projectId, onClose }: Props) {
         >
           <ArrowLeft size={16} strokeWidth={2} aria-hidden />
         </button>
-        <Globe size={16} strokeWidth={2} aria-hidden style={{ color: '#0ea5e9' }} />
+        <Globe size={16} strokeWidth={2} aria-hidden style={{ color: 'hsl(var(--primary))' }} />
         <span style={{ fontSize: 15, fontWeight: 700, color: 'hsl(var(--shell-foreground))' }}>
           Languages &amp; dubbing
         </span>
@@ -226,7 +238,7 @@ export function DubbingSettings({ projectId, onClose }: Props) {
 
         {error && (
           <div role="alert" style={{
-            fontSize: 12, color: '#b91c1c', background: 'rgba(239,68,68,0.08)',
+            fontSize: 12, color: 'hsl(var(--destructive))', background: 'hsl(var(--destructive) / 0.08)',
             border: '1px solid rgba(239,68,68,0.25)', borderRadius: 8, padding: '10px 12px',
           }}>
             {error}
@@ -239,8 +251,8 @@ export function DubbingSettings({ projectId, onClose }: Props) {
         */}
         {!loading && estimate?.watermark_notice && (
           <div role="alert" style={{
-            display: 'flex', gap: 10, fontSize: 12, color: '#92400e',
-            background: 'rgba(245,158,11,0.10)', border: '1px solid rgba(245,158,11,0.3)',
+            display: 'flex', gap: 10, fontSize: 12, color: 'hsl(var(--warning, 38 92% 35%))',
+            background: 'hsl(var(--warning, 38 92% 45%) / 0.10)', border: '1px solid hsl(var(--warning, 38 92% 45%) / 0.3)',
             borderRadius: 8, padding: '10px 12px', lineHeight: 1.6,
           }}>
             <AlertTriangle size={16} strokeWidth={2} aria-hidden style={{ flexShrink: 0, marginTop: 1 }} />
@@ -258,7 +270,8 @@ export function DubbingSettings({ projectId, onClose }: Props) {
                   <div style={{
                     display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px',
                     border: '1px solid hsl(var(--border))', borderRadius: 10,
-                    background: checked ? 'rgba(14,165,233,0.06)' : 'transparent',
+                    background: checked ? 'hsl(var(--primary) / 0.06)' : 'transparent',
+                    opacity: row.isSource ? 0.62 : 1,
                   }}>
                     {/*
                       A real <input type="checkbox"> with a <label>, not a styled div: the label
@@ -269,25 +282,30 @@ export function DubbingSettings({ projectId, onClose }: Props) {
                       type="checkbox"
                       id={`dub-lang-${row.code}`}
                       checked={checked}
-                      disabled={requested || blocked}
+                      disabled={requested || blocked || row.isSource}
                       onChange={() => toggle(row.code)}
-                      style={{ width: 16, height: 16, accentColor: '#0ea5e9', cursor: requested ? 'default' : 'pointer' }}
+                      style={{
+                        width: 16, height: 16, accentColor: 'hsl(var(--primary))',
+                        cursor: requested || row.isSource ? 'default' : 'pointer',
+                      }}
                     />
                     <label
                       htmlFor={`dub-lang-${row.code}`}
-                      style={{ flex: 1, minWidth: 0, cursor: requested ? 'default' : 'pointer' }}
+                      style={{ flex: 1, minWidth: 0, cursor: requested || row.isSource ? 'default' : 'pointer' }}
                     >
                       <span style={{ display: 'block', fontSize: 13, fontWeight: 600, color: 'hsl(var(--foreground))' }}>
                         {row.name}
                       </span>
                       <span style={{ display: 'block', fontSize: 11, color: 'hsl(var(--muted-foreground))' }}>
                         {row.endonym} · /{row.code}
+                        {row.isSource && ' · this video is already in this language'}
                       </span>
                     </label>
 
                     {row.status && (
                       <span style={{
-                        fontSize: 11, fontWeight: 600, color: STATUS_COLOR[row.status] ?? '#64748b',
+                        fontSize: 11, fontWeight: 600,
+                        color: STATUS_COLOR[row.status] ?? 'hsl(var(--muted-foreground))',
                         display: 'flex', alignItems: 'center', gap: 5,
                       }}>
                         {row.status === 'processing' && (
@@ -295,7 +313,6 @@ export function DubbingSettings({ projectId, onClose }: Props) {
                         )}
                         {row.status === 'completed' && <Check size={12} strokeWidth={2.5} aria-hidden />}
                         {STATUS_LABEL[row.status] ?? row.status}
-                        {row.status === 'partial' && ` (${row.done}/${row.total})`}
                       </span>
                     )}
 
@@ -309,7 +326,7 @@ export function DubbingSettings({ projectId, onClose }: Props) {
                         title={`Delete the ${row.name} dub`}
                         style={{
                           width: 28, height: 28, borderRadius: 7, border: 'none', cursor: 'pointer',
-                          backgroundColor: 'transparent', color: '#ef4444',
+                          backgroundColor: 'transparent', color: 'hsl(var(--destructive))',
                           display: 'flex', alignItems: 'center', justifyContent: 'center',
                         }}
                       >
@@ -320,8 +337,40 @@ export function DubbingSettings({ projectId, onClose }: Props) {
                     )}
                   </div>
 
+                  {/*
+                    WHERE THE WORK ACTUALLY IS. A dub is per-video, so a project with four videos
+                    reaches "completed" only when the fourth one does — and until this bar existed
+                    the creator saw a spinner that could mean one minute or forty. `done/total` was
+                    already computed for the rollup; it was simply never shown.
+
+                    The bar is `aria-hidden` and the numbers next to it carry the same information
+                    as text, because a progress bar a screen reader announces as a percentage of
+                    nothing is worse than no bar at all.
+                  */}
+                  {row.status && row.status !== 'failed' && row.total > 0 && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '6px 0 0 40px' }}>
+                      <div
+                        aria-hidden
+                        style={{
+                          flex: 1, height: 4, borderRadius: 999,
+                          background: 'hsl(var(--muted))', overflow: 'hidden',
+                        }}
+                      >
+                        <div style={{
+                          width: `${Math.round((row.done / row.total) * 100)}%`,
+                          height: '100%', borderRadius: 999,
+                          background: row.ready ? 'hsl(var(--primary))' : 'hsl(var(--primary) / 0.55)',
+                          transition: 'width 240ms ease',
+                        }} />
+                      </div>
+                      <span style={{ fontSize: 10, color: 'hsl(var(--muted-foreground))', fontVariantNumeric: 'tabular-nums' }}>
+                        {row.done}/{row.total} {row.total === 1 ? 'video' : 'videos'}
+                      </span>
+                    </div>
+                  )}
+
                   {row.error && (
-                    <p style={{ fontSize: 11, color: '#ef4444', margin: '4px 0 0 40px' }}>{row.error}</p>
+                    <p style={{ fontSize: 11, color: 'hsl(var(--destructive))', margin: '4px 0 0 40px' }}>{row.error}</p>
                   )}
                 </li>
               );
@@ -358,8 +407,13 @@ export function DubbingSettings({ projectId, onClose }: Props) {
             disabled={selected.size === 0 || running || blocked}
             style={{
               flexShrink: 0, padding: '9px 16px', borderRadius: 9, border: 'none',
-              fontSize: 13, fontWeight: 700, color: '#fff',
-              backgroundColor: selected.size === 0 || running || blocked ? '#94a3b8' : '#0ea5e9',
+              fontSize: 13, fontWeight: 700,
+              color: selected.size === 0 || running || blocked
+                ? 'hsl(var(--muted-foreground))'
+                : 'hsl(var(--primary-foreground))',
+              backgroundColor: selected.size === 0 || running || blocked
+                ? 'hsl(var(--muted))'
+                : 'hsl(var(--primary))',
               cursor: selected.size === 0 || running || blocked ? 'not-allowed' : 'pointer',
               display: 'flex', alignItems: 'center', gap: 7,
             }}

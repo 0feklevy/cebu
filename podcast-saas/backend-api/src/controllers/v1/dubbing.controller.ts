@@ -36,7 +36,7 @@ import {
   UnsupportedDubLanguage,
   DUB_PROVIDER_ELEVENLABS,
 } from '../../services/dubbing/dubRegistry.js';
-import { DUBBING_LANGUAGES, normalizeDubbingLanguage } from '../../services/dubbing/languages.js';
+import { DUBBING_LANGUAGES, findDubbingLanguage, normalizeDubbingLanguage } from '../../services/dubbing/languages.js';
 import { checkDubbingBudget } from '../../services/dubbing/budget.js';
 import { logger } from '../../lib/logger.js';
 
@@ -75,10 +75,19 @@ export async function registerDubbingRoutes(app: FastifyInstance): Promise<void>
       // round-trip per checkbox.
       const estimate = await estimateProjectDubCost(project.id, 1);
 
+      // The source language is not a target. Dubbing a video into the language it is already in
+      // is a full billable run that returns a worse copy of the original, so it is excluded here
+      // rather than merely discouraged in the UI — a client that ignores a disabled checkbox must
+      // not be able to spend money. `is_source` is still reported so the UI can SHOW the language
+      // and say why it cannot be picked, which is more useful than silently omitting it.
+      const sourceLanguage = normalizeDubbingLanguage(project.source_language ?? '') ?? null;
+
       return reply.send({
         dubs,
+        source_language: sourceLanguage,
         supported_languages: DUBBING_LANGUAGES.map((l) => ({
           code: l.code, name: l.name, endonym: l.endonym, rtl: l.rtl,
+          is_source: l.code === sourceLanguage,
         })),
         estimate,
       });
@@ -98,6 +107,18 @@ export async function registerDubbingRoutes(app: FastifyInstance): Promise<void>
 
       const language = (request.body?.language ?? '').trim();
       if (!language) return reply.code(400).send({ message: 'A target language is required.' });
+
+      // Refuse the source language outright. This is not UI politeness: dubbing a video into the
+      // language it is already spoken in is a complete, billable vendor run whose output is a
+      // degraded copy of the input. The check lives on the server because a disabled checkbox is
+      // advice, and advice does not stop a scripted client from spending $2.20 a minute.
+      const projectSource = normalizeDubbingLanguage(project.source_language ?? '');
+      if (projectSource && normalizeDubbingLanguage(language) === projectSource) {
+        const named = findDubbingLanguage(projectSource);
+        return reply.code(409).send({
+          message: `This project is already in ${named?.name ?? projectSource}. Dubbing it into its own language would be billed in full and return a worse copy of the original — pick a different language.`,
+        });
+      }
 
       // THE CEILING GOES HERE, ahead of `requestProjectDub`, because the vendor bills on job
       // creation and has no idempotency key: a limit enforced after that call is a report, not a

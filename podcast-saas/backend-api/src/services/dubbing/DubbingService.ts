@@ -32,7 +32,7 @@ import { promisify } from 'util';
 import { and, eq, or, lt, isNull, ne } from 'drizzle-orm';
 
 import { db } from '../../db/index.js';
-import { video_dubs, video_files } from '../../db/schema.js';
+import { projects, video_dubs, video_files } from '../../db/schema.js';
 import type { VideoDub } from '../../db/schema.js';
 import { logger } from '../../lib/logger.js';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
@@ -572,6 +572,16 @@ export class DubbingService {
 
   private async execute(dub: VideoDub, video: VideoRow, hash: string, slot: DubbingSlot): Promise<void> {
     const storage = getStorageAdapter();
+    // Read the project's declared source language here rather than threading it through every
+    // caller: it is one indexed lookup on a job that is about to spend real money, and getting it
+    // from the project is the whole point — a deployment-wide env var cannot describe a catalogue
+    // whose videos are in different languages.
+    const project = video.project_id
+      ? await db.query.projects.findFirst({
+          where: eq(projects.id, video.project_id),
+          columns: { source_language: true },
+        })
+      : null;
     const workDir = await mkdtemp(join(tmpdir(), 'dub-'));
 
     try {
@@ -583,7 +593,11 @@ export class DubbingService {
       const result = await this.provider.run({
         dubId: dub.id,
         sourceUrl,
-        sourceLanguage: sourceLanguageTag(process.env.DUBBING_SOURCE_LANGUAGE),
+        // The PROJECT's declared source, falling back to the deployment-wide default. A single
+        // global env var is meaningless for a catalogue holding videos in different languages;
+        // when neither is set this stays null and the vendor auto-detects, which is a correct
+        // outcome rather than a missing one.
+        sourceLanguage: sourceLanguageTag(project?.source_language ?? process.env.DUBBING_SOURCE_LANGUAGE),
         targetLanguage: dub.target_language,
         existing: { projectId: dub.el_project_id, languageId: dub.el_language_id },
         onProjectCreated: async (projectId) => {
