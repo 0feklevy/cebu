@@ -8,6 +8,9 @@ import { editableProject } from '../../services/collabAccess.js';
 import { buildPlayerConfig } from '../../services/buildPlayerConfig.js';
 import { BillingService } from '../../services/billing/BillingService.js';
 import { normalizeDubbingLanguage } from '../../services/dubbing/languages.js';
+import {
+  configSnapshot, isConfigRevalidation, sendConfigSnapshot,
+} from '../../services/playerConfigFreshness.js';
 
 export async function registerShareRoutes(app: FastifyInstance): Promise<void> {
 
@@ -39,18 +42,30 @@ export async function registerShareRoutes(app: FastifyInstance): Promise<void> {
         }
       }
 
-      const config = await buildPlayerConfig(
-        project.id, null, project, normalizeDubbingLanguage(request.query.lang ?? ''),
+      // D-13. The share-token and paid gates above have already run, so the conditional answer
+      // below can never turn a revoked link into a stale allow: a revoked token 404s before this
+      // point, `If-None-Match` or not.
+      const language = normalizeDubbingLanguage(request.query.lang ?? '');
+      const snapshot = await configSnapshot(
+        // `viewerId: null` mirrors the build argument — this route deliberately builds an
+        // anonymous payload for everyone, so every share viewer of one language IS one audience.
+        { surface: 'share', contentId: project.id, viewerId: null, language },
+        () => buildPlayerConfig(project.id, null, project, language),
       );
-      if (!config) return reply.code(404).send({ message: 'Shared video not found' });
+      if (!snapshot) return reply.code(404).send({ message: 'Shared video not found' });
 
-      // Fire-and-forget view count increment
-      db.update(projects)
-        .set({ view_count: sql`${projects.view_count} + 1` })
-        .where(eq(projects.id, project.id))
-        .catch(() => {});
+      // Fire-and-forget view count increment — for an OPENING, not for a freshness re-poll.
+      // This route bumps on every GET, so without the guard D-13's ~60 revalidations an hour
+      // would report one viewer of a one-hour lecture as sixty (D-13: "config revalidation must
+      // not count as a view").
+      if (!isConfigRevalidation(request)) {
+        db.update(projects)
+          .set({ view_count: sql`${projects.view_count} + 1` })
+          .where(eq(projects.id, project.id))
+          .catch(() => {});
+      }
 
-      return reply.send(config);
+      return sendConfigSnapshot(request, reply, snapshot);
     },
   );
 

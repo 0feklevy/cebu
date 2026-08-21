@@ -10,6 +10,7 @@ import { requireProjectAccess } from '../../services/projectAccess.js';
 import { editableProject, isCollaborator } from '../../services/collabAccess.js';
 import { requireUuidParams } from '../../lib/uuidParam.js';
 import { normalizeDubbingLanguage } from '../../services/dubbing/languages.js';
+import { configSnapshot, sendConfigSnapshot } from '../../services/playerConfigFreshness.js';
 
 import type { AccessProject } from '../../services/projectAccess.js';
 
@@ -76,11 +77,18 @@ export async function registerPlayerRoutes(app: FastifyInstance): Promise<void> 
         }
       }
 
-      const config = await buildPlayerConfig(
-        projectId, request.dbUser?.id ?? null, project, normalizeDubbingLanguage(request.query.lang ?? ''),
+      // D-13. Every gate above — existence, visibility/collaborator, pricing, purchase — has
+      // already run, which is the ORDERING REQUIREMENT: authorization must complete before any
+      // `304`, or a viewer who lost access keeps revalidating their way to a stale allow. The
+      // snapshot below only decides whether the bytes still need sending.
+      const viewerId = request.dbUser?.id ?? null;
+      const language = normalizeDubbingLanguage(request.query.lang ?? '');
+      const snapshot = await configSnapshot(
+        { surface: 'player-config', contentId: projectId, viewerId, language },
+        () => buildPlayerConfig(projectId, viewerId, project, language),
       );
-      if (!config) return reply.code(404).send({ message: 'Project not found' });
-      return reply.send(config);
+      if (!snapshot) return reply.code(404).send({ message: 'Project not found' });
+      return sendConfigSnapshot(request, reply, snapshot);
     },
   );
 

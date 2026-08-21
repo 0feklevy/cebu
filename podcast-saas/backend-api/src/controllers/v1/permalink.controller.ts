@@ -13,6 +13,9 @@ import {
   type SlugExclude,
 } from '../../services/permalinkService.js';
 import { normalizeDubbingLanguage } from '../../services/dubbing/languages.js';
+import {
+  configSnapshot, isConfigRevalidation, sendConfigSnapshot,
+} from '../../services/playerConfigFreshness.js';
 
 /**
  * Creator-controlled permalinks (migration 043): {PUBLIC_SITE_URL}/{slug}.
@@ -86,19 +89,46 @@ export async function registerPermalinkRoutes(app: FastifyInstance): Promise<voi
             });
           }
         }
-        const config = await buildPlayerConfig(
-          project.id, viewerId, project, normalizeDubbingLanguage(request.query.lang ?? ''),
+        // D-13. `resolvePublicSlug` has already refused anything that is not `visibility ===
+        // 'public'`, and the paid gate above has already run, so no conditional answer below can
+        // outlive the authorization that permitted it.
+        const language = normalizeDubbingLanguage(request.query.lang ?? '');
+        const snapshot = await configSnapshot(
+          // `viewerId` is part of the key because the payload is built FOR that viewer: a
+          // cross-project branch edge carries the destination's share token only for someone who
+          // can reach it, so a per-slug cache would hand one viewer another's token.
+          { surface: 'permalink', contentId: project.id, viewerId, language },
+          () => buildPlayerConfig(project.id, viewerId, project, language),
         );
-        if (!config) return reply.code(404).send({ message: 'Not found' });
+        if (!snapshot) return reply.code(404).send({ message: 'Not found' });
 
-        // Fire-and-forget view count increment
-        db.update(projects)
-          .set({ view_count: sql`${projects.view_count} + 1` })
-          .where(eq(projects.id, project.id))
-          .catch(() => {});
-        return reply.send(config);
+        // Fire-and-forget view count increment — openings only. A D-13 freshness re-poll arrives
+        // with `If-None-Match` and must not be counted, or one mid-watch viewer reports ~60 views
+        // an hour on a route that bumps on every GET.
+        if (!isConfigRevalidation(request)) {
+          db.update(projects)
+            .set({ view_count: sql`${projects.view_count} + 1` })
+            .where(eq(projects.id, project.id))
+            .catch(() => {});
+        }
+        return sendConfigSnapshot(request, reply, snapshot);
       }
 
+      /*
+       * PLAYLISTS ARE EXPLICITLY OUT OF SCOPE FOR D-13, and this branch is deliberately
+       * unchanged — no ETag, no `Cache-Control`, no revalidation gate on the view count.
+       *
+       * The ruling allows the playlist and course surfaces to be "covered or explicitly
+       * excluded", and half-covering them would be worse than leaving them alone: a playlist's
+       * payload is a LIST of per-item player configs built by `buildPlaylistPlayConfig`, and
+       * `PlaylistViewer` loads it exactly once with no poll at all. Adding validators here would
+       * invite the browser's own revalidation of a payload nothing re-reads — and that
+       * revalidation would then be excluded from `view_count` by the rule above, silently
+       * changing owner-visible playlist analytics for no freshness benefit.
+       *
+       * Covering them properly means a per-item freshness poll inside the playlist shell, which
+       * is its own change. Until that lands, D-13 stays PARTIAL by the ruling's own terms.
+       */
       const playlist = resolved.playlist;
       if (playlist.access_type === 'paid') {
         const hasAccess = await BillingService.hasAccess(viewerId, 'playlist', playlist.id);
