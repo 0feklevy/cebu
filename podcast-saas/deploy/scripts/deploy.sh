@@ -48,6 +48,10 @@ cd "${REPO_DIR}"
 command -v git >/dev/null || die "git not found on the VM."
 
 CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
+# A DETACHED HEAD REPORTS THE LITERAL STRING "HEAD", and `git checkout HEAD` is a no-op — so the
+# next deploy would rebuild whatever tree the host is pinned to and label it as new. rollback.sh
+# now detaches deliberately, which makes this a reachable state rather than a curiosity.
+[ "${CURRENT_BRANCH}" = "HEAD" ] && CURRENT_BRANCH=main
 TARGET_REF="${REF:-${CURRENT_BRANCH}}"
 
 log "Fetching latest from origin…"
