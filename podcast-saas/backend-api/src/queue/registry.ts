@@ -21,7 +21,7 @@ import { resolveConfiguredCaptureProvider } from '../services/export/capture/iso
  * the registry → service → queue import cycle: nothing is invoked at module-eval time.
  */
 export const handlers: JobHandlers = {
-  transcode: (p) => runVideoTranscode(p.videoFileId),
+  transcode: (p) => runVideoTranscode(p.videoFileId, { replaced: p.replaced === true }),
   captions: (p) => runCaptionJobNow(p.videoId, { force: p.force }),
   crop: (p) => runCropAnalysis(p.videoFileId),
   metadata: (p) => generateVideoMetadata(p.projectId, p.videoFileId, p),

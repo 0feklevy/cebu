@@ -204,6 +204,32 @@ interface PlanStorage {
 const POSTER_FORMATS: readonly PosterFormat[] = ['webp', 'avif', 'png'];
 
 /**
+ * CAP AN OUT-POINT TO THE MEDIA THAT ACTUALLY EXISTS — at READ time, on a copy, never in the row.
+ *
+ * D-01f: once authoritative metadata exists, an over-long window is capped rather than looped or
+ * frozen, and the shortening is SHOWN. This is the defensive half of that ruling, and it is what
+ * makes it safe for the transcode job to have stopped rewriting `end_sec` when a replacement comes
+ * back shorter (D-01b, migration 069): the authored window survives in the database for the author
+ * to settle from the review queue, and in the meantime ffmpeg is never asked for frames that do not
+ * exist — which it answers by producing a shorter clip and a silent hole in the timeline.
+ *
+ * An unknown duration caps nothing. Inventing a length for media that has not been probed is how
+ * the old code produced a "30-second source" out of nowhere; the honest answer is to export what
+ * was authored and let the assembler meet the real file.
+ */
+export function capToSource(
+  requestedOutSec: number,
+  sourceDurationSec: number | null | undefined,
+): { outSec: number; shortenedBy: number } {
+  const dur = typeof sourceDurationSec === 'number' && Number.isFinite(sourceDurationSec)
+    ? sourceDurationSec : null;
+  if (dur === null || dur <= 0 || !Number.isFinite(requestedOutSec) || requestedOutSec <= dur) {
+    return { outSec: requestedOutSec, shortenedBy: 0 };
+  }
+  return { outSec: dur, shortenedBy: requestedOutSec - dur };
+}
+
+/**
  * Resolve one project into an `ExportPlan`, or null when the project does not exist.
  *
  * Throws `ExportRefused` (`export_branching_unsupported`, retryable false) for a branching
@@ -497,7 +523,15 @@ export async function buildExportPlan(
         continue;
       }
       const clipIn = s.clip_in_sec ?? 0;
-      const winDur = s.end_sec - s.start_sec;
+      const requestedOut = clipIn + (s.end_sec - s.start_sec);
+      const { outSec, shortenedBy } = capToSource(requestedOut, src.duration_sec);
+      if (shortenedBy > 0) {
+        warnings.push(
+          `${sectionName(s)}: its source is only ${(src.duration_sec ?? 0).toFixed(2)}s long, so the ` +
+          `clip is ${shortenedBy.toFixed(2)}s shorter than authored — the stored window is unchanged`,
+        );
+      }
+      const winDur = outSec - clipIn;
       const win: ClipWindow = {
         kind: 'clip',
         sectionId: s.id,
@@ -507,7 +541,7 @@ export async function buildExportPlan(
         sourceVideoFileId: src.id,
         storageKey: src.storage_key,
         sourceInSec: clipIn,
-        sourceOutSec: clipIn + winDur,
+        sourceOutSec: outSec,
         sourceRole: 'clip',
       };
       timeline.push(win);
@@ -564,16 +598,23 @@ export async function buildExportPlan(
         continue;
       }
       const brollStart = placementOf(s);
+      const { outSec, shortenedBy } = capToSource(s.end_sec, src.duration_sec);
+      if (shortenedBy > 0) {
+        warnings.push(
+          `${sectionName(s)}: its source is only ${(src.duration_sec ?? 0).toFixed(2)}s long, so the ` +
+          `b-roll is ${shortenedBy.toFixed(2)}s shorter than authored — the stored window is unchanged`,
+        );
+      }
       const win: ClipWindow = {
         kind: 'clip',
         sectionId: s.id,
         label: s.label,
         startSec: brollStart,
-        endSec: brollStart + (s.end_sec - s.start_sec),
+        endSec: brollStart + (outSec - s.start_sec),
         sourceVideoFileId: src.id,
         storageKey: src.storage_key,
         sourceInSec: s.start_sec,
-        sourceOutSec: s.end_sec,
+        sourceOutSec: outSec,
         sourceRole: 'broll',
       };
       timeline.push(win);
