@@ -261,6 +261,23 @@ describe('069 — deleting a host video', () => {
     expect(after.target_anchor_video_file_id).toBeNull();
   });
 
+  it('a row that is BOTH anchored to and sourced from the host still deletes cleanly', async () => {
+    // The interaction the NO ACTION choice depends on, and the one a RESTRICT would have broken.
+    // The `video_file_id` CASCADE removes this row DURING the delete statement; the anchor check
+    // runs at the END of that statement and finds nothing left to complain about. If this ever
+    // fails, the delete route's preflight cannot save it — the row is unreachable from `detach`
+    // by design (`anchoredSectionIdsFor` excludes it), so the constraint has to tolerate it.
+    const { projectId, mainId } = await seed();
+    await one<{ id: string }>(
+      `INSERT INTO timeline_sections (project_id, video_file_id, start_sec, end_sec, type, track,
+                                      global_offset_sec, placement_mode, anchor_video_file_id,
+                                      anchor_offset_sec)
+       VALUES ($1,$2,0,6,'broll','broll',10,'segment',$2,10) RETURNING id`, [projectId, mainId]);
+
+    await expect(pg.query(`DELETE FROM video_files WHERE id=$1`, [mainId])).resolves.toBeDefined();
+    expect(await rows(`SELECT id FROM timeline_sections`)).toEqual([]);
+  });
+
   it('a SOURCED section still goes with its media — what "detach" cannot save', async () => {
     // `timeline_sections.video_file_id` has cascaded since long before D-01, and it is why the
     // delete route names those rows separately in its 409: an author who chooses "keep my clips"
