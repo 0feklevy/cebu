@@ -154,21 +154,39 @@ export function SharedViewerPage({ shareToken, permalinkSlug, language }: Props)
    * changes and the audio does not. A real load guarantees every media element is rebuilt. The
    * cost is one page load on an action a viewer takes rarely and deliberately.
    *
-   * PLAYBACK POSITION IS NOT PRESERVED. Carrying it across would mean writing the offset to the
-   * URL and having the player seek on mount, and there is no initial-seek entry point today —
-   * `useProjectPlayer` starts every segment at 0 and its only seek path is the progress bar's
-   * pointer handler. Adding one is a real change to a heavily-tested module, so it is called out
-   * in the report rather than done badly here. What costs nothing is the placement: the switcher
-   * lives inside a menu the viewer must open, so this is never an accidental click.
+   * PLAYBACK POSITION IS PRESERVED through the URL: the viewer's global offset goes out as `t=`
+   * and the reloaded player consumes it once, on its first play, through the same code path a
+   * scrub release uses. The round trip is deliberately dumb — a number in a query string — because
+   * anything stateful would have to survive a document load that exists precisely to destroy state.
    */
-  function changeLanguage(code: string | null): void {
+  function changeLanguage(code: string | null, atSec = 0): void {
+    const t = Number.isFinite(atSec) && atSec > 1 ? `t=${Math.floor(atSec)}` : '';
+    const withT = (base: string, hasQuery: boolean) =>
+      t ? `${base}${hasQuery ? '&' : '?'}${t}` : base;
     const href = shareToken
-      ? (code ? `/v/${shareToken}?lang=${encodeURIComponent(code)}` : `/v/${shareToken}`)
+      ? (code
+          ? withT(`/v/${shareToken}?lang=${encodeURIComponent(code)}`, true)
+          : withT(`/v/${shareToken}`, false))
       : permalinkSlug
-        ? (code ? `/${permalinkSlug}/${encodeURIComponent(code)}` : `/${permalinkSlug}`)
+        ? (code
+            ? withT(`/${permalinkSlug}/${encodeURIComponent(code)}`, false)
+            : withT(`/${permalinkSlug}`, false))
         : null;
     if (href) window.location.assign(href);
   }
+
+  /**
+   * The `?t=` left by a language switch. Read once from the live URL rather than threaded through
+   * every route that renders this page — a resume offset is a property of the navigation, not of
+   * the project, and the routes have no business knowing about it.
+   */
+  const initialSeekSec = (() => {
+    if (typeof window === 'undefined') return undefined;
+    const raw = new URLSearchParams(window.location.search).get('t');
+    if (!raw) return undefined;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : undefined;
+  })();
 
   if (locked) {
     return (
@@ -251,6 +269,7 @@ export function SharedViewerPage({ shareToken, permalinkSlug, language }: Props)
         onCaptionMenuOpenChange={setCaptionMenuOpen}
         shareToken={shareToken ?? null}
         onLanguageChange={changeLanguage}
+        initialSeekSec={initialSeekSec}
         bottomRightOverlay={!captionMenuOpen ? <AskAvatarButton onClick={() => setAvatarOpen(true)} label="Ask!" /> : null}
       />
 

@@ -130,7 +130,10 @@ interface Props {
    * the server picks both the audio and the captions, which is what makes it impossible for them
    * to come from different languages. Omitted ⇒ no switcher is drawn.
    */
-  onLanguageChange?: (code: string | null) => void;
+  /** Language switch. Receives the viewer's current global position so the new URL can carry it. */
+  onLanguageChange?: (code: string | null, atSec: number) => void;
+  /** Global seconds to resume from — the `?t=` a language switch left behind. */
+  initialSeekSec?: number;
 }
 
 // Auth headers for OUR backend caption endpoints. The player-config fetch already sends the
@@ -163,6 +166,7 @@ export function HLSPlayerShell({
   onNavigate,
   shareToken,
   onLanguageChange,
+  initialSeekSec,
 }: Props) {
   const videoARef             = useRef<HTMLVideoElement>(null);
   const videoBRef             = useRef<HTMLVideoElement>(null);
@@ -199,7 +203,7 @@ export function HLSPlayerShell({
     curTime,
     totTime,
     root: rootRef,
-  }, { onProjectComplete, autoStart, onNavigate });
+  }, { onProjectComplete, autoStart, onNavigate, initialSeekSec });
 
   // Smart portrait crop — no-op in landscape, follows the active speaker in portrait.
   // Disabled in branching mode: flat segment indices don't map onto per-sequence timelines.
@@ -781,7 +785,7 @@ export function HLSPlayerShell({
         onCaptionMenuOpenChange={onCaptionMenuOpenChange}
         audioLanguages={config.available_languages ?? []}
         currentLanguage={config.language ?? null}
-        onLanguageChange={onLanguageChange}
+        onLanguageChange={onLanguageChange ? (code) => onLanguageChange(code, state.globalTime) : undefined}
       />
     </div>
   );
