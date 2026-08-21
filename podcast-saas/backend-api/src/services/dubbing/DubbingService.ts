@@ -32,7 +32,7 @@ import { promisify } from 'util';
 import { and, eq, or, lt, isNull, ne } from 'drizzle-orm';
 
 import { db } from '../../db/index.js';
-import { projects, video_dubs, video_files } from '../../db/schema.js';
+import { video_dubs, video_files } from '../../db/schema.js';
 import type { VideoDub } from '../../db/schema.js';
 import { logger } from '../../lib/logger.js';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
@@ -49,7 +49,9 @@ import {
   type DubbingProjectResponse,
 } from './ElevenLabsDubbingClient.js';
 import { acquireDubbingSlot, releaseDubbingSlot, renewDubbingSlot, type DubbingSlot } from './dubbingSlots.js';
+import type { DubStageKey } from './stages.js';
 import { vendorTargetLanguage, sourceLanguageTag } from './languages.js';
+import { resolveProjectSourceLanguage, recordVendorSourceLanguage } from './sourceLanguage.js';
 import { estimateDubbingCost } from './cost.js';
 import { dubbingWatermarkPolicy, dubbingUsdPerCredit, WATERMARK_UNSHIPPABLE_REASON } from './config.js';
 
@@ -171,6 +173,14 @@ export function hasAudibleSpeech(waveformPeaksJson: string | null | undefined): 
 export interface DubbingProviderResult {
   audio: Buffer;
   captionsVtt: string | null;
+  /**
+   * The source language the vendor worked from — echoed back after ITS auto-detection ran.
+   *
+   * This is the most authoritative reading of the source language anything in this system gets:
+   * it comes from a machine that listened to the audio, not from text we inferred. Null when the
+   * vendor did not report one.
+   */
+  sourceLanguage: string | null;
   elProjectId: string;
   elLanguageId: string;
   revision: number | null;
@@ -198,6 +208,14 @@ export interface DubbingProvider {
     onProjectCreated: (projectId: string) => Promise<void>;
     /** Called with the language id as soon as the target exists. */
     onLanguageCreated: (languageId: string) => Promise<void>;
+    /**
+     * Called as each step begins, so the creator's bar can say what is happening.
+     *
+     * Optional because a provider that cannot distinguish its own steps should say nothing rather
+     * than report invented ones — a bar that moves on a schedule instead of on progress is the
+     * defect this replaced, not the fix for it.
+     */
+    onStage?: (stage: DubStageKey) => Promise<void>;
     /** Keeps the concurrency lease alive across a long vendor wait. */
     heartbeat: () => Promise<boolean>;
   }): Promise<DubbingProviderResult>;
@@ -216,12 +234,20 @@ export class ElevenLabsDubbingProvider implements DubbingProvider {
     if (!target) throw new Error(`Unsupported dubbing target language: ${args.targetLanguage}`);
 
     const project = await this.resolveVendorProject(args, target);
-    await this.pollProject(project.project_id, args.heartbeat);
+
+    // Transcription is the vendor's first job and it is not the dub — see the header note. The
+    // stage is announced here rather than before `resolveVendorProject` because until the project
+    // exists there is nothing being transcribed.
+    await args.onStage?.('transcribing');
+    const ready = await this.pollProject(project.project_id, args.heartbeat);
 
     const languageId = await this.resolveLanguageTarget(project.project_id, args, target);
+    await args.onStage?.('translating');
     const language = await this.pollLanguage(project.project_id, languageId, args.heartbeat);
 
+    await args.onStage?.('captioning');
     const captionsVtt = await this.buildCaptions(project.project_id, languageId);
+    await args.onStage?.('downloading');
 
     // Re-fetch immediately before downloading: the signed URL expires about an hour after it is
     // issued, and the poll above may have taken longer than that. Never persist the URL.
@@ -235,6 +261,10 @@ export class ElevenLabsDubbingProvider implements DubbingProvider {
     return {
       audio,
       captionsVtt,
+      // Read from the READY project rather than the create response: auto-detection has finished by
+      // then, and the create response can echo back only what we sent it — which, when we sent
+      // nothing, is nothing.
+      sourceLanguage: ready.source_language ?? project.source_language ?? null,
       elProjectId: project.project_id,
       elLanguageId: languageId,
       revision: language.revision ?? null,
@@ -351,9 +381,18 @@ export class ElevenLabsDubbingProvider implements DubbingProvider {
     }
   }
 
-  /** Poll the PROJECT to `ready` — transcription done. This is not yet a dub. */
-  private async pollProject(projectId: string, heartbeat: () => Promise<boolean>): Promise<void> {
-    await pollUntil(
+  /**
+   * Poll the PROJECT to `ready` — transcription done. This is not yet a dub.
+   *
+   * Returns the settled project because that response carries the vendor's OWN reading of the
+   * source language, which is the one piece of ground truth about the original audio anything in
+   * this pipeline ever sees.
+   */
+  private async pollProject(
+    projectId: string,
+    heartbeat: () => Promise<boolean>,
+  ): Promise<DubbingProjectResponse> {
+    return pollUntil(
       () => this.client.getProject(projectId),
       (p) => {
         if (p.status === 'failed') {
@@ -524,7 +563,7 @@ export class DubbingService {
       if (err instanceof DubSlotUnavailable) {
         // Hand the row back to `queued` so the retry is an ordinary run rather than a reclaim.
         await db.update(video_dubs)
-          .set({ status: DUB_STATUS.queued, claimed_at: null, updated_at: new Date() })
+          .set({ status: DUB_STATUS.queued, stage: null, stage_entered_at: null, claimed_at: null, updated_at: new Date() })
           .where(eq(video_dubs.id, dubId))
           .catch(() => {});
         throw err;
@@ -554,6 +593,11 @@ export class DubbingService {
       status: DUB_STATUS.processing,
       error: null,
       source_hash: hash,
+      // The claim IS the first stage. Writing it here rather than in `execute` means a row can
+      // never be `processing` with no stage at all, which is the state that used to make the
+      // creator's panel look stuck.
+      stage: 'preparing',
+      stage_entered_at: new Date(),
       claimed_at: new Date(),
       updated_at: new Date(),
     }).where(force
@@ -576,11 +620,12 @@ export class DubbingService {
     // caller: it is one indexed lookup on a job that is about to spend real money, and getting it
     // from the project is the whole point — a deployment-wide env var cannot describe a catalogue
     // whose videos are in different languages.
-    const project = video.project_id
-      ? await db.query.projects.findFirst({
-          where: eq(projects.id, video.project_id),
-          columns: { source_language: true },
-        })
+    // RESOLVED, not merely read. The column is null on every project that predates detection, and
+    // a null here means the vendor auto-detects — correct, but it also means the creator's panel
+    // never learns what the video is in. Resolving caches the answer as a side effect, so the panel
+    // is right the moment the first dub starts rather than only after it finishes.
+    const resolved = video.project_id
+      ? await resolveProjectSourceLanguage(video.project_id)
       : null;
     const workDir = await mkdtemp(join(tmpdir(), 'dub-'));
 
@@ -597,7 +642,7 @@ export class DubbingService {
         // global env var is meaningless for a catalogue holding videos in different languages;
         // when neither is set this stays null and the vendor auto-detects, which is a correct
         // outcome rather than a missing one.
-        sourceLanguage: sourceLanguageTag(project?.source_language ?? process.env.DUBBING_SOURCE_LANGUAGE),
+        sourceLanguage: sourceLanguageTag(resolved?.code ?? process.env.DUBBING_SOURCE_LANGUAGE),
         targetLanguage: dub.target_language,
         existing: { projectId: dub.el_project_id, languageId: dub.el_language_id },
         onProjectCreated: async (projectId) => {
@@ -611,7 +656,11 @@ export class DubbingService {
             .where(eq(video_dubs.id, dub.id));
         },
         heartbeat: () => renewDubbingSlot(slot, dub.id),
+        onStage: (stage) => this.setStage(dub.id, stage),
       });
+
+      // What the vendor heard outranks what we inferred, and this is the only moment it is known.
+      if (video.project_id) await recordVendorSourceLanguage(video.project_id, result.sourceLanguage);
 
       await this.publish(dub, video, hash, result, workDir, storage);
     } finally {
@@ -634,6 +683,8 @@ export class DubbingService {
     const audioKey = `dubs/${dub.video_file_id}/${dub.target_language}/audio-${dub.id}`;
     await uploadFileFromDisk(audioKey, audioPath, 'audio/wav');
 
+    await this.setStage(dub.id, 'mixing');
+
     const captionsVtt = result.captionsVtt
       ?? await transcribeDubbedAudio(audioPath, workDir);
 
@@ -654,6 +705,9 @@ export class DubbingService {
 
     await db.update(video_dubs).set({
       status: publishable ? DUB_STATUS.completed : DUB_STATUS.failed,
+      // The stage stays on the LAST step rather than being cleared: on a completed row it is
+      // ignored, and on a failed one it is the single most useful thing the row can say.
+      stage: 'packaging',
       audio_key: audioKey,
       muxed_video_key: muxedKey,
       hls_master_key: hlsMasterKey,
@@ -674,6 +728,22 @@ export class DubbingService {
       { dubId: dub.id, language: dub.target_language, publishable, costCents: cost.costCents },
       '[dubbing] dub finished',
     );
+  }
+
+  /**
+   * Record which step is running.
+   *
+   * Best-effort on purpose: a dub must not fail because a progress bar could not be updated. The
+   * timestamp is what lets the bar move inside a step that reports nothing of its own — see
+   * `stages.ts` for why it creeps asymptotically rather than linearly.
+   */
+  private async setStage(dubId: string, stage: DubStageKey): Promise<void> {
+    await db.update(video_dubs)
+      .set({ stage, stage_entered_at: new Date(), updated_at: new Date() })
+      .where(eq(video_dubs.id, dubId))
+      .catch((err: unknown) => {
+        logger.debug({ dubId, stage, err: (err as Error).message?.slice(0, 120) }, '[dubbing] stage write failed');
+      });
   }
 
   /**
@@ -715,6 +785,7 @@ export class DubbingService {
     await uploadFileFromDisk(muxedKey, muxedPath, 'video/mp4');
 
     const hlsDir = join(workDir, 'hls');
+    await this.setStage(dub.id, 'packaging');
     const { masterKey } = await transcodeToHLS({
       inputPath: muxedPath,
       workDir: hlsDir,

@@ -35,6 +35,67 @@ one post-deploy measurement — and a four-round map (P3-F) sequencing all of it
 
 ---
 
+## 🟢 Requested and delivered 2026-08-22 — the dubbing panel, three defects from the running product
+
+The owner opened the shipped panel and found three things wrong with it. All three are the same
+kind of failure: the round that added 94 languages, a source-language column and a progress bar
+shipped the *mechanism* for each and never checked what the creator actually sees.
+
+- **D-20 — the source language is never detected, so English is offered for an English video.**
+  Migration 068 added `projects.source_language` and the server refuses a same-language dub, but
+  **nothing ever writes that column**. It is null for every real project, so `is_source` is false
+  for all 94 rows and the exclusion never fires. Reported twice, which is the measure of how
+  badly the first fix missed: shipping the *refusal* without shipping the *detection* left the
+  defect exactly where it was. Fix: detect from the source captions this product already stores
+  (offline, no vendor call, no tokens), persist what the vendor auto-detects on the first real
+  dub, keep a creator override above both, and record WHICH of the three a value came from so a
+  guess never masquerades as a declaration.
+- **D-21 — the progress bar measures the wrong thing.** It renders `done/total videos`, so a
+  single-video project — which is nearly all of them — sits at `0/1` for the entire run and then
+  jumps to `1/1`. That is a boolean drawn as a bar. The information the creator wants is *where
+  in the pipeline this dub is*: waiting for a slot, transcribing, translating, captioning,
+  mixing, packaging. Every one of those stages is a distinct step in `DubbingService` and none of
+  them is persisted. Fix: persist the stage, report a real percentage, and say in words what is
+  happening right now.
+- **D-22 — 94 languages, no search and no order.** The list is alphabetical by English name, so
+  Spanish is 76 rows below Afrikaans. Fix: a search box matching name, endonym and code, plus a
+  sort control (popular / A–Z / status), with the source language and anything already requested
+  pinned above the rest.
+
+**Why these three together:** they are one screen and one round. Splitting them would ship a
+searchable list that still lies about progress.
+
+**Delivered on `feat/dubbing-language-ux`** — migration **070** (`video_dubs.stage`,
+`video_dubs.stage_entered_at`, `projects.source_language_origin`, and a
+`(video_file_id, status)` index for the panel's poll), registered in **both** hardcoded registries.
+
+- **D-20** — `detectLanguage.ts` identifies the language offline from the WebVTT this product
+  already stores: script ranges decide the non-Latin cases outright, stopword rates decide the
+  Latin ones. No dependency, no model, no vendor call, no tokens. `sourceLanguage.ts` resolves
+  three sources in a fixed order of authority — a creator's declaration, then what the vendor heard
+  during a real dub, then our own detection — caches the answer, and records WHICH it was. **A
+  guess below the confidence floor is returned as a suggestion and acted on by nothing**, because a
+  language silently removed from someone's list is a worse failure than the one being fixed. A new
+  `PUT /api/v1/projects/:id/source-language` is how a person overrules all of it.
+- **D-21** — `stages.ts` is the pipeline as data: seven steps, each with where the bar stands when
+  it begins and roughly how long it runs. `DubbingService` writes the stage as it crosses each
+  one. Inside a step the bar creeps asymptotically on elapsed time toward one point short of the
+  next step and can only cross when the step actually finishes — optimistic about timing, never
+  about progress. The panel shows the percentage and the sentence ("Translating and matching the
+  voices"), and polls at 5s because the poll interval is now the frame rate.
+- **D-22** — search across English name, endonym and code, accent-folded, with **graded relevance**
+  (exact code → prefix → substring) so "fr" answers French rather than Afrikaans. Three sorts —
+  Most used / A–Z / In progress first — with the rank served from `languages.ts` so one table
+  orders the list. The source language is pinned first when not searching, and relevance wins when
+  searching.
+
+Tests: 26 new (detector, stages, ordering, rollup, the popular-list invariants), and the whole
+suite green — backend 3891, client-web 1699, 0 lint errors. The pure logic was pulled OUT of the
+component into `languageList.ts` first: a rule tested through a rendered tree is tested through
+everything else the tree does, which this repo has already paid for once.
+
+---
+
 ## 🔴 Still open — post-release (2026-08-21, after v0.1.36)
 
 1. **The dubbing watermark flag is still `true` in production.** The tier question is ANSWERED —
@@ -341,4 +402,19 @@ and that no implementation begins without an explicit go-ahead.
   docs-only PR that touched no code: the same commit produced 1, 2, and 3 failures on different
   runs. The `ci.yml` comment still describes one reproducible failure and should be corrected when
   `__CHILD` is re-keyed onto something the child sends.
-- 235 ledger findings remain open and unverified (P2/P3-labelled, tail never adversarially read).
+- ~~235 ledger findings remain open and unverified (P2/P3-labelled, tail never adversarially read).~~
+  **SWEPT 2026-08-22** — `.claude/review/LEDGER-VERIFICATION-2026-08-22.md` (823 lines). 164
+  verdicts against the tail (71 ids are unadjudicated aliases and must NOT be bulk-closed by
+  alias — four documented cases where the canonical's verdict does not carry). Split:
+  **93 CONFIRMED · 65 ALREADY_FIXED · 6 REFUTED** — 40% of the tail was already dead, most of it
+  closed by commits that name the finding id in a comment. Severity moved DOWN, not up: 2 P1,
+  41 P2, 50 P3, with only two escalations. Actions: 22 fix-now, 69 schedule, 7 needs-owner,
+  66 close. The two P1s are `job-queue-011` (rollback re-points `APP_VERSION` without checking
+  out the matching tree, so the old image gets a queue name it does not know, exits 1, and
+  crash-loops — while `wait_healthy` omits `worker` and calls the rollback healthy) and
+  `test-quality-015` (`RumService.fieldAggregates` binds a raw `Date` into raw SQL; real
+  Postgres rejects the string and a bare catch hides it, so field refinement is dead in production
+  and six tests pass because PGlite serialises Dates itself). The largest single cluster is C1 —
+  the media authorization gate knows exactly three key prefixes — six findings closed by one
+  prefix-complete gate. **Caveat carried from the report:** code, tests and local probes only; no
+  production was exercised, and §5 names the seven determinations resting on inference.

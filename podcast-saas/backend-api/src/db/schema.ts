@@ -188,6 +188,15 @@ export const projects = pgTable('projects', {
   seo_description: text('seo_description'),
   /** The language the project's video is already spoken in; null = undeclared, vendor auto-detects. */
   source_language: text('source_language'),
+  /**
+   * Where `source_language` came from (migration 070): 'declared' | 'detected' | 'vendor'.
+   *
+   * A guess and an assertion must not be stored identically. Detection can be wrong, and acting on
+   * a wrong one silently removes a language the creator wanted; knowing the provenance is what lets
+   * the UI say WHY a row is greyed out and offer to change it. Null beside a non-null language
+   * predates this column and is read as 'declared' — the conservative reading.
+   */
+  source_language_origin: text('source_language_origin'),
   seo_keywords:    text('seo_keywords'),
   // View counter (migration 027)
   view_count: integer('view_count').notNull().default(0),
@@ -1671,6 +1680,10 @@ export const video_dubs = pgTable(
     /** Seam for the classic dubbing surface. Nothing writes it on the v2 path. */
     el_dubbing_id:   text('el_dubbing_id'),
     status:          text('status').notNull().default('queued'),
+    /** Which pipeline step is running (migration 070). See services/dubbing/stages.ts. */
+    stage:            text('stage'),
+    /** When that step began — the only signal a bar has inside a vendor wait that reports nothing. */
+    stage_entered_at: timestamp('stage_entered_at', { withTimezone: true }),
     audio_key:       text('audio_key'),
     muxed_video_key: text('muxed_video_key'),
     hls_master_key:  text('hls_master_key'),
@@ -1693,6 +1706,7 @@ export const video_dubs = pgTable(
     ),
     idxVideo:          index('idx_video_dubs_video').on(t.video_file_id),
     idxStatusClaimed:  index('idx_video_dubs_status_claimed').on(t.status, t.claimed_at),
+    idxVideoStatus:    index('idx_video_dubs_video_status').on(t.video_file_id, t.status),
     languageFormatChk: check('video_dubs_language_format_chk', sql`${t.target_language} ~ '^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})*$'`),
     statusChk:         check('video_dubs_status_chk', sql`${t.status} IN ('queued', 'processing', 'completed', 'stale', 'failed')`),
     providerChk:       check('video_dubs_provider_chk', sql`${t.provider} IN ('elevenlabs', 'whisper+llm')`),
