@@ -88,7 +88,17 @@ export function sampleTrack(keyframes: Keyframe[], times: number[]): number[] {
   return out;
 }
 
-export function scoreClip(clip: EvalClip, keyframes: Keyframe[], half: number): ClipScore {
+/**
+ * Everything scoring actually reads off a clip.
+ *
+ * Named because a hand-labelled clip (`labels.ts`) has no frames and no audio to offer — the
+ * media stays out of the repo — and there is no reason it should need them to be scored. Stating
+ * the real dependency here lets synthetic fixtures and hand labels run through this one scorer
+ * instead of growing a second copy that drifts.
+ */
+export type ScorableClip = Pick<EvalClip, 'id' | 'category' | 'durationSec' | 'labels'>;
+
+export function scoreClip(clip: ScorableClip, keyframes: Keyframe[], half: number): ClipScore {
   const width = half * 2;
   const xs = sampleTrack(keyframes, clip.labels.map((l) => l.t));
 
