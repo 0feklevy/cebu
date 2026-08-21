@@ -43,7 +43,7 @@ Then, only if you approve:
 
 ---
 
-## The fleet — 24 agents
+## The fleet — 26 agents
 
 ### Orchestration & meta (`agents/meta/`)
 | Agent | Role |
@@ -53,6 +53,8 @@ Then, only if you approve:
 | `review-fixer` | The only agent that may edit source. Post-approval, on a branch, one verified change at a time. |
 | `fleet-maintainer` | Audits the fleet against the repo. Catches knowledge-base drift before it poisons a review. |
 | `fiji-advisor` | Ports architecture patterns from the **fiji** reference platform. Labels itself verified/unverified based on whether the fiji source is present. |
+| `patent-scout` | Hunts for genuinely non-obvious mechanisms and tries hard to kill each one. Plain-language dossier with diagrams. Never cites specific patents — general field context only, by design. |
+| `task-tracker` | Enumerates every requirement in a task and reports a per-item verdict backed by evidence. |
 
 ### Core reviewers (`agents/core/`)
 `backend-reviewer` · `frontend-reviewer` · `ui-ux-reviewer` · `database-reviewer` ·

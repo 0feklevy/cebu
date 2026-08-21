@@ -128,6 +128,7 @@ could…" is not P0 — it is a note.
 | New SQL migrations, expand/contract safety, `migration-audit.json` | `migration-auditor` (release runs) / `database-reviewer` (code review) |
 | Failed release or red production audit → incident write-up | `incident-reporter` |
 | Cross-cutting architecture where a reference design exists | `fiji-advisor` |
+| Novelty assessment: which mechanisms are genuinely non-obvious and worth protecting | `patent-scout` |
 | Agent/knowledge-base drift, guard integrity | `fleet-maintainer` |
 
 If you find something outside your column: **one line in `signals.md`, then move on.**
