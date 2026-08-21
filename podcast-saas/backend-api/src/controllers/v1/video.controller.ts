@@ -1,7 +1,20 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { db } from '../../db/index.js';
-import { video_files } from '../../db/schema.js';
-import { eq, and, desc } from 'drizzle-orm';
+import {
+  placement_impact_reviews,
+  timeline_sections,
+  video_files,
+  video_generation_jobs,
+} from '../../db/schema.js';
+import { eq, and, asc, desc, inArray, isNull, notInArray } from 'drizzle-orm';
+import {
+  HOST_DELETE_CHOICES,
+  anchoredSectionIdsFor,
+  buildMainSegmentTimeline,
+  dependentSectionIdsFor,
+  isHostDeleteChoice,
+  planHostDeleteImpact,
+} from 'shared';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { editableProject, type CollabUser } from '../../services/collabAccess.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
@@ -26,8 +39,11 @@ import {
  * (see runVideoTranscode's skip-if-similar). Captions/crop used to be triggered lazily from
  * buildPlayerConfig on every read/preview (review perf-002); they belong on the write path.
  */
-function enqueueVideoProcessing(videoFileId: string): void {
-  enqueueJob('transcode', { videoFileId });
+function enqueueVideoProcessing(videoFileId: string, opts: { replaced?: boolean } = {}): void {
+  // `replaced` is carried to the job because only this side knows it. The probe cannot tell a
+  // corrected duration from a swapped file, and D-01b's two cases are recorded differently — a
+  // review filed under the wrong one is not recoverable later. See JobPayloads.transcode.
+  enqueueJob('transcode', { videoFileId, ...(opts.replaced ? { replaced: true } : {}) });
 }
 
 const TEN_GB = 10 * 1024 * 1024 * 1024;
@@ -146,7 +162,13 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
         .returning();
 
       if (oldStorageKey && oldStorageKey !== storage_key) deleteWithFallback(oldStorageKey).catch(() => {});
-      enqueueVideoProcessing(updated.id);
+      // STAGE AND PROBE FIRST (D-01b): `duration_sec` is deliberately NOT touched here. The client
+      // measured the file it uploaded, but the authoritative number is the probe's, and writing a
+      // guess would move every anchored overlay after this segment twice — once now and once when
+      // the real length lands. The rows placed against this video are assessed against the probed
+      // duration, in the transcode job, and any that no longer fit go to review rather than being
+      // clamped to the new end.
+      enqueueVideoProcessing(updated.id, { replaced: true });
       const raw_url = await storage.getPresignedDownloadUrl(storage_key, 3600).catch(() => null);
       return { ...updated, raw_url };
     }
@@ -542,8 +564,27 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  // DELETE /api/v1/projects/:id/videos/:videoId
-  app.delete<{ Params: { id: string; videoId: string } }>(
+  // DELETE /api/v1/projects/:id/videos/:videoId?dependents=detach|delete
+  //
+  // ── THE PREFLIGHT (D-01b) ───────────────────────────────────────────────────────────────────
+  //
+  // Deleting a video that other rows are placed against used to be silent in two directions at
+  // once: every section SOURCED from it was cascade-deleted by the FK, and every overlay ANCHORED
+  // to it had its anchor set to NULL and fell back to a wall-clock second that the shorter timeline
+  // had just made wrong. The author saw neither, and neither was reversible.
+  //
+  // The ruling is that this event REQUIRES AN EXPLICIT CHOICE — and that the one thing nobody may
+  // do is re-anchor the orphans to "the next" video, because a machine's guess about intent is
+  // indistinguishable, afterwards, from a placement the author made. So: with dependents and no
+  // choice, this answers 409 and lists them. With a choice, it applies exactly that choice in one
+  // transaction. `planHostDeleteImpact` (shared) decides what a dependent is, so this route and the
+  // resolver cannot disagree about which rows are at stake.
+  //
+  // ORDERING IS PART OF THE FIX. The bytes are now deleted only AFTER the row is gone. Before, a
+  // storage delete ran first and a failed DB delete left a row pointing at media that no longer
+  // existed — and with the FK now refusing an anchored host, that failure became reachable rather
+  // than theoretical.
+  app.delete<{ Params: { id: string; videoId: string }; Querystring: { dependents?: string } }>(
     '/api/v1/projects/:id/videos/:videoId',
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
@@ -559,6 +600,102 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
       });
       if (!videoFile) return reply.code(404).send({ message: 'Video not found' });
 
+      const requested = request.query?.dependents;
+      if (requested !== undefined && !isHostDeleteChoice(requested)) {
+        return reply.code(400).send({
+          message: `dependents must be one of: ${HOST_DELETE_CHOICES.join(', ')}`,
+        });
+      }
+
+      const [sections, projectVideos, inFlightJobs] = await Promise.all([
+        db.query.timeline_sections.findMany({
+          where: eq(timeline_sections.project_id, project.id),
+        }),
+        db.query.video_files.findMany({
+          where: eq(video_files.project_id, project.id),
+          orderBy: [asc(video_files.created_at)],
+          columns: { id: true, duration_sec: true, is_broll: true },
+        }),
+        // Generations still rendering against this host. Their anchor FK stays ON DELETE SET NULL
+        // (a queued job must not hold a video hostage for twenty-five minutes), so this is not a
+        // blocker — it is a fact the author is entitled to before they decide.
+        db.query.video_generation_jobs.findMany({
+          where: and(
+            eq(video_generation_jobs.target_anchor_video_file_id, videoFile.id),
+            notInArray(video_generation_jobs.status, ['ready', 'failed']),
+          ),
+          columns: { id: true, status: true },
+        }),
+      ]);
+
+      const plan = planHostDeleteImpact({
+        hostVideoFileId: videoFile.id,
+        rows: sections ?? [],
+        timeline: buildMainSegmentTimeline(projectVideos ?? []),
+      });
+
+      if (plan.requiresChoice && requested === undefined) {
+        return reply.code(409).send({
+          message:
+            'This video has sections placed against it. Choose what happens to them: ' +
+            '"detach" keeps them where they play now (and flags them for review), ' +
+            '"delete" removes them with the video.',
+          code: 'video_has_dependent_sections',
+          choices: plan.choices,
+          dependents: plan.dependents,
+          // Named separately because `detach` cannot save these: their media IS this video, so they
+          // go either way. An author choosing "keep my clips" deserves to know which ones cannot be.
+          removed_regardless: plan.dependents.filter((d) => d.kind === 'source').map((d) => d.sectionId),
+          generations_in_flight: (inFlightJobs ?? []).length,
+        });
+      }
+
+      const detachedIds = requested === 'detach' ? anchoredSectionIdsFor(plan) : [];
+
+      await db.transaction(async (tx) => {
+        if (requested === 'delete') {
+          const ids = dependentSectionIdsFor(plan);
+          if (ids.length > 0) {
+            await tx.delete(timeline_sections).where(inArray(timeline_sections.id, ids));
+          }
+        } else if (detachedIds.length > 0) {
+          // DETACH: drop the anchor, keep `placement_mode='segment'`. That combination is not an
+          // accident — it is what lets the resolver report `anchor_missing` ("was anchored, lost
+          // its host") instead of mistaking the row for one that was never anchored at all. The
+          // stored `global_offset_sec` keeps it exactly where it plays today; nothing re-derives.
+          await tx
+            .update(timeline_sections)
+            .set({ anchor_video_file_id: null, anchor_offset_sec: null })
+            .where(inArray(timeline_sections.id, detachedIds));
+
+          // And the author is TOLD. A detached row is not fine — the timeline it was pinned to is
+          // about to get shorter — so each one becomes a review item naming the video that went.
+          await tx
+            .insert(placement_impact_reviews)
+            .values(detachedIds.map((sectionId) => ({
+              project_id: project.id,
+              section_id: sectionId,
+              host_video_file_id: videoFile.id,
+              reason: 'host_deleted_detached',
+              change_kind: 'host_delete',
+              detail:
+                `the video it was anchored to ("${videoFile.filename}") was deleted — ` +
+                'it now plays at a fixed second and needs re-placing',
+            })))
+            // `where` on doNothing is the conflict TARGET's predicate — it names the partial index
+            // `uniq_placement_impact_open` so Postgres can infer it. Without the predicate the
+            // statement raises "no unique or exclusion constraint matching the ON CONFLICT
+            // specification" and the whole delete rolls back.
+            .onConflictDoNothing({
+              target: [placement_impact_reviews.section_id, placement_impact_reviews.reason],
+              where: isNull(placement_impact_reviews.resolved_at),
+            });
+        }
+
+        await tx.delete(video_files).where(eq(video_files.id, videoFile.id));
+      });
+
+      // The row is gone and the transaction committed — only now are the bytes unrecoverable.
       // Delete raw source file (from R2 and/or local — wherever the bytes landed)
       if (videoFile.storage_key) {
         await deleteWithFallback(videoFile.storage_key);
@@ -574,7 +711,12 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
       await deleteWithFallback(`crop/${videoFile.id}.json`);
       await deleteWithPrefixFallback(`captions/${project.id}/${videoFile.id}`);
 
-      await db.delete(video_files).where(eq(video_files.id, videoFile.id));
+      if (detachedIds.length > 0) {
+        logger.info(
+          { projectId: project.id, videoFileId: videoFile.id, sectionIds: detachedIds },
+          'video deleted with an explicit detach — anchored sections kept and queued for review',
+        );
+      }
 
       return reply.code(204).send();
     },
