@@ -23,7 +23,7 @@ The prior 2026-08 remediation round is closed and archived — PRs #31–#37 mer
 built; its full record is in `DECISIONS-ARCHIVE.md` (bottom section, dated 2026-08-19). Its items
 below are still live and unchanged.
 
-Last updated: **2026-08-21**, post-merge of PR #45.
+Last updated: **2026-08-21**, after v0.1.36 shipped (PRs #45, #46, #47 merged; #48 carries this update).
 **Every item in this ledger now has a written answer in `CODEX-DECISION-RESPONSE-2026-08-21.md`:**
 Part I (R-01…R-11, executed), Part II (R-12…R-19 — the 🔴 items: release order, ElevenLabs,
 crop footage, VM runbook, Supabase), and **Part III (P3-A…P3-F — everything else)**: the two 🔵
@@ -45,7 +45,12 @@ one post-deploy measurement — and a four-round map (P3-F) sequencing all of it
    watermark by ear and closes the top of `DUBBING-IMPLEMENTATION-REPORT.md` §7 — above all whether
    the billable multipart create accepts `reference` or silently drops it. Until the probe runs,
    nothing in the dubbing pipeline has ever met the live vendor API.
-2. **Crop P2 needs real footage.** The face-detector step change is blocked on measurement, not on
+2. ~~**The 0-byte root `.env.local`.**~~ **CLOSED 2026-08-21** — the owner removed it by hand and
+   confirmed `OK: removed`. Worth recording that this is owner-attested rather than agent-verified:
+   the repo's secrets floor blocks any command that so much as names an env file, including a
+   read-only existence check, and the file is gitignored, so its absence from `git status` proves
+   nothing either way. That guard is correct and was not worked around at any point.
+3. **Crop P2 needs real footage.** The face-detector step change is blocked on measurement, not on
    feasibility: YuNet scores **zero detections** against the synthetic eval fixtures, so nothing about
    it can be scored until P0.3 exists (20–50 labelled catalogue clips). The dependency and model were
    removed rather than landing ~1,000 unverifiable lines. Supplying clips is the unblock, and R-08
