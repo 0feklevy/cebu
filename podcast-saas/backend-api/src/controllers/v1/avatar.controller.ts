@@ -32,6 +32,8 @@ import { getProjectTranscript } from '../../services/transcriptPropagation.js';
 import { encryptKey } from '../../services/secrets/ApiKeyService.js';
 import { resolveAnamKeyForProject } from '../../services/avatar/anamKey.js';
 import { normalizeAvatarCircles, type AvatarCirclesLike } from '../../services/avatarCircles/normalizeAvatarCircles.js';
+import { circleFaceUrlPersistError } from '../../services/avatarCircles/circleFaceUrls.js';
+import { isProd } from '../../config/publicOrigins.js';
 import { analyzeVisual, generateLibrarySimulation, editLibrarySimulation } from '../../services/avatar/visualService.js';
 import { analyzeAndGenerateImage, generateLibraryImage } from '../../services/avatar/imageService.js';
 import { insertVisual, listVisuals, updateVisual, deleteVisual, syncBasicLibrary, storeImageBuffer, storeSimulationHtml } from '../../services/avatar/libraryService.js';
@@ -1348,6 +1350,10 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
       if (!project) return;
       const parsed = AvatarConfigSchema.safeParse(request.body);
       if (!parsed.success) return reply.code(400).send({ message: parsed.error.message });
+      // Same durable state, same guard as PUT /avatar/circles — this route can write
+      // avatarCircles too, so a face URL that is not publicly reachable is refused here as well.
+      const configCircleUrlError = circleFaceUrlPersistError(parsed.data.avatarCircles, isProd());
+      if (configCircleUrlError) return reply.code(400).send({ message: configCircleUrlError });
       const incoming = parsed.data as AvatarPersonaConfig;
       const existing = (project.avatar_config as AvatarPersonaConfig | null) ?? {};
       // STORE A CHARACTER ONLY WHEN SOMEONE ACTUALLY PICKED ONE.
@@ -1541,6 +1547,13 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
       if (!project) return;
       const parsed = AvatarCirclesSchema.safeParse(request.body);
       if (!parsed.success) return reply.code(400).send({ message: parsed.error.message });
+      // A face image URL is stored ABSOLUTE and never re-derived on read, so a non-public host
+      // written here is served to every viewer of this project forever — and it lives inside a
+      // JSON document, where the URL-column backfill and the release audit could not see it.
+      // Refuse it at the door instead of repairing it afterwards. Prod-gated: in local dev
+      // http://localhost:8080/local-storage/... IS the correct value for this field.
+      const circleUrlError = circleFaceUrlPersistError(parsed.data, isProd());
+      if (circleUrlError) return reply.code(400).send({ message: circleUrlError });
       const existing = asPersonaConfig(project.avatar_config);
       const merged: AvatarPersonaConfig = { ...existing, avatarCircles: parsed.data };
       await db.update(projects).set({ avatar_config: merged, updated_at: new Date() }).where(eq(projects.id, project.id));
