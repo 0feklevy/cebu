@@ -160,6 +160,12 @@ const REPORTER = `<script>(function(){
       var c = document.querySelector('.controls');
       parent.postMessage({
         type: 'E2E_STATE',
+        // The document names ITSELF. The parent used to bind these reports to the posting
+        // Window object, and cross-origin Window identity is exactly the assumption Linux
+        // WebKit does not honour the way Chromium and Firefox do — the report arrived, the
+        // lookup missed, and waitForSection timed out on a simulation the screenshot showed
+        // rendered. A URL survives the boundary; an object identity apparently does not.
+        href: location.href,
         section: m ? m.getAttribute('data-section') : null,
         controls: !!c && getComputedStyle(c).display !== 'none',
         at: Date.now()
@@ -394,10 +400,16 @@ async function bootViewer(page: Page, config: object, opts?: { simdebug?: boolea
   await page.addInitScript(() => {
     const w = window as unknown as {
       __CHILD?: Map<Window, unknown>;
+      __CHILD_BY_HREF?: Map<string, unknown>;
       __PROTO_LOG?: unknown[];
       __PAINTED_SRCS?: string[];
     };
     w.__CHILD = new Map();
+    // Two keys for the same report, deliberately. The Window-identity map is kept because it
+    // works on Chromium and Firefox and this change must not risk them; the href map is what
+    // Linux WebKit can actually match on. Lookups try href first and fall back — so the fix is
+    // additive, and the day WebKit's identity behaviour changes, nothing here breaks.
+    w.__CHILD_BY_HREF = new Map();
     // WHICH document claimed a paint, not merely that one did. A package the viewer classifies
     // paint-INCAPABLE (canEmitPaint === false) must never appear here; without recording the
     // source, a future gate leak that made such a package ack would be invisible and the
@@ -414,7 +426,10 @@ async function bootViewer(page: Page, config: object, opts?: { simdebug?: boolea
         if (own) w.__PAINTED_SRCS!.push(own.src);
       }
       if (d?.type === 'E2E_STATE' && e.source) {
-        w.__CHILD!.set(e.source as Window, { ...(d as object), recvAt: Date.now() });
+        const rec = { ...(d as object), recvAt: Date.now() };
+        w.__CHILD!.set(e.source as Window, rec);
+        const href = (d as { href?: string }).href;
+        if (href) w.__CHILD_BY_HREF!.set(href.split('#')[0], rec);
       }
     });
   });
@@ -514,15 +529,22 @@ const now = (page: Page): Promise<number> => page.evaluate(() => Date.now());
  */
 async function waitForSection(page: Page, section: string, timeout = 20_000): Promise<void> {
   await page.waitForFunction((want) => {
-    const map = (window as unknown as { __CHILD?: Map<Window, { section: string | null }> }).__CHILD;
+    const win = window as unknown as {
+      __CHILD?: Map<Window, { section: string | null }>;
+      __CHILD_BY_HREF?: Map<string, { section: string | null }>;
+    };
+    const map = win.__CHILD;
     if (!map) return false;
+    // href first, Window identity second — see the capture hook for why both exist.
+    const report = (el: HTMLIFrameElement) =>
+      win.__CHILD_BY_HREF?.get(el.src.split('#')[0]) ?? map.get(el.contentWindow as Window);
     const frames = [...document.querySelectorAll('iframe')] as HTMLIFrameElement[];
     return frames.some((el) => {
       if (!/index\.html/.test(el.src)) return false;
       let op = parseFloat(getComputedStyle(el).opacity) || 0;
       let n: HTMLElement | null = el.parentElement;
       for (let i = 0; n && i < 4; i++, n = n.parentElement) op *= parseFloat(getComputedStyle(n).opacity) || 0;
-      return op > 0.5 && map.get(el.contentWindow as Window)?.section === want;
+      return op > 0.5 && report(el)?.section === want;
     });
   }, section, { timeout });
 }
@@ -554,9 +576,14 @@ async function sampleFrames(page: Page, ms: number): Promise<Sample[]> {
         const el = f as HTMLIFrameElement;
         if (!/index\.html/.test(el.src)) return;
         // Cross-origin by design: read the document's OWN report rather than its DOM.
-        const rep = (window as unknown as {
-          __CHILD?: Map<Window, { section: string | null; controls: boolean; recvAt: number }>;
-        }).__CHILD?.get(el.contentWindow as Window);
+        type Rep = { section: string | null; controls: boolean; recvAt: number };
+        const win = window as unknown as {
+          __CHILD?: Map<Window, Rep>;
+          __CHILD_BY_HREF?: Map<string, Rep>;
+        };
+        // href first, Window identity second — see the capture hook for why both exist.
+        const rep = win.__CHILD_BY_HREF?.get(el.src.split('#')[0])
+          ?? win.__CHILD?.get(el.contentWindow as Window);
         // A report older than a few frames is STALE: the sim's rAF loop is starved (a
         // synchronously-blocking body does exactly that), so it still names the PREVIOUS section
         // whether the code is right or wrong. Trusting it is what let a dead apply gate pass.
