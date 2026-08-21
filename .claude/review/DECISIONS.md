@@ -16,30 +16,43 @@ R-01…R-11 and a phased way of working for the implementing session.
 
 ---
 
-## 🔴 Blocked on you — from the 2026-08-21 feature round (five items)
+## 🔴 Still blocked on you — from the 2026-08-21 feature round (three items)
 
 1. **ElevenLabs plan tier.** `ELEVENLABS_DUBBING_WATERMARKED` defaults to `true` and withholds every
    dub from viewers. The vendor exposes no watermark field on any v2 response — it is a property of
    the plan the API key belongs to — so this is a declared config fact, deliberately defaulting to
    the inconvenient-but-safe value. Until you confirm a non-watermarking plan and set it to `false`,
-   dubs are produced, **billed**, and never published. Confirm the tier before anyone runs a real dub.
-2. **How this ships: one PR or three?** `integration/night-run` is a local merge of
-   `feat/library-share-impl` (migration 065), `feat/crop-v2` (066) and `feat/dubbing-multilang` (067).
-   Reviewing any single feature branch against `main` in isolation shows a stale migration array —
-   the numbers were reserved by hand, and only the integration branch has them reconciled. Decide
-   whether the integration branch ships as one PR or is unbundled back into three.
-3. **Five cleanup deletions, still untouched** (from `REPO-CLEANUP-2026-08-20.md`): the byte-identical
-   duplicate `.claim-demo-watch-long.sh`, the 0-byte root `.env.local`, and three empty
-   `agent-memory` leaf dirs. A ready-to-paste `rm` block is in that report. Nothing was deleted.
-4. **The local capture harness: `.gitignore` or `scripts/dev/`?** `claim-demo*.sh`,
-   `run-local-capture.sh` and `LOCAL-CAPTURE-README.md` support the still-open export-throughput
-   work; their own README says they are not for the repo, but PR #43 exists because untracked files
-   block deploys. Only the unambiguous `_archive/` line was added to `.gitignore`; this question was
-   left for you. The dead `.claude/review/runs/` entry in `podcast-saas/.gitignore` is also still there.
-5. **Crop P2 needs real footage.** The face-detector step change is blocked on measurement, not on
+   dubs are produced, **billed**, and never published. Confirm the tier before anyone runs a real
+   dub, then run one ≤60s probe (R-02) before customer-facing use.
+2. **The 0-byte root `.env.local`.** The only cleanup deletion NOT executed, and deliberately so:
+   the repo's own secrets floor refuses any command that names an env file, so it could not even be
+   re-verified, let alone removed. That guard is correct and was not worked around. Delete it by
+   hand if you still want it gone.
+3. **Crop P2 needs real footage.** The face-detector step change is blocked on measurement, not on
    feasibility: YuNet scores **zero detections** against the synthetic eval fixtures, so nothing about
    it can be scored until P0.3 exists (20–50 labelled catalogue clips). The dependency and model were
-   removed rather than landing ~1,000 unverifiable lines. Supplying clips is the unblock.
+   removed rather than landing ~1,000 unverifiable lines. Supplying clips is the unblock, and R-08
+   describes the annotation tool and the model file to use (`..._2026may.onnx`, not the plan's
+   `..._2023mar.onnx`, which is fixed-640×640 and ~10× over budget).
+
+## ✅ Resolved in the 2026-08-21 round (rulings R-01…R-10, executed)
+
+- **Ships as ONE PR** from `integration/night-run` (R-01) — the tree that was verified is the tree
+  that ships; per-feature revert survives as three `--no-ff` merge commits.
+- **Share dialog names the video** (R-05): the title rides on the share state the button already
+  fetches, since `VideoEditor` has only a `projectId` in scope. The prop is gone.
+- **Playback position survives a language switch** (R-04): `?t=` out, consumed once on first play
+  through the scrub path — extracted, not reimplemented, so the in-flight-swap rule guards it too.
+- **A per-user monthly dubbing ceiling** (R-03), checked BEFORE the vendor is called; the route test
+  asserts the vendor was never reached on a refusal. All four dubbing settings are now documented.
+- **The capture harness is versioned** at `scripts/dev/local-capture/` (R-07), paths derived rather
+  than hardcoded; the dead `podcast-saas/.gitignore` entry is gone. `localCaptureProvider.ts` stays
+  out — it is source belonging to the open export bug-chain.
+- **Four of five cleanup deletions executed** (R-06) after re-verifying each guard; the surviving
+  agent-memory content was untouched, and the superseded root copies are in `_archive/`.
+- **Contract drift checked, not assumed** (R-09): `client-v1.ts` was diff-read against the server —
+  `LibraryShareInfo` ≡ `shareState()`, `ProjectDub` ≡ `toView()`, `DubCostEstimate` and
+  `ProjectDubsResponse` field-for-field. No drift shipped.
 
 ## 🟠 Rulings made during the 2026-08-21 round (do not silently reverse)
 
@@ -60,17 +73,17 @@ R-01…R-11 and a phased way of working for the implementing session.
   the audio does not. Playback position is therefore not preserved; the `?t=` + `initialSeekSec`
   follow-up is specified in `DUBBING-IMPLEMENTATION-REPORT.md` (~a day).
 
-## 🟡 Known small gaps from the 2026-08-21 round
+## 🟡 Known gaps that ship with this round
 
-- `VideoEditor.tsx:1375` passes `title={null}` to `LibraryShareButton` — correct, since the component
-  receives only `{ projectId }` and has no project object in scope. Consequence: one sentence in the
-  share dialog reads "…in this project" instead of the video's title. Fixing it properly means adding
-  the title to the library-share API response; not done, deliberately.
-- `shared/src/generated/client-v1.ts` is hand-maintained and was edited by two branches. Typecheck
-  proves internal consistency only, never that the client type matches what the server actually
-  returns. Worth a diff-read before merge.
 - Crop P0.1 (fleet-audit script), P0.2 (annotation tool) and P0.3 (real labelled set) are absent; all
-  reported crop gains are measured on **synthetic fixtures**, and should not be quoted as field results.
+  reported crop gains are measured on **synthetic fixtures**, and must not be quoted as field results.
+  P2 (the detector itself) is not in this release at all — `CROP_ALGO` has no v2 to select yet.
+- Nothing in the dubbing pipeline has been exercised against the live ElevenLabs API — no key, no
+  network in the build environment. The ranked list of call shapes that remain unverified is in
+  `md-files/DUBBING-IMPLEMENTATION-REPORT.md` §7; the riskiest is the billable multipart create,
+  where a silently-dropped `reference` field would quiet the crash-recovery defence without erroring.
+- `db:check` is a manual operator tool and is still not wired into CI. It does not need to be: the
+  registry-drift invariant it would enforce is already covered by tests that run on every branch.
 
 ## 🔵 Requested 2026-08-21, deliberately NOT started — plan only after the release, then on approval
 
