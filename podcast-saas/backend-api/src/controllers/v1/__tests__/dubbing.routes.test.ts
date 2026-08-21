@@ -28,6 +28,9 @@ const mocks = vi.hoisted(() => ({
     watermarked: false, watermark_notice: null,
   })),
   authedUser: { id: 'user-1', email: 'a@b.c' } as { id: string; email: string } | null,
+  checkDubbingBudget: vi.fn(async () => ({
+    allowed: true, spentCents: 0, budgetCents: 5000, estimateCents: 2200, exempt: false, reason: null,
+  })),
 }));
 
 vi.mock('../../../db/index.js', () => ({ db: { query: mocks } }));
@@ -46,6 +49,10 @@ vi.mock('../../../services/collabAccess.js', () => ({
   isCollaborator: vi.fn(async () => false),
 }));
 vi.mock('../../../services/projectAccess.js', () => ({ requireProjectAccess: vi.fn(() => true) }));
+// The ceiling reaches the database through `select`, which this suite does not stub; the policy
+// itself is proven in dubbingBudget.test.ts. What matters HERE is only what the route does with a
+// verdict — and specifically that a refusal never reaches the vendor.
+vi.mock('../../../services/dubbing/budget.js', () => ({ checkDubbingBudget: mocks.checkDubbingBudget }));
 vi.mock('../../../services/billing/BillingService.js', () => ({
   BillingService: { getPricing: vi.fn(async () => ({ accessType: 'free' })), hasAccess: vi.fn(async () => true) },
 }));
@@ -80,6 +87,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.authedUser = { id: 'user-1', email: 'a@b.c' };
   mocks.editableProject.mockResolvedValue({ id: PROJECT_ID });
+  mocks.checkDubbingBudget.mockResolvedValue({
+    allowed: true, spentCents: 0, budgetCents: 5000, estimateCents: 2200, exempt: false, reason: null,
+  });
   mocks.video_files.findMany.mockResolvedValue([]);
   mocks.video_dubs.findMany.mockResolvedValue([]);
   mocks.listDubsForProject.mockResolvedValue([]);
@@ -233,5 +243,50 @@ describe('GET /videos/:videoId/captions/:language — the public per-language re
       method: 'GET', url: `/api/v1/videos/${VIDEO_ID}/captions/he.vtt?share=tok123`,
     });
     expect(res.statusCode).toBe(200);
+  });
+});
+
+describe('the monthly dubbing ceiling', () => {
+  it('refuses the run WITHOUT EVER REACHING THE VENDOR when the budget is spent', async () => {
+    mocks.checkDubbingBudget.mockResolvedValue({
+      allowed: false, spentCents: 4900, budgetCents: 5000, estimateCents: 2200, exempt: false,
+      reason: 'Dubbing this project would cost about $22.00, and only $1.00 of your $50.00 monthly dubbing budget is left ($49.00 used). The budget resets at the start of next month.',
+    });
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: 'POST', url: `/api/v1/projects/${PROJECT_ID}/dubs`, payload: { language: 'he' },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).message).toContain('monthly dubbing budget');
+    expect(JSON.parse(res.body).budget).toMatchObject({ spent_cents: 4900, budget_cents: 5000 });
+    // THE ASSERTION THIS TEST EXISTS FOR. The vendor bills on job creation and offers no
+    // idempotency key, so a ceiling that is checked after this call is a report, not a limit.
+    expect(mocks.requestProjectDub).not.toHaveBeenCalled();
+  });
+
+  it('lets a run inside the budget through to the vendor', async () => {
+    mocks.requestProjectDub.mockResolvedValue([{ id: 'dub-1', target_language: 'he' }]);
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: 'POST', url: `/api/v1/projects/${PROJECT_ID}/dubs`, payload: { language: 'he' },
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(mocks.requestProjectDub).toHaveBeenCalledTimes(1);
+  });
+
+  it('checks the ceiling only after access is proven — a stranger learns nothing about cost', async () => {
+    mocks.editableProject.mockResolvedValue(null);
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: 'POST', url: `/api/v1/projects/${PROJECT_ID}/dubs`, payload: { language: 'he' },
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(mocks.checkDubbingBudget).not.toHaveBeenCalled();
   });
 });

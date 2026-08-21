@@ -31,11 +31,13 @@ import {
   requestProjectDub,
   deleteProjectDub,
   estimateProjectDubCost,
+
   isDubServable,
   UnsupportedDubLanguage,
   DUB_PROVIDER_ELEVENLABS,
 } from '../../services/dubbing/dubRegistry.js';
 import { DUBBING_LANGUAGES, normalizeDubbingLanguage } from '../../services/dubbing/languages.js';
+import { checkDubbingBudget } from '../../services/dubbing/budget.js';
 import { logger } from '../../lib/logger.js';
 
 import type { AccessProject } from '../../services/projectAccess.js';
@@ -96,6 +98,29 @@ export async function registerDubbingRoutes(app: FastifyInstance): Promise<void>
 
       const language = (request.body?.language ?? '').trim();
       if (!language) return reply.code(400).send({ message: 'A target language is required.' });
+
+      // THE CEILING GOES HERE, ahead of `requestProjectDub`, because the vendor bills on job
+      // creation and has no idempotency key: a limit enforced after that call is a report, not a
+      // limit. Priced for this one language, which is exactly what this request would spend.
+      const budgetEstimate = await estimateProjectDubCost(project.id, 1);
+      const verdict = await checkDubbingBudget({
+        userId: user.id,
+        estimateCents: Math.round(budgetEstimate.estimated_usd * 100),
+      });
+      if (!verdict.allowed) {
+        logger.warn(
+          { projectId: project.id, userId: user.id, spentCents: verdict.spentCents, budgetCents: verdict.budgetCents },
+          '[dubbing] refused — monthly budget would be exceeded',
+        );
+        return reply.code(409).send({
+          message: verdict.reason,
+          budget: {
+            spent_cents: verdict.spentCents,
+            budget_cents: verdict.budgetCents,
+            estimate_cents: verdict.estimateCents,
+          },
+        });
+      }
 
       try {
         const dubs = await requestProjectDub(project.id, language, { force: request.body?.force });
