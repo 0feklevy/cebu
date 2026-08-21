@@ -2,6 +2,13 @@
  * Pure, testable helpers for the localhost-URL backfill (see backfill-localhost-urls.ts).
  * Kept separate so they can be unit-tested without running the migration's DB side effects.
  */
+import {
+  circlesOf,
+  nonPublicCircleFaceUrls,
+  parseAvatarConfigColumn,
+  serializeAvatarConfigColumn,
+  withCircleFaceUrls,
+} from '../../services/avatarCircles/circleFaceUrls.js';
 
 // A URL whose host is localhost/loopback or an internal Docker service name. Postgres
 // regex string (used with `~*`) — valid cloud/public URLs never match, so they are safe.
@@ -46,7 +53,7 @@ export function keyFromUrl(url: string): string | null {
 export type PlannedUrlAction = 'rewrite' | 'key' | 'null' | 'skip';
 
 export interface PlannedUrlRow {
-  /** table.column */
+  /** table.column, plus `#<json path>` when the URL is embedded in a JSON document. */
   target: string;
   rowId: string;
   oldValue: string;
@@ -54,6 +61,13 @@ export interface PlannedUrlRow {
   action: PlannedUrlAction;
   /** null = not applicable (no storage object involved). */
   assetExists: boolean | null;
+  /**
+   * Set when this URL lives INSIDE a JSON column at the named path (e.g.
+   * `avatarCircles.faces[0].imageUrl`). Such a row is written by re-serializing the whole
+   * document in the shape it was read in — never by assigning to the column — so the apply
+   * step routes it separately. Absent for ordinary `SET col = value` targets.
+   */
+  jsonPath?: string;
 }
 
 export interface UrlBackfillPlanSummary {
@@ -152,4 +166,71 @@ export function buildBackfillReport(input: {
     maxAffectedRows: input.maxAffectedRows,
     samples,
   };
+}
+
+// ─── JSON-embedded target: projects.avatar_config → avatarCircles.faces[].imageUrl ───────
+//
+// The one browser-visible URL this product stores inside a JSON document rather than a column,
+// and therefore the one the fixed column list could never reach. The whole per-row decision lives
+// here — target naming, rewrite-vs-null classification, and the shape-preserving payload — so the
+// repair the script would actually perform is unit-testable without a database.
+
+/** What the caller's storage lookup concluded about one poisoned URL. */
+export interface CircleFaceResolution {
+  /** The URL to write, or null to clear this one field (the object is gone or unaddressable). */
+  newValue: string | null;
+  /** null = no key could be derived from the URL, so no existence question was asked. */
+  assetExists: boolean | null;
+}
+
+export interface CircleFaceRepair {
+  /** One planned row per poisoned face URL, classified exactly like every column target. */
+  rows: PlannedUrlRow[];
+  /** The literal jsonb text to write back, in the SHAPE the column was read in. */
+  payload: string;
+}
+
+/**
+ * The complete repair for ONE `projects` row, or null when the row holds nothing to repair.
+ *
+ * `resolve` performs the IO (derive key → objectExists → public URL); everything else is decided
+ * here. Preserving the column's shape is the point: production stores this column double-encoded,
+ * as a jsonb *string*, and a repair that writes an object back would change how project
+ * duplication treats the row while looking like a clean fix.
+ */
+export async function planCircleFaceRepair(
+  rowId: string,
+  avatarConfig: unknown,
+  resolve: (url: string) => Promise<CircleFaceResolution>,
+): Promise<CircleFaceRepair | null> {
+  const parsed = parseAvatarConfigColumn(avatarConfig);
+  if (!parsed) return null;
+  const sites = nonPublicCircleFaceUrls(circlesOf(parsed.config));
+  if (sites.length === 0) return null;
+
+  const rows: PlannedUrlRow[] = [];
+  const resolutions = new Map<number, string | null>();
+  for (const site of sites) {
+    const { newValue, assetExists } = await resolve(site.url);
+    resolutions.set(site.faceIndex, newValue);
+    rows.push({
+      target: `projects.avatar_config#${site.path}`,
+      rowId,
+      oldValue: site.url,
+      newValue,
+      action: newValue ? 'rewrite' : 'null',
+      assetExists,
+      jsonPath: site.path,
+    });
+  }
+  return {
+    rows,
+    payload: serializeAvatarConfigColumn(withCircleFaceUrls(parsed.config, resolutions), parsed.shape),
+  };
+}
+
+/** True when this stored avatar_config still holds a non-public face URL (post-apply convergence). */
+export function avatarConfigStillPoisoned(avatarConfig: unknown): boolean {
+  const parsed = parseAvatarConfigColumn(avatarConfig);
+  return !!parsed && nonPublicCircleFaceUrls(circlesOf(parsed.config)).length > 0;
 }

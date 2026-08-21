@@ -76,12 +76,23 @@ function shouldSkip(video: VideoRow, hash: string, force = false): boolean {
   });
 }
 
+/**
+ * Public URL of a caption VTT that lives in object storage.
+ *
+ * THE ADAPTER DECIDES THE ORIGIN — never `R2_*` env read directly. This used to pick the storage
+ * origin from `R2_ACCOUNT_ID` / `R2_PUBLIC_URL` independently of the adapter that actually holds
+ * the bytes, which is an adapter BYPASS: production writes to Supabase while its environment still
+ * carries the legacy R2 variables, so this minted `https://pub-*.r2.dev/<key>` caption tracks
+ * against a bucket the VTT was never written to. It is masked today only because every ready row
+ * also carries `captions_vtt` in the database and `captionUrlForVideo` prefers the API route — the
+ * first VTT that lands in storage and not in that column would serve a dead track.
+ *
+ * Behaviour is unchanged per adapter: local disk still yields `{api origin}/local-storage/{key}`,
+ * R2 still yields its own public URL. Only the CHOICE between them stops being an env guess.
+ */
 export function captionPublicUrl(key: string | null | undefined): string | null {
   if (!key) return null;
-  const r2Public = process.env.R2_PUBLIC_URL?.replace(/\/$/, '');
-  if (process.env.R2_ACCOUNT_ID && r2Public) return `${r2Public}/${key}`;
-  const base = publicApiOrigin();
-  return `${base}/local-storage/${key}`;
+  return getStorageAdapter().getPublicUrl(key);
 }
 
 /** Public URL that serves a video's DB-stored caption VTT (no object storage needed). */

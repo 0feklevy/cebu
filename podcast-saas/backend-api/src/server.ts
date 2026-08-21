@@ -14,6 +14,7 @@ import { checkDatabaseConnection, db, video_files, simulations } from './db/inde
 import { getFirebaseAdmin } from './services/firebase.js';
 import { getStorageAdapter } from './services/storage/getStorageAdapter.js';
 import { R2StorageAdapter } from './services/storage/R2StorageAdapter.js';
+import { hlsProxyUpstream } from './services/storage/hlsProxyUpstream.js';
 import {
   browserOrigins,
   assertPublicOriginsForProd,
@@ -327,8 +328,15 @@ async function build() {
     },
   );
 
-  // HLS proxy for R2 storage — fetches from the R2 public URL and adds CORS headers.
+  // HLS proxy for cloud storage — streams the object through the API and adds CORS headers.
   // Necessary because pub-*.r2.dev ignores PutBucketCorsCommand CORS rules.
+  //
+  // THE UPSTREAM COMES FROM THE RESOLVED ADAPTER, not from R2_PUBLIC_URL. Reading that variable
+  // directly made the route's storage origin an env guess independent of the adapter that holds
+  // the bytes: with STORAGE_BACKEND=supabase it fetched a bucket Supabase never wrote to, and
+  // with the variable unset it answered 500 to every segment. R2 streams over its S3 GET (which
+  // works with a read-only token); any other cloud adapter is fetched at its own public URL;
+  // local disk is redirected to /hls-public, which is where the local adapter points HLS anyway.
   app.get<{ Params: { '*': string } }>(
     '/hls-proxy/*',
     async (request, reply) => {
@@ -338,38 +346,52 @@ async function build() {
       if (keyHasTraversal(key)) {
         return reply.code(403).send({ message: 'Forbidden' });
       }
-      const r2PublicUrl = process.env.R2_PUBLIC_URL;
-      if (!r2PublicUrl) {
-        return reply.code(500).send({ message: 'R2_PUBLIC_URL not set' });
+      // Cloud storage may not have these segments when a read-only token forced the HLS upload
+      // to fall back to durable local disk. Serve the local copy via /hls-public (relative
+      // segment URLs then resolve there too) — keep the media token so the redirect target
+      // stays authorized.
+      const serveLocalCopy = () =>
+        reply.redirect(token ? `/hls-public/t/${token}/${key}` : `/hls-public/${key}`);
+      const contentType = key.endsWith('.m3u8')
+        ? 'application/vnd.apple.mpegurl'
+        : 'video/mp2t';
+      // Versioned run trees are write-once → immutable (playlists included; the mutable
+      // pointer is the DB row). Legacy/unrecognised keys keep the old 1h default.
+      const cacheControl = hlsCacheControlForKey(key) ?? 'public, max-age=3600';
+      const storage = getStorageAdapter();
+      const upstream = hlsProxyUpstream(storage, key);
+      if (upstream.kind === 'local') return serveLocalCopy();
+
+      if (upstream.kind === 'stream') {
+        try {
+          const { body } = await (storage as R2StorageAdapter).streamObject(key);
+          return reply
+            .header('Content-Type', contentType)
+            .header('Access-Control-Allow-Origin', '*')
+            .header('Cache-Control', cacheControl)
+            .send(body);
+        } catch (err) {
+          logger.warn({ key, err }, 'hls-proxy: storage read failed — falling back to local /hls-public');
+          return serveLocalCopy();
+        }
       }
+
       const controller = new AbortController();
       request.raw.on('close', () => controller.abort());
       try {
-        const upstream = await fetch(`${r2PublicUrl}/${key}`, { signal: controller.signal });
-        if (!upstream.ok || !upstream.body) {
-          // R2 may not have these segments when a read-only token forced the HLS
-          // upload to fall back to durable local disk. Serve the local copy via
-          // /hls-public (relative segment URLs then resolve there too) — keep the
-          // media token so the redirect target stays authorized.
-          return reply.redirect(token ? `/hls-public/t/${token}/${key}` : `/hls-public/${key}`);
-        }
-        const contentType = key.endsWith('.m3u8')
-          ? 'application/vnd.apple.mpegurl'
-          : 'video/mp2t';
+        const res = await fetch(upstream.url, { signal: controller.signal });
+        if (!res.ok || !res.body) return serveLocalCopy();
         // Stream the upstream body through instead of buffering the whole segment
         // into the Node heap (was Buffer.from(await upstream.arrayBuffer())).
-        //
-        // Versioned run trees are write-once → immutable (playlists included; the mutable
-        // pointer is the DB row). Legacy/unrecognised keys keep the old 1h default.
         return reply
           .header('Content-Type', contentType)
           .header('Access-Control-Allow-Origin', '*')
-          .header('Cache-Control', hlsCacheControlForKey(key) ?? 'public, max-age=3600')
-          .send(Readable.fromWeb(upstream.body as unknown as Parameters<typeof Readable.fromWeb>[0]));
+          .header('Cache-Control', cacheControl)
+          .send(Readable.fromWeb(res.body as unknown as Parameters<typeof Readable.fromWeb>[0]));
       } catch (err) {
         if (controller.signal.aborted) return; // client disconnected mid-segment
-        logger.warn({ key, err }, 'hls-proxy: R2 fetch failed — falling back to local /hls-public');
-        return reply.redirect(token ? `/hls-public/t/${token}/${key}` : `/hls-public/${key}`);
+        logger.warn({ key, err }, 'hls-proxy: upstream fetch failed — falling back to local /hls-public');
+        return serveLocalCopy();
       }
     },
   );

@@ -36,11 +36,12 @@
  * the backend's token-gated proxy. Getting there is four landings, not one, and the last one is
  * the only irreversible step.
  *
- *   STEP 1 — teach /hls-proxy to serve from Supabase. Today it reads R2_PUBLIC_URL and 500s
- *     when unset (pinned by the last test below). It needs a Supabase branch that streams from
- *     `storage.readObject(key)` or a short-lived presigned GET. Ship this ALONE first: it
- *     changes no URL anyone holds, so it cannot break playback, and it is the prerequisite for
- *     every later step.
+ *   STEP 1 — DONE. /hls-proxy no longer reads R2_PUBLIC_URL: `hlsProxyUpstream()` resolves the
+ *     upstream from the RESOLVED adapter (R2 streams over its own S3 GET, any other cloud adapter
+ *     is fetched at its public URL, local disk redirects to /hls-public), so a Supabase deployment
+ *     can adopt the route instead of getting `500 R2_PUBLIC_URL not set` on every segment. It
+ *     changed no URL anyone holds — nothing points at /hls-proxy under Supabase yet — which is
+ *     exactly why it was safe to land first. The last test below pins that behaviour.
  *   STEP 2 — CAPACITY, and this is the real cost, not a footnote. Today zero video bytes touch
  *     the API process; Supabase's CDN serves them. Step 3 moves 100% of segment traffic onto
  *     the Node tier on a 2-vCPU host. Measure concurrent-viewer segment throughput against that
@@ -75,6 +76,9 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { SupabaseStorageAdapter } from '../SupabaseStorageAdapter.js';
 import { R2StorageAdapter } from '../R2StorageAdapter.js';
+import { LocalStorageAdapter } from '../LocalStorageAdapter.js';
+import { hlsProxyUpstream } from '../hlsProxyUpstream.js';
+import type { StorageService } from '../StorageService.js';
 import { mediaKeyScope } from '../mediaToken.js';
 
 const SAVED = { ...process.env };
@@ -163,16 +167,67 @@ describe('security-001 — R2 gates HLS; Supabase does not', () => {
   });
 });
 
-describe('security-001 — the migration checklist these assertions encode', () => {
-  it('the /hls-proxy route is R2-only, so Supabase cannot simply adopt it', async () => {
-    // server.ts's /hls-proxy handler reads R2_PUBLIC_URL and replies 500 when it is unset.
-    // STORAGE_BACKEND=supabase deployments do not set it. Pointing Supabase's getPublicUrl at
-    // /hls-proxy WITHOUT teaching that route about Supabase would 500 every segment — the
-    // "naive fix breaks playback" case. Pinned here so the ordering is not lost.
-    const { readFileSync } = await import('node:fs');
-    const server = readFileSync(new URL('../../../server.ts', import.meta.url), 'utf8');
-    const proxy = server.slice(server.indexOf("'/hls-proxy/*'"));
-    expect(proxy).toContain('R2_PUBLIC_URL');
-    expect(proxy.slice(0, proxy.indexOf('/video-raw/'))).toContain("message: 'R2_PUBLIC_URL not set'");
+describe('security-001 STEP 1 — /hls-proxy resolves its upstream from the adapter, not R2_* env', () => {
+  // Asserted on the OUTPUT of the decision the route makes. Reading server.ts as text (which is
+  // what this used to do) proves only that a string is present, and would have gone on passing
+  // while the behaviour changed underneath it.
+
+  it('under Supabase it fetches the SUPABASE object — even with the legacy R2 vars still set', () => {
+    setEnv({ ...R2_ENV, ...SUPABASE_ENV });
+    const upstream = hlsProxyUpstream(new SupabaseStorageAdapter(), HLS_KEY);
+    expect(upstream).toEqual({
+      kind: 'fetch',
+      url: `https://abc123ref.supabase.co/storage/v1/object/public/media/${HLS_KEY}`,
+    });
+  });
+
+  it('and it does NOT depend on R2_PUBLIC_URL — the variable production is still carrying', () => {
+    setEnv(SUPABASE_ENV);
+    delete process.env.R2_PUBLIC_URL;
+    const upstream = hlsProxyUpstream(new SupabaseStorageAdapter(), HLS_KEY);
+    // The old route replied `500 R2_PUBLIC_URL not set` here, for every segment.
+    expect(upstream.kind).toBe('fetch');
+    expect(JSON.stringify(upstream)).not.toContain('r2.dev');
+  });
+
+  it('under R2 it streams through the adapter rather than fetching a URL out of the environment', () => {
+    setEnv(R2_ENV);
+    expect(hlsProxyUpstream(new R2StorageAdapter(), HLS_KEY)).toEqual({ kind: 'stream' });
+  });
+
+  it('never hands the route a URL that points back at /hls-proxy — the self-fetch loop', () => {
+    setEnv({ ...R2_ENV, ...SUPABASE_ENV });
+    // R2's getPublicUrl deliberately mints the proxied shape; taking it as an upstream would make
+    // the route fetch itself. Any adapter whose public URL is proxied falls back to local disk.
+    const proxied = { getPublicUrl: (k: string) => `https://api.flowvidco.com/hls-proxy/${k}` } as StorageService;
+    expect(hlsProxyUpstream(proxied, HLS_KEY)).toEqual({ kind: 'local' });
+    for (const adapter of [new R2StorageAdapter(), new SupabaseStorageAdapter()] as StorageService[]) {
+      const up = hlsProxyUpstream(adapter, HLS_KEY);
+      if (up.kind === 'fetch') expect(up.url).not.toContain('/hls-proxy/');
+    }
+  });
+
+  it('local disk is served by /hls-public, where the local adapter points HLS anyway', () => {
+    setEnv({ BACKEND_API_URL: 'http://localhost:8080' });
+    expect(hlsProxyUpstream(new LocalStorageAdapter(), HLS_KEY)).toEqual({ kind: 'local' });
+  });
+});
+
+describe('under Supabase, no browser-visible URL builder emits the legacy R2 origin', () => {
+  // The production container carries SUPABASE_S3_* and every R2_* variable at once. Anything that
+  // decides an origin from env rather than from the resolved adapter therefore points browsers at
+  // a bucket Supabase never wrote to. Pinned on output for the two shapes the adapter publishes.
+  it('media URLs stay on Supabase and sim URLs stay on the API origin, with R2_* still set', () => {
+    setEnv({ ...R2_ENV, ...SUPABASE_ENV });
+    const a = new SupabaseStorageAdapter();
+    for (const key of [HLS_KEY, 'captions/p/v/en.vtt', 'thumbnails/p/a.jpg', 'avatar-circles/p/a.png']) {
+      expect(a.getPublicUrl(key), key).toBe(`https://abc123ref.supabase.co/storage/v1/object/public/media/${key}`);
+      expect(a.getPublicUrl(key), key).not.toContain('r2.dev');
+    }
+    // The sim entry document is the one URL that must be FRAMABLE: the frontend's
+    // `frame-src` allows the API origin and nothing on r2.dev.
+    const sim = a.getSimPublicUrl('simulations/p/v/index.html');
+    expect(sim).toBe('https://api.flowvidco.com/sim-public/simulations/p/v/index.html');
+    expect(sim).not.toContain('r2.dev');
   });
 });
