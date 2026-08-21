@@ -279,6 +279,20 @@ describe('deleting a host lists its dependents and refuses to choose', () => {
     expect(JSON.stringify(plan)).not.toContain('"B"');
   });
 
+  it('will not "keep" a row whose media is the video being deleted, however it is anchored', () => {
+    // A row anchored to A AND sourced from A. It is malformed, and it exists in the wild. The
+    // `video_file_id` FK cascades it away with the host whatever the author chose, so reporting it
+    // as detached would be a lie told at the exact moment the author was deciding.
+    const both: LabelledSectionLike = {
+      id: 'both', track: 'broll', type: 'broll', video_file_id: 'A',
+      start_sec: 0, end_sec: 6, global_offset_sec: 20,
+      placement_mode: 'segment', anchor_video_file_id: 'A', anchor_offset_sec: 20,
+    };
+    const p = planHostDeleteImpact({ hostVideoFileId: 'A', rows: [both], timeline });
+    expect(dependentSectionIdsFor(p)).toEqual(['both']);   // still named as a dependent
+    expect(anchoredSectionIdsFor(p)).toEqual([]);          // but not offered as keepable
+  });
+
   it('requires no choice when nothing depends on the host', () => {
     const free = planHostDeleteImpact({ hostVideoFileId: 'SRC', rows: [rows[1]], timeline });
     expect(free).toMatchObject({ requiresChoice: false, dependents: [] });

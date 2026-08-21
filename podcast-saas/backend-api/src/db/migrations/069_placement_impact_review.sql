@@ -145,6 +145,14 @@ COMMENT ON TABLE placement_impact_reviews IS
 -- transactional preflight, returns 409 with the dependents, and applies the author's choice. The
 -- constraint is the floor under that — the guarantee that a path which forgets to preflight fails
 -- loudly instead of quietly detaching an author's work.
+--
+-- THE COST: re-adding the constraint re-validates it, which is a scan of timeline_sections while
+-- holding a lock the `lock_timeout` above bounds the WAIT for but not the duration of. The same
+-- trade 063 made when it added this column inline, for the same reason — the table is small, and
+-- the alternative (ADD ... NOT VALID here, VALIDATE CONSTRAINT in a later file) leaves an
+-- unvalidated constraint that someone has to remember to finish. If this table ever grows to where
+-- the scan matters, that split is the escape hatch, and only the anchor column would need it: the
+-- values are NULL on every row that has never been anchored.
 DO $$
 BEGIN
   ALTER TABLE timeline_sections

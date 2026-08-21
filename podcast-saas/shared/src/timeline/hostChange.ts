@@ -312,16 +312,20 @@ export function planHostDeleteImpact(opts: {
 }
 
 /**
- * The rows a `detach` must orphan — the anchored ones, and only those.
+ * The rows a `detach` can actually keep — anchored to this host, and NOT sourced from it.
  *
- * A SOURCE dependent is not detachable: its media is the video being deleted, so there is nothing
- * to keep it pointing at. Separating the two here is what stops a caller from "detaching" a row
- * that would then reference a video_files id that no longer exists.
+ * A source dependent is not detachable however it is anchored: its media is the video being
+ * deleted, so keeping the row would keep a section with nothing to play (and the `video_file_id`
+ * FK cascades it away regardless). A row that is BOTH — malformed, but they exist — is therefore
+ * excluded, so a caller cannot report "kept" for a section that is about to disappear anyway.
  */
 export function anchoredSectionIdsFor(plan: HostDeletePlan): string[] {
+  const sourced = new Set(
+    plan.dependents.filter((d) => d.kind === 'source').map((d) => d.sectionId),
+  );
   const out: string[] = [];
   for (const d of plan.dependents) {
-    if (d.kind === 'anchor' && isSet(d.sectionId)) out.push(d.sectionId);
+    if (d.kind === 'anchor' && isSet(d.sectionId) && !sourced.has(d.sectionId)) out.push(d.sectionId);
   }
   return [...new Set(out)];
 }

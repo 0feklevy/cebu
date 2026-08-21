@@ -340,6 +340,34 @@ export interface LockedContent {
   currency: string;
 }
 
+/**
+ * What an author may do with the rows placed against a video they are deleting (D-01b).
+ *
+ * Two answers, and there is deliberately no third: moving an orphan to "the next" clip is a guess
+ * about intent that would be indistinguishable, afterwards, from a placement the author made.
+ */
+export type VideoDeleteChoice = 'detach' | 'delete';
+
+export interface VideoDeleteDependent {
+  sectionId: string | null;
+  /** `anchor` — the row loses its POSITION. `source` — the row loses its MEDIA. */
+  kind: 'anchor' | 'source';
+  label: string | null;
+  absoluteSec: number;
+  anchorOffsetSec: number | null;
+}
+
+/** The 409 body: the delete did not happen, and this is what is at stake. */
+export interface VideoDeleteBlocked {
+  code: 'video_has_dependent_sections';
+  message: string;
+  choices: VideoDeleteChoice[];
+  dependents: VideoDeleteDependent[];
+  /** Sections that go whatever the author picks — their media IS the video being deleted. */
+  removed_regardless: Array<string | null>;
+  generations_in_flight: number;
+}
+
 export interface VideoFile {
   id: string;
   project_id: string;
@@ -1214,8 +1242,37 @@ export class ClientV1Api {
     return this.request(`/api/v1/projects/${projectId}/videos/${videoId}/hls-status`);
   }
 
-  deleteVideo(projectId: string, videoId: string): Promise<void> {
-    return this.request(`/api/v1/projects/${projectId}/videos/${videoId}`, { method: 'DELETE' });
+  /**
+   * Delete a video, or find out what is placed against it first (D-01b).
+   *
+   * Returns `null` when the video is gone. Returns the BLOCKED payload — never throwing — when the
+   * server refuses because sections depend on it: the author has to choose what happens to them,
+   * and that choice is theirs, not this client's. Call again with `dependents` to apply it.
+   *
+   * Not routed through `this.request`, which collapses every non-2xx into an Error and drops the
+   * body: the whole value of the 409 is in its body. `requestText`/`requestBlob` above are the
+   * same kind of exception.
+   */
+  async deleteVideo(
+    projectId: string,
+    videoId: string,
+    opts: { dependents?: VideoDeleteChoice } = {},
+  ): Promise<VideoDeleteBlocked | null> {
+    const query = opts.dependents ? `?dependents=${encodeURIComponent(opts.dependents)}` : '';
+    const token = await this.config.getToken();
+    const res = await fetch(
+      `${this.config.baseURL}/api/v1/projects/${projectId}/videos/${videoId}${query}`,
+      { method: 'DELETE', headers: token ? { Authorization: `Bearer ${token}` } : {} },
+    );
+    if (res.status === 409) {
+      const body = await res.json().catch(() => null) as VideoDeleteBlocked | null;
+      if (body?.code === 'video_has_dependent_sections') return body;
+    }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ message: res.statusText })) as { message?: string };
+      throw new Error(err.message ?? `HTTP ${res.status}`);
+    }
+    return null;
   }
 
   recropProject(projectId: string): Promise<{ queued: boolean }> {
