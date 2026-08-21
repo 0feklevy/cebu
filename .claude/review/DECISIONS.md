@@ -182,15 +182,63 @@ no queue behind it.
 
 ## 🟡 Known gaps that ship with this round
 
-- Crop P0.1 (fleet-audit script), P0.2 (annotation tool) and P0.3 (real labelled set) are absent; all
-  reported crop gains are measured on **synthetic fixtures**, and must not be quoted as field results.
-  P2 (the detector itself) is not in this release at all — `CROP_ALGO` has no v2 to select yet.
+- Crop **P0.2 (annotation tool) and P0.3 (real labelled set) are absent**; all reported crop gains are
+  measured on **synthetic fixtures** and must not be quoted as field results. P2 (the detector itself) is
+  not in this release at all — `CROP_ALGO` has no v2 to select yet. *(P0.1 was listed here as absent too;
+  it is not — it ran against production on 2026-08-21, see the fleet-audit section above. An audit caught
+  this line contradicting one 60 lines higher in the same file.)*
 - Nothing in the dubbing pipeline has been exercised against the live ElevenLabs API — no key, no
   network in the build environment. The ranked list of call shapes that remain unverified is in
   `md-files/DUBBING-IMPLEMENTATION-REPORT.md` §7; the riskiest is the billable multipart create,
   where a silently-dropped `reference` field would quiet the crash-recovery defence without erroring.
 - `db:check` is a manual operator tool and is still not wired into CI. It does not need to be: the
   registry-drift invariant it would enforce is already covered by tests that run on every branch.
+
+## 🔴 Live production defects, found in the owner's own browser console (2026-08-21)
+
+Both are real, user-visible, and — until this entry — **recorded nowhere**: not here, not in either codex,
+not among the 334 audit-ledger findings. An adversarial completeness audit caught that, which is the whole
+reason for running one.
+
+1. **Avatar-circle images are served from `http://localhost:8080` in production.** The editor requests
+   `http://localhost:8080/local-storage/avatar-circles/{projectId}/{uuid}.png`; the browser blocks it twice
+   over, as mixed content and against `img-src 'self' data: blob: https:`. `getStorageAdapter.ts` has a
+   guard that THROWS rather than fall back to local disk in production, so the live request path should not
+   be able to construct this — which points at absolute URLs persisted during a local run and never
+   rewritten. The bug CLASS is a documented past incident (`backend-api/src/config/publicOrigins.ts:5-6`:
+   a missing public-origin var emitting a loopback URL to real browsers), so this may be a recurrence
+   rather than a new fault.
+2. **Simulation iframes are served from `pub-*.r2.dev` and blocked by `frame-src`.** This was PREDICTED —
+   `md-files/LIBRARY-SHARE-MINISITE-PLAN.md` (the R2 guard) says `R2StorageAdapter.getSimPublicUrl` returns
+   an origin that `rebaseSimPublicOrigin` will not rebase and `frame-src` will refuse, giving a blank
+   iframe. A prediction in a planning document is not an open item, which is exactly how it reached
+   production unnoticed. Note the plan's premise — "R2 is not the production writer today" — needs
+   re-checking against what is actually being served now.
+
+Both are under investigation on `fix/production-console-errors`. **The fix must not simply widen
+`browserOrigins()`/`frame-src`**: that would widen who may frame EVERY simulation in the product, which is
+a security decision rather than a config tweak. Routing sims through the API origin is preferred.
+
+## 🟡 Delivered but previously untracked (recorded 2026-08-21 after a completeness audit)
+
+The ledger is the index of what exists; work absent from it is work the next session cannot find.
+
+- **PR #51 — 94 dubbing languages, a progress bar, and source-language exclusion.** Open and CI-green at
+  the time of writing. The language table went from three codes to the vendor's full verified set;
+  `PERMALINK_LANGUAGE_SUFFIXES` is now DERIVED from it rather than hand-maintained as a second copy (the
+  same drift class as the two migration registries); migration **068** puts a source language on the
+  project so the language the video is already in stops being offered as a paid target — a same-language
+  dub is a full billable run returning a degraded copy. Belongs to Round A.
+- **The two ideas volumes exist and were never recorded as delivered**: `md-files/FLOWVID-NEXT-STEP-IDEAS.md`
+  (1,334 lines, product ideas) and `md-files/FLOWVID-EXPANSION-AND-GTM-IDEAS.md` (743 lines, GTM, strategy
+  and niche expansion). They are reference material, not scheduled work — but a reader of this ledger alone
+  would not have known they exist, which made them effectively invisible.
+- **`localCaptureProvider.ts` is now tracked on `main`, and it arrived by accident.** R-07 ruled it stays
+  out of this round because it belonged to the open export bug chain; it was swept into commit `f9414e6`
+  by an over-broad `git add -A`. The ruling is amended rather than reverted: the export work it supported
+  has since shipped (#44's GPU host, confirmed working in production), so the reason to withhold it is
+  stale and removing it now would be churn. Recorded because a file that enters the repo by accident and
+  is then silently kept is indistinguishable from one nobody noticed.
 
 ## 🔵 Requested 2026-08-21, deliberately NOT started — plan only after the release, then on approval
 

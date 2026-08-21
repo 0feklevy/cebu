@@ -70,6 +70,34 @@ pnpm -C podcast-saas dev                        # all packages in parallel
 the backend test suite fails with module-resolution errors until `shared` has been built once. This
 is the single most common false alarm in this repo.
 
+## 3b. The decision ledger — every piece of work has to be findable
+
+`.claude/review/DECISIONS.md` is the index of what is open, what was ruled, and what shipped;
+`CODEX-DECISION-RESPONSE-*.md` holds the reasoning behind each ruling. **Work that is not in the ledger
+is work the next session cannot find**, and the failure is silent — nothing breaks, a green build says
+nothing, and the item simply stops existing until someone stumbles over it.
+
+That is not hypothetical. A completeness audit on 2026-08-21 found three live examples at once: two
+user-visible production defects the owner had seen in their own browser and reported, recorded nowhere;
+an open PR with a migration in it, invisible to the ledger; and two substantial reference documents a
+reader of the ledger alone would not have known existed.
+
+So, when finishing any unit of work:
+
+- **Opening a PR?** Add a line to `DECISIONS.md` — what it is, and which round it belongs to. A CI-green
+  branch nobody has indexed is not progress.
+- **Found a bug you are not fixing right now?** It becomes a 🔴 entry with its evidence, not a memory.
+  A prediction inside a planning document is not an open item — that is precisely how the R2 `frame-src`
+  failure reached production after being correctly foreseen.
+- **Delivered a document?** One line saying it exists.
+- **Closed something?** Say WHICH KIND of closure it is. "Owner-attested" and "verified in code" are
+  different claims, and a ledger that blurs them is worth less than one that admits the difference.
+- **Contradicted an earlier entry?** Fix the earlier one in the same pass. The same file said crop P0.1
+  was "absent" sixty lines below a section describing the day it ran.
+
+The discipline is cheap — one line per item — and it is the only thing standing between a long session
+and quietly losing half of it.
+
 ## 4. Verification
 
 `pnpm -C podcast-saas release:verify` is the real gate, and it is what CI runs. Nine steps: frozen
