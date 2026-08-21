@@ -96,6 +96,68 @@ which also updates what `ci.yml` records: the comment there describes a single r
 when in fact the lane's failure count varies run to run. Worth folding into that comment when the
 `__CHILD` Window-identity assumption is finally fixed.
 
+## 🟢 Production fleet audit, 2026-08-21 — read-only, and it answered two questions at once
+
+Ran against production (read-only queries through the backend container; nothing written). This is
+crop **P0.1**, delivered — and it settled the `QUEUE_CROP_CONCURRENCY` question without needing the
+load test that was queued for the owner.
+
+**The fleet is six videos.** Four crop-ready, two failed. The most recent crop analysis ran on
+2026-07-30 — three weeks before this audit.
+
+**RULING — `QUEUE_CROP_CONCURRENCY` stays 1, and the reason is not caution about CPU.** There is no
+queue to parallelise. Concurrency 2 would optimise contention that has never occurred; the planned
+two-job RSS/runtime measurement would have been measuring a non-problem. Revisit only if the fleet
+grows enough that crop jobs actually wait on each other — the trigger is a real backlog, not a
+calendar reminder. (Capacity context, since it was previously unmeasured: the host is 2 vCPU with
+**7.6 GB RAM, 5.6 GB free**, and the worker idles at 63 MB. Memory was never the constraint.)
+
+**Both crop failures are `download failed: 404` — storage, not the algorithm.** The `video_files`
+row exists and its `storage_key` is well-formed (`videos/<uuid>.mp4`), but the object is not there.
+Neither size nor age explains it: a 541 MB video from 51 days ago works while a 79 MB one from 60
+days ago does not.
+
+Two of the six are **public projects**, and they fail differently:
+
+| video | project | state | what a visitor sees |
+|---|---|---|---|
+| `9ee102e7` | "Niceville - test" (public) | `hls_status=failed` **and** crop failed; 726 MB source, 82 days old | **A broken player.** Nothing to play — this one is fully dead. |
+| `292ea47d` | "How Did Proteins Evolve…" (public) | `hls_status=ready`, crop failed; 79 MB source, 60 days old | Plays fine. The raw source is gone, so crop can never run and any future re-processing fails. |
+
+The 726 MB one, whose HLS also failed, has the fingerprint of an **abandoned multipart upload** —
+the row was created optimistically and the object never assembled. That is precisely the billed-but-
+invisible case Supabase's 24-hour auto-abort now covers, so new occurrences should stop; this row
+predates it by 82 days. The 79 MB one is different and more concerning: it survived long enough to
+transcode, then disappeared — a deletion after the fact, which is the writers-vs-deleters asymmetry
+PR #37 was chasing.
+
+**Every video has `crop_algo_version = NULL`.** Not one has been analysed by the versioned algorithm,
+so this round's P1 improvements have never touched production data. Because `ALGO_VERSION` is in the
+idempotency hash, a re-run WOULD re-analyse all four ready videos under v1.1 — the dark-skin mIoU
+0.272→0.508 improvement is available to them the moment anyone asks for it.
+
+**All three follow-ups are now closed** (2026-08-21, same day):
+
+- **The missing 79 MB object was a known path.** The owner confirms deleting source files by hand.
+  The storage-leak file does NOT reopen — this was housekeeping, not an unaccounted deleter.
+- **The four healthy videos were re-cropped onto v1.1**, enqueued through the app's own
+  `enqueueJob('crop')` rather than by touching rows. All four now carry `crop_algo_version = v1.1`;
+  the two failures stayed failed, correctly, because their source objects genuinely are not there.
+  This is the first time this round's P1 work has touched production data — including the dark-skin
+  mIoU 0.272→0.508 improvement.
+- **The dead public project is to be deleted by the owner from the app**, not by SQL. It holds two
+  simulations and two `avatar_visuals`, and the delete handler's own comment explains why the path
+  matters: avatar-visual bytes live under `simulations/avatar/{uuid}/`, outside any project-scoped
+  prefix, so once the row is gone they are unreachable by every sweep that will ever exist. The
+  handler collects them before deleting; a hand-rolled delete would orphan them permanently.
+
+**A measurement fell out of the re-crop for free** — the thing the queued load test was supposed to
+produce. Four analyses ran back-to-back on production; the gaps between their `crop_updated_at`
+stamps give real durations: 5 s of video ≈ instant, 239 s ≈ 81 s, 432 s ≈ 167 s, 432 s ≈ 179 s.
+**Crop runs at roughly 0.4× realtime** — a 7-minute video is analysed in about 3 minutes. That is
+comfortable, and it independently confirms the concurrency ruling: the job is not slow, and there is
+no queue behind it.
+
 ## 🟠 Rulings made during the 2026-08-21 round (do not silently reverse)
 
 - **Captions for a dubbed language come from that dub's own segments — never from an independent
@@ -179,7 +241,7 @@ and that no implementation begins without an explicit go-ahead.
 - `AVATAR_CAPABILITY_MODE` / `AVATAR_BUDGET_MODE` stay `shadow` — the five-step enforce ordering
   is in `.env.example` and the archive. Flipping capability enforce early 401s every viewer.
 - Budget-shadow traffic is **not** valid calibration data until the async observer is rebuilt.
-- `QUEUE_CROP_CONCURRENCY` stays 1 until measured on the 2-vCPU host (now also the code default).
+- `QUEUE_CROP_CONCURRENCY` stays 1. **Now measured and settled** — see the fleet audit above: six videos, no queue, so there is nothing to parallelise. Not a capacity limit.
 
 ## 🟡 The next work, when picked up
 
