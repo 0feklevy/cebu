@@ -682,11 +682,16 @@ export const timeline_sections = pgTable('timeline_sections', {
   // mapping a row's absolute second onto today's segments would canonise a placement that is
   // already wrong. See `planAnchorBackfill` for the dry run that reports instead of converting.
   //
-  // ON DELETE SET NULL rather than CASCADE: deleting a main video must not delete the b-roll
-  // overlays an author placed over it. A row left with `placement_mode='segment'` and a NULL anchor
-  // is precisely why the mode is a stored column and not a computed `anchor_video_file_id != null` —
-  // it is the difference between "was anchored, lost its host" and "was never anchored".
-  anchor_video_file_id: uuid('anchor_video_file_id').references(() => video_files.id, { onDelete: 'set null' }),
+  // NO ACTION since 069, and it was ON DELETE SET NULL before that. 063 chose SET NULL to protect
+  // the CONTENT — deleting a main video must not delete the b-roll placed over it — and that half
+  // was right. What it left was a SILENT orphaning: every anchored overlay lost its anchor and fell
+  // back to a wall-clock second that was now wrong, with nothing said to anyone. D-01b asks for the
+  // opposite default, so the delete is now refused by the database and the route runs a
+  // transactional preflight that makes the author choose (detach, or delete the dependents). A row
+  // with `placement_mode='segment'` and a NULL anchor is still reachable — it is what an explicit
+  // `detach` leaves behind — and that is why the mode is a stored column and not a computed
+  // `anchor_video_file_id != null`: "was anchored, lost its host" is not "was never anchored".
+  anchor_video_file_id: uuid('anchor_video_file_id').references(() => video_files.id),
   anchor_offset_sec: real('anchor_offset_sec'),
   placement_mode: text('placement_mode').notNull().default('legacy_absolute'),   // 'segment' | 'legacy_absolute'
   // Which b-roll GENERATION produced this row (migration 062). NULL for every hand-made section.
@@ -705,6 +710,58 @@ export const timeline_sections = pgTable('timeline_sections', {
   // (→ video_generation_jobs(id) ON DELETE SET NULL) is declared in 062 and enforced by the
   created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * PLACEMENTS A MEDIA CHANGE LEFT OUTSIDE THEIR HOST — the queue, not the fix (migration 069, D-01b).
+ *
+ * A b-roll anchored twelve seconds into "the intro" is still twelve seconds into the intro after
+ * the intro is re-transcoded; that is what 063's anchor is for, and it needs no help. But an author
+ * who REPLACES the intro with a shorter file has left a placement with no honest answer, and the
+ * three ways to compute one are all wrong: clamping it to the new end destroys the authored value
+ * in place, zeroing it moves the clip to the top of the video, and attaching it to the next segment
+ * invents an intent nobody expressed. So nothing is computed. The row is kept exactly as authored
+ * and one row lands here for a person to settle.
+ *
+ * The numbers are captured AT DETECTION on purpose. By the time anyone opens the list the timeline
+ * may have moved again, and "60 s → 12 s" is the only form in which the finding is still checkable.
+ *
+ * `uniq_placement_impact_open` — at most one OPEN item per (section, reason) — is declared in
+ * migration 069 only: it is PARTIAL (`WHERE resolved_at IS NULL`), and Drizzle's index builder has
+ * no WHERE clause, so declaring it here would forbid a section from ever having a second review
+ * after the first was resolved. Same for `idx_placement_impact_open_by_project`.
+ */
+export const placement_impact_reviews = pgTable('placement_impact_reviews', {
+  id:                       uuid('id').primaryKey().defaultRandom(),
+  project_id:               uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  /** CASCADE: a review of a section that no longer exists is noise. Deleting the clip IS an answer. */
+  section_id:               uuid('section_id').notNull().references(() => timeline_sections.id, { onDelete: 'cascade' }),
+  /**
+   * SET NULL, not CASCADE, for one reason code: `host_deleted_detached` is written in the same
+   * transaction that deletes the host, and CASCADE would delete the review as fast as it appeared.
+   * The host's name lives in `detail` for that case, because the id will not survive.
+   */
+  host_video_file_id:       uuid('host_video_file_id').references(() => video_files.id, { onDelete: 'set null' }),
+  /** anchor_out_of_range | source_window_out_of_range | host_deleted_detached */
+  reason:                   text('reason').notNull(),
+  /** duration_correction | media_replace | host_delete — recorded, because it is not recoverable later. */
+  change_kind:              text('change_kind').notNull(),
+  host_duration_before_sec: real('host_duration_before_sec'),
+  host_duration_after_sec:  real('host_duration_after_sec'),
+  /** As stored on the row. NOT a proposal: nothing here is ever applied to a placement. */
+  anchor_offset_sec:        real('anchor_offset_sec'),
+  window_start_sec:         real('window_start_sec'),
+  window_end_sec:           real('window_end_sec'),
+  /** Where the row played at detection — the number that lets a person find the clip. */
+  absolute_sec:             real('absolute_sec'),
+  detail:                   text('detail'),
+  detected_at:              timestamp('detected_at', { withTimezone: true }).notNull().defaultNow(),
+  resolved_at:              timestamp('resolved_at', { withTimezone: true }),
+  /** re_placed | accepted | dismissed. There is deliberately no `auto_fixed`. */
+  resolution:               text('resolution'),
+});
+
+export type PlacementImpactReview = typeof placement_impact_reviews.$inferSelect;
+export type NewPlacementImpactReview = typeof placement_impact_reviews.$inferInsert;
 
 // Editor timeline markers (migration 041) — Premiere-style flags the editor drops at a point
 // on the timeline (button or "m" hotkey) so they don't forget a note while cutting. Positioned

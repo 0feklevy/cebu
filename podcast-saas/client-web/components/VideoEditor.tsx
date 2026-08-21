@@ -14,6 +14,7 @@ import { VideoUploader } from './VideoUploader';
 import { SimulationUploader } from './SimulationUploader';
 import { BrollPanel } from './BrollPanel';
 import { ConfirmDialog } from './ConfirmDialog';
+import { VideoDependentsDialog } from './VideoDependentsDialog';
 import { ImageCropEditor } from './ImageCropEditor';
 import { ExtendedLibraryModal } from './avatar/ExtendedLibraryModal';
 import { LibraryShareButton } from './library/LibraryShareButton';
@@ -26,7 +27,7 @@ import {
   rememberServedSimUrls, servedSimulationUrl, withRepublishedServedUrls, type RememberedServedUrl,
 } from '../lib/simServedUrl';
 import { getStoredSelection } from '../lib/simUiControls';
-import type { VideoFile, TimelineSection, TimelineMarker, Simulation, VideoGenerationJob, ImageFile, AudioFile } from 'shared/src/generated/client-v1';
+import type { VideoFile, TimelineSection, TimelineMarker, Simulation, VideoGenerationJob, ImageFile, AudioFile, VideoDeleteBlocked, VideoDeleteChoice } from 'shared/src/generated/client-v1';
 
 type ToolMode = 'video' | 'simulation' | 'broll';
 
@@ -313,6 +314,10 @@ export function VideoEditor({ projectId }: Props) {
   const [deletingId,    setDeletingId]    = useState<string | null>(null);
   // Confirm dialogs
   const [confirmVideo, setConfirmVideo] = useState<string | null>(null);  // videoId to delete
+  // The server's refusal to delete a video other rows are placed against (D-01b), held until
+  // the author answers it. `null` means nothing is waiting on them.
+  const [videoDependents, setVideoDependents] =
+    useState<{ videoId: string; blocked: VideoDeleteBlocked } | null>(null);
   const [confirmSim,   setConfirmSim]   = useState<string | null>(null);  // simId to delete
   const [confirmImg,   setConfirmImg]   = useState<string | null>(null);  // imageId to delete (ui-ux-005)
   const [confirmAudio, setConfirmAudio] = useState<string | null>(null);  // audioId to delete (ui-ux-005)
@@ -684,18 +689,41 @@ export function VideoEditor({ projectId }: Props) {
     setConfirmVideo(videoId);
   };
 
+  /**
+   * Apply a delete, and hand the author the question if the server asks one (D-01b).
+   *
+   * `deleteVideo` returns the refusal instead of throwing it, because the refusal is not an error:
+   * the video has sections placed against it and only a person can say what happens to them. This
+   * function therefore has two exits — the video is gone, or the dialog is now open.
+   */
+  const runDeleteVideo = async (videoId: string, dependents?: VideoDeleteChoice) => {
+    setDeletingId(videoId);
+    try {
+      const blocked = await api.deleteVideo(projectId, videoId, { dependents });
+      if (blocked) { setVideoDependents({ videoId, blocked }); return; }
+      setVideoDependents(null);
+      setVideos(v => v.filter(vid => vid.id !== videoId));
+      setSections(s => s
+        // Two different rules, mirroring the server. A row whose MEDIA is this video goes with it
+        // whatever was chosen; a row merely ANCHORED to it goes only if that is what was chosen.
+        .filter(sec => sec.video_file_id !== videoId
+          && !(dependents === 'delete' && sec.anchor_video_file_id === videoId))
+        // A detached row STAYS, at the second it plays at, with its anchor gone — which is what
+        // the author chose and what the server has flagged for them to re-place. Dropping it from
+        // the editor would hide the very thing they were just told about.
+        .map(sec => (sec.anchor_video_file_id === videoId
+          ? { ...sec, anchor_video_file_id: null, anchor_offset_sec: null }
+          : sec)));
+    } catch { /* ignore */ } finally {
+      setDeletingId(null);
+    }
+  };
+
   const confirmDeleteVideo = async () => {
     if (!confirmVideo) return;
     const videoId = confirmVideo;
     setConfirmVideo(null);
-    setDeletingId(videoId);
-    try {
-      await api.deleteVideo(projectId, videoId);
-      setVideos(v => v.filter(vid => vid.id !== videoId));
-      setSections(s => s.filter(sec => sec.video_file_id !== videoId));
-    } catch { /* ignore */ } finally {
-      setDeletingId(null);
-    }
+    await runDeleteVideo(videoId);
   };
 
   // Sort videos by created_at ASC (oldest = clip 1)
@@ -1818,10 +1846,21 @@ export function VideoEditor({ projectId }: Props) {
     {confirmVideo && (
       <ConfirmDialog
         title="Delete video clip?"
-        description="This will permanently delete the video and all timeline sections that reference it. This cannot be undone."
+        description="This will permanently delete the video and the sections made from it. If other clips are placed against it, you will be asked what happens to them. This cannot be undone."
         confirmLabel="Delete video"
         onConfirm={confirmDeleteVideo}
         onCancel={() => setConfirmVideo(null)}
+      />
+    )}
+    {/* The server refused, because other rows are placed against this video. The author answers
+        (D-01b) — nothing is moved or dropped on their behalf. */}
+    {videoDependents && (
+      <VideoDependentsDialog
+        blocked={videoDependents.blocked}
+        filename={videos.find(v => v.id === videoDependents.videoId)?.filename ?? null}
+        busy={deletingId === videoDependents.videoId}
+        onChoose={(choice) => { void runDeleteVideo(videoDependents.videoId, choice); }}
+        onCancel={() => setVideoDependents(null)}
       />
     )}
     {confirmSim && (

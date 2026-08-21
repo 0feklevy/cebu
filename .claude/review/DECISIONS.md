@@ -310,8 +310,20 @@ and that no implementation begins without an explicit go-ahead.
   round is cancelled. Two things to carry forward if that changes: "parked is not fixed" still
   holds — the two P1s are real and unaddressed — and the money path that IS live today is dubbing,
   which is guarded instead by the per-user monthly ceiling shipped in this round (R-03).
-- **A P1 with no implementation:** `broll-data-001` (b-roll offsets anchored to
-  `video_files.duration_sec`) — decided, no schema or code yet.
+- ~~**A P1 with no implementation:** `broll-data-001` (b-roll offsets anchored to
+  `video_files.duration_sec`) — decided, no schema or code yet.~~ **Two corrections, 2026-08-21.**
+  (1) The premise was already stale when it was written: migration **063** shipped D-01a's anchor
+  (`anchor_video_file_id` + `anchor_offset_sec` + `placement_mode`), the one shared resolver
+  (`shared/src/timeline/placement.ts`) behind the editor, viewer, export and prewarm, and the
+  enqueue-time anchor for generated b-roll. (2) What was genuinely missing was **D-01b** — the
+  three cases a media change can be — and that is on branch `fix/broll-anchor` (not yet a PR):
+  migration **069** (`placement_impact_reviews` + the anchor FK moved SET NULL → NO ACTION), the
+  cut-to-fit clamp in the transcode job **removed** (it silently rewrote authored `start_sec`/
+  `end_sec` on every duration change), a replace now raising a review instead of clamping, and a
+  video delete that refuses until the author chooses (never re-anchoring to "the next" clip).
+  Follow-ups it does NOT close, from D-01a's own text: absolute `timeline_markers.at_sec` and
+  manual avatar ranges keep the same drift class, and the review queue has API + delete-time UI but
+  no standing panel in the editor.
 
 ## ⚪ Known and accepted
 

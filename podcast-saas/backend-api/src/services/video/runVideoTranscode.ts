@@ -4,8 +4,7 @@ import { pipeline } from 'stream/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { db, video_files } from '../../db/index.js';
-import { timeline_sections } from '../../db/schema.js';
-import { eq, and, gt, inArray, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import { transcodeToHLS, extractWaveformPeaks } from './HLSTranscoder.js';
 import { previousHlsTreeToGc } from './hlsVersioning.js';
@@ -16,8 +15,18 @@ import { enqueueCaptionsForProject } from '../captions/CaptionService.js';
 import { beatHlsHeartbeat } from './hlsRecovery.js';
 import { fetchWithRetry } from '../../lib/fetchWithRetry.js';
 import { logger } from '../../lib/logger.js';
+import { recordHostMediaImpacts } from '../timeline/placementImpact.js';
+import type { HostChangeKind } from 'shared';
 
-export async function runVideoTranscode(video_file_id: string): Promise<{ hls_master_key: string }> {
+export async function runVideoTranscode(
+  video_file_id: string,
+  /**
+   * True when the write path SWAPPED this video's media rather than re-encoding what was already
+   * there. It changes no behaviour of the transcode itself — it decides which of D-01b's two cases
+   * a resulting placement review is filed under, and that distinction is not recoverable later.
+   */
+  { replaced = false }: { replaced?: boolean } = {},
+): Promise<{ hls_master_key: string }> {
   const storage = getStorageAdapter();
 
   console.log(`[HLS] ▶ START transcode for video_file_id=${video_file_id}`);
@@ -132,35 +141,50 @@ export async function runVideoTranscode(video_file_id: string): Promise<{ hls_ma
     console.log(`[HLS] ✅ STATUS → ready  masterKey=${result.masterKey}  duration=${result.durationSec}s  (${video_file_id})`);
     logger.info({ video_file_id, masterKey: result.masterKey }, 'HLS transcode complete');
 
-    // Cut-to-fit: clamp any timeline clip that references this video to the new duration,
-    // so a replaced/shorter source doesn't leave clips pointing past the end of the video.
-    // (No-op on a first upload — clips don't exist yet — and on a same-length replacement.)
-    if (result.durationSec > 0) {
-      try {
-        await db
-          .update(timeline_sections)
-          .set({
-            end_sec: sql`LEAST(${timeline_sections.end_sec}, ${result.durationSec})`,
-            start_sec: sql`LEAST(${timeline_sections.start_sec}, ${result.durationSec})`,
-          })
-          .where(and(
-            eq(timeline_sections.video_file_id, video_file_id),
-            gt(timeline_sections.end_sec, result.durationSec),
-            // THE TRACK PREDICATE IS LOAD-BEARING, and its absence silently destroyed user data.
-            // `video_file_id` does not mean the same thing on every track. On `main` and `broll`
-            // rows it is the media whose in/out points start_sec/end_sec address — the rows this
-            // clamp is for. On an `audio` cutaway it is only the HOST the cutaway hangs from: the
-            // row's start/end are offsets into the AUDIO file (exportPlan.ts and
-            // buildPlayerConfig.ts both consume them that way), and the client posts the first
-            // main video as the host regardless of length. So a 60-second music bed attached to a
-            // 12-second video was rewritten to end at 12 the moment that video was replaced or
-            // re-transcoded — in the player AND in the exported MP4, permanently, with the
-            // original length gone from the row and nothing surfaced to the user.
-            inArray(timeline_sections.track, ['main', 'broll']),
-          ));
-      } catch (err) {
-        logger.warn({ err, video_file_id }, 'timeline cut-to-fit clamp failed (non-fatal)');
-      }
+    // ── WHAT THIS DURATION DID TO THE ROWS PLACED AGAINST THIS VIDEO (D-01b) ────────────────
+    //
+    // This was a CLAMP: `SET end_sec = LEAST(end_sec, $new), start_sec = LEAST(start_sec, $new)`
+    // over every main/broll row pointing at this video. It read as a repair and was a silent,
+    // irreversible rewrite of authored placement data fired by a background job — no copy of the
+    // previous value, nothing shown to the author, and it had already destroyed one class of row
+    // outright (the `track IN ('main','broll')` predicate it carried was the scar left by a
+    // 60-second music bed rewritten to the length of the 12-second video under it).
+    //
+    // The ruling separates the two events it was firing on, and gives them different answers:
+    //
+    //   • A PROBE CORRECTION rewrites NOTHING. An anchored row's absolute second ripples out of
+    //     the new layout by itself — that is what the anchor added in 063 is for.
+    //   • A REPLACE can genuinely leave a window or an anchor outside the new media, and the
+    //     answer to that is a decision a person makes. Clamping picks one on their behalf,
+    //     destroys the alternative, and tells nobody.
+    //
+    // So `timeline_sections` is not written here in either case. Findings go to
+    // `placement_impact_reviews`, which the editor reads. The READ side is what keeps an
+    // over-long window safe in the meantime: the export planner caps a window to the source it
+    // can actually reach (D-01f) rather than asking ffmpeg for frames that do not exist.
+    //
+    // `video` holds the PRE-update row, so `video.duration_sec` here is still the old length.
+    const similarMedia = isSimilarMedia(
+      video.duration_sec, parsePeaks(video.waveform_peaks), result.durationSec, waveformPeaks,
+    );
+    if (video.project_id && result.durationSec > 0) {
+      // WHICH EVENT THIS WAS. `replaced` is the truth from the write path — the replace route
+      // knows what it did. The fallback is not belt-and-braces for its own sake: the transcode
+      // queue is a singleton on `videoFileId`, so a replace enqueued while another delivery is
+      // already queued can be collapsed into it and lose the flag. Media that is NOT similar to
+      // what was there before is a replace whatever the payload says, and similar media is never
+      // called a replace — so a genuine correction cannot be mislabelled in either direction.
+      const kind: HostChangeKind =
+        replaced || (!similarMedia && video.duration_sec != null)
+          ? 'media_replace'
+          : 'duration_correction';
+      await recordHostMediaImpacts({
+        projectId: video.project_id,
+        hostVideoFileId: video_file_id,
+        afterDurationSec: result.durationSec,
+        beforeDurationSec: video.duration_sec,
+        kind,
+      });
     }
 
     // Pointer is flipped — RETIRE the previous *versioned* tree (different run), if any.
@@ -179,10 +203,10 @@ export async function runVideoTranscode(video_file_id: string): Promise<{ hls_ma
     // Captions + smart-crop run on the WRITE path. Skip-if-similar: on a REPLACE where the
     // new media is essentially the same as the old (same duration + near-identical audio),
     // keep the existing captions/crop instead of re-running them ("save extra effort").
-    // A first upload (no prior media) always processes. `video` holds the PRE-update values.
+    // A first upload (no prior media) always processes. `similarMedia` is computed once above,
+    // where the same comparison decides which D-01b case this transcode is.
     if (video.project_id) {
-      const similar = isSimilarMedia(video.duration_sec, parsePeaks(video.waveform_peaks), result.durationSec, waveformPeaks);
-      if (similar) {
+      if (similarMedia) {
         logger.info({ video_file_id, project_id: video.project_id }, 'Replaced media unchanged — skipping caption/crop re-processing');
       } else {
         enqueueCaptionsForProject(video.project_id).catch(() => {});

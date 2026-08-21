@@ -33,7 +33,13 @@ export const JOB_NAMES = [
 export type JobName = (typeof JOB_NAMES)[number];
 
 export interface JobPayloads {
-  transcode: { videoFileId: string };
+  // `replaced` says the write path swapped this video's MEDIA rather than re-encoding what was
+  // already there. It does not change the transcode; it decides which of D-01b's two cases a
+  // resulting placement review is filed under, and that is not recoverable after the fact. It is
+  // deliberately NOT part of the singleton key: two deliveries for one video file are still one
+  // HLS ladder, and `runVideoTranscode` re-derives the case from the media when the flag is lost
+  // to that collapse.
+  transcode: { videoFileId: string; replaced?: boolean };
   captions: { videoId: string; force?: boolean };
   crop: { videoFileId: string };
   metadata: { projectId: string; videoFileId: string } & MetadataOptions;
