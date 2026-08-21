@@ -136,10 +136,27 @@ so this round's P1 improvements have never touched production data. Because `ALG
 idempotency hash, a re-run WOULD re-analyse all four ready videos under v1.1 — the dark-skin mIoU
 0.272→0.508 improvement is available to them the moment anyone asks for it.
 
-**Follow-ups this opens** (none urgent, all cheap): decide whether the dead public project is
-deleted or re-uploaded; confirm whether the 79 MB object was deleted by a known path or an unknown
-one — the latter would reopen the storage-leak file; and consider a one-off re-crop of the four
-healthy videos to move them onto v1.1.
+**All three follow-ups are now closed** (2026-08-21, same day):
+
+- **The missing 79 MB object was a known path.** The owner confirms deleting source files by hand.
+  The storage-leak file does NOT reopen — this was housekeeping, not an unaccounted deleter.
+- **The four healthy videos were re-cropped onto v1.1**, enqueued through the app's own
+  `enqueueJob('crop')` rather than by touching rows. All four now carry `crop_algo_version = v1.1`;
+  the two failures stayed failed, correctly, because their source objects genuinely are not there.
+  This is the first time this round's P1 work has touched production data — including the dark-skin
+  mIoU 0.272→0.508 improvement.
+- **The dead public project is to be deleted by the owner from the app**, not by SQL. It holds two
+  simulations and two `avatar_visuals`, and the delete handler's own comment explains why the path
+  matters: avatar-visual bytes live under `simulations/avatar/{uuid}/`, outside any project-scoped
+  prefix, so once the row is gone they are unreachable by every sweep that will ever exist. The
+  handler collects them before deleting; a hand-rolled delete would orphan them permanently.
+
+**A measurement fell out of the re-crop for free** — the thing the queued load test was supposed to
+produce. Four analyses ran back-to-back on production; the gaps between their `crop_updated_at`
+stamps give real durations: 5 s of video ≈ instant, 239 s ≈ 81 s, 432 s ≈ 167 s, 432 s ≈ 179 s.
+**Crop runs at roughly 0.4× realtime** — a 7-minute video is analysed in about 3 minutes. That is
+comfortable, and it independently confirms the concurrency ruling: the job is not slow, and there is
+no queue behind it.
 
 ## 🟠 Rulings made during the 2026-08-21 round (do not silently reverse)
 
