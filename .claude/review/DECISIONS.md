@@ -72,6 +72,32 @@ R-01…R-11 and a phased way of working for the implementing session.
 - Crop P0.1 (fleet-audit script), P0.2 (annotation tool) and P0.3 (real labelled set) are absent; all
   reported crop gains are measured on **synthetic fixtures**, and should not be quoted as field results.
 
+## 🔵 Requested 2026-08-21, deliberately NOT started — plan only after the release, then on approval
+
+Both were asked for while the release round was in flight, and both were parked on purpose: the
+owner's instruction is that everything else finishes first, that planning starts only afterwards,
+and that no implementation begins without an explicit go-ahead.
+
+1. **Interactive podcast, phase 2 — the three named surfaces.** *Raise Your Hand*, *Hands-Busy
+   Mode*, *Call It* (see `md-files/INTERACTIVE-PODCAST-PLAN.md`, whose phase 1 is the episode +
+   share page). The framing the owner gave, which changes the architecture from what that plan
+   assumed: **start from the video that already exists.** Take the existing project — captions
+   included — and export it as audio, either as a download for the creator or as a new section at
+   `flowvidco/audio/…`, which then becomes its own public-or-private link and the home of the
+   interactive-podcast surfaces. The hard requirement is the listening context: driving, walking,
+   eyes-and-hands busy. That includes a technical answer for **playback surviving a locked or
+   screen-off phone**, which is a real constraint (background audio, Media Session, a service
+   worker or a native shell — it is a design question, not a detail). Deliverable when it starts:
+   a considered architecture first, not code.
+2. **Public route renaming.** `/admin` becomes the control surface — the management dashboard with
+   all the data already exists on its own server, and that page moves in under this path.
+   `/podcasts` becomes `/edit-podcasts` (the creator-facing editor), which frees the podcast
+   *landing* surface for a new route: `/project/audio`, presented as a sub-project of the video —
+   the interactive-audio edition. Note before planning: renaming a live public route is a redirect
+   and SEO question as much as a routing one (`permalinkService.ts` `RESERVED_SLUGS`,
+   `LegacyRedirectResolver`, sitemaps, and any already-shared `/podcasts/...` link), and it
+   overlaps item 1's `/project/audio` target — they should be planned together, not separately.
+
 ---
 
 ## 🔴 Blocked on you — carried over from the 2026-08-19 round (two items, both small)
