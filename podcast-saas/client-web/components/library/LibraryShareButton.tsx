@@ -19,7 +19,7 @@ import type { LibraryShareState } from 'shared/src/types/library-view';
  * border-border bg-card`) so the pair reads as one group; a live link tints it with the primary
  * token rather than a hardcoded colour.
  */
-export function LibraryShareButton({ projectId, title }: { projectId: string; title: string | null }) {
+export function LibraryShareButton({ projectId }: { projectId: string }) {
   const [state, setState] = useState<LibraryShareState>(NOT_SHARED);
   const [open, setOpen] = useState(false);
 
@@ -50,7 +50,6 @@ export function LibraryShareButton({ projectId, title }: { projectId: string; ti
       {open && (
         <LibraryShareDialog
           projectId={projectId}
-          title={title}
           state={state}
           onState={setState}
           onClose={() => setOpen(false)}

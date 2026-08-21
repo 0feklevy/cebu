@@ -26,6 +26,15 @@ vi.mock('next/link', () => ({
 }));
 // The editor's share button reads Firebase on mount; nothing here signs in.
 vi.mock('../lib/firebase', () => ({ auth: { currentUser: null } }));
+// The button READS its state on mount. The project's title rides on that state — the editor has
+// only a projectId in scope — so this mock is what proves the title reaches the dialog at all.
+vi.mock('../lib/libraryShareClient', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/libraryShareClient')>()),
+  getLibraryShare: vi.fn(async () => ({
+    slug: null, url: null, cleanUrl: null, includeTypes: null,
+    expiresAt: null, createdAt: null, title: 'The Edge of Chaos',
+  })),
+}));
 
 import { LibraryMiniSite } from '../components/library/LibraryMiniSite';
 import { LibraryShareButton } from '../components/library/LibraryShareButton';
@@ -141,7 +150,7 @@ describe('10. Escape closes and focus returns to the invoking tile', () => {
 
 describe('11. the share button resolves by its accessible name (ui-ux-003)', () => {
   it('is reachable through the accessibility tree and opens the dialog', async () => {
-    render(<LibraryShareButton projectId="p1" title="The Edge of Chaos" />);
+    render(<LibraryShareButton projectId="p1" />);
 
     // Its entire visible content is an aria-hidden icon. Without the aria-label this query fails,
     // which is exactly the regression the rule exists to catch.
@@ -152,6 +161,9 @@ describe('11. the share button resolves by its accessible name (ui-ux-003)', () 
     expect(within(dialog).getByRole('button', { name: 'Close share dialog' })).toBeTruthy();
     // Unshared state offers minting; it never mutates on the first click.
     expect(within(dialog).getByRole('button', { name: /Create the link/i })).toBeTruthy();
+    // The title came from the fetched state, not from a prop: the dialog names the real video
+    // instead of falling back to "this project".
+    expect(within(dialog).getByText('The Edge of Chaos')).toBeTruthy();
   });
 });
 

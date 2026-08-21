@@ -62,12 +62,17 @@ function shareState(share: LibraryShareRow, project: ProjectRow): LibraryShareSt
     includeTypes: share.include_types as LibraryMaterialType[],
     expiresAt: share.expires_at ? share.expires_at.toISOString() : null,
     createdAt: share.created_at.toISOString(),
+    title: project.title ?? null,
   };
 }
 
-const NO_SHARE: LibraryShareState = {
-  slug: null, url: null, cleanUrl: null, includeTypes: null, expiresAt: null, createdAt: null,
-};
+/** No live link yet — but the project still has a title, and the dialog names it either way. */
+function noShare(project: ProjectRow): LibraryShareState {
+  return {
+    slug: null, url: null, cleanUrl: null, includeTypes: null, expiresAt: null, createdAt: null,
+    title: project.title ?? null,
+  };
+}
 
 export async function registerLibraryShareRoutes(app: FastifyInstance): Promise<void> {
 
@@ -130,7 +135,7 @@ export async function registerLibraryShareRoutes(app: FastifyInstance): Promise<
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
       const share = await liveShareForProject(project.id);
-      return reply.send(share ? shareState(share, project) : NO_SHARE);
+      return reply.send(share ? shareState(share, project) : noShare(project));
     },
   );
 

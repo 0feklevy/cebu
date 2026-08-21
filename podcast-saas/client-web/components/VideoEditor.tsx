@@ -1372,7 +1372,7 @@ export function VideoEditor({ projectId }: Props) {
                     `shrink-0` group and share goes FIRST, i.e. to the LEFT of Extended.
                   */}
                   <div className="flex shrink-0 items-center gap-1.5">
-                    <LibraryShareButton projectId={projectId} title={null} />
+                    <LibraryShareButton projectId={projectId} />
                     <button
                       type="button"
                       onClick={() => setExtendedLibraryOpen(true)}

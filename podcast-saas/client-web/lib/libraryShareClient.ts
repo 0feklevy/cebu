@@ -19,6 +19,7 @@ const BASE = process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === 'produ
 
 export const NOT_SHARED: LibraryShareState = {
   slug: null, url: null, cleanUrl: null, includeTypes: null, expiresAt: null, createdAt: null,
+  title: null,
 };
 
 async function authHeaders(): Promise<Record<string, string>> {

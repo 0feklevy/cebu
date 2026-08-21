@@ -754,6 +754,8 @@ export interface LibraryShareInfo {
   includeTypes: Array<'simulation' | 'image' | 'video' | 'audio'> | null;
   expiresAt: string | null;
   createdAt: string | null;
+  /** The project's title, so the share dialog can name what is being shared. */
+  title: string | null;
 }
 
 export interface PlaylistItem {

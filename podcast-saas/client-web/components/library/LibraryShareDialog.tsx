@@ -28,7 +28,6 @@ import type { LibraryShareState } from 'shared/src/types/library-view';
 
 interface Props {
   projectId: string;
-  title: string | null;
   state: LibraryShareState;
   onState: (next: LibraryShareState) => void;
   onClose: () => void;
@@ -36,7 +35,10 @@ interface Props {
 
 type Status = { tone: 'ok' | 'error'; message: string } | null;
 
-export function LibraryShareDialog({ projectId, title, state, onState, onClose }: Props) {
+export function LibraryShareDialog({ projectId, state, onState, onClose }: Props) {
+  // The title rides on the share state itself: the editor has only a projectId in scope, so the
+  // GET this dialog's opener already makes is the one place the project's name is available.
+  const title = state.title;
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<Status>(null);
   const [copied, setCopied] = useState(false);

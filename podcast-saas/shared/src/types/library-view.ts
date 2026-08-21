@@ -83,6 +83,12 @@ export const LibraryShareStateSchema = z.object({
   includeTypes: z.array(LibraryMaterialTypeSchema).nullable(),
   expiresAt: z.string().nullable(),
   createdAt: z.string().nullable(),
+  /**
+   * The project's title, so the dialog can name what is being shared. Present even when there is
+   * no live link — the project has a title either way, and the editor never holds one to pass
+   * down (`VideoEditor` receives only `projectId`).
+   */
+  title: z.string().nullable(),
 });
 export type LibraryShareState = z.infer<typeof LibraryShareStateSchema>;
 
