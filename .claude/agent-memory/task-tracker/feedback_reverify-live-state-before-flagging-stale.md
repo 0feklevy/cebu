@@ -26,3 +26,13 @@ in-flight run, `gh pr list --state open` for the repo, and `git branch --show-cu
 `git status --porcelain=v2 --branch`. Before writing "X is not reflected in the docs," grep for an
 open PR touching the same file first. Report both states explicitly when they differ: what's true
 on `main` (authoritative) vs. what's already drafted on an unmerged branch (ready, pending merge).
+
+**Second confirmed occurrence, same day (2026-08-21, later session).** A ledger-completeness audit
+(cross-checking 17 owner requests against `DECISIONS.md` + the CODEX response) opened with
+`git branch --show-current` = `feat/dubbing-languages-and-progress`; by the time the audit re-checked
+near the end, `HEAD` had silently become `main` and had fast-forwarded by two more merged PRs (#49,
+docs/crop-fleet-audit) that were not there at the start — a `DECISIONS.md` re-read mid-audit picked
+up 60 new lines (the production fleet audit section) that the first read had missed entirely. This
+is not a one-off: treat "branch/HEAD moves under you mid-session" as a standing property of this
+working tree, not an anomaly worth investigating on its own. The re-verification step in **How to
+apply** below caught it both times.

@@ -33,3 +33,19 @@ per finding, key field `currentDisposition`: `OPEN` (235), `FIXED_SELF_VERIFIED`
 self-verified by whoever proposed the fix, per the `residualRisk` field's recurring caveat.
 
 See also [[flowvid-billing-review-descoped]] and [[reverify-live-state-before-flagging-stale]].
+
+**Committed to git ≠ tracked in the ledger.** One commit (`f9414e6`, 2026-08-21) mass-flushed dozens
+of previously-untracked files in a single sweep — every agent's memory dir, several `md-files/*.md`
+plans (incl. the two ideas volumes, `FLOWVID-NEXT-STEP-IDEAS.md` "Volume 1" /
+`FLOWVID-EXPANSION-AND-GTM-IDEAS.md` "Volume 2 — GTM"), and `localCaptureProvider.ts` — while only
+touching `DECISIONS.md` for two unrelated line items. Being present and committed in `md-files/`
+says nothing about whether `DECISIONS.md` records its delivery; check both independently.
+
+**To audit ledger completeness (does the ledger cover every real request), `grep` alone is not
+enough.** `DECISIONS.md`'s own "Last updated" line names the PRs it accounts for — treat that as a
+watermark, then run `gh pr list --repo 0feklevy/cebu --state all --limit 20` and diff PR numbers
+above that watermark against ledger content by title/number. An open PR with no corresponding
+`docs(decisions):` follow-up commit is structurally invisible to `DECISIONS.md` no matter how
+thoroughly you re-read it — this is how PR #51 (94 dubbing languages + progress bar + source-language
+exclusion, opened 2026-08-21T16:58Z) had zero mentions in either ledger file despite being real,
+tested, CI-green work.
