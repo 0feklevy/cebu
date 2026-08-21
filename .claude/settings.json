@@ -48,6 +48,30 @@
       "Bash(git push:*)"
     ]
   },
+  "$autoModeComment": [
+    "permissions.allow and the auto-mode classifier are two separate gates, and an outward-facing",
+    "action has to pass BOTH. `Bash(git push:*)` above was already present when a push was refused",
+    "with 'Blocked by classifier': the classifier treats publishing and merging as outward-facing",
+    "and does not consult the allow list at all. These rules clear exactly those two cases.",
+    "",
+    "They are written as descriptions rather than command globs because the classifier reasons about",
+    "intent, and `gh pr merge --admin` is a different act from `gh pr merge` in a way no glob can",
+    "express. `$defaults` keeps every built-in rule.",
+    "",
+    "WHAT IS DELIBERATELY NOT COVERED, and still goes through the classifier every time:",
+    "  - force-pushing or any history rewrite on a shared branch",
+    "  - `--delete` of a remote ref, and pushing to any remote other than this repo's `origin`",
+    "  - `--admin` / `--bypass`, i.e. merging past required checks or branch protection",
+    "  - dispatching a release, deploying, touching the VM, or any destructive database action",
+    "The last one matters most: a merge is reversible with a revert, a deploy is not."
+  ],
+  "autoMode": {
+    "allow": [
+      "$defaults",
+      "Pushing commits or a branch to this repository's own `origin` remote with `git push`, including `-u`/`--set-upstream` on a new branch. Force-pushing, `--delete`, and pushing to any remote other than `origin` are NOT covered by this rule and remain subject to the default rules.",
+      "Merging a pull request in this repository with gh pr merge when its required checks have passed, and the branch bookkeeping that follows. Merging with --admin or --bypass is NOT covered."
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {
