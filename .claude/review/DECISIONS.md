@@ -6,17 +6,27 @@ merged into `integration/night-run` over `origin/main` @ `6c7f9bb`: the Library 
 P1). Then the R-01…R-10 rulings were executed on top. Plans and per-feature reports are in
 `podcast-saas/md-files/`.
 
-**Status: PR #45 is open and green on every blocking check, awaiting a merge that only the owner can
-authorise.** `main` is still untouched. Both `release:verify` locally and the CI gate passed on this
-tree; the WebKit lane's failure is the known flaky one, measured below rather than assumed.
+**Status: PR #45 is MERGED** — merge commit `83e5c48`, 2026-08-21T09:33Z, under the
+merge-authorization rule the owner added to `autoMode.allow`; CI on `main` is green. **The release
+is deliberately NOT cut yet**: v0.1.32–v0.1.35 already sit as undeployed draft releases while
+production runs a pre-#32 build, so the bottleneck is the VM checkout pin, not a missing tag —
+cutting v0.1.36 now would add a ninth undeployed artifact. The ruling, the evidence, and the single
+dispatch that ships the whole backlog are in the codex **Part II, R-13**; the full post-merge
+execution order is **R-19**.
 
 The prior 2026-08 remediation round is closed and archived — PRs #31–#37 merged, v0.1.30 tagged and
 built; its full record is in `DECISIONS-ARCHIVE.md` (bottom section, dated 2026-08-19). Its items
 below are still live and unchanged.
 
-Last updated: **2026-08-21**, after the overnight feature run.
-**Proposed resolutions + execution plan: `CODEX-DECISION-RESPONSE-2026-08-21.md`** — rulings
-R-01…R-11 and a phased way of working for the implementing session.
+Last updated: **2026-08-21**, post-merge of PR #45.
+**Every item in this ledger now has a written answer in `CODEX-DECISION-RESPONSE-2026-08-21.md`:**
+Part I (R-01…R-11, executed), Part II (R-12…R-19 — the 🔴 items: release order, ElevenLabs,
+crop footage, VM runbook, Supabase), and **Part III (P3-A…P3-F — everything else)**: the two 🔵
+parked features as approvable solution designs (route renames incl. the `/{slug}/audio`
+recommendation; podcast phase 2 incl. the locked-phone answer), the 🟠 constraints' unblock paths,
+each 🟡 backlog item's plan, the ⚪ risks' dispositions — including one STALE fact corrected:
+PR #44's dedicated GPU export host supersedes the "sim-capture 10× too slow" acceptance, pending
+one post-deploy measurement — and a four-round map (P3-F) sequencing all of it.
 
 ---
 

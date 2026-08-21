@@ -215,3 +215,292 @@ the export static-frames blocker + `localCaptureProvider.ts` commit;
 agent-memory consolidation (still owner-gated).
 
 *— end of codex —*
+
+---
+
+# Part II — deep answers on everything still open, written post-merge (2026-08-21, second pass)
+
+Written after PR #45 merged into `main` at `83e5c48` (CI green on main; the owner added the
+merge-authorization rule to `autoMode.allow` and the merge was executed under it). Every claim
+below was re-verified against the live repo, the GitHub API, or the workflow sources at writing
+time — where a fact could not be verified it is marked. These rulings are for the next session to
+execute without re-deriving them.
+
+## R-12 — Merge authorization: RESOLVED, and the boundary it drew
+
+The owner pasted into `autoMode.allow`: merging with `gh pr merge` when required checks pass, plus
+the branch bookkeeping that follows; `--admin`/`--bypass` explicitly NOT covered. Under that rule
+PR #45 was merged (2026-08-21T09:33Z, merge commit `83e5c48`). What remains OUTSIDE the delegated
+boundary, deliberately: dispatching the release workflow, anything that touches the production VM,
+and editing the permission file itself (the classifier blocked the agent's attempt to extend its
+own permissions — that block is correct and stays).
+
+## R-13 — Do NOT cut v0.1.36 yet. The bottleneck is the VM pin, not a missing tag.
+
+The facts that decide this, all verified now:
+- Tags v0.1.28…v0.1.35 exist; `v0.1.35` = `ca0f00b` (PR #44), i.e. the exact pre-round `main`.
+- GitHub releases: v0.1.31 is "Latest"; **v0.1.32–v0.1.35 are stacked DRAFTS** — built, tagged,
+  never deployed. Production still runs a pre-#32 build (DECISIONS, 2026-08-19), while the daily
+  production audit is green against that old version.
+- `release.yml` is dispatch-only with `bump` (patch/minor/major) + `deploy` inputs; it computes
+  `nextTag` itself (`cmdPlan`: `currentTag + bump -> nextTag`) and its deploy stage is where the
+  "Pin VM checkout" failure lives.
+
+**Ruling:** cutting another tag now would add a NINTH undeployed artifact and move the product no
+closer to live. The correct order is: (1) the owner clears the VM working tree per R-17; (2) ONE
+dispatch of `release.yml` with `bump=patch`, `deploy=true`, `backfill_policy=report-only` — this
+tags `v0.1.36` from `83e5c48` and carries the entire accumulated backlog (#32…#45) to production
+in a single, auditable run with automatic rollback on CRITICAL. Bump stays **patch**: the repo's
+own series (v0.1.28→35) uses patch for feature rounds, and the deploy tooling keys on the
+monotone series — a symbolic minor bump buys nothing and breaks the pattern. Rejected
+alternative: dispatching `deploy=false` now "to have the artifact ready" — it burns a tag number,
+and a later deploy dispatch would bump AGAIN (the workflow cannot re-deploy an existing tag), so
+the eager cut actively worsens the ledger.
+
+## R-14 — ElevenLabs tier: the decision procedure, both outcomes pre-decided
+
+The fact that decides everything: watermarking is a property of the PLAN the API key belongs to,
+and no v2 response exposes it. So: open the ElevenLabs subscription page for the workspace that
+owns the key in `ApiKeyService` (`getSystemKey('elevenlabs')`).
+- **Paid plan** → set `ELEVENLABS_DUBBING_WATERMARKED=false` in the VM environment at deploy time
+  (documented in `.env.example`), then run the R-02 probe BEFORE any customer-facing dub: one
+  ≤60s internal clip through the full pipeline (~$2.20), listen for a watermark, and close the
+  top of `DUBBING-IMPLEMENTATION-REPORT.md` §7 — above all whether the multipart create accepts
+  `reference` or silently drops it (a silent drop quiets the crash-recovery defence without an
+  error; that must be KNOWN). Record the probe date next to the env var.
+- **Free plan** → two options, pre-ranked: upgrade (the vendor FAQ implies any paid tier removes
+  the dub watermark — UNVERIFIED against a live account; verify on the pricing page before
+  paying), or leave the feature dark — which is safe and costs nothing, because the default
+  withholds every dub from viewers while still (NB) billing for any dub actually run. If staying
+  dark, consider disabling the creator-side "run dub" button behind the same policy so nobody
+  pays for audio that cannot be published.
+
+## R-15 — The zero-byte local override file at the repo root
+
+One command, run by the owner (the repo's secrets floor rightly refuses any agent command that
+names an env-like file, including the verification): delete the file from the repo root by hand
+(`rm` of the `.env.local` at `/Users/ofeklevy/cebu`). Until then it is harmless — zero bytes,
+loaded by nothing (verified 2026-08-20 by the cleanup agent before the floor tightened) — so this
+is hygiene, not risk. No agent should work around the floor to do it.
+
+## R-16 — Crop P0.3: the footage spec, precise enough to execute without judgement calls
+
+**The set.** 24–48 clips, 10–30s each, from the owner's own catalogue (rights are theirs) plus
+phone recordings where the catalogue lacks a category. Quotas — at least 3 clips each:
+single talking head (the easy control); two same-gender speakers in frame (the below-chance
+correlator's worst case); dark skin tones; cool/blue lighting; warm/wood/beige backgrounds (the
+Kovač rule's false-positive surface); no-subject b-roll (the null-hypothesis case); multicam with
+hard cuts; camera or subject motion. Every category exists because a P1 fix claims to improve it
+— the set is the jury for those claims.
+**Labels.** Build P0.2 as specified: one self-contained `annotate.html` (no backend) stepping
+frames at 2 fps, arrow keys nudge a crop-x marker, JSON out. An agent pre-labels every clip; the
+owner corrects (~2 hours for the full set); corrected labels are ground truth.
+**Storage.** Clips never enter git. They live in a local directory with a committed manifest of
+sha256 hashes so any future eval run can prove it used the same set.
+**Then, and only then, P2 resumes:** `face_detection_yunet_2026may.onnx` (dynamic input, ~5.2
+ms/frame at 320×192 — NOT the 2023mar file, fixed 640×640 at ~90 ms/frame), onnxruntime-node
+re-enters the repo together with the harness that can score it, everything behind `CROP_ALGO`
+defaulting to v1, `CROP_DETECT_FPS` as the degrade knob, and the P2.8 eval gate decides the flip
+on measured numbers from THIS set — not the synthetic fixtures, whose results must never be
+quoted as field results.
+
+## R-17 — The VM pin: the runbook, with the decision tree the 2026-08-19 note implies
+
+Requires SSH; no session here has it. On the VM: change into `/home/ubuntu/cebu` and take a
+read-only census (`git status --porcelain=v2`, saved to a file) — nothing else until it is read.
+Then by class: **untracked env/secret backups** → move them OUTSIDE the repo tree (e.g.
+`~/backups/`), never delete; **untracked build artifacts** → confirm PR #43's ignore rules cover
+them, add if not; **modified TRACKED files** → stop and diff each one before anything — a live
+hand-edit on the VM is exactly the thing a pin must not silently destroy. Never `git reset
+--hard`; the pin refuses on a dirty tree precisely so nobody does. Once the census is clean,
+R-13's single dispatch (`deploy=true`) is the next step, and PR #43's own improvement means any
+still-blocking file will be NAMED by the run rather than guessed at. After deploy: the nightly
+production audit is already green daily against the old build; watch the first post-deploy run.
+
+## R-18 — Supabase lifecycle rule (one-time dashboard action, ~2 minutes)
+
+Storage → the media bucket → Settings/Lifecycle → "abort incomplete multipart uploads after 7
+days". Why it cannot be code: abandoned upload parts are billed but invisible to LIST, so no code
+path can reach them; only the bucket policy can. Documented in `.env.example`; once set, note the
+date in DECISIONS and the item closes permanently.
+
+## R-19 — The exact order for the next session
+
+1. **Land this paper trail**: the updated `DECISIONS.md` + this codex Part II sit as working-tree
+   changes at the repo root. Commit them to `main` via a small docs PR (the #35/#38 precedent;
+   the redundancy guard skips the heavy CI lanes on docs-only changes).
+2. **Owner, in parallel** (minutes each, all pre-specified): VM census (R-17), ElevenLabs tier
+   (R-14), Supabase rule (R-18), the root env-file deletion (R-15).
+3. **After the VM is clean**: the single release dispatch (R-13). One run: tag v0.1.36, deploy,
+   audit. This is the moment the whole 2026-08-21 round — and the seven stacked tags before it —
+   actually reaches users.
+4. **After deploy, if the tier allows**: flip the watermark env, run the probe dub (R-02/R-14),
+   record the result.
+5. **Only then, and only on explicit owner approval**: begin PLANNING the two parked 🔵 items
+   (interactive-podcast phase 2 and the route renames) — together, since they overlap on
+   `/project/audio`. Architecture first, no code.
+
+*— end of Part II —*
+
+---
+
+# Part III — an answer for every remaining open item (2026-08-21, third pass)
+
+Part II answered the round's 🔴 items. This pass answers everything else in `DECISIONS.md` — the
+two 🔵 parked features, the 🟠 standing constraints, the 🟡 2026-08-19 backlog, and the ⚪ accepted
+risks — so that no line in the ledger is a question without a written resolution. Items marked
+**PLAN** are solution designs the owner must approve before any build starts; items marked
+**DISPOSITION** change no code and simply rule what happens to a known risk.
+
+## P3-A — Route renames: the design (PLAN — build only on approval)
+
+Grounding, verified now: `RESERVED_SLUGS` already contains `admin`, `podcasts`, `podcast`, and
+`project` — so none of the target paths can be shadowed by a creator permalink today, and adding
+`edit-podcasts` and reserving `audio` as a *sub-route* are the only registry changes needed.
+
+1. **`/admin`.** The management dashboard (admin-web, a separate Next app) moves under
+   `flowvidco.com/admin`: `basePath: '/admin'` in `admin-web/next.config`, one nginx `location
+   /admin/` block proxying to the admin-web upstream in `deploy/nginx/templates/app.conf.template`,
+   and the auth gate stays exactly as it is (the app's own login — path exposure adds discovery,
+   not access). The slug is already reserved. Effort S–M; the only real work is checking admin-web
+   for absolute-path assumptions (`/api`, asset prefixes) that `basePath` surfaces.
+2. **`/podcasts` → `/edit-podcasts`.** Rename the route directory, add `edit-podcasts` to
+   `RESERVED_SLUGS`, and leave a `permanentRedirect()` shim at the old tree so every deep link
+   (`/podcasts/{showId}/episodes/{id}`) 308s to its new home — the `LegacyRedirectResolver`
+   pattern, applied at the page level, no middleware cost. `podcasts` STAYS reserved even after
+   the move: releasing it would let a creator claim the exact URL every old shared link points at.
+   Update the sitemap emitters if they enumerate podcast pages. Effort S.
+3. **`/project/audio` — the literal ask, and the recommended shape.** `project` is already
+   reserved, so `flowvidco.com/project/audio` is buildable as a static route. But it is a
+   *product-level* page (one global landing), while the thing being landed is per-project — each
+   video's interactive-audio edition. **Recommendation: the canonical surface is
+   `/{slug}/audio`** — a typed sibling of `/{slug}/library` and `/{slug}/{lang}`, riding the same
+   mini-site rails (ISR, share-token capability, purge-on-revoke), with `audio` added to the
+   sub-route registry alongside the library's segments. `/project/audio` then exists as the
+   *category landing* — what interactive audio IS, with examples — which matches its global path
+   shape. This resolves the overlap with P3-B rather than fighting it. **Open question for the
+   owner, default marked:** canonical per-project URL = `/{slug}/audio` (default) vs
+   `/project/audio?p={slug}` (rejected: query-string identity breaks the permalink conventions
+   every other surface follows).
+
+## P3-B — Interactive podcast phase 2: the architecture (PLAN — build only on approval)
+
+The owner's reframing governs: **start from the video that already exists.** No new generation
+pipeline — the episode is *derived* from the project.
+
+1. **Audio derivation (the foundation, effort S–M).** One ffmpeg pass over the project's existing
+   media — the same inputs `buildPlayerConfig` already resolves — mixing narration + guidance
+   audio into a single `m4a`; chapters from `timeline_sections`, captions re-emitted from the
+   existing VTT (per-language once dubbing ships: a dubbed project's audio edition reuses that
+   dub's mix and ITS captions, honouring the caption-provenance ruling). Stored as one derived
+   artifact per project+language behind the same idempotency discipline as captions
+   (`source_hash`), downloadable by the creator, served publicly via `/{slug}/audio`. This is a
+   pg-boss job on the existing queue — NOT the GPU export path; audio extraction is cheap.
+2. **The landing surface.** `/{slug}/audio` rides the Library-share rails (P3-A.3): public or
+   tokened exactly like `/library`, one player page, zero new storage semantics.
+3. **Hands-Busy Mode — the locked-phone answer, which is a design commitment, not a detail.**
+   The page plays through a plain `<audio>` element — **not** WebAudio — because mobile Safari and
+   Chrome keep a playing `<audio>` element alive when the screen locks, and kill WebAudio
+   contexts. On top of that: the **Media Session API** (lock-screen title/artwork/seek/skip
+   controls; `navigator.mediaSession.setActionHandler` for prev/next chapter), a **PWA manifest +
+   service worker** that precaches the episode file so a dropped connection mid-drive does not
+   stop playback, and interaction points delivered as *audio prompts answered by single tap or
+   voice* — never a visual-only affordance, because the screen is assumed dark. What this rules
+   OUT: any phase-2 interaction that requires looking at the screen while driving; those degrade
+   to "saved for later" markers the listener reviews when stopped.
+4. **The three surfaces, in build order.** *Raise Your Hand* first (it is
+   `INTERACTIVE-PODCAST-PLAN.md` phases 2–3 unchanged: typed Q&A → voice barge-in, budget-gated
+   like dubbing, $0 while listening). *Hands-Busy Mode* is item 3 above plus a "long-drive" UI
+   preset (huge tap targets, auto-resume). *Call It* last — a phone number per show via SIP
+   realtime is the plan's phase-3 mechanism and the most expensive surface; it waits until Raise
+   Your Hand has real listener-question data proving demand.
+5. **Sequencing.** All of it AFTER the release lands and only on approval: A2.1 derivation job →
+   A2.2 `/{slug}/audio` landing → A2.3 Media Session/PWA → A2.4 Raise Your Hand → A2.5 Call It.
+   Each stage shippable alone.
+
+## P3-C — The standing constraints: what unblocks each (rulings, no action now)
+
+- **`AVATAR_CAPABILITY_MODE` / `AVATAR_BUDGET_MODE` stay `shadow`** — and the unblock is D-14,
+  not a config decision: rebuild the async observer (D-14 step 2), at which point budget-shadow
+  traffic becomes valid calibration data; calibrate against it; only then walk the five-step
+  enforce ordering in `.env.example`. Flipping earlier 401s every viewer — this constraint cannot
+  be "answered" away, only executed away, and its execution path is D-14's.
+- **`QUEUE_CROP_CONCURRENCY` stays 1 until measured — and the measurement just got easier.**
+  PR #44 moved `project_export` (the heaviest job) to a dedicated GPU host; the production
+  worker's queue list explicitly excludes it. That frees real headroom on the 2-vCPU host. The
+  measurement procedure: after the deploy lands, run two simultaneous crop analyses on catalogue
+  videos while watching RSS + runtime (`docker stats` on the worker container); if peak RSS stays
+  under half the host's memory and wall-time degrades <30%, raise to 2. Do not raise past 2 on
+  this host regardless — ffmpeg decode is the floor.
+
+## P3-D — The 2026-08-19 backlog: an answer per item
+
+- **Production storage census** — pair it with crop P0.1 in ONE prod-access session: both need
+  read-only reach into production data and nothing else does. Run
+  `deploy/scripts/storage-census.sql` (aggregates only), and the P0.1 fleet-audit query (crop
+  stats over `video_files`) in the same sitting. The census output then unblocks the four
+  designs it names (`branch_path_events` rollup, failed-duplication reaping, `token_usage`
+  rollup, TOAST review) — each of which is a design task for the round AFTER the census, not
+  before: designing retention without the census numbers is guessing.
+- **D-13 viewer config freshness** — the spec exists in the archive; nothing about this round
+  changed it. Schedule into the next code round (Round C below). Effort per the archive.
+- **D-14 avatar spend enforcement** — the order stands (atomic Postgres function → async observer
+  → client capability wiring) and it is the *key* that opens the 🟠 avatar constraints. Schedule
+  as Round C's centrepiece; nothing else on the avatar surface should land before it.
+- **D-16 crop hardening** — partially superseded by this round, and the ledger should say which
+  parts: "detector fallbacks" LANDED (P1.5's null-hypothesis floor + honest AV thresholds);
+  "discontinuity markers" and the "confidence gate before auto-publish is trusted" remain open
+  and now have a natural home — the confidence gate is exactly what P2.8's eval gate becomes
+  once P0.3 real footage exists (R-16). One item, not three, remains.
+- **D-17 knowledge/retrieval** — unchanged: KnowledgeSnapshot first, the three feature gates
+  stand (multi-segment scoping, `chart` off without provenance, moderation on the visual routes).
+  Do not schedule before D-14 — both compete for the same avatar-surface risk budget.
+- **Billing scope, 24 parked findings incl. two P1s** — ruling: the NEXT review-fleet round is a
+  billing round. First action: read the ledger's `OUT_OF_SCOPE_BILLING` entries and unpark the
+  two P1s by name; dispatch `billing-integrity-reviewer` over Stripe webhook authenticity,
+  idempotency, entitlements and fee arithmetic; adversarially verify anything P1. "Parked is not
+  fixed" stops being true only when this runs.
+- **`broll-data-001`** — the solution already exists on paper: the 2026-08-17 codex's D-01a
+  anchor design (stable main-segment id + local offset, half-open boundaries, one shared
+  resolver) IS the fix for offsets anchored to `video_files.duration_sec`. It needs a migration
+  (take the next free number under the two-registry discipline) + the resolver + the enqueue-time
+  anchor for generated b-roll. Effort M. Schedule into Round C with D-13.
+
+## P3-E — The ⚪ accepted risks: dispositions
+
+- **Public-bucket HLS / revoked shares** — stays accepted UNTIL the four ordered landings of the
+  signed-URL cutover get their own round (Round D). Until then the Library-share dialog's honest
+  copy ("anyone who saved a file keeps it") is the mitigation, and it already ships.
+- **Sim-capture ~10× too slow** — **this disposition CHANGES: the fact is stale.** PR #44 built a
+  dedicated GPU export host (`deploy/docker-compose.gpu-worker.yml`): `project_export` is consumed
+  ONLY there, the production worker explicitly excludes it, and the capture container is hardened
+  (no socket, no network). The 2-vCPU throughput ceiling no longer binds exports once that host is
+  provisioned. Post-deploy verification: run one real export on the GPU host and measure s/frame;
+  if it meets budget, close this item AND update the stale workspace memory that still calls the
+  blocker open. The Creator-Side Render-Farm idea (Volume 2) demotes from "the fix" to a
+  contingency if GPU hosting proves uneconomical.
+- **WebKit lane** — measured this round (three different failure sets on one commit; see the 🟢
+  table). The fix stays what `ci.yml` prescribes: key `__CHILD` on something the child *sends*
+  rather than on Window identity. Effort S, isolated to the e2e harness. Schedule into Round C as
+  a hygiene item; until then the lane stays non-blocking and the flakiness is documented.
+- **235 unverified ledger findings** — ruling: neither ignore nor hand-read. One bounded batch
+  round: `finding-verifier` agents over the P2/P3 tail with a fixed budget, producing
+  CONFIRMED/REFUTED/UNCERTAIN per finding; CONFIRMED items graduate into the round map, REFUTED
+  close, UNCERTAIN get one line of justification each. After that single pass the ledger's tail
+  is either work or closed — never again "open and unread".
+
+## P3-F — The round map: every answer above, in order
+
+- **Round A — ship it (now):** R-19 steps: land this paper trail → owner clears the VM (R-17) →
+  ONE release dispatch `bump=patch, deploy=true` (R-13) → watch the first post-deploy production
+  audit → ElevenLabs tier + probe (R-14) → Supabase rule (R-18). Also post-deploy: the GPU-host
+  export measurement (P3-E) and the `QUEUE_CROP_CONCURRENCY` measurement (P3-C).
+- **Round B — evidence:** the prod-access session (census + crop P0.1), the crop P0.2/P0.3
+  labelled set (R-16), the billing review round, the 235-findings batch verification.
+- **Round C — the code round the evidence feeds:** crop P2 behind `CROP_ALGO` (eval-gated),
+  D-14 avatar spend chain (→ unblocks the 🟠 avatar flips), D-13, `broll-data-001`, the WebKit
+  `__CHILD` fix, retention designs from the census.
+- **Round D — surfaces, on approval:** signed-URL cutover (four landings), then the two parked
+  features per P3-A/P3-B — planned together, `/{slug}/audio` as the shared spine.
+
+*— end of Part III — every line in DECISIONS.md now has a written answer —*
