@@ -5,6 +5,8 @@ import type { PlayerConfig } from './types';
 import type { LockedContent } from 'shared/src/generated/client-v1';
 import { readPlayerConfigResponse } from './lockedResponse';
 import { readinessOf } from './segmentReadiness';
+import { applyConfigRevision } from './configRevision';
+import { useConfigFreshness } from './useConfigFreshness';
 import { HLSPlayerShell } from './HLSPlayerShell';
 import { branchNavigate } from './branchNavigate';
 import { PaywallOverlay } from '../PaywallOverlay';
@@ -40,6 +42,13 @@ export function ViewerPage({ projectId }: Props) {
   const [avatarOpen, setAvatarOpen] = useState(false);
   const [captionMenuOpen, setCaptionMenuOpen] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  /**
+   * D-13. The ETag of the payload currently on screen, minted by whichever fetch last delivered
+   * one. It is what makes the freshness poll below a CONDITIONAL request from its very first tick
+   * — an unconditional one would put the whole config back on the wire and, on the share and
+   * permalink surfaces, be counted as another view.
+   */
+  const configEtagRef = useRef<string | null>(null);
   // Wait for Firebase auth to resolve before fetching — otherwise a fresh tab
   // fetches with no token and the owner is treated as anonymous (paid content
   // shows the paywall to its own creator).
@@ -67,10 +76,15 @@ export function ViewerPage({ projectId }: Props) {
     const check = async () => {
       try {
         const token = await getIdTokenRef.current().catch(() => null);
+        // `no-store` keeps the browser's HTTP cache out of the readiness path: the D-13 poll
+        // supplies its own validator, and a browser-generated revalidation would look like ours
+        // at the server while belonging to no session.
         const r = await fetch(`${API_URL}/api/v1/projects/${projectId}/player-config`, {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
+          cache: 'no-store',
         });
         if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+        const etag = r.headers.get('etag');
         // The endpoint answers with ONE of two shapes. Reading it as an intersection made every
         // field of both look present and put `data.segments.length` one line away from a
         // TypeError on any third shape — which the catch below rendered to the viewer verbatim
@@ -121,7 +135,13 @@ export function ViewerPage({ projectId }: Props) {
           // Deliver what exists now. The committed-revision pinning in useProjectPlayer means a
           // later config cannot swap a shot out from under a viewer mid-playback, and
           // useProjectPlayer's own sync effect fills in URLs that arrive after this point.
-          setConfig(data);
+          //
+          // D-13: through `applyConfigRevision` rather than `setConfig(data)` directly, so a tick
+          // whose payload is byte-identical to the one on screen returns the SAME object and
+          // React bails out — instead of handing the shell a fresh `segments` array, which is
+          // what resets caption state. New segment data still goes through untouched.
+          if (etag) configEtagRef.current = etag;
+          setConfig((prev) => applyConfigRevision(prev, data));
           setProcessing(false);
           // KEEP POLLING while anything is still transcoding.
           //
@@ -146,6 +166,26 @@ export function ViewerPage({ projectId }: Props) {
     intervalRef.current = setInterval(check, POLL_INTERVAL_MS);
     return stop;
   }, [projectId, authLoading, recheck]);
+
+  /**
+   * D-13 — the deliberate delivery path for an editorial correction.
+   *
+   * The readiness poll above answers "is the video ready yet?" and correctly stops once every
+   * segment is terminal. That termination used to end ALL config delivery for the session, which
+   * is the defect this replaces: from then on a corrected b-roll list reached React only by
+   * accident, when the auth context happened to re-render.
+   *
+   * The two polls do not overlap in purpose and barely overlap in time — the readiness one is
+   * already stopped for the vast majority of a watch — and they share one ETag, so whichever
+   * delivers a payload leaves the other revalidating against it.
+   */
+  useConfigFreshness({
+    url: `${API_URL}/api/v1/projects/${projectId}/player-config`,
+    enabled: !!config && !locked && !error,
+    etagRef: configEtagRef,
+    getToken: () => getIdTokenRef.current().catch(() => null),
+    onRevision: (next) => setConfig((prev) => applyConfigRevision(prev, next)),
+  });
 
   if (locked) {
     return (
