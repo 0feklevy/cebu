@@ -13,6 +13,7 @@
  */
 
 import { db } from '../db/index.js';
+import { DUBBING_LANGUAGES } from './dubbing/languages.js';
 import { projects, playlists, library_shares } from '../db/schema.js';
 import { and, eq, isNull, like, ne, or, type SQL } from 'drizzle-orm';
 import { slugify, dedupeSlug } from './seo/SlugService.js';
@@ -53,7 +54,9 @@ export const RESERVED_SLUGS = new Set([
  * future route that wants to live at `/{slug}/{something}` can check whether that name is already
  * spoken for by a translation, rather than discovering the overlap in production.
  */
-export const PERMALINK_LANGUAGE_SUFFIXES = new Set(['en', 'es', 'he']);
+export const PERMALINK_LANGUAGE_SUFFIXES: ReadonlySet<string> = new Set(
+  DUBBING_LANGUAGES.map((l) => l.code),
+);
 
 /** Whether a second path segment under a permalink names a dubbed language rather than a page. */
 export function isDubbingLanguageSuffix(segment: string): boolean {

@@ -174,8 +174,15 @@ describe('cost — the arithmetic the creator sees before the run', () => {
 });
 
 describe('language codes — the rules that produce a vendor error rather than a fallback', () => {
-  it('offers he, es and en, and the URL suffix IS the base code', () => {
-    expect(DUBBING_LANGUAGES.map((l) => l.code).sort()).toEqual(['en', 'es', 'he']);
+  it('offers the vendor set, and the URL suffix IS the base code', () => {
+    // This used to pin the exact three languages the product shipped, which made expanding the
+    // table a test failure rather than a feature. What actually has to hold is the SHAPE: every
+    // offered code is a bare base code, because that code is also the public URL suffix.
+    expect(DUBBING_LANGUAGES.length).toBeGreaterThan(80);
+    for (const l of DUBBING_LANGUAGES) expect(l.code).toMatch(/^[a-z]{2,3}$/);
+    for (const code of ['en', 'es', 'he']) {
+      expect(DUBBING_LANGUAGES.some((l) => l.code === code), code).toBe(true);
+    }
   });
 
   it('collapses a dialect to its base code for storage and the URL', () => {
@@ -201,7 +208,10 @@ describe('language codes — the rules that produce a vendor error rather than a
   });
 
   it('rejects an unoffered language before any billable call can be made', () => {
-    expect(vendorTargetLanguage('fr')).toBeNull();
+    // `fr` used to stand in for "not offered" and now is — the guard is what matters, not which
+    // language demonstrates it, so this uses tags the vendor genuinely does not dub into.
+    expect(vendorTargetLanguage('xx')).toBeNull();
+    expect(vendorTargetLanguage('tlh')).toBeNull();
     expect(normalizeDubbingLanguage('klingon')).toBeNull();
   });
 

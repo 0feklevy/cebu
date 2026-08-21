@@ -895,6 +895,8 @@ export interface DubbingLanguageOption {
   name: string;
   /** The language's own name — what a viewer picking it should actually see. */
   endonym: string;
+  /** True when this is the language the video is already in — shown, but never a valid target. */
+  is_source?: boolean;
   /** Right-to-left script; the caption overlay needs it to set `dir`. */
   rtl: boolean;
 }
@@ -939,6 +941,8 @@ export interface DubCostEstimate {
 }
 
 export interface ProjectDubsResponse {
+  /** The project's declared source language, or null when it has never been declared. */
+  source_language?: string | null;
   dubs: ProjectDub[];
   supported_languages: DubbingLanguageOption[];
   estimate: DubCostEstimate;
