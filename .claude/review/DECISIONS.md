@@ -54,6 +54,26 @@ R-01…R-11 and a phased way of working for the implementing session.
   `LibraryShareInfo` ≡ `shareState()`, `ProjectDub` ≡ `toView()`, `DubCostEstimate` and
   `ProjectDubsResponse` field-for-field. No drift shipped.
 
+## 🟢 CI evidence from PR #45 — the WebKit lane is flaky, and now measured
+
+PR #45 (`integration/night-run` → `main`) ran green on every blocking check: Release verification
+gate, Static audits, Redundancy guard, and the chromium and firefox e2e lanes. WebKit failed, and
+because that lane is `continue-on-error` by design it does not veto the merge — but it was worth
+proving the failure was not ours, so it was measured rather than waved through:
+
+| run | WebKit result |
+|---|---|
+| `feat/gpu-capture-grant` (before this round) | 1 failed — scenario 11 |
+| `fix/deploy-blocked-by-untracked` (before this round) | 2 failed — scenarios 9 **and** 11 |
+| PR #45, first run | 3 failed — 9, 11, **32** |
+| PR #45, **re-run of the same commit** | **1 failed — scenario 11.** 37 passed |
+
+The same commit produced three different failure sets across runs, and the re-run landed exactly on
+the documented baseline. So scenarios 9 and 32 are **flaky on Linux WebKit, not regressions** —
+which also updates what `ci.yml` records: the comment there describes a single reproducible failure,
+when in fact the lane's failure count varies run to run. Worth folding into that comment when the
+`__CHILD` Window-identity assumption is finally fixed.
+
 ## 🟠 Rulings made during the 2026-08-21 round (do not silently reverse)
 
 - **Captions for a dubbed language come from that dub's own segments — never from an independent
