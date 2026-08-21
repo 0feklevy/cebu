@@ -1,10 +1,14 @@
 # Open decisions
 
 **A feature round is open (2026-08-21).** Three features were built overnight on three branches and
-merged into `integration/night-run` (20 commits over `origin/main` @ `6c7f9bb`): the Library Share
-mini-site (Phase 1), ElevenLabs Dubbing v2 with a viewer language switcher, and crop v2 (P0 harness +
-all of P1). `pnpm release:verify` passes on the integrated branch. **Nothing is pushed, no PR is open,
-`main` is untouched.** Plans and per-feature reports are in `podcast-saas/md-files/`.
+merged into `integration/night-run` over `origin/main` @ `6c7f9bb`: the Library Share mini-site
+(Phase 1), ElevenLabs Dubbing v2 with a viewer language switcher, and crop v2 (P0 harness + all of
+P1). Then the R-01…R-10 rulings were executed on top. Plans and per-feature reports are in
+`podcast-saas/md-files/`.
+
+**Status: PR #45 is open and green on every blocking check, awaiting a merge that only the owner can
+authorise.** `main` is still untouched. Both `release:verify` locally and the CI gate passed on this
+tree; the WebKit lane's failure is the known flaky one, measured below rather than assumed.
 
 The prior 2026-08 remediation round is closed and archived — PRs #31–#37 merged, v0.1.30 tagged and
 built; its full record is in `DECISIONS-ARCHIVE.md` (bottom section, dated 2026-08-19). Its items
@@ -90,8 +94,11 @@ when in fact the lane's failure count varies run to run. Worth folding into that
   no information, not as tuning a threshold.
 - **Language switching is a full document load, not a soft navigation.** The player holds live hls.js
   instances on two `<video>` elements; a soft nav leaves them attached and the picture changes while
-  the audio does not. Playback position is therefore not preserved; the `?t=` + `initialSeekSec`
-  follow-up is specified in `DUBBING-IMPLEMENTATION-REPORT.md` (~a day).
+  the audio does not. This constraint stands. What changed in R-04 is only how the position survives
+  it: the offset now rides out on `?t=` and is consumed once, on the first play, through the scrub
+  path — which was **extracted, not reimplemented**, so the in-flight-swap rule whose comment records
+  wedging the player permanently guards the resume too. Do not "simplify" that by writing a second
+  seek.
 
 ## 🟡 Known gaps that ship with this round
 
