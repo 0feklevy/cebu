@@ -1,8 +1,10 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
-import { timeline_sections, simulations, video_files, branch_sequences } from '../../db/schema.js';
-import { eq, and, asc } from 'drizzle-orm';
+import {
+  timeline_sections, simulations, video_files, branch_sequences, placement_impact_reviews,
+} from '../../db/schema.js';
+import { eq, and, asc, desc, inArray, isNull } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { editableProject } from '../../services/collabAccess.js';
 import {
@@ -24,6 +26,7 @@ import {
 } from '../../services/simulation/simulationUrlResolver.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { logger } from '../../lib/logger.js';
+import { resolveReviewsAfterReplacement } from '../../services/timeline/placementImpact.js';
 import {
   newTimelineSectionViolations, sortTimelineSections, timelineSectionViolations,
   anchorPlacementViolations, buildMainSegmentTimeline, deriveAnchorForAbsoluteSec, isAnchorable,
@@ -533,6 +536,89 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
     },
   );
 
+  /**
+   * GET /api/v1/projects/:id/placement-impacts — the queue of decisions the author still owes.
+   *
+   * Opened by the transcode job when a media change leaves a placement outside its host, and by
+   * the video delete when an author explicitly detaches an orphan. Every item is a row that was
+   * KEPT EXACTLY AS AUTHORED: this endpoint is the whole reason it was safe not to clamp it.
+   *
+   * The stored numbers are the ones captured AT DETECTION; `placement` is where the row sits right
+   * now, resolved through the one resolver. Both are returned because they answer different
+   * questions — "what broke" and "where is it today" — and the second has usually moved again.
+   */
+  app.get<{ Params: { id: string } }>(
+    '/api/v1/projects/:id/placement-impacts',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const project = await editableProject(request.params.id, user);
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+
+      const [reviews, timeline] = await Promise.all([
+        db.query.placement_impact_reviews.findMany({
+          where: and(
+            eq(placement_impact_reviews.project_id, project.id),
+            isNull(placement_impact_reviews.resolved_at),
+          ),
+          orderBy: [desc(placement_impact_reviews.detected_at)],
+        }),
+        mainTimelineFor(project.id),
+      ]);
+
+      const sectionIds = [...new Set((reviews ?? []).map((r) => r.section_id))];
+      const rows = sectionIds.length > 0
+        ? await db.query.timeline_sections.findMany({
+            where: inArray(timeline_sections.id, sectionIds),
+          })
+        : [];
+      const placed = new Map(
+        placeSections(rows ?? [], timeline).map((r) => [r.id, r.placement]),
+      );
+
+      return reply.send({
+        project_id: project.id,
+        open: (reviews ?? []).map((r) => ({ ...r, placement: placed.get(r.section_id) ?? null })),
+      });
+    },
+  );
+
+  /**
+   * POST /api/v1/projects/:id/placement-impacts/:reviewId/resolve — close one item, explicitly.
+   *
+   * The body names what the author decided; nothing is inferred and no placement is changed here.
+   * `re_placed` is not accepted from this route: "the author moved it" is a claim only a write to
+   * the section can make, and the PATCH handler makes it there. Offering the word here would let a
+   * client mark the queue clean without anything having moved.
+   */
+  app.post<{ Params: { id: string; reviewId: string }; Body: { resolution?: string } }>(
+    '/api/v1/projects/:id/placement-impacts/:reviewId/resolve',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const project = await editableProject(request.params.id, user);
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+
+      const resolution = request.body?.resolution;
+      if (resolution !== 'accepted' && resolution !== 'dismissed') {
+        return reply.code(400).send({ message: 'resolution must be "accepted" or "dismissed"' });
+      }
+
+      const [updated] = await db
+        .update(placement_impact_reviews)
+        .set({ resolved_at: new Date(), resolution })
+        .where(and(
+          eq(placement_impact_reviews.id, request.params.reviewId),
+          eq(placement_impact_reviews.project_id, project.id),
+          isNull(placement_impact_reviews.resolved_at),
+        ))
+        .returning();
+      if (!updated) return reply.code(404).send({ message: 'Open placement review not found' });
+
+      return reply.send(updated);
+    },
+  );
+
   // POST /api/v1/projects/:id/sections
   app.post<{
     Params: { id: string };
@@ -846,6 +932,11 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
         .set(patch)
         .where(eq(timeline_sections.id, existing.id))
         .returning();
+
+      // An author who re-places an impacted row has just answered the question its review was
+      // asking, so the item closes itself (D-01b). Only on a placement write: a label edit is not
+      // an answer. Best-effort by design — see `resolveReviewsAfterReplacement`.
+      if (anchor) await resolveReviewsAfterReplacement(existing.id);
 
       // Enriched, for the reason spelled out on `withServedSimUrls`: a drag, a trim, a move and an
       // undo/redo restore all splice THIS response into the editor's section state — which is also

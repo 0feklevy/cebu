@@ -56,6 +56,7 @@ import { UsageTrackingService } from '../services/usage/UsageTrackingService.js'
 import { recordVideoUsage } from '../services/llm/systemAi.js';
 import { runVideoTranscode } from '../services/video/runVideoTranscode.js';
 import { enqueueJob } from '../queue/index.js';
+import { recordPublishedAnchorImpact } from '../services/timeline/placementImpact.js';
 import { logger } from '../lib/logger.js';
 
 const _llmService = new LLMService(new ApiKeyService(), new UsageTrackingService());
@@ -445,6 +446,14 @@ export async function runVideoGenerate(
 
       return inserted.id;
     });
+
+    // DID THE SPOT SURVIVE THE RENDER? (D-01b.) The anchor above is the one the author chose and is
+    // never re-derived — but the host may have been REPLACED with shorter media while the vendor
+    // worked, and this row did not exist when the transcode assessed that replacement, so nothing
+    // else will ever look at it. The clip is published either way; this only files a review.
+    // Outside the transaction and non-fatal: a generation that produced a video and a row has
+    // succeeded, and bookkeeping must not turn that into a retry.
+    await recordPublishedAnchorImpact({ projectId: job.project_id, sectionId });
 
     logger.info({ job_id, sectionId, videoFileId }, 'B-roll generation complete');
     return { job_id, status: 'ready', section_id: sectionId, video_file_id: videoFileId };
