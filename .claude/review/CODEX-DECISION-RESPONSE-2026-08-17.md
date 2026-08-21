@@ -975,3 +975,238 @@ precision@1, no-visual precision, stale-result rate, latency ועלות ל-turn.
 
 לאחר D-17a ניתן לסגור את correctness של הידע. D-17b נסגרת רק לאחר ה-eval וה-gates; לא נכון
 לסגור את שתיהן תחת “next-wave quality, not a blocker”.
+
+# עדכון ביצוע מחייב — 2026-08-19: release state, D-13–D-17 ו-Supabase
+
+המסמך החדש אינו מציג החלטה חדשה לבעלים; הוא handoff לביצוע. עם זאת, בדיקה מול Git,‏ GitHub,
+הקוד ב-`02e1dda` וה-ledger מצאה כמה פערים שמשנים את ה-go/no-go. אין לפרש את הכותרת “Nothing here
+is waiting on a ruling” כאישור merge או production deploy.
+
+## פסק הדין הקצר
+
+- **אין לפרוס את `v0.1.28` כעת.** הוא נבנה ונחתם, אך חסרים בו תיקונים שנכתבו אחריו, ובפרט
+  `559ed28`, שסוגר דליפת visual library בין פרויקטים. ה-release נשאר draft.
+- **אין למזג או לפרוס את `02e1dda` כעת.** הוא כולל תיקונים חשובים, אך גם regressions מאומתים
+  בזרימת pending segments; D-13 delivery עדיין לא נבנה כלל.
+- `AVATAR_CAPABILITY_MODE` ו-`AVATAR_BUDGET_MODE` אינם עוברים ל-`enforce`. ברירות המחדל בקוד הן
+  `shadow`, אבל ה-shadow של budget עדיין חוסם את request path ומייצר נתוני calibration מוטים;
+  אין לקרוא לכמה ימי traffic עליו “כיול”.
+- לפני rollout ציבורי של Avatar יש שלושה gates מקומיים: knowledge נכון ל-multi-segment/branching,
+  `chart` מושבת בלי provenance, ו-moderation מחובר בפועל ל-visual/image routes.
+- לא בוצע שום ניקוי או dedupe ב-Supabase. ה-audit היה read-only; production data אינו נגיש כרגע
+  מן ה-workspace, ולכן כל אומדן production שמופיע לפני חיבור מאושר יהיה המצאה.
+
+## מצב ה-release האמיתי
+
+`origin/main` הוא `488b551`/`v0.1.28`. ה-CI וה-builds עברו, אך GitHub run `32149868485` אינו
+“ממתין לאישור”: האישור כבר ניתן וה-deploy התחיל. הוא נכשל ב-`CHECK_REMOTE_STATUS`, מפני
+שה-working tree ב-VM תחת `/home/ubuntu/cebu` מכיל שינויים לא-מחויבים. ה-run עצר **לפני** pull,
+retag, migration או container recreation; production נשאר על הגרסה הקודמת.
+
+אין לנקות את ה-VM באמצעות `git reset --hard`. הפעולה הבאה היא read-only census של
+`git status --porcelain=v2`,‏ diff ושיוך בעלות לכל קובץ; לשמר/להתחייב/להעביר הצידה רק לאחר review.
+ה-state של ה-release כבר `FAILED`, ולכן אין “resume” עיוור. לאחר יישוב ה-working tree יש להפיק
+release חדש מ-`main` נקי, עם tag/digests חדשים וכל שערי ה-release מחדש.
+
+גם מקור העבודה שונה מן הכותרת במסמך: ה-worktree הנקי שנבדק הוא `fix/broll-conversation` ב-
+`02e1dda`, ללא upstream, וביחס ל-`origin/main` הוא 14 commits קדימה ו-3 merge commits אחורה.
+אין PR פתוח. ארבעה-עשר ה-commits האלה אינם חלק מ-`v0.1.28`, ולכן אין לערבב ראיות CI של
+`v0.1.28` עם מצב הענף המקומי.
+
+### release path מאושר
+
+1. census ושימור השינויים ב-VM; אין mutation אוטומטי.
+2. לתקן את regressions של pending segments המפורטים להלן על הענף המקומי.
+3. להעמיד את הענף על `origin/main` בצורה reviewable, לפתוח PR ולהריץ CI/release verification על
+   ה-tree המדויק שיימזג.
+4. לוודא ב-production env: שני מצבי Avatar אינם `enforce`, ו-`QUEUE_CROP_CONCURRENCY=1`.
+5. רק לאחר merge ירוק ליצור release חדש. `v0.1.28` נשאר artifact היסטורי של run שנכשל, לא יעד
+   deploy מאוחר.
+
+## D-13 — נשארת PARTIAL, ובענף יש regressions שחוסמים merge
+
+`410a658`, שכבר נמצא ב-`v0.1.28`, מספק scheduler-side atomic pinning לארבע שכבות ה-overlay.
+זה החלק שכבר בנוי. אין ב-`02e1dda` שום `ETag`/`If-None-Match`/`304` ב-player config routes,
+אין cache audience-safe, אין 60s revalidation, auth context עדיין אינו memoized, ו-playlist/course
+נשארו one-shot. share/permalink/playlist עדיין מגדילים `view_count` בכל GET.
+
+ה-commits המקומיים `c105126` ו-`09e174f` מרחיבים את processing poll, אך אינם מספקים D-13 ואף
+מכניסים ארבעה כשלים:
+
+- `playable.length > 0` מאשר config כאשר *כל* segment שהוא ready, בעוד playback מתחיל תמיד
+  ב-segment 0. segment מאוחר מוכן אינו מציל segment ראשון ללא URL.
+- `segmentsRef` נשמר מ-config הישן; `setConfig` מאוחר אינו מעביר URL חדש של segment שהפך ready.
+- prewarm רושם `standbyId` לפני שהוא מגלה URL ריק, ולכן אינו מנסה שוב כאשר ה-URL מגיע.
+- timeout/failed state של segment מאוחר אינו מוצג כאשר כבר קיים config playable; ה-viewer יכול
+  להיתקע בשקט בגבול הבא. המבחנים הקיימים בודקים predicates/source text, לא את ה-hook וה-shell
+  יחד.
+
+לפני D-13 עצמה יש לתקן את ארבעת המצבים האלה ולהוסיף integration tests אמיתיים. לאחר מכן מממשים
+את החוזה שכבר נפסק: authorization לפני cache/304; body ללא capability; cache bounded + singleflight
+של כ-5s ורק ל-audience variant בטוח; ETag ו-CORS מלא כולל preflight; recursive poll של 60s ± jitter
+רק כשהמסמך visible וה-session playing; אין overlap; refresh failure אינו קטלני; אין view counting;
+caption state נשמר; overlay bundle מוחל רק מול `timeline_revision` תואם; וכל direct/share/
+permalink/playlist/course surfaces משתמשים באותו subscription primitive.
+
+עד שהמטריצה הזאת ירוקה: אין archive ל-D-13, אין merge ל-`c105126`/`09e174f`, ואין release של
+`02e1dda`.
+
+## D-14 — ה-no-go נכון; ה-shadow הנוכחי אינו implementation של הפסיקה
+
+המצב בקוד נשאר כך:
+
+- default חסר/לא מוכר לשני המתגים הוא `shadow`;
+- budget shadow עדיין ממתין למסד ומבצע את ה-transaction המלא במסלול המשתמש;
+- cap miss ב-shadow מגלגל את ה-transaction לאחור, ולכן דווקא הזנב שמעבר ל-cap אינו נרשם;
+- אין bounded observer queue, workers, timeout או loss/latency metrics;
+- אין Postgres function אטומית בקריאה אחת; lease admission עדיין יכול לחרוג בתחרות;
+- capability endpoint קיים, אבל ה-client אינו עושה prefetch/refresh, אינו משתמש ב-token של start,
+  ו-reconnect אינו שולח capability או `startKey`;
+- lease עדיין מזוהה לפי capability `jti`, ולכן שתי פתיחות popup אמיתיות תחת token אחד עלולות
+  להתמזג; retry עשוי להיספר שוב לפני idempotency.
+
+לכן שומרים capability ב-`shadow` ואסור להפעיל budget `enforce`. גם budget `shadow` אינו source
+לכיול caps עד שה-observer המתוקן קיים. אין להעביר אותו אוטומטית ל-`off`, מפני שזו בחירת exposure
+שמאבדת את ה-DB kill/meter; אם latency של first click מחייב זאת זמנית, זו החלטה תפעולית מפורשת עם
+env kill switch וניטור, לא default סמוי.
+
+הסדר נשאר: function אטומית + concurrency/idempotency tests; observer אסינכרוני 1–2 workers;
+prefetch/refresh/reconnect בכל surface; E2E אמיתי ב-capability enforce כשה-budget עדיין shadow;
+כמה ימי traffic **תקפים**; ורק אז review של caps והפעלת budget enforce. יש להוסיף את כל משתני
+ה-rollout ל-`.env.example`/deploy docs ולבדוק את הערך האפקטיבי ב-VM—כרגע הם אינם מתועדים שם.
+
+## D-16 — `7c342ce` תיקן backend וגם client, אך auto-publish עדיין אינו בטוח
+
+הטבלה במסמך ממעיטה במה שכבר נעשה. `7c342ce` תיקן את ה-gender/region decision, חיבר
+speech-correlated motion ל-head localization, מסר committed speaker switches כריצות נפרדות,
+והוסיף בצד ה-client smoothing תלוי-זמן, snap לקפיצות גדולות, first-keyframe adoption ותיקון
+4:3 `0.2 → 0.275`. ב-HEAD שנבדק עברו 44 בדיקות crop backend ו-13 בדיקות client.
+
+עם זאת, זו עדיין הוכחה סינתטית ולא בדיקה על הקליפ המקורי או corpus מגוון. אין discontinuity marker
+ב-JSON; ה-client עדיין עושה interpolation בין keyframes, ולכן יכול להתחיל לזוז בערך 175ms לפני
+ה-switch המוצהר. no/failed audio, slides, moving single speaker ו-SAR שאינו square-pixel עדיין
+חסרים fallback בטוח. אין confidence gate, preview או opt-out.
+
+בנוסף, `QUEUE_CROP_CONCURRENCY=1` הוא יעד ולא מצב קיים: default הקוד הוא `2`, ואין override ב-
+deploy config. תנאי release מיידי הוא להוכיח שה-production env קובע `1` או לשנות את ה-default
+וה-comment. D-16 אינה חוסמת release שאינו חושף auto-crop, אבל היא חוסמת auto-publish אמין עד
+שיש discontinuities, fallback/opt-out, corpus אמיתי ומדידת RSS/runtime על 2 vCPU.
+
+## D-17 — ה-runtime isolation תוקן רק בענף המקומי; שלושה feature gates נשארים
+
+ב-`02e1dda`,‏ `559ed28` כבר סוגר את ה-global visual pool ומבחני project isolation עוברים. אין
+ליישם את זה מחדש. אבל התיקון **אינו ב-`v0.1.28` או ב-production**, ולכן זו סיבה נוספת לא לפרוס
+את artifact הישן ולחשוב שהמצב תוקן.
+
+יתר D-17 לא השתנה: longest-vs-last-captioned split-brain, delete-before-upload race, head truncation
+של 24k תוך הצגתו כ-full, היעדר playhead context, top-400 לפני relevance, היעדר `character_id`,
+cache key שאינו מתאר את reply שנוצר, charts ללא provenance, והיעדר moderation ב-Avatar visual/
+image routes.
+
+לפני public rollout:
+
+1. Ask Avatar בפרויקט multi-segment/branching מוגבל במפורש ל-current segment או מסומן unsupported.
+2. `chart` מוסר מן classifier עד שכל מספר נושא מקור מתוך `KnowledgeSnapshot`.
+3. visual/image generation עובר moderation עם fail-closed/metrics במסלול האנונימי.
+
+אחריהם: `KnowledgeSnapshot` versioned ו-branch-aware עם upload-new → CAS activate → delete-old,
+truncation ישרה ו-cue window סביב playhead; ואז one-turn visual coordinator, cache fingerprint נכון,
+relevance-first retrieval ו-character filtering. אלה feature gates, לא עילה לחסום release שאינו
+מפעיל את ה-features האלה.
+
+## תיקון ל-ledger summary
+
+334 הוא מספר השורות הנכון, אבל “No product P1 remains open” אינו תיאור נאמן של הקובץ. ב-HEAD
+שנבדק יש 235 `OPEN`,‏ 66 `FIXED_SELF_VERIFIED`,‏ 24 `OUT_OF_SCOPE_BILLING`, שלושה
+`OPEN_AUDIT_BLOCKER`, וכן `broll-data-001` ב-P1 במצב `BLOCKED_DECIDED_NOT_IMPLEMENTED` עם residual
+שאומר במפורש שאין schema/code. שני P1 נוספים הוצאו כ-billing, לא נפתרו. גם 32 שורות P1 ו-5 שורות
+P0 הן self-verified בלבד.
+
+העובדה שבמדגם לא-אקראי 26 severities ירדו ואפס עלו אינה הוכחה שה-tail “אינו מסתיר P0”. היא כן
+ראיה לנטיית overstatement בקבוצה שנבדקה; היא אינה confidence bound על 235 ממצאים פתוחים. יש לנסח
+את הסיכום כ-state של ledger, לא כהבטחת release או טענה סטטיסטית.
+
+## Supabase data/storage optimization — audit read-only
+
+### מה נבדק בפועל
+
+לא נמצא חיבור production מאושר ב-workspace. `DATABASE_URL` המקומי מצביע ל-Postgres 16 מקומי,
+ללא schema של Supabase Storage; אין מפתח SSH production,‏ Supabase S3 credentials או connector
+פעיל. ניסיון החיבור ל-VM נדחה ב-auth. לא נעשה שום write, DDL, delete, VACUUM או storage mutation.
+
+על מסד הפיתוח המקומי הורץ census בתוך `BEGIN TRANSACTION READ ONLY`: 53 טבלאות, פרויקט אחד ו-19
+exports. נמצאו שישה עותקים זהים של plan JSON, בחיסכון תיאורטי כולל של כ-8.4KB בלבד; לא נמצאו FK
+orphans או assets לא-מקושרים relationally. המדגם אומר דבר אחד שימושי: **אין הצדקה לבנות normalization
+מורכב עבור plan JSON**. הוא אינו מייצג את production ואינו מאפשר לכמת חיסכון בכל הפרויקטים.
+
+הוצעה התקנת חיבור Supabase ייעודי לקריאה בלבד, אך טרם אושרה. עד שהחיבור מאושר, אסור לפרסם מספר
+production, רשימת “פרויקטים כבדים” או אחוז חיסכון.
+
+### חיסכון בטוח ללא ירידה באיכות
+
+הסדר המומלץ מתחיל רק ב-data שאינו משמש playback, source quality, rollback או audit:
+
+1. **Export intermediates.** לאחר export `ready`, למחוק את
+   `exports/{project}/{export}/sections/*`; ה-master כבר מכיל אותם. עבור `failed|cancelled`, לאחר
+   grace, למחוק את prefix ה-export כאשר אין `output_key`. לזהות גם master orphan כאשר terminal
+   fence הפסיד. ready master נשמר.
+2. **Caption backups ישנים.** `video_files.captions_vtt` הוא source of truth וה-reader מעדיף אותו;
+   `captions_vtt_key` הוא backup legacy שכל regeneration מחליף ב-UUID חדש בלי למחוק את הקודם.
+   למחוק רק keys שאינם live; לאחר compatibility window ניתן להסיר גם backup נוכחי כאשר ה-DB VTT
+   מלא, ואז לאפס את pointer. `captions_source_hash` אינו byte hash ואסור לדלל לפיו.
+3. **Crop orphans.** `crop/{videoId}.json` נכתב overwrite בשם דטרמיניסטי. למחוק רק אם אין
+   `video_files.id` תואם. `crop_source_hash` אינו hash של bytes.
+4. **Failed project duplications.** ה-plan השמור מכיל את destination keys. לאחר grace ו-CAS של
+   `status='failed' AND target_project_id IS NULL`, למחוק בדיוק את destinations שב-plan. אין למחוק
+   את ledger לפני cleanup.
+5. **Retired HLS בלבד.** להשתמש ב-`hls_retired_runs` וב-sweeper הקיים, עם ה-grace הנוכחי וסריקה
+   bounded. אין למחוק HLS פעיל לפי filename, size או hash, מפני viewers פתוחים מחזיקים segment URLs.
+6. **Orphans שנוצרים ב-delete paths.** לתקן קודם project/video/image/podcast delete כך שהם אוספים
+   crop, caption backup, exports, image objects ו-podcast prefixes *לפני* שה-FK cascade מוחק את
+   ה-ledger. רק אחר כך להריץ sweep היסטורי.
+
+### מה לא מאחדים אוטומטית
+
+- raw video/source, active HLS renditions או media בין פרויקטים. Project duplication מעתיק bytes
+  בכוונה כדי לשמור עצמאות מחיקה/הרשאות; dedupe פיזי דורש object ownership ו-refcount חדשים.
+- simulation revisions לפי `manifest_hash`. היסטוריית rollback היא שימוש אמיתי; מפעילים רק את
+  `RevisionService.gc`, ששומר לפחות שתי revisions כשירות, ומוסיפים lister ל-orphans שנוצרו בין
+  row delete ל-prefix delete.
+- `avatar_visuals` לפי `lookup_key`, filename, URL או size. אין byte hash/unique constraint, ו-basic
+  rows יכולים לשתף `image_files.storage_key`. generated simulations גם אינם תחת project prefix.
+  קודם בונים reference graph ו-refcount; object נמחק רק באפס references.
+- podcast clips/chunks/renders לפי “לא נמצא ב-mix הנוכחי”. snapshots ו-`timeline_json` יכולים
+  להצביע לגרסה ישנה. Chunk audio הוא regenerable אך מחיקתו משנה latency ועלות TTS, ולכן אינו
+  zero-quality/no-impact cleanup.
+- `avatar_conversations`/profile memory ו-RUM מעבר למדיניות. conversation כבר מוגבלת ל-20 turns;
+  RUM כבר נחתך בבאצ'ים עם default 30 יום. TTL נוסף למידע אישי הוא החלטת privacy/product, לא
+  optimization חינמי.
+
+### production census הנדרש לפני כל delete
+
+להריץ דרך connector/credential read-only מאושר, עם `default_transaction_read_only=on`,‏
+`statement_timeout`, aggregate output בלבד וללא titles, emails, transcripts, share tokens או URLs:
+
+1. גודל DB וטבלאות/אינדקסים: logical rows, live/dead tuples, table/index/TOAST bytes ו-index usage.
+2. Storage inventory לפי bucket, prefix class, MIME, age ו-bytes; multipart leftovers בנפרד.
+3. per-project aggregates עם opaque project id: raw/source, HLS, sims/revisions/posters, exports,
+   captions/crop, avatar visuals ו-podcast assets.
+4. live-reference set מכל העמודות **וגם** JSON: `project_exports.plan/effective_plan`,
+   `project_duplications.plan`,‏ `projects.avatar_config`, simulation guidance metadata ו-podcast
+   mix/snapshot timelines. לכלול jobs in-flight.
+5. exact duplicates רק באמצעות content digest אמין; size/filename/URL/ETag של multipart אינם הוכחת
+   זהות. Semantic duplicates מקבלים report בלבד.
+6. manifest של orphan candidates עם `key`, bytes, owner class, reason וראיית DB—ב-artifact מוגבל.
+   בפרסום הראשון מציגים רק counts/bytes וסכום חיסכון conservative/likely/upper-bound.
+
+### פרוטוקול cleanup
+
+כל cleaner הוא expand/verify/delete-last: dry-run manifest → תיקון writers/delete paths → סריקת
+references שנייה מיד לפני פעולה → tombstone/grace של לפחות 24 שעות → batches קטנים עם ledger
+resumable ו-CAS → delete object → verification. listing ריק/כושל הוא failure, לא “אין references”.
+אין cleanup בזמן export, duplication, transcode או simulation publish in-flight. Rollback שומר את
+ה-manifest ואת ה-object עד סוף ה-grace.
+
+המסקנה הכלכלית כרגע: החיסכון בעל הוודאות הגבוהה נמצא ב-export intermediates וב-orphans של delete
+paths, לא בדחיסת שורות DB ולא בהורדת איכות HLS/source. אין ליישם shared-media dedupe לפני שה-census
+האמיתי מוכיח שהחיסכון מצדיק refcount, privacy boundaries ו-delete semantics חדשים.

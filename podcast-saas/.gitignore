@@ -25,8 +25,6 @@ coverage/
 .local-storage/
 **/.local-storage/
 
-# Review swarm run outputs (disposable; agent defs + protocol stay tracked)
-.claude/review/runs/
 
 # Release-verify optional public build vars + temp isolation backups
 deploy/release.env

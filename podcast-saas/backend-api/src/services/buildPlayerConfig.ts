@@ -3,6 +3,7 @@ import { db } from '../db/index.js';
 import {
   projects, video_files, timeline_sections, image_files, audio_files, scenes,
   branch_sequences, branch_choice_points, branch_edges, playlists, simulations, sim_posters,
+  video_dubs,
 } from '../db/schema.js';
 import { eq, asc, inArray } from 'drizzle-orm';
 
@@ -65,6 +66,8 @@ type PlayerChoicePoint = {
 };
 import { getStorageAdapter } from './storage/getStorageAdapter.js';
 import { captionUrlForVideo } from './captions/CaptionService.js';
+import { dubCaptionUrl, isDubServable } from './dubbing/dubRegistry.js';
+import { findDubbingLanguage } from './dubbing/languages.js';
 import { normalizeAvatarCircles, normalizeSpeakerTimeline, type AvatarCirclesLike } from './avatarCircles/normalizeAvatarCircles.js';
 import { logger } from '../lib/logger.js';
 import { resolveRumSampleRate, resolveSimRuntimeFlags, fieldAggregates } from './simulation/RumService.js';
@@ -174,6 +177,19 @@ export async function buildPlayerConfig(
   projectId: string,
   requesterUserId: string | null = null,
   preloadedProject?: typeof projects.$inferSelect,
+  /**
+   * Which dubbed language to serve, or null for the source-language track (migration 067).
+   *
+   * Deliberately a SERVER-SIDE swap rather than something the player does. When this is set, each
+   * segment's `hls_url` and `captions.vtt_url` are replaced with that language's rendition, so the
+   * viewer plays a dubbed lesson through exactly the code path it plays any other lesson through —
+   * no second player state, no audio-track switching, and no way for the audio and the captions to
+   * come from different languages, because one decision here picks both.
+   *
+   * An unknown or unavailable language falls back to the source track rather than 404ing: a
+   * shared /he link must not break when that dub is deleted or has not finished.
+   */
+  language: string | null = null,
 ) {
   const storage = getStorageAdapter();
 
@@ -247,6 +263,39 @@ export async function buildPlayerConfig(
 
   // Main video segments (uploaded by user, not AI-generated broll sources)
   const mainVideos = allVideos.filter((v) => !v.is_broll);
+
+  // ── Dubbed languages (migration 067) ────────────────────────────────────────
+  //
+  // One query for the whole project, keyed `{videoId}:{language}`, because the alternative is a
+  // lookup per segment on the hottest read path in the product. Only SERVABLE dubs are indexed —
+  // `isDubServable` rejects a watermarked or rendition-less row — so a half-finished or
+  // unshippable dub is invisible here rather than being something every read site has to remember
+  // to filter.
+  const dubRows = mainVideos.length > 0
+    ? await db.query.video_dubs.findMany({
+        where: inArray(video_dubs.video_file_id, mainVideos.map((v) => v.id)),
+      })
+    : [];
+  const servableDubs = new Map<string, (typeof dubRows)[number]>();
+  for (const dub of dubRows) {
+    if (isDubServable(dub)) servableDubs.set(`${dub.video_file_id}:${dub.target_language}`, dub);
+  }
+
+  /**
+   * A language is offered to the viewer only when EVERY main video has a servable dub in it.
+   *
+   * The strict rule is the honest one. Offering a partly-dubbed language would give a viewer a
+   * lesson that switches back to the source language partway through, with the captions following
+   * it — which reads as a broken player rather than as a partial translation. A creator sees the
+   * per-video truth on the settings page; a viewer sees only languages that work end to end.
+   */
+  const offeredLanguages = [...new Set(dubRows.map((d) => d.target_language))]
+    .filter((lang) => mainVideos.every((v) => servableDubs.has(`${v.id}:${lang}`)))
+    .sort();
+
+  // A requested language that is not fully available falls back to the source track. A shared /he
+  // link must keep working when that dub is deleted or is still processing.
+  const activeLanguage = language && offeredLanguages.includes(language) ? language : null;
 
   const simRows = new Map(projectSimulations.map((r) => [r.id, r]));
 
@@ -505,11 +554,18 @@ export async function buildPlayerConfig(
   };
 
   const buildSegment = (v: (typeof allVideos)[number]) => {
-    const hls_url = v.hls_master_key
-      ? storage.getPublicUrl(v.hls_master_key)
-      : v.hls_360p_key
-        ? storage.getPublicUrl(v.hls_360p_key)
-        : null;
+    // The dubbed rendition for the requested language, if this video has a servable one. A video
+    // without one keeps its source track — a project whose lessons are only partly dubbed plays
+    // through, in the languages it has, rather than failing whole.
+    const dub = activeLanguage ? servableDubs.get(`${v.id}:${activeLanguage}`) ?? null : null;
+
+    const hls_url = dub?.hls_master_key
+      ? storage.getPublicUrl(dub.hls_master_key)
+      : v.hls_master_key
+        ? storage.getPublicUrl(v.hls_master_key)
+        : v.hls_360p_key
+          ? storage.getPublicUrl(v.hls_360p_key)
+          : null;
     const fallback_url = hls_url;
 
     // Only non-broll sections for this main video.
@@ -567,11 +623,20 @@ export async function buildPlayerConfig(
       fallback_url,
       hls_status: v.hls_status,
       crop_url,                 // smart portrait-crop metadata (null until ready)
-      captions: {
-        status: videoCaptionStatus(v.captions_status),
-        vtt_url: captionUrlForVideo(v),
-        error: v.captions_status === 'failed' ? v.captions_error : null,
-      },
+      // THE INTEGRITY RULE, enforced structurally: when a dub is being served, its captions come
+      // from that same dub and nothing else. `dub` decided the audio two dozen lines above, so the
+      // audio and the caption text are two halves of one decision and cannot be made to disagree.
+      captions: dub
+        ? {
+            status: (dub.captions_vtt ? 'ready' : 'none') as 'none' | 'ready',
+            vtt_url: dub.captions_vtt ? dubCaptionUrl(v.id, dub.target_language) : null,
+            error: null,
+          }
+        : {
+            status: videoCaptionStatus(v.captions_status),
+            vtt_url: captionUrlForVideo(v),
+            error: v.captions_status === 'failed' ? v.captions_error : null,
+          },
       simulations,
     };
   };
@@ -972,6 +1037,23 @@ export async function buildPlayerConfig(
     description:    project.topic ?? null,
     thumbnail_url:  project.thumbnail_url ?? null,
     segments,
+    // ── The viewer's language switcher (migration 067) ──────────────────────
+    //
+    // `language` is what is PLAYING — null means the source track. `available_languages` is what
+    // the switcher may offer, and it never contains the source language, because "switch back to
+    // the original" is a different action from "switch to a translation" and the player renders it
+    // as such. Both are emitted unconditionally: a project with no dubs sends `null` and `[]`, and
+    // a viewer that receives them draws no switcher at all.
+    language: activeLanguage,
+    available_languages: offeredLanguages.map((code) => {
+      const meta = findDubbingLanguage(code);
+      return {
+        code,
+        name: meta?.name ?? code,
+        endonym: meta?.endonym ?? code,
+        rtl: meta?.rtl ?? false,
+      };
+    }),
     broll_clips:    brollClips,
     clip_overlays:  clipOverlays,
     image_overlays: imageOverlays,

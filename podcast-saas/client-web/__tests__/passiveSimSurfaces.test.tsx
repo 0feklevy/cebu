@@ -120,6 +120,10 @@ function frameRules(el: HTMLIFrameElement) {
     src: el.getAttribute('src'),
     srcdoc: el.getAttribute('srcdoc'),
     sandbox: el.getAttribute('sandbox'),
+    // `allow` DELEGATES a capability (fullscreen, autoplay) where `sandbox` REMOVES one, so the two
+    // must be pinned separately: a surface that drops `allow` silently makes a full-screen
+    // simulation un-full-screenable, and nothing else in the DOM would show it.
+    allow: el.getAttribute('allow'),
     inert: el.hasAttribute('inert'),
     ariaHidden: el.getAttribute('aria-hidden'),
     tabIndex: el.getAttribute('tabindex'),
@@ -338,6 +342,7 @@ describe('SimSurface / AdminSimSurface agree on the rules that matter', () => {
     visible: boolean;
     interactive?: boolean;
     sandbox?: string;
+    allow?: string;
     bootHide?: string[];
     fade?: boolean;
   }
@@ -349,6 +354,7 @@ describe('SimSurface / AdminSimSurface agree on the rules that matter', () => {
     { name: 'hidden srcDoc frame', props: { srcDoc: '<b>x</b>', visible: false, sandbox: 'allow-scripts' } },
     { name: 'boot-hide selectors', props: { src: SIM_URL, visible: true, bootHide: ['#hud', '.controls'] } },
     { name: 'fade disabled', props: { src: SIM_URL, visible: true, fade: false } },
+    { name: 'delegated permissions', props: { src: SIM_URL, visible: true, allow: 'fullscreen' } },
   ];
 
   for (const { name, props } of cases) {
@@ -363,6 +369,14 @@ describe('SimSurface / AdminSimSurface agree on the rules that matter', () => {
       expect(admin).toEqual(client);
     });
   }
+
+  it('delegates nothing by default — `allow` is opt-in on both surfaces', () => {
+    const a = render(<SimSurface src={SIM_URL} visible frameRef={() => {}} />);
+    expect(a.container.querySelector('iframe')!.hasAttribute('allow')).toBe(false);
+    cleanup();
+    const b = render(<AdminSimSurface src={SIM_URL} visible />);
+    expect(b.container.querySelector('iframe')!.hasAttribute('allow')).toBe(false);
+  });
 
   it('agrees on the default sandbox token set', () => {
     const a = render(<SimSurface src={SIM_URL} visible frameRef={() => {}} />);

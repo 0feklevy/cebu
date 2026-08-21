@@ -257,6 +257,57 @@
   padding: 0 8px;
 }
 
+/* ── Audio-language switcher (migration 067) ──────────────────────────────────
+   A fieldset of radios rather than a select: the current language is announced as
+   checked, arrow keys move between options for free, and the legend names the group.
+   The rows override `.viewer-cc-menu label`'s two-column grid, which is built for a
+   "name on the left, control on the right" settings row and would otherwise push each
+   radio to the far side of the menu, away from its own text. */
+.viewer-cc-menu .viewer-cc-langs {
+  border: none;
+  border-bottom: 1px solid rgba(255,255,255,.14);
+  margin: 0;
+  padding: 0 0 12px;
+  display: grid;
+  gap: 8px;
+}
+.viewer-cc-menu .viewer-cc-langs legend {
+  padding: 0 0 8px;
+  color: rgba(255,255,255,.6);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.viewer-cc-menu .viewer-cc-langs label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.viewer-cc-menu .viewer-cc-langs label:hover {
+  background: rgba(255,255,255,.07);
+}
+.viewer-cc-menu .viewer-cc-langs input[type="radio"] {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  accent-color: #fff;
+  cursor: pointer;
+}
+/* Keyboard focus must be visible on a dark surface — the browser default outline
+   disappears against this background. */
+.viewer-cc-menu .viewer-cc-langs input[type="radio"]:focus-visible {
+  outline: 2px solid #60a5fa;
+  outline-offset: 2px;
+}
+.viewer-cc-menu .viewer-cc-langs label:has(input:checked) {
+  background: rgba(96,165,250,.16);
+}
+
 .viewer-caption-overlay {
   position: absolute;
   left: 50%;

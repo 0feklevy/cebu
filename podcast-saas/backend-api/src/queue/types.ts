@@ -27,6 +27,7 @@ export const JOB_NAMES = [
   'video_generate',
   'project_duplicate',
   'project_export',
+  'dub',
 ] as const;
 
 export type JobName = (typeof JOB_NAMES)[number];
@@ -43,6 +44,11 @@ export interface JobPayloads {
   video_generate: { jobId: string };        // B-roll: external video gen (submit/poll/download/transcode)
   project_duplicate: { duplicationId: string }; // Duplicate project: copy bytes, then commit the row graph
   project_export: { exportId: string };         // Linear video export: plan, capture (Phase 2), assemble, upload
+  // Multi-language dubbing. The payload is the video_dubs row id and nothing else: every parameter
+  // of the job (language, provider, vendor ids, source hash) lives on that row, so a delivery can
+  // never carry a stale copy of something the row has since changed — and, more to the point, a
+  // retry cannot re-derive a DIFFERENT billable job from the same payload.
+  dub: { dubId: string; force?: boolean };
 }
 
 export type JobHandlers = {

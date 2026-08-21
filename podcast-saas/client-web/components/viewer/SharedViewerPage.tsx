@@ -29,9 +29,17 @@ interface Props {
   shareToken?: string;
   /** Creator-controlled public permalink ({PUBLIC_SITE_URL}/{slug}, migration 043). */
   permalinkSlug?: string;
+  /**
+   * Dubbed language to play, from the URL suffix ({slug}/he) (migration 067).
+   *
+   * Passed to the config endpoint, which returns segment URLs already pointing at that language's
+   * rendition. An unknown or unfinished language falls back to the original server-side, so a
+   * stale /he link plays rather than 404ing.
+   */
+  language?: string;
 }
 
-export function SharedViewerPage({ shareToken, permalinkSlug }: Props) {
+export function SharedViewerPage({ shareToken, permalinkSlug, language }: Props) {
   const [config, setConfig]         = useState<PlayerConfig | null>(null);
   const [locked, setLocked]         = useState<LockedContent | null>(null);
   const [error, setError]           = useState<string | null>(null);
@@ -53,9 +61,12 @@ export function SharedViewerPage({ shareToken, permalinkSlug }: Props) {
     const check = async () => {
       try {
         const token = await auth.currentUser?.getIdToken().catch(() => null);
+        // The language rides as a query param on BOTH surfaces; only the permalink expresses it
+        // in the path, and that path segment is turned back into this param by the route.
+        const langQuery = language ? `?lang=${encodeURIComponent(language)}` : '';
         const configUrl = shareToken
-          ? `${API_URL}/api/v1/share/${shareToken}`
-          : `${API_URL}/api/v1/public/permalink/${permalinkSlug}/config`;
+          ? `${API_URL}/api/v1/share/${shareToken}${langQuery}`
+          : `${API_URL}/api/v1/public/permalink/${permalinkSlug}/config${langQuery}`;
         const r = await fetch(configUrl, {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         });
@@ -127,7 +138,55 @@ export function SharedViewerPage({ shareToken, permalinkSlug }: Props) {
     check();
     intervalRef.current = setInterval(check, POLL_INTERVAL_MS);
     return stop;
-  }, [shareToken, permalinkSlug, recheck]);
+  }, [shareToken, permalinkSlug, language, recheck]);
+
+  /**
+   * Switch audio language by navigating to that language's URL.
+   *
+   * A permalink expresses the language in the PATH ({slug}/he), which is the shareable form the
+   * product asked for. A share link cannot — its path is a random token, and /v/{token}/he would
+   * read as a second token — so it carries the language as a query param. Both end at the same
+   * server-side swap.
+   *
+   * A FULL DOCUMENT LOAD, deliberately, rather than a client-side `router.push`. The player owns
+   * live hls.js instances attached to two <video> elements, and a soft navigation would hand the
+   * shell a new config while those attachments survive — the exact shape of bug where the picture
+   * changes and the audio does not. A real load guarantees every media element is rebuilt. The
+   * cost is one page load on an action a viewer takes rarely and deliberately.
+   *
+   * PLAYBACK POSITION IS PRESERVED through the URL: the viewer's global offset goes out as `t=`
+   * and the reloaded player consumes it once, on its first play, through the same code path a
+   * scrub release uses. The round trip is deliberately dumb — a number in a query string — because
+   * anything stateful would have to survive a document load that exists precisely to destroy state.
+   */
+  function changeLanguage(code: string | null, atSec = 0): void {
+    const t = Number.isFinite(atSec) && atSec > 1 ? `t=${Math.floor(atSec)}` : '';
+    const withT = (base: string, hasQuery: boolean) =>
+      t ? `${base}${hasQuery ? '&' : '?'}${t}` : base;
+    const href = shareToken
+      ? (code
+          ? withT(`/v/${shareToken}?lang=${encodeURIComponent(code)}`, true)
+          : withT(`/v/${shareToken}`, false))
+      : permalinkSlug
+        ? (code
+            ? withT(`/${permalinkSlug}/${encodeURIComponent(code)}`, false)
+            : withT(`/${permalinkSlug}`, false))
+        : null;
+    if (href) window.location.assign(href);
+  }
+
+  /**
+   * The `?t=` left by a language switch. Read once from the live URL rather than threaded through
+   * every route that renders this page — a resume offset is a property of the navigation, not of
+   * the project, and the routes have no business knowing about it.
+   */
+  const initialSeekSec = (() => {
+    if (typeof window === 'undefined') return undefined;
+    const raw = new URLSearchParams(window.location.search).get('t');
+    if (!raw) return undefined;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : undefined;
+  })();
 
   if (locked) {
     return (
@@ -209,6 +268,8 @@ export function SharedViewerPage({ shareToken, permalinkSlug }: Props) {
         onNavigate={branchNavigate}
         onCaptionMenuOpenChange={setCaptionMenuOpen}
         shareToken={shareToken ?? null}
+        onLanguageChange={changeLanguage}
+        initialSeekSec={initialSeekSec}
         bottomRightOverlay={!captionMenuOpen ? <AskAvatarButton onClick={() => setAvatarOpen(true)} label="Ask!" /> : null}
       />
 

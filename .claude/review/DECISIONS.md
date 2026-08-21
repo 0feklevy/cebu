@@ -1,14 +1,146 @@
 # Open decisions
 
-**Clean slate — the 2026-08 remediation round is closed and archived.** PRs #31–#37 merged;
-v0.1.30 tagged and built. The full record of that round, including every ruling and correction,
-is in `DECISIONS-ARCHIVE.md` (bottom section, dated 2026-08-19).
+**A feature round is open (2026-08-21).** Three features were built overnight on three branches and
+merged into `integration/night-run` over `origin/main` @ `6c7f9bb`: the Library Share mini-site
+(Phase 1), ElevenLabs Dubbing v2 with a viewer language switcher, and crop v2 (P0 harness + all of
+P1). Then the R-01…R-10 rulings were executed on top. Plans and per-feature reports are in
+`podcast-saas/md-files/`.
 
-Last updated: **2026-08-19**, at round close.
+**Status: PR #45 is open and green on every blocking check, awaiting a merge that only the owner can
+authorise.** `main` is still untouched. Both `release:verify` locally and the CI gate passed on this
+tree; the WebKit lane's failure is the known flaky one, measured below rather than assumed.
+
+The prior 2026-08 remediation round is closed and archived — PRs #31–#37 merged, v0.1.30 tagged and
+built; its full record is in `DECISIONS-ARCHIVE.md` (bottom section, dated 2026-08-19). Its items
+below are still live and unchanged.
+
+Last updated: **2026-08-21**, after the overnight feature run.
+**Proposed resolutions + execution plan: `CODEX-DECISION-RESPONSE-2026-08-21.md`** — rulings
+R-01…R-11 and a phased way of working for the implementing session.
 
 ---
 
-## 🔴 Blocked on you (two items, both small)
+## 🔴 Still blocked on you — from the 2026-08-21 feature round (three items)
+
+1. **ElevenLabs plan tier.** `ELEVENLABS_DUBBING_WATERMARKED` defaults to `true` and withholds every
+   dub from viewers. The vendor exposes no watermark field on any v2 response — it is a property of
+   the plan the API key belongs to — so this is a declared config fact, deliberately defaulting to
+   the inconvenient-but-safe value. Until you confirm a non-watermarking plan and set it to `false`,
+   dubs are produced, **billed**, and never published. Confirm the tier before anyone runs a real
+   dub, then run one ≤60s probe (R-02) before customer-facing use.
+2. **The 0-byte root `.env.local`.** The only cleanup deletion NOT executed, and deliberately so:
+   the repo's own secrets floor refuses any command that names an env file, so it could not even be
+   re-verified, let alone removed. That guard is correct and was not worked around. Delete it by
+   hand if you still want it gone.
+3. **Crop P2 needs real footage.** The face-detector step change is blocked on measurement, not on
+   feasibility: YuNet scores **zero detections** against the synthetic eval fixtures, so nothing about
+   it can be scored until P0.3 exists (20–50 labelled catalogue clips). The dependency and model were
+   removed rather than landing ~1,000 unverifiable lines. Supplying clips is the unblock, and R-08
+   describes the annotation tool and the model file to use (`..._2026may.onnx`, not the plan's
+   `..._2023mar.onnx`, which is fixed-640×640 and ~10× over budget).
+
+## ✅ Resolved in the 2026-08-21 round (rulings R-01…R-10, executed)
+
+- **Ships as ONE PR** from `integration/night-run` (R-01) — the tree that was verified is the tree
+  that ships; per-feature revert survives as three `--no-ff` merge commits.
+- **Share dialog names the video** (R-05): the title rides on the share state the button already
+  fetches, since `VideoEditor` has only a `projectId` in scope. The prop is gone.
+- **Playback position survives a language switch** (R-04): `?t=` out, consumed once on first play
+  through the scrub path — extracted, not reimplemented, so the in-flight-swap rule guards it too.
+- **A per-user monthly dubbing ceiling** (R-03), checked BEFORE the vendor is called; the route test
+  asserts the vendor was never reached on a refusal. All four dubbing settings are now documented.
+- **The capture harness is versioned** at `scripts/dev/local-capture/` (R-07), paths derived rather
+  than hardcoded; the dead `podcast-saas/.gitignore` entry is gone. `localCaptureProvider.ts` stays
+  out — it is source belonging to the open export bug-chain.
+- **Four of five cleanup deletions executed** (R-06) after re-verifying each guard; the surviving
+  agent-memory content was untouched, and the superseded root copies are in `_archive/`.
+- **Contract drift checked, not assumed** (R-09): `client-v1.ts` was diff-read against the server —
+  `LibraryShareInfo` ≡ `shareState()`, `ProjectDub` ≡ `toView()`, `DubCostEstimate` and
+  `ProjectDubsResponse` field-for-field. No drift shipped.
+
+## 🟢 CI evidence from PR #45 — the WebKit lane is flaky, and now measured
+
+PR #45 (`integration/night-run` → `main`) ran green on every blocking check: Release verification
+gate, Static audits, Redundancy guard, and the chromium and firefox e2e lanes. WebKit failed, and
+because that lane is `continue-on-error` by design it does not veto the merge — but it was worth
+proving the failure was not ours, so it was measured rather than waved through:
+
+| run | WebKit result |
+|---|---|
+| `feat/gpu-capture-grant` (before this round) | 1 failed — scenario 11 |
+| `fix/deploy-blocked-by-untracked` (before this round) | 2 failed — scenarios 9 **and** 11 |
+| PR #45, first run | 3 failed — 9, 11, **32** |
+| PR #45, **re-run of the same commit** | **1 failed — scenario 11.** 37 passed |
+
+The same commit produced three different failure sets across runs, and the re-run landed exactly on
+the documented baseline. So scenarios 9 and 32 are **flaky on Linux WebKit, not regressions** —
+which also updates what `ci.yml` records: the comment there describes a single reproducible failure,
+when in fact the lane's failure count varies run to run. Worth folding into that comment when the
+`__CHILD` Window-identity assumption is finally fixed.
+
+## 🟠 Rulings made during the 2026-08-21 round (do not silently reverse)
+
+- **Captions for a dubbed language come from that dub's own segments — never from an independent
+  Whisper translation.** Two independent translations diverge and the viewer reads different wording
+  than they hear. The Groq Whisper path stays allowed only for captions-only languages with no dub.
+- **Migration numbers are reserved by hand across concurrent branches** (065/066/067 here). Two
+  hardcoded registries must both be updated — `db/migrate.ts` **and** `scripts/check-db.ts`. This is
+  guarded: removing an entry from either fails three tests in the standard suite (verified empirically
+  on 2026-08-21), though the `db:check` tool itself is still not wired into CI.
+- **The active-speaker correlator performs below chance** (17–46% correct when it fires, against 50%
+  for guessing; an 80-point threshold sweep found no configuration that beats it). The gender→region
+  gap-fill was not merely deleted — deleting it alone regressed the end-to-end test — it was replaced
+  with shot-level speech-correlated motion. Treat any future work here as fixing a signal that carries
+  no information, not as tuning a threshold.
+- **Language switching is a full document load, not a soft navigation.** The player holds live hls.js
+  instances on two `<video>` elements; a soft nav leaves them attached and the picture changes while
+  the audio does not. This constraint stands. What changed in R-04 is only how the position survives
+  it: the offset now rides out on `?t=` and is consumed once, on the first play, through the scrub
+  path — which was **extracted, not reimplemented**, so the in-flight-swap rule whose comment records
+  wedging the player permanently guards the resume too. Do not "simplify" that by writing a second
+  seek.
+
+## 🟡 Known gaps that ship with this round
+
+- Crop P0.1 (fleet-audit script), P0.2 (annotation tool) and P0.3 (real labelled set) are absent; all
+  reported crop gains are measured on **synthetic fixtures**, and must not be quoted as field results.
+  P2 (the detector itself) is not in this release at all — `CROP_ALGO` has no v2 to select yet.
+- Nothing in the dubbing pipeline has been exercised against the live ElevenLabs API — no key, no
+  network in the build environment. The ranked list of call shapes that remain unverified is in
+  `md-files/DUBBING-IMPLEMENTATION-REPORT.md` §7; the riskiest is the billable multipart create,
+  where a silently-dropped `reference` field would quiet the crash-recovery defence without erroring.
+- `db:check` is a manual operator tool and is still not wired into CI. It does not need to be: the
+  registry-drift invariant it would enforce is already covered by tests that run on every branch.
+
+## 🔵 Requested 2026-08-21, deliberately NOT started — plan only after the release, then on approval
+
+Both were asked for while the release round was in flight, and both were parked on purpose: the
+owner's instruction is that everything else finishes first, that planning starts only afterwards,
+and that no implementation begins without an explicit go-ahead.
+
+1. **Interactive podcast, phase 2 — the three named surfaces.** *Raise Your Hand*, *Hands-Busy
+   Mode*, *Call It* (see `md-files/INTERACTIVE-PODCAST-PLAN.md`, whose phase 1 is the episode +
+   share page). The framing the owner gave, which changes the architecture from what that plan
+   assumed: **start from the video that already exists.** Take the existing project — captions
+   included — and export it as audio, either as a download for the creator or as a new section at
+   `flowvidco/audio/…`, which then becomes its own public-or-private link and the home of the
+   interactive-podcast surfaces. The hard requirement is the listening context: driving, walking,
+   eyes-and-hands busy. That includes a technical answer for **playback surviving a locked or
+   screen-off phone**, which is a real constraint (background audio, Media Session, a service
+   worker or a native shell — it is a design question, not a detail). Deliverable when it starts:
+   a considered architecture first, not code.
+2. **Public route renaming.** `/admin` becomes the control surface — the management dashboard with
+   all the data already exists on its own server, and that page moves in under this path.
+   `/podcasts` becomes `/edit-podcasts` (the creator-facing editor), which frees the podcast
+   *landing* surface for a new route: `/project/audio`, presented as a sub-project of the video —
+   the interactive-audio edition. Note before planning: renaming a live public route is a redirect
+   and SEO question as much as a routing one (`permalinkService.ts` `RESERVED_SLUGS`,
+   `LegacyRedirectResolver`, sitemaps, and any already-shared `/podcasts/...` link), and it
+   overlaps item 1's `/project/audio` target — they should be planned together, not separately.
+
+---
+
+## 🔴 Blocked on you — carried over from the 2026-08-19 round (two items, both small)
 
 1. **The production deploy fails on the VM, not in this repo.** The approved v0.1.28 deploy
    failed 32 seconds in at *"Pin VM checkout"* — the working tree at `/home/ubuntu/cebu` holds

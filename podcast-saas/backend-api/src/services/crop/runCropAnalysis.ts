@@ -6,10 +6,13 @@
  * runVideoTranscode works. Everything here is fire-and-forget: the editor and
  * the share/preview requests never await it.
  *
- * Idempotency: a content hash of the source (storage_key + size + duration) is
- * stored on the row. Re-running when the hash already matches a `ready` result
- * is a no-op, so triggering on every preview is cheap; when the underlying video
- * changes the hash differs and the crop is recomputed automatically.
+ * Idempotency: a content hash of the source (storage_key + size + duration) AND the
+ * algorithm version is stored on the row. Re-running when the hash already matches a
+ * `ready` result is a no-op, so triggering on every preview is cheap; when the underlying
+ * video changes — or the algorithm that produced the crop does — the hash differs and the
+ * crop is recomputed automatically. Before the version was in the input, a source that
+ * never changes (every published episode) could never pick up a pipeline fix, and Recrop
+ * deterministically reproduced the same wrong answer.
  */
 
 import { createHash } from 'crypto';
@@ -23,11 +26,17 @@ import { db, video_files } from '../../db/index.js';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import { logger } from '../../lib/logger.js';
 import { processVideoCrop } from './cropProcessor.js';
+import { algoVersion } from './algo.js';
 import { enqueueJob } from '../../queue/index.js';
 
-function sourceHash(storageKey: string, fileSize: number | null, durationSec: number | null): string {
+export function sourceHash(
+  storageKey: string,
+  fileSize: number | null,
+  durationSec: number | null,
+  algo: string = algoVersion(),
+): string {
   return createHash('sha256')
-    .update(`${storageKey}|${fileSize ?? ''}|${durationSec ?? ''}`)
+    .update(`${storageKey}|${fileSize ?? ''}|${durationSec ?? ''}|${algo}`)
     .digest('hex')
     .slice(0, 16);
 }
@@ -122,7 +131,10 @@ async function runCropAnalysisInner(videoFileId: string): Promise<void> {
     await storage.uploadFile(key, Buffer.from(json), 'application/json');
 
     await db.update(video_files)
-      .set({ crop_status: 'ready', crop_key: key, crop_source_hash: hash, crop_error: null, crop_updated_at: new Date() })
+      .set({
+        crop_status: 'ready', crop_key: key, crop_source_hash: hash, crop_error: null,
+        crop_updated_at: new Date(), crop_algo_version: metadata.stats?.algo_version ?? algoVersion(),
+      })
       .where(eq(video_files.id, videoFileId));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

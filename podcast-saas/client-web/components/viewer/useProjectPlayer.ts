@@ -309,6 +309,12 @@ export interface ProjectPlayerOptions {
   autoStart?: boolean;
   /** Branching: navigate away to another project/playlist/external URL (route change, not in-player). */
   onNavigate?: (dest: { type: 'project' | 'playlist' | 'external_url'; url?: string | null; token?: string | null }) => void;
+  /**
+   * Global seconds to land on the first time playback starts — the `?t=` a language switch carries
+   * so the viewer resumes where they left off. Applied ONCE, through the same code path a scrub
+   * release uses, and then forgotten. Out-of-range values are clamped, never NaN-propagated.
+   */
+  initialSeekSec?: number;
 }
 
 export function useProjectPlayer(
@@ -721,7 +727,15 @@ export function useProjectPlayer(
   const volumeRef     = useRef(1);
   const mutedRef      = useRef(false);
   const scrubbingRef  = useRef(false);
-  const wasPlayingRef = useRef(false);
+
+  /** The scrub effect's seek implementation, so the one-shot `?t=` can reuse it verbatim. */
+  const seekRef = useRef<((targetGlobal: number, resumePlaying: boolean) => void) | null>(null);
+  /** Consumed once, on the first startPlayback; null afterwards. */
+  const pendingInitialSeekRef = useRef<number | null>(
+    typeof options.initialSeekSec === 'number' && Number.isFinite(options.initialSeekSec)
+      ? Math.max(0, options.initialSeekSec)
+      : null,
+  );  const wasPlayingRef = useRef(false);
   const swapGenRef    = useRef(0);
   const standbyIdRef  = useRef<string | null>(null);
   const idleTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -3747,7 +3761,15 @@ export function useProjectPlayer(
     const endScrub = (cx: number) => {
       if (!scrubbingRef.current) return;
       scrubbingRef.current = false;
-      const targetGlobal = getPct(cx) * totalDurRef.current;
+      applySeek(getPct(cx) * totalDurRef.current, wasPlayingRef.current);
+    };
+
+    /**
+     * Land the player on a global timestamp. Extracted verbatim from the scrub release so the
+     * initial `?t=` seek travels the SAME path — including the in-flight-swap rule below, which
+     * exists because getting it wrong once wedged the player permanently.
+     */
+    const applySeek = (targetGlobal: number, resumePlaying: boolean) => {
       const tl = timelineRef.current;
       setProgress(targetGlobal, totalDurRef.current);
       merge({ globalTime: targetGlobal });
@@ -3799,12 +3821,16 @@ export function useProjectPlayer(
           merge({ showResumeBtn: false, resumeAction: 'resume' });
         }
         updateSimOverlay(targetIdx, localTime);
-        updateFlatOverlays(targetGlobal, wasPlayingRef.current);
-        if (wasPlayingRef.current && localTime < targetSeg.duration - 0.01) safePlay(videoRef.current!);
+        updateFlatOverlays(targetGlobal, resumePlaying);
+        if (resumePlaying && localTime < targetSeg.duration - 0.01) safePlay(videoRef.current!);
       } else {
-        loadSegment(targetIdx, localTime, wasPlayingRef.current);
+        loadSegment(targetIdx, localTime, resumePlaying);
       }
     };
+
+    // The scrub effect owns the only seek implementation; this ref is how a non-pointer caller
+    // (the initial `?t=`) reaches it without a second, divergent copy of the logic.
+    seekRef.current = applySeek;
 
     // Pointer Events + pointer capture — YouTube-grade scrubbing. Capturing on
     // pointerdown routes every subsequent move/up/cancel to the wrap no matter
@@ -3899,6 +3925,15 @@ export function useProjectPlayer(
     startedRef.current = true;
     merge({ started: true });
     applyMediaVolume();
+    // A carried-over position (`?t=` from a language switch) lands BEFORE the first play, through
+    // the scrub path, so segment resolution and HLS handling are identical to a manual seek. It is
+    // consumed once: a later pause/resume must not teleport the viewer back here.
+    const pendingSeek = pendingInitialSeekRef.current;
+    if (pendingSeek !== null) {
+      pendingInitialSeekRef.current = null;
+      const target = Math.max(0, Math.min(pendingSeek, Math.max(0, totalDurRef.current - 0.25)));
+      if (target > 0 && seekRef.current) { seekRef.current(target, true); return; }
+    }
     void safePlay(videoRef.current!).then((ok) => {
       // Rejected play (autoplay policy without a qualifying gesture, a load() interrupting
       // the request): revert to the actionable poster + play button instead of a black

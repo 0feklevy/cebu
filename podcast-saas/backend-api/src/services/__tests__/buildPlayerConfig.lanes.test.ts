@@ -42,6 +42,7 @@ const mocks = vi.hoisted(() => ({
   playlists:            { findMany: vi.fn() },
   simulations:          { findMany: vi.fn() },
   sim_posters:          { findMany: vi.fn() },
+  video_dubs:          { findMany: vi.fn() },
 }));
 
 vi.mock('../../db/index.js', () => ({ db: { query: mocks } }));
@@ -52,6 +53,7 @@ vi.mock('../../db/schema.js', () => ({
   branch_sequences: Symbol('branch_sequences'), branch_choice_points: Symbol('branch_choice_points'),
   branch_edges: Symbol('branch_edges'), playlists: Symbol('playlists'),
   simulations: Symbol('simulations'), sim_posters: Symbol('sim_posters'),
+  video_dubs: Symbol('video_dubs'),
 }));
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn(() => ({ type: 'eq' })), asc: vi.fn(() => ({ type: 'asc' })),
@@ -134,6 +136,7 @@ beforeEach(() => {
   mocks.branch_sequences.findMany.mockResolvedValue([]);
   mocks.simulations.findMany.mockResolvedValue([]);
   mocks.sim_posters.findMany.mockResolvedValue([]);
+  mocks.video_dubs.findMany.mockResolvedValue([]);
 });
 
 // ── 1. Mutually exclusive lanes ───────────────────────────────────────────────

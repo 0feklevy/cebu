@@ -733,6 +733,31 @@ export interface PermalinkAvailability {
   message?: string;
 }
 
+// ── Library share (migration 065) ────────────────────────────────────────────
+//
+// The five routes of the materials mini-site. Declared here because this file is HAND-maintained
+// and nothing enforces it against the Fastify routes — a backend change does not break the build,
+// so an omission here is silent drift rather than a compile error.
+//
+// The public read is deliberately NOT a method on this client: `client-web/lib/libraryApi.ts`
+// fetches it server-side with ISR tags and validates it against `LibraryViewSchema`, and routing it
+// through the browser client would lose both. Its path is recorded here so the contract is
+// complete: GET /api/v1/public/library/:slug?type= → LibraryView | 404.
+
+export interface LibraryShareInfo {
+  /** The public path segment, `{title-slug}-{code13}`. Null when the project has no live link. */
+  slug: string | null;
+  /** Full public URL ({PUBLIC_SITE_URL}/{slug}/library), null when there is no link. */
+  url: string | null;
+  /** The code-free `/{permalink}/library` form — only when the project is public with a permalink. */
+  cleanUrl: string | null;
+  includeTypes: Array<'simulation' | 'image' | 'video' | 'audio'> | null;
+  expiresAt: string | null;
+  createdAt: string | null;
+  /** The project's title, so the share dialog can name what is being shared. */
+  title: string | null;
+}
+
 export interface PlaylistItem {
   id: string;
   project_id: string;
@@ -859,6 +884,64 @@ export interface BranchAnalytics {
   completes: number;
   edge_choice_counts: Record<string, number>;
   sequence_enter_counts: Record<string, number>;
+}
+
+// ── Multi-language dubbing (migration 067) ──────────────────────────────────
+
+/** A language this product can dub into. `code` is also the public URL suffix, 1:1. */
+export interface DubbingLanguageOption {
+  code: string;
+  /** English name, for a UI that has no better idea what the reader speaks. */
+  name: string;
+  /** The language's own name — what a viewer picking it should actually see. */
+  endonym: string;
+  /** Right-to-left script; the caption overlay needs it to set `dir`. */
+  rtl: boolean;
+}
+
+/** One video's dub in one language, as the creator's settings page sees it. */
+export interface ProjectDub {
+  id: string;
+  video_file_id: string;
+  language: string;
+  language_name: string;
+  language_endonym: string;
+  rtl: boolean;
+  provider: string;
+  /** queued | processing | completed | stale | failed — the vendor's own target statuses. */
+  status: string;
+  /**
+   * Whether this dub may actually be served. NOT the same as `status === 'completed'`: a
+   * watermarked dub is finished and paid for but is never published to viewers.
+   */
+  servable: boolean;
+  hls_url: string | null;
+  captions_url: string | null;
+  cost_cents: number | null;
+  error: string | null;
+  updated_at: string | null;
+}
+
+/** What a dubbing run would cost, shown BEFORE it is started. */
+export interface DubCostEstimate {
+  language_count: number;
+  total_duration_sec: number;
+  /** The headline figure the UI leads with, per source-minute per language. */
+  usd_per_minute_per_language: number;
+  /** Cost of dubbing this whole project into ONE language — multiply by the selection. */
+  usd_per_language: number;
+  estimated_usd: number;
+  estimated_credits: number;
+  /** True when the account's plan watermarks output, which makes a dub unpublishable. */
+  watermarked: boolean;
+  /** Set only when the plan watermarks — says what an operator must change. */
+  watermark_notice: string | null;
+}
+
+export interface ProjectDubsResponse {
+  dubs: ProjectDub[];
+  supported_languages: DubbingLanguageOption[];
+  estimate: DubCostEstimate;
 }
 
 export class ClientV1Api {
@@ -1516,6 +1599,35 @@ export class ClientV1Api {
     return this.request(`/api/v1/permalink-availability?${params.toString()}`);
   }
 
+  // ── Library share (migration 065) ───────────────────────────────────────
+  //
+  // The four OWNER routes. All four answer 404 (never 403) when the caller may not edit the
+  // project. The anonymous read that renders the page is fetched server-side by
+  // `client-web/lib/libraryApi.ts`, not from here — see the LibraryShareInfo header.
+
+  /** Current link state, or all-nulls when the project has no live link. */
+  getLibraryShare(projectId: string): Promise<LibraryShareInfo> {
+    return this.request(`/api/v1/projects/${projectId}/library-share`);
+  }
+
+  /** Mint. Idempotent — a second call returns the SAME slug, not a second link. 201. */
+  createLibraryShare(projectId: string): Promise<LibraryShareInfo> {
+    return this.request(`/api/v1/projects/${projectId}/library-share`, { method: 'POST' });
+  }
+
+  /** Change the type scope or the expiry. Dispatches an ISR purge for both URL forms. */
+  updateLibraryShare(
+    projectId: string,
+    patch: { includeTypes?: Array<'simulation' | 'image' | 'video' | 'audio'>; expiresAt?: string | null },
+  ): Promise<LibraryShareInfo> {
+    return this.request(`/api/v1/projects/${projectId}/library-share`, { method: 'PATCH', body: patch });
+  }
+
+  /** Revoke: stamps revoked_at and purges the page. 204. */
+  revokeLibraryShare(projectId: string): Promise<void> {
+    return this.request(`/api/v1/projects/${projectId}/library-share`, { method: 'DELETE' });
+  }
+
   getPlaylistShare(playlistId: string): Promise<{ shareToken: string | null; shareUrl: string | null }> {
     return this.request(`/api/v1/playlists/${playlistId}/share`);
   }
@@ -1757,5 +1869,26 @@ export class ClientV1Api {
 
   exportPodcastMix(showId: string, episodeId: string, format: 'mp4' | 'mp3' | 'wav'): Promise<{ render_id: string; already_running?: boolean }> {
     return this.request(`/api/v1/podcasts/${showId}/episodes/${episodeId}/studio/export`, { method: 'POST', body: { format } });
+  }
+
+  // ── Multi-language dubbing (migration 067) ────────────────────────────────
+
+  listProjectDubs(projectId: string): Promise<ProjectDubsResponse> {
+    return this.request(`/api/v1/projects/${projectId}/dubs`);
+  }
+
+  /**
+   * Queue a dub of every main video in the project into one language.
+   *
+   * THE ONLY BILLABLE CALL ON THIS CLIENT. Answers 202 — the work is queued, not done — and the
+   * returned rows start in `queued`. Requesting a language that already has a dub is a no-op
+   * rather than a second charge; `force` is what deliberately re-runs one.
+   */
+  createProjectDub(projectId: string, language: string, force = false): Promise<{ dubs: ProjectDub[] }> {
+    return this.request(`/api/v1/projects/${projectId}/dubs`, { method: 'POST', body: { language, force } });
+  }
+
+  deleteProjectDub(projectId: string, language: string): Promise<{ removed: number }> {
+    return this.request(`/api/v1/projects/${projectId}/dubs/${encodeURIComponent(language)}`, { method: 'DELETE' });
   }
 }

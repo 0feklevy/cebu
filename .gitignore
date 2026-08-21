@@ -39,3 +39,6 @@ darwin-avatar/
 # `build/` rule above would publish a registry whose files do not exist — every capture would fail
 # at materialise() with "vendored file missing on disk".
 !podcast-saas/backend-api/vendor/sim-deps/**
+
+# Local pre-sync backups and archived artifacts (never for the repo)
+_archive/

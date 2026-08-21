@@ -12,6 +12,7 @@ import {
   rejectPermalinkSlug, rejectionMessage, suggestPermalinkSlug,
   type SlugExclude,
 } from '../../services/permalinkService.js';
+import { normalizeDubbingLanguage } from '../../services/dubbing/languages.js';
 
 /**
  * Creator-controlled permalinks (migration 043): {PUBLIC_SITE_URL}/{slug}.
@@ -64,7 +65,9 @@ export async function registerPermalinkRoutes(app: FastifyInstance): Promise<voi
   // ── Public (optional auth): GET /api/v1/public/permalink/:slug/config ──────
   // Playback config — exactly the payload of /api/v1/share/:token for projects
   // and /api/v1/playlist-share/:token for playlists (incl. the paid `locked` stub).
-  app.get<{ Params: { slug: string } }>(
+  // `?lang=he` serves that language's dubbed rendition and captions (migration 067); an unknown
+  // or unfinished language falls back to the source track rather than failing.
+  app.get<{ Params: { slug: string }; Querystring: { lang?: string } }>(
     '/api/v1/public/permalink/:slug/config',
     { preHandler: [firebaseAuthOptionalMiddleware] },
     async (request, reply: FastifyReply) => {
@@ -83,7 +86,9 @@ export async function registerPermalinkRoutes(app: FastifyInstance): Promise<voi
             });
           }
         }
-        const config = await buildPlayerConfig(project.id, viewerId, project);
+        const config = await buildPlayerConfig(
+          project.id, viewerId, project, normalizeDubbingLanguage(request.query.lang ?? ''),
+        );
         if (!config) return reply.code(404).send({ message: 'Not found' });
 
         // Fire-and-forget view count increment

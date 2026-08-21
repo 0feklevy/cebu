@@ -112,7 +112,7 @@ services:
       # test (deployTopology.test.ts) asserts it equals PGBOSS_JOB_NAMES minus project_export,
       # so adding a queue without updating this line fails the build instead of silently
       # starving the new queue.
-      WORKER_QUEUES: "crop,video_generate,transcode,captions,metadata,podcast_script,podcast_render,podcast_clips,podcast_mix_export,project_duplicate"
+      WORKER_QUEUES: "crop,video_generate,transcode,captions,metadata,podcast_script,podcast_render,podcast_clips,podcast_mix_export,project_duplicate,dub"
     volumes:
       - media_work:/app/backend-api/.work
     networks: [internal]

@@ -17,6 +17,11 @@ export async function GET() {
     'Disallow: /new',
     'Disallow: /unlock',
     'Disallow: /api/',
+    // Library mini-sites (migration 065), on BOTH URL forms — the coded slug and the clean
+    // permalink alias. Decided explicitly rather than by omission: a title-derived URL that is
+    // guessable is one thing, one that is searchable is another. The pages also emit
+    // `robots: noindex` in their metadata, so this is belt and braces rather than the only guard.
+    'Disallow: /*/library',
     '',
     `Sitemap: ${base}/sitemap.xml`,
     '',

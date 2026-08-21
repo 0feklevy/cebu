@@ -16,6 +16,7 @@ import { BrollPanel } from './BrollPanel';
 import { ConfirmDialog } from './ConfirmDialog';
 import { ImageCropEditor } from './ImageCropEditor';
 import { ExtendedLibraryModal } from './avatar/ExtendedLibraryModal';
+import { LibraryShareButton } from './library/LibraryShareButton';
 import { BranchingModal } from './branching/BranchingModal';
 import { getAvatarCircles, saveAvatarCircles, type AvatarCirclesConfig } from './avatar/avatarApi';
 import { normalizeCircleSections, type CircleSection } from '../lib/circleSections';
@@ -1364,15 +1365,24 @@ export function VideoEditor({ projectId }: Props) {
                       {videos.length} clip{videos.length !== 1 ? 's' : ''} · {sections.length} section{sections.length !== 1 ? 's' : ''}
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setExtendedLibraryOpen(true)}
-                    className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-[10px] font-semibold text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground focus-ring"
-                    title="Manage the avatar's basic and extended visual library"
-                  >
-                    <Sparkles size={12} strokeWidth={1.9} aria-hidden />
-                    Extended
-                  </button>
+                  {/*
+                    The row is `justify-between` with exactly TWO children — the title block and
+                    this group. A sibling inserted beside Extended would be spread to the far side
+                    by justify-between rather than placed next to it, so the two buttons share one
+                    `shrink-0` group and share goes FIRST, i.e. to the LEFT of Extended.
+                  */}
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <LibraryShareButton projectId={projectId} />
+                    <button
+                      type="button"
+                      onClick={() => setExtendedLibraryOpen(true)}
+                      className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-[10px] font-semibold text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground focus-ring"
+                      title="Manage the avatar's basic and extended visual library"
+                    >
+                      <Sparkles size={12} strokeWidth={1.9} aria-hidden />
+                      Extended
+                    </button>
+                  </div>
                 </div>
 
                 <div className="flex items-center justify-between">

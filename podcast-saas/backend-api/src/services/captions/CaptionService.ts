@@ -119,15 +119,22 @@ function vttTimestamp(sec: number): string {
   return `${pad(Math.floor(t / 3600))}:${pad(Math.floor((t % 3600) / 60))}:${pad(t % 60)}.${pad(ms, 3)}`;
 }
 
-interface VttSegment { start: number; end: number; text: string }
-function segmentsToVtt(segments: VttSegment[]): string {
+export interface VttSegment { start: number; end: number; text: string }
+/**
+ * Exported (alongside `normalizeVtt` and `generateVttValidate` below) because the dubbing pipeline
+ * builds its per-language WebVTT from the vendor's JSON transcript segments and MUST produce cues
+ * byte-identical in shape to the ones the source-language path produces — same timestamp
+ * formatting, same cue numbering, same validation. A second implementation would drift, and the
+ * viewer parses both with one parser.
+ */
+export function segmentsToVtt(segments: VttSegment[]): string {
   const cues = segments
     .filter((s) => s.text && s.text.trim().length > 0 && Number.isFinite(s.start) && Number.isFinite(s.end))
     .map((s, i) => `${i + 1}\n${vttTimestamp(s.start)} --> ${vttTimestamp(Math.max(s.end, s.start + 0.1))}\n${s.text.trim()}`);
   return `WEBVTT\n\n${cues.join('\n\n')}\n`;
 }
 
-function normalizeVtt(raw: string): string {
+export function normalizeVtt(raw: string): string {
   const body = raw.trimStart();
   return body.startsWith('WEBVTT') ? body : `WEBVTT\n\n${body}`;
 }
@@ -318,7 +325,7 @@ async function runCaptionJob(videoId: string, opts: { force?: boolean } = {}): P
 }
 
 /** Reject obviously-invalid VTT before persisting (must start with WEBVTT and have a cue). */
-function generateVttValidate(vtt: string): string {
+export function generateVttValidate(vtt: string): string {
   const v = vtt.trimStart();
   if (!v.startsWith('WEBVTT')) throw new Error('Generated captions are not valid WebVTT');
   if (!v.includes('-->')) throw new Error('Generated captions contain no cues');
