@@ -150,6 +150,45 @@ for (const lang of DUBBING_LANGUAGES) {
 }
 
 /**
+ * The order the language picker offers by default.
+ *
+ * WHY AN ORDER EXISTS AT ALL: the list is 94 long and was rendered alphabetically by English name,
+ * which put Spanish seventy-six rows below Afrikaans. Alphabetical is not neutral — it is an
+ * ordering by an accident of English spelling, and on a list this long it means every creator
+ * scrolls past eighty languages to reach one of the six they actually wanted.
+ *
+ * WHAT THE ORDER IS: rough global demand for dubbed video — speaker population weighted toward the
+ * languages online course catalogues are actually translated into. It is a heuristic and it is
+ * meant to be one; it decides what appears first, never what is possible, and the search box and
+ * the A–Z sort are both one interaction away.
+ *
+ * Anything not listed here keeps its position in `DUBBING_LANGUAGES`, which is alphabetical by
+ * English name — so the tail is still ordered, just ordered second.
+ */
+export const POPULAR_DUBBING_LANGUAGES: readonly string[] = [
+  'en', 'es', 'pt', 'fr', 'de', 'hi', 'ar', 'zh', 'ja', 'ko',
+  'it', 'ru', 'id', 'tr', 'vi', 'pl', 'nl', 'th', 'he', 'sv',
+  'uk', 'fa', 'ms', 'ta', 'ro', 'cs', 'el', 'hu', 'da', 'fi',
+  'no', 'bg', 'fil', 'sw', 'ur', 'te', 'mr', 'yue', 'sk',
+];
+
+const POPULARITY = new Map(POPULAR_DUBBING_LANGUAGES.map((code, i) => [code, i]));
+
+/**
+ * A sort key for the default ordering: lower is offered sooner.
+ *
+ * Unlisted languages get a rank past the end of the popular list, offset by their position in
+ * `DUBBING_LANGUAGES`, so the tail stays alphabetical instead of collapsing into one tie the
+ * client would break arbitrarily.
+ */
+export function dubbingLanguageRank(code: string): number {
+  const popular = POPULARITY.get(code);
+  if (popular !== undefined) return popular;
+  const alphabetical = DUBBING_LANGUAGES.findIndex((l) => l.code === code);
+  return POPULAR_DUBBING_LANGUAGES.length + (alphabetical < 0 ? DUBBING_LANGUAGES.length : alphabetical);
+}
+
+/**
  * The same shape `courses.language` and `video_dubs.target_language` enforce in the database.
  * Checking it here as well means a malformed tag is refused with a readable message instead of a
  * constraint violation at insert time.

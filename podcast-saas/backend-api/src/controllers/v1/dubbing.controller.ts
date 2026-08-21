@@ -36,7 +36,16 @@ import {
   UnsupportedDubLanguage,
   DUB_PROVIDER_ELEVENLABS,
 } from '../../services/dubbing/dubRegistry.js';
-import { DUBBING_LANGUAGES, findDubbingLanguage, normalizeDubbingLanguage } from '../../services/dubbing/languages.js';
+import {
+  DUBBING_LANGUAGES,
+  dubbingLanguageRank,
+  findDubbingLanguage,
+  normalizeDubbingLanguage,
+} from '../../services/dubbing/languages.js';
+import {
+  declareProjectSourceLanguage,
+  resolveProjectSourceLanguage,
+} from '../../services/dubbing/sourceLanguage.js';
 import { checkDubbingBudget } from '../../services/dubbing/budget.js';
 import { logger } from '../../lib/logger.js';
 
@@ -75,19 +84,32 @@ export async function registerDubbingRoutes(app: FastifyInstance): Promise<void>
       // round-trip per checkbox.
       const estimate = await estimateProjectDubCost(project.id, 1);
 
-      // The source language is not a target. Dubbing a video into the language it is already in
-      // is a full billable run that returns a worse copy of the original, so it is excluded here
-      // rather than merely discouraged in the UI — a client that ignores a disabled checkbox must
-      // not be able to spend money. `is_source` is still reported so the UI can SHOW the language
-      // and say why it cannot be picked, which is more useful than silently omitting it.
-      const sourceLanguage = normalizeDubbingLanguage(project.source_language ?? '') ?? null;
+      // RESOLVED, not read. The column was added in migration 068 and nothing ever wrote it, so
+      // reading it returned null for every project in existence and the exclusion below never fired
+      // — an English lesson was offered English as a paid target. `resolveProjectSourceLanguage`
+      // detects it from the transcript this product already stores, caches the answer, and reports
+      // WHERE the answer came from so the UI can distinguish a guess from a declaration.
+      //
+      // The exclusion itself stays server-side and is repeated on POST: a disabled checkbox is
+      // advice, and advice does not stop a scripted client from spending $2.20 a minute.
+      const source = await resolveProjectSourceLanguage(project.id);
 
       return reply.send({
         dubs,
-        source_language: sourceLanguage,
+        source_language: source.code,
+        /** 'declared' | 'detected' | 'vendor' — how much the value should be trusted, and by whom. */
+        source_language_origin: source.origin,
+        /** A guess too weak to act on. Prefills the picker; excludes nothing. */
+        source_language_suggestion: source.suggestion,
+        /** 'no_transcript' | 'undecided' — why there is no answer, when there is none. */
+        source_language_reason: source.reason,
         supported_languages: DUBBING_LANGUAGES.map((l) => ({
           code: l.code, name: l.name, endonym: l.endonym, rtl: l.rtl,
-          is_source: l.code === sourceLanguage,
+          // The default sort order. Ninety-four rows alphabetised by ENGLISH name put Spanish
+          // seventy-six below Afrikaans; the rank travels with the language so the client sorts
+          // without a second table to keep in step.
+          rank: dubbingLanguageRank(l.code),
+          is_source: source.code !== null && l.code === source.code,
         })),
         estimate,
       });
@@ -112,7 +134,7 @@ export async function registerDubbingRoutes(app: FastifyInstance): Promise<void>
       // language it is already spoken in is a complete, billable vendor run whose output is a
       // degraded copy of the input. The check lives on the server because a disabled checkbox is
       // advice, and advice does not stop a scripted client from spending $2.20 a minute.
-      const projectSource = normalizeDubbingLanguage(project.source_language ?? '');
+      const projectSource = (await resolveProjectSourceLanguage(project.id)).code;
       if (projectSource && normalizeDubbingLanguage(language) === projectSource) {
         const named = findDubbingLanguage(projectSource);
         return reply.code(409).send({
@@ -161,6 +183,47 @@ export async function registerDubbingRoutes(app: FastifyInstance): Promise<void>
         }
         throw err;
       }
+    },
+  );
+
+  // ── Auth: PUT /api/v1/projects/:id/source-language ────────────────────────
+  //
+  // The creator's correction, and the reason detection is allowed to act on its own at all.
+  //
+  // Automatic detection is right most of the time and wrong some of the time, and when it is wrong
+  // it removes a language somebody wanted with no way to argue. This route is that way. A declared
+  // value outranks everything afterwards — including a later vendor detection — because a person
+  // who has told us what their own video is in should not be contradicted by a machine.
+  //
+  // `null` clears it, which returns the project to "undeclared" and lets detection run again.
+  app.put<{ Params: { id: string }; Body: { language?: string | null } }>(
+    '/api/v1/projects/:id/source-language',
+    { preHandler: [projectIdIsUuid, firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser;
+      if (!user) return reply.code(401).send({ message: 'Unauthorized' });
+      const project = await editableProject(request.params.id, user);
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+
+      const raw = request.body?.language;
+      if (raw === null || raw === undefined || raw === '') {
+        await declareProjectSourceLanguage(project.id, null);
+        return reply.send({ source_language: null, source_language_origin: null });
+      }
+
+      // Only a language this product actually offers may be declared. Not a validation formality:
+      // the declared value is what the POST route compares a target against, and a tag outside the
+      // known set could never match one, so it would silently stop excluding anything.
+      const code = normalizeDubbingLanguage(String(raw));
+      if (!code) {
+        return reply.code(400).send({
+          message: `"${String(raw)}" is not a language this product can work with.`,
+        });
+      }
+
+      await declareProjectSourceLanguage(project.id, code);
+      logger.info({ projectId: project.id, code }, '[dubbing] source language declared by the creator');
+      return reply.send({ source_language: code, source_language_origin: 'declared' });
     },
   );
 

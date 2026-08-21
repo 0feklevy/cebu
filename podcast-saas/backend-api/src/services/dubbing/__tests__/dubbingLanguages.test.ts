@@ -3,8 +3,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
-  DUBBING_LANGUAGES, findDubbingLanguage, isSupportedDubbingLanguage,
-  normalizeDubbingLanguage, vendorTargetLanguage,
+  DUBBING_LANGUAGES, dubbingLanguageRank, findDubbingLanguage, isSupportedDubbingLanguage,
+  normalizeDubbingLanguage, POPULAR_DUBBING_LANGUAGES, vendorTargetLanguage,
 } from '../languages.js';
 import { PERMALINK_LANGUAGE_SUFFIXES, RESERVED_SLUGS } from '../../permalinkService.js';
 
@@ -32,6 +32,42 @@ describe('the table itself', () => {
     }
     for (const code of ['en', 'es', 'ja']) {
       expect(findDubbingLanguage(code)?.rtl, code).toBe(false);
+    }
+  });
+});
+
+describe('the default ordering', () => {
+  it('only names languages the product actually offers', () => {
+    // Not a formality. A code here that is not in the table ranks a row that can never appear,
+    // and reads as support for a language this product does not have — 'bn' was exactly that.
+    for (const code of POPULAR_DUBBING_LANGUAGES) {
+      expect(isSupportedDubbingLanguage(code), code).toBe(true);
+    }
+  });
+
+  it('has no duplicates, which would make one language outrank itself', () => {
+    expect(new Set(POPULAR_DUBBING_LANGUAGES).size).toBe(POPULAR_DUBBING_LANGUAGES.length);
+  });
+
+  it('ranks every language uniquely, so the list has one stable order and not a set of ties', () => {
+    const ranks = DUBBING_LANGUAGES.map((l) => dubbingLanguageRank(l.code));
+    expect(new Set(ranks).size).toBe(ranks.length);
+  });
+
+  it('puts the languages people actually dub into ahead of an accident of English spelling', () => {
+    // The defect this exists to fix: alphabetical by English NAME put Spanish 76 rows below
+    // Afrikaans, in a list of ninety-four.
+    expect(dubbingLanguageRank('es')).toBeLessThan(dubbingLanguageRank('af'));
+    expect(dubbingLanguageRank('en')).toBeLessThan(dubbingLanguageRank('ak'));
+    expect(dubbingLanguageRank('he')).toBeLessThan(dubbingLanguageRank('as'));
+  });
+
+  it('keeps the unranked tail alphabetical rather than collapsing it into one tie', () => {
+    const tail = DUBBING_LANGUAGES
+      .filter((l) => !POPULAR_DUBBING_LANGUAGES.includes(l.code))
+      .map((l) => l.code);
+    for (let i = 1; i < tail.length; i += 1) {
+      expect(dubbingLanguageRank(tail[i]!)).toBeGreaterThan(dubbingLanguageRank(tail[i - 1]!));
     }
   });
 });

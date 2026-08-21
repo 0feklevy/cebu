@@ -925,8 +925,28 @@ export interface DubbingLanguageOption {
   endonym: string;
   /** True when this is the language the video is already in — shown, but never a valid target. */
   is_source?: boolean;
+  /**
+   * Default sort position, lower first — roughly global demand for dubbed video.
+   *
+   * Sent by the server so the ordering of ninety-four languages lives in ONE place. Optional
+   * because an older backend does not send it, and a client that sorted by `undefined` would
+   * shuffle the list into an arbitrary order rather than falling back to alphabetical.
+   */
+  rank?: number;
   /** Right-to-left script; the caption overlay needs it to set `dir`. */
   rtl: boolean;
+}
+
+/** Where in the pipeline one dub is — see backend-api/src/services/dubbing/stages.ts. */
+export interface DubProgress {
+  /** A pipeline stage key, or a terminal `completed` | `failed` | `stale`. */
+  stage: string;
+  /** Present tense and plain language: what is happening right now. */
+  label: string;
+  /** 0–100. Reaches 100 only when the dub is genuinely finished. */
+  percent: number;
+  /** Still moving — which is what tells the client whether to keep polling. */
+  active: boolean;
 }
 
 /** One video's dub in one language, as the creator's settings page sees it. */
@@ -949,6 +969,11 @@ export interface ProjectDub {
   captions_url: string | null;
   cost_cents: number | null;
   error: string | null;
+  /**
+   * Live progress. Optional so a client built against this file still compiles against a backend
+   * that predates it; the UI falls back to the coarse per-video count when it is absent.
+   */
+  progress?: DubProgress;
   updated_at: string | null;
 }
 
@@ -969,8 +994,22 @@ export interface DubCostEstimate {
 }
 
 export interface ProjectDubsResponse {
-  /** The project's declared source language, or null when it has never been declared. */
+  /**
+   * The language the video is already in, or null when it is genuinely not known.
+   *
+   * No longer merely "declared": the server detects it from the stored transcript and records what
+   * the dubbing vendor heard, so this is populated for projects nobody ever configured.
+   */
   source_language?: string | null;
+  /** How the value above was arrived at — a declaration, our detection, or the vendor's. */
+  source_language_origin?: 'declared' | 'detected' | 'vendor' | null;
+  /**
+   * A guess that was too weak to act on. Prefills the picker and excludes nothing, because a
+   * language removed from the list on a coin-flip is worse than one the creator has to confirm.
+   */
+  source_language_suggestion?: { code: string; confidence: number } | null;
+  /** Why there is no answer: no transcript to read, or a transcript that did not settle it. */
+  source_language_reason?: 'no_transcript' | 'undecided' | null;
   dubs: ProjectDub[];
   supported_languages: DubbingLanguageOption[];
   estimate: DubCostEstimate;
@@ -1936,6 +1975,22 @@ export class ClientV1Api {
 
   listProjectDubs(projectId: string): Promise<ProjectDubsResponse> {
     return this.request(`/api/v1/projects/${projectId}/dubs`);
+  }
+
+  /**
+   * Declare (or clear, with null) the language the video is already in.
+   *
+   * A declaration outranks both our detection and the vendor's, permanently — it is the creator
+   * correcting a machine about their own video, and nothing afterwards overwrites it.
+   */
+  setProjectSourceLanguage(
+    projectId: string,
+    language: string | null,
+  ): Promise<{ source_language: string | null; source_language_origin: string | null }> {
+    return this.request(`/api/v1/projects/${projectId}/source-language`, {
+      method: 'PUT',
+      body: { language },
+    });
   }
 
   /**
