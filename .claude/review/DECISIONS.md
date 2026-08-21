@@ -35,6 +35,39 @@ one post-deploy measurement — and a four-round map (P3-F) sequencing all of it
 
 ---
 
+## 🔴→🟢 2026-08-22 — the dubbing feature was COMPLETELY DEAD in production (D-23, PR #58)
+
+The owner reported "the translation doesn't work at all", and they were right in the strongest
+sense: **no production dub has ever run.** Diagnosed live on the VM (read-only — container ps,
+logs, SELECTs on `pgboss.job`): every attempt died in `acquireDubbingSlot` with
+`TypeError: … Received an instance of Date` — a raw `Date` bound into `db.execute(sql…)`,
+which postgres-js `unsafe()` does not serialise. Thrown before any log line and before the vendor
+was ever reached; pg-boss retried on backoff and failed the job permanently; the row sat `queued`
+forever.
+
+Three compounding silences, each now fixed:
+1. the slot acquire sits outside `run()`'s try/catch → the `[dubbing] failed` log never fired;
+2. `registerWorkers` re-threw without logging → the worker emitted ZERO lines across a 30-minute
+   window holding four failed attempts (the error existed only in `pgboss.job.output`);
+3. every test was green — PGlite serialises Dates itself. **The identical mechanism the sweep
+   confirmed as P1 the same night (`test-quality-015`, RumService.fieldAggregates).** Both sites
+   fixed in one pass; the invariant is pinned at the parameter layer in both suites.
+
+Also ruled out while diagnosing, worth keeping: **the vendor client is verified correct** against
+the current API reference — `POST /v1/dubbing/project` (multipart, `reference` accepted),
+language targets, target transcript, status enums. §7's riskiest unknown is now answered; the
+probe (~$2.20) remains the last unverified step. Beware the docs redirect: the current surface's
+`create` URL 404s to the LEGACY `POST /v1/dubbing` page, which briefly misled this diagnosis.
+
+**`job-queue-011` (P1) fixed in the same PR**: rollback.sh now checks out the target tree, waits
+on `worker`, and `resolveWorkerQueues` skips unknown names (throws only when nothing survives).
+
+Production state verified clean after diagnosis: no pending dub jobs, no orphan rows. **The fix
+is dead code until a release ships it** — the owner runs the dub again afterwards, which doubles
+as the long-owed vendor probe.
+
+---
+
 ## 🟢 Requested and delivered 2026-08-22 — the dubbing panel, three defects from the running product
 
 The owner opened the shipped panel and found three things wrong with it. All three are the same
