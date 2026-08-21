@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import {
+  avatarConfigStillPoisoned,
   buildBackfillReport,
   evaluateBackfillPolicy,
   isNonPublicUrl,
   keyFromUrl,
+  planCircleFaceRepair,
   summarizePlan,
   type PlannedUrlRow,
 } from '../urlBackfill.js';
@@ -130,5 +132,79 @@ describe('buildBackfillReport (machine-readable contract)', () => {
     expect(report.samples).toHaveLength(3);
     expect(report.applied).toEqual({ rewritten: 10, keyed: 0, nulled: 0, skipped: 0 });
     expect(report.postAffected).toBe(0);
+  });
+});
+
+// ── The JSON-embedded target: what the backfill would actually DO to the poisoned row ──
+//
+// These exercise the exact decision the script makes per `projects` row — target naming,
+// rewrite-vs-null classification, and the payload it would write — with the storage lookup
+// stubbed. Without this, only the primitives were covered and the wiring was not.
+describe('planCircleFaceRepair (projects.avatar_config → avatarCircles.faces[].imageUrl)', () => {
+  const PROJECT = '431df510-45e5-4d4b-9750-87ed723776ba';
+  const KEY = `avatar-circles/${PROJECT}/4829af92-9757-4d4c-842e-8adc6bdaf763.png`;
+  const POISONED = `http://localhost:8080/local-storage/${KEY}`;
+  const PUBLIC = `https://abc123ref.supabase.co/storage/v1/object/public/media/${KEY}`;
+
+  const config = () => ({
+    avatarCircles: {
+      enabled: true, visibility: 'always', count: 1,
+      faces: [{ speaker: 'host_a', side: 'left', label: 'hey hey', imageUrl: POISONED }],
+    },
+  });
+  /** Production holds this column double-encoded — a jsonb STRING, not an object. */
+  const storedAsProduction = () => JSON.stringify(config());
+  const found = async () => ({ newValue: PUBLIC, assetExists: true });
+  const missing = async () => ({ newValue: null, assetExists: false });
+
+  it('plans ONE rewrite for the poisoned face, named by its JSON path', async () => {
+    const repair = await planCircleFaceRepair(PROJECT, storedAsProduction(), found);
+    expect(repair?.rows).toEqual([{
+      target: 'projects.avatar_config#avatarCircles.faces[0].imageUrl',
+      rowId: PROJECT,
+      oldValue: POISONED,
+      newValue: PUBLIC,
+      action: 'rewrite',
+      assetExists: true,
+      jsonPath: 'avatarCircles.faces[0].imageUrl',
+    }]);
+  });
+
+  it('writes back a jsonb STRING for a string-shaped row — the no-op a path update would be', async () => {
+    const repair = await planCircleFaceRepair(PROJECT, storedAsProduction(), found);
+    const stored = JSON.parse(repair!.payload) as unknown;
+    expect(typeof stored).toBe('string'); // still double-encoded, as it was found
+    expect(JSON.parse(stored as string)).toEqual({
+      avatarCircles: { ...config().avatarCircles, faces: [{ speaker: 'host_a', side: 'left', label: 'hey hey', imageUrl: PUBLIC }] },
+    });
+  });
+
+  it('writes back an OBJECT for an object-shaped row', async () => {
+    const repair = await planCircleFaceRepair(PROJECT, config(), found);
+    expect(JSON.parse(repair!.payload)).toBeTypeOf('object');
+    expect(JSON.parse(repair!.payload).avatarCircles.faces[0].imageUrl).toBe(PUBLIC);
+  });
+
+  it('a missing object becomes a NULL action — which the policy gate then refuses to auto-apply', async () => {
+    const repair = await planCircleFaceRepair(PROJECT, storedAsProduction(), missing);
+    expect(repair!.rows[0]).toMatchObject({ action: 'null', newValue: null, assetExists: false });
+    expect(evaluateBackfillPolicy(summarizePlan(repair!.rows), 1, 50).unsafe).toBe(true);
+    // …and it clears only the picture.
+    const document = JSON.parse(JSON.parse(repair!.payload) as string);
+    expect(document.avatarCircles.faces[0]).toEqual({ speaker: 'host_a', side: 'left', label: 'hey hey' });
+  });
+
+  it('plans nothing for a healthy row, a row with no circles, or a non-JSON column', async () => {
+    const healthy = { avatarCircles: { count: 1, faces: [{ speaker: 'host_a', side: 'left', imageUrl: PUBLIC }] } };
+    expect(await planCircleFaceRepair(PROJECT, healthy, found)).toBeNull();
+    expect(await planCircleFaceRepair(PROJECT, { characterId: 'einstein' }, found)).toBeNull();
+    expect(await planCircleFaceRepair(PROJECT, null, found)).toBeNull();
+    expect(await planCircleFaceRepair(PROJECT, 'not json at all', found)).toBeNull();
+  });
+
+  it('converges: the repaired value no longer counts as poisoned', async () => {
+    expect(avatarConfigStillPoisoned(storedAsProduction())).toBe(true);
+    const repair = await planCircleFaceRepair(PROJECT, storedAsProduction(), found);
+    expect(avatarConfigStillPoisoned(JSON.parse(repair!.payload))).toBe(false);
   });
 });

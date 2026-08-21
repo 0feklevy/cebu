@@ -48,18 +48,13 @@ import postgres from 'postgres';
 import { getStorageAdapter } from '../services/storage/getStorageAdapter.js';
 import { logger } from '../lib/logger.js';
 import {
-  circlesOf,
-  nonPublicCircleFaceUrls,
-  parseAvatarConfigColumn,
-  serializeAvatarConfigColumn,
-  withCircleFaceUrls,
-} from '../services/avatarCircles/circleFaceUrls.js';
-import {
   NON_PUBLIC_SQL as NON_PUBLIC,
+  avatarConfigStillPoisoned,
   buildBackfillReport,
   evaluateBackfillPolicy,
   isNonPublicUrl,
   keyFromUrl,
+  planCircleFaceRepair,
   summarizePlan,
   type PlannedUrlRow,
   type UrlBackfillReportJson,
@@ -166,40 +161,21 @@ async function main() {
       );
       let affected = 0;
       for (const r of rows) {
-        const parsed = parseAvatarConfigColumn(r.avatar_config);
-        if (!parsed) continue;
-        const sites = nonPublicCircleFaceUrls(circlesOf(parsed.config));
-        if (sites.length === 0) continue;
-        affected += 1;
-        const resolutions = new Map<number, string | null>();
-        const rowsForWrite: PlannedUrlRow[] = [];
-        for (const site of sites) {
+        const repair = await planCircleFaceRepair(String(r.id), r.avatar_config, async (url) => {
           // The poisoned shape is `{origin}/local-storage/{key}`, which keyFromUrl inverts;
           // keyFromPublicUrl covers a URL minted by whichever adapter is configured now.
-          const key = keyFromUrl(site.url) ?? storage.keyFromPublicUrl(site.url);
-          const assetExists = key ? await exists(key) : false;
-          // The bytes moved to cloud storage under the identical key — only the URL string
-          // was left behind — so this is a REWRITE. NULL only when the object is genuinely
-          // gone, and that clears this one field: never the face, never the row.
-          const newValue = key && assetExists ? storage.getPublicUrl(key) : null;
-          resolutions.set(site.faceIndex, newValue);
-          const planned: PlannedUrlRow = {
-            target: `projects.avatar_config#${site.path}`,
-            rowId: String(r.id),
-            oldValue: site.url,
-            newValue,
-            action: newValue ? 'rewrite' : 'null',
-            assetExists,
-            jsonPath: site.path,
-          };
-          rowsForWrite.push(planned);
-          jsonPlan.push(planned);
-        }
-        jsonWrites.push({
-          rowId: String(r.id),
-          payload: serializeAvatarConfigColumn(withCircleFaceUrls(parsed.config, resolutions), parsed.shape),
-          rows: rowsForWrite,
+          const key = keyFromUrl(url) ?? storage.keyFromPublicUrl(url);
+          if (!key) return { newValue: null, assetExists: null };
+          // The bytes moved to cloud storage under the identical key — only the URL string was
+          // left behind — so this is a REWRITE. NULL only when the object is genuinely gone,
+          // and that clears this one field: never the face, never the row.
+          const assetExists = await exists(key);
+          return { newValue: assetExists ? storage.getPublicUrl(key) : null, assetExists };
         });
+        if (!repair) continue;
+        affected += 1;
+        jsonPlan.push(...repair.rows);
+        jsonWrites.push({ rowId: String(r.id), payload: repair.payload, rows: repair.rows });
       }
       targets.push({ target: AVATAR_CIRCLES_TARGET, affected });
     }
@@ -446,10 +422,7 @@ async function main() {
       const rows = await q<{ id: string; avatar_config: unknown }>(
         `SELECT id, avatar_config FROM projects WHERE avatar_config IS NOT NULL`,
       );
-      for (const r of rows) {
-        const parsed = parseAvatarConfigColumn(r.avatar_config);
-        if (parsed && nonPublicCircleFaceUrls(circlesOf(parsed.config)).length > 0) postAffected++;
-      }
+      for (const r of rows) if (avatarConfigStillPoisoned(r.avatar_config)) postAffected++;
     }
 
     emitJson(buildBackfillReport({
