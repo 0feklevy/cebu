@@ -5,6 +5,8 @@ import type { PlayerConfig } from './types';
 import type { LockedContent } from 'shared/src/generated/client-v1';
 import { readPlayerConfigResponse } from './lockedResponse';
 import { readinessOf } from './segmentReadiness';
+import { applyConfigRevision } from './configRevision';
+import { useConfigFreshness } from './useConfigFreshness';
 import { HLSPlayerShell } from './HLSPlayerShell';
 import { branchNavigate } from './branchNavigate';
 import { PaywallOverlay } from '../PaywallOverlay';
@@ -51,6 +53,24 @@ export function SharedViewerPage({ shareToken, permalinkSlug, language }: Props)
   const [avatarOpen, setAvatarOpen] = useState(false);
   const [captionMenuOpen, setCaptionMenuOpen] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  /**
+   * D-13. The ETag of the payload currently on screen. Held in a ref so a new tag neither
+   * re-renders the player nor restarts either poll.
+   */
+  const configEtagRef = useRef<string | null>(null);
+
+  /**
+   * The one config URL this page reads — hoisted out of the fetch effect so the readiness poll and
+   * the D-13 freshness poll below cannot end up revalidating a DIFFERENT url than the one the ETag
+   * was minted from. Derived from props only, so it is a stable string across renders.
+   *
+   * The language rides as a query param on BOTH surfaces; only the permalink expresses it in the
+   * path, and that path segment is turned back into this param by the route.
+   */
+  const langQuery = language ? `?lang=${encodeURIComponent(language)}` : '';
+  const configUrl = shareToken
+    ? `${API_URL}/api/v1/share/${shareToken}${langQuery}`
+    : `${API_URL}/api/v1/public/permalink/${permalinkSlug}/config${langQuery}`;
 
   useEffect(() => {
     const startedAt = Date.now();
@@ -61,14 +81,13 @@ export function SharedViewerPage({ shareToken, permalinkSlug, language }: Props)
     const check = async () => {
       try {
         const token = await auth.currentUser?.getIdToken().catch(() => null);
-        // The language rides as a query param on BOTH surfaces; only the permalink expresses it
-        // in the path, and that path segment is turned back into this param by the route.
-        const langQuery = language ? `?lang=${encodeURIComponent(language)}` : '';
-        const configUrl = shareToken
-          ? `${API_URL}/api/v1/share/${shareToken}${langQuery}`
-          : `${API_URL}/api/v1/public/permalink/${permalinkSlug}/config${langQuery}`;
+        // `no-store` keeps the browser's HTTP cache out of the readiness path: the D-13 poll
+        // supplies its own validator, and a browser-generated revalidation would look like ours
+        // at the server while belonging to no session — and would be excluded from `view_count`
+        // by the revalidation gate that protects this very route.
         const r = await fetch(configUrl, {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
+          cache: 'no-store',
         });
         if (r.status === 404) {
           setError('This link is no longer active or does not exist.');
@@ -76,6 +95,7 @@ export function SharedViewerPage({ shareToken, permalinkSlug, language }: Props)
           return;
         }
         if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+        const etag = r.headers.get('etag');
 
         // ONE of two shapes, never a merge of both — see lockedResponse.ts. The intersection this
         // replaces put `data.segments.length` one line from a TypeError on any third shape, and
@@ -119,7 +139,11 @@ export function SharedViewerPage({ shareToken, permalinkSlug, language }: Props)
         }
 
         if (readiness.entryPlayable) {
-          setConfig(data);
+          // D-13: through `applyConfigRevision` rather than `setConfig(data)` directly, so an
+          // unchanged payload returns the SAME object and React bails out instead of handing the
+          // shell a fresh `segments` array — the identity the caption reset keys on.
+          if (etag) configEtagRef.current = etag;
+          setConfig((prev) => applyConfigRevision(prev, data));
           setProcessing(false);
           // Keep polling until every segment is terminal, and surface the give-up — including
           // once a config exists, which the old placement inside `if (!config)` could not do.
@@ -138,7 +162,26 @@ export function SharedViewerPage({ shareToken, permalinkSlug, language }: Props)
     check();
     intervalRef.current = setInterval(check, POLL_INTERVAL_MS);
     return stop;
-  }, [shareToken, permalinkSlug, language, recheck]);
+    // `configUrl` is derived from exactly these props, so listing them keeps the existing
+    // lifetime of this effect unchanged.
+  }, [shareToken, permalinkSlug, language, recheck, configUrl]);
+
+  /**
+   * D-13 — the deliberate delivery path for an editorial correction (see ViewerPage for the full
+   * reasoning; this is the surface most likely to meet it, because a share link is how a lecture
+   * gets watched while its creator is still fixing it).
+   *
+   * Revalidation is deliberately NOT how this page learns that a link was revoked or that content
+   * became paid: those responses are ignored by the hook and playback continues. D-13 is editorial
+   * freshness, not a takedown mechanism (`security-001`).
+   */
+  useConfigFreshness({
+    url: configUrl,
+    enabled: !!config && !locked && !error,
+    etagRef: configEtagRef,
+    getToken: async () => (await auth.currentUser?.getIdToken().catch(() => null)) ?? null,
+    onRevision: (next) => setConfig((prev) => applyConfigRevision(prev, next)),
+  });
 
   /**
    * Switch audio language by navigating to that language's URL.

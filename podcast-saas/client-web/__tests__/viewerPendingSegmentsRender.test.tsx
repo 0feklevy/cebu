@@ -46,7 +46,15 @@ const serve = (b: unknown) => { body = b; };
 
 function stubFetch() {
   vi.stubGlobal('fetch', vi.fn(async () => (
-    { ok: true, status: 200, statusText: 'OK', json: async () => body } as unknown as Response
+    {
+      ok: true, status: 200, statusText: 'OK',
+      // `headers` is part of a real `Response`, and the viewer pages read the D-13 `ETag` off
+      // every config response. A double without it made the page throw inside the very `try`
+      // whose catch renders to the screen — reported here as "Cannot read properties of
+      // undefined", which is a defect in the double, not in the page.
+      headers: { get: () => null },
+      json: async () => body,
+    } as unknown as Response
   )));
 }
 

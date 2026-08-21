@@ -206,6 +206,15 @@ async function build() {
     // so production never ships dev origins, and the admin origin is always included.)
     origin: browserOrigins(),
     credentials: true,
+    // D-13. The viewer is on a DIFFERENT ORIGIN from this API, and a cross-origin response
+    // exposes only the CORS-safelisted headers to JavaScript — `ETag` is not one of them. Without
+    // this line `r.headers.get('etag')` reads null in the browser, the freshness poll has no tag
+    // to send back, and every re-poll is an unconditional GET: the full config on the wire each
+    // time, and (on the share/permalink routes) a counted view each time. The matching request
+    // header, `If-None-Match`, needs no entry here — @fastify/cors reflects
+    // `Access-Control-Request-Headers` on the preflight when `allowedHeaders` is unset, which is
+    // how `Authorization` already gets through.
+    exposedHeaders: ['ETag'],
   });
 
   await app.register(helmet, {

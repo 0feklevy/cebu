@@ -16,7 +16,7 @@ import {
   type User,
 } from 'firebase/auth';
 import { authEmulatorOrigin } from 'shared/src/csp';
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import React from 'react';
 
 const firebaseConfig = {
@@ -111,48 +111,66 @@ export function FirebaseAuthProvider({ children }: { children: React.ReactNode }
     return unsub;
   }, []);
 
-  const getIdToken = async () => {
+  /*
+   * EVERY CALLABLE HERE IS MEMOISED, AND THE CONTEXT VALUE WITH THEM (D-13).
+   *
+   * These were plain function declarations in the provider body inside a fresh object literal, so
+   * `getIdToken` — and the whole context value — changed identity on EVERY provider render. That
+   * is not a performance detail; it was load-bearing in a way nobody intended:
+   *
+   *   • it was the viewer's *accidental* config-delivery path. `ViewerPage`'s fetch effect used to
+   *     list `getIdToken` as a dependency, so an unrelated provider render re-ran the fetch and a
+   *     corrected b-roll list arrived — sometimes, if the auth context happened to re-render (a
+   *     cross-tab sign-in was enough). D-13 replaces that coincidence with a deliberate poll, and
+   *     a deliberate mechanism is only testable once the accidental one is gone;
+   *   • the same identity churn had already torn down that poll's give-up clock on every render,
+   *     which is why `ViewerPage` had to route `getIdToken` through a ref to defend itself.
+   *
+   * None of them close over `user` or `loading`, so `[]` is the honest dependency list: each reads
+   * `auth.currentUser` at call time, which is the live value.
+   */
+  const getIdToken = useCallback(async () => {
     return auth.currentUser?.getIdToken() ?? null;
-  };
+  }, []);
 
-  const signInAnonymouslyFn = async () => {
+  const signInAnonymouslyFn = useCallback(async () => {
     await signInAnonymously(auth);
-  };
+  }, []);
 
-  const signInWithGoogle = async () => {
+  const signInWithGoogle = useCallback(async () => {
     const provider = new GoogleAuthProvider();
     await signInWithPopup(auth, provider);
-  };
+  }, []);
 
-  const signInWithEmail = async (email: string, password: string) => {
+  const signInWithEmail = useCallback(async (email: string, password: string) => {
     await signInWithEmailAndPassword(auth, email, password);
-  };
+  }, []);
 
-  const signUpWithEmail = async (email: string, password: string) => {
+  const signUpWithEmail = useCallback(async (email: string, password: string) => {
     await createUserWithEmailAndPassword(auth, email, password);
-  };
+  }, []);
 
-  const signOutUser = async () => {
+  const signOutUser = useCallback(async () => {
     await signOut(auth);
-  };
+  }, []);
 
-  return React.createElement(
-    AuthContext.Provider,
-    {
-      value: {
-        user,
-        loading,
-        isAnonymous: user?.isAnonymous ?? false,
-        getIdToken,
-        signInAnonymouslyFn,
-        signInWithGoogle,
-        signInWithEmail,
-        signUpWithEmail,
-        signOutUser,
-      },
-    },
-    children,
-  );
+  const value = useMemo<AuthContextValue>(() => ({
+    user,
+    loading,
+    isAnonymous: user?.isAnonymous ?? false,
+    getIdToken,
+    signInAnonymouslyFn,
+    signInWithGoogle,
+    signInWithEmail,
+    signUpWithEmail,
+    signOutUser,
+  }), [
+    user, loading,
+    getIdToken, signInAnonymouslyFn, signInWithGoogle,
+    signInWithEmail, signUpWithEmail, signOutUser,
+  ]);
+
+  return React.createElement(AuthContext.Provider, { value }, children);
 }
 
 export function useAuth(): AuthContextValue {

@@ -74,7 +74,17 @@ const NEITHER: Array<[string, unknown]> = [
   ['a config whose segments is not an array', { ...CONFIG, segments: 'none' }],
 ];
 
-const ok = (body: unknown) => ({ ok: true, status: 200, statusText: 'OK', json: async () => body });
+/**
+ * `headers` is part of the double because it is part of a real `Response`, and both viewer pages
+ * now read the D-13 `ETag` off every config response. A double without it made the pages throw a
+ * TypeError inside the very `try` these tests exist to keep clean — which would have been this
+ * file reporting a defect in itself.
+ */
+const ok = (body: unknown, etag: string | null = null) => ({
+  ok: true, status: 200, statusText: 'OK',
+  headers: { get: (name: string) => (name.toLowerCase() === 'etag' ? etag : null) },
+  json: async () => body,
+});
 
 beforeEach(() => {
   fetchMock.mockReset();
