@@ -643,6 +643,30 @@ describe('fieldAggregates — the shipped function, executed', () => {
     expect(logged.error).not.toHaveBeenCalled();
   });
 
+  it('binds the cutoff as an ISO string, never a Date — the production driver refuses a Date', async () => {
+    // The same assertion the retention sweep already carries, extended here per test-quality-015:
+    // this function had the identical defect — `created_at >= ${cutoff}` with a raw Date — and six
+    // green tests could not see it, because PGlite serialises Dates and postgres.js throws. The
+    // dubbing slot pool shipped the same bug the same week. The rule is now pinned at both sites.
+    await seed('rev-a', [10]);
+    const params: unknown[] = [];
+    const realQuery = pg.query.bind(pg);
+    (pg as unknown as { query: unknown }).query = ((text: string, args?: unknown[]) => {
+      if (Array.isArray(args)) params.push(...args);
+      return realQuery(text, args as never);
+    }) as typeof pg.query;
+    try {
+      await fieldAggregates(['rev-a']);
+    } finally {
+      (pg as unknown as { query: unknown }).query = realQuery;
+    }
+    expect(params.filter((x) => x instanceof Date),
+      'a Date was bound into the raw fieldAggregates fragment — postgres.js throws on it, the bare '
+      + 'catch eats the throw, and field refinement is silently dead in production').toEqual([]);
+    expect(params.some((x) => typeof x === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(x)),
+      'the cutoff is no longer passed as an ISO string').toBe(true);
+  });
+
   it('reports nearest-rank percentiles, so every value reported actually occurred', async () => {
     await seed('rev-a', [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]);
     const a = (await fieldAggregates(['rev-a'])).get('rev-a')!;
