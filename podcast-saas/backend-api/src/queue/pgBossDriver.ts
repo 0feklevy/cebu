@@ -144,8 +144,26 @@ export function singletonKeyFor<N extends JobName>(name: N, payload: JobPayloads
  * what keeps Docker access out of the request-serving process.
  *
  * A general worker gets `crop,video_generate`. A dedicated export orchestrator gets
- * `project_export` and nothing else. An unknown name is a startup error rather than a silent
- * omission, because a typo would otherwise mean a queue nobody consumes and jobs that sit forever.
+ * `project_export` and nothing else.
+ *
+ * ── WHY AN UNKNOWN NAME IS SKIPPED RATHER THAN FATAL (job-queue-011) ─────────────────────────
+ * This function used to throw on any unknown name, to catch a typo — a queue nobody consumes means
+ * jobs that sit forever and a failure that surfaces days later as "my export never started".
+ *
+ * That is the right instinct and it was aimed at the wrong failure. `WORKER_QUEUES` is set in
+ * `docker-compose.yml`, which is read from the CHECKED-OUT TREE, while the image is whatever tag
+ * `APP_VERSION` names — so the config and the code can legitimately disagree in one direction:
+ * **an older image being handed a queue name that was added after it was built.** That is exactly
+ * what a rollback is. The throw turned it into `process.exit(1)` under `restart: unless-stopped`,
+ * i.e. a crash-loop of the only container that runs background work, during an incident.
+ *
+ * So this is the expand/contract rule for queue names, and it has to hold in BOTH directions:
+ * adding a queue must not break an older image, and removing one must not break a newer one.
+ *
+ *   • unknown names are DROPPED, and logged at error level naming each one — a typo is still
+ *     loudly visible at startup, in the place an operator is already looking;
+ *   • but if NOTHING known survives, that is thrown, because a worker consuming no queues at all
+ *     does no work while looking perfectly healthy, and there is no version skew that explains it.
  */
 export function resolveWorkerQueues(
   available: readonly JobName[],
@@ -154,13 +172,24 @@ export function resolveWorkerQueues(
   const raw = env.WORKER_QUEUES?.trim();
   if (!raw) return [...available];
   const named = raw.split(',').map((n) => n.trim()).filter(Boolean);
+  const known = named.filter((n) => (available as readonly string[]).includes(n));
   const unknown = named.filter((n) => !(available as readonly string[]).includes(n));
+
   if (unknown.length > 0) {
-    throw new Error(
-      `WORKER_QUEUES names unknown queue(s): ${unknown.join(', ')}; known: ${available.join(', ')}`,
+    logger.error(
+      { unknown, known, available },
+      '[queue] WORKER_QUEUES names queue(s) this build does not have — skipping them. ' +
+      'If this is not a rollback to an image older than the compose file, it is a typo and those jobs will never run.',
     );
   }
-  return named as JobName[];
+
+  if (known.length === 0) {
+    throw new Error(
+      `WORKER_QUEUES names no queue this build has: ${named.join(', ')}; known: ${available.join(', ')}`,
+    );
+  }
+
+  return known as JobName[];
 }
 
 export async function registerWorkers(
@@ -172,7 +201,20 @@ export async function registerWorkers(
     const run = handlers[name] as (payload: unknown) => Promise<unknown>;
     await boss.work(name, { localConcurrency: concurrencyFor(name) }, async (jobs) => {
       for (const job of jobs) {
-        await run(job.data); // throwing fails the job → pg-boss retries with backoff
+        try {
+          await run(job.data);
+        } catch (err) {
+          // LOG BEFORE RE-THROWING. pg-boss records the failure and schedules the retry either
+          // way, but only in its own tables — an error thrown from a handler used to leave ZERO
+          // log lines, and the dubbing feature shipped broken in production for a full day with
+          // its TypeError visible nowhere but `pgboss.job.output`, a table nothing watches. The
+          // rethrow is what fails the job so the retry/backoff behaviour is unchanged.
+          logger.warn(
+            { queue: name, jobId: job.id, err: err instanceof Error ? err.message.slice(0, 400) : String(err) },
+            '[pg-boss] job handler threw — job will retry with backoff (or fail permanently past its retry limit)',
+          );
+          throw err;
+        }
       }
     });
     logger.info({ queue: name }, '[pg-boss] worker registered');

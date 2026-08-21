@@ -205,11 +205,32 @@ describe('resolveWorkerQueues', () => {
       .toEqual(['crop', 'video_generate']);
   });
 
-  it('an unknown name is a STARTUP ERROR, not a silent omission', () => {
-    // A typo would otherwise mean a queue nobody consumes and jobs that sit forever — the failure
-    // shows up as "my export never started", days later, with nothing in the logs.
-    expect(() => resolveWorkerQueues(ALL, { WORKER_QUEUES: 'crop,projectexport' } as NodeJS.ProcessEnv))
-      .toThrow(/unknown queue\(s\): projectexport/);
+  /**
+   * THE EXPAND/CONTRACT RULE FOR QUEUE NAMES (job-queue-011).
+   *
+   * `WORKER_QUEUES` comes from the checked-out `docker-compose.yml`; the code comes from whatever
+   * image tag `APP_VERSION` names. A rollback re-points the tag without moving the tree, so an old
+   * image is handed the new file's queue list — and this function used to throw, which under
+   * `restart: unless-stopped` crash-loops the only container running background work, during an
+   * incident. Skipping the name it does not know is what makes a rollback survivable.
+   */
+  it('skips a queue this build does not have, so an old image survives a newer compose file', () => {
+    expect(resolveWorkerQueues(ALL, { WORKER_QUEUES: 'crop,video_generate,dub' } as NodeJS.ProcessEnv))
+      .toEqual(['crop', 'video_generate']);
+  });
+
+  it('still refuses a list where NOTHING is known — that is a typo, not version skew', () => {
+    // A worker consuming no queues does no work while looking perfectly healthy, and no rollback
+    // explains it. This is the case the old throw was really protecting against.
+    expect(() => resolveWorkerQueues(ALL, { WORKER_QUEUES: 'projectexport' } as NodeJS.ProcessEnv))
+      .toThrow(/no queue this build has: projectexport/);
+  });
+
+  it('a partial typo is dropped rather than fatal, and the surviving queues still run', () => {
+    // The tradeoff, stated plainly: this used to throw. The typo is now visible as a startup ERROR
+    // log naming the unknown queue, and the worker keeps doing the work it CAN do.
+    expect(resolveWorkerQueues(ALL, { WORKER_QUEUES: 'crop,projectexport' } as NodeJS.ProcessEnv))
+      .toEqual(['crop']);
   });
 });
 

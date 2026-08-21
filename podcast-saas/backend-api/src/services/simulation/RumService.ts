@@ -427,7 +427,13 @@ export async function fieldAggregates(
   const wanted = [...new Set(packageRevisions.filter((r) => typeof r === 'string' && r.length > 0))];
   if (wanted.length === 0) return out;
   try {
-    const cutoff = new Date(Date.now() - windowDays * 86_400_000);
+    // ISO string + explicit cast, never a raw Date: `db.execute(sql\`…\`)` hands parameters to
+    // postgres-js `unsafe()` with no inferred types, so a Date is not serialised — real Postgres
+    // rejects what comes out, the catch below turns that into an empty Map, and field refinement is
+    // silently dead while every test passes on PGlite, which serialises Dates itself. That exact
+    // chain shipped (test-quality-015), and `reapRumEvents` above already does this for the same
+    // reason. The dubbing slot pool had the identical bug the same week (dubbingSlots.ts).
+    const cutoff = new Date(Date.now() - windowDays * 86_400_000).toISOString();
     const res = await db.execute<{
       package_revision: string; samples: number; p50: number | null; p90: number | null; dropped: number;
     }>(sql`
@@ -439,7 +445,7 @@ export async function fieldAggregates(
         FROM ${sim_rum_events}
        WHERE kind = 'transition'
          AND total_ms IS NOT NULL
-         AND created_at >= ${cutoff}
+         AND created_at >= ${cutoff}::timestamptz
          AND ${inArray(sim_rum_events.package_revision, wanted)}
        GROUP BY package_revision
     `);

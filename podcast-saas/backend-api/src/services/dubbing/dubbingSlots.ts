@@ -44,10 +44,18 @@ export interface DubbingSlot {
  * back later" — and the caller must treat it as a deferral, never as a failure of the dub.
  */
 export async function acquireDubbingSlot(holder: string): Promise<DubbingSlot | null> {
-  const expiresAt = new Date(Date.now() + SLOT_LEASE_MS);
+  // AN ISO STRING WITH AN EXPLICIT CAST — NEVER A RAW Date — because this goes through
+  // `db.execute(sql\`…\`)`, where drizzle hands the parameters to postgres-js `unsafe()` with no
+  // inferred types and a Date object reaches Buffer.byteLength() unserialised. The result is a
+  // TypeError on EVERY call ("must be of type string… Received an instance of Date"), thrown
+  // before any log line and before the vendor is ever reached — which is how the entire dubbing
+  // feature shipped dead in production while every test stayed green: PGlite's JS driver
+  // serialises Dates itself, so no test could see it. RumService.reapRumEvents documents the
+  // same trap (test-quality-015 is its sibling); dubbingSlots.date-binding.test.ts now pins it.
+  const expiresAt = new Date(Date.now() + SLOT_LEASE_MS).toISOString();
   const rows = await db.execute(sql`
     UPDATE dubbing_slots
-       SET holder = ${holder}, expires_at = ${expiresAt}, updated_at = now()
+       SET holder = ${holder}, expires_at = ${expiresAt}::timestamptz, updated_at = now()
      WHERE slot_no = (
        SELECT slot_no FROM dubbing_slots
         WHERE holder IS NULL OR expires_at IS NULL OR expires_at < now()
@@ -93,10 +101,11 @@ export async function releaseDubbingSlot(slot: DubbingSlot, holder: string): Pro
  * that has lost it can stop rather than carry on believing it holds a slot it does not.
  */
 export async function renewDubbingSlot(slot: DubbingSlot, holder: string): Promise<boolean> {
-  const expiresAt = new Date(Date.now() + SLOT_LEASE_MS);
+  // ISO string + cast, not a raw Date — see the note in `acquireDubbingSlot`.
+  const expiresAt = new Date(Date.now() + SLOT_LEASE_MS).toISOString();
   const rows = await db.execute(sql`
     UPDATE dubbing_slots
-       SET expires_at = ${expiresAt}, updated_at = now()
+       SET expires_at = ${expiresAt}::timestamptz, updated_at = now()
      WHERE slot_no = ${slot.slotNo} AND holder = ${holder}
      RETURNING slot_no
   `);
