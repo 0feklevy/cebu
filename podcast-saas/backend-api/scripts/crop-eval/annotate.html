@@ -1,0 +1,1098 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  The crop annotator: hand-labelled ground truth for the 16:9 -> 9:16 crop.
+
+  Open this file directly (double-click, or `open annotate.html`). There is no server, no build
+  step and no dependency. The Content-Security-Policy below is not decoration: `connect-src
+  'none'` means the browser itself refuses every fetch, XHR and WebSocket this page could make,
+  so "your footage never leaves this machine" is enforced rather than promised. The video is read
+  through a blob URL that exists only in this tab.
+
+  What it writes is documented in README.md, and parsed by
+  src/services/crop/eval/labels.ts — change one and the other's tests fail.
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src blob: data:; media-src blob:; connect-src 'none'; form-action 'none'; base-uri 'none'">
+<title>Crop Annotator</title>
+<style>
+  :root {
+    --background: 220 20% 97%;
+    --foreground: 224 28% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 4%;
+    --primary: 231 72% 55%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 214 32% 92%;
+    --secondary-foreground: 224 28% 12%;
+    --muted: 214 28% 93%;
+    --muted-foreground: 220 9% 42%;
+    --accent: 190 76% 92%;
+    --accent-foreground: 224 28% 12%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --warning: 38 92% 45%;
+    --border: 216 20% 86%;
+    --input: 216 20% 86%;
+    --ring: 231 72% 55%;
+    --radius: 0.625rem;
+  }
+
+  html[data-theme="dark"] {
+    --background: 222 47% 7%;
+    --foreground: 210 40% 96%;
+    --card: 222 36% 10%;
+    --card-foreground: 210 40% 96%;
+    --primary: 252 82% 67%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 217 33% 17%;
+    --secondary-foreground: 210 40% 96%;
+    --muted: 217 33% 15%;
+    --muted-foreground: 215 20% 70%;
+    --accent: 190 76% 24%;
+    --accent-foreground: 210 40% 96%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --warning: 38 92% 58%;
+    --border: 217 33% 20%;
+    --input: 217 33% 22%;
+    --ring: 252 82% 67%;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    padding: 12px 20px;
+    border-bottom: 1px solid hsl(var(--border));
+    background: hsl(var(--card));
+  }
+  header h1 { font-size: 15px; font-weight: 650; margin: 0; letter-spacing: -0.01em; }
+  header .spacer { flex: 1; }
+
+  .badge {
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    border: 1px solid hsl(var(--border));
+    color: hsl(var(--muted-foreground));
+    background: hsl(var(--muted));
+    white-space: nowrap;
+  }
+  .badge.ok { color: hsl(var(--primary)); border-color: hsl(var(--primary) / 0.4); background: hsl(var(--primary) / 0.1); }
+  .badge.warn { color: hsl(var(--warning)); border-color: hsl(var(--warning) / 0.4); background: hsl(var(--warning) / 0.12); }
+  .badge.bad { color: hsl(var(--destructive)); border-color: hsl(var(--destructive) / 0.4); background: hsl(var(--destructive) / 0.1); }
+
+  main {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 320px;
+    gap: 20px;
+    padding: 20px;
+    align-items: start;
+  }
+  @media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); } }
+
+  .card {
+    background: hsl(var(--card));
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
+    padding: 14px;
+  }
+  .card + .card { margin-top: 14px; }
+  .card h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: hsl(var(--muted-foreground));
+    margin: 0 0 10px;
+    font-weight: 650;
+  }
+
+  /* ── stage ─────────────────────────────────────────────────────────────── */
+
+  .stage-wrap { display: flex; justify-content: center; }
+  .stage {
+    position: relative;
+    width: 100%;
+    line-height: 0;
+    border-radius: calc(var(--radius) - 2px);
+    overflow: hidden;
+    background: hsl(var(--secondary));
+    cursor: ew-resize;
+    touch-action: none;
+    user-select: none;
+  }
+  .stage.empty { aspect-ratio: 16 / 9; cursor: default; }
+  .stage video { width: 100%; height: auto; display: block; }
+
+  .mask {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: hsl(var(--background) / 0.68);
+    pointer-events: none;
+  }
+  .window {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border: 2px solid hsl(var(--primary));
+    box-shadow: 0 0 0 1px hsl(var(--primary-foreground) / 0.55) inset;
+    pointer-events: none;
+  }
+  .marker {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 0;
+    border-left: 1px dashed hsl(var(--primary-foreground) / 0.8);
+    pointer-events: none;
+  }
+  .window-label {
+    position: absolute;
+    top: 6px;
+    left: 50%;
+    transform: translateX(-50%);
+    font: 600 10px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: hsl(var(--primary-foreground));
+    background: hsl(var(--primary));
+    padding: 1px 6px;
+    border-radius: 4px;
+    white-space: nowrap;
+  }
+  .stage.state-none .window, .stage.state-ambiguous .window { border-style: dashed; }
+  .stage.state-none .window-label, .stage.state-ambiguous .window-label { background: hsl(var(--muted-foreground)); }
+  .stage.state-none .window, .stage.state-ambiguous .window { border-color: hsl(var(--muted-foreground)); }
+
+  .drop-hint {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    line-height: 1.5;
+    color: hsl(var(--muted-foreground));
+    text-align: center;
+    padding: 20px;
+  }
+  .drop-hint strong { color: hsl(var(--foreground)); font-size: 15px; }
+  body.dragging .stage { outline: 2px dashed hsl(var(--primary)); outline-offset: -6px; }
+
+  /* ── timeline ──────────────────────────────────────────────────────────── */
+
+  #timeline { width: 100%; height: 78px; display: block; cursor: pointer; border-radius: 6px; }
+
+  .transport {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 12px;
+  }
+  .readout {
+    font: 500 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: hsl(var(--muted-foreground));
+    white-space: nowrap;
+  }
+  .readout b { color: hsl(var(--foreground)); font-weight: 650; }
+
+  /* ── controls ──────────────────────────────────────────────────────────── */
+
+  button, select, input[type="text"] {
+    font: inherit;
+    color: hsl(var(--foreground));
+    background: hsl(var(--card));
+    border: 1px solid hsl(var(--border));
+    border-radius: 8px;
+    padding: 6px 11px;
+  }
+  button { cursor: pointer; }
+  button:hover:not(:disabled) { background: hsl(var(--secondary)); }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  button:focus-visible, select:focus-visible, input:focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 1px;
+  }
+  button.primary {
+    background: hsl(var(--primary));
+    color: hsl(var(--primary-foreground));
+    border-color: hsl(var(--primary));
+    font-weight: 600;
+  }
+  button.primary:hover:not(:disabled) { background: hsl(var(--primary) / 0.88); }
+  button.on {
+    background: hsl(var(--primary) / 0.14);
+    border-color: hsl(var(--primary));
+    color: hsl(var(--primary));
+    font-weight: 600;
+  }
+  button.danger.on {
+    background: hsl(var(--destructive) / 0.14);
+    border-color: hsl(var(--destructive));
+    color: hsl(var(--destructive));
+  }
+
+  label.field { display: block; margin-bottom: 10px; }
+  label.field > span {
+    display: block;
+    font-size: 11px;
+    color: hsl(var(--muted-foreground));
+    margin-bottom: 4px;
+  }
+  label.field > input, label.field > select { width: 100%; }
+
+  .seg { display: flex; gap: 6px; }
+  .seg button { flex: 1; padding: 6px 4px; font-size: 12px; }
+
+  .file-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  input[type="file"] { display: none; }
+
+  dl.meta { margin: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; font-size: 12px; }
+  dl.meta dt { color: hsl(var(--muted-foreground)); }
+  dl.meta dd { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+
+  table.keys { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.keys td { padding: 3px 0; vertical-align: top; }
+  table.keys td:first-child { width: 96px; }
+  kbd {
+    font: 500 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+    border: 1px solid hsl(var(--border));
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    padding: 1px 5px;
+    background: hsl(var(--muted));
+    white-space: nowrap;
+  }
+
+  p.note { font-size: 12px; color: hsl(var(--muted-foreground)); margin: 8px 0 0; }
+  .issues {
+    margin: 8px 0 0;
+    padding-left: 18px;
+    font-size: 12px;
+    color: hsl(var(--destructive));
+    max-height: 150px;
+    overflow: auto;
+  }
+  #fallback { width: 100%; min-height: 110px; margin-top: 8px; font: 11px/1.4 ui-monospace, Menlo, monospace; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Crop Annotator</h1>
+  <span class="badge" id="privacy">local only &middot; nothing is uploaded</span>
+  <span class="badge" id="progress">no clip loaded</span>
+  <span class="spacer"></span>
+  <button id="theme" type="button" title="Toggle dark mode">Theme</button>
+</header>
+
+<main>
+  <section>
+    <div class="card">
+      <div class="stage-wrap">
+        <div class="stage empty" id="stage">
+          <video id="video" preload="auto" playsinline muted></video>
+          <div class="mask" id="maskL"></div>
+          <div class="mask" id="maskR"></div>
+          <div class="window" id="window"><span class="window-label" id="windowLabel">9:16</span></div>
+          <div class="marker" id="marker"></div>
+          <div class="drop-hint" id="dropHint">
+            <strong>Drop a video file here</strong>
+            <span>or <button type="button" id="pickVideo2">choose a file</button> &mdash; it is read in this tab and never uploaded.</span>
+            <span>Drop a labels <code>.json</code> to resume a session.</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="transport">
+        <button type="button" id="prev" disabled>&larr; frame</button>
+        <button type="button" id="next" disabled>frame &rarr;</button>
+        <span class="readout" id="readout">&mdash;</span>
+        <span class="spacer" style="flex:1"></span>
+        <span class="readout" id="cropReadout">&mdash;</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Track &middot; click to jump</h2>
+      <canvas id="timeline"></canvas>
+      <p class="note" id="trackNote">Height is crop&#8209;x across the clip. Solid = a frame you looked at, faded = carried forward and not yet reviewed. Red rules are cuts.</p>
+    </div>
+  </section>
+
+  <aside>
+    <div class="card">
+      <h2>Clip</h2>
+      <div class="file-row">
+        <button type="button" id="pickVideo">Choose video&hellip;</button>
+        <button type="button" id="pickLabels">Import labels&hellip;</button>
+      </div>
+      <input type="file" id="videoInput" accept="video/*">
+      <input type="file" id="labelsInput" accept="application/json,.json">
+      <dl class="meta" id="clipMeta" hidden>
+        <dt>file</dt><dd id="mFile">&mdash;</dd>
+        <dt>size</dt><dd id="mSize">&mdash;</dd>
+        <dt>sha256</dt><dd id="mHash">&mdash;</dd>
+        <dt>frame</dt><dd id="mDims">&mdash;</dd>
+        <dt>window</dt><dd id="mWindow">&mdash;</dd>
+      </dl>
+    </div>
+
+    <div class="card">
+      <h2>Metadata</h2>
+      <label class="field"><span>clip_id</span><input type="text" id="clipId" spellcheck="false" autocomplete="off"></label>
+      <label class="field"><span>category</span>
+        <select id="category">
+          <option value="single">single &mdash; one talking head</option>
+          <option value="two_shot">two_shot &mdash; two speakers in frame</option>
+          <option value="same_gender">same_gender &mdash; two same-pitch speakers</option>
+          <option value="dark_skin">dark_skin &mdash; deeper skin tones</option>
+          <option value="cool_light">cool_light &mdash; cool / blue lighting</option>
+          <option value="warm_set">warm_set &mdash; wood / beige background</option>
+          <option value="no_subject">no_subject &mdash; b&#8209;roll, slides, title cards</option>
+          <option value="multicam">multicam &mdash; hard cuts between angles</option>
+          <option value="moving_subject">moving_subject &mdash; camera or subject motion</option>
+          <option value="no_audio">no_audio &mdash; silent or undecodable audio</option>
+        </select>
+      </label>
+      <label class="field"><span>labeller</span><input type="text" id="labeller" spellcheck="false" autocomplete="off" placeholder="who is labelling"></label>
+    </div>
+
+    <div class="card">
+      <h2>This frame</h2>
+      <div class="seg" id="subjectSeg">
+        <button type="button" data-subject="subject" title="A subject to frame (1)">Subject</button>
+        <button type="button" data-subject="none" title="Nobody on screen (2)">Nobody</button>
+        <button type="button" data-subject="ambiguous" title="Genuinely undecidable (3)">Ambiguous</button>
+      </div>
+      <p class="note" id="subjectNote">&mdash;</p>
+      <div class="seg" style="margin-top:10px">
+        <button type="button" id="cutBtn" class="danger" disabled>Cut starts here (C)</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Keys</h2>
+      <table class="keys">
+        <tr><td><kbd>&larr;</kbd> <kbd>&rarr;</kbd></td><td>nudge crop&#8209;x (<kbd>Alt</kbd> fine, <kbd>Shift</kbd> coarse)</td></tr>
+        <tr><td><kbd>drag</kbd></td><td>drop the window where you point</td></tr>
+        <tr><td><kbd>Space</kbd> <kbd>.</kbd> <kbd>&darr;</kbd></td><td>accept and go to next frame</td></tr>
+        <tr><td><kbd>,</kbd> <kbd>&uarr;</kbd></td><td>previous frame</td></tr>
+        <tr><td><kbd>Home</kbd> <kbd>End</kbd></td><td>first / last frame</td></tr>
+        <tr><td><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></td><td>subject / nobody / ambiguous</td></tr>
+        <tr><td><kbd>C</kbd></td><td>mark a cut at this frame</td></tr>
+        <tr><td><kbd>Z</kbd></td><td>undo</td></tr>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>Export</h2>
+      <button type="button" class="primary" id="export" disabled style="width:100%">Download labels JSON</button>
+      <p class="note" id="exportNote">Load a clip to begin.</p>
+      <ul class="issues" id="issues" hidden></ul>
+      <textarea id="fallback" hidden readonly spellcheck="false"></textarea>
+    </div>
+  </aside>
+</main>
+
+<script>
+(function () {
+  'use strict';
+
+  // The schema string and the 9:16 constant are duplicated from
+  // src/services/crop/eval/labels.ts on purpose: this file has to run with no build step and no
+  // imports. labels.test.ts asserts the two copies still agree.
+  var LABEL_SCHEMA = 'flowvid.crop-labels/1';
+  var CROP_ASPECT = 9 / 16;
+  var SAMPLE_FPS = 2;
+  var SUBJECTS = ['subject', 'none', 'ambiguous'];
+  var NUDGE = { fine: 0.001, normal: 0.005, coarse: 0.025 };
+  var UNDO_LIMIT = 200;
+
+  var SUBJECT_NOTES = {
+    subject: 'Ground truth is the window you set. Frame whoever holds the floor; if two people share it, frame the one a viewer would look at.',
+    none: 'Nobody on screen. Ground truth becomes the frame centre, so the crop-x you set is ignored for scoring.',
+    ambiguous: 'Two framings are equally defensible. This frame is EXCLUDED from accuracy scoring, so use it sparingly — it is not a synonym for "hard".',
+  };
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  var els = {
+    stage: $('stage'), video: $('video'), maskL: $('maskL'), maskR: $('maskR'),
+    window: $('window'), windowLabel: $('windowLabel'), marker: $('marker'), dropHint: $('dropHint'),
+    timeline: $('timeline'), readout: $('readout'), cropReadout: $('cropReadout'),
+    prev: $('prev'), next: $('next'), cutBtn: $('cutBtn'), subjectSeg: $('subjectSeg'),
+    subjectNote: $('subjectNote'), clipId: $('clipId'), category: $('category'), labeller: $('labeller'),
+    videoInput: $('videoInput'), labelsInput: $('labelsInput'),
+    clipMeta: $('clipMeta'), mFile: $('mFile'), mSize: $('mSize'), mHash: $('mHash'),
+    mDims: $('mDims'), mWindow: $('mWindow'),
+    exportBtn: $('export'), exportNote: $('exportNote'), issues: $('issues'), fallback: $('fallback'),
+    progress: $('progress'), privacy: $('privacy'), trackNote: $('trackNote'),
+  };
+
+  var state = {
+    hasVideo: false,
+    fileName: '',
+    bytes: 0,
+    sha256: null,
+    width: 0,
+    height: 0,
+    duration: 0,
+    half: 0.5,
+    fps: SAMPLE_FPS,
+    labels: [],
+    cuts: {},
+    idx: 0,
+    undo: [],
+    importedFrom: null,
+  };
+
+  // ── geometry ────────────────────────────────────────────────────────────
+
+  /** Half-width of the 9:16 window in frame-width units. Mirrors labelHalfWidth(). */
+  function halfWidth(w, h) {
+    if (!w || !h) return 0.5;
+    return Math.min(0.5, (h * CROP_ASPECT) / w / 2);
+  }
+
+  /** Frame count at this cadence. Mirrors frameCount(). */
+  function frameCount(duration, fps) {
+    return Math.max(1, Math.round(duration * fps));
+  }
+
+  function timeOf(i) { return Number((i / state.fps).toFixed(6)); }
+
+  function clampX(x) {
+    return Math.min(1 - state.half, Math.max(state.half, x));
+  }
+
+  // ── label model ─────────────────────────────────────────────────────────
+
+  function blankLabels(n) {
+    var out = [];
+    for (var i = 0; i < n; i++) out.push({ crop_x: 0.5, subject: 'subject', confirmed: false });
+    return out;
+  }
+
+  /**
+   * Carry every unconfirmed frame's value forward from the frame before it — the whole reason a
+   * static shot is fast to label. A frame that starts a cut inherits nothing: the labeller has to
+   * look at the new shot and say where the window goes, which is exactly the convention the README
+   * documents and the one a carried-forward value would quietly violate.
+   */
+  function propagate() {
+    for (var i = 1; i < state.labels.length; i++) {
+      var l = state.labels[i];
+      if (l.confirmed || state.cuts[i]) continue;
+      l.crop_x = state.labels[i - 1].crop_x;
+      l.subject = state.labels[i - 1].subject;
+    }
+  }
+
+  function pushUndo() {
+    state.undo.push(JSON.stringify({ labels: state.labels, cuts: state.cuts, idx: state.idx }));
+    if (state.undo.length > UNDO_LIMIT) state.undo.shift();
+  }
+
+  function undo() {
+    var snap = state.undo.pop();
+    if (!snap) return;
+    var prev = JSON.parse(snap);
+    state.labels = prev.labels;
+    state.cuts = prev.cuts;
+    state.idx = prev.idx;
+    syncVideo();
+    render();
+  }
+
+  function current() { return state.labels[state.idx]; }
+
+  function goTo(i) {
+    if (!state.hasVideo) return;
+    var n = state.labels.length;
+    var next = Math.min(n - 1, Math.max(0, i));
+    if (next === state.idx && state.labels[next].confirmed) return;
+    pushUndo();
+    state.idx = next;
+    // Visiting a frame is what confirms it: the carried-forward value becomes this frame's label
+    // because a human had it on screen and moved on. Everything past here stays carried.
+    state.labels[next].confirmed = true;
+    propagate();
+    syncVideo();
+    render();
+  }
+
+  function setCropX(x) {
+    if (!state.hasVideo) return;
+    pushUndo();
+    var l = current();
+    l.crop_x = clampX(x);
+    l.confirmed = true;
+    propagate();
+    render();
+  }
+
+  function setSubject(s) {
+    if (!state.hasVideo || SUBJECTS.indexOf(s) < 0) return;
+    pushUndo();
+    var l = current();
+    l.subject = s;
+    l.confirmed = true;
+    propagate();
+    render();
+  }
+
+  function toggleCut() {
+    if (!state.hasVideo || state.idx === 0) return;
+    pushUndo();
+    if (state.cuts[state.idx]) delete state.cuts[state.idx];
+    else state.cuts[state.idx] = true;
+    propagate();
+    render();
+  }
+
+  function cutTimes() {
+    var out = [];
+    Object.keys(state.cuts).forEach(function (k) { out.push(Number(k)); });
+    out.sort(function (a, b) { return a - b; });
+    return out.map(timeOf);
+  }
+
+  // ── video ───────────────────────────────────────────────────────────────
+
+  var seeking = false;
+  var pendingSeek = false;
+  var seekWatchdog = 0;
+
+  function syncVideo() {
+    if (!state.hasVideo) return;
+    var t = Math.min(timeOf(state.idx), Math.max(0, state.duration - 1e-3));
+    // Decode speed must not throttle labelling. Requests that arrive mid-seek collapse into one
+    // flag, and the seek that follows reads the CURRENT frame index — so holding the step key
+    // through a static shot skips the intermediate decodes instead of queueing thirty of them.
+    if (seeking) { pendingSeek = true; return; }
+    if (Math.abs(els.video.currentTime - t) < 1e-4) return;
+    seeking = true;
+    clearTimeout(seekWatchdog);
+    // A container that refuses a seek must not wedge the tool: labelling continues either way,
+    // the picture just stops following. Three seconds is far past a normal keyframe seek.
+    seekWatchdog = setTimeout(function () { seeking = false; }, 3000);
+    els.video.currentTime = t;
+  }
+
+  els.video.addEventListener('seeked', function () {
+    clearTimeout(seekWatchdog);
+    seeking = false;
+    if (pendingSeek) { pendingSeek = false; syncVideo(); }
+  });
+
+  function loadVideo(file) {
+    var url = URL.createObjectURL(file);
+    var v = els.video;
+
+    v.onloadedmetadata = function () {
+      var w = v.videoWidth, h = v.videoHeight, d = v.duration;
+      if (!w || !h || !isFinite(d) || d <= 0) {
+        note('This file loaded but reports no usable dimensions or duration. Try a different container.', 'bad');
+        return;
+      }
+      var keepLabels = state.importedFrom && state.labels.length === frameCount(d, state.fps);
+
+      state.hasVideo = true;
+      state.fileName = file.name;
+      state.bytes = file.size;
+      state.width = w;
+      state.height = h;
+      state.duration = d;
+      state.half = halfWidth(w, h);
+      state.idx = 0;
+      state.undo = [];
+      if (!keepLabels) {
+        state.labels = blankLabels(frameCount(d, state.fps));
+        state.cuts = {};
+        state.importedFrom = null;
+      }
+      for (var i = 0; i < state.labels.length; i++) state.labels[i].crop_x = clampX(state.labels[i].crop_x);
+      state.labels[0].confirmed = true;
+
+      if (!els.clipId.value) els.clipId.value = slug(file.name);
+      els.stage.classList.remove('empty');
+      els.dropHint.hidden = true;
+      els.clipMeta.hidden = false;
+      // Cap the stage so a portrait source does not push the transport off screen. Capping the
+      // WIDTH rather than the height keeps the video free of letterboxing, which matters: every
+      // overlay position here is a percentage of the video's own picture.
+      els.stage.style.maxWidth = Math.round(Math.min(1600, (window.innerHeight * 0.62) * (w / h))) + 'px';
+
+      hashFile(file);
+      note(keepLabels
+        ? 'Imported labels matched this file. Continue where you left off.'
+        : state.labels.length + ' frames at ' + state.fps + ' fps. Set crop-x on each, then export.', 'ok');
+      syncVideo();
+      render();
+    };
+
+    v.onerror = function () {
+      note('The browser could not decode this file. H.264/AAC in MP4 or MOV is the safe choice.', 'bad');
+    };
+
+    v.src = url;
+    v.load();
+  }
+
+  function hashFile(file) {
+    els.mHash.textContent = 'hashing…';
+    if (!(window.crypto && window.crypto.subtle && file.arrayBuffer)) {
+      state.sha256 = null;
+      els.mHash.textContent = 'unavailable in this browser';
+      return;
+    }
+    file.arrayBuffer().then(function (buf) {
+      return window.crypto.subtle.digest('SHA-256', buf);
+    }).then(function (digest) {
+      var bytes = new Uint8Array(digest), hex = '';
+      for (var i = 0; i < bytes.length; i++) hex += (bytes[i] < 16 ? '0' : '') + bytes[i].toString(16);
+      state.sha256 = hex;
+      render();
+    }).catch(function () {
+      state.sha256 = null;
+      els.mHash.textContent = 'hashing failed';
+    });
+  }
+
+  function slug(name) {
+    return name.replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'clip';
+  }
+
+  // ── import ──────────────────────────────────────────────────────────────
+
+  function loadLabels(file) {
+    var reader = new FileReader();
+    reader.onload = function () {
+      var parsed;
+      try { parsed = JSON.parse(String(reader.result)); }
+      catch (e) { note('That file is not valid JSON.', 'bad'); return; }
+      applyLabelFile(parsed);
+    };
+    reader.readAsText(file);
+  }
+
+  function applyLabelFile(f) {
+    var problems = validate(f);
+    if (problems.length) { showIssues(problems); note('Import refused: the file does not match the schema.', 'bad'); return; }
+    showIssues([]);
+
+    if (state.hasVideo) {
+      var mismatch = [];
+      if (f.width !== state.width || f.height !== state.height) mismatch.push('frame size');
+      if (Math.abs(f.duration_sec - state.duration) > 0.5) mismatch.push('duration');
+      if (f.source.sha256 && state.sha256 && f.source.sha256 !== state.sha256) mismatch.push('sha256');
+      if (mismatch.length && !window.confirm('These labels were made against a different file (' + mismatch.join(', ') + ' differ). Load them anyway?')) return;
+    }
+
+    state.labels = f.labels.map(function (l) {
+      return { crop_x: l.crop_x, subject: l.subject, confirmed: !!l.confirmed };
+    });
+    state.cuts = {};
+    f.cuts.forEach(function (t) { state.cuts[Math.round(t * f.sample_fps)] = true; });
+    state.fps = f.sample_fps;
+    state.importedFrom = f;
+    state.undo = [];
+    state.idx = 0;
+    els.clipId.value = f.clip_id;
+    els.labeller.value = f.labeller || '';
+    if (f.category) els.category.value = f.category;
+
+    if (!state.hasVideo) {
+      state.duration = f.duration_sec;
+      note('Labels loaded. Choose the matching video file to keep labelling.', 'ok');
+    } else {
+      for (var i = 0; i < state.labels.length; i++) state.labels[i].crop_x = clampX(state.labels[i].crop_x);
+      syncVideo();
+      note('Labels loaded.', 'ok');
+    }
+    render();
+  }
+
+  /**
+   * The browser-side twin of labelFileIssues() in src/services/crop/eval/labels.ts. It is
+   * duplicated because this page cannot import TypeScript, and labels.test.ts round-trips a file
+   * this tool produced through the real loader so the two cannot drift apart unnoticed.
+   */
+  function validate(f) {
+    var out = [];
+    if (!f || typeof f !== 'object' || Array.isArray(f)) return ['not a JSON object'];
+    if (f.schema !== LABEL_SCHEMA) out.push('schema: expected ' + LABEL_SCHEMA + ', got ' + String(f.schema));
+    if (!f.clip_id) out.push('clip_id: missing or empty');
+    if (!f.category) out.push('category: missing or empty');
+    if (!(f.width > 0) || !(f.height > 0)) out.push('width/height: must be positive numbers');
+    if (!(f.duration_sec > 0)) out.push('duration_sec: must be a positive number');
+    if (!(f.sample_fps > 0)) out.push('sample_fps: must be a positive number');
+    if (!f.source || typeof f.source !== 'object') out.push('source: missing');
+    else if (f.source.sha256 !== null && !/^[0-9a-f]{64}$/.test(String(f.source.sha256))) out.push('source.sha256: must be 64 hex chars or null');
+    if (!Array.isArray(f.labels)) out.push('labels: missing or not an array');
+    if (!Array.isArray(f.cuts)) out.push('cuts: missing or not an array');
+    if (out.length) return out;
+
+    var expected = frameCount(f.duration_sec, f.sample_fps);
+    if (f.labels.length !== expected) out.push('labels: ' + f.labels.length + ' entries, but ' + f.duration_sec + 's at ' + f.sample_fps + ' fps needs ' + expected);
+    var half = halfWidth(f.width, f.height);
+    for (var i = 0; i < f.labels.length && out.length < 50; i++) {
+      var l = f.labels[i];
+      if (!l || typeof l !== 'object') { out.push('labels[' + i + ']: not an object'); continue; }
+      if (l.frame_idx !== i) out.push('labels[' + i + '].frame_idx: expected ' + i);
+      if (!(typeof l.t === 'number') || Math.abs(l.t - i / f.sample_fps) > 1e-6) out.push('labels[' + i + '].t: expected ' + (i / f.sample_fps));
+      if (SUBJECTS.indexOf(l.subject) < 0) out.push('labels[' + i + '].subject: expected one of ' + SUBJECTS.join('|'));
+      if (typeof l.confirmed !== 'boolean') out.push('labels[' + i + '].confirmed: expected a boolean');
+      if (typeof l.crop_x !== 'number' || !isFinite(l.crop_x)) out.push('labels[' + i + '].crop_x: expected a number');
+      else if (l.crop_x < half - 1e-6 || l.crop_x > 1 - half + 1e-6) out.push('labels[' + i + '].crop_x: outside the reachable range');
+    }
+    for (var c = 0; c < f.cuts.length && out.length < 50; c++) {
+      var t = f.cuts[c];
+      if (typeof t !== 'number' || !isFinite(t)) { out.push('cuts[' + c + ']: expected a number'); continue; }
+      if (t <= 0 || t >= f.duration_sec) out.push('cuts[' + c + ']: outside (0, ' + f.duration_sec + ')');
+      if (Math.abs(t * f.sample_fps - Math.round(t * f.sample_fps)) > 1e-6) out.push('cuts[' + c + ']: not a sampled time');
+      if (c > 0 && t <= f.cuts[c - 1]) out.push('cuts[' + c + ']: not after cuts[' + (c - 1) + ']');
+    }
+    return out;
+  }
+
+  // ── export ──────────────────────────────────────────────────────────────
+
+  /**
+   * Pick the shortest decimal for the duration that still satisfies
+   * labels.length === round(duration * fps). Blind rounding can cross a .5 boundary and produce a
+   * file the loader rejects for a frame-count mismatch, which is a maddening way to lose an
+   * annotation session.
+   */
+  function safeDuration(d, fps, n) {
+    for (var dp = 3; dp <= 6; dp++) {
+      var r = Number(d.toFixed(dp));
+      if (Math.max(1, Math.round(r * fps)) === n && r > 0) return r;
+    }
+    return d;
+  }
+
+  function buildFile() {
+    var n = state.labels.length;
+    var half = state.half;
+    return {
+      schema: LABEL_SCHEMA,
+      clip_id: els.clipId.value.trim(),
+      category: els.category.value,
+      source: { file: state.fileName, sha256: state.sha256, bytes: state.bytes },
+      width: state.width,
+      height: state.height,
+      duration_sec: safeDuration(state.duration, state.fps, n),
+      sample_fps: state.fps,
+      crop_aspect: CROP_ASPECT,
+      labelled_at: new Date().toISOString(),
+      labeller: els.labeller.value.trim(),
+      cuts: cutTimes(),
+      labels: state.labels.map(function (l, i) {
+        var x = Math.min(1 - half, Math.max(half, Number(l.crop_x.toFixed(6))));
+        return { frame_idx: i, t: timeOf(i), crop_x: x, subject: l.subject, confirmed: l.confirmed };
+      }),
+    };
+  }
+
+  function doExport() {
+    var file = buildFile();
+    var problems = validate(file);
+    showIssues(problems);
+    if (problems.length) { note('Export blocked: the tool produced a file its own validator rejects. Please report this.', 'bad'); return; }
+
+    var unreviewed = state.labels.filter(function (l) { return !l.confirmed; }).length;
+    if (unreviewed && !window.confirm(unreviewed + ' of ' + state.labels.length + ' frames were never on screen. Their values are carried forward, not reviewed. Export anyway?')) return;
+
+    var text = JSON.stringify(file, null, 2) + '\n';
+    var name = (file.clip_id || 'clip') + '.labels.json';
+    var blob = new Blob([text], { type: 'application/json' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+
+    // Some browsers refuse a script-initiated download from a file:// page. The textarea is the
+    // escape hatch: select all, paste into the labels file by hand, nothing is lost.
+    els.fallback.hidden = false;
+    els.fallback.value = text;
+    note('Saved as ' + name + '. If no download appeared, copy the JSON below into ' + name + '.', 'ok');
+  }
+
+  function showIssues(list) {
+    els.issues.innerHTML = '';
+    els.issues.hidden = list.length === 0;
+    list.slice(0, 20).forEach(function (m) {
+      var li = document.createElement('li');
+      li.textContent = m;
+      els.issues.appendChild(li);
+    });
+  }
+
+  function note(text, kind) {
+    els.exportNote.textContent = text;
+    els.progress.className = 'badge' + (kind ? ' ' + kind : '');
+  }
+
+  // ── render ──────────────────────────────────────────────────────────────
+
+  function render() {
+    if (!state.hasVideo) {
+      els.progress.textContent = state.importedFrom ? 'labels loaded — waiting for video' : 'no clip loaded';
+      return;
+    }
+    var l = current();
+    var half = state.half;
+    var lo = (l.crop_x - half) * 100;
+    var hi = (l.crop_x + half) * 100;
+
+    els.maskL.style.left = '0%';
+    els.maskL.style.width = Math.max(0, lo) + '%';
+    els.maskR.style.left = hi + '%';
+    els.maskR.style.width = Math.max(0, 100 - hi) + '%';
+    els.window.style.left = lo + '%';
+    els.window.style.width = (hi - lo) + '%';
+    els.marker.style.left = (l.crop_x * 100) + '%';
+    els.windowLabel.textContent = l.subject === 'none' ? 'nobody — centre is ground truth'
+      : l.subject === 'ambiguous' ? 'ambiguous — not scored' : 'x = ' + l.crop_x.toFixed(3);
+    els.stage.className = 'stage state-' + l.subject;
+
+    els.readout.innerHTML = 'frame <b>' + (state.idx + 1) + '</b>/' + state.labels.length +
+      ' &middot; <b>' + timeOf(state.idx).toFixed(1) + 's</b> of ' + state.duration.toFixed(1) + 's';
+    els.cropReadout.innerHTML = 'crop&#8209;x <b>' + l.crop_x.toFixed(3) + '</b> &middot; window ' +
+      (l.crop_x - half).toFixed(3) + '–' + (l.crop_x + half).toFixed(3) +
+      (l.confirmed ? '' : ' &middot; carried');
+
+    Array.prototype.forEach.call(els.subjectSeg.children, function (b) {
+      b.className = b.dataset.subject === l.subject ? 'on' : '';
+    });
+    els.subjectNote.textContent = SUBJECT_NOTES[l.subject];
+    els.cutBtn.disabled = state.idx === 0;
+    els.cutBtn.className = 'danger' + (state.cuts[state.idx] ? ' on' : '');
+    els.prev.disabled = state.idx === 0;
+    els.next.disabled = state.idx >= state.labels.length - 1;
+    els.exportBtn.disabled = false;
+
+    var done = state.labels.filter(function (x) { return x.confirmed; }).length;
+    els.progress.textContent = done + '/' + state.labels.length + ' frames reviewed';
+    els.progress.className = 'badge' + (done === state.labels.length ? ' ok' : '');
+
+    els.mFile.textContent = state.fileName;
+    els.mSize.textContent = (state.bytes / 1048576).toFixed(1) + ' MB';
+    els.mHash.textContent = state.sha256 ? state.sha256.slice(0, 16) + '…' : els.mHash.textContent;
+    els.mDims.textContent = state.width + '×' + state.height;
+    els.mWindow.textContent = half >= 0.5
+      ? 'full width (source is already 9:16 or narrower)'
+      : (2 * half).toFixed(4) + ' of width · x ∈ [' + half.toFixed(3) + ', ' + (1 - half).toFixed(3) + ']';
+
+    drawTimeline();
+  }
+
+  function drawTimeline() {
+    var c = els.timeline;
+    var dpr = window.devicePixelRatio || 1;
+    var w = c.clientWidth, h = 78;
+    if (!w) return;
+    c.width = Math.round(w * dpr);
+    c.height = Math.round(h * dpr);
+    var g = c.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, w, h);
+
+    var css = getComputedStyle(document.body);
+    var read = function (name, fallback) {
+      var v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+      return v ? 'hsl(' + v + ')' : fallback;
+    };
+    var colBg = read('--muted', css.backgroundColor);
+    var colLine = read('--primary', css.color);
+    var colDim = read('--muted-foreground', css.color);
+    var colCut = read('--destructive', css.color);
+    var colText = read('--foreground', css.color);
+
+    g.fillStyle = colBg;
+    g.fillRect(0, 0, w, h);
+
+    var n = state.labels.length;
+    var colW = w / n;
+    var half = state.half;
+    var y = function (x) { return h - 10 - ((x - half) / Math.max(1e-6, 1 - 2 * half)) * (h - 22); };
+
+    // Reachable band: the crop centre cannot leave [half, 1-half], so the plot uses that range.
+    g.globalAlpha = 0.35;
+    for (var i = 0; i < n; i++) {
+      var l = state.labels[i];
+      if (l.subject === 'subject') continue;
+      g.fillStyle = colDim;
+      g.fillRect(i * colW, 0, Math.max(1, colW), h);
+    }
+    g.globalAlpha = 1;
+
+    g.strokeStyle = colLine;
+    g.lineWidth = 2;
+    g.beginPath();
+    for (var j = 0; j < n; j++) {
+      var px = (j + 0.5) * colW, py = y(state.labels[j].crop_x);
+      if (j === 0) g.moveTo(px, py); else g.lineTo(px, py);
+    }
+    g.stroke();
+
+    for (var k = 0; k < n; k++) {
+      g.fillStyle = colLine;
+      g.globalAlpha = state.labels[k].confirmed ? 1 : 0.3;
+      g.beginPath();
+      g.arc((k + 0.5) * colW, y(state.labels[k].crop_x), 2.5, 0, Math.PI * 2);
+      g.fill();
+    }
+    g.globalAlpha = 1;
+
+    g.strokeStyle = colCut;
+    g.lineWidth = 2;
+    Object.keys(state.cuts).forEach(function (key) {
+      var x = Number(key) * colW;
+      g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke();
+    });
+
+    g.strokeStyle = colText;
+    g.lineWidth = 1;
+    var cx = (state.idx + 0.5) * colW;
+    g.beginPath(); g.moveTo(cx, 0); g.lineTo(cx, h); g.stroke();
+  }
+
+  // ── input ───────────────────────────────────────────────────────────────
+
+  function stageX(clientX) {
+    var r = els.stage.getBoundingClientRect();
+    if (!r.width) return 0.5;
+    return (clientX - r.left) / r.width;
+  }
+
+  var dragging = false;
+  els.stage.addEventListener('pointerdown', function (e) {
+    if (!state.hasVideo) return;
+    dragging = true;
+    els.stage.setPointerCapture(e.pointerId);
+    setCropX(stageX(e.clientX));
+    e.preventDefault();
+  });
+  els.stage.addEventListener('pointermove', function (e) {
+    if (!dragging) return;
+    // Drags collapse into one undo entry: a nudge is a decision, a drag is one decision made
+    // over 40 mousemove events, and an undo stack that cannot survive a drag is not an undo stack.
+    var l = current();
+    l.crop_x = clampX(stageX(e.clientX));
+    l.confirmed = true;
+    propagate();
+    render();
+  });
+  var endDrag = function () { dragging = false; };
+  els.stage.addEventListener('pointerup', endDrag);
+  els.stage.addEventListener('pointercancel', endDrag);
+
+  els.timeline.addEventListener('click', function (e) {
+    if (!state.hasVideo) return;
+    var r = els.timeline.getBoundingClientRect();
+    goTo(Math.floor(((e.clientX - r.left) / r.width) * state.labels.length));
+  });
+
+  window.addEventListener('keydown', function (e) {
+    var tag = (e.target && e.target.tagName) || '';
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    if (!state.hasVideo) return;
+    var step = e.altKey ? NUDGE.fine : e.shiftKey ? NUDGE.coarse : NUDGE.normal;
+    var k = e.key;
+
+    if (k === 'ArrowLeft') { setCropX(current().crop_x - step); }
+    else if (k === 'ArrowRight') { setCropX(current().crop_x + step); }
+    else if (k === 'ArrowDown' || k === ' ' || k === '.' || k === '>') { goTo(state.idx + 1); }
+    else if (k === 'ArrowUp' || k === ',' || k === '<') { goTo(state.idx - 1); }
+    else if (k === 'Home') { goTo(0); }
+    else if (k === 'End') { goTo(state.labels.length - 1); }
+    else if (k === '1') { setSubject('subject'); }
+    else if (k === '2') { setSubject('none'); }
+    else if (k === '3') { setSubject('ambiguous'); }
+    else if (k === 'c' || k === 'C') { toggleCut(); }
+    else if (k === 'z' || k === 'Z') { undo(); }
+    else return;
+    e.preventDefault();
+  });
+
+  els.prev.addEventListener('click', function () { goTo(state.idx - 1); });
+  els.next.addEventListener('click', function () { goTo(state.idx + 1); });
+  els.cutBtn.addEventListener('click', toggleCut);
+  els.subjectSeg.addEventListener('click', function (e) {
+    var b = e.target.closest ? e.target.closest('button') : null;
+    if (b) setSubject(b.dataset.subject);
+  });
+  els.exportBtn.addEventListener('click', doExport);
+  els.clipId.addEventListener('input', function () { showIssues([]); });
+
+  $('pickVideo').addEventListener('click', function () { els.videoInput.click(); });
+  $('pickVideo2').addEventListener('click', function () { els.videoInput.click(); });
+  $('pickLabels').addEventListener('click', function () { els.labelsInput.click(); });
+  els.videoInput.addEventListener('change', function () { if (this.files[0]) loadVideo(this.files[0]); });
+  els.labelsInput.addEventListener('change', function () { if (this.files[0]) loadLabels(this.files[0]); });
+
+  ['dragenter', 'dragover'].forEach(function (ev) {
+    window.addEventListener(ev, function (e) { e.preventDefault(); document.body.classList.add('dragging'); });
+  });
+  ['dragleave', 'drop'].forEach(function (ev) {
+    window.addEventListener(ev, function (e) { e.preventDefault(); document.body.classList.remove('dragging'); });
+  });
+  window.addEventListener('drop', function (e) {
+    var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (!f) return;
+    if (/\.json$/i.test(f.name)) loadLabels(f); else loadVideo(f);
+  });
+
+  window.addEventListener('resize', function () { if (state.hasVideo) drawTimeline(); });
+
+  $('theme').addEventListener('click', function () {
+    var dark = document.documentElement.getAttribute('data-theme') === 'dark';
+    document.documentElement.setAttribute('data-theme', dark ? 'light' : 'dark');
+    if (state.hasVideo) drawTimeline();
+  });
+  if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+    document.documentElement.setAttribute('data-theme', 'dark');
+  }
+
+  // Exposed for the round-trip test in src/services/crop/__tests__/labels.test.ts, which drives
+  // this page in a real browser and feeds what it exports to the real loader.
+  window.__cropAnnotator = {
+    state: state,
+    buildFile: buildFile,
+    validate: validate,
+    applyLabelFile: applyLabelFile,
+    setCropX: setCropX,
+    setSubject: setSubject,
+    toggleCut: toggleCut,
+    goTo: goTo,
+    schema: LABEL_SCHEMA,
+    halfWidth: halfWidth,
+    frameCount: frameCount,
+  };
+})();
+</script>
+</body>
+</html>

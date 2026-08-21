@@ -1,0 +1,190 @@
+{
+  "schema": "flowvid.crop-labels/1",
+  "clip_id": "annotator-roundtrip",
+  "category": "multicam",
+  "source": {
+    "file": "clip.webm",
+    "sha256": "eb0121e1856dde48fb833f1e60962e5074427a563064f42277c1d9d609a471ef",
+    "bytes": 1070612
+  },
+  "width": 1280,
+  "height": 720,
+  "duration_sec": 12,
+  "sample_fps": 2,
+  "crop_aspect": 0.5625,
+  "labelled_at": "2026-08-21T17:45:54.194Z",
+  "labeller": "p0.2 verification run",
+  "cuts": [
+    4
+  ],
+  "labels": [
+    {
+      "frame_idx": 0,
+      "t": 0,
+      "crop_x": 0.35,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 1,
+      "t": 0.5,
+      "crop_x": 0.35,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 2,
+      "t": 1,
+      "crop_x": 0.35,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 3,
+      "t": 1.5,
+      "crop_x": 0.35,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 4,
+      "t": 2,
+      "crop_x": 0.35,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 5,
+      "t": 2.5,
+      "crop_x": 0.35,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 6,
+      "t": 3,
+      "crop_x": 0.35,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 7,
+      "t": 3.5,
+      "crop_x": 0.35,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 8,
+      "t": 4,
+      "crop_x": 0.65,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 9,
+      "t": 4.5,
+      "crop_x": 0.65,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 10,
+      "t": 5,
+      "crop_x": 0.65,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 11,
+      "t": 5.5,
+      "crop_x": 0.65,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 12,
+      "t": 6,
+      "crop_x": 0.65,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 13,
+      "t": 6.5,
+      "crop_x": 0.65,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 14,
+      "t": 7,
+      "crop_x": 0.65,
+      "subject": "none",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 15,
+      "t": 7.5,
+      "crop_x": 0.65,
+      "subject": "none",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 16,
+      "t": 8,
+      "crop_x": 0.65,
+      "subject": "none",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 17,
+      "t": 8.5,
+      "crop_x": 0.65,
+      "subject": "none",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 18,
+      "t": 9,
+      "crop_x": 0.5,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 19,
+      "t": 9.5,
+      "crop_x": 0.5,
+      "subject": "ambiguous",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 20,
+      "t": 10,
+      "crop_x": 0.5,
+      "subject": "ambiguous",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 21,
+      "t": 10.5,
+      "crop_x": 0.515,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 22,
+      "t": 11,
+      "crop_x": 0.53,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 23,
+      "t": 11.5,
+      "crop_x": 0.545,
+      "subject": "subject",
+      "confirmed": true
+    }
+  ]
+}
