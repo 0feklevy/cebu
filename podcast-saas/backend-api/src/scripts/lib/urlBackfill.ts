@@ -46,7 +46,7 @@ export function keyFromUrl(url: string): string | null {
 export type PlannedUrlAction = 'rewrite' | 'key' | 'null' | 'skip';
 
 export interface PlannedUrlRow {
-  /** table.column */
+  /** table.column, plus `#<json path>` when the URL is embedded in a JSON document. */
   target: string;
   rowId: string;
   oldValue: string;
@@ -54,6 +54,13 @@ export interface PlannedUrlRow {
   action: PlannedUrlAction;
   /** null = not applicable (no storage object involved). */
   assetExists: boolean | null;
+  /**
+   * Set when this URL lives INSIDE a JSON column at the named path (e.g.
+   * `avatarCircles.faces[0].imageUrl`). Such a row is written by re-serializing the whole
+   * document in the shape it was read in — never by assigning to the column — so the apply
+   * step routes it separately. Absent for ordinary `SET col = value` targets.
+   */
+  jsonPath?: string;
 }
 
 export interface UrlBackfillPlanSummary {

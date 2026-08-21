@@ -17,6 +17,15 @@
  * rewritten to a cloud URL / NULL it is never touched again. Only the fixed column list
  * below is examined — never blind replacement inside arbitrary text or JSON.
  *
+ * JSON-EMBEDDED TARGETS (added after the avatar-circles incident). A column list cannot see a
+ * URL that lives inside a jsonb document, and exactly one browser-visible URL does:
+ * `projects.avatar_config → avatarCircles.faces[].imageUrl` — the one storage namespace a
+ * project owns that NO column names. The 2026-07-16 run converged with such a row still serving
+ * `http://localhost:8080/...` to every viewer. JSON targets are handled by a TYPED PATH WALK over
+ * the parsed document (never a text replace inside the blob), are written back in the SHAPE they
+ * were read in (production stores that column double-encoded, as a jsonb *string*), and are
+ * counted with the same walk afterwards so convergence is actually proven.
+ *
  *   Report:  tsx --env-file=../.env src/scripts/backfill-localhost-urls.ts
  *   Apply:   tsx --env-file=../.env src/scripts/backfill-localhost-urls.ts --apply
  *   Options: --json <path|->   machine-readable report (path, or sentinel block on stdout)
@@ -38,6 +47,13 @@ import { writeFileSync } from 'node:fs';
 import postgres from 'postgres';
 import { getStorageAdapter } from '../services/storage/getStorageAdapter.js';
 import { logger } from '../lib/logger.js';
+import {
+  circlesOf,
+  nonPublicCircleFaceUrls,
+  parseAvatarConfigColumn,
+  serializeAvatarConfigColumn,
+  withCircleFaceUrls,
+} from '../services/avatarCircles/circleFaceUrls.js';
 import {
   NON_PUBLIC_SQL as NON_PUBLIC,
   buildBackfillReport,
@@ -87,6 +103,19 @@ const ALL_TARGETS = [
   ...OTHER_COLUMNS,
 ];
 
+/**
+ * The one JSON-embedded browser-visible URL. Named as `table.column#json.path` so the release
+ * audit (which groups findings by target) says exactly which field is poisoned, and so it can
+ * never be confused with a plain column assignment in the apply step.
+ *
+ * The candidate set is deliberately `avatar_config IS NOT NULL` rather than a regex over the
+ * blob's text: the parsed walk is exact, and a text predicate that matched anywhere in the
+ * document would report rows this repair cannot fix (making the convergence check lie) — and a
+ * looser one would reach `_url_backfill_backup.old_value`, whose localhost strings ARE the
+ * rollback provenance of the July repair and must never be "repaired".
+ */
+const AVATAR_CIRCLES_TARGET = 'projects.avatar_config#avatarCircles.faces[].imageUrl';
+
 function emitJson(report: UrlBackfillReportJson): void {
   if (!JSON_OUT) return;
   const doc = JSON.stringify(report, null, 2);
@@ -124,6 +153,57 @@ async function main() {
       );
       targets.push({ target: `${t.table}.${t.col}`, affected: count });
     }
+
+    // ── 1b. JSON-embedded target — avatar-circle face images ──────────────────
+    // Invisible to the column scan above, because the URL lives inside a jsonb document.
+    // Planned here rather than in step 2 so its affected count joins the same table, the
+    // same total and the same policy gate as every column target.
+    const jsonPlan: PlannedUrlRow[] = [];
+    const jsonWrites: Array<{ rowId: string; payload: string; rows: PlannedUrlRow[] }> = [];
+    {
+      const rows = await q<{ id: string; avatar_config: unknown }>(
+        `SELECT id, avatar_config FROM projects WHERE avatar_config IS NOT NULL`,
+      );
+      let affected = 0;
+      for (const r of rows) {
+        const parsed = parseAvatarConfigColumn(r.avatar_config);
+        if (!parsed) continue;
+        const sites = nonPublicCircleFaceUrls(circlesOf(parsed.config));
+        if (sites.length === 0) continue;
+        affected += 1;
+        const resolutions = new Map<number, string | null>();
+        const rowsForWrite: PlannedUrlRow[] = [];
+        for (const site of sites) {
+          // The poisoned shape is `{origin}/local-storage/{key}`, which keyFromUrl inverts;
+          // keyFromPublicUrl covers a URL minted by whichever adapter is configured now.
+          const key = keyFromUrl(site.url) ?? storage.keyFromPublicUrl(site.url);
+          const assetExists = key ? await exists(key) : false;
+          // The bytes moved to cloud storage under the identical key — only the URL string
+          // was left behind — so this is a REWRITE. NULL only when the object is genuinely
+          // gone, and that clears this one field: never the face, never the row.
+          const newValue = key && assetExists ? storage.getPublicUrl(key) : null;
+          resolutions.set(site.faceIndex, newValue);
+          const planned: PlannedUrlRow = {
+            target: `projects.avatar_config#${site.path}`,
+            rowId: String(r.id),
+            oldValue: site.url,
+            newValue,
+            action: newValue ? 'rewrite' : 'null',
+            assetExists,
+            jsonPath: site.path,
+          };
+          rowsForWrite.push(planned);
+          jsonPlan.push(planned);
+        }
+        jsonWrites.push({
+          rowId: String(r.id),
+          payload: serializeAvatarConfigColumn(withCircleFaceUrls(parsed.config, resolutions), parsed.shape),
+          rows: rowsForWrite,
+        });
+      }
+      targets.push({ target: AVATAR_CIRCLES_TARGET, affected });
+    }
+
     const total = targets.reduce((s, r) => s + r.affected, 0);
     console.table(targets);
     logger.info(`[backfill] total affected rows: ${total}`);
@@ -259,6 +339,10 @@ async function main() {
       }
     }
 
+    // 2g. JSON-embedded rows planned in 1b — classified identically, so they are gated,
+    // reported, backed up and counted by the same contract as every column target.
+    plan.push(...jsonPlan);
+
     const summary = summarizePlan(plan);
     const policy = evaluateBackfillPolicy(summary, total, MAX_AFFECTED);
     logger.info(
@@ -323,12 +407,27 @@ async function main() {
     let rewritten = 0, nulled = 0, keyed = 0, skipped = 0;
     for (const row of plan) {
       if (row.action === 'skip') { skipped++; continue; }
+      // JSON-embedded rows are written below, as one re-serialized document per row —
+      // a column assignment would replace the whole blob with a bare URL.
+      if (row.jsonPath) continue;
       const [table, col] = row.target.split('.');
       await backup(row.target, row.rowId, row.oldValue, row.newValue);
       await sql.unsafe(`UPDATE ${table} SET ${col} = $1 WHERE id = $2`, [row.newValue, row.rowId]);
       if (row.action === 'key') keyed++;
       else if (row.newValue !== null) rewritten++;
       else nulled++;
+    }
+
+    // 6b. JSON-embedded rows: every field edit for a row lands in ONE update, written in the
+    // shape the document was read in. Each edited field is snapshotted individually first, so
+    // the backup table records exactly which path changed from what to what.
+    for (const w of jsonWrites) {
+      for (const row of w.rows) await backup(row.target, row.rowId, row.oldValue, row.newValue);
+      await sql.unsafe(`UPDATE projects SET avatar_config = $1::jsonb WHERE id = $2`, [w.payload, w.rowId]);
+      for (const row of w.rows) {
+        if (row.newValue !== null) rewritten++;
+        else nulled++;
+      }
     }
 
     // ── 7. Post-apply convergence check ───────────────────────────────────────
@@ -339,6 +438,18 @@ async function main() {
         [NON_PUBLIC],
       );
       postAffected += count;
+    }
+    // JSON targets re-counted with the SAME typed walk the plan used — the check that catches
+    // the most dangerous failure here: a path/jsonb_set update silently no-ops on a
+    // double-encoded row, so the run would report success having changed nothing.
+    {
+      const rows = await q<{ id: string; avatar_config: unknown }>(
+        `SELECT id, avatar_config FROM projects WHERE avatar_config IS NOT NULL`,
+      );
+      for (const r of rows) {
+        const parsed = parseAvatarConfigColumn(r.avatar_config);
+        if (parsed && nonPublicCircleFaceUrls(circlesOf(parsed.config)).length > 0) postAffected++;
+      }
     }
 
     emitJson(buildBackfillReport({
