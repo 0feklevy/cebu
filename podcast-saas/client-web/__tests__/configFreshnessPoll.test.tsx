@@ -184,7 +184,18 @@ describe('(b) a 304 leaves the session untouched', () => {
     await advanceOneTick();
     await advanceOneTick();
     await advanceOneTick();
-    expect(calls).toHaveLength(3);
+
+    // A RANGE, not an exact count, and the jitter is the reason. Delays land in [45s, 75s] and
+    // each tick advances 75.001s, so three ticks cover 225s of virtual time — which fits between
+    // three and five polls depending on how the dice fall. This assertion used to demand exactly
+    // three and therefore failed on roughly the majority of seeds: a test that depends on luck
+    // reports the weather, not the behaviour.
+    //
+    // What is actually under test is that a 304 does not STOP the loop, so the floor is what
+    // matters. The ceiling is kept as a runaway guard: a double-scheduled timer would show up
+    // here as a count well past five.
+    expect(calls.length).toBeGreaterThanOrEqual(3);
+    expect(calls.length).toBeLessThanOrEqual(5);
   });
 });
 
