@@ -11,6 +11,7 @@ import { db } from '../../db/index.js';
 import { corpora } from '../../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { logger } from '../../lib/logger.js';
+import { recordSttSpend } from '../usage/recordSttSpend.js';
 import type { SSEEmitter } from '../../lib/sse.js';
 
 export class CorpusBuilder {
@@ -121,7 +122,21 @@ export class CorpusBuilder {
           if (corpus.source_type === 'pdf') {
             extractedMd = await this.pdf.extract(buf, filename);
           } else if (corpus.source_type === 'audio') {
-            extractedMd = await this.audio.transcribe(buf, filename);
+            // TRANSCRIPTION IS BILLED, AND THIS PATH CAN RUN TWICE. Corpus ingest is on a durable
+            // queue with a retry (#96): a failure anywhere after this line — a storage write, a
+            // database blip — buys a SECOND transcription on the next delivery. Recording each one
+            // is the only way that shows up as anything other than a surprise on the invoice.
+            //
+            // Recorded before the text is used, so a failure downstream cannot lose the charge
+            // that has already been incurred.
+            const transcription = await this.audio.transcribe(buf, filename);
+            extractedMd = transcription.text;
+            void recordSttSpend({
+              userId: null,             // a corpus belongs to a project, not to a request's user
+              projectId: corpus.project_id ?? null,
+              task: 'corpus_audio_transcribe',
+              durationSec: transcription.durationSec,
+            });
           } else if (corpus.source_type === 'image') {
             extractedMd = await this.image.caption(buf, mime);
           } else {

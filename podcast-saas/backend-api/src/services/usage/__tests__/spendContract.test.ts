@@ -65,8 +65,11 @@ const PAID_VENDOR_HOSTS = [
  * leaving the import behind kept it green. Mutation-testing found that; it is the same failure as
  * a mask that matches text instead of behaviour.
  *
- * FOUR SHAPES, because there are four. A module may call `.record(` itself, use the shared
- * `recordTtsSpend(` helper, insert into the table directly, or CONSTRUCT the recorder and hand it
+ * FOUR SHAPES, because there are four. The helper pattern is `record\w*Spend(` rather than a list
+ * of names — `recordTtsSpend` and `recordSttSpend` already exist and a third would otherwise slip
+ * through as an unmetered module while metering perfectly well.
+ * A module may call `.record(` itself, use one of the shared
+ * `record*Spend(` helpers, insert into the table directly, or CONSTRUCT the recorder and hand it
  * to a service that writes — `new LLMService(new ApiKeyService(), new UsageTrackingService())` is
  * metering, and the stricter pattern flagged three modules doing exactly that before this line
  * accounted for it. A rule that calls correct code a gap trains people to silence it.
@@ -76,7 +79,7 @@ const PAID_VENDOR_HOSTS = [
  * narrower: catch a module that reaches a paid vendor and never reaches a recorder at all.
  */
 const RECORDS_USAGE =
-  /\.record\(|insert\(token_usage\)|recordUsage\(|trackUsage\(|recordTtsSpend\(|new UsageTrackingService\(/;
+  /\.record\(|insert\(token_usage\)|recordUsage\(|trackUsage\(|record\w*Spend\(|new UsageTrackingService\(/;
 
 /**
  * Modules that call a paid vendor and DO NOT record usage themselves — because their caller does.
@@ -97,6 +100,9 @@ const METERED_BY_CALLER = [
   'services/llm/ClaudeProvider.ts',
   'services/llm/GeminiProvider.ts',
   'services/llm/OpenAIProvider.ts',
+  // Reports the duration the vendor billed and lets `CorpusBuilder` record it — the caller is what
+  // knows the corpus and the project. Same split as the dialogue client's `attempts`.
+  'services/ingestion/AudioIngester.ts',
 ];
 
 /**
@@ -154,12 +160,11 @@ const UNMETERED_TODAY = [
   // They were not "known gaps" that had been triaged and deferred — they were invisible, which is
   // worse, and they are the reason the list grew when it looked ready to reach zero.
   //
-  // Speech-to-text, billed per minute of AUDIO. `AudioIngester` is the one that matters most:
-  // it runs inside corpus ingest, which is now on a durable queue with a retry — so a failure
-  // after transcription costs a second transcription, and nothing records either.
+  // Speech-to-text, billed per minute of AUDIO. `AudioIngester` came OFF this list first, because
+  // it runs inside corpus ingest — on a durable queue with a retry, so a failure after
+  // transcription buys a second one. These two remain.
   'services/captions/CaptionService.ts',
   'services/captions/transcribeAudioFile.ts',
-  'services/ingestion/AudioIngester.ts',
 
   // Image generation, billed per IMAGE. A unit `token_usage` can already express (migration 073),
   // which is what makes these the cheapest of the remaining gaps to close.
@@ -339,8 +344,11 @@ describe('what the gap costs, stated rather than implied', () => {
     // The most expensive of the remaining gaps, and the ones the host-only scan could not see at
     // all. `AudioIngester` runs inside corpus ingest, which is on a durable queue with a retry —
     // so a failure after transcription buys a second transcription and neither is recorded.
-    expect(UNMETERED_TODAY).toContain('services/ingestion/AudioIngester.ts');
     expect(UNMETERED_TODAY).toContain('services/captions/CaptionService.ts');
+    expect(UNMETERED_TODAY).toContain('services/captions/transcribeAudioFile.ts');
+    // Closed first, and it must stay closed: this is the one path where an ordinary retry buys a
+    // second vendor charge.
+    expect(UNMETERED_TODAY).not.toContain('services/ingestion/AudioIngester.ts');
   });
 
   it('names the image-generation paths, billed per image', () => {

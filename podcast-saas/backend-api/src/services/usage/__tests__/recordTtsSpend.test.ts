@@ -84,3 +84,43 @@ describe('it can never break the thing it is measuring', () => {
     await expect(recordTtsSpend({ userId: 'u', task: 't', characters: 50 })).resolves.toBeUndefined();
   });
 });
+
+/**
+ * The transcription recorder, whose extra decision is what to do about an unknown quantity.
+ *
+ * Kept beside its TTS sibling because the two differ in exactly one place and the difference is
+ * the interesting part: TTS always knows how many characters it sent, while a transcription may
+ * come back without the duration the vendor billed.
+ */
+describe('recordSttSpend — when the vendor did not say how long the audio was', () => {
+  it('records a reported duration in seconds', async () => {
+    record.mockClear();
+    const { recordSttSpend } = await import('../recordSttSpend.js');
+    await recordSttSpend({ userId: null, projectId: 'p1', task: 'corpus_audio_transcribe', durationSec: 600 });
+
+    const row = record.mock.calls[0]![0] as Record<string, unknown>;
+    expect(row.unit).toBe('seconds');
+    expect(row.quantity).toBe(600);
+    expect(row.provider).toBe('groq');
+    expect(row.projectId).toBe('p1');
+  });
+
+  it('writes NOTHING when the duration is unknown, rather than a row saying it was free', async () => {
+    // The whole reason `reportedDurationSec` returns null instead of 0. A row with quantity 0
+    // asserts the transcription cost nothing, and a per-day total built from it is confidently
+    // wrong — worse than a visible gap, because a number gets believed.
+    record.mockClear();
+    const { recordSttSpend } = await import('../recordSttSpend.js');
+    await recordSttSpend({ userId: null, projectId: 'p1', task: 'corpus_audio_transcribe', durationSec: null });
+    expect(record).not.toHaveBeenCalled();
+  });
+
+  it('never throws, whatever the recorder does', async () => {
+    record.mockClear();
+    record.mockRejectedValueOnce(new Error('usage table unavailable'));
+    const { recordSttSpend } = await import('../recordSttSpend.js');
+    await expect(
+      recordSttSpend({ userId: null, projectId: 'p', task: 't', durationSec: 10 }),
+    ).resolves.toBeUndefined();
+  });
+});
