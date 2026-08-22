@@ -26,6 +26,34 @@ before either.** That rule does real work here, because the podcast area turns o
 Each wave is finishable and leaves the product in a coherent state. Do not start wave N+1 while a
 wave-N item is open, unless it is blocked on the owner — in which case say so and drop down.
 
+### PRIORITY 1 (owner, 2026-08-22) — REPLACE THE APPROVAL CLICK WITH REAL GATES  ·  PR #76  ·  ⏳ CI
+The owner's account of the manual production approval: *"in practice I only click 'Approve and
+deploy' without performing an additional review, so it is not providing meaningful protection."*
+Shipped as one coherent extension of the existing release system, not a parallel one.
+
+- **`candidate-smoke`** — a job between `release-plan` and `deploy` that boots the exact
+  digest-pinned images about to be deployed and exercises them over HTTP. Every other check in the
+  pipeline tests the SOURCE. Pins from `manifest.json` (the same file `remote-deploy` pins from),
+  refuses any non-`@sha256:` reference, runs against a real Postgres.
+- **Conditional approval** — `release-cli release-risk` classifies each release in `plan` from
+  evidence already produced (migration-audit findings, `backfill_policy`, `approve_high`, the
+  changed-path surface for auth/secrets/media-tokens/deploy config). Risky → `production-approval`
+  environment with a required reviewer. Routine → automatic. Unreadable evidence ⇒ ask a human.
+- **`production-flows.spec.ts`** — the flows the owner named: opening an existing project, the
+  legacy-URL → token-minting → resource-loads round trip, an untokenised private key being refused,
+  playback buffering a real frame, the export entry point (stopping short of submitting).
+- **A hole this found in the EXISTING post-deploy gate:** every fixture-dependent production audit
+  is `test.skip(!process.env.SMOKE_*)`, so an unset repository variable silently removed the check —
+  spec skipped, summary counted it, no finding, gate passed, release deployed. Closed by
+  `playwright-summary --require-tests`, which scores skipped and missing as the same CRITICAL.
+- **Tests for the gates themselves:** `workflow-graph.ts` parses the job graph structurally. Eleven
+  un-gating mutations applied, eleven caught. Two pre-existing tests rewritten from magic constants
+  (`checkouts===7`, a literal `testMatch`) to the properties they were protecting.
+
+**Owner-side, already done by me:** `production-approval` created with the owner as required
+reviewer; `production` already had none. **Done when:** #76 merges and the first release after it
+exercises `candidate-smoke` against live images for the first time.
+
 ### WAVE 0 — SHIP WHAT IS ALREADY FIXED  ·  blocks everything  ·  owner: approve deploy
 Nothing a user experiences changes until this lands. Production runs v0.1.38 and **the dubbing
 feature is dead in it** — every attempt dies before the vendor is reached. Also sitting unshipped:
