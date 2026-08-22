@@ -7,7 +7,9 @@ vi.mock('../pgBoss.js', () => ({
 }));
 
 import { getBoss } from '../pgBoss.js';
-import { pgBossSend, registerWorkers, resolveWorkerQueues } from '../pgBossDriver.js';
+import {
+  CPU_BOUND_JOBS, QUEUE_CONCURRENCY, pgBossSend, registerWorkers, resolveWorkerQueues,
+} from '../pgBossDriver.js';
 import type { JobHandlers } from '../types.js';
 
 const mockGetBoss = vi.mocked(getBoss);
@@ -32,21 +34,52 @@ describe('pgBossSend', () => {
     expect(inline).not.toHaveBeenCalled();
   });
 
-  it('runs the inline fallback when the send rejects (job never lost)', async () => {
+  it('runs the inline fallback for a PROVIDER-BOUND job when the send rejects', async () => {
+    // The fallback's whole point: a job that waits on somebody else's HTTP response is cheap to
+    // run here, and losing it would be worse than borrowing the API's event loop for it.
+    const send = vi.fn().mockRejectedValue(new Error('db down'));
+    mockGetBoss.mockResolvedValue({ send } as never);
+    const inline = vi.fn();
+
+    pgBossSend('captions', { videoFileId: 'v2' } as never, inline);
+    await vi.waitFor(() => expect(inline).toHaveBeenCalledTimes(1));
+  });
+
+  it('runs the inline fallback for a provider-bound job when pg-boss itself fails to start', async () => {
+    mockGetBoss.mockRejectedValue(new Error('cannot connect'));
+    const inline = vi.fn();
+
+    pgBossSend('captions', { videoFileId: 'v3' } as never, inline);
+    await vi.waitFor(() => expect(inline).toHaveBeenCalledTimes(1));
+  });
+
+  /**
+   * job-queue-013 — and this pair used to assert the OPPOSITE, with `crop`.
+   *
+   * "The job is never lost" was the right instinct applied to the wrong kind. A send only fails
+   * when the queue database is unhealthy — the moment the API is most needed — and answering that
+   * by starting ffmpeg plus frame analysis inside the request-serving process trades a recoverable
+   * delay for an unavailable product. Crop's row keeps its non-terminal status and is re-claimable,
+   * so refusing costs a delay, not the work.
+   */
+  it('REFUSES to run a CPU-bound job inline when the send rejects', async () => {
     const send = vi.fn().mockRejectedValue(new Error('db down'));
     mockGetBoss.mockResolvedValue({ send } as never);
     const inline = vi.fn();
 
     pgBossSend('crop', { videoFileId: 'v2' }, inline);
-    await vi.waitFor(() => expect(inline).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(send).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 10));
+    expect(inline, 'an encode must never run in the API container').not.toHaveBeenCalled();
   });
 
-  it('runs the inline fallback when pg-boss itself fails to start', async () => {
+  it('REFUSES to run a CPU-bound job inline when pg-boss fails to start', async () => {
     mockGetBoss.mockRejectedValue(new Error('cannot connect'));
     const inline = vi.fn();
 
     pgBossSend('crop', { videoFileId: 'v3' }, inline);
-    await vi.waitFor(() => expect(inline).toHaveBeenCalledTimes(1));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(inline).not.toHaveBeenCalled();
   });
 
   it('never throws synchronously to the producer', () => {
@@ -183,6 +216,43 @@ describe('the CPU-bound queues run serially', () => {
  * Splitting the pool is not a deployment detail; it is what keeps Docker access out of the
  * request-serving process.
  */
+/**
+ * job-queue-013 — the inline fallback must not run an encode in the API container.
+ *
+ * `pgBossSend` falls back to the inline handler when the durable send fails. That is right for a
+ * job that waits on somebody else's HTTP response and badly wrong for an encode: the send only
+ * fails when the queue database is unhealthy, which is exactly when the API is most needed — and
+ * the fallback would answer by starting a full HLS ladder for a source up to 2 GB, in-process, on
+ * a 2-vCPU host.
+ */
+describe('the inline fallback, by job kind', () => {
+  it('runs every CPU-bound kind SERIALLY, which is the same judgement the fallback rule reads', () => {
+    // Deliberately one-directional. A CPU-bound job may not quietly acquire concurrency > 1 on a
+    // 2-vCPU host — that is the thing the concurrency comments warn about — so raising one has to
+    // fail here and be argued for. The reverse is NOT asserted: a queue can be serial for reasons
+    // that have nothing to do with the CPU, and forcing it into this set would be a false coupling.
+    for (const name of CPU_BOUND_JOBS) {
+      expect(QUEUE_CONCURRENCY[name], `${name} is CPU-bound and must stay serial`).toBe(1);
+    }
+  });
+
+  it('covers the kinds that actually run ffmpeg or a TTS stitch', () => {
+    // Stated by name, because this is the list a reader needs to be able to check against reality
+    // rather than against another list.
+    for (const name of ['transcode', 'crop', 'dub', 'project_export', 'podcast_render'] as const) {
+      expect(CPU_BOUND_JOBS.has(name), name).toBe(true);
+    }
+  });
+
+  it('leaves the provider-bound kinds free to fall back inline', () => {
+    // These wait on somebody else's HTTP response. Running one in the API process while the queue
+    // is down is exactly the cheap insurance the fallback was written for.
+    for (const name of ['captions', 'metadata', 'podcast_script', 'video_generate'] as const) {
+      expect(CPU_BOUND_JOBS.has(name), name).toBe(false);
+    }
+  });
+});
+
 describe('resolveWorkerQueues', () => {
   const ALL = ['crop', 'video_generate', 'project_export'] as const;
 
