@@ -107,9 +107,19 @@ test.describe('the client-web image was built with the right origins baked in', 
     for (const src of scripts) {
       const url = src.startsWith('http') ? src : new URL(src, APP).toString();
       const body = await (await page.request.get(url, { timeout: 30_000 })).text();
-      // Next dev/HMR artefacts and sourcemap comments legitimately mention localhost in dev
-      // builds; a PRODUCTION bundle must not, which is what this image claims to be.
-      if (/https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)/.test(body)) offenders.push(url);
+      // THE SAME PATTERN `deploy/scripts/scan-bundle-localhost.sh` USES, deliberately.
+      //
+      // A bare `http://localhost` is NOT a defect: the Firebase SDK ships one in its own
+      // internals, so matching it would have failed this gate on every release — the repo learned
+      // that once already and wrote it down in that script's comments, which is where this came
+      // from. What is a defect is a loopback host with one of OUR ports on it, or an internal
+      // Docker service name: those can only have arrived from a missing build variable.
+      //
+      // That script scans a REBUILD of the source. This scans the shipped image, which is the
+      // only place a build-arg mistake between the two can show up.
+      if (/(localhost|127\.0\.0\.1):(8080|3000|3001)|https?:\/\/(backend|worker|nginx|client-web|admin-web)(:|\/)/.test(body)) {
+        offenders.push(url);
+      }
     }
     expect(offenders, `production bundles embed a loopback origin:\n${offenders.join('\n')}`).toEqual([]);
   });

@@ -26,6 +26,10 @@ const composeSource = readFileSync(join(ROOT, 'podcast-saas', 'deploy', 'docker-
  */
 const compose = withoutComments(composeSource);
 const jobs = parseJobGraph(releaseYml);
+const candidateSpec = readFileSync(
+  join(ROOT, 'podcast-saas', 'client-web', 'e2e', 'candidate-smoke.spec.ts'),
+  'utf8',
+);
 
 /** What a job RUNS, with its explanatory prose removed — see withoutComments. */
 const runsOf = (job: string) => withoutComments(jobs.get(job)?.text ?? '');
@@ -140,6 +144,21 @@ describe('it tests the images that will actually be deployed', () => {
   it('refuses to proceed when the manifest is absent or of an unknown schema', () => {
     expect(gateText).toContain('cannot identify the candidate');
     expect(gateText).toContain('flowvid.image-manifest/v1');
+  });
+
+  it('the image bundle scan uses the pattern the repo already proved correct', () => {
+    // `scan-bundle-localhost.sh` carries hard-won knowledge in one regex: a BARE
+    // `http://localhost` is not a defect, because the Firebase SDK ships one in its own
+    // internals. A naive "no localhost anywhere" check would fail this gate on every release —
+    // and the candidate spec was written that way first, until this script's comments said
+    // otherwise. Keeping the two in step means the lesson is only learned once.
+    const scanner = readFileSync(join(ROOT, 'podcast-saas', 'deploy', 'scripts', 'scan-bundle-localhost.sh'), 'utf8');
+    const PORTS = '(localhost|127\\.0\\.0\\.1):(8080|3000|3001)';
+    const HOSTS = '(backend|worker|nginx|client-web|admin-web)';
+    for (const [name, text] of [['scanner', scanner], ['candidate spec', candidateSpec]] as const) {
+      expect(text, `${name} no longer requires a port on a loopback host`).toContain(PORTS.replace(/\\\\/g, '\\'));
+      expect(text, `${name} no longer names the internal Docker hosts`).toContain(HOSTS);
+    }
   });
 
   it('never falls back to a floating tag', () => {
