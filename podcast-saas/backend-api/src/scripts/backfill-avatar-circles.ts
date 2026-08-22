@@ -23,6 +23,7 @@
  * write (apply) would be overwritten. The backup table holds the plan-time value for recovery.
  */
 import { randomUUID } from 'node:crypto';
+import { positiveIntArg } from './argGuards.js';
 import { writeFileSync } from 'node:fs';
 import postgres from 'postgres';
 import { logger } from '../lib/logger.js';
@@ -40,7 +41,10 @@ const argValue = (name: string): string | undefined => {
   return i >= 0 ? argv[i + 1] : undefined;
 };
 const RUN_ID = argValue('--run-id') ?? `circbf-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}`;
-const MAX_AFFECTED = Number(argValue('--max-affected') ?? '200');
+// NOT `Number(argValue(...))` — that reads `--max-affected --apply` as NaN and the ceiling
+// test `total > NaN` is false, so a typo DISARMS the guard instead of failing the run
+// (scripts-ship-010). `positiveIntArg` refuses anything it cannot read.
+const MAX_AFFECTED = positiveIntArg(argv, '--max-affected', 200);
 const JSON_OUT = argValue('--json');
 const BACKUP_TABLE = '_avatar_circles_backfill_backup';
 

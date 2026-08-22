@@ -43,6 +43,7 @@
  *   - no-key columns (branch_edges.thumbnail_url): NULL the poisoned value.
  */
 import { randomUUID } from 'node:crypto';
+import { positiveIntArg } from './argGuards.js';
 import { writeFileSync } from 'node:fs';
 import postgres from 'postgres';
 import { getStorageAdapter } from '../services/storage/getStorageAdapter.js';
@@ -68,7 +69,10 @@ const argValue = (name: string): string | undefined => {
   return i !== -1 && i + 1 < argv.length ? argv[i + 1] : undefined;
 };
 const RUN_ID = argValue('--run-id') ?? `urlbf-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}`;
-const MAX_AFFECTED = Number(argValue('--max-affected') ?? '50');
+// NOT `Number(argValue(...))` — that reads `--max-affected --apply` as NaN and the ceiling
+// test `total > NaN` is false, so a typo DISARMS the guard instead of failing the run
+// (scripts-ship-010). `positiveIntArg` refuses anything it cannot read.
+const MAX_AFFECTED = positiveIntArg(argv, '--max-affected', 50);
 const JSON_OUT = argValue('--json');
 
 const BACKUP_TABLE = '_url_backfill_backup';

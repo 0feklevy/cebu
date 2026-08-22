@@ -70,6 +70,19 @@ export interface PendingDeployment {
   waitTimerStartedAt: string | null;
 }
 
+/**
+ * A recorded review DECISION on an environment deployment.
+ *
+ * The decision is the thing that was missing (scripts-ship-005): the conductor inferred approval
+ * from a pending deployment DISAPPEARING, and a rejection removes it exactly as an approval does.
+ */
+export interface DeploymentApproval {
+  environmentNames: string[];
+  state: 'approved' | 'rejected' | 'pending';
+  user: string | null;
+  comment: string;
+}
+
 /** A `gh pr checks` row. `bucket` is gh's normalisation: pass|fail|pending|skipping|cancel. */
 export interface CheckRow {
   name: string;
@@ -262,6 +275,37 @@ export class Gh {
       currentUserCanApprove: r.current_user_can_approve,
       waitTimerStartedAt: r.wait_timer_started_at,
     }));
+  }
+
+  /**
+   * The review decisions recorded against a run, newest first.
+   *
+   * `reviewDeployment` was write-only and nothing ever read a decision back, which is what let a
+   * REJECTED production deploy be journalled as approved: the poll watched
+   * `pendingDeployments` go empty, and a rejection empties it exactly as an approval does.
+   *
+   * Best-effort by design. This is used to CONFIRM a disappearance, so a listing failure must
+   * leave the caller waiting rather than let it assume either outcome — an empty array means "no
+   * decision is recorded", which is indistinguishable from "the call failed", and both should keep
+   * the conductor waiting rather than declaring success.
+   */
+  async deploymentApprovals(runId: number): Promise<DeploymentApproval[]> {
+    try {
+      const rows = await this.json<{
+        state: string;
+        comment: string;
+        user: { login: string } | null;
+        environments: { name: string }[];
+      }[]>(['api', `repos/${this.opts.repo}/actions/runs/${runId}/approvals`]);
+      return rows.map((r) => ({
+        environmentNames: (r.environments ?? []).map((e) => e.name),
+        state: r.state === 'approved' || r.state === 'rejected' ? r.state : 'pending',
+        user: r.user?.login ?? null,
+        comment: r.comment ?? '',
+      }));
+    } catch {
+      return [];
+    }
   }
 
   async reviewDeployment(runId: number, environmentIds: number[], state: 'approved' | 'rejected', comment: string): Promise<void> {
