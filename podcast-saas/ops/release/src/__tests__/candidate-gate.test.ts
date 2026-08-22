@@ -75,43 +75,37 @@ describe('human approval is reserved for releases where a human changes the outc
     expect(review?.text).toContain('production-approval');
   });
 
-  it('refuses BEFORE deploying when a release-blocking flow has no fixture', () => {
-    // A NEAR MISS. `--require-tests` makes a skipped release-blocking flow CRITICAL, and the
-    // post-deploy gate turns CRITICAL into an automatic rollback. Every one of those flows is
-    // `test.skip(!process.env.SMOKE_PUBLIC_PATH, …)`, and those variables are not set on this
-    // repository — so the first release to reach the post-deploy gate would have rolled back a
-    // perfectly healthy deploy because of a missing configuration value.
+  it('a flow with NO FIXTURE is excluded from the requirement rather than blocking the release', () => {
+    // Two wrong answers were tried before this one.
     //
-    // "Nobody told me which project to test" is a configuration gap and must stop the release
-    // BEFORE anything is deployed. "You told me and it still did not run" is a broken flow and
-    // post-deploy rollback is right. Different failures, different places.
+    // First: nothing. `--require-tests` makes a SKIPPED release-blocking flow CRITICAL and the
+    // post-deploy gate turns CRITICAL into an automatic rollback — so a missing repository
+    // variable would have rolled back a perfectly healthy deploy.
+    //
+    // Then: refuse to release at all. That closed the rollback trap and opened a worse one — it
+    // blocks security fixes behind a configuration task, and the person who can do the
+    // configuring is not always there.
+    //
+    // The requirement is now passed downstream ONLY for flows that have somewhere to run. A flow
+    // with no fixture is reported loudly and excluded; a flow that HAS a fixture and still did
+    // not run stays CRITICAL, and the rollback then means what it says.
     const plan = withoutComments(jobs.get('plan')?.text ?? '');
-    // TESTED, not merely mentioned. A mutation that renamed the variable inside the check still
-    // passed, because the long comment above it names the variable too — and a test satisfied by
-    // prose is satisfied by a check that no longer exists.
     for (const v of ['SMOKE_PUBLIC_PATH', 'SMOKE_PLAYLIST_PATH', 'SMOKE_ADMIN_PREVIEW_PATH']) {
-      expect(plan, `${v} is required post-deploy but never checked before the deploy`)
+      expect(plan, `${v} is never checked, so its absence is invisible`)
         .toMatch(new RegExp(`\\[ -n "\\$\\{\\{ vars\\.${v} \\}\\}" \\]`));
     }
-    // ...and the check must FAIL, not merely notice. One that detects the gap and continues is
-    // not a check, and `exit 1 -> true` was a surviving mutation until this line existed.
+    // It must WARN, not fail — a step that exits non-zero here blocks the release.
     const step = plan.split('- name:').find((x) => x.includes('vars.SMOKE_PUBLIC_PATH')) ?? '';
-    expect(step, 'the fixture check reports the problem and then carries on').toContain('exit 1');
-    // In `plan`, which runs before ANY image is deployed — not in the deploy job, where refusing
-    // is already too late for the thing this protects against.
-    expect(transitiveNeeds(jobs, 'deploy')).toContain('plan');
+    expect(step, 'the fixture check blocks the release instead of warning').not.toMatch(/\bexit 1\b/);
+    expect(step, 'the gap is not reported anywhere a human would see it').toContain('::warning::');
+    expect(step, 'the gap is not recorded in the run summary').toContain('GITHUB_STEP_SUMMARY');
   });
 
-  it('every flow named in --require-tests is one the pre-deploy check covers', () => {
-    // The two lists must not drift. A flow required post-deploy whose fixture nobody verified
-    // up front is exactly the rollback trap this pair exists to close, reintroduced one entry
-    // at a time.
-    const deploy = withoutComments(jobs.get('deploy')?.text ?? '');
-    const required = /--require-tests\s+'([^']+)'/.exec(deploy)?.[1] ?? '';
-    expect(required, 'the post-deploy gate names no release-blocking flows').toBeTruthy();
-    // Every flow in this suite depends on SMOKE_PUBLIC_PATH; if one ever depends on a different
-    // fixture, this assertion is the place that has to learn about it.
-    expect(withoutComments(jobs.get('plan')?.text ?? '')).toContain('SMOKE_PUBLIC_PATH');
+  it('the post-deploy requirement comes FROM that check, not from a hard-coded list', () => {
+    // A hard-coded list in the deploy job cannot know whether a fixture exists, which is exactly
+    // how the rollback trap was built the first time.
+    expect(jobs.get('plan')?.text).toContain("require_tests: ${{ steps.fixtures.outputs.require_tests }}");
+    expect(withoutComments(jobs.get('deploy')?.text ?? '')).toContain('needs.plan.outputs.require_tests');
   });
 
   it('the approval verdict is computed from evidence, not from a human deciding to skip it', () => {
