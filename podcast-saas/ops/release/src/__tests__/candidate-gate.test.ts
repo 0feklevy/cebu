@@ -110,6 +110,33 @@ describe('it tests the images that will actually be deployed', () => {
     expect(gateText).toContain('candidate reference is not digest-pinned');
   });
 
+  it("applies this build's migrations with the command production uses", () => {
+    // Migrations do NOT run at boot — the VM applies them as a separate step. So a candidate
+    // stack that only starts the containers has an EMPTY database, and a test claiming to verify
+    // "migrations against a real Postgres" verifies nothing. That was the first version of this
+    // job: a false claim, which is worse than a missing one because it reads as covered.
+    //
+    // The command must match deploy-images.sh, verbatim. A different invocation here — a
+    // different entry file, an added flag — tests a path the VM never takes, which is the same
+    // category of mistake as not running them at all, only harder to notice.
+    const gate = runsOf(GATE);
+    expect(gate).toContain('run --rm --no-deps backend node dist/db/migrate.js');
+
+    const deployScript = readFileSync(join(ROOT, 'podcast-saas', 'deploy', 'scripts', 'deploy-images.sh'), 'utf8');
+    expect(deployScript, 'the deploy script no longer runs the command this gate mirrors').toContain(
+      'run --rm --no-deps backend node dist/db/migrate.js',
+    );
+  });
+
+  it('a failing migration is not swallowed', () => {
+    // `|| true` on that step would turn the single highest-value check in this job into a log
+    // line. A migration that cannot apply to an empty, real Postgres must never reach one with
+    // data in it.
+    const step = runsOf(GATE).split('- name:').find((s) => s.includes('dist/db/migrate.js')) ?? '';
+    expect(step).not.toMatch(/migrate\.js.*\|\|\s*true/);
+    expect(step).not.toContain('continue-on-error: true');
+  });
+
   it('refuses to proceed when the manifest is absent or of an unknown schema', () => {
     expect(gateText).toContain('cannot identify the candidate');
     expect(gateText).toContain('flowvid.image-manifest/v1');

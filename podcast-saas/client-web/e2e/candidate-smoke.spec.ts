@@ -46,18 +46,19 @@ test.describe('the candidate images boot and serve', () => {
     expect(res?.status(), 'client-web did not serve a document').toBeLessThan(500);
   });
 
-  test('the backend image ran its migrations against a REAL Postgres', async ({ request }) => {
-    // The whole point of a real engine here. `/health` is answered only once the pool connects,
-    // and the readiness payload reports migration state where the build exposes it.
+  test('the schema this build migrated to is live, and the pool reports healthy', async ({ request }) => {
+    // The migrations themselves are applied by the workflow step before this runs, with the
+    // command production uses verbatim and no `|| true` — so a migration that cannot apply has
+    // already failed the job by the time this executes. What this asserts is the CONSEQUENCE: the
+    // backend, holding a pool against the freshly-migrated database, reports it healthy.
+    //
+    // Asserted STRICTLY. The first version of this test read `if ('database' in body)` and
+    // tolerated the field being absent — which made it pass against a build that reports nothing
+    // at all, i.e. against exactly the broken image it was written to catch.
     const res = await request.get(`${API}/health`, { timeout: 15_000 });
-    expect(res.ok()).toBe(true);
-    const body = await res.json().catch(() => ({}));
-    // Deliberately tolerant about SHAPE and strict about CONTENT: a build that reports database
-    // health must not report it as unhealthy. A build that reports nothing is covered by the boot
-    // test above rather than failed twice for the same reason.
-    if (typeof body === 'object' && body !== null && 'database' in body) {
-      expect(String((body as Record<string, unknown>).database)).not.toMatch(/error|down|fail/i);
-    }
+    expect(res.ok(), `/health returned ${res.status()}`).toBe(true);
+    const body = (await res.json()) as { status?: string; database?: { status?: string } };
+    expect(body.database?.status, `/health did not report the database as ok: ${JSON.stringify(body)}`).toBe('ok');
   });
 });
 

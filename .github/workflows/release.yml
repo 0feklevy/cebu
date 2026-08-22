@@ -466,6 +466,23 @@ jobs:
           set -euo pipefail
           cd podcast-saas/deploy
           docker compose -f docker-compose.candidate.yml up -d --wait --wait-timeout 240
+      - name: Apply this build's migrations to a REAL Postgres
+        run: |
+          set -euo pipefail
+          # THE COMMAND PRODUCTION RUNS, VERBATIM. deploy-images.sh line 148 and deploy.sh line 157
+          # both run exactly `compose run --rm --no-deps backend node dist/db/migrate.js`; a
+          # different invocation here would test a path the VM never takes.
+          #
+          # This is the single highest-value check in the job. The backend suite runs on PGlite,
+          # which serialises a `Date` where real Postgres rejects it — a divergence that left the
+          # whole dubbing feature dead in production while every test stayed green (D-23). It also
+          # catches a `.sql` file missing from migrate.ts's hardcoded list, which applies silently
+          # to nothing and is invisible until the first query against the missing column.
+          #
+          # No `|| true`: a migration that cannot apply to an empty, real Postgres is a release
+          # that must not reach one with data in it.
+          cd podcast-saas/deploy
+          docker compose -f docker-compose.candidate.yml run --rm --no-deps backend node dist/db/migrate.js
       - name: Seed the storage fixtures the round-trip test asserts on
         id: fixtures
         run: |
