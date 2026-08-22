@@ -78,6 +78,39 @@ and spending them on a condition only a human can clear delays the error the ope
 while making it look transient. **Owner action if it ever fires:** free a custom-voice slot in the
 ElevenLabs workspace; no code change will help.
 
+## 🔴 CROP v2 IS A LABEL WITH NO ALGORITHM BEHIND IT — and flipping it costs a full recompute
+
+Found on the first real run of the field eval, 2026-08-22.
+
+`algo.ts` documents `CROP_ALGO=v2` as a shipped-dark rollout lever: *"v2 carries a new dependency
+and a new failure mode, so it ships dark and is turned on per-environment, and rolling back is an
+env flip rather than a deploy."* The flag, the type and the version stamp all exist.
+
+**Nothing branches on it.** `cropAlgo()` has no consumers anywhere outside `algo.ts` — grep the
+whole of `backend-api/src` and the only readers are the version stamper and the two eval scripts.
+v1 and v2 are one code path wearing two labels, which the field eval demonstrated by scoring both
+at mIoU 0.5089 — identical to four decimal places, on 390 real frames.
+
+**The trap.** `sourceHash(..., algo = algoVersion())` folds the version into the crop idempotency
+hash — deliberately, so a genuine algorithm fix reaches videos that already have a crop. So
+setting `CROP_ALGO=v2` in production would:
+  - change every `crop_source_hash`,
+  - make every `ready` crop row stale,
+  - recompute the ENTIRE catalogue,
+  - and produce byte-identical output.
+
+An env flip documented as a cheap rollback lever is in fact a full-catalogue reprocess for zero
+change. Nothing warns about it and nothing fails.
+
+**Also:** any past comparison of "v1 vs v2" from `run-eval.ts` compared a thing to itself. Its
+`withAlgo()` helper pins the env var around each run, which reads as a working A/B and is not one.
+
+**Not fixed here, because the right fix depends on an answer only the owner has:** was v2 removed
+deliberately (then delete the flag, the type and the VERSIONS entry, and say so), or is it still
+intended (then the flag stays and needs a guard so it cannot be set until an implementation
+exists)? Shipping either without knowing would be guessing at a plan. The dangerous half — that a
+flip silently costs a catalogue recompute — is what needed writing down today.
+
 ## 🎯 WORK WAVES — the order everything is done in (owner-ranked 2026-08-22)
 
 The owner's ranking: **podcast is the most critical area, crop second — but a critical BUG comes

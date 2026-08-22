@@ -1,0 +1,235 @@
+{
+  "schema": "flowvid.crop-labels/1",
+  "clip_id": "boids-06-cartoon-to-cu",
+  "category": "mixed",
+  "source": {
+    "file": "boids-06-cartoon-to-cu.mp4",
+    "sha256": "8d4fb14bdc30581f0bcae677306eae57b923f6aff18b6b6d6d4c40493eda46bb",
+    "bytes": 5206849
+  },
+  "width": 1920,
+  "height": 1080,
+  "duration_sec": 15.0,
+  "sample_fps": 2,
+  "crop_aspect": 0.5625,
+  "cuts": [
+    1.0,
+    2.0,
+    5.5,
+    10.0,
+    12.5,
+    13.5
+  ],
+  "labels": [
+    {
+      "frame_idx": 0,
+      "t": 0.0,
+      "crop_x": 0.52,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 1,
+      "t": 0.5,
+      "crop_x": 0.52,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 2,
+      "t": 1.0,
+      "crop_x": 0.6,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 3,
+      "t": 1.5,
+      "crop_x": 0.6,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 4,
+      "t": 2.0,
+      "crop_x": 0.5,
+      "subject": "none",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 5,
+      "t": 2.5,
+      "crop_x": 0.5,
+      "subject": "none",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 6,
+      "t": 3.0,
+      "crop_x": 0.5,
+      "subject": "none",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 7,
+      "t": 3.5,
+      "crop_x": 0.5,
+      "subject": "none",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 8,
+      "t": 4.0,
+      "crop_x": 0.5,
+      "subject": "none",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 9,
+      "t": 4.5,
+      "crop_x": 0.5,
+      "subject": "none",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 10,
+      "t": 5.0,
+      "crop_x": 0.5,
+      "subject": "none",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 11,
+      "t": 5.5,
+      "crop_x": 0.6,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 12,
+      "t": 6.0,
+      "crop_x": 0.6,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 13,
+      "t": 6.5,
+      "crop_x": 0.6,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 14,
+      "t": 7.0,
+      "crop_x": 0.6,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 15,
+      "t": 7.5,
+      "crop_x": 0.6,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 16,
+      "t": 8.0,
+      "crop_x": 0.6,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 17,
+      "t": 8.5,
+      "crop_x": 0.6,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 18,
+      "t": 9.0,
+      "crop_x": 0.6,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 19,
+      "t": 9.5,
+      "crop_x": 0.6,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 20,
+      "t": 10.0,
+      "crop_x": 0.42,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 21,
+      "t": 10.5,
+      "crop_x": 0.42,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 22,
+      "t": 11.0,
+      "crop_x": 0.42,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 23,
+      "t": 11.5,
+      "crop_x": 0.42,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 24,
+      "t": 12.0,
+      "crop_x": 0.42,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 25,
+      "t": 12.5,
+      "crop_x": 0.52,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 26,
+      "t": 13.0,
+      "crop_x": 0.52,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 27,
+      "t": 13.5,
+      "crop_x": 0.42,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 28,
+      "t": 14.0,
+      "crop_x": 0.42,
+      "subject": "subject",
+      "confirmed": true
+    },
+    {
+      "frame_idx": 29,
+      "t": 14.5,
+      "crop_x": 0.42,
+      "subject": "subject",
+      "confirmed": true
+    }
+  ]
+}
