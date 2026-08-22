@@ -90,10 +90,45 @@ one gate.
 - The classifier boundaries stand: merges yes, `--admin` no; push yes, force-push no; release
   dispatch and deploy approval are yours alone.
 
+## 🟢 The sweep's fix-now queue is DONE — 8 landed, 1 corrected by measurement (2026-08-22)
+
+**Landed** (PRs #62–#68, each mutation-checked): C4 viewer/export overlap parity · `simulation-009`
+superseded-activation identity · `job-queue-013` no encodes in the API container ·
+`job-queue-014` exhaustive job maps · `media-003` canvas-free capture · the ship-conductor trio
+(`-005` rejected-deploy-as-approved, `-010` NaN ceiling, `-013` seeder DB guard) · the LLM trio
+(`-011` thinking-off + un-metered, `-016` gutted script marked ready, `-007` unreachable prompt
+caching).
+
+**`simulation-008` — CORRECTED, and deliberately NOT implemented.** The finding's facts hold:
+`posterService.invalidate()` has no caller on the production activation path, and
+`cleanupOrphans()` has no caller at all. But its SCENARIO — "every republication leaks the previous
+revision's posters, forever" — is not currently reachable, and the prescribed fix would have added a
+destructive call to a path that creates nothing:
+
+- the production activation path does not GENERATE posters either. The only capture path is the
+  operator script `sim-canary-publish.ts`, which already calls `invalidate()` after the new verdict
+  is durable (line 322) — the one writer is also the one invalidator;
+- the other writer, `ProjectDuplicationService`, copies posters onto a NEW simulation id, so nothing
+  is superseded;
+- **production evidence, read-only: `sim_posters` holds 0 rows across 0 simulations.** There is no
+  accumulated backlog, which is what the sweep's "fold it into the storage census rather than
+  deleting in isolation" caution was protecting.
+
+Wiring `invalidate()` into the activation path today would delete nothing and add a real hazard:
+the function deletes every poster row whose `package_revision` differs from the one passed, and its
+own comment warns that a wrong value matches rows it was meant to keep.
+
+**The condition under which this becomes real:** a production path that CAPTURES posters. If poster
+generation ever moves out of the operator script and into publication, the capture and the
+invalidation must land together — that pairing is the actual invariant, and it is currently
+maintained only because both live in one script.
+
+---
+
 ## 🟡 Work queue — the sweep's remaining confirmed findings, in cluster order
 
-**The remaining `fix-now` findings** — the 13 below are every one not closed by #58–#60. First steps are the sweep's own,
-re-checked against the code before anything lands:
+~~**The remaining `fix-now` findings** — the 13 below.~~ **ALL CLOSED 2026-08-22** — see the
+section above. Kept as the record of what each was and how it was approached:
 
 1. **C4 — viewer and export disagree on overlapping clips** (`broll-player-002` +
    `broll-data-008`): move `resolvePlan`'s winner rule into `shared/`, call it at both
