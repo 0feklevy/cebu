@@ -29,6 +29,7 @@ import { mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import { tmpdir } from 'node:os';
+import { captureSpaceVerdict, freeBytesFor } from './captureSpace.js';
 import { join } from 'node:path';
 
 import { logger } from '../../../../lib/logger.js';
@@ -238,6 +239,8 @@ export interface ContainerCaptureConfig {
   memoryMb: number;
   pidsLimit: number;
   tmpfsScratchMb: number;
+  /** Per-capture output ceiling in MB (media-009). 0 disables it. */
+  maxOutputMb: number;
   stopTimeoutSec: number;
   dockerBin: string;
   /**
@@ -294,6 +297,11 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): ContainerCa
     memoryMb: int(env.EXPORT_CAPTURE_MEMORY_MB, 2048),
     pidsLimit: int(env.EXPORT_CAPTURE_PIDS_LIMIT, 256),
     tmpfsScratchMb: int(env.EXPORT_CAPTURE_TMPFS_MB, 512),
+    // Per-capture output ceiling (media-009). 4 GB is far above any real section — a 60 s 1080p
+    // capture at 30 fps predicts well under 1 GB even at the worst-case bytes-per-pixel — so this
+    // refuses the absurd rather than the merely large. 0 disables the ceiling and leaves only the
+    // free-space check.
+    maxOutputMb: int(env.EXPORT_CAPTURE_MAX_OUTPUT_MB, 4096),
     stopTimeoutSec: int(env.EXPORT_CAPTURE_STOP_TIMEOUT_SEC, 10),
     dockerBin: env.EXPORT_CAPTURE_DOCKER_BIN?.trim() || 'docker',
     sandboxMechanism,
@@ -413,6 +421,29 @@ export class ContainerCaptureProvider implements SimCaptureBackend {
 
     const base = this.config.workDir ?? tmpdir();
     await mkdir(base, { recursive: true });
+
+    // WILL THE FRAMES FIT? (media-009) The container is bounded on CPU, memory, pids, tmpfs scratch
+    // and wall clock — every dimension except the one it actually fills. Nothing compared
+    // `durationSec * fps` frames at this resolution to the space on the disk receiving them.
+    //
+    // Running out mid-capture does not fail politely: the frame sequence is left with holes, and
+    // the assembler covers a hole by stretching or repeating, so the export is visibly broken and
+    // the simulation gets the blame. And the filesystem it fills is the one Postgres is on.
+    //
+    // Checked AFTER `mkdir(base)` so the measurement is of a directory that exists, and before the
+    // job directory is created so a refusal leaves nothing behind.
+    {
+      const verdict = captureSpaceVerdict({
+        frames: expectedFrameCount(containerSpec),
+        width: spec.width,
+        height: spec.height,
+        freeBytes: await freeBytesFor(base),
+        ceilingBytes: this.config.maxOutputMb * 1024 * 1024,
+      });
+      if (verdict.refusal) {
+        throw new Error(`container capture refused: ${verdict.refusal}`);
+      }
+    }
     const jobDir = await mkdtemp(join(base, `capture-${spec.sectionId.slice(0, 8)}-`));
     const inputDir = join(jobDir, 'input');
     const outputDir = join(jobDir, 'output');

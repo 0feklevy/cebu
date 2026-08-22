@@ -69,15 +69,44 @@ function walk(dir: string): string[] {
   return out;
 }
 
+/**
+ * Every name this codebase reads from the environment.
+ *
+ * TWO PATTERNS, because there are two ways this code reads a variable and the first version of
+ * this file only knew one. `process.env.NAME` is the common one. But the capture provider, the
+ * dubbing budget and the migration runner take a `NodeJS.ProcessEnv` as a PARAMETER and read
+ * `env.NAME` off it — a better shape for testing, and completely invisible to a scan anchored on
+ * `process.`.
+ *
+ * That blind spot hid 19 variables, `MIGRATION_DATABASE_URL`, `WORKER_QUEUES` and the whole
+ * `EXPORT_CAPTURE_*` family among them. Worse than the count: it made the ratchet's verdict
+ * unsound rather than merely incomplete, because a genuinely undocumented variable read that way
+ * could never appear in the diff this test computes. A gate that cannot see a class of input is
+ * not a smaller gate, it is a gate with a hole.
+ */
+function envNamesIn(text: string): string[] {
+  const names: string[] = [];
+  for (const m of text.matchAll(/process\.env\.([A-Z][A-Z0-9_]+)/g)) names.push(m[1]!);
+  // `env.NAME` where `env` is the injected ProcessEnv. The negative lookbehind keeps this from
+  // double-counting the `process.env.` hits above.
+  for (const m of text.matchAll(/(?<!process\.)\benv\.([A-Z][A-Z0-9_]+)/g)) names.push(m[1]!);
+  return names;
+}
+
+function allEnvNamesRead(): Set<string> {
+  const read = new Set<string>();
+  for (const file of walk(SRC)) for (const n of envNamesIn(readFileSync(file, 'utf8'))) read.add(n);
+  return read;
+}
+
 describe('every environment variable is findable by whoever has to set it', () => {
   it('no NEW undocumented variable has appeared', () => {
-    const read = new Set<string>();
-    for (const file of walk(SRC)) {
-      for (const m of readFileSync(file, 'utf8').matchAll(/process\.env\.([A-Z][A-Z0-9_]+)/g)) {
-        read.add(m[1]);
-      }
-    }
+    const read = allEnvNamesRead();
     expect(read.size, 'the env-var scan matched nothing — its pattern has drifted').toBeGreaterThan(80);
+    // BOTH shapes, asserted by example. A regression that silently dropped either pattern would
+    // shrink the read set and make this file report success while checking half the surface.
+    expect(read, 'the process.env.X pattern stopped matching').toContain('DATABASE_URL');
+    expect(read, 'the injected env.X pattern stopped matching').toContain('EXPORT_CAPTURE_TMPFS_MB');
 
     const documented = new Set<string>();
     for (const p of [join(ROOT, '.env.example'), join(ROOT, 'deploy', '.env.example')]) {
@@ -100,10 +129,7 @@ describe('every environment variable is findable by whoever has to set it', () =
   it('the allow-list has not rotted', () => {
     // An entry for a variable nothing reads any more is a line that makes the gap look larger
     // than it is, and it is the reason ratchet lists stop being trusted.
-    const read = new Set<string>();
-    for (const file of walk(SRC)) {
-      for (const m of readFileSync(file, 'utf8').matchAll(/process\.env\.([A-Z][A-Z0-9_]+)/g)) read.add(m[1]);
-    }
+    const read = allEnvNamesRead();
     const stale = KNOWN_UNDOCUMENTED.filter((v) => !read.has(v));
     expect(stale, 'these are allowed as undocumented but nothing reads them — delete the entries').toEqual([]);
   });
