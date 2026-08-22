@@ -1,0 +1,186 @@
+# THE RELEASE CANDIDATE, RUN AS IMAGES — the gate that replaces a human clicking "approve".
+#
+# Every other check in the pipeline tests the SOURCE: `verify` runs the workspace's tests and
+# production builds, and `viewer-e2e` starts the app from the pnpm workspace. Nothing had ever
+# started the ACTUAL IMAGES that are about to be deployed. That gap is not academic — an image can
+# differ from its source tree in the ways that matter most and are least visible: a missing runtime
+# dependency the workspace happened to have, an entrypoint that resolves differently, a build arg
+# that changed what got compiled in, a migration that runs on a real database rather than PGlite.
+#
+# ── IMMUTABLE DIGESTS, NOT TAGS ───────────────────────────────────────────────────────────────
+# The services below are pinned by ${*_IMAGE}, which the workflow fills from image-manifest.json —
+# the same digest-pinned manifest the production deploy uses. Testing `:latest` here would test
+# something that is merely NAMED like the candidate. If these variables are unset, compose fails to
+# start rather than substituting an empty string into an image reference, which is the fail-closed
+# direction: no stack means no evidence, and no evidence blocks the release.
+#
+# ── WHY POSTGRES IS REAL ──────────────────────────────────────────────────────────────────────
+# The backend test suite runs against PGlite, which is not Postgres — it serialises a `Date` where
+# real Postgres rejects it, and that exact difference hid a defect that made a whole shipped
+# feature dead in production while every test stayed green (test-quality-015 / D-23). A candidate
+# gate that also used PGlite would be blind to the same class. This one runs the real engine and
+# the real migration runner.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: candidate
+      POSTGRES_PASSWORD: candidate
+      POSTGRES_DB: candidate
+    # No published port: only the compose network reaches it, so a CI runner cannot accidentally
+    # pick up a neighbouring database, and nothing outside this stack can reach the fixtures.
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U candidate -d candidate']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    tmpfs:
+      # Ephemeral by construction — a candidate stack must never leave state behind that a later
+      # run could mistake for a fresh boot.
+      - /var/lib/postgresql/data
+
+  # Object storage for the candidate: a real S3 the production adapter can talk to, holding
+  # nothing and reachable from nowhere outside this compose network.
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: candidateaccesskey
+      MINIO_ROOT_PASSWORD: candidatesecretkey
+    tmpfs:
+      - /data
+    healthcheck:
+      test: ['CMD-SHELL', 'mc ready local || exit 1']
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  # Creates the bucket and exits. `service_completed_successfully` on this is what guarantees the
+  # backend never starts against a bucket that does not exist yet — a race that would surface as
+  # an intermittent gate failure, the least debuggable kind there is.
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >-
+      /bin/sh -c "
+      mc alias set candidate http://minio:9000 candidateaccesskey candidatesecretkey &&
+      mc mb --ignore-existing candidate/media &&
+      mc anonymous set download candidate/media
+      "
+
+  backend:
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE must be a digest-pinned reference from image-manifest.json}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      NODE_ENV: production
+      PORT: '8080'
+      DATABASE_URL: postgres://candidate:candidate@postgres:5432/candidate
+      QUEUE_DATABASE_URL: postgres://candidate:candidate@postgres:5432/candidate
+      # Inline, so the candidate stack runs no background workers: this gate proves the images
+      # BOOT and SERVE, not that ffmpeg encodes. Durable work is the production worker's job and
+      # exercising it here would trade a fast gate for a flaky one.
+      QUEUE_DRIVER: inline
+      # ── STORAGE: THE REAL ADAPTER, AGAINST A THROWAWAY S3 ────────────────────────────────────
+      # `STORAGE_BACKEND: local` was the first version of this, and it could never have worked:
+      # getStorageAdapter REFUSES local disk whenever NODE_ENV=production, by design, because
+      # per-instance disk served over a localhost URL is a production incident. The backend would
+      # not have booted, and the gate would have blocked every release on its own configuration.
+      #
+      # Dropping NODE_ENV=production to dodge that would have been worse — the whole claim of this
+      # job is that it runs the image the way production runs it. So the candidate gets a MinIO of
+      # its own and the SupabaseStorageAdapter is pointed at it. That is strictly better than the
+      # local adapter anyway: Supabase is what production actually writes through, so this
+      # exercises the real path, and a mis-shaped S3 configuration now fails at boot, visibly.
+      #
+      # SUPABASE_URL is deliberately unset: it derives `publicBase`, and MinIO does not serve
+      # Supabase's public-object path. Sim files route through the backend's own /sim-public proxy
+      # (BACKEND_API_URL above), which reads the object through the adapter — so the object round
+      # trip is exercised without inventing a URL shape that exists nowhere.
+      STORAGE_BACKEND: supabase
+      SUPABASE_S3_ENDPOINT: http://minio:9000
+      SUPABASE_S3_ACCESS_KEY_ID: candidateaccesskey
+      SUPABASE_S3_SECRET_ACCESS_KEY: candidatesecretkey
+      SUPABASE_S3_REGION: us-east-1
+      SUPABASE_STORAGE_BUCKET: media
+      # ── THE ORIGINS THE BOOT GUARD DEMANDS ───────────────────────────────────────────────────
+      # `assertPublicOriginsForProd` refuses to start whenever NODE_ENV=production and these point
+      # at localhost, at an internal Docker service name, or at anything not https — and it exits
+      # the process rather than warning. Loopback values, the obvious choice for a local stack,
+      # are a second way this gate would have blocked every release on its own configuration.
+      #
+      # `.invalid` is the RFC 2606 reserved TLD: guaranteed never to resolve, anywhere, ever. That
+      # makes it the honest value here — it satisfies a guard that only inspects the STRING, while
+      # being incapable of reaching a real host should some future code path try to fetch it. The
+      # tests address the containers through the published ports, which the guard never sees.
+      BACKEND_API_URL: https://api.candidate.invalid
+      # NEXT_PUBLIC_APP_URL is read by the BACKEND, despite the prefix: publicOrigins.ts uses it
+      # as the public app origin for CORS and for the URLs it mints, and the guard above requires
+      # it. NEXT_PUBLIC_API_URL is deliberately absent — nothing in backend-api reads it, and a
+      # variable no code consults is a claim about the system that quietly stops being true.
+      NEXT_PUBLIC_APP_URL: https://app.candidate.invalid
+      PUBLIC_SITE_URL: https://app.candidate.invalid
+      # ── FIREBASE: VALIDATED AT BOOT, SO IT CANNOT SIMPLY BE OMITTED ──────────────────────────
+      # `getFirebaseAdmin()` runs during startup and throws when any of the three is missing, and
+      # `admin.credential.cert()` parses the PEM — so a placeholder string will not do either.
+      # This was the third boot guard that would have blocked every release.
+      #
+      # The credential is GENERATED PER RUN by the workflow and passed in; it is never committed.
+      # Key material in a compose file would be real key material in the repository even though it
+      # authenticates nothing, would trip the release's own secret scan, and would teach the next
+      # reader that keys belong in configuration files.
+      FIREBASE_PROJECT_ID: candidate-smoke
+      FIREBASE_CLIENT_EMAIL: candidate@candidate-smoke.iam.gserviceaccount.com
+      FIREBASE_PRIVATE_KEY: ${CANDIDATE_FIREBASE_CREDENTIAL:?CANDIDATE_FIREBASE_CREDENTIAL must be a throwaway PEM generated by the workflow}
+      # A syntactically valid, throwaway key. `assertEncryptionKeyEnv` fails closed on a malformed
+      # one (security-004), and media-token minting signs with it — so a stack without it could not
+      # exercise the token path this gate exists to cover.
+      ENCRYPTION_KEY: '0000000000000000000000000000000000000000000000000000000000000001'
+      LOG_LEVEL: warn
+    ports:
+      - '8080:8080'
+    healthcheck:
+      test: ['CMD-SHELL', 'node -e "fetch(\"http://127.0.0.1:8080/health\").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"']
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  client-web:
+    image: ${CLIENT_WEB_IMAGE:?CLIENT_WEB_IMAGE must be a digest-pinned reference from image-manifest.json}
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: '3000'
+      # ── READ AT SERVER START, NOT ONLY AT BUILD ──────────────────────────────────────────────
+      # `next.config.ts` is loaded by `next start`, and its `resolvePublicUrl` THROWS whenever
+      # NODE_ENV=production and one of these is loopback, an internal service name, or not https.
+      # Loopback values here do not merely fail to reach the browser — they stop the container
+      # from starting at all. This was the fifth boot guard in this stack, and the fourth found
+      # only by reading what the code does with the value rather than what the value looks like.
+      #
+      # `.invalid` for the same reason as the backend's: reserved by RFC 2606, guaranteed never to
+      # resolve, and therefore honest about being unreachable while satisfying a string check.
+      #
+      # These are SERVER-SIDE ONLY regardless. Next.js bakes every NEXT_PUBLIC_* value into the
+      # browser bundle at BUILD time, so this image's client code calls the production API whatever
+      # is set here. Written down because the opposite assumption is easy and expensive: a test
+      # asserting "the page only talks to this stack" would fail on every correct release.
+      NEXT_PUBLIC_API_URL: https://api.candidate.invalid
+      NEXT_PUBLIC_APP_URL: https://app.candidate.invalid
+      PUBLIC_SITE_URL: https://app.candidate.invalid
+      NEXT_TELEMETRY_DISABLED: '1'
+    ports:
+      - '3000:3000'
+    healthcheck:
+      test: ['CMD-SHELL', 'node -e "fetch(\"http://127.0.0.1:3000/\").then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"']
+      interval: 3s
+      timeout: 5s
+      retries: 40

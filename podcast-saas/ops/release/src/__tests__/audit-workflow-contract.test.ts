@@ -165,10 +165,68 @@ describe('the gate demands current evidence', () => {
 describe('Playwright runs the production config, not the full local matrix', () => {
   const PRODUCTION_CONFIG = join(REPO, 'podcast-saas', 'client-web', 'playwright.production.config.ts');
 
-  it('the production config exists and selects only the two self-contained audit specs', () => {
+  it('EVERY config a workflow names selects only self-contained specs', () => {
+    // The rule below is applied to the production config by name. It has to apply to every config
+    // CI actually invokes, or the next one added — candidate-smoke was exactly that — inherits the
+    // danger with none of the protection. These jobs install neither backend-api nor shared/sim,
+    // so a spec importing either dies during collection, before any browser opens, taking the
+    // whole suite with it and producing no report at all.
+    const CI_DIR = join(PRODUCTION_CONFIG, '..');
+    const named = new Set<string>();
+    for (const text of [AUDIT, RELEASE, ROLLBACK]) {
+      for (const m of text.matchAll(/--config=(playwright\.[a-z-]+\.config\.ts)/g)) named.add(m[1]);
+    }
+    expect(named.size, 'no Playwright config is invoked by any workflow').toBeGreaterThan(0);
+
+    for (const cfgName of named) {
+      const cfgPath = join(CI_DIR, cfgName);
+      expect(existsSync(cfgPath), `${cfgName} is invoked by a workflow but does not exist`).toBe(true);
+      const cfg = readFileSync(cfgPath, 'utf8');
+      const match = /testMatch:\s*\[([^\]]*)\]/.exec(cfg);
+      expect(match, `${cfgName} declares no testMatch — it would collect every spec`).not.toBeNull();
+      for (const spec of [...match![1].matchAll(/'([^']+)'/g)].map((m) => m[1])) {
+        const file = join(CI_DIR, 'e2e', spec);
+        expect(existsSync(file), `${cfgName} lists ${spec}, which does not exist`).toBe(true);
+        for (const imp of [...readFileSync(file, 'utf8').matchAll(/from\s+'([^']+)'/g)].map((m) => m[1])) {
+          const ok = imp.startsWith('.') || imp === '@playwright/test' || imp.startsWith('node:');
+          expect(ok, `${spec} (via ${cfgName}) imports "${imp}", which CI does not install`).toBe(true);
+        }
+      }
+    }
+  });
+
+  it('the production config selects only SELF-CONTAINED specs, whatever the list is', () => {
+    // Stated as the property rather than as the literal two-item list it used to pin. The reason
+    // the list mattered was never its length: these jobs install neither backend-api nor
+    // shared/sim, so a spec importing either dies during COLLECTION — before any browser opens,
+    // taking the whole suite with it and producing no report at all. Adding a legitimate new
+    // production spec turned the old assertion red for a reason unrelated to that danger, and
+    // the obvious repair — paste the new filename in — quietly re-pinned the list without ever
+    // checking the thing that actually breaks.
     expect(existsSync(PRODUCTION_CONFIG)).toBe(true);
     const cfg = readFileSync(PRODUCTION_CONFIG, 'utf8');
-    expect(cfg).toContain("testMatch: ['production-audit.spec.ts', 'production-smoke.spec.ts']");
+
+    const match = /testMatch:\s*\[([^\]]*)\]/.exec(cfg);
+    expect(match, 'the production config declares no testMatch — it would collect every spec').not.toBeNull();
+    const specs = [...match![1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+    expect(specs.length, 'testMatch is empty').toBeGreaterThan(0);
+
+    const E2E_DIR = join(PRODUCTION_CONFIG, '..', 'e2e');
+    for (const spec of specs) {
+      const file = join(E2E_DIR, spec);
+      expect(existsSync(file), `${spec} is in testMatch but does not exist`).toBe(true);
+      const src = readFileSync(file, 'utf8');
+      const imports = [...src.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]);
+      for (const spec2 of imports) {
+        const local = spec2.startsWith('.');
+        const allowed = spec2 === '@playwright/test' || spec2.startsWith('node:');
+        expect(
+          local || allowed,
+          `${spec} imports "${spec2}" — production jobs install neither backend-api nor shared, so this dies during collection`,
+        ).toBe(true);
+      }
+    }
+
     // Only chromium is installed by these jobs; declaring firefox/webkit would fail to launch.
     expect(cfg).not.toContain("name: 'firefox'");
     expect(cfg).not.toContain("name: 'webkit'");
@@ -178,10 +236,16 @@ describe('Playwright runs the production config, not the full local matrix', () 
 
   for (const [name, text] of Object.entries({ 'production-audit.yml': AUDIT, 'release.yml': RELEASE, 'rollback.yml': ROLLBACK })) {
     it(`${name} never runs the default (all-specs, three-engine) Playwright config`, () => {
-      const bare = text.match(/^\s*npx playwright test\s*$/m);
-      expect(bare, `${name} runs "npx playwright test" with the default config`).toBeNull();
-      if (text.includes('npx playwright test')) {
-        expect(text).toContain('--config=playwright.production.config.ts');
+      // EVERY invocation must name a config, not just one of them. The previous form asserted
+      // that the file CONTAINED `--config=playwright.production.config.ts` somewhere — so a
+      // second, unconfigured `npx playwright test` added anywhere else in the same workflow was
+      // satisfied by the first one's flag. release.yml now has two invocations, and adding the
+      // second is exactly the edit that would have slipped through.
+      const invocations = [...text.matchAll(/npx playwright test([^\n]*)/g)].map((m) => m[1]);
+      for (const args of invocations) {
+        expect(args, `${name} runs "npx playwright test" with no --config`).toMatch(
+          /--config=playwright\.[a-z-]+\.config\.ts/,
+        );
       }
     });
   }

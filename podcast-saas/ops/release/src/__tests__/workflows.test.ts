@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { parseJobGraph } from '../workflow-graph.js';
 
 /**
  * Static checks over .github/workflows/*.yml — action runtime currency,
@@ -95,10 +96,23 @@ describe('checkout credential hygiene (git-128 post-step fix)', () => {
   });
 
   it('release keeps credentials ONLY for the remote-read (plan) and tag-push (release-plan) jobs', () => {
-    const checkouts = (wf['release.yml'].match(/uses: actions\/checkout@v\d+/g) ?? []).length;
-    const withoutCreds = (wf['release.yml'].match(/persist-credentials: false/g) ?? []).length;
-    expect(checkouts).toBe(7);
-    expect(withoutCreds).toBe(5); // all except plan + release-plan
+    // Stated as the PROPERTY, not as a pair of magic totals. The previous form asserted
+    // `checkouts === 7 && withoutCreds === 5`, which meant adding any job — including a new
+    // *gate* — turned this test red for a reason unrelated to credentials, and the obvious
+    // repair was to bump both numbers. A test whose repair is "increment the constant" stops
+    // being read, and the invariant it was protecting quietly stops being checked.
+    const CREDENTIALED = new Set(['plan', 'release-plan']);
+    const jobs = parseJobGraph(wf['release.yml']);
+    expect(jobs.size).toBeGreaterThan(0);
+
+    for (const [name, job] of jobs) {
+      if (!/uses: actions\/checkout@v\d+/.test(job.text)) continue;
+      const keepsCreds = !job.text.includes('persist-credentials: false');
+      expect(keepsCreds, `job "${name}" ${keepsCreds ? 'keeps' : 'drops'} checkout credentials`).toBe(
+        CREDENTIALED.has(name),
+      );
+    }
+    // Both exceptions must still justify themselves in the file the reader is looking at.
     expect(wf['release.yml']).toContain('credentials kept: preflight runs `git ls-remote');
     expect(wf['release.yml']).toContain('credentials kept: this job pushes the annotated release tag');
   });

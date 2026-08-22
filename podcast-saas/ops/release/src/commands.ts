@@ -27,6 +27,7 @@ import { auditDatabaseUrls, parseBackfillReport, type BackfillPolicy, type UrlBa
 import { setOutput } from './gha.js';
 import { parseManifest, validateManifest, type ImageManifest } from './image-manifest.js';
 import { auditMigrations, sha256, type MigrationAuditResult } from './migration-audit.js';
+import { assessReleaseRisk, RELEASE_RISK_SCHEMA, type ReleaseRiskVerdict } from './release-risk.js';
 import { preflight } from './preflight.js';
 import { redactValue } from './redact.js';
 import { buildReport, renderMarkdown, type EndpointStatus, type ReleaseReport, type StageTiming } from './report.js';
@@ -484,21 +485,33 @@ export interface PlaywrightSummary {
   failed: number;
   skipped: number;
   failures: string[];
+  /** Full titles of specs that passed — what `--require-tests` matches against. */
+  passedTitles: string[];
+  /** Full titles of specs every result of which was `skipped`. */
+  skippedTitles: string[];
 }
 
 export function summarizePlaywrightReport(json: string): PlaywrightSummary {
   const report = JSON.parse(json) as { suites?: PwSuite[] };
-  const summary: PlaywrightSummary = { total: 0, passed: 0, failed: 0, skipped: 0, failures: [] };
+  const summary: PlaywrightSummary = { total: 0, passed: 0, failed: 0, skipped: 0, failures: [], passedTitles: [], skippedTitles: [] };
   const walk = (suite: PwSuite, path: string) => {
     for (const spec of suite.specs ?? []) {
       summary.total += 1;
+      const title = `${path}${spec.title}`;
       const statuses = (spec.tests ?? []).flatMap((t) => (t.results ?? []).map((r) => r.status ?? t.status ?? 'unknown'));
       const skipped = statuses.length > 0 && statuses.every((s) => s === 'skipped');
-      if (skipped) summary.skipped += 1;
-      else if (spec.ok) summary.passed += 1;
-      else {
+      if (skipped) {
+        summary.skipped += 1;
+        // Recorded by TITLE, not just counted. A count answers "how many did not run"; only the
+        // titles answer "was the release-blocking one among them", which is the question the gate
+        // actually needs and could not previously ask.
+        summary.skippedTitles.push(title);
+      } else if (spec.ok) {
+        summary.passed += 1;
+        summary.passedTitles.push(title);
+      } else {
         summary.failed += 1;
-        summary.failures.push(`${path}${spec.title}`);
+        summary.failures.push(title);
       }
     }
     for (const child of suite.suites ?? []) walk(child, `${path}${suite.title ? `${suite.title} › ` : ''}`);
@@ -538,7 +551,7 @@ export function resolveEvidencePath(ctx: CommandContext, p: string): string {
 
 export function cmdPlaywrightSummary(
   ctx: CommandContext,
-  opts: { reportFile: string; out?: string; runId?: string; gitSha?: string },
+  opts: { reportFile: string; out?: string; runId?: string; gitSha?: string; requireTests?: readonly string[] },
 ): { summary: PlaywrightSummary; findings: Finding[]; exitCode: number } {
   const reportFile = resolveEvidencePath(ctx, opts.reportFile);
   // FAIL CLOSED. A missing Playwright report is not a summary of "0 failures" — it means
@@ -590,12 +603,43 @@ export function cmdPlaywrightSummary(
           }),
         ]
       : [];
+
+  // A RELEASE-BLOCKING FLOW THAT DID NOT RUN IS NOT A FLOW THAT PASSED.
+  //
+  // `test.skip(!process.env.SMOKE_PUBLIC_PATH, …)` is the idiom throughout the production audit,
+  // and it is the right idiom — a suite should not fail because a reviewer ran it locally without
+  // fixtures. But in CI it meant an unset repository variable silently removed a check: the audit
+  // for project pages, playlists, or admin would report `skipped`, the summary counted it, no
+  // finding was raised, the gate passed, and the release deployed having verified nothing about
+  // the flow. Nothing anywhere went red. That is the same shape as the v0.1.5 missing-report
+  // failure this module already guards, arriving through a different door.
+  //
+  // So the caller names the flows that must have ACTUALLY EXECUTED. Missing and skipped are the
+  // same verdict — neither produced evidence — and both are CRITICAL.
+  for (const required of opts.requireTests ?? []) {
+    const ran = summary.passedTitles.some((t) => t.includes(required));
+    if (ran) continue;
+    const wasSkipped = summary.skippedTitles.some((t) => t.includes(required));
+    const wasFailure = summary.failures.some((t) => t.includes(required));
+    if (wasFailure) continue; // already CRITICAL above; do not double-report the same flow
+    findings.push(
+      finding(
+        wasSkipped ? 'playwright.required-skipped' : 'playwright.required-missing',
+        'CRITICAL',
+        'browser',
+        wasSkipped
+          ? `Release-blocking flow "${required}" was SKIPPED — it produced no evidence, so it cannot be scored as a pass.`
+          : `Release-blocking flow "${required}" is absent from the report — it never ran.`,
+        { detail: wasSkipped ? 'Usually an unset SMOKE_* repository variable or secret.' : undefined },
+      ),
+    );
+  }
   if (opts.out) {
     const artifact = stampArtifact(PLAYWRIGHT_SUMMARY_SCHEMA, { ...summary, findings }, { runId: opts.runId, gitSha: opts.gitSha });
     writeJsonFile(opts.out, artifact satisfies PlaywrightSummaryArtifact);
   }
   ctx.log(`playwright: ${summary.passed}/${summary.total} passed, ${summary.failed} failed, ${summary.skipped} skipped`);
-  return { summary, findings, exitCode: summary.failed > 0 ? 1 : 0 };
+  return { summary, findings, exitCode: findings.some((f) => f.severity === 'CRITICAL') ? 1 : 0 };
 }
 
 // ─── gate ────────────────────────────────────────────────────────────────────────
@@ -1096,4 +1140,73 @@ export function cmdReport(
   writeFileSync(opts.outMd, renderMarkdown(report));
   ctx.log(`report: ${opts.outJson} + ${opts.outMd} (${findings.length} finding(s), state=${report.state})`);
   return { report };
+}
+
+// ─── release risk → who must approve ─────────────────────────────────────────────
+
+/**
+ * Decide whether this release still needs a person, from evidence already on disk.
+ *
+ * Writes the verdict as an artifact AND to `$GITHUB_OUTPUT` when running under Actions, so the
+ * workflow can gate a job on it. Exit code is always 0: "a human is required" is a routing
+ * decision, not a failure, and failing here would block the very releases that most need to
+ * reach a reviewer.
+ */
+export function cmdReleaseRisk(
+  ctx: CommandContext,
+  opts: {
+    findingsFiles: string[];
+    backfillPolicy: BackfillPolicy;
+    approveHigh: boolean;
+    changedPathsFile?: string;
+    out?: string;
+  },
+): { verdict: ReleaseRiskVerdict; exitCode: number } {
+  // FAIL CLOSED ON UNREADABLE EVIDENCE. `collectFindingsFromFiles` skips files that do not
+  // exist, which is right for an optional audit and wrong here: "no findings" and "the findings
+  // could not be read" are the same value and opposite meanings. A verdict computed from
+  // evidence that was never read is exactly the reflexive approval this replaces.
+  const missing = opts.findingsFiles.filter((f) => !existsSync(resolveEvidencePath(ctx, f)));
+  if (missing.length > 0) {
+    const verdict: ReleaseRiskVerdict = {
+      schema: RELEASE_RISK_SCHEMA,
+      requiresHuman: true,
+      reasons: [`audit evidence could not be read: ${missing.join(', ')} — defaulting to human approval.`],
+    };
+    if (opts.out) writeJsonFile(opts.out, verdict);
+    emitRiskOutput(ctx, verdict);
+    return { verdict, exitCode: 0 };
+  }
+
+  let changedPaths: string[] = [];
+  if (opts.changedPathsFile && existsSync(resolveEvidencePath(ctx, opts.changedPathsFile))) {
+    changedPaths = readFileSync(resolveEvidencePath(ctx, opts.changedPathsFile), 'utf8')
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+  }
+
+  const verdict = assessReleaseRisk({
+    findings: collectFindingsFromFiles(opts.findingsFiles.map((f) => resolveEvidencePath(ctx, f))),
+    backfillPolicy: opts.backfillPolicy,
+    approveHigh: opts.approveHigh,
+    changedPaths,
+  });
+  if (opts.out) writeJsonFile(opts.out, verdict);
+  emitRiskOutput(ctx, verdict);
+  ctx.log(
+    verdict.requiresHuman
+      ? `release-risk: HUMAN APPROVAL REQUIRED — ${verdict.reasons.length} reason(s):\n  - ${verdict.reasons.join('\n  - ')}`
+      : 'release-risk: routine — no reason for a human to be in this path.',
+  );
+  return { verdict, exitCode: 0 };
+}
+
+function emitRiskOutput(ctx: CommandContext, verdict: ReleaseRiskVerdict): void {
+  // `setOutput`, not a second appendFileSync: it redacts, handles multiline values through
+  // heredoc delimiters, and falls back to stdout locally. A parallel writer here would be one
+  // more place for a secret to reach a log, in the module whose whole job is trustworthiness.
+  setOutput('requires_human', verdict.requiresHuman ? 'true' : 'false');
+  setOutput('risk_reasons', verdict.reasons.join('\n'));
+  ctx.log(`release-risk: requires_human=${verdict.requiresHuman}`);
 }
