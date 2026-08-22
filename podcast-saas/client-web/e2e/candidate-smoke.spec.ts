@@ -57,8 +57,15 @@ test.describe('the candidate images boot and serve', () => {
     // at all, i.e. against exactly the broken image it was written to catch.
     const res = await request.get(`${API}/health`, { timeout: 15_000 });
     expect(res.ok(), `/health returned ${res.status()}`).toBe(true);
-    const body = (await res.json()) as { status?: string; database?: { status?: string } };
-    expect(body.database?.status, `/health did not report the database as ok: ${JSON.stringify(body)}`).toBe('ok');
+    // `checks.database`, not `database`. The payload nests its probes one level down, and the
+    // first version of this read the top level — where the value is always undefined, so the
+    // assertion failed against a perfectly healthy image. The whole error message is included
+    // below for exactly that reason: a shape mismatch here must read as a shape mismatch.
+    const body = (await res.json()) as { checks?: { database?: { status?: string } } };
+    expect(
+      body.checks?.database?.status,
+      `/health did not report the database as ok — payload was: ${JSON.stringify(body)}`,
+    ).toBe('ok');
   });
 });
 
