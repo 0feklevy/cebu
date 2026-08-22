@@ -810,18 +810,61 @@ test.describe('real React viewer — simulation transitions', () => {
       for (const [k, v] of w.__CHILD ?? []) {
         if (typeof k === 'string') reports.push({ key: k, section: v?.section ?? null });
       }
+      // THE TIMELINE'S OWN CLOCK. Every sim activation in this viewer is decided inside `onTick`,
+      // and `onTick` is reachable from exactly one place: the video's `timeupdate` listener. So a
+      // video that never advances is a viewer that never evaluates a section — and from the
+      // outside that is indistinguishable from a sim that failed to render. `currentTime` and
+      // `played` separate them in one line: a sim-first scenario whose video sits at 0.00 with an
+      // empty `played` never got the chance to activate anything, and no amount of looking at the
+      // iframe will show that.
+      const v = document.querySelector('video') as HTMLVideoElement | null;
+      const ranges = (r: TimeRanges | undefined) => {
+        if (!r) return [];
+        const out: Array<[number, number]> = [];
+        for (let i = 0; i < r.length; i++) out.push([+r.start(i).toFixed(2), +r.end(i).toFixed(2)]);
+        return out;
+      };
       return {
         proto: (w.__PROTO_LOG ?? []).slice(-60),
         childReports: reports,
+        video: v
+          ? {
+              paused: v.paused,
+              currentTime: +v.currentTime.toFixed(3),
+              readyState: v.readyState,
+              duration: v.duration,
+              // `error.code` 4 is MEDIA_ERR_SRC_NOT_SUPPORTED — the shape a codec the engine
+              // cannot decode takes. Worth reading before blaming the viewer.
+              error: v.error ? { code: v.error.code, message: v.error.message } : null,
+              buffered: ranges(v.buffered),
+              // BUFFERED IS NOT PLAYED. Bytes can arrive and be demuxed while not one frame is
+              // ever presented; `played` is empty in that case and non-empty otherwise.
+              played: ranges(v.played),
+            }
+          : null,
         // What was actually on the page: which iframes exist, where they point, and whether they
         // were visible. A sim that never mounted and a sim that mounted blank look identical in
         // a timeout message and are completely different bugs.
-        iframes: ([...document.querySelectorAll('iframe')] as HTMLIFrameElement[]).map((el) => ({
-          src: el.src,
-          opacity: getComputedStyle(el).opacity,
-          w: el.clientWidth,
-          h: el.clientHeight,
-        })),
+        //
+        // The ANCESTOR CHAIN, not just the element: the visibility predicate multiplies four
+        // levels of opacity, and the reveal is driven by a class on `.sim-overlay` rather than by
+        // the iframe. An iframe reading opacity 1 under an overlay reading 0 is the viewer having
+        // decided not to show it — a completely different bug from the iframe being transparent
+        // itself, and the two were indistinguishable in the dump that reported only the element.
+        iframes: ([...document.querySelectorAll('iframe')] as HTMLIFrameElement[]).map((el) => {
+          const chain: Array<{ tag: string; cls: string; opacity: string }> = [];
+          let n: HTMLElement | null = el.parentElement;
+          for (let i = 0; n && i < 4; i++, n = n.parentElement) {
+            chain.push({ tag: n.tagName, cls: String(n.className ?? ''), opacity: getComputedStyle(n).opacity });
+          }
+          return {
+            src: el.src,
+            opacity: getComputedStyle(el).opacity,
+            w: el.clientWidth,
+            h: el.clientHeight,
+            ancestors: chain,
+          };
+        }),
       };
     }).catch((e: unknown) => ({ dumpFailed: String(e) }));
     await testInfo.attach('sim-state-on-failure', {
