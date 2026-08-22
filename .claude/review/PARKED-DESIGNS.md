@@ -66,3 +66,46 @@ pipeline — the episode is *derived* from the project.
 5. **Sequencing.** A2.1 derivation job → A2.2 `/{slug}/audio` landing → A2.3 Media Session/PWA →
    A2.4 Raise Your Hand → A2.5 Call It. Each stage shippable alone. The two features are planned
    together — `/{slug}/audio` is the shared spine.
+
+---
+
+## 🔴 A2.3 — THE SERVICE WORKER COLLIDES WITH AN EXISTING KILL-SWITCH (needs one ruling)
+
+Found while building A2.2, 2026-08-22. The P3-B design says Hands-Busy Mode gets "a **PWA manifest
++ service worker** precaching the episode so a dropped connection mid-drive does not stop playback."
+It was written without knowing this exists:
+
+`client-web/app/layout.tsx:40` ships an unconditional kill-switch that runs on EVERY page load and
+unregisters EVERY service worker, then deletes every Cache Storage entry. There is exactly one root
+layout and no route can opt out, so **any service worker this feature registers is destroyed the
+next time the listener opens any page in the app** — silently, with the audio page appearing to
+work until the moment the connection drops.
+
+The kill-switch is not incidental. It was added after a stale SW from a prior deploy kept serving
+cached `http://localhost:8080/...` URLs to real browsers, and `production-smoke.spec.ts:59` now
+asserts zero registrations in production. Both are load-bearing.
+
+**Three ways out, and they are genuinely different bets:**
+
+1. **Narrow the kill-switch to foreign workers** — keep unregistering anything whose `scriptURL` is
+   not exactly ours. Cheapest, and it preserves the original intent (the incident was a FOREIGN
+   stale worker). The cost is real: the blanket unregister is currently the recovery path for a bad
+   SW, and once ours is exempt, a bad version of OURS needs its own kill path — a version check in
+   the worker, plus a way to ship a worker that unregisters itself.
+2. **No service worker; download the file and play from a blob.** `fetch` the m4a, hold it as an
+   object URL. Genuinely offline for the session, no SW, no conflict, no weakening. The cost is
+   the wait: a 40-minute lesson at 96 kbps is ~29 MB, and playback cannot start until it lands.
+   Acceptable for a "download for the drive" button; not acceptable as the default play path.
+3. **Both** — stream normally on tap, offer an explicit "save for offline" that does (2). Most
+   work; matches what podcast apps actually do, and asks the listener rather than guessing.
+
+**Recommendation: (3), with (2) as the first shippable half.** It needs no change to the
+kill-switch at all, which means A2.3 stops depending on a ruling about a security-adjacent
+protection. If offline-by-default later proves necessary, (1) can be taken deliberately, with the
+self-kill path designed rather than discovered.
+
+**Not blocking anything else.** Media Session — the other half of A2.3, and the half that actually
+answers "the phone is locked" — shipped with A2.2 and needs no service worker: lock-screen title,
+chapter skip, seek, and position state all work today. A2.4 (Raise Your Hand) does not depend on
+this answer either.
+

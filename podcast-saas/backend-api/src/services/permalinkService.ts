@@ -41,6 +41,16 @@ export const RESERVED_SLUGS = new Set([
   // creator could claim the permalink `library`, which makes `/library/library` a real page and
   // permanently blocks any future top-level `/library`.
   'library', 'libraries', 'simulation', 'simulations', 'sound', 'sounds', 'sim',
+  // Audio editions (P3-B/A2.1). `app/[slug]/audio/` is a static child of the same dynamic segment
+  // and needs no reservation to FUNCTION; this is the same defence as the library names above.
+  // Without it a creator could claim the permalink `audio`, which makes `/audio/audio` a real
+  // page and permanently blocks any future top-level `/audio` — the category landing this
+  // feature's own design already calls for.
+  //
+  // Checked against `isDubbingLanguageSuffix` before adding, which is exactly what that export
+  // invites: `/{slug}/audio` and `/{slug}/{lang}` share a path shape, and a name spoken for by a
+  // translation would collide in production rather than here.
+  'audio', 'listen',
 ]);
 
 /**

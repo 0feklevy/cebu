@@ -17,6 +17,7 @@ const state = {
   project: null as Record<string, unknown> | null,
   edition: null as Record<string, unknown> | null,
   enqueued: [] as Array<{ name: string; payload: unknown }>,
+  rateLimitAllows: true,
 };
 
 vi.mock('../../../db/index.js', () => ({
@@ -48,6 +49,7 @@ vi.mock('../../../services/storage/getStorageAdapter.js', () => ({
 vi.mock('../../../queue/index.js', () => ({
   enqueueJob: (name: string, payload: unknown) => { state.enqueued.push({ name, payload }); },
 }));
+vi.mock('../../../lib/rateLimit.js', () => ({ rateLimit: () => state.rateLimitAllows }));
 
 const { registerAudioEditionRoutes } = await import('../audioEdition.controller.js');
 
@@ -59,11 +61,15 @@ async function call(
   path: string,
   opts: { user?: { id: string } | null; query?: Record<string, string>; body?: unknown } = {},
 ): Promise<Captured> {
-  const routes: Array<{ method: string; path: string; handler: (req: unknown, reply: unknown) => Promise<unknown> }> = [];
-  const app = {
-    get: (p: string, _o: unknown, h: never) => routes.push({ method: 'GET', path: p, handler: h }),
-    post: (p: string, _o: unknown, h: never) => routes.push({ method: 'POST', path: p, handler: h }),
-  };
+  type Handler = (req: unknown, reply: unknown) => Promise<unknown>;
+  const routes: Array<{ method: string; path: string; handler: Handler }> = [];
+  // Fastify allows BOTH `(path, opts, handler)` and `(path, handler)`, and this controller uses
+  // each — the public route needs no preHandler. A harness that assumed three arguments recorded
+  // the options object as the handler and failed with "route.handler is not a function", which
+  // reads like a routing bug rather than a fake that cannot see half the routes.
+  const record = (method: string) => (p: string, a: unknown, b?: unknown) =>
+    routes.push({ method, path: p, handler: (typeof a === 'function' ? a : b) as Handler });
+  const app = { get: record('GET'), post: record('POST') };
   await registerAudioEditionRoutes(app as never);
 
   const route = routes.find((r) => r.method === method && r.path === path);
@@ -76,7 +82,7 @@ async function call(
     send(b: unknown) { captured.body = b; return reply; },
   };
   await route.handler(
-    { params: { id: 'p1' }, query: opts.query ?? {}, body: opts.body, dbUser: opts.user ?? null },
+    { params: { id: 'p1', slug: 'my-lesson' }, query: opts.query ?? {}, body: opts.body, dbUser: opts.user ?? null, ip: '1.2.3.4' },
     reply,
   );
   return captured;
@@ -92,6 +98,7 @@ beforeEach(() => {
   state.project = null;
   state.edition = null;
   state.enqueued = [];
+  state.rateLimitAllows = true;
 });
 
 describe('an edition is exactly as public as its project', () => {
@@ -214,5 +221,58 @@ describe('building costs money, so building needs edit rights', () => {
     state.project = { id: 'p1', visibility: 'public', created_by: 'owner', editable: true };
     await call('POST', '/api/v1/projects/:id/audio', { user: { id: 'owner' }, body: { language: '  ' } });
     expect((state.enqueued[0].payload as { language: null }).language).toBeNull();
+  });
+});
+
+describe('the public mini-site route resolves a slug, and only a public one', () => {
+  const PUBLIC = { id: 'p1', slug: 'my-lesson', visibility: 'public', created_by: 'owner', title: 'A Lesson', seo_description: 'about it' };
+
+  it('serves a public project’s edition by slug', async () => {
+    state.project = PUBLIC;
+    state.edition = READY_EDITION;
+    const r = await call('GET', '/api/v1/public/audio/:slug');
+    expect(r.code).toBe(200);
+    expect(r.body).toMatchObject({ title: 'A Lesson', duration_ms: 1000 });
+  });
+
+  it('404s a PRIVATE project even when the slug is correct', async () => {
+    // A slug is guessable, which makes this a different threat from following a link someone was
+    // given: the authenticated route honours share tokens because the holder was handed one, and
+    // this route must not, because nobody handed anything to a guesser.
+    state.project = { ...PUBLIC, visibility: 'private' };
+    state.edition = READY_EDITION;
+    expect((await call('GET', '/api/v1/public/audio/:slug')).code).toBe(404);
+  });
+
+  it('ignores a share token on the public route', async () => {
+    // Sharing is a capability granted per-project through the authenticated surface. Honouring it
+    // here would make the ISR-cached mini-site serve private audio from a shared cache entry.
+    state.project = { ...PUBLIC, visibility: 'private', share_token: 'tok' };
+    state.edition = READY_EDITION;
+    expect((await call('GET', '/api/v1/public/audio/:slug', { query: { share: 'tok' } })).code).toBe(404);
+  });
+
+  it('404s when no edition is ready, rather than rendering an empty player', async () => {
+    state.project = PUBLIC;
+    state.edition = { status: 'processing', m4a_key: null };
+    expect((await call('GET', '/api/v1/public/audio/:slug')).code).toBe(404);
+  });
+
+  it('refuses when the rate limit is exhausted', async () => {
+    // An endpoint that resolves a guessable slug cheaply is one somebody will enumerate.
+    state.project = PUBLIC;
+    state.edition = READY_EDITION;
+    state.rateLimitAllows = false;
+    expect((await call('GET', '/api/v1/public/audio/:slug')).code).toBe(429);
+  });
+
+  it('never exposes the storage key, only a signed URL', async () => {
+    // The key is the object's address in a private bucket. Leaking it turns a time-limited
+    // capability into a permanent one for anyone who later gets bucket-level access.
+    state.project = PUBLIC;
+    state.edition = READY_EDITION;
+    const body = (await call('GET', '/api/v1/public/audio/:slug')).body as Record<string, unknown>;
+    expect(JSON.stringify(body)).not.toContain('m4a_key');
+    expect(String(body.audio_url)).toMatch(/^https:\/\/signed\.example\//);
   });
 });

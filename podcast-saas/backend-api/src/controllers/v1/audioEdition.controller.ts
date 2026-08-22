@@ -22,6 +22,7 @@ import { requireUuidParams } from '../../lib/uuidParam.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { enqueueJob } from '../../queue/index.js';
 import { editionRefusalReason } from '../../services/audio/audioEdition.js';
+import { rateLimit } from '../../lib/rateLimit.js';
 
 const projectIdIsUuid = requireUuidParams('id');
 
@@ -154,6 +155,55 @@ export async function registerAudioEditionRoutes(app: FastifyInstance): Promise<
       // `text/vtt` explicitly. A browser handed `text/plain` refuses to use the track, and the
       // failure is silent — captions simply never appear, with nothing in the console.
       return reply.header('content-type', 'text/vtt; charset=utf-8').send(edition.captions_vtt);
+    },
+  );
+
+  /**
+   * GET /api/v1/public/audio/:slug — the mini-site's data source for `/{slug}/audio`.
+   *
+   * A PERMALINK route, not a share-token one: `/{slug}/audio` is the canonical per-project audio
+   * surface, a sibling of `/{slug}/{lang}`, so it resolves the same way the permalink page does
+   * and is served under the same condition — the project is public. Private projects reach their
+   * audio through the authenticated route above, which honours share tokens.
+   *
+   * Rate-limited by IP like every other unauthenticated public route here: a slug is guessable,
+   * and an endpoint that resolves one cheaply is an endpoint someone will enumerate.
+   */
+  app.get<{ Params: { slug: string }; Querystring: { language?: string } }>(
+    '/api/v1/public/audio/:slug',
+    async (request, reply: FastifyReply) => {
+      if (!rateLimit(`audioslug:${request.ip}`, 60, 60_000)) {
+        return reply.code(429).send({ message: 'Too many requests — please slow down.' });
+      }
+
+      const project = await db.query.projects.findFirst({ where: eq(projects.slug, request.params.slug) });
+      // `visibility === 'public'` explicitly, not `requireProjectAccess` with a null user. The two
+      // agree today, and stating the condition here means a future change to share-token handling
+      // cannot quietly make private projects resolvable by GUESSING a slug — which is a different
+      // threat from following a link someone was given.
+      if (!project || project.visibility !== 'public') return reply.code(404).send({ message: 'Not found' });
+
+      const edition = await findEdition(project.id, request.query.language?.trim() || null);
+      if (!edition || edition.status !== 'ready' || !edition.m4a_key) {
+        return reply.code(404).send({ message: 'Not found' });
+      }
+
+      const storage = getStorageAdapter();
+      return reply.send({
+        title: project.title,
+        // The transcript-derived SEO description (migration 034), which is what every other
+        // public surface uses — a second source of prose here would drift from all of them.
+        description: project.seo_description ?? null,
+        audio_url: await storage.getPresignedDownloadUrl(edition.m4a_key, AUDIO_URL_TTL_SECONDS),
+        duration_ms: edition.duration_ms,
+        chapters: edition.chapters_json ?? [],
+        captions_url: edition.captions_vtt
+          ? `/api/v1/projects/${project.id}/audio/captions.vtt${edition.language ? `?language=${encodeURIComponent(edition.language)}` : ''}`
+          : null,
+        language: edition.language,
+        // The page caches on ISR, so it needs to know how old what it is holding is.
+        updated_at: edition.updated_at,
+      });
     },
   );
 }
