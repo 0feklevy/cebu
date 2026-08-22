@@ -1,5 +1,6 @@
 import type { JobHandlers } from './types.js';
 import { runVideoTranscode } from '../services/video/runVideoTranscode.js';
+import { CorpusBuilder } from '../services/ingestion/CorpusBuilder.js';
 import { runCaptionJobNow } from '../services/captions/CaptionService.js';
 import { runDubJobNow } from '../services/dubbing/DubbingService.js';
 import { runAudioEditionJob } from '../services/audio/AudioEditionService.js';
@@ -43,4 +44,7 @@ export const handlers: JobHandlers = {
     new ProjectExportService(undefined, null, resolveConfiguredCaptureProvider()).run(p.exportId),
   dub: (p) => runDubJobNow(p.dubId, { force: p.force }),
   audio_edition: (p) => runAudioEditionJob(p),
+  // Constructed per job for the same reason as the two above: the adapters it reaches (storage,
+  // the extractors) are resolved when the job RUNS rather than at import time.
+  corpus_ingest: (p) => new CorpusBuilder().ingest(p.corpusId),
 };

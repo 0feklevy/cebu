@@ -29,6 +29,7 @@ export const JOB_NAMES = [
   'project_export',
   'dub',
   'audio_edition',
+  'corpus_ingest',
 ] as const;
 
 export type JobName = (typeof JOB_NAMES)[number];
@@ -58,6 +59,10 @@ export interface JobPayloads {
   dub: { dubId: string; force?: boolean };
   /** P3-B/A2.1 — derive a project's listenable edition. `language: null` is the source track. */
   audio_edition: { projectId: string; language?: string | null; force?: boolean };
+  // The corpus row id and nothing else. Every parameter of the ingest — source type, URL, storage
+  // key, mime — lives on that row, so a delivery can never carry a stale copy of something the row
+  // has since changed, and a retry cannot re-derive DIFFERENT work from the same payload.
+  corpus_ingest: { corpusId: string };
 }
 
 export type JobHandlers = {
