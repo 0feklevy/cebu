@@ -165,6 +165,37 @@ inference from one screenshot, which is exactly how the last two rounds went wro
 time, and it was read as noise because the job is non-blocking and the note said the product was
 fine.
 
+## 📌 WHERE THINGS STAND — end of 2026-08-22
+
+**Merged to `main` today:** #74 podcast source privacy · #75 media gate · #76 release gates ·
+#77 wave 2 (writers'-room golden suite + podcast health metrics) · #78 A2.1 audio editions ·
+#79 A2.2 listening surface + A2.4 Raise Your Hand · #80 A2.3 save-for-the-drive ·
+#81 candidate-gate artifact path.
+
+**Open:** #82 (webkit disproof + failure instrumentation) · #83 (a missing fixture must not block
+a release) · #84 (crop v2 guard).
+
+**Production is still on v0.1.39.** Two release attempts, both stopped before deploying:
+1. `candidate-smoke` could not find the manifest — a relative path in a job that runs one
+   directory down. The gate refused rather than guessing, deploy skipped, containers untouched.
+   Fixed in #81, with a string check for the whole class.
+2. `plan` refused because the SMOKE_* fixture variables are unset — a check I had added an hour
+   earlier, which was the wrong half of a real trade-off. Fixed in #83: the gap is now warned
+   about loudly and the flows with no fixture are excluded from the post-deploy requirement, so
+   nothing blocks and nothing rolls back.
+
+Nothing has been deployed and nothing is broken. The gate has done exactly what it exists to do,
+twice, on its own first outings.
+
+**The three things waiting on the owner**, in order of cost of delay:
+1. **Delete and re-upload the exposed podcast document.** The code fix is merged; a URL that was
+   already shared stays valid regardless.
+2. **Set `SMOKE_PUBLIC_PATH`, `SMOKE_PLAYLIST_PATH`, `SMOKE_ADMIN_PREVIEW_PATH`.** Needs a public
+   project to exist first — both sitemaps are empty. Until then every release deploys without
+   verifying project pages, playlists or admin preview, and says so in its run summary.
+3. **Check the ElevenLabs custom-voice quota** before the dubbing accent fix reaches production.
+   Each language now takes a voice slot; running out makes dubs FAIL rather than degrade.
+
 ## 🎯 WORK WAVES — the order everything is done in (owner-ranked 2026-08-22)
 
 The owner's ranking: **podcast is the most critical area, crop second — but a critical BUG comes
