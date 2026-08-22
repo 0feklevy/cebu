@@ -301,3 +301,64 @@ describe('assertUsableElevenLabsKey — the ID/key mix-up, caught before it cost
     expect(() => assertUsableElevenLabsKey('id_12345_sk_67890')).toThrow(/not an ElevenLabs API key/i);
   });
 });
+
+describe('the accent fix — a native voice instead of a clone of the presenter', () => {
+  // The owner's report, 2026-08-22: every dubbed language came out with an American accent.
+  // ElevenLabs dubs by CLONING the source speaker, so a cloned English speaker saying Hebrew
+  // keeps that speaker's articulation. `disable_voice_cloning` is the vendor's own escape.
+
+  it('sends disable_voice_cloning when a native voice is wanted', async () => {
+    const { client, calls } = clientWith(() => json(PROJECT_READY));
+    await client.createProject({ sourceUrl: 'https://x/y.mp4', reference: 'r', modelId: 'dubbing_v2', nativeVoice: true });
+    expect((calls[0]!.init.body as FormData).get('disable_voice_cloning')).toBe('true');
+  });
+
+  it('sends NOTHING when a clone is wanted, rather than an explicit false', async () => {
+    // The vendor's default is already `false`. An explicit `false` is indistinguishable from
+    // omission on the wire while looking, in this file, like a decision someone made.
+    const { client, calls } = clientWith(() => json(PROJECT_READY));
+    await client.createProject({ sourceUrl: 'https://x/y.mp4', reference: 'r', modelId: 'dubbing_v2', nativeVoice: false });
+    expect((calls[0]!.init.body as FormData).get('disable_voice_cloning')).toBeNull();
+  });
+
+  it('sends target_accent only when one is chosen', async () => {
+    // Distinct from the flag above and easy to confuse with it: that decides whether the voice is
+    // native at all, this picks between natives. A wrong dialect is worse than no preference.
+    const { client, calls } = clientWith(() => json(PROJECT_READY));
+    await client.createProject({ sourceUrl: 'https://x/y.mp4', reference: 'r', modelId: 'dubbing_v2' });
+    expect((calls[0]!.init.body as FormData).get('target_accent')).toBeNull();
+
+    const second = clientWith(() => json(PROJECT_READY));
+    await second.client.createProject({ sourceUrl: 'https://x/y.mp4', reference: 'r', modelId: 'dubbing_v2', targetAccent: 'mexican' });
+    expect((second.calls[0]!.init.body as FormData).get('target_accent')).toBe('mexican');
+  });
+});
+
+describe('the cost of a native voice: workspace voice slots', () => {
+  // "Voices used from the library will contribute towards a workspace's custom voices limit, and
+  // if there aren't enough available slots the dub will fail." Every language takes a slot.
+
+  it('names a voice-limit failure instead of leaving it a generic 4xx', async () => {
+    // Left generic, this reads as "dubbing is broken" and the operator has no way to learn that
+    // the fix is to free a voice slot in the ElevenLabs workspace.
+    const { client } = clientWith(() => json({ detail: 'You have reached the maximum number of custom voices' }, 400));
+    const err = await client.getProject('p').catch((e: unknown) => e) as ElevenLabsDubbingError;
+    expect(err.voiceLimitReached).toBe(true);
+  });
+
+  it('does NOT retry a voice-limit failure', async () => {
+    // A dub gets eight attempts. Spending them on a condition only a human can clear delays the
+    // error the operator needs to see and makes it look transient.
+    const { client } = clientWith(() => json({ detail: 'custom voices limit reached' }, 429));
+    const err = await client.getProject('p').catch((e: unknown) => e) as ElevenLabsDubbingError;
+    expect(err.voiceLimitReached).toBe(true);
+    expect(err.retryable, 'a voice-limit failure was scheduled for retry').toBe(false);
+  });
+
+  it('still retries an ordinary 429 that is not about voices', async () => {
+    const { client } = clientWith(() => json({ detail: { status: 'too_many_concurrent_requests' } }, 429));
+    const err = await client.getProject('p').catch((e: unknown) => e) as ElevenLabsDubbingError;
+    expect(err.voiceLimitReached).toBe(false);
+    expect(err.retryable).toBe(true);
+  });
+});

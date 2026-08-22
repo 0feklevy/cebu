@@ -312,6 +312,20 @@ export class ElevenLabsDubbingProvider implements DubbingProvider {
       sourceLanguage: args.sourceLanguage,
       modelId: 'dubbing_v2',
       targetLanguage: target,
+      // NATIVE VOICE, NOT A CLONE OF THE PRESENTER.
+      //
+      // The default is a clone, and a cloned English speaker saying Hebrew keeps that speaker's
+      // articulation — which is what the owner heard as "an English `r` in Spanish and Hebrew,
+      // it does not sound natural at all". It is not a defect in this integration; it is what
+      // voice cloning does across languages.
+      //
+      // The owner ruled on the trade-off on 2026-08-22: a DIFFERENT voice is fine as long as it
+      // sounds native. The vendor selects a SIMILAR library voice, so a male presenter stays male.
+      //
+      // Environment-overridable so the previous behaviour can be restored without a deploy — a
+      // dub costs real money per source-minute, and "change one line and ship" is the wrong
+      // recovery loop for a setting whose result you can only judge by listening.
+      nativeVoice: process.env.DUBBING_NATIVE_VOICE !== '0',
     });
     // Persist the id BEFORE anything else can throw. Everything after this point is recoverable;
     // losing this id is the one failure that costs real money to repair.

@@ -142,6 +142,30 @@ export interface CreateDubbingProjectRequest {
   keyterms?: string[];
   /** Shortcut: also create a language target, queued to start once the project is ready. */
   targetLanguage?: string | null;
+  /**
+   * Use a NATIVE library voice rather than a clone of the original speaker.
+   *
+   * The owner's report, 2026-08-22: every dubbed language came out with an American accent —
+   * Spanish and Hebrew with an English `r`. That is not a bug in this integration. ElevenLabs
+   * dubs by CLONING the source speaker and having the clone speak the target language, and a
+   * cloned English speaker saying Hebrew carries that speaker's articulation. It is what voice
+   * cloning does.
+   *
+   * The vendor's own escape is this flag: "Instead of using a voice clone in dubbing, use a
+   * similar voice from the ElevenLabs Voice Library." SIMILAR is the operative word — gender and
+   * character are preserved, the phonetics are the library voice's own.
+   *
+   * The owner ruled on the trade-off directly: a different voice is fine, an accent is not.
+   */
+  nativeVoice?: boolean;
+  /**
+   * [Experimental, vendor's word] Which accent to prefer WITHIN the target language.
+   *
+   * Distinct from `nativeVoice`, and easy to confuse with it. That flag decides whether the voice
+   * is native at all; this one picks between natives — Castilian or Latin American Spanish. Left
+   * unset by default because a wrong dialect is a worse answer than no preference.
+   */
+  targetAccent?: string | null;
 }
 
 /** Raised for any non-2xx vendor response, carrying enough to decide whether to retry. */
@@ -153,6 +177,18 @@ export class ElevenLabsDubbingError extends Error {
    * because retrying it immediately is the one reaction guaranteed not to help.
    */
   readonly concurrencyExhausted: boolean;
+  /**
+   * The workspace has no custom-voice slots left, so a native-voice dub cannot start.
+   *
+   * A cost of `disable_voice_cloning` the vendor states plainly: "Voices used from the library
+   * will contribute towards a workspace's custom voices limit, and if there aren't enough
+   * available slots the dub will fail." Every language dubbed takes a slot.
+   *
+   * Named separately because it is the one dubbing failure whose fix is neither a retry nor a
+   * code change — somebody has to free a voice slot in the ElevenLabs workspace. Left as a
+   * generic 4xx it reads as "dubbing is broken", and the operator has no way to learn otherwise.
+   */
+  readonly voiceLimitReached: boolean;
   readonly retryable: boolean;
 
   constructor(status: number, body: string) {
@@ -161,9 +197,17 @@ export class ElevenLabsDubbingError extends Error {
     this.status = status;
     this.body = body;
     this.concurrencyExhausted = body.includes('too_many_concurrent_requests');
+    // Matched on the message text because the vendor does not give this its own status code.
+    // Best-effort by construction: a wording change turns this back into a generic 4xx, which is
+    // the same behaviour as before this existed rather than a new failure.
+    this.voiceLimitReached =
+      /voice[_ ]?limit|custom voices limit|maximum number of (custom )?voices|no available voice slots/i.test(body);
     // 4xx describes the request or the account and will fail identically on retry — except 429,
     // which is precisely a "try again later". 5xx is worth another attempt.
-    this.retryable = this.concurrencyExhausted || status === 429 || status >= 500;
+    // A voice-limit failure is NOT retryable, whatever its status code. Retrying it burns the
+    // retry budget on a condition only a human can clear, and the eight attempts a dub gets would
+    // all fail identically while looking like a transient vendor problem.
+    this.retryable = !this.voiceLimitReached && (this.concurrencyExhausted || status === 429 || status >= 500);
   }
 }
 
@@ -295,6 +339,10 @@ export class ElevenLabsDubbingClient {
     if (req.sourceLanguage) form.append('source_language', req.sourceLanguage);
     if (req.targetLanguage) form.append('target_language', req.targetLanguage);
     for (const term of req.keyterms ?? []) form.append('keyterms', term);
+    // Sent only when true. The vendor's default is `false` (clone), and sending an explicit
+    // `false` would be indistinguishable from sending nothing while looking like a decision.
+    if (req.nativeVoice) form.append('disable_voice_cloning', 'true');
+    if (req.targetAccent) form.append('target_accent', req.targetAccent);
 
     return this.request<DubbingProjectResponse>('/dubbing/project', { method: 'POST', body: form });
   }

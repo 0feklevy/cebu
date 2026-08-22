@@ -18,7 +18,7 @@ Last updated: **2026-08-22**, during the post-sweep fix round.
 
 ---
 
-## 🔴 OWNER-REPORTED (2026-08-22) — EVERY DUBBED LANGUAGE HAS AN AMERICAN ACCENT
+## ✅ RESOLVED (2026-08-22) — EVERY DUBBED LANGUAGE HAD AN AMERICAN ACCENT
 
 **The report, verbatim:** ElevenLabs dubbing "puts an American accent on all the other languages and
 it does not sound natural at all (Spanish, Hebrew — there is an English `r`, not their languages')."
@@ -54,6 +54,29 @@ argued. Dubbing is billed per source-minute, so use the shortest usable clip.
 
 **Blast radius:** dubbing is the most expensive job kind in the product ($2.20/min was the figure
 used when the budget guard was written), so any experiment needs a stated cost before it runs.
+
+### THE ANSWER (researched and shipped, 2026-08-22)
+
+It was cloning, and it is one parameter. ElevenLabs' `disable_voice_cloning`: *"Instead of using a
+voice clone in dubbing, use a similar voice from the ElevenLabs Voice Library."* **Similar** is the
+operative word — gender and character are preserved, the phonetics are the library voice's own.
+
+**The owner ruled:** a different voice is fine, an accent is not — "if a man/woman is speaking, a
+different man's/woman's voice is fine, but no accent; they should sound native in that language."
+Shipped on by default, with `DUBBING_NATIVE_VOICE=0` to restore cloning without a deploy.
+
+`target_accent` (experimental) also exists and picks between natives — Castilian vs Latin American
+Spanish. Left UNSET: a wrong dialect is a worse answer than no preference.
+
+**THE COST, WHICH THE VENDOR STATES PLAINLY:** *"Voices used from the library will contribute
+towards a workspace's custom voices limit, and if there aren't enough available slots the dub will
+fail."* Every language dubbed takes a slot, and it needs the `add_voice_from_voice_library`
+permission on the workspace.
+
+That failure is now named (`voiceLimitReached`) and made NON-retryable — a dub gets eight attempts,
+and spending them on a condition only a human can clear delays the error the operator needs to see
+while making it look transient. **Owner action if it ever fires:** free a custom-voice slot in the
+ElevenLabs workspace; no code change will help.
 
 ## 🎯 WORK WAVES — the order everything is done in (owner-ranked 2026-08-22)
 
