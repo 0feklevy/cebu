@@ -136,34 +136,60 @@ gate turns CRITICAL into an automatic rollback — so without the early refusal,
 would have rolled back a perfectly healthy deploy over a missing configuration value. `plan` now
 refuses BEFORE anything is deployed and names the variables (PR #81).
 
-## 🔴 SUSPECTED PRODUCT BUG — a project that OPENS on a simulation may be blank on WebKit
+## 🔴 SUSPECTED PRODUCT BUG — a project that OPENS on a simulation is blank on Linux WebKit
 
-Evidence gathered 2026-08-22 by downloading the CI failure artefact rather than trusting the note
-about it. This had been treated as a test flake for two rounds; it may not be one.
+Re-examined 2026-08-22 against the CI failure dump and a local WebKit run. **Two of the three
+claims in the previous version of this entry were wrong**, and both errors pointed the last two
+rounds at the harness instead of the product.
 
-**What the artefact shows:** a flat dark-blue frame carrying the simulation's OWN UI chrome —
-its buttons are drawn — and no content whatsoever. The iframe loaded and the sim's script ran; it
-never painted. The comment in `viewer-e2e.spec.ts` said *"the screenshot shows the simulation
-rendered"*. It does not, and that sentence is what sent two previous attempts at the harness.
+**Correction 1 — the screenshot shows the VIEWER's chrome, not the simulation's.** The frame is
+flat navy with FlowVid's own avatar button bottom-left and its "Ask!" button bottom-right. Those
+are the viewer's controls. The simulation is not on screen at all. The earlier reading ("the
+simulation's OWN UI chrome — its buttons are drawn") is what made this look like a rendering
+problem inside the sim.
 
-**What makes it a product hypothesis rather than a harness one:** scenario 11 is the ONLY sim
-scenario with `start: 0`. Every other one SEEKS to the sim; this one OPENS on it, so the sim is
-active from the very first frame. **37 WebKit scenarios pass**, including ones that wait for
-exactly this condition after a seek. The `__CHILD` identity theory was tested directly (re-keyed by
-iframe src, PR #82) and DISPROVED — it changed nothing.
+**Correction 2 — it does NOT pass locally, and it does not fail there for this reason either.**
+Local macOS WebKit fails scenario 11 in ~2.5s on `realErrors()`, because the Firebase auth emulator
+is not running on this machine. `waitForSection` is reached and passes. So local is not a
+reproduction of the CI failure and never was — it is a separate environmental failure that has been
+masking the fact that the CI one is unreproducible here.
 
-**The hypothesis:** a sim already active at t=0 mounts before the viewer applies its section, and
-on WebKit that ordering resolves differently. If so, **a WebKit visitor opening a project that
-starts on a simulation sees a blank frame** — user-visible, in Safari, which is every iPhone.
+**What the CI dump actually says** (`sim-state-on-failure`, run 32583922539):
 
-**Not fixed, and deliberately not guessed at.** The fix belongs in the viewer's boot ordering, and
-the next step is a reproduction: run the sim scenarios in WebKit with a sim at `start: 0` and
-instrument when the section is applied relative to the iframe's load. Everything up to now has been
-inference from one screenshot, which is exactly how the last two rounds went wrong.
+```
+iframes:      [{ opacity: "0", w: 1280, h: 720 }]
+childReports: [{ section: "none" }]
+proto:        []
+```
 
-**Why it matters more than the red check:** the suite has been correctly reporting this the whole
-time, and it was read as noise because the job is non-blocking and the note said the product was
-fine.
+The iframe is **fully transparent** and the child reports **no section applied**. So the sim did
+not fail to paint — **the viewer never revealed it and never told it what to show**. A locally
+instrumented run of the same scenario shows the correct behaviour for comparison: the overlay is
+`sim-overlay visible` at opacity 1 with `section: "A"` from T+1s until the sim's window closes at
+T+10s.
+
+**The remaining hypothesis, and why it is the only one left standing.** `onTick` — the function
+that decides every sim activation — has exactly one call site in `useProjectPlayer.ts:3253`, the
+video's `timeupdate` listener. Nothing else reaches it: not `seeked`, not `loadedmetadata`, not a
+rAF loop. **A video that never advances is a viewer that never evaluates a section.** Every other
+sim scenario calls `seekTo()`, which assigns `currentTime`; scenario 11 is the only one that
+depends on playback progressing on its own from 0.
+
+If that is what happens on Linux WebKit, the user-visible consequence is not confined to CI: **a
+section covering t=0 is not applied until the timeline first moves.** Safari blocks autoplay by
+default, so a visitor arriving at a project that opens on a simulation sees the video's first frame
+instead of the simulation until they press play.
+
+**Instrumented rather than guessed at.** The failure dump now carries the video's `currentTime`,
+`readyState`, `error`, `buffered` and — the discriminating one — `played`, plus the iframe's
+ancestor chain including the `.sim-overlay` class that drives the reveal. Bytes arriving is not
+frames presenting, and `buffered` without `played` is exactly that state. The next red run settles
+it: `played: []` with `currentTime: 0` confirms the hypothesis, a non-empty `played` refutes it.
+Verified locally that the new fields carry real values rather than nulls.
+
+**Not fixed.** The fix — ticking on `seeked` and once when a segment is ready, so the section
+covering the current time is applied while paused — is a change to viewer boot ordering, and it
+should be made against a confirmed diagnosis rather than this one.
 
 ## 📌 WHERE THINGS STAND — end of 2026-08-22
 
