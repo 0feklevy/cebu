@@ -166,6 +166,19 @@ jobs:
               exit 1
             fi
           done
+      # Vitest EXECUTES TypeScript without checking it, so a test can be type-nonsense and still
+      # pass. `tsconfig.test.json` was added to close that gap and nothing has ever invoked it —
+      # not this workflow, not `release-verify.sh` — while the ledger recorded the finding as
+      # closed. 140 errors accumulated in the meantime. The ratchet refuses anything WORSE rather
+      # than demanding zero today, because a gate that cannot be turned on is not a gate.
+      #
+      # Needs the workspace installed: the previous step only installs `ops-release`.
+      - name: Install backend + shared (for the test typecheck)
+        run: pnpm install --frozen-lockfile --filter backend-api --filter shared
+      - name: Build shared
+        run: pnpm --filter shared build
+      - name: Backend test files must not gain type errors
+        run: bash deploy/scripts/typecheck-tests-ratchet.sh
 
   # ── Viewer end-to-end ──────────────────────────────────────────────────────────
   # The ONLY suite that drives the real production viewer: the real Next route, the
