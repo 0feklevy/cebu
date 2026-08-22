@@ -164,9 +164,37 @@ class FakeGh {
     return false;
   }
 
+  /**
+   * A decision taken in the GitHub UI rather than through the handshake files.
+   *
+   * 'vanished' is the case that matters most: the pending deployment is gone and NO decision is
+   * recorded — which is what a failed API call also looks like. The conductor must not read either
+   * as consent.
+   */
+  private _remote: 'approved' | 'rejected' | 'vanished' | null = null;
+  get remote(): 'approved' | 'rejected' | 'vanished' | null { return this._remote; }
+  set remote(v: 'approved' | 'rejected' | 'vanished' | null) {
+    this._remote = v;
+    // A UI decision unparks the real workflow exactly as the API call does, so the fake's release
+    // run has to unpark too — otherwise an approved-in-the-UI run would hang here rather than in
+    // production, and the test would be measuring the fake.
+    if (v === 'approved') this.approved = true;
+    if (v === 'rejected') this.rejected = true;
+  }
+
   async pendingDeployments(): Promise<PendingDeployment[]> {
-    if (this.approved || this.rejected) return [];
+    if (this.approved || this.rejected || this.remote) return [];
     return [{ environmentName: 'production', environmentId: 42, currentUserCanApprove: true, waitTimerStartedAt: null }];
+  }
+
+  async deploymentApprovals(): Promise<Array<{ environmentNames: string[]; state: 'approved' | 'rejected' | 'pending'; user: string | null; comment: string }>> {
+    if (this.remote === 'approved') {
+      return [{ environmentNames: ['production'], state: 'approved', user: 'ofek', comment: 'ship it' }];
+    }
+    if (this.remote === 'rejected') {
+      return [{ environmentNames: ['production'], state: 'rejected', user: 'ofek', comment: 'not now' }];
+    }
+    return [];
   }
   async reviewDeployment(_runId: number, _ids: number[], state: 'approved' | 'rejected'): Promise<void> {
     this.reviews.push({ state });
@@ -378,6 +406,54 @@ describe('the approval gate', () => {
 
     expect(run.verdict).toBe('SHIPPED');
     expect(gh.reviews).toEqual([{ state: 'approved' }]);
+  });
+
+  /**
+   * scripts-ship-005 — a rejection in the GitHub UI removes the pending deployment EXACTLY as an
+   * approval does, and the conductor used to read that disappearance as consent: it journalled
+   * "production approved on GitHub" and set the verdict to RUNNING for a deploy an operator had
+   * just refused. Nothing anywhere read the recorded decision.
+   */
+  it('ABORTS when production is rejected in the GitHub UI', async () => {
+    const gh = new FakeGh();
+    const decide = setTimeout(() => { gh.remote = 'rejected'; }, 50);
+    const run = await ship(gh, { autoApprove: false });
+    clearTimeout(decide);
+
+    expect(run.verdict, 'a rejected deploy must never read as shipped').toBe('ABORTED');
+    expect(run.failure?.summary).toMatch(/rejected/i);
+    expect(gh.dispatches, 'nothing may be deployed after a rejection').not.toContain(FAST.workflows.audit);
+  });
+
+  it('names who rejected it and why, so the journal explains itself', async () => {
+    const gh = new FakeGh();
+    const decide = setTimeout(() => { gh.remote = 'rejected'; }, 50);
+    const run = await ship(gh, { autoApprove: false });
+    clearTimeout(decide);
+
+    expect(run.failure?.summary).toMatch(/ofek/);
+    expect(run.failure?.summary).toMatch(/not now/);
+  });
+
+  it('SHIPS when production is approved in the GitHub UI', async () => {
+    const gh = new FakeGh();
+    const decide = setTimeout(() => { gh.remote = 'approved'; }, 50);
+    const run = await ship(gh, { autoApprove: false });
+    clearTimeout(decide);
+
+    expect(run.verdict).toBe('SHIPPED');
+  });
+
+  it('KEEPS WAITING when the deployment vanishes with no recorded decision', async () => {
+    // The fail-safe. An empty approvals list is indistinguishable from a failed API call, and
+    // neither is consent — so the run stays gated and the approval timeout ends it.
+    const gh = new FakeGh();
+    const decide = setTimeout(() => { gh.remote = 'vanished'; }, 50);
+    const run = await ship(gh, { autoApprove: false });
+    clearTimeout(decide);
+
+    expect(run.verdict).not.toBe('SHIPPED');
+    expect(run.failure?.summary).toMatch(/no approval decision/i);
   });
 
   it('ignores handshake files left behind by an earlier shipment', async () => {

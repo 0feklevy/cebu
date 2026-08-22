@@ -42,7 +42,7 @@ import {
   branch_sequences, branch_choice_points, branch_edges, sim_revisions,
 } from '../db/schema.js';
 import { getStorageAdapter } from '../services/storage/getStorageAdapter.js';
-import { assertLocalStorageOnly } from './seedGuards.js';
+import { assertLocalDatabase, assertLocalStorageOnly } from './seedGuards.js';
 import { getSimulationContentType } from '../services/simulation/SimulationService.js';
 import { SIM_MANIFEST_VERSION } from 'shared/sim/simManifest';
 
@@ -121,7 +121,13 @@ const POSTER_PNG = Buffer.from(
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const storage = getStorageAdapter();
+  // TWO INDEPENDENT VARIABLES, TWO GUARDS (scripts-ship-013). The storage check protects the
+  // bytes; it says nothing about where `wipe()`'s four DELETEs land. `STORAGE_BACKEND=local`
+  // with a production DATABASE_URL used to pass every check here and then wipe and seed a public
+  // [SYNTHETIC] project into production. Both branches below are destructive, so both guards run
+  // before either of them.
   assertLocalStorageOnly(storage);
+  assertLocalDatabase(process.env.DATABASE_URL);
   if (argv.includes('--delete')) {
     await wipe();
     log('🗑  synthetic sim-pool fixture deleted (storage objects left in place — local disk only)');

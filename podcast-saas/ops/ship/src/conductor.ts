@@ -632,9 +632,37 @@ export class Conductor {
         lastRemoteCheck = Date.now();
         const still = await gh.pendingDeployments(runId);
         if (still.filter((p) => p.environmentName === config.productionEnvironment).length === 0) {
-          this.run.verdict = 'RUNNING';
-          this.ok('approval', 'production approved on GitHub');
-          return;
+          // THE DEPLOYMENT DISAPPEARED — BUT WHY? (scripts-ship-005)
+          //
+          // A rejection in the GitHub UI removes the pending deployment exactly as an approval
+          // does, and this used to read the absence as consent: it journalled "production approved
+          // on GitHub" and set the verdict to RUNNING for a deploy an operator had just refused.
+          // So the DECISION is read rather than inferred from the disappearance.
+          //
+          // An unreadable or absent decision keeps waiting rather than guessing. That is the safe
+          // direction for both outcomes: the run is still gated on GitHub either way, and the
+          // approval timeout below is what ends the wait.
+          const decisions = await gh.deploymentApprovals(runId);
+          const forProd = decisions.filter(
+            (d) => d.environmentNames.length === 0
+              || d.environmentNames.includes(config.productionEnvironment),
+          );
+          const rejected = forProd.find((d) => d.state === 'rejected');
+          if (rejected) {
+            // The same event as the local deny-file above, arriving through the other channel, so
+            // it produces the same outcome: Aborted, verdict ABORTED, nothing deployed. Reporting
+            // a remote rejection differently from a local one would make the journal depend on
+            // which button the operator happened to reach for.
+            throw new Aborted(
+              `production deployment was REJECTED on GitHub${rejected.user ? ` by ${rejected.user}` : ''}`
+              + `${rejected.comment ? `: ${rejected.comment}` : ''} — nothing was deployed`,
+            );
+          }
+          if (forProd.some((d) => d.state === 'approved')) {
+            this.run.verdict = 'RUNNING';
+            this.ok('approval', 'production approved on GitHub');
+            return;
+          }
         }
       }
       if (Date.now() > deadline) {
