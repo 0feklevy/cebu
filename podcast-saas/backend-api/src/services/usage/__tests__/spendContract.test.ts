@@ -43,8 +43,25 @@ const PAID_VENDOR_HOSTS = [
   'api.anam.ai',
 ];
 
-/** Any of the ways this codebase records a billable event. */
-const RECORDS_USAGE = /UsageTrackingService|insert\(token_usage\)|recordUsage|trackUsage/;
+/**
+ * The ways this codebase records a billable event — matched as CALLS, not as names.
+ *
+ * The first version matched `UsageTrackingService` anywhere in a file, so deleting the call and
+ * leaving the import behind kept it green. Mutation-testing found that; it is the same failure as
+ * a mask that matches text instead of behaviour.
+ *
+ * FOUR SHAPES, because there are four. A module may call `.record(` itself, use the shared
+ * `recordTtsSpend(` helper, insert into the table directly, or CONSTRUCT the recorder and hand it
+ * to a service that writes — `new LLMService(new ApiKeyService(), new UsageTrackingService())` is
+ * metering, and the stricter pattern flagged three modules doing exactly that before this line
+ * accounted for it. A rule that calls correct code a gap trains people to silence it.
+ *
+ * Still a text match, and still limited — a call in dead code would satisfy it — which is why
+ * `renderSpendMetering.test.ts` asserts the renderer's accounting by behaviour. The job here is
+ * narrower: catch a module that reaches a paid vendor and never reaches a recorder at all.
+ */
+const RECORDS_USAGE =
+  /\.record\(|insert\(token_usage\)|recordUsage\(|trackUsage\(|recordTtsSpend\(|new UsageTrackingService\(/;
 
 /**
  * Modules that call a paid vendor and DO NOT record usage themselves — because their caller does.
@@ -63,6 +80,23 @@ const METERED_BY_CALLER = [
 ];
 
 /**
+ * Modules that touch a paid HOST but only on a FREE endpoint.
+ *
+ * This file's own header says a key can be read for a free endpoint and that what matters is the
+ * invoice — and then the first strict run flagged exactly that. `llm-config.controller` validates
+ * a pasted ElevenLabs key with `GET /v1/user`, which returns the account and consumes no credits.
+ * Metering it would put a $0.00 row in the spend surface every time an operator saves a key.
+ *
+ * Every entry names the endpoint, because "it is probably free" is the assumption this whole file
+ * exists to stop making. If a vendor starts charging for one, the entry is where that gets
+ * re-opened.
+ */
+const FREE_ENDPOINT_ONLY = [
+  // GET /v1/user — key validation on save. No credits.
+  'controllers/admin/v1/llm-config.controller.ts',
+];
+
+/**
  * KNOWN GAPS, 2026-08-23. Every line is money leaving the account with no row behind it.
  *
  * Ordered by what they cost. The renderer synthesises a whole episode; the preview and re-voice
@@ -74,11 +108,8 @@ const UNMETERED_TODAY = [
   // `PodcastRenderer` came OFF this list once it started metering: every synthesis, retries
   // included, is counted and one row is written per render — in `finally`, so a render that dies
   // halfway is not recorded as free.
-  'services/podcast/audio/previewTurn.ts',       // one synthesis per preview CLICK
-  'services/podcast/audio/revoiceTurn.ts',       // one synthesis per re-voice click
   'services/podcast/audio/chunker.ts',           // splits a turn, then synthesises each piece
   'controllers/v1/podcast.controller.ts',
-  'services/simulation/GuidanceService.ts',
   'controllers/v1/audio.controller.ts',          // TTS straight from a route
 
   // ── The Anam avatar surface. Some of these only READ (listing or fingerprinting a persona),
@@ -174,6 +205,7 @@ function buildGraph(): Graph {
  * the context a usage row needs; anything further up has lost it.
  */
 function unmeteredFor(g: Graph, client: string): string[] {
+  if (FREE_ENDPOINT_ONLY.includes(client)) return [];
   if (!METERED_BY_CALLER.includes(client)) {
     return g.meters.has(client) ? [] : [client];
   }
@@ -225,7 +257,7 @@ describe('every module that spends money is accounted for', () => {
   });
 
   it('keeps every listed path pointed at a real file', () => {
-    for (const p of [...UNMETERED_TODAY, ...METERED_BY_CALLER]) {
+    for (const p of [...UNMETERED_TODAY, ...METERED_BY_CALLER, ...FREE_ENDPOINT_ONLY]) {
       expect(() => statSync(join(SRC, p)), `${p} does not exist`).not.toThrow();
     }
   });
@@ -240,15 +272,25 @@ describe('what the gap costs, stated rather than implied', () => {
     expect(UNMETERED_TODAY).not.toContain('services/podcast/audio/PodcastRenderer.ts');
   });
 
-  it('still names both per-click synthesis paths', () => {
-    // These are the ones with no natural stop: a creator auditioning voices spends per press, and
-    // until they meter, the spend surface cannot show the shape of the 22 August burn.
-    expect(UNMETERED_TODAY).toContain('services/podcast/audio/previewTurn.ts');
-    expect(UNMETERED_TODAY).toContain('services/podcast/audio/revoiceTurn.ts');
+  it('keeps the per-click synthesis paths OUT of the list — they meter now', () => {
+    // Previously the loudest entries here, and described as "one synthesis per click, unbounded".
+    // BOTH HALVES OF THAT WERE WRONG in the same direction: they are cached by a hash over the
+    // inputs, the seed and the format, so re-listening to an unchanged line costs nothing. What
+    // costs is editing a line and listening again — real, and invisible until they metered, but
+    // never unbounded. Recorded here rather than quietly dropped, because the first version of
+    // this file was written from the overstatement.
+    expect(UNMETERED_TODAY).not.toContain('services/podcast/audio/previewTurn.ts');
+    expect(UNMETERED_TODAY).not.toContain('services/podcast/audio/revoiceTurn.ts');
+  });
+
+  it('keeps guidance publishing out too', () => {
+    // Accumulates across the cues it actually synthesises — the unchanged ones hit a cue-level
+    // cache and never reach the vendor — and writes one row per publish.
+    expect(UNMETERED_TODAY).not.toContain('services/simulation/GuidanceService.ts');
   });
 
   it('shrinks — the list is smaller than the day it was written', () => {
     // Thirteen on 2026-08-23. A ratchet whose number never moves is a list, not a ratchet.
-    expect(UNMETERED_TODAY.length).toBeLessThan(13);
+    expect(UNMETERED_TODAY.length).toBeLessThan(10);
   });
 });
