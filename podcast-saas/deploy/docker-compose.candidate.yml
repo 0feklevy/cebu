@@ -60,6 +60,11 @@ services:
       # them in a real production boot; this stack is not production, and pointing them anywhere
       # else would make the browser's requests leave the compose network.
       BACKEND_API_URL: http://localhost:8080
+      # SERVER-SIDE ONLY, AND THAT IS NOT A MISTAKE. Next.js bakes every NEXT_PUBLIC_* value into
+      # the browser bundle at BUILD time, so this image's client code calls the production API
+      # whatever is set here; these affect only server components rendering inside the container.
+      # Written explicitly because the opposite assumption is easy and expensive: a test asserting
+      # "the page only talks to this stack" would fail on every correct release.
       NEXT_PUBLIC_API_URL: http://localhost:8080
       NEXT_PUBLIC_APP_URL: http://localhost:3000
       PUBLIC_SITE_URL: http://localhost:3000
@@ -84,6 +89,11 @@ services:
     environment:
       NODE_ENV: production
       PORT: '3000'
+      # SERVER-SIDE ONLY, AND THAT IS NOT A MISTAKE. Next.js bakes every NEXT_PUBLIC_* value into
+      # the browser bundle at BUILD time, so this image's client code calls the production API
+      # whatever is set here; these affect only server components rendering inside the container.
+      # Written explicitly because the opposite assumption is easy and expensive: a test asserting
+      # "the page only talks to this stack" would fail on every correct release.
       NEXT_PUBLIC_API_URL: http://localhost:8080
       NEXT_PUBLIC_APP_URL: http://localhost:3000
       PUBLIC_SITE_URL: http://localhost:3000

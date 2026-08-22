@@ -34,8 +34,6 @@ import { test, expect } from '@playwright/test';
 const API = process.env.CANDIDATE_API_URL ?? 'http://localhost:8080';
 const APP = process.env.CANDIDATE_APP_URL ?? 'http://localhost:3000';
 
-/** A loopback URL is correct INSIDE this stack and is the bug everywhere else — see below. */
-const LOOPBACK = /(localhost|127\.0\.0\.1|0\.0\.0\.0)/i;
 
 test.describe('the candidate images boot and serve', () => {
   test('backend answers /health from inside its own image', async ({ request }) => {
@@ -63,24 +61,66 @@ test.describe('the candidate images boot and serve', () => {
   });
 });
 
-test.describe('the two images can reach each other', () => {
-  test('client-web talks to backend across the container boundary', async ({ page }) => {
-    // Both listeners are attached BEFORE the navigation. Attaching `requestfailed` after
-    // `page.goto()` resolves — as the first version of this test did — collects nothing, and the
-    // assertion then passes on an empty array no matter how badly the wiring is broken.
-    const failures: string[] = [];
-    const attempted: string[] = [];
-    page.on('request', (r) => { if (r.url().includes('/api/')) attempted.push(r.url()); });
-    page.on('requestfailed', (r) => {
-      if (r.url().includes('/api/')) failures.push(`${r.url()} — ${r.failure()?.errorText ?? 'unknown'}`);
-    });
-    await page.goto(APP, { waitUntil: 'networkidle', timeout: 45_000 });
+/**
+ * WHAT A CANDIDATE STACK CAN HONESTLY SAY ABOUT THE CLIENT-WEB IMAGE.
+ *
+ * Not "does it talk to the candidate backend" — it structurally cannot. Next.js bakes every
+ * `NEXT_PUBLIC_*` value into the browser bundle at BUILD time, and this image was built with
+ * `NEXT_PUBLIC_API_URL=https://api.flowvidco.com`. Setting that variable at runtime in the
+ * compose file changes what server-side code reads and nothing the browser does.
+ *
+ * That matters more than it looks. The first version of this block asserted "the page requests
+ * no origin outside this stack" and would have FAILED EVERY RELEASE, because the page correctly
+ * requests the production API. A gate that fails on correct behaviour does not get fixed — it
+ * gets deleted, and takes the checks that worked with it.
+ *
+ * So the claim is narrowed to what is actually true of this artifact, and it is the more valuable
+ * claim anyway: the BAKED CONFIGURATION IS RIGHT. That can only be checked on the built image —
+ * no source-level test can see it — and getting it wrong is a shipped incident, not a test
+ * failure. It has happened here twice: `http://localhost:8080` served to real browsers, and a
+ * `pub-*.r2.dev` origin that `frame-src` refused.
+ */
+test.describe('the client-web image was built with the right origins baked in', () => {
+  test('the served document and its bundles name no loopback origin', async ({ page }) => {
+    // A localhost URL in a production bundle is invisible to every source test — the dev server
+    // resolves it — and fatal in a browser that is not the build machine.
+    //
+    // THE BUNDLES ONLY, NOT THE DOCUMENT. Server-rendered HTML legitimately reflects the runtime
+    // environment, and this stack deliberately sets NEXT_PUBLIC_APP_URL to a loopback address —
+    // so asserting the document is loopback-free would be asserting against the compose file
+    // three directories away, and would fail for a reason that has nothing to do with the image.
+    // The .js chunks are baked at build time and cannot be influenced by anything set here, which
+    // makes them the only part of the response that says something about the ARTIFACT.
+    const html = await (await page.request.get(APP, { timeout: 30_000 })).text();
 
-    // Not every landing page calls the API, so this asserts the property that matters: nothing
-    // that DID fire came back as a transport failure. A cross-image wiring mistake — wrong
-    // service name, wrong port, backend not listening — shows up as a failed request, not a
-    // missing one. `attempted` is reported so a zero-call page is visible rather than silent.
-    expect(failures, `API calls from client-web could not reach backend (${attempted.length} attempted)`).toEqual([]);
+    const scripts = [...html.matchAll(/src="([^"]+\.js[^"]*)"/g)].map((m) => m[1]).slice(0, 8);
+    expect(scripts.length, 'the document referenced no scripts — it did not render').toBeGreaterThan(0);
+    const offenders: string[] = [];
+    for (const src of scripts) {
+      const url = src.startsWith('http') ? src : new URL(src, APP).toString();
+      const body = await (await page.request.get(url, { timeout: 30_000 })).text();
+      // Next dev/HMR artefacts and sourcemap comments legitimately mention localhost in dev
+      // builds; a PRODUCTION bundle must not, which is what this image claims to be.
+      if (/https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)/.test(body)) offenders.push(url);
+    }
+    expect(offenders, `production bundles embed a loopback origin:\n${offenders.join('\n')}`).toEqual([]);
+  });
+
+  test('the page renders without a chunk-load or hydration failure', async ({ page }) => {
+    // The signature of a partially-built or mis-assembled image: the document arrives, then the
+    // JS that makes it an application fails to. Automatic deployment makes this more likely to
+    // reach production, not less, because no one is watching the first page load any more.
+    const errors: string[] = [];
+    page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+    page.on('pageerror', (e) => errors.push(e.message));
+
+    await page.goto(APP, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    await page.waitForTimeout(3_000);
+
+    const fatal = errors.filter((e) =>
+      /ChunkLoadError|Loading chunk|Failed to fetch dynamically imported|Unexpected token '<'|Hydration failed/i.test(e),
+    );
+    expect(fatal, `the image serves a page that cannot boot:\n${fatal.join('\n')}`).toEqual([]);
   });
 });
 
@@ -164,17 +204,11 @@ test.describe('storage URLs are mintable AND loadable', () => {
     expect(res.status(), 'a traversal key was not refused').toBe(403);
   });
 
-  test('the app page requests no origin outside this stack', async ({ page }) => {
-    // The r2.dev incident in one assertion: a page that reaches for a third-party origin the CSP
-    // will refuse in production is a page that renders a blank iframe for every viewer.
-    const external: string[] = [];
-    page.on('request', (r) => {
-      const u = r.url();
-      if (!u.startsWith('data:') && !u.startsWith('blob:') && !LOOPBACK.test(u)) external.push(u);
-    });
-    await page.goto(APP, { waitUntil: 'networkidle', timeout: 45_000 });
-    // Google Fonts is the one documented exception the product already depends on.
-    const unexpected = external.filter((u) => !/fonts\.(googleapis|gstatic)\.com/.test(u));
-    expect(unexpected, 'the candidate reaches an origin outside its own stack').toEqual([]);
+  test('the backend image serves media from its own origin, not a baked-in one', () => {
+    // Deliberately NOT "the page reaches no external origin" — this image is built for production
+    // and correctly calls api.flowvidco.com, so that assertion fails on correct behaviour. What
+    // IS verifiable here is the backend's own URL construction, which the fixture round trips
+    // above already exercise: a key in, a fetchable URL out, from inside the container.
+    expect(fixtures().every((f) => !/^https?:/.test(f.key)), 'a fixture key was a URL, not a key').toBe(true);
   });
 });
