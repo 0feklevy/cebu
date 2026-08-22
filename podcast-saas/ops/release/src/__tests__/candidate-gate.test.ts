@@ -75,6 +75,45 @@ describe('human approval is reserved for releases where a human changes the outc
     expect(review?.text).toContain('production-approval');
   });
 
+  it('refuses BEFORE deploying when a release-blocking flow has no fixture', () => {
+    // A NEAR MISS. `--require-tests` makes a skipped release-blocking flow CRITICAL, and the
+    // post-deploy gate turns CRITICAL into an automatic rollback. Every one of those flows is
+    // `test.skip(!process.env.SMOKE_PUBLIC_PATH, …)`, and those variables are not set on this
+    // repository — so the first release to reach the post-deploy gate would have rolled back a
+    // perfectly healthy deploy because of a missing configuration value.
+    //
+    // "Nobody told me which project to test" is a configuration gap and must stop the release
+    // BEFORE anything is deployed. "You told me and it still did not run" is a broken flow and
+    // post-deploy rollback is right. Different failures, different places.
+    const plan = withoutComments(jobs.get('plan')?.text ?? '');
+    // TESTED, not merely mentioned. A mutation that renamed the variable inside the check still
+    // passed, because the long comment above it names the variable too — and a test satisfied by
+    // prose is satisfied by a check that no longer exists.
+    for (const v of ['SMOKE_PUBLIC_PATH', 'SMOKE_PLAYLIST_PATH', 'SMOKE_ADMIN_PREVIEW_PATH']) {
+      expect(plan, `${v} is required post-deploy but never checked before the deploy`)
+        .toMatch(new RegExp(`\\[ -n "\\$\\{\\{ vars\\.${v} \\}\\}" \\]`));
+    }
+    // ...and the check must FAIL, not merely notice. One that detects the gap and continues is
+    // not a check, and `exit 1 -> true` was a surviving mutation until this line existed.
+    const step = plan.split('- name:').find((x) => x.includes('vars.SMOKE_PUBLIC_PATH')) ?? '';
+    expect(step, 'the fixture check reports the problem and then carries on').toContain('exit 1');
+    // In `plan`, which runs before ANY image is deployed — not in the deploy job, where refusing
+    // is already too late for the thing this protects against.
+    expect(transitiveNeeds(jobs, 'deploy')).toContain('plan');
+  });
+
+  it('every flow named in --require-tests is one the pre-deploy check covers', () => {
+    // The two lists must not drift. A flow required post-deploy whose fixture nobody verified
+    // up front is exactly the rollback trap this pair exists to close, reintroduced one entry
+    // at a time.
+    const deploy = withoutComments(jobs.get('deploy')?.text ?? '');
+    const required = /--require-tests\s+'([^']+)'/.exec(deploy)?.[1] ?? '';
+    expect(required, 'the post-deploy gate names no release-blocking flows').toBeTruthy();
+    // Every flow in this suite depends on SMOKE_PUBLIC_PATH; if one ever depends on a different
+    // fixture, this assertion is the place that has to learn about it.
+    expect(withoutComments(jobs.get('plan')?.text ?? '')).toContain('SMOKE_PUBLIC_PATH');
+  });
+
   it('the approval verdict is computed from evidence, not from a human deciding to skip it', () => {
     // `plan` must actually run release-risk, and expose it. A hand-set output would make the
     // whole mechanism a switch someone can flip.
@@ -105,8 +144,31 @@ describe('it tests the images that will actually be deployed', () => {
   it('pins the candidate from the same manifest remote-deploy pins from', () => {
     // A gate that reads a *different* artifact can bless one set of digests while production
     // pulls another. Both must name manifest.json.
-    expect(gateText).toContain('MANIFEST=artifacts/manifest.json');
+    expect(gateText).toContain('MANIFEST="$ART/manifest.json"');
     expect(jobs.get('deploy')?.text).toContain('--manifest "$ART/manifest.json"');
+  });
+
+  it('reads and writes evidence through ABSOLUTE paths, never workspace-relative ones', () => {
+    // COST A FULL BUILD TO LEARN. The workflow sets `defaults.run.working-directory:
+    // podcast-saas`, so every `run:` step starts one directory DOWN — while
+    // `actions/download-artifact` writes relative to the workspace ROOT. A relative
+    // `artifacts/manifest.json` therefore looked in `podcast-saas/artifacts/` and found nothing.
+    //
+    // The gate failed closed and the deploy was skipped, which is the system working exactly as
+    // designed. It is still an hour of build time to discover something a string check catches,
+    // and the same trap is waiting for every future step in this job.
+    const gate = runsOf(GATE);
+    const relative = [...gate.matchAll(/(?:^|\s)(?:--(?:out|findings|require|report)\s+|MANIFEST=)"?([A-Za-z][\w./-]*\.json)/g)]
+      .map((m) => m[1])
+      .filter((path) => !path.startsWith('$') && !path.startsWith('release-artifacts/'));
+    expect(relative, `these evidence paths are workspace-relative in a job that runs one directory down: ${relative.join(', ')}`).toEqual([]);
+  });
+
+  it('downloads the release artifacts where $ART actually points', () => {
+    // `$ART` is `${{ github.workspace }}/release-artifacts`. Downloading to any other path means
+    // every `$ART/...` read in this job resolves to an empty directory.
+    expect(runsOf(GATE)).toContain('path: release-artifacts');
+    expect(releaseYml).toContain('ART: ${{ github.workspace }}/release-artifacts');
   });
 
   it('refuses any reference that is not digest-pinned', () => {
@@ -277,7 +339,7 @@ describe('evidence is demanded even when the run went badly', () => {
     // commit". Dropping --expect-run-id alone would let a stale artifact from an earlier,
     // greener run satisfy the gate. checkRequiredEvidence raises evidence.stale-run for it.
     const gateStep = stepWith('release-cli gate --phase pre-deploy') ?? '';
-    expect(gateStep).toContain('--require artifacts/candidate-smoke.json');
+    expect(gateStep).toContain('--require "$ART/candidate-smoke.json"');
     expect(gateStep).toContain('--identity-bearing candidate-smoke.json');
     expect(gateStep).toContain('--expect-run-id "$RUN_ID"');
     expect(gateStep).toContain('--expect-git-sha');

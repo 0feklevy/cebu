@@ -252,8 +252,19 @@ jobs:
           started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           set -o pipefail
           set +e
+          # THE SAME REQUIREMENT THE RELEASE GATE APPLIES, for the same reason and with a
+          # different consequence. Every fixture-dependent check here is written
+          # `test.skip(!process.env.SMOKE_PUBLIC_PATH, …)`, and those repository variables are
+          # unset — so this audit has been reporting SUCCESS daily while skipping project pages,
+          # playlists and admin preview entirely. A green audit that verified nothing is worse
+          # than a red one that says so.
+          #
+          # Unlike the release path this audit only REPORTS: there is no rollback here, so a
+          # CRITICAL turns the daily run red and changes nothing in production. That is the
+          # honest outcome until the fixtures exist.
           pnpm --filter ops-release release-cli playwright-summary --report "$PW_RESULTS" \
-            --run-id "$RUN_ID" --git-sha "$GIT_SHA" --out "$ART/playwright-summary.json"
+            --run-id "$RUN_ID" --git-sha "$GIT_SHA" --out "$ART/playwright-summary.json" \
+            --require-tests 'opening an existing project renders its media,a stored media URL is minted and the resource actually loads,an untokenised private media URL is refused,playback starts on a real project,the export entry point is reachable'
           ps=$?
           set -e
           pnpm --filter ops-release release-cli collector-record \

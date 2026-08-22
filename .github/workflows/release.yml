@@ -126,6 +126,40 @@ jobs:
             ${{ inputs.approve_high && '--approve-high' || '' }} \
             --changed-paths "$ART/changed-paths.txt" \
             --out "$ART/release-risk.json"
+      - name: Prove the release-blocking flows have somewhere to run
+        # A NEAR MISS, CAUGHT BEFORE IT FIRED. `playwright-summary --require-tests` (added with
+        # the candidate gate) makes a SKIPPED release-blocking flow a CRITICAL finding, and the
+        # post-deploy gate turns CRITICAL into an automatic rollback.
+        #
+        # Every one of those flows is `test.skip(!process.env.SMOKE_PUBLIC_PATH, …)`. Those
+        # variables are NOT set on this repository today — so the first release to reach the
+        # post-deploy gate would have found them all skipped, called it CRITICAL, and rolled back
+        # a perfectly healthy deploy because of a missing configuration value.
+        #
+        # The two cases are genuinely different and must fail in different places:
+        #   - "nobody told me which project to test" is a CONFIGURATION gap. It has to be loud,
+        #     and it has to stop the release BEFORE anything is deployed. Rolling production back
+        #     for it would be absurd.
+        #   - "you told me, and the flow still did not run" means something is broken, and
+        #     post-deploy CRITICAL plus rollback is exactly right.
+        #
+        # So this refuses early. The post-deploy requirement then means what it says.
+        if: ${{ inputs.deploy }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "${{ vars.SMOKE_PUBLIC_PATH }}" ]        || missing="$missing SMOKE_PUBLIC_PATH"
+          [ -n "${{ vars.SMOKE_PLAYLIST_PATH }}" ]      || missing="$missing SMOKE_PLAYLIST_PATH"
+          [ -n "${{ vars.SMOKE_ADMIN_PREVIEW_PATH }}" ] || missing="$missing SMOKE_ADMIN_PREVIEW_PATH"
+          if [ -n "$missing" ]; then
+            echo "::error::Release-blocking production flows have no fixture to run against:$missing"
+            echo "::error::Set these as repository variables (Settings → Secrets and variables →"
+            echo "::error::Actions → Variables) to a PUBLIC project path, a public playlist path,"
+            echo "::error::and an admin preview path. Until then the post-deploy suite would skip"
+            echo "::error::those flows, and a skipped release-blocking flow is not a passing one."
+            exit 1
+          fi
+          echo "release-blocking flows have fixtures configured"
       - name: Prove the approval environment is actually protected
         # ONLY MEANINGFUL FOR RISKY RELEASES, AND ESSENTIAL FOR THEM.
         #
@@ -404,7 +438,7 @@ jobs:
       - name: Install workspace (frozen)
         run: pnpm install --frozen-lockfile
       - uses: actions/download-artifact@v6
-        with: { name: release-artifacts, path: artifacts }
+        with: { name: release-artifacts, path: release-artifacts }
       - uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -419,7 +453,12 @@ jobs:
           # this job exists to close. `release-plan` has already run `image-manifest --verify` over
           # it (namespace, sha256 form, no floating tag) and fails its own job on a CRITICAL, so a
           # manifest that reaches this step is a verified one.
-          MANIFEST=artifacts/manifest.json
+          # ABSOLUTE, via $ART. This job's `run:` steps inherit `working-directory: podcast-saas`
+          # from the workflow defaults, while `download-artifact` writes relative to the WORKSPACE
+          # root — so a relative `artifacts/manifest.json` here looked in `podcast-saas/artifacts/`
+          # and found nothing. The gate failed closed and blocked the deploy, which is the system
+          # working; it also cost a full build to discover, which a test now prevents.
+          MANIFEST="$ART/manifest.json"
           # No manifest ⇒ no candidate ⇒ no deploy. Never fall back to a floating tag: a `:latest`
           # here would test something merely NAMED like the candidate.
           test -f "$MANIFEST" || { echo "::error::manifest.json is missing — cannot identify the candidate"; exit 1; }
@@ -534,17 +573,16 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          mkdir -p artifacts
           pnpm --filter ops-release release-cli playwright-summary \
             --report "${{ github.workspace }}/podcast-saas/client-web/e2e-results/candidate-smoke.json" \
             --run-id "$RUN_ID" --git-sha "${{ needs.plan.outputs.git_sha }}" \
-            --out artifacts/candidate-smoke.json
+            --out "$ART/candidate-smoke.json"
           pnpm --filter ops-release release-cli gate --phase pre-deploy \
-            --findings artifacts/candidate-smoke.json \
-            --require artifacts/candidate-smoke.json \
+            --findings "$ART/candidate-smoke.json" \
+            --require "$ART/candidate-smoke.json" \
             --identity-bearing candidate-smoke.json \
             --expect-run-id "$RUN_ID" --expect-git-sha "${{ needs.plan.outputs.git_sha }}" \
-            --out artifacts/candidate-gate.json
+            --out "$ART/candidate-gate.json"
       - name: Container logs on failure (the candidate speaks for itself)
         if: failure()
         run: |
@@ -560,8 +598,8 @@ jobs:
         with:
           name: candidate-smoke-evidence
           path: |
-            artifacts/candidate-smoke.json
-            artifacts/candidate-gate.json
+            release-artifacts/candidate-smoke.json
+            release-artifacts/candidate-gate.json
             podcast-saas/client-web/e2e-results/candidate-smoke.json
           if-no-files-found: warn
 
