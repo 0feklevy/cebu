@@ -21,6 +21,16 @@ export interface FrameSample {
   readonly width: number;
   readonly height: number;
   readonly rgba: ArrayLike<number>;
+  /**
+   * Whether this grid is the CANVAS REGION (the default) or the WHOLE VIEWPORT.
+   *
+   * A simulation with no `<canvas>` at all — a DOM/SVG one — has no canvas region to sample, and
+   * the sampler used to answer `'null'` for it. That is not a missing sample, it is a question
+   * that does not apply, and treating the two as the same discarded correct frames (media-003).
+   *
+   * Optional so every existing caller and fixture keeps its meaning: absent means canvas region.
+   */
+  readonly canvasRegion?: boolean;
 }
 
 /** What the injected probe recorded about WebGL context creation. */
@@ -54,6 +64,12 @@ export interface GateChecks {
   readonly interFrameDelta: boolean;
   /** true if there were enough samples to judge delta at all. */
   readonly enoughSamples: boolean;
+  /**
+   * true when the samples are whole-viewport because the document has NO canvas.
+   *
+   * The gate's canvas-specific checks are suspended in that case — see `evaluateSanityGate`.
+   */
+  readonly canvasFree: boolean;
 }
 
 export interface GateResult {
@@ -129,26 +145,47 @@ export function evaluateSanityGate(input: GateInput): GateResult {
   const distinctFrames = signatures.size;
   const interFrameDelta = distinctFrames >= 2;
 
+  /**
+   * A DOCUMENT WITH NO CANVAS (media-003).
+   *
+   * The sampler reports whole-viewport grids when it finds no `<canvas>`, and that changes which of
+   * these checks mean anything. Both of the canvas-specific ones exist to catch ONE failure — the
+   * M144 trap, where a WebGL context comes back null and the canvas stays dead black under a live
+   * UI. A document with no canvas cannot be in that state: there is nothing to be dead.
+   *
+   * So for a canvas-free sim the ANIMATION requirement is suspended. It is not evidence of health
+   * here — a DOM or SVG simulation may legitimately render once and stand still, and failing it
+   * throws away frames that are already correct on disk. What is still required is that the
+   * viewport is not blank, which `intraFrameNonUniform` answers against the whole screenshot, and
+   * that the sim actually ran, which `SIM_PAINTED` answers independently of any canvas.
+   */
+  const canvasFree = frames.length > 0 && frames.every((f) => f.canvasRegion === false);
+
   const checks: GateChecks = {
     simPainted: input.simPainted,
     webglLive,
     intraFrameNonUniform,
     interFrameDelta,
     enoughSamples,
+    canvasFree,
   };
 
+  const region = canvasFree ? 'viewport' : 'canvas';
   const reasons: string[] = [];
   if (!input.simPainted) reasons.push('the sim never posted SIM_PAINTED (no first frame drew)');
   if (!webglLive) {
     reasons.push('a WebGL context was requested but came back null (M144 SwiftShader trap — black canvas)');
   }
-  if (!enoughSamples) {
+  if (!enoughSamples && !canvasFree) {
     reasons.push(`only ${frames.length} canvas sample(s) — need ≥2 to judge animation`);
   }
-  if (!intraFrameNonUniform) {
-    reasons.push('every sampled canvas frame is uniform (dead/black canvas under the UI)');
+  if (frames.length === 0) {
+    reasons.push('no frames were sampled at all — nothing to judge');
   }
-  if (enoughSamples && !interFrameDelta) {
+  if (frames.length > 0 && !intraFrameNonUniform) {
+    reasons.push(`every sampled ${region} frame is uniform (${canvasFree ? 'blank page' : 'dead/black canvas under the UI'})`);
+  }
+  if (!canvasFree && enoughSamples && !interFrameDelta) {
     reasons.push('the canvas did not change across frames (nothing is animating)');
   }
 
