@@ -95,6 +95,27 @@ export interface TestKeyResult {
   error?: string;
 }
 
+/** Render statuses the backend enumerates, plus any it holds that this type does not name yet. */
+export interface PodcastRenderCounts extends Record<string, number> {
+  queued: number;
+  synthesizing: number;
+  stitching: number;
+  encoding: number;
+  ready: number;
+  failed: number;
+}
+
+/** Writers'-room statuses. A script that fails here never reaches the renderer at all. */
+export interface PodcastScriptCounts extends Record<string, number> {
+  drafting: number;
+  reviewing: number;
+  rewriting: number;
+  compiling: number;
+  ready: number;
+  approved: number;
+  failed: number;
+}
+
 export interface PipelineStats {
   projects: {
     total: number;
@@ -119,6 +140,37 @@ export interface PipelineStats {
       processing: number;
       ready: number;
       failed: number;
+    };
+  };
+  /**
+   * observability-006. Every known status is always present, so a key at zero and a key that
+   * disappeared stay distinguishable — the index signature carries statuses the backend knows
+   * about and this type does not, which is the case worth surfacing rather than dropping.
+   */
+  podcast: {
+    renders: {
+      total: number;
+      by_status: PodcastRenderCounts;
+      /** null = nothing has SETTLED yet. Never conflate with 0, which means "settled, none failed". */
+      failure_rate: number | null;
+      recent_30d: {
+        total: number;
+        by_status: PodcastRenderCounts;
+        failure_rate: number | null;
+      };
+      /** Over COMPLETED renders only — a failed render's duration measures how long it took to break. */
+      duration_ms: {
+        completed: number;
+        avg: number;
+        p50: number;
+        p95: number;
+      };
+      cost_cents: number;
+    };
+    scripts: {
+      total: number;
+      by_status: PodcastScriptCounts;
+      failure_rate: number | null;
     };
   };
   ai_extraction: {
