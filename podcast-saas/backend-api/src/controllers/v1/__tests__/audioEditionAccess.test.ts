@@ -17,6 +17,11 @@ const state = {
   project: null as Record<string, unknown> | null,
   edition: null as Record<string, unknown> | null,
   enqueued: [] as Array<{ name: string; payload: unknown }>,
+  rateLimitAllows: true,
+  rateLimitKeys: [] as string[],
+  asked: [] as Array<Record<string, unknown>>,
+  askResult: { status: 'answered', answer: 'Because.' } as Record<string, unknown>,
+  questions: [] as Array<Record<string, unknown>>,
 };
 
 vi.mock('../../../db/index.js', () => ({
@@ -24,16 +29,18 @@ vi.mock('../../../db/index.js', () => ({
     query: {
       projects: { findFirst: async () => state.project },
       project_audio_editions: { findFirst: async () => state.edition },
+      listener_questions: { findMany: async () => state.questions },
       video_files: { findMany: async () => [{ storage_key: 'k', duration_sec: 10 }] },
     },
   },
 }));
 vi.mock('../../../db/schema.js', () => ({
   project_audio_editions: { project_id: 'project_id', language: 'language' },
+  listener_questions: { id: 'id', project_id: 'project_id', created_at: 'created_at' },
   projects: { id: 'id' },
   video_files: { project_id: 'project_id' },
 }));
-vi.mock('drizzle-orm', () => ({ and: vi.fn(() => ({})), eq: vi.fn(() => ({})), isNull: vi.fn(() => ({})) }));
+vi.mock('drizzle-orm', () => ({ and: vi.fn(() => ({})), eq: vi.fn(() => ({})), isNull: vi.fn(() => ({})), desc: vi.fn(() => ({})) }));
 vi.mock('../../../middleware/firebase-auth.js', () => ({
   firebaseAuthMiddleware: vi.fn(),
   firebaseAuthOptionalMiddleware: vi.fn(),
@@ -48,6 +55,15 @@ vi.mock('../../../services/storage/getStorageAdapter.js', () => ({
 vi.mock('../../../queue/index.js', () => ({
   enqueueJob: (name: string, payload: unknown) => { state.enqueued.push({ name, payload }); },
 }));
+vi.mock('../../../lib/rateLimit.js', () => ({
+  rateLimit: (key: string) => { state.rateLimitKeys.push(key); return state.rateLimitAllows; },
+}));
+vi.mock('../../../services/audio/ListenerQuestionService.js', () => ({
+  askListenerQuestion: async (input: Record<string, unknown>) => {
+    state.asked.push(input);
+    return state.askResult;
+  },
+}));
 
 const { registerAudioEditionRoutes } = await import('../audioEdition.controller.js');
 
@@ -59,11 +75,15 @@ async function call(
   path: string,
   opts: { user?: { id: string } | null; query?: Record<string, string>; body?: unknown } = {},
 ): Promise<Captured> {
-  const routes: Array<{ method: string; path: string; handler: (req: unknown, reply: unknown) => Promise<unknown> }> = [];
-  const app = {
-    get: (p: string, _o: unknown, h: never) => routes.push({ method: 'GET', path: p, handler: h }),
-    post: (p: string, _o: unknown, h: never) => routes.push({ method: 'POST', path: p, handler: h }),
-  };
+  type Handler = (req: unknown, reply: unknown) => Promise<unknown>;
+  const routes: Array<{ method: string; path: string; handler: Handler }> = [];
+  // Fastify allows BOTH `(path, opts, handler)` and `(path, handler)`, and this controller uses
+  // each — the public route needs no preHandler. A harness that assumed three arguments recorded
+  // the options object as the handler and failed with "route.handler is not a function", which
+  // reads like a routing bug rather than a fake that cannot see half the routes.
+  const record = (method: string) => (p: string, a: unknown, b?: unknown) =>
+    routes.push({ method, path: p, handler: (typeof a === 'function' ? a : b) as Handler });
+  const app = { get: record('GET'), post: record('POST') };
   await registerAudioEditionRoutes(app as never);
 
   const route = routes.find((r) => r.method === method && r.path === path);
@@ -76,7 +96,7 @@ async function call(
     send(b: unknown) { captured.body = b; return reply; },
   };
   await route.handler(
-    { params: { id: 'p1' }, query: opts.query ?? {}, body: opts.body, dbUser: opts.user ?? null },
+    { params: { id: 'p1', slug: 'my-lesson' }, query: opts.query ?? {}, body: opts.body, dbUser: opts.user ?? null, ip: '1.2.3.4' },
     reply,
   );
   return captured;
@@ -92,6 +112,11 @@ beforeEach(() => {
   state.project = null;
   state.edition = null;
   state.enqueued = [];
+  state.rateLimitAllows = true;
+  state.rateLimitKeys = [];
+  state.asked = [];
+  state.askResult = { status: 'answered', answer: 'Because.' };
+  state.questions = [];
 });
 
 describe('an edition is exactly as public as its project', () => {
@@ -214,5 +239,160 @@ describe('building costs money, so building needs edit rights', () => {
     state.project = { id: 'p1', visibility: 'public', created_by: 'owner', editable: true };
     await call('POST', '/api/v1/projects/:id/audio', { user: { id: 'owner' }, body: { language: '  ' } });
     expect((state.enqueued[0].payload as { language: null }).language).toBeNull();
+  });
+});
+
+describe('the public mini-site route resolves a slug, and only a public one', () => {
+  const PUBLIC = { id: 'p1', slug: 'my-lesson', visibility: 'public', created_by: 'owner', title: 'A Lesson', seo_description: 'about it' };
+
+  it('serves a public project’s edition by slug', async () => {
+    state.project = PUBLIC;
+    state.edition = READY_EDITION;
+    const r = await call('GET', '/api/v1/public/audio/:slug');
+    expect(r.code).toBe(200);
+    expect(r.body).toMatchObject({ title: 'A Lesson', duration_ms: 1000 });
+  });
+
+  it('404s a PRIVATE project even when the slug is correct', async () => {
+    // A slug is guessable, which makes this a different threat from following a link someone was
+    // given: the authenticated route honours share tokens because the holder was handed one, and
+    // this route must not, because nobody handed anything to a guesser.
+    state.project = { ...PUBLIC, visibility: 'private' };
+    state.edition = READY_EDITION;
+    expect((await call('GET', '/api/v1/public/audio/:slug')).code).toBe(404);
+  });
+
+  it('ignores a share token on the public route', async () => {
+    // Sharing is a capability granted per-project through the authenticated surface. Honouring it
+    // here would make the ISR-cached mini-site serve private audio from a shared cache entry.
+    state.project = { ...PUBLIC, visibility: 'private', share_token: 'tok' };
+    state.edition = READY_EDITION;
+    expect((await call('GET', '/api/v1/public/audio/:slug', { query: { share: 'tok' } })).code).toBe(404);
+  });
+
+  it('404s when no edition is ready, rather than rendering an empty player', async () => {
+    state.project = PUBLIC;
+    state.edition = { status: 'processing', m4a_key: null };
+    expect((await call('GET', '/api/v1/public/audio/:slug')).code).toBe(404);
+  });
+
+  it('refuses when the rate limit is exhausted', async () => {
+    // An endpoint that resolves a guessable slug cheaply is one somebody will enumerate.
+    state.project = PUBLIC;
+    state.edition = READY_EDITION;
+    state.rateLimitAllows = false;
+    expect((await call('GET', '/api/v1/public/audio/:slug')).code).toBe(429);
+  });
+
+  it('never exposes the storage key, only a signed URL', async () => {
+    // The key is the object's address in a private bucket. Leaking it turns a time-limited
+    // capability into a permanent one for anyone who later gets bucket-level access.
+    state.project = PUBLIC;
+    state.edition = READY_EDITION;
+    const body = (await call('GET', '/api/v1/public/audio/:slug')).body as Record<string, unknown>;
+    expect(JSON.stringify(body)).not.toContain('m4a_key');
+    expect(String(body.audio_url)).toMatch(/^https:\/\/signed\.example\//);
+  });
+});
+
+describe('Raise Your Hand — an anonymous stranger, the owner’s bill', () => {
+  const PUBLIC = { id: 'p1', slug: 'my-lesson', visibility: 'public', created_by: 'owner', title: 'A Lesson', seo_description: null };
+
+  it('lets an anonymous listener ask, because the listener is driving', async () => {
+    // Requiring an account to ask about the thing they are already hearing would make the feature
+    // unusable for the person it exists for.
+    state.project = PUBLIC;
+    const r = await call('POST', '/api/v1/public/audio/:slug/questions', {
+      user: null, body: { question: 'Why?', position_ms: 1000, intent: 'answer' },
+    });
+    expect(r.code).toBe(200);
+    expect((r.body as { answer: string }).answer).toBe('Because.');
+  });
+
+  it('defaults an unknown intent to SAVE, never to answer', async () => {
+    // Defaulting the other way would make a malformed client spend the owner's money by omission.
+    state.project = PUBLIC;
+    await call('POST', '/api/v1/public/audio/:slug/questions', { body: { question: 'Why?', position_ms: 0 } });
+    expect(state.asked[0].intent).toBe('save');
+    await call('POST', '/api/v1/public/audio/:slug/questions', { body: { question: 'Why?', intent: 'nonsense' } });
+    expect(state.asked[1].intent).toBe('save');
+  });
+
+  it('rate-limits asking far more tightly than reading', async () => {
+    // A read is cheap and idempotent; this one can cost real money.
+    state.project = PUBLIC;
+    state.rateLimitAllows = false;
+    const r = await call('POST', '/api/v1/public/audio/:slug/questions', { body: { question: 'Why?', intent: 'answer' } });
+    expect(r.code).toBe(429);
+    expect(state.asked, 'a rate-limited question still reached the service').toEqual([]);
+  });
+
+  it('uses a DIFFERENT rate-limit bucket from the read route', async () => {
+    // Sharing one bucket would let a listener reading the page exhaust their own ability to ask,
+    // and would let a script asking questions lock everyone out of reading.
+    state.project = PUBLIC;
+    state.edition = READY_EDITION;
+    await call('GET', '/api/v1/public/audio/:slug');
+    await call('POST', '/api/v1/public/audio/:slug/questions', { body: { question: 'Why?' } });
+    const [readKey, askKey] = state.rateLimitKeys;
+    expect(readKey.split(':')[0]).not.toBe(askKey.split(':')[0]);
+  });
+
+  it('refuses a question on a PRIVATE lesson without reaching the service', async () => {
+    state.project = { ...PUBLIC, visibility: 'private' };
+    const r = await call('POST', '/api/v1/public/audio/:slug/questions', { body: { question: 'Why?', intent: 'answer' } });
+    expect(r.code).toBe(404);
+    expect(state.asked).toEqual([]);
+  });
+
+  it('passes the refusal REASON back, so a withheld answer is not a silent non-response', async () => {
+    state.project = PUBLIC;
+    state.askResult = { status: 'saved', reason: 'This lesson has answered all its questions for today.' };
+    const r = await call('POST', '/api/v1/public/audio/:slug/questions', { body: { question: 'Why?', intent: 'answer' } });
+    expect(r.code).toBe(200);
+    expect((r.body as { status: string }).status).toBe('saved');
+    expect((r.body as { message: string }).message).toMatch(/today/);
+  });
+
+  it('400s a malformed question rather than pretending it was saved', async () => {
+    state.project = PUBLIC;
+    state.askResult = { status: 'refused', reason: 'A question needs some words in it.' };
+    expect((await call('POST', '/api/v1/public/audio/:slug/questions', { body: { question: '' } })).code).toBe(400);
+  });
+});
+
+describe('the creator’s view of what listeners asked', () => {
+  it('requires EDIT rights — audience data is not viewer data', async () => {
+    // A viewer of a public lesson has no more claim on its questions than a reader of a blog has
+    // on its analytics.
+    state.project = { id: 'p1', visibility: 'public', created_by: 'owner', editable: false };
+    expect((await call('GET', '/api/v1/projects/:id/questions', { user: { id: 'viewer' } })).code).toBe(404);
+  });
+
+  it('refuses an anonymous caller', async () => {
+    state.project = { id: 'p1', visibility: 'public', created_by: 'owner', editable: true };
+    expect((await call('GET', '/api/v1/projects/:id/questions', { user: null })).code).toBe(401);
+  });
+
+  it('returns the questions to an editor, including the ones never answered', async () => {
+    // The capped and failed ones are exactly the list's value: they are where a lesson's confusing
+    // passage becomes visible, and the demand signal A2.5 is waiting on.
+    state.project = { id: 'p1', visibility: 'public', created_by: 'owner', editable: true };
+    state.questions = [
+      { id: 'q1', position_ms: 1000, question: 'Why?', answer: 'Because.', status: 'answered', language: null, created_at: new Date(0) },
+      { id: 'q2', position_ms: 2000, question: 'And this?', answer: null, status: 'saved', language: null, created_at: new Date(0) },
+    ];
+    const r = await call('GET', '/api/v1/projects/:id/questions', { user: { id: 'owner' } });
+    expect(r.code).toBe(200);
+    expect((r.body as { questions: unknown[] }).questions).toHaveLength(2);
+  });
+
+  it('never exposes who asked', async () => {
+    // `asked_by` is a user id. The creator needs the QUESTION, not the identity of an anonymous
+    // listener who was told nothing about being identified.
+    state.project = { id: 'p1', visibility: 'public', created_by: 'owner', editable: true };
+    state.questions = [{ id: 'q1', position_ms: 0, question: 'Why?', answer: null, status: 'saved', language: null, created_at: new Date(0), asked_by: 'user-42' }];
+    const r = await call('GET', '/api/v1/projects/:id/questions', { user: { id: 'owner' } });
+    expect(JSON.stringify(r.body)).not.toContain('user-42');
   });
 });

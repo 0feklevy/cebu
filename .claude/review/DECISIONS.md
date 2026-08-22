@@ -18,6 +18,99 @@ Last updated: **2026-08-22**, during the post-sweep fix round.
 
 ---
 
+## ✅ RESOLVED (2026-08-22) — EVERY DUBBED LANGUAGE HAD AN AMERICAN ACCENT
+
+**The report, verbatim:** ElevenLabs dubbing "puts an American accent on all the other languages and
+it does not sound natural at all (Spanish, Hebrew — there is an English `r`, not their languages')."
+
+**What we actually send**, verified in `ElevenLabsDubbingClient.ts:252-259`: `file`/`source_url`,
+`reference`, `model_id`, `source_language`, `target_language`, `keyterms`. **Nothing about voice.**
+
+**The mechanism this most likely is, and why it matters which:** ElevenLabs Dubbing CLONES the
+original speaker's voice and has the clone speak the target language. A cloned English speaker
+speaking Hebrew carries that speaker's articulation — an English `r` is exactly what voice-cloning
+transfer sounds like. If that is what is happening, this is not a bug in our integration at all; it
+is the default behaviour of the product we chose, and the fix is a **product decision with a real
+trade-off**: the creator's own voice with a foreign accent, or a native-sounding voice that is not
+theirs. Those are different products and the owner should choose, not us.
+
+**Do NOT assume it is that.** The alternative — that a parameter we are not sending would fix it
+outright — is equally consistent with the evidence, and we would be shipping a preference where a
+one-line fix belonged.
+
+**The research must settle, with citations to the vendor's current API:**
+1. Does Dubbing v2 expose per-target-language VOICE selection, or a way to disable cloning and use
+   a stock native voice? If so, is it per project, per language, or Dubbing-Studio-only?
+2. Is there a quality or accent control we are not sending (`num_speakers`, voice settings,
+   `dubbing_studio`) that changes phonetics rather than just fidelity?
+3. Does `keyterms` — which we already send — affect pronunciation, and are we using it?
+4. Is `model_id` (`dubbing_v2`) the right model for accent quality, or is there a newer one?
+5. If cloning is unavoidable, what do comparable products do, and what does the owner lose either
+   way? A recommendation, with the trade-off stated in one sentence each.
+
+**Evidence to collect before recommending anything:** one short clip dubbed to Hebrew AND Spanish,
+under the current settings and under each candidate setting, so the difference is heard rather than
+argued. Dubbing is billed per source-minute, so use the shortest usable clip.
+
+**Blast radius:** dubbing is the most expensive job kind in the product ($2.20/min was the figure
+used when the budget guard was written), so any experiment needs a stated cost before it runs.
+
+### THE ANSWER (researched and shipped, 2026-08-22)
+
+It was cloning, and it is one parameter. ElevenLabs' `disable_voice_cloning`: *"Instead of using a
+voice clone in dubbing, use a similar voice from the ElevenLabs Voice Library."* **Similar** is the
+operative word — gender and character are preserved, the phonetics are the library voice's own.
+
+**The owner ruled:** a different voice is fine, an accent is not — "if a man/woman is speaking, a
+different man's/woman's voice is fine, but no accent; they should sound native in that language."
+Shipped on by default, with `DUBBING_NATIVE_VOICE=0` to restore cloning without a deploy.
+
+`target_accent` (experimental) also exists and picks between natives — Castilian vs Latin American
+Spanish. Left UNSET: a wrong dialect is a worse answer than no preference.
+
+**THE COST, WHICH THE VENDOR STATES PLAINLY:** *"Voices used from the library will contribute
+towards a workspace's custom voices limit, and if there aren't enough available slots the dub will
+fail."* Every language dubbed takes a slot, and it needs the `add_voice_from_voice_library`
+permission on the workspace.
+
+That failure is now named (`voiceLimitReached`) and made NON-retryable — a dub gets eight attempts,
+and spending them on a condition only a human can clear delays the error the operator needs to see
+while making it look transient. **Owner action if it ever fires:** free a custom-voice slot in the
+ElevenLabs workspace; no code change will help.
+
+## 🔴 CROP v2 IS A LABEL WITH NO ALGORITHM BEHIND IT — and flipping it costs a full recompute
+
+Found on the first real run of the field eval, 2026-08-22.
+
+`algo.ts` documents `CROP_ALGO=v2` as a shipped-dark rollout lever: *"v2 carries a new dependency
+and a new failure mode, so it ships dark and is turned on per-environment, and rolling back is an
+env flip rather than a deploy."* The flag, the type and the version stamp all exist.
+
+**Nothing branches on it.** `cropAlgo()` has no consumers anywhere outside `algo.ts` — grep the
+whole of `backend-api/src` and the only readers are the version stamper and the two eval scripts.
+v1 and v2 are one code path wearing two labels, which the field eval demonstrated by scoring both
+at mIoU 0.5089 — identical to four decimal places, on 390 real frames.
+
+**The trap.** `sourceHash(..., algo = algoVersion())` folds the version into the crop idempotency
+hash — deliberately, so a genuine algorithm fix reaches videos that already have a crop. So
+setting `CROP_ALGO=v2` in production would:
+  - change every `crop_source_hash`,
+  - make every `ready` crop row stale,
+  - recompute the ENTIRE catalogue,
+  - and produce byte-identical output.
+
+An env flip documented as a cheap rollback lever is in fact a full-catalogue reprocess for zero
+change. Nothing warns about it and nothing fails.
+
+**Also:** any past comparison of "v1 vs v2" from `run-eval.ts` compared a thing to itself. Its
+`withAlgo()` helper pins the env var around each run, which reads as a working A/B and is not one.
+
+**Not fixed here, because the right fix depends on an answer only the owner has:** was v2 removed
+deliberately (then delete the flag, the type and the VERSIONS entry, and say so), or is it still
+intended (then the flag stays and needs a guard so it cannot be set until an implementation
+exists)? Shipping either without knowing would be guessing at a plan. The dangerous half — that a
+flip silently costs a catalogue recompute — is what needed writing down today.
+
 ## 🎯 WORK WAVES — the order everything is done in (owner-ranked 2026-08-22)
 
 The owner's ranking: **podcast is the most critical area, crop second — but a critical BUG comes
@@ -26,7 +119,7 @@ before either.** That rule does real work here, because the podcast area turns o
 Each wave is finishable and leaves the product in a coherent state. Do not start wave N+1 while a
 wave-N item is open, unless it is blocked on the owner — in which case say so and drop down.
 
-### PRIORITY 1 (owner, 2026-08-22) — REPLACE THE APPROVAL CLICK WITH REAL GATES  ·  PR #76  ·  ⏳ CI
+### ✅ PRIORITY 1 (owner, 2026-08-22) — APPROVAL CLICK REPLACED BY REAL GATES  ·  PR #76 MERGED
 The owner's account of the manual production approval: *"in practice I only click 'Approve and
 deploy' without performing an additional review, so it is not providing meaningful protection."*
 Shipped as one coherent extension of the existing release system, not a parallel one.
@@ -65,25 +158,37 @@ reviewer; `production` already had none. **Done when:** #76 merges and the first
 exercises `candidate-smoke` against live images for the first time — that run is the real test, and
 it fails closed, so the risk is a blocked release rather than a bad deploy.
 
-### WAVE 0 — SHIP WHAT IS ALREADY FIXED  ·  blocks everything  ·  owner: approve deploy
-Nothing a user experiences changes until this lands. Production runs v0.1.38 and **the dubbing
-feature is dead in it** — every attempt dies before the vendor is reached. Also sitting unshipped:
-two cross-tenant write holes, Firebase tokens in the access log, the container memory ceilings, and
-−474 KB of JS on every viewer route. Twelve PRs' worth of fixes, none of them live.
-**Done when:** release published, deploy approved, and the dubbing probe (~$2.20) runs clean.
+### 🔴 WAVE 0 — FIVE MERGED PRs ARE NOT IN PRODUCTION  ·  blocks everything user-facing
+**Verified 2026-08-22 against the running containers**, because the previous version of this entry
+was stale in both directions — it said v0.1.38 and "dubbing is dead", and production had been on
+v0.1.39 with dubbing working since the owner fixed the API key.
 
-### WAVE 1 — LIVE EXPOSURE, AND IT IS IN THE PODCAST AREA  ·  owner: one ruling
-C1, the media authorization gate. Two of its six members are the reason this outranks podcast
-features rather than competing with them:
-- **`security-016` — a confidential brief uploaded to an episode is readable by anyone who obtains
-  the URL, with no credential.** `podcasts/` is modelled as a public prefix because it was chosen
-  for immutable studio clips; user SOURCE DOCUMENTS were added to it later without revisiting that.
-  This is a podcast data-exposure bug wearing a security label.
-- **`security-005`/`simulation-007` — unsharing a project does not revoke access to its
-  simulation.** `/sim-public/*` checks only that the key starts with `simulations/`.
-Four decisions with recommendations are in the ruling block below. One sentence unblocks all six.
-**Done when:** one prefix-complete gate ships; the bucket cutover (`security-001`) is scheduled
-separately because it changes URLs people already hold.
+Production runs **v0.1.39**. Merged to `main` and NOT deployed:
+- **#74 — `security-016`, a live data exposure.** A user's uploaded podcast brief is readable by
+  anyone who obtains the URL, with no credential. Fixed in `main`, still exposed in production.
+  This is why the wave is red rather than amber.
+- **#75** — the media gate understands simulations and no longer fails open blindly.
+- **#76** — the release gates that replace the approval click.
+- **#77** — the writers'-room golden suite and the podcast pipeline's own health metrics.
+- **#78** — A2.1, audio editions.
+
+**The first release after #76 exercises `candidate-smoke` against live images for the first time.**
+It fails closed, so the risk is a blocked release rather than a bad deploy — which makes this the
+right release to find out on, not the wrong one.
+**Done when:** a release is published and deployed, and production reports the new version.
+
+### ✅ WAVE 1 — CLOSED (2026-08-22), verified in `main` rather than assumed
+Both of the findings that made this wave outrank podcast features are fixed and merged:
+- **`security-016`** — `podcast.controller.ts` now writes user source documents under the private
+  `podcast-sources/` prefix (PR #74). Verified present in `origin/main`.
+- **`simulation-007`** — `sim-public.controller.ts` gates on `isRevisionStatusPublic` before the
+  storage read, so a draft/uploading/failed revision 404s rather than serving its bytes (PR #75).
+  Verified present in `origin/main`.
+
+Still open from C1 and deliberately NOT closed here: **`security-001`, the bucket cutover.** It
+changes URLs people already hold, so it is scheduled separately — see the ruling block below.
+**Owner action outstanding:** delete and re-upload the one podcast document that was exposed. The
+code fix stops new exposure; it cannot un-expose a URL that was already shared.
 
 ### ✅ WAVE 2 — DONE (2026-08-22, PR #77 merged)
 Both items shipped. `llm-pipeline-017`: a golden suite drives the REAL ScriptRoom over a fixed
@@ -106,25 +211,6 @@ public is what made a customer's brief world-readable (security-016). 31 mutatio
 **Remaining:** A2.2 `/{slug}/audio` landing → A2.3 Media Session + PWA (the locked-phone answer) →
 A2.4 Raise Your Hand. **A2.5 "Call It" is deferred by its own design** until A2.4 produces real
 listener-question data proving demand — that is a decision already recorded, not an omission.
-
-### WAVE 2 — MAKE THE PODCAST SAFE TO BUILD ON  ·  ✅ SUPERSEDED BY THE ENTRY ABOVE
-The owner's rule applied honestly: before adding surfaces to the podcast, close the things that let
-its OUTPUT go wrong silently. Both are about the paid deliverable.
-- **`llm-pipeline-017` — there is no golden-output or end-to-end test for `ScriptRoom`**, the
-  nine-call chain that produces the episode. A silent quality regression in the product's core
-  output ships unnoticed. This is not theoretical: `llm-pipeline-016` (a compiler returning three
-  turns from a sixty-turn draft, hashed and marked `ready`) was live until 2026-08-22, and a
-  golden-output suite is exactly what would have caught it on the branch.
-- **`observability-006` — `podcast_renders` has no status, failure-rate or duration metric on any
-  admin endpoint.** When a render fails today, nothing above the queue-depth layer says so.
-**Done when:** a fixed-corpus golden suite with a stability assertion, and the four `groupBy`
-aggregates beside the existing `hls_status` ones.
-
-### WAVE 3 — PODCAST PHASE 2  ·  owner: go  ·  the thing actually wanted
-`PARKED-DESIGNS.md` P3-B, built on P3-A's `/{slug}/audio` spine (the owner already chose option א).
-Build order is in that file and each stage ships alone: audio derivation → the landing surface →
-Media Session/PWA (the locked-phone answer) → Raise Your Hand → Call It. Route renames (P3-A) land
-WITH this, not before — `/{slug}/audio` is their shared spine.
 
 ### WAVE 4 — CROP  ·  owner: footage  ·  blocked at the first step
 P0.3 is 20–50 real catalogue clips + ~2h labelling in the shipped tool

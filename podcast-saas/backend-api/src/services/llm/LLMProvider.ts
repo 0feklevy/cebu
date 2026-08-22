@@ -19,7 +19,9 @@ export type TaskType =
   | 'podcast_compile'
   | 'podcast_delivery'
   | 'podcast_turn_regen'
-  | 'podcast_memory';
+  | 'podcast_memory'
+  // Raise Your Hand (P3-B/A2.4) — a listener's question about the moment they are at.
+  | 'listener_question';
 
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 

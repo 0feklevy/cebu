@@ -166,6 +166,11 @@ const TASK_TIER: Record<TaskType, Tier> = {
   podcast_delivery: 'creative',
   podcast_turn_regen: 'creative',
   podcast_memory: 'creative',
+  // NOT 'creative'. A listener question is a short, grounded answer about a passage that is
+  // already in the prompt — the work is comprehension, not composition — and the creative tier is
+  // the most expensive in the product. It is also the only tier a STRANGER can trigger, on the
+  // OWNER's bill, from a public page. Utility is the right size and the right blast radius.
+  listener_question: 'utility',
 };
 
 export class LLMService {
