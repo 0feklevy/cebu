@@ -111,6 +111,31 @@ intended (then the flag stays and needs a guard so it cannot be set until an imp
 exists)? Shipping either without knowing would be guessing at a plan. The dangerous half — that a
 flip silently costs a catalogue recompute — is what needed writing down today.
 
+## 🔴 OWNER ACTION — three repository variables are unset, and the daily audit has been hollow
+
+Found 2026-08-22 while checking whether the production audit shared the hole closed in the release
+path. It does.
+
+`SMOKE_PUBLIC_PATH`, `SMOKE_PLAYLIST_PATH` and `SMOKE_ADMIN_PREVIEW_PATH` are **not set** as
+repository variables. Every fixture-dependent production check is written
+`test.skip(!process.env.SMOKE_PUBLIC_PATH, …)`, so the daily **Production audit** has been running
+green while skipping project pages, playlists and admin preview entirely. Three consecutive green
+runs verified far less than they appear to.
+
+**What to set (Settings → Secrets and variables → Actions → Variables):**
+- `SMOKE_PUBLIC_PATH` — the path of a PUBLIC project with media, e.g. `/some-lesson-slug`
+- `SMOKE_PLAYLIST_PATH` — a public playlist page path
+- `SMOKE_ADMIN_PREVIEW_PATH` — an admin preview path
+
+**There is currently no public project at all** — both sitemaps are empty — so this needs a
+project made public before the first variable has a value to hold.
+
+**Until they are set, releases will refuse to deploy.** That is deliberate and is the safe half of
+a near miss: `--require-tests` makes a skipped release-blocking flow CRITICAL, and the post-deploy
+gate turns CRITICAL into an automatic rollback — so without the early refusal, the first release
+would have rolled back a perfectly healthy deploy over a missing configuration value. `plan` now
+refuses BEFORE anything is deployed and names the variables (PR #81).
+
 ## 🎯 WORK WAVES — the order everything is done in (owner-ranked 2026-08-22)
 
 The owner's ranking: **podcast is the most critical area, crop second — but a critical BUG comes
