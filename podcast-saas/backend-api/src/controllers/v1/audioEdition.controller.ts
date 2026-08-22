@@ -1,6 +1,16 @@
 /**
  * The audio edition's API surface — P3-B / A2.1.
  *
+ * ── THE PATH IS `/audio-edition`, NOT `/audio`, AND THAT IS NOT COSMETIC ──────────────────────
+ * `audio.controller.ts` already owns `GET` and `POST` on `/api/v1/projects/:id/audio` — that is
+ * the TIMELINE audio feature (uploaded tracks, generated music and SFX), a different thing that
+ * happens to share an obvious noun. Registering these here on the same path made Fastify throw
+ * `FST_ERR_DUPLICATED_ROUTE` at startup, so the backend could not boot AT ALL.
+ *
+ * Nothing caught it: the tests mock the Fastify instance, and `release:verify` typechecks, lints,
+ * tests and builds without ever starting a server. The one thing that would have caught it is the
+ * candidate-image gate, which boots the actual image — and it had not run successfully yet.
+ *
  * Three routes and one security decision. The decision is the whole file: an edition is a DERIVED
  * form of a project, so it is exactly as public as that project is and never more. That sounds
  * obvious and is the precise mistake this codebase has already made twice — `podcasts/` was
@@ -54,7 +64,7 @@ export async function registerAudioEditionRoutes(app: FastifyInstance): Promise<
    * private project's audio link works for the people the creator gave it to and nobody else.
    */
   app.get<{ Params: { id: string }; Querystring: { share?: string; language?: string } }>(
-    '/api/v1/projects/:id/audio',
+    '/api/v1/projects/:id/audio-edition',
     { preHandler: [projectIdIsUuid, firebaseAuthOptionalMiddleware] },
     async (request, reply: FastifyReply) => {
       const project = await db.query.projects.findFirst({ where: eq(projects.id, request.params.id) });
@@ -107,7 +117,7 @@ export async function registerAudioEditionRoutes(app: FastifyInstance): Promise<
    * any viewer trigger it would let any viewer spend the owner's money by reloading a page.
    */
   app.post<{ Params: { id: string }; Body: { language?: string | null; force?: boolean } }>(
-    '/api/v1/projects/:id/audio',
+    '/api/v1/projects/:id/audio-edition',
     { preHandler: [projectIdIsUuid, firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser;
@@ -143,7 +153,7 @@ export async function registerAudioEditionRoutes(app: FastifyInstance): Promise<
    * the GET above rather than replacing it. Same access rule, from the same function.
    */
   app.get<{ Params: { id: string }; Querystring: { share?: string; language?: string } }>(
-    '/api/v1/projects/:id/audio/captions.vtt',
+    '/api/v1/projects/:id/audio-edition/captions.vtt',
     { preHandler: [projectIdIsUuid, firebaseAuthOptionalMiddleware] },
     async (request, reply: FastifyReply) => {
       const project = await db.query.projects.findFirst({ where: eq(projects.id, request.params.id) });
@@ -201,7 +211,7 @@ export async function registerAudioEditionRoutes(app: FastifyInstance): Promise<
         duration_ms: edition.duration_ms,
         chapters: edition.chapters_json ?? [],
         captions_url: edition.captions_vtt
-          ? `/api/v1/projects/${project.id}/audio/captions.vtt${edition.language ? `?language=${encodeURIComponent(edition.language)}` : ''}`
+          ? `/api/v1/projects/${project.id}/audio-edition/captions.vtt${edition.language ? `?language=${encodeURIComponent(edition.language)}` : ''}`
           : null,
         language: edition.language,
         // The page caches on ISR, so it needs to know how old what it is holding is.
