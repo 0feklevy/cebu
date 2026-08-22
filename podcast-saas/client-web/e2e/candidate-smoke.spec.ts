@@ -125,37 +125,32 @@ test.describe('the client-web image was built with the right origins baked in', 
 });
 
 /**
- * THE OWNER'S NAMED CASE: a stored key becomes a URL a browser can actually fetch.
+ * A STORED KEY BECOMES SOMETHING A BROWSER CAN FETCH — through the adapter production uses.
  *
- *   "legacy DB URL without token → backend processing/token minting → valid final URL →
- *    resource successfully loads"
+ * The owner named this flow: "legacy DB URL without token → backend processing/token minting →
+ * valid final URL → resource successfully loads". Its full form needs a signed-in identity and
+ * real production data, so it lives in `production-flows.spec.ts` and runs post-deploy. What
+ * belongs HERE is the half that is a property of the IMAGE: given an object in the bucket, does
+ * this build read it back and serve it correctly?
  *
- * The two production incidents of this shape were both "the URL was built from configuration
- * instead of asked of the storage adapter" — one emitted `http://localhost:8080/...` to real
- * browsers, the other a `pub-*.r2.dev` origin that `frame-src` refused. Both were invisible to
- * every source-level test and visible in one browser request.
+ * That is not a small question. Both production incidents of this shape were the backend building
+ * a URL from configuration instead of asking the storage adapter — one emitted
+ * `http://localhost:8080/...` to real browsers, the other a `pub-*.r2.dev` origin that `frame-src`
+ * refused. And `/sim-public/*` exists precisely because Supabase's public endpoint downgrades
+ * `text/html` to `text/plain`, so an iframe pointed at the bucket shows raw source. That proxy
+ * re-asserts the Content-Type, and whether THIS image still does so is exactly an image question.
  *
- * ── WHY THIS SEEDS, AND WHAT IT DELIBERATELY DOES NOT COVER ───────────────────────────────────
- * The first version of this block walked whatever JSON a public endpoint happened to return and
- * fetched any URLs it found. Against this stack — which seeds nothing — that is an empty list, a
- * loop that never runs, and a test that reports PASS while asserting nothing. Vacuous green is
- * worse than no test: it is the thing the gate was built to stop, reproduced inside the gate.
- *
- * So the workflow writes two real files into the backend image's storage directory before this
- * runs, and the fixtures are declared through `CANDIDATE_STORAGE_FIXTURES`. If that is absent the
- * tests FAIL rather than skip — a fixture that could not be placed means the environment could not
- * be produced, which is exactly the condition the owner asked to fail closed.
- *
- * The authenticated leg — a signed-in user asking the API to mint a token — is NOT covered here:
- * it needs a real Firebase identity, which this stack has no way to produce, and faking one would
- * test the fake. What IS covered is every leg that does not need an identity, including the one
- * that actually failed in production: an untokenised URL for a private key must be REFUSED, and a
- * public key's URL must return the real bytes over HTTP from inside the image.
+ * ── FAIL CLOSED, NEVER SKIP ───────────────────────────────────────────────────────────────────
+ * The first version of this block walked whatever JSON a public endpoint returned and fetched any
+ * URLs it found. Against a stack that seeds nothing that is an empty list, a loop that never runs,
+ * and a test reporting PASS while asserting nothing. Vacuous green is worse than no test: it is
+ * the failure the gate was built to stop, reproduced inside the gate. So the workflow writes real
+ * objects into MinIO first and declares them through `CANDIDATE_STORAGE_FIXTURES`; if that is
+ * absent these tests FAIL, because an environment that could not be produced is not a pass.
  */
-test.describe('storage URLs are mintable AND loadable', () => {
-  interface Fixture { key: string; body: string; expect: 'loads' | 'refused' }
+test.describe('a stored object is served back by the image that will deploy', () => {
+  interface Fixture { key: string; body: string; contentType: string }
 
-  /** Fail closed: no declared fixtures ⇒ the environment was not produced ⇒ no deploy. */
   function fixtures(): Fixture[] {
     const raw = process.env.CANDIDATE_STORAGE_FIXTURES;
     if (!raw) {
@@ -171,44 +166,34 @@ test.describe('storage URLs are mintable AND loadable', () => {
     return parsed;
   }
 
-  test('a public key returns its real bytes over HTTP from inside the image', async ({ request }) => {
-    const loadable = fixtures().filter((f) => f.expect === 'loads');
-    expect(loadable.length, 'no loadable fixture was seeded').toBeGreaterThan(0);
-    for (const f of loadable) {
-      const url = `${API}/local-storage/${f.key}`;
-      const res = await request.get(url, { timeout: 20_000 });
-      expect(res.status(), `seeded public key did not load: ${url}`).toBe(200);
-      // Byte equality, not just a 200. A 200 carrying an error page, an index listing or another
-      // object's contents is the failure mode a status check cannot see.
+  test('the object round trips: bucket → adapter → HTTP, with its bytes intact', async ({ request }) => {
+    for (const f of fixtures()) {
+      const url = `${API}/sim-public/${f.key}`;
+      const res = await request.get(url, { timeout: 30_000 });
+      expect(res.status(), `seeded object did not load: ${url}`).toBe(200);
+      // Byte equality, not just a 200. A 200 carrying an error page, a redirect body or another
+      // object's contents is the failure a status check cannot see.
       expect(await res.text(), `served the wrong content for ${f.key}`).toBe(f.body);
     }
   });
 
-  test('a private key with no token is refused — the legacy-URL leg', async ({ request }) => {
-    const refused = fixtures().filter((f) => f.expect === 'refused');
-    expect(refused.length, 'no private fixture was seeded').toBeGreaterThan(0);
-    for (const f of refused) {
-      const res = await request.get(`${API}/local-storage/${f.key}`, { timeout: 20_000 });
-      // 401 or 403 — which one is an auth-layer detail. What must never happen is 200: that is a
-      // private object served to an anonymous browser, the incident class this leg exists for.
-      expect([401, 403], `private key was NOT refused (got ${res.status()}): ${f.key}`).toContain(res.status());
-      expect(await res.text()).not.toBe(f.body);
+  test('the proxy re-asserts text/html, which the bucket would have downgraded', async ({ request }) => {
+    // This is the whole reason /sim-public exists. If a build ever stops setting the type, every
+    // simulation iframe in production renders its own source as plain text — visible to every
+    // viewer, invisible to every source-level test.
+    for (const f of fixtures().filter((x) => x.contentType === 'text/html')) {
+      const res = await request.get(`${API}/sim-public/${f.key}`, { timeout: 30_000 });
+      expect(res.headers()['content-type'] ?? '', `content-type was downgraded for ${f.key}`).toContain('text/html');
     }
   });
 
-  test('a traversal key is refused even though its first segment looks public', async ({ request }) => {
-    // `podcasts/..%2fexports/x` decodes to a `..` segment whose leading part matches a PUBLIC
-    // prefix, skipping the auth branch, while the path resolves back into the private tree.
-    // Guarded in server.ts; asserted here against the running image rather than the source.
-    const res = await request.get(`${API}/local-storage/podcasts/..%2fexports/anything.txt`, { timeout: 20_000 });
-    expect(res.status(), 'a traversal key was not refused').toBe(403);
-  });
-
-  test('the backend image serves media from its own origin, not a baked-in one', () => {
-    // Deliberately NOT "the page reaches no external origin" — this image is built for production
-    // and correctly calls api.flowvidco.com, so that assertion fails on correct behaviour. What
-    // IS verifiable here is the backend's own URL construction, which the fixture round trips
-    // above already exercise: a key in, a fetchable URL out, from inside the container.
-    expect(fixtures().every((f) => !/^https?:/.test(f.key)), 'a fixture key was a URL, not a key').toBe(true);
+  test('a key outside the simulations prefix is refused, however it is spelled', async ({ request }) => {
+    // `/sim-public` serves without auth, so its prefix check is the only thing standing between
+    // an anonymous request and a private object. `podcasts/..%2f…` decodes to a `..` segment whose
+    // leading part matches an allowed prefix while resolving back into the private tree.
+    for (const key of ['exports/candidate-smoke/private.mp4', 'simulations/..%2fexports/private.mp4']) {
+      const res = await request.get(`${API}/sim-public/${key}`, { maxRedirects: 0, timeout: 20_000 });
+      expect(res.status(), `an out-of-prefix key was served: ${key}`).not.toBe(200);
+    }
   });
 });

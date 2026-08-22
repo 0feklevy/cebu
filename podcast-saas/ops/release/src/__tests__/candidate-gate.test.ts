@@ -18,7 +18,13 @@ import { gateIsEnforced, parseJobGraph, transitiveNeeds, withoutComments } from 
 
 const ROOT = join(new URL('.', import.meta.url).pathname, '..', '..', '..', '..', '..');
 const releaseYml = readFileSync(join(ROOT, '.github', 'workflows', 'release.yml'), 'utf8');
-const compose = readFileSync(join(ROOT, 'podcast-saas', 'deploy', 'docker-compose.candidate.yml'), 'utf8');
+const composeSource = readFileSync(join(ROOT, 'podcast-saas', 'deploy', 'docker-compose.candidate.yml'), 'utf8');
+/**
+ * The compose file's DIRECTIVES, without its prose. The comments in that file explain at length
+ * which settings would break it — `STORAGE_BACKEND: local`, a production hostname — so an
+ * assertion reading the raw text matches the warning against the mistake and calls it the mistake.
+ */
+const compose = withoutComments(composeSource);
 const jobs = parseJobGraph(releaseYml);
 
 /** What a job RUNS, with its explanatory prose removed — see withoutComments. */
@@ -126,11 +132,33 @@ describe('the compose stack cannot boot anything but the candidate', () => {
 
   it('never reaches production storage, queues, or database', () => {
     expect(compose).toContain('QUEUE_DRIVER: inline');
-    expect(compose).toContain('STORAGE_BACKEND: local');
     // The one place a candidate stack could do real damage is by being pointed at a real
-    // DATABASE_URL. Its postgres is a throwaway container with tmpfs storage.
+    // DATABASE_URL or a real bucket. Its postgres and its S3 are throwaway containers on tmpfs,
+    // and no production hostname may appear anywhere in the file.
     expect(compose).toMatch(/tmpfs/);
     expect(compose).not.toMatch(/flowvidco\.com|supabase\.co|r2\.cloudflarestorage/);
+    expect(compose).toMatch(/SUPABASE_S3_ENDPOINT:\s*http:\/\/minio:9000/);
+  });
+
+  it('runs the image as production runs it, with a storage backend that can boot', () => {
+    // These two are ONE constraint, and getting either alone wrong is fatal in a different way.
+    //
+    // NODE_ENV must be production, or the gate stops testing the artifact and starts testing a
+    // development configuration of it. And under NODE_ENV=production, getStorageAdapter refuses
+    // local disk unconditionally — so `STORAGE_BACKEND: local`, the obvious choice for a
+    // throwaway stack, makes the backend fail to boot and blocks every release on the gate's own
+    // configuration. The candidate therefore runs the real Supabase adapter against its own S3.
+    expect(compose).toMatch(/NODE_ENV:\s*production/);
+    expect(compose, 'local-disk storage cannot boot under NODE_ENV=production').not.toMatch(
+      /STORAGE_BACKEND:\s*local/,
+    );
+    expect(compose).toMatch(/STORAGE_BACKEND:\s*supabase/);
+  });
+
+  it('the backend waits for the bucket to exist, not merely for S3 to be up', () => {
+    // A bucket created concurrently with the backend's first write is an intermittent gate
+    // failure — the least debuggable kind, and the kind that gets a gate disabled.
+    expect(compose).toMatch(/minio-init:\n\s+condition:\s+service_completed_successfully/);
   });
 });
 

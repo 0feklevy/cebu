@@ -450,30 +450,29 @@ jobs:
         id: fixtures
         run: |
           set -euo pipefail
-          # The storage tests must exercise REAL objects. Without these two files the spec has an
-          # empty candidate to assert about, and an empty assertion loop reports PASS — the exact
-          # vacuous-green failure this whole job exists to prevent. The spec refuses to run at all
-          # unless CANDIDATE_STORAGE_FIXTURES is set, so a failure to seed blocks the deploy.
+          # The storage tests must exercise REAL objects through the REAL adapter. Without these
+          # the spec has an empty candidate to assert about, and an empty assertion loop reports
+          # PASS — the vacuous-green failure this whole job exists to prevent. The spec refuses to
+          # run at all unless CANDIDATE_STORAGE_FIXTURES is set, so failing to seed blocks deploy.
           #
-          # `podcasts/` is a PUBLIC_LOCAL_PREFIX (served with no auth); `exports/` is private and
-          # must be refused without a token. Both are written INSIDE the backend image, so the test
-          # reads them back over HTTP exactly as a browser would.
+          # Written into MinIO, not onto the container's disk: the backend reads them back through
+          # SupabaseStorageAdapter — the same adapter production writes through — so this covers
+          # adapter → object → HTTP rather than a local-disk route production never takes.
           cd podcast-saas/deploy
-          DIR=/app/backend-api/.candidate-storage
-          docker compose -f docker-compose.candidate.yml exec -T backend sh -eu -c "
-            mkdir -p $DIR/podcasts/candidate $DIR/exports/candidate
-            printf 'public-candidate-fixture' > $DIR/podcasts/candidate/public.txt
-            printf 'private-candidate-fixture' > $DIR/exports/candidate/private.txt
-          "
+          docker compose -f docker-compose.candidate.yml run --rm --entrypoint /bin/sh minio-init -eu -c '
+            mc alias set candidate http://minio:9000 candidateaccesskey candidatesecretkey
+            printf "<!DOCTYPE html><title>candidate</title>" > /tmp/index.html
+            mc cp /tmp/index.html candidate/media/simulations/candidate-smoke/index.html
+          '
           # Declared as data, so the spec asserts on what was actually written rather than on
           # constants that could drift away from this step without either side failing.
           cat > /tmp/fixtures.json <<'JSON'
-          [{"key":"podcasts/candidate/public.txt","body":"public-candidate-fixture","expect":"loads"},
-           {"key":"exports/candidate/private.txt","body":"private-candidate-fixture","expect":"refused"}]
+          [{"key":"simulations/candidate-smoke/index.html",
+            "body":"<!DOCTYPE html><title>candidate</title>",
+            "contentType":"text/html"}]
           JSON
           # jq -c, not `tr -d`: stripping whitespace by hand also strips it from inside string
-          # values, so a fixture body containing a space would be silently rewritten and the
-          # byte-equality assertion downstream would fail for a reason no log explains.
+          # values, and these fixture bodies contain spaces.
           echo "json=$(jq -c . < /tmp/fixtures.json)" >> "$GITHUB_OUTPUT"
       - name: Install Playwright chromium
         run: pnpm --filter client-web exec playwright install --with-deps chromium
