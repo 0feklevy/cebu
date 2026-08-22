@@ -954,9 +954,19 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
       const controller = new AbortController();
       request.raw.on('close', () => { controller.abort(); clearInterval(keepAlive); });
 
-      await db.update(simulations).set({ guidance_status: 'analyzing', guidance_error: null }).where(eq(simulations.id, owned.sim.id));
-
       try {
+      // INSIDE THE TRY, not before it (backend-006). This update used to sit between arming
+      // `keepAlive` and the `try`, which is the one place in this handler where a throw is
+      // unrecoverable: the headers were already flushed by `sendEvent('connected')`, so Fastify
+      // cannot turn it into a 5xx — and because `finally` had not been entered, the interval was
+      // never cleared and `reply.raw.end()` was never called. The client's EventSource then hangs
+      // with no error and no end, and a timer keeps firing at a dead handler until the socket
+      // eventually closes.
+      //
+      // Inside the try, the same throw reaches `finally`: the interval is cleared and the stream is
+      // ENDED, which the browser reports as a closed connection rather than an eternal wait.
+        await db.update(simulations).set({ guidance_status: 'analyzing', guidance_error: null }).where(eq(simulations.id, owned.sim.id));
+
         const svc = new GuidanceService(storage, _llmService);
         const result = await svc.analyzeAndDraft({
           simId: owned.sim.id, projectId: owned.project.id, userId: user.id,
@@ -1066,9 +1076,19 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
       const controller = new AbortController();
       request.raw.on('close', () => { controller.abort(); clearInterval(keepAlive); });
 
-      await db.update(simulations).set({ guidance_status: 'publishing', guidance_error: null }).where(eq(simulations.id, owned.sim.id));
-
       try {
+      // INSIDE THE TRY, not before it (backend-006). This update used to sit between arming
+      // `keepAlive` and the `try`, which is the one place in this handler where a throw is
+      // unrecoverable: the headers were already flushed by `sendEvent('connected')`, so Fastify
+      // cannot turn it into a 5xx — and because `finally` had not been entered, the interval was
+      // never cleared and `reply.raw.end()` was never called. The client's EventSource then hangs
+      // with no error and no end, and a timer keeps firing at a dead handler until the socket
+      // eventually closes.
+      //
+      // Inside the try, the same throw reaches `finally`: the interval is cleared and the stream is
+      // ENDED, which the browser reports as a closed connection rather than an eternal wait.
+        await db.update(simulations).set({ guidance_status: 'publishing', guidance_error: null }).where(eq(simulations.id, owned.sim.id));
+
         const svc = new GuidanceService(storage, _llmService);
         const result = await svc.publishGuidance({
           simId: owned.sim.id, projectId: owned.project.id,

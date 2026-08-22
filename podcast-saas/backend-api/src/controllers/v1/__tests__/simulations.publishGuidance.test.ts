@@ -359,3 +359,56 @@ describe('publish-guidance — revisioned package (audit D-04)', () => {
     expect(mockStorage.uploadFile).not.toHaveBeenCalled();
   });
 });
+
+// ── (4) backend-006 — the stream must END, even when the first write throws ───
+
+/**
+ * The guidance handlers armed a 15s keep-alive interval, flushed headers with
+ * `sendEvent('connected')`, and only THEN did `await db.update(... 'publishing')` — outside the
+ * `try` whose `finally` owns `clearInterval` and `reply.raw.end()`.
+ *
+ * A throw from that one update is the worst-placed throw in the handler. The headers are already
+ * sent, so Fastify cannot turn it into a 5xx; and `finally` was never entered, so the interval was
+ * never cleared and the stream was never ended. The client's EventSource hangs with no error and
+ * no end, while a timer keeps writing to a dead handler until the socket eventually closes.
+ *
+ * Moving the update inside the `try` makes the same failure end the stream instead.
+ */
+describe('publish-guidance — a failing status write still ends the stream (backend-006)', () => {
+  it('ENDS the response instead of hanging when the first db.update throws', async () => {
+    // Only the FIRST update throws — the status flip to 'publishing'. Later ones behave normally,
+    // so this isolates the unguarded await rather than breaking the whole handler.
+    let calls = 0;
+    mocks.mockUpdateWhere.mockImplementation(() => {
+      calls += 1;
+      if (calls === 1) throw new Error('db is down');
+      return { returning: mocks.mockUpdateReturning };
+    });
+
+    const app = await makeApp();
+    const res = await app.inject({ method: 'GET', url: URL_PATH });
+
+    // The request completes rather than hanging — which is the whole point. Before the fix the
+    // rejection escaped after headers were sent and nothing closed the stream.
+    expect(res.statusCode).toBe(200);
+    expect(calls, 'the failing update was reached').toBeGreaterThan(0);
+    await app.close();
+  });
+
+  it('still emits its connected frame, so the client saw an established stream', async () => {
+    let calls = 0;
+    mocks.mockUpdateWhere.mockImplementation(() => {
+      calls += 1;
+      if (calls === 1) throw new Error('db is down');
+      return { returning: mocks.mockUpdateReturning };
+    });
+
+    const app = await makeApp();
+    const res = await app.inject({ method: 'GET', url: URL_PATH });
+    const events = parseSse(res.payload).map(([name]) => name);
+
+    expect(events[0], 'headers were flushed before the failure — that is why it could not be a 5xx')
+      .toBe('connected');
+    await app.close();
+  });
+});
