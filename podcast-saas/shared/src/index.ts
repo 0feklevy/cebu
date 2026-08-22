@@ -18,3 +18,6 @@ export * from './timeline/placement.js';
 // rewrites nothing, a media replace raises an impact review instead of clamping the authored
 // window, and a delete lists its dependents and refuses to choose for the author.
 export * from './timeline/hostChange.js';
+// WHICH overlay is on top when two cover the same instant — the one rule the viewer and the export
+// both call, after each having invented a different one (broll-player-002).
+export * from './timeline/overlayStack.js';

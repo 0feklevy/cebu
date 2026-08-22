@@ -33,6 +33,9 @@ import type {
   ExportWindow,
 } from './types.js';
 import type { AudioWindow, TimelineWindow } from './ffmpegGraph.js';
+import {
+  OVERLAY_LAYER, firstOverlappingPair, stacksAbove, type StackRank,
+} from 'shared';
 
 /** The plan cannot be assembled as written — a planner/contract bug, not a media failure. */
 export class ExportPlanShapeError extends Error {
@@ -52,13 +55,19 @@ export interface TranslatedPlan {
   totalSec: number;
 }
 
-/** Viewer stacking order (plan doc §2): sim pool > image > clip/b-roll > base video. */
+/**
+ * Viewer stacking order (plan doc §2): sim pool > image > clip/b-roll > base video.
+ *
+ * The NUMBERS now come from `shared`, because the viewer resolves the same question and used to
+ * answer it differently (broll-player-002). Mapping stays here — only this file knows what an
+ * `ExportWindow['kind']` is.
+ */
 const LAYER_PRIORITY: Record<ExportWindow['kind'], number> = {
-  'sim-capture': 3,      // defensively mapped to poster-fallback below; same layer
-  'poster-fallback': 3,
-  image: 2,
-  clip: 1,
-  video: 0,
+  'sim-capture': OVERLAY_LAYER.sim,   // defensively mapped to poster-fallback below; same layer
+  'poster-fallback': OVERLAY_LAYER.sim,
+  image: OVERLAY_LAYER.image,
+  clip: OVERLAY_LAYER.clip,
+  video: OVERLAY_LAYER.base,
 };
 
 /** Stored linear gain → dB for the volume filter; null means "drop this window". */
@@ -66,6 +75,29 @@ export function gainToDb(gain: number): number | null {
   if (!Number.isFinite(gain) || gain <= 0) return null;
   const db = 20 * Math.log10(gain);
   return Math.max(-60, Math.min(12, db));
+}
+
+/**
+ * A layer as the shared stacking rule sees it.
+ *
+ * Frames, not seconds — the comparison is unit-agnostic and this file has already snapped to the
+ * frame grid, so ranking in frames is what makes two windows that snap to the same frame tie
+ * exactly rather than by a float hair.
+ *
+ * The id is the SECTION id where there is one. That is the tiebreak the viewer uses too, and it is
+ * why the two sides now agree on a genuine tie: array position, which this file used before, is not
+ * something the viewer could ever have reproduced.
+ */
+function rankOf(l: Layer): StackRank {
+  const sectionId = (l.w as { sectionId?: string }).sectionId;
+  return {
+    layer: l.priority,
+    start: l.startF,
+    end: l.endF,
+    // A window with no section id is the base video, which never contends for a tie — the kind
+    // string is a stable stand-in rather than a meaningful ordering.
+    id: typeof sectionId === 'string' && sectionId.length > 0 ? sectionId : l.w.kind,
+  };
 }
 
 interface Layer {
@@ -154,18 +186,20 @@ export function translateContractPlan(
   });
 
   // Overlap between overlays is resolvable (stacking order) but worth surfacing once.
-  const overlays = layers.filter((l) => l.priority > 0);
-  outer: for (let i = 0; i < overlays.length; i++) {
-    for (let j = i + 1; j < overlays.length; j++) {
-      const a = overlays[i]!;
-      const b = overlays[j]!;
-      if (a.startF < b.endF && b.startF < a.endF) {
-        warnings.push(
-          `${label(a.w)} and ${label(b.w)} overlap on the timeline — the viewer's stacking order decides which is visible`,
-        );
-        break outer;
-      }
-    }
+  //
+  // The wording used to promise "the viewer's stacking order decides which is visible" — a stacking
+  // order the viewer did not have, which is precisely how the two surfaces diverged in silence.
+  // Both now call `stacksAbove`, so the promise is true; the warning stays because an overlap is
+  // still usually an authoring mistake.
+  const overlapping = firstOverlappingPair(
+    layers.filter((l) => l.priority > 0).map((l) => ({ ...rankOf(l), label: label(l.w) })),
+  );
+  if (overlapping) {
+    const [a, b] = overlapping;
+    warnings.push(
+      `${a.label} and ${b.label} overlap on the timeline — the one that starts later is the one ` +
+      `that shows, in the player and in this export alike`,
+    );
   }
 
   // ── Sweep the frame axis: topmost layer per elementary interval ─────────────────────────────
@@ -185,17 +219,12 @@ export function translateContractPlan(
   for (let i = 0; i < marks.length - 1; i++) {
     const aF = marks[i]!;
     const bF = marks[i + 1]!;
+    // Containment, not overlap: this elementary interval is either wholly inside a layer or
+    // wholly outside it, so the shared `coversPoint` test is applied to the interval's start.
     let winner: Layer | null = null;
     for (const l of layers) {
       if (l.startF > aF || l.endF < bF) continue;
-      if (
-        !winner ||
-        l.priority > winner.priority ||
-        (l.priority === winner.priority && (l.startF > winner.startF ||
-          (l.startF === winner.startF && l.order > winner.order)))
-      ) {
-        winner = l;
-      }
+      if (winner === null || stacksAbove(rankOf(l), rankOf(winner))) winner = l;
     }
     const prev = pieces[pieces.length - 1];
     if (prev && prev.layer === winner && prev.endF === aF) {
