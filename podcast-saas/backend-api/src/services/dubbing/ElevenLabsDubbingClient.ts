@@ -223,12 +223,15 @@ export interface ElevenLabsDubbingClientOpts {
 export function assertUsableElevenLabsKey(key: string): void {
   const trimmed = key.trim();
   if (trimmed.startsWith('sk_')) return;
+  // UNDER 200 CHARACTERS, DELIBERATELY. ElevenLabsDubbingError truncates its body at 200 when
+  // building `.message`, and the first draft of this text ran to ~290 — so the half that said
+  // WHAT TO DO was cut off in every place an operator would actually read it. A diagnostic
+  // whose instruction is truncated away is just a longer way of saying 401.
   throw new ElevenLabsDubbingError(
     401,
-    'The stored ElevenLabs credential is not an API key. ElevenLabs shows the key once, at '
-    + "creation, and it starts with 'sk_'; the string the dashboard displays afterwards is the "
-    + "key's ID and cannot authenticate. Create a new key in the ElevenLabs dashboard, copy the "
-    + "'sk_…' value at that moment, and save it in Admin → API Keys.",
+    "Not an ElevenLabs API key. A key starts with 'sk_' and is shown only at creation; the "
+    + 'dashboard shows its ID afterwards, which cannot authenticate. Create a new key and save '
+    + 'it in Admin → API Keys.',
   );
 }
 
