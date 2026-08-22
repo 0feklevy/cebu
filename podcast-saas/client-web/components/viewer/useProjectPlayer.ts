@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import type { PlayerConfig, PlayerSegment, SimulationOverlay, TimelineSeg, BrollClip, ClipOverlay, ImageOverlayItem, AudioCutaway, PlayerBranchSequence, PlayerChoicePoint, PlayerBranchEdge } from './types';
 import { releaseAvatarElement } from '../../lib/avatarAudioGraph';
+// The ONE stacking rule the export calls too — see shared/src/timeline/overlayStack.ts.
+import { OVERLAY_LAYER, topmostAt, type StackRank } from 'shared';
 import type { SimStartScriptParams } from '../../lib/simUiControls';
 import { canWarmUnpaused, learnCanEmitPaint } from '../../lib/simCapability';
 import { resolveSimPoolMode } from '../../lib/simPoolMode';
@@ -315,6 +317,26 @@ export interface ProjectPlayerOptions {
    * release uses, and then forgotten. Out-of-range values are clamped, never NaN-propagated.
    */
   initialSeekSec?: number;
+}
+
+/**
+ * One overlay clip, as the shared stacking rule sees it.
+ *
+ * A clip's visible span is its global offset plus its own trimmed length — `end_sec`/`start_sec`
+ * are in-points on the SOURCE, not on the timeline, which is the arithmetic every reader of this
+ * config has to get right. `broll_clip` and `clip_overlay` are deliberately the SAME layer class:
+ * they use the same overlay element and the export has always treated both as `kind: 'clip'`.
+ */
+function asStackedClip<T extends { id: string; global_offset_sec: number; start_sec: number; end_sec: number }>(
+  clip: T,
+): StackRank & { clip: T } {
+  return {
+    id: clip.id,
+    layer: OVERLAY_LAYER.clip,
+    start: clip.global_offset_sec,
+    end: clip.global_offset_sec + (clip.end_sec - clip.start_sec),
+    clip,
+  };
 }
 
 export function useProjectPlayer(
@@ -2404,13 +2426,17 @@ export function useProjectPlayer(
 
   const updateBrollOverlay = (gt: number) => {
     if (branching) return;  // flat overlays disabled in branching mode (Phase 2)
-    // Merge broll_clips and clip_overlays — both use the same video overlay mechanism
+    // Merge broll_clips and clip_overlays — both use the same video overlay mechanism.
+    //
+    // WHICH ONE WINS IS NOT THIS FILE'S DECISION ANY MORE (broll-player-002). This used to be
+    // `.find(...)` — the FIRST array match — which meant a `clip_overlay` could never beat a
+    // `broll_clip` however much later it started, and that array order, not the timeline, decided
+    // what a viewer saw. The export resolved the same overlap by layer then later-start, so the
+    // two surfaces disagreed and what an author previewed was not what the master contained.
+    // `topmostAt` is now the single rule both call.
     const cfg = overlayConfigRef.current;
-    const brollClips = [...(cfg.broll_clips ?? []), ...(cfg.clip_overlays ?? [])];
-    const clip = brollClips.find((b) => {
-      const brollEnd = b.global_offset_sec + (b.end_sec - b.start_sec);
-      return gt >= b.global_offset_sec && gt < brollEnd;
-    }) ?? null;
+    const overlayClips = [...(cfg.broll_clips ?? []), ...(cfg.clip_overlays ?? [])];
+    const clip = topmostAt(overlayClips.map(asStackedClip), gt)?.clip ?? null;
 
     if (clip?.id !== activeBrollRef.current?.id) {
       const brollEl = refs.videoBroll.current;
@@ -2900,10 +2926,25 @@ export function useProjectPlayer(
       // Pre-warm next broll clip 15s before its start (flat overlays are disabled in
       // branching mode — their global offsets don't map onto per-sequence timelines).
       if (!branching) {
-        const brollClips = overlayConfigRef.current.broll_clips ?? [];
-        const nextBroll = brollClips.find((b) =>
-          gt < b.global_offset_sec && gt + 15 >= b.global_offset_sec
-        ) ?? null;
+        // PREWARM WHAT WILL ACTUALLY BE SHOWN, not whichever row sits first in the array — the
+        // second half of broll-player-002. Take the earliest start in the look-ahead window, then
+        // ask the shared rule who wins AT that instant across every overlay lane; a clip that will
+        // be covered by a later-starting one is not worth prewarming. Only b-roll can be prewarmed
+        // (the standby element is a b-roll element), so a `clip_overlay` winner simply means
+        // nothing to do — which is what happened before for every clip_overlay anyway.
+        const liveCfg = overlayConfigRef.current;
+        const brollClips = liveCfg.broll_clips ?? [];
+        const allOverlays = [...brollClips, ...(liveCfg.clip_overlays ?? [])].map(asStackedClip);
+        const upcoming = brollClips
+          .filter((b) => gt < b.global_offset_sec && gt + 15 >= b.global_offset_sec)
+          .sort((a, b) => a.global_offset_sec - b.global_offset_sec);
+        const soonest = upcoming[0] ?? null;
+        const winnerAtStart = soonest
+          ? topmostAt(allOverlays, soonest.global_offset_sec)?.clip ?? null
+          : null;
+        const nextBroll = winnerAtStart && brollClips.some((b) => b.id === winnerAtStart.id)
+          ? (winnerAtStart as typeof brollClips[number])
+          : null;
         if (nextBroll && nextBroll.id !== standbyBrollClipIdRef.current && nextBroll.id !== activeBrollRef.current?.id) {
           prewarmBroll(nextBroll, hlsLibRef.current);
         }
