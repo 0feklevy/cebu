@@ -27,9 +27,34 @@ export class CorpusBuilder {
   async ingest(
     corpusId: string,
     sse?: SSEEmitter,
+    opts: { force?: boolean } = {},
   ): Promise<void> {
     const corpus = await db.query.corpora.findFirst({ where: eq(corpora.id, corpusId) });
     if (!corpus) throw new Error(`Corpus ${corpusId} not found`);
+
+    // ALREADY DONE — return without redoing paid work.
+    //
+    // This became load-bearing when ingest moved onto the durable queue (job-queue-015). pg-boss
+    // re-delivers a job whose completion was lost — a worker killed between finishing the work and
+    // acknowledging it, which a deploy makes routine — and for an AUDIO corpus this method runs a
+    // billed speech-to-text pass. Without this line, a lost acknowledgement is a second invoice for
+    // bytes that are already in the row.
+    //
+    // The condition asks for both the status and the CONTENT. A row marked `ready` with an empty
+    // `extracted_md` is not a finished ingest, it is a bug or a partial write, and short-circuiting
+    // on the flag alone would make it permanent.
+    //
+    // The SSE event is still emitted, because a client that reconnected mid-ingest is waiting for
+    // exactly this and has no other way to learn the work is finished.
+    if (!opts.force && corpus.ingestion_status === 'ready' && (corpus.extracted_md?.length ?? 0) > 0) {
+      logger.info({ corpusId }, 'Corpus already ingested — skipping (idempotent re-delivery)');
+      sse?.emit({
+        type: 'corpus_ready',
+        corpus_id: corpusId,
+        extracted_md_preview: corpus.extracted_md!.slice(0, 500),
+      });
+      return;
+    }
 
     // From here until the `ready`/`failed` writes below, this row is `processing` and the ONLY
     // things that will ever move it off again are the happy path and the catch at the bottom of

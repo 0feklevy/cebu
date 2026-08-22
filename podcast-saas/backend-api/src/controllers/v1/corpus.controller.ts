@@ -14,9 +14,9 @@ import {
   UploadTooLargeError,
   withBoundedTempFile,
 } from '../../services/security/uploadLimits.js';
-import { CorpusBuilder } from '../../services/ingestion/CorpusBuilder.js';
 import { MARKITDOWN_EXTENSIONS } from '../../services/ingestion/DocumentIngester.js';
 import { logger } from '../../lib/logger.js';
+import { enqueueJob } from '../../queue/index.js';
 
 type FileSourceType = 'pdf' | 'audio' | 'image' | 'document';
 
@@ -134,11 +134,20 @@ export async function registerCorpusRoutes(app: FastifyInstance): Promise<void> 
           })
           .returning();
 
-        // Async ingest — don't await
-        const builder = new CorpusBuilder();
-        builder.ingest(corpus.id).catch((err) => {
-          logger.error({ err }, 'Corpus ingest failed');
-        });
+        // DURABLE, not fire-and-forget (job-queue-015 / backend-008).
+        //
+        // This used to be `builder.ingest(id).catch(log)` — a floating promise in the request
+        // process. It survived nothing: a deploy, a crash or an OOM between here and the `ready`
+        // write left the row at `processing` with no one running it and nothing that would ever
+        // retry. `corpusRecovery.ts` was added to clear those stranded rows, which is a good sweep
+        // and is not the same thing as the work getting done: it marks the ingest FAILED so the
+        // user can try again.
+        //
+        // On the queue, the job outlives the process that accepted the upload. The singleton key
+        // is the corpus id, so two sends are one ingest, and `CorpusBuilder.ingest` returns
+        // immediately when the row is already `ready` — so a re-delivery whose acknowledgement was
+        // lost costs a SELECT rather than a second paid extraction.
+        enqueueJob('corpus_ingest', { corpusId: corpus.id });
 
         return reply.code(202).send({
           corpus_id: corpus.id,
@@ -166,11 +175,8 @@ export async function registerCorpusRoutes(app: FastifyInstance): Promise<void> 
           })
           .returning();
 
-        // Async ingest
-        const builder = new CorpusBuilder();
-        builder.ingest(corpus.id).catch((err) => {
-          logger.error({ err }, 'Corpus ingest failed');
-        });
+        // Durable, for the reasons written out at the file-upload site above.
+        enqueueJob('corpus_ingest', { corpusId: corpus.id });
 
         return reply.code(202).send({
           corpus_id: corpus.id,

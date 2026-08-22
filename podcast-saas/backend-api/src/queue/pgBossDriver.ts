@@ -59,6 +59,9 @@ export const QUEUE_CONCURRENCY: Record<JobName, number> = {
   podcast_script: 2,
   video_generate: 2,
   project_duplicate: 2,
+  // Extraction is network- and provider-bound — a fetch, then a PDF/STT/vision call. The ffmpeg-free
+  // path through this system, so it is not in CPU_BOUND_JOBS and two may interleave.
+  corpus_ingest: 2,
 
   // Dubbing spends most of its wall clock waiting on the vendor, but its tail is an ffmpeg mux
   // plus a full HLS ladder — CPU-bound work on a 2-vCPU host. One at a time here; the number that
@@ -187,6 +190,9 @@ export function singletonKeyFor<N extends JobName>(name: N, payload: JobPayloads
   // this line claimed `??` was preventing cross-project dedup. It was not, and a mutation to `||`
   // proved it by changing nothing: both spellings are correct. A comment that names a protection
   // it does not provide is worse than no comment, because the next reader believes it.)
+  // Two sends for one corpus row are one ingest. Collapsing them in the queue is strictly better
+  // than letting both start: the second would re-run a paid extraction to produce the same bytes.
+  if (name === 'corpus_ingest') return (payload as JobPayloads['corpus_ingest']).corpusId;
   if (name === 'audio_edition') {
     const p = payload as JobPayloads['audio_edition'];
     return `${p.projectId}:${p.language ?? 'source'}`;

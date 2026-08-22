@@ -40,6 +40,7 @@ const SAMPLE_PAYLOADS: { [N in JobName]: JobPayloads[N] } = {
   project_export: { exportId: 'e1' },
   dub: { dubId: 'd1' },
   audio_edition: { projectId: 'p1', language: null },
+  corpus_ingest: { corpusId: 'c1' },
 };
 
 describe('a queue that is sent a singletonKey must have a policy that honours it', () => {

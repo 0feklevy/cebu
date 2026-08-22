@@ -60,6 +60,7 @@ export const PGBOSS_JOB_NAMES = [
   // until the stale horizon frees it — twenty minutes of a creator pressing a button that does
   // nothing. Durability costs nothing here and removes that window entirely.
   'audio_edition',
+  'corpus_ingest',
 ] as const satisfies readonly JobName[];
 
 const DLQ_SUFFIX = '-dead';
@@ -106,6 +107,23 @@ export const QUEUE_OPTIONS: Record<
   QueueOptions & { policy: QueuePolicy }
 > = {
   crop: { policy: 'short', retryLimit: 3, retryDelay: 30, retryBackoff: true, expireInSeconds: 30 * 60 },
+
+  /**
+   * Corpus ingest — the only one of these whose retry budget is set by a VENDOR BILL.
+   *
+   * `retryLimit: 1`, the same number and the same reasoning as `metadata`: an ingest of an audio
+   * corpus runs a paid speech-to-text pass, so every attempt after the first costs money. One
+   * retry buys the case this queue exists for — a deploy or a crash mid-ingest — without turning a
+   * genuinely broken source into a small recurring bill.
+   *
+   * The retry is also nearly free in the common case, because `CorpusBuilder.ingest` returns
+   * immediately when the row is already `ready` with its extracted markdown. A retry after a
+   * SUCCESS whose completion was lost costs one SELECT.
+   *
+   * `policy: 'short'` with a singletonKey of the corpus id: two sends for one corpus row are
+   * unambiguously one piece of work.
+   */
+  corpus_ingest: { policy: 'short', retryLimit: 1, retryDelay: 60, retryBackoff: true, expireInSeconds: 45 * 60 },
   video_generate: { policy: 'short', retryLimit: 2, retryDelay: 60, retryBackoff: true, expireInSeconds: 45 * 60 },
   // An export's worst case is the SUM of its sections' wall-clock caps, and each of those is up to
   // 600 s (`wallClockCapSec`) — so a project with more than six simulation windows could legitimately
