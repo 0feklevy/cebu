@@ -172,9 +172,21 @@ Production runs **v0.1.39**. Merged to `main` and NOT deployed:
 - **#77** — the writers'-room golden suite and the podcast pipeline's own health metrics.
 - **#78** — A2.1, audio editions.
 
-**The first release after #76 exercises `candidate-smoke` against live images for the first time.**
-It fails closed, so the risk is a blocked release rather than a bad deploy — which makes this the
-right release to find out on, not the wrong one.
+### THE GATE'S FIRST LIVE RUN, 2026-08-22 — it blocked the deploy, and it was right to
+
+Release run 32580801013: `candidate-smoke` FAILED → **deploy SKIPPED, publish SKIPPED, production
+containers untouched on v0.1.39.** Fail-closed demonstrated in production rather than argued for.
+
+The cause was a bug in the gate itself, not in the images. The workflow sets
+`defaults.run.working-directory: podcast-saas`, so every `run:` step starts one directory down,
+while `actions/download-artifact` writes relative to the workspace ROOT — a relative
+`artifacts/manifest.json` looked in `podcast-saas/artifacts/` and found nothing. The job then did
+exactly what it promises when it cannot identify the candidate: refused.
+
+Fixed in PR #81, which also adds a string check for the whole class — the trap waits for every
+future step added to that job and costs a full image build to discover. Verified: `candidate-smoke`
+was the ONLY job with the problem; every other one already reads through the absolute `$ART`.
+
 **Done when:** a release is published and deployed, and production reports the new version.
 
 ### ✅ WAVE 1 — CLOSED (2026-08-22), verified in `main` rather than assumed
