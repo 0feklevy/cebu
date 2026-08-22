@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { ZodSchema } from 'zod';
 import JSON5 from 'json5';
 import { LLMProvider, type TaskType, type TokenUsage, type EffortLevel, type LLMResponse } from './LLMProvider.js';
+import { describeUnparseable } from './unparseableOutput.js';
 import { ClaudeProvider } from './ClaudeProvider.js';
 import { OpenAIProvider } from './OpenAIProvider.js';
 import { GeminiProvider } from './GeminiProvider.js';
@@ -711,7 +712,13 @@ export class LLMService {
     // If schema validation was the closest we got, surface that error
     if (lastSchemaError) throw lastSchemaError;
 
-    logger.error({ rawLen: raw.length, rawPreview: raw.slice(0, 800) }, 'All JSON repair attempts failed — raw LLM output shown');
+    // SHAPE, NOT CONTENT (observability-009). This line used to carry `raw.slice(0, 800)` — 800
+    // characters of the model's attempt at a structured answer about the USER'S OWN material, at
+    // error level, which is the line most likely to be shipped somewhere or pasted into an issue.
+    // Almost none of its diagnostic value was in the words: a JSON parse failure is a question
+    // about shape, and brace balance, fencing and the two redacted edges answer it without
+    // putting a customer's document in the log.
+    logger.error({ output: describeUnparseable(raw) }, 'All JSON repair attempts failed');
     throw new AppError(
       LLMErrorType.PARSING_ERROR,
       'Failed to parse LLM response as valid JSON after all repair attempts',
