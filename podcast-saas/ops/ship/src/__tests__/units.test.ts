@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -210,5 +210,62 @@ describe('report', () => {
       nextActions(fakeRun({ failure: { stage: 'deploy', kind, summary: 's', evidence: [] } }), 'o/r'),
     );
     expect(all.join(' ')).not.toMatch(/just re-run|try again until|--approve-high` to get past/i);
+  });
+});
+
+/**
+ * backend-009 — the state file's write must be ATOMIC, not a truncating copy.
+ *
+ * `saveRun`'s comment has always promised "a reader tailing this directory never sees a
+ * half-written state", while the code did `writeFileSync(stateFile, readFileSync(tmp))`.
+ * `writeFileSync` opens with O_TRUNC, so between that open and the write completing the state file
+ * is empty on disk — and `loadRun` catches the resulting parse error and returns null, which every
+ * caller reads as "there is no run". A shipment in progress reported as nonexistent.
+ */
+describe('saveRun writes atomically (backend-009)', () => {
+  const paths = runPaths(tmp(), 'run-atomic');
+
+  /**
+   * THE TEST THAT ACTUALLY DISTINGUISHES THE TWO IMPLEMENTATIONS.
+   *
+   * A first attempt asserted only that no `.tmp` file was left behind — and a mutation check showed
+   * that passes against the ORIGINAL BUG too, because the copy-based version also removed its temp
+   * file. It looked like coverage and was not.
+   *
+   * The inode is the honest observable. `writeFileSync` on an existing path opens it with O_TRUNC
+   * and writes in place, so the file keeps its inode — and that in-place truncation IS the window a
+   * reader can land in. `renameSync` replaces the directory entry, so the path resolves to the temp
+   * file's inode instead: a reader holding the old one still sees a complete previous state, and a
+   * reader opening the path fresh sees a complete new one. Never a seam.
+   */
+  it('replaces the file by RENAME, not by truncating it in place', () => {
+    saveRun(paths, fakeRun({ verdict: 'RUNNING' }));
+    const before = statSync(paths.stateFile).ino;
+
+    saveRun(paths, fakeRun({ verdict: 'SHIPPED' }));
+    const after = statSync(paths.stateFile).ino;
+
+    expect(after, 'the inode is unchanged, so the file was truncated in place — a reader can land '
+      + 'inside that window and get unparseable JSON, which loadRun reports as "no run"')
+      .not.toBe(before);
+  });
+
+  it('leaves no temp file behind', () => {
+    saveRun(paths, fakeRun({ verdict: 'RUNNING' }));
+    expect(existsSync(`${paths.stateFile}.tmp`)).toBe(false);
+    expect(existsSync(paths.stateFile)).toBe(true);
+  });
+
+  it('round-trips through loadRun', () => {
+    saveRun(paths, fakeRun({ verdict: 'SHIPPED' }));
+    expect(loadRun(paths)?.verdict).toBe('SHIPPED');
+  });
+
+  it('keeps the file parseable across repeated saves', () => {
+    for (const verdict of ['RUNNING', 'BLOCKED', 'SHIPPED', 'FAILED'] as const) {
+      saveRun(paths, fakeRun({ verdict }));
+      expect(loadRun(paths)?.verdict, verdict).toBe(verdict);
+      expect(existsSync(`${paths.stateFile}.tmp`)).toBe(false);
+    }
   });
 });
