@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { adminApi } from '../../lib/api';
 import { AdminShell } from '../../components/AdminShell';
+import { formatFailureRate, formatMs } from '../../lib/pipelineFormat';
 import type { AdminSettings, PipelineStats, UsageRollup } from 'shared/src/generated/admin-v1';
 
 export default function DashboardPage() {
@@ -128,6 +129,68 @@ export default function DashboardPage() {
             </div>
           </section>
 
+          {/* Podcast pipeline (observability-006) */}
+          <section className="mb-8">
+            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+              Podcast Pipeline
+            </h2>
+            <div className="rounded-lg border border-border bg-card p-4">
+              <div className="text-xs text-muted-foreground mb-3">
+                {stats.podcast.renders.total.toLocaleString()} renders total ·{' '}
+                {stats.podcast.renders.recent_30d.total.toLocaleString()} in the last 30 days
+              </div>
+              <HlsStatusBar counts={stats.podcast.renders.by_status} total={stats.podcast.renders.total} />
+              <div className="grid grid-cols-3 gap-3 mt-4">
+                <FailureRateCard
+                  label="Failure rate (all time)"
+                  rate={stats.podcast.renders.failure_rate}
+                />
+                <FailureRateCard
+                  label="Failure rate (30 days)"
+                  rate={stats.podcast.renders.recent_30d.failure_rate}
+                />
+                <MetricCard
+                  label="Failed renders"
+                  value={stats.podcast.renders.by_status.failed.toLocaleString()}
+                  bad={stats.podcast.renders.by_status.failed > 0}
+                />
+              </div>
+              <div className="grid grid-cols-4 gap-3 mt-3">
+                <MetricCard label="Completed" value={stats.podcast.renders.duration_ms.completed.toLocaleString()} />
+                <MetricCard label="Median" value={formatMs(stats.podcast.renders.duration_ms.p50)} />
+                {/* p95 beside the median deliberately: the tail is what a listener waits through,
+                    and a mean cannot show it. */}
+                <MetricCard label="p95" value={formatMs(stats.podcast.renders.duration_ms.p95)} />
+                <MetricCard
+                  label="Render cost"
+                  value={`$${(stats.podcast.renders.cost_cents / 100).toFixed(2)}`}
+                />
+              </div>
+            </div>
+          </section>
+
+          {/* Podcast scripts — a run that fails HERE never reaches the renderer at all, so a
+              render-only view would show a quiet, healthy pipeline producing nothing. */}
+          <section className="mb-8">
+            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+              Writers&rsquo; Room (Scripts)
+            </h2>
+            <div className="grid grid-cols-4 gap-4">
+              <MetricCard label="Total" value={stats.podcast.scripts.total.toLocaleString()} />
+              <MetricCard
+                label="Ready"
+                value={stats.podcast.scripts.by_status.ready.toLocaleString()}
+                good={stats.podcast.scripts.by_status.ready > 0}
+              />
+              <MetricCard
+                label="Failed"
+                value={stats.podcast.scripts.by_status.failed.toLocaleString()}
+                bad={stats.podcast.scripts.by_status.failed > 0}
+              />
+              <FailureRateCard label="Failure rate" rate={stats.podcast.scripts.failure_rate} />
+            </div>
+          </section>
+
           {/* AI extraction (last 30 days) */}
           <section className="mb-8">
             <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
@@ -193,6 +256,28 @@ function MetricCard({ label, value, bad, good }: { label: string; value: string;
       <div className={`text-xl font-bold ${bad ? 'text-destructive' : good ? 'text-primary' : ''}`}>{value}</div>
     </div>
   );
+}
+
+/**
+ * A failure rate, or an explicit no-data state.
+ *
+ * The RULE lives in lib/pipelineFormat.ts and is tested there, deliberately. `null` and `0` come
+ * back from the API as different values so that "no evidence" and "evidence of health" stay
+ * different all the way to the screen, and a single `?? 0` anywhere in here would collapse them
+ * again — silently, and in the direction that reassures.
+ */
+function FailureRateCard({ label, rate }: { label: string; rate: number | null }) {
+  const d = formatFailureRate(rate);
+  if (d.tone === 'unknown') {
+    return (
+      <div className="rounded-lg border border-border bg-card p-4">
+        <div className="text-xs text-muted-foreground mb-1">{label}</div>
+        <div className="text-2xl font-bold text-muted-foreground">{d.text}</div>
+        <div className="text-xs text-muted-foreground mt-1">{d.hint}</div>
+      </div>
+    );
+  }
+  return <MetricCard label={label} value={d.text} bad={d.tone === 'bad'} good={d.tone === 'good'} />;
 }
 
 function HlsStatusBar({ counts, total }: { counts: Record<string, number>; total: number }) {
