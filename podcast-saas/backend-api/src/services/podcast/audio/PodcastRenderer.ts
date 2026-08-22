@@ -73,8 +73,14 @@ export class PodcastRenderer {
   private async meteredSynthesize(
     params: Parameters<ElevenLabsDialogue['synthesize']>[0],
   ): Promise<Awaited<ReturnType<ElevenLabsDialogue['synthesize']>>> {
-    this.charactersSpent += charactersIn(params.inputs);
-    return this.el.synthesize(params);
+    const chars = charactersIn(params.inputs);
+    const result = await this.el.synthesize(params);
+    // MULTIPLIED BY THE ATTEMPTS THE CLIENT ACTUALLY MADE. Its retry loop is internal — up to four
+    // requests for one `synthesize()` call — so counting one synthesis per call under-reports by
+    // up to 4× precisely when the account is being rate-limited, which is when spend is highest
+    // and the number matters most. The text arrived on every attempt, so every attempt is billed.
+    this.charactersSpent += chars * Math.max(1, result.attempts ?? 1);
+    return result;
   }
 
   /**

@@ -36,13 +36,16 @@ interface Internals {
   recordSpend: (a: { userId: string | null; episodeId: string; renderId: string }) => Promise<void>;
 }
 
-function renderer(): { r: PodcastRenderer; i: Internals; calls: number } {
+function renderer(): { r: PodcastRenderer; i: Internals; calls: number; setAttempts: (n: number) => void } {
   const r = new PodcastRenderer();
   const i = r as unknown as Internals;
-  const state = { calls: 0 };
-  i.el = { synthesize: async () => { state.calls++; return { audioBase64: '', voiceSegments: [] }; } };
+  const state = { calls: 0, attempts: 1 };
+  // `attempts` defaults to 1 here; tests that care about the retry multiplier set it explicitly.
+  i.el = {
+    synthesize: async () => { state.calls++; return { audioBase64: '', voiceSegments: [], attempts: state.attempts }; },
+  };
   i.charactersSpent = 0;
-  return { r, i, get calls() { return state.calls; } };
+  return { r, i, get calls() { return state.calls; }, setAttempts: (n) => { state.attempts = n; } };
 }
 
 beforeEach(() => { record.mockClear(); });
@@ -64,6 +67,25 @@ describe('every synthesis is counted, including the ones that were thrown away',
     await i.meteredSynthesize(chunk);
     await i.meteredSynthesize(chunk);   // the retry
     expect(i.charactersSpent).toBe('a stubborn line'.length * 2);
+  });
+
+  it('multiplies by the attempts the CLIENT made, not by the calls we made', async () => {
+    // The retry loop is inside `ElevenLabsDialogue`: one `synthesize()` can be up to four requests,
+    // and the vendor bills each because the text arrived every time. Counting one per call
+    // under-reports by up to 4× exactly when the account is rate-limited — when spend is highest.
+    const h = renderer();
+    h.setAttempts(3);
+    await h.i.meteredSynthesize({ inputs: [{ text: 'twelve chars' }] });
+    expect(h.i.charactersSpent).toBe(12 * 3);
+  });
+
+  it('treats a client that reports no attempts as one', async () => {
+    // Defensive: an older client, or a stub in someone else's test, must not price a real call at
+    // zero. Under-reporting to zero is the failure that looks like good news.
+    const h = renderer();
+    h.setAttempts(undefined as unknown as number);
+    await h.i.meteredSynthesize({ inputs: [{ text: 'abcde' }] });
+    expect(h.i.charactersSpent).toBe(5);
   });
 
   it('still reaches the vendor — the meter must not swallow the call', async () => {
