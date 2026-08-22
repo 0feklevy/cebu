@@ -20,6 +20,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Fastify from 'fastify';
 import { registerSectionsRoutes } from '../sections.controller.js';
+import { callArg } from '../../../__tests__/helpers/mockCalls.js';
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
@@ -329,7 +330,7 @@ describe('regeneration persistence', () => {
     expect(genOpts.uiControls).toEqual({ controls: SELECTION.controls, show: ['#a', '#b'], hide: ['#c', '#z'] });
 
     // sim_meta persisted with planVersion '7' + normalized uiControls.
-    const setArg = mockUpdateSet.mock.calls[0][0] as { sim_meta: Record<string, unknown> };
+    const setArg = callArg(mockUpdateSet, 0, 0) as { sim_meta: Record<string, unknown> };
     expect(setArg.sim_meta.planVersion).toBe('7');
     expect(setArg.sim_meta.uiControls).toEqual({ controls: SELECTION.controls, show: ['#a', '#b'], hide: ['#c', '#z'] });
   });
@@ -340,7 +341,7 @@ describe('regeneration persistence', () => {
     const res = await app.inject({ method: 'GET', url: streamUrl() });
     expect(res.body).toContain('event: done');
     expect(mockGenerate).toHaveBeenCalledTimes(1);
-    const setArg = mockUpdateSet.mock.calls[0][0] as { sim_meta: Record<string, unknown> };
+    const setArg = callArg(mockUpdateSet, 0, 0) as { sim_meta: Record<string, unknown> };
     expect(setArg.sim_meta.planVersion).toBe('7');
     expect(setArg.sim_meta.uiControls).toBeUndefined();
   });
@@ -389,7 +390,7 @@ describe('POST /generate-sim-script — ui_controls parity with the SSE route', 
     expect(res.statusCode).toBe(200);
     expect(mockGenerate).toHaveBeenCalledTimes(1);
     expect(mockReuse).not.toHaveBeenCalled();
-    const setArg = mockUpdateSet.mock.calls[0][0] as { sim_meta: Record<string, unknown> };
+    const setArg = callArg(mockUpdateSet, 0, 0) as { sim_meta: Record<string, unknown> };
     expect(setArg.sim_meta.uiControls).toBeUndefined();
   });
 
@@ -401,7 +402,7 @@ describe('POST /generate-sim-script — ui_controls parity with the SSE route', 
     expect(mockGenerate).toHaveBeenCalledTimes(1);
     const genOpts = mockGenerate.mock.calls[0][0];
     expect(genOpts.uiControls).toEqual({ controls: SELECTION.controls, show: ['#a', '#b'], hide: ['#c', '#z'] });
-    const setArg = mockUpdateSet.mock.calls[0][0] as { sim_meta: Record<string, unknown> };
+    const setArg = callArg(mockUpdateSet, 0, 0) as { sim_meta: Record<string, unknown> };
     expect(setArg.sim_meta.planVersion).toBe('7');
     expect(setArg.sim_meta.uiControls).toEqual({ controls: SELECTION.controls, show: ['#a', '#b'], hide: ['#c', '#z'] });
   });
@@ -442,7 +443,7 @@ describe('generate without a prompt → mechanical minimize-UI (no LLM)', () => 
     expect(mockMechanical).toHaveBeenCalledTimes(1);
     expect(mockGenerate).not.toHaveBeenCalled();
     expect(mockReuse).not.toHaveBeenCalled();
-    const setArg = mockUpdateSet.mock.calls[0][0] as { sim_meta: Record<string, unknown>; sim_prompt?: unknown };
+    const setArg = callArg(mockUpdateSet, 0, 0) as { sim_meta: Record<string, unknown>; sim_prompt?: unknown };
     // Provenance PRESERVED (the bridge body is unchanged) — the section stays LLM-authored,
     // keeps its built prompt, and sim_prompt is not touched; only the selection changed.
     expect(setArg.sim_meta.generatedBy).toBe('llm');
@@ -460,7 +461,7 @@ describe('generate without a prompt → mechanical minimize-UI (no LLM)', () => 
     });
     expect(res.statusCode).toBe(200);
     expect(mockMechanical).toHaveBeenCalledTimes(1);
-    const setArg = mockUpdateSet.mock.calls[0][0] as { sim_meta: Record<string, unknown> };
+    const setArg = callArg(mockUpdateSet, 0, 0) as { sim_meta: Record<string, unknown> };
     expect(setArg.sim_meta.generatedBy).toBe('mechanical');
     expect(setArg.sim_meta.uiControls).toEqual(SELECTION);
   });

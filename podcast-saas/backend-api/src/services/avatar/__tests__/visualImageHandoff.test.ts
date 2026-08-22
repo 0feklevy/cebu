@@ -59,6 +59,7 @@ vi.mock('../../llm/systemAi.js', () => ({
 import { analyzeVisual } from '../visualService.js';
 import { analyzeAndGenerateImage } from '../imageService.js';
 import { resetImageClassificationMemo, takeImageClassification } from '../visualClassifyMemo.js';
+import { callArg } from '../../../__tests__/helpers/mockCalls.js';
 
 const MESSAGE = 'why do the finch beaks differ between the islands?';
 const CHARACTER = 'darwin';
@@ -119,7 +120,7 @@ describe('the turn that ends in a picture', () => {
     // The prompt actually sent to gpt-image-1 is the one the visual classify wrote — proving the
     // shortcut carried the real work forward rather than skipping the work altogether.
     expect(ai.imagesGenerate).toHaveBeenCalledTimes(1);
-    expect((ai.imagesGenerate.mock.calls[0][0] as { prompt: string }).prompt).toBe(DALLE);
+    expect(callArg<{ prompt: string }>(ai.imagesGenerate, 0, 0).prompt).toBe(DALLE);
     expect(image.caption).toBe('Beak shape tracks the food on each island.');
   });
 
@@ -133,7 +134,7 @@ describe('the turn that ends in a picture', () => {
 
     expect(modelsCalled()).toEqual(['gpt-4.1-mini']);
     expect(image.shouldGenerate).toBe(true);
-    expect((ai.imagesGenerate.mock.calls[0][0] as { prompt: string }).prompt).toBe('a second, redundant prompt');
+    expect(callArg<{ prompt: string }>(ai.imagesGenerate, 0, 0).prompt).toBe('a second, redundant prompt');
   });
 
   it('does not let one classification cover a later, different question', async () => {

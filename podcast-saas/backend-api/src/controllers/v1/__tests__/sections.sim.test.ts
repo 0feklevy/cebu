@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Fastify from 'fastify';
 import { registerSectionsRoutes } from '../sections.controller.js';
+import { callArg } from '../../../__tests__/helpers/mockCalls.js';
 
 // ── Mocks (hoisted so they're available inside vi.mock factories) ──────────────
 
@@ -163,7 +164,7 @@ describe('POST /api/v1/projects/:id/sections — simulation denormalization', ()
     expect(body.simulation_url).toBe(SIM_URL);
 
     // Confirm the insert values contained the resolved URL
-    const insertedValues = mockInsertValues.mock.calls[0][0];
+    const insertedValues = callArg(mockInsertValues, 0, 0);
     expect(insertedValues.simulation_url).toBe(SIM_URL);
     expect(insertedValues.simulation_id).toBe(SIM_ID);
   });
@@ -189,7 +190,7 @@ describe('POST /api/v1/projects/:id/sections — simulation denormalization', ()
     expect(res.statusCode).toBe(201);
     // Should NOT have queried simulations table
     expect(mockSimulations.findFirst).not.toHaveBeenCalled();
-    const insertedValues = mockInsertValues.mock.calls[0][0];
+    const insertedValues = callArg(mockInsertValues, 0, 0);
     expect(insertedValues.simulation_url).toBe(directUrl);
   });
 
@@ -258,7 +259,7 @@ describe('PATCH /api/v1/projects/:id/sections/:sid — simulation denormalizatio
 
     expect(res.statusCode).toBe(200);
     // Verify the patch object passed to db.update().set() included simulation_url
-    const setArg = mockUpdateSet.mock.calls[0][0] as Record<string, unknown>;
+    const setArg = callArg<Record<string, unknown>>(mockUpdateSet, 0, 0);
     expect(setArg.simulation_url).toBe(SIM_URL);
     expect(setArg.simulation_id).toBe(SIM_ID);
   });
@@ -278,7 +279,7 @@ describe('PATCH /api/v1/projects/:id/sections/:sid — simulation denormalizatio
     expect(res.statusCode).toBe(200);
     // Empty simulation_id should clear URL and not query simulations table
     expect(mockSimulations.findFirst).not.toHaveBeenCalled();
-    const setArg = mockUpdateSet.mock.calls[0][0] as Record<string, unknown>;
+    const setArg = callArg<Record<string, unknown>>(mockUpdateSet, 0, 0);
     expect(setArg.simulation_url).toBeNull();
     expect(setArg.simulation_id).toBeNull();
   });
@@ -298,7 +299,7 @@ describe('PATCH /api/v1/projects/:id/sections/:sid — simulation denormalizatio
     expect(res.statusCode).toBe(200);
     // simulation_id not in body → simulations table not queried, simulation_url not in patch
     expect(mockSimulations.findFirst).not.toHaveBeenCalled();
-    const setArg = mockUpdateSet.mock.calls[0][0] as Record<string, unknown>;
+    const setArg = callArg<Record<string, unknown>>(mockUpdateSet, 0, 0);
     expect('simulation_url' in setArg).toBe(false);
   });
 });

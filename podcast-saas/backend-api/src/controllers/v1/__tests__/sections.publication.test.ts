@@ -25,6 +25,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
+import { callArg } from '../../../__tests__/helpers/mockCalls.js';
 import {
   registerSectionsRoutes, classifySimulationError, ERROR_MESSAGES,
 } from '../sections.controller.js';
@@ -362,7 +363,7 @@ describe('the section update is only ever the service’s in-transaction hook', 
     });
     expect(res.statusCode).toBe(200);
     expect(mockUpdateSet).toHaveBeenCalledTimes(1);
-    expect(mockUpdateSet.mock.calls[0][0]).toMatchObject({
+    expect(callArg(mockUpdateSet, 0, 0)).toMatchObject({
       simple_ui: true, auto_script: false, sim_script: 'main',
       sim_prompt: PROMPT, simulation_url: GEN_RESULT.sectionUrl,
     });
@@ -398,7 +399,7 @@ describe('the reuse path publishes nothing', () => {
     });
     expect(res.statusCode).toBe(200);
     expect(mockUpdateSet).toHaveBeenCalledTimes(1);
-    const patch = mockUpdateSet.mock.calls[0][0] as Record<string, unknown>;
+    const patch = callArg<Record<string, unknown>>(mockUpdateSet, 0, 0);
     // Only the toggles + the (unchanged) URL. A reuse produced no new bytes, so re-stamping
     // sim_meta would advertise a fresh generation that never happened.
     expect(patch).toEqual({

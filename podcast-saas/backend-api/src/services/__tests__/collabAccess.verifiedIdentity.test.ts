@@ -26,6 +26,7 @@
  * ADDRESSEE — who the invitation is for — never a credential.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import type { InjectOptions } from 'fastify';
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -98,7 +99,11 @@ type Identity = CollabUser & { token: Token };
 /** Issue a request as a token or an already-signed-in identity, through the real middleware. */
 async function as(
   who: Token | Identity,
-  opts: { method: 'GET' | 'POST' | 'DELETE'; url: string; payload?: unknown },
+  // `payload` is Fastify's OWN type, not `unknown`. With `unknown` the spread below does not
+  // satisfy `InjectOptions`, so overload resolution falls through to the callback form of
+  // `inject`, whose return type is `void & Promise<Response> & Chain` — and every `.statusCode`
+  // and `.json()` on the result becomes a type error. Ten of them in this file, from one word.
+  opts: { method: 'GET' | 'POST' | 'DELETE'; url: string; payload?: InjectOptions['payload'] },
 ) {
   h.verifyIdToken.mockResolvedValue('token' in who ? who.token : who);
   return app.inject({ ...opts, headers: { authorization: 'Bearer t' } });
