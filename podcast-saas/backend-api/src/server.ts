@@ -51,6 +51,7 @@ import { registerCorrelationId } from './middleware/correlationId.js';
 import { canServeMediaKey } from './services/storage/mediaAccess.js';
 import { splitMediaTokenPrefix } from './services/storage/mediaToken.js';
 import { assertEncryptionKeyEnv } from './services/security/encryptionKey.js';
+import { cropAlgoMisconfigured } from './services/crop/algo.js';
 import { GLOBAL_MULTIPART_FILE_LIMIT_BYTES } from './services/security/uploadLimits.js';
 import { apiErrorHandler } from './lib/apiErrorHandler.js';
 import { hlsCacheControlForKey } from './services/video/hlsVersioning.js';
@@ -680,6 +681,13 @@ async function start() {
       logger.error({ err }, (err as Error).message);
       process.exit(1);
     }
+
+    // LOUD, ONCE, AND NOT FATAL. An environment asking for a crop algorithm that does not exist is
+    // being ignored — see cropAlgo() for why honouring it would recompute the whole catalogue to
+    // produce identical output. Refusing to boot over a stray experimental variable would be a
+    // worse outage than the thing it prevents, so this reports and continues.
+    const cropMisconfig = cropAlgoMisconfigured();
+    if (cropMisconfig) logger.error({ CROP_ALGO: process.env.CROP_ALGO }, cropMisconfig);
 
     getFirebaseAdmin(); // validates env vars early
 
