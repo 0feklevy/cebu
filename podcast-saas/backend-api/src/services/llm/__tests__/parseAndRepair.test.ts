@@ -280,3 +280,59 @@ describe('what the parse-failure log carries', () => {
     expect(line).toContain('"kind":"prose"');
   });
 });
+
+/**
+ * THE WARN-LEVEL SIBLING (found by the end-of-day verification pass, not by a report).
+ *
+ * The suite above only drives the never-valid-JSON path, so it exercises `logger.error` and is
+ * structurally blind to the other failure: JSON that PARSES and fails the schema. That path had
+ * its own `raw.slice(0, 300)`, and a second leak nobody was looking for — Zod puts the offending
+ * VALUE into both `received` and `message`, and the issue array was interpolated into the thrown
+ * AppError's message as well, which travels further than a log line.
+ *
+ * The fixture is therefore valid JSON with a wrong enum value, which is exactly the shape that
+ * makes Zod echo the value back.
+ */
+describe('what the SCHEMA-failure log carries', () => {
+  const PRIVATE_ENUM_VALUE = 'Northwind-acquisition-fourteen-million';
+  const EnumSchema = z.object({ mode: z.enum(['fast', 'slow']), name: z.string() });
+
+  const failSchema = (): string => {
+    const warnSpy = logger.warn as unknown as ReturnType<typeof vi.fn>;
+    warnSpy.mockClear();
+    const raw = JSON.stringify({ mode: PRIVATE_ENUM_VALUE, name: 'The acquisition brief' });
+    expect(() => parseAndRepair(raw, EnumSchema)).toThrow(AppError);
+    const calls = warnSpy.mock.calls;
+    expect(calls.length, 'the schema failure was never logged').toBeGreaterThan(0);
+    return JSON.stringify(calls[calls.length - 1]);
+  };
+
+  it('does not carry the raw output', () => {
+    expect(failSchema()).not.toContain('The acquisition brief');
+  });
+
+  it('does not carry the value Zod echoed back in `received`', () => {
+    // The half that looks structural and is not.
+    expect(failSchema()).not.toContain(PRIVATE_ENUM_VALUE);
+  });
+
+  it('still names WHICH field failed, which is the whole diagnostic value', () => {
+    const line = failSchema();
+    expect(line).toContain('"path":"mode"');
+    expect(line).toContain('invalid_enum_value');
+    expect(line).toContain('"options":2');
+  });
+
+  it('keeps the value out of the THROWN error too, not only the log', () => {
+    // The AppError message is interpolated from the same array and reaches further than a log
+    // line does — it is the 422 the caller sees and whatever records that.
+    const raw = JSON.stringify({ mode: PRIVATE_ENUM_VALUE, name: 'x' });
+    try {
+      parseAndRepair(raw, EnumSchema);
+      expect.unreachable('the schema should have rejected this');
+    } catch (e) {
+      expect((e as AppError).message).not.toContain(PRIVATE_ENUM_VALUE);
+      expect((e as AppError).message).toContain('mode');
+    }
+  });
+});
