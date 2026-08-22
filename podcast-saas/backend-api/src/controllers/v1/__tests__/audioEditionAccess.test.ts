@@ -123,7 +123,7 @@ describe('an edition is exactly as public as its project', () => {
   it('serves a PUBLIC project’s audio to an anonymous listener', () => {
     state.project = { id: 'p1', visibility: 'public', created_by: 'owner' };
     state.edition = READY_EDITION;
-    return call('GET', '/api/v1/projects/:id/audio').then((r) => {
+    return call('GET', '/api/v1/projects/:id/audio-edition').then((r) => {
       expect(r.code).toBe(200);
       expect((r.body as { audio_url: string }).audio_url).toContain('editions/p1/');
     });
@@ -134,7 +134,7 @@ describe('an edition is exactly as public as its project', () => {
     // response, a normal log line, and a customer's content readable by anyone with the URL.
     state.project = { id: 'p1', visibility: 'private', created_by: 'owner' };
     state.edition = READY_EDITION;
-    const r = await call('GET', '/api/v1/projects/:id/audio', { user: { id: 'someone-else' } });
+    const r = await call('GET', '/api/v1/projects/:id/audio-edition', { user: { id: 'someone-else' } });
     expect(r.code, 'a private project’s audio was served to a stranger').toBe(404);
     expect((r.body as { audio_url?: string }).audio_url).toBeUndefined();
   });
@@ -144,13 +144,13 @@ describe('an edition is exactly as public as its project', () => {
     // information about a private project.
     state.project = { id: 'p1', visibility: 'private', created_by: 'owner' };
     state.edition = READY_EDITION;
-    expect((await call('GET', '/api/v1/projects/:id/audio', { user: { id: 'x' } })).code).toBe(404);
+    expect((await call('GET', '/api/v1/projects/:id/audio-edition', { user: { id: 'x' } })).code).toBe(404);
   });
 
   it('serves the owner their own private project’s audio', async () => {
     state.project = { id: 'p1', visibility: 'private', created_by: 'owner' };
     state.edition = READY_EDITION;
-    const r = await call('GET', '/api/v1/projects/:id/audio', { user: { id: 'owner' } });
+    const r = await call('GET', '/api/v1/projects/:id/audio-edition', { user: { id: 'owner' } });
     expect(r.code).toBe(200);
   });
 
@@ -159,8 +159,8 @@ describe('an edition is exactly as public as its project', () => {
     // to, or "share" means something different on this surface than everywhere else.
     state.project = { id: 'p1', visibility: 'private', created_by: 'owner', share_token: 'tok' };
     state.edition = READY_EDITION;
-    expect((await call('GET', '/api/v1/projects/:id/audio', { query: { share: 'tok' } })).code).toBe(200);
-    expect((await call('GET', '/api/v1/projects/:id/audio', { query: { share: 'wrong' } })).code).toBe(404);
+    expect((await call('GET', '/api/v1/projects/:id/audio-edition', { query: { share: 'tok' } })).code).toBe(200);
+    expect((await call('GET', '/api/v1/projects/:id/audio-edition', { query: { share: 'wrong' } })).code).toBe(404);
   });
 
   it('applies the identical rule to the captions track', async () => {
@@ -168,14 +168,14 @@ describe('an edition is exactly as public as its project', () => {
     // leaking the audio, and it is the kind of route that gets access checks added last.
     state.project = { id: 'p1', visibility: 'private', created_by: 'owner' };
     state.edition = READY_EDITION;
-    const r = await call('GET', '/api/v1/projects/:id/audio/captions.vtt', { user: { id: 'stranger' } });
+    const r = await call('GET', '/api/v1/projects/:id/audio-edition/captions.vtt', { user: { id: 'stranger' } });
     expect(r.code, 'the transcript was served to a stranger').toBe(404);
   });
 
   it('serves captions as text/vtt, or the browser silently ignores the track', async () => {
     state.project = { id: 'p1', visibility: 'public', created_by: 'owner' };
     state.edition = READY_EDITION;
-    const r = await call('GET', '/api/v1/projects/:id/audio/captions.vtt');
+    const r = await call('GET', '/api/v1/projects/:id/audio-edition/captions.vtt');
     expect(r.headers['content-type']).toContain('text/vtt');
   });
 });
@@ -184,14 +184,14 @@ describe('an edition that is not ready yet', () => {
   it('reports a status rather than a broken URL', async () => {
     state.project = { id: 'p1', visibility: 'public', created_by: 'owner' };
     state.edition = { status: 'processing', m4a_key: null, error: null };
-    const r = await call('GET', '/api/v1/projects/:id/audio');
+    const r = await call('GET', '/api/v1/projects/:id/audio-edition');
     expect(r.code).toBe(200);
     expect(r.body).toMatchObject({ status: 'processing', audio_url: null, chapters: [] });
   });
 
   it('reports "none" when no edition has ever been built', async () => {
     state.project = { id: 'p1', visibility: 'public', created_by: 'owner' };
-    const r = await call('GET', '/api/v1/projects/:id/audio');
+    const r = await call('GET', '/api/v1/projects/:id/audio-edition');
     expect(r.body).toMatchObject({ status: 'none', audio_url: null });
   });
 
@@ -199,7 +199,7 @@ describe('an edition that is not ready yet', () => {
     // The key may still be set from a previous successful build; the status is what decides.
     state.project = { id: 'p1', visibility: 'public', created_by: 'owner' };
     state.edition = { status: 'failed', m4a_key: 'editions/p1/old.m4a', error: 'ffmpeg exploded' };
-    const r = await call('GET', '/api/v1/projects/:id/audio');
+    const r = await call('GET', '/api/v1/projects/:id/audio-edition');
     expect((r.body as { audio_url: null }).audio_url).toBeNull();
     expect((r.body as { error: string }).error).toBe('ffmpeg exploded');
   });
@@ -210,14 +210,14 @@ describe('building costs money, so building needs edit rights', () => {
     // A route any viewer could trigger is a route any viewer could use to spend the owner's
     // compute by reloading a page.
     state.project = { id: 'p1', visibility: 'public', created_by: 'owner', editable: false };
-    const r = await call('POST', '/api/v1/projects/:id/audio', { user: { id: 'viewer' }, body: {} });
+    const r = await call('POST', '/api/v1/projects/:id/audio-edition', { user: { id: 'viewer' }, body: {} });
     expect(r.code).toBe(404);
     expect(state.enqueued, 'a non-editor queued work').toEqual([]);
   });
 
   it('refuses an anonymous caller outright', async () => {
     state.project = { id: 'p1', visibility: 'public', created_by: 'owner', editable: true };
-    const r = await call('POST', '/api/v1/projects/:id/audio', { user: null, body: {} });
+    const r = await call('POST', '/api/v1/projects/:id/audio-edition', { user: null, body: {} });
     expect(r.code).toBe(401);
     expect(state.enqueued).toEqual([]);
   });
@@ -226,7 +226,7 @@ describe('building costs money, so building needs edit rights', () => {
     // 202 is the honest code: the work is accepted, not done. A 200 with no artifact behind it
     // is what makes a client stop polling and show a broken player.
     state.project = { id: 'p1', visibility: 'public', created_by: 'owner', editable: true };
-    const r = await call('POST', '/api/v1/projects/:id/audio', { user: { id: 'owner' }, body: { language: 'he' } });
+    const r = await call('POST', '/api/v1/projects/:id/audio-edition', { user: { id: 'owner' }, body: { language: 'he' } });
     expect(r.code).toBe(202);
     expect(state.enqueued).toEqual([
       { name: 'audio_edition', payload: { projectId: 'p1', language: 'he', force: false } },
@@ -237,7 +237,7 @@ describe('building costs money, so building needs edit rights', () => {
     // `''` and `null` must not become two different editions of the same audio, each with its own
     // row and its own object in the bucket.
     state.project = { id: 'p1', visibility: 'public', created_by: 'owner', editable: true };
-    await call('POST', '/api/v1/projects/:id/audio', { user: { id: 'owner' }, body: { language: '  ' } });
+    await call('POST', '/api/v1/projects/:id/audio-edition', { user: { id: 'owner' }, body: { language: '  ' } });
     expect((state.enqueued[0].payload as { language: null }).language).toBeNull();
   });
 });
