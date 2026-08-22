@@ -79,7 +79,14 @@ describe('podcast deletes remove their bytes', () => {
     expect(res.statusCode).toBe(204);
 
     const prefixes = mocks.deleteWithPrefixFallback.mock.calls.map((c) => c[0]).sort();
-    expect(prefixes).toEqual(['podcasts/ep-a', 'podcasts/ep-b', 'podcasts/show-1']);
+    // `podcast-sources/` joined the list when source documents moved off the PUBLIC `podcasts/`
+    // prefix (security-016). A document that outlives the show that owned it is the same exposure
+    // with a longer fuse, so the show delete has to sweep both — and this exact-set assertion is
+    // what forced that to be noticed rather than discovered later in a bucket listing.
+    expect(prefixes).toEqual([
+      'podcast-sources/show-1',
+      'podcasts/ep-a', 'podcasts/ep-b', 'podcasts/show-1',
+    ]);
     await app.close();
   });
 
@@ -89,7 +96,10 @@ describe('podcast deletes remove their bytes', () => {
     expect(res.statusCode).toBe(204);
 
     const prefixes = mocks.deleteWithPrefixFallback.mock.calls.map((c) => c[0]).sort();
-    expect(prefixes).toEqual(['podcasts/ep-1', 'podcasts/show-1/episodes/ep-1']);
+    expect(prefixes).toEqual([
+      'podcast-sources/show-1/episodes/ep-1',
+      'podcasts/ep-1', 'podcasts/show-1/episodes/ep-1',
+    ]);
     await app.close();
   });
 

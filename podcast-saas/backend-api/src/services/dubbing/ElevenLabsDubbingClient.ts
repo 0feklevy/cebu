@@ -198,6 +198,43 @@ export interface ElevenLabsDubbingClientOpts {
   fetchImpl?: typeof fetch;
 }
 
+/**
+ * Refuse a credential that is the wrong KIND of string, before it can fail at the vendor.
+ *
+ * ── Why this exists ───────────────────────────────────────────────────────────────────────────
+ * ElevenLabs shows an API key exactly once, at creation, as `sk_…`. Afterwards the dashboard
+ * displays the key's **ID** — a different, shorter string that looks equally like a credential and
+ * is the obvious thing to copy later. Pasting the ID is therefore the DEFAULT mistake, not an
+ * unusual one, and the product's first real dub failed on precisely it:
+ *
+ *   400 {"type":"authentication_error","code":"invalid_api_key",
+ *        "message":"API key ID used as API key …"}
+ *
+ * That answer is correct and useless in the place it appears: it surfaces per-language, on a job
+ * row, after the queue has run — so the operator sees "Hebrew: Failed" and has to go read a vendor
+ * message to learn that a field in the admin UI holds the wrong value.
+ *
+ * ── Why a shape check and not a live probe ────────────────────────────────────────────────────
+ * A probe would cost a request and could not run at save time without spending one. The shape is
+ * enough for THIS mistake, which is the one that actually happens: the ID and the key differ by an
+ * unmistakable prefix. Anything that looks like a key is passed through untouched — this refuses a
+ * known-wrong kind of value, it does not try to decide whether a real key is valid.
+ */
+export function assertUsableElevenLabsKey(key: string): void {
+  const trimmed = key.trim();
+  if (trimmed.startsWith('sk_')) return;
+  // UNDER 200 CHARACTERS, DELIBERATELY. ElevenLabsDubbingError truncates its body at 200 when
+  // building `.message`, and the first draft of this text ran to ~290 — so the half that said
+  // WHAT TO DO was cut off in every place an operator would actually read it. A diagnostic
+  // whose instruction is truncated away is just a longer way of saying 401.
+  throw new ElevenLabsDubbingError(
+    401,
+    "Not an ElevenLabs API key. A key starts with 'sk_' and is shown only at creation; the "
+    + 'dashboard shows its ID afterwards, which cannot authenticate. Create a new key and save '
+    + 'it in Admin → API Keys.',
+  );
+}
+
 export class ElevenLabsDubbingClient {
   private readonly apiKeyService: ApiKeyService;
   private readonly baseUrl: string;
@@ -216,6 +253,7 @@ export class ElevenLabsDubbingClient {
       process.env.ELEVENLABS_API_KEY ??
       null;
     if (!key) throw new ElevenLabsKeyMissingError();
+    assertUsableElevenLabsKey(key);
     return key;
   }
 
