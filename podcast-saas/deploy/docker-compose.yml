@@ -78,6 +78,29 @@ services:
     # this line existed every `docker compose up -d` killed in-flight jobs mid-write (job-queue-004).
     # It is a CEILING, not a delay: the process exits the moment its drain finishes.
     stop_grace_period: 90s
+    # ── RESOURCE CEILINGS (config-003) ────────────────────────────────────────────────────────
+    #
+    # Until this existed, NOTHING on this host had a memory limit, so any container's runaway
+    # allocation was charged straight to the 7.6 GiB machine — taking nginx and every other
+    # service down with it. That is the containment half of security-007 (six multipart routes
+    # still buffer a whole upload in the heap): with a ceiling, a 1.9 GiB POST kills one container
+    # that `restart: unless-stopped` brings back, instead of the host.
+    #
+    # SIZED FROM MEASUREMENT, not from a guess. Idle on 2026-08-22: backend 104 MiB, worker 76 MiB,
+    # client-web 243 MiB, admin-web 215 MiB, nginx 12 MiB — 665 MiB in total. Every ceiling below is
+    # several times its measured peak, and the SUM (6016 MiB) sits under host RAM with ~1.8 GiB left
+    # for the kernel and page cache. A limit that legitimate work can reach is worse than no limit,
+    # because it turns a capacity question into a crash.
+    #
+    # `memswap_limit == mem_limit` disables swap for the container: swapping a Node heap does not
+    # rescue it, it just makes the box unresponsive for several minutes first.
+    #
+    # NO `cpus` HERE, deliberately. The host has 2 vCPUs; a quota on the request-serving process
+    # would make it slower under exactly the load where it must stay responsive. The contention
+    # this host actually suffers is the worker's ffmpeg, and that is where the quota belongs.
+    mem_limit: 2048m
+    memswap_limit: 2048m
+    pids_limit: 512
     healthcheck:
       test: ['CMD', 'curl', '-fsS', 'http://localhost:8080/health']
       interval: 15s
@@ -120,6 +143,18 @@ services:
     # queue, so its whole drain is stopBoss()'s 30 s graceful stop — but Docker's 10 s default cut
     # even that in half, and this is the container that holds the ffmpeg/capture work.
     stop_grace_period: 45s
+    # Ceilings — see the note on `backend`. The worker gets the largest share because it is the
+    # one that runs ffmpeg (crop, transcode, HLS, audio render); the dedicated export worker's own
+    # compose file has used exactly this shape at 2048m since it was written.
+    #
+    # `cpus: 1.5` IS THE ONE THAT MATTERS ON THIS HOST. With 2 vCPUs and no quota, one ffmpeg run
+    # can take the whole machine and the API stops answering while a crop finishes. Half a core
+    # held back is a ~25% slower crop and an API that keeps serving — on a box with six videos and
+    # no crop queue (measured in the 2026-08-21 fleet audit), that is plainly the right trade.
+    mem_limit: 2560m
+    memswap_limit: 2560m
+    cpus: 1.5
+    pids_limit: 512
     # No HTTP port to probe. The worker is PID 1, so if it crashes the container exits
     # and `restart: unless-stopped` brings it back — that IS the liveness guarantee.
 
@@ -143,6 +178,11 @@ services:
         PUBLIC_BRAND_NAME: ${PUBLIC_BRAND_NAME}
         PUBLIC_SITE_URL: https://${DOMAIN_ROOT}
     restart: unless-stopped
+    # Ceilings — see the note on `backend`. A Next.js server that has grown a leak should be
+    # restarted by its own limit, not by taking the host with it. Measured idle: 243 MiB.
+    mem_limit: 768m
+    memswap_limit: 768m
+    pids_limit: 256
     environment:
       NODE_ENV: production
       PORT: '3000'
@@ -182,6 +222,11 @@ services:
         PUBLIC_BRAND_NAME: ${PUBLIC_BRAND_NAME}
         PUBLIC_SITE_URL: https://${DOMAIN_ADMIN}
     restart: unless-stopped
+    # Ceilings — see the note on `backend`. Measured idle: 215 MiB; this surface serves a handful
+    # of operators, so it gets the smallest Node ceiling.
+    mem_limit: 512m
+    memswap_limit: 512m
+    pids_limit: 256
     environment:
       NODE_ENV: production
       PORT: '3000'
@@ -202,6 +247,12 @@ services:
   nginx:
     image: nginx:1.27-alpine
     restart: unless-stopped
+    # Ceilings — see the note on `backend`. nginx is the LAST thing that should die when something
+    # else misbehaves, which is exactly why it gets a limit: an unbounded neighbour taking the host
+    # takes the reverse proxy with it, and then nothing is reachable to diagnose from.
+    mem_limit: 128m
+    memswap_limit: 128m
+    pids_limit: 128
     ports:
       - '80:80'
       - '443:443'
