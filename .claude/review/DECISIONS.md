@@ -85,7 +85,29 @@ Four decisions with recommendations are in the ruling block below. One sentence 
 **Done when:** one prefix-complete gate ships; the bucket cutover (`security-001`) is scheduled
 separately because it changes URLs people already hold.
 
-### WAVE 2 — MAKE THE PODCAST SAFE TO BUILD ON  ·  not blocked  ·  ~1–2 days
+### ✅ WAVE 2 — DONE (2026-08-22, PR #77 merged)
+Both items shipped. `llm-pipeline-017`: a golden suite drives the REAL ScriptRoom over a fixed
+corpus and pins everything the room does after the model speaks — the proportional floor, the
+splitter, the overlap demotion, the blank-turn drop, the hook guarantee, pass order, telemetry, and
+what the content hash must distinguish. The fake parses every fixture through the pass's own Zod
+schema, which immediately caught the judge's verdict enum being `approve|needs_fixes` rather than
+`pass|needs_fixes` — a value `.catch()` silently coerced, so the "clean" corpus had been quietly
+taking the rewrite path. `observability-006`: four aggregates plus the dashboard, reporting a
+failure RATE over SETTLED renders (queued work in the denominator would make the rate improve as the
+pipeline backs up) and `null` rather than `0` when nothing has settled, preserved all the way to
+the screen. 33 mutations, all caught; five of them only after a test was fixed.
+
+### 🔵 WAVE 3 — IN PROGRESS  ·  A2.1 shipped (PR #78), A2.2–A2.4 next
+`PARKED-DESIGNS.md` P3-B, in its stated build order. **A2.1 (audio derivation) is complete**:
+migration 071, the pure rules, the ffmpeg pass, the service, the durable job and the API. An edition
+is exactly as public as its project — re-derived per request from `requireProjectAccess`, never read
+off the edition row — with the artifact under a PRIVATE `editions/` prefix, because `podcasts/` being
+public is what made a customer's brief world-readable (security-016). 31 mutations, all caught.
+**Remaining:** A2.2 `/{slug}/audio` landing → A2.3 Media Session + PWA (the locked-phone answer) →
+A2.4 Raise Your Hand. **A2.5 "Call It" is deferred by its own design** until A2.4 produces real
+listener-question data proving demand — that is a decision already recorded, not an omission.
+
+### WAVE 2 — MAKE THE PODCAST SAFE TO BUILD ON  ·  ✅ SUPERSEDED BY THE ENTRY ABOVE
 The owner's rule applied honestly: before adding surfaces to the podcast, close the things that let
 its OUTPUT go wrong silently. Both are about the paid deliverable.
 - **`llm-pipeline-017` — there is no golden-output or end-to-end test for `ScriptRoom`**, the

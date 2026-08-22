@@ -39,6 +39,7 @@ const SAMPLE_PAYLOADS: { [N in JobName]: JobPayloads[N] } = {
   project_duplicate: { duplicationId: 'd1' },
   project_export: { exportId: 'e1' },
   dub: { dubId: 'd1' },
+  audio_edition: { projectId: 'p1', language: null },
 };
 
 describe('a queue that is sent a singletonKey must have a policy that honours it', () => {
@@ -153,5 +154,31 @@ describe('reconcileQueuePolicies — repairs a queue that already exists on the 
       getDb: () => ({ executeSql }),
     } as never;
     await expect(reconcileQueuePolicies(boss, SCHEMA)).resolves.toBeUndefined();
+  });
+});
+
+describe('the audio-edition key identifies the WORK, not a row', () => {
+  it('separates the source edition from a dubbed one', () => {
+    // `/{slug}/audio` and `/{slug}/he/audio` are different artifacts. One key for both would
+    // dedup a dub request against a source request that is already pending, and the listener
+    // would get the wrong language with nothing anywhere reporting an error.
+    const src = singletonKeyFor('audio_edition', { projectId: 'p1', language: null });
+    const he = singletonKeyFor('audio_edition', { projectId: 'p1', language: 'he' });
+    expect(src).not.toBe(he);
+  });
+
+  it('separates two projects’ source editions', () => {
+    // The project id leads the key, so this holds under any spelling of the language fallback —
+    // which a mutation confirmed by swapping `??` for `||` and changing nothing. Kept because it
+    // pins the invariant that matters (one key per project), not because it caught that mutation.
+    const a = singletonKeyFor('audio_edition', { projectId: 'p1', language: null });
+    const b = singletonKeyFor('audio_edition', { projectId: 'p2', language: null });
+    expect(a).not.toBe(b);
+    expect(a).toBeTruthy();
+  });
+
+  it('collapses two identical requests', () => {
+    expect(singletonKeyFor('audio_edition', { projectId: 'p1', language: 'he' }))
+      .toBe(singletonKeyFor('audio_edition', { projectId: 'p1', language: 'he' }));
   });
 });

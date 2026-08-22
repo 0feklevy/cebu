@@ -1740,3 +1740,40 @@ export const dubbing_slots = pgTable('dubbing_slots', {
   expires_at: timestamp('expires_at', { withTimezone: true }),
   updated_at: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ── Audio editions (migration 071, P3-B/A2.1) ─────────────────────────────────
+
+/**
+ * The listenable form of a project that already exists.
+ *
+ * DERIVED, never generated. One ffmpeg pass over the narration and guidance audio the project
+ * already has — the same inputs `buildPlayerConfig` resolves — mixed to a single m4a, with
+ * chapters from `timeline_sections` and captions re-emitted from the existing VTT. There is no
+ * second content pipeline and no LLM anywhere in it.
+ *
+ * ONE ROW PER (project, language), with NULL meaning the source track. A dubbed project's edition
+ * reuses that dub's mix and ITS captions, so `/{slug}/audio` and `/{slug}/he/audio` are separate
+ * artifacts a listener may hold links to simultaneously — see migration 071 for why the
+ * uniqueness is two partial indexes rather than one composite.
+ */
+export const project_audio_editions = pgTable('project_audio_editions', {
+  id:            uuid('id').primaryKey().defaultRandom(),
+  project_id:    uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  /** NULL = the project's source language; otherwise a BCP-47 code matching a completed dub. */
+  language:      text('language'),
+  status:        text('status').notNull().default('none'),   // none | processing | ready | failed
+  /** Idempotency, as captions and crop already do it: same inputs ⇒ no work. */
+  source_hash:   text('source_hash'),
+  m4a_key:       text('m4a_key'),
+  duration_ms:   integer('duration_ms'),
+  /** Chapter marks stored WITH the artifact — sections can be edited after it is built. */
+  chapters_json: jsonb('chapters_json'),
+  captions_vtt:  text('captions_vtt'),
+  error:         text('error'),
+  claimed_at:    timestamp('claimed_at', { withTimezone: true }),
+  created_at:    timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updated_at:    timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxProject: index('idx_project_audio_editions_project').on(t.project_id),
+  idxStatus:  index('idx_project_audio_editions_status').on(t.status, t.claimed_at),
+}));

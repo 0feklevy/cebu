@@ -68,6 +68,7 @@ import { registerPhase2StubRoutes } from './controllers/stubs.js';
 import { registerPlayerRoutes } from './controllers/v1/player.controller.js';
 import { registerShareRoutes }  from './controllers/v1/share.controller.js';
 import { registerDubbingRoutes } from './controllers/v1/dubbing.controller.js';
+import { registerAudioEditionRoutes } from './controllers/v1/audioEdition.controller.js';
 import { registerPermalinkRoutes } from './controllers/v1/permalink.controller.js';
 import { registerLibraryShareRoutes } from './controllers/v1/library-share.controller.js';
 import { registerSimulationsRoutes } from './controllers/v1/simulations.controller.js';
@@ -629,6 +630,9 @@ async function build() {
 
   await registerPlayerRoutes(app);
   await registerDubbingRoutes(app);
+  // P3-B/A2.1 — a project's listenable edition. Read access is re-derived from the PROJECT on
+  // every request, never from the edition row: one fact, one source of truth.
+  await registerAudioEditionRoutes(app);
   await registerShareRoutes(app);
   await registerPermalinkRoutes(app);
   await registerLibraryShareRoutes(app);
