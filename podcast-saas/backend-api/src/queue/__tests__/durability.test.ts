@@ -34,9 +34,10 @@ const PAYLOADS: { [N in JobName]: JobPayloads[N] } = {
   podcast_render: { renderId: 'r' },
   podcast_clips: { mixId: 'm' },
   podcast_mix_export: { renderId: 'r' },
-  video_generate: { jobId: 'g' },
+  video_generate: { jobId: 'j' },
   project_duplicate: { duplicationId: 'd' },
   project_export: { exportId: 'e' },
+  dub: { dubId: 'd' },
 };
 
 /** Loads the REAL producer against the REAL PGBOSS_JOB_NAMES; only the two drivers are stubbed. */
