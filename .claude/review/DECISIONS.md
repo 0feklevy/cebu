@@ -86,7 +86,7 @@ before either.** That rule does real work here, because the podcast area turns o
 Each wave is finishable and leaves the product in a coherent state. Do not start wave N+1 while a
 wave-N item is open, unless it is blocked on the owner — in which case say so and drop down.
 
-### PRIORITY 1 (owner, 2026-08-22) — REPLACE THE APPROVAL CLICK WITH REAL GATES  ·  PR #76  ·  ⏳ CI
+### ✅ PRIORITY 1 (owner, 2026-08-22) — APPROVAL CLICK REPLACED BY REAL GATES  ·  PR #76 MERGED
 The owner's account of the manual production approval: *"in practice I only click 'Approve and
 deploy' without performing an additional review, so it is not providing meaningful protection."*
 Shipped as one coherent extension of the existing release system, not a parallel one.
@@ -125,25 +125,37 @@ reviewer; `production` already had none. **Done when:** #76 merges and the first
 exercises `candidate-smoke` against live images for the first time — that run is the real test, and
 it fails closed, so the risk is a blocked release rather than a bad deploy.
 
-### WAVE 0 — SHIP WHAT IS ALREADY FIXED  ·  blocks everything  ·  owner: approve deploy
-Nothing a user experiences changes until this lands. Production runs v0.1.38 and **the dubbing
-feature is dead in it** — every attempt dies before the vendor is reached. Also sitting unshipped:
-two cross-tenant write holes, Firebase tokens in the access log, the container memory ceilings, and
-−474 KB of JS on every viewer route. Twelve PRs' worth of fixes, none of them live.
-**Done when:** release published, deploy approved, and the dubbing probe (~$2.20) runs clean.
+### 🔴 WAVE 0 — FIVE MERGED PRs ARE NOT IN PRODUCTION  ·  blocks everything user-facing
+**Verified 2026-08-22 against the running containers**, because the previous version of this entry
+was stale in both directions — it said v0.1.38 and "dubbing is dead", and production had been on
+v0.1.39 with dubbing working since the owner fixed the API key.
 
-### WAVE 1 — LIVE EXPOSURE, AND IT IS IN THE PODCAST AREA  ·  owner: one ruling
-C1, the media authorization gate. Two of its six members are the reason this outranks podcast
-features rather than competing with them:
-- **`security-016` — a confidential brief uploaded to an episode is readable by anyone who obtains
-  the URL, with no credential.** `podcasts/` is modelled as a public prefix because it was chosen
-  for immutable studio clips; user SOURCE DOCUMENTS were added to it later without revisiting that.
-  This is a podcast data-exposure bug wearing a security label.
-- **`security-005`/`simulation-007` — unsharing a project does not revoke access to its
-  simulation.** `/sim-public/*` checks only that the key starts with `simulations/`.
-Four decisions with recommendations are in the ruling block below. One sentence unblocks all six.
-**Done when:** one prefix-complete gate ships; the bucket cutover (`security-001`) is scheduled
-separately because it changes URLs people already hold.
+Production runs **v0.1.39**. Merged to `main` and NOT deployed:
+- **#74 — `security-016`, a live data exposure.** A user's uploaded podcast brief is readable by
+  anyone who obtains the URL, with no credential. Fixed in `main`, still exposed in production.
+  This is why the wave is red rather than amber.
+- **#75** — the media gate understands simulations and no longer fails open blindly.
+- **#76** — the release gates that replace the approval click.
+- **#77** — the writers'-room golden suite and the podcast pipeline's own health metrics.
+- **#78** — A2.1, audio editions.
+
+**The first release after #76 exercises `candidate-smoke` against live images for the first time.**
+It fails closed, so the risk is a blocked release rather than a bad deploy — which makes this the
+right release to find out on, not the wrong one.
+**Done when:** a release is published and deployed, and production reports the new version.
+
+### ✅ WAVE 1 — CLOSED (2026-08-22), verified in `main` rather than assumed
+Both of the findings that made this wave outrank podcast features are fixed and merged:
+- **`security-016`** — `podcast.controller.ts` now writes user source documents under the private
+  `podcast-sources/` prefix (PR #74). Verified present in `origin/main`.
+- **`simulation-007`** — `sim-public.controller.ts` gates on `isRevisionStatusPublic` before the
+  storage read, so a draft/uploading/failed revision 404s rather than serving its bytes (PR #75).
+  Verified present in `origin/main`.
+
+Still open from C1 and deliberately NOT closed here: **`security-001`, the bucket cutover.** It
+changes URLs people already hold, so it is scheduled separately — see the ruling block below.
+**Owner action outstanding:** delete and re-upload the one podcast document that was exposed. The
+code fix stops new exposure; it cannot un-expose a URL that was already shared.
 
 ### ✅ WAVE 2 — DONE (2026-08-22, PR #77 merged)
 Both items shipped. `llm-pipeline-017`: a golden suite drives the REAL ScriptRoom over a fixed
@@ -166,25 +178,6 @@ public is what made a customer's brief world-readable (security-016). 31 mutatio
 **Remaining:** A2.2 `/{slug}/audio` landing → A2.3 Media Session + PWA (the locked-phone answer) →
 A2.4 Raise Your Hand. **A2.5 "Call It" is deferred by its own design** until A2.4 produces real
 listener-question data proving demand — that is a decision already recorded, not an omission.
-
-### WAVE 2 — MAKE THE PODCAST SAFE TO BUILD ON  ·  ✅ SUPERSEDED BY THE ENTRY ABOVE
-The owner's rule applied honestly: before adding surfaces to the podcast, close the things that let
-its OUTPUT go wrong silently. Both are about the paid deliverable.
-- **`llm-pipeline-017` — there is no golden-output or end-to-end test for `ScriptRoom`**, the
-  nine-call chain that produces the episode. A silent quality regression in the product's core
-  output ships unnoticed. This is not theoretical: `llm-pipeline-016` (a compiler returning three
-  turns from a sixty-turn draft, hashed and marked `ready`) was live until 2026-08-22, and a
-  golden-output suite is exactly what would have caught it on the branch.
-- **`observability-006` — `podcast_renders` has no status, failure-rate or duration metric on any
-  admin endpoint.** When a render fails today, nothing above the queue-depth layer says so.
-**Done when:** a fixed-corpus golden suite with a stability assertion, and the four `groupBy`
-aggregates beside the existing `hls_status` ones.
-
-### WAVE 3 — PODCAST PHASE 2  ·  owner: go  ·  the thing actually wanted
-`PARKED-DESIGNS.md` P3-B, built on P3-A's `/{slug}/audio` spine (the owner already chose option א).
-Build order is in that file and each stage ships alone: audio derivation → the landing surface →
-Media Session/PWA (the locked-phone answer) → Raise Your Hand → Call It. Route renames (P3-A) land
-WITH this, not before — `/{slug}/audio` is their shared spine.
 
 ### WAVE 4 — CROP  ·  owner: footage  ·  blocked at the first step
 P0.3 is 20–50 real catalogue clips + ~2h labelling in the shipped tool
