@@ -22,6 +22,9 @@ import { requireUuidParams } from '../../lib/uuidParam.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { enqueueJob } from '../../queue/index.js';
 import { editionRefusalReason } from '../../services/audio/audioEdition.js';
+import { askListenerQuestion } from '../../services/audio/ListenerQuestionService.js';
+import { listener_questions } from '../../db/schema.js';
+import { desc } from 'drizzle-orm';
 import { rateLimit } from '../../lib/rateLimit.js';
 
 const projectIdIsUuid = requireUuidParams('id');
@@ -203,6 +206,99 @@ export async function registerAudioEditionRoutes(app: FastifyInstance): Promise<
         language: edition.language,
         // The page caches on ISR, so it needs to know how old what it is holding is.
         updated_at: edition.updated_at,
+      });
+    },
+  );
+
+  /**
+   * POST /api/v1/public/audio/:slug/questions — Raise Your Hand (P3-B / A2.4).
+   *
+   * PUBLIC and UNAUTHENTICATED, deliberately: the listener is driving, and requiring an account
+   * to ask a question about the thing they are already hearing would make the feature unusable
+   * for the person it exists for.
+   *
+   * Which means an anonymous stranger can, from this route, cause an LLM call the project OWNER
+   * pays for. Three things stand between that and a bill, and all three are load-bearing:
+   *  - a per-IP rate limit here,
+   *  - a per-project daily cap on ANSWERS, enforced in the service before any model is called,
+   *  - a length ceiling on the question, because its size is a cost lever anyone can pull.
+   *
+   * `intent: 'save'` is always free and is the hands-free path: a marker with a timestamp, kept
+   * for the creator, reviewed by the listener when they have stopped.
+   */
+  app.post<{
+    Params: { slug: string };
+    Body: { question?: string; position_ms?: number; intent?: 'answer' | 'save'; language?: string | null };
+  }>(
+    '/api/v1/public/audio/:slug/questions',
+    { preHandler: [firebaseAuthOptionalMiddleware] },
+    async (request, reply: FastifyReply) => {
+      // Tighter than the read route's limit. A read is cheap and idempotent; this one can cost
+      // real money, so the ceiling is set where a genuine listener never notices it and a script
+      // hits it immediately.
+      if (!rateLimit(`askq:${request.ip}`, 10, 60_000)) {
+        return reply.code(429).send({ message: 'Too many questions — please slow down.' });
+      }
+
+      const project = await db.query.projects.findFirst({ where: eq(projects.slug, request.params.slug) });
+      if (!project || project.visibility !== 'public') return reply.code(404).send({ message: 'Not found' });
+
+      const result = await askListenerQuestion({
+        projectId: project.id,
+        language: request.body?.language?.trim() || null,
+        positionMs: Number(request.body?.position_ms ?? 0),
+        question: String(request.body?.question ?? ''),
+        // Anything that is not literally 'answer' is treated as a save. Defaulting the other way
+        // would make a malformed client spend the owner's money by omission.
+        intent: request.body?.intent === 'answer' ? 'answer' : 'save',
+        userId: request.dbUser?.id ?? null,
+      });
+
+      if (result.status === 'refused') return reply.code(400).send({ message: result.reason });
+      return reply.send({
+        status: result.status,
+        answer: result.answer ?? null,
+        // Present whenever the answer was withheld, so the listener learns WHY rather than
+        // watching a silent non-response.
+        message: result.reason ?? null,
+      });
+    },
+  );
+
+  /**
+   * GET /api/v1/projects/:id/questions — what listeners have been asking.
+   *
+   * The creator's view, and the reason the capped and failed questions are kept rather than
+   * discarded: this list is where a lesson's confusing passage becomes visible, and it is the
+   * demand signal A2.5 ("Call It") is explicitly waiting on before it gets built.
+   */
+  app.get<{ Params: { id: string } }>(
+    '/api/v1/projects/:id/questions',
+    { preHandler: [projectIdIsUuid, firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser;
+      if (!user) return reply.code(401).send({ message: 'Unauthorized' });
+      // EDIT rights, not view: listener questions are audience data, and a viewer of a public
+      // lesson has no more claim on them than a reader of a blog has on its analytics.
+      const project = await editableProject(request.params.id, user);
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+
+      const rows = await db.query.listener_questions.findMany({
+        where: eq(listener_questions.project_id, project.id),
+        orderBy: [desc(listener_questions.created_at)],
+        limit: 200,
+      });
+
+      return reply.send({
+        questions: rows.map((q) => ({
+          id: q.id,
+          position_ms: q.position_ms,
+          question: q.question,
+          answer: q.answer,
+          status: q.status,
+          language: q.language,
+          created_at: q.created_at,
+        })),
       });
     },
   );

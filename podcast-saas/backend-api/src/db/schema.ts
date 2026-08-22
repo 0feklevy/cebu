@@ -1777,3 +1777,35 @@ export const project_audio_editions = pgTable('project_audio_editions', {
   idxProject: index('idx_project_audio_editions_project').on(t.project_id),
   idxStatus:  index('idx_project_audio_editions_status').on(t.status, t.claimed_at),
 }));
+
+// ── Raise Your Hand (migration 072, P3-B/A2.4) ────────────────────────────────
+
+/**
+ * A listener's question, at the moment they had it.
+ *
+ * WHO PAYS DECIDES THE SHAPE. The asking surface is public and the project owner pays for every
+ * answer, so a question can exist WITHOUT one — costing nothing — and `answered_at` rather than
+ * `created_at` is the billable event. The daily cap counts rows by `answered_at`, which is what
+ * makes a saved question structurally incapable of consuming budget.
+ *
+ * `asked_by` is null for an anonymous listener, which is the common case: the audio page is public
+ * and asking must not require an account.
+ */
+export const listener_questions = pgTable('listener_questions', {
+  id:          uuid('id').primaryKey().defaultRandom(),
+  project_id:  uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  /** NULL = the source-language edition, matching project_audio_editions (migration 071). */
+  language:    text('language'),
+  /** Where in the lesson — the same words mean different questions at minute 2 and minute 40. */
+  position_ms: integer('position_ms').notNull(),
+  question:    text('question').notNull(),
+  answer:      text('answer'),
+  asked_by:    uuid('asked_by').references(() => users.id, { onDelete: 'set null' }),
+  status:      text('status').notNull().default('saved'),   // saved | answered | failed
+  /** THE BILLABLE TIMESTAMP. Set only when a model was actually called. */
+  answered_at: timestamp('answered_at', { withTimezone: true }),
+  cost_cents:  integer('cost_cents'),
+  created_at:  timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxProject: index('idx_listener_questions_project').on(t.project_id, t.created_at),
+}));
