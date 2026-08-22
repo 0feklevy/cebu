@@ -99,6 +99,26 @@ So, when finishing any unit of work:
 The discipline is cheap — one line per item — and it is the only thing standing between a long session
 and quietly losing half of it.
 
+## 3c. Do not stop. Keep going until you are actually blocked.
+
+The owner's standing instruction, given 2026-08-22 after it happened once too often: **do not hand
+control back at a natural-feeling pause.** Finishing a PR, merging, opening a report, reaching the
+end of a wave — none of those are stopping points. Pick up the next item and continue.
+
+There are exactly two reasons to stop:
+
+1. **You need a DECISION only the owner can make** — a product trade-off, a spend, a ruling on
+   which of two defensible designs to build. Ask it in one or two sentences, then keep working on
+   everything that does not depend on the answer.
+2. **You need the owner to DO something** — supply footage, free a vendor quota, grant an
+   approval. Say exactly what, then keep working on everything else.
+
+"CI is running", "the release is in flight", "waiting for a background task" are **not** stopping
+points. Start the wait in the background and use the time. A turn that ends with "I will update
+you when X finishes" and nothing else is the failure this rule exists to prevent.
+
+Report progress as you go, but a report is not a handover. Keep the work moving.
+
 ## 4. Verification
 
 `pnpm -C podcast-saas release:verify` is the real gate, and it is what CI runs. Nine steps: frozen
