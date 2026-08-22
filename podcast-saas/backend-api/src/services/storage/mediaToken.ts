@@ -31,7 +31,12 @@ export function mediaKeyScope(key: string): string | null {
   // `exports/{projectId}` — linear-export masters (migration 058): the download link is a plain
   // <a> navigation, which cannot carry an Authorization header, so the local adapter needs the
   // same scoped-token URL shape the video routes use. Cloud adapters presign instead.
-  if (parts[0] !== 'hls' && parts[0] !== 'videos' && parts[0] !== 'exports') return null;
+  // `simulations/{projectId}/{simId}/…` — the project id is the SECOND segment, the same shape
+  // `videos/{projectId}` already uses, so one token authorises one project's simulation media and
+  // nothing else (security-005). The sim package loads its assets by RELATIVE url from the entry
+  // document, which is exactly why the token is a path segment: every asset request inherits the
+  // prefix without the package knowing the token exists.
+  if (parts[0] !== 'hls' && parts[0] !== 'videos' && parts[0] !== 'exports' && parts[0] !== 'simulations') return null;
   if (!parts[1]) return null;
   return `${parts[0]}/${parts[1]}`;
 }
