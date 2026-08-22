@@ -136,6 +136,60 @@ gate turns CRITICAL into an automatic rollback — so without the early refusal,
 would have rolled back a perfectly healthy deploy over a missing configuration value. `plan` now
 refuses BEFORE anything is deployed and names the variables (PR #81).
 
+## 🔴🔴 OWNER-RANKED TOP PRIORITY — every API token and every dollar, visible in admin
+
+Asked for directly on 2026-08-23, and ranked ABOVE routine debugging: *"מעקב צמוד על כל ה-API
+tokens וההוצאות שיש בכל המערכת ב-admin mode"*.
+
+It came out of a real incident. Four ElevenLabs Auto Top-Up invoices fired on 22 August — $10 at
+14:43, $10 at 14:57, $10 at 16:14, $22 at 18:06, and a fifth $10 left Open at 00:27 on the 23rd.
+The owner first read them as ₪31.81 usage charges; they are $10 top-ups at a 3.181 shekel rate,
+which is why three of them look identical. **The spend itself was invisible in the product**, and
+that is the finding: the money left the account and nothing in FlowVid could say what bought it.
+
+### The gap, measured rather than assumed
+
+`token_usage` is written from 14 modules and covers the LLM providers, dubbing, avatar and video
+generation. It does NOT cover the paths below — every one of them calls a vendor that charges, and
+none of them records a row:
+
+| path | what it spends on |
+|---|---|
+| `podcast/audio/PodcastRenderer.ts` → `ElevenLabsDialogue` | **the whole episode's speech synthesis** — almost certainly the largest untracked line |
+| `podcast/audio/previewTurn.ts` | one synthesis per preview click, unlimited and unmetered |
+| `podcast/audio/revoiceTurn.ts` | one synthesis per re-voice click |
+| `simulation/GuidanceService.ts` → `GuidanceTTSService` | guidance narration |
+| `controllers/v1/audio.controller.ts` | on-demand TTS straight from a route |
+| `podcast/PodcastVoiceService.ts` callers | voice operations on the render and preview paths |
+
+The preview and re-voice paths matter beyond the accounting: a creator auditioning voices spends
+real money per click, with no counter anywhere and no ceiling. That is the shape of the 22 August
+burn — the owner was testing dubbing voices that afternoon, which is when the top-ups fired.
+
+### What "close tracking" has to mean here
+
+1. **No vendor call without a usage row.** A CONTRACT TEST that enumerates every module reaching a
+   paid vendor host and fails when one of them records nothing — with today's gaps as an explicit,
+   shrinking allow-list. Same shape as the env-var contract (#86/#94) and the typecheck ratchet
+   (#90), and for the same reason: a gate that demands perfection on day one gets skipped.
+2. **Characters and credits, not just tokens.** `token_usage` is shaped for LLM tokens. TTS bills
+   per CHARACTER and dubbing per source-MINUTE, and forcing them into `input_tokens` would make the
+   dashboard arithmetic wrong in a way nobody could see. The unit belongs in the row.
+3. **An admin surface that answers "where did the money go".** By provider, by day, by user, by
+   project — and it must reconcile against the vendor invoice, which is the only external check
+   that the tracking is complete.
+4. **A ceiling that covers every path.** `DUBBING_MONTHLY_BUDGET_CENTS` ($50 default, checked
+   BEFORE the vendor call) protects dubbing alone. TTS has no equivalent, which is why an
+   audition loop can spend without limit.
+5. **The vendor's own view, for reconciliation.** `backend-api/scripts/dubbing-audit.ts` (read-only)
+   lists every dubbing project in the workspace grouped by our `reference`, so duplicates are
+   visible. The equivalent for TTS is the character-usage endpoint, not yet wired.
+
+### Owner action, worth doing tonight
+
+Put a ceiling on ElevenLabs **Auto Top-Up**, or turn it off. Auto Top-Up is the amplifier: any
+runaway path spends without a natural stop, and the product-side ceiling only covers dubbing.
+
 ## 🔴 A SECOND rawPreview LOG SITE — the class #91 closed has one more instance
 
 Found 2026-08-22 by the end-of-day verification pass, not by a report. `LLMService.ts:700` logs
