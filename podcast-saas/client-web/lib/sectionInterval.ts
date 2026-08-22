@@ -75,3 +75,31 @@ export function sectionAtPlayhead<T>(
 
   return null;
 }
+
+/**
+ * The playhead a section lookup should use, given whatever the media element reports.
+ *
+ * ── WHY THIS IS NOT JUST `v.currentTime` ──────────────────────────────────────────────────────
+ * A media element's timeline does not have to start at zero. An HLS stream demuxed from MPEG-TS
+ * carries the presentation timestamps the packager wrote, and when those do not begin at 0 the
+ * element reports a currentTime a few tens of milliseconds NEGATIVE before the first frame is
+ * presented. That is not an error state — `readyState` is 4 and the buffer is full — it is simply
+ * where the stream's own clock begins.
+ *
+ * `-0.04 >= 0` is false, so a section whose `start_sec` is 0 does not contain that playhead and
+ * the lookup returns nothing. **A project whose timeline OPENS on a simulation therefore has no
+ * section at all** until the clock crosses zero. On an engine where playback advances that lasts
+ * one frame and self-heals; on one where it does not, it lasts forever, which is what Linux WebKit
+ * has been reporting from CI.
+ *
+ * Measured, not deduced: the failure dump from that run reads `currentTime: -0.04`, `played: []`,
+ * `readyState: 4`, `buffered: [[0, 32.4]]`. Fully loaded, playing, and never past zero.
+ *
+ * A negative media time means "before the first frame", and for timeline purposes that is the same
+ * position as the first frame. Clamping is the whole fix. NaN — a duration-less stream mid-load —
+ * resolves the same way rather than poisoning every comparison it touches into false.
+ */
+export function playheadFromMediaTime(currentTime: number | null | undefined): number {
+  if (typeof currentTime !== 'number' || !Number.isFinite(currentTime)) return 0;
+  return currentTime < 0 ? 0 : currentTime;
+}

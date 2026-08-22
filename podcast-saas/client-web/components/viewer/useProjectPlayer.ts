@@ -11,7 +11,7 @@ import { canWarmUnpaused, learnCanEmitPaint } from '../../lib/simCapability';
 import { resolveSimPoolMode } from '../../lib/simPoolMode';
 // The media/timeline slop this file has always applied by hand. Named and shared so the EDITOR's
 // section predicates use the same tolerance instead of a second epsilon of their own (audit §9.6).
-import { SECTION_BOUNDARY_EPSILON_SEC } from '../../lib/sectionInterval';
+import { SECTION_BOUNDARY_EPSILON_SEC, playheadFromMediaTime } from '../../lib/sectionInterval';
 import { mergeSegmentUrls, shouldPrewarm } from './segmentReadiness';
 import { collectSimPool, bootHideFor, dynamicScriptFor, flattenSimOccurrences, packageKeyOf, planWindowResidency, sectionKeyOf, SIM_POOL_CAP, type SimPoolFrameSpec } from '../../lib/simPool';
 import { planResidency, type SimOccurrence } from 'shared/src/sim/occurrencePlanner';
@@ -1873,7 +1873,11 @@ export function useProjectPlayer(
       return;
     }
 
-    const section    = seg.simulations.find((s) => localTime >= s.start_sec && localTime < s.end_sec) ?? null;
+    // CLAMPED, because a media timeline need not start at zero — see `playheadFromMediaTime`.
+    // Linux WebKit reports `currentTime: -0.04` on this fixture's HLS stream with a full buffer and
+    // `played: []`, and `-0.04 >= 0` is false, so a section starting at 0 matched nothing at all.
+    const playhead   = playheadFromMediaTime(localTime);
+    const section    = seg.simulations.find((s) => playhead >= s.start_sec && playhead < s.end_sec) ?? null;
     const simSection = section?.simulation_url ? section : null;
     const segmentDuration = timelineRef.current[segmentIdx]?.duration ?? seg.duration_sec;
     const isPostRollSim = !!simSection &&
