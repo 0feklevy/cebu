@@ -88,6 +88,7 @@ function testConfig(workDir: string): ContainerCaptureConfig {
     image: 'podcast-saas/export-worker:test', rendererProfile: 'swiftshader', workDir, user: '1000:1000', cpus: '2',
     memoryMb: 2048, pidsLimit: 256, tmpfsScratchMb: 512, stopTimeoutSec: 10,
     dockerBin: 'true', sandboxMechanism: 'sys-admin',
+    gpuCdiDevice: 'nvidia.com/gpu=0', maxOutputMb: 4096,
   };
 }
 
@@ -119,6 +120,7 @@ function capturingBoundary(): {
           frameCount: 30, rendererString: 'ANGLE (SwiftShader)', gate: 'passed', reason: null,
           rendererIdentity: { imageDigest: 'i', headlessShellVersion: 'v', viewport: { w: 1920, h: 1080 }, dpr: 1 },
           failure: null,
+          cost: null,
         };
       },
     },

@@ -75,6 +75,8 @@ function testConfig(workDir: string): ContainerCaptureConfig {
     pidsLimit: 256,
     tmpfsScratchMb: 512,
     stopTimeoutSec: 10,
+    gpuCdiDevice: 'nvidia.com/gpu=0',
+    maxOutputMb: 4096,
     dockerBin: 'true',
     sandboxMechanism: 'userns',
   };
@@ -114,6 +116,7 @@ const framesBoundary = {
         chromeHeadlessShellVersion: 'test', viewport: '320x180', dpr: 1,
       } as ContainerCaptureResult['rendererIdentity'],
       failure: null,
+      cost: null,
     };
   },
 };

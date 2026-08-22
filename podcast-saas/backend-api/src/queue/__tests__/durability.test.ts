@@ -38,6 +38,8 @@ const PAYLOADS: { [N in JobName]: JobPayloads[N] } = {
   project_duplicate: { duplicationId: 'd' },
   project_export: { exportId: 'e' },
   dub: { dubId: 'd' },
+  audio_edition: { projectId: 'p', language: null },
+  corpus_ingest: { corpusId: 'c' },
 };
 
 /** Loads the REAL producer against the REAL PGBOSS_JOB_NAMES; only the two drivers are stubbed. */

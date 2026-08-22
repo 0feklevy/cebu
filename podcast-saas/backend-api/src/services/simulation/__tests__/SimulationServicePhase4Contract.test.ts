@@ -26,6 +26,9 @@ const baseManifest: SimManifest = {
   checkboxElements: [],
   canvasElements: ['canvas'],
   globalObjects: [],
+  runtimeGlobals: [],
+  instanceMethods: [],
+  cssControls: [],
 };
 
 const INSTRUCTIONS = 'You generate a bridge script.';
