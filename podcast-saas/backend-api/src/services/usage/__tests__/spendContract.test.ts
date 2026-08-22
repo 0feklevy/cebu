@@ -31,8 +31,10 @@ import { fileURLToPath } from 'node:url';
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 /**
- * Hosts that charge money. Listing them by NAME rather than looking for an "api key" pattern is
- * deliberate: a key can be read for a free endpoint, and what matters here is the invoice.
+ * How a module reaches a vendor that charges — by hostname, or by the vendor's own SDK.
+ *
+ * Listed by NAME rather than by an "api key" pattern, deliberately: a key can be read for a free
+ * endpoint, and what matters here is the invoice.
  */
 const PAID_VENDOR_HOSTS = [
   'api.elevenlabs.io',
@@ -41,6 +43,19 @@ const PAID_VENDOR_HOSTS = [
   'api.groq.com',
   'generativelanguage.googleapis.com',
   'api.anam.ai',
+
+  // ── AND THE SDKs, WHICH THE HOST LIST COULD NOT SEE ───────────────────────────────────────
+  // A whole class of spend was invisible while this list held only URLs: a module using the
+  // vendor's own package never types the hostname. `groq-sdk` is speech-to-text billed per audio
+  // minute, `openai` covers image generation billed per image, and the LLM SDKs are the largest
+  // recurring spend in the product.
+  //
+  // Found while checking whether the gap list could honestly be called empty. It could not, and
+  // the difference between "no gaps" and "no gaps I can see" is the whole value of this file.
+  "from 'groq-sdk'",
+  "from '@anthropic-ai/sdk'",
+  "from 'openai'",
+  "from '@google/genai'",
 ];
 
 /**
@@ -77,10 +92,20 @@ const METERED_BY_CALLER = [
   'services/podcast/audio/ElevenLabsDialogue.ts',
   'services/podcast/PodcastVoiceService.ts',
   'services/audio/GuidanceTTSService.ts',
+  // The three LLM provider wrappers. `LLMService` constructs them and records every call, with the
+  // token counts and the model — which is exactly the context a provider wrapper does not have.
+  'services/llm/ClaudeProvider.ts',
+  'services/llm/GeminiProvider.ts',
+  'services/llm/OpenAIProvider.ts',
 ];
 
 /**
- * Modules that touch a paid HOST but only on a FREE endpoint.
+ * Modules that reach a paid vendor's code but never a BILLABLE operation.
+ *
+ * Two shapes live here and the name covers both: a free ENDPOINT on a paid host, and an import
+ * that reaches no vendor call at all. Renamed from `FREE_ENDPOINT_ONLY` when the second kind
+ * arrived, because a list whose name describes only half its contents is where wrong entries get
+ * added without anyone noticing.
  *
  * This file's own header says a key can be read for a free endpoint and that what matters is the
  * invoice — and then the first strict run flagged exactly that. `llm-config.controller` validates
@@ -91,9 +116,27 @@ const METERED_BY_CALLER = [
  * exists to stop making. If a vendor starts charging for one, the entry is where that gets
  * re-opened.
  */
-const FREE_ENDPOINT_ONLY = [
+const NO_BILLABLE_CALL = [
   // GET /v1/user — key validation on save. No credits.
   'controllers/admin/v1/llm-config.controller.ts',
+
+  // ── ANAM PERSONA CONFIGURATION ────────────────────────────────────────────────────────────
+  // Anam bills SESSION MINUTES, and this product's own billing model enumerates the ops that
+  // cost: `start`, `visual`, `image`, `memory` (`usage/avatarBudget.ts`). Persona CRUD is not
+  // among them — `upsertVideoPersona`, `getPersona` and `peekAvatarLook` configure a character
+  // that costs nothing until somebody talks to it, and the talking is metered by
+  // `controllers/v1/avatar.controller.ts`.
+  //
+  // DERIVED FROM OUR MODEL, NOT FROM AN INVOICE. If an Anam bill ever shows a line for persona
+  // writes, this block is where the argument re-opens — which is the point of writing the
+  // reasoning down instead of deleting the entries.
+  'services/avatar/displayIdentity.ts',
+  'services/avatar/personaBake.ts',
+  'services/transcriptPropagation.ts',
+  // Imports `isAnamConfigured`, a LOCAL predicate over environment variables. No vendor call at
+  // all — the import graph cannot see the difference between importing a module and calling the
+  // part of it that spends.
+  'controllers/admin/v1/avatar.controller.ts',
 ];
 
 /**
@@ -104,22 +147,27 @@ const FREE_ENDPOINT_ONLY = [
  * burn that prompted this file.
  */
 const UNMETERED_TODAY = [
-  // ── The speech-synthesis paths. This is where the 22 August money went. ────────────────────
-  // `PodcastRenderer` came OFF this list once it started metering: every synthesis, retries
-  // included, is counted and one row is written per render — in `finally`, so a render that dies
-  // halfway is not recorded as free.
-  'services/podcast/audio/chunker.ts',           // splits a turn, then synthesises each piece
   'controllers/v1/podcast.controller.ts',
 
-  // ── The Anam avatar surface. Some of these only READ (listing or fingerprinting a persona),
-  // which costs nothing — but nothing in the code says which, and "probably free" is exactly the
-  // assumption this file exists to stop making. They stay listed until each is checked.
-  'controllers/admin/v1/avatar.controller.ts',
-  'services/avatar/displayIdentity.ts',
-  'services/avatar/personaBake.ts',
-  'services/avatar/personaFingerprint.ts',
-  'services/transcriptPropagation.ts',
-  'scripts/tag-circle-voices.ts',                // an operator script, and it still spends
+  // ── FOUND BY LOOKING FOR SDKs, NOT HOSTNAMES ──────────────────────────────────────────────
+  // None of these types a vendor URL, so the original host-only scan could not see any of them.
+  // They were not "known gaps" that had been triaged and deferred — they were invisible, which is
+  // worse, and they are the reason the list grew when it looked ready to reach zero.
+  //
+  // Speech-to-text, billed per minute of AUDIO. `AudioIngester` is the one that matters most:
+  // it runs inside corpus ingest, which is now on a durable queue with a retry — so a failure
+  // after transcription costs a second transcription, and nothing records either.
+  'services/captions/CaptionService.ts',
+  'services/captions/transcribeAudioFile.ts',
+  'services/ingestion/AudioIngester.ts',
+
+  // Image generation, billed per IMAGE. A unit `token_usage` can already express (migration 073),
+  // which is what makes these the cheapest of the remaining gaps to close.
+  'services/generateAiThumbnail.ts',
+  'services/avatar/imageService.ts',
+
+  // OpenAI text, on the metadata path.
+  'services/generateVideoMetadata.ts',
 ];
 
 function walk(dir: string): string[] {
@@ -168,7 +216,14 @@ function buildGraph(): Graph {
 
     // Relative imports only. A package import cannot be a module of ours, and resolving one would
     // add a dependency on the module graph of node_modules for no gain.
-    for (const m of text.matchAll(/from\s+'(\.[^']+)'/g)) {
+    //
+    // TYPE IMPORTS ARE STRIPPED FIRST. `import type` is erased at compile time and cannot make a
+    // network call — `scripts/tag-circle-voices.ts` imports one interface from the Anam client and
+    // was flagged as an unmetered spender for it. Counting an erased edge is not conservatism, it
+    // is a false positive, and false positives are what teach people to add allow-list entries to
+    // silence a gate.
+    const runtimeText = text.replace(/import\s+type\s+[^;]*?;/g, '');
+    for (const m of runtimeText.matchAll(/from\s+'(\.[^']+)'/g)) {
       const spec = m[1]!.replace(/\.js$/, '');
       const abs = join(dirname(join(SRC, f)), spec);
       const target = bySpecifier.get(rel(abs)) ?? bySpecifier.get(`${rel(abs)}/index`);
@@ -204,12 +259,15 @@ function buildGraph(): Graph {
  * the context a usage row needs; anything further up has lost it.
  */
 function unmeteredFor(g: Graph, client: string): string[] {
-  if (FREE_ENDPOINT_ONLY.includes(client)) return [];
+  if (NO_BILLABLE_CALL.includes(client)) return [];
   if (!METERED_BY_CALLER.includes(client)) {
     return g.meters.has(client) ? [] : [client];
   }
   const callers = [...new Set(g.importers.get(client) ?? [])];
-  return callers.filter((c) => !g.meters.has(c)).sort();
+  // The exemption applies to CALLERS too, not only to clients. `anamService` is metered by its
+  // caller, and most of its callers only configure a persona — which this product's own billing
+  // model says costs nothing. Exempting the client alone would have left them looking unmetered.
+  return callers.filter((c) => !g.meters.has(c) && !NO_BILLABLE_CALL.includes(c)).sort();
 }
 
 describe('every module that spends money is accounted for', () => {
@@ -256,40 +314,45 @@ describe('every module that spends money is accounted for', () => {
   });
 
   it('keeps every listed path pointed at a real file', () => {
-    for (const p of [...UNMETERED_TODAY, ...METERED_BY_CALLER, ...FREE_ENDPOINT_ONLY]) {
+    for (const p of [...UNMETERED_TODAY, ...METERED_BY_CALLER, ...NO_BILLABLE_CALL]) {
       expect(() => statSync(join(SRC, p)), `${p} does not exist`).not.toThrow();
     }
   });
 });
 
 describe('what the gap costs, stated rather than implied', () => {
-  it('keeps the podcast renderer OUT of the gap list — it is metered now', () => {
-    // It used to be the largest line on this list: a whole episode of synthesis with no row behind
-    // it. It meters every call including the three retry paths, and writes one row per render in
-    // `finally`, so a render that dies halfway is not recorded as free. Asserted from the other
-    // side now: putting it back on the list means the metering was removed.
-    expect(UNMETERED_TODAY).not.toContain('services/podcast/audio/PodcastRenderer.ts');
+  it('keeps every metered path OFF the list', () => {
+    // Six came off by being metered: the renderer, the two per-click preview paths, guidance
+    // publishing and sound-effect generation. Putting one back means its metering was removed.
+    for (const closed of [
+      'services/podcast/audio/PodcastRenderer.ts',
+      'services/podcast/audio/previewTurn.ts',
+      'services/podcast/audio/revoiceTurn.ts',
+      'services/simulation/GuidanceService.ts',
+      'controllers/v1/audio.controller.ts',
+    ]) {
+      expect(UNMETERED_TODAY, closed).not.toContain(closed);
+    }
   });
 
-  it('keeps the per-click synthesis paths OUT of the list — they meter now', () => {
-    // Previously the loudest entries here, and described as "one synthesis per click, unbounded".
-    // BOTH HALVES OF THAT WERE WRONG in the same direction: they are cached by a hash over the
-    // inputs, the seed and the format, so re-listening to an unchanged line costs nothing. What
-    // costs is editing a line and listening again — real, and invisible until they metered, but
-    // never unbounded. Recorded here rather than quietly dropped, because the first version of
-    // this file was written from the overstatement.
-    expect(UNMETERED_TODAY).not.toContain('services/podcast/audio/previewTurn.ts');
-    expect(UNMETERED_TODAY).not.toContain('services/podcast/audio/revoiceTurn.ts');
+  it('names the speech-to-text paths, which are billed per minute of AUDIO', () => {
+    // The most expensive of the remaining gaps, and the ones the host-only scan could not see at
+    // all. `AudioIngester` runs inside corpus ingest, which is on a durable queue with a retry —
+    // so a failure after transcription buys a second transcription and neither is recorded.
+    expect(UNMETERED_TODAY).toContain('services/ingestion/AudioIngester.ts');
+    expect(UNMETERED_TODAY).toContain('services/captions/CaptionService.ts');
   });
 
-  it('keeps guidance publishing out too', () => {
-    // Accumulates across the cues it actually synthesises — the unchanged ones hit a cue-level
-    // cache and never reach the vendor — and writes one row per publish.
-    expect(UNMETERED_TODAY).not.toContain('services/simulation/GuidanceService.ts');
+  it('names the image-generation paths, billed per image', () => {
+    expect(UNMETERED_TODAY).toContain('services/generateAiThumbnail.ts');
+    expect(UNMETERED_TODAY).toContain('services/avatar/imageService.ts');
   });
 
-  it('shrinks — the list is smaller than the day it was written', () => {
-    // Thirteen on 2026-08-23. A ratchet whose number never moves is a list, not a ratchet.
-    expect(UNMETERED_TODAY.length).toBeLessThan(9);
+  it('is honest that the list GREW when the scan got sharper', () => {
+    // It stood at one entry and looked ready to reach zero. Then the SDK patterns went in and six
+    // modules appeared that had never been triaged, only unseen. A ratchet is allowed to grow when
+    // the measurement improves — pretending otherwise is how a gate starts flattering itself.
+    expect(UNMETERED_TODAY.length).toBeGreaterThan(1);
+    expect(UNMETERED_TODAY.length).toBeLessThan(8);
   });
 });
