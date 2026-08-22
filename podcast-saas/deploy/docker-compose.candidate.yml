@@ -159,14 +159,23 @@ services:
     environment:
       NODE_ENV: production
       PORT: '3000'
-      # SERVER-SIDE ONLY, AND THAT IS NOT A MISTAKE. Next.js bakes every NEXT_PUBLIC_* value into
-      # the browser bundle at BUILD time, so this image's client code calls the production API
-      # whatever is set here; these affect only server components rendering inside the container.
-      # Written explicitly because the opposite assumption is easy and expensive: a test asserting
-      # "the page only talks to this stack" would fail on every correct release.
-      NEXT_PUBLIC_API_URL: http://localhost:8080
-      NEXT_PUBLIC_APP_URL: http://localhost:3000
-      PUBLIC_SITE_URL: http://localhost:3000
+      # ── READ AT SERVER START, NOT ONLY AT BUILD ──────────────────────────────────────────────
+      # `next.config.ts` is loaded by `next start`, and its `resolvePublicUrl` THROWS whenever
+      # NODE_ENV=production and one of these is loopback, an internal service name, or not https.
+      # Loopback values here do not merely fail to reach the browser — they stop the container
+      # from starting at all. This was the fifth boot guard in this stack, and the fourth found
+      # only by reading what the code does with the value rather than what the value looks like.
+      #
+      # `.invalid` for the same reason as the backend's: reserved by RFC 2606, guaranteed never to
+      # resolve, and therefore honest about being unreachable while satisfying a string check.
+      #
+      # These are SERVER-SIDE ONLY regardless. Next.js bakes every NEXT_PUBLIC_* value into the
+      # browser bundle at BUILD time, so this image's client code calls the production API whatever
+      # is set here. Written down because the opposite assumption is easy and expensive: a test
+      # asserting "the page only talks to this stack" would fail on every correct release.
+      NEXT_PUBLIC_API_URL: https://api.candidate.invalid
+      NEXT_PUBLIC_APP_URL: https://app.candidate.invalid
+      PUBLIC_SITE_URL: https://app.candidate.invalid
       NEXT_TELEMETRY_DISABLED: '1'
     ports:
       - '3000:3000'
