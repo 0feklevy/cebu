@@ -280,3 +280,153 @@ describe('metering of failed and aborted calls (llm-pipeline-005)', () => {
     expect(mocks.record).toHaveBeenCalledTimes(3);
   });
 });
+
+// ── llm-pipeline-011 ─────────────────────────────────────────────────────────
+
+/**
+ * `sendText` had neither of the two things `_sendStructuredOnce` had: the per-user generation
+ * quota, and any reasoning controls at all. Its payload carried only
+ * model/systemPrompt/userPrompt/maxTokens/temperature.
+ *
+ * That mattered most for `guidance_plan` — GuidanceService's pass-1 deep analysis. It is tier
+ * `complex`, whose table comment says it "benefits from strongest model + extended thinking", and
+ * it goes through `sendText`. So the product's deepest reasoning call ran with thinking OFF and
+ * un-metered against the user's daily cap, while every structured call of the same tier did not.
+ */
+describe('sendText reasoning and quota (llm-pipeline-011)', () => {
+  it('sends thinking controls for a tier-complex task — it used to send none', async () => {
+    await makeSvc().sendText({ ...TEXT_OPTS, task: 'guidance_plan' });
+
+    const payload = mocks.sendMessage.mock.calls[0]![0] as Record<string, unknown>;
+    // THINKING SPECIFICALLY, not "any reasoning field is set". A mutation check caught the looser
+    // version: `effort: 'high'` is set for complex on an adaptive model whether or not thinking is
+    // on, so a disjunction that included `effort` stayed green with thinking disabled entirely.
+    const thinks = payload.adaptiveThinking === true || typeof payload.thinkingBudgetTokens === 'number';
+    expect(thinks, 'guidance_plan is tier complex and must THINK, not merely carry an effort').toBe(true);
+  });
+
+  it('matches what the structured path sends for the SAME task', async () => {
+    // The point is parity: one decision, two entry points. If these drift again, the deepest
+    // reasoning task silently gets weaker treatment through one door than the other.
+    await makeSvc().sendText({ ...TEXT_OPTS, task: 'guidance_plan' });
+    const viaText = mocks.sendMessage.mock.calls[0]![0] as Record<string, unknown>;
+
+    mocks.sendMessage.mockClear();
+    mocks.sendMessage.mockResolvedValue(okResponse());
+    await makeSvc().sendStructured({ ...STRUCTURED_OPTS, task: 'guidance_plan' });
+    const viaStructured = mocks.sendMessage.mock.calls[0]![0] as Record<string, unknown>;
+
+    expect(viaText.adaptiveThinking).toEqual(viaStructured.adaptiveThinking);
+    expect(viaText.thinkingBudgetTokens).toEqual(viaStructured.thinkingBudgetTokens);
+    expect(viaText.effort).toEqual(viaStructured.effort);
+    expect(viaText.maxTokens).toEqual(viaStructured.maxTokens);
+  });
+
+  it('does NOT send thinking for a utility task', async () => {
+    await makeSvc().sendText({ ...TEXT_OPTS, task: 'prompt_enhance' });
+    const payload = mocks.sendMessage.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload.adaptiveThinking).toBeUndefined();
+    expect(payload.thinkingBudgetTokens).toBeUndefined();
+  });
+
+  it('ENFORCES the daily cap on sendText — it used to be un-metered', async () => {
+    mocks.adminFindFirst.mockResolvedValue({
+      ...SHIPPED_DEFAULTS, generation_limit_enabled: true, generation_daily_limit: 5,
+    });
+    mocks.selectWhere.mockResolvedValue([{ count: 5 }]);
+
+    await expect(makeSvc().sendText({ ...TEXT_OPTS, task: 'guidance_plan' }))
+      .rejects.toMatchObject({ error_type: LLMErrorType.LIMIT_EXCEEDED });
+    expect(mocks.sendMessage, 'the provider must never be reached past the cap').not.toHaveBeenCalled();
+  });
+
+  it('lets a user under the cap through', async () => {
+    mocks.adminFindFirst.mockResolvedValue({
+      ...SHIPPED_DEFAULTS, generation_limit_enabled: true, generation_daily_limit: 5,
+    });
+    mocks.selectWhere.mockResolvedValue([{ count: 4 }]);
+
+    await expect(makeSvc().sendText({ ...TEXT_OPTS, task: 'guidance_plan' })).resolves.toBeDefined();
+  });
+
+  it('never blocks content_moderation, which gates other requests', async () => {
+    mocks.adminFindFirst.mockResolvedValue({
+      ...SHIPPED_DEFAULTS, generation_limit_enabled: true, generation_daily_limit: 1,
+    });
+    mocks.selectWhere.mockResolvedValue([{ count: 999 }]);
+
+    await expect(makeSvc().sendText({ ...TEXT_OPTS, task: 'content_moderation' })).resolves.toBeDefined();
+  });
+
+  it('does NOT re-charge the cap on a retry of an already-admitted call', async () => {
+    // The structured path enforces only on attempt 0 for exactly this reason. A retry that is
+    // re-counted charges one user action twice against their daily limit — and a mutation check
+    // showed nothing was pinning it.
+    mocks.adminFindFirst.mockResolvedValue({
+      ...SHIPPED_DEFAULTS, generation_limit_enabled: true, generation_daily_limit: 5,
+    });
+    mocks.selectWhere.mockResolvedValue([{ count: 999 }]);
+
+    await expect(makeSvc().sendText({ ...TEXT_OPTS, task: 'guidance_plan', retryCount: 1 }))
+      .resolves.toBeDefined();
+  });
+
+  it('does not count the cap against an anonymous call', async () => {
+    mocks.adminFindFirst.mockResolvedValue({
+      ...SHIPPED_DEFAULTS, generation_limit_enabled: true, generation_daily_limit: 1,
+    });
+    mocks.selectWhere.mockResolvedValue([{ count: 999 }]);
+
+    await expect(makeSvc().sendText({ ...TEXT_OPTS, userId: undefined, task: 'guidance_plan' }))
+      .resolves.toBeDefined();
+  });
+});
+
+// ── llm-pipeline-007 ─────────────────────────────────────────────────────────
+
+/**
+ * `ClaudeProvider` has honoured `systemPromptCacheable`/`systemPromptCachePrefix` since it was
+ * written — but nothing could REACH it. The fields were absent from `SendStructuredOpts`/
+ * `SendTextOpts` and from the payload the service builds, so every Claude call took the default
+ * branch and cache-wrote its entire system prompt.
+ *
+ * That is only wasteful for a prompt that can never be read back — and ScriptRoom's passes are
+ * exactly that, embedding `JSON.stringify(draft.turns)` INTO the system prompt, so each call pays
+ * a 1.25x cache-write premium for an entry with a structural hit rate of zero.
+ */
+describe('system-prompt caching reaches the provider (llm-pipeline-007)', () => {
+  it('forwards an opt-OUT through sendStructured', async () => {
+    await makeSvc().sendStructured({
+      ...STRUCTURED_OPTS, task: 'podcast_compile', systemPromptCacheable: false,
+    });
+    const payload = mocks.sendMessage.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload.systemPromptCacheable).toBe(false);
+  });
+
+  it('forwards a stable PREFIX through sendStructured', async () => {
+    await makeSvc().sendStructured({
+      ...STRUCTURED_OPTS, task: 'podcast_compile', systemPromptCachePrefix: 'FROZEN HEAD',
+    });
+    const payload = mocks.sendMessage.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload.systemPromptCachePrefix).toBe('FROZEN HEAD');
+  });
+
+  it('forwards both through sendText too', async () => {
+    await makeSvc().sendText({
+      ...TEXT_OPTS, task: 'guidance_plan', systemPromptCacheable: false, systemPromptCachePrefix: 'HEAD',
+    });
+    const payload = mocks.sendMessage.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload.systemPromptCacheable).toBe(false);
+    expect(payload.systemPromptCachePrefix).toBe('HEAD');
+  });
+
+  it('leaves callers that say nothing on the caching DEFAULT', async () => {
+    // The default must stay on: several callers build a byte-stable system prompt deliberately
+    // (SimulationService.buildContextPrompt sorts its sources precisely so the prompt caches
+    // across refinement turns) and those get real cache reads.
+    await makeSvc().sendStructured({ ...STRUCTURED_OPTS, task: 'bridge_plan' });
+    const payload = mocks.sendMessage.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload.systemPromptCacheable).toBeUndefined();
+    expect(payload.systemPromptCachePrefix).toBeUndefined();
+  });
+});
