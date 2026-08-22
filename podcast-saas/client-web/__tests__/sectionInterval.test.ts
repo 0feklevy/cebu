@@ -15,7 +15,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
-import { SECTION_BOUNDARY_EPSILON_SEC, sectionAtPlayhead } from '../lib/sectionInterval';
+import { SECTION_BOUNDARY_EPSILON_SEC, sectionAtPlayhead, playheadFromMediaTime } from '../lib/sectionInterval';
 
 // NOT `new URL(<literal>, import.meta.url)`: Vite rewrites that exact form into a bundled asset
 // reference, and the result is an http: URL that readFileSync refuses.
@@ -137,7 +137,18 @@ describe('the tolerance is the viewer\'s, not a second one', () => {
 
   it('is IMPORTED by the viewer, so the two clocks cannot drift apart', () => {
     const viewer = read('../components/viewer/useProjectPlayer.ts');
-    expect(viewer).toContain("SECTION_BOUNDARY_EPSILON_SEC } from '../../lib/sectionInterval'");
+    // Matched as an IMPORT of the name from this module, not as one exact spelling of the import
+    // line. The previous assertion pinned the literal `SECTION_BOUNDARY_EPSILON_SEC } from …`, so
+    // adding a SECOND name to the same import broke it — a red test for a change that satisfies
+    // everything the test is about. What matters is that the constant comes from the shared module
+    // and is not redefined here; the punctuation between them does not.
+    const importsFromModule = new RegExp(
+      String.raw`import\s*\{[^}]*\bSECTION_BOUNDARY_EPSILON_SEC\b[^}]*\}\s*from\s*'\.\./\.\./lib/sectionInterval'`,
+    );
+    expect(viewer).toMatch(importsFromModule);
+    // And nowhere does it declare its own. A second definition is the drift this file exists to
+    // prevent, and an import assertion alone would not catch one added beside it.
+    expect(viewer).not.toMatch(/(?:const|let|var)\s+SECTION_BOUNDARY_EPSILON_SEC\s*=/);
     // The section/sim interval comparisons must read the constant, not a bare literal.
     expect(viewer).toContain('start_sec <= SECTION_BOUNDARY_EPSILON_SEC');
     expect(viewer).toContain('start_sec >= segmentDuration - SECTION_BOUNDARY_EPSILON_SEC');
@@ -150,5 +161,57 @@ describe('the tolerance is the viewer\'s, not a second one', () => {
     // The exact shape of the bug: an interval end compared strictly against the playhead.
     expect(editor).not.toMatch(/playheadSec\s*<\s*sectionGlobalEnd/);
     expect(editor).not.toMatch(/playheadSec\s*>=\s*sectionGlobalStart/);
+  });
+});
+
+/**
+ * A negative playhead — the Linux WebKit failure that three rounds read as a harness problem.
+ *
+ * The CI dump for the sim-first scenario reads `currentTime: -0.04`, `played: []`, `readyState: 4`,
+ * `buffered: [[0, 32.4]]`. Fully loaded, playing, and never past zero: an HLS stream demuxed from
+ * MPEG-TS carries whatever presentation timestamps the packager wrote, and they do not have to
+ * begin at 0.
+ *
+ * `-0.04 >= 0` is false, so a section starting at 0 contained nothing and the viewer had no section
+ * to apply. On an engine where the clock advances that lasts a frame; on one where it does not, it
+ * lasts forever.
+ */
+describe('playheadFromMediaTime — a media timeline need not start at zero', () => {
+  it('clamps the exact value CI reported', () => {
+    expect(playheadFromMediaTime(-0.04)).toBe(0);
+  });
+
+  it('makes a section starting at 0 contain that playhead again', () => {
+    // The assertion that matters is not the number but that the lookup resolves again.
+    const zeroStart = [{ id: 'A', start: 0, end: 10 }];
+    const at = (t: number) =>
+      sectionAtPlayhead(zeroStart, playheadFromMediaTime(t), (s) => s, 10)?.id ?? null;
+
+    expect(at(-0.04)).toBe('A');
+    expect(at(-2)).toBe('A');
+    expect(at(0)).toBe('A');
+  });
+
+  it('leaves every ordinary time untouched', () => {
+    // A clamp that moved real times would shift every section boundary in the product.
+    for (const t of [0, 0.001, 4.5, 39.999, 1e6]) expect(playheadFromMediaTime(t)).toBe(t);
+  });
+
+  it('does NOT drag a later section back to the start', () => {
+    // Clamping concerns the region below zero only. Reaching above it would make a seek to 6
+    // resolve to whatever sits at 0, and the viewer would present the wrong simulation.
+    const two = [{ id: 'A', start: 0, end: 5 }, { id: 'B', start: 5, end: 10 }];
+    expect(sectionAtPlayhead(two, playheadFromMediaTime(6), (s) => s, 10)?.id).toBe('B');
+  });
+
+  it('treats NaN and a missing element as position zero rather than poisoning the comparison', () => {
+    // `currentTime` can follow a NaN duration mid-load. Every comparison against NaN is false, so
+    // the lookup would silently return null and the section would never apply — the same bug
+    // arriving by a different route.
+    expect(playheadFromMediaTime(NaN)).toBe(0);
+    expect(playheadFromMediaTime(Infinity)).toBe(0);
+    expect(playheadFromMediaTime(-Infinity)).toBe(0);
+    expect(playheadFromMediaTime(null)).toBe(0);
+    expect(playheadFromMediaTime(undefined)).toBe(0);
   });
 });
