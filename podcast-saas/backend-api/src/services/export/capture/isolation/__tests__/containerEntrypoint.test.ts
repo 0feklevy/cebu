@@ -38,6 +38,7 @@ const SPEC: ContainerCaptureSpec = {
   warmupFrames: 30,
   posterKey: 'posters/p/s/poster.jpg',
   output: { format: 'jpeg', quality: 80, frameDir: 'frames', namePattern: 'frame-%06d.jpg' },
+  rendererProfile: 'swiftshader',
   wallClockTimeoutSec: 60,
 };
 
@@ -86,6 +87,7 @@ describe('runContainerCapture', () => {
               dpr: 1,
             },
             failure: null,
+            cost: null,
           };
           expect(od).toBe(outputDir);
           return result;
@@ -134,6 +136,7 @@ describe('runContainerCapture', () => {
             frameCount: 0, rendererString: '', gate: 'passed', reason: null,
             rendererIdentity: { imageDigest: 'i', headlessShellVersion: 'v', viewport: { w: 1, h: 1 }, dpr: 1 },
             failure: null,
+            cost: null,
           };
         },
       };
@@ -209,6 +212,7 @@ describe('runContainerCapture', () => {
             frameCount: 0, rendererString: '', gate: 'passed', reason: null,
             rendererIdentity: { imageDigest: 'i', headlessShellVersion: 'v', viewport: { w: 1, h: 1 }, dpr: 1 },
             failure: null,
+            cost: null,
           };
         },
       };

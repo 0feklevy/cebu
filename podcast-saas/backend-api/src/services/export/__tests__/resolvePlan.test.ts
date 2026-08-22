@@ -117,7 +117,7 @@ describe('flattening the layered timeline', () => {
     const sim: SimCaptureWindow = {
       kind: 'sim-capture', sectionId: 'sec-sim', label: 'sim', startSec: 6, endSec: 8,
       simulationId: 's1', servedUrl: 'http://sim', simpleUi: true, autoScript: true,
-      uiHide: undefined, posterKey: 'posters/p.webp',
+      uiHide: undefined, configHash: null, posterKey: 'posters/p.webp',
     };
     const t = translateContractPlan(plan([base(), sim]), identity);
     expect(t.timeline.some((w) => w.kind === 'poster-fallback' && w.sourcePath === identity('posters/p.webp'))).toBe(true);

@@ -39,6 +39,9 @@ const baseManifest: SimManifest = {
   checkboxElements: [],
   canvasElements: ['main-canvas'],
   globalObjects: [],
+  runtimeGlobals: [],
+  instanceMethods: [],
+  cssControls: [],
 };
 
 // ── A valid minimal bridge ────────────────────────────────────────────────────
