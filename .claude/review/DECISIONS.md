@@ -37,7 +37,7 @@ The media gate (`canServeMediaKey`) knows exactly three key prefixes — `videos
 only that the key starts with `simulations/`, and `podcasts/` is modelled as fully public.
 One prefix-complete gate closes `security-005`, `security-016`, `simulation-007`, `security-006`,
 and (with the bucket migration) `security-001`. The sweep's own warning: implementing this without
-the ruling "produces something that looks done and is not." Three decisions, with my
+the ruling "produces something that looks done and is not." Four decisions, with my
 recommendation on each:
 
 1. **`/sim-public/*` policy — token or live lookup?** *Recommendation: scoped tokens, the same
