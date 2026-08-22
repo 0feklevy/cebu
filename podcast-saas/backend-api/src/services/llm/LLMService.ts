@@ -24,6 +24,27 @@ export interface SendStructuredOpts<T> {
   deadlineAt?: number;
   task: TaskType;
   systemPrompt: string;
+  /**
+   * Opt OUT of caching the system prompt (llm-pipeline-007).
+   *
+   * `ClaudeProvider` has honoured this since it was written, but nothing could REACH it: the field
+   * was absent from these opts and from the payload the service builds, so every Claude call took
+   * the default branch and cache-wrote its whole system prompt. For a prompt that is unique per
+   * call by construction — ScriptRoom's compiler embeds `JSON.stringify(draft.turns)` in its
+   * system prompt — that is a 1.25x cache-write premium on every request, for an entry no later
+   * request can ever read.
+   *
+   * Default true, because several callers deliberately build a byte-stable system prompt and
+   * re-send it, and those get real cache reads that must be preserved.
+   */
+  systemPromptCacheable?: boolean;
+  /**
+   * The STABLE leading span of the system prompt, when the caller has one.
+   *
+   * Caching is a PREFIX match: only a byte-identical leading span is ever read back. Pass the
+   * frozen head here and leave the per-call remainder in `systemPrompt`.
+   */
+  systemPromptCachePrefix?: string;
   userPrompt: string;
   previousMessages?: Array<{ role: 'user' | 'assistant'; content: string }>;
   schema: ZodSchema<T>;
@@ -200,6 +221,86 @@ export class LLMService {
     throw lastError!;
   }
 
+  /**
+   * The per-user generation quota, for EVERY billable entry point (llm-pipeline-011).
+   *
+   * OFF by default (`generation_limit_enabled=false` ⇒ unlimited). When an admin enables it, a
+   * user is capped at `generation_daily_limit` billable LLM calls per rolling 24h — the
+   * security-101 cost-DoS guard. `content_moderation` is a utility pre-screen and is neither
+   * blocked nor counted; it must keep running in order to gate other requests.
+   *
+   * WHY THIS IS A METHOD. It lived inline in `_sendStructuredOnce` and nowhere else, so every call
+   * through `sendText` was un-metered against the cap — including `guidance_plan`, the product's
+   * deepest and most expensive reasoning task. A cap one entry point does not enforce is not a cap.
+   *
+   * Only enforced on the first attempt, so retries of an already-admitted call are not
+   * double-charged against it.
+   */
+  private async enforceGenerationQuota(
+    settings: { generation_limit_enabled: boolean; generation_daily_limit: number },
+    userId: string | null | undefined,
+    task: TaskType,
+    attempt: number,
+  ): Promise<void> {
+    if (!settings.generation_limit_enabled || !userId || attempt !== 0 || task === 'content_moderation') {
+      return;
+    }
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const [usage] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(token_usage)
+      .where(and(
+        eq(token_usage.user_id, userId),
+        gte(token_usage.occurred_at, since),
+        notInArray(token_usage.task, QUOTA_EXEMPT_TASKS),
+      ));
+    if ((usage?.count ?? 0) >= settings.generation_daily_limit) {
+      throw new AppError(
+        LLMErrorType.LIMIT_EXCEEDED,
+        'You have reached the generation limit for now. Please try again later.',
+        429,
+      );
+    }
+  }
+
+  /**
+   * How hard the model should think, for EVERY entry point (llm-pipeline-011).
+   *
+   * This decision lived inline in the structured path, so `sendText` sent no reasoning controls at
+   * all — its payload carried only model/prompts/maxTokens/temperature. GuidanceService's pass-1
+   * deep analysis is task `guidance_plan`, tier `complex`, and goes through `sendText`: the
+   * product's deepest reasoning call was running with thinking OFF, silently, while the tier table
+   * said it "benefits from the strongest model + extended thinking".
+   */
+  private reasoningPayload(
+    model: string,
+    tier: Tier,
+    isClaude: boolean,
+    settings: { extended_thinking_enabled: boolean; thinking_budget_tokens: number; podcast_effort: string; max_tokens: number },
+  ): { thinkingBudgetTokens?: number; effort?: EffortLevel; adaptiveThinking?: boolean; maxTokens: number } {
+    // Shared with ClaudeProvider so the two classifications cannot drift, and so a model id newer
+    // than this file is not handed a rejected `temperature` (llm-pipeline-009).
+    const isAdaptiveModel = isAdaptiveOnlyClaudeModel(model);
+    // Thinking is wanted for complex + creative work on Claude. On adaptive-only models we signal
+    // adaptive thinking (no token budget); on older Claude models we pass the classic budget.
+    // Bridge/guidance (complex) is reasoning-heavy code generation — always think on Claude,
+    // independent of the global toggle. Podcast (creative) thinking stays admin-gated.
+    const wantThinking =
+      isClaude && (tier === 'complex' || (tier === 'creative' && settings.extended_thinking_enabled));
+    return {
+      thinkingBudgetTokens: wantThinking && !isAdaptiveModel ? settings.thinking_budget_tokens : undefined,
+      adaptiveThinking: wantThinking && isAdaptiveModel ? true : undefined,
+      // creative → admin-selected effort; complex → high on effort-capable Claude models so
+      // reasoning-heavy generation gets the strongest reasoning.
+      effort:
+        tier === 'creative' ? (settings.podcast_effort as EffortLevel)
+        : (tier === 'complex' && isAdaptiveModel) ? 'high'
+        : undefined,
+      // Give creative passes generous headroom (streamed) so thinking + a full script fit.
+      maxTokens: tier === 'creative' ? Math.max(settings.max_tokens, 64000) : settings.max_tokens,
+    };
+  }
+
   private async _sendStructuredOnce<T>(
     opts: SendStructuredOpts<T>,
     attempt: number,
@@ -216,34 +317,7 @@ export class LLMService {
       );
     }
 
-    // Per-user generation quota — OFF by default (generation_limit_enabled=false => unlimited).
-    // When an admin enables it, cap a user at generation_daily_limit billable LLM calls per
-    // rolling 24h (security-101 cost-DoS guard). content_moderation is a utility pre-screen and
-    // is neither blocked nor counted. Only enforced on the first attempt so retries of an
-    // already-admitted call aren't double-charged against the cap.
-    if (
-      settings.generation_limit_enabled &&
-      opts.userId &&
-      attempt === 0 &&
-      opts.task !== 'content_moderation'
-    ) {
-      const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
-      const [usage] = await db
-        .select({ count: sql<number>`count(*)::int` })
-        .from(token_usage)
-        .where(and(
-          eq(token_usage.user_id, opts.userId),
-          gte(token_usage.occurred_at, since),
-          notInArray(token_usage.task, QUOTA_EXEMPT_TASKS),
-        ));
-      if ((usage?.count ?? 0) >= settings.generation_daily_limit) {
-        throw new AppError(
-          LLMErrorType.LIMIT_EXCEEDED,
-          'You have reached the generation limit for now. Please try again later.',
-          429,
-        );
-      }
-    }
+    await this.enforceGenerationQuota(settings, opts.userId, opts.task, attempt);
 
     const { provider, model } = await this.resolveProviderAndModel(
       opts.userId,
@@ -255,32 +329,9 @@ export class LLMService {
 
     const tier = TASK_TIER[opts.task];
     const isClaude = provider.providerName === 'claude';
-    // Shared with ClaudeProvider so the two classifications cannot drift, and so
-    // a model id newer than this file is not handed a rejected `temperature`
-    // (llm-pipeline-009).
-    const isAdaptiveModel = isAdaptiveOnlyClaudeModel(model);
-    // Thinking is wanted for complex + creative work on Claude. On adaptive-only
-    // models we signal adaptive thinking (no token budget); on older Claude models
-    // we pass the classic thinking budget.
-    // Bridge/guidance (complex) is reasoning-heavy code generation — always think on Claude so it
-    // runs "high-level" (adaptive thinking on Opus/Fable, classic budget on older Claude),
-    // independent of the global toggle. Podcast (creative) thinking stays admin-gated.
-    const wantThinking =
-      isClaude && (
-        tier === 'complex' ||
-        (tier === 'creative' && settings.extended_thinking_enabled)
-      );
-    const thinkingBudget = wantThinking && !isAdaptiveModel ? settings.thinking_budget_tokens : undefined;
-    const adaptiveThinking = wantThinking && isAdaptiveModel ? true : undefined;
-    // creative → admin-selected effort; complex (bridge/guidance code generation) → high on
-    // effort-capable Claude models so simulation bridge scripts get the strongest reasoning
-    // (was implicitly the API default; make it explicit and independent of provider defaults).
-    const effort: EffortLevel | undefined =
-      tier === 'creative' ? (settings.podcast_effort as EffortLevel)
-      : (tier === 'complex' && isAdaptiveModel) ? 'high'
-      : undefined;
-    // Give creative passes generous headroom (streamed) so thinking + a full script fit.
-    const maxTokens = tier === 'creative' ? Math.max(settings.max_tokens, 64000) : settings.max_tokens;
+    // ONE reasoning decision, shared with sendText — see `reasoningPayload`.
+    const { thinkingBudgetTokens: thinkingBudget, adaptiveThinking, effort, maxTokens } =
+      this.reasoningPayload(model, tier, isClaude, settings);
 
     // On retry, reinforce the JSON-only instruction
     const userPrompt =
@@ -299,6 +350,9 @@ export class LLMService {
       deadlineAt: opts.deadlineAt,
       model,
       systemPrompt: opts.systemPrompt,
+      // Forwarded, or the provider's support for these is unreachable (llm-pipeline-007).
+      systemPromptCacheable: opts.systemPromptCacheable,
+      systemPromptCachePrefix: opts.systemPromptCachePrefix,
       userPrompt,
       previousMessages: opts.previousMessages,
       maxTokens,
@@ -558,6 +612,11 @@ export class LLMService {
       );
     }
 
+    // THE SAME CAP THE STRUCTURED PATH ENFORCES (llm-pipeline-011). It used to exist only there,
+    // so every sendText call — including `guidance_plan`, the most expensive reasoning task in the
+    // product — ran un-metered against the user's daily limit.
+    await this.enforceGenerationQuota(settings, opts.userId, opts.task, opts.retryCount ?? 0);
+
     const { provider, model } = await this.resolveProviderAndModel(
       opts.userId,
       opts.task,
@@ -565,13 +624,24 @@ export class LLMService {
       opts.retryCount ?? 0,
     );
 
+    // AND THE SAME REASONING CONTROLS. This payload carried none, so a tier-`complex` task went to
+    // Claude with thinking off — the opposite of what the tier table says that tier is for.
+    const reasoning = this.reasoningPayload(
+      model, TASK_TIER[opts.task], provider.providerName === 'claude', settings,
+    );
+
     const response = await this.callProvider(provider, model, opts, {
       model,
       systemPrompt: opts.systemPrompt,
+      systemPromptCacheable: opts.systemPromptCacheable,
+      systemPromptCachePrefix: opts.systemPromptCachePrefix,
       userPrompt: opts.userPrompt,
       previousMessages: opts.previousMessages,
-      maxTokens: settings.max_tokens,
+      maxTokens: reasoning.maxTokens,
       temperature: settings.temperature,
+      thinkingBudgetTokens: reasoning.thinkingBudgetTokens,
+      effort: reasoning.effort,
+      adaptiveThinking: reasoning.adaptiveThinking,
       onTokenChunk: opts.onTokenChunk,
       abortSignal: opts.abortSignal,
     });

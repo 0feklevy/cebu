@@ -72,6 +72,38 @@ interface PassTelemetry {
   cost_cents: number;
 }
 
+/**
+ * The smallest share of the draft's turns a compiled body may keep before it counts as a LOSS
+ * rather than a compression.
+ *
+ * A judgement, not a measurement — stated here so it is arguable in one place. The compiler is
+ * meant to polish rather than summarise, and the delivery director that runs after it ADDS turns
+ * (short backchannels), so a body that has HALVED the draft is already far outside intended
+ * behaviour.
+ */
+export const MIN_COMPILED_TURN_RATIO = 0.5;
+
+/**
+ * Did the compile pass lose the script? (llm-pipeline-016)
+ *
+ * The only guards were `directed.turns.length >= compiled.turns.length` and an all-or-nothing
+ * fallback at exactly zero turns. A compiler returning THREE turns from a sixty-turn draft passed
+ * both: the body was hashed, the script written `status: 'ready'` and the episode `script_ready`.
+ * A gutted paid deliverable, marked complete, with nothing anywhere to indicate it.
+ *
+ * Zero is not the failure mode that happens; near-zero is.
+ *
+ * Exported and pure because it is a RULE — the thing worth testing and worth arguing about — and
+ * because `validate`, which applies it, is private and does a great deal else besides.
+ */
+export function compiledBodyIsTooSmall(compiledTurnCount: number, draftTurnCount: number): boolean {
+  // An empty draft needs no special case, and a mutation check proved it: ceil(0 * ratio) is 0 and
+  // no turn count is below zero, so a body is never failed for the ABSENCE of a yardstick. The
+  // explicit branch that used to sit here was dead — and a dead branch carrying a comment about
+  // what it prevents is worse than none, because the next reader believes it.
+  return compiledTurnCount < Math.ceil(draftTurnCount * MIN_COMPILED_TURN_RATIO);
+}
+
 export class ScriptRoom {
   constructor(
     private readonly llm: LLMService = new LLMService(new ApiKeyService(), new UsageTrackingService()),
@@ -100,6 +132,16 @@ export class ScriptRoom {
         res = await this.llm.sendStructured({
           task,
           systemPrompt,
+          // NOT CACHEABLE, and set once here because it is true of every pass in this room
+          // (llm-pipeline-007). Each writers'-room system prompt is built by `fillPrompt` with
+          // per-call JSON interpolated INTO it — STORY_JSON, MATERIALS_JSON, DRAFT_TURNS — so it is
+          // unique by construction and no later request can ever read the entry back. Caching it
+          // bought a 1.25x cache-WRITE premium on every call of the most expensive tier in the
+          // product, for a cache with a structural hit rate of zero.
+          //
+          // A pass that ever gains a genuinely stable system prompt should pass the frozen head as
+          // `systemPromptCachePrefix` rather than flipping this back on wholesale.
+          systemPromptCacheable: false,
           userPrompt,
           // Zod input≠output (from .catch()/.default()); cast to the output-typed schema.
           schema: schema as unknown as ZodSchema<z.infer<S>>,
@@ -385,8 +427,30 @@ export class ScriptRoom {
       }
     }
 
-    if (out.length === 0) {
-      // Compiler produced nothing usable — fall back to the draft turns.
+    // A PROPORTIONAL FLOOR, NOT JUST A ZERO CHECK (llm-pipeline-016).
+    //
+    // The only guards on the compile pass were `directed.turns.length >= compiled.turns.length`
+    // and this fallback at exactly zero. A compiler that returned THREE turns from a sixty-turn
+    // draft passed both: the body was hashed, the script written `status: 'ready'` and the episode
+    // `script_ready`. A gutted paid deliverable, marked complete, with nothing to indicate it.
+    //
+    // Zero is not the failure mode that happens; near-zero is. The floor compares the FINAL turn
+    // count against the draft, after `splitLongTurn` — which can only ever increase the count — so
+    // falling below it means content was lost rather than compressed.
+    //
+    // Falling back to the draft yields an unpolished but COMPLETE episode, which is the right
+    // trade against a polished fragment. The ratio is a judgement, not a measurement: the compiler
+    // is meant to polish rather than summarise, and the delivery director that follows it ADDS
+    // turns, so a halving is already well outside intended behaviour.
+    if (compiledBodyIsTooSmall(out.length, draft.turns.length)) {
+      logger.warn(
+        { compiledTurns: out.length, draftTurns: draft.turns.length, ratio: MIN_COMPILED_TURN_RATIO },
+        'podcast compile returned too few turns — falling back to the draft body',
+      );
+      // Rebuild from the draft rather than topping up: a partial compile and the draft are two
+      // different scripts, and interleaving them would produce one that reads as neither.
+      out.length = 0;
+      idx = 0;
       draft.turns.forEach((t) => {
         out.push({ id: `t${++idx}`, speaker: t.speaker, text: t.text.trim(), overlap: t.overlap, is_hook: t.is_hook, beat: t.beat });
       });
