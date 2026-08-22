@@ -29,13 +29,13 @@ export async function runVideoTranscode(
 ): Promise<{ hls_master_key: string }> {
   const storage = getStorageAdapter();
 
-  console.log(`[HLS] ▶ START transcode for video_file_id=${video_file_id}`);
+  logger.info({ videoFileId: video_file_id }, '[hls] transcode started');
 
   const video = await db.query.video_files.findFirst({
     where: eq(video_files.id, video_file_id),
   });
   if (!video || !video.storage_key) {
-    console.error(`[HLS] ✗ video_file ${video_file_id} not found or missing storage_key`);
+    logger.error({ videoFileId: video_file_id }, '[hls] video_file not found or has no storage_key');
     throw new Error(`video_file ${video_file_id} not found or has no storage_key`);
   }
 
@@ -43,7 +43,7 @@ export async function runVideoTranscode(
     .update(video_files)
     .set({ hls_status: 'processing', hls_started_at: new Date() })
     .where(eq(video_files.id, video_file_id));
-  console.log(`[HLS] ● STATUS → processing  (${video_file_id})`);
+  logger.info({ videoFileId: video_file_id, status: 'processing' }, '[hls] status changed');
 
   // Prove this run is still alive for as long as it is (job-queue-003). The reaper in
   // `hlsRecovery.ts` runs on a timer now, not only at boot, and its death test is "nothing has
@@ -72,13 +72,13 @@ export async function runVideoTranscode(
   let published360pKey: string | null = null;
 
   try {
-    console.log(`[HLS] ⬇ Downloading source from storage_key=${video.storage_key}`);
+    logger.info({ videoFileId: video_file_id, storageKey: video.storage_key }, '[hls] downloading source');
     const downloadUrl = await storage.getPresignedDownloadUrl(video.storage_key, 3600);
     const response = await fetchWithRetry(downloadUrl);
     if (!response.ok) throw new Error(`Failed to download source video: ${response.status}`);
     if (!response.body) throw new Error('No response body');
     await pipeline(response.body as unknown as NodeJS.ReadableStream, createWriteStream(inputPath));
-    console.log(`[HLS] ✓ Source downloaded → ${inputPath}`);
+    logger.info({ videoFileId: video_file_id }, '[hls] source downloaded');
     logger.info({ video_file_id, inputPath }, 'Source video downloaded');
 
     // Versioned HLS tree per transcode run: a re-transcode writes a fresh tree and the
@@ -96,7 +96,7 @@ export async function runVideoTranscode(
         // From the first tier onward this run may own bytes under its prefix (a tier throwing
         // mid-upload leaves partial segments behind), so from here a failure must clean up.
         runPrefix = storageKeyPrefix;
-        console.log(`[HLS] ⚙ TIER START: ${tierName}  (${video_file_id})`);
+        logger.info({ videoFileId: video_file_id, tier: tierName }, '[hls] tier started');
         logger.info({ video_file_id, tierName }, 'HLS tier starting');
         await db
           .update(video_files)
@@ -104,7 +104,7 @@ export async function runVideoTranscode(
           .where(eq(video_files.id, video_file_id));
       },
       onTierComplete: async (tierName, tierKey) => {
-        console.log(`[HLS] ✓ TIER DONE: ${tierName}  key=${tierKey}  (${video_file_id})`);
+        logger.info({ videoFileId: video_file_id, tier: tierName, tierKey }, '[hls] tier finished');
         logger.info({ video_file_id, tierName, tierKey }, 'HLS tier complete');
         if (tierName === '360p') {
           await db
@@ -112,19 +112,19 @@ export async function runVideoTranscode(
             .set({ hls_360p_key: tierKey })
             .where(eq(video_files.id, video_file_id));
           published360pKey = tierKey;
-          console.log(`[HLS] ● 360p ready — early playback available  (${video_file_id})`);
+          logger.info({ videoFileId: video_file_id }, '[hls] 360p ready — early playback available');
         }
       },
     });
 
     // Extract waveform peaks for timeline display (non-blocking on error)
-    console.log(`[HLS] ⚡ Extracting waveform peaks  (${video_file_id})`);
+    logger.info({ videoFileId: video_file_id }, '[hls] extracting waveform peaks');
     const waveformPeaks = await extractWaveformPeaks(inputPath).catch((err) => {
       logger.warn({ err, video_file_id }, 'Waveform extraction failed, continuing without peaks');
       return [] as number[];
     });
     const waveformJson = waveformPeaks.length > 0 ? JSON.stringify(waveformPeaks) : null;
-    if (waveformJson) console.log(`[HLS] ✓ Waveform peaks extracted  count=${waveformPeaks.length}  (${video_file_id})`);
+    if (waveformJson) logger.info({ videoFileId: video_file_id, peaks: waveformPeaks.length }, '[hls] waveform peaks extracted');
 
     await db
       .update(video_files)
@@ -138,7 +138,7 @@ export async function runVideoTranscode(
       })
       .where(eq(video_files.id, video_file_id));
 
-    console.log(`[HLS] ✅ STATUS → ready  masterKey=${result.masterKey}  duration=${result.durationSec}s  (${video_file_id})`);
+    logger.info({ videoFileId: video_file_id, status: 'ready', masterKey: result.masterKey, durationSec: result.durationSec }, '[hls] status changed');
     logger.info({ video_file_id, masterKey: result.masterKey }, 'HLS transcode complete');
 
     // ── WHAT THIS DURATION DID TO THE ROWS PLACED AGAINST THIS VIDEO (D-01b) ────────────────
@@ -217,7 +217,7 @@ export async function runVideoTranscode(
     return { hls_master_key: result.masterKey };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error(`[HLS] ✗ STATUS → failed  error="${message}"  (${video_file_id})`);
+    logger.error({ videoFileId: video_file_id, status: 'failed', err: message }, '[hls] status changed');
     logger.error({ video_file_id, err }, 'HLS transcode failed');
 
     // Un-publish before un-storing (media-006). This run's own 360p key is the only pointer a
@@ -249,6 +249,6 @@ export async function runVideoTranscode(
   } finally {
     stopHeartbeat();
     await rm(workDir, { recursive: true, force: true });
-    console.log(`[HLS] 🧹 Cleaned up workDir=${workDir}`);
+    logger.debug({ videoFileId: video_file_id, workDir }, '[hls] work directory cleaned up');
   }
 }
