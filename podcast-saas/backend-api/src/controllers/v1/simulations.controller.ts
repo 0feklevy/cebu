@@ -1092,6 +1092,7 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
         const svc = new GuidanceService(storage, _llmService);
         const result = await svc.publishGuidance({
           simId: owned.sim.id, projectId: owned.project.id,
+          userId: request.dbUser?.id ?? null,   // who the guidance spend is attributed to
           entries, language, existing: entries,
           entryKey: owned.sim.entry_file,   // authoritative entry-file storage key
           meta,                             // so a revisioned publish writes the new meta in-tx

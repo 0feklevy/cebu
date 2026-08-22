@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm';
 import type { StorageService } from '../storage/StorageService.js';
 import { LLMService } from '../llm/LLMService.js';
 import { GuidanceTTSService, resolveGuidanceVoice } from '../audio/GuidanceTTSService.js';
+import { recordTtsSpend } from '../usage/recordTtsSpend.js';
 import {
   selectSources,
   computeSourceHash,
@@ -585,6 +586,8 @@ export class GuidanceService {
    */
   async publishGuidance(opts: {
     simId: string; projectId: string;
+    /** Who is spending. Optional because a publish can be re-driven by a sweep with no request. */
+    userId?: string | null;
     entries: GuidanceEntryStored[]; language?: string;
     existing?: GuidanceEntryStored[] | null;
     entryKey?: string;   // authoritative entry-file storage key (from the simulation row)
@@ -595,6 +598,31 @@ export class GuidanceService {
     const { simId, projectId, onEvent } = opts;
     const language = opts.language || 'en';
     const prefix = `simulations/${projectId}/${simId}`;
+    // Characters handed to the vendor across this publish. One row at the end rather than one per
+    // cue: the question is "what did publishing this simulation's guidance cost", and a row per
+    // cue would bury that under a dozen entries a creator never thinks of separately.
+    let charactersSpent = 0;
+    /**
+     * Writes the publish's spend down, whether it finished or died mid-way.
+     *
+     * A publish that throws on its fourth cue already paid for three. Recording only on success
+     * makes a failing publish look free — and a publish that fails repeatedly, which is the
+     * expensive one, would be the single thing the spend surface could never show. Same reasoning
+     * as the renderer's `finally`, and it was missing here until a mutation moved the counter after
+     * the vendor call and nothing failed.
+     *
+     * Called from exactly one place, the `finally` below. An earlier version carried a once-only
+     * latch; no mutation could kill it, because there was no second call site for it to protect
+     * against. Defensiveness nothing can falsify is just code.
+     */
+    const meterSpend = () => {
+      void recordTtsSpend({
+        userId: opts.userId ?? null,
+        projectId,
+        task: 'guidance_publish',
+        characters: charactersSpent,
+      });
+    };
 
     const enabled = opts.entries.filter(e => e.enabled);
     if (enabled.length === 0) throw new Error('No enabled guidance cues to publish');
@@ -605,6 +633,7 @@ export class GuidanceService {
 
     onEvent?.('status', { status: 'Synthesizing narration audio…', type: 'progress' });
     const published: GuidanceEntryStored[] = [];
+    try {
     for (const e of opts.entries) {
       if (!e.enabled) { published.push({ ...e, audioUrl: null }); continue; }
       // Defensive: never bake an unsafe/broken predicate into guidance.js.
@@ -621,11 +650,20 @@ export class GuidanceService {
         published.push({ ...e, audioUrl: prev.audioUrl });
         continue;
       }
+      // Counted before the call, so a synthesis that throws after the vendor received the text is
+      // still on the bill — which it is. The cue-level cache above means an unchanged narration
+      // never reaches here at all.
+      charactersSpent += e.narration.length;
       const buf = await this.tts.synthesize(e.narration, voice);
       const textHash = createHash('sha256').update(e.narration).digest('hex').slice(0, 8);
       const key = `${prefix}/guidance/${language}/${e.id}.${textHash}.mp3`;
       await this.storage.uploadFile(key, buf, 'audio/mpeg');
       published.push({ ...e, audioUrl: this.storage.getSimPublicUrl(key) });
+    }
+
+
+    } finally {
+      meterSpend();
     }
 
     // Assemble + inject under the per-sim lock (read-modify-write of index.html).
