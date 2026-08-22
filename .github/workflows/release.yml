@@ -126,6 +126,40 @@ jobs:
             ${{ inputs.approve_high && '--approve-high' || '' }} \
             --changed-paths "$ART/changed-paths.txt" \
             --out "$ART/release-risk.json"
+      - name: Prove the release-blocking flows have somewhere to run
+        # A NEAR MISS, CAUGHT BEFORE IT FIRED. `playwright-summary --require-tests` (added with
+        # the candidate gate) makes a SKIPPED release-blocking flow a CRITICAL finding, and the
+        # post-deploy gate turns CRITICAL into an automatic rollback.
+        #
+        # Every one of those flows is `test.skip(!process.env.SMOKE_PUBLIC_PATH, …)`. Those
+        # variables are NOT set on this repository today — so the first release to reach the
+        # post-deploy gate would have found them all skipped, called it CRITICAL, and rolled back
+        # a perfectly healthy deploy because of a missing configuration value.
+        #
+        # The two cases are genuinely different and must fail in different places:
+        #   - "nobody told me which project to test" is a CONFIGURATION gap. It has to be loud,
+        #     and it has to stop the release BEFORE anything is deployed. Rolling production back
+        #     for it would be absurd.
+        #   - "you told me, and the flow still did not run" means something is broken, and
+        #     post-deploy CRITICAL plus rollback is exactly right.
+        #
+        # So this refuses early. The post-deploy requirement then means what it says.
+        if: ${{ inputs.deploy }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "${{ vars.SMOKE_PUBLIC_PATH }}" ]        || missing="$missing SMOKE_PUBLIC_PATH"
+          [ -n "${{ vars.SMOKE_PLAYLIST_PATH }}" ]      || missing="$missing SMOKE_PLAYLIST_PATH"
+          [ -n "${{ vars.SMOKE_ADMIN_PREVIEW_PATH }}" ] || missing="$missing SMOKE_ADMIN_PREVIEW_PATH"
+          if [ -n "$missing" ]; then
+            echo "::error::Release-blocking production flows have no fixture to run against:$missing"
+            echo "::error::Set these as repository variables (Settings → Secrets and variables →"
+            echo "::error::Actions → Variables) to a PUBLIC project path, a public playlist path,"
+            echo "::error::and an admin preview path. Until then the post-deploy suite would skip"
+            echo "::error::those flows, and a skipped release-blocking flow is not a passing one."
+            exit 1
+          fi
+          echo "release-blocking flows have fixtures configured"
       - name: Prove the approval environment is actually protected
         # ONLY MEANINGFUL FOR RISKY RELEASES, AND ESSENTIAL FOR THEM.
         #
