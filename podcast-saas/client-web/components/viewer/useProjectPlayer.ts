@@ -3267,6 +3267,35 @@ export function useProjectPlayer(
       }
       merge({ playing: true });
       scheduleHide();
+      // APPLY THE SECTION COVERING THE CURRENT TIME, NOW — do not wait for `timeupdate`.
+      //
+      // `updateSimOverlay` is the only function that applies a section and reveals the overlay,
+      // and until this line every path to it required the timeline to have MOVED: the `timeupdate`
+      // tick, a segment swap, or a seek. A viewer sitting at t=0 that has never played and never
+      // seeked had reached none of them, so **a project whose timeline OPENS on a simulation had
+      // no simulation applied at all**. Proven rather than reasoned: an instrumented boot logs no
+      // call to `updateSimOverlay`, the overlay stays at opacity 0 on the bare `sim-overlay` class,
+      // and the child reports section "none" — the same signature the WebKit CI failure dumps.
+      //
+      // The sim-first case was already half-handled: the pool is SEEDED and the arm gate opens
+      // immediately for it, so the package is warm and the iframe exists. Only the activation was
+      // still waiting for a clock that had not started.
+      //
+      // `play` rather than `playing` or `loadeddata`: `play` fires when playback is REQUESTED,
+      // which is the earliest moment the viewer has committed to showing the timeline — and it
+      // fires even when the media then fails to advance, which is precisely the case that had no
+      // recovery. `playing` would inherit the same dependency on frames actually arriving.
+      //
+      // Not restricted to the first play, and not conditional on `simFirst`. `updateSimOverlay`
+      // early-returns when the active section is unchanged, so a resume mid-section costs one
+      // comparison; and a resume whose section DID change while paused is a case that wants this
+      // too. Guarding it would trade a real fix for a narrower one that needs the guard to be
+      // right.
+      //
+      // Second effect, on every browser: `timeupdate` fires at roughly 4 Hz, so the first tick
+      // after pressing play was up to ~250 ms late. For a sim-first project that was a visible
+      // flash of the video's first frame before the simulation appeared.
+      onTick();
       // Sync broll: if broll is active, resume it too
       if (activeBrollRef.current && refs.videoBroll.current?.paused) {
         safePlay(refs.videoBroll.current);
