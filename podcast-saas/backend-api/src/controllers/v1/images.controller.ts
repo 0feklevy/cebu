@@ -9,6 +9,12 @@ import { uploadWithFallback } from '../../services/storage/uploadWithFallback.js
 import { deleteWithFallback } from '../../services/storage/deleteWithFallback.js';
 import { randomUUID } from 'crypto';
 import { extname } from 'path';
+import {
+  UPLOAD_MAX_BYTES,
+  declaredTooLarge,
+  readStreamBounded,
+  tooLargeMessage,
+} from '../../services/security/uploadLimits.js';
 
 const ALLOWED_MIME = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif']);
 
@@ -22,6 +28,14 @@ export async function registerImageRoutes(app: FastifyInstance): Promise<void> {
       const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
+      // DECLARED SIZE FIRST (security-007): free, exact enough, and available before a byte of body
+      // is read — so we never begin buffering something already decided against. It is not the real
+      // guard (Content-Length can be absent or a lie); `readStreamBounded` below is.
+      const declared = declaredTooLarge(request.headers['content-length'], UPLOAD_MAX_BYTES.image);
+      if (declared !== null) {
+        return reply.code(413).send({ message: tooLargeMessage('This image', declared, UPLOAD_MAX_BYTES.image) });
+      }
+
       const data = await request.file();
       if (!data) return reply.code(400).send({ message: 'No file uploaded' });
 
@@ -32,7 +46,7 @@ export async function registerImageRoutes(app: FastifyInstance): Promise<void> {
 
       const ext  = extname(data.filename || 'image').replace(/[^a-z0-9.]/gi, '').toLowerCase() || '.jpg';
       const key  = `images/${project.id}/${randomUUID()}${ext}`;
-      const buf  = await data.toBuffer();
+      const buf  = await readStreamBounded(data.file, UPLOAD_MAX_BYTES.image, 'This image');
 
       const publicUrl = await uploadWithFallback(key, buf, mime);
 
@@ -72,6 +86,14 @@ export async function registerImageRoutes(app: FastifyInstance): Promise<void> {
       });
       if (!existing) return reply.code(404).send({ message: 'Image not found' });
 
+      // DECLARED SIZE FIRST (security-007): free, exact enough, and available before a byte of body
+      // is read — so we never begin buffering something already decided against. It is not the real
+      // guard (Content-Length can be absent or a lie); `readStreamBounded` below is.
+      const declared = declaredTooLarge(request.headers['content-length'], UPLOAD_MAX_BYTES.image);
+      if (declared !== null) {
+        return reply.code(413).send({ message: tooLargeMessage('This image', declared, UPLOAD_MAX_BYTES.image) });
+      }
+
       const data = await request.file();
       if (!data) return reply.code(400).send({ message: 'No file uploaded' });
       const mime = data.mimetype.toLowerCase().split(';')[0].trim();
@@ -81,7 +103,7 @@ export async function registerImageRoutes(app: FastifyInstance): Promise<void> {
 
       const ext = extname(data.filename || 'image').replace(/[^a-z0-9.]/gi, '').toLowerCase() || '.jpg';
       const key = `images/${project.id}/${randomUUID()}${ext}`;
-      const buf = await data.toBuffer();
+      const buf = await readStreamBounded(data.file, UPLOAD_MAX_BYTES.image, 'This image');
       const publicUrl = await uploadWithFallback(key, buf, mime);
 
       const oldKey = existing.storage_key;
