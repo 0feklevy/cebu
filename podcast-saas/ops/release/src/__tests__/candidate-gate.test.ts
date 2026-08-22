@@ -105,8 +105,31 @@ describe('it tests the images that will actually be deployed', () => {
   it('pins the candidate from the same manifest remote-deploy pins from', () => {
     // A gate that reads a *different* artifact can bless one set of digests while production
     // pulls another. Both must name manifest.json.
-    expect(gateText).toContain('MANIFEST=artifacts/manifest.json');
+    expect(gateText).toContain('MANIFEST="$ART/manifest.json"');
     expect(jobs.get('deploy')?.text).toContain('--manifest "$ART/manifest.json"');
+  });
+
+  it('reads and writes evidence through ABSOLUTE paths, never workspace-relative ones', () => {
+    // COST A FULL BUILD TO LEARN. The workflow sets `defaults.run.working-directory:
+    // podcast-saas`, so every `run:` step starts one directory DOWN — while
+    // `actions/download-artifact` writes relative to the workspace ROOT. A relative
+    // `artifacts/manifest.json` therefore looked in `podcast-saas/artifacts/` and found nothing.
+    //
+    // The gate failed closed and the deploy was skipped, which is the system working exactly as
+    // designed. It is still an hour of build time to discover something a string check catches,
+    // and the same trap is waiting for every future step in this job.
+    const gate = runsOf(GATE);
+    const relative = [...gate.matchAll(/(?:^|\s)(?:--(?:out|findings|require|report)\s+|MANIFEST=)"?([A-Za-z][\w./-]*\.json)/g)]
+      .map((m) => m[1])
+      .filter((path) => !path.startsWith('$') && !path.startsWith('release-artifacts/'));
+    expect(relative, `these evidence paths are workspace-relative in a job that runs one directory down: ${relative.join(', ')}`).toEqual([]);
+  });
+
+  it('downloads the release artifacts where $ART actually points', () => {
+    // `$ART` is `${{ github.workspace }}/release-artifacts`. Downloading to any other path means
+    // every `$ART/...` read in this job resolves to an empty directory.
+    expect(runsOf(GATE)).toContain('path: release-artifacts');
+    expect(releaseYml).toContain('ART: ${{ github.workspace }}/release-artifacts');
   });
 
   it('refuses any reference that is not digest-pinned', () => {
@@ -277,7 +300,7 @@ describe('evidence is demanded even when the run went badly', () => {
     // commit". Dropping --expect-run-id alone would let a stale artifact from an earlier,
     // greener run satisfy the gate. checkRequiredEvidence raises evidence.stale-run for it.
     const gateStep = stepWith('release-cli gate --phase pre-deploy') ?? '';
-    expect(gateStep).toContain('--require artifacts/candidate-smoke.json');
+    expect(gateStep).toContain('--require "$ART/candidate-smoke.json"');
     expect(gateStep).toContain('--identity-bearing candidate-smoke.json');
     expect(gateStep).toContain('--expect-run-id "$RUN_ID"');
     expect(gateStep).toContain('--expect-git-sha');

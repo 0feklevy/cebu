@@ -404,7 +404,7 @@ jobs:
       - name: Install workspace (frozen)
         run: pnpm install --frozen-lockfile
       - uses: actions/download-artifact@v6
-        with: { name: release-artifacts, path: artifacts }
+        with: { name: release-artifacts, path: release-artifacts }
       - uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -419,7 +419,12 @@ jobs:
           # this job exists to close. `release-plan` has already run `image-manifest --verify` over
           # it (namespace, sha256 form, no floating tag) and fails its own job on a CRITICAL, so a
           # manifest that reaches this step is a verified one.
-          MANIFEST=artifacts/manifest.json
+          # ABSOLUTE, via $ART. This job's `run:` steps inherit `working-directory: podcast-saas`
+          # from the workflow defaults, while `download-artifact` writes relative to the WORKSPACE
+          # root — so a relative `artifacts/manifest.json` here looked in `podcast-saas/artifacts/`
+          # and found nothing. The gate failed closed and blocked the deploy, which is the system
+          # working; it also cost a full build to discover, which a test now prevents.
+          MANIFEST="$ART/manifest.json"
           # No manifest ⇒ no candidate ⇒ no deploy. Never fall back to a floating tag: a `:latest`
           # here would test something merely NAMED like the candidate.
           test -f "$MANIFEST" || { echo "::error::manifest.json is missing — cannot identify the candidate"; exit 1; }
@@ -534,17 +539,16 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          mkdir -p artifacts
           pnpm --filter ops-release release-cli playwright-summary \
             --report "${{ github.workspace }}/podcast-saas/client-web/e2e-results/candidate-smoke.json" \
             --run-id "$RUN_ID" --git-sha "${{ needs.plan.outputs.git_sha }}" \
-            --out artifacts/candidate-smoke.json
+            --out "$ART/candidate-smoke.json"
           pnpm --filter ops-release release-cli gate --phase pre-deploy \
-            --findings artifacts/candidate-smoke.json \
-            --require artifacts/candidate-smoke.json \
+            --findings "$ART/candidate-smoke.json" \
+            --require "$ART/candidate-smoke.json" \
             --identity-bearing candidate-smoke.json \
             --expect-run-id "$RUN_ID" --expect-git-sha "${{ needs.plan.outputs.git_sha }}" \
-            --out artifacts/candidate-gate.json
+            --out "$ART/candidate-gate.json"
       - name: Container logs on failure (the candidate speaks for itself)
         if: failure()
         run: |
@@ -560,8 +564,8 @@ jobs:
         with:
           name: candidate-smoke-evidence
           path: |
-            artifacts/candidate-smoke.json
-            artifacts/candidate-gate.json
+            release-artifacts/candidate-smoke.json
+            release-artifacts/candidate-gate.json
             podcast-saas/client-web/e2e-results/candidate-smoke.json
           if-no-files-found: warn
 
