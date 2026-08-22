@@ -73,6 +73,9 @@ jobs:
       current_tag: ${{ steps.plan.outputs.current_tag }}
       git_sha: ${{ steps.plan.outputs.git_sha }}
       requires_human: ${{ steps.risk.outputs.requires_human }}
+      # Release-blocking flows that actually have a fixture. Empty means nothing is required,
+      # so a flow with nowhere to run cannot trigger a post-deploy rollback.
+      require_tests: ${{ steps.fixtures.outputs.require_tests }}
       risk_reasons: ${{ steps.risk.outputs.risk_reasons }}
     steps:
       - name: Releases run only from main
@@ -126,40 +129,55 @@ jobs:
             ${{ inputs.approve_high && '--approve-high' || '' }} \
             --changed-paths "$ART/changed-paths.txt" \
             --out "$ART/release-risk.json"
-      - name: Prove the release-blocking flows have somewhere to run
-        # A NEAR MISS, CAUGHT BEFORE IT FIRED. `playwright-summary --require-tests` (added with
-        # the candidate gate) makes a SKIPPED release-blocking flow a CRITICAL finding, and the
-        # post-deploy gate turns CRITICAL into an automatic rollback.
+      - name: Are the release-blocking flows configured to run at all?
+        id: fixtures
+        # WARNS, DOES NOT BLOCK — and the first version of this blocked, which was wrong.
         #
-        # Every one of those flows is `test.skip(!process.env.SMOKE_PUBLIC_PATH, …)`. Those
-        # variables are NOT set on this repository today — so the first release to reach the
-        # post-deploy gate would have found them all skipped, called it CRITICAL, and rolled back
-        # a perfectly healthy deploy because of a missing configuration value.
+        # The problem it solves is real: `--require-tests` makes a SKIPPED release-blocking flow
+        # CRITICAL, and the post-deploy gate turns CRITICAL into an automatic rollback. Every one
+        # of those flows is `test.skip(!process.env.SMOKE_PUBLIC_PATH, …)`, and those variables are
+        # unset — so without something here, the first release would have rolled back a perfectly
+        # healthy deploy over a missing configuration value.
         #
-        # The two cases are genuinely different and must fail in different places:
-        #   - "nobody told me which project to test" is a CONFIGURATION gap. It has to be loud,
-        #     and it has to stop the release BEFORE anything is deployed. Rolling production back
-        #     for it would be absurd.
-        #   - "you told me, and the flow still did not run" means something is broken, and
-        #     post-deploy CRITICAL plus rollback is exactly right.
+        # But refusing to release is the wrong half of that trade. It blocks security fixes on a
+        # configuration task, and the person who can do the configuring is not always there. A
+        # deploy that proceeds with a LOUD, recorded gap is not the silent green this replaced.
         #
-        # So this refuses early. The post-deploy requirement then means what it says.
-        if: ${{ inputs.deploy }}
+        # So the requirement is passed downstream only for flows that HAVE a fixture. A flow with
+        # nowhere to run is reported here and excluded from the post-deploy requirement; a flow
+        # that HAS somewhere to run and still did not run stays CRITICAL, and the rollback then
+        # means what it says.
         run: |
           set -euo pipefail
           missing=""
           [ -n "${{ vars.SMOKE_PUBLIC_PATH }}" ]        || missing="$missing SMOKE_PUBLIC_PATH"
           [ -n "${{ vars.SMOKE_PLAYLIST_PATH }}" ]      || missing="$missing SMOKE_PLAYLIST_PATH"
           [ -n "${{ vars.SMOKE_ADMIN_PREVIEW_PATH }}" ] || missing="$missing SMOKE_ADMIN_PREVIEW_PATH"
+
           if [ -n "$missing" ]; then
-            echo "::error::Release-blocking production flows have no fixture to run against:$missing"
-            echo "::error::Set these as repository variables (Settings → Secrets and variables →"
-            echo "::error::Actions → Variables) to a PUBLIC project path, a public playlist path,"
-            echo "::error::and an admin preview path. Until then the post-deploy suite would skip"
-            echo "::error::those flows, and a skipped release-blocking flow is not a passing one."
-            exit 1
+            echo "::warning::Release-blocking production flows have NO FIXTURE and will not run:$missing"
+            echo "::warning::Set them as repository variables (Settings → Secrets and variables →"
+            echo "::warning::Actions → Variables). Until then this release deploys WITHOUT verifying"
+            echo "::warning::project pages, playlists or admin preview in production."
+            {
+              echo '### ⚠️ Production flows not verified'
+              echo ''
+              echo 'These repository variables are unset, so the flows that depend on them were'
+              echo 'skipped rather than run:'
+              echo ''
+              for v in $missing; do echo "- \`$v\`"; done
+              echo ''
+              echo 'The deploy proceeded. It was NOT verified against those surfaces.'
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
-          echo "release-blocking flows have fixtures configured"
+
+          # Named flows go downstream ONLY when they have somewhere to run. An empty value means
+          # `--require-tests` is not passed at all, so nothing is required and nothing rolls back.
+          if [ -z "${{ vars.SMOKE_PUBLIC_PATH }}" ]; then
+            echo "require_tests=" >> "$GITHUB_OUTPUT"
+          else
+            echo "require_tests=opening an existing project renders its media,a stored media URL is minted and the resource actually loads,an untokenised private media URL is refused,playback starts on a real project,the export entry point is reachable" >> "$GITHUB_OUTPUT"
+          fi
       - name: Prove the approval environment is actually protected
         # ONLY MEANINGFUL FOR RISKY RELEASES, AND ESSENTIAL FOR THEM.
         #
@@ -784,7 +802,7 @@ jobs:
           pnpm --filter ops-release release-cli playwright-summary \
             --report "${{ github.workspace }}/podcast-saas/client-web/e2e-results/results.json" \
             --run-id "$RUN_ID" --git-sha "${{ github.sha }}" --out "$ART/playwright-summary.json" \
-            --require-tests 'opening an existing project renders its media,a stored media URL is minted and the resource actually loads,an untokenised private media URL is refused,playback starts on a real project,the export entry point is reachable'
+            ${{ needs.plan.outputs.require_tests && format('--require-tests ''{0}''', needs.plan.outputs.require_tests) || '' }}
           pnpm --filter ops-release release-cli browser-audit --report "$ART/browser-audit.json" --out "$ART/browser-findings.json"
       - name: Post-deploy gate (CRITICAL ⇒ rollback)
         id: gate

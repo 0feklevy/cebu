@@ -176,7 +176,9 @@ describe('Playwright runs the production config, not the full local matrix', () 
     // is one that can rot for a month and only surface during a deploy.
     const flows = /--require-tests\s+'([^']+)'/.exec(AUDIT)?.[1];
     expect(flows, 'the daily audit requires no release-blocking flow to have run').toBeTruthy();
-    const releaseFlows = /--require-tests\s+'([^']+)'/.exec(RELEASE)?.[1];
+    // The release passes its list through a job OUTPUT now (so a flow with no fixture can be
+    // excluded rather than blocking), so the comparison is against the source of that output.
+    const releaseFlows = /require_tests=(opening[^\n"]+)/.exec(RELEASE)?.[1];
     expect(flows, 'the audit and the release disagree about which flows are release-blocking')
       .toBe(releaseFlows);
   });
