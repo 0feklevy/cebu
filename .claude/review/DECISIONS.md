@@ -18,6 +18,43 @@ Last updated: **2026-08-22**, during the post-sweep fix round.
 
 ---
 
+## 🔴 OWNER-REPORTED (2026-08-22) — EVERY DUBBED LANGUAGE HAS AN AMERICAN ACCENT
+
+**The report, verbatim:** ElevenLabs dubbing "puts an American accent on all the other languages and
+it does not sound natural at all (Spanish, Hebrew — there is an English `r`, not their languages')."
+
+**What we actually send**, verified in `ElevenLabsDubbingClient.ts:252-259`: `file`/`source_url`,
+`reference`, `model_id`, `source_language`, `target_language`, `keyterms`. **Nothing about voice.**
+
+**The mechanism this most likely is, and why it matters which:** ElevenLabs Dubbing CLONES the
+original speaker's voice and has the clone speak the target language. A cloned English speaker
+speaking Hebrew carries that speaker's articulation — an English `r` is exactly what voice-cloning
+transfer sounds like. If that is what is happening, this is not a bug in our integration at all; it
+is the default behaviour of the product we chose, and the fix is a **product decision with a real
+trade-off**: the creator's own voice with a foreign accent, or a native-sounding voice that is not
+theirs. Those are different products and the owner should choose, not us.
+
+**Do NOT assume it is that.** The alternative — that a parameter we are not sending would fix it
+outright — is equally consistent with the evidence, and we would be shipping a preference where a
+one-line fix belonged.
+
+**The research must settle, with citations to the vendor's current API:**
+1. Does Dubbing v2 expose per-target-language VOICE selection, or a way to disable cloning and use
+   a stock native voice? If so, is it per project, per language, or Dubbing-Studio-only?
+2. Is there a quality or accent control we are not sending (`num_speakers`, voice settings,
+   `dubbing_studio`) that changes phonetics rather than just fidelity?
+3. Does `keyterms` — which we already send — affect pronunciation, and are we using it?
+4. Is `model_id` (`dubbing_v2`) the right model for accent quality, or is there a newer one?
+5. If cloning is unavoidable, what do comparable products do, and what does the owner lose either
+   way? A recommendation, with the trade-off stated in one sentence each.
+
+**Evidence to collect before recommending anything:** one short clip dubbed to Hebrew AND Spanish,
+under the current settings and under each candidate setting, so the difference is heard rather than
+argued. Dubbing is billed per source-minute, so use the shortest usable clip.
+
+**Blast radius:** dubbing is the most expensive job kind in the product ($2.20/min was the figure
+used when the budget guard was written), so any experiment needs a stated cost before it runs.
+
 ## 🎯 WORK WAVES — the order everything is done in (owner-ranked 2026-08-22)
 
 The owner's ranking: **podcast is the most critical area, crop second — but a critical BUG comes
