@@ -157,7 +157,7 @@ test.describe('the client-web image was built with the right origins baked in', 
  * absent these tests FAIL, because an environment that could not be produced is not a pass.
  */
 test.describe('a stored object is served back by the image that will deploy', () => {
-  interface Fixture { key: string; body: string; contentType: string }
+  interface Fixture { key: string; body: string; match: 'exact' | 'contains'; contentType: string }
 
   function fixtures(): Fixture[] {
     const raw = process.env.CANDIDATE_STORAGE_FIXTURES;
@@ -175,33 +175,49 @@ test.describe('a stored object is served back by the image that will deploy', ()
   }
 
   test('the object round trips: bucket → adapter → HTTP, with its bytes intact', async ({ request }) => {
+    // `match` is declared by the seeding step rather than assumed here, because the route does
+    // not treat every key the same and the difference is invisible from the key alone.
+    // `injectSimBootSnippet` runs at SERVE time on entry HTML, so the served document is
+    // deliberately not the stored one; a blanket byte-equality assertion would fail against a
+    // correct image. Non-entry text keys are proxied unmodified and do get compared exactly.
+    const exact = fixtures().filter((f) => f.match === 'exact');
+    expect(exact.length, 'no byte-comparable fixture was seeded').toBeGreaterThan(0);
+
     for (const f of fixtures()) {
       const url = `${API}/sim-public/${f.key}`;
       const res = await request.get(url, { timeout: 30_000 });
       expect(res.status(), `seeded object did not load: ${url}`).toBe(200);
-      // Byte equality, not just a 200. A 200 carrying an error page, a redirect body or another
-      // object's contents is the failure a status check cannot see.
-      expect(await res.text(), `served the wrong content for ${f.key}`).toBe(f.body);
+      const text = await res.text();
+      if (f.match === 'exact') {
+        // A 200 carrying an error page, a redirect body, or another object's contents is the
+        // failure a status check cannot see.
+        expect(text, `served the wrong content for ${f.key}`).toBe(f.body);
+      } else {
+        expect(text, `the served document lost the stored content of ${f.key}`).toContain(f.body);
+      }
     }
   });
 
   test('the proxy re-asserts text/html, which the bucket would have downgraded', async ({ request }) => {
-    // This is the whole reason /sim-public exists. If a build ever stops setting the type, every
-    // simulation iframe in production renders its own source as plain text — visible to every
-    // viewer, invisible to every source-level test.
-    for (const f of fixtures().filter((x) => x.contentType === 'text/html')) {
+    // This is the whole reason /sim-public exists. Supabase's public endpoint force-downgrades
+    // text/html to text/plain, so an iframe pointed at the bucket shows raw source. If a build
+    // ever stops re-asserting the type, every simulation in production renders as plain text —
+    // visible to every viewer, invisible to every source-level test.
+    const html = fixtures().filter((f) => f.contentType === 'text/html');
+    expect(html.length, 'no HTML fixture was seeded, so the downgrade check asserts nothing').toBeGreaterThan(0);
+    for (const f of html) {
       const res = await request.get(`${API}/sim-public/${f.key}`, { timeout: 30_000 });
       expect(res.headers()['content-type'] ?? '', `content-type was downgraded for ${f.key}`).toContain('text/html');
     }
   });
 
   test('a key outside the simulations prefix is refused, however it is spelled', async ({ request }) => {
-    // `/sim-public` serves without auth, so its prefix check is the only thing standing between
-    // an anonymous request and a private object. `podcasts/..%2f…` decodes to a `..` segment whose
-    // leading part matches an allowed prefix while resolving back into the private tree.
+    // `/sim-public` serves without auth, so its prefix check is the only thing between an
+    // anonymous request and a private object. `simulations/..%2f…` decodes to a `..` segment whose
+    // leading part matches the allowed prefix while resolving back into the private tree.
     for (const key of ['exports/candidate-smoke/private.mp4', 'simulations/..%2fexports/private.mp4']) {
       const res = await request.get(`${API}/sim-public/${key}`, { maxRedirects: 0, timeout: 20_000 });
-      expect(res.status(), `an out-of-prefix key was served: ${key}`).not.toBe(200);
+      expect(res.status(), `an out-of-prefix key was served: ${key}`).toBe(403);
     }
   });
 });

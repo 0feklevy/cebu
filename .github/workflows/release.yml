@@ -498,18 +498,28 @@ jobs:
           cd podcast-saas/deploy
           docker compose -f docker-compose.candidate.yml run --rm --entrypoint /bin/sh minio-init -eu -c '
             mc alias set candidate http://minio:9000 candidateaccesskey candidatesecretkey
-            printf "<!DOCTYPE html><title>candidate</title>" > /tmp/index.html
+            printf "{\"candidate\":true}" > /tmp/asset.json
+            printf "<!DOCTYPE html><title>candidate</title><body>candidate-marker</body>" > /tmp/index.html
+            mc cp /tmp/asset.json candidate/media/simulations/candidate-smoke/asset.json
             mc cp /tmp/index.html candidate/media/simulations/candidate-smoke/index.html
           '
-          # Declared as data, so the spec asserts on what was actually written rather than on
-          # constants that could drift away from this step without either side failing.
+          # TWO fixtures, because the route treats them differently and only one of them can be
+          # compared byte for byte. `injectSimBootSnippet` runs at SERVE time on entry HTML, so the
+          # served document is deliberately NOT the stored one — asserting equality there would
+          # fail against a correct image. The .json takes the exact-bytes assertion; the .html
+          # takes the Content-Type one, which is the check that route exists for.
           cat > /tmp/fixtures.json <<'JSON'
-          [{"key":"simulations/candidate-smoke/index.html",
-            "body":"<!DOCTYPE html><title>candidate</title>",
+          [{"key":"simulations/candidate-smoke/asset.json",
+            "body":"{\"candidate\":true}",
+            "match":"exact",
+            "contentType":"application/json"},
+           {"key":"simulations/candidate-smoke/index.html",
+            "body":"candidate-marker",
+            "match":"contains",
             "contentType":"text/html"}]
           JSON
           # jq -c, not `tr -d`: stripping whitespace by hand also strips it from inside string
-          # values, and these fixture bodies contain spaces.
+          # values, and these fixture bodies contain both spaces and quotes.
           echo "json=$(jq -c . < /tmp/fixtures.json)" >> "$GITHUB_OUTPUT"
       - name: Install Playwright chromium
         run: pnpm --filter client-web exec playwright install --with-deps chromium
