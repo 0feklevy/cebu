@@ -69,7 +69,7 @@ pipeline — the episode is *derived* from the project.
 
 ---
 
-## 🔴 A2.3 — THE SERVICE WORKER COLLIDES WITH AN EXISTING KILL-SWITCH (needs one ruling)
+## 🟡 A2.3 — SERVICE WORKER vs KILL-SWITCH: option (2) SHIPPED, (1) still needs a ruling only if wanted
 
 Found while building A2.2, 2026-08-22. The P3-B design says Hands-Busy Mode gets "a **PWA manifest
 + service worker** precaching the episode so a dropped connection mid-drive does not stop playback."
@@ -108,4 +108,18 @@ self-kill path designed rather than discovered.
 answers "the phone is locked" — shipped with A2.2 and needs no service worker: lock-screen title,
 chapter skip, seek, and position state all work today. A2.4 (Raise Your Hand) does not depend on
 this answer either.
+
+### SHIPPED 2026-08-22 — option (2), which needed no ruling
+
+`lib/offlineAudio.ts` + a "Save for the drive" button. An explicit download into a Blob the
+listener ASKS for: genuinely offline for the session, no worker, no exemption from the kill-switch,
+nothing weakened. A Blob rather than Cache Storage because the kill-switch clears that too, so
+anything written there is gone by the next navigation.
+
+Deliberately NOT offline-by-default: ~29 MB for a forty-minute lesson, and playback cannot start
+until it lands, so making it the default would trade an instant start for a wait on every listen.
+
+**What is still open, and only if the owner wants it:** offline-by-DEFAULT needs option (1) —
+narrowing the kill-switch to foreign workers. That remains a real ruling about a protection added
+after an incident, and it now buys a convenience rather than the feature itself.
 

@@ -26,6 +26,12 @@ import {
   type AudioChapter,
   type AudioEditionView,
 } from '@/lib/audioEditionApi';
+import {
+  formatBytes,
+  releaseOffline,
+  saveForOffline,
+  type OfflineState,
+} from '@/lib/offlineAudio';
 
 interface Props {
   view: AudioEditionView;
@@ -45,6 +51,25 @@ export function AudioEditionPlayer({ view, artworkUrl }: Props) {
   const [durationMs, setDurationMs] = useState(view.duration_ms ?? 0);
   const [playing, setPlaying] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
+  const [offline, setOffline] = useState<OfflineState>({ status: 'idle' });
+
+  // The Blob behind a saved recording is pinned until its object URL is revoked — a 29 MB episode
+  // held forever by a tab the listener left open.
+  useEffect(() => () => {
+    if (offline.status === 'saved') releaseOffline(offline.objectUrl);
+  }, [offline]);
+
+  const save = useCallback(async () => {
+    setOffline({ status: 'saving', progress: 0 });
+    try {
+      const { objectUrl, bytes } = await saveForOffline(view.audio_url, {
+        onProgress: (progress) => setOffline({ status: 'saving', progress }),
+      });
+      setOffline({ status: 'saved', objectUrl, bytes });
+    } catch (e) {
+      setOffline({ status: 'failed', reason: (e as Error).message });
+    }
+  }, [view.audio_url]);
 
   const chapters = view.chapters;
   const currentChapter = useMemo(() => chapterIndexAt(chapters, positionMs), [chapters, positionMs]);
@@ -127,7 +152,10 @@ export function AudioEditionPlayer({ view, artworkUrl }: Props) {
     <div className="w-full max-w-2xl mx-auto">
       <audio
         ref={audioRef}
-        src={view.audio_url}
+        // The saved copy WINS once it exists. Swapping the src mid-session resets the element's
+        // position, so this is deliberately only ever set once per save — and the listener has
+        // just pressed a button, which is the one moment an interruption is expected.
+        src={offline.status === 'saved' ? offline.objectUrl : view.audio_url}
         preload="metadata"
         onTimeUpdate={(e) => setPositionMs(e.currentTarget.currentTime * 1000)}
         onLoadedMetadata={(e) => {
@@ -154,6 +182,37 @@ export function AudioEditionPlayer({ view, artworkUrl }: Props) {
           {failed}
         </p>
       )}
+
+      {/* Save for the drive — P3-B/A2.3, deliberately WITHOUT a service worker. The root layout
+          unregisters every worker on every page load (added after a stale one served cached
+          localhost URLs), so a worker registered here would die on the next navigation, silently.
+          An explicit download the listener asks for needs no exemption from that protection. */}
+      <div className="mt-4 flex items-center gap-3">
+        {offline.status === 'idle' && (
+          <button
+            type="button"
+            onClick={() => void save()}
+            className="min-h-[44px] rounded-lg border border-border px-4 py-2 text-sm"
+          >
+            Save for the drive
+          </button>
+        )}
+        {offline.status === 'saving' && (
+          <p className="text-sm text-muted-foreground" aria-live="polite">
+            {/* Percent ONLY when the server told us the total. A fabricated denominator produces a
+                bar that races to 90% and stops. */}
+            {offline.progress > 0 ? `Saving… ${Math.round(offline.progress * 100)}%` : 'Saving…'}
+          </p>
+        )}
+        {offline.status === 'saved' && (
+          <p className="text-sm text-muted-foreground">
+            Saved for this session · {formatBytes(offline.bytes)}
+          </p>
+        )}
+        {offline.status === 'failed' && (
+          <p role="alert" className="text-sm text-destructive">{offline.reason}</p>
+        )}
+      </div>
 
       {chapters.length > 0 && (
         <ol className="mt-6 divide-y divide-border rounded-lg border border-border">
