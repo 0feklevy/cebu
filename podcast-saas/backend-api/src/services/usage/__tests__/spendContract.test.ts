@@ -110,7 +110,6 @@ const UNMETERED_TODAY = [
   // halfway is not recorded as free.
   'services/podcast/audio/chunker.ts',           // splits a turn, then synthesises each piece
   'controllers/v1/podcast.controller.ts',
-  'controllers/v1/audio.controller.ts',          // TTS straight from a route
 
   // ── The Anam avatar surface. Some of these only READ (listing or fingerprinting a persona),
   // which costs nothing — but nothing in the code says which, and "probably free" is exactly the
@@ -291,6 +290,6 @@ describe('what the gap costs, stated rather than implied', () => {
 
   it('shrinks — the list is smaller than the day it was written', () => {
     // Thirteen on 2026-08-23. A ratchet whose number never moves is a list, not a ratchet.
-    expect(UNMETERED_TODAY.length).toBeLessThan(10);
+    expect(UNMETERED_TODAY.length).toBeLessThan(9);
   });
 });

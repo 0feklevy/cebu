@@ -25,7 +25,13 @@ export interface RecordUsageOpts {
 }
 
 /** The units this product actually buys in. `tokens` is implicit for LLM rows and left unset. */
-export type UsageUnit = 'characters' | 'source_minutes' | 'session_minutes' | 'images' | 'tokens';
+export type UsageUnit =
+  | 'characters'      // TTS — what the vendor received
+  | 'seconds'         // generated audio, priced by its length rather than by the prompt
+  | 'source_minutes'  // dubbing — per target language
+  | 'session_minutes' // avatar
+  | 'images'
+  | 'tokens';
 
 export class UsageTrackingService {
   async record(opts: RecordUsageOpts): Promise<void> {

@@ -19,6 +19,8 @@ import {
 } from '../../services/security/uploadLimits.js';
 import { probeMediaDuration } from '../../services/video/HLSTranscoder.js';
 import { ApiKeyService } from '../../services/secrets/ApiKeyService.js';
+import { UsageTrackingService } from '../../services/usage/UsageTrackingService.js';
+import { estimateSfxCost, usdPerSfxSecondFromEnv } from '../../services/usage/sfxCost.js';
 import { randomUUID } from 'crypto';
 import { mkdtemp, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
@@ -215,6 +217,35 @@ export async function registerAudioRoutes(app: FastifyInstance): Promise<void> {
       if (!elRes.ok) {
         const errText = await elRes.text().catch(() => '');
         return reply.code(502).send({ message: `ElevenLabs error ${elRes.status}: ${errText.slice(0, 300)}` });
+      }
+
+      // SPEND, RECORDED. Sound generation is billed by the DURATION of the audio produced, so the
+      // row carries seconds rather than characters — see `sfxCost.ts` for why the rate is a single
+      // overridable constant with a pessimistic default, and why the SECONDS being right matters
+      // more than the rate: a usage row with a measured quantity can be re-priced later, one with
+      // a guessed quantity cannot.
+      //
+      // Recorded on a 2xx, because the failure branches above return before the audio exists —
+      // and a request the vendor rejected outright is not billed.
+      {
+        const sfx = estimateSfxCost({
+          durationSeconds: body.data.duration_seconds ?? null,
+          usdPerSecond: usdPerSfxSecondFromEnv(),
+        });
+        void new UsageTrackingService().record({
+          userId: request.dbUser?.id ?? null,
+          projectId: project.id,
+          provider: 'elevenlabs',
+          model: 'sound-generation',
+          task: body.data.type === 'music' ? 'sfx_music' : 'sfx_effect',
+          inputTokens: 0,
+          cachedInputTokens: 0,
+          outputTokens: 0,
+          costCents: sfx.costCents,
+          usedPersonalKey: false,
+          quantity: sfx.seconds,
+          unit: 'seconds',
+        }).catch(() => { /* a reporting gap must never fail a generation the creator is waiting on */ });
       }
 
       let audioBuf: Buffer;
