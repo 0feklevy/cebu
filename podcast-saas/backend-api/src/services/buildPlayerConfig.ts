@@ -204,6 +204,23 @@ export async function buildPlayerConfig(
   // player-config / share / playlist-item / course render), so the serial waits added up
   // (perf-003; scenes+branch_sequences folded in per loadperf-002/backend-110). Scenes and
   // sequences are filtered/used in memory below exactly as before.
+  // Avatar circles config (audio-reactive overlays shown during b-roll). Tolerate a legacy
+  // double-encoded JSON string for avatar_config.
+  //
+  // READ BEFORE THE FAN-OUT, not beside its consumer, because `wantsSpeakerTimeline` below decides
+  // whether the `scenes` query runs at all — and a decision made after the queries can only narrow
+  // one, never skip it. There is exactly ONE parse of this column in this file on purpose: two
+  // readings of the same config that must agree is the drift class this codebase keeps paying for.
+  const avatarConfigObj: { avatarCircles?: unknown } | null = (() => {
+    const v = project.avatar_config as unknown;
+    if (v && typeof v === 'object' && !Array.isArray(v)) return v as { avatarCircles?: unknown };
+    if (typeof v === 'string') { try { const o = JSON.parse(v); return o && typeof o === 'object' ? o : null; } catch { return null; } }
+    return null;
+  })();
+
+  /** Whether anything downstream reads the scene rows. Same truthiness test the consumer applies. */
+  const wantsSpeakerTimeline = Boolean(avatarConfigObj?.avatarCircles);
+
   const [allVideos, sectionRows, imageRows, audioRows, allScenes, sequenceRows, simPoolMode, rumSampleRate, simRuntimeFlags, projectSimulations] = await Promise.all([
     db.query.video_files.findMany({
       where: eq(video_files.project_id, project.id),
@@ -226,7 +243,23 @@ export async function buildPlayerConfig(
     }),
     db.query.image_files.findMany({ where: eq(image_files.project_id, project.id) }),
     db.query.audio_files.findMany({ where: eq(audio_files.project_id, project.id) }),
-    db.query.scenes.findMany({ where: eq(scenes.project_id, project.id) }),
+    // FOUR SCALARS, AND ONLY WHEN SOMETHING READS THEM (database-005).
+    //
+    // This is the hottest read path in the product — every player config, share page, playlist
+    // item and course render goes through it — and this row used to select `scenes.*`. That
+    // means `transcript` (text) and `aligned_words` (jsonb, word-level alignment) came back for
+    // every scene in the project, on every one of those reads.
+    //
+    // Its ONLY consumer is `normalizeSpeakerTimeline`, whose `SceneRow` is exactly the four
+    // columns below — and it is called only when avatar circles are configured, which most
+    // projects do not use. So the fetch was not merely wide, it was usually wasted entirely.
+    // Every sibling query in this `Promise.all` already narrows; `scenes` was the outlier.
+    wantsSpeakerTimeline
+      ? db.query.scenes.findMany({
+          where: eq(scenes.project_id, project.id),
+          columns: { speaker: true, start_ms: true, end_ms: true, script_version: true },
+        })
+      : Promise.resolve([]),
     db.query.branch_sequences.findMany({
       where: eq(branch_sequences.project_id, project.id),
       orderBy: [asc(branch_sequences.sort_order), asc(branch_sequences.created_at)],
@@ -842,14 +875,6 @@ export async function buildPlayerConfig(
     })
     .filter(Boolean);
 
-  // Avatar circles config (audio-reactive overlays shown during b-roll). Tolerate
-  // a legacy double-encoded JSON string for avatar_config.
-  const avatarConfigObj: { avatarCircles?: unknown } | null = (() => {
-    const v = project.avatar_config as unknown;
-    if (v && typeof v === 'object' && !Array.isArray(v)) return v as { avatarCircles?: unknown };
-    if (typeof v === 'string') { try { const o = JSON.parse(v); return o && typeof o === 'object' ? o : null; } catch { return null; } }
-    return null;
-  })();
   // Self-heal a stored circles config on read: canonical faces (distinct speaker→circle so
   // "his wave / her wave" always maps correctly) + clean manual sections. A degenerate faces
   // mapping was the likely cause of the reported broken circles-waves data. (avatar-circles-fix)

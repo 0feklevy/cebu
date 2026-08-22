@@ -16,10 +16,15 @@ import { getOpenAIClient } from '../../services/llm/systemAi.js';
 import { moderateGenerationInput } from '../../services/llm/ContentModerationService.js';
 import { enqueueJob } from '../../queue/index.js';
 import { logger } from '../../lib/logger.js';
+import {
+  UPLOAD_MAX_BYTES,
+  declaredTooLarge,
+  readStreamBounded,
+  tooLargeMessage,
+} from '../../services/security/uploadLimits.js';
 import { AppError, CreateProjectSchema } from 'shared';
 
 const ALLOWED_THUMBNAIL_MIME = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp']);
-const MAX_THUMBNAIL_BYTES = 10 * 1024 * 1024;
 
 function thumbnailExt(mime: string): string {
   if (mime === 'image/png') return '.png';
@@ -358,6 +363,14 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
       const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
+      // DECLARED SIZE FIRST (security-007): free, exact enough, and available before a byte of body
+      // is read — so we never begin buffering something already decided against. It is not the real
+      // guard (Content-Length can be absent or a lie); `readStreamBounded` below is.
+      const declared = declaredTooLarge(request.headers['content-length'], UPLOAD_MAX_BYTES.thumbnail);
+      if (declared !== null) {
+        return reply.code(413).send({ message: tooLargeMessage('Thumbnail', declared, UPLOAD_MAX_BYTES.thumbnail) });
+      }
+
       const data = await request.file();
       if (!data) return reply.code(400).send({ message: 'No file uploaded' });
 
@@ -366,10 +379,10 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
         return reply.code(400).send({ message: 'Only JPEG, PNG, and WebP thumbnails are supported' });
       }
 
-      const buf = await data.toBuffer();
-      if (buf.length > MAX_THUMBNAIL_BYTES) {
-        return reply.code(413).send({ message: 'Thumbnail must be 10MB or smaller' });
-      }
+      // The 10 MB limit is unchanged; what changed is WHEN it applies. `buf.length` can only be
+      // consulted once the entire file is already in the heap, so the old check refused the
+      // request after paying its full memory cost (security-007).
+      const buf = await readStreamBounded(data.file, UPLOAD_MAX_BYTES.thumbnail, 'Thumbnail');
 
       const sourceExt = extname(data.filename || '').replace(/[^a-z0-9.]/gi, '').toLowerCase();
       const ext = ['.jpg', '.jpeg', '.png', '.webp'].includes(sourceExt) ? sourceExt : thumbnailExt(mime);

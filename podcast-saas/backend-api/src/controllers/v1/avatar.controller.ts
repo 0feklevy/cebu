@@ -55,6 +55,12 @@ import {
 } from '../../services/avatar/avatarCapability.js';
 import { hashSubject, killSwitchEngaged, type AvatarDimension, type AvatarOp } from '../../services/usage/avatarBudget.js';
 import { reserveAvatarSpend } from '../../services/usage/avatarBudgetRuntime.js';
+import {
+  UPLOAD_MAX_BYTES,
+  declaredTooLarge,
+  readStreamBounded,
+  tooLargeMessage,
+} from '../../services/security/uploadLimits.js';
 
 // Read avatar_config defensively: normally a jsonb object, but tolerate a legacy
 // double-encoded JSON string so a merge-write never spreads a string into
@@ -1484,13 +1490,21 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
     async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
       const project = await requireOwnedProject(request, reply);
       if (!project) return;
+      // DECLARED SIZE FIRST (security-007): free, exact enough, and available before a byte of body
+      // is read — so we never begin buffering something already decided against. It is not the real
+      // guard (Content-Length can be absent or a lie); `readStreamBounded` below is.
+      const declared = declaredTooLarge(request.headers['content-length'], UPLOAD_MAX_BYTES.knowledgeDoc);
+      if (declared !== null) {
+        return reply.code(413).send({ message: tooLargeMessage('This document', declared, UPLOAD_MAX_BYTES.knowledgeDoc) });
+      }
+
       const data = await request.file();
       if (!data) return reply.code(400).send({ message: 'No file uploaded' });
       const ext = (data.filename?.split('.').pop() ?? '').toLowerCase();
       if (!['pdf', 'txt', 'md', 'docx', 'csv'].includes(ext)) {
         return reply.code(400).send({ message: 'Supported: PDF, TXT, MD, DOCX, CSV' });
       }
-      const buf = await data.toBuffer();
+      const buf = await readStreamBounded(data.file, UPLOAD_MAX_BYTES.knowledgeDoc, 'This document');
       const apiKey = await resolveAnamKeyForProject(project.id).catch(() => undefined);
       const existing = (project.avatar_config as AvatarPersonaConfig | null) ?? {};
       try {
@@ -1619,14 +1633,22 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
     async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
       const project = await requireOwnedProject(request, reply);
       if (!project) return;
+      // DECLARED SIZE FIRST (security-007): free, exact enough, and available before a byte of body
+      // is read — so we never begin buffering something already decided against. It is not the real
+      // guard (Content-Length can be absent or a lie); `readStreamBounded` below is.
+      const declared = declaredTooLarge(request.headers['content-length'], UPLOAD_MAX_BYTES.avatarFace);
+      if (declared !== null) {
+        return reply.code(413).send({ message: tooLargeMessage('This image', declared, UPLOAD_MAX_BYTES.avatarFace) });
+      }
+
       const data = await request.file();
       if (!data) return reply.code(400).send({ message: 'No file uploaded' });
       const mime = data.mimetype.toLowerCase().split(';')[0].trim();
       if (!['image/jpeg', 'image/jpg', 'image/png', 'image/webp'].includes(mime)) {
         return reply.code(400).send({ message: 'Only JPEG, PNG, and WebP images are supported' });
       }
-      const buf = await data.toBuffer();
-      if (buf.length > 8 * 1024 * 1024) return reply.code(413).send({ message: 'Image must be 8MB or smaller' });
+      // Same 8 MB as before, enforced before the heap pays for it (security-007).
+      const buf = await readStreamBounded(data.file, UPLOAD_MAX_BYTES.avatarFace, 'This image');
       const ext = mime === 'image/png' ? '.png' : mime === 'image/webp' ? '.webp' : '.jpg';
       const key = `avatar-circles/${project.id}/${randomUUID()}${ext}`;
       const url = await uploadWithFallback(key, buf, mime);
