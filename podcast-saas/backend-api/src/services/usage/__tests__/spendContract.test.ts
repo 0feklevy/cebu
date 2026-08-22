@@ -71,7 +71,9 @@ const METERED_BY_CALLER = [
  */
 const UNMETERED_TODAY = [
   // ── The speech-synthesis paths. This is where the 22 August money went. ────────────────────
-  'services/podcast/audio/PodcastRenderer.ts',   // a whole episode, unmetered
+  // `PodcastRenderer` came OFF this list once it started metering: every synthesis, retries
+  // included, is counted and one row is written per render — in `finally`, so a render that dies
+  // halfway is not recorded as free.
   'services/podcast/audio/previewTurn.ts',       // one synthesis per preview CLICK
   'services/podcast/audio/revoiceTurn.ts',       // one synthesis per re-voice click
   'services/podcast/audio/chunker.ts',           // splits a turn, then synthesises each piece
@@ -230,15 +232,23 @@ describe('every module that spends money is accounted for', () => {
 });
 
 describe('what the gap costs, stated rather than implied', () => {
-  it('names the podcast renderer, which synthesises a whole episode unmetered', () => {
-    // The single largest untracked line. Pinned by name so that removing it from the list is a
-    // deliberate act with a diff, not an accident of tidying.
-    expect(UNMETERED_TODAY).toContain('services/podcast/audio/PodcastRenderer.ts');
+  it('keeps the podcast renderer OUT of the gap list — it is metered now', () => {
+    // It used to be the largest line on this list: a whole episode of synthesis with no row behind
+    // it. It meters every call including the three retry paths, and writes one row per render in
+    // `finally`, so a render that dies halfway is not recorded as free. Asserted from the other
+    // side now: putting it back on the list means the metering was removed.
+    expect(UNMETERED_TODAY).not.toContain('services/podcast/audio/PodcastRenderer.ts');
   });
 
-  it('names both per-click synthesis paths', () => {
-    // These are the ones with no natural stop: a creator auditioning voices spends per press.
+  it('still names both per-click synthesis paths', () => {
+    // These are the ones with no natural stop: a creator auditioning voices spends per press, and
+    // until they meter, the spend surface cannot show the shape of the 22 August burn.
     expect(UNMETERED_TODAY).toContain('services/podcast/audio/previewTurn.ts');
     expect(UNMETERED_TODAY).toContain('services/podcast/audio/revoiceTurn.ts');
+  });
+
+  it('shrinks — the list is smaller than the day it was written', () => {
+    // Thirteen on 2026-08-23. A ratchet whose number never moves is a list, not a ratchet.
+    expect(UNMETERED_TODAY.length).toBeLessThan(13);
   });
 });

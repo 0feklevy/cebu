@@ -329,8 +329,16 @@ export const token_usage = pgTable('token_usage', {
   // Fractional cents (migration 046) — sub-cent utility calls must not round to "free".
   cost_cents: doublePrecision('cost_cents').default(0).notNull(),
   used_personal_key: boolean('used_personal_key').default(false).notNull(),
+  // What was actually bought, for the vendors that do not sell tokens (migration 073). TTS bills
+  // per character, dubbing per source-minute, avatars per session-minute. NULL on LLM rows, whose
+  // amount is already in the token columns above — see UsageTrackingService for why a guessed unit
+  // is worse than an absent one.
+  quantity: doublePrecision('quantity'),
+  unit: text('unit'),
   occurred_at: timestamp('occurred_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
+  // "what did each provider cost, per day" — the admin surface's only query (migration 073).
+  idxProviderOccurred: index('idx_token_usage_provider_occurred').on(t.provider, t.occurred_at),
   // Hot path: the rolling-24h generation-cap count (migration 046).
   idxUserOccurred: index('idx_token_usage_user_occurred').on(t.user_id, t.occurred_at),
 }));
