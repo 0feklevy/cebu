@@ -4,7 +4,7 @@
 released: **#57** (dubbing panel — source-language detection, real progress, search/sort),
 **#58** (the D-23 production dubbing outage + both sweep P1s), **#59** (cross-tenant writes, the
 token leak, container ceilings), and **#60** (bounded uploads, scenes over-fetch, −474 KB viewer
-JS) once its gate finishes. **The dubbing feature is dead in the deployed build and fixed only in
+JS — merged 2026-08-22). **The dubbing feature is dead in the deployed build and fixed only in
 `main` — nothing dubbing-related can be tested until the next release ships.**
 
 The 2026-08-21→22 closed round — v0.1.36→38, the fleet audit, the CSP defects, D-13, D-01b,
@@ -19,7 +19,7 @@ Last updated: **2026-08-22**, during the post-sweep fix round.
 
 ## 🔴 Next release — the one action everything dubbing waits on
 
-**Do:** merge #60 when its gate finishes (or ask me to), dispatch a release, approve the deploy.
+**Do:** dispatch a release, approve the deploy. (#60 is merged; main is ready as it stands.)
 
 **Then, the probe dub (~$2.20), which is now the LAST unverified step:** the watermark flag is
 verified `false` in both containers (checked 2026-08-22, process env read directly), the vendor
