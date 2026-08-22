@@ -1065,6 +1065,46 @@ test.describe('real React viewer — simulation transitions', () => {
     expect(realErrors(page)).toEqual([]);
   });
 
+
+  test('11b. sim-first, playback REQUESTED but never advancing — the section still applies', async ({ page }) => {
+    // THE CASE THAT HAD NO RECOVERY, and the one the WebKit job has been reporting for weeks.
+    //
+    // `updateSimOverlay` is the only function that applies a section and reveals the overlay, and
+    // every path to it required the timeline to have MOVED: the `timeupdate` tick, a segment swap,
+    // or a seek. So a viewer that requested playback and then got no frames — a stalled decode, a
+    // codec the engine will not take — had a simulation warm and mounted and never applied. The
+    // failure dump's signature is opacity 0, the bare `sim-overlay` class, and a child reporting
+    // section "none".
+    //
+    // Reproduced deterministically rather than by hoping for a stall: play, then pause in the same
+    // synchronous block. `play` fires; no `timeupdate` can, because the element is paused again
+    // before the next task. Anything that applies the section here did so WITHOUT the clock.
+    await bootViewer(page, makeConfig([{ id: 's1', start: 0, end: 10, section: S.A }]));
+    await page.waitForSelector('video', { timeout: 30_000 });
+    await page.waitForFunction(() => {
+      const v = document.querySelector('video') as HTMLVideoElement | null;
+      return !!v && v.readyState >= 1;
+    }, undefined, { timeout: 30_000 });
+
+    await page.evaluate(() => {
+      const v = document.querySelector('video') as HTMLVideoElement | null;
+      if (!v) return;
+      v.muted = true;
+      void v.play().catch(() => {});
+      v.pause();
+    });
+
+    // No `startPlayback`, no seek, no click. If this resolves, the section was applied by the
+    // play REQUEST alone.
+    await waitForSection(page, 'A');
+    const v = await page.evaluate(() => {
+      const el = document.querySelector('video') as HTMLVideoElement | null;
+      return { paused: el?.paused ?? null, t: el?.currentTime ?? null };
+    });
+    expect(v.paused, 'the video resumed — this scenario proves nothing if the clock ran').toBe(true);
+    expect(v.t ?? 1, 'the timeline advanced; the tick could have applied the section').toBeLessThan(0.2);
+  });
+
   test('12. post-roll simulation (runs past the end of the video)', async ({ page }) => {
     await bootViewer(page, makeConfig([{ id: 's1', start: 25, end: 30, section: S.B }], { segDuration: 30 }));
     await startPlayback(page);
