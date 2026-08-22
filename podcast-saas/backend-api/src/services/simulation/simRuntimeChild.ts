@@ -813,11 +813,21 @@ function __simInstallV3(win, sections, opts) {
     }
     lifecycle = toLifecycle(ret);
 
+    // WHOSE ACTIVATION IS THIS? Captured HERE, at call time — never read from the module-level
+    // 'current' when the promise settles (simulation-009). prepare() may be async, and by the time
+    // it resolves the viewer may have scrubbed to a different section: releaseCurrent will have
+    // aborted this one and pointed 'current' at the new one. Posting against 'current' then stamps
+    // THIS section's outcome with the OTHER section's identity, the parent's matchesActivation
+    // accepts it, and a healthy section is acknowledged — or killed — for work belonging to a
+    // section the viewer already left. onPresent below has always done this correctly and calls
+    // the alternative "a forged match"; this is the same guard.
+    var applyActivation = current;
     var finish = function () {
+      if (!current || !applyActivation || current.activationId !== applyActivation.activationId) return;
       // The child recomputes NOTHING about identity: it echoes the exact variantKey and configHash
       // it was asked to install. A child that computed its own hash could disagree with the parent
       // for a reason neither side can see, and the invariant would start rejecting healthy acks.
-      post('SECTION_APPLIED', { variantKey: env.variantKey, configHash: env.configHash, applyMs: nowMs() - t0 }, current);
+      post('SECTION_APPLIED', { variantKey: env.variantKey, configHash: env.configHash, applyMs: nowMs() - t0 }, applyActivation);
     };
     if (lifecycle.__managed && typeof lifecycle.prepare === 'function') {
       runMaybeAsync(function () { return lifecycle.prepare(makeCtx('prepare')); }, finish, 'prepare');
@@ -1086,15 +1096,29 @@ function __simInstallV3(win, sections, opts) {
       hideSelectors: config.hideSelectors || []
     };
   }
+  /**
+   * Run fn, which may or may not return a promise, then call then().
+   *
+   * THE ACTIVATION IS CAPTURED AT CALL TIME (simulation-009). A synchronous throw cannot have
+   * outlived its activation, but a REJECTION can and routinely does: the viewer scrubs, the section
+   * is superseded, its aborted prepare() rejects, and reading the module-level 'current' at that
+   * moment attributes the failure to whichever section is now on screen. The parent's identity
+   * check then passes and a healthy section is failed for a dead one's error.
+   *
+   * A superseded activation's outcome is DROPPED rather than reported against itself: nothing is
+   * displaying it any more, so its failure is moot — the same choice markPresented makes.
+   */
   function runMaybeAsync(fn, then, stage) {
+    var activation = current;
     var r;
     try { r = fn(); } catch (err) {
-      post('SECTION_ERROR', { message: String((err && err.message) || err), stage: stage, recoverable: true }, current);
+      post('SECTION_ERROR', { message: String((err && err.message) || err), stage: stage, recoverable: true }, activation);
       return;
     }
     if (r && typeof r.then === 'function') {
       r.then(function () { try { then(); } catch (e) {} }, function (err) {
-        post('SECTION_ERROR', { message: String((err && err.message) || err), stage: stage, recoverable: true }, current);
+        if (!current || !activation || current.activationId !== activation.activationId) return;
+        post('SECTION_ERROR', { message: String((err && err.message) || err), stage: stage, recoverable: true }, activation);
       });
     } else {
       then();
