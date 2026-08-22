@@ -28,6 +28,7 @@ export const JOB_NAMES = [
   'project_duplicate',
   'project_export',
   'dub',
+  'audio_edition',
 ] as const;
 
 export type JobName = (typeof JOB_NAMES)[number];
@@ -55,6 +56,8 @@ export interface JobPayloads {
   // never carry a stale copy of something the row has since changed — and, more to the point, a
   // retry cannot re-derive a DIFFERENT billable job from the same payload.
   dub: { dubId: string; force?: boolean };
+  /** P3-B/A2.1 — derive a project's listenable edition. `language: null` is the source track. */
+  audio_edition: { projectId: string; language?: string | null; force?: boolean };
 }
 
 export type JobHandlers = {

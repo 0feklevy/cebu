@@ -52,6 +52,7 @@ const PAYLOADS: { [N in JobName]: JobPayloads[N] } = {
   project_duplicate: { duplicationId: 'd' },
   project_export: { exportId: 'e' },
   dub: { dubId: 'd' },
+  audio_edition: { projectId: 'p', language: null },
 };
 
 afterEach(() => {

@@ -2,6 +2,7 @@ import type { JobHandlers } from './types.js';
 import { runVideoTranscode } from '../services/video/runVideoTranscode.js';
 import { runCaptionJobNow } from '../services/captions/CaptionService.js';
 import { runDubJobNow } from '../services/dubbing/DubbingService.js';
+import { runAudioEditionJob } from '../services/audio/AudioEditionService.js';
 import { runCropAnalysis } from '../services/crop/runCropAnalysis.js';
 import { generateVideoMetadata } from '../services/generateVideoMetadata.js';
 import { runPodcastScriptJob } from '../services/podcast/runPodcastScript.js';
@@ -41,4 +42,5 @@ export const handlers: JobHandlers = {
   project_export: (p) =>
     new ProjectExportService(undefined, null, resolveConfiguredCaptureProvider()).run(p.exportId),
   dub: (p) => runDubJobNow(p.dubId, { force: p.force }),
+  audio_edition: (p) => runAudioEditionJob(p),
 };

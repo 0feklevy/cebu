@@ -56,6 +56,10 @@ export const PGBOSS_JOB_NAMES = [
   // RESULT and keep the CHARGE — the same argument that made the eight above durable, only with a
   // per-job cost measured in dollars per source-minute rather than fractions of a cent.
   'dub',
+  // audio_edition: cheap per job, but an edition lost to a deploy leaves the row in `processing`
+  // until the stale horizon frees it — twenty minutes of a creator pressing a button that does
+  // nothing. Durability costs nothing here and removes that window entirely.
+  'audio_edition',
 ] as const satisfies readonly JobName[];
 
 const DLQ_SUFFIX = '-dead';
@@ -168,6 +172,11 @@ export const QUEUE_OPTIONS: Record<
    * gets retried underneath itself — which for this queue would mean a second invoice.
    */
   dub: { policy: 'short', retryLimit: 8, retryDelay: 120, retryBackoff: true, expireInSeconds: 3 * 60 * 60 },
+  // Short retries, short expiry: an edition is one ffmpeg pass over audio that already exists, so
+  // it either works in a couple of minutes or something is wrong with the inputs — and retrying
+  // bad inputs eight times just delays the error the creator needs to see. Three attempts is
+  // enough for a transient storage read; the fourth would only be superstition.
+  audio_edition: { policy: 'short', retryLimit: 3, retryDelay: 30, retryBackoff: true, expireInSeconds: 30 * 60 },
 };
 
 function connectionString(): string {

@@ -40,6 +40,11 @@ export const QUEUE_CONCURRENCY: Record<JobName, number> = {
   podcast_clips: 1,
   podcast_mix_export: 1,
   project_export: 1,
+  // CPU-bound like the rest of this group: it is an ffmpeg encode. Cheap per job — seconds, not
+  // minutes — but a cheap encode running beside a transcode on a 2-vCPU host still contends for
+  // the same cores, and "it is only audio" is exactly the reasoning that produced the twenty
+  // concurrent handlers this map was written to stop.
+  audio_edition: 1,
   // Crop is NOT I/O-bound, which is why it is not in the group below. It runs ffmpeg plus frame
   // analysis, so it is CPU-bound, and the production host has 2 vCPU — two crop workers there
   // contend with each other and with whatever else is encoding. The decision record has said
@@ -172,6 +177,20 @@ export function singletonKeyFor<N extends JobName>(name: N, payload: JobPayloads
   // second request genuinely different, `force` here only bypasses the settled-status gates for a
   // row that is already the singleton subject — collapsing two pending deliveries loses nothing.
   if (name === 'dub') return (payload as JobPayloads['dub']).dubId;
+  // An edition is identified by (project, language), not by a row id — the row may not exist yet
+  // on the first send. Two enqueues for the same pair are the same work, and collapsing them in
+  // the queue is strictly better than letting both start and having the loser discover the claim
+  // is taken: no download, no temp directory, no wasted worker slot.
+  //
+  // The project id is always present, so cross-project collision is not the risk here — the risk
+  // is null colliding with a real language, which `'source'` rules out. (An earlier comment on
+  // this line claimed `??` was preventing cross-project dedup. It was not, and a mutation to `||`
+  // proved it by changing nothing: both spellings are correct. A comment that names a protection
+  // it does not provide is worse than no comment, because the next reader believes it.)
+  if (name === 'audio_edition') {
+    const p = payload as JobPayloads['audio_edition'];
+    return `${p.projectId}:${p.language ?? 'source'}`;
+  }
   return undefined;
 }
 
