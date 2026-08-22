@@ -22,8 +22,13 @@ vi.mock('../../../services/usage/UsageTrackingService.js', () => ({ UsageTrackin
 vi.mock('../ClaudeProvider.js', () => ({ ClaudeProvider: vi.fn() }));
 vi.mock('../OpenAIProvider.js', () => ({ OpenAIProvider: vi.fn() }));
 vi.mock('../GeminiProvider.js', () => ({ GeminiProvider: vi.fn() }));
+// The failure log is what the last describe block is about, so it has to be observable.
+vi.mock('../../../lib/logger.js', () => ({
+  logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
+}));
 
 import { LLMService } from '../LLMService.js';
+import { logger } from '../../../lib/logger.js';
 
 // Call the REAL private parseAndRepair through the constructed service.
 function parseAndRepair<T>(raw: string, schema: z.ZodSchema<T>): T {
@@ -223,5 +228,55 @@ describe('parseAndRepair', () => {
       expect(result.turns).toHaveLength(2);
       expect(result.turns[0].is_hook).toBe(true);
     });
+  });
+});
+
+/**
+ * THE FAILURE LOG ITSELF (observability-009).
+ *
+ * `unparseableOutput.test.ts` proves the describer is safe. This proves the SERVICE USES IT —
+ * a different claim, and the one that decides what actually reaches the log. Restoring
+ * `raw.slice(0, 800)` on that line leaves every describer test green while customer content goes
+ * back into an error-level record, so the assertion belongs where the leak would happen.
+ */
+describe('what the parse-failure log carries', () => {
+  // Assembled rather than written out: a literal of this shape in the repository is itself the
+  // thing secret scanners exist to find, and a test fixture is not a good enough reason to add one.
+  const CREDENTIAL = ['sk', 'livekey0123456789abcdefghij'].join('-');
+  const PRIVATE_SENTENCE = 'The acquisition price agreed with Northwind was fourteen million.';
+
+  const failParse = (): string => {
+    const errorSpy = logger.error as unknown as ReturnType<typeof vi.fn>;
+    errorSpy.mockClear();
+    // Unparseable however hard the repair loop tries: prose first, then a credential, then an
+    // object that stops mid-value.
+    const raw = `Sure! Here you go. token=${CREDENTIAL}. ${PRIVATE_SENTENCE} {"name":"x","value":`;
+    expect(() => parseAndRepair(raw, SimpleSchema)).toThrow(AppError);
+    const calls = errorSpy.mock.calls;
+    expect(calls.length, 'the failure was never logged at all').toBeGreaterThan(0);
+    return JSON.stringify(calls[calls.length - 1]);
+  };
+
+  it('does not carry the customer sentence the model was working on', () => {
+    expect(failParse()).not.toContain('fourteen million');
+  });
+
+  it('does not carry a credential that appeared in the output', () => {
+    expect(failParse()).not.toContain(CREDENTIAL);
+  });
+
+  it('carries no word of it either — this is what killed the redaction design', () => {
+    // Not credential-shaped: just a sentence. A redactor cannot see it, so the module stopped
+    // keeping excerpts at all.
+    expect(failParse()).not.toContain('Northwind');
+  });
+
+  it('still says enough to diagnose the failure', () => {
+    // The reason the raw dump existed in the first place. If THIS is the assertion that breaks,
+    // the description went too far and the log has stopped earning its place.
+    const line = failParse();
+    expect(line).toContain('braceBalance');
+    expect(line).toContain('"len"');
+    expect(line).toContain('"kind":"prose"');
   });
 });
