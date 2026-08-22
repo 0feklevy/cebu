@@ -18,6 +18,68 @@ Last updated: **2026-08-22**, during the post-sweep fix round.
 
 ---
 
+## 🎯 WORK WAVES — the order everything is done in (owner-ranked 2026-08-22)
+
+The owner's ranking: **podcast is the most critical area, crop second — but a critical BUG comes
+before either.** That rule does real work here, because the podcast area turns out to CONTAIN one.
+
+Each wave is finishable and leaves the product in a coherent state. Do not start wave N+1 while a
+wave-N item is open, unless it is blocked on the owner — in which case say so and drop down.
+
+### WAVE 0 — SHIP WHAT IS ALREADY FIXED  ·  blocks everything  ·  owner: approve deploy
+Nothing a user experiences changes until this lands. Production runs v0.1.38 and **the dubbing
+feature is dead in it** — every attempt dies before the vendor is reached. Also sitting unshipped:
+two cross-tenant write holes, Firebase tokens in the access log, the container memory ceilings, and
+−474 KB of JS on every viewer route. Twelve PRs' worth of fixes, none of them live.
+**Done when:** release published, deploy approved, and the dubbing probe (~$2.20) runs clean.
+
+### WAVE 1 — LIVE EXPOSURE, AND IT IS IN THE PODCAST AREA  ·  owner: one ruling
+C1, the media authorization gate. Two of its six members are the reason this outranks podcast
+features rather than competing with them:
+- **`security-016` — a confidential brief uploaded to an episode is readable by anyone who obtains
+  the URL, with no credential.** `podcasts/` is modelled as a public prefix because it was chosen
+  for immutable studio clips; user SOURCE DOCUMENTS were added to it later without revisiting that.
+  This is a podcast data-exposure bug wearing a security label.
+- **`security-005`/`simulation-007` — unsharing a project does not revoke access to its
+  simulation.** `/sim-public/*` checks only that the key starts with `simulations/`.
+Four decisions with recommendations are in the ruling block below. One sentence unblocks all six.
+**Done when:** one prefix-complete gate ships; the bucket cutover (`security-001`) is scheduled
+separately because it changes URLs people already hold.
+
+### WAVE 2 — MAKE THE PODCAST SAFE TO BUILD ON  ·  not blocked  ·  ~1–2 days
+The owner's rule applied honestly: before adding surfaces to the podcast, close the things that let
+its OUTPUT go wrong silently. Both are about the paid deliverable.
+- **`llm-pipeline-017` — there is no golden-output or end-to-end test for `ScriptRoom`**, the
+  nine-call chain that produces the episode. A silent quality regression in the product's core
+  output ships unnoticed. This is not theoretical: `llm-pipeline-016` (a compiler returning three
+  turns from a sixty-turn draft, hashed and marked `ready`) was live until 2026-08-22, and a
+  golden-output suite is exactly what would have caught it on the branch.
+- **`observability-006` — `podcast_renders` has no status, failure-rate or duration metric on any
+  admin endpoint.** When a render fails today, nothing above the queue-depth layer says so.
+**Done when:** a fixed-corpus golden suite with a stability assertion, and the four `groupBy`
+aggregates beside the existing `hls_status` ones.
+
+### WAVE 3 — PODCAST PHASE 2  ·  owner: go  ·  the thing actually wanted
+`PARKED-DESIGNS.md` P3-B, built on P3-A's `/{slug}/audio` spine (the owner already chose option א).
+Build order is in that file and each stage ships alone: audio derivation → the landing surface →
+Media Session/PWA (the locked-phone answer) → Raise Your Hand → Call It. Route renames (P3-A) land
+WITH this, not before — `/{slug}/audio` is their shared spine.
+
+### WAVE 4 — CROP  ·  owner: footage  ·  blocked at the first step
+P0.3 is 20–50 real catalogue clips + ~2h labelling in the shipped tool
+(`scripts/crop-eval/annotate.html`). Until it exists, P2's detector cannot be scored — YuNet gets
+ZERO detections on the synthetic fixtures — and every crop number in this repo remains a
+synthetic-fixture figure that must not be quoted as a field result. Then D-16 hardening
+(discontinuity markers, detector fallbacks, a confidence gate before auto-publish is trusted).
+
+### WAVE 5 — THE TAIL  ·  not blocked  ·  take from it, do not try to finish it
+~65 remaining `schedule` findings (report §2) plus the standing backlog: storage census, D-14
+avatar spend, D-17 knowledge gates, D-01b follow-ups, the WebKit `__CHILD` re-key. Mostly P3 with
+bounded blast radius. **This wave has no finish line and is not meant to have one** — pull from it
+when a related area is already open, rather than working down the list.
+
+---
+
 ## 🔴 Next release — the one action everything dubbing waits on
 
 **Do:** dispatch a release, approve the deploy. (#60 is merged; main is ready as it stands.)
