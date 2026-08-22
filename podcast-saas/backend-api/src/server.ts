@@ -6,6 +6,12 @@ import { Readable } from 'stream';
 import { dirname, extname } from 'path';
 import { eq } from 'drizzle-orm';
 import { logger } from './lib/logger.js';
+import { installProcessSafetyNet } from './lib/processSafetyNet.js';
+
+// AT MODULE SCOPE, before anything can start work: a rejection during boot — a failed pool
+// connect, a queue that will not start — is exactly the case where the process dying silently is
+// hardest to diagnose, and installing this after listen() would leave that window uncovered.
+installProcessSafetyNet('api');
 import { TRUST_PROXY_HOPS } from './config/trustProxy.js';
 import { LOCAL_STORAGE_BASE_DIR } from './services/storage/localStoragePaths.js';
 import { safeLocalPath, keyHasTraversal } from './services/storage/pathSafety.js';

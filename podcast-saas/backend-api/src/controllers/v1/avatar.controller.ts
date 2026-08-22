@@ -12,7 +12,7 @@ import { randomUUID } from 'crypto';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { rateLimit } from '../../lib/rateLimit.js';
-import { and, or, eq, isNull } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { uploadWithFallback } from '../../services/storage/uploadWithFallback.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
@@ -961,10 +961,23 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
     return project;
   }
 
-  // A visual the editor may manage: this project's basic items OR a global extended item.
+  /**
+   * A visual THIS PROJECT may manage. Scoped strictly to `project_id`; a global row (project_id
+   * IS NULL) is never manageable from a project route (security-008).
+   *
+   * It used to accept `OR project_id IS NULL`, which made every global extended visual writable by
+   * ANY project owner in the deployment: PATCH could rewrite its caption and scope, DELETE could
+   * remove it, and edit-simulation could rewrite its code — for every other tenant at once. The
+   * only thing keeping that from being trivially exploitable was that both LIST endpoints pass
+   * `includeGlobal: false`, so the UI never hands out a global id. That is obscurity, not a
+   * boundary: the id is a uuid in a URL, and one leaked id was enough.
+   *
+   * Globals are administered through admin-web's own avatar routes, which is where a cross-tenant
+   * write belongs — behind an admin check rather than a project check.
+   */
   async function findManageableVisual(projectId: string, visualId: string) {
     const [row] = await db.select().from(avatar_visuals)
-      .where(and(eq(avatar_visuals.id, visualId), or(eq(avatar_visuals.project_id, projectId), isNull(avatar_visuals.project_id)))).limit(1);
+      .where(and(eq(avatar_visuals.id, visualId), eq(avatar_visuals.project_id, projectId))).limit(1);
     return row ?? null;
   }
 
@@ -1508,6 +1521,32 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
     },
   );
 
+  /**
+   * Is this document actually in THIS project's knowledge group? (security-009)
+   *
+   * The vendor's document ids are global to the Anam ACCOUNT, and by default every tenant in this
+   * deployment shares one platform key — `resolveAnamKeyForProject` returns undefined unless BYOK
+   * is on AND the owner stored their own key. So a document id is not a capability: proving you own
+   * SOME project proves nothing about the document you named.
+   *
+   * The listing above already scopes by `knowledgeGroupId`; this makes the destructive path ask
+   * the same question. Membership is checked against the group's own listing rather than a local
+   * table because the vendor is the only system that knows it.
+   */
+  async function documentBelongsToProject(
+    groupId: string | undefined,
+    docId: string,
+    apiKey: string | undefined,
+  ): Promise<boolean> {
+    if (!groupId) return false;
+    const docs = await listKnowledgeDocuments(groupId, apiKey).catch(() => ({ data: [] }));
+    return docs.data.some((d) => {
+      const id = (d as { id?: unknown; documentId?: unknown } | null)?.id
+        ?? (d as { documentId?: unknown } | null)?.documentId;
+      return typeof id === 'string' && id === docId;
+    });
+  }
+
   // DELETE — remove a document from the knowledge group
   app.delete<{ Params: { id: string; docId: string } }>(
     '/api/v1/projects/:id/avatar/knowledge/documents/:docId',
@@ -1516,6 +1555,18 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
       const project = await requireOwnedProject(request, reply);
       if (!project) return;
       const apiKey = await resolveAnamKeyForProject(project.id).catch(() => undefined);
+      const cfg = (project.avatar_config as AvatarPersonaConfig | null) ?? {};
+
+      // 404, not 403 — the same rule every project route here keeps: refusing must not confirm
+      // that somebody else's document id exists.
+      if (!(await documentBelongsToProject(cfg.knowledgeGroupId, request.params.docId, apiKey))) {
+        logger.warn(
+          { projectId: project.id, docId: request.params.docId },
+          '[Avatar] refused a knowledge-document delete for a document outside this project group',
+        );
+        return reply.code(404).send({ message: 'Document not found' });
+      }
+
       const ok = await deleteKnowledgeDocument(request.params.docId, apiKey).catch(() => false);
       return reply.code(ok ? 204 : 502).send();
     },

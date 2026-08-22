@@ -12,6 +12,12 @@
 import { startWorker } from './queue/startWorker.js';
 import { stopBoss } from './queue/pgBoss.js';
 import { logger } from './lib/logger.js';
+import { installProcessSafetyNet } from './lib/processSafetyNet.js';
+
+// AT MODULE SCOPE, before anything can start work: a rejection during boot — a failed pool
+// connect, a queue that will not start — is exactly the case where the process dying silently is
+// hardest to diagnose, and installing this after listen() would leave that window uncovered.
+installProcessSafetyNet('worker');
 import { assertPublicOriginsForProd } from './config/publicOrigins.js';
 import { assertEncryptionKeyEnv } from './services/security/encryptionKey.js';
 

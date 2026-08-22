@@ -40,6 +40,7 @@ import { LLMService } from '../../services/llm/LLMService.js';
 import { ApiKeyService } from '../../services/secrets/ApiKeyService.js';
 import { UsageTrackingService } from '../../services/usage/UsageTrackingService.js';
 import { logger } from '../../lib/logger.js';
+import { sanitizeDbText } from '../../lib/sanitizeDbText.js';
 
 const GUIDANCE_ERROR_MESSAGES: Record<string, string> = {
   aborted:          'Generation was cancelled.',
@@ -264,11 +265,19 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
           logger.info({ simId, entryKey }, 'Simulation ready');
         })
         .catch(async (err: unknown) => {
+          // THE FAILURE HANDLER MUST NOT BE ABLE TO FAIL (backend-011). Nothing awaits the promise
+          // this .catch() returns, so a throw in here is an unhandled rejection — which terminates
+          // the process on Node 22. `msg` is vendor/LLM text that can carry a NUL byte, and
+          // Postgres rejects those in a text column, so this is reachable from ordinary input.
           const msg = err instanceof Error ? err.message : String(err);
-          await db
-            .update(simulations)
-            .set({ status: 'failed', error: msg })
-            .where(eq(simulations.id, simId));
+          try {
+            await db
+              .update(simulations)
+              .set({ status: 'failed', error: sanitizeDbText(msg) })
+              .where(eq(simulations.id, simId));
+          } catch (writeErr) {
+            logger.error({ simId, writeErr }, 'could not record the simulation failure');
+          }
           logger.error({ simId, err }, 'Simulation processing failed');
         });
 
@@ -560,11 +569,16 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
             });
 
       publication.catch(async (err: unknown) => {
+        // Same rule as the create path above — see backend-011 there.
         const msg = err instanceof Error ? err.message : String(err);
-        await db
-          .update(simulations)
-          .set({ status: 'failed', error: msg })
-          .where(eq(simulations.id, sim.id));
+        try {
+          await db
+            .update(simulations)
+            .set({ status: 'failed', error: sanitizeDbText(msg) })
+            .where(eq(simulations.id, sim.id));
+        } catch (writeErr) {
+          logger.error({ simId: sim.id, writeErr }, 'could not record the simulation failure');
+        }
         logger.error({ simId: sim.id, err }, 'Simulation replace failed');
       });
 

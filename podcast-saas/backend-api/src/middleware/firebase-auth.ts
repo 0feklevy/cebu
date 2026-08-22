@@ -63,6 +63,43 @@ function provenEmail(decoded: DecodedIdToken): string | undefined {
   return decoded.email_verified === true ? decoded.email : undefined;
 }
 
+/**
+ * The ONLY routes that may authenticate with `?token=` (security-011).
+ *
+ * The browser's `EventSource` cannot set an Authorization header, so an SSE stream has no other
+ * way to carry a credential. That is a real constraint — but it was implemented by reading
+ * `?token=` in this shared middleware, which meant EVERY route using it as a preHandler accepted
+ * a live Firebase ID token in its URL, while exactly one client call site ever sent one.
+ *
+ * A credential in a URL does not stay in the URL. It is written to the nginx access log (which
+ * logs `"$request"`), to browser history, and to the `Referer` header of anything the page then
+ * loads. The app's own logging was hardened separately (`safeRequestPath`), which is exactly why
+ * this looked fixed at a glance.
+ *
+ * Matched on the ROUTE PATTERN, not the request URL, so this cannot be widened by a path that
+ * merely looks similar. Adding an entry here is a deliberate act with a reviewer attached.
+ */
+const QUERY_TOKEN_ROUTES: ReadonlySet<string> = new Set([
+  '/api/v1/projects/:id/simulations/:simId/generate-guidance/stream',
+  '/api/v1/projects/:id/simulations/:simId/publish-guidance/stream',
+]);
+
+/**
+ * The bearer token for this request.
+ *
+ * The header is authoritative everywhere. The query fallback applies only on the allowlisted SSE
+ * routes above — and only when no header was sent, so a client that can use the header still does.
+ */
+export function bearerTokenFor(request: FastifyRequest): string | undefined {
+  const authHeader = request.headers.authorization;
+  if (authHeader?.startsWith('Bearer ')) return authHeader.slice(7);
+
+  const routePattern = (request as { routeOptions?: { url?: string } }).routeOptions?.url;
+  if (!routePattern || !QUERY_TOKEN_ROUTES.has(routePattern)) return undefined;
+  const tokenQuery = (request.query as Record<string, string> | undefined)?.token;
+  return typeof tokenQuery === 'string' && tokenQuery.length > 0 ? tokenQuery : undefined;
+}
+
 declare module 'fastify' {
   interface FastifyRequest {
     firebaseUser?: DecodedIdToken;
@@ -74,10 +111,7 @@ export async function firebaseAuthMiddleware(
   request: FastifyRequest,
   reply: FastifyReply,
 ): Promise<void> {
-  const authHeader = request.headers.authorization;
-  // Also check query param for SSE streams (EventSource limitation)
-  const tokenQuery = (request.query as Record<string, string>)?.token;
-  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : tokenQuery;
+  const token = bearerTokenFor(request);
 
   if (!token) {
     return reply.code(401).send({ error_type: 'connection_error', message: 'No auth token' });
