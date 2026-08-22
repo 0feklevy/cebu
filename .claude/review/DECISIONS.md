@@ -136,60 +136,43 @@ gate turns CRITICAL into an automatic rollback — so without the early refusal,
 would have rolled back a perfectly healthy deploy over a missing configuration value. `plan` now
 refuses BEFORE anything is deployed and names the variables (PR #81).
 
-## 🔴 SUSPECTED PRODUCT BUG — a project that OPENS on a simulation is blank on Linux WebKit
+## ✅ DIAGNOSED AND FIXED — a project that OPENS on a simulation showed nothing
 
-Re-examined 2026-08-22 against the CI failure dump and a local WebKit run. **Two of the three
-claims in the previous version of this entry were wrong**, and both errors pointed the last two
-rounds at the harness instead of the product.
+Three rounds read this as a harness problem. It was two product bugs stacked on each other, and
+both are now fixed with the evidence attached.
 
-**Correction 1 — the screenshot shows the VIEWER's chrome, not the simulation's.** The frame is
-flat navy with FlowVid's own avatar button bottom-left and its "Ask!" button bottom-right. Those
-are the viewer's controls. The simulation is not on screen at all. The earlier reading ("the
-simulation's OWN UI chrome — its buttons are drawn") is what made this look like a rendering
-problem inside the sim.
+**Correction to the record, first.** The failure screenshot shows the VIEWER's chrome — FlowVid's
+own avatar button and its "Ask!" button — over an empty frame. It is not the simulation's UI. The
+earlier reading ("the simulation's OWN UI chrome — its buttons are drawn") is what sent two rounds
+at the harness. And the scenario does NOT pass locally either: macOS WebKit fails it in ~2.5 s on
+`realErrors()`, because the Firebase auth emulator is not running on that machine — a separate
+environmental failure that had been masking the fact that the CI one was never reproducible there.
 
-**Correction 2 — it does NOT pass locally, and it does not fail there for this reason either.**
-Local macOS WebKit fails scenario 11 in ~2.5s on `realErrors()`, because the Firebase auth emulator
-is not running on this machine. `waitForSection` is reached and passes. So local is not a
-reproduction of the CI failure and never was — it is a separate environmental failure that has been
-masking the fact that the CI one is unreproducible here.
+**Bug 1 — the section was never applied (#89).** `updateSimOverlay` is the only function that
+applies a section and reveals the overlay, and every path to it required the timeline to have
+MOVED: the `timeupdate` tick, a segment swap, or a seek. A viewer that requested playback and got
+no frames had reached none of them. An instrumented boot logs no call to it at all. Fixed by
+ticking in the `play` handler — `play` fires when playback is REQUESTED, so it fires even when the
+media then fails to advance, which is precisely the case that had no recovery. Scenario 11b
+reproduces it deterministically (play, then pause in the same synchronous block, so no `timeupdate`
+can fire) and **passes on Linux WebKit in CI where it failed before**.
 
-**What the CI dump actually says** (`sim-state-on-failure`, run 32583922539):
+**Bug 2 — a negative playhead matched no section (#92).** #89 did not turn the job green, and the
+enriched dump said why in one number: `currentTime: -0.04`, `played: []`, `readyState: 4`,
+`buffered: [[0, 32.4]]`. An HLS stream demuxed from MPEG-TS carries the packager's presentation
+timestamps, and they need not begin at 0, so the element reports a slightly negative time before
+the first frame. `-0.04 >= 0` is false, so a section starting at 0 contained nothing. Fixed by
+clamping in `playheadFromMediaTime`, beside `sectionAtPlayhead` in `lib/sectionInterval.ts`.
 
-```
-iframes:      [{ opacity: "0", w: 1280, h: 720 }]
-childReports: [{ section: "none" }]
-proto:        []
-```
+**What made the difference:** #87 put the video's `played`, `currentTime` and `error`, and the
+iframe's ancestor chain, into the failure dump. Every previous round was inference from one
+screenshot. `buffered` full with `played` empty is the whole diagnosis, and it took one red run to
+produce once the dump could say it.
 
-The iframe is **fully transparent** and the child reports **no section applied**. So the sim did
-not fail to paint — **the viewer never revealed it and never told it what to show**. A locally
-instrumented run of the same scenario shows the correct behaviour for comparison: the overlay is
-`sim-overlay visible` at opacity 1 with `section: "A"` from T+1s until the sim's window closes at
-T+10s.
-
-**The remaining hypothesis, and why it is the only one left standing.** `onTick` — the function
-that decides every sim activation — has exactly one call site in `useProjectPlayer.ts:3253`, the
-video's `timeupdate` listener. Nothing else reaches it: not `seeked`, not `loadedmetadata`, not a
-rAF loop. **A video that never advances is a viewer that never evaluates a section.** Every other
-sim scenario calls `seekTo()`, which assigns `currentTime`; scenario 11 is the only one that
-depends on playback progressing on its own from 0.
-
-If that is what happens on Linux WebKit, the user-visible consequence is not confined to CI: **a
-section covering t=0 is not applied until the timeline first moves.** Safari blocks autoplay by
-default, so a visitor arriving at a project that opens on a simulation sees the video's first frame
-instead of the simulation until they press play.
-
-**Instrumented rather than guessed at.** The failure dump now carries the video's `currentTime`,
-`readyState`, `error`, `buffered` and — the discriminating one — `played`, plus the iframe's
-ancestor chain including the `.sim-overlay` class that drives the reveal. Bytes arriving is not
-frames presenting, and `buffered` without `played` is exactly that state. The next red run settles
-it: `played: []` with `currentTime: 0` confirms the hypothesis, a non-empty `played` refutes it.
-Verified locally that the new fields carry real values rather than nulls.
-
-**Not fixed.** The fix — ticking on `seeked` and once when a segment is ready, so the section
-covering the current time is applied while paused — is a change to viewer boot ordering, and it
-should be made against a confirmed diagnosis rather than this one.
+**User-visible reach beyond CI:** both bugs are engine-independent in principle. Any browser where
+the first `timeupdate` is late shows a flash of the video's first frame before the simulation
+appears, and any stream whose timeline starts before zero misses a section at 0 until the clock
+crosses it.
 
 ## 📌 WHERE THINGS STAND — end of 2026-08-22
 
@@ -458,43 +441,98 @@ maintained only because both live in one script.
 
 ---
 
-## 🟡 Work queue — the sweep's remaining confirmed findings, in cluster order
+## 🟡 Work queue — re-audited 2026-08-22, and the ledger was wrong in BOTH directions
 
-~~**The remaining `fix-now` findings** — the 13 below.~~ **ALL CLOSED 2026-08-22** — see the
-section above. Kept as the record of what each was and how it was approached:
+The previous version of this section said the 13 `fix-now` findings were "ALL CLOSED". A file-by-file
+audit against the actual tree says: eleven of them are closed and verifiable, **one closure was
+reported for work that was never done**, and **one gate was reported closed while nothing in CI has
+ever invoked it**. Separately, two clusters listed here as outstanding were quietly finished days
+ago, so the queue also under-reported progress.
 
-1. **C4 — viewer and export disagree on overlapping clips** (`broll-player-002` +
-   `broll-data-008`): move `resolvePlan`'s winner rule into `shared/`, call it at both
-   `useProjectPlayer` sites; add an `overlap` violation code + writer-side rejection.
-2. **`simulation-009`** — an aborted section's error is stamped with the live section's identity:
-   capture `var activation = current` at call time, re-check identity before posting.
-3. **`simulation-008`** — republication leaks the previous revision's posters forever: call
-   `invalidate()` from the two real activation sites; fold poster GC into the storage census.
-4. **`media-003`** — the capture sanity gate discards canvas-free sims' frames: full-viewport
-   screenshot hash when `cs.length === 0`; "no canvas" is not-applicable, not failed.
-5. **C10 — `job-queue-013`**: extend `NEVER_INLINE` to every CPU-bound job kind (the export
-   precedent already exists); move corpus ingest onto pg-boss (`backend-008`/`job-queue-015`
-   ride along).
-6. **`job-queue-014`** — test files are not type-checked: `tsc --noEmit -p tsconfig.test.json`
-   in CI, fix the four current errors.
-7. **LLM trio** — `llm-pipeline-007` (wire the prompt-caching fields that already exist),
-   `llm-pipeline-011` (hoist quota block + reasoning payload into a shared preamble),
-   `llm-pipeline-016` (ratio floor before the compile hash, fall back to draft below it).
-8. **Ship-conductor trio** — `scripts-ship-005` (read the review decision, never infer approval
-   from a disappearance), `scripts-ship-010` (one shared arg parser that rejects non-finite
-   numbers — a NaN currently disarms the destructive-backfill ceiling), `scripts-ship-013`
-   (`assertLocalDatabase` beside `assertLocalStorageOnly` in every wipe/seed script).
+A ledger that is stale in the optimistic direction is how a hole stays open. Both directions are
+recorded below, because the corrections that make the list look better are the ones that buy the
+credibility for the corrections that make it look worse.
 
-**Then the 69 `schedule` findings** — report §2, grouped; biggest clusters after C1: C2's
-remaining resource items (`media-009` tmpfs arithmetic, `performance-005` zip double-buffer),
-observability's silent-failure paths, and the a11y group.
+### ✅ Verified closed — evidence, not commit messages
 
-**Standing backlog, unchanged:** production storage census (`storage-census.sql`, read-only —
-unblocks retention/rollup/TOAST work and simulation-008's poster GC) · **D-14** avatar spend
-(atomic function → async observer → client wiring, in that order) · **D-16** crop hardening ·
-**D-17** knowledge/retrieval gates · D-01b follow-ups (absolute `timeline_markers.at_sec` and
-manual avatar ranges share the drift class; standing review panel in the editor) · WebKit
-`__CHILD` re-key + the stale `ci.yml` comment (baseline measured — PR #45's four-run table, in git history).
+| item | closed by |
+|---|---|
+| C4 `broll-player-002` / `broll-data-008` | `shared/src/timeline/overlayStack.ts` `stacksAbove`, called from both `resolvePlan.ts` and `useProjectPlayer.ts`; `overlayParity.test.ts` green |
+| `simulation-009` | `simRuntimeChild.ts` captures the activation identity at call time; `simRuntimeActivationIdentity.test.ts` green |
+| `simulation-008` | `posterService.invalidate()` — deliberately reachable from the publish path only; the GC hazard was correctly not added |
+| `media-003` | `beginFrameBackend.ts` reports `canvasRegion`; `sanityGate.ts` suspends the animation check for canvas-free sims |
+| `job-queue-013` (the NEVER_INLINE half) | `pgBossDriver.ts` `CPU_BOUND_JOBS`, asserted equal to the `QUEUE_CONCURRENCY === 1` set |
+| LLM trio `-007` / `-011` / `-016` | `ClaudeProvider.ts` cache-control, `LLMService.ts` shared preamble, `ScriptRoom.ts` ratio floor |
+| Ship trio `-005` / `-010` / `-013` | `conductor.ts` reads the review decision, `argGuards.ts` rejects non-finite numbers, `assertLocalDatabase` beside `assertLocalStorageOnly` |
+| `performance-005` | `simulations.controller.ts` refuses before the heap fills, citing the finding by name |
+
+### 🔴 `job-queue-014` — reported closed; the gate was never wired, and 140 errors accumulated
+
+`tsconfig.test.json` exists. `typecheck:test` exists in `backend-api/package.json`. **Nothing has
+ever run either** — not `ci.yml`, not `release-verify.sh`; grep both and the result is empty. So the
+finding was marked closed on the strength of a config file that no build executes.
+
+Meanwhile the drift the finding exists to stop carried on: **140 type errors across 51 test files**,
+in a repo whose production sources type-check clean. Vitest executes TypeScript without checking it,
+so every one of those files still passes.
+
+**Now gated, as a ratchet rather than a clean assertion** (`deploy/scripts/typecheck-tests-ratchet.sh`,
+wired into the static-audits job). Nothing may get worse: a clean test file may not acquire an error,
+a dirty one may not acquire more, and the per-file baseline in `backend-api/.typecheck-test-baseline`
+is expected only to shrink. Demanding zero today would mean 140 judgement calls in one pass and a red
+build people learn to skip.
+
+**Still open:** the 140 themselves. They are dominated by three shapes — `TS2493` (indexing a mock's
+empty-tuple capture), `TS2352` (a cast through `undefined`), `TS2339` — so they are tractable, but
+each needs a judgement about whether the cast is hiding a real defect.
+
+### 🔴 `job-queue-015` / `backend-008` — the "ride along" closure did not happen
+
+The queue said corpus ingest would move onto pg-boss alongside `job-queue-013`. It did not.
+`corpus.controller.ts` still calls `builder.ingest(corpus.id).catch(log)` fire-and-forget at **both**
+upload sites, so an ingest dies with the process and nothing retries it.
+
+What actually shipped under this heading was a different finding — `observability-002`'s stuck-row
+reaper (`services/ingestion/corpusRecovery.ts`), which recovers rows *after* they are stranded. That
+is a genuine improvement and it is not the same thing as durable execution.
+
+Riding alongside it: **`src/jobs/corpus.ingest.ts` and `src/jobs/video.transcode.ts` are Trigger.dev
+tasks that nothing imports.** They declare `retry: { maxAttempts: 3 }` and none of it runs. Dead code
+that advertises retry semantics is worse than no file, because a reader checking "is ingest retried?"
+finds a convincing answer that is false. Either wire ingest onto pg-boss or delete both files
+(closing `observability-011` with them).
+
+### 🟢 Corrections in the other direction — two clusters were finished and never recorded
+
+* **The a11y group is five-sixths done.** `ui-ux-003 / -004 / -005 / -007 / -009` shipped on
+  2026-08-19, three days before this section was last written, and 29 a11y tests cover them today
+  (`podcastStudioOverlayA11y`, `confirmDialogA11y`, `a11yOperableControls`, `adminControlsA11y`).
+  Only `ui-ux-006` — the editor timeline has no keyboard alternative — is genuinely open, and that
+  one was deferred on purpose.
+* **D-16 crop is not "blocked at the first step".** Thirteen hand-labelled clips exist under
+  `backend-api/scripts/crop-eval/labels/`, a field eval has run, and its result is marked quotable —
+  it is what surfaced the `CROP_ALGO=v2` no-op recorded above. Below the 20–50 clip target, but the
+  measurement loop exists and works. The P2 detector work has not started.
+
+### Still open, unchanged
+
+* **`media-009`** — captured frame bytes are not bounded against the container's tmpfs/memory cap.
+  Zero references in code; `containerRunArgs.ts` has no size check. Genuinely untouched.
+* **`observability-005`** — `runVideoTranscode.ts` still uses raw `console.log`/`console.error` at
+  13 call sites, so transcode failures are invisible to the structured log.
+* **`observability-009`** — `LLMService.ts` logs 800 raw characters of model output with no
+  redaction, at error level.
+* **`observability-010`** — `lib/sse.ts` is dead code; only an archived module and a type-only
+  import reference it.
+* **D-14** avatar spend (atomic function → async observer → client wiring). No code; `AVATAR_BUDGET_MODE`
+  is still `shadow`.
+* **D-01b follow-ups** — `timeline_markers.at_sec` is still absolute-only with no anchor column, and
+  the standing review panel does not exist.
+* **D-17 knowledge/retrieval gates** — the ledger never recorded which findings this covers. The two
+  plausible members (`security-009` cross-group knowledge-doc delete, `performance-002` unbounded
+  corpus upload) are both fixed, so this entry may be empty; it needs its scope stated or removing.
+* **Production storage census** (`deploy/scripts/storage-census.sql`, read-only) — **owner action**.
+  It unblocks retention, rollup and poster GC, and no result exists anywhere in the repo.
 
 ## ⚪ Known and accepted
 
