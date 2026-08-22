@@ -389,11 +389,23 @@ async function bootViewer(page: Page, config: object, opts?: { simdebug?: boolea
     });
   }, PIN_CORES);
 
-  // Bind each E2E_STATE report to the iframe that sent it. contentWindow IS reachable
-  // cross-origin (contentDocument is not), so identity comparison works.
+  // Bind each E2E_STATE report to the iframe that sent it, BY SRC, resolved at message time.
+  //
+  // It used to key the map by the posting `Window` and look it up later with `el.contentWindow`.
+  // That identity holds on macOS WebKit and on Chromium/Firefox in CI, and did not hold on Linux
+  // WebKit — where scenario 11 timed out while the failure screenshot showed the simulation
+  // rendered perfectly. The product worked; the predicate could not see it.
+  //
+  // `SIM_PAINTED`, ten lines below, never had the problem because it resolves `e.source` to an
+  // iframe AT MESSAGE TIME and stores `own.src` — a stable string. E2E_STATE now does the same.
+  // The Window key is kept as a FALLBACK for the case where resolution fails at message time, so
+  // this is strictly more robust than what it replaces rather than a different bet.
+  //
+  // Still a hypothesis: Linux WebKit is not reproducible locally (it passes there in ~3s). What
+  // makes it safe to ship anyway is that it cannot be worse — the old lookup remains in place.
   await page.addInitScript(() => {
     const w = window as unknown as {
-      __CHILD?: Map<Window, unknown>;
+      __CHILD?: Map<Window | string, unknown>;
       __PROTO_LOG?: unknown[];
       __PAINTED_SRCS?: string[];
     };
@@ -414,7 +426,13 @@ async function bootViewer(page: Page, config: object, opts?: { simdebug?: boolea
         if (own) w.__PAINTED_SRCS!.push(own.src);
       }
       if (d?.type === 'E2E_STATE' && e.source) {
-        w.__CHILD!.set(e.source as Window, { ...(d as object), recvAt: Date.now() });
+        const payload = { ...(d as object), recvAt: Date.now() };
+        const own = ([...document.querySelectorAll('iframe')] as HTMLIFrameElement[])
+          .find((el) => el.contentWindow === e.source);
+        // BOTH keys. The src is what the predicate reads; the Window is what it read before, and
+        // keeping it means a browser where resolution fails here is no worse off than today.
+        if (own) w.__CHILD!.set(own.src, payload);
+        w.__CHILD!.set(e.source as Window, payload);
       }
     });
   });
@@ -514,7 +532,7 @@ const now = (page: Page): Promise<number> => page.evaluate(() => Date.now());
  */
 async function waitForSection(page: Page, section: string, timeout = 20_000): Promise<void> {
   await page.waitForFunction((want) => {
-    const map = (window as unknown as { __CHILD?: Map<Window, { section: string | null }> }).__CHILD;
+    const map = (window as unknown as { __CHILD?: Map<Window | string, { section: string | null }> }).__CHILD;
     if (!map) return false;
     const frames = [...document.querySelectorAll('iframe')] as HTMLIFrameElement[];
     return frames.some((el) => {
@@ -522,7 +540,10 @@ async function waitForSection(page: Page, section: string, timeout = 20_000): Pr
       let op = parseFloat(getComputedStyle(el).opacity) || 0;
       let n: HTMLElement | null = el.parentElement;
       for (let i = 0; n && i < 4; i++, n = n.parentElement) op *= parseFloat(getComputedStyle(n).opacity) || 0;
-      return op > 0.5 && map.get(el.contentWindow as Window)?.section === want;
+      // SRC FIRST — a stable string resolved when the message arrived. `contentWindow` second,
+      // because that is the lookup this replaced and a browser where it still works loses nothing.
+      const state = map.get(el.src) ?? map.get(el.contentWindow as Window);
+      return op > 0.5 && state?.section === want;
     });
   }, section, { timeout });
 }
@@ -554,9 +575,14 @@ async function sampleFrames(page: Page, ms: number): Promise<Sample[]> {
         const el = f as HTMLIFrameElement;
         if (!/index\.html/.test(el.src)) return;
         // Cross-origin by design: read the document's OWN report rather than its DOM.
-        const rep = (window as unknown as {
-          __CHILD?: Map<Window, { section: string | null; controls: boolean; recvAt: number }>;
-        }).__CHILD?.get(el.contentWindow as Window);
+        const childMap = (window as unknown as {
+          __CHILD?: Map<Window | string, { section: string | null; controls: boolean; recvAt: number }>;
+        }).__CHILD;
+        // Same src-first lookup as waitForSection. The two MUST agree: a sampler resolving a
+        // report the wait predicate cannot see would name a section for a frame the test just
+        // timed out waiting for — which reads as the product being inconsistent rather than the
+        // harness being inconsistent with itself.
+        const rep = childMap?.get(el.src) ?? childMap?.get(el.contentWindow as Window);
         // A report older than a few frames is STALE: the sim's rAF loop is starved (a
         // synchronously-blocking body does exactly that), so it still names the PREVIOUS section
         // whether the code is right or wrong. Trusting it is what let a dead apply gate pass.
@@ -754,6 +780,56 @@ const externalRequests = (page: Page): string[] => (page as Page & { __external?
 // iframe. The fixture now publishes real HLS. Separately, sims are cross-origin in production,
 // so per-frame section/controls evidence now comes from a reporter inside the sim document.
 test.describe('real React viewer — simulation transitions', () => {
+  /**
+   * ON FAILURE, SAY WHAT THE SIM ACTUALLY DID — because two rounds of work went at the wrong
+   * layer for want of exactly this.
+   *
+   * Scenario 11 has timed out on Linux WebKit for weeks. Every diagnosis so far was inference
+   * from a single screenshot, and the note recording the last one turned out to describe a
+   * screenshot that does not exist: it said "the simulation rendered" where the artefact shows
+   * the sim's UI chrome and no content at all.
+   *
+   * The harness already collects everything needed to settle it — `__PROTO_LOG` holds the sim's
+   * own protocol records and `__CHILD` holds what each iframe last reported — and it was thrown
+   * away on failure. This attaches all three to the report, so the NEXT red run answers the
+   * question instead of starting another theory.
+   *
+   * Failure-only: on a green run it costs nothing, and a suite that attaches a payload to every
+   * pass is a suite whose artefacts nobody opens.
+   */
+  test.afterEach(async ({ page }, testInfo) => {
+    if (testInfo.status === testInfo.expectedStatus) return;
+    const dump = await page.evaluate(() => {
+      const w = window as unknown as {
+        __PROTO_LOG?: unknown[];
+        __CHILD?: Map<Window | string, { section: string | null; recvAt: number }>;
+      };
+      const reports: Array<{ key: string; section: string | null }> = [];
+      // String keys only. A Window key cannot be serialised and is not informative here — the
+      // src IS the identity the predicate looks things up by.
+      for (const [k, v] of w.__CHILD ?? []) {
+        if (typeof k === 'string') reports.push({ key: k, section: v?.section ?? null });
+      }
+      return {
+        proto: (w.__PROTO_LOG ?? []).slice(-60),
+        childReports: reports,
+        // What was actually on the page: which iframes exist, where they point, and whether they
+        // were visible. A sim that never mounted and a sim that mounted blank look identical in
+        // a timeout message and are completely different bugs.
+        iframes: ([...document.querySelectorAll('iframe')] as HTMLIFrameElement[]).map((el) => ({
+          src: el.src,
+          opacity: getComputedStyle(el).opacity,
+          w: el.clientWidth,
+          h: el.clientHeight,
+        })),
+      };
+    }).catch((e: unknown) => ({ dumpFailed: String(e) }));
+    await testInfo.attach('sim-state-on-failure', {
+      body: JSON.stringify(dump, null, 2),
+      contentType: 'application/json',
+    });
+  });
+
   test('1. cold video → simulation: the sim is never presented blank or unapplied', async ({ page }) => {
     await bootViewer(page, makeConfig([{ id: 's1', start: 5, end: 15, section: S.A }]));
     await startPlayback(page);
