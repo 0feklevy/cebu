@@ -75,7 +75,6 @@ function renderTimeline() {
       showBrollTrack={false}
       showAudioTrack={false}
       onAddVideo={() => {}}
-      {...({} as never)}
     />,
   );
 }
