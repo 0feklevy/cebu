@@ -425,10 +425,10 @@ export class R2StorageAdapter implements StorageService {
           },
         }),
       );
-      console.log(`[R2] CORS configured — PUT: ${allowedOrigins.join(', ')} | GET/HEAD: *`);
+      logger.info({ allowedOrigins }, '[r2] CORS configured (PUT restricted to these origins; GET/HEAD open)');
       logger.info('R2 bucket CORS configured');
     } catch (err) {
-      console.error('[R2] CORS setup failed:', err);
+      logger.error({ err: (err as Error).message?.slice(0, 200) }, '[r2] CORS setup failed');
       logger.warn({ err }, 'R2 CORS setup failed — configure manually in Cloudflare dashboard');
     }
   }
