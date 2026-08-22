@@ -22,6 +22,23 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 type ProjectAccessRow = { id: string; visibility: string; created_by: string | null };
 
+/**
+ * Scopes last confirmed PUBLIC, and when.
+ *
+ * Only consulted when the database lookup itself fails — it is a fault-time fallback, never a
+ * cache on the success path, so an unshare takes effect immediately while the database is healthy.
+ * Bounded in size and in time: a fault that outlives the TTL fails closed, which is the safe
+ * direction for a window nobody is watching.
+ */
+const publicKeyMemory = new Map<string, number>();
+const PUBLIC_MEMORY_TTL_MS = 10 * 60 * 1000;
+const PUBLIC_MEMORY_MAX = 5_000;
+
+/** Exposed for tests; also called when the map would otherwise grow without bound. */
+export function _resetPublicKeyMemory(): void {
+  publicKeyMemory.clear();
+}
+
 /** Resolve a media key to its owning project's access fields, or null. */
 async function resolveProjectForKey(key: string): Promise<ProjectAccessRow | null> {
   const parts = key.split('/');
@@ -35,6 +52,18 @@ async function resolveProjectForKey(key: string): Promise<ProjectAccessRow | nul
   // Export masters live under `exports/{projectId}/…` — the project id is the scope, exactly
   // like `videos/{projectId}`.
   if (parts[0] === 'exports' && UUID_RE.test(parts[1] ?? '')) {
+    const row = await db.query.projects.findFirst({
+      where: eq(projects.id, parts[1]),
+      columns: { id: true, visibility: true, created_by: true },
+    });
+    return row ?? null;
+  }
+  // Simulation packages: `simulations/{projectId}/{simId}/…`. The project id sits in the same
+  // position as it does for `videos` and `exports`, so this needs no simulations-table lookup —
+  // and `/sim-public/*` had NO project check at all until it started calling this gate, which
+  // meant unsharing a project did not revoke access to its simulation (security-005,
+  // simulation-007).
+  if (parts[0] === 'simulations' && UUID_RE.test(parts[1] ?? '')) {
     const row = await db.query.projects.findFirst({
       where: eq(projects.id, parts[1]),
       columns: { id: true, visibility: true, created_by: true },
@@ -85,16 +114,38 @@ export async function canServeMediaKey(
     if (!project) return false;
 
     // 2. Public/unlisted: servable to anyone holding the (unguessable) key.
-    if (project.visibility === 'public' || project.visibility === 'unlisted') return true;
+    if (project.visibility === 'public' || project.visibility === 'unlisted') {
+      if (publicKeyMemory.size >= PUBLIC_MEMORY_MAX) publicKeyMemory.clear();
+      publicKeyMemory.set(scope, Date.now());
+      return true;
+    }
+    // A scope that has just been confirmed PRIVATE must not keep a stale public memory — that is
+    // the "unshare then the database wobbles" case, and it is the one the memory could get wrong.
+    publicKeyMemory.delete(scope);
 
     // 3. Private: require the owner or an invited collaborator.
     if (!user) return false;
     if (project.created_by === user.id) return true;
     return await isCollaborator('project', project.id, user);
   } catch (err) {
-    // Availability bias: a DB blip must not take down all playback. Deny would be
-    // stricter, but the token path (1) already covers every URL we mint ourselves.
-    logger.error({ err, key }, '[mediaAccess] lookup failed — allowing (fail-open)');
-    return true;
+    // BOUNDED FAIL-OPEN (security-012). Ratified, not removed — but no longer unconditional.
+    //
+    // The availability argument is real: a database blip must not take down all playback, and the
+    // token path above already covers every URL this product mints. But "allow anything we could
+    // not check" also served a PRIVATE project's media to a caller with no token and no session,
+    // for as long as the fault lasted — the one case the gate exists for.
+    //
+    // So the answer is now "allow what we have SEEN to be public, deny what we have never seen".
+    // A key whose project was public at its last successful lookup keeps playing through a fault;
+    // a key nobody has ever resolved is refused. That keeps the outage story (public content keeps
+    // streaming) without keeping the hole (private content does not start streaming to strangers
+    // the moment the database wobbles).
+    const seenPublic = publicKeyMemory.get(scope);
+    if (seenPublic !== undefined && Date.now() - seenPublic < PUBLIC_MEMORY_TTL_MS) {
+      logger.error({ err, key }, '[mediaAccess] lookup failed — allowing (last seen public)');
+      return true;
+    }
+    logger.error({ err, key }, '[mediaAccess] lookup failed and this key was never seen public — denying');
+    return false;
   }
 }
