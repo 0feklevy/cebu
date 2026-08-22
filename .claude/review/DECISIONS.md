@@ -486,21 +486,24 @@ build people learn to skip.
 empty-tuple capture), `TS2352` (a cast through `undefined`), `TS2339` — so they are tractable, but
 each needs a judgement about whether the cast is hiding a real defect.
 
-### 🔴 `job-queue-015` / `backend-008` — the "ride along" closure did not happen
+### ✅ `job-queue-015` / `backend-008` — CLOSED for real this time (#96)
 
-The queue said corpus ingest would move onto pg-boss alongside `job-queue-013`. It did not.
-`corpus.controller.ts` still calls `builder.ingest(corpus.id).catch(log)` fire-and-forget at **both**
-upload sites, so an ingest dies with the process and nothing retries it.
+Corpus ingest is on pg-boss. Registered across all nine coupled points — JOB_NAMES, JobPayloads,
+the handler registry, PGBOSS_JOB_NAMES, QUEUE_OPTIONS, QUEUE_CONCURRENCY, singletonKeyFor,
+compose's WORKER_QUEUES and the two test sample-payload maps. The queue suite caught four of them
+before I did.
 
-What actually shipped under this heading was a different finding — `observability-002`'s stuck-row
-reaper (`services/ingestion/corpusRecovery.ts`), which recovers rows *after* they are stranded. That
-is a genuine improvement and it is not the same thing as durable execution.
+**`retryLimit: 1`, because the retry budget here is set by a vendor bill.** An ingest of an audio
+corpus runs a paid speech-to-text pass. One retry buys the case the queue exists for — a deploy or
+a crash mid-ingest — without turning a permanently broken source into a small recurring bill.
 
-Riding alongside it: **`src/jobs/corpus.ingest.ts` and `src/jobs/video.transcode.ts` are Trigger.dev
-tasks that nothing imports.** They declare `retry: { maxAttempts: 3 }` and none of it runs. Dead code
-that advertises retry semantics is worse than no file, because a reader checking "is ingest retried?"
-finds a convincing answer that is false. Either wire ingest onto pg-boss or delete both files
-(closing `observability-011` with them).
+**And a retry is nearly free**, because `ingest` now returns immediately when the row is already
+`ready` WITH content. A durable queue re-delivers a job whose completion it never saw, which a
+deploy makes routine, and without that short-circuit a lost acknowledgement is a second invoice for
+bytes already in the row. The condition asks for the status AND the content: a row marked `ready`
+with empty `extracted_md` is a partial write, not finished work.
+
+The two dead Trigger.dev files that made this look done are deleted (#95).
 
 ### 🟢 Corrections in the other direction — two clusters were finished and never recorded
 
@@ -516,14 +519,26 @@ finds a convincing answer that is false. Either wire ingest onto pg-boss or dele
 
 ### Still open, unchanged
 
-* **`media-009`** — captured frame bytes are not bounded against the container's tmpfs/memory cap.
-  Zero references in code; `containerRunArgs.ts` has no size check. Genuinely untouched.
-* **`observability-005`** — `runVideoTranscode.ts` still uses raw `console.log`/`console.error` at
-  13 call sites, so transcode failures are invisible to the structured log.
-* **`observability-009`** — `LLMService.ts` logs 800 raw characters of model output with no
-  redaction, at error level.
-* **`observability-010`** — `lib/sse.ts` is dead code; only an archived module and a type-only
-  import reference it.
+* ~~**`media-009`**~~ **CLOSED (#94).** The capture container was capped on CPU, memory, pids,
+  tmpfs scratch and wall clock — every dimension except the one it fills. Ten minutes at 1080p30 is
+  18,000 JPEGs and nothing compared that to the disk. It refuses before starting now, against both
+  a per-capture ceiling and the free space, and an UNMEASURABLE filesystem does not refuse — the
+  ceiling still applies, so an absurd request is refused either way.
+* ~~**`observability-005`**~~ **CLOSED (#95).** Thirteen call sites, including the failure line.
+  The file had ALREADY imported pino, at line 18, and used it elsewhere — the console calls were an
+  inconsistency inside a file that otherwise logs properly, which is how they survived. The two in
+  `R2StorageAdapter` went with them. `isolation/main.ts` keeps its console calls deliberately: it
+  runs INSIDE the capture container, where there is no pino and stdout is the transport.
+* ~~**`observability-009`**~~ **CLOSED (#91).** The first attempt redacted a 120-character
+  excerpt from each end; its own test killed that — a fixture sentence about an acquisition price
+  survived untouched, because it is confidential without being credential-shaped. There is no
+  excerpt now, only shape, and a test asserts structurally that every emitted value is a number, a
+  boolean, a single character or a member of a fixed enum.
+* **`observability-010`** — **verified, and deliberately NOT deleted.** `initSSE` is reached only
+  from `_archive/v1-podcast-pipeline`, and `SSEEmitter` survives as a type on
+  `CorpusBuilder.ingest`'s optional third parameter, which no live caller passes. Deleting it would
+  break the archive's imports, and the archive exists to be readable. The accurate statement is
+  that this system has no live SSE surface — worth knowing before anyone builds one on top of it.
 * **D-14** avatar spend (atomic function → async observer → client wiring). No code; `AVATAR_BUDGET_MODE`
   is still `shadow`.
 * **D-01b follow-ups** — `timeline_markers.at_sec` is still absolute-only with no anchor column, and
