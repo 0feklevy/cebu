@@ -144,3 +144,50 @@ export function describeUnparseable(raw: string): UnparseableShape {
     ...structure(trimmed),
   };
 }
+
+
+/**
+ * A schema failure, described without the value that failed.
+ *
+ * ── WHY THE ZOD ISSUE ITSELF CANNOT BE LOGGED ─────────────────────────────────────────────────
+ * `result.error.errors` looks structural and is not. For an enum or literal mismatch Zod puts the
+ * ACTUAL VALUE in two places at once:
+ *
+ *   received: "THE CUSTOMER SECRET PROJECT NAME"
+ *   message:  "Invalid enum value. Expected 'a' | 'b', received 'THE CUSTOMER SECRET PROJECT NAME'"
+ *
+ * So logging the issue array leaks the same class of content as the raw dump this module was
+ * written to remove — and the site that did it also interpolated the array into the thrown
+ * `AppError`'s message, which travels further than a log line does.
+ *
+ * ── WHAT SURVIVES, AND WHY IT IS ENOUGH ───────────────────────────────────────────────────────
+ * `path` is field names from OUR schema, authored here, never model output — and it is the single
+ * most useful thing a schema failure can report: WHICH field the model got wrong. `expected`
+ * likewise comes from our own definition. `options` is a COUNT, so "the model sent something
+ * outside a four-option enum at `turns.3.speaker`" survives while the something does not.
+ *
+ * `received`, `message` and `keys` are dropped. Every one of them is authored by the model.
+ */
+export interface SchemaIssueShape {
+  code: string;
+  /** Dotted path into the schema, e.g. `turns.3.speaker`. `<root>` when the failure is top-level. */
+  path: string;
+  /** What the schema wanted — a type name, or a literal we defined. */
+  expected?: string;
+  /** How many enum options there were. Never which one arrived. */
+  options?: number;
+}
+
+/** Describe up to `max` schema issues. Never throws: it runs on a failure path. */
+export function describeSchemaIssues(issues: readonly unknown[] | undefined, max = 5): SchemaIssueShape[] {
+  if (!Array.isArray(issues)) return [];
+  return issues.slice(0, max).map((raw) => {
+    const i = (raw ?? {}) as { code?: unknown; path?: unknown; expected?: unknown; options?: unknown };
+    const path = Array.isArray(i.path) && i.path.length > 0 ? i.path.join('.') : '<root>';
+    const out: SchemaIssueShape = { code: typeof i.code === 'string' ? i.code : 'unknown', path };
+    // Only primitives, and only from OUR side of the comparison.
+    if (typeof i.expected === 'string' || typeof i.expected === 'number') out.expected = String(i.expected);
+    if (Array.isArray(i.options)) out.options = i.options.length;
+    return out;
+  });
+}

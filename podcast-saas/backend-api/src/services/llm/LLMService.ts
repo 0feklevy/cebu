@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { ZodSchema } from 'zod';
 import JSON5 from 'json5';
 import { LLMProvider, type TaskType, type TokenUsage, type EffortLevel, type LLMResponse } from './LLMProvider.js';
-import { describeUnparseable } from './unparseableOutput.js';
+import { describeUnparseable, describeSchemaIssues } from './unparseableOutput.js';
 import { ClaudeProvider } from './ClaudeProvider.js';
 import { OpenAIProvider } from './OpenAIProvider.js';
 import { GeminiProvider } from './GeminiProvider.js';
@@ -695,9 +695,22 @@ export class LLMService {
         const obj = repair();
         const result = schema.safeParse(obj);
         if (result.success) return result.data;
-        // JSON parsed but schema failed
-        const schemaIssues = result.error.errors.slice(0, 5);
-        logger.warn({ schemaIssues, rawPreview: raw.slice(0, 300) }, 'Schema validation failed after JSON parse');
+        // JSON parsed but schema failed.
+        //
+        // BOTH FIELDS HERE USED TO CARRY CUSTOMER CONTENT, and the second is the less obvious of
+        // the two. `rawPreview: raw.slice(0, 300)` was the same defect as the error-level site
+        // below (observability-009), 300 characters instead of 800. But `result.error.errors` is
+        // not structural either: for an enum or literal mismatch Zod puts the ACTUAL VALUE in
+        // `received` AND interpolates it into `message`. The array was then also interpolated into
+        // the thrown AppError's message, which travels further than a log line.
+        //
+        // `describeSchemaIssues` keeps the half that is ours — which field, what the schema wanted,
+        // how many options there were — and drops every field the model authored.
+        const schemaIssues = describeSchemaIssues(result.error.errors);
+        logger.warn(
+          { schemaIssues, output: describeUnparseable(raw) },
+          'Schema validation failed after JSON parse',
+        );
         lastSchemaError = new AppError(
           LLMErrorType.PARSING_ERROR,
           `Schema validation failed: ${JSON.stringify(schemaIssues)}`,
