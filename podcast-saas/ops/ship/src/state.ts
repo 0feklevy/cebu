@@ -17,7 +17,7 @@
  * this project's machine-readable run output (`.claude/review/runs/…`), and it is
  * git-ignored: it holds logs, not source.
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { SHIP_RUN_SCHEMA, SHIP_STAGES, type ShipRun, type ShipStage, type ShipStageName, type ShipStageStatus } from './types.js';
 
@@ -79,11 +79,23 @@ export function ensureRunDir(paths: RunPaths): void {
 
 export function saveRun(paths: RunPaths, run: ShipRun): void {
   ensureRunDir(paths);
-  // Write-then-rename: a reader tailing this directory never sees a half-written state.
+  // WRITE-THEN-RENAME, and this time actually (backend-009).
+  //
+  // The comment here has always promised that "a reader tailing this directory never sees a
+  // half-written state" — but the code did `writeFileSync(stateFile, readFileSync(tmp))`, which is
+  // a truncating COPY, not a rename. `writeFileSync` opens with O_TRUNC, so between that open and
+  // the write completing, the state file is empty or partial on disk. A reader landing in that
+  // window gets JSON it cannot parse, and `loadRun` below catches the parse error and returns
+  // null — which every caller reads as "there is no run". The shipment is still running; the CLI
+  // says it does not exist.
+  //
+  // `renameSync` within one directory is atomic on every filesystem this runs on: a reader sees
+  // either the whole previous state or the whole new one, never a seam. The temp file is on the
+  // same filesystem BY CONSTRUCTION — it is the state file's own path plus a suffix — which is the
+  // condition that makes the rename atomic rather than a copy underneath.
   const tmp = `${paths.stateFile}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(run, null, 2)}\n`, 'utf8');
-  writeFileSync(paths.stateFile, readFileSync(tmp, 'utf8'), 'utf8');
-  rmSync(tmp, { force: true });
+  renameSync(tmp, paths.stateFile);
 }
 
 export function loadRun(paths: RunPaths): ShipRun | null {
@@ -96,6 +108,15 @@ export function loadRun(paths: RunPaths): ShipRun | null {
   }
 }
 
+/**
+ * The pointer to the run in progress.
+ *
+ * Deliberately NOT rename-atomic, unlike `saveRun`: this file holds one line, `getCurrent` already
+ * treats an empty read as "no current run", and `listRunIds` is the documented fallback for exactly
+ * that case ("used by `ship status` when `current` is missing or stale"). The truncation window
+ * therefore degrades to picking the newest run by directory listing, which is almost always the
+ * same answer. `saveRun`'s window did not degrade — it reported that the run did not exist.
+ */
 export function setCurrent(root: string, runId: string): void {
   const home = join(root, SHIP_HOME);
   mkdirSync(home, { recursive: true });
