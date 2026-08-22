@@ -65,6 +65,7 @@ vi.mock('../anamService.js', async (importOriginal) => {
 vi.mock('../anamKey.js', () => ({ resolveAnamKeyForProject: anam.resolveAnamKeyForProject }));
 
 import { propagateTranscript } from '../../transcriptPropagation.js';
+import { callArg } from '../../../__tests__/helpers/mockCalls.js';
 
 function savedConfig(): AvatarPersonaConfig | undefined {
   return mocks.writes.filter((w) => w.avatar_config).at(-1)?.avatar_config as AvatarPersonaConfig | undefined;
@@ -89,13 +90,13 @@ describe('transcript propagation — the persona follows the script', () => {
   it('re-bakes a persona whose avatar and voice are INHERITED (nothing pinned in the config)', async () => {
     run({ characterId: 'einstein', personaId: 'persona-1' });
     await vi.waitFor(() => expect(anam.upsertVideoPersona).toHaveBeenCalledTimes(1));
-    expect(anam.upsertVideoPersona.mock.calls[0][3]).toBe('persona-1');   // updates in place
+    expect(callArg(anam.upsertVideoPersona, 0, 3)).toBe('persona-1');   // updates in place
   });
 
   it('the re-baked persona carries the new transcript', async () => {
     run({ characterId: 'einstein', personaId: 'persona-1', avatarId: 'av-1', voiceId: 'vo-1' });
     await vi.waitFor(() => expect(anam.upsertVideoPersona).toHaveBeenCalledTimes(1));
-    const baked = anam.upsertVideoPersona.mock.calls[0][1] as AvatarPersonaConfig;
+    const baked = callArg<AvatarPersonaConfig>(anam.upsertVideoPersona, 0, 1);
     expect(baked.knowledge).toContain('photoelectric');
   });
 

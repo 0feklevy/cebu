@@ -11,6 +11,7 @@ import {
   CPU_BOUND_JOBS, QUEUE_CONCURRENCY, pgBossSend, registerWorkers, resolveWorkerQueues,
 } from '../pgBossDriver.js';
 import type { JobHandlers } from '../types.js';
+import { callArg } from '../../__tests__/helpers/mockCalls.js';
 
 const mockGetBoss = vi.mocked(getBoss);
 
@@ -203,7 +204,7 @@ describe('the CPU-bound queues run serially', () => {
     process.env.QUEUE_EXPORT_CONCURRENCY = '3';
     try {
       await registerWorkers({ work } as never, ['project_export'], noopHandlers);
-      expect((work.mock.calls[0][1] as { localConcurrency: number }).localConcurrency).toBe(3);
+      expect(callArg<{ localConcurrency: number }>(work, 0, 1).localConcurrency).toBe(3);
     } finally {
       delete process.env.QUEUE_EXPORT_CONCURRENCY;
     }
