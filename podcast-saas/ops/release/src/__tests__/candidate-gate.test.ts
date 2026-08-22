@@ -158,6 +158,46 @@ describe('it tests the images that will actually be deployed', () => {
     expect(relative, `these evidence paths are workspace-relative in a job that runs one directory down: ${relative.join(', ')}`).toEqual([]);
   });
 
+  it('never `cd`s to a repo-root path from a job that already starts inside podcast-saas', () => {
+    // THE SAME TRAP, SECOND VISIT. #81 fixed the workspace-relative JSON paths above. Nobody
+    // checked the `cd`s, and every one of them said `cd podcast-saas/deploy` — which under
+    // `defaults.run.working-directory: podcast-saas` resolves to `podcast-saas/podcast-saas/deploy`.
+    //
+    // The cost was not theoretical: a release built and pushed all three images, tagged, drafted,
+    // reached this gate, and died on `cd: No such file or directory`. The gate failed closed and
+    // the deploy was correctly skipped — after twenty minutes of builds.
+    //
+    // Written against EVERY job that inherits the default rather than against the gate alone,
+    // because the trap belongs to the workflow, not to one job.
+    const offenders: string[] = [];
+    for (const [name, job] of jobs) {
+      if (/working-directory:\s*\./.test(job.text)) continue;   // opts out of the default
+      for (const m of job.text.matchAll(/(?:^|\s|&&\s*)cd\s+(podcast-saas\/[\w./-]+)/g)) {
+        offenders.push(`${name}: cd ${m[1]}`);
+      }
+    }
+    expect(
+      offenders,
+      `these resolve to podcast-saas/podcast-saas/… — drop the prefix: ${offenders.join(' · ')}`,
+    ).toEqual([]);
+  });
+
+  it('masks the generated PEM LINE BY LINE, because a blob mask matches nothing', () => {
+    // `::add-mask::` registers one exact string and replaces it where it appears contiguously. A
+    // PEM is multi-line, and the runner prints a step's `env:` block across lines — so a
+    // blob-level mask matched nothing and the whole generated key appeared in the log of the
+    // failing run, directly under a comment asserting it could not.
+    //
+    // That key authenticates nothing, so nothing leaked. The PATTERN is what this pins: the same
+    // code holding a real credential would have leaked it, and the comment would still have said
+    // it was safe.
+    expect(gateText).toMatch(/while IFS= read -r line; do[\s\S]*?add-mask::\$line/);
+    expect(
+      gateText,
+      'the whole PEM is masked as one blob again — that does not mask the env: echo',
+    ).not.toMatch(/echo "::add-mask::\$key"/);
+  });
+
   it('downloads the release artifacts where $ART actually points', () => {
     // `$ART` is `${{ github.workspace }}/release-artifacts`. Downloading to any other path means
     // every `$ART/...` read in this job resolves to an empty directory.

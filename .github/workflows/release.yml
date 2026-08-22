@@ -507,9 +507,20 @@ jobs:
           # a live key in a throwaway stack for no gain; committing a fake one would put key
           # material in the repository and teach the next reader that it belongs there.
           key=$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null)
-          # Masked before it is ever written anywhere the log can see it. It is worthless, but a
-          # PEM appearing unmasked in a public build log is a pattern worth never establishing.
-          echo "::add-mask::$key"
+          # Masked LINE BY LINE, which is the only thing that works.
+          #
+          # `::add-mask::` registers one exact string, and the runner replaces that string when it
+          # appears contiguously. A PEM is multi-line, and when the runner echoes a step's `env:`
+          # block it prints the value across lines — so the blob-level mask matched nothing and the
+          # whole key appeared in the log of the failing run, under a comment claiming it could not.
+          # Registering each line means each line is replaced wherever it shows up.
+          #
+          # The key is generated here and authenticates nothing, so this exposed no secret. It is
+          # fixed because the pattern is the problem: the same code with a real credential in it
+          # would have leaked one, and the comment would still have said it was safe.
+          while IFS= read -r line; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done <<< "$key"
           {
             echo 'CANDIDATE_FIREBASE_CREDENTIAL<<PEM_EOF'
             echo "$key"
@@ -521,7 +532,12 @@ jobs:
           CLIENT_WEB_IMAGE: ${{ steps.images.outputs.client_web }}
         run: |
           set -euo pipefail
-          cd podcast-saas/deploy
+          # `cd deploy`, NOT `cd podcast-saas/deploy`. This job's `run:` steps inherit
+          # `defaults.run.working-directory: podcast-saas`, so the repo-root spelling resolves to
+          # `podcast-saas/podcast-saas/deploy` and every one of these steps died on `cd`. Same
+          # class as the `artifacts/manifest.json` path fixed in #81 — a path written as if from
+          # the repo root inside a job that does not start there.
+          cd deploy
           docker compose -f docker-compose.candidate.yml up -d --wait --wait-timeout 240
       - name: Apply this build's migrations to a REAL Postgres
         run: |
@@ -538,7 +554,12 @@ jobs:
           #
           # No `|| true`: a migration that cannot apply to an empty, real Postgres is a release
           # that must not reach one with data in it.
-          cd podcast-saas/deploy
+          # `cd deploy`, NOT `cd podcast-saas/deploy`. This job's `run:` steps inherit
+          # `defaults.run.working-directory: podcast-saas`, so the repo-root spelling resolves to
+          # `podcast-saas/podcast-saas/deploy` and every one of these steps died on `cd`. Same
+          # class as the `artifacts/manifest.json` path fixed in #81 — a path written as if from
+          # the repo root inside a job that does not start there.
+          cd deploy
           docker compose -f docker-compose.candidate.yml run --rm --no-deps backend node dist/db/migrate.js
       - name: Seed the storage fixtures the round-trip test asserts on
         id: fixtures
@@ -552,7 +573,12 @@ jobs:
           # Written into MinIO, not onto the container's disk: the backend reads them back through
           # SupabaseStorageAdapter — the same adapter production writes through — so this covers
           # adapter → object → HTTP rather than a local-disk route production never takes.
-          cd podcast-saas/deploy
+          # `cd deploy`, NOT `cd podcast-saas/deploy`. This job's `run:` steps inherit
+          # `defaults.run.working-directory: podcast-saas`, so the repo-root spelling resolves to
+          # `podcast-saas/podcast-saas/deploy` and every one of these steps died on `cd`. Same
+          # class as the `artifacts/manifest.json` path fixed in #81 — a path written as if from
+          # the repo root inside a job that does not start there.
+          cd deploy
           docker compose -f docker-compose.candidate.yml run --rm --entrypoint /bin/sh minio-init -eu -c '
             mc alias set candidate http://minio:9000 candidateaccesskey candidatesecretkey
             printf "{\"candidate\":true}" > /tmp/asset.json
@@ -604,12 +630,22 @@ jobs:
       - name: Container logs on failure (the candidate speaks for itself)
         if: failure()
         run: |
-          cd podcast-saas/deploy
+          # `cd deploy`, NOT `cd podcast-saas/deploy`. This job's `run:` steps inherit
+          # `defaults.run.working-directory: podcast-saas`, so the repo-root spelling resolves to
+          # `podcast-saas/podcast-saas/deploy` and every one of these steps died on `cd`. Same
+          # class as the `artifacts/manifest.json` path fixed in #81 — a path written as if from
+          # the repo root inside a job that does not start there.
+          cd deploy
           docker compose -f docker-compose.candidate.yml logs --no-color --tail 200 || true
       - name: Tear the stack down
         if: always()
         run: |
-          cd podcast-saas/deploy
+          # `cd deploy`, NOT `cd podcast-saas/deploy`. This job's `run:` steps inherit
+          # `defaults.run.working-directory: podcast-saas`, so the repo-root spelling resolves to
+          # `podcast-saas/podcast-saas/deploy` and every one of these steps died on `cd`. Same
+          # class as the `artifacts/manifest.json` path fixed in #81 — a path written as if from
+          # the repo root inside a job that does not start there.
+          cd deploy
           docker compose -f docker-compose.candidate.yml down -v || true
       - uses: actions/upload-artifact@v6
         if: always()
