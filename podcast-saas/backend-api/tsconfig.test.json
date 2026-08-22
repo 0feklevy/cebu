@@ -1,8 +1,20 @@
 {
+  // Type-checks the TEST files, which `tsconfig.json` deliberately excludes from the BUILD (job-queue-014).
+  //
+  // Nothing ran this config until now, and the cost was not hypothetical: exhaustive
+  // `{ [N in JobName]: ... }` maps in the queue tests had silently stopped being exhaustive — one was
+  // missing four of twelve job names, another was missing `dub` — while the suite stayed green, because
+  // vitest executes TypeScript without checking it. An exhaustive map that is not exhaustive is
+  // worse than no map: it reads as a guarantee.
+  //
+  // `src/_archive/**` is excluded for the same reason the build excludes it — it is retired code kept
+  // for reference, its imports point at modules that have since moved, and type-checking it would
+  // bury the 4 real errors under 240 dead ones. Overriding `exclude` without carrying that entry
+  // forward is what made this config unusable even for anyone who tried to run it.
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "types": ["vitest/globals"]
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "exclude": ["node_modules", "dist", "src/_archive/**"]
 }
