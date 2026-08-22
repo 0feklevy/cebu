@@ -8,8 +8,9 @@ JS — merged 2026-08-22). **The dubbing feature is dead in the deployed build a
 `main` — nothing dubbing-related can be tested until the next release ships.**
 
 The 2026-08-21→22 closed round — v0.1.36→38, the fleet audit, the CSP defects, D-13, D-01b,
-D-20…D-23, and the ten sweep findings fixed in #58–#60 — is archived with per-item verification
-notes in `DECISIONS-ARCHIVE.md` (bottom section). The verification sweep itself is
+D-20…D-23, and the sweep's entire fix-now queue — is CLOSED, its per-item verification record
+living in git history (the ledger's own commits across PRs #48–#69), which is where
+closed rounds belong rather than in an ever-growing archive file. The verification sweep itself is
 `LEDGER-VERIFICATION-2026-08-22.md`: 164 verdicts, 93 confirmed, of which 10 are now fixed;
 **the remaining confirmed findings are the work queue below.**
 
@@ -68,16 +69,16 @@ one gate.
   tool (`scripts/crop-eval/annotate.html`, PR #54). Until then crop P2 does not start, and all
   quoted crop gains remain synthetic-fixture numbers. YuNet model: `..._2026may.onnx` (R-08).
 - **Route renames (P3-A)** — `/admin`, `/edit-podcasts`, and the audio landing you already chose
-  as **option א: `/{slug}/audio`**. Full design in `CODEX-DECISION-RESPONSE-2026-08-21.md` Part
-  III; needs your "go" to implement, and should land together with —
+  as **option א: `/{slug}/audio`**. Full design in `PARKED-DESIGNS.md`;
+  needs your "go" to implement, and should land together with —
 - **Interactive podcast phase 2 (P3-B)** — Raise Your Hand / Hands-Busy Mode / Call It, built
   from the existing video + captions, exported as audio, with the locked-phone playback answer
-  (Media Session + background audio) in the same design doc. Architecture first, code on approval.
+  (Media Session + background audio) in `PARKED-DESIGNS.md`. Architecture first, code on approval.
 
 ## 🟠 Standing constraints (do not change without a ruling)
 
 - `AVATAR_CAPABILITY_MODE` / `AVATAR_BUDGET_MODE` stay `shadow` — flipping capability enforce
-  early 401s every viewer; the five-step enforce ordering is in `.env.example` and the archive.
+  early 401s every viewer; the five-step enforce ordering is in `.env.example`.
   Budget-shadow traffic is NOT valid calibration data until the async observer is rebuilt (D-14).
 - `QUEUE_CROP_CONCURRENCY` stays 1 — measured ruling (six videos, no queue); revisit on a real
   backlog, not a calendar.
@@ -161,7 +162,7 @@ unblocks retention/rollup/TOAST work and simulation-008's poster GC) · **D-14**
 (atomic function → async observer → client wiring, in that order) · **D-16** crop hardening ·
 **D-17** knowledge/retrieval gates · D-01b follow-ups (absolute `timeline_markers.at_sec` and
 manual avatar ranges share the drift class; standing review panel in the editor) · WebKit
-`__CHILD` re-key + the stale `ci.yml` comment (baseline measured, in the archive).
+`__CHILD` re-key + the stale `ci.yml` comment (baseline measured — PR #45's four-run table, in git history).
 
 ## ⚪ Known and accepted
 
