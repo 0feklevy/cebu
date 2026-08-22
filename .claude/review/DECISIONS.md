@@ -50,9 +50,20 @@ Shipped as one coherent extension of the existing release system, not a parallel
   un-gating mutations applied, eleven caught. Two pre-existing tests rewritten from magic constants
   (`checkouts===7`, a literal `testMatch`) to the properties they were protecting.
 
+- **Five boot guards the candidate stack could not have passed**, each found by reading what the
+  code does with a value rather than what the value looks like, and each of which would have failed
+  `--wait` and blocked EVERY release while reporting it as a broken image: local-disk storage is
+  refused under production; `assertPublicOriginsForProd` rejects loopback origins; `getFirebaseAdmin`
+  parses a PEM at boot; `next.config.ts` applies the same origin rules at `next start`; and
+  migrations do not run at boot at all. Mapped in the `production-mode-boot-guards` memory.
+- **Two of my own tests asserted things that cannot be true** — Next.js bakes its public env at
+  BUILD time, so the candidate client-web calls production regardless. One of them would have failed
+  on every correct release, which is the failure mode that gets a gate deleted rather than fixed.
+
 **Owner-side, already done by me:** `production-approval` created with the owner as required
 reviewer; `production` already had none. **Done when:** #76 merges and the first release after it
-exercises `candidate-smoke` against live images for the first time.
+exercises `candidate-smoke` against live images for the first time — that run is the real test, and
+it fails closed, so the risk is a blocked release rather than a bad deploy.
 
 ### WAVE 0 — SHIP WHAT IS ALREADY FIXED  ·  blocks everything  ·  owner: approve deploy
 Nothing a user experiences changes until this lands. Production runs v0.1.38 and **the dubbing
