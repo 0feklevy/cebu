@@ -345,29 +345,40 @@ export function compositedSamplerExpression(gridN: number, jpegBase64: string): 
   }
   return `(async () => {
     const d = globalThis.document; if (!d) return 'null';
-    const cs = Array.from(d.querySelectorAll('canvas')); if (cs.length === 0) return 'null';
-    let best = cs[0], bestArea = 0;
-    for (const c of cs) { const a = (c.width||0)*(c.height||0); if (a > bestArea) { bestArea = a; best = c; } }
     const img = new Image();
     img.src = 'data:image/jpeg;base64,${jpegBase64}';
     try { await img.decode(); } catch { return 'null'; }
     const iw = img.naturalWidth || 0, ih = img.naturalHeight || 0;
     if (iw <= 0 || ih <= 0) return 'null';
+
+    // NO CANVAS IS NOT A MISSING SAMPLE (media-003). A DOM or SVG simulation has no canvas region
+    // to crop to, and answering 'null' made the gate see zero samples and fail on checks that were
+    // never applicable — throwing away JPEGs that were already correct on disk. The whole viewport
+    // IS the content for such a document, so it is sampled, and flagged so the gate knows to
+    // suspend its canvas-specific checks rather than apply them to the wrong thing.
+    const cs = Array.from(d.querySelectorAll('canvas'));
+    const canvasRegion = cs.length > 0;
+
     // The screenshot is the viewport; map the canvas box from CSS px into image px.
     const vw = globalThis.innerWidth || iw, vh = globalThis.innerHeight || ih;
     const sx = iw / vw, sy = ih / vh;
-    const r = best.getBoundingClientRect();
-    let x = Math.round(r.left * sx), y = Math.round(r.top * sy);
-    let w = Math.round(r.width * sx), h = Math.round(r.height * sy);
-    // Clamp to the image; a canvas scrolled or sized out of the viewport is not a sample.
-    x = Math.max(0, Math.min(x, iw - 1)); y = Math.max(0, Math.min(y, ih - 1));
-    w = Math.min(w, iw - x); h = Math.min(h, ih - y);
-    if (w < 1 || h < 1) return 'null';
+    let x = 0, y = 0, w = iw, h = ih;
+    if (canvasRegion) {
+      let best = cs[0], bestArea = 0;
+      for (const c of cs) { const a = (c.width||0)*(c.height||0); if (a > bestArea) { bestArea = a; best = c; } }
+      const r = best.getBoundingClientRect();
+      x = Math.round(r.left * sx); y = Math.round(r.top * sy);
+      w = Math.round(r.width * sx); h = Math.round(r.height * sy);
+      // Clamp to the image; a canvas scrolled or sized out of the viewport is not a sample.
+      x = Math.max(0, Math.min(x, iw - 1)); y = Math.max(0, Math.min(y, ih - 1));
+      w = Math.min(w, iw - x); h = Math.min(h, ih - y);
+      if (w < 1 || h < 1) return 'null';
+    }
     const off = d.createElement('canvas'); off.width = ${gridN}; off.height = ${gridN};
     const g = off.getContext('2d', { willReadFrequently: true }); if (!g) return 'null';
     try { g.drawImage(img, x, y, w, h, 0, 0, ${gridN}, ${gridN}); } catch { return 'null'; }
     const data = g.getImageData(0, 0, ${gridN}, ${gridN}).data;
-    return JSON.stringify({ width: ${gridN}, height: ${gridN}, rgba: Array.from(data) });
+    return JSON.stringify({ width: ${gridN}, height: ${gridN}, rgba: Array.from(data), canvasRegion: canvasRegion });
   })()`;
 }
 

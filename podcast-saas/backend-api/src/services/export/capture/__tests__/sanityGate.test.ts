@@ -132,3 +132,85 @@ describe('evaluateSanityGate', () => {
     expect(result.checks.enoughSamples).toBe(false);
   });
 });
+
+/**
+ * media-003 — a simulation with NO CANVAS.
+ *
+ * The sampler answered 'null' for any document without a `<canvas>`, so `frames` stayed empty and
+ * the gate failed on `enoughSamples` AND `intraFrameNonUniform` — two checks that were never
+ * applicable. Meanwhile SIM_PAINTED had fired (it comes from the first rAF callback and knows
+ * nothing about canvases), the handshake had completed, and correct JPEGs were already on disk. The
+ * gate threw away work that was right.
+ *
+ * A canvas-free document is now sampled across the whole viewport and flagged, and the two
+ * canvas-specific checks are suspended — both of them exist to catch the M144 trap, where a WebGL
+ * context comes back null and the canvas stays dead black under a live UI, and a document with no
+ * canvas cannot be in that state.
+ */
+describe('a canvas-free simulation (DOM/SVG)', () => {
+  const viewport = (f: FrameSample): FrameSample => ({ ...f, canvasRegion: false });
+
+  it('PASSES when it renders once and never animates', () => {
+    // The case that was being discarded. A DOM sim may legitimately stand still; demanding
+    // animation of it fails frames that are already correct.
+    const still = viewport(gradient(0));
+    const r = evaluateSanityGate({
+      simPainted: true, webgl: WEBGL_NONE, frames: [still, still, still],
+    });
+    expect(r.gate).toBe('passed');
+    expect(r.checks.canvasFree).toBe(true);
+    expect(r.checks.interFrameDelta, 'no animation, and that is fine here').toBe(false);
+  });
+
+  it('PASSES on a single sample, because animation is not being judged', () => {
+    const r = evaluateSanityGate({
+      simPainted: true, webgl: WEBGL_NONE, frames: [viewport(gradient(0))],
+    });
+    expect(r.gate).toBe('passed');
+  });
+
+  it('still FAILS on a blank page — the check that does apply', () => {
+    const blank = viewport(solid(255, 255, 255, 255));
+    const r = evaluateSanityGate({
+      simPainted: true, webgl: WEBGL_NONE, frames: [blank, blank],
+    });
+    expect(r.gate).toBe('failed');
+    expect(r.reason).toContain('blank page');
+  });
+
+  it('still FAILS when the sim never painted', () => {
+    const r = evaluateSanityGate({
+      simPainted: false, webgl: WEBGL_NONE, frames: [viewport(gradient(0)), viewport(gradient(1))],
+    });
+    expect(r.gate).toBe('failed');
+    expect(r.reason).toContain('SIM_PAINTED');
+  });
+
+  it('still FAILS a dead WebGL context, if one was somehow attempted', () => {
+    const r = evaluateSanityGate({
+      simPainted: true,
+      webgl: { attempted: true, ok: false, renderer: '' },
+      frames: [viewport(gradient(0)), viewport(gradient(1))],
+    });
+    expect(r.gate).toBe('failed');
+    expect(r.reason).toContain('came back null');
+  });
+
+  it('does NOT suspend the canvas checks when any frame IS a canvas region', () => {
+    // Mixed input must be judged as canvas content — the strict reading. Suspending on a partial
+    // signal is how a real dead canvas would slip through.
+    const dead = solid(0, 0, 0, 255);
+    const r = evaluateSanityGate({
+      simPainted: true, webgl: WEBGL_NONE, frames: [dead, { ...dead, canvasRegion: false }],
+    });
+    expect(r.checks.canvasFree).toBe(false);
+    expect(r.gate).toBe('failed');
+  });
+
+  it('FAILS when nothing was sampled at all, which is different from having no canvas', () => {
+    const r = evaluateSanityGate({ simPainted: true, webgl: WEBGL_NONE, frames: [] });
+    expect(r.gate).toBe('failed');
+    expect(r.checks.canvasFree).toBe(false);
+    expect(r.reason).toContain('no frames were sampled');
+  });
+});
