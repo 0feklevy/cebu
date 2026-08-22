@@ -969,3 +969,158 @@ they were not.
 reporters overstate — but the checked group was P0/P1 only, so it is **not a random sample** and
 bounds nothing about the 235 open P2/P3 findings that no verifier ever read. The honest sentence
 about the tail is: *235 findings are open and unverified.*
+
+---
+
+# Closed round — archived 2026-08-22 (the v0.1.36→v0.1.38 span, and the 2026-08-22 day)
+
+Everything below is CLOSED and moved here from `DECISIONS.md` on 2026-08-22, after each closure was
+re-verified rather than assumed — the verification method is named per item, because "owner-attested"
+and "agent-verified in production" are different claims.
+
+## The 2026-08-21 feature round — SHIPPED as v0.1.36, then hardened through v0.1.38
+
+Three features built on three branches, merged via `integration/night-run`, shipped 2026-08-21 as
+**v0.1.36** (run 32473689948, digest-pinned, `HEALTHY → BROWSER_VERIFIED`): Library Share Phase 1,
+ElevenLabs Dubbing v2 with the viewer language switcher, crop v2 P0 harness + P1. R-13 played out as
+ruled — one dispatch carried PRs #36–#47, closing the deploy drought. **v0.1.37** followed with the
+dubbing expansion round, and **v0.1.38** (2026-08-21) carried the production-data repair; its release
+gate verified `rows still holding a loopback URL: 0` from the outside. Rulings R-01…R-10 and their
+execution notes are recorded in `CODEX-DECISION-RESPONSE-2026-08-21.md` Part I.
+
+## 🟢 The two browser-console CSP defects — FIXED (PR #53), repaired in production, gate-verified
+
+The owner's console showed avatar-circle images served from `http://localhost:8080` and simulation
+iframes from `pub-*.r2.dev`, both CSP-blocked. Root cause was ONE class — a URL built from
+configuration instead of asked of the storage adapter — present in TWO more places nobody had
+reported yet (captions, HLS proxy). All four fixed by asking the adapter, plus a persist-time guard;
+`frame-src` was NOT widened. The lone production row holding a loopback URL (inside
+`projects.avatar_config` JSON, invisible to the earlier 10-column repair) was fixed by
+`backfill-localhost-urls.ts` with its 11th JSON-path target; v0.1.38's release gate — the same gate
+that had correctly BLOCKED v0.1.37 over this row — confirmed zero remaining. The `FAILED → DEPLOYING`
+refusal that forced a fresh dispatch instead of a re-run was the state machine working as designed.
+
+## 🟢 The dubbing panel round — D-20/D-21/D-22, delivered (PR #57)
+
+Reported from the running product: the source language was never detected (068's column had no
+writer, so English was offered for an English video — reported twice); the progress bar drew
+`done/total videos` (0/1 for a whole run); 94 languages had no search and no order. Delivered:
+migration **070** (`video_dubs.stage`, `stage_entered_at`, `projects.source_language_origin`,
+poll index); `detectLanguage.ts` (offline script+stopword identification from stored WebVTT — no
+vendor call, no tokens); `sourceLanguage.ts` (declared > vendor > detected, cached, provenance
+recorded, sub-threshold guesses are suggestions that exclude nothing);
+`PUT /projects/:id/source-language`; `stages.ts` (seven pipeline steps, wall-clock-weighted
+percentages, asymptotic creep that can never claim an unfinished step); panel search with graded
+relevance (exact code → prefix → substring, accent-folded) and three sorts. 26 new tests.
+
+## 🔴→🟢 D-23 — the dubbing feature was COMPLETELY DEAD in production (PR #58)
+
+No production dub had ever run. Diagnosed live on the VM (read-only): every attempt died in
+`acquireDubbingSlot` with `TypeError: … Received an instance of Date` — a raw `Date` bound into
+`db.execute(sql…)`, which postgres-js `unsafe()` does not serialise. Thrown before any log line and
+before the vendor was reached; pg-boss retried on backoff and failed permanently; the row sat
+`queued` forever. Three compounding silences, each fixed: the slot acquire sat outside `run()`'s
+try/catch; `registerWorkers` re-threw without logging (the error existed ONLY in
+`pgboss.job.output`); every test was green because PGlite serialises Dates itself — the exact
+mechanism of `test-quality-015`, confirmed P1 the same night in `RumService.fieldAggregates` and
+fixed in the same PR. The invariant is pinned at the parameter layer in both suites. Also verified
+while diagnosing: **the vendor client's five endpoint shapes are correct** against the current API
+reference (`POST /v1/dubbing/project` accepts `reference`; beware — the docs 404-redirect the
+current surface's `create` URL to the LEGACY `POST /v1/dubbing` page, which briefly misled the
+diagnosis). Production left clean: no pending dub jobs, no orphan rows.
+
+## 🟢 job-queue-011 — the rollback crash-loop (PR #58)
+
+`rollback.sh` re-pointed `APP_VERSION` without checking out the matching tree, so the OLD image got
+the NEW compose file's `WORKER_QUEUES`, threw on the unknown name, and crash-looped the only
+background-work container — while `wait_healthy` omitted `worker` and reported success. Fixed: the
+rollback checks out the target commit (best-effort, loud warnings), `worker` joined its health wait,
+`resolveWorkerQueues` now SKIPS unknown names (error-logged) and throws only when nothing known
+survives — the expand/contract rule for queue names — and `deploy.sh` maps a detached-HEAD reading
+to `main`.
+
+## 🟢 Acting on the verification sweep — 10 findings closed (PRs #58, #59, #60)
+
+- **PR #59**: `security-009` (knowledge-doc DELETE never proved project membership, under a SHARED
+  vendor key — now group-scoped, 404 on refusal), `security-008` (`findManageableVisual` matched
+  `OR project_id IS NULL`, making every global avatar visual writable by any project owner — now
+  strictly project-scoped), `security-011` (Firebase tokens accepted in `?token=` on every route and
+  retained by nginx's `"$request"` log — fallback allowlisted to the two SSE route patterns, nginx
+  logs `$request_method $uri`), `backend-011` (fire-and-forget failure handlers could kill the
+  process on Node 22 — hardened, `sanitizeDbText` strips the NUL Postgres rejects,
+  `installProcessSafetyNet` at module scope in API and worker), `config-003` (NOTHING on the host
+  had a memory limit — ceilings sized from measured idle usage, 6016 of 7815 MiB, swap off,
+  `cpus: 1.5` on the worker only; the ceiling test was mutation-checked, four mutations caught).
+- **PR #60**: `security-007` (six multipart routes buffered whole files — two "checked" size only
+  AFTER the allocation; all six now refuse on declared size then cut the stream at the ceiling; env
+  overrides documented in a new `.env.example` section), `database-005` (the hottest read path
+  fetched every scene's transcript + word alignment for four scalars, usually for nothing — narrowed
+  AND skipped, with the config parse hoisted so it exists once), `performance-009` (katex+chart.js
+  in every viewer's initial JS — `next/dynamic`; **measured**: `/[slug]` 1310→836 KB,
+  `/v/[shareToken]` 1288→813 KB).
+
+## 🟢 The watermark flag — SET, agent-verified 2026-08-22
+
+`ELEVENLABS_DUBBING_WATERMARKED=false` confirmed in BOTH containers' process env (docker exec, value
+read directly). What remains is only the probe dub, tracked as an open item.
+
+## 🟢 Production fleet audit (crop P0.1) — delivered 2026-08-21, all follow-ups now verified closed
+
+Six videos; concurrency question settled (no queue exists — `QUEUE_CROP_CONCURRENCY` stays 1 as a
+measured ruling, not caution); crop runs ~0.4× realtime (measured off the re-crop's timestamps);
+both crop failures were missing storage objects, not the algorithm. Follow-ups: the four healthy
+videos re-cropped onto v1.1 through the app's own queue (**verified 2026-08-22: 4 rows carry
+`crop_algo_version = v1.1`**); the 79 MB missing object was owner-attested hand-deletion
+(storage-leak file does NOT reopen); the dead public project was deleted by the owner from the app
+(**verified 2026-08-22: zero Niceville rows**), through the delete handler that collects
+avatar-visual bytes a hand-rolled SQL delete would have orphaned.
+
+## 🟢 CI evidence from PR #45 — the WebKit lane is flaky, and measured
+
+Same commit produced 1, 2, and 3 failures on different runs (scenario 11 consistent; 9 and 32
+flaky); a docs-only PR reproduced it. Baseline recorded so future WebKit reds are compared, not
+panicked over. The open remainder — re-key `__CHILD` off Window identity and correct the `ci.yml`
+comment — lives in the work queue.
+
+## 🟢 Previously untracked deliveries, recorded then closed
+
+PR #51 (94 languages, migration 068, `PERMALINK_LANGUAGE_SUFFIXES` derived not duplicated) —
+merged, shipped in v0.1.37. The two ideas volumes (`FLOWVID-NEXT-STEP-IDEAS.md` 1,334 lines;
+`FLOWVID-EXPANSION-AND-GTM-IDEAS.md` 743 lines) — delivered reference material.
+`localCaptureProvider.ts` — arrived by accident (over-broad `git add -A` against R-07), kept
+deliberately once #44's GPU host shipped; the ruling is amended, the accident recorded.
+
+## 🟢 broll-data-001 / D-01b — shipped (PR #56)
+
+Migration **069** (`placement_impact_reviews`, anchor FK SET NULL → NO ACTION), the cut-to-fit
+clamp REMOVED from the transcode job (it silently rewrote authored ranges on every duration
+change), replace raises a review instead of clamping, delete refuses until the author chooses.
+Open follow-ups (work queue): absolute `timeline_markers.at_sec` and manual avatar ranges carry the
+same drift class; the review queue has API + delete-time UI but no standing editor panel.
+
+## 🟢 D-13 viewer config freshness — shipped (PR #55)
+
+Conditional GET, 60s ± 25% jitter, self-scheduling timer. The flaky range-assertion test was fixed
+to assert the real subject (floor) plus a runaway guard (ceiling); green five consecutive runs.
+
+## 🟢 Sim-capture "~10× too slow" — CLOSED, owner-attested
+
+PR #44's dedicated GPU export host is live and is the sole consumer of `project_export`. The owner
+ran a real export on it and accepted the result ("takes a while, but the video with the simulation
+comes out — don't touch"). The 2-vCPU premise no longer describes where exports run. No formal
+seconds-per-frame was recorded; if export latency ever becomes a complaint, measure THEN. The
+Creator-Side Render Farm idea demotes to contingency.
+
+## 🟢 Two carried items from 2026-08-19 — closed 2026-08-21
+
+The VM deploy pin (owner cleared the dirty tree by census, never `reset --hard`; v0.1.36 deployed
+through the same pin) and the Supabase lifecycle rule (platform auto-aborts incomplete multipart
+uploads after 24h — stricter than the rule we planned; nothing to configure).
+
+## 🟢 Billing — DESCOPED by the owner, 2026-08-21
+
+The 24 `OUT_OF_SCOPE_BILLING` findings (two P1s among them) stay parked deliberately. If billing
+returns: parked is not fixed. The live money path is dubbing, guarded by the R-03 per-user monthly
+ceiling.
+
+## 🟢 The 0-byte root `.env.local` — removed by the owner (attested), 2026-08-21
