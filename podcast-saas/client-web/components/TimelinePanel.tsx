@@ -9,6 +9,7 @@ import { A2AudioModal } from './A2AudioModal';
 import { api } from '../lib/api';
 import { MIN_CIRCLE_SECTION_SEC, makeCircleSection, normalizeCircleSections, type CircleSection } from '../lib/circleSections';
 import { PANEL_EDGE_GAP_PX, clampedPanelWidth } from '../lib/floatingPanel';
+import { timelineKeyAction, formatTimecode, handleLabel } from '../lib/timelineKeyboard';
 
 // ─── constants ────────────────────────────────────────────────────────────────
 
@@ -810,6 +811,117 @@ export function TimelinePanel({
   }, [toolMode, pixelsToGlobalSec, setInter, duplicateMode, circlesMode]);
 
   // ── V1 section mouse down ────────────────────────────────────────────────
+  /**
+   * The length a section may occupy on its own clip — the SAME number the drag path computes.
+   *
+   * Extracted rather than duplicated because the keyboard path below has to agree with the mouse
+   * about where a section may legally end. Two copies of this arithmetic is how the two inputs
+   * start disagreeing, and only one of them would be the one anybody tested.
+   */
+  const sectionBaseDuration = useCallback((s: TimelineSection): number => {
+    const v = videos.find(v => v.id === s.video_file_id);
+    const measured = v ? effDur(v) : 0;
+    const baseDur = measured > 0 ? measured : totalDuration;
+    return Math.max(baseDur, s.end_sec);
+  }, [videos, effDur, totalDuration]);
+
+  /**
+   * Move or trim a section from the keyboard (ui-ux-006).
+   *
+   * WHAT THIS DELIBERATELY DOES NOT DO: re-derive where a section may go. `clampMove` and
+   * `clampTrim` are the collision rules, they are what the drag uses, and they are called here
+   * with the same arguments. This function only turns a keypress into a target time and hands it
+   * to them — so a change to the rules reaches both inputs at once, and neither can drift into
+   * allowing something the other forbids.
+   *
+   * It also commits through the same `api.updateSection` + `onSectionsChange` pair as the mouseup
+   * path, per keypress. No drag preview: with a mouse the preview exists because the pointer is
+   * still moving; a keypress is already the final answer.
+   */
+  const handleSectionKeyDown = useCallback(async (
+    e: React.KeyboardEvent,
+    s: TimelineSection,
+    handle: 'move' | 'trim-start' | 'trim-end',
+    isBroll: boolean,
+  ) => {
+    if (duplicateMode || circlesMode) return;   // same two modes the drag path refuses
+    const action = timelineKeyAction(e);
+    if (!action) return;                        // unhandled keys fall through to the browser
+    e.preventDefault();
+    e.stopPropagation();
+
+    let patch: { start_sec?: number; end_sec?: number; global_offset_sec?: number } | null = null;
+
+    if (isBroll) {
+      const offset = s.global_offset_sec ?? 0;
+      const len = s.end_sec - s.start_sec;
+      if (handle === 'move') {
+        const max = Math.max(0, totalDuration - len);
+        const target = action.kind === 'jump'
+          ? (action.to === 'min' ? 0 : max)
+          : offset + action.deltaSec;
+        const next = Math.max(0, Math.min(max, target));
+        if (Math.abs(next - offset) >= 0.001) patch = { global_offset_sec: next };
+      } else if (handle === 'trim-start') {
+        // Left-edge trim advances the source in-point and shifts the placement by the same delta,
+        // so the RIGHT edge stays put — the Premiere behaviour the drag path implements
+        // (frontend-001). Keeps ≥1 s of clip, as the drag does.
+        const max = s.end_sec - 1;
+        const target = action.kind === 'jump'
+          ? (action.to === 'min' ? 0 : max)
+          : s.start_sec + action.deltaSec;
+        const next = Math.max(0, Math.min(max, target));
+        if (Math.abs(next - s.start_sec) >= 0.001) {
+          patch = { start_sec: next, end_sec: s.end_sec, global_offset_sec: offset + (next - s.start_sec) };
+        }
+      } else {
+        const srcVid = allVideos.find(v => v.id === s.video_file_id || v.id === s.clip_source_video_id)
+          ?? videos.find(v => v.id === s.video_file_id);
+        const measuredSrc = srcVid ? effDur(srcVid) : 0;
+        const sourceDuration = measuredSrc > 0 ? measuredSrc : len;
+        const min = s.start_sec + 1;
+        const target = action.kind === 'jump'
+          ? (action.to === 'min' ? min : sourceDuration)
+          : s.end_sec + action.deltaSec;
+        const next = Math.min(sourceDuration, Math.max(min, target));
+        if (Math.abs(next - s.end_sec) >= 0.001) patch = { start_sec: s.start_sec, end_sec: next };
+      }
+    } else {
+      const duration = sectionBaseDuration(s);
+      if (handle === 'move') {
+        const len = s.end_sec - s.start_sec;
+        const target = action.kind === 'jump'
+          ? (action.to === 'min' ? 0 : duration - len)
+          : s.start_sec + action.deltaSec;
+        const [ps, pe] = clampMove(mainSections, s, target, duration);
+        if (Math.abs(ps - s.start_sec) >= 0.001) patch = { start_sec: ps, end_sec: pe };
+      } else {
+        // A simulation or an image has no inherent source length, so its END may extend freely;
+        // `clampTrim` still stops it at the next section. Same exception the drag path makes.
+        const edge = handle === 'trim-start' ? 'start' as const : 'end' as const;
+        const noSourceCap = s.type === 'simulation' || !!s.clip_source_image_id;
+        const endMax = edge === 'end' && noSourceCap ? s.end_sec + 3600 : duration;
+        const current = edge === 'start' ? s.start_sec : s.end_sec;
+        const target = action.kind === 'jump'
+          ? (action.to === 'min' ? 0 : endMax)
+          : current + action.deltaSec;
+        const clamped = clampTrim(mainSections, s, edge, Math.max(0, Math.min(endMax, target)), endMax);
+        if (Math.abs(clamped - current) >= 0.001) {
+          patch = edge === 'start'
+            ? { start_sec: clamped, end_sec: s.end_sec }
+            : { start_sec: s.start_sec, end_sec: clamped };
+        }
+      }
+    }
+
+    if (!patch) return;   // already at the limit — say nothing rather than write a no-op
+    try {
+      const updated = await api.updateSection(projectId, s.id, patch);
+      onSectionsChange(sections.map(x => x.id === updated.id ? updated : x));
+    } catch { /* same silent-failure posture as the drag commit */ }
+  }, [duplicateMode, circlesMode, totalDuration, allVideos, videos, effDur, sectionBaseDuration,
+      mainSections, projectId, sections, onSectionsChange]);
+
   const handleSectionMouseDown = useCallback((
     e: React.MouseEvent,
     s: TimelineSection,
@@ -821,10 +933,7 @@ export function TimelinePanel({
     if (circlesMode) return;           // circles picking: sections are inert context
     const globalSec = pixelsToGlobalSec(e.clientX);
     const localSec  = globalSec - clipOffset;
-    const v = videos.find(v => v.id === s.video_file_id);
-    const measured = v ? effDur(v) : 0;
-    const baseDur = measured > 0 ? measured : totalDuration;
-    const dur = Math.max(baseDur, s.end_sec);
+    const dur = sectionBaseDuration(s);   // shared with the keyboard path, deliberately
     didMoveRef.current = false;
     if (mode === 'move') {
       const offsetSec = localSec - s.start_sec;
@@ -833,7 +942,7 @@ export function TimelinePanel({
       setInter({ kind: 'trimming', section: s, clipOffset, edge: mode === 'trim-start' ? 'start' : 'end', duration: dur, previewStart: s.start_sec, previewEnd: s.end_sec });
     }
     e.preventDefault();
-  }, [videos, totalDuration, pixelsToGlobalSec, setInter, effDur, duplicateMode, circlesMode]);
+  }, [sectionBaseDuration, pixelsToGlobalSec, setInter, duplicateMode, circlesMode]);
 
   // ── V2 broll section mouse down ──────────────────────────────────────────
   const handleBrollSectionMouseDown = useCallback((
@@ -1415,7 +1524,27 @@ export function TimelinePanel({
           else handleSectionMouseDown(e, s, clipOffset, mode);
         }}
         onClick={e => { e.stopPropagation(); handleSectionClick(e, s); }}
+        /* A GROUP, not a slider: `slider` takes presentational children, so the three focusable
+           handles inside would be invisible to a screen reader if this element claimed that role. */
+        role="group"
+        aria-label={`${sectionKindLabel(s)} ${s.label ?? ''}`.trim() + `, ${formatTimecode(s.start_sec)} to ${formatTimecode(s.end_sec)}`}
       >
+        {/* KEYBOARD MOVE (ui-ux-006). `pointerEvents: 'none'` on purpose: this exists only to be
+            TABBED to. The mouse already moves a section by dragging the body, and an overlay that
+            swallowed clicks would break that — so this is focusable and click-transparent, and the
+            drag path below is untouched. */}
+        <div
+          role="slider"
+          tabIndex={0}
+          aria-label={handleLabel('move', `${sectionKindLabel(s)} ${s.label ?? ''}`.trim(), s.start_sec, s.end_sec)}
+          aria-valuemin={0}
+          aria-valuemax={Math.max(0, sectionBaseDuration(s) - (s.end_sec - s.start_sec))}
+          aria-valuenow={Math.round(s.start_sec * 10) / 10}
+          aria-valuetext={formatTimecode(s.start_sec)}
+          aria-keyshortcuts="ArrowLeft ArrowRight Shift+ArrowLeft Shift+ArrowRight Home End"
+          onKeyDown={e => { void handleSectionKeyDown(e, s, 'move', isBroll); }}
+          style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 3 }}
+        />
         {/* Image-clip thumbnail fill so the block visibly shows its content (Premiere-style). */}
         {s.clip_source_image_id && (() => {
           const img = images.find(i => i.id === s.clip_source_image_id);
@@ -1429,6 +1558,14 @@ export function TimelinePanel({
         <div
           className="absolute top-0 bottom-0 flex items-center justify-center"
           style={{ left: 0, width: TRIM_ZONE_PX, cursor: 'ew-resize', zIndex: 2 }}
+          role="slider"
+          tabIndex={0}
+          aria-label={handleLabel('trim-start', `${sectionKindLabel(s)} ${s.label ?? ''}`.trim(), s.start_sec, s.end_sec)}
+          aria-valuemin={0}
+          aria-valuemax={Math.max(0, s.end_sec - 0.5)}
+          aria-valuenow={Math.round(s.start_sec * 10) / 10}
+          aria-valuetext={formatTimecode(s.start_sec)}
+          onKeyDown={e => { void handleSectionKeyDown(e, s, 'trim-start', isBroll); }}
           onMouseDown={e => {
             e.stopPropagation();
             if (isBroll) handleBrollSectionMouseDown(e, s, 'trim-start');
@@ -1449,6 +1586,14 @@ export function TimelinePanel({
         <div
           className="absolute top-0 bottom-0 flex items-center justify-center"
           style={{ right: 0, width: TRIM_ZONE_PX, cursor: 'ew-resize', zIndex: 2 }}
+          role="slider"
+          tabIndex={0}
+          aria-label={handleLabel('trim-end', `${sectionKindLabel(s)} ${s.label ?? ''}`.trim(), s.start_sec, s.end_sec)}
+          aria-valuemin={s.start_sec + 0.5}
+          aria-valuemax={Math.max(s.start_sec + 0.5, sectionBaseDuration(s))}
+          aria-valuenow={Math.round(s.end_sec * 10) / 10}
+          aria-valuetext={formatTimecode(s.end_sec)}
+          onKeyDown={e => { void handleSectionKeyDown(e, s, 'trim-end', isBroll); }}
           onMouseDown={e => {
             e.stopPropagation();
             if (isBroll) handleBrollSectionMouseDown(e, s, 'trim-end');
