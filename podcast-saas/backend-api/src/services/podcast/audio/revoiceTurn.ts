@@ -17,6 +17,8 @@ import type { PodcastShow, PodcastEpisode, PodcastClip } from '../../../db/schem
 import { getStorageAdapter } from '../../storage/getStorageAdapter.js';
 import { PodcastVoiceService } from '../PodcastVoiceService.js';
 import { ElevenLabsDialogue } from './ElevenLabsDialogue.js';
+import { recordTtsSpend } from '../../usage/recordTtsSpend.js';
+import { charactersIn } from '../../usage/ttsCost.js';
 import { decodeToWav, extractClip, measureLufs, gainToTarget, applyTempo, extractPeaks, probeDurationMs } from './ffmpegAudio.js';
 import { computeClipBounds } from './clipBounds.js';
 import type { PodcastTurn } from 'shared';
@@ -57,6 +59,19 @@ export async function revoicePodcastTurn(params: {
   const workDir = await mkdtemp(join(tmpdir(), 'podcast-revoice-'));
   try {
     const result = await new ElevenLabsDialogue().synthesize({ inputs, seed, outputFormat: OUTPUT_FORMAT, stability: 0.5 });
+
+    // SPEND, RECORDED (#105's contract). Reached only on a cache MISS — the hash above covers the
+    // inputs, the seed and the format, so re-previewing unchanged text costs nothing and is not
+    // counted. What does cost is a creator editing a line and listening again, which is the
+    // ordinary way this screen is used and was invisible until now.
+    //
+    // `attempts` multiplies it: the client's retry loop is internal, and every attempt that
+    // reached the vendor was billed.
+    void recordTtsSpend({
+      userId: show.created_by ?? null,
+      task: 'podcast_revoice',
+      characters: charactersIn(inputs) * Math.max(1, result.attempts ?? 1),
+    });
     const isPcm = result.format === 'pcm';
     const raw = join(workDir, `r.${isPcm ? 'pcm' : 'mp3'}`);
     await writeFile(raw, result.audio);

@@ -37,6 +37,18 @@ export interface DialogueResult {
   format: 'mp3' | 'pcm';
   sampleRate: number;
   voiceSegments: VoiceSegment[];
+  /**
+   * How many requests actually reached the vendor, including the retried ones.
+   *
+   * THE RETRY LOOP IS IN HERE, so a caller that counts one synthesis per `synthesize()` call
+   * under-reports by up to 4× exactly when the account is being rate-limited — which is when the
+   * spend is highest and the reporting matters most. The text arrived on every attempt, so every
+   * attempt is billed; a caller that meters must multiply by this.
+   *
+   * Reported rather than recorded here on purpose: this client is shared by the renderer, the
+   * preview and the re-voice paths, and it knows none of their users or projects.
+   */
+  attempts: number;
 }
 
 export class ElevenLabsDialogue {
@@ -81,7 +93,9 @@ export class ElevenLabsDialogue {
     const RETRYABLE = new Set([429, 500, 502, 503, 504, 529]);
     const MAX_ATTEMPTS = 4;
     let res!: Response;
+    let attemptsMade = 0;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      attemptsMade = attempt;
       try {
         res = await fetch(url, {
           method: 'POST',
@@ -114,6 +128,7 @@ export class ElevenLabsDialogue {
       format: isPcm ? 'pcm' : 'mp3',
       sampleRate,
       voiceSegments: data.voice_segments ?? [],
+      attempts: attemptsMade,
     };
   }
 }
