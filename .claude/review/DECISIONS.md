@@ -35,6 +35,57 @@ one post-deploy measurement — and a four-round map (P3-F) sequencing all of it
 
 ---
 
+## 🟢 Acting on the verification sweep, 2026-08-22 — 10 findings closed across PRs #58–#60
+
+The sweep returned 93 confirmed findings with 22 marked `fix-now`. These are the ones now fixed,
+each re-verified against the code before being touched rather than trusted from the report.
+
+**PR #58 — the two P1s.** `test-quality-015` (RumService `fieldAggregates` bound a raw `Date` into
+raw SQL) and `job-queue-011` (rollback re-pointed `APP_VERSION` without moving the tree, so an old
+image got a queue name it did not know and crash-looped while `wait_healthy` omitted `worker`).
+The first turned out to share its exact mechanism with the live dubbing outage — see D-23.
+
+**PR #59 — cross-tenant writes, a credential leak, and containment.**
+- `security-009` — a knowledge-document DELETE never proved the document belonged to the project,
+  and the default deployment sends every tenant's request under ONE shared vendor key.
+- `security-008` — `findManageableVisual` matched `OR project_id IS NULL`, making every global
+  avatar visual writable by any project owner. The only thing making it non-trivial was that the
+  LIST endpoints hide global ids — obscurity, not a boundary.
+- `security-011` — Firebase ID tokens were accepted in `?token=` on EVERY route using the shared
+  middleware, and nginx logged the query string. Both halves fixed.
+- `backend-011` — a throw inside a fire-and-forget failure handler terminates the process on
+  Node 22. Both catch bodies hardened, error text sanitised, and a process-level net added.
+- `config-003` — nothing on the host had a memory limit. Ceilings sized from MEASURED idle usage
+  (665 MiB total across five containers) to 6016 MiB of 7815 MiB, swap disabled, `cpus: 1.5` on the
+  worker only.
+
+**PR #60 — resource cost.**
+- `security-007` — six multipart routes buffered whole files; two "checked" the size only after
+  the allocation, which is the cost being defended against.
+- `database-005` — the hottest read path fetched every scene's transcript and word-level alignment
+  to use four scalars, usually for nothing.
+- `performance-009` — katex and chart.js sat in the initial JS of every public viewer route.
+  Measured before/after: **−474 KB** on `/[slug]`, **−475 KB** on `/v/[shareToken]`.
+
+**🔵 BLOCKED ON YOU — cluster C1, the largest remaining security item.** The media authorization
+gate knows exactly three key prefixes (`videos/`, `exports/`, `hls/`), so `simulations/` and
+`podcasts/` are served with no project lookup at all. Six findings collapse into one fix — but the
+fix needs a ruling first, and the sweep explicitly warns that whoever implements one of these
+without the ruling "will produce something that looks done and is not":
+1. **`/sim-public/*` policy** (`simulation-007`, `security-005`): should a simulation package be
+   reachable by a token scoped to it, or by a live project-visibility lookup? Today unsharing a
+   project does not revoke access to its simulation.
+2. **`podcasts/` prefix** (`security-016`): it is modelled as public because it was chosen for
+   immutable studio clips, and user SOURCE DOCUMENTS were later added to it. Move the documents off
+   the public prefix, or make the prefix private and re-mint its URLs?
+3. **`security-001`** — steps 3 and 4 of the storage migration (mint `/hls-proxy/t/{token}/` URLs,
+   then make the bucket private). This changes URLs people already hold, so it is a scheduling
+   decision as much as a technical one.
+Also `needs-owner`: `security-012` (the gate returns true on a DB error — ratify or reverse that
+availability-over-confidentiality trade).
+
+---
+
 ## 🔴→🟢 2026-08-22 — the dubbing feature was COMPLETELY DEAD in production (D-23, PR #58)
 
 The owner reported "the translation doesn't work at all", and they were right in the strongest
