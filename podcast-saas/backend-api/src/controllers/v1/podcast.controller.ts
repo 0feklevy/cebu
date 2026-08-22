@@ -71,6 +71,18 @@ function extractSourceInBackground(sourceId: string, run: () => Promise<string>)
   })();
 }
 
+/**
+ * Where a user's uploaded SOURCE documents live (security-016).
+ *
+ * Deliberately NOT under `podcasts/`: that prefix is public by design — it is listed in
+ * `PUBLIC_LOCAL_PREFIXES` and the Supabase adapter mints `/object/public/` URLs for it — because
+ * it was chosen for immutable studio clips and render masters. A confidential brief is not that.
+ *
+ * Exported so the guard test asserts against the same string the routes build with, rather than a
+ * copy that can drift from it.
+ */
+export const PODCAST_SOURCE_PREFIX = 'podcast-sources';
+
 export async function registerPodcastRoutes(app: FastifyInstance): Promise<void> {
   const voiceService = new PodcastVoiceService();
 
@@ -241,6 +253,9 @@ export async function registerPodcastRoutes(app: FastifyInstance): Promise<void>
       await Promise.all([
         deleteWithPrefixFallback(`podcasts/${show.id}`),
         ...episodes.map((e) => deleteWithPrefixFallback(`podcasts/${e.id}`)),
+        // The private source prefix mirrors the public one; deleting a show must clear BOTH, or
+        // the documents outlive the show that owned them (security-016).
+        deleteWithPrefixFallback(`${PODCAST_SOURCE_PREFIX}/${show.id}`),
       ]);
       return reply.code(204).send();
     },
@@ -341,6 +356,7 @@ export async function registerPodcastRoutes(app: FastifyInstance): Promise<void>
       await Promise.all([
         deleteWithPrefixFallback(`podcasts/${loaded.episode.id}`),
         deleteWithPrefixFallback(`podcasts/${loaded.show.id}/episodes/${loaded.episode.id}`),
+        deleteWithPrefixFallback(`${PODCAST_SOURCE_PREFIX}/${loaded.show.id}/episodes/${loaded.episode.id}`),
       ]);
       return reply.code(204).send();
     },
@@ -455,7 +471,18 @@ export async function registerPodcastRoutes(app: FastifyInstance): Promise<void>
       const filename = data.filename;
       const mime = data.mimetype;
 
-      const storageKey = `podcasts/${loaded.show.id}/episodes/${loaded.episode.id}/sources/${Date.now()}_${safeFilename(filename)}`;
+      // A PRIVATE PREFIX, because this is the user's own document (security-016).
+      //
+      // `podcasts/` is modelled as PUBLIC — it is in `PUBLIC_LOCAL_PREFIXES` and the Supabase
+      // adapter hands out `/object/public/` URLs for it. That was chosen for immutable studio
+      // clips and render masters, which are meant to be linkable. Source documents were added to
+      // the same prefix later without revisiting that, so a confidential brief uploaded to an
+      // episode became readable by anyone who obtained the URL — no credential, no expiry.
+      //
+      // `podcast-sources/` is in no public prefix list, so it is served only through the
+      // authenticated paths and presigned reads. The key shape is otherwise identical, so the
+      // delete paths below stay a mechanical mirror of it.
+      const storageKey = `${PODCAST_SOURCE_PREFIX}/${loaded.show.id}/episodes/${loaded.episode.id}/sources/${Date.now()}_${safeFilename(filename)}`;
       try {
         await getStorageAdapter().uploadFile(storageKey, buffer, mime);
       } catch (err) {
