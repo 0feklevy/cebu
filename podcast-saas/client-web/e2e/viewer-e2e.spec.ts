@@ -780,6 +780,56 @@ const externalRequests = (page: Page): string[] => (page as Page & { __external?
 // iframe. The fixture now publishes real HLS. Separately, sims are cross-origin in production,
 // so per-frame section/controls evidence now comes from a reporter inside the sim document.
 test.describe('real React viewer — simulation transitions', () => {
+  /**
+   * ON FAILURE, SAY WHAT THE SIM ACTUALLY DID — because two rounds of work went at the wrong
+   * layer for want of exactly this.
+   *
+   * Scenario 11 has timed out on Linux WebKit for weeks. Every diagnosis so far was inference
+   * from a single screenshot, and the note recording the last one turned out to describe a
+   * screenshot that does not exist: it said "the simulation rendered" where the artefact shows
+   * the sim's UI chrome and no content at all.
+   *
+   * The harness already collects everything needed to settle it — `__PROTO_LOG` holds the sim's
+   * own protocol records and `__CHILD` holds what each iframe last reported — and it was thrown
+   * away on failure. This attaches all three to the report, so the NEXT red run answers the
+   * question instead of starting another theory.
+   *
+   * Failure-only: on a green run it costs nothing, and a suite that attaches a payload to every
+   * pass is a suite whose artefacts nobody opens.
+   */
+  test.afterEach(async ({ page }, testInfo) => {
+    if (testInfo.status === testInfo.expectedStatus) return;
+    const dump = await page.evaluate(() => {
+      const w = window as unknown as {
+        __PROTO_LOG?: unknown[];
+        __CHILD?: Map<Window | string, { section: string | null; recvAt: number }>;
+      };
+      const reports: Array<{ key: string; section: string | null }> = [];
+      // String keys only. A Window key cannot be serialised and is not informative here — the
+      // src IS the identity the predicate looks things up by.
+      for (const [k, v] of w.__CHILD ?? []) {
+        if (typeof k === 'string') reports.push({ key: k, section: v?.section ?? null });
+      }
+      return {
+        proto: (w.__PROTO_LOG ?? []).slice(-60),
+        childReports: reports,
+        // What was actually on the page: which iframes exist, where they point, and whether they
+        // were visible. A sim that never mounted and a sim that mounted blank look identical in
+        // a timeout message and are completely different bugs.
+        iframes: ([...document.querySelectorAll('iframe')] as HTMLIFrameElement[]).map((el) => ({
+          src: el.src,
+          opacity: getComputedStyle(el).opacity,
+          w: el.clientWidth,
+          h: el.clientHeight,
+        })),
+      };
+    }).catch((e: unknown) => ({ dumpFailed: String(e) }));
+    await testInfo.attach('sim-state-on-failure', {
+      body: JSON.stringify(dump, null, 2),
+      contentType: 'application/json',
+    });
+  });
+
   test('1. cold video → simulation: the sim is never presented blank or unapplied', async ({ page }) => {
     await bootViewer(page, makeConfig([{ id: 's1', start: 5, end: 15, section: S.A }]));
     await startPlayback(page);
