@@ -36,3 +36,33 @@ up 60 new lines (the production fleet audit section) that the first read had mis
 is not a one-off: treat "branch/HEAD moves under you mid-session" as a standing property of this
 working tree, not an anomaly worth investigating on its own. The re-verification step in **How to
 apply** below caught it both times.
+
+**Third confirmed pattern, 2026-08-22 (DECISIONS.md 🟡 work-queue audit).** Staleness runs in
+*both* directions here, not just "closed but unmerged":
+- **Claimed DONE, actually unwired.** `job-queue-014` ("test files are not type-checked: `tsc
+  --noEmit -p tsconfig.test.json` in CI") was listed as closed. The config and the `typecheck:test`
+  npm script exist (`backend-api/tsconfig.test.json`, `package.json`), but grepping every workflow
+  and `release-verify.sh` for `typecheck:test` finds zero references — it is never invoked. Running
+  it directly found **140 type errors across 29 test files**, proof the never-wired check let real
+  drift accumulate exactly as the original finding warned. Lesson: when a work-queue item's fix is
+  "add X to CI," verify by grepping the actual CI workflow/script chain for the invocation, not just
+  confirming the script/config file exists.
+- **Claimed as a "ride-along" closure, only half true.** The same entry claimed `backend-008` and
+  `job-queue-015` (corpus ingestion durability) closed as a side effect of a queue fix. A *different*
+  finding (`observability-002`, a stuck-row sweep) was actually what shipped; `corpus.controller.ts`
+  still fire-and-forgets `builder.ingest(...).catch(log)` in-process, never through pg-boss, and
+  `jobs/corpus.ingest.ts` (a Trigger.dev task) remains dead, unimported code. Lesson: "ride along"
+  closure claims bundling multiple ledger ids need each id checked individually — a shared root
+  cause does not mean a shared fix landed.
+- **Claimed OPEN/blocked, actually has real progress.** The a11y "schedule" cluster (6 `ui-ux-*`
+  findings) was framed as still-open backlog, but 5 of 6 were fixed 3 days earlier in commit
+  `384a782` (2026-08-19) with 29 passing accessibility tests today — the 🟡 section just hadn't been
+  refreshed. Similarly "WAVE 4 — CROP · blocked at the first step" (no real footage exists yet) was
+  contradicted by `backend-api/scripts/crop-eval/results/field-v1@v1.1.json`, a completed field eval
+  over 13 real hand-labelled clips (`"quotable": true`) that had already produced a finding elsewhere
+  in the same document (the CROP_ALGO=v2 no-op discovery). Lesson: a "blocked" or "not started" framing
+  needs the same live-code check as a "done" one — don't assume the pessimistic direction is safe to
+  skip verifying.
+
+**Net practice:** treat every verdict in DECISIONS.md — DONE, ride-along-DONE, or NOT-STARTED — as
+a claim to verify against code/tests/CI config, not as ground truth in either direction.
