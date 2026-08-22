@@ -438,6 +438,26 @@ jobs:
           echo "client_web=$cw" >> "$GITHUB_OUTPUT"
           echo "candidate backend:    $be"
           echo "candidate client-web: $cw"
+      - name: Mint a throwaway Firebase credential for the candidate
+        run: |
+          set -euo pipefail
+          # `getFirebaseAdmin()` runs during the backend's startup and throws when the three
+          # FIREBASE_* variables are missing, and `admin.credential.cert()` PARSES the PEM — so
+          # the candidate needs a syntactically real key, and a placeholder string will not do.
+          #
+          # Generated here rather than committed or taken from a secret. It authenticates nothing
+          # and exists for the lifetime of one job. Using the real production credential would put
+          # a live key in a throwaway stack for no gain; committing a fake one would put key
+          # material in the repository and teach the next reader that it belongs there.
+          key=$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null)
+          # Masked before it is ever written anywhere the log can see it. It is worthless, but a
+          # PEM appearing unmasked in a public build log is a pattern worth never establishing.
+          echo "::add-mask::$key"
+          {
+            echo 'CANDIDATE_FIREBASE_CREDENTIAL<<PEM_EOF'
+            echo "$key"
+            echo 'PEM_EOF'
+          } >> "$GITHUB_ENV"
       - name: Start the candidate stack
         env:
           BACKEND_IMAGE: ${{ steps.images.outputs.backend }}
