@@ -136,6 +136,22 @@ gate turns CRITICAL into an automatic rollback — so without the early refusal,
 would have rolled back a perfectly healthy deploy over a missing configuration value. `plan` now
 refuses BEFORE anything is deployed and names the variables (PR #81).
 
+## 🔴 A SECOND rawPreview LOG SITE — the class #91 closed has one more instance
+
+Found 2026-08-22 by the end-of-day verification pass, not by a report. `LLMService.ts:700` logs
+`rawPreview: raw.slice(0, 300)` at WARN level on every schema-validation failure — valid JSON,
+wrong shape. Same class as observability-009: the model's output about the customer's own material,
+in the log. #91 fixed the ERROR-level site at line ~721 and the test suite it added only exercises
+never-valid-JSON fixtures, so it structurally cannot see this path.
+
+**The fix is already designed:** replace with `describeUnparseable(raw)` exactly as line 721 was
+(`schemaIssues` may stay — Zod issue paths are field names, not content), and add a
+`parseAndRepair.test.ts` case that drives the schema-validation path (valid JSON, wrong shape) and
+asserts on `logger.warn` the same three things the error-path cases assert. Mutation: restore the
+slice, the new case must fail.
+
+Until it ships, the observability-009 entry below is PARTIAL, not closed.
+
 ## ✅ DIAGNOSED AND FIXED — a project that OPENS on a simulation showed nothing
 
 Three rounds read this as a harness problem. It was two product bugs stacked on each other, and
@@ -482,7 +498,10 @@ a dirty one may not acquire more, and the per-file baseline in `backend-api/.typ
 is expected only to shrink. Demanding zero today would mean 140 judgement calls in one pass and a red
 build people learn to skip.
 
-**Still open:** the 140 themselves. They are dominated by three shapes — `TS2493` (indexing a mock's
+**Still open:** 81 as of end-of-day (140 at freeze, minus #98's fixtures and #99's typed
+captures). What remains is the judgement-call set — `TS2339` property access on `unknown` and
+`TS2352` casts, each needing a decision on whether the cast hides a real defect. (Original text,
+for the record: dominated by `TS2493` (indexing a mock's
 empty-tuple capture), `TS2352` (a cast through `undefined`), `TS2339` — so they are tractable, but
 each needs a judgement about whether the cast is hiding a real defect.
 
@@ -529,7 +548,9 @@ The two dead Trigger.dev files that made this look done are deleted (#95).
   inconsistency inside a file that otherwise logs properly, which is how they survived. The two in
   `R2StorageAdapter` went with them. `isolation/main.ts` keeps its console calls deliberately: it
   runs INSIDE the capture container, where there is no pino and stdout is the transport.
-* ~~**`observability-009`**~~ **CLOSED (#91).** The first attempt redacted a 120-character
+* **`observability-009`** — **PARTIAL (#91).** The error-level site is closed; a WARN-level
+  sibling at `LLMService.ts:700` still carries `raw.slice(0, 300)` — see the 🔴 entry above.
+  On the closed site: the first attempt redacted a 120-character
   excerpt from each end; its own test killed that — a fixture sentence about an acquisition price
   survived untouched, because it is confidential without being credential-shaped. There is no
   excerpt now, only shape, and a test asserts structurally that every emitted value is a number, a
@@ -553,8 +574,10 @@ The two dead Trigger.dev files that made this look done are deleted (#95).
 
 - Public-bucket HLS: revoked shares keep working until C1's STEP 3+4 cutover ships (see the
   ruling block above — this is now the same item).
-- The WebKit e2e lane is non-blocking and flaky by measurement; scenario 11 is the one consistent
-  failure, lead documented (the opacity product over 5 elements).
+- ~~The WebKit e2e lane is non-blocking and flaky by measurement; scenario 11 is the one
+  consistent failure~~ — **no longer true as of 2026-08-22**: scenario 11 was two stacked product
+  bugs, fixed in #89/#92, and the lane ran 39/39 green on main's own CI the same day. Kept struck
+  through rather than deleted so the contradiction with the ✅ section above cannot recur silently.
 - 71 sweep ids are unadjudicated aliases — never bulk-close by alias; four documented cases where
   the canonical's verdict does not carry (`dependency-008`, `security-012`, `media-011`,
   `simulation-004`).
