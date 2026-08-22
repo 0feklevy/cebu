@@ -41,7 +41,7 @@ export default defineConfig({
   testDir: './e2e',
   // Explicit allow-list, not a glob: a new local spec dropped into e2e/ must not silently
   // join the production audit and reintroduce a cross-package import.
-  testMatch: ['production-audit.spec.ts', 'production-smoke.spec.ts'],
+  testMatch: ['production-audit.spec.ts', 'production-smoke.spec.ts', 'production-flows.spec.ts'],
   timeout: 60_000,
   expect: { timeout: 15_000 },
   // No retries. A flaky production probe must be visible as a finding, not smoothed away:

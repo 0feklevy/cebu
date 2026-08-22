@@ -1,0 +1,97 @@
+# THE RELEASE CANDIDATE, RUN AS IMAGES — the gate that replaces a human clicking "approve".
+#
+# Every other check in the pipeline tests the SOURCE: `verify` runs the workspace's tests and
+# production builds, and `viewer-e2e` starts the app from the pnpm workspace. Nothing had ever
+# started the ACTUAL IMAGES that are about to be deployed. That gap is not academic — an image can
+# differ from its source tree in the ways that matter most and are least visible: a missing runtime
+# dependency the workspace happened to have, an entrypoint that resolves differently, a build arg
+# that changed what got compiled in, a migration that runs on a real database rather than PGlite.
+#
+# ── IMMUTABLE DIGESTS, NOT TAGS ───────────────────────────────────────────────────────────────
+# The services below are pinned by ${*_IMAGE}, which the workflow fills from image-manifest.json —
+# the same digest-pinned manifest the production deploy uses. Testing `:latest` here would test
+# something that is merely NAMED like the candidate. If these variables are unset, compose fails to
+# start rather than substituting an empty string into an image reference, which is the fail-closed
+# direction: no stack means no evidence, and no evidence blocks the release.
+#
+# ── WHY POSTGRES IS REAL ──────────────────────────────────────────────────────────────────────
+# The backend test suite runs against PGlite, which is not Postgres — it serialises a `Date` where
+# real Postgres rejects it, and that exact difference hid a defect that made a whole shipped
+# feature dead in production while every test stayed green (test-quality-015 / D-23). A candidate
+# gate that also used PGlite would be blind to the same class. This one runs the real engine and
+# the real migration runner.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: candidate
+      POSTGRES_PASSWORD: candidate
+      POSTGRES_DB: candidate
+    # No published port: only the compose network reaches it, so a CI runner cannot accidentally
+    # pick up a neighbouring database, and nothing outside this stack can reach the fixtures.
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U candidate -d candidate']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    tmpfs:
+      # Ephemeral by construction — a candidate stack must never leave state behind that a later
+      # run could mistake for a fresh boot.
+      - /var/lib/postgresql/data
+
+  backend:
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE must be a digest-pinned reference from image-manifest.json}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: '8080'
+      DATABASE_URL: postgres://candidate:candidate@postgres:5432/candidate
+      QUEUE_DATABASE_URL: postgres://candidate:candidate@postgres:5432/candidate
+      # Inline, so the candidate stack runs no background workers: this gate proves the images
+      # BOOT and SERVE, not that ffmpeg encodes. Durable work is the production worker's job and
+      # exercising it here would trade a fast gate for a flaky one.
+      QUEUE_DRIVER: inline
+      STORAGE_BACKEND: local
+      LOCAL_STORAGE_DIR: /app/backend-api/.candidate-storage
+      # Loopback origins are CORRECT here and nowhere else. `assertPublicOriginsForProd` refuses
+      # them in a real production boot; this stack is not production, and pointing them anywhere
+      # else would make the browser's requests leave the compose network.
+      BACKEND_API_URL: http://localhost:8080
+      NEXT_PUBLIC_API_URL: http://localhost:8080
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+      PUBLIC_SITE_URL: http://localhost:3000
+      # A syntactically valid, throwaway key. `assertEncryptionKeyEnv` fails closed on a malformed
+      # one (security-004), and media-token minting signs with it — so a stack without it could not
+      # exercise the token path this gate exists to cover.
+      ENCRYPTION_KEY: '0000000000000000000000000000000000000000000000000000000000000001'
+      LOG_LEVEL: warn
+    ports:
+      - '8080:8080'
+    healthcheck:
+      test: ['CMD-SHELL', 'node -e "fetch(\"http://127.0.0.1:8080/health\").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"']
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  client-web:
+    image: ${CLIENT_WEB_IMAGE:?CLIENT_WEB_IMAGE must be a digest-pinned reference from image-manifest.json}
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: '3000'
+      NEXT_PUBLIC_API_URL: http://localhost:8080
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+      PUBLIC_SITE_URL: http://localhost:3000
+      NEXT_TELEMETRY_DISABLED: '1'
+    ports:
+      - '3000:3000'
+    healthcheck:
+      test: ['CMD-SHELL', 'node -e "fetch(\"http://127.0.0.1:3000/\").then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"']
+      interval: 3s
+      timeout: 5s
+      retries: 40

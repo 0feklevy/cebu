@@ -1,12 +1,23 @@
 # Release FlowVid — the deterministic release autopilot.
 #
-# merge to main → run this workflow → pick bump → review the generated release plan →
-# approve the "production" environment → receive a full release report.
+# merge to main → run this workflow → pick bump → receive a full release report.
 #
 # The pipeline: plan/verify source → full test+build gate → immutable images on GHCR →
-# annotated tag + draft release → manual production approval → digest-pinned deploy on
-# the VM (no builds there) → health + browser verification → automatic rollback on any
+# annotated tag + draft release → THE CANDIDATE IMAGES ARE BOOTED AND EXERCISED → digest-pinned
+# deploy on the VM (no builds there) → health + browser verification → automatic rollback on any
 # CRITICAL failure → published release + release-report.{md,json}.
+#
+# APPROVAL IS CONDITIONAL, NOT ROUTINE. A release stops for a human only when one exists to be
+# made: a destructive or backward-incompatible migration, a backfill policy that can write data,
+# an accepted HIGH finding, or a change to auth, secrets, media-token or deployment configuration.
+# `release-cli release-risk` decides that in the `plan` job from evidence the pipeline already
+# produced, and evidence it cannot read counts as a reason to ask.
+#
+# The unconditional approval this replaced was answered the same way every time — which is what
+# an approval requested for every release always becomes. What now stands in its place is the
+# `candidate-smoke` job: the exact digest-pinned images that are about to be deployed are started
+# as containers and exercised over HTTP before the deploy job can begin. That gate cannot be
+# clicked through, and ops/release's tests fail if any edit lets a deploy past a failed one.
 #
 # No AI is involved anywhere in this workflow. Secrets are environment-scoped; the
 # GHCR pull token travels to the VM via stdin only.
@@ -61,6 +72,8 @@ jobs:
       next_tag: ${{ steps.plan.outputs.next_tag }}
       current_tag: ${{ steps.plan.outputs.current_tag }}
       git_sha: ${{ steps.plan.outputs.git_sha }}
+      requires_human: ${{ steps.risk.outputs.requires_human }}
+      risk_reasons: ${{ steps.risk.outputs.risk_reasons }}
     steps:
       - name: Releases run only from main
         working-directory: .
@@ -99,6 +112,48 @@ jobs:
             --findings "$ART/preflight.json,$ART/secret-scan.json,$ART/migration-audit.json" \
             ${{ inputs.approve_high && '--approve-high' || '' }} \
             --out "$ART/gate.json"
+      - name: Does this release still need a human?
+        id: risk
+        run: |
+          set -euo pipefail
+          # The set of changed paths, for the security-sensitive-surface check. `|| true` on the
+          # diff only: an unknown base ref yields an EMPTY list, and release-risk treats evidence
+          # it could not read as a reason to require approval rather than as an absence of risk.
+          git diff --name-only "${{ steps.plan.outputs.current_tag }}"..HEAD > "$ART/changed-paths.txt" 2>/dev/null || true
+          pnpm --filter ops-release release-cli release-risk \
+            --findings "$ART/preflight.json,$ART/secret-scan.json,$ART/migration-audit.json" \
+            --backfill-policy "${{ inputs.backfill_policy }}" \
+            ${{ inputs.approve_high && '--approve-high' || '' }} \
+            --changed-paths "$ART/changed-paths.txt" \
+            --out "$ART/release-risk.json"
+      - name: Prove the approval environment is actually protected
+        # ONLY MEANINGFUL FOR RISKY RELEASES, AND ESSENTIAL FOR THEM.
+        #
+        # `environment: production-approval` does not fail when that environment has no rules —
+        # GitHub creates it on first use with none, and the job simply runs. The approval gate
+        # would then be a job that prints a warning and continues, which is indistinguishable in
+        # every log from one that a person actually approved. So the protection is verified
+        # rather than assumed, and anything that prevents verifying it — a 403, a rename, a rule
+        # removed — blocks the release instead of quietly downgrading it to automatic.
+        if: ${{ steps.risk.outputs.requires_human == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          rules=$(gh api "repos/${{ github.repository }}/environments/production-approval" \
+                    --jq '[.protection_rules[].type] | join(",")' 2>/dev/null) || {
+            echo "::error::Could not read the production-approval environment. A risky release must not"
+            echo "::error::deploy on the assumption that an approval gate exists. Grant the workflow token"
+            echo "::error::read access to environments, or approve this release manually."
+            exit 1
+          }
+          echo "production-approval rules: $rules"
+          case "$rules" in
+            *required_reviewers*) echo "approval gate is armed" ;;
+            *) echo "::error::production-approval has NO required reviewers ($rules). This release was"
+               echo "::error::classified as risky, so it must not proceed through an unprotected environment."
+               exit 1 ;;
+          esac
       - name: State → SOURCE_VERIFIED
         run: pnpm --filter ops-release release-cli state-transition --file "$ART/state.json" --to SOURCE_VERIFIED
       - uses: actions/upload-artifact@v6
@@ -306,10 +361,210 @@ jobs:
         with: { name: release-artifacts, path: release-artifacts, overwrite: true, include-hidden-files: true }
 
   # ── 5. AWAITING_APPROVAL → … → BROWSER_VERIFIED (protected environment) ─────────
-  deploy:
-    name: Deploy to production (digest-pinned)
+  # ── The candidate images, actually run ──────────────────────────────────────────────────────
+  #
+  # THIS IS THE GATE THAT REPLACES A HUMAN CLICKING "APPROVE". Every check before it tests the
+  # SOURCE: `verify` runs the workspace's tests and production builds. Nothing had ever started
+  # the images that are about to be deployed — the one artifact production actually runs.
+  #
+  # It boots the candidate by DIGEST (from image-manifest.json, the same pinning the deploy uses)
+  # against a real Postgres, and exercises the seams that only exist once the pieces are separate
+  # processes in separate images: does it boot, do migrations apply to a real engine, can the two
+  # images reach each other, and does a stored key become a URL a browser can actually FETCH.
+  #
+  # FAIL CLOSED, three ways over:
+  #   1. compose refuses to start without digest-pinned image references (`${VAR:?message}`);
+  #   2. every step is a hard failure — no continue-on-error anywhere in this job, unlike the
+  #      post-deploy collectors, because there is nothing to roll back from yet and the correct
+  #      answer to "we could not tell" is "do not deploy";
+  #   3. the gate REQUIRES this suite's summary and requires it to carry THIS run and commit, so a
+  #      suite that never ran cannot be scored as a clean pass (the v0.1.5 shape of failure).
+  candidate-smoke:
+    name: Candidate image smoke (the images that will deploy)
     needs: [plan, release-plan]
     if: ${{ inputs.deploy }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          ref: ${{ needs.plan.outputs.git_sha }}
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: podcast-saas/package.json
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: podcast-saas/pnpm-lock.yaml
+      - name: Install workspace (frozen)
+        run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v6
+        with: { name: release-artifacts, path: artifacts }
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Resolve the digest-pinned candidate images
+        id: images
+        run: |
+          set -euo pipefail
+          # THE SAME FILE `remote-deploy` PINS FROM. Reading a different artifact here would let the
+          # gate bless one set of digests while production pulled another — the exact class of hole
+          # this job exists to close. `release-plan` has already run `image-manifest --verify` over
+          # it (namespace, sha256 form, no floating tag) and fails its own job on a CRITICAL, so a
+          # manifest that reaches this step is a verified one.
+          MANIFEST=artifacts/manifest.json
+          # No manifest ⇒ no candidate ⇒ no deploy. Never fall back to a floating tag: a `:latest`
+          # here would test something merely NAMED like the candidate.
+          test -f "$MANIFEST" || { echo "::error::manifest.json is missing — cannot identify the candidate"; exit 1; }
+          test "$(jq -r '.schema' "$MANIFEST")" = 'flowvid.image-manifest/v1' \
+            || { echo "::error::manifest.json is not a flowvid.image-manifest/v1 document"; exit 1; }
+          be=$(jq -er '.images[] | select(.service=="backend") | "\(.repository)@\(.digest)"' "$MANIFEST")
+          cw=$(jq -er '.images[] | select(.service=="client-web") | "\(.repository)@\(.digest)"' "$MANIFEST")
+          # Belt and braces: refuse anything that is not digest-pinned, whatever the manifest claims.
+          for ref in "$be" "$cw"; do
+            case "$ref" in
+              *@sha256:*) ;;
+              *) echo "::error::candidate reference is not digest-pinned: $ref"; exit 1 ;;
+            esac
+          done
+          echo "backend=$be" >> "$GITHUB_OUTPUT"
+          echo "client_web=$cw" >> "$GITHUB_OUTPUT"
+          echo "candidate backend:    $be"
+          echo "candidate client-web: $cw"
+      - name: Start the candidate stack
+        env:
+          BACKEND_IMAGE: ${{ steps.images.outputs.backend }}
+          CLIENT_WEB_IMAGE: ${{ steps.images.outputs.client_web }}
+        run: |
+          set -euo pipefail
+          cd podcast-saas/deploy
+          docker compose -f docker-compose.candidate.yml up -d --wait --wait-timeout 240
+      - name: Seed the storage fixtures the round-trip test asserts on
+        id: fixtures
+        run: |
+          set -euo pipefail
+          # The storage tests must exercise REAL objects. Without these two files the spec has an
+          # empty candidate to assert about, and an empty assertion loop reports PASS — the exact
+          # vacuous-green failure this whole job exists to prevent. The spec refuses to run at all
+          # unless CANDIDATE_STORAGE_FIXTURES is set, so a failure to seed blocks the deploy.
+          #
+          # `podcasts/` is a PUBLIC_LOCAL_PREFIX (served with no auth); `exports/` is private and
+          # must be refused without a token. Both are written INSIDE the backend image, so the test
+          # reads them back over HTTP exactly as a browser would.
+          cd podcast-saas/deploy
+          DIR=/app/backend-api/.candidate-storage
+          docker compose -f docker-compose.candidate.yml exec -T backend sh -eu -c "
+            mkdir -p $DIR/podcasts/candidate $DIR/exports/candidate
+            printf 'public-candidate-fixture' > $DIR/podcasts/candidate/public.txt
+            printf 'private-candidate-fixture' > $DIR/exports/candidate/private.txt
+          "
+          # Declared as data, so the spec asserts on what was actually written rather than on
+          # constants that could drift away from this step without either side failing.
+          cat > /tmp/fixtures.json <<'JSON'
+          [{"key":"podcasts/candidate/public.txt","body":"public-candidate-fixture","expect":"loads"},
+           {"key":"exports/candidate/private.txt","body":"private-candidate-fixture","expect":"refused"}]
+          JSON
+          # jq -c, not `tr -d`: stripping whitespace by hand also strips it from inside string
+          # values, so a fixture body containing a space would be silently rewritten and the
+          # byte-equality assertion downstream would fail for a reason no log explains.
+          echo "json=$(jq -c . < /tmp/fixtures.json)" >> "$GITHUB_OUTPUT"
+      - name: Install Playwright chromium
+        run: pnpm --filter client-web exec playwright install --with-deps chromium
+      - name: Candidate smoke (browser, against the containers)
+        working-directory: podcast-saas/client-web
+        env:
+          CANDIDATE_API_URL: http://localhost:8080
+          CANDIDATE_APP_URL: http://localhost:3000
+          CANDIDATE_STORAGE_FIXTURES: ${{ steps.fixtures.outputs.json }}
+        run: npx playwright test --config=playwright.candidate.config.ts
+      - name: Summarize + gate (fail closed on missing or stale evidence)
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          pnpm --filter ops-release release-cli playwright-summary \
+            --report "${{ github.workspace }}/podcast-saas/client-web/e2e-results/candidate-smoke.json" \
+            --run-id "$RUN_ID" --git-sha "${{ needs.plan.outputs.git_sha }}" \
+            --out artifacts/candidate-smoke.json
+          pnpm --filter ops-release release-cli gate --phase pre-deploy \
+            --findings artifacts/candidate-smoke.json \
+            --require artifacts/candidate-smoke.json \
+            --identity-bearing candidate-smoke.json \
+            --expect-run-id "$RUN_ID" --expect-git-sha "${{ needs.plan.outputs.git_sha }}" \
+            --out artifacts/candidate-gate.json
+      - name: Container logs on failure (the candidate speaks for itself)
+        if: failure()
+        run: |
+          cd podcast-saas/deploy
+          docker compose -f docker-compose.candidate.yml logs --no-color --tail 200 || true
+      - name: Tear the stack down
+        if: always()
+        run: |
+          cd podcast-saas/deploy
+          docker compose -f docker-compose.candidate.yml down -v || true
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: candidate-smoke-evidence
+          path: |
+            artifacts/candidate-smoke.json
+            artifacts/candidate-gate.json
+            podcast-saas/client-web/e2e-results/candidate-smoke.json
+          if-no-files-found: warn
+
+  # ── 5b. RISKY RELEASES ONLY: a human, asked a question worth asking ─────────────
+  #
+  # This job carries the required reviewer. It is SKIPPED for routine releases, which is the
+  # entire point: the owner's own account of the old unconditional approval was that they clicked
+  # it "without performing an additional review, so it is not providing meaningful protection."
+  # An approval that is requested for every release is answered reflexively for every release;
+  # one that appears only when a destructive migration, a data backfill, an accepted HIGH finding
+  # or a change to auth/secrets/deploy config is in the diff is a question with content.
+  #
+  # The verdict is computed in `plan` from evidence the pipeline already produced — the migration
+  # audit, backfill_policy and approve_high — and unreadable evidence resolves to "ask a human".
+  risk-review:
+    name: Human approval (risky release only)
+    needs: [plan, release-plan, candidate-smoke]
+    if: ${{ inputs.deploy && needs.plan.outputs.requires_human == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 4320
+    environment:
+      name: production-approval
+    steps:
+      - name: Why this release stopped for you
+        run: |
+          echo "::warning::This release requires human approval."
+          echo "### Why this release needs a person" >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' "${{ needs.plan.outputs.risk_reasons }}" | sed 's/^/- /' >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          echo 'The candidate images have already been booted and exercised; this is not asking you to re-run those checks.' >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy to production (digest-pinned)
+    # `candidate-smoke` is a HARD dependency, not advisory: the images are exercised before they
+    # are deployed, and a candidate that could not be verified blocks the deploy rather than
+    # deferring the question to a human who would click through it anyway.
+    needs: [plan, release-plan, candidate-smoke, risk-review]
+    # `risk-review` is SKIPPED for routine releases, and GitHub skips a dependant whose `needs`
+    # was skipped — so tolerating that skip requires switching off the implicit "all needs
+    # succeeded" precondition. The dangerous way to do that is a bare `always()`, which also
+    # re-admits a FAILED candidate-smoke and silently un-gates the whole pipeline. So the
+    # requirement is spelled out instead: candidate-smoke must have SUCCEEDED, and risk-review
+    # must be success-or-skipped. `gateIsEnforced` in ops/release refuses any weaker spelling.
+    if: >-
+      ${{ inputs.deploy
+          && !cancelled()
+          && needs.candidate-smoke.result == 'success'
+          && (needs.risk-review.result == 'success' || needs.risk-review.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     environment:
@@ -444,7 +699,8 @@ jobs:
           # was scored as a clean pass — the v0.1.5 shape of failure.
           pnpm --filter ops-release release-cli playwright-summary \
             --report "${{ github.workspace }}/podcast-saas/client-web/e2e-results/results.json" \
-            --run-id "$RUN_ID" --git-sha "${{ github.sha }}" --out "$ART/playwright-summary.json"
+            --run-id "$RUN_ID" --git-sha "${{ github.sha }}" --out "$ART/playwright-summary.json" \
+            --require-tests 'opening an existing project renders its media,a stored media URL is minted and the resource actually loads,an untokenised private media URL is refused,playback starts on a real project,the export entry point is reachable'
           pnpm --filter ops-release release-cli browser-audit --report "$ART/browser-audit.json" --out "$ART/browser-findings.json"
       - name: Post-deploy gate (CRITICAL ⇒ rollback)
         id: gate

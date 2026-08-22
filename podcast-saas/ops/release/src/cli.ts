@@ -20,6 +20,7 @@ import {
   cmdPlan,
   cmdPlaywrightSummary,
   cmdPreflight,
+  cmdReleaseRisk,
   cmdReport,
   cmdSecretScan,
   cmdStateInit,
@@ -74,7 +75,10 @@ const USAGE = `Usage: release-cli <command> [flags]
   db-url-audit        --report backfill.json --policy … [--max-affected N] [--out file]
   browser-audit       --report browser-audit.json [--out file]
   playwright-summary  --report playwright.json [--run-id ID] [--git-sha SHA] [--out file]
+                      [--require-tests 'title fragment,another']   flows that MUST have run
   endpoint-audit      [--run-id ID] [--git-sha SHA] [--out endpoints.json]
+  release-risk        --findings f1.json,… [--backfill-policy P] [--approve-high] [--changed-paths f] [--out risk.json]
+                      decides whether this release still needs a human; unreadable evidence ⇒ yes
   gate                --phase pre-deploy|post-deploy --findings f1.json,f2.json [--approve-high] [--block-on-warning]
                       [--require f1.json,f2.json] [--identity-bearing name.json,…] [--expect-run-id ID] [--expect-git-sha SHA] [--out gate.json]
   collector-record    --name N --log collectors.json [--command C] [--exit-code N] [--artifact f] [--probe-artifact f]
@@ -143,6 +147,19 @@ async function main(): Promise<number> {
         out: flags.get('out'),
         runId: flags.get('run-id'),
         gitSha: flags.get('git-sha'),
+        requireTests: flags
+          .get('require-tests')
+          ?.split(',')
+          .map((t) => t.trim())
+          .filter(Boolean),
+      }).exitCode;
+    case 'release-risk':
+      return cmdReleaseRisk(ctx, {
+        findingsFiles: need('findings').split(','),
+        backfillPolicy: (flags.get('backfill-policy') ?? 'report-only') as BackfillPolicy,
+        approveHigh: bools.has('approve-high'),
+        changedPathsFile: flags.get('changed-paths'),
+        out: flags.get('out'),
       }).exitCode;
     case 'endpoint-audit':
       return (await cmdEndpointAudit(ctx, { out: flags.get('out'), runId: flags.get('run-id'), gitSha: flags.get('git-sha') })).exitCode;
