@@ -165,6 +165,22 @@ describe('the gate demands current evidence', () => {
 describe('Playwright runs the production config, not the full local matrix', () => {
   const PRODUCTION_CONFIG = join(REPO, 'podcast-saas', 'client-web', 'playwright.production.config.ts');
 
+  it('the daily audit demands the same release-blocking flows the release does', () => {
+    // The audit ran GREEN for days while skipping project pages, playlists and admin preview,
+    // because every one of those checks is `test.skip(!process.env.SMOKE_PUBLIC_PATH, …)` and
+    // those repository variables are unset. A green audit that verified nothing is worse than a
+    // red one that says so — and unlike the release path this audit only reports, so a CRITICAL
+    // turns the run red and changes nothing in production.
+    //
+    // The two lists must stay in step: a flow the release blocks on but the daily audit ignores
+    // is one that can rot for a month and only surface during a deploy.
+    const flows = /--require-tests\s+'([^']+)'/.exec(AUDIT)?.[1];
+    expect(flows, 'the daily audit requires no release-blocking flow to have run').toBeTruthy();
+    const releaseFlows = /--require-tests\s+'([^']+)'/.exec(RELEASE)?.[1];
+    expect(flows, 'the audit and the release disagree about which flows are release-blocking')
+      .toBe(releaseFlows);
+  });
+
   it('EVERY config a workflow names selects only self-contained specs', () => {
     // The rule below is applied to the production config by name. It has to apply to every config
     // CI actually invokes, or the next one added — candidate-smoke was exactly that — inherits the
