@@ -27,6 +27,12 @@ import { moderateGenerationInput } from '../../services/llm/ContentModerationSer
 import { AppError } from 'shared';
 import { extname } from 'path';
 import { logger } from '../../lib/logger.js';
+import {
+  UPLOAD_MAX_BYTES,
+  declaredTooLarge,
+  readStreamBounded,
+  tooLargeMessage,
+} from '../../services/security/uploadLimits.js';
 
 const ALLOWED_BANNER_MIME = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif']);
 type BannerProvider = 'openai' | 'gemini';
@@ -361,6 +367,14 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
       const playlist = await ownedPlaylist(request.params.id, user);
       if (!playlist) return reply.code(404).send({ message: 'Playlist not found' });
 
+      // DECLARED SIZE FIRST (security-007): free, exact enough, and available before a byte of body
+      // is read — so we never begin buffering something already decided against. It is not the real
+      // guard (Content-Length can be absent or a lie); `readStreamBounded` below is.
+      const declared = declaredTooLarge(request.headers['content-length'], UPLOAD_MAX_BYTES.image);
+      if (declared !== null) {
+        return reply.code(413).send({ message: tooLargeMessage('This banner', declared, UPLOAD_MAX_BYTES.image) });
+      }
+
       const data = await request.file();
       if (!data) return reply.code(400).send({ message: 'No file uploaded' });
 
@@ -371,7 +385,7 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
 
       const ext = extname(data.filename || 'banner').replace(/[^a-z0-9.]/gi, '').toLowerCase() || bannerExt(mime);
       const key = `playlist-banners/${playlist.id}/${randomUUID()}${ext}`;
-      const buf = await data.toBuffer();
+      const buf = await readStreamBounded(data.file, UPLOAD_MAX_BYTES.image, 'This banner');
       const publicUrl = await uploadWithFallback(key, buf, mime);
 
       const [updated] = await db

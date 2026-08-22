@@ -1,10 +1,35 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import dynamic from 'next/dynamic';
 import type { VisualResult } from './avatarApi';
-import { EquationRenderer } from './renderers/EquationRenderer';
-import { ChartRenderer } from './renderers/ChartRenderer';
 import { DiagramRenderer } from './renderers/DiagramRenderer';
+
+/**
+ * katex and chart.js load ONLY when a visual of that kind is actually shown (performance-009).
+ *
+ * These two were imported at module scope, and this module is reached from `AvatarConversation`,
+ * which every public viewer route renders. So ~465 KB of parser and charting library sat in the
+ * INITIAL JavaScript of `/[slug]` and `/v/[shareToken]` — paid for by every viewer, including the
+ * overwhelming majority who never open the avatar, and of those who do, the ones who never see an
+ * equation or a chart.
+ *
+ * `ssr: false` because both renderers are imperative and browser-only: they write into a ref in
+ * `useEffect` (katex) or construct a Chart against a canvas (chart.js). Neither produces server
+ * markup worth having, and asking for it would only add a hydration boundary to reconcile.
+ *
+ * DiagramRenderer stays a static import deliberately — it is a plain iframe with an inline script
+ * and pulls in no library, so deferring it would add a chunk request to save nothing.
+ */
+const EquationRenderer = dynamic(
+  () => import('./renderers/EquationRenderer').then((m) => m.EquationRenderer),
+  { ssr: false, loading: () => <div className="avatar-visual-panel__loading" aria-hidden /> },
+);
+
+const ChartRenderer = dynamic(
+  () => import('./renderers/ChartRenderer').then((m) => m.ChartRenderer),
+  { ssr: false, loading: () => <div className="avatar-visual-panel__loading" aria-hidden /> },
+);
 
 interface Props {
   visual: VisualResult;

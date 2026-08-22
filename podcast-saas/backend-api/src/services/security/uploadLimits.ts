@@ -108,6 +108,21 @@ function envBytes(name: string, fallback: number): number {
  *                           take a Buffer and parse it in memory, so the ceiling here is a real
  *                           memory budget, not a transfer budget. 100 MiB is a vast PDF — the
  *                           parse, not the upload, is what a bigger one would kill.
+ *   image          25 MiB   The image routes (project images, their replace path, playlist
+ *                           banners) had NO ceiling at all — 1.9 GB declared as image/jpeg passed
+ *                           the MIME check and went straight into the heap. 25 MiB is far above
+ *                           any real JPEG/PNG/WebP/GIF a creator uploads and far below anything
+ *                           that threatens the host.
+ *   thumbnail      10 MiB   Unchanged from the number this route already enforced — what changed
+ *                           is that it is enforced BEFORE the allocation instead of after it. A
+ *                           check on `buf.length` runs only once the whole file is already in
+ *                           memory, which is precisely the cost being defended against.
+ *   avatarFace      8 MiB   Same story as thumbnail: the number is the one already documented in
+ *                           the route, moved to before the buffer exists.
+ *   knowledgeDoc   25 MiB   PDF/TXT/MD/DOCX/CSV forwarded to the vendor. Must stay in the heap
+ *                           because the vendor client takes a Buffer, so this is a memory budget.
+ *                           25 MiB is a very large document; the vendor's own ingestion, not the
+ *                           upload, is what a bigger one would strain.
  *   simulationZip  256 MiB  Matches zipGuard's `maxUncompressedBytes`, and the unit is the point.
  *                           An earlier value of 250 MiB was justified as "exactly
  *                           SIMULATION_UPLOAD_MAX_BYTES", but that limit is on the COMPRESSED
@@ -125,6 +140,10 @@ export const UPLOAD_MAX_BYTES = {
   corpusSource: uploadCeilingBytes(envBytes('MAX_CORPUS_UPLOAD_BYTES', 1 * GIB)),
   podcastSource: uploadCeilingBytes(envBytes('MAX_PODCAST_SOURCE_BYTES', 100 * MIB)),
   simulationZip: envBytes('MAX_SIM_DOWNLOAD_BYTES', 256 * MIB),
+  image: uploadCeilingBytes(envBytes('MAX_IMAGE_UPLOAD_BYTES', 25 * MIB)),
+  thumbnail: uploadCeilingBytes(envBytes('MAX_THUMBNAIL_UPLOAD_BYTES', 10 * MIB)),
+  avatarFace: uploadCeilingBytes(envBytes('MAX_AVATAR_FACE_BYTES', 8 * MIB)),
+  knowledgeDoc: uploadCeilingBytes(envBytes('MAX_KNOWLEDGE_DOC_BYTES', 25 * MIB)),
 } as const;
 
 export function humanBytes(n: number): string {
