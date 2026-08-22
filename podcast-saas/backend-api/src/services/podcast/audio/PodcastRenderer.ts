@@ -21,6 +21,8 @@ import { getStorageAdapter } from '../../storage/getStorageAdapter.js';
 import { PodcastVoiceService } from '../PodcastVoiceService.js';
 import { ElevenLabsDialogue, type VoiceSegment } from './ElevenLabsDialogue.js';
 import { planChunks, type Chunk, type BackchannelJob } from './chunker.js';
+import { UsageTrackingService } from '../../usage/UsageTrackingService.js';
+import { estimateTtsCost, usdPerCreditFromEnv, charactersIn } from '../../usage/ttsCost.js';
 import { buildTimeline, type TimelineTurn } from './timeline.js';
 import {
   decodeToWav, measureLufs, gainToTarget, extractClip, mixClips, applyTempo,
@@ -49,6 +51,62 @@ async function runLimited<T>(items: T[], limit: number, fn: (item: T, i: number)
 
 export class PodcastRenderer {
   private el = new ElevenLabsDialogue();
+  private usage = new UsageTrackingService();
+
+  /**
+   * Characters handed to the vendor during ONE render, retries included.
+   *
+   * Reset per render rather than per chunk, because the question the admin surface asks is "what
+   * did this episode cost" — and because counting per chunk would write one usage row per request
+   * and bury the answer in hundreds of them.
+   */
+  private charactersSpent = 0;
+
+  /**
+   * Every synthesis goes through here, and that is the whole point.
+   *
+   * `render()` calls `synthesize` in five places and THREE of them are retries with a different
+   * seed. The vendor bills each one: the text arrived, so a failed or discarded attempt is not
+   * refunded. Counting at the call sites would have meant remembering that five times, and the two
+   * that got forgotten would be invisible — which is precisely the state this replaces.
+   */
+  private async meteredSynthesize(
+    params: Parameters<ElevenLabsDialogue['synthesize']>[0],
+  ): Promise<Awaited<ReturnType<ElevenLabsDialogue['synthesize']>>> {
+    this.charactersSpent += charactersIn(params.inputs);
+    return this.el.synthesize(params);
+  }
+
+  /**
+   * Write the render's spend down. Best-effort, and deliberately so: this runs after the audio is
+   * made and paid for, and a metering failure must not fail a render the customer is waiting for.
+   * A missing row is a reporting gap; a thrown error here would be a lost episode.
+   */
+  private async recordSpend(args: { userId: string | null; episodeId: string; renderId: string }): Promise<void> {
+    if (this.charactersSpent <= 0) return;
+    const cost = estimateTtsCost({ characters: this.charactersSpent, usdPerCredit: usdPerCreditFromEnv() });
+    try {
+      await this.usage.record({
+        userId: args.userId,
+        projectId: null,               // Podcast Studio work is not attached to a video project
+        provider: 'elevenlabs',
+        model: 'eleven_v3',
+        task: 'podcast_render',
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        costCents: cost.costCents,
+        usedPersonalKey: false,
+        quantity: cost.characters,
+        unit: 'characters',
+      });
+    } catch (err) {
+      logger.warn(
+        { renderId: args.renderId, err: (err as Error).message?.slice(0, 160) },
+        '[podcast] render finished but its spend was not recorded',
+      );
+    }
+  }
   private voices = new PodcastVoiceService();
   private storage = getStorageAdapter();
 
@@ -73,6 +131,7 @@ export class PodcastRenderer {
     if (!body || !body.turns.length) throw new Error('No script to render');
     const language = episode.language ?? show.language ?? 'en';
 
+    this.charactersSpent = 0;   // one renderer instance may serve several renders
     const workDir = await mkdtemp(join(tmpdir(), 'podcast-render-'));
     try {
       const { clipPath, clipDurMs } = await this.synthesizeAndRecut(episodeId, episode, show, body, language, workDir, {
@@ -130,6 +189,11 @@ export class PodcastRenderer {
       await db.update(podcast_episodes).set({ status: 'ready', updated_at: new Date() }).where(eq(podcast_episodes.id, episodeId));
       logger.info({ renderId, durationMs, turns: tTurns.length }, 'podcast render complete');
     } finally {
+      // IN `finally`, because a render that failed HALFWAY still spent money on every chunk it
+      // synthesised before it died. Recording only on success would make failures look free —
+      // and a retry loop, which is the expensive failure, would be the one thing the spend
+      // surface could never show.
+      await this.recordSpend({ userId: show.created_by ?? null, episodeId, renderId });
       await rm(workDir, { recursive: true, force: true });
     }
   }
@@ -208,11 +272,11 @@ export class PodcastRenderer {
     // them wrong (one line's audio bleeds into another's slice), which shipped as the
     // "12s clip for an 8-word line → lanes overlap" corruption. Char-range alignment
     // catches that; a still-bad result is not cached so a rebuild self-heals.
-    let result = await this.el.synthesize({ inputs: chunk.inputs, seed, outputFormat: OUTPUT_FORMAT, stability: STABILITY });
+    let result = await this.meteredSynthesize({ inputs: chunk.inputs, seed, outputFormat: OUTPUT_FORMAT, stability: STABILITY });
     let complete = this.segmentsCoverReal(result.voiceSegments, chunk) && this.segmentsAligned(result.voiceSegments, chunk);
     if (!complete) {
       logger.warn({ hash: chunk.hash }, 'chunk voice_segments incomplete or misaligned — retrying with seed+1');
-      result = await this.el.synthesize({ inputs: chunk.inputs, seed: seed + 1, outputFormat: OUTPUT_FORMAT, stability: STABILITY });
+      result = await this.meteredSynthesize({ inputs: chunk.inputs, seed: seed + 1, outputFormat: OUTPUT_FORMAT, stability: STABILITY });
       complete = this.segmentsCoverReal(result.voiceSegments, chunk) && this.segmentsAligned(result.voiceSegments, chunk);
     }
 
@@ -245,16 +309,16 @@ export class PodcastRenderer {
 
     // Backchannels carry a context input for prosody; the bc's own segment must be
     // present so we can cut the context away. Retry once with seed+1 if it's missing.
-    let result = await this.el.synthesize({ inputs: bc.inputs, seed, outputFormat: OUTPUT_FORMAT, stability: STABILITY });
+    let result = await this.meteredSynthesize({ inputs: bc.inputs, seed, outputFormat: OUTPUT_FORMAT, stability: STABILITY });
     const hasBcSegment = () => bc.contextCount === 0 || result.voiceSegments.some((s) => s.dialogue_input_index === bc.contextCount);
     if (!hasBcSegment()) {
       logger.warn({ hash: bc.hash }, 'backchannel segment missing — retrying with seed+1');
-      result = await this.el.synthesize({ inputs: bc.inputs, seed: seed + 1, outputFormat: OUTPUT_FORMAT, stability: STABILITY });
+      result = await this.meteredSynthesize({ inputs: bc.inputs, seed: seed + 1, outputFormat: OUTPUT_FORMAT, stability: STABILITY });
     }
     if (!hasBcSegment()) {
       // Last resort: synthesize without context so the whole clip IS the backchannel.
       logger.warn({ hash: bc.hash }, 'backchannel still incomplete — synthesizing without context');
-      result = await this.el.synthesize({ inputs: bc.inputs.slice(bc.contextCount), seed, outputFormat: OUTPUT_FORMAT, stability: STABILITY });
+      result = await this.meteredSynthesize({ inputs: bc.inputs.slice(bc.contextCount), seed, outputFormat: OUTPUT_FORMAT, stability: STABILITY });
       const ext = result.format === 'pcm' ? 'pcm' : 'mp3';
       const key = `podcasts/${episodeId}/chunks/${bc.hash}.${ext}`;
       await this.storage.uploadFile(key, result.audio, result.format === 'pcm' ? 'application/octet-stream' : 'audio/mpeg', 'public, max-age=31536000, immutable');
