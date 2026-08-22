@@ -33,7 +33,7 @@ import { logger } from '../lib/logger.js';
  * Before Phase E every queue except project_export silently inherited crop's number; with eight
  * more queues that would have meant up to twenty concurrent handlers on a two-core host.
  */
-const QUEUE_CONCURRENCY: Record<JobName, number> = {
+export const QUEUE_CONCURRENCY: Record<JobName, number> = {
   // CPU-bound — one at a time.
   transcode: 1,
   podcast_render: 1,
@@ -62,6 +62,25 @@ const QUEUE_CONCURRENCY: Record<JobName, number> = {
   dub: 1,
 };
 
+/**
+ * The kinds whose work is CPU-BOUND, and which therefore must never run in the API container
+ * (job-queue-013).
+ *
+ * This is the same set the concurrency table above marks `1` and explains as CPU-bound, written
+ * out once so the fallback rule and the concurrency rule cannot drift apart —
+ * `cpuBoundMatchesConcurrency` in the driver test asserts they stay equal.
+ *
+ * WHY IT MATTERS THAT THIS IS A SET AND NOT A JUDGEMENT AT THE CALL SITE. `pgBossSend` falls back
+ * to running the handler inline when the durable send fails, which is a good rule for a cheap job
+ * and a dangerous one for an encode: the moment the queue database is unhealthy is the moment the
+ * API is most needed, and that is exactly when the fallback would start a full HLS ladder for a
+ * source up to 2 GB — or a TTS-plus-ffmpeg stitch, or a dub's mux — inside the request-serving
+ * process on a 2-vCPU host.
+ */
+export const CPU_BOUND_JOBS: ReadonlySet<JobName> = new Set<JobName>([
+  'transcode', 'podcast_render', 'podcast_clips', 'podcast_mix_export', 'project_export', 'crop', 'dub',
+]);
+
 /** Per-queue env overrides, kept for the two knobs that already shipped. */
 const CONCURRENCY_ENV: Partial<Record<JobName, string>> = {
   crop: 'QUEUE_CROP_CONCURRENCY',
@@ -88,6 +107,28 @@ export function pgBossSend<N extends JobName>(
       if (!id) logger.debug({ job: name }, '[queue] pg-boss send deduped (existing pending job)');
     })
     .catch((err) => {
+      // THE FALLBACK IS FOR CHEAP WORK ONLY (job-queue-013).
+      //
+      // Running the handler in this process is the right answer for a job that mostly waits on
+      // somebody else's HTTP response. It is the wrong answer for an encode, and wrong in the
+      // worst way: the send only fails when the queue database is unhealthy, which is precisely
+      // when the API must keep answering — and the fallback would answer by starting a full HLS
+      // ladder, a TTS-plus-ffmpeg stitch, or a dub's mux, in-process, on 2 vCPUs.
+      //
+      // Refusing does not lose the work. Every kind in `CPU_BOUND_JOBS` is re-drivable: the row
+      // keeps its own non-terminal status, and each service claims by CAS with a staleness window
+      // (`sweepStuckTranscodes` at boot, `startExportSweep`, the podcast runners' stale-claim
+      // reclaim, DubbingService's `STALE_CLAIM_MS`). So the outcome is a delay that recovers,
+      // instead of an API that stops serving everyone while the queue is already down.
+      if (CPU_BOUND_JOBS.has(name)) {
+        logger.error(
+          { err, job: name, payload },
+          '[queue] pg-boss send failed for a CPU-bound job — NOT running it inline. ' +
+          'It stays claimable and a recovery sweep will re-drive it; running it here would put an ' +
+          'encode in the request-serving process while the queue is already unhealthy.',
+        );
+        return;
+      }
       logger.error({ err, job: name }, '[queue] pg-boss send failed — running inline as fallback');
       inline();
     });
