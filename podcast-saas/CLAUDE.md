@@ -73,7 +73,8 @@ is the single most common false alarm in this repo.
 ## 3b. The decision ledger — every piece of work has to be findable
 
 `.claude/review/DECISIONS.md` is the index of what is open, what was ruled, and what shipped;
-`CODEX-DECISION-RESPONSE-*.md` holds the reasoning behind each ruling. **Work that is not in the ledger
+closed rounds live in git history (the ledger's own commits), and the two approved-pending
+feature designs live in `PARKED-DESIGNS.md` beside it. **Work that is not in the ledger
 is work the next session cannot find**, and the failure is silent — nothing breaks, a green build says
 nothing, and the item simply stops existing until someone stumbles over it.
 
