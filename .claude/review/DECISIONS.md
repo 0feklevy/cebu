@@ -136,6 +136,35 @@ gate turns CRITICAL into an automatic rollback — so without the early refusal,
 would have rolled back a perfectly healthy deploy over a missing configuration value. `plan` now
 refuses BEFORE anything is deployed and names the variables (PR #81).
 
+## 🔴 SUSPECTED PRODUCT BUG — a project that OPENS on a simulation may be blank on WebKit
+
+Evidence gathered 2026-08-22 by downloading the CI failure artefact rather than trusting the note
+about it. This had been treated as a test flake for two rounds; it may not be one.
+
+**What the artefact shows:** a flat dark-blue frame carrying the simulation's OWN UI chrome —
+its buttons are drawn — and no content whatsoever. The iframe loaded and the sim's script ran; it
+never painted. The comment in `viewer-e2e.spec.ts` said *"the screenshot shows the simulation
+rendered"*. It does not, and that sentence is what sent two previous attempts at the harness.
+
+**What makes it a product hypothesis rather than a harness one:** scenario 11 is the ONLY sim
+scenario with `start: 0`. Every other one SEEKS to the sim; this one OPENS on it, so the sim is
+active from the very first frame. **37 WebKit scenarios pass**, including ones that wait for
+exactly this condition after a seek. The `__CHILD` identity theory was tested directly (re-keyed by
+iframe src, PR #82) and DISPROVED — it changed nothing.
+
+**The hypothesis:** a sim already active at t=0 mounts before the viewer applies its section, and
+on WebKit that ordering resolves differently. If so, **a WebKit visitor opening a project that
+starts on a simulation sees a blank frame** — user-visible, in Safari, which is every iPhone.
+
+**Not fixed, and deliberately not guessed at.** The fix belongs in the viewer's boot ordering, and
+the next step is a reproduction: run the sim scenarios in WebKit with a sim at `start: 0` and
+instrument when the section is applied relative to the iframe's load. Everything up to now has been
+inference from one screenshot, which is exactly how the last two rounds went wrong.
+
+**Why it matters more than the red check:** the suite has been correctly reporting this the whole
+time, and it was read as noise because the job is non-blocking and the note said the product was
+fine.
+
 ## 🎯 WORK WAVES — the order everything is done in (owner-ranked 2026-08-22)
 
 The owner's ranking: **podcast is the most critical area, crop second — but a critical BUG comes
