@@ -95,7 +95,7 @@ vi.mock('../../../services/avatar/avatarAccess.js', () => ({
   avatarProjectAllowed: vi.fn(() => true), avatarProjectAllowedAsync: svc.avatarProjectAllowedAsync,
 }));
 vi.mock('../../../services/transcriptPropagation.js', () => ({ getProjectTranscript: svc.getProjectTranscript }));
-vi.mock('../../../services/avatar/anamKey.js', () => ({ resolveAnamKeyForProject: svc.resolveAnamKeyForProject }));
+vi.mock('../../../services/avatar/anamKey.js', () => ({ resolveAnamKeyForProject: svc.resolveAnamKeyForProject, resolveSystemAnamKey: vi.fn(async () => undefined) }));
 
 import { registerAvatarRoutes } from '../avatar.controller.js';
 import { resetBurstShield } from '../../../services/usage/avatarBudget.js';

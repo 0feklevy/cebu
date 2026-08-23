@@ -75,7 +75,7 @@ export async function registerAdminLlmConfigRoutes(app: FastifyInstance): Promis
     { preHandler: [firebaseAdminRequired] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const body = z
-        .object({ provider: z.enum(['claude', 'openai', 'gemini', 'elevenlabs']), api_key: z.string().min(1) })
+        .object({ provider: z.enum(['claude', 'openai', 'gemini', 'elevenlabs', 'anam']), api_key: z.string().min(1) })
         .safeParse(request.body);
       if (!body.success) return reply.code(400).send({ message: body.error.message });
 
@@ -93,13 +93,20 @@ export async function registerAdminLlmConfigRoutes(app: FastifyInstance): Promis
     { preHandler: [firebaseAdminRequired] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const body = z
-        .object({ provider: z.enum(['claude', 'openai', 'gemini', 'elevenlabs']), api_key: z.string().min(1) })
+        .object({ provider: z.enum(['claude', 'openai', 'gemini', 'elevenlabs', 'anam']), api_key: z.string().min(1) })
         .safeParse(request.body);
       if (!body.success) return reply.code(400).send({ message: body.error.message });
 
       try {
         // Test by making a minimal API call per provider
-        if (body.data.provider === 'elevenlabs') {
+        if (body.data.provider === 'anam') {
+          // A read that costs nothing and proves the key is live on a real account.
+          const resp = await fetch('https://api.anam.ai/v1/avatars?page=1&perPage=1', {
+            headers: { Authorization: `Bearer ${body.data.api_key}` },
+          });
+          if (!resp.ok) throw new Error(`Anam API returned ${resp.status}`);
+          return reply.send({ valid: true });
+        } else if (body.data.provider === 'elevenlabs') {
           const resp = await fetch('https://api.elevenlabs.io/v1/user', {
             headers: { 'xi-api-key': body.data.api_key },
           });
@@ -133,7 +140,7 @@ export async function registerAdminLlmConfigRoutes(app: FastifyInstance): Promis
     '/api/admin/v1/api-keys/:provider',
     { preHandler: [firebaseAdminRequired] },
     async (request, reply: FastifyReply) => {
-      const provider = request.params.provider as 'claude' | 'openai' | 'gemini' | 'elevenlabs';
+      const provider = request.params.provider as import('../../../services/secrets/ApiKeyService.js').SystemKeyProvider;
       await apiKeyService.removeSystemKey(provider);
       invalidateSystemAiClients();
       return reply.send({ success: true });

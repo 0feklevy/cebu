@@ -36,10 +36,21 @@ export function decryptKey(ciphertext: string): string {
 // others — the TTL bounds how long any instance keeps serving the old key.
 const CACHE_TTL_MS = 5 * 60_000;
 
+/**
+ * The vendors whose PLATFORM key can be set from Admin → API Keys.
+ *
+ * 'anam' joined on 2026-08-23, during the avatar outage: every other vendor read the admin-stored
+ * key first with the env var as fallback, while the avatar path read ONLY the env var — so an
+ * owner who rotated the Anam key in the admin screen changed nothing, and the avatar kept minting
+ * with whatever the container was started with. An admin screen that LOOKS like the source of
+ * truth and silently is not is worse than no screen.
+ */
+export type SystemKeyProvider = 'claude' | 'openai' | 'gemini' | 'elevenlabs' | 'anam';
+
 export class ApiKeyService {
   private cache: Map<string, { value: string; expiresAt: number }> = new Map();
 
-  async getSystemKey(provider: 'claude' | 'openai' | 'gemini' | 'elevenlabs'): Promise<string | null> {
+  async getSystemKey(provider: SystemKeyProvider): Promise<string | null> {
     const cacheKey = `system:${provider}`;
     const cached = this.cache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) return cached.value;
@@ -66,7 +77,7 @@ export class ApiKeyService {
   }
 
   async setSystemKey(
-    provider: 'claude' | 'openai' | 'gemini' | 'elevenlabs',
+    provider: SystemKeyProvider,
     plainKey: string,
     createdBy: string,
   ): Promise<void> {
@@ -102,7 +113,7 @@ export class ApiKeyService {
     this.cache.delete(`system:${provider}`);
   }
 
-  async removeSystemKey(provider: 'claude' | 'openai' | 'gemini' | 'elevenlabs'): Promise<void> {
+  async removeSystemKey(provider: SystemKeyProvider): Promise<void> {
     await db.delete(api_keys).where(
       and(eq(api_keys.provider, provider), isNull(api_keys.user_id)),
     );
@@ -111,7 +122,7 @@ export class ApiKeyService {
 
   async getKeyStatus(): Promise<
     Array<{
-      provider: 'claude' | 'openai' | 'gemini' | 'elevenlabs';
+      provider: SystemKeyProvider;
       is_set: boolean;
       created_at: Date | null;
       created_by: string | null;
@@ -122,7 +133,7 @@ export class ApiKeyService {
     });
 
     const byProvider = new Map(rows.map((r) => [r.provider, r]));
-    const providers: Array<'claude' | 'openai' | 'gemini' | 'elevenlabs'> = ['claude', 'openai', 'gemini', 'elevenlabs'];
+    const providers: SystemKeyProvider[] = ['claude', 'openai', 'gemini', 'elevenlabs', 'anam'];
 
     return providers.map((p) => {
       const row = byProvider.get(p);

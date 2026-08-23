@@ -91,6 +91,7 @@ const MIGRATION_FILES = [
   '071_project_audio_editions.sql',
   '072_listener_questions.sql',
   '073_usage_units.sql',
+  '075_anam_provider.sql',
 ];
 
 type Row = Record<string, unknown>;

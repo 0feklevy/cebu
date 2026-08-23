@@ -30,7 +30,7 @@ import {
 } from '../../services/avatar/anamService.js';
 import { getProjectTranscript } from '../../services/transcriptPropagation.js';
 import { encryptKey } from '../../services/secrets/ApiKeyService.js';
-import { resolveAnamKeyForProject } from '../../services/avatar/anamKey.js';
+import { resolveAnamKeyForProject, resolveSystemAnamKey } from '../../services/avatar/anamKey.js';
 import { normalizeAvatarCircles, type AvatarCirclesLike } from '../../services/avatarCircles/normalizeAvatarCircles.js';
 import { circleFaceUrlPersistError } from '../../services/avatarCircles/circleFaceUrls.js';
 import { isProd } from '../../config/publicOrigins.js';
@@ -634,6 +634,10 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
       // signal, and 'einstein' is the honest fallback. This is the ONLY start path where a
       // client-supplied character decides unconditionally.
       ({ id: characterId, source: characterSource } = resolveCharacter(undefined, body.character_id));
+      // The admin-managed platform key applies here too — without this line, the project-less
+      // path stayed pinned to the env var after every other path had learned to read the admin
+      // screen, and the same rotation would fix nine-tenths of the product and not this.
+      apiKey = await trace.time('key_read', () => resolveSystemAnamKey().catch(() => undefined));
     }
     // Reserve the session's WORST-CASE cost before the vendor is called. `/avatar/end` is a no-op
     // any client may simply never send, so nothing here is ever given back early — the lease
