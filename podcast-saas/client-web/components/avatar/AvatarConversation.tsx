@@ -480,8 +480,8 @@ export function AvatarConversation({ characterId, identity, projectId, sessionTo
       // A reconnect REFUSED by the budget is not a reconnect that failed, and "close and try
       // again" is the one instruction guaranteed not to work: the next open meets the same limit.
       // Same shared, closed-enum copy the popup renders — no server string reaches the screen.
-      // NOTE: unlike the popup's denial screen, this line has no test. Reaching it needs a live
-      // SDK connection-lost event and no harness in this repo produces one today.
+      // Tested in avatarReconnectDenial.test.tsx, whose harness produces the live connection-lost
+      // event this note once said nothing produced.
       setJoinError(denialOf(e)?.message ?? 'Reconnect failed. Please close and try again.');
       setLostConnection(false);
     } finally {
