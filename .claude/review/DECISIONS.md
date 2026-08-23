@@ -586,11 +586,13 @@ The two dead Trigger.dev files that made this look done are deleted (#95).
 
 ### 🟢 Corrections in the other direction — two clusters were finished and never recorded
 
-* **The a11y group is five-sixths done.** `ui-ux-003 / -004 / -005 / -007 / -009` shipped on
-  2026-08-19, three days before this section was last written, and 29 a11y tests cover them today
-  (`podcastStudioOverlayA11y`, `confirmDialogA11y`, `a11yOperableControls`, `adminControlsA11y`).
-  Only `ui-ux-006` — the editor timeline has no keyboard alternative — is genuinely open, and that
-  one was deferred on purpose.
+* ~~**The a11y group**~~ **COMPLETE (#102).** Five shipped on 2026-08-19; `ui-ux-006` — the editor
+  timeline had no keyboard path at all — landed overnight. Each section now exposes three focusable
+  sliders (move, trim-start, trim-end) driven by plain arrow keys, with NO modifier scheme: Alt+Arrow
+  is browser back on Windows and Linux, so binding a trim there would lose the editor on a mistimed
+  press. The keyboard calls `clampMove`/`clampTrim` — the drag path's own collision rules — because
+  a second copy is how the two inputs start disagreeing about where a section may go.
+
 * **D-16 crop is not "blocked at the first step".** Thirteen hand-labelled clips exist under
   `backend-api/scripts/crop-eval/labels/`, a field eval has run, and its result is marked quotable —
   it is what surfaced the `CROP_ALGO=v2` no-op recorded above. Below the 20–50 clip target, but the
@@ -608,13 +610,12 @@ The two dead Trigger.dev files that made this look done are deleted (#95).
   inconsistency inside a file that otherwise logs properly, which is how they survived. The two in
   `R2StorageAdapter` went with them. `isolation/main.ts` keeps its console calls deliberately: it
   runs INSIDE the capture container, where there is no pino and stdout is the transport.
-* **`observability-009`** — **PARTIAL (#91).** The error-level site is closed; a WARN-level
-  sibling at `LLMService.ts:700` still carries `raw.slice(0, 300)` — see the 🔴 entry above.
-  On the closed site: the first attempt redacted a 120-character
-  excerpt from each end; its own test killed that — a fixture sentence about an acquisition price
-  survived untouched, because it is confidential without being credential-shaped. There is no
-  excerpt now, only shape, and a test asserts structurally that every emitted value is a number, a
-  boolean, a single character or a member of a fixed enum.
+* ~~**`observability-009`**~~ **CLOSED (#91 + #101).** The error-level site went first. The audit
+  then found a WARN-level sibling, and that turned out to be THREE leaks: `raw.slice(0, 300)`, the
+  Zod issue array (which carries the offending value in `received` and again inside `message`), and
+  the same array interpolated into the thrown AppError — the 422 the caller sees. All closed; the
+  describer keeps shape and drops every field the model authored.
+
 * **`observability-010`** — **verified, and deliberately NOT deleted.** `initSSE` is reached only
   from `_archive/v1-podcast-pipeline`, and `SSEEmitter` survives as a type on
   `CorpusBuilder.ingest`'s optional third parameter, which no live caller passes. Deleting it would
