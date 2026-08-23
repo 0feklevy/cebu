@@ -190,21 +190,27 @@ burn — the owner was testing dubbing voices that afternoon, which is when the 
 Put a ceiling on ElevenLabs **Auto Top-Up**, or turn it off. Auto Top-Up is the amplifier: any
 runaway path spends without a natural stop, and the product-side ceiling only covers dubbing.
 
-## 🔴 A SECOND rawPreview LOG SITE — the class #91 closed has one more instance
+## ✅ CLOSED (#101) — the schema-failure log leaked the customer's value THREE ways
 
-Found 2026-08-22 by the end-of-day verification pass, not by a report. `LLMService.ts:700` logs
-`rawPreview: raw.slice(0, 300)` at WARN level on every schema-validation failure — valid JSON,
-wrong shape. Same class as observability-009: the model's output about the customer's own material,
-in the log. #91 fixed the ERROR-level site at line ~721 and the test suite it added only exercises
-never-valid-JSON fixtures, so it structurally cannot see this path.
+Found by the end-of-day verification pass on 2026-08-22, not by a report. The audit named one leak
+on that line. There were three, and the second is the one worth remembering.
 
-**The fix is already designed:** replace with `describeUnparseable(raw)` exactly as line 721 was
-(`schemaIssues` may stay — Zod issue paths are field names, not content), and add a
-`parseAndRepair.test.ts` case that drives the schema-validation path (valid JSON, wrong shape) and
-asserts on `logger.warn` the same three things the error-path cases assert. Mutation: restore the
-slice, the new case must fail.
+`LLMService.ts` logged `rawPreview: raw.slice(0, 300)` at WARN on every schema-validation failure —
+the same defect as the ERROR-level site #91 closed, 300 characters instead of 800. But
+`result.error.errors` is not structural either: for an enum or literal mismatch **Zod puts the
+actual value in `received` AND interpolates it into `message`**. And that array was interpolated
+into the thrown `AppError`'s message, which travels further than a log line — it is the 422 the
+caller sees.
 
-Until it ships, the observability-009 entry below is PARTIAL, not closed.
+`describeSchemaIssues` keeps the half that is ours: which field, what the schema wanted, how many
+options existed. `received`, `message` and `keys` are dropped, because the model authored all
+three.
+
+**Why #91's tests could not have caught it:** they drive never-valid-JSON fixtures, so they exercise
+`logger.error` and are structurally blind to JSON that PARSES and fails the schema. The new test
+uses valid JSON with a wrong enum value — precisely the shape that makes Zod echo the value back —
+and asserts on `logger.warn` and separately on the THROWN error, because no log assertion would
+have caught the third leak.
 
 ## ✅ DIAGNOSED AND FIXED — a project that OPENS on a simulation showed nothing
 
