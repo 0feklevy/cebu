@@ -85,7 +85,7 @@ async function anchorPatchFor(projectId: string, atSec: number) {
           project_id: project.id,
           at_sec,
           // Both representations: the absolute second stays the fallback, and the anchor is what
-          // makes the marker follow its content when an earlier clip changes length (migration 074).
+          // makes the marker follow its content when an earlier clip changes length (migration 076).
           ...(await anchorPatchFor(project.id, at_sec)),
           label: label ?? null,
           notes: notes ?? null,

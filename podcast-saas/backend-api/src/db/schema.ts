@@ -787,7 +787,7 @@ export type NewPlacementImpactReview = typeof placement_impact_reviews.$inferIns
 export const timeline_markers = pgTable('timeline_markers', {
   id: uuid('id').primaryKey().defaultRandom(),
   project_id: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
-  // ABSOLUTE, and kept as the fallback rather than replaced (migration 074). A marker that predates
+  // ABSOLUTE, and kept as the fallback rather than replaced (migration 076). A marker that predates
   // the anchor columns resolves exactly as it always has; one that has been moved since carries the
   // anchor pair below and follows its content when an earlier clip changes length.
   at_sec: real('at_sec').notNull(),
