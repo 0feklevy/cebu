@@ -18,24 +18,20 @@
     "allow": [
       "Bash(pnpm -C podcast-saas ship:*)",
       "Bash(node podcast-saas/ops/ship/watch.mjs:*)",
-
       "Bash(gh run list:*)",
       "Bash(gh run view:*)",
       "Bash(gh pr list:*)",
       "Bash(gh pr view:*)",
       "Bash(gh pr checks:*)",
       "Bash(gh release list:*)",
-
       "Bash(gh pr create:*)",
       "Bash(gh pr ready:*)",
       "Bash(gh pr merge:*)",
       "Bash(gh workflow run:*)",
-
       "Bash(pnpm -C podcast-saas typecheck:*)",
       "Bash(pnpm -C podcast-saas lint:*)",
       "Bash(pnpm -C podcast-saas test:*)",
       "Bash(pnpm -C podcast-saas --filter:*)",
-
       "Bash(git status:*)",
       "Bash(git log:*)",
       "Bash(git diff:*)",
@@ -80,6 +76,16 @@
           {
             "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/fleet-guard.mjs secrets"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/night-run-stop.mjs"
           }
         ]
       }

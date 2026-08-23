@@ -65,7 +65,12 @@ const PAID_VENDOR_HOSTS = [
  * leaving the import behind kept it green. Mutation-testing found that; it is the same failure as
  * a mask that matches text instead of behaviour.
  *
- * FOUR SHAPES, because there are four. The helper pattern is `record\w*Spend(` rather than a list
+ * FOUR SHAPES, because there are four. The helper patterns are `record\w*Spend(` and
+ * `record\w*Usage(` rather than lists of names, and BOTH generalisations were forced by a false
+ * positive: `recordTtsSpend`/`recordSttSpend` for the first, `recordImageUsage`/`recordChatUsage`
+ * for the second. Three modules sat on the gap list metering perfectly well, flagged only because
+ * the pattern spelled one helper's name and not another's.
+ * The helper pattern is `record\w*Spend(` rather than a list
  * of names — `recordTtsSpend` and `recordSttSpend` already exist and a third would otherwise slip
  * through as an unmetered module while metering perfectly well.
  * A module may call `.record(` itself, use one of the shared
@@ -79,7 +84,7 @@ const PAID_VENDOR_HOSTS = [
  * narrower: catch a module that reaches a paid vendor and never reaches a recorder at all.
  */
 const RECORDS_USAGE =
-  /\.record\(|insert\(token_usage\)|recordUsage\(|trackUsage\(|record\w*Spend\(|new UsageTrackingService\(/;
+  /\.record\(|insert\(token_usage\)|record\w*Usage\(|trackUsage\(|record\w*Spend\(|new UsageTrackingService\(/;
 
 /**
  * Modules that call a paid vendor and DO NOT record usage themselves — because their caller does.
@@ -164,13 +169,11 @@ const UNMETERED_TODAY = [
   // `AudioIngester` came off first, because it runs inside corpus ingest on a durable queue with
   // a retry, so a failure after transcription buys a second one.
 
-  // Image generation, billed per IMAGE. A unit `token_usage` can already express (migration 073),
-  // which is what makes these the cheapest of the remaining gaps to close.
-  'services/generateAiThumbnail.ts',
-  'services/avatar/imageService.ts',
+  // Three former entries here — the two image paths and the metadata path — came off WITHOUT a
+  // line of metering being written: they already recorded through `recordImageUsage`/
+  // `recordChatUsage`, and the contract could not see those names. Gaps that were only ever blind
+  // spots in the scanner.
 
-  // OpenAI text, on the metadata path.
-  'services/generateVideoMetadata.ts',
 ];
 
 function walk(dir: string): string[] {
@@ -324,45 +327,39 @@ describe('every module that spends money is accounted for', () => {
 });
 
 describe('what the gap costs, stated rather than implied', () => {
-  it('keeps every metered path OFF the list', () => {
-    // Six came off by being metered: the renderer, the two per-click preview paths, guidance
-    // publishing and sound-effect generation. Putting one back means its metering was removed.
+  it('keeps every accounted-for path OFF the list', () => {
+    // Some were closed by writing metering; three were never gaps at all. Either way, putting one
+    // back is a regression, and this is the guard that says so.
     for (const closed of [
       'services/podcast/audio/PodcastRenderer.ts',
       'services/podcast/audio/previewTurn.ts',
       'services/podcast/audio/revoiceTurn.ts',
       'services/simulation/GuidanceService.ts',
       'controllers/v1/audio.controller.ts',
-    ]) {
-      expect(UNMETERED_TODAY, closed).not.toContain(closed);
-    }
-  });
-
-  it('keeps every speech-to-text path metered', () => {
-    // The most expensive of the remaining gaps, and the ones the host-only scan could not see at
-    // all. `AudioIngester` runs inside corpus ingest, which is on a durable queue with a retry —
-    // so a failure after transcription buys a second transcription and neither is recorded.
-    // All three closed. Kept as a regression guard rather than deleted: the corpus path is the
-    // one where an ordinary retry buys a second vendor charge, and it must stay metered.
-    for (const closed of [
       'services/ingestion/AudioIngester.ts',
       'services/captions/CaptionService.ts',
       'services/captions/transcribeAudioFile.ts',
+      'services/generateAiThumbnail.ts',
+      'services/avatar/imageService.ts',
+      'services/generateVideoMetadata.ts',
     ]) {
       expect(UNMETERED_TODAY, closed).not.toContain(closed);
     }
   });
 
-  it('names the image-generation paths, billed per image', () => {
-    expect(UNMETERED_TODAY).toContain('services/generateAiThumbnail.ts');
-    expect(UNMETERED_TODAY).toContain('services/avatar/imageService.ts');
-  });
-
-  it('is honest that the list GREW when the scan got sharper', () => {
-    // It stood at one entry and looked ready to reach zero. Then the SDK patterns went in and six
-    // modules appeared that had never been triaged, only unseen. A ratchet is allowed to grow when
-    // the measurement improves — pretending otherwise is how a gate starts flattering itself.
-    expect(UNMETERED_TODAY.length).toBeGreaterThan(1);
-    expect(UNMETERED_TODAY.length).toBeLessThan(6);
+  it('has shrunk from thirteen to one, by two different means', () => {
+    // Worth separating, because they are different kinds of progress.
+    //
+    // SIX were closed by writing metering: the renderer, the two per-click preview paths, guidance
+    // publishing, sound-effect generation and corpus transcription.
+    //
+    // The REST were never gaps. Three were type-only imports the graph miscounted; three were
+    // metering through a helper whose name the pattern did not spell; the Anam group reaches no
+    // billable operation at all.
+    //
+    // And the list GREW once, when SDK detection found six modules that had never been triaged —
+    // only unseen. A ratchet is allowed to grow when the measurement improves; a ratchet that only
+    // ever shrinks is one that has stopped looking.
+    expect(UNMETERED_TODAY.length).toBe(1);
   });
 });
