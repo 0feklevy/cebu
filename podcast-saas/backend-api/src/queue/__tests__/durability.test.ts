@@ -3,6 +3,7 @@ import { JOB_NAMES } from '../types.js';
 import { PGBOSS_JOB_NAMES, QUEUE_OPTIONS } from '../pgBoss.js';
 import { registerWorkers } from '../pgBossDriver.js';
 import type { JobName, JobPayloads } from '../types.js';
+import { callArgs } from '../../__tests__/helpers/mockCalls.js';
 
 /**
  * job-queue-005 — only 3 of 11 job types were durable.
@@ -141,9 +142,9 @@ describe('concurrency on the 2-vCPU worker', () => {
 
     await registerWorkers({ work } as never, JOB_NAMES, handlers);
 
-    const byName = Object.fromEntries(
-      work.mock.calls.map((c) => [c[0] as string, (c[1] as { localConcurrency: number }).localConcurrency]),
-    );
+    const names = callArgs<string>(work, 0);
+    const opts = callArgs<{ localConcurrency: number }>(work, 1);
+    const byName = Object.fromEntries(names.map((n, i) => [n, opts[i].localConcurrency]));
     for (const heavy of ['transcode', 'podcast_render', 'podcast_clips', 'podcast_mix_export', 'project_export', 'crop']) {
       expect(byName[heavy], `${heavy} must not run two at a time`).toBe(1);
     }

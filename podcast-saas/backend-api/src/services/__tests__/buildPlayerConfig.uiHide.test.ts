@@ -163,7 +163,7 @@ describe('buildPlayerConfig — ui_hide', () => {
     expect(config).not.toBeNull();
     const sims = config!.segments[0].simulations;
     expect(sims).toHaveLength(4);
-    const byId = new Map(sims.map((s: { id: string }) => [s.id, s]));
+    const byId = new Map(sims.map((s: { id: string; ui_hide?: string[] }) => [s.id, s]));
 
     expect(byId.get('sec-hide')?.ui_hide).toEqual(['#b', '#a']);   // passed through as stored
     expect(byId.get('sec-empty-hide')?.ui_hide).toBeUndefined();

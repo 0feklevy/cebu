@@ -276,7 +276,7 @@ describe('runContainerCapture', () => {
     try {
       const driver: SimCaptureDriver = {
         async drive() {
-          return { resultVersion: 1, sectionId: 'x', status: 'bogus' } as unknown as CaptureResult;
+          return { resultVersion: 1, sectionId: 'x', status: 'bogus' } as never;
         },
       };
       await expect(

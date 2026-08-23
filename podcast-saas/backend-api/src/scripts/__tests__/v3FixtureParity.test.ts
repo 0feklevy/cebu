@@ -933,7 +933,7 @@ const SET_UI_POLICY = 'SET_UI_POLICY';
 const SET_AUTOMATION_POLICY = 'SET_AUTOMATION_POLICY';
 
 /** Boot the policy package and bring one section all the way to activated. */
-function bootPolicy(variantKey = POLICY_HOOKED, config: SimPresentationConfig = CONFIG) {
+function bootPolicy(variantKey: string = POLICY_HOOKED, config: SimPresentationConfig = CONFIG) {
   const h = createHarness(POLICY_BODIES, V3_ALL_MANAGED_DESCRIPTOR);
   h.bootstrap();
   h.init();

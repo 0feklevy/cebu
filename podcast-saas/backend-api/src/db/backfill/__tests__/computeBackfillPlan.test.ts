@@ -17,14 +17,14 @@ const T1 = new Date('2025-02-01T00:00:00Z');
 
 function playlist(over: Partial<PlaylistRow> & { id: string }): PlaylistRow {
   return {
-    id: over.id, org_id: 'org-1', created_by: 'user-1', title: 'Playlist', description: null,
+    org_id: 'org-1', created_by: 'user-1', title: 'Playlist', description: null,
     banner_url: null, share_token: null, share_enabled_at: null, view_count: 0, created_at: T0,
     ...over,
   };
 }
 function project(over: Partial<ProjectRow> & { id: string }): ProjectRow {
   return {
-    id: over.id, org_id: 'org-1', created_by: 'user-1', title: 'Project', topic: null,
+    org_id: 'org-1', created_by: 'user-1', title: 'Project', topic: null,
     thumbnail_url: null, share_token: null, share_enabled_at: null, view_count: 0, created_at: T0,
     ...over,
   };

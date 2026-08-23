@@ -60,7 +60,7 @@ vi.mock('../storage/getStorageAdapter.js', () => ({
 const logged = vi.hoisted(() => ({ error: vi.fn() }));
 const rum = vi.hoisted(() => ({
   sampleRate: 0,
-  flags: { schedulerMode: 'off' as const, adaptiveQuality: false, boundarySentinel: false },
+  flags: { schedulerMode: 'off' as 'off' | 'predictive', adaptiveQuality: false as boolean, boundarySentinel: false as boolean },
   aggregates: new Map<string, unknown>(),
   /** The keys the server actually grouped field measurements by, for the identity-axis test. */
   lastRequestedRevisions: [] as string[],
@@ -95,7 +95,7 @@ const section = (over: Record<string, unknown> = {}) => ({
   clip_in_sec: 0, global_offset_sec: null, broll_volume: 1, ...over,
 });
 
-const simRow = (over: Record<string, unknown> = {}) => ({
+const simRow = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
   id: 'sim-1', package_class: null, bridge_hash: 'H1',
   active_revision_id: null, active_revision_entry_key: null, prepare_budget_ms: null, ...over,
 });

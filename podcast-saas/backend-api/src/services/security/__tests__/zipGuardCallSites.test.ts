@@ -24,7 +24,7 @@ const mockStorage = {
   getSimPublicUrl: vi.fn().mockReturnValue('https://cdn.example.com/sim.html'),
   listObjects: vi.fn().mockResolvedValue([]),
   readObject: vi.fn().mockResolvedValue(Buffer.from('')),
-} as unknown as Parameters<typeof SimulationService.prototype.constructor>[0];
+} as unknown as ConstructorParameters<typeof SimulationService>[0] & { uploadFile: ReturnType<typeof vi.fn> };
 
 const svc = new SimulationService(mockStorage, {} as unknown as LLMService);
 

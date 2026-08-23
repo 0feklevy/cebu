@@ -29,7 +29,7 @@ const ALL_MIGRATIONS = readdirSync(MIGRATIONS_DIR).filter((f) => /^\d{3}_[^.]+\.
 // the per-test PGlite instance is the same seam `publicQuery.integration.test.ts` uses.
 const holder = vi.hoisted(() => ({ current: null as unknown as ReturnType<typeof drizzle> }));
 vi.mock('../../../db/index.js', () => ({
-  db: new Proxy({}, { get: (_t, prop) => (holder.current as Record<string | symbol, unknown>)[prop] }),
+  db: new Proxy({}, { get: (_t, prop) => (holder.current as unknown as Record<string | symbol, unknown>)[prop] }),
 }));
 
 import { registerLibraryShareRoutes } from '../../../controllers/v1/library-share.controller.js';

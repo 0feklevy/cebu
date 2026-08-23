@@ -38,7 +38,7 @@ type Reply = { status: number; json: unknown };
  *  exactly what a positional mock cannot express. */
 function mockAnam(handler: (url: string, method: string, body: Record<string, unknown>) => Reply): Call[] {
   const calls: Call[] = [];
-  globalThis.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+  globalThis.fetch = vi.fn(async (url: string | URL, init?: RequestInit) => {
     const u = String(url);
     const method = (init?.method ?? 'GET').toUpperCase();
     let body: Record<string, unknown> = {};

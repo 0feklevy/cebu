@@ -20,7 +20,7 @@ const PROJECT_ID = 'proj-1';
 const EXPORT_ID = 'exp-1';
 
 const mocks = vi.hoisted(() => ({
-  admit: vi.fn(() => null),
+  admit: vi.fn((..._args: unknown[]): { admitted: boolean; statusCode: number; code: string; message: string; detail: string } | null => null),
   // The row the controller writes — the frozen degradation policy is asserted on it.
   values: vi.fn(),
   findFirst: vi.fn(),
@@ -90,7 +90,7 @@ vi.mock('../../../services/export/exportPlan.js', () => {
   return {
     ExportRefused,
     buildExportPlan: mocks.buildExportPlan,
-    admitCaptureWorkload: (...args: unknown[]) => mocks.admit(...args),
+    admitCaptureWorkload: (...args: unknown[]) => mocks.admit(...(args as [unknown])),
   };
 });
 vi.mock('../../../services/export/ProjectExportService.js', () => ({

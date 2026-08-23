@@ -20,6 +20,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Fastify from 'fastify';
+import { callArgs } from '../../../__tests__/helpers/mockCalls.js';
 
 const mocks = vi.hoisted(() => ({
   deleteWithFallback: vi.fn(async () => {}),
@@ -78,7 +79,7 @@ describe('podcast deletes remove their bytes', () => {
     const res = await app.inject({ method: 'DELETE', url: '/api/v1/podcasts/show-1' });
     expect(res.statusCode).toBe(204);
 
-    const prefixes = mocks.deleteWithPrefixFallback.mock.calls.map((c) => c[0]).sort();
+    const prefixes = callArgs<string>(mocks.deleteWithPrefixFallback).sort();
     // `podcast-sources/` joined the list when source documents moved off the PUBLIC `podcasts/`
     // prefix (security-016). A document that outlives the show that owned it is the same exposure
     // with a longer fuse, so the show delete has to sweep both — and this exact-set assertion is
@@ -95,7 +96,7 @@ describe('podcast deletes remove their bytes', () => {
     const res = await app.inject({ method: 'DELETE', url: '/api/v1/podcasts/show-1/episodes/ep-1' });
     expect(res.statusCode).toBe(204);
 
-    const prefixes = mocks.deleteWithPrefixFallback.mock.calls.map((c) => c[0]).sort();
+    const prefixes = callArgs<string>(mocks.deleteWithPrefixFallback).sort();
     expect(prefixes).toEqual([
       'podcast-sources/show-1/episodes/ep-1',
       'podcasts/ep-1', 'podcasts/show-1/episodes/ep-1',

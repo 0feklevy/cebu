@@ -11,6 +11,7 @@
  * first call, which is the thing that was missing.
  */
 import { describe, it, expect, vi } from 'vitest';
+import { callArg } from '../../../__tests__/helpers/mockCalls.js';
 
 vi.mock('../../../db/index.js', () => ({
   db: {
@@ -56,7 +57,7 @@ describe('the writers room opts out of system-prompt caching', () => {
     } as never).catch(() => { /* the fake throws after the first pass — by design */ });
 
     expect(sendStructured, 'the room never reached the LLM').toHaveBeenCalled();
-    const payload = sendStructured.mock.calls[0]![0] as Record<string, unknown>;
+    const payload = callArg<Record<string, unknown>>(sendStructured);
     expect(payload.systemPromptCacheable, 'a prompt unique per call must not be cache-written').toBe(false);
   });
 });

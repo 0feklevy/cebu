@@ -114,7 +114,7 @@ process.exit(${behavior.exitCode});
 
 function boundary(dockerBin: string): DockerCaptureBoundary {
   return new DockerCaptureBoundary({
-    image: 'podcast-saas/export-worker:test', rendererProfile: 'swiftshader',
+    image: 'podcast-saas/export-worker:test',
     user: '1000:1000',
     cpus: '2',
     memoryMb: 2048,
@@ -332,7 +332,7 @@ process.exit(1);
     );
     await chmod(dockerBin, 0o755);
     const b = new DockerCaptureBoundary({
-      image: 'podcast-saas/export-worker:test', rendererProfile: 'swiftshader',
+      image: 'podcast-saas/export-worker:test',
       user: '1000:1000', cpus: '2', memoryMb: 2048, pidsLimit: 256, tmpfsScratchMb: 512,
       stopTimeoutSec: 10, dockerBin,
       gpuCdiDevice: 'nvidia.com/gpu=0',

@@ -13,7 +13,7 @@ import * as schema from '../../../db/schema.js';
 // Mock the app db with a proxy that delegates to the per-test PGlite Drizzle instance.
 const holder = vi.hoisted(() => ({ current: null as unknown as ReturnType<typeof drizzle> }));
 vi.mock('../../../db/index.js', () => ({
-  db: new Proxy({}, { get: (_t, prop) => (holder.current as Record<string | symbol, unknown>)[prop] }),
+  db: new Proxy({}, { get: (_t, prop) => (holder.current as unknown as Record<string | symbol, unknown>)[prop] }),
 }));
 
 import { PublicCourseQueryService } from '../PublicCourseQueryService.js';

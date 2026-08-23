@@ -175,9 +175,11 @@ async function newJob(opts: { enhance?: boolean; offset?: number } = {}): Promis
 interface JobView {
   status: string; error: string | null; section_id: string | null; video_file_id: string | null;
   external_task_id: string | null; claimed_by: string | null; attempts: number;
+  finished_at: string | null;
 }
 const jobRow = (id: string): Promise<JobView> => one<JobView>(
-  `SELECT status, error, section_id, video_file_id, external_task_id, claimed_by, attempts
+  `SELECT status, error, section_id, video_file_id, external_task_id, claimed_by, attempts,
+          finished_at
      FROM video_generation_jobs WHERE id=$1`, [id]);
 
 /**

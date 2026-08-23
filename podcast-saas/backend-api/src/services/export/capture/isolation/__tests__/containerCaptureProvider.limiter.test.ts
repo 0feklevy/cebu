@@ -45,7 +45,9 @@ const SPEC: CaptureSpec = {
   width: 320,
   height: 180,
   configHash: 'cfg-1',
-  posterKey: null,
+  // '' is what ProjectExportService actually passes when a window has no poster (`?? ''`) —
+  // the type requires a string and null never crosses this boundary in production.
+  posterKey: '',
 };
 
 function fakeStorage(): StorageService {
@@ -111,10 +113,12 @@ const framesBoundary = {
       rendererString: 'ANGLE (test)',
       gate: 'passed',
       reason: null,
+      // The REAL RendererIdentity shape (types.ts). The previous fixture carried the pre-refactor
+      // field names under an `as` cast — which is how a fixture goes stale without a test noticing.
       rendererIdentity: {
-        image: 'podcast-saas/export-worker:test', rendererProfile: 'swiftshader',
-        chromeHeadlessShellVersion: 'test', viewport: '320x180', dpr: 1,
-      } as ContainerCaptureResult['rendererIdentity'],
+        imageDigest: 'sha256:test', headlessShellVersion: 'test',
+        viewport: { w: 320, h: 180 }, dpr: 1,
+      },
       failure: null,
       cost: null,
     };
