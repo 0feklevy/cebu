@@ -555,7 +555,7 @@ export function SectionEditor({
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+   
   }, [clipSourceVideoId, localVideos, section.end_sec, section.start_sec]);
 
   // Load simulation file list

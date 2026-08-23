@@ -352,7 +352,6 @@ describe('A → B', () => {
 
 // ── every refusal reason, by name ─────────────────────────────────────────────────────────────
 
-const DOC = readyDocument('doc_reasons');
 const CURRENT: PresentationIdentity = identity({
   documentId: 'doc_reasons',
   activationId: 'act_current',

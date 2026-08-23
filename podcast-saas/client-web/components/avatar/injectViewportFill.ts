@@ -3,7 +3,7 @@
 
 export function withRafErrorCatch(html: string): string {
   if (!html) return '';
-  const script = `<script id="__raf_safe__">(function(){var _r=window.requestAnimationFrame;window.requestAnimationFrame=function(cb){return _r.call(window,function(ts){try{cb(ts);}catch(e){console.error('[sim]',e.message);}});};})();<\/script>`;
+  const script = `<script id="__raf_safe__">(function(){var _r=window.requestAnimationFrame;window.requestAnimationFrame=function(cb){return _r.call(window,function(ts){try{cb(ts);}catch(e){console.error('[sim]',e.message);}});};})();</script>`;
   if (html.includes('<head>')) return html.replace('<head>', '<head>' + script);
   if (html.includes('<body>')) return html.replace('<body>', script + '<body>');
   return script + html;
@@ -12,7 +12,7 @@ export function withRafErrorCatch(html: string): string {
 export function injectViewportFill(html: string, preview = false): string {
   if (!html) return '';
   const rafThrottle = preview
-    ? `<script id="__pv_raf__">(function(){var _r=window.requestAnimationFrame,n=0;window.requestAnimationFrame=function(cb){if(n++<10){return _r.call(window,function(ts){try{cb(ts);}catch(e){}});}return _r.call(window,function(){});};})();<\/script>`
+    ? `<script id="__pv_raf__">(function(){var _r=window.requestAnimationFrame,n=0;window.requestAnimationFrame=function(cb){if(n++<10){return _r.call(window,function(ts){try{cb(ts);}catch(e){}});}return _r.call(window,function(){});};})();</script>`
     : '';
   const injection = rafThrottle + `
 <style id="__vp__">
@@ -45,7 +45,7 @@ body{margin:0!important;padding:0!important;overflow:visible!important;position:
   if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',init);}
   else{init();}
 })();
-<\/script>`;
+</script>`;
   let result: string;
   if (html.includes('<head>')) result = html.replace('<head>', '<head>' + injection);
   else if (html.includes('<body>')) result = html.replace('<body>', injection + '<body>');

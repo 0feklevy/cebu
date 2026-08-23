@@ -298,7 +298,6 @@ export function VideoEditor({ projectId }: Props) {
   const [showUploader, setShowUploader] = useState(false);
   const [showBranching, setShowBranching] = useState(false);
   const [showSimUploader, setShowSimUploader] = useState(false);
-  const [showImgUploader, setShowImgUploader] = useState(false);
   const [pendingCropImage, setPendingCropImage] = useState<ImageFile | null>(null);
   const [extendedLibraryOpen, setExtendedLibraryOpen] = useState(false);
   const [imgUploading, setImgUploading] = useState(false);
@@ -457,7 +456,7 @@ export function VideoEditor({ projectId }: Props) {
     poll();
     const timer = setInterval(poll, 5000);
     return () => clearInterval(timer);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+   
   }, [pendingKey, projectId]);
 
   // Poll for simulation status while any are still processing
@@ -473,14 +472,12 @@ export function VideoEditor({ projectId }: Props) {
     poll();
     const timer = setInterval(poll, 2000);
     return () => clearInterval(timer);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+   
   }, [pendingSimKey, projectId]);
 
   // B-roll computed values
-  const isAudioSection = (s: TimelineSection) => s.track === 'audio' || !!s.clip_source_audio_id;
   const isVisualBrollSection = (s: TimelineSection) => s.track === 'broll' && !s.clip_source_audio_id;
   const brollSections = sections.filter(isVisualBrollSection);
-  const audioSections = sections.filter(isAudioSection);
   const hasBroll = toolMode === 'broll' || showAllLayers;
 
   // Main timeline offsets. Sections may extend past the physical video duration
@@ -546,11 +543,6 @@ export function VideoEditor({ projectId }: Props) {
   const brollHlsUrl = overlaySourceId ? (hlsUrls[overlaySourceId] ?? null) : null;
 
   // B-roll callbacks
-  const handleToolModeChange = useCallback((mode: ToolMode) => {
-    setToolMode(mode);
-    if (mode !== 'broll') setBrollMark(null);
-  }, []);
-
   const handleToggleAllLayers = useCallback(() => {
     setShowAllLayers((visible) => {
       const next = !visible;

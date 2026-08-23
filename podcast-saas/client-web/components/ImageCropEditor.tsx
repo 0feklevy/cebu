@@ -29,8 +29,8 @@ export function ImageCropEditor({ image, onApprove, onCancel }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const imgRef       = useRef<HTMLImageElement>(null);
 
-  const [naturalW, setNaturalW] = useState(image.width  ?? 0);
-  const [naturalH, setNaturalH] = useState(image.height ?? 0);
+  const [, setNaturalW] = useState(image.width  ?? 0);
+  const [, setNaturalH] = useState(image.height ?? 0);
 
   // Crop state as fractions of the DISPLAYED image element size.
   // Width/height are clamped to a positive minimum — a stored 0 would divide-by-zero

@@ -502,7 +502,7 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
                           </span>
                           <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground" title={shareUrl}>{shareUrl}</span>
                           <button
-                            onClick={async () => { try { await navigator.clipboard.writeText(shareUrl); setShareCopied(true); setTimeout(() => setShareCopied(false), 1500); } catch {} }}
+                            onClick={async () => { try { await navigator.clipboard.writeText(shareUrl); setShareCopied(true); setTimeout(() => setShareCopied(false), 1500); } catch { /* clipboard permission denied — the copy simply does not happen */ } }}
                             className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-ring"
                             title={shareCopied ? 'Copied' : 'Copy link'}
                             aria-label={shareCopied ? 'Copied' : 'Copy playlist share link'}
