@@ -322,3 +322,47 @@ describe('artifact uploads cannot publish production credentials', () => {
     });
   }
 });
+
+describe('the candidate stack can actually interpolate its compose file', () => {
+  // Twice on 2026-08-23 the release died INSIDE candidate-smoke on plumbing, not on a real
+  // candidate defect: first `cd podcast-saas/deploy` under a job whose working-directory already
+  // is podcast-saas (#103), then ${BACKEND_IMAGE} missing on the migrate step because the digest
+  // refs lived in ONE step's `env:` block (#129). Both cost a full release cycle each. The
+  // compose file declares its required variables; this asserts the workflow supplies every one of
+  // them job-wide, so the next required variable added to the compose file cannot go unnoticed.
+  it('every required compose variable is exported JOB-WIDE, not per-step', () => {
+    const compose = readFileSync(
+      join(REPO, 'podcast-saas', 'deploy', 'docker-compose.candidate.yml'), 'utf8');
+    const required = [...compose.matchAll(/\$\{([A-Z_][A-Z0-9_]*):\?/g)].map((m) => m[1]);
+    expect(required.length, 'no required interpolations found — the regex or the file moved').toBeGreaterThan(0);
+
+    const smokeJob = / {2}candidate-smoke:\n(?:.*\n)*?(?=\n {2}[a-z-]+:\n)/.exec(RELEASE)?.[0] ?? '';
+    expect(smokeJob, 'candidate-smoke job not found in release.yml').not.toBe('');
+
+    // JOB-WIDE ONLY. A per-step `env:` block is exactly what failed on 2026-08-23: it covered the
+    // stack-start step and left the migrate step interpolating nothing. So the accepted spellings
+    // are the two that reach EVERY step — an echo into $GITHUB_ENV, or a heredoc write into it.
+    const missing = required.filter((v) =>
+      !new RegExp(`echo "${v}=[^"]*" >> "\\$GITHUB_ENV"`).test(smokeJob) &&
+      !new RegExp(`echo '${v}<<`).test(smokeJob));
+    expect(missing, `the candidate compose REQUIRES these and the smoke job never exports them job-wide (a per-step env: block is not enough — that is the #129 bug): ${missing.join(', ')}`)
+      .toEqual([]);
+  });
+});
+
+describe('the publish job survives the skipped-approval chain', () => {
+  // v0.1.40–43 all sat as Drafts: risk-review is SKIPPED on routine releases, and publish's `if`
+  // carried no status function — so the implicit "all transitive needs succeeded" precondition
+  // silently skipped it on every routine deploy. The deploy job documents this exact trap and
+  // handles it; this test stops anyone from re-simplifying publish's condition back into it.
+  it("publish's if switches the implicit precondition off AND keeps the deploy gate", () => {
+    const src = RELEASE;
+    const m = /publish:\n(?:.*\n)*? {4}if: (.*)/.exec(src);
+    expect(m, 'publish job or its if not found').not.toBeNull();
+    const cond = m![1];
+    expect(cond, 'a status function must disable the implicit success() precondition')
+      .toMatch(/!cancelled\(\)|always\(\)/);
+    expect(cond, 'always() would re-admit a FAILED deploy — the explicit result check must stay')
+      .toMatch(/needs\.deploy\.result == 'success'/);
+  });
+});

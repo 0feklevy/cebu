@@ -24,10 +24,11 @@
  *
  * WHAT IS AND IS NOT VERIFIED
  * Byte content is verified by reading every file back and re-hashing it — an upload that resolves is
- * not proof the object landed. Object METADATA (content type, cache control) is verified only where
- * the adapter can report it; where it cannot, the manifest records the value as declared and the
- * report says `unverified` rather than `ok`. A verification that cannot tell the difference between
- * "correct" and "cannot tell" is not a verification.
+ * not proof the object landed. Object METADATA is verified only where the adapter can report it:
+ * cache control against the stored value, and content type against the adapter's effective public
+ * delivery value. Where metadata cannot be observed, the manifest records the declared value and
+ * the report says `unverified` rather than `ok`. A verification that cannot tell the difference
+ * between "correct" and "cannot tell" is not a verification.
  */
 
 import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
@@ -101,7 +102,7 @@ export interface VerificationProblem {
 export interface VerificationReport {
   /** Files whose stored BYTES were read back and matched their manifest hash. */
   bytesVerified: number;
-  /** Files whose stored METADATA was observed and matched. */
+  /** Files whose observable metadata matched the effective public delivery contract. */
   metadataVerified: number;
   /**
    * Files whose metadata could not be observed because the adapter does not report it. Counted
@@ -547,10 +548,13 @@ export class RevisionService {
         continue;
       }
       let mismatched = false;
-      if (head.contentType !== null && head.contentType !== f.contentType) {
+      const effectiveContentType = head.contentType === null
+        ? null
+        : this.storage.effectiveSimulationContentType?.(key, head.contentType) ?? head.contentType;
+      if (effectiveContentType !== null && effectiveContentType !== f.contentType) {
         report.problems.push({
           path: f.path, code: 'content-type-mismatch',
-          detail: `stored ${head.contentType}, manifest ${f.contentType}`,
+          detail: `stored ${head.contentType}, delivered ${effectiveContentType}, manifest ${f.contentType}`,
         });
         mismatched = true;
       }

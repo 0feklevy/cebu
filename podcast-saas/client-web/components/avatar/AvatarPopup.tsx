@@ -148,6 +148,17 @@ export function AvatarPopup({ open, onClose, projectId, videoTitle, characterId 
       }
     };
 
+    // Bound only the TOKEN START. Once it settles, AvatarConversation owns the live session and
+    // its own first-frame watchdog. Leaving this timer armed after a successful token meant it
+    // fired 30s after popup-open, replaced a healthy conversation with the timeout screen, and
+    // unmounted the child — whose cleanup then stopped the active stream.
+    const watchdog = setTimeout(() => {
+      if (abort.signal.aborted) return;
+      trace.mark('connect-failed', { at: 'token-timeout' });
+      abort.abort();
+      setError("The avatar is taking longer than expected to start.");
+    }, CONNECT_WATCHDOG_MS);
+
     attemptStart()
       .then((data) => {
         if (abort.signal.aborted) return;
@@ -193,18 +204,8 @@ export function AvatarPopup({ open, onClose, projectId, videoTitle, characterId 
           return;
         }
         setError("The avatar couldn't start right now. Please try again in a moment.");
-      });
-    // AND BOUND THE WAIT ITSELF. The check above catches a start that answers uselessly; this
-    // catches one that does not answer at all — a hung vendor call, a proxy holding the
-    // connection, a network that goes away mid-flight. `fetch` has no timeout of its own, so
-    // without this the spinner is unbounded. Same constant the conversation uses for the stream
-    // phase, because it is the same promise to the viewer: you will not be left here.
-    const watchdog = setTimeout(() => {
-      if (abort.signal.aborted) return;
-      trace.mark('connect-failed', { at: 'token-timeout' });
-      abort.abort();
-      setError("The avatar is taking longer than expected to start.");
-    }, CONNECT_WATCHDOG_MS);
+      })
+      .finally(() => clearTimeout(watchdog));
 
     return () => { clearTimeout(watchdog); abort.abort(); };
   }, [open, characterId, projectId, attempt]);
