@@ -322,3 +322,30 @@ describe('artifact uploads cannot publish production credentials', () => {
     });
   }
 });
+
+describe('the candidate stack can actually interpolate its compose file', () => {
+  // Twice on 2026-08-23 the release died INSIDE candidate-smoke on plumbing, not on a real
+  // candidate defect: first `cd podcast-saas/deploy` under a job whose working-directory already
+  // is podcast-saas (#103), then ${BACKEND_IMAGE} missing on the migrate step because the digest
+  // refs lived in ONE step's `env:` block (#129). Both cost a full release cycle each. The
+  // compose file declares its required variables; this asserts the workflow supplies every one of
+  // them job-wide, so the next required variable added to the compose file cannot go unnoticed.
+  it('every required compose variable is exported JOB-WIDE, not per-step', () => {
+    const compose = readFileSync(
+      join(REPO, 'podcast-saas', 'deploy', 'docker-compose.candidate.yml'), 'utf8');
+    const required = [...compose.matchAll(/\$\{([A-Z_][A-Z0-9_]*):\?/g)].map((m) => m[1]);
+    expect(required.length, 'no required interpolations found — the regex or the file moved').toBeGreaterThan(0);
+
+    const smokeJob = /  candidate-smoke:\n(?:.*\n)*?(?=\n  [a-z-]+:\n)/.exec(RELEASE)?.[0] ?? '';
+    expect(smokeJob, 'candidate-smoke job not found in release.yml').not.toBe('');
+
+    // JOB-WIDE ONLY. A per-step `env:` block is exactly what failed on 2026-08-23: it covered the
+    // stack-start step and left the migrate step interpolating nothing. So the accepted spellings
+    // are the two that reach EVERY step — an echo into $GITHUB_ENV, or a heredoc write into it.
+    const missing = required.filter((v) =>
+      !new RegExp(`echo "${v}=[^"]*" >> "\\$GITHUB_ENV"`).test(smokeJob) &&
+      !new RegExp(`echo '${v}<<`).test(smokeJob));
+    expect(missing, `the candidate compose REQUIRES these and the smoke job never exports them job-wide (a per-step env: block is not enough — that is the #129 bug): ${missing.join(', ')}`)
+      .toEqual([]);
+  });
+});
