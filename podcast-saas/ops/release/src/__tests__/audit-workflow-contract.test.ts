@@ -336,7 +336,7 @@ describe('the candidate stack can actually interpolate its compose file', () => 
     const required = [...compose.matchAll(/\$\{([A-Z_][A-Z0-9_]*):\?/g)].map((m) => m[1]);
     expect(required.length, 'no required interpolations found — the regex or the file moved').toBeGreaterThan(0);
 
-    const smokeJob = /  candidate-smoke:\n(?:.*\n)*?(?=\n  [a-z-]+:\n)/.exec(RELEASE)?.[0] ?? '';
+    const smokeJob = / {2}candidate-smoke:\n(?:.*\n)*?(?=\n {2}[a-z-]+:\n)/.exec(RELEASE)?.[0] ?? '';
     expect(smokeJob, 'candidate-smoke job not found in release.yml').not.toBe('');
 
     // JOB-WIDE ONLY. A per-step `env:` block is exactly what failed on 2026-08-23: it covered the
