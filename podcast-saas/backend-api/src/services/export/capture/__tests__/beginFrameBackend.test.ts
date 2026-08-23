@@ -208,7 +208,7 @@ describe('sanity-gate sampler judges the captured frame, not the canvas element'
       async decode(): Promise<void> {}
     };
     try {
-      // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
+       
       const result = await (new Function(`return (${expr});`)() as Promise<unknown>);
       return { result, drewFrom };
     } finally {

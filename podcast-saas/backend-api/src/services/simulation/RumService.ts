@@ -14,7 +14,7 @@
  * There is no code path that turns collection on by accident.
  */
 
-import { inArray, lt, sql } from 'drizzle-orm';
+import {inArray, sql } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { sim_rum_events } from '../../db/schema.js';
 import { logger } from '../../lib/logger.js';

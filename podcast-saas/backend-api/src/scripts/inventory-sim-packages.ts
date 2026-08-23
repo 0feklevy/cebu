@@ -15,7 +15,7 @@
 import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { db } from '../db/index.js';
-import { simulations, timeline_sections } from '../db/schema.js';
+
 import { getStorageAdapter } from '../services/storage/getStorageAdapter.js';
 import {
   deriveEntryRelPath,

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { countSpokenWords, estimateMinutes, wordBudget, SPOKEN_WPM, BUDGET_LOW, BUDGET_HIGH } from '../duration.js';
+import {countSpokenWords, estimateMinutes, wordBudget, SPOKEN_WPM, BUDGET_LOW } from '../duration.js';
 
 describe('countSpokenWords', () => {
   it('counts plain words', () => {

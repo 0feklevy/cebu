@@ -1,6 +1,6 @@
 // Ported (simplified) from darwin-avatar/server/db/userMemory.ts
 // Cross-session conversation memory: stores turns + extracts personal facts.
-import { and, eq, desc } from 'drizzle-orm';
+import {eq, desc } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { avatar_conversations, avatar_profiles } from '../../db/schema.js';
 import { MODELS } from './models.js';

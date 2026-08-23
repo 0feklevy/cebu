@@ -102,7 +102,7 @@ function boot(sections: Record<string, unknown>) {
     .replace('__SECTIONS__', '__TEST_SECTIONS__')
     .replace('var __simV3 =', 'return');
 
-  // eslint-disable-next-line @typescript-eslint/no-implied-eval
+   
   const install = new Function('window', '__TEST_SECTIONS__', source) as
     (w: unknown, s: unknown) => { onEnvelope: (raw: unknown) => void; isAdopted: () => boolean };
   const handle = install(win, sections);

@@ -1,4 +1,4 @@
-import { z } from 'zod';
+
 import type { ZodSchema } from 'zod';
 import JSON5 from 'json5';
 import { LLMProvider, type TaskType, type TokenUsage, type EffortLevel, type LLMResponse } from './LLMProvider.js';
@@ -11,7 +11,7 @@ import { callDeadlineAt, linkAbortWithDeadline } from './deadline.js';
 import { ApiKeyService } from '../secrets/ApiKeyService.js';
 import { UsageTrackingService } from '../usage/UsageTrackingService.js';
 import { db } from '../../db/index.js';
-import { admin_settings, system_prompts, api_keys, token_usage } from '../../db/schema.js';
+import {admin_settings, token_usage } from '../../db/schema.js';
 import { eq, and, gte, notInArray, sql } from 'drizzle-orm';
 import { AppError, LLMErrorType } from 'shared';
 import { logger } from '../../lib/logger.js';

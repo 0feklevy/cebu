@@ -46,21 +46,21 @@ interface Harness {
   fire(data: Msg, from: 'parent' | 'foreign'): void;
   /** Run every rAF callback queued so far, once, with `ts`. */
   flushRaf(ts: number): void;
-  win: Record<string, unknown> & { [k: string]: any };  // eslint-disable-line @typescript-eslint/no-explicit-any
+  win: Record<string, unknown> & { [k: string]: any };   
 }
 
 /** A window/document just real enough to run the injected system scripts. */
-function runInSimDocument(source: string, setup?: (win: any) => void): Harness { // eslint-disable-line @typescript-eslint/no-explicit-any
+function runInSimDocument(source: string, setup?: (win: any) => void): Harness {  
   const parentPosts: Msg[] = [];
   const messageListeners: Array<(e: unknown) => void> = [];
   let rafQueue: Array<(ts: number) => void> = [];
-  const byId = new Map<string, any>(); // eslint-disable-line @typescript-eslint/no-explicit-any
+  const byId = new Map<string, any>();  
 
-  const makeEl = (tag: string): any => { // eslint-disable-line @typescript-eslint/no-explicit-any
-    const e: any = { // eslint-disable-line @typescript-eslint/no-explicit-any
+  const makeEl = (tag: string): any => {  
+    const e: any = {  
       tagName: tag.toUpperCase(), id: '', textContent: '', value: '', checked: false,
       style: {}, children: [] as unknown[], parentElement: null, removed: false,
-      appendChild(c: any) { // eslint-disable-line @typescript-eslint/no-explicit-any
+      appendChild(c: any) {  
         e.children.push(c); c.parentElement = e; if (c.id) byId.set(c.id, c); return c;
       },
       remove() { e.removed = true; if (e.id) byId.delete(e.id); },
@@ -76,7 +76,7 @@ function runInSimDocument(source: string, setup?: (win: any) => void): Harness {
   const head = makeEl('head');
   const body = makeEl('body');
 
-  const document: any = { // eslint-disable-line @typescript-eslint/no-explicit-any
+  const document: any = {  
     readyState: 'complete',
     head, body, documentElement: documentEl,
     addEventListener() {}, removeEventListener() {},
@@ -89,7 +89,7 @@ function runInSimDocument(source: string, setup?: (win: any) => void): Harness {
 
   const parent = { postMessage: (m: Msg) => { parentPosts.push(m); } };
 
-  const win: any = { // eslint-disable-line @typescript-eslint/no-explicit-any
+  const win: any = {  
     document,
     parent,
     location: { hash: '', search: '', href: 'https://api.example.test/sim-public/s/index.html', origin: 'https://api.example.test' },
@@ -157,7 +157,7 @@ const BARE_HTML = '<!doctype html><html><head></head><body></body></html>';
 
 describe('boot snippet — clearBootHide', () => {
   const bootSource = () => scriptContaining(injectSimBootSnippet(BARE_HTML), '__simBootHide');
-  const withBootCloak = (win: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+  const withBootCloak = (win: any) => {  
     win.location.hash = '#simboot=' + encodeURIComponent(JSON.stringify({ hide: ['#panel'] }));
   };
 
@@ -206,7 +206,7 @@ describe('rAF gate — simPause/simResume', () => {
 describe('inline bridge — startScript', () => {
   const FNS: BridgeFunction[] = [{ name: 'demo', windowFn: 'runDemo', description: 'demo' }];
   const inlineSource = () => scriptContaining(injectInlineBridge(BARE_HTML, FNS), 'sim-bridge v2');
-  const countRuns = (win: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+  const countRuns = (win: any) => {  
     win.runs = 0;
     win.runDemo = () => { win.runs += 1; };
   };

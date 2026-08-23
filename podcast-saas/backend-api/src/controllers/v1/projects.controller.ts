@@ -7,7 +7,7 @@ import { projects, hosts, video_files, simulations, audio_files, image_files, co
 import { eq, and, inArray } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { editableProject, projectsEditableByWhere } from '../../services/collabAccess.js';
-import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
+
 import { uploadWithFallback } from '../../services/storage/uploadWithFallback.js';
 import { deleteSupersededThumbnail } from '../../services/storage/deleteSupersededThumbnail.js';
 import { deleteWithFallback, deleteWithPrefixFallback } from '../../services/storage/deleteWithFallback.js';

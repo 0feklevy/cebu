@@ -1,6 +1,6 @@
 import type { FastifyRequest, FastifyReply } from 'fastify';
 import { db } from '../db/index.js';
-import { admin_settings } from '../db/schema.js';
+
 import { LLMErrorType } from 'shared';
 
 export async function scriptGenerationRateLimit(

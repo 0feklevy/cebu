@@ -413,7 +413,7 @@ export async function storeImageBuffer(
 }
 
 // Stores a full HTML simulation as a single-file entry. Returns prefix + public URL.
-export async function storeSimulationHtml(html: string, projectId?: string | null): Promise<{ prefix: string; url: string }> {
+export async function storeSimulationHtml(html: string, _projectId?: string | null): Promise<{ prefix: string; url: string }> {
   const id = randomUUID();
   const prefix = `simulations/avatar/${id}`;
   const key = `${prefix}/index.html`;

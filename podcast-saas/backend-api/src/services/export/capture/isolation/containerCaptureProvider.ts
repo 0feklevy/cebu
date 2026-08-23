@@ -50,7 +50,6 @@ import {
   assertRendererProfileName,
   assertWithinOutputDir,
   openArtifactHandle,
-  assertRegularArtifact,
   frameFileName,
   buildCaptureSpec,
   expectedFrameCount,

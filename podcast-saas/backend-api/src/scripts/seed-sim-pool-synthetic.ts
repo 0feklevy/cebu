@@ -29,7 +29,7 @@
  *   Delete: DATABASE_URL=... STORAGE_BACKEND=local tsx src/scripts/seed-sim-pool-synthetic.ts --delete
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import {mkdtempSync, readFileSync, readdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';

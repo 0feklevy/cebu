@@ -31,7 +31,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { constants as fsConstants, lstat, mkdir, open as fsOpen, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import {constants as fsConstants, lstat, mkdir, open as fsOpen, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, sep } from 'node:path';
 
 import type { RendererIdentity, SimCaptureWindow } from '../../types.js';
