@@ -30,7 +30,7 @@ export function useMixWaveform(
       });
     }, 250);
     return () => clearTimeout(handle);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [timeline, clips, totalMs, laneOf]);
 
   return peaks;

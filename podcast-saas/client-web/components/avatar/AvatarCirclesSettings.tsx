@@ -538,7 +538,6 @@ const label: React.CSSProperties = { fontSize: 12, color: '#475569', fontWeight:
 const labelStrong: React.CSSProperties = { fontSize: 13, color: '#0f172a', fontWeight: 700 };
 const rowBetween: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 };
 const input: React.CSSProperties = { border: '1px solid #e2e8f0', borderRadius: 7, padding: '6px 8px', fontSize: 12, color: '#0f172a', outline: 'none' };
-const select: React.CSSProperties = { ...input, cursor: 'pointer' };
 const pill: React.CSSProperties = { border: '1px solid #dbe3ef', background: '#fff', borderRadius: 7, padding: '5px 12px', fontSize: 12, fontWeight: 700, color: '#475569', cursor: 'pointer' };
 const pillActive: React.CSSProperties = { background: 'linear-gradient(135deg,#6366f1,#a855f7)', color: '#fff', border: '1px solid transparent' };
 const iconBtn: React.CSSProperties = { width: 30, height: 30, borderRadius: 8, border: 'none', background: 'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#475569' };

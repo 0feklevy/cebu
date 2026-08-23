@@ -881,7 +881,7 @@ export function useProjectPlayer(
   // runtime has no model for into the runtime's mouth.
   const sendToFrame = (key: string | null, msg: object) => {
     if (!key) return;
-    try { simPoolFramesRef.current.get(key)?.contentWindow?.postMessage(msg, '*'); } catch (_) {}
+    try { simPoolFramesRef.current.get(key)?.contentWindow?.postMessage(msg, '*'); } catch { /* a torn-down frame cannot receive — nothing to do */ }
   };
 
   // Per-package pool-manager flags (get-or-create — a frame may message before any bookkeeping).

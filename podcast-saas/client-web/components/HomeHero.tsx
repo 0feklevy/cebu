@@ -294,7 +294,7 @@ function writeCachedProjects(uid: string | null | undefined, items: Project[]) {
 }
 
 export function HomeHero() {
-  const { loading: authLoading, user, isAnonymous } = useAuth();
+  const { loading: authLoading, user } = useAuth();
   const [createOpen, setCreateOpen] = useState(false);
   // Start empty so the server and the first client render match (the page now
   // SSRs). The localStorage cache is seeded in a mount effect below.

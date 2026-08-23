@@ -762,7 +762,7 @@ export function TimelinePanel({
     };
     el.addEventListener('wheel', handler, { passive: false });
     return () => el.removeEventListener('wheel', handler);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+   
   }, []);
 
   // ── px → global seconds ──────────────────────────────────────────────────
@@ -1219,7 +1219,7 @@ export function TimelinePanel({
     markerDragCleanupRef.current = teardown;
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+   
   }, [pixelsToGlobalSec, onUpdateMarker]);
 
   // Remove any in-flight marker-drag window listeners if the component unmounts mid-drag. (frontend-102)

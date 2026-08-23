@@ -110,7 +110,7 @@ export function useEditorPlayback(
     standbyIdRef.current = clip.id;
     // attachHlsSource from shared core — same error-recovery as the viewer
     attachHlsSource(standbyRef.current, clip.hlsUrl, clip.rawUrl, hlsStandbyRef.current, hlsLibRef.current);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+   
   }, []);
 
   // ── swapVideos — A↔B element swap, same pattern as useProjectPlayer ────────
@@ -123,7 +123,7 @@ export function useEditorPlayback(
     a.pause();
     hlsStandbyRef.current?.stopLoad();
     hlsStandbyRef.current?.detachMedia();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+   
   }, []);
 
   // ── loadClip ───────────────────────────────────────────────────────────────
@@ -209,7 +209,7 @@ export function useEditorPlayback(
       (s, d, i) => s + (d || clipsRef.current[i]?.duration || 0), 0,
     );
     setTotalDuration(Math.max(newTotal, minTotalDurationRef.current));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+   
   }, []);
 
   // ── onTick — driven by timeupdate (~4–10 Hz) not RAF (60 Hz) ─────────────
@@ -338,7 +338,7 @@ export function useEditorPlayback(
     const wp = wasPlayingRef.current;
     scrubbingRef.current = false;
     seek(globalSec, wp);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+   
   }, [seek]);
 
   const play  = useCallback(() => { videoRef.current?.play().catch(() => {}); }, []);

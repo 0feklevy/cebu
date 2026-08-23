@@ -40,7 +40,7 @@ const DEFAULT_HOSTS: Pick<Host, 'id' | 'name' | 'role' | 'persona_text'>[] = [
 
 export function HostPicker({ selectedAId, selectedBId, onSelectA, onSelectB }: Props) {
   const [hosts, setHosts] = useState<typeof DEFAULT_HOSTS>(DEFAULT_HOSTS);
-  const [loading, setLoading] = useState(false);
+  const [, setLoading] = useState(false);
 
   useEffect(() => {
     setLoading(true);

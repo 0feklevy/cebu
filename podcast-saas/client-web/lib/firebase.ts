@@ -72,7 +72,7 @@ export const auth = useAuthEmulator
 if (useAuthEmulator) {
   connectAuthEmulator(auth, authEmulatorUrl, { disableWarnings: true });
 } else if (AUTH_EMULATOR_HOST && process.env.NODE_ENV !== 'production') {
-  // eslint-disable-next-line no-console
+   
   console.error('[firebase] refusing a non-loopback auth emulator host');
 }
 

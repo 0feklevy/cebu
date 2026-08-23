@@ -146,7 +146,7 @@ export function attachHlsSource(
 /** Plays a video element, swallowing the DOMException thrown when play() is
  *  interrupted by a subsequent pause() or src change. */
 export async function safePlay(v: HTMLVideoElement): Promise<void> {
-  try { await v.play(); } catch (_) {}
+  try { await v.play(); } catch { /* autoplay refusal is the caller's normal path */ }
 }
 
 /** Format seconds as M:SS. */

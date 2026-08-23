@@ -122,7 +122,7 @@ export function AudioStudio({ showId, episodeId, initial, turns, onReloadScript 
       (pos, isPlaying) => { setPlayhead(pos); setPlaying(isPlaying); },
     );
     return () => { playerRef.current?.dispose(); playerRef.current = null; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, []);
 
   const togglePlay = useCallback(() => {
@@ -280,7 +280,7 @@ export function AudioStudio({ showId, episodeId, initial, turns, onReloadScript 
       const el = e.target as HTMLElement;
       if (!shortcutsActiveRef.current || isEditableTarget(el)) return;
       if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
-      else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? draft.redo() : draft.undo(); }
+      else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) draft.redo(); else draft.undo(); }
       else if (e.key.toLowerCase() === 'c' && !e.metaKey && !e.ctrlKey && !e.altKey) setRazor((r) => !r);
       else if (e.key.toLowerCase() === 'm' && selected != null) setField(selected, { muted: !timeline.clips[selected].muted });
       else if ((e.key === 'Delete' || e.key === 'Backspace') && selected != null) setField(selected, { muted: true });

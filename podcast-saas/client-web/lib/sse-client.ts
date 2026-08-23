@@ -49,11 +49,11 @@ export async function connectSSEStream(
 
         for (const msg of messages) {
           const lines = msg.split('\n');
-          let eventType = '';
           let dataLine = '';
 
           for (const line of lines) {
-            if (line.startsWith('event: ')) eventType = line.slice(7).trim();
+            // `event:` lines are part of the SSE frame but this client dispatches on the DATA
+            // payload's own type field; the frame-level event name is deliberately unused.
             if (line.startsWith('data: ')) dataLine = line.slice(6).trim();
           }
 

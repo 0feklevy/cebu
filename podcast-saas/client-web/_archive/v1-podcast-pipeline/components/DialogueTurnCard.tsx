@@ -4,7 +4,7 @@ import type { DialogueTurn } from 'shared';
 
 interface Props {
   turn: DialogueTurn;
-  index: number;
+  _index: number;
   isSelected: boolean;
   hostAName: string;
   hostBName: string;
@@ -23,7 +23,7 @@ const EMOTION_COLORS: Record<string, string> = {
 
 export function DialogueTurnCard({
   turn,
-  index,
+  index: _index,
   isSelected,
   hostAName,
   hostBName,
