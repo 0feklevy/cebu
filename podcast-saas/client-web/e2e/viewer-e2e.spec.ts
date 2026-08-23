@@ -548,7 +548,7 @@ async function waitForSection(page: Page, section: string, timeout = 20_000): Pr
   }, section, { timeout });
 }
 
-interface Sample { t: number; abs: number; frames: { op: number; section: string | null; controls: boolean; stale: boolean; src: string }[] }
+interface Sample { t: number; abs: number; frames: { op: number; section: string | null; controls: boolean; ageMs: number; src: string }[] }
 
 /**
  * Sample every animation frame from inside the page: for each sim iframe, its LIVE animated
@@ -583,20 +583,22 @@ async function sampleFrames(page: Page, ms: number): Promise<Sample[]> {
         // timed out waiting for — which reads as the product being inconsistent rather than the
         // harness being inconsistent with itself.
         const rep = childMap?.get(el.src) ?? childMap?.get(el.contentWindow as Window);
-        // A report older than a few frames is STALE: the sim's rAF loop is starved (a
-        // synchronously-blocking body does exactly that), so it still names the PREVIOUS section
-        // whether the code is right or wrong. Trusting it is what let a dead apply gate pass.
-        const fresh = !!rep && (Date.now() - rep.recvAt) < 120;
-        const section: string | null = fresh ? (rep!.section ?? null) : null;
-        const controls = fresh ? rep!.controls : false;
-        const stale = !!rep && !fresh;
+        // The report's AGE is recorded; whether that age means STALE is decided at assert time,
+        // against the sampler's own observed cadence — see assertVisibleFramesAreCorrect. The
+        // in-page 120ms constant this replaces treated runner starvation (CI WebKit under
+        // software GL drops BOTH loops to ~7fps) identically to a synchronously-blocking sim
+        // body, and flaked three times on 2026-08-23 alone on diffs that never touched the
+        // viewer ("N/8 presented samples had STALE evidence").
+        const ageMs = rep ? Date.now() - rep.recvAt : -1;
+        const section: string | null = rep ? (rep.section ?? null) : null;
+        const controls = rep ? rep.controls : false;
         // The animated opacity may live on the iframe or on a wrapper; take the effective product.
         let op = parseFloat(getComputedStyle(el).opacity) || 0;
         let node: HTMLElement | null = el.parentElement;
         for (let i = 0; node && i < 4; i++, node = node.parentElement) {
           op *= parseFloat(getComputedStyle(node).opacity) || 0;
         }
-        frames.push({ op, section, controls, stale, src: el.src });
+        frames.push({ op, section, controls, ageMs, src: el.src });
       });
       out.push({ t: Math.round(performance.now() - t0), abs: Date.now(), frames });
       if (performance.now() - t0 < duration) requestAnimationFrame(tick);
@@ -620,21 +622,38 @@ function assertVisibleFramesAreCorrect(
   samples: Sample[],
   opts: { expect: string; forbidPrevious?: string; minimalUi?: boolean; requirePresented?: boolean },
 ): void {
+  // ── ADAPTIVE STALENESS ─────────────────────────────────────────────────────────────────────
+  // A child report is stale when the CHILD's loop is starved while the PARENT's is healthy —
+  // that asymmetry is the signature of a synchronously-blocking sim body, the bug this check
+  // exists to catch. When the PARENT is starved too (CI WebKit under software GL samples at
+  // ~150-300ms instead of ~16ms), an old report is the ENVIRONMENT's fault and says nothing
+  // about the sim: judging it by a fixed 120ms produced three false failures on 2026-08-23 on
+  // diffs that never touched the viewer. So the bound scales with the sampler's own observed
+  // cadence: 120ms on a healthy runner, proportionally wider exactly when the ground truth
+  // (the parent's clock) is itself coarse.
+  const gaps = samples.slice(1).map((sample, i) => sample.t - samples[i].t).sort((a, b) => a - b);
+  const medianGap = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 16;
+  const staleBound = Math.max(120, medianGap * 4);
+  const isStale = (f: { ageMs: number }): boolean => f.ageMs >= staleBound;
+  const isFresh = (f: { ageMs: number }): boolean => f.ageMs >= 0 && !isStale(f);
+
   if (opts.requirePresented !== false) {
     const shown = samples.some((s) => s.frames.some((f) => f.op > 0.5));
     expect(shown, 'no simulation frame was ever presented — the assertions below would be vacuous').toBe(true);
-    const readable = samples.some((s) => s.frames.some((f) => f.section !== null));
+    const readable = samples.some((s) => s.frames.some((f) => f.section !== null && isFresh(f)));
     expect(readable, 'no iframe document was readable — section evidence is unavailable, so this test proves nothing').toBe(true);
     // A presented frame whose evidence went stale for a long stretch is not a pass: it is an
     // unobserved window, and an unobserved window is exactly where a wrong section hides.
-    const staleVisible = samples.filter((s) => s.frames.some((f) => f.op > 0.5 && f.stale)).length;
-    expect(staleVisible, `${staleVisible}/${samples.length} presented samples had STALE evidence`)
+    const staleVisible = samples.filter((s) => s.frames.some((f) => f.op > 0.5 && isStale(f))).length;
+    expect(staleVisible,
+      `${staleVisible}/${samples.length} presented samples had STALE evidence (bound ${staleBound}ms, median sample gap ${medianGap}ms)`)
       .toBeLessThan(Math.max(4, samples.length * 0.5));
   }
   const violations: string[] = [];
   for (const s of samples) {
     for (const f of s.frames) {
       if (f.op <= 0.01) continue;                       // not presented — nothing to assert
+      if (!isFresh(f)) continue;                        // stale evidence indicts nobody, either way
       if (f.section !== null && f.section !== 'none' && f.section !== opts.expect) {
         violations.push(`t=${s.t}ms opacity=${f.op.toFixed(2)} shows section "${f.section}", expected "${opts.expect}"`);
       }
@@ -1045,8 +1064,10 @@ test.describe('real React viewer — simulation transitions', () => {
     // The rapid-seek window is the point of this test; the old version discarded it entirely and
     // asserted only on a fresh settled sample afterwards (audited).
     expect(during.length, 'no samples were taken during rapid seeking — vacuous').toBeGreaterThan(10);
+    // `ageMs` replaced the in-page `stale` flag (see assertVisibleFramesAreCorrect): here the
+    // filter only needs "do not indict on old evidence", so a generous fixed bound suffices.
     const wrongDuring = during.flatMap((s) => s.frames)
-      .filter((f) => f.op > 0.5 && !f.stale && f.section !== null && f.section !== 'none'
+      .filter((f) => f.op > 0.5 && f.ageMs >= 0 && f.ageMs < 300 && f.section !== null && f.section !== 'none'
                      && f.section !== 'A' && f.section !== 'B');
     expect(wrongDuring.length, 'a section outside the timeline was presented during rapid seeking').toBe(0);
     await seekTo(page, 4);
@@ -1839,7 +1860,7 @@ test.describe('stale acknowledgements — supersede, teardown and token mismatch
     expect(afterB.some((x) => x.frames.some((f) => f.op > 0.5)),
       "B was never presented after its acknowledgement").toBe(true);
     const wrongAfter = afterB.flatMap((x) => x.frames)
-      .filter((f) => f.op > 0.05 && !f.stale && f.section !== null && f.section !== 'none' && f.section !== 'B');
+      .filter((f) => f.op > 0.05 && f.ageMs >= 0 && f.ageMs < 300 && f.section !== null && f.section !== 'none' && f.section !== 'B');
     expect(wrongAfter.length, 'a section other than B was presented after B became current').toBe(0);
   });
 
