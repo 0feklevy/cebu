@@ -17,6 +17,15 @@ vi.mock('../../usage/recordTtsSpend.js', () => ({
   recordTtsSpend: (...a: unknown[]) => recordTtsSpend(...(a as [])),
 }));
 
+// `resolveGuidanceVoice` reads admin_settings through the REAL db client. Unmocked, this suite
+// passed on any machine with the dev Postgres up and failed everywhere else — the publish died
+// resolving a voice, the `.catch(() => {})` in `publish()` swallowed it, and every assertion saw
+// "recordTtsSpend: 0 calls". A unit suite must not change its verdict with `docker ps`.
+vi.mock('../../audio/GuidanceTTSService.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../audio/GuidanceTTSService.js')>()),
+  resolveGuidanceVoice: async () => ({ voiceId: 'test-voice', model: 'test-model' }),
+}));
+
 import { GuidanceService } from '../GuidanceService.js';
 import { callArg } from '../../../__tests__/helpers/mockCalls.js';
 

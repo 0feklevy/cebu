@@ -153,7 +153,10 @@ export async function evaluateSpendCeiling(args: {
     return { mode, refuse: false, wouldRefuse: false, spentCents: 0, ceilingCents: ceilingCents ?? 0, reason: null };
   }
 
-  let spentCents = 0;
+  // No initializer on purpose: every path below either assigns it or returns, and a `= 0`
+  // default here is exactly the kind of value that leaks into a verdict if the try is ever
+  // restructured. Let the compiler prove assignment instead.
+  let spentCents: number;
   try {
     spentCents = await providerSpentThisMonthCents(args.provider, args.now);
   } catch (err) {
