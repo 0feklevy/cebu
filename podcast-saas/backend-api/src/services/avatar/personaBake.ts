@@ -17,6 +17,7 @@
 //   • nothing here logs a prompt, a transcript, a persona body, a key or a vendor error string.
 import { eq } from 'drizzle-orm';
 import { db } from '../../db/index.js';
+import { sanitizeAvatarPersonaConfig, sanitizeDroppedKeys } from './sanitizeAvatarConfig.js';
 import { projects } from '../../db/schema.js';
 import { logger } from '../../lib/logger.js';
 import { upsertVideoPersona, type AvatarPersonaConfig, type BakedPersona } from './anamService.js';
@@ -51,8 +52,16 @@ export function withTranscriptKnowledge(
  *  against a concurrent editor save). Returns the merged config. */
 export async function patchAvatarConfig(projectId: string, patch: Partial<AvatarPersonaConfig>): Promise<AvatarPersonaConfig> {
   const row = await db.query.projects.findFirst({ where: eq(projects.id, projectId), columns: { avatar_config: true } });
-  const current = (row?.avatar_config as AvatarPersonaConfig | null) ?? {};
-  const merged = { ...current, ...patch };
+  // Sanitized on read — and therefore HEALED on write: this function immediately persists the
+  // merge, so a wrong-typed stored field is repaired durably the first time any patch lands,
+  // instead of re-failing the bake every five minutes forever (incident 2026-08-23, review B1).
+  const rawCurrent = (row?.avatar_config as AvatarPersonaConfig | null) ?? {};
+  const dropped = sanitizeDroppedKeys(rawCurrent);
+  if (dropped.length) {
+    logger.warn({ evt: 'avatar_config_healed', projectId, keys: dropped },
+      '[Avatar] wrong-typed avatar_config fields repaired during patch');
+  }
+  const merged = { ...sanitizeAvatarPersonaConfig(rawCurrent), ...patch };
   await db.update(projects).set({ avatar_config: merged, updated_at: new Date() }).where(eq(projects.id, projectId));
   return merged;
 }
@@ -111,7 +120,8 @@ export function scheduleSelfHeal(input: BakeInput): boolean {
     try {
       // Re-read: an editor save (or another instance) may have healed this already.
       const row = await db.query.projects.findFirst({ where: eq(projects.id, projectId), columns: { avatar_config: true } });
-      const fresh = (row?.avatar_config as AvatarPersonaConfig | null) ?? null;
+      const freshRaw = (row?.avatar_config as AvatarPersonaConfig | null) ?? null;
+      const fresh = freshRaw ? sanitizeAvatarPersonaConfig(freshRaw) : null;
       if (!fresh) return;
       const transcriptHash = hashTranscript(input.transcript);
       // Someone recorded a NEWER transcript than the one this start read — transcript propagation

@@ -14,6 +14,7 @@ import { db } from '../db/index.js';
 import { projects } from '../db/schema.js';
 import { eq, ilike } from 'drizzle-orm';
 import type { AvatarCircleFace } from '../services/avatar/anamService.js';
+import { sanitizeAvatarPersonaConfig } from '../services/avatar/sanitizeAvatarConfig.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -57,7 +58,7 @@ async function main() {
     console.log(`  →      ${JSON.stringify(next)}  ${changed ? '' : '(no change)'}`);
     if (apply && changed) {
       const updated = { ...cfg, avatarCircles: { ...circles, faces: next } };
-      await db.update(projects).set({ avatar_config: updated, updated_at: new Date() }).where(eq(projects.id, row.id));
+      await db.update(projects).set({ avatar_config: sanitizeAvatarPersonaConfig(updated as Record<string, unknown>), updated_at: new Date() }).where(eq(projects.id, row.id));
       console.log('  APPLIED');
     }
   }
