@@ -614,13 +614,26 @@ The two dead Trigger.dev files that made this look done are deleted (#95).
   `CorpusBuilder.ingest`'s optional third parameter, which no live caller passes. Deleting it would
   break the archive's imports, and the archive exists to be readable. The accurate statement is
   that this system has no live SSE surface — worth knowing before anyone builds one on top of it.
-* **D-14** avatar spend (atomic function → async observer → client wiring). No code; `AVATAR_BUDGET_MODE`
-  is still `shadow`.
-* **D-01b follow-ups** — `timeline_markers.at_sec` is still absolute-only with no anchor column, and
-  the standing review panel does not exist.
-* **D-17 knowledge/retrieval gates** — the ledger never recorded which findings this covers. The two
-  plausible members (`security-009` cross-group knowledge-doc delete, `performance-002` unbounded
-  corpus upload) are both fixed, so this entry may be empty; it needs its scope stated or removing.
+* **D-14 avatar spend** — **two of three parts are BUILT**, and the ledger said "No code". Measured
+  2026-08-23:
+  * ✅ **atomic reserve** — `reserveAvatarSpend` in `usage/AvatarBudgetService.ts`, a single
+    `INSERT … ON CONFLICT … DO UPDATE … WHERE` so Postgres holds the row while it decides. Wired
+    into `avatar.controller.ts`, and it denies with a status, a `Retry-After` and a `deniedBy`.
+  * ✅ **async observer** — `sweepAvatarMeter`, run by `scheduleSweep` after the response and
+    throttled once per process per interval, so housekeeping never sits in a request's latency.
+  * ❌ **client wiring** — nothing in `client-web` reads the denial. In `shadow` that costs nothing
+    because nothing is refused; the moment `AVATAR_BUDGET_MODE=enforce` is set, a viewer gets a 429
+    or a 503 and the UI has no way to say why or when to try again. **That is the whole remaining
+    item**, and it is the one that has to land BEFORE enforce is ever switched on.
+
+  `AVATAR_BUDGET_MODE` stays `shadow` deliberately — the same posture as the new account-wide
+  `SPEND_CEILING_MODE`, and for the same reason: a limit that refuses on a number nobody has
+  watched is a limit that takes something down.
+
+* **D-01b follow-ups** — ~~`timeline_markers.at_sec` absolute-only~~ **CLOSED (#118)**: markers now
+  carry the same segment anchor 063 gave b-roll, resolved through the same function rather than a
+  second copy of the rules. The standing review panel still does not exist.
+
 * **Production storage census** (`deploy/scripts/storage-census.sql`, read-only) — **owner action**.
   It unblocks retention, rollup and poster GC, and no result exists anywhere in the repo.
 
