@@ -128,6 +128,17 @@ const METERED_BY_CALLER = [
  * re-opened.
  */
 const NO_BILLABLE_CALL = [
+  // ── VOICE LIBRARY: A SLOT, NOT A CHARGE ──────────────────────────────────────────────────
+  // `GET /shared-voices` browses the library and is free. `POST /voices/add/...` adds a shared
+  // voice to the workspace, which consumes a VOICE SLOT rather than credits — no invoice line.
+  //
+  // Worth writing down anyway, because slots are a finite resource whose exhaustion is a HARD
+  // failure elsewhere: `ElevenLabsDubbingClient.voiceLimitReached` marks it non-retryable, so a
+  // workspace out of slots fails its dubs outright rather than degrading. That is a quota problem,
+  // not a spend one, and this file is deliberately about money — but the next person to wonder
+  // why this path is exempt should find the reason rather than infer it.
+  'controllers/v1/podcast.controller.ts',
+
   // GET /v1/user — key validation on save. No credits.
   'controllers/admin/v1/llm-config.controller.ts',
 
@@ -157,8 +168,7 @@ const NO_BILLABLE_CALL = [
  * paths synthesise once per click, which is unbounded by construction and is the shape of the
  * burn that prompted this file.
  */
-const UNMETERED_TODAY = [
-  'controllers/v1/podcast.controller.ts',
+const UNMETERED_TODAY: string[] = [
 
   // ── FOUND BY LOOKING FOR SDKs, NOT HOSTNAMES ──────────────────────────────────────────────
   // None of these types a vendor URL, so the original host-only scan could not see any of them.
@@ -347,19 +357,21 @@ describe('what the gap costs, stated rather than implied', () => {
     }
   });
 
-  it('has shrunk from thirteen to one, by two different means', () => {
-    // Worth separating, because they are different kinds of progress.
+  it('is EMPTY — and that only means something because the scan still finds vendors', () => {
+    // An empty gap list is the easiest thing in the world to fake: delete the patterns and nothing
+    // is ever flagged again. So the claim is paired with the scan's own liveness — if this file
+    // ever reports zero gaps while finding zero vendors, it is lying, and the first assertion in
+    // this suite is what catches that.
     //
-    // SIX were closed by writing metering: the renderer, the two per-click preview paths, guidance
-    // publishing, sound-effect generation and corpus transcription.
+    // HOW IT GOT HERE, because the two halves are different kinds of progress. SIX were closed by
+    // writing metering: the renderer, the two per-click preview paths, guidance publishing, sound
+    // effects and corpus transcription. The REST were never gaps — three type-only imports the
+    // graph miscounted, three helpers whose names the pattern did not spell, an Anam group that
+    // reaches no billable operation, and a voice-library path that consumes a slot rather than
+    // credits.
     //
-    // The REST were never gaps. Three were type-only imports the graph miscounted; three were
-    // metering through a helper whose name the pattern did not spell; the Anam group reaches no
-    // billable operation at all.
-    //
-    // And the list GREW once, when SDK detection found six modules that had never been triaged —
-    // only unseen. A ratchet is allowed to grow when the measurement improves; a ratchet that only
-    // ever shrinks is one that has stopped looking.
-    expect(UNMETERED_TODAY.length).toBe(1);
+    // And it GREW once, when SDK detection found six modules that had never been triaged, only
+    // unseen. A ratchet that only ever shrinks is one that has stopped looking.
+    expect(UNMETERED_TODAY).toEqual([]);
   });
 });

@@ -46,6 +46,7 @@ import { registerAdminLlmConfigRoutes } from './controllers/admin/v1/llm-config.
 import { registerAdminUsersRoutes } from './controllers/admin/v1/users.controller.js';
 import { registerAdminPipelineStatsRoutes } from './controllers/admin/v1/pipeline-stats.controller.js';
 import { registerAdminBillingRoutes } from './controllers/admin/v1/billing.controller.js';
+import { registerAdminSpendRoutes } from './controllers/admin/v1/spend.controller.js';
 import { firebaseAuthMiddleware, firebaseAuthOptionalMiddleware } from './middleware/firebase-auth.js';
 import { registerCorrelationId } from './middleware/correlationId.js';
 import { canServeMediaKey } from './services/storage/mediaAccess.js';
@@ -627,6 +628,7 @@ async function build() {
   await registerAdminLlmConfigRoutes(app);
   await registerAdminUsersRoutes(app);
   await registerAdminPipelineStatsRoutes(app);
+  await registerAdminSpendRoutes(app);
   await registerAdminBillingRoutes(app);
 
   await registerPlayerRoutes(app);
