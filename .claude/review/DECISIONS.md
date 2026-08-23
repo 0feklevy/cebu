@@ -452,9 +452,15 @@ when a related area is already open, rather than working down the list.
 
 ---
 
-## 🔴 Next release — the one action everything dubbing waits on
+## 🟢 Releases SHIPPED (2026-08-23): v0.1.39 → v0.1.43 live; v0.1.44 queued
 
-**Do:** dispatch a release, approve the deploy. (#60 is merged; main is ready as it stands.)
+The "dispatch a release" action this entry waited on has happened repeatedly: v0.1.43 deployed
+2026-08-23 ~14:20Z through the FULL pipeline — candidate smoke (first ever to pass), digest-pinned
+deploy, post-deploy browser verification against the live site with SMOKE_PUBLIC_PATH — no
+rollback. v0.1.44 follows with the post-incident wave (#118 #121 #130 #131 #132 #133 #134).
+Remaining OWNER action from the original entry, unchanged and still last:
+
+**The probe dub (~$2.20)** — everything code-side is verified; only the paid probe remains.
 
 **Then, the probe dub (~$2.20), which is now the LAST unverified step:** the watermark flag is
 verified `false` in both containers (checked 2026-08-22, process env read directly), the vendor
