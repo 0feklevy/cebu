@@ -551,18 +551,13 @@ export function AvatarConversation({ characterId, identity, projectId, sessionTo
         <VisualPanel visual={visual} visible={visualVisible} onDismiss={dismissVisual} />
       )}
       {/*
-        THE SECONDS BETWEEN ASKING AND SEEING, GIVEN A FACE.
-
-        A fresh b-roll is a classify completion plus a gpt-image-1 render plus an upload; it is
-        seconds by construction and this component cannot make it not be. It can stop the viewer
-        having to guess whether anything is happening, which is what the report
-        "לוקח להם זמן להיטען" is about as much as the latency itself.
-
-        Rendered only when no real visual holds the slot, so progress never displaces a result.
+        NO PROGRESS PANEL FOR A PENDING IMAGE — owner ruling 2026-08-23, watching the live
+        product: "החלון Generating image… לא אמור להופיע ליוזר - רק כשזה מוכן". This reverses the
+        earlier "לוקח להם זמן להיטען" feedback deliberately: a b-roll is an optional flourish, and
+        an empty screen beats a shimmer that promises one. The pending state machinery stays (it
+        still gates duplicate triggers); only its RENDER is gone, so the image appears exactly
+        once, finished.
       */}
-      {imagePending && !visual && !imageUrl && (
-        <VisualPanel visual={{ type: 'image_loading', caption: pendingCaption }} visible onDismiss={dismissPending} />
-      )}
       {visual?.type === 'simulation' && (
         <SimulationOverlay
           html={visual.simulationUrl ? undefined : visual.html}

@@ -189,20 +189,22 @@ describe('b-rolls during a conversation', () => {
   });
 
   // ── 2. LATENCY: WHAT THE VIEWER SEES WHILE IT RUNS ────────────────────────────────────────
-  it('shows progress while the image is still being generated, instead of nothing', async () => {
-    // The fresh-image path is a classify completion plus a gpt-image-1 render plus an upload.
-    // It is seconds, and no client change makes it not seconds. What the client controls is
-    // whether those seconds look like a working product or a broken one.
+  it('shows NOTHING while the image is still being generated — it appears only finished', async () => {
+    // REVERSED by the owner on 2026-08-23, watching the live product mid-presentation:
+    // "החלון Generating image… לא אמור להופיע ליוזר - רק כשזה מוכן". The earlier ruling (a
+    // shimmer so the seconds look alive) is superseded: a b-roll is an optional flourish, and an
+    // empty screen beats a placeholder that promises one. The pending STATE machinery stays — it
+    // still gates duplicate triggers — only its render is gone.
     holdImage = true;
     await mount();
     await viewerAsks('why do the finch beaks differ between the islands?');
 
-    await waitFor(() => expect(screen.queryByText(/Generating image/i)).not.toBeNull());
-    expect(shownImage()).toBeNull(); // …and it is genuinely still in flight
+    await flush();
+    expect(screen.queryByText(/Generating image/i)).toBeNull();  // no placeholder, ever
+    expect(shownImage()).toBeNull();                              // and no image yet either
 
     await act(async () => { releaseImage?.(); await flush(); });
-    await waitFor(() => expect(shownImage()).not.toBeNull());
-    // The placeholder gives way to the real thing.
+    await waitFor(() => expect(shownImage()).not.toBeNull());     // it appears exactly once: done
     expect(screen.queryByText(/Generating image/i)).toBeNull();
   });
 
