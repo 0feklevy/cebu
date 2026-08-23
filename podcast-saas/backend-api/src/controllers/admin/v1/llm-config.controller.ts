@@ -5,8 +5,6 @@ import { admin_settings } from '../../../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { firebaseAdminRequired } from '../../../middleware/firebase-admin-required.js';
 import { ApiKeyService } from '../../../services/secrets/ApiKeyService.js';
-import { LLMService } from '../../../services/llm/LLMService.js';
-import { UsageTrackingService } from '../../../services/usage/UsageTrackingService.js';
 import { invalidateSystemAiClients } from '../../../services/llm/systemAi.js';
 
 const apiKeyService = new ApiKeyService();
@@ -126,7 +124,7 @@ export async function registerAdminLlmConfigRoutes(app: FastifyInstance): Promis
         } else {
           const { GoogleGenAI } = await import('@google/genai');
           const client = new GoogleGenAI({ apiKey: body.data.api_key });
-          const models = await client.models.list();
+          await client.models.list();   // the call IS the validation; the listing itself is unused
           return reply.send({ valid: true, model: 'gemini-2.5-pro' });
         }
       } catch (err) {
