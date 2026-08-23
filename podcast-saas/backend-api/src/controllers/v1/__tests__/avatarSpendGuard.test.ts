@@ -534,3 +534,95 @@ describe('a poisoned avatar_config is a config problem, never a 500', () => {
     });
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+/**
+ * D-14, last part: a refusal a human can act on.
+ *
+ * The budget ships in `shadow`, so none of this fires in production today. That is exactly why it
+ * has to be tested now — on the day somebody sets `AVATAR_BUDGET_MODE=enforce`, the first thing a
+ * viewer meets is this body, and there is no second chance to discover it says nothing.
+ *
+ * The burst limits are env-tunable, so a denial is forced here rather than simulated: these
+ * assertions run through the real limiter, the real verdict and the real reply.
+ */
+describe('what a refused viewer is actually told', () => {
+  afterEach(() => {
+    delete process.env.AVATAR_BURST_GLOBAL;
+    delete process.env.AVATAR_BURST_IP;
+  });
+
+  it('explains a PLATFORM-wide refusal as busy, not as the viewer\'s own quota', async () => {
+    process.env.AVATAR_BURST_GLOBAL = '0';
+    serve(PUBLIC_PROJECT);
+
+    const res = await post('/api/v1/avatar/start', startBody());
+    expect(res.statusCode).toBe(429);
+    const body = res.json();
+    expect(body.reason).toBe('busy');
+    expect(body.message).toMatch(/across the platform/i);
+    expect(body.retryAfterSec).toBeGreaterThanOrEqual(1);
+    nothingWasSpent();
+  });
+
+  it('explains a PER-VIEWER refusal as their limit', async () => {
+    process.env.AVATAR_BURST_IP = '0';
+    serve(PUBLIC_PROJECT);
+
+    const body = (await post('/api/v1/avatar/start', startBody())).json();
+    expect(body.reason).toBe('limited');
+    expect(body.message).toMatch(/reached the avatar limit/i);
+  });
+
+  it('never names the limiter dimension that fired', async () => {
+    // The log line carries `deniedBy` for the operator. The wire must not: it describes the shape
+    // of the defence to whoever is probing it, and means nothing to the person who was refused.
+    process.env.AVATAR_BURST_IP = '0';
+    serve(PUBLIC_PROJECT);
+
+    const raw = (await post('/api/v1/avatar/start', startBody())).body;
+    for (const internal of ['burst', 'ip', 'uid', 'jti', 'global']) {
+      expect(raw.toLowerCase(), internal).not.toContain(internal);
+    }
+  });
+
+  it('sends Retry-After and the SAME number in the body', async () => {
+    // A header the fetch layer can act on and a body the UI can render. If they disagree, one of
+    // the two is lying to the viewer and there is no way to tell which.
+    process.env.AVATAR_BURST_GLOBAL = '0';
+    serve(PUBLIC_PROJECT);
+
+    const res = await post('/api/v1/avatar/start', startBody());
+    expect(res.headers['retry-after']).toBe(String(res.json().retryAfterSec));
+  });
+
+  it('does NOT tell a viewer who hit the emergency stop that they need a capability', async () => {
+    // The bug this block was written to catch. The kill switch reused the CAPABILITY refusal's
+    // body, so an operator pulling the stop produced a 503 explained as a 401 — sending the viewer
+    // off to find a credential that would not have helped.
+    process.env.AVATAR_KILL_SWITCH = '1';
+    serve(PUBLIC_PROJECT);
+
+    const res = await post('/api/v1/avatar/start', startBody());
+    expect(res.statusCode).toBe(503);
+    expect(res.json().message).not.toMatch(/capability/i);
+    expect(res.json().reason).toBe('unavailable');
+    nothingWasSpent();
+  });
+
+  it('leaves the QUIET degradations quiet — a trimmed visual is not an error on screen', async () => {
+    // The visual and image routes answer a refusal with their success shape on purpose: the right
+    // behaviour is to show no visual, not to apologise. If `explain` ever leaks onto these, every
+    // limiter trim becomes a popup, and the caller's parser meets a shape it does not expect.
+    process.env.AVATAR_BURST_GLOBAL = '0';
+    serve(PUBLIC_PROJECT);
+
+    const visual = (await post('/api/v1/avatar/visual/analyze', visualBody())).json();
+    expect(visual).toEqual({ type: 'none' });
+    expect(visual.reason).toBeUndefined();
+
+    const image = (await post('/api/v1/avatar/image/analyze', imageBody())).json();
+    expect(image.shouldGenerate).toBe(false);
+    expect(image.reason).toBeUndefined();
+  });
+});

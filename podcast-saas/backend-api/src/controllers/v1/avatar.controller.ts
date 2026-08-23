@@ -35,6 +35,7 @@ import { sanitizeAvatarPersonaConfig } from '../../services/avatar/sanitizeAvata
 import { normalizeAvatarCircles, type AvatarCirclesLike } from '../../services/avatarCircles/normalizeAvatarCircles.js';
 import { circleFaceUrlPersistError } from '../../services/avatarCircles/circleFaceUrls.js';
 import { isProd } from '../../config/publicOrigins.js';
+import { avatarDenialBody } from 'shared';
 import { analyzeVisual, generateLibrarySimulation, editLibrarySimulation } from '../../services/avatar/visualService.js';
 import { analyzeAndGenerateImage, generateLibraryImage } from '../../services/avatar/imageService.js';
 import { insertVisual, listVisuals, updateVisual, deleteVisual, syncBasicLibrary, storeImageBuffer, storeSimulationHtml } from '../../services/avatar/libraryService.js';
@@ -346,7 +347,16 @@ interface BillablePreflight {
 function preflightBillable(
   request: FastifyRequest,
   reply: FastifyReply,
-  input: { projectId: string | null; capabilityToken: string | null; deniedBody: unknown },
+  input: {
+    projectId: string | null;
+    capabilityToken: string | null;
+    deniedBody: unknown;
+    /**
+     * Opt in to a body a UI can render — see `reserveBillable`'s note. Off by default so the
+     * quiet-degradation callers keep the exact success-shaped body their parsers expect.
+     */
+    explain?: boolean;
+  },
 ): BillablePreflight | null {
   // ── THE EMERGENCY STOP, HONOURED WHERE ITS DOCSTRING SAYS IT IS ──────────────────────────
   //
@@ -366,7 +376,15 @@ function preflightBillable(
   // (`avatar_budget_state.killed`) still binds inside the meter, and still binds in shadow mode —
   // shadow means "do not enforce the BUDGETS", never "ignore the emergency stop".
   if (killSwitchEngaged()) {
-    reply.code(503).header('Retry-After', '60').send(input.deniedBody);
+    // `deniedBody` is the CAPABILITY refusal's body. Sending it here told a viewer who had hit the
+    // emergency stop that they needed a capability: a 503 explained as a 401, which sends them off
+    // to find a credential that would not have helped. The stop is an availability event and now
+    // says so.
+    reply.code(503).header('Retry-After', '60').send(
+      input.explain
+        ? avatarDenialBody({ deniedBy: 'kill_switch', retryAfterSec: 60 })
+        : input.deniedBody,
+    );
     return null;
   }
 
@@ -413,6 +431,18 @@ async function reserveBillable(
     deniedBody: unknown;
     /** Only a session-minting op takes out a concurrency lease. */
     takesLease?: boolean;
+    /**
+     * Opt in to a refusal a UI can RENDER: `{ message, reason, retryAfterSec }`.
+     *
+     * Off by default, and that default is the point. Most callers here answer a refusal with a
+     * success-SHAPED body — `{ type: 'none' }`, `NO_IMAGE`, `{ ok: false }` — because the right
+     * behaviour is to show no visual at all, quietly. Turning those into error objects would put
+     * an apology on screen every time a limiter trimmed an optional flourish, and would hand the
+     * caller's zod parser a shape it does not expect.
+     *
+     * So the explanation is opt-in per call site, and only the two viewer-facing ones take it.
+     */
+    explain?: boolean;
   },
 ): Promise<{ ok: true; shadowDeniedBy?: string } | { ok: false }> {
   const subjects: Partial<Record<AvatarDimension, string>> = {
@@ -438,7 +468,9 @@ async function reserveBillable(
     '[Avatar] billable call refused');
   reply.code(verdict.status)
     .header('Retry-After', String(Math.max(1, verdict.retryAfterSec)))
-    .send(input.deniedBody);
+    .send(input.explain
+      ? avatarDenialBody({ deniedBy: verdict.deniedBy, retryAfterSec: verdict.retryAfterSec })
+      : input.deniedBody);
   return { ok: false };
 }
 
@@ -556,6 +588,7 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
       projectId: body.projectId ?? null,
       capabilityToken: capabilityTokenOf(request, body.capability),
       deniedBody: { message: 'Avatar capability required' },
+      explain: true,
     });
     if (!pre) {
       trace.finish({ outcome: 'error', status: 401 });
@@ -653,7 +686,10 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
       projectId: body.projectId ?? null,
       ownerId,
       takesLease: true,
+      // Kept as the shape's floor; `explain` replaces it with a message that knows WHICH limit
+      // fired, so a platform-wide surge no longer reads to the viewer as their own quota.
       deniedBody: { message: 'Avatar is busy — try again shortly' },
+      explain: true,
     }));
     if (!reserved.ok) {
       trace.finish({ outcome: 'error', status: reply.statusCode });

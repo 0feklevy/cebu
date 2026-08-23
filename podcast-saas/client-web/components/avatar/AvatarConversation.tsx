@@ -12,7 +12,7 @@ import {
 } from './anamConnectPolicy';
 import { beginConnectTrace, type ConnectTrace } from './connectTelemetry';
 import { characterMeta, type CharacterMeta } from './characters';
-import { endAvatarSession, startAvatarSession, type AvatarDisplay } from './avatarApi';
+import { endAvatarSession, startAvatarSession, denialOf, type AvatarDisplay } from './avatarApi';
 import { useVisualTrigger } from './hooks/useVisualTrigger';
 import { useImageTrigger } from './hooks/useImageTrigger';
 import { useConversationMemory } from './hooks/useConversationMemory';
@@ -476,8 +476,13 @@ export function AvatarConversation({ characterId, identity, projectId, sessionTo
       newClient.streamToVideoElement(VIDEO_ELEMENT_ID)
         .then(() => { connectSettledRef.current = true; })
         .catch((err: Error) => { setJoinError(err.message ?? 'Reconnect failed'); setLostConnection(false); });
-    } catch {
-      setJoinError('Reconnect failed. Please close and try again.');
+    } catch (e) {
+      // A reconnect REFUSED by the budget is not a reconnect that failed, and "close and try
+      // again" is the one instruction guaranteed not to work: the next open meets the same limit.
+      // Same shared, closed-enum copy the popup renders — no server string reaches the screen.
+      // NOTE: unlike the popup's denial screen, this line has no test. Reaching it needs a live
+      // SDK connection-lost event and no harness in this repo produces one today.
+      setJoinError(denialOf(e)?.message ?? 'Reconnect failed. Please close and try again.');
       setLostConnection(false);
     } finally {
       setReconnecting(false);

@@ -1,6 +1,28 @@
 'use client';
 
 import { auth } from '../../lib/firebase';
+import { parseAvatarDenial, type AvatarDenial } from 'shared/src/avatar/denial';
+
+/**
+ * A refusal the product can EXPLAIN, as opposed to a failure it can only apologise for.
+ *
+ * The distinction matters at exactly one moment: when `AVATAR_BUDGET_MODE=enforce` is switched on
+ * and viewers start meeting the limiter. Without this, every denial arrives as an anonymous Error
+ * and the popup shows its generic "couldn't start right now" screen with a Try again button that
+ * is guaranteed to fail again immediately.
+ */
+export class AvatarDenialError extends Error {
+  readonly denial: AvatarDenial;
+  constructor(denial: AvatarDenial) {
+    super(denial.message);
+    this.name = 'AvatarDenialError';
+    this.denial = denial;
+  }
+}
+
+/** The denial behind a rejection, when there is one. Null for every other kind of failure. */
+export const denialOf = (e: unknown): AvatarDenial | null =>
+  e instanceof AvatarDenialError ? e.denial : null;
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
 
@@ -14,7 +36,14 @@ async function jsonFetch<T>(path: string, init?: RequestInit, withAuth = false):
   if (withAuth) Object.assign(headers, await authHeaders());
   const res = await fetch(`${BASE}${path}`, { ...init, headers });
   const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error((json as { message?: string }).message ?? `Request failed: ${res.status}`);
+  if (!res.ok) {
+    // `parseAvatarDenial` returns null unless the body carries one of the three reasons the shared
+    // module defines, and it REGENERATES the copy rather than trusting the string it was sent — so
+    // this cannot become a route by which a proxy error or a stack trace reaches a viewer's screen.
+    const denial = parseAvatarDenial(json);
+    if (denial) throw new AvatarDenialError(denial);
+    throw new Error((json as { message?: string }).message ?? `Request failed: ${res.status}`);
+  }
   return json as T;
 }
 

@@ -14,6 +14,9 @@ export * from './timeline/sectionShape.js';
 // export planner and the prewarm/marker maths, so "what second is this at?" cannot be answered
 // four ways again (D-01).
 export * from './timeline/placement.js';
+
+// What a viewer is told when an avatar call is refused (D-14).
+export * from './avatar/denial.js';
 // WHAT A CHANGE TO A VIDEO DOES to the rows placed against it (D-01b): a duration correction
 // rewrites nothing, a media replace raises an impact review instead of clamping the authored
 // window, and a delete lists its dependents and refuses to choose for the author.
