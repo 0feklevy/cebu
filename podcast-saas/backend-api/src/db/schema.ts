@@ -787,7 +787,16 @@ export type NewPlacementImpactReview = typeof placement_impact_reviews.$inferIns
 export const timeline_markers = pgTable('timeline_markers', {
   id: uuid('id').primaryKey().defaultRandom(),
   project_id: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
-  at_sec: real('at_sec').notNull(),                          // absolute position on the global main timeline
+  // ABSOLUTE, and kept as the fallback rather than replaced (migration 076). A marker that predates
+  // the anchor columns resolves exactly as it always has; one that has been moved since carries the
+  // anchor pair below and follows its content when an earlier clip changes length.
+  at_sec: real('at_sec').notNull(),
+  anchor_video_file_id: uuid('anchor_video_file_id').references(() => video_files.id, { onDelete: 'set null' }),
+  anchor_offset_sec: real('anchor_offset_sec'),
+  // `segment` | `legacy_absolute`. A column rather than a computed `anchor_video_file_id != null`,
+  // so a row whose host was deleted stays distinguishable from one that was never anchored — see
+  // the `anchor_missing` degradation in shared/timeline/placement.ts.
+  placement_mode: text('placement_mode').notNull().default('legacy_absolute'),
   label: text('label'),
   notes: text('notes'),
   color: text('color').notNull().default('#ef4444'),         // red, matching the playhead

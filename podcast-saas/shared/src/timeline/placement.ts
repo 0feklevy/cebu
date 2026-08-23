@@ -648,3 +648,94 @@ export function planAnchorBackfill(
 
   return { anchorableRows, alreadyAnchored, candidates, excluded, excludedByReason, branched };
 }
+
+
+// ── Markers ───────────────────────────────────────────────────────────────────
+
+/**
+ * The columns a marker's placement depends on (migration 074).
+ *
+ * Named identically to the section ones on purpose. A marker is not a section — it has no length,
+ * no lane and no host — but it drifts for exactly the same reason and must resolve through exactly
+ * the same rules, because the bug class 063 was written to end is that each surface answers "where
+ * is this row?" differently.
+ */
+export interface PlacementMarkerLike {
+  /** The stored absolute second. Every marker has one; it is the fallback. */
+  at_sec?: number | null;
+  placement_mode?: string | null;
+  anchor_video_file_id?: string | null;
+  anchor_offset_sec?: number | null;
+}
+
+/**
+ * Where a marker actually is.
+ *
+ * Deliberately NOT a copy of `resolveSectionPlacement` with the field names changed. It reuses
+ * `finish` and the same degradation vocabulary, so a marker whose host was deleted reports
+ * `anchor_missing` — the same word, meaning the same thing, on a surface that can present it the
+ * same way. A second resolver with its own near-identical wording is how two surfaces start
+ * disagreeing in ways nobody notices until an author does.
+ *
+ * A marker has no `video_file_id` host, so there is no `native_host` path here: it is either
+ * anchored or absolute, and that is the whole decision.
+ */
+export function resolveMarkerPlacement(
+  marker: PlacementMarkerLike,
+  timeline: MainSegmentTimeline,
+): PlacementResolution {
+  const absolute = finite(marker.at_sec);
+
+  if (marker.placement_mode !== 'segment') {
+    return absolute === null
+      ? finish(timeline, 0, 'absolute', 'absolute_missing')
+      : finish(timeline, absolute, 'absolute', null);
+  }
+
+  // Same fallback posture as sections: keep the marker VISIBLE at its stored second, and report the
+  // anchor's fault rather than the fallback's. A marker that vanishes is worse than one in the
+  // wrong place — the author can move a marker they can see.
+  const fallback = (degradation: PlacementDegradation): PlacementResolution =>
+    finish(timeline, absolute ?? 0, 'absolute', degradation);
+
+  if (!isSet(marker.anchor_video_file_id)) return fallback('anchor_missing');
+  const seg = timeline.byId.get(marker.anchor_video_file_id);
+  if (!seg) return fallback('anchor_not_a_segment');
+  const offset = finite(marker.anchor_offset_sec);
+  if (offset === null || offset < 0) return fallback('anchor_offset_missing');
+
+  return finish(timeline, seg.startSec + offset, 'anchor', null);
+}
+
+/**
+ * The anchor pair to STORE for a marker the author just placed at `absoluteSec`.
+ *
+ * Returns null when the timeline cannot say which segment that second belongs to — an empty
+ * project, or a second past everything. Storing half a pair, or an anchor to a segment that is not
+ * really there, would produce a row that claims to be anchored and resolves through the fallback
+ * forever, which is strictly worse than an honest absolute.
+ */
+export function anchorForAbsoluteSec(
+  timeline: MainSegmentTimeline,
+  absoluteSec: number,
+): { anchor_video_file_id: string; anchor_offset_sec: number; placement_mode: 'segment' } | null {
+  // NO GUARDS OF ITS OWN, and that is deliberate rather than careless.
+  //
+  // The first version repeated `segmentAtAbsoluteSec`'s checks — null, negative, empty timeline —
+  // and then validated the offset it computes. Mutation-testing killed neither: the helper already
+  // refuses every one of those inputs, and it only ever returns a segment whose `startSec` is at or
+  // before the requested second, so a negative offset is unreachable. Code no mutation can falsify
+  // is not caution; it is a claim about behaviour that nothing checks, and it reads as if somebody
+  // had a reason.
+  //
+  // What remains is the honest shape: a thin projection of the helper's answer into the pair the
+  // row stores. If `segmentAtAbsoluteSec` ever loosens its contract, THAT is where the guard
+  // belongs, next to the promise being made.
+  const seg = segmentAtAbsoluteSec(timeline, absoluteSec);
+  if (!seg) return null;
+  return {
+    anchor_video_file_id: seg.id,
+    anchor_offset_sec: (finite(absoluteSec) ?? 0) - seg.startSec,
+    placement_mode: 'segment',
+  };
+}

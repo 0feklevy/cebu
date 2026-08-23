@@ -29,6 +29,9 @@ import {
   resolveSectionStartSec,
   segmentAtAbsoluteSec,
   type PlacementSectionLike,
+  resolveMarkerPlacement,
+  anchorForAbsoluteSec,
+  type PlacementMarkerLike,
 } from '../placement.js';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -503,6 +506,111 @@ describe('planAnchorBackfill — nominates, converts nothing', () => {
         global_offset_sec: null,
       });
       expect(resolveSectionStartSec(converted, t)).toBeCloseTo(c.absoluteSec, 9);
+    }
+  });
+});
+
+// ── Markers (migration 074) ───────────────────────────────────────────────────
+
+/**
+ * A marker is not a section — no length, no lane, no host — and it drifts for exactly the same
+ * reason. These tests pin that it resolves through the SAME rules and reports the SAME degradation
+ * words, because the bug class 063 was written to end is that each surface answers "where is this
+ * row?" differently, and near-identical wording on a second resolver is how that comes back.
+ */
+describe('marker placement', () => {
+  const marker = (over: Partial<PlacementMarkerLike> = {}): PlacementMarkerLike =>
+    ({ at_sec: 40, placement_mode: 'legacy_absolute', ...over });
+
+  it('resolves a legacy marker at its stored second, unchanged', () => {
+    const t = buildMainSegmentTimeline(THREE);
+    const r = resolveMarkerPlacement(marker(), t);
+    expect(r.absoluteSec).toBe(40);
+    expect(r.source).toBe('absolute');
+    expect(r.degradation).toBeNull();
+  });
+
+  it('FOLLOWS ITS CONTENT when an earlier clip changes length', () => {
+    // The whole point. A marker on "second 10 of clip B" means a moment in the lesson. Trim four
+    // seconds out of clip A and the absolute marker still fires at 40 — now pointing at a different
+    // sentence — while the anchored one moves with the content it was placed on.
+    const before = buildMainSegmentTimeline(THREE);
+    const shorter = buildMainSegmentTimeline([vid('A', 26), vid('B', 40), vid('C', 15)]);
+
+    const legacy = marker({ at_sec: 40 });
+    const anchored = marker({
+      at_sec: 40, placement_mode: 'segment', anchor_video_file_id: 'B', anchor_offset_sec: 10,
+    });
+
+    expect(resolveMarkerPlacement(legacy, before).absoluteSec).toBe(40);
+    expect(resolveMarkerPlacement(anchored, before).absoluteSec).toBe(40);
+
+    expect(resolveMarkerPlacement(legacy, shorter).absoluteSec).toBe(40);      // stayed put
+    expect(resolveMarkerPlacement(anchored, shorter).absoluteSec).toBe(36);    // followed clip B
+  });
+
+  it('keeps a marker VISIBLE when its anchor is gone, and names the anchor\'s fault', () => {
+    // A marker that vanishes is worse than one in the wrong place: the author can move a marker
+    // they can see. Same fallback posture as sections, and the same word for it.
+    const t = buildMainSegmentTimeline(THREE);
+    const orphan = marker({ at_sec: 40, placement_mode: 'segment', anchor_video_file_id: null });
+
+    const r = resolveMarkerPlacement(orphan, t);
+    expect(r.absoluteSec).toBe(40);
+    expect(r.degradation).toBe('anchor_missing');
+  });
+
+  it('distinguishes an anchor pointing at a NON-segment from a missing one', () => {
+    const t = buildMainSegmentTimeline(THREE);
+    const r = resolveMarkerPlacement(
+      marker({ placement_mode: 'segment', anchor_video_file_id: 'not-a-segment', anchor_offset_sec: 5 }), t);
+    expect(r.degradation).toBe('anchor_not_a_segment');
+  });
+
+  it('treats half a pair as no anchor at all', () => {
+    const t = buildMainSegmentTimeline(THREE);
+    const r = resolveMarkerPlacement(
+      marker({ placement_mode: 'segment', anchor_video_file_id: 'B', anchor_offset_sec: null }), t);
+    expect(r.degradation).toBe('anchor_offset_missing');
+    expect(r.absoluteSec).toBe(40);
+  });
+
+  it('names a missing absolute rather than silently placing it at zero', () => {
+    const t = buildMainSegmentTimeline(THREE);
+    const r = resolveMarkerPlacement(marker({ at_sec: null }), t);
+    expect(r.absoluteSec).toBe(0);
+    expect(r.degradation).toBe('absolute_missing');
+  });
+});
+
+describe('choosing an anchor to store', () => {
+  it('turns an absolute second into the segment it falls in, plus the offset', () => {
+    const t = buildMainSegmentTimeline(THREE);   // A 0-30, B 30-70, C 70-85
+    expect(anchorForAbsoluteSec(t, 40)).toEqual({
+      anchor_video_file_id: 'B', anchor_offset_sec: 10, placement_mode: 'segment',
+    });
+  });
+
+  it('round-trips: what it stores is what the resolver reads back', () => {
+    // The property that matters more than either function alone.
+    const t = buildMainSegmentTimeline(THREE);
+    for (const sec of [0, 12, 30, 55, 70, 84]) {
+      const pair = anchorForAbsoluteSec(t, sec)!;
+      expect(resolveMarkerPlacement({ at_sec: sec, ...pair }, t).absoluteSec, `at ${sec}`).toBeCloseTo(sec, 6);
+    }
+  });
+
+  it('returns NULL rather than half a pair when there is no timeline', () => {
+    // A row claiming to be anchored and resolving through the fallback forever is strictly worse
+    // than an honest absolute.
+    const empty = buildMainSegmentTimeline([]);
+    expect(anchorForAbsoluteSec(empty, 10)).toBeNull();
+  });
+
+  it('returns NULL for a nonsense second', () => {
+    const t = buildMainSegmentTimeline(THREE);
+    for (const bad of [-1, NaN, Infinity]) {
+      expect(anchorForAbsoluteSec(t, bad), String(bad)).toBeNull();
     }
   });
 });

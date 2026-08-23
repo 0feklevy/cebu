@@ -190,21 +190,27 @@ burn — the owner was testing dubbing voices that afternoon, which is when the 
 Put a ceiling on ElevenLabs **Auto Top-Up**, or turn it off. Auto Top-Up is the amplifier: any
 runaway path spends without a natural stop, and the product-side ceiling only covers dubbing.
 
-## 🔴 A SECOND rawPreview LOG SITE — the class #91 closed has one more instance
+## ✅ CLOSED (#101) — the schema-failure log leaked the customer's value THREE ways
 
-Found 2026-08-22 by the end-of-day verification pass, not by a report. `LLMService.ts:700` logs
-`rawPreview: raw.slice(0, 300)` at WARN level on every schema-validation failure — valid JSON,
-wrong shape. Same class as observability-009: the model's output about the customer's own material,
-in the log. #91 fixed the ERROR-level site at line ~721 and the test suite it added only exercises
-never-valid-JSON fixtures, so it structurally cannot see this path.
+Found by the end-of-day verification pass on 2026-08-22, not by a report. The audit named one leak
+on that line. There were three, and the second is the one worth remembering.
 
-**The fix is already designed:** replace with `describeUnparseable(raw)` exactly as line 721 was
-(`schemaIssues` may stay — Zod issue paths are field names, not content), and add a
-`parseAndRepair.test.ts` case that drives the schema-validation path (valid JSON, wrong shape) and
-asserts on `logger.warn` the same three things the error-path cases assert. Mutation: restore the
-slice, the new case must fail.
+`LLMService.ts` logged `rawPreview: raw.slice(0, 300)` at WARN on every schema-validation failure —
+the same defect as the ERROR-level site #91 closed, 300 characters instead of 800. But
+`result.error.errors` is not structural either: for an enum or literal mismatch **Zod puts the
+actual value in `received` AND interpolates it into `message`**. And that array was interpolated
+into the thrown `AppError`'s message, which travels further than a log line — it is the 422 the
+caller sees.
 
-Until it ships, the observability-009 entry below is PARTIAL, not closed.
+`describeSchemaIssues` keeps the half that is ours: which field, what the schema wanted, how many
+options existed. `received`, `message` and `keys` are dropped, because the model authored all
+three.
+
+**Why #91's tests could not have caught it:** they drive never-valid-JSON fixtures, so they exercise
+`logger.error` and are structurally blind to JSON that PARSES and fails the schema. The new test
+uses valid JSON with a wrong enum value — precisely the shape that makes Zod echo the value back —
+and asserts on `logger.warn` and separately on the THROWN error, because no log assertion would
+have caught the third leak.
 
 ## ✅ DIAGNOSED AND FIXED — a project that OPENS on a simulation showed nothing
 
@@ -580,11 +586,13 @@ The two dead Trigger.dev files that made this look done are deleted (#95).
 
 ### 🟢 Corrections in the other direction — two clusters were finished and never recorded
 
-* **The a11y group is five-sixths done.** `ui-ux-003 / -004 / -005 / -007 / -009` shipped on
-  2026-08-19, three days before this section was last written, and 29 a11y tests cover them today
-  (`podcastStudioOverlayA11y`, `confirmDialogA11y`, `a11yOperableControls`, `adminControlsA11y`).
-  Only `ui-ux-006` — the editor timeline has no keyboard alternative — is genuinely open, and that
-  one was deferred on purpose.
+* ~~**The a11y group**~~ **COMPLETE (#102).** Five shipped on 2026-08-19; `ui-ux-006` — the editor
+  timeline had no keyboard path at all — landed overnight. Each section now exposes three focusable
+  sliders (move, trim-start, trim-end) driven by plain arrow keys, with NO modifier scheme: Alt+Arrow
+  is browser back on Windows and Linux, so binding a trim there would lose the editor on a mistimed
+  press. The keyboard calls `clampMove`/`clampTrim` — the drag path's own collision rules — because
+  a second copy is how the two inputs start disagreeing about where a section may go.
+
 * **D-16 crop is not "blocked at the first step".** Thirteen hand-labelled clips exist under
   `backend-api/scripts/crop-eval/labels/`, a field eval has run, and its result is marked quotable —
   it is what surfaced the `CROP_ALGO=v2` no-op recorded above. Below the 20–50 clip target, but the
@@ -602,13 +610,12 @@ The two dead Trigger.dev files that made this look done are deleted (#95).
   inconsistency inside a file that otherwise logs properly, which is how they survived. The two in
   `R2StorageAdapter` went with them. `isolation/main.ts` keeps its console calls deliberately: it
   runs INSIDE the capture container, where there is no pino and stdout is the transport.
-* **`observability-009`** — **PARTIAL (#91).** The error-level site is closed; a WARN-level
-  sibling at `LLMService.ts:700` still carries `raw.slice(0, 300)` — see the 🔴 entry above.
-  On the closed site: the first attempt redacted a 120-character
-  excerpt from each end; its own test killed that — a fixture sentence about an acquisition price
-  survived untouched, because it is confidential without being credential-shaped. There is no
-  excerpt now, only shape, and a test asserts structurally that every emitted value is a number, a
-  boolean, a single character or a member of a fixed enum.
+* ~~**`observability-009`**~~ **CLOSED (#91 + #101).** The error-level site went first. The audit
+  then found a WARN-level sibling, and that turned out to be THREE leaks: `raw.slice(0, 300)`, the
+  Zod issue array (which carries the offending value in `received` and again inside `message`), and
+  the same array interpolated into the thrown AppError — the 422 the caller sees. All closed; the
+  describer keeps shape and drops every field the model authored.
+
 * **`observability-010`** — **verified, and deliberately NOT deleted.** `initSSE` is reached only
   from `_archive/v1-podcast-pipeline`, and `SSEEmitter` survives as a type on
   `CorpusBuilder.ingest`'s optional third parameter, which no live caller passes. Deleting it would
