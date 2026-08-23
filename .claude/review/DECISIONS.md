@@ -78,7 +78,7 @@ and spending them on a condition only a human can clear delays the error the ope
 while making it look transient. **Owner action if it ever fires:** free a custom-voice slot in the
 ElevenLabs workspace; no code change will help.
 
-## 🔴 CROP v2 IS A LABEL WITH NO ALGORITHM BEHIND IT — and flipping it costs a full recompute
+## 🟡 CROP v2 — the recompute trap is DEFUSED in code; only the delete-vs-implement ruling remains
 
 Found on the first real run of the field eval, 2026-08-22.
 
@@ -110,6 +110,14 @@ deliberately (then delete the flag, the type and the VERSIONS entry, and say so)
 intended (then the flag stays and needs a guard so it cannot be set until an implementation
 exists)? Shipping either without knowing would be guessing at a plan. The dangerous half — that a
 flip silently costs a catalogue recompute — is what needed writing down today.
+
+**UPDATE 2026-08-23 (verified in code on main):** the dangerous half is closed. `algo.ts` now
+carries `V2_IMPLEMENTED = false`; `cropAlgo()` CLAMPS a requested-but-unimplemented v2 to v1 (so
+the version stamp, and with it every `crop_source_hash`, cannot change), and
+`cropAlgoMisconfigured()` is wired into `server.ts` startup to say loudly that the variable is
+being ignored and why. Tested in `crop/__tests__/algoV2Guard.test.ts`. What remains is ONLY the
+owner ruling this entry always ended on: delete the flag/type/VERSIONS entry, or implement v2 —
+and the implementing commit must flip `V2_IMPLEMENTED` in the same change.
 
 ## 🟡 OWNER ACTION (⅓ done 2026-08-23) — smoke variables: PUBLIC set, two remain
 
