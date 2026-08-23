@@ -414,9 +414,17 @@ synthetic-fixture figure that must not be quoted as a field result. Then D-16 ha
 
 ### WAVE 5 — THE TAIL  ·  not blocked  ·  take from it, do not try to finish it
 ~65 remaining `schedule` findings (report §2) plus the standing backlog: storage census, D-14
-avatar spend, D-17 knowledge gates, D-01b follow-ups, the WebKit `__CHILD` re-key. Mostly P3 with
+avatar spend, D-17 knowledge gates, D-01b follow-ups, ~~the WebKit `__CHILD` re-key~~. Mostly P3 with
 bounded blast radius. **This wave has no finish line and is not meant to have one** — pull from it
 when a related area is already open, rather than working down the list.
+
+* **WebKit `__CHILD` re-key — CLOSED as already-done, 2026-08-23.** The re-key is implemented in
+  `viewer-e2e.spec.ts`: the map stores BOTH keys (`el.src` resolved at message arrival, plus the
+  posting `Window`), and `waitForSection` reads src-first with the Window lookup kept as fallback
+  (lines ~434 and ~543). Evidence it worked: the WebKit viewer e2e job passed on every CI run today
+  (e.g. 7m41s green on #121's and #122's runs) — the same job whose scenario-11 timeout, twice
+  reproduced at 20s AND 45s, motivated the re-key. Closure kind: verified in code + green CI, not
+  owner-attested.
 
 ---
 
