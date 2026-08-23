@@ -435,6 +435,13 @@ avatar spend, D-17 knowledge gates, D-01b follow-ups, ~~the WebKit `__CHILD` re-
 bounded blast radius. **This wave has no finish line and is not meant to have one** — pull from it
 when a related area is already open, rather than working down the list.
 
+* **WebKit "STALE evidence" flake — root-caused and fixed same day (#130).** Three hits on
+  2026-08-23 (twice on #126, once on #129 — the release-blocking one), all on diffs that never
+  touched the viewer. The freshness check judged child reports against a fixed 120ms; on CI WebKit
+  under software GL the PARENT samples every 150–300ms, so every report aged past the bound between
+  samples — environment starvation misread as a blocking sim body. The bound now scales with the
+  sampler's own observed cadence (max(120ms, 4× median inter-sample gap)); a blocking body on a
+  healthy runner is still caught, and the failure message names the bound and the median gap.
 * **WebKit `__CHILD` re-key — CLOSED as already-done, 2026-08-23.** The re-key is implemented in
   `viewer-e2e.spec.ts`: the map stores BOTH keys (`el.src` resolved at message arrival, plus the
   posting `Window`), and `waitForSection` reads src-first with the Window lookup kept as fallback
