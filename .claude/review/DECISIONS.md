@@ -618,9 +618,18 @@ The two dead Trigger.dev files that made this look done are deleted (#95).
   is still `shadow`.
 * **D-01b follow-ups** — `timeline_markers.at_sec` is still absolute-only with no anchor column, and
   the standing review panel does not exist.
-* **D-17 knowledge/retrieval gates** — the ledger never recorded which findings this covers. The two
-  plausible members (`security-009` cross-group knowledge-doc delete, `performance-002` unbounded
-  corpus upload) are both fixed, so this entry may be empty; it needs its scope stated or removing.
+* ~~**D-17 knowledge/retrieval gates**~~ **CLOSED as empty, 2026-08-23.** The ledger never recorded
+  which findings this covered, which is the whole reason it lingered — an entry that names no work
+  cannot be finished, only re-read. Both plausible members are fixed and verified in code:
+  `security-009` (a knowledge document could be deleted across groups) now refuses with
+  `avatar.controller.ts` logging "refused a knowledge-document delete for a document outside this
+  project group", and `performance-002` (unbounded corpus upload) is bounded by a declared-size
+  check plus a spooled read against `UPLOAD_MAX_BYTES.corpusSource`.
+
+  Removed rather than left open. **An item whose scope was never written down is not a backlog
+  entry, it is a worry** — and a list that keeps them teaches the reader to skim, which is how the
+  real entries around it stop being read.
+
 * **Production storage census** (`deploy/scripts/storage-census.sql`, read-only) — **owner action**.
   It unblocks retention, rollup and poster GC, and no result exists anywhere in the repo.
 
