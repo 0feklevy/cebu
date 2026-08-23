@@ -669,6 +669,18 @@ The two dead Trigger.dev files that made this look done are deleted (#95).
     mint with their key, statuses only.
   * NOTE: prod runs the OLD build (release blocked at the VM pin), so nothing recently merged is a
     suspect; equally, no code fix can reach prod until that pin is resolved.
+  * CORRECTION (later same day): prod is NOT on an old build — release v0.1.39 deployed
+    successfully 2026-08-22 10:57Z; the VM-pin memory was stale. v0.1.40/41 failed only the
+    candidate-smoke `cd` bug (#103 fixed it). Further probes with the owner's key ruled the vendor
+    OUT: every real persona (6/6), 26KB prompts, dead references — all mint 200 from outside; prod's
+    pre-mint path answers 400/404 correctly. The 500 is inside the mint block, server-side only.
+    Owner asked for the VM log line + failing project URL; owner placed the working key at the
+    repo root (now gitignored) for remediation — INCIDENT-AVATAR-500.md has both scenarios.
+  * Fallout shipped: #122 (main was RED — #115 merged on a cancelled CI run, no-useless-assignment;
+    same class as #102), #123 (vendor-5xx ephemeral retry + the start catch now logs a bounded
+    shape-only diagnostic — during the incident a statusless throw left no log line at all).
+  * NOT a finding after all: the "leaked" CANDIDATE_FIREBASE_CREDENTIAL in the release logs is a
+    per-run synthetic key that authenticates nothing, and main already masks it line-by-line.
 
 ## ⚪ Known and accepted
 
