@@ -80,3 +80,38 @@ describe('the REAL mint path survives every poison that used to kill it', () => 
     });
   }
 });
+
+describe("the 'guide' default has no PERSONA_MAP entry — and must not crash", () => {
+  const realFetch = globalThis.fetch;
+  const savedEnv = { ...ANAM_ENV };
+  beforeEach(() => {
+    ANAM_ENV.ANAM_API_KEY = 'test-key-1234567890';
+    ANAM_ENV.ANAM_AVATAR_ID = 'env-avatar-1';
+    ANAM_ENV.ANAM_VOICE_ID = 'env-voice-1';
+    ANAM_ENV.ANAM_LLM_ID = 'llm-default-1';
+    invalidateAnamLlmCache();
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ sessionToken: 'tok-guide' }), { status: 200, headers: { 'Content-Type': 'application/json' } })) as typeof fetch;
+  });
+  afterEach(() => { globalThis.fetch = realFetch; Object.assign(ANAM_ENV, savedEnv); invalidateAnamLlmCache(); });
+
+  it('an EMPTY config on the default character mints instead of TypeErroring', async () => {
+    // THE 2026-08-23 production crash, exactly: DEFAULT_CHARACTER_ID became the neutral 'guide',
+    // and PERSONA_MAP (a static literal keyed einstein/darwin/napoleon/archimedes) never learned
+    // it — so `PERSONA_MAP[characterId] ?? PERSONA_MAP[DEFAULT_CHARACTER_ID]` was
+    // `undefined ?? undefined`, and `entry.personaId` threw a statusless TypeError → a bare 500
+    // for EVERY start without a baked personaId. The self-heal branch STRIPS the baked id after a
+    // transcript change, which is how "worked yesterday" became "dead today" with no deploy.
+    const info = await getSessionToken('guide', {});
+    expect(info.token).toBe('tok-guide');
+  });
+
+  it('an unknown character id falls back and mints, not crashes', async () => {
+    const info = await getSessionToken('pnina-custom-character', {});
+    expect(info.token).toBe('tok-guide');
+  });
+
+  it('a NULL-config project path (cfg absent entirely) mints too', async () => {
+    const info = await getSessionToken('guide', undefined);
+    expect(info.token).toBe('tok-guide');
+  });
+});
