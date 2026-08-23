@@ -706,6 +706,10 @@ The two dead Trigger.dev files that made this look done are deleted (#95).
 * **Production storage census** (`deploy/scripts/storage-census.sql`, read-only) — **owner action**.
   It unblocks retention, rollup and poster GC, and no result exists anywhere in the repo.
 
+* ⚪ Follow-up seed from the #127 adversarial review: nothing constrains `projects.avatar_config`'s
+  SHAPE at the database — the write helpers now sanitize (B1), but a jsonb CHECK constraint or a
+  single typed write chokepoint is what stops the NEXT wrong-typed writer. Unowned; revisit after
+  the incident wave settles.
 * 🔴 **PROD INCIDENT (open): /avatar/start returns 500 — owner-reported 2026-08-23** — full debrief draft: `INCIDENT-2026-08-23-avatar.md` — **MECHANISM CRACKED + reproduced: wrong-typed avatar_config field → statusless TypeError → bare 500 pre-vendor; fix = #127 (sanitize at both seams); v0.1.42 (diagnostic+admin key) deploying, v0.1.43 (the fix) right behind**
 
   * v0.1.42 did NOT deploy: candidate smoke failed one step past #103's cd fix —
