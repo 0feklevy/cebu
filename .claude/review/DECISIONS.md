@@ -78,7 +78,7 @@ and spending them on a condition only a human can clear delays the error the ope
 while making it look transient. **Owner action if it ever fires:** free a custom-voice slot in the
 ElevenLabs workspace; no code change will help.
 
-## 🔴 CROP v2 IS A LABEL WITH NO ALGORITHM BEHIND IT — and flipping it costs a full recompute
+## 🟡 CROP v2 — the recompute trap is DEFUSED in code; only the delete-vs-implement ruling remains
 
 Found on the first real run of the field eval, 2026-08-22.
 
@@ -111,7 +111,15 @@ intended (then the flag stays and needs a guard so it cannot be set until an imp
 exists)? Shipping either without knowing would be guessing at a plan. The dangerous half — that a
 flip silently costs a catalogue recompute — is what needed writing down today.
 
-## 🔴 OWNER ACTION — three repository variables are unset, and the daily audit has been hollow
+**UPDATE 2026-08-23 (verified in code on main):** the dangerous half is closed. `algo.ts` now
+carries `V2_IMPLEMENTED = false`; `cropAlgo()` CLAMPS a requested-but-unimplemented v2 to v1 (so
+the version stamp, and with it every `crop_source_hash`, cannot change), and
+`cropAlgoMisconfigured()` is wired into `server.ts` startup to say loudly that the variable is
+being ignored and why. Tested in `crop/__tests__/algoV2Guard.test.ts`. What remains is ONLY the
+owner ruling this entry always ended on: delete the flag/type/VERSIONS entry, or implement v2 —
+and the implementing commit must flip `V2_IMPLEMENTED` in the same change.
+
+## 🟡 OWNER ACTION (⅓ done 2026-08-23) — smoke variables: PUBLIC set, two remain
 
 Found 2026-08-22 while checking whether the production audit shared the hole closed in the release
 path. It does.
@@ -129,6 +137,15 @@ runs verified far less than they appear to.
 
 **There is currently no public project at all** — both sitemaps are empty — so this needs a
 project made public before the first variable has a value to hold.
+
+**UPDATE 2026-08-23:** `SMOKE_PUBLIC_PATH` is now SET — `/projects/d8e7557a-…/view`, the owner's
+public project verified viewable anonymously during the avatar incident. The four
+fixture-dependent production flows run again from the next audit. Two remain, both needing a value
+only the owner has: `SMOKE_PLAYLIST_PATH` (playlists are share-token pages — need a token) and
+`SMOKE_ADMIN_PREVIEW_PATH`. ALSO STALE BELOW: "releases will refuse to deploy" described #81's
+behaviour; the release now computes `require_tests` from which fixtures EXIST (v0.1.39 deployed
+with none set), so missing fixtures shrink coverage rather than block. The paragraph is kept for
+the near-miss reasoning:
 
 **Until they are set, releases will refuse to deploy.** That is deliberate and is the safe half of
 a near miss: `--require-tests` makes a skipped release-blocking flow CRITICAL, and the post-deploy
@@ -211,7 +228,18 @@ three.
 uses valid JSON with a wrong enum value — precisely the shape that makes Zod echo the value back —
 and asserts on `logger.warn` and separately on the THROWN error, because no log assertion would
 have caught the third leak.
+* ~~**The a11y group**~~ **COMPLETE (#102).** Five shipped on 2026-08-19; `ui-ux-006` — the editor
+  timeline had no keyboard path at all — landed overnight. Each section now exposes three focusable
+  sliders (move, trim-start, trim-end) driven by plain arrow keys, with NO modifier scheme: Alt+Arrow
+  is browser back on Windows and Linux, so binding a trim there would lose the editor on a mistimed
+  press. The keyboard calls `clampMove`/`clampTrim` — the drag path's own collision rules — because
+  a second copy is how the two inputs start disagreeing about where a section may go.
 
+* ~~**`observability-009`**~~ **CLOSED (#91 + #101).** The error-level site went first. The audit
+  then found a WARN-level sibling, and that turned out to be THREE leaks: `raw.slice(0, 300)`, the
+  Zod issue array (which carries the offending value in `received` and again inside `message`), and
+  the same array interpolated into the thrown AppError — the 422 the caller sees. All closed; the
+  describer keeps shape and drops every field the model authored.
 ## ✅ DIAGNOSED AND FIXED — a project that OPENS on a simulation showed nothing
 
 Three rounds read this as a harness problem. It was two product bugs stacked on each other, and
@@ -403,9 +431,24 @@ synthetic-fixture figure that must not be quoted as a field result. Then D-16 ha
 
 ### WAVE 5 — THE TAIL  ·  not blocked  ·  take from it, do not try to finish it
 ~65 remaining `schedule` findings (report §2) plus the standing backlog: storage census, D-14
-avatar spend, D-17 knowledge gates, D-01b follow-ups, the WebKit `__CHILD` re-key. Mostly P3 with
+avatar spend, D-17 knowledge gates, D-01b follow-ups, ~~the WebKit `__CHILD` re-key~~. Mostly P3 with
 bounded blast radius. **This wave has no finish line and is not meant to have one** — pull from it
 when a related area is already open, rather than working down the list.
+
+* **WebKit "STALE evidence" flake — root-caused and fixed same day (#130).** Three hits on
+  2026-08-23 (twice on #126, once on #129 — the release-blocking one), all on diffs that never
+  touched the viewer. The freshness check judged child reports against a fixed 120ms; on CI WebKit
+  under software GL the PARENT samples every 150–300ms, so every report aged past the bound between
+  samples — environment starvation misread as a blocking sim body. The bound now scales with the
+  sampler's own observed cadence (max(120ms, 4× median inter-sample gap)); a blocking body on a
+  healthy runner is still caught, and the failure message names the bound and the median gap.
+* **WebKit `__CHILD` re-key — CLOSED as already-done, 2026-08-23.** The re-key is implemented in
+  `viewer-e2e.spec.ts`: the map stores BOTH keys (`el.src` resolved at message arrival, plus the
+  posting `Window`), and `waitForSection` reads src-first with the Window lookup kept as fallback
+  (lines ~434 and ~543). Evidence it worked: the WebKit viewer e2e job passed on every CI run today
+  (e.g. 7m41s green on #121's and #122's runs) — the same job whose scenario-11 timeout, twice
+  reproduced at 20s AND 45s, motivated the re-key. Closure kind: verified in code + green CI, not
+  owner-attested.
 
 ---
 
@@ -621,15 +664,110 @@ The two dead Trigger.dev files that made this look done are deleted (#95).
   `CorpusBuilder.ingest`'s optional third parameter, which no live caller passes. Deleting it would
   break the archive's imports, and the archive exists to be readable. The accurate statement is
   that this system has no live SSE surface — worth knowing before anyone builds one on top of it.
-* **D-14** avatar spend (atomic function → async observer → client wiring). No code; `AVATAR_BUDGET_MODE`
-  is still `shadow`.
-* **D-01b follow-ups** — `timeline_markers.at_sec` is still absolute-only with no anchor column, and
-  the standing review panel does not exist.
-* **D-17 knowledge/retrieval gates** — the ledger never recorded which findings this covers. The two
-  plausible members (`security-009` cross-group knowledge-doc delete, `performance-002` unbounded
-  corpus upload) are both fixed, so this entry may be empty; it needs its scope stated or removing.
+* **D-14 avatar spend** — **two of three parts are BUILT**, and the ledger said "No code". Measured
+  2026-08-23:
+  * ✅ **atomic reserve** — `reserveAvatarSpend` in `usage/AvatarBudgetService.ts`, a single
+    `INSERT … ON CONFLICT … DO UPDATE … WHERE` so Postgres holds the row while it decides. Wired
+    into `avatar.controller.ts`, and it denies with a status, a `Retry-After` and a `deniedBy`.
+  * ✅ **async observer** — `sweepAvatarMeter`, run by `scheduleSweep` after the response and
+    throttled once per process per interval, so housekeeping never sits in a request's latency.
+  * ✅ **client wiring** — **PR #121** (2026-08-23). `shared/src/avatar/denial.ts` owns the wire
+    shape both ways: three coarse public reasons (busy/limited/unavailable — the limiter DIMENSION
+    stays in the operator log, asserted off the wire), copy generated from the enum, and
+    `parseAvatarDenial` REGENERATING it on read so a valid `reason` is never a licence to render
+    the server's string (ui-ux-205 kept by construction). `explain` is opt-in per call site — the
+    quiet degradations (`NONE`, `NO_IMAGE`, `{ok:false}`) keep their success shapes. The popup
+    disables Try-again for exactly the server-named wait, then gives it back. Found and fixed on
+    the way: **the kill switch reused the capability body** — an operator pulling the stop
+    produced a 503 explained as "Avatar capability required". All claims mutation-checked; the
+    one untested line is flagged in-code (reconnect denial copy — no harness makes a live
+    connection-lost event). **D-14 is now complete end to end; enforce is no longer blocked on
+    the client.**
+
+  `AVATAR_BUDGET_MODE` stays `shadow` deliberately — the same posture as the new account-wide
+  `SPEND_CEILING_MODE`, and for the same reason: a limit that refuses on a number nobody has
+  watched is a limit that takes something down.
+
+* **D-01b follow-ups** — ~~`timeline_markers.at_sec` absolute-only~~ **CLOSED (#118)**: markers now
+  carry the same segment anchor 063 gave b-roll, resolved through the same function rather than a
+  second copy of the rules. The standing review panel still does not exist.
+* ~~**D-17 knowledge/retrieval gates**~~ **CLOSED as empty, 2026-08-23.** The ledger never recorded
+  which findings this covered, which is the whole reason it lingered — an entry that names no work
+  cannot be finished, only re-read. Both plausible members are fixed and verified in code:
+  `security-009` (a knowledge document could be deleted across groups) now refuses with
+  `avatar.controller.ts` logging "refused a knowledge-document delete for a document outside this
+  project group", and `performance-002` (unbounded corpus upload) is bounded by a declared-size
+  check plus a spooled read against `UPLOAD_MAX_BYTES.corpusSource`.
+
+  Removed rather than left open. **An item whose scope was never written down is not a backlog
+  entry, it is a worry** — and a list that keeps them teaches the reader to skim, which is how the
+  real entries around it stop being read.
+
 * **Production storage census** (`deploy/scripts/storage-census.sql`, read-only) — **owner action**.
   It unblocks retention, rollup and poster GC, and no result exists anywhere in the repo.
+
+* ✅ (same day) #127-review cross-signal CLOSED in #132: ALL SEVEN `avatar_config` writers now
+  funnel through the sanitizer — including the main PUT rebuild (which reflects VENDOR fields via
+  `enrichAvatarConfigFromAnam`'s `||` and could store the exact poison the read seams survive),
+  the knowledge-upload merge, project duplication (a copy never inherits poison) and the
+  tag-circle-voices script. A jsonb CHECK constraint remains optional belt-and-braces; the typed
+  chokepoint exists without a migration.
+* 🟡 Small open from v0.1.43's run: the **Publish GitHub release job reported `skipped`** even
+  though `inputs.deploy` was true and the deploy succeeded — v0.1.40–43 all sit as Drafts while
+  v0.1.39 published fine. Cosmetic (tag+draft exist), but the `if:` on the publish job deserves a
+  look before the next release; publish v0.1.43's draft by hand or fix the condition.
+* ✅ **PROD INCIDENT RESOLVED 2026-08-23 ~14:20Z: /avatar/start 500 → 200 in v0.1.43.** Root: PERSONA_MAP never learned the 'guide' default (undefined ?? undefined → entry.personaId TypeError, statusless, pre-vendor). Fixed #127 (+ sanitizer class-defense), verified live: real sessionToken minted on the reported page; both pages 200. Full debrief: `INCIDENT-2026-08-23-avatar.md` — **MECHANISM CRACKED + reproduced: wrong-typed avatar_config field → statusless TypeError → bare 500 pre-vendor; fix = #127 (sanitize at both seams); v0.1.42 (diagnostic+admin key) deploying, v0.1.43 (the fix) right behind**
+
+  * v0.1.42 did NOT deploy: candidate smoke failed one step past #103's cd fix —
+    `${BACKEND_IMAGE}` is a compose REQUIRED variable and its per-step env block existed only on
+    the stack-start step, so the migrate step died on interpolation and the deploy was skipped
+    (run 32640689308). Fixed in **#129** ($GITHUB_ENV export from the resolve step; contract
+    suites 84/84). Escape hatch if smoke blocks again: images are pushed BEFORE the smoke, and
+    rollback.yml deploys by tag — a "rollback" TO the new tag bypasses the smoke path entirely.
+  * The reconnect-denial line in #121 got its harness (avatarReconnectDenial.test.tsx) — the
+    in-code "no harness produces a live connection-lost event" note is now false and removed. from their own
+  browser console (`api.flowvidco.com/api/v1/avatar/start` → 500, body `Avatar session failed`,
+  twice). Diagnosis so far, all from outside the VM:
+  * `/health` and `/health/ready` are green (DB 2ms, queue empty) — the server itself is fine.
+  * Anam's API answers from here (401 fast, unauthenticated) — the vendor is not down outright.
+  * The 500 text `Avatar session failed` is produced ONLY by the start handler's catch for
+    `status >= 500`, and the mint passes the VENDOR's status through verbatim
+    (`anamService.ts` — `err.status = minted.status`). Network error → 502, timeout → 504, so a
+    plain 500 means **Anam itself answered 500 to the mint POST**, or a statusless throw — and the
+    statusless candidates are nearly all swallowed (`getPersona` → null, `resolveDefaultLlmId`
+    caught), leaving `res.json()` on a 200 as the only thin one.
+  * The deciding evidence exists in two places we cannot reach from a dev machine: the VM log line
+    `[Anam] session-token request failed {status, code}`, and the owner's Anam dashboard
+    (credits/plan banner). Owner is running `anam-probe.sh` (repo root) — auth check + minimal
+    mint with their key, statuses only.
+  * NOTE: prod runs the OLD build (release blocked at the VM pin), so nothing recently merged is a
+    suspect; equally, no code fix can reach prod until that pin is resolved.
+  * CORRECTION (later same day): prod is NOT on an old build — release v0.1.39 deployed
+    successfully 2026-08-22 10:57Z; the VM-pin memory was stale. v0.1.40/41 failed only the
+    candidate-smoke `cd` bug (#103 fixed it). Further probes with the owner's key ruled the vendor
+    OUT: every real persona (6/6), 26KB prompts, dead references — all mint 200 from outside; prod's
+    pre-mint path answers 400/404 correctly. The 500 is inside the mint block, server-side only.
+    Owner asked for the VM log line + failing project URL; owner placed the working key at the
+    repo root (now gitignored) for remediation — INCIDENT-AVATAR-500.md has both scenarios.
+  * Fallout shipped: #122 (main was RED — #115 merged on a cancelled CI run, no-useless-assignment;
+    same class as #102), #123 (vendor-5xx ephemeral retry + the start catch now logs a bounded
+    shape-only diagnostic — during the incident a statusless throw left no log line at all).
+  * NOT a finding after all: the "leaked" CANDIDATE_FIREBASE_CREDENTIAL in the release logs is a
+    per-run synthetic key that authenticates nothing, and main already masks it line-by-line.
+  * ROOT DESIGN GAP FOUND (owner suspected it first): `getSystemKey`'s provider union never
+    included 'anam' — the admin key screen managed four vendors and the avatar read only the
+    container env, so rotating the key in the screen built for that changed nothing. **PR #125**
+    fixes it end to end (migration 075 widens the enum in both registries, resolution order
+    BYOK → admin key → env, project-less path included, admin-web row, admin-v1 widened).
+  * INTERIM BROWSER-ONLY FIX handed to owner (works on deployed v0.1.39): enable BYOK in
+    admin → paste the working key in user settings (AnamKeyField) → owner's videos mint with
+    the owner's key. A monitor watches /avatar/start for recovery.
+  * Still open pending the VM log line: WHY the env key draws a 500 (not 401) from Anam —
+    revoked-key-of-live-account vs deleted-account are the candidates; garbage keys give 401.
+  * CI fallout fixed in the same wave: #122 also carried a test that silently required a live
+    local Postgres (guidanceSpendMetering — resolveGuidanceVoice reads admin_settings through
+    the real db client; green with `docker ps`, red in CI). Mocked at the module seam, proven
+    with an unroutable DATABASE_URL.
 
 ## ⚪ Known and accepted
 
