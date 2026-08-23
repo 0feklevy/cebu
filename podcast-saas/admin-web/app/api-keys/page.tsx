@@ -5,13 +5,16 @@ import { adminApi } from '../../lib/api';
 import { AdminShell } from '../../components/AdminShell';
 import type { ApiKeyStatus, TestKeyResult } from 'shared/src/generated/admin-v1';
 
-type Provider = 'claude' | 'openai' | 'gemini' | 'elevenlabs';
+type Provider = 'claude' | 'openai' | 'gemini' | 'elevenlabs' | 'anam';
 
 const PROVIDERS: { id: Provider; label: string; placeholder: string; description: string; primary?: boolean }[] = [
   { id: 'claude', label: 'Anthropic (Claude)', placeholder: 'sk-ant-…', description: 'AI bridge function extraction — required for simulations', primary: true },
   { id: 'gemini', label: 'Google (Gemini)', placeholder: 'AIza…', description: 'Not used in current pipeline' },
   { id: 'openai', label: 'OpenAI', placeholder: 'sk-…', description: 'Not used in current pipeline' },
   { id: 'elevenlabs', label: 'ElevenLabs', placeholder: 'sk_…', description: 'Not used in current pipeline' },
+  // Added during the 2026-08-23 outage: the avatar minted only with the container env key, so
+  // rotating here changed nothing. Now this key wins over the env var for every avatar mint.
+  { id: 'anam', label: 'Anam (avatar)', placeholder: 'MT…', description: 'Avatar sessions — read before the server env key', primary: true },
 ];
 
 interface KeyEntry {
@@ -29,6 +32,7 @@ export default function ApiKeysPage() {
     claude: { status: null, draft: '', testing: false, testResult: null, saving: false, deleting: false },
     openai: { status: null, draft: '', testing: false, testResult: null, saving: false, deleting: false },
     gemini: { status: null, draft: '', testing: false, testResult: null, saving: false, deleting: false },
+    anam: { status: null, draft: '', testing: false, testResult: null, saving: false, deleting: false },
   });
   const [error, setError] = useState<string | null>(null);
 

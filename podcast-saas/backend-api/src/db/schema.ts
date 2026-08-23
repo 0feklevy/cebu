@@ -65,7 +65,8 @@ export const scriptStatusEnum = pgEnum('script_status', [
   'approved',
   'failed',
 ]);
-export const providerEnum = pgEnum('provider', ['claude', 'openai', 'gemini', 'elevenlabs']);
+// 'anam' added by migration 075 — the avatar vendor's platform key becomes admin-manageable.
+export const providerEnum = pgEnum('provider', ['claude', 'openai', 'gemini', 'elevenlabs', 'anam']);
 export const jobStatusEnum = pgEnum('job_status', [
   'queued',
   'running',

@@ -62,7 +62,7 @@ export interface SystemPrompt {
 }
 
 export interface ApiKeyStatus {
-  provider: 'claude' | 'openai' | 'gemini' | 'elevenlabs';
+  provider: 'claude' | 'openai' | 'gemini' | 'elevenlabs' | 'anam';
   set: boolean;
   last_updated: string | null;
 }
@@ -291,15 +291,15 @@ export class AdminV1Api {
     return this.request('/api/admin/v1/api-keys');
   }
 
-  setApiKey(provider: 'claude' | 'openai' | 'gemini' | 'elevenlabs', api_key: string): Promise<{ success: boolean }> {
+  setApiKey(provider: 'claude' | 'openai' | 'gemini' | 'elevenlabs' | 'anam', api_key: string): Promise<{ success: boolean }> {
     return this.request('/api/admin/v1/api-keys', { method: 'POST', body: { provider, api_key } });
   }
 
-  testApiKey(provider: 'claude' | 'openai' | 'gemini' | 'elevenlabs', api_key: string): Promise<TestKeyResult> {
+  testApiKey(provider: 'claude' | 'openai' | 'gemini' | 'elevenlabs' | 'anam', api_key: string): Promise<TestKeyResult> {
     return this.request('/api/admin/v1/api-keys/test', { method: 'POST', body: { provider, api_key } });
   }
 
-  deleteApiKey(provider: 'claude' | 'openai' | 'gemini' | 'elevenlabs'): Promise<{ success: boolean }> {
+  deleteApiKey(provider: 'claude' | 'openai' | 'gemini' | 'elevenlabs' | 'anam'): Promise<{ success: boolean }> {
     return this.request(`/api/admin/v1/api-keys/${provider}`, { method: 'DELETE' });
   }
 

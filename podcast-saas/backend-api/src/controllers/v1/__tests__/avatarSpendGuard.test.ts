@@ -63,7 +63,7 @@ vi.mock('../../../services/usage/UsageTrackingService.js', () => ({ UsageTrackin
 vi.mock('../../../services/avatar/memoryService.js', () => ({ saveTurns: vi.fn(), getTurns: vi.fn(), getProfile: vi.fn(), extractAndSaveFacts: vi.fn() }));
 vi.mock('../../../services/avatar/memoryToken.js', () => ({ signMemoryToken: vi.fn(), verifyMemoryToken: vi.fn() }));
 vi.mock('../../../services/transcriptPropagation.js', () => ({ getProjectTranscript: vi.fn(async () => null) }));
-vi.mock('../../../services/avatar/anamKey.js', () => ({ resolveAnamKeyForProject: vi.fn(async () => 'anam_sk_test') }));
+vi.mock('../../../services/avatar/anamKey.js', () => ({ resolveAnamKeyForProject: vi.fn(async () => 'anam_sk_test'), resolveSystemAnamKey: vi.fn(async () => undefined) }));
 
 // ── The three things that cost money. Every refusal must leave all three untouched. ──────────
 const spend = vi.hoisted(() => ({

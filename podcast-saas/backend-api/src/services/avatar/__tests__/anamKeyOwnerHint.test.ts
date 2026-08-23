@@ -24,7 +24,7 @@ vi.mock('../../../db/index.js', () => ({
 }));
 vi.mock('../../../db/schema.js', () => ({ projects: Symbol('projects'), users: Symbol('users'), admin_settings: Symbol('admin_settings') }));
 vi.mock('drizzle-orm', () => ({ eq: vi.fn() }));
-vi.mock('../../secrets/ApiKeyService.js', () => ({ decryptKey: vi.fn(() => 'anam_sk_decrypted') }));
+vi.mock('../../secrets/ApiKeyService.js', () => ({ decryptKey: vi.fn(() => 'anam_sk_decrypted'), ApiKeyService: class { async getSystemKey() { return null; } } }));
 
 import { resolveAnamKeyForProject } from '../anamKey.js';
 

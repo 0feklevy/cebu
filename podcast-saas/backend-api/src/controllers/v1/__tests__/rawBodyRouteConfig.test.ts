@@ -64,7 +64,7 @@ vi.mock('../../../services/avatar/anamService.js', () => ({
   ensureKnowledgeGroup: vi.fn(), ensureKnowledgeTool: vi.fn(), uploadKnowledgeDocument: vi.fn(),
   listKnowledgeDocuments: vi.fn(), deleteKnowledgeDocument: vi.fn(), listSystemTools: vi.fn(),
 }));
-vi.mock('../../../services/avatar/anamKey.js', () => ({ resolveAnamKeyForProject: vi.fn() }));
+vi.mock('../../../services/avatar/anamKey.js', () => ({ resolveAnamKeyForProject: vi.fn(), resolveSystemAnamKey: vi.fn(async () => undefined) }));
 vi.mock('../../../services/avatar/visualService.js', () => ({
   analyzeVisual: vi.fn(), generateLibrarySimulation: vi.fn(), editLibrarySimulation: vi.fn(),
 }));
