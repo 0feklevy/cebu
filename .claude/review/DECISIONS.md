@@ -211,7 +211,18 @@ three.
 uses valid JSON with a wrong enum value — precisely the shape that makes Zod echo the value back —
 and asserts on `logger.warn` and separately on the THROWN error, because no log assertion would
 have caught the third leak.
+* ~~**The a11y group**~~ **COMPLETE (#102).** Five shipped on 2026-08-19; `ui-ux-006` — the editor
+  timeline had no keyboard path at all — landed overnight. Each section now exposes three focusable
+  sliders (move, trim-start, trim-end) driven by plain arrow keys, with NO modifier scheme: Alt+Arrow
+  is browser back on Windows and Linux, so binding a trim there would lose the editor on a mistimed
+  press. The keyboard calls `clampMove`/`clampTrim` — the drag path's own collision rules — because
+  a second copy is how the two inputs start disagreeing about where a section may go.
 
+* ~~**`observability-009`**~~ **CLOSED (#91 + #101).** The error-level site went first. The audit
+  then found a WARN-level sibling, and that turned out to be THREE leaks: `raw.slice(0, 300)`, the
+  Zod issue array (which carries the offending value in `received` and again inside `message`), and
+  the same array interpolated into the thrown AppError — the 422 the caller sees. All closed; the
+  describer keeps shape and drops every field the model authored.
 ## ✅ DIAGNOSED AND FIXED — a project that OPENS on a simulation showed nothing
 
 Three rounds read this as a harness problem. It was two product bugs stacked on each other, and
@@ -648,6 +659,17 @@ The two dead Trigger.dev files that made this look done are deleted (#95).
 * **D-01b follow-ups** — ~~`timeline_markers.at_sec` absolute-only~~ **CLOSED (#118)**: markers now
   carry the same segment anchor 063 gave b-roll, resolved through the same function rather than a
   second copy of the rules. The standing review panel still does not exist.
+* ~~**D-17 knowledge/retrieval gates**~~ **CLOSED as empty, 2026-08-23.** The ledger never recorded
+  which findings this covered, which is the whole reason it lingered — an entry that names no work
+  cannot be finished, only re-read. Both plausible members are fixed and verified in code:
+  `security-009` (a knowledge document could be deleted across groups) now refuses with
+  `avatar.controller.ts` logging "refused a knowledge-document delete for a document outside this
+  project group", and `performance-002` (unbounded corpus upload) is bounded by a declared-size
+  check plus a spooled read against `UPLOAD_MAX_BYTES.corpusSource`.
+
+  Removed rather than left open. **An item whose scope was never written down is not a backlog
+  entry, it is a worry** — and a list that keeps them teaches the reader to skim, which is how the
+  real entries around it stop being read.
 
 * **Production storage census** (`deploy/scripts/storage-census.sql`, read-only) — **owner action**.
   It unblocks retention, rollup and poster GC, and no result exists anywhere in the repo.
