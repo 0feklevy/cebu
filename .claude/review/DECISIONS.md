@@ -699,7 +699,16 @@ The two dead Trigger.dev files that made this look done are deleted (#95).
 * **Production storage census** (`deploy/scripts/storage-census.sql`, read-only) — **owner action**.
   It unblocks retention, rollup and poster GC, and no result exists anywhere in the repo.
 
-* 🔴 **PROD INCIDENT (open): /avatar/start returns 500 — owner-reported 2026-08-23** — full debrief draft: `INCIDENT-2026-08-23-avatar.md` — **MECHANISM CRACKED + reproduced: wrong-typed avatar_config field → statusless TypeError → bare 500 pre-vendor; fix = #127 (sanitize at both seams); v0.1.42 (diagnostic+admin key) deploying, v0.1.43 (the fix) right behind** from their own
+* 🔴 **PROD INCIDENT (open): /avatar/start returns 500 — owner-reported 2026-08-23** — full debrief draft: `INCIDENT-2026-08-23-avatar.md` — **MECHANISM CRACKED + reproduced: wrong-typed avatar_config field → statusless TypeError → bare 500 pre-vendor; fix = #127 (sanitize at both seams); v0.1.42 (diagnostic+admin key) deploying, v0.1.43 (the fix) right behind**
+
+  * v0.1.42 did NOT deploy: candidate smoke failed one step past #103's cd fix —
+    `${BACKEND_IMAGE}` is a compose REQUIRED variable and its per-step env block existed only on
+    the stack-start step, so the migrate step died on interpolation and the deploy was skipped
+    (run 32640689308). Fixed in **#129** ($GITHUB_ENV export from the resolve step; contract
+    suites 84/84). Escape hatch if smoke blocks again: images are pushed BEFORE the smoke, and
+    rollback.yml deploys by tag — a "rollback" TO the new tag bypasses the smoke path entirely.
+  * The reconnect-denial line in #121 got its harness (avatarReconnectDenial.test.tsx) — the
+    in-code "no harness produces a live connection-lost event" note is now false and removed. from their own
   browser console (`api.flowvidco.com/api/v1/avatar/start` → 500, body `Avatar session failed`,
   twice). Diagnosis so far, all from outside the VM:
   * `/health` and `/health/ready` are green (DB 2ms, queue empty) — the server itself is fine.
