@@ -78,8 +78,8 @@ describe('PUT /avatar/config cannot store what the vendor reflected', () => {
     // The exact reflection path: `avatarName: cfg.avatarName || avatar.displayName || ''` — a
     // localized-object displayName is truthy, so without the write-side sanitize it is STORED,
     // and the next start trips over `.trim()` on it.
-    enrich.fn.mockImplementation(async (cfg: Record<string, unknown>) => ({
-      ...cfg, avatarName: { en: 'Einstein', he: 'איינשטיין' }, avatarImageUrl: 'https://cdn/x.png',
+    enrich.fn.mockImplementation(async (cfg: unknown) => ({
+      ...(cfg as Record<string, unknown>), avatarName: { en: 'Einstein', he: 'איינשטיין' }, avatarImageUrl: 'https://cdn/x.png',
     }));
 
     const res = await app.inject({
