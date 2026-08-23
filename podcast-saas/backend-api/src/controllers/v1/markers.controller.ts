@@ -1,9 +1,10 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { db } from '../../db/index.js';
-import { timeline_markers } from '../../db/schema.js';
+import { timeline_markers, video_files } from '../../db/schema.js';
 import { eq, and, asc } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { editableProject } from '../../services/collabAccess.js';
+import { buildMainSegmentTimeline, anchorForAbsoluteSec } from 'shared';
 
 // Input bounds for markers (backend-206 / security-403): a 3- or 6-digit hex color, a sane
 // upper bound on at_sec (matching the thumbnail-from-timeline cap), and length caps on the
@@ -35,6 +36,26 @@ export async function registerMarkersRoutes(app: FastifyInstance): Promise<void>
     },
   );
 
+
+/**
+ * The anchor to store for a marker at `atSec`, or an empty patch when one cannot be chosen.
+ *
+ * ANCHORING HAPPENS ON WRITE, never as a backfill. An old marker's absolute second cannot tell you
+ * which segment its author MEANT — the drift this fixes is precisely the case where that second no
+ * longer points where they intended — so guessing would write a measurement-shaped guess into the
+ * table. Rows gain an anchor the next time somebody moves them, which is the moment the intent is
+ * known.
+ *
+ * Returns `{}` rather than throwing when the project has no main timeline yet: the marker is still
+ * worth storing at its absolute second, and a row that claims to be anchored while resolving
+ * through the fallback forever is strictly worse than an honest absolute.
+ */
+async function anchorPatchFor(projectId: string, atSec: number) {
+  const videos = await db.query.video_files.findMany({ where: eq(video_files.project_id, projectId) });
+  const timeline = buildMainSegmentTimeline(videos);
+  return anchorForAbsoluteSec(timeline, atSec) ?? {};
+}
+
   // POST /api/v1/projects/:id/markers
   app.post<{ Params: { id: string }; Body: { at_sec?: number; label?: string | null; notes?: string | null; color?: string | null } }>(
     '/api/v1/projects/:id/markers',
@@ -63,6 +84,9 @@ export async function registerMarkersRoutes(app: FastifyInstance): Promise<void>
         .values({
           project_id: project.id,
           at_sec,
+          // Both representations: the absolute second stays the fallback, and the anchor is what
+          // makes the marker follow its content when an earlier clip changes length (migration 074).
+          ...(await anchorPatchFor(project.id, at_sec)),
           label: label ?? null,
           notes: notes ?? null,
           color: color || '#ef4444',
@@ -102,7 +126,14 @@ export async function registerMarkersRoutes(app: FastifyInstance): Promise<void>
       }
 
       const patch: Partial<typeof timeline_markers.$inferInsert> = {};
-      if (at_sec != null) patch.at_sec = at_sec;
+      if (at_sec != null) {
+        patch.at_sec = at_sec;
+        // MOVING A MARKER RE-ANCHORS IT. This is the moment the author's intent is known — they
+        // just pointed at a place — so it is the only moment an anchor can be chosen honestly.
+        // A move that cannot be anchored (no main timeline yet) leaves the columns alone rather
+        // than writing a stale pair from wherever the marker used to be.
+        Object.assign(patch, await anchorPatchFor(project.id, at_sec));
+      }
       if (label !== undefined) patch.label = label;
       if (notes !== undefined) patch.notes = notes;
       if (color) patch.color = color;
