@@ -23,6 +23,7 @@ import { ElevenLabsDialogue, type VoiceSegment } from './ElevenLabsDialogue.js';
 import { planChunks, type Chunk, type BackchannelJob } from './chunker.js';
 import { UsageTrackingService } from '../../usage/UsageTrackingService.js';
 import { estimateTtsCost, usdPerCreditFromEnv, charactersIn } from '../../usage/ttsCost.js';
+import { evaluateSpendCeiling } from '../../usage/spendCeiling.js';
 import { buildTimeline, type TimelineTurn } from './timeline.js';
 import {
   decodeToWav, measureLufs, gainToTarget, extractClip, mixClips, applyTempo,
@@ -138,6 +139,20 @@ export class PodcastRenderer {
     const language = episode.language ?? show.language ?? 'en';
 
     this.charactersSpent = 0;   // one renderer instance may serve several renders
+
+    // THE ACCOUNT-WIDE CEILING, checked before a single character is synthesised.
+    //
+    // Placed at the render rather than at each chunk: an episode is the unit a person decides to
+    // make, and stopping one halfway leaves a part-paid artefact nobody can use. Checked here it
+    // either runs or does not.
+    //
+    // SHADOW BY DEFAULT — `SPEND_CEILING_MODE` has to be set to `enforce` for this to refuse
+    // anything. Until then it logs what it would have done, which is the only way to find out
+    // whether the configured figure is the right one before it starts costing somebody a render.
+    const ceiling = await evaluateSpendCeiling({ provider: 'elevenlabs' });
+    if (ceiling.refuse) {
+      throw new Error(ceiling.reason ?? 'Monthly ElevenLabs spend ceiling reached.');
+    }
     const workDir = await mkdtemp(join(tmpdir(), 'podcast-render-'));
     try {
       const { clipPath, clipDurMs } = await this.synthesizeAndRecut(episodeId, episode, show, body, language, workDir, {
