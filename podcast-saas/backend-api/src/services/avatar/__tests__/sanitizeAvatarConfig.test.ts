@@ -18,7 +18,7 @@ describe('sanitizeAvatarPersonaConfig', () => {
       knowledge: { nested: true },          // object in a string field → dropped
       voiceId: ['v-1'],                     // array in a string field → dropped
       avatarId: 'real-avatar',              // correct → kept
-      voiceSensitivity: '0.5',              // string in a number field → dropped
+      voiceSensitivity: '0.5',              // numeric STRING → coerced (dropping would shrink sessions)
       maxSessionLengthSeconds: 1800,        // correct → kept
       skipGreeting: 'yes',                  // string in a boolean field → dropped
       toolIds: ['tool-1', 7, null, 'tool-2'], // wrong members filtered, right ones kept
@@ -28,6 +28,7 @@ describe('sanitizeAvatarPersonaConfig', () => {
 
     expect(out).toEqual({
       avatarId: 'real-avatar',
+      voiceSensitivity: 0.5,
       maxSessionLengthSeconds: 1800,
       toolIds: ['tool-1', 'tool-2'],
       someFutureField: { anything: 1 },

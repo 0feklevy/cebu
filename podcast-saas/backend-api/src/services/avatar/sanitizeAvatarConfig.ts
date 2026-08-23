@@ -34,6 +34,17 @@ const STRING_FIELDS = [
 const NUMBER_FIELDS = ['maxSessionLengthSeconds', 'voiceSensitivity'] as const;
 const BOOLEAN_FIELDS = ['skipGreeting', 'uninterruptibleGreeting'] as const;
 
+/** Key NAMES the last sanitize dropped or coerced — for logging; never the values. */
+export function sanitizeDroppedKeys(
+  raw: AvatarPersonaConfig | Record<string, unknown> | null | undefined,
+): string[] {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
+  const clean = sanitizeAvatarPersonaConfig(raw) as Record<string, unknown>;
+  return Object.keys(raw as Record<string, unknown>).filter(
+    (k) => JSON.stringify((raw as Record<string, unknown>)[k]) !== JSON.stringify(clean[k]),
+  );
+}
+
 export function sanitizeAvatarPersonaConfig(
   raw: AvatarPersonaConfig | Record<string, unknown> | null | undefined,
 ): AvatarPersonaConfig {
@@ -44,7 +55,11 @@ export function sanitizeAvatarPersonaConfig(
     if (k in cfg && typeof cfg[k] !== 'string') delete cfg[k];
   }
   for (const k of NUMBER_FIELDS) {
-    if (k in cfg && (typeof cfg[k] !== 'number' || !Number.isFinite(cfg[k] as number))) delete cfg[k];
+    if (!(k in cfg)) continue;
+    // Coerce rather than drop: '1800' meaning thirty minutes silently becoming the 600s default
+    // is a worse failure than the wrong type itself. Anything non-finite after coercion goes.
+    const n = typeof cfg[k] === 'number' ? (cfg[k] as number) : Number(cfg[k]);
+    if (Number.isFinite(n)) cfg[k] = n; else delete cfg[k];
   }
   for (const k of BOOLEAN_FIELDS) {
     if (k in cfg && typeof cfg[k] !== 'boolean') delete cfg[k];
@@ -57,6 +72,19 @@ export function sanitizeAvatarPersonaConfig(
   // The server-managed objects: a non-object is dropped outright.
   for (const k of ['personaBaked', 'personaDisplay', 'avatarCircles'] as const) {
     if (k in cfg && (typeof cfg[k] !== 'object' || cfg[k] === null || Array.isArray(cfg[k]))) delete cfg[k];
+  }
+  // personaBaked's members feed personaFingerprint, which spreads `[...(baked.toolIds ?? [])]` —
+  // a non-array there is a statusless TypeError thrown BEFORE the start handler's try, so it
+  // reaches the wire as a generic 500 with no diagnostic line at all (reviewer finding B4).
+  if (cfg.personaBaked) {
+    const b = { ...(cfg.personaBaked as Record<string, unknown>) };
+    for (const k of ['fingerprint', 'transcriptHash']) if (k in b && typeof b[k] !== 'string') delete b[k];
+    if ('revision' in b && (typeof b.revision !== 'number' || !Number.isFinite(b.revision))) delete b.revision;
+    if ('toolIds' in b) {
+      b.toolIds = Array.isArray(b.toolIds) ? (b.toolIds as unknown[]).filter((t) => typeof t === 'string') : undefined;
+      if (!b.toolIds) delete b.toolIds;
+    }
+    cfg.personaBaked = b;
   }
   // personaDisplay's members are consumed with the SAME fragile pattern this module exists for
   // (`d.displayName?.trim()` in buildAvatarDisplay) — and they are WRITTEN from vendor data

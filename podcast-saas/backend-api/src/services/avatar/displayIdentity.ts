@@ -46,11 +46,14 @@ export function scheduleDisplayResolve(input: DisplayResolveInput): boolean {
       if (!avatarId) return;
       const look = await describeAvatar(avatarId, input.apiKey);
       if (!look) return;
+      // Coerced, not `??`-defaulted: `??` passes any non-null value through, and this object is
+      // PERSISTED into avatar_config — a vendor shape change must not become stored poison.
+      const str = (v: unknown): string => (typeof v === 'string' ? v : '');
       const personaDisplay: PersonaDisplay = {
         avatarId,
-        displayName: look.displayName ?? '',
-        variantName: look.variantName ?? '',
-        imageUrl: look.imageUrl ?? '',
+        displayName: str(look.displayName),
+        variantName: str(look.variantName),
+        imageUrl: str(look.imageUrl),
       };
       await patchAvatarConfig(projectId, { personaDisplay });
     } catch {

@@ -524,6 +524,13 @@ describe('a poisoned avatar_config is a config problem, never a 500', () => {
       // persona (the config's usable fields win where they exist), not take the avatar down.
       expect(res.statusCode, JSON.stringify(res.json())).toBe(200);
       expect(res.json().sessionToken).toBe('tok-1');
+      // AND the seam is observable, not assumed: this suite mocks getSessionToken, so a 200 alone
+      // proves nothing about sanitization (the reviewer ran these six against a sanitizer-free
+      // tree and they all passed). The config the CONTROLLER hands the mint must arrive scrubbed.
+      const handed = spend.getSessionToken.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+      for (const key of Object.keys(poison)) {
+        expect(handed?.[key], `poisoned '${key}' reached the mint`).not.toEqual(poison[key]);
+      }
     });
   }
 });

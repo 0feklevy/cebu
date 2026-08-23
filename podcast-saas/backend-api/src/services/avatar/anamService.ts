@@ -497,7 +497,11 @@ export async function describeAvatar(
   const { data } = await listAnamResource('avatars', apiKey);
   const avatar = (data as AnamAvatarResource[]).find((a) => a.id === avatarId);
   if (!avatar) return null;
-  const look = { displayName: avatar.displayName ?? '', variantName: avatar.variantName ?? '', imageUrl: avatar.imageUrl ?? '' };
+  // Coerced per-field: `??` passes any non-null value through, and these three come from the
+  // vendor — a shape change (localized object where a string was) must cost the label, not the
+  // session. Same rule the sanitizer applies to the PERSISTED copy (personaDisplay).
+  const str = (v: unknown): string => (typeof v === 'string' ? v : '');
+  const look = { displayName: str(avatar.displayName), variantName: str(avatar.variantName), imageUrl: str(avatar.imageUrl) };
   if (_avatarLookCache.size >= AVATAR_LOOK_MAX_ENTRIES) {
     const oldest = _avatarLookCache.keys().next().value;   // insertion-ordered
     if (oldest) _avatarLookCache.delete(oldest);
@@ -728,9 +732,9 @@ async function mintWithToolFallback(key: string, personaConfig: Record<string, u
 }
 
 export async function getSessionToken(characterId: string, cfg?: AvatarPersonaConfig, apiKey?: string): Promise<SessionInfo> {
-  // Second, independent seam for the same guard the controller applies: this function is also
-  // reached by jobs and scripts that read avatar_config themselves, and a wrong-typed field here
-  // was a statusless TypeError → a bare 500 (2026-08-23). Each seam is testable via its own entry.
+  // Second, independent seam for the same guard the controller applies. Today this function has
+  // exactly one production caller (the start handler), which already sanitizes — this seam is
+  // defence in depth for the next caller, and it is the seam with the direct unit tests.
   cfg = cfg ? sanitizeAvatarPersonaConfig(cfg) : cfg;
   const id = CHARACTERS[characterId] ? characterId : DEFAULT_CHARACTER_ID;
   const voiceSensitivity = cfg?.voiceSensitivity ?? CHARACTERS[id]?.endOfSpeechSensitivity ?? 0.5;
