@@ -42,3 +42,6 @@ darwin-avatar/
 
 # Local pre-sync backups and archived artifacts (never for the repo)
 _archive/
+
+# Owner-provided credential files for local incident remediation — NEVER commit
+secret-*.txt
