@@ -786,7 +786,18 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
         '[Avatar] start failed in the mint block',
       );
       trace.finish({ outcome: 'error', status });
-      return reply.code(status).send({ message: status >= 500 ? 'Avatar session failed' : (err as Error).message });
+      if (status >= 500) {
+        // A vendor/server failure used to go out as a naked status and the fixed string
+        // 'Avatar session failed' — which the popup could only render as its generic apology with
+        // a live Try-again. Owner watched exactly that during the 2026-08-23 incident. It is an
+        // availability event; say so in the same denial shape the budget refusals use, so the
+        // client renders honest copy and paces the retry. Same rule as everywhere in this
+        // vocabulary: enum-generated body, no vendor detail on the wire.
+        return reply.code(status)
+          .header('Retry-After', '30')
+          .send(avatarDenialBody({ deniedBy: 'vendor_unavailable', retryAfterSec: 30 }));
+      }
+      return reply.code(status).send({ message: (err as Error).message });
     }
   });
 

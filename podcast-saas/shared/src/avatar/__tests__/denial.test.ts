@@ -174,3 +174,14 @@ describe('reading a denial back off the wire', () => {
     expect(read?.retryAfterSec).toBe(1);
   });
 });
+
+describe('a broken vendor', () => {
+  it('reads as UNAVAILABLE — the 2026-08-23 incident shape', () => {
+    // Anam answered 5xx on the mint and the viewer got a naked 500 with a generic apology and a
+    // retry that could not work. A vendor outage is an availability event, and says so.
+    expect(publicDenialReason('vendor_unavailable')).toBe('unavailable');
+    const body = avatarDenialBody({ deniedBy: 'vendor_unavailable', retryAfterSec: 30 });
+    expect(body.message).toMatch(/temporarily unavailable/i);
+    expect(JSON.stringify(body)).not.toMatch(/vendor|anam/i);
+  });
+});

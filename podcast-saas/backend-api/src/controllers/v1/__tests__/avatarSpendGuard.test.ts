@@ -626,3 +626,40 @@ describe('what a refused viewer is actually told', () => {
     expect(image.reason).toBeUndefined();
   });
 });
+
+describe('a vendor failure is an availability event, not an anonymous 500', () => {
+  // 2026-08-23 incident: /avatar/start answered a naked 500 with 'Avatar session failed', the
+  // popup showed its generic apology, and Try-again refused again the same second. The vendor
+  // being down is a thing this product can SAY.
+  it('wraps a vendor 5xx in the denial shape the client renders', async () => {
+    serve(PUBLIC_PROJECT);
+    const err = Object.assign(new Error('Anam API error (500)'), { status: 500 });
+    spend.getSessionToken.mockRejectedValue(err);
+
+    const res = await post('/api/v1/avatar/start', startBody());
+    expect(res.statusCode).toBe(500);
+    expect(res.json().reason).toBe('unavailable');
+    expect(res.json().message).toMatch(/temporarily unavailable/i);
+    expect(res.headers['retry-after']).toBe('30');
+  });
+
+  it('keeps a 4xx exactly as it was — those messages are ours and actionable', async () => {
+    serve(PUBLIC_PROJECT);
+    const err = Object.assign(new Error('Anam API error (401): bad key'), { status: 401 });
+    spend.getSessionToken.mockRejectedValue(err);
+
+    const res = await post('/api/v1/avatar/start', startBody());
+    expect(res.statusCode).toBe(401);
+    expect(res.json().message).toMatch(/Anam API error/);
+    expect(res.json().reason).toBeUndefined();
+  });
+
+  it('never leaks vendor detail through the 5xx body', async () => {
+    serve(PUBLIC_PROJECT);
+    const err = Object.assign(new Error('Anam API error (502): {"trace":"internal-host-10.2.3.4"}'), { status: 502 });
+    spend.getSessionToken.mockRejectedValue(err);
+
+    const raw = (await post('/api/v1/avatar/start', startBody())).body;
+    expect(raw).not.toMatch(/internal-host|10\.2\.3\.4|Anam/);
+  });
+});

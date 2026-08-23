@@ -49,9 +49,9 @@ export function publicDenialReason(deniedBy: string | null | undefined): AvatarD
   // rather than falling through to the per-subject default.
   const dimension = (deniedBy ?? '').replace(/^burst:/, '');
 
-  // The emergency stop and a dead meter are the same thing to a viewer: the feature is off, and
-  // there is no share of anything they could wait to get back.
-  if (dimension === 'meter_unavailable' || dimension === 'kill_switch') return 'unavailable';
+  // The emergency stop, a dead meter and a broken vendor are the same thing to a viewer: the
+  // feature is off, and there is no share of anything they could wait to get back.
+  if (dimension === 'meter_unavailable' || dimension === 'kill_switch' || dimension === 'vendor_unavailable') return 'unavailable';
   if (dimension === 'global' || dimension === 'global_concurrency') return 'busy';
   return 'limited';
 }
