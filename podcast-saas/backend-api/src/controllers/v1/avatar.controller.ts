@@ -724,9 +724,23 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
       });
     } catch (err) {
       const status = (err as { status?: number }).status ?? 500;
-      // Deliberately NO free-form error log here: an Anam failure detail can echo the request
-      // (persona body, prompt). The trace line carries the correlation id + status, and
-      // anamService logs the vendor failure with a redacted, bounded reason.
+      // Deliberately NO free-form error MESSAGE here: an Anam failure detail can echo the request
+      // (persona body, prompt). But the 2026-08-23 incident showed the opposite failure: a
+      // statusless throw surfaced as a bare 500 and NOTHING recorded which KIND of error it was —
+      // the vendor log line only exists when the vendor answered, so an internal throw left no
+      // trace at all and the incident could not be diagnosed from outside the VM. So: bounded,
+      // shape-only fields — the constructor name, whether a status was attached, and where it
+      // happened. No message, no stack, nothing request-derived.
+      logger.warn(
+        {
+          evt: 'avatar_start_failed',
+          cid: trace.correlationId,
+          status,
+          errClass: (err as Error)?.constructor?.name ?? 'unknown',
+          hadStatus: typeof (err as { status?: unknown }).status === 'number',
+        },
+        '[Avatar] start failed in the mint block',
+      );
       trace.finish({ outcome: 'error', status });
       return reply.code(status).send({ message: status >= 500 ? 'Avatar session failed' : (err as Error).message });
     }
