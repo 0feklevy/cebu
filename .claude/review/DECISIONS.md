@@ -452,12 +452,23 @@ when a related area is already open, rather than working down the list.
 
 ---
 
-## 🟢 Releases SHIPPED (2026-08-23): v0.1.39 → v0.1.43 live; v0.1.44 queued
+## 🟡 Release correction (2026-08-23): v0.1.43 live; v0.1.44 cancelled; v0.1.45 next
 
 The "dispatch a release" action this entry waited on has happened repeatedly: v0.1.43 deployed
 2026-08-23 ~14:20Z through the FULL pipeline — candidate smoke (first ever to pass), digest-pinned
 deploy, post-deploy browser verification against the live site with SMOKE_PUBLIC_PATH — no
-rollback. v0.1.44 follows with the post-incident wave (#118 #121 #130 #131 #132 #133 #134).
+rollback. v0.1.44 built and passed candidate smoke from the post-incident wave (#118 #121 #130
+#131 #132 #133 #134), but was cancelled at the human gate before deploy because it did not yet
+contain the two live incident fixes below. Its immutable tag and draft remain; the next patch is
+therefore v0.1.45.
+
+**v0.1.45 candidate — PR #137 (absorbs #136):** clears the popup's stale 30-second token watchdog
+after a successful start, keeps a same-open retry replayable through that window, accepts only
+Supabase's measured simulation-HTML `text/plain` metadata rewrite when the public `/sim-public/*`
+delivery contract restores `text/html`, and fixes the release publish job's skipped-needs
+condition. It also carries the real-Postgres proof for migration 077 and the candidate-compose
+environment contract. None of this is live until #137 and the v0.1.45 release gates pass.
+
 Remaining OWNER action from the original entry, unchanged and still last:
 
 **The probe dub (~$2.20)** — everything code-side is verified; only the paid probe remains.

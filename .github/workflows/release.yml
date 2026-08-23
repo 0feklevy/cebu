@@ -894,7 +894,12 @@ jobs:
   publish:
     name: Publish GitHub release
     needs: [plan, deploy]
-    if: ${{ inputs.deploy && needs.deploy.result == 'success' }}
+    # Same trap the deploy job documents above: risk-review is SKIPPED on routine releases, and an
+    # `if` with NO status function keeps the implicit "all transitive needs succeeded" precondition
+    # — so publish silently skipped on every routine deploy (v0.1.40–43 all sat as drafts while
+    # v0.1.39, a pre-rework release, published fine). `!cancelled()` switches the implicit
+    # precondition off; the explicit deploy-result check keeps the only gate that matters.
+    if: ${{ inputs.deploy && !cancelled() && needs.deploy.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
