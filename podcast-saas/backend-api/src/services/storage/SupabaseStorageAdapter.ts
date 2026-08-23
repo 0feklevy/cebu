@@ -441,6 +441,20 @@ export class SupabaseStorageAdapter implements StorageService {
   }
 
   /**
+   * Supabase deliberately stores uploaded HTML as text/plain. That raw metadata is different, but
+   * this adapter never publishes the bucket URL for simulations: `getSimPublicUrl` uses the backend
+   * proxy, whose extension-based response header restores text/html. Declare only that measured,
+   * HTML-only rewrite equivalent; every other mismatch remains a failed publication.
+   */
+  effectiveSimulationContentType(key: string, storedContentType: string): string {
+    return key.startsWith('simulations/')
+      && /\.html?$/i.test(key)
+      && storedContentType.trim().toLowerCase() === 'text/plain'
+      ? 'text/html; charset=utf-8'
+      : storedContentType;
+  }
+
+  /**
    * The inverse of the two shapes above. See `publicUrlKeys.ts`.
    *
    * THIS ADAPTER IS THE REASON THE METHOD EXISTS. `{origin}/storage/v1/object/public/{bucket}/{key}`

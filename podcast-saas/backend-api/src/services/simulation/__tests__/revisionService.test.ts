@@ -31,6 +31,7 @@ import { drizzle } from 'drizzle-orm/pglite';
 import { createHash } from 'node:crypto';
 
 import * as schema from '../../../db/schema.js';
+import type { StorageService } from '../../storage/StorageService.js';
 
 const h = vi.hoisted(() => ({ dbRef: { current: null as unknown as Record<string, unknown> } }));
 
@@ -71,6 +72,7 @@ function fakeStorage() {
     objects,
     /** When set, headObject reports nulls — the local-disk case, which cannot verify metadata. */
     metadataBlind: false,
+    effectiveSimulationContentType: undefined as StorageService['effectiveSimulationContentType'],
     uploadFile: vi.fn(async (key: string, bytes: Buffer, contentType: string, cacheControl?: string) => {
       objects.set(key, { bytes, contentType, cacheControl });
       return `https://cdn.test/${key}`;
@@ -382,6 +384,45 @@ describe('verifyStoredBytes', () => {
     const rev = (await svc.listRevisions(simId)).find((r) => r.id === id)!;
     const report = await svc.verifyStoredBytes(rev, PREFIX, manifestFor(STD_FILES));
     expect(report.problems.map((p) => p.code)).toContain('cache-control-mismatch');
+  });
+
+  it('still rejects text/plain HTML when the delivery adapter declares no equivalence', async () => {
+    const { id } = await publish();
+    const key = revisionFileKey(PREFIX, id, 'package/index.html');
+    adapter.objects.set(key, { ...adapter.objects.get(key)!, contentType: 'text/plain' });
+    const rev = (await svc.listRevisions(simId)).find((r) => r.id === id)!;
+    const report = await svc.verifyStoredBytes(rev, PREFIX, manifestFor(STD_FILES));
+    expect(report.problems).toContainEqual(expect.objectContaining({
+      path: 'package/index.html', code: 'content-type-mismatch',
+    }));
+  });
+
+  it('accepts a store rewrite only when its public-delivery adapter declares it equivalent', async () => {
+    // Production Supabase HEAD reports text/plain for uploaded HTML, while the adapter publishes
+    // simulations through /sim-public/* and that proxy restores text/html. The strict raw compare
+    // rejected every generated bridge after the LLM had already succeeded.
+    const draft = await svc.createDraft({ simulationId: simId });
+    const uploading = await svc.beginUpload(simId, draft.id);
+    for (const f of STD_FILES) {
+      await svc.writeFile(uploading, PREFIX, {
+        manifestPath: f.path, bytes: f.bytes, contentType: f.contentType, role: f.role as never,
+      });
+    }
+    const key = revisionFileKey(PREFIX, draft.id, 'package/index.html');
+    adapter.objects.set(key, { ...adapter.objects.get(key)!, contentType: 'text/plain' });
+    adapter.effectiveSimulationContentType = vi.fn((candidate, stored) =>
+      candidate === key && stored === 'text/plain' ? 'text/html; charset=utf-8' : stored);
+
+    const validating = await svc.finishUpload(simId, draft.id);
+    const result = await svc.validate(simId, validating, PREFIX, { manifest: manifestFor(STD_FILES) });
+    const published = (await svc.listRevisions(simId)).find((r) => r.id === draft.id)!;
+
+    expect(result.ok).toBe(true);
+    expect(result.verified.problems).toEqual([]);
+    expect(result.verified.metadataVerified).toBe(2);
+    expect(published.status).toBe('canary_passed');
+    expect(adapter.objects.has(`${PREFIX}/revisions/${draft.id}/manifest.json`)).toBe(true);
+    expect(adapter.effectiveSimulationContentType).toHaveBeenCalledWith(key, 'text/plain');
   });
 
   it('fails the revision and writes NO manifest when verification fails', async () => {

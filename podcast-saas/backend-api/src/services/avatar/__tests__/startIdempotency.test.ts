@@ -7,7 +7,7 @@
  * viewers, two popups, two projects, or two callers never collide, so they never share a token,
  * which matters because an Anam session token is single-use per stream.
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { startIdempotencyKey, withStartIdempotency, resetStartIdempotency } from '../startIdempotency.js';
 
 const OPEN_A = 'popup-open-3f7c1b0a-1111';
@@ -40,6 +40,7 @@ describe('startIdempotencyKey — scoping', () => {
 
 describe('withStartIdempotency — single-flight within one popup open', () => {
   beforeEach(() => resetStartIdempotency());
+  afterEach(() => vi.restoreAllMocks());
 
   it('a null key never dedupes', async () => {
     let n = 0;
@@ -60,6 +61,39 @@ describe('withStartIdempotency — single-flight within one popup open', () => {
     expect(n).toBe(1);
     expect(a.value).toBe(b.value);
     expect(a.replayed !== b.replayed).toBe(true);   // exactly one of them is the replay
+  });
+
+  it('the 15s fetch retry joins the in-flight mint and its result remains replayable through the 30s watchdog', async () => {
+    const key = startIdempotencyKey({ projectId: PROJECT, callerId: 'ip-1', startKey: OPEN_A });
+    const startedAt = 1_000_000;
+    let now = startedAt;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+
+    let runs = 0;
+    let finish!: (token: string) => void;
+    const mint = new Promise<string>((resolve) => { finish = resolve; });
+    const first = withStartIdempotency(key, async () => {
+      runs += 1;
+      return mint;
+    });
+
+    // AvatarPopup retries the fetch at half of CONNECT_WATCHDOG_MS (30s). This used to land nine
+    // seconds after the 6s entry had been swept and start a second mint.
+    now = startedAt + 15_000;
+    const retry = withStartIdempotency(key, async () => `unexpected-${++runs}`);
+    expect(runs).toBe(1);
+
+    finish('tok-one-open');
+    const [initial, joined] = await Promise.all([first, retry]);
+    expect(initial.value).toBe('tok-one-open');
+    expect(joined).toEqual({ value: 'tok-one-open', replayed: true });
+
+    // A response lost after the mint completed can be retried anywhere inside the same watchdog
+    // without exchanging the single-use token for a second one.
+    now = startedAt + 30_000;
+    const replay = await withStartIdempotency(key, async () => `unexpected-${++runs}`);
+    expect(replay).toEqual({ value: 'tok-one-open', replayed: true });
+    expect(runs).toBe(1);
   });
 
   it('different keys never share a result', async () => {

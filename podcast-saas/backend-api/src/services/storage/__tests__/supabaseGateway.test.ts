@@ -181,6 +181,33 @@ describe('Supabase: the bodyless HEADs a duplication hammers', () => {
   });
 });
 
+describe('Supabase simulation HTML delivery metadata', () => {
+  it('declares only the measured text/plain HTML downgrade equivalent', () => {
+    const { adapter } = adapterUnder(() => { throw new Error('no S3 request expected'); });
+
+    expect(adapter.effectiveSimulationContentType(
+      'simulations/p/s/revisions/r/package/index.html',
+      'text/plain',
+    )).toBe('text/html; charset=utf-8');
+    expect(adapter.effectiveSimulationContentType(
+      'simulations/p/s/revisions/r/package/embed.htm',
+      'text/plain',
+    )).toBe('text/html; charset=utf-8');
+    expect(adapter.effectiveSimulationContentType(
+      'simulations/p/s/revisions/r/package/app.js',
+      'text/plain',
+    )).toBe('text/plain');
+    expect(adapter.effectiveSimulationContentType(
+      'simulations/p/s/revisions/r/package/index.html',
+      'application/octet-stream',
+    )).toBe('application/octet-stream');
+    expect(adapter.effectiveSimulationContentType(
+      'other/p/s/revisions/r/package/index.html',
+      'text/plain',
+    )).toBe('text/plain');
+  });
+});
+
 // ── The socket-inactivity timer, and the one command shape it was sized wrong for ─────────────
 
 /** The resolved `socketTimeout` of a client's request handler. */

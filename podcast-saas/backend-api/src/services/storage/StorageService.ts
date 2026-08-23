@@ -100,6 +100,18 @@ export interface StorageService {
    * able to tell "served as text/plain" from "cannot tell".
    */
   headObject(key: string): Promise<StoredObjectHead | null>;
+
+  /**
+   * Map a store-specific metadata rewrite to the Content-Type at the adapter's PUBLIC delivery
+   * boundary.
+   *
+   * Most stores must leave this absent: a raw Content-Type mismatch is then a publication
+   * failure. Supabase is the deliberate exception for HTML. Its public bucket downgrades HTML to
+   * text/plain, while `getSimPublicUrl` routes the same bytes through `/sim-public/*`, which
+   * re-asserts text/html before a browser sees them. Keeping that exception on the adapter stops a
+   * real text/plain upload on a direct-serving adapter (R2) from being mistaken for a valid page.
+   */
+  effectiveSimulationContentType?(key: string, storedContentType: string): string;
 }
 
 /** What a HEAD can tell us about a stored object. Nulls mean "the store did not report it". */
