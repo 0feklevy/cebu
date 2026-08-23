@@ -120,7 +120,10 @@ describe('the connect can never spin forever', () => {
     expect(starts[1].body.startKey).toBe(starts[0].body.startKey);
 
     await act(async () => {
-      starts[1].resolve({ provider: 'anam', sessionToken: 'tok-retry', characterId: 'guide', characterSource: 'default' });
+      // A STRUCTURALLY VALID JWT: resolving with a mountable token mounts AvatarConversation,
+      // whose real @anam-ai/js-sdk decodes it — a plain string threw 'Invalid session token
+      // format' as an unhandled rejection and failed the whole file in the full-suite run.
+      starts[1].resolve({ provider: 'anam', sessionToken: 'eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJ0eXBlIjogImVwaGVtZXJhbCIsICJzZXNzaW9uU3RvcmVJZCI6ICJzLTEiLCAiZXhwIjogNDEwMjQ0NDgwMH0.sig', characterId: 'guide', characterSource: 'default' });
       await Promise.resolve(); await Promise.resolve();
     });
     // The retry's token connects: no error screen, no timeout message.
