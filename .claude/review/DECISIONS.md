@@ -628,10 +628,18 @@ The two dead Trigger.dev files that made this look done are deleted (#95).
     into `avatar.controller.ts`, and it denies with a status, a `Retry-After` and a `deniedBy`.
   * ✅ **async observer** — `sweepAvatarMeter`, run by `scheduleSweep` after the response and
     throttled once per process per interval, so housekeeping never sits in a request's latency.
-  * ❌ **client wiring** — nothing in `client-web` reads the denial. In `shadow` that costs nothing
-    because nothing is refused; the moment `AVATAR_BUDGET_MODE=enforce` is set, a viewer gets a 429
-    or a 503 and the UI has no way to say why or when to try again. **That is the whole remaining
-    item**, and it is the one that has to land BEFORE enforce is ever switched on.
+  * ✅ **client wiring** — **PR #121** (2026-08-23). `shared/src/avatar/denial.ts` owns the wire
+    shape both ways: three coarse public reasons (busy/limited/unavailable — the limiter DIMENSION
+    stays in the operator log, asserted off the wire), copy generated from the enum, and
+    `parseAvatarDenial` REGENERATING it on read so a valid `reason` is never a licence to render
+    the server's string (ui-ux-205 kept by construction). `explain` is opt-in per call site — the
+    quiet degradations (`NONE`, `NO_IMAGE`, `{ok:false}`) keep their success shapes. The popup
+    disables Try-again for exactly the server-named wait, then gives it back. Found and fixed on
+    the way: **the kill switch reused the capability body** — an operator pulling the stop
+    produced a 503 explained as "Avatar capability required". All claims mutation-checked; the
+    one untested line is flagged in-code (reconnect denial copy — no harness makes a live
+    connection-lost event). **D-14 is now complete end to end; enforce is no longer blocked on
+    the client.**
 
   `AVATAR_BUDGET_MODE` stays `shadow` deliberately — the same posture as the new account-wide
   `SPEND_CEILING_MODE`, and for the same reason: a limit that refuses on a number nobody has
@@ -643,6 +651,24 @@ The two dead Trigger.dev files that made this look done are deleted (#95).
 
 * **Production storage census** (`deploy/scripts/storage-census.sql`, read-only) — **owner action**.
   It unblocks retention, rollup and poster GC, and no result exists anywhere in the repo.
+
+* 🔴 **PROD INCIDENT (open): /avatar/start returns 500 — owner-reported 2026-08-23** from their own
+  browser console (`api.flowvidco.com/api/v1/avatar/start` → 500, body `Avatar session failed`,
+  twice). Diagnosis so far, all from outside the VM:
+  * `/health` and `/health/ready` are green (DB 2ms, queue empty) — the server itself is fine.
+  * Anam's API answers from here (401 fast, unauthenticated) — the vendor is not down outright.
+  * The 500 text `Avatar session failed` is produced ONLY by the start handler's catch for
+    `status >= 500`, and the mint passes the VENDOR's status through verbatim
+    (`anamService.ts` — `err.status = minted.status`). Network error → 502, timeout → 504, so a
+    plain 500 means **Anam itself answered 500 to the mint POST**, or a statusless throw — and the
+    statusless candidates are nearly all swallowed (`getPersona` → null, `resolveDefaultLlmId`
+    caught), leaving `res.json()` on a 200 as the only thin one.
+  * The deciding evidence exists in two places we cannot reach from a dev machine: the VM log line
+    `[Anam] session-token request failed {status, code}`, and the owner's Anam dashboard
+    (credits/plan banner). Owner is running `anam-probe.sh` (repo root) — auth check + minimal
+    mint with their key, statuses only.
+  * NOTE: prod runs the OLD build (release blocked at the VM pin), so nothing recently merged is a
+    suspect; equally, no code fix can reach prod until that pin is resolved.
 
 ## ⚪ Known and accepted
 
