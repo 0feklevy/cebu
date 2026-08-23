@@ -330,7 +330,7 @@ describe('the publish job survives the skipped-approval chain', () => {
   // handles it; this test stops anyone from re-simplifying publish's condition back into it.
   it("publish's if switches the implicit precondition off AND keeps the deploy gate", () => {
     const src = RELEASE;
-    const m = /publish:\n(?:.*\n)*?    if: (.*)/.exec(src);
+    const m = /publish:\n(?:.*\n)*? {4}if: (.*)/.exec(src);
     expect(m, 'publish job or its if not found').not.toBeNull();
     const cond = m![1];
     expect(cond, 'a status function must disable the implicit success() precondition')
