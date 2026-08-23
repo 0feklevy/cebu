@@ -116,6 +116,41 @@ export interface PodcastScriptCounts extends Record<string, number> {
   failed: number;
 }
 
+/**
+ * `GET /api/admin/v1/spend` — where the money went, in a shape that can sit beside an invoice.
+ *
+ * QUANTITIES ARE PER UNIT AND ARE NEVER COMBINED. `token_usage` holds characters, seconds, images,
+ * source-minutes and tokens in one column; adding them produces a number that means nothing and
+ * renders exactly like one that does. Money is the only field summed across providers.
+ */
+export interface SpendUnitTotal {
+  unit: string;
+  quantity: number;
+}
+
+export interface SpendByProvider {
+  provider: string;
+  usd: number;
+  quantities: SpendUnitTotal[];
+  /** Rows with no unit — LLM calls, whose amount lives in the token columns. */
+  untypedRows: number;
+}
+
+export interface SpendSummaryResponse {
+  from: string;
+  to: string;
+  totalUsd: number;
+  providers: SpendByProvider[];
+  byTask: Array<{ provider: string; task: string; usd: number; rows: number }>;
+  byDay: Array<{ day: string; usd: number }>;
+  rows: number;
+  /** Rows priced at exactly zero — surfaced because zero is what a broken rate produces. */
+  zeroCostRows: number;
+  /** True when the window held more rows than one request summarises. A truncated total is not the total. */
+  truncated: boolean;
+  maxRows: number;
+}
+
 export interface PipelineStats {
   projects: {
     total: number;
@@ -285,6 +320,11 @@ export class AdminV1Api {
 
   getPipelineStats(): Promise<PipelineStats> {
     return this.request('/api/admin/v1/pipeline-stats');
+  }
+
+  /** Spend over a window. `from`/`to` accept `YYYY-MM-DD` or a full ISO timestamp. */
+  getSpend(from?: string, to?: string): Promise<SpendSummaryResponse> {
+    return this.request('/api/admin/v1/spend', { params: { from, to } });
   }
 
   getBillingOverview(): Promise<AdminBillingOverview> {

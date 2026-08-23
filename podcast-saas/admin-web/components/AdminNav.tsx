@@ -11,6 +11,7 @@ const NAV = [
   { href: '/api-keys', label: 'API Keys' },
   { href: '/feature-flags', label: 'Controls' },
   { href: '/billing', label: 'Billing' },
+  { href: '/spend', label: 'Spend' },
   { href: '/users', label: 'Users' },
 ];
 
