@@ -493,6 +493,15 @@ jobs:
           done
           echo "backend=$be" >> "$GITHUB_OUTPUT"
           echo "client_web=$cw" >> "$GITHUB_OUTPUT"
+          # Also to $GITHUB_ENV: every LATER step in this job runs `docker compose` against the
+          # candidate file, whose services interpolate ${BACKEND_IMAGE}/${CLIENT_WEB_IMAGE} as
+          # REQUIRED variables. The per-step `env:` block existed only on "Start the candidate
+          # stack", so the very next step — applying migrations — died on
+          # "required variable BACKEND_IMAGE is missing a value" (run 32640689308, v0.1.42),
+          # skipping the deploy. Job-level env from a step output is not expressible in GitHub
+          # Actions; the environment file is the supported way to make a step's discovery stick.
+          echo "BACKEND_IMAGE=$be" >> "$GITHUB_ENV"
+          echo "CLIENT_WEB_IMAGE=$cw" >> "$GITHUB_ENV"
           echo "candidate backend:    $be"
           echo "candidate client-web: $cw"
       - name: Mint a throwaway Firebase credential for the candidate
