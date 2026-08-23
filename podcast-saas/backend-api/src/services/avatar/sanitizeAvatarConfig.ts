@@ -54,10 +54,20 @@ export function sanitizeAvatarPersonaConfig(
     cfg.toolIds = Array.isArray(cfg.toolIds) ? (cfg.toolIds as unknown[]).filter((t) => typeof t === 'string') : undefined;
     if (!cfg.toolIds) delete cfg.toolIds;
   }
-  // The two server-managed objects: shape-checked loosely — a non-object is dropped, an object is
-  // passed through (their own readers guard their members).
+  // The server-managed objects: a non-object is dropped outright.
   for (const k of ['personaBaked', 'personaDisplay', 'avatarCircles'] as const) {
     if (k in cfg && (typeof cfg[k] !== 'object' || cfg[k] === null || Array.isArray(cfg[k]))) delete cfg[k];
+  }
+  // personaDisplay's members are consumed with the SAME fragile pattern this module exists for
+  // (`d.displayName?.trim()` in buildAvatarDisplay) — and they are WRITTEN from vendor data
+  // (`look.displayName ?? ''`, where `??` happily passes an object through). A vendor shape
+  // change must cost a cosmetic fallback, not a session.
+  if (cfg.personaDisplay) {
+    const d = { ...(cfg.personaDisplay as Record<string, unknown>) };
+    for (const k of ['avatarId', 'displayName', 'variantName', 'imageUrl']) {
+      if (k in d && typeof d[k] !== 'string') delete d[k];
+    }
+    cfg.personaDisplay = d;
   }
   return cfg as AvatarPersonaConfig;
 }

@@ -34,6 +34,16 @@ describe('sanitizeAvatarPersonaConfig', () => {
     });
   });
 
+  it('scrubs personaDisplay MEMBERS — vendor-written, consumed with the same fragile trim', () => {
+    // `scheduleDisplayResolve` persists `look.displayName ?? ''` — `??` passes a localized OBJECT
+    // straight through — and `buildAvatarDisplay` reads it back as `d.displayName?.trim()`. A
+    // vendor shape change must cost a cosmetic fallback, not the session.
+    const out = sanitizeAvatarPersonaConfig({
+      personaDisplay: { avatarId: 'av-1', displayName: { en: 'Einstein' }, variantName: 7, imageUrl: 'https://x/y.png' },
+    } as never);
+    expect(out.personaDisplay).toEqual({ avatarId: 'av-1', imageUrl: 'https://x/y.png' });
+  });
+
   it('treats a non-object wholesale as an empty config', () => {
     for (const v of [null, undefined, 'a string', 42, ['a']]) {
       expect(sanitizeAvatarPersonaConfig(v as never)).toEqual({});
