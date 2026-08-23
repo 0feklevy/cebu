@@ -31,6 +31,7 @@ import {
 import { getProjectTranscript } from '../../services/transcriptPropagation.js';
 import { encryptKey } from '../../services/secrets/ApiKeyService.js';
 import { resolveAnamKeyForProject, resolveSystemAnamKey } from '../../services/avatar/anamKey.js';
+import { sanitizeAvatarPersonaConfig } from '../../services/avatar/sanitizeAvatarConfig.js';
 import { normalizeAvatarCircles, type AvatarCirclesLike } from '../../services/avatarCircles/normalizeAvatarCircles.js';
 import { circleFaceUrlPersistError } from '../../services/avatarCircles/circleFaceUrls.js';
 import { isProd } from '../../config/publicOrigins.js';
@@ -66,9 +67,12 @@ import {
 // double-encoded JSON string so a merge-write never spreads a string into
 // numeric-index keys (which would corrupt the column).
 function asPersonaConfig(v: unknown): AvatarPersonaConfig {
-  if (v && typeof v === 'object' && !Array.isArray(v)) return v as AvatarPersonaConfig;
+  // Sanitized on the way in (2026-08-23 outage): a wrong-typed FIELD — a number where a string
+  // belongs — used to survive this reader and explode later as a statusless TypeError inside the
+  // mint, taking the avatar down for every viewer of the row. See sanitizeAvatarPersonaConfig.
+  if (v && typeof v === 'object' && !Array.isArray(v)) return sanitizeAvatarPersonaConfig(v as Record<string, unknown>);
   if (typeof v === 'string') {
-    try { const o = JSON.parse(v); if (o && typeof o === 'object' && !Array.isArray(o)) return o as AvatarPersonaConfig; } catch { /* ignore */ }
+    try { const o = JSON.parse(v); if (o && typeof o === 'object' && !Array.isArray(o)) return sanitizeAvatarPersonaConfig(o); } catch { /* ignore */ }
   }
   return {};
 }

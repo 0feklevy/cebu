@@ -5,6 +5,7 @@
 // POST /v1/auth/session-token's `personaConfig` (override / ephemeral mode).
 import { CHARACTERS, DEFAULT_CHARACTER_ID } from './characters.js';
 import { logger } from '../../lib/logger.js';
+import { sanitizeAvatarPersonaConfig } from './sanitizeAvatarConfig.js';
 
 const ANAM_BASE = 'https://api.anam.ai/v1';
 
@@ -496,7 +497,11 @@ export async function describeAvatar(
   const { data } = await listAnamResource('avatars', apiKey);
   const avatar = (data as AnamAvatarResource[]).find((a) => a.id === avatarId);
   if (!avatar) return null;
-  const look = { displayName: avatar.displayName ?? '', variantName: avatar.variantName ?? '', imageUrl: avatar.imageUrl ?? '' };
+  // Coerced per-field: `??` passes any non-null value through, and these three come from the
+  // vendor — a shape change (localized object where a string was) must cost the label, not the
+  // session. Same rule the sanitizer applies to the PERSISTED copy (personaDisplay).
+  const str = (v: unknown): string => (typeof v === 'string' ? v : '');
+  const look = { displayName: str(avatar.displayName), variantName: str(avatar.variantName), imageUrl: str(avatar.imageUrl) };
   if (_avatarLookCache.size >= AVATAR_LOOK_MAX_ENTRIES) {
     const oldest = _avatarLookCache.keys().next().value;   // insertion-ordered
     if (oldest) _avatarLookCache.delete(oldest);
@@ -599,6 +604,12 @@ async function buildPersonaConfig(
     return { personaId: cfg.personaId, maxSessionLengthSeconds };
   }
 
+  // `entry` CAN BE UNDEFINED — and was, in production, on 2026-08-23. PERSONA_MAP is built from
+  // env pins (ANAM_PERSONA_ID_*); an environment with none leaves the map empty and BOTH lookups
+  // undefined. Every consumer below already treated `entry` as optional except one:
+  // `entry.personaId` on the base-look branch — a statusless TypeError that surfaced as a bare
+  // 500 for every start reaching the ephemeral path (which the self-heal branch FORCES by
+  // stripping the baked personaId after a transcript change — "worked yesterday, dead today").
   const entry = PERSONA_MAP[characterId] ?? PERSONA_MAP[DEFAULT_CHARACTER_ID];
   const character = CHARACTERS[characterId] ?? CHARACTERS[DEFAULT_CHARACTER_ID];
 
@@ -623,7 +634,7 @@ async function buildPersonaConfig(
   // supplies one, so the common case never pays a round trip for it.
   let baseAvatar = '', baseVoice = '', baseLlm = '';
   const needsBaseLook = !cfg?.avatarId?.trim() || !cfg?.voiceId?.trim();
-  if (entry.personaId && needsBaseLook) {
+  if (entry?.personaId && needsBaseLook) {
     const base = await getPersona(entry.personaId, key);
     baseAvatar = base?.avatarId ?? base?.avatar?.id ?? '';
     baseVoice  = base?.voiceId  ?? base?.voice?.id  ?? '';
@@ -633,7 +644,7 @@ async function buildPersonaConfig(
   let voiceId  = (cfg?.voiceId?.trim()  || baseVoice  || ANAM_ENV.ANAM_VOICE_ID).trim();
   let llmId    = (cfg?.llmId?.trim()    || baseLlm    || '').trim();
   if (!llmId) llmId = (await resolveLlm()).trim();
-  if (!llmId && entry.personaId && !needsBaseLook) {
+  if (!llmId && entry?.personaId && !needsBaseLook) {
     // Nothing pinned, and the account listing offered no hosted LLM. Only NOW is the base
     // persona's own brain worth a round trip — the alternative is failing the start outright.
     const base = await getPersona(entry.personaId, key);
@@ -652,7 +663,7 @@ async function buildPersonaConfig(
   }
 
   if (avatarId && voiceId) {
-    const pc: Record<string, unknown> = { name: cfg?.name?.trim() || liveDefaultName || entry.name, avatarId, voiceId, maxSessionLengthSeconds };
+    const pc: Record<string, unknown> = { name: cfg?.name?.trim() || liveDefaultName || entry?.name, avatarId, voiceId, maxSessionLengthSeconds };
     if (llmId) pc.llmId = llmId;                       // the brain — required for a v4 (non-legacy) token
     if (cfg?.avatarModel) pc.avatarModel = cfg.avatarModel;
     if (systemPrompt) pc.systemPrompt = systemPrompt;
@@ -671,7 +682,7 @@ async function buildPersonaConfig(
 
   // Couldn't assemble an inline persona (no avatar/voice anywhere) — reference the base
   // persona statefully (works when that dashboard persona already carries an llmId).
-  if (entry.personaId) return { personaId: entry.personaId, maxSessionLengthSeconds };
+  if (entry?.personaId) return { personaId: entry.personaId, maxSessionLengthSeconds };
   return {};   // caller raises the "no persona configured" error
 }
 
@@ -721,6 +732,10 @@ async function mintWithToolFallback(key: string, personaConfig: Record<string, u
 }
 
 export async function getSessionToken(characterId: string, cfg?: AvatarPersonaConfig, apiKey?: string): Promise<SessionInfo> {
+  // Second, independent seam for the same guard the controller applies. Today this function has
+  // exactly one production caller (the start handler), which already sanitizes — this seam is
+  // defence in depth for the next caller, and it is the seam with the direct unit tests.
+  cfg = cfg ? sanitizeAvatarPersonaConfig(cfg) : cfg;
   const id = CHARACTERS[characterId] ? characterId : DEFAULT_CHARACTER_ID;
   const voiceSensitivity = cfg?.voiceSensitivity ?? CHARACTERS[id]?.endOfSpeechSensitivity ?? 0.5;
   const key = apiKey || ANAM_ENV.ANAM_API_KEY;
