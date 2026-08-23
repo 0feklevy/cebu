@@ -121,7 +121,7 @@ vi.mock('../../../lib/logger.js', () => ({
 
 const {
   mockProjects, mockSimulations, mockTimelineSections,
-  mockUpdate, mockUpdateSet, mockUpdateReturning, mockStorage,
+  mockUpdateSet, mockUpdateReturning, mockStorage,
   mockSynthesize, mockResolveVoice,
 } = mocks;
 

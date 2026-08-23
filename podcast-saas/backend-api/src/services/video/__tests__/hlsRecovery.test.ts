@@ -43,7 +43,6 @@ vi.mock('../../../lib/logger.js', () => ({
 import {
   HLS_HEARTBEAT_MS,
   HLS_STALE_AFTER_MS,
-  HLS_SWEEP_INTERVAL_MS,
   beatHlsHeartbeat,
   hlsStaleBefore,
   startHlsRecoverySweep,

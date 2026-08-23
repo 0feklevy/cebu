@@ -42,7 +42,7 @@ beforeEach(() => {
 describe('extractZip', () => {
   it('returns all non-directory, non-hidden file entries', () => {
     const buf = makeZip({ 'index.html': '<h1/>', 'app.js': 'var x=1;' });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const files: Map<string, Buffer> = (svc as any).extractZip(buf);
     expect(files.has('index.html')).toBe(true);
     expect(files.has('app.js')).toBe(true);
@@ -55,7 +55,7 @@ describe('extractZip', () => {
     zip.addFile('__MACOSX/._index.html', Buffer.from(''));
     zip.addFile('__MACOSX/sim/._app.js', Buffer.from(''));
     const buf = zip.toBuffer();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const files: Map<string, Buffer> = (svc as any).extractZip(buf);
     expect(files.has('index.html')).toBe(true);
     expect([...files.keys()].some(k => k.includes('__MACOSX'))).toBe(false);
@@ -69,7 +69,7 @@ describe('extractZip', () => {
     zip.addFile('index.html', Buffer.from('<h1/>'));
     zip.addFile('.DS_Store', Buffer.from(''));
     const buf = zip.toBuffer();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const files: Map<string, Buffer> = (svc as any).extractZip(buf);
     expect(files.has('.DS_Store')).toBe(false);
     expect(files.has('index.html')).toBe(true);
@@ -77,7 +77,7 @@ describe('extractZip', () => {
 
   it('returns empty Map for a ZIP with no valid entries', () => {
     const buf = makeZip({});
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const files: Map<string, Buffer> = (svc as any).extractZip(buf);
     expect(files.size).toBe(0);
   });
@@ -85,7 +85,7 @@ describe('extractZip', () => {
   it('preserves file content correctly', () => {
     const html = '<html><body>hello</body></html>';
     const buf = makeZip({ 'index.html': html });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const files: Map<string, Buffer> = (svc as any).extractZip(buf);
     expect(files.get('index.html')!.toString('utf-8')).toBe(html);
   });
@@ -95,7 +95,7 @@ describe('extractZip', () => {
     const zip = new AdmZip();
     zip.addFile('ising-kid-simu/index.html', Buffer.from('<html></html>'));
     zip.addFile('ising-kid-simu/VERSION3/BLUE_RED_HATS_NEW/1_BLUE_HAPPY.png', png);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const files: Map<string, Buffer> = (svc as any).extractZip(zip.toBuffer());
     expect(files.get('ising-kid-simu/VERSION3/BLUE_RED_HATS_NEW/1_BLUE_HAPPY.png')).toEqual(png);
   });
@@ -158,32 +158,32 @@ describe('processFileUpload', () => {
 describe('findEntryHtml', () => {
   it('returns index.html when present at root', () => {
     const files = htmlMap({ 'index.html': '', 'other.html': '' });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     expect((svc as any).findEntryHtml(files)).toBe('index.html');
   });
 
   it('returns folder/index.html (single-folder ZIP) preferentially', () => {
     const files = htmlMap({ 'sim/index.html': '', 'sim/about.html': '' });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     expect((svc as any).findEntryHtml(files)).toBe('sim/index.html');
   });
 
   it('falls back to shortest-path HTML when no index.html', () => {
     const files = htmlMap({ 'sim/deep/other.html': '', 'sim/main.html': '' });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const result: string | null = (svc as any).findEntryHtml(files);
     expect(result).toBe('sim/main.html');
   });
 
   it('returns null when no HTML files exist', () => {
     const files = htmlMap({ 'app.js': '', 'style.css': '' });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     expect((svc as any).findEntryHtml(files)).toBeNull();
   });
 
   it('accepts .htm extension', () => {
     const files = htmlMap({ 'index.htm': '' });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     expect((svc as any).findEntryHtml(files)).toBe('index.htm');
   });
 });
@@ -195,7 +195,7 @@ describe('injectBridge', () => {
 
   it('injects script tag before </body>', () => {
     const html = '<html><body><p>hi</p></body></html>';
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const result: string = (svc as any).injectBridge(html, fns);
     const bodyIdx   = result.indexOf('</body>');
     const scriptIdx = result.indexOf('<script>');
@@ -205,7 +205,7 @@ describe('injectBridge', () => {
 
   it('appends script when no </body> tag present', () => {
     const html = '<h1>bare html</h1>';
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const result: string = (svc as any).injectBridge(html, fns);
     expect(result.endsWith('</script>')).toBe(true);
     expect(result).toContain('<h1>bare html</h1>');
@@ -213,7 +213,7 @@ describe('injectBridge', () => {
 
   it('replaces __SIM_BRIDGE_FUNCTIONS__ with serialized fn array', () => {
     const html = '<html><body></body></html>';
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const result: string = (svc as any).injectBridge(html, fns);
     expect(result).toContain(JSON.stringify(fns));
     expect(result).not.toContain('__SIM_BRIDGE_FUNCTIONS__');
@@ -221,7 +221,7 @@ describe('injectBridge', () => {
 
   it('bridge script contains SIM_READY postMessage call', () => {
     const html = '<html><body></body></html>';
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const result: string = (svc as any).injectBridge(html, fns);
     expect(result).toContain('SIM_READY');
     expect(result).toContain('postMessage');
@@ -229,7 +229,7 @@ describe('injectBridge', () => {
 
   it('handles empty functions array', () => {
     const html = '<html><body></body></html>';
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const result: string = (svc as any).injectBridge(html, []);
     expect(result).toContain('[]');
     expect(result).toContain('SIM_READY');

@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { db } from '../../db/index.js';
-import { admin_settings } from '../../db/schema.js';
+
 
 export async function registerPlatformRoutes(app: FastifyInstance): Promise<void> {
   // GET /api/v1/platform/settings

@@ -11,7 +11,6 @@ import { uploadWithFallback } from '../../services/storage/uploadWithFallback.js
 import { uploadFileFromDisk } from '../../services/storage/uploadFromDisk.js';
 import {
   declaredTooLarge,
-  PROXY_BODY_LIMIT_BYTES,
   tooLargeMessage,
   UPLOAD_MAX_BYTES,
   UploadTooLargeError,

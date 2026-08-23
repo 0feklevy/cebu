@@ -26,7 +26,7 @@
  * the recovery branches — an existing project id, a project found by reference — are asserted here
  * too. Each of those is a path where getting it wrong means paying twice for the same dub.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import {describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   ElevenLabsDubbingProvider,
   dubReference,

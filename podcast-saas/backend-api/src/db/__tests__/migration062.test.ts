@@ -100,17 +100,6 @@ async function newJob(projectId: string, offset = 0): Promise<string> {
   return r.id;
 }
 
-async function insertSection(
-  projectId: string, videoFileId: string, generationJobId: string | null,
-): Promise<string> {
-  const r = await one<{ id: string }>(
-    `INSERT INTO timeline_sections (project_id, video_file_id, start_sec, end_sec, type, track,
-                                    global_offset_sec, generation_job_id)
-     VALUES ($1,$2,0,5,'broll','broll',0,$3) RETURNING id`,
-    [projectId, videoFileId, generationJobId]);
-  return r.id;
-}
-
 beforeEach(async () => {
   pg = new PGlite();
   for (const f of PRIOR) await pg.exec(readFileSync(join(MIGRATIONS_DIR, f), 'utf-8'));

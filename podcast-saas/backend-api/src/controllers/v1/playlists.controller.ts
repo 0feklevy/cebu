@@ -15,7 +15,6 @@ import {
 } from '../../services/collabAccess.js';
 import { buildPlayerConfig } from '../../services/buildPlayerConfig.js';
 import { BillingService } from '../../services/billing/BillingService.js';
-import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { uploadWithFallback } from '../../services/storage/uploadWithFallback.js';
 import {
   getOpenAIClient,
@@ -109,9 +108,11 @@ async function generateOpenAiBanner(prompt: string, userId: string | null): Prom
   if (!client) throw new Error('OpenAI API key is not configured');
   const model = process.env.OPENAI_IMAGE_MODEL ?? 'gpt-image-1';
 
-  // Cast as any — same pattern used in darwin-avatar/server/image/imageService.ts.
-  // gpt-image-1 parameters differ from dall-e-3; the SDK types reflect the older API.
-  const resp = await (client.images.generate as any)({
+  // gpt-image-1 parameters differ from dall-e-3 and the SDK types reflect the older API, so the
+  // call is typed by what THIS code sends and reads rather than silenced with `any` — the reads
+  // below (`data[0].b64_json` / `.url`) stay type-checked.
+  type ImageCall = (args: Record<string, unknown>) => Promise<{ data?: Array<Record<string, unknown>> }>;
+  const resp = await (client.images.generate as unknown as ImageCall)({
     model,
     prompt: prompt.slice(0, 4000),
     quality: 'low',        // 'low' is valid for gpt-image-1 and generates fast
@@ -163,7 +164,10 @@ async function generateGeminiBanner(prompt: string, userId: string | null): Prom
 
   // Fallback: gemini-2.5-flash-image (generateContent with IMAGE response modality).
   const geminiImageModel = 'gemini-2.5-flash-image';
-  const response = await (client.models.generateContent as any)({
+  type GenerateCall = (args: Record<string, unknown>) => Promise<{
+    candidates?: Array<{ content?: { parts?: Array<Record<string, unknown>> } }>;
+  }>;
+  const response = await (client.models.generateContent as unknown as GenerateCall)({
     model: geminiImageModel,
     contents: `Generate a cinematic, wide 16:9 banner image. ${prompt}`,
     config: { responseModalities: ['IMAGE', 'TEXT'] },
@@ -183,7 +187,6 @@ async function generateGeminiBanner(prompt: string, userId: string | null): Prom
 }
 
 export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void> {
-  const storage = getStorageAdapter();
 
   // ── Public (optional auth): GET /api/v1/playlist-share/:shareToken ────────
   // Returns the full play-config, or a `locked` paywall stub for paid playlists.

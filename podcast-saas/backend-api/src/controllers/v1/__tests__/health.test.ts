@@ -18,7 +18,7 @@
  * decides whether this process can serve a request, and `/health/ready` is the strict one for
  * humans and alerting.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import {describe, it, expect, vi } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 
 vi.mock('../../../lib/logger.js', () => ({

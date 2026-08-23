@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import {and, eq, inArray, sql } from 'drizzle-orm';
 import { deleteWithFallback, deleteWithPrefixFallback } from '../../services/storage/deleteWithFallback.js';
 import { db } from '../../db/index.js';
 import {
@@ -20,7 +20,6 @@ import { PodcastVoiceService, DEFAULT_TEACHER_VOICE_ID, DEFAULT_LEARNER_VOICE_ID
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import {
   declaredTooLarge,
-  PROXY_BODY_LIMIT_BYTES,
   readStreamBounded,
   tooLargeMessage,
   UPLOAD_MAX_BYTES,

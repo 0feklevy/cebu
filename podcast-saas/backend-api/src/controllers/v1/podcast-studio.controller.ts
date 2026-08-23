@@ -18,7 +18,7 @@ import { and, desc, eq, isNotNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
 import {
-  podcast_scripts, podcast_episodes, podcast_mixes, podcast_clips, podcast_mix_snapshots,
+  podcast_scripts, podcast_mixes, podcast_clips, podcast_mix_snapshots,
 } from '../../db/schema.js';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { ownedEpisodeInShow } from '../../services/podcastAccess.js';

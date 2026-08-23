@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import type {FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
 import { corpora } from '../../db/schema.js';
@@ -8,14 +8,13 @@ import { editableProject } from '../../services/collabAccess.js';
 import { uploadFileFromDisk } from '../../services/storage/uploadFromDisk.js';
 import {
   declaredTooLarge,
-  PROXY_BODY_LIMIT_BYTES,
   tooLargeMessage,
   UPLOAD_MAX_BYTES,
   UploadTooLargeError,
   withBoundedTempFile,
 } from '../../services/security/uploadLimits.js';
 import { MARKITDOWN_EXTENSIONS } from '../../services/ingestion/DocumentIngester.js';
-import { logger } from '../../lib/logger.js';
+
 import { enqueueJob } from '../../queue/index.js';
 
 type FileSourceType = 'pdf' | 'audio' | 'image' | 'document';
