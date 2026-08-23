@@ -111,7 +111,7 @@ intended (then the flag stays and needs a guard so it cannot be set until an imp
 exists)? Shipping either without knowing would be guessing at a plan. The dangerous half — that a
 flip silently costs a catalogue recompute — is what needed writing down today.
 
-## 🔴 OWNER ACTION — three repository variables are unset, and the daily audit has been hollow
+## 🟡 OWNER ACTION (⅓ done 2026-08-23) — smoke variables: PUBLIC set, two remain
 
 Found 2026-08-22 while checking whether the production audit shared the hole closed in the release
 path. It does.
@@ -129,6 +129,15 @@ runs verified far less than they appear to.
 
 **There is currently no public project at all** — both sitemaps are empty — so this needs a
 project made public before the first variable has a value to hold.
+
+**UPDATE 2026-08-23:** `SMOKE_PUBLIC_PATH` is now SET — `/projects/d8e7557a-…/view`, the owner's
+public project verified viewable anonymously during the avatar incident. The four
+fixture-dependent production flows run again from the next audit. Two remain, both needing a value
+only the owner has: `SMOKE_PLAYLIST_PATH` (playlists are share-token pages — need a token) and
+`SMOKE_ADMIN_PREVIEW_PATH`. ALSO STALE BELOW: "releases will refuse to deploy" described #81's
+behaviour; the release now computes `require_tests` from which fixtures EXIST (v0.1.39 deployed
+with none set), so missing fixtures shrink coverage rather than block. The paragraph is kept for
+the near-miss reasoning:
 
 **Until they are set, releases will refuse to deploy.** That is deliberate and is the safe half of
 a near miss: `--require-tests` makes a skipped release-blocking flow CRITICAL, and the post-deploy
