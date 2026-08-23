@@ -681,6 +681,20 @@ The two dead Trigger.dev files that made this look done are deleted (#95).
     shape-only diagnostic — during the incident a statusless throw left no log line at all).
   * NOT a finding after all: the "leaked" CANDIDATE_FIREBASE_CREDENTIAL in the release logs is a
     per-run synthetic key that authenticates nothing, and main already masks it line-by-line.
+  * ROOT DESIGN GAP FOUND (owner suspected it first): `getSystemKey`'s provider union never
+    included 'anam' — the admin key screen managed four vendors and the avatar read only the
+    container env, so rotating the key in the screen built for that changed nothing. **PR #125**
+    fixes it end to end (migration 075 widens the enum in both registries, resolution order
+    BYOK → admin key → env, project-less path included, admin-web row, admin-v1 widened).
+  * INTERIM BROWSER-ONLY FIX handed to owner (works on deployed v0.1.39): enable BYOK in
+    admin → paste the working key in user settings (AnamKeyField) → owner's videos mint with
+    the owner's key. A monitor watches /avatar/start for recovery.
+  * Still open pending the VM log line: WHY the env key draws a 500 (not 401) from Anam —
+    revoked-key-of-live-account vs deleted-account are the candidates; garbage keys give 401.
+  * CI fallout fixed in the same wave: #122 also carried a test that silently required a live
+    local Postgres (guidanceSpendMetering — resolveGuidanceVoice reads admin_settings through
+    the real db client; green with `docker ps`, red in CI). Mocked at the module seam, proven
+    with an unroutable DATABASE_URL.
 
 ## ⚪ Known and accepted
 
