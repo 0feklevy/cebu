@@ -712,7 +712,7 @@ The two dead Trigger.dev files that made this look done are deleted (#95).
   the knowledge-upload merge, project duplication (a copy never inherits poison) and the
   tag-circle-voices script. A jsonb CHECK constraint remains optional belt-and-braces; the typed
   chokepoint exists without a migration.
-* 🔴 **PROD INCIDENT (open): /avatar/start returns 500 — owner-reported 2026-08-23** — full debrief draft: `INCIDENT-2026-08-23-avatar.md` — **MECHANISM CRACKED + reproduced: wrong-typed avatar_config field → statusless TypeError → bare 500 pre-vendor; fix = #127 (sanitize at both seams); v0.1.42 (diagnostic+admin key) deploying, v0.1.43 (the fix) right behind**
+* ✅ **PROD INCIDENT RESOLVED 2026-08-23 ~14:20Z: /avatar/start 500 → 200 in v0.1.43.** Root: PERSONA_MAP never learned the 'guide' default (undefined ?? undefined → entry.personaId TypeError, statusless, pre-vendor). Fixed #127 (+ sanitizer class-defense), verified live: real sessionToken minted on the reported page; both pages 200. Full debrief: `INCIDENT-2026-08-23-avatar.md` — **MECHANISM CRACKED + reproduced: wrong-typed avatar_config field → statusless TypeError → bare 500 pre-vendor; fix = #127 (sanitize at both seams); v0.1.42 (diagnostic+admin key) deploying, v0.1.43 (the fix) right behind**
 
   * v0.1.42 did NOT deploy: candidate smoke failed one step past #103's cd fix —
     `${BACKEND_IMAGE}` is a compose REQUIRED variable and its per-step env block existed only on
