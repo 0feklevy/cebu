@@ -9,6 +9,8 @@ import { firebaseAdminRequired } from '../../../middleware/firebase-admin-requir
 import { updateVisual, deleteVisual } from '../../../services/avatar/libraryService.js';
 import { isAnamConfigured } from '../../../services/avatar/anamService.js';
 import { CHARACTERS, DEFAULT_CHARACTER_ID } from '../../../services/avatar/characters.js';
+import { z } from 'zod';
+import { invalidateAnamDefaultsCache } from '../../../services/avatar/anamDefaults.js';
 
 export async function registerAdminAvatarRoutes(app: FastifyInstance): Promise<void> {
   // ── Config / health ────────────────────────────────────────────────────────
@@ -16,7 +18,12 @@ export async function registerAdminAvatarRoutes(app: FastifyInstance): Promise<v
     '/api/admin/v1/avatar/config',
     { preHandler: [firebaseAdminRequired] },
     async (_req: FastifyRequest, reply: FastifyReply) => {
-      const [settings] = await db.select({ byok: admin_settings.avatar_byok_enabled }).from(admin_settings).limit(1);
+      const [settings] = await db.select({
+        byok: admin_settings.avatar_byok_enabled,
+        avatar_default_avatar_id: admin_settings.avatar_default_avatar_id,
+        avatar_default_voice_id: admin_settings.avatar_default_voice_id,
+        avatar_default_llm_id: admin_settings.avatar_default_llm_id,
+      }).from(admin_settings).limit(1);
       return reply.send({
         anam_configured: isAnamConfigured(),
         anam_api_key: Boolean(process.env.ANAM_API_KEY),
@@ -28,7 +35,40 @@ export async function registerAdminAvatarRoutes(app: FastifyInstance): Promise<v
         default_character: DEFAULT_CHARACTER_ID,
         characters: Object.keys(CHARACTERS),
         byok_enabled: Boolean(settings?.byok),
+        // Admin-first defaults (077): what the row holds, and what env would supply beneath it —
+        // shown so an operator can see BOTH layers instead of guessing which one is live.
+        defaults: {
+          avatarId: settings?.avatar_default_avatar_id ?? '',
+          voiceId: settings?.avatar_default_voice_id ?? '',
+          llmId: settings?.avatar_default_llm_id ?? '',
+          envFallback: {
+            avatarId: Boolean(process.env.ANAM_AVATAR_ID),
+            voiceId: Boolean(process.env.ANAM_VOICE_ID),
+            llmId: Boolean(process.env.ANAM_LLM_ID),
+          },
+        },
       });
+    },
+  );
+
+  // The default Anam look/brain — admin-managed since 077; env vars are the fallback beneath.
+  app.put(
+    '/api/admin/v1/avatar/defaults',
+    { preHandler: [firebaseAdminRequired] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const parsed = z.object({
+        avatarId: z.string().trim().max(200).optional(),
+        voiceId: z.string().trim().max(200).optional(),
+        llmId: z.string().trim().max(200).optional(),
+      }).safeParse(request.body ?? {});
+      if (!parsed.success) return reply.code(400).send({ message: parsed.error.message });
+      await db.update(admin_settings).set({
+        avatar_default_avatar_id: parsed.data.avatarId || null,
+        avatar_default_voice_id: parsed.data.voiceId || null,
+        avatar_default_llm_id: parsed.data.llmId || null,
+      }).where(eq(admin_settings.id, 1));
+      invalidateAnamDefaultsCache();
+      return reply.send({ ok: true });
     },
   );
 

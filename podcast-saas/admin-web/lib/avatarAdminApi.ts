@@ -28,6 +28,12 @@ export interface AvatarConfig {
   default_character: string;
   characters: string[];
   byok_enabled: boolean;
+  /** Admin-first defaults (077): the stored row, plus whether env supplies a fallback beneath.
+   *  Optional: a pre-077 server answers without it, and the page must not explode on that. */
+  defaults?: {
+    avatarId: string; voiceId: string; llmId: string;
+    envFallback: { avatarId: boolean; voiceId: boolean; llmId: boolean };
+  };
 }
 
 export interface AvatarStats {
@@ -66,6 +72,8 @@ export interface AvatarSession {
 export const getAvatarConfig = () => authedFetch<AvatarConfig>('/api/admin/v1/avatar/config');
 export const setAvatarByok = (enabled: boolean) =>
   authedFetch<{ ok: boolean; byok_enabled: boolean }>('/api/admin/v1/avatar/byok', { method: 'PUT', body: JSON.stringify({ enabled }) });
+export const setAvatarDefaults = (d: { avatarId?: string; voiceId?: string; llmId?: string }) =>
+  authedFetch<{ ok: boolean }>('/api/admin/v1/avatar/defaults', { method: 'PUT', body: JSON.stringify(d) });
 export const getAvatarStats = () => authedFetch<AvatarStats>('/api/admin/v1/avatar/stats');
 
 export const getAvatarGallery = (opts: { page?: number; type?: string; scope?: string; source?: string; character?: string; q?: string }) => {
