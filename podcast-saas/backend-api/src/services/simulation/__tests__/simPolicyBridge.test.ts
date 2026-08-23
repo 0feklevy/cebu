@@ -164,7 +164,7 @@ interface FakeElement {
  */
 function makeBridgeHarness(source: string = BRIDGE) {
   const posted: Posted[] = [];
-  const winListeners: ((e: { data: unknown }) => void)[] = [];
+  const winListeners: ((e: { data: unknown; source?: unknown }) => void)[] = [];
 
   // ── clock ──
   let now = 0;
@@ -747,7 +747,10 @@ describe('a bridge without the handlers still works, and takes the restart path'
 
 // ══ 7. THE HANDLERS ARE SYSTEM-OWNED ══════════════════════════════════════════════════════════
 
-const MANIFEST: SimManifest = buildManifest('<html><body><canvas id="c"></canvas></body></html>', '');
+// The author's original two-string call iterated the HTML *character by character* (a string is
+// iterable), matched nothing, and produced an EMPTY manifest — these tests have always run against
+// one. Passing the map the signature asks for makes the canvas real without changing any verdict.
+const MANIFEST: SimManifest = buildManifest(new Map([['sim.html', '<html><body><canvas id="c"></canvas></body></html>']]));
 
 describe('validateGeneratedBridge treats the policy handlers as system-owned', () => {
   it('the real generated bridge passes', () => {

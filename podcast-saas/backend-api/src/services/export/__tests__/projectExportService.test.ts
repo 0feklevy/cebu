@@ -75,7 +75,7 @@ interface ExportRowView {
     failure?: { code: string; retryable: boolean; phase: string; detail: string };
   } | null;
   /** What the run actually did. `plan` is the frozen snapshot and never changes. */
-  effective_plan: { timeline?: unknown[]; warnings?: string[] } | null;
+  effective_plan: { timeline?: Array<{ kind: string; sectionId?: string }>; warnings?: string[] } | null;
   /** Why a run stopped, in its own column rather than merged over the snapshot. */
   failure: { code?: string; retryable?: boolean; phase?: string; detail?: string } | null;
   finished_at: string | null;
@@ -521,12 +521,12 @@ describe('run — the happy path (Phase 1: poster fallback for every sim window)
       const storageSpy = storage;
       // Set the flag at the last possible moment: after assembly, as the master is uploaded.
       const originalUpload = storageSpy.uploadFile.bind(storageSpy);
-      storageSpy.uploadFile = async (key: string, ...rest: unknown[]) => {
+      storageSpy.uploadFile = (async (key: string, ...rest: unknown[]) => {
         if (key.endsWith('master.mp4')) {
           await pg.query(`UPDATE project_exports SET cancel_requested = true WHERE id = $1`, [exportId]);
         }
         return (originalUpload as (...a: unknown[]) => Promise<unknown>)(key, ...rest);
-      };
+      }) as typeof storageSpy.uploadFile;
       try {
         await withCapture(assembler, {
           name: 'fake', isAvailable: async () => false, captureSection: vi.fn(),

@@ -50,7 +50,7 @@ afterEach(() => {
 const ADAPTERS = [
   {
     label: 'Local',
-    env: { NODE_ENV: 'development', BACKEND_API_URL: 'http://localhost:4000' },
+    env: { NODE_ENV: 'development', BACKEND_API_URL: 'http://localhost:4000' } as Record<string, string>,
     make: () => new LocalStorageAdapter(),
   },
   {
@@ -59,7 +59,7 @@ const ADAPTERS = [
       R2_ACCOUNT_ID: 'acct', R2_ACCESS_KEY_ID: 'key', R2_SECRET_ACCESS_KEY: 'secret',
       R2_BUCKET_NAME: 'media', R2_PUBLIC_URL: 'https://cdn.example.com',
       BACKEND_API_URL: 'https://api.example.com',
-    },
+    } as Record<string, string>,
     make: () => new R2StorageAdapter(),
   },
   {
@@ -68,7 +68,7 @@ const ADAPTERS = [
       SUPABASE_URL: 'https://ref.supabase.co', SUPABASE_S3_ACCESS_KEY_ID: 'key',
       SUPABASE_S3_SECRET_ACCESS_KEY: 'secret', SUPABASE_S3_REGION: 'us-east-1',
       SUPABASE_STORAGE_BUCKET: 'media', BACKEND_API_URL: 'https://api.example.com',
-    },
+    } as Record<string, string>,
     make: () => new SupabaseStorageAdapter(),
   },
 ];

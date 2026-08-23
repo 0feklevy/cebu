@@ -29,7 +29,7 @@ const mocks = vi.hoisted(() => ({
   })),
   authedUser: { id: 'user-1', email: 'a@b.c' } as { id: string; email: string } | null,
   checkDubbingBudget: vi.fn(async () => ({
-    allowed: true, spentCents: 0, budgetCents: 5000, estimateCents: 2200, exempt: false, reason: null,
+    allowed: true, spentCents: 0, budgetCents: 5000, estimateCents: 2200, exempt: false, reason: null as string | null,
   })),
 }));
 

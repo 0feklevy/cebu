@@ -44,7 +44,7 @@ function harness(): {
   lastPost: (type: string) => Posted | undefined;
 } {
   const posted: Posted[] = [];
-  const listeners: ((e: { data: unknown }) => void)[] = [];
+  const listeners: ((e: { data: unknown; source?: unknown }) => void)[] = [];
 
   let now = 0;
   let seq = 0;
@@ -193,7 +193,7 @@ describe('auto-script resume and one-shot demo timers', () => {
       return function () {};
     `]]));
     const posted: Posted[] = [];
-    const listeners: ((e: { data: unknown }) => void)[] = [];
+    const listeners: ((e: { data: unknown; source?: unknown }) => void)[] = [];
     let now = 0; let seq = 0;
     const timers = new Map<number, { fn: (...a: unknown[]) => void; args: unknown[]; due: number }>();
     const ctx: Record<string, unknown> = {

@@ -19,6 +19,7 @@ vi.mock('../deleteWithFallback.js', () => ({
 }));
 
 import { deleteSupersededThumbnail } from '../deleteSupersededThumbnail.js';
+import { callArgs } from '../../../__tests__/helpers/mockCalls.js';
 
 beforeEach(() => {
   mocks.deleteWithFallback.mockClear();
@@ -71,8 +72,8 @@ describe('sweepRevisionGc', () => {
     // keepLastN must be the exported floor, not a literal someone can quietly lower to 1 —
     // keep-1 collects every retired revision and makes rollback permanently impossible.
     const { GC_MIN_KEEP } = await import('../../simulation/RevisionService.js');
-    for (const call of mocks.gc.mock.calls) {
-      expect((call[0] as { keepLastN: number }).keepLastN).toBe(GC_MIN_KEEP);
+    for (const arg of callArgs<{ keepLastN: number }>(mocks.gc)) {
+      expect(arg.keepLastN).toBe(GC_MIN_KEEP);
     }
     expect(res).toEqual({ simulations: 2, deleted: 3 });
   });

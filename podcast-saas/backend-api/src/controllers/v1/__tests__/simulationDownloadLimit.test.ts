@@ -38,7 +38,7 @@ const mocks = vi.hoisted(() => ({
     deleteWithPrefix: vi.fn(),
     getSimPublicUrl: vi.fn((key: string) => `https://cdn.example.com/${key}`),
   },
-  readActiveRevisionPackage: vi.fn(async () => null),
+  readActiveRevisionPackage: vi.fn(async (): Promise<{ revisionId: string; entryKey: string; files: { key: string; relPath: string }[] } | null> => null),
 }));
 
 vi.mock('../../../db/index.js', () => ({

@@ -28,14 +28,14 @@ interface Posted { type: string; script?: string; token?: number }
 /** Run the emitted bridge source and drive it with a message sequence. */
 async function drive(steps: object[], settleMs = 700): Promise<Posted[]> {
   const posted: Posted[] = [];
-  const listeners: ((e: { data: unknown }) => void)[] = [];
+  const listeners: ((e: { data: unknown; source?: unknown }) => void)[] = [];
   const el = { style: {}, setAttribute() {}, remove() {} };
   const ctx: Record<string, unknown> = {
     console, Date, Object, JSON, String, Math, setTimeout, clearTimeout,
     document: { getElementById: () => el, querySelector: () => null },
     parent: { postMessage: (m: Posted) => posted.push(m) },
     location: { search: '', hash: '' },
-    addEventListener: (t: string, f: (e: { data: unknown }) => void) => { if (t === 'message') listeners.push(f); },
+    addEventListener: (t: string, f: (e: { data: unknown; source?: unknown }) => void) => { if (t === 'message') listeners.push(f); },
   };
   ctx.window = ctx;
   vm.createContext(ctx);

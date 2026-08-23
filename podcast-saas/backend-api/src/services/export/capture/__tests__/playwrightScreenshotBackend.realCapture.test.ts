@@ -141,7 +141,8 @@ async function resolveChromium(): Promise<{ launcher: ChromiumLike; executablePa
   let exe = process.env.PLAYWRIGHT_CHROMIUM_PATH || '';
   if (!exe) {
     try {
-      exe = launcher.executablePath ? (launcher as any).executablePath() : '';
+      const maybe = (launcher as { executablePath?: () => string }).executablePath;
+      exe = maybe ? maybe.call(launcher) : '';
     } catch {
       exe = '';
     }

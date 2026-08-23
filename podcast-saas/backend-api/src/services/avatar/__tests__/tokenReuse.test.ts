@@ -14,7 +14,7 @@ import { getSessionToken, invalidateAnamLlmCache, ANAM_ENV } from '../anamServic
 
 function mockMintSequence(tokens: string[]): { mints: number } {
   const counter = { mints: 0 };
-  globalThis.fetch = vi.fn(async (url: RequestInfo | URL) => {
+  globalThis.fetch = vi.fn(async (url: string | URL) => {
     if (String(url).includes('/auth/session-token')) {
       const token = tokens[Math.min(counter.mints, tokens.length - 1)];
       counter.mints += 1;

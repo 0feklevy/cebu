@@ -377,7 +377,7 @@ describe('sendText reasoning and quota (llm-pipeline-011)', () => {
     });
     mocks.selectWhere.mockResolvedValue([{ count: 999 }]);
 
-    await expect(makeSvc().sendText({ ...TEXT_OPTS, userId: undefined, task: 'guidance_plan' }))
+    await expect(makeSvc().sendText({ ...TEXT_OPTS, userId: null, task: 'guidance_plan' }))
       .resolves.toBeDefined();
   });
 });

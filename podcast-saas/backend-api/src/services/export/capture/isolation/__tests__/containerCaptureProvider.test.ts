@@ -114,8 +114,6 @@ describe('configFromEnv', () => {
       pidsLimit: 256,
       tmpfsScratchMb: 512,
       stopTimeoutSec: 10,
-      gpuCdiDevice: 'nvidia.com/gpu=0',
-      maxOutputMb: 4096,
       dockerBin: 'docker',
       sandboxMechanism: 'userns',
       gpuCdiDevice: 'nvidia.com/gpu=0',
@@ -245,14 +243,17 @@ function okResult(partial: Partial<ContainerCaptureResult>): ContainerCaptureRes
     rendererString: 'ANGLE (test)',
     gate: 'passed',
     reason: null,
+    // The REAL RendererIdentity shape (types.ts). The previous fixture carried the pre-refactor
+    // field names under an `as` cast — which is how a fixture goes stale without a test noticing.
     rendererIdentity: {
-      image: 'podcast-saas/export-worker:test', rendererProfile: 'swiftshader',
-      chromeHeadlessShellVersion: 'test',
-      viewport: '1920x1080',
-      dpr: 1,
-    } as ContainerCaptureResult['rendererIdentity'],
+      imageDigest: 'sha256:test', headlessShellVersion: 'test',
+      viewport: { w: 1920, h: 1080 }, dpr: 1,
+    },
     failure: null,
     ...partial,
+    // `Partial` lets an override carry an explicit undefined, which the wire type
+    // forbids (cost is `| null`, never absent). Normalize after the spread.
+    cost: partial.cost ?? null,
   };
 }
 

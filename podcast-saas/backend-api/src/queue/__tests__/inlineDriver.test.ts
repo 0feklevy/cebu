@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createInlineQueue } from '../inlineDriver.js';
 import type { JobHandlers } from '../types.js';
+import { JOB_NAMES } from '../types.js';
 
 /** Flush the microtask + setImmediate queue so scheduled work has run. */
 function flush(): Promise<void> {
@@ -9,12 +10,10 @@ function flush(): Promise<void> {
 
 function stubHandlers(overrides: Partial<JobHandlers> = {}): JobHandlers {
   const noop = vi.fn(async () => {});
-  return {
-    transcode: overrides.transcode ?? noop,
-    captions: overrides.captions ?? noop,
-    crop: overrides.crop ?? noop,
-    metadata: overrides.metadata ?? noop,
-  };
+  // Every JOB_NAMES entry gets a handler, so this builder cannot silently under-satisfy
+  // JobHandlers when the next job type is added — the drift the type exists to catch.
+  const all = Object.fromEntries(JOB_NAMES.map((n) => [n, noop])) as unknown as JobHandlers;
+  return { ...all, ...overrides };
 }
 
 describe('inline queue driver', () => {

@@ -99,6 +99,7 @@ vi.mock('openai', () => ({
 }));
 
 import { generateVideoMetadata } from '../generateVideoMetadata.js';
+import { callArgs } from '../../__tests__/helpers/mockCalls.js';
 
 const PROJECT_ID = 'proj-1';
 const VIDEO_ID = 'vid-1';
@@ -122,7 +123,7 @@ function fakeVideo() {
 
 /** Grab the .set(...) argument of the final "persist" update (the one that includes topic/title). */
 function lastPersistSetArg(): Record<string, unknown> {
-  const calls = mocks.mockUpdateSet.mock.calls.map((c) => c[0] as Record<string, unknown>);
+  const calls = callArgs<Record<string, unknown>>(mocks.mockUpdateSet);
   // The persist update sets metadata_status:'ready'. (The first update sets it to 'processing'.)
   const persist = calls.find((a) => a.metadata_status === 'ready');
   return persist ?? {};

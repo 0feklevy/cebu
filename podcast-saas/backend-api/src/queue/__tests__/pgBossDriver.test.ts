@@ -10,14 +10,18 @@ import { getBoss } from '../pgBoss.js';
 import {
   CPU_BOUND_JOBS, QUEUE_CONCURRENCY, pgBossSend, registerWorkers, resolveWorkerQueues,
 } from '../pgBossDriver.js';
+import { JOB_NAMES } from '../types.js';
 import type { JobHandlers } from '../types.js';
-import { callArg } from '../../__tests__/helpers/mockCalls.js';
+import { callArg, callArgs } from '../../__tests__/helpers/mockCalls.js';
 
 const mockGetBoss = vi.mocked(getBoss);
 
 function handlersWith(crop: JobHandlers['crop']): JobHandlers {
   const noop = vi.fn(async () => {});
-  return { transcode: noop, captions: noop, crop, metadata: noop };
+  // Every registered job gets a handler, so this never silently under-satisfies JobHandlers when
+  // the next job type is added — the exact drift the type exists to catch.
+  const all = Object.fromEntries(JOB_NAMES.map((n) => [n, noop])) as unknown as JobHandlers;
+  return { ...all, crop };
 }
 
 describe('pgBossSend', () => {
@@ -194,7 +198,9 @@ describe('the CPU-bound queues run serially', () => {
 
     await registerWorkers({ work } as never, ['crop', 'project_export'], noopHandlers);
 
-    const byName = Object.fromEntries(work.mock.calls.map((c) => [c[0] as string, c[1] as { localConcurrency: number }]));
+    const names = callArgs<string>(work, 0);
+    const opts = callArgs<{ localConcurrency: number }>(work, 1);
+    const byName = Object.fromEntries(names.map((n, i) => [n, opts[i]]));
     expect(byName.project_export.localConcurrency).toBe(1);
     expect(byName.crop.localConcurrency).toBe(1);
   });

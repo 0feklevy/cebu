@@ -172,7 +172,7 @@ describe('etagMatches — RFC 9110 weak comparison', () => {
 describe('isConfigRevalidation — a re-poll is not a view', () => {
   it('is true exactly when the request carries a usable If-None-Match', () => {
     expect(isConfigRevalidation({ headers: { 'if-none-match': '"abc"' } })).toBe(true);
-    expect(isConfigRevalidation({ headers: { 'if-none-match': ['"abc"'] } })).toBe(true);
+    expect(isConfigRevalidation({ headers: { 'if-none-match': ['"abc"'] } as never })).toBe(true);
     expect(isConfigRevalidation({ headers: {} })).toBe(false);
     expect(isConfigRevalidation({ headers: { 'if-none-match': '   ' } })).toBe(false);
   });

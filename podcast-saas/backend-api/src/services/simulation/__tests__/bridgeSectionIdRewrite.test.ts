@@ -85,7 +85,7 @@ describe('rewriteBridgeSectionIds', () => {
 
 /** Load a bridge in a VM and start one section; returns what the bodies recorded. */
 function runSection(source: string, section: string): string[] {
-  const listeners: ((e: { data: unknown }) => void)[] = [];
+  const listeners: ((e: { data: unknown; source?: unknown }) => void)[] = [];
   const ctx: Record<string, unknown> = {
     console, Object, JSON, String, Math, Date, Array, URLSearchParams,
     document: {
@@ -102,7 +102,7 @@ function runSection(source: string, section: string): string[] {
     clearInterval: (): void => { /* no-op */ },
     requestAnimationFrame: (cb: (t: number) => void): number => { cb(0); return 3; },
     cancelAnimationFrame: (): void => { /* no-op */ },
-    addEventListener(type: string, fn: (e: { data: unknown }) => void) { if (type === 'message') listeners.push(fn); },
+    addEventListener(type: string, fn: (e: { data: unknown; source?: unknown }) => void) { if (type === 'message') listeners.push(fn); },
     removeEventListener() { /* no-op */ },
   };
   ctx.window = ctx;

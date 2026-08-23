@@ -9,7 +9,7 @@ type Call = { url: string; body: Record<string, unknown> };
 function mockFetchSequence(responses: Array<{ status: number; json: unknown }>): Call[] {
   const calls: Call[] = [];
   let i = 0;
-  globalThis.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+  globalThis.fetch = vi.fn(async (url: string | URL, init?: RequestInit) => {
     calls.push({ url: String(url), body: JSON.parse(String(init?.body ?? '{}')) });
     const r = responses[Math.min(i++, responses.length - 1)];
     return new Response(JSON.stringify(r.json), { status: r.status, headers: { 'Content-Type': 'application/json' } });

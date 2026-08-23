@@ -144,6 +144,9 @@ function okResult(overrides: Partial<ContainerCaptureResult> = {}): ContainerCap
     rendererIdentity: RENDERER,
     failure: null,
     ...overrides,
+    // `Partial` lets an override carry an explicit undefined, which the wire type
+    // forbids (cost is `| null`, never absent). Normalize after the spread.
+    cost: overrides.cost ?? null,
   };
 }
 

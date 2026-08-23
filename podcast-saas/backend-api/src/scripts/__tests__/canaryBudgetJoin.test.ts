@@ -53,9 +53,9 @@ describe('a budget derived from a REAL assembled report', () => {
   it('the assembler really puts steps under cases[], not at the top level', () => {
     // Pins the shape the derivation depends on. If the assembler ever hoisted steps, the derivation
     // would keep working and this test would tell you why the other one started failing.
-    expect(Array.isArray((report as { cases?: unknown[] }).cases)).toBe(true);
-    expect((report as { steps?: unknown }).steps).toBeUndefined();
-    expect(((report as { cases: { steps: unknown[] }[] }).cases)[0]!.steps.length).toBeGreaterThan(0);
+    expect(Array.isArray((report as unknown as { cases?: unknown[] }).cases)).toBe(true);
+    expect((report as unknown as { steps?: unknown }).steps).toBeUndefined();
+    expect(((report as unknown as { cases: { steps: unknown[] }[] }).cases)[0]!.steps.length).toBeGreaterThan(0);
   });
 
   it('derives a NUMBER from it — the join the original bug broke', () => {

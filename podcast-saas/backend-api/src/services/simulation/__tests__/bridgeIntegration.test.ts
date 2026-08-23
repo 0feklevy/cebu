@@ -260,7 +260,7 @@ interface Posted { type?: string; dispatch?: string; sections?: string[] }
 
 function bootBridge(bridge: string, search: string) {
   const posted: Posted[] = [];
-  const messageListeners: ((e: { data: unknown }) => void)[] = [];
+  const messageListeners: ((e: { data: unknown; source?: unknown }) => void)[] = [];
   const runs: string[] = [];
 
   const fakeDocument = {
@@ -273,7 +273,7 @@ function bootBridge(bridge: string, search: string) {
   };
   const fakeWindow: Record<string, unknown> = {
     parent: { postMessage: (msg: Posted, _origin: string) => posted.push(msg) },
-    addEventListener: (t: string, fn: (e: { data: unknown }) => void) => {
+    addEventListener: (t: string, fn: (e: { data: unknown; source?: unknown }) => void) => {
       if (t === 'message') messageListeners.push(fn);
     },
     // The raw-rAF fallback binds window.requestAnimationFrame when no gate is present.

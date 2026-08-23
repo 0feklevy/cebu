@@ -21,7 +21,7 @@ import {
 /** A vendor that never answers. Resolves only when the caller's signal aborts. */
 function mockHangingFetch(): { calls: string[] } {
   const calls: string[] = [];
-  globalThis.fetch = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
+  globalThis.fetch = vi.fn((url: string | URL, init?: RequestInit) => {
     calls.push(String(url));
     return new Promise<Response>((_resolve, reject) => {
       const signal = init?.signal;
@@ -89,7 +89,7 @@ describe('Anam calls — deadlines and cancellation', () => {
 
   it('every Anam request carries an abort signal', async () => {
     const seen: Array<boolean> = [];
-    globalThis.fetch = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+    globalThis.fetch = vi.fn(async (_url: string | URL, init?: RequestInit) => {
       seen.push(Boolean(init?.signal));
       return new Response(JSON.stringify({ sessionToken: 'tok', data: [], id: 'x' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }) as typeof fetch;

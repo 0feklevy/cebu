@@ -40,7 +40,7 @@ function res(status: number): Response {
 function logged(): string {
   return JSON.stringify(
     [log.info.mock.calls, log.warn.mock.calls, log.error.mock.calls, log.debug.mock.calls],
-    (_k, v) => (v instanceof Error ? { name: v.name, message: v.message, stack: v.stack, ...v } : v),
+    (_k, v) => (v instanceof Error ? { ...v, name: v.name, message: v.message, stack: v.stack } : v),
   );
 }
 function payloads(): Array<Record<string, unknown>> {

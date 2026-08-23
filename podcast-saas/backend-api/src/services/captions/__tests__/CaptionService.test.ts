@@ -41,7 +41,7 @@ describe('generateVttValidate', () => {
 });
 
 describe('shouldSkip / retry semantics', () => {
-  const base = { id: 'v', captions_source_hash: 'h', captions_status: 'failed', captions_updated_at: new Date() } as never;
+  const base = { id: 'v', captions_source_hash: 'h', captions_status: 'failed', captions_updated_at: new Date() } as Parameters<typeof shouldSkip>[0];
   it('skips a recent failure but force overrides', () => {
     expect(shouldSkip(base, 'h', false)).toBe(true);
     expect(shouldSkip(base, 'h', true)).toBe(false);
@@ -50,12 +50,12 @@ describe('shouldSkip / retry semantics', () => {
     expect(shouldSkip(base, 'different', false)).toBe(false);
   });
   it('retries a failure older than the cooldown', () => {
-    const old = { ...base, captions_updated_at: new Date(Date.now() - 20 * 60 * 1000) } as never;
+    const old = { ...base, captions_updated_at: new Date(Date.now() - 20 * 60 * 1000) };
     expect(shouldSkip(old, 'h', false)).toBe(false);
   });
   it('skips ready/processing without force', () => {
-    expect(shouldSkip({ ...base, captions_status: 'ready' } as never, 'h')).toBe(true);
-    expect(shouldSkip({ ...base, captions_status: 'processing' } as never, 'h')).toBe(true);
+    expect(shouldSkip({ ...base, captions_status: 'ready' }, 'h')).toBe(true);
+    expect(shouldSkip({ ...base, captions_status: 'processing' }, 'h')).toBe(true);
   });
 });
 
