@@ -13,6 +13,8 @@
 import { readFile, stat } from 'fs/promises';
 import Groq from 'groq-sdk';
 import { segmentsToVtt, type VttSegment } from './CaptionService.js';
+import { recordSttSpend } from '../usage/recordSttSpend.js';
+import { reportedDurationSec } from '../usage/sttCost.js';
 
 /** Groq's audio upload limit (~25 MB). 16 kHz mono mp3 ≈ 0.5 MB/min → roughly 50 minutes. */
 export const GROQ_MAX_BYTES = 24 * 1024 * 1024;
@@ -27,7 +29,16 @@ export const GROQ_MAX_BYTES = 24 * 1024 * 1024;
  */
 export async function transcribeAudioFileToVtt(
   audioPath: string,
-  opts: { language?: string } = {},
+  opts: {
+    language?: string;
+    /**
+     * Who to bill this transcription to. Optional, and the recording only happens when it is
+     * supplied — an unattributed row is still worth more than none, but the CALLER is the only
+     * thing that knows the project, so making it explicit keeps the attribution honest rather
+     * than defaulting to null and looking complete.
+     */
+    spend?: { userId: string | null; projectId: string | null; task: string };
+  } = {},
 ): Promise<string | null> {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) throw new Error('GROQ_API_KEY not configured');
@@ -51,6 +62,12 @@ export async function transcribeAudioFileToVtt(
     response_format: 'verbose_json',
     ...(language ? { language } : {}),
   } as Parameters<typeof groq.audio.transcriptions.create>[0]);
+
+  // BILLED ON THE VENDOR'S OWN DURATION, recorded before the response is interpreted: whatever
+  // this function decides to do with the segments, the audio was processed and charged for.
+  if (opts.spend) {
+    void recordSttSpend({ ...opts.spend, durationSec: reportedDurationSec(res), model });
+  }
 
   const segments = (res as unknown as { segments?: VttSegment[] }).segments;
   if (Array.isArray(segments) && segments.length > 0) return segmentsToVtt(segments);

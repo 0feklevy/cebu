@@ -15,6 +15,8 @@ import { propagateTranscript } from '../transcriptPropagation.js';
 import { runFfmpegLimited } from '../ffmpegLimit.js';
 import { enqueueJob } from '../../queue/index.js';
 import { enqueueVideoMetadata } from '../generateVideoMetadata.js';
+import { recordSttSpend } from '../usage/recordSttSpend.js';
+import { reportedDurationSec } from '../usage/sttCost.js';
 
 const execFileAsync = promisify(execFile);
 const inFlight = new Set<string>();
@@ -182,7 +184,10 @@ async function extractAudioWithFallback(candidates: string[], workDir: string, f
 }
 
 /** Groq Whisper → VTT (built from verbose_json segments). */
-async function transcribeWithGroq(audioPath: string): Promise<string> {
+async function transcribeWithGroq(
+  audioPath: string,
+  spend?: { userId: string | null; projectId: string | null; task: string },
+): Promise<string> {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) throw new Error('GROQ_API_KEY not configured');
   const { size } = await stat(audioPath);
@@ -199,6 +204,10 @@ async function transcribeWithGroq(audioPath: string): Promise<string> {
     response_format: 'verbose_json',
     ...(language ? { language } : {}),
   } as Parameters<typeof groq.audio.transcriptions.create>[0]);
+
+  // Recorded before the response is interpreted — the audio was processed and charged for
+  // whatever this function goes on to do with the segments.
+  if (spend) void recordSttSpend({ ...spend, durationSec: reportedDurationSec(res), model });
 
   const segments = (res as unknown as { segments?: VttSegment[]; text?: string }).segments;
   if (Array.isArray(segments) && segments.length > 0) return segmentsToVtt(segments);
@@ -222,12 +231,19 @@ async function transcribeWithWhisperCpp(wavPath: string, workDir: string): Promi
   return normalizeVtt(await readFile(`${outBase}.vtt`, 'utf8'));
 }
 
-async function generateVtt(candidates: string[], workDir: string): Promise<string> {
+async function generateVtt(
+  candidates: string[],
+  workDir: string,
+  // Threaded from the claimed video row so a Groq transcription can be attributed. Optional
+  // because the whisper.cpp branch below spends nothing — it runs locally, and passing an
+  // attribution for work with no invoice would put a $0.00 row in the spend surface.
+  spend?: { userId: string | null; projectId: string | null; task: string },
+): Promise<string> {
   const engine = pickEngine();
   const format = engine === 'groq' ? 'mp3' : 'wav';
   const audioPath = await extractAudioWithFallback(candidates, workDir, format);
   return engine === 'groq'
-    ? transcribeWithGroq(audioPath)
+    ? transcribeWithGroq(audioPath, spend)
     : transcribeWithWhisperCpp(audioPath, workDir);
 }
 
@@ -277,7 +293,11 @@ async function runCaptionJob(videoId: string, opts: { force?: boolean } = {}): P
     const candidates: string[] = [await storage.getPresignedDownloadUrl(video.storage_key, 3600)];
     const hlsKey = video.hls_master_key ?? video.hls_360p_key;
     if (hlsKey) candidates.push(storage.getPublicUrl(hlsKey));
-    const vtt = generateVttValidate(await generateVtt(candidates, workDir));
+    const vtt = generateVttValidate(await generateVtt(candidates, workDir, {
+      userId: null,                       // captioning is a pipeline job, not a request
+      projectId: video.project_id ?? null,
+      task: 'captions_transcribe',
+    }));
 
     // Best-effort object-storage backup (may be denied on read-only tokens) —
     // never fails the job, because the DB is the source of truth.

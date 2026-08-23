@@ -27,6 +27,7 @@ vi.mock('../../../../db/schema.js', () => ({}));
 
 import { PodcastRenderer } from '../PodcastRenderer.js';
 import { estimateTtsCost, DEFAULT_USD_PER_CREDIT } from '../../../usage/ttsCost.js';
+import { callArg } from '../../../../__tests__/helpers/mockCalls.js';
 
 /** Reaches the two private members that carry the money. They are the subject, not an accident. */
 interface Internals {
@@ -104,7 +105,7 @@ describe('what gets written down', () => {
     await i.recordSpend({ userId: 'user-1', episodeId: 'ep-1', renderId: 'r-1' });
 
     expect(record).toHaveBeenCalledTimes(1);
-    const row = record.mock.calls[0]![0] as Record<string, unknown>;
+    const row = callArg<Record<string, unknown>>(record, 0, 0);
     expect(row.unit).toBe('characters');
     expect(row.quantity).toBe(1_400);
     expect(row.inputTokens).toBe(0);
@@ -116,7 +117,7 @@ describe('what gets written down', () => {
     i.charactersSpent = 36_000;
     await i.recordSpend({ userId: 'u', episodeId: 'e', renderId: 'r' });
 
-    const row = record.mock.calls[0]![0] as { costCents: number };
+    const row = callArg<{ costCents: number }>(record, 0, 0);
     expect(row.costCents).toBeCloseTo(estimateTtsCost({ characters: 36_000, usdPerCredit: DEFAULT_USD_PER_CREDIT }).costCents, 6);
     expect(row.costCents).toBeGreaterThan(0);
   });
@@ -126,7 +127,7 @@ describe('what gets written down', () => {
     const { i } = renderer();
     i.charactersSpent = 10;
     await i.recordSpend({ userId: 'owner-7', episodeId: 'e', renderId: 'r' });
-    expect((record.mock.calls[0]![0] as { userId: string }).userId).toBe('owner-7');
+    expect(callArg<{ userId: string }>(record, 0, 0).userId).toBe('owner-7');
   });
 
   it('writes nothing when nothing was synthesised', async () => {

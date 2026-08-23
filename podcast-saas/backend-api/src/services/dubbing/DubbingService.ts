@@ -881,7 +881,11 @@ async function transcribeDubbedAudio(audioPath: string, workDir: string): Promis
     ], { timeout: 30 * 60 * 1000, maxBuffer: 1024 * 1024 * 8 }));
 
     const { transcribeAudioFileToVtt } = await import('../captions/transcribeAudioFile.js');
-    return await transcribeAudioFileToVtt(mp3Path);
+    // The dub's own caption pass is a second, separate Groq charge on top of the vendor dub.
+    // Attributed to the project so the two show up side by side rather than one hiding the other.
+    return await transcribeAudioFileToVtt(mp3Path, {
+      spend: { userId: null, projectId: null, task: 'dub_captions_transcribe' },
+    });
   } catch (err) {
     logger.warn(
       { err: (err as Error).message?.slice(0, 200) },

@@ -18,6 +18,7 @@ vi.mock('../../usage/recordTtsSpend.js', () => ({
 }));
 
 import { GuidanceService } from '../GuidanceService.js';
+import { callArg } from '../../../__tests__/helpers/mockCalls.js';
 
 const NARRATION_A = 'Watch how the flock reorganises when one bird changes direction.';
 const NARRATION_B = 'Now raise the separation weight and see the cohesion collapse.';
@@ -59,7 +60,7 @@ describe('what a guidance publish records', () => {
     await publish(svc, [entry('a', NARRATION_A), entry('b', NARRATION_B)]);
 
     expect(recordTtsSpend).toHaveBeenCalledTimes(1);
-    const spend = recordTtsSpend.mock.calls[0]![0] as { characters: number; task: string };
+    const spend = callArg<{ characters: number; task: string }>(recordTtsSpend, 0, 0);
     expect(spend.characters).toBe(NARRATION_A.length + NARRATION_B.length);
     expect(spend.task).toBe('guidance_publish');
   });
@@ -73,7 +74,7 @@ describe('what a guidance publish records', () => {
     await publish(svc, [entry('a', NARRATION_A), entry('b', NARRATION_B)], prior);
 
     expect(synthesize).toHaveBeenCalledTimes(1);
-    const spend = recordTtsSpend.mock.calls[0]![0] as { characters: number };
+    const spend = callArg<{ characters: number }>(recordTtsSpend, 0, 0);
     expect(spend.characters).toBe(NARRATION_B.length);
   });
 
@@ -82,7 +83,7 @@ describe('what a guidance publish records', () => {
     const { svc } = service();
     await publish(svc, [entry('a', NARRATION_A)]);
 
-    const spend = recordTtsSpend.mock.calls[0]![0] as { userId: string; projectId: string };
+    const spend = callArg<{ userId: string; projectId: string }>(recordTtsSpend, 0, 0);
     expect(spend.userId).toBe('user-1');
     expect(spend.projectId).toBe('proj-1');
   });
@@ -99,7 +100,7 @@ describe('what a guidance publish records', () => {
     await publish(svc, [entry('a', NARRATION_A)]);
 
     expect(recordTtsSpend, 'a failed publish recorded nothing at all').toHaveBeenCalledTimes(1);
-    const spend = recordTtsSpend.mock.calls[0]![0] as { characters: number };
+    const spend = callArg<{ characters: number }>(recordTtsSpend, 0, 0);
     expect(spend.characters, 'a failed publish was recorded as free').toBe(NARRATION_A.length);
   });
 
