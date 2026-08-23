@@ -5,13 +5,14 @@ import { AdminShell } from '../../components/AdminShell';
 import { AdminSimSurface } from '../../components/AdminSimSurface';
 import {
   getAvatarConfig, setAvatarByok, getAvatarStats, getAvatarGallery, deleteAvatarVisual, getAvatarConversations,
-  type AvatarConfig, type AvatarStats, type AvatarGalleryItem, type AvatarSession,
-} from '../../lib/avatarAdminApi';
+  type AvatarConfig, type AvatarStats, type AvatarGalleryItem, type AvatarSession, setAvatarDefaults } from '../../lib/avatarAdminApi';
 
 type Tab = 'gallery' | 'conversations';
 
 export default function AvatarAdminPage() {
   const [config, setConfig] = useState<AvatarConfig | null>(null);
+  const [defaultsDraft, setDefaultsDraft] = useState({ avatarId: '', voiceId: '', llmId: '' });
+  const [savingDefaults, setSavingDefaults] = useState(false);
   const [stats, setStats] = useState<AvatarStats | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>('gallery');
@@ -29,7 +30,7 @@ export default function AvatarAdminPage() {
 
   useEffect(() => {
     Promise.all([getAvatarConfig(), getAvatarStats()])
-      .then(([c, s]) => { setConfig(c); setStats(s); })
+      .then(([c, s]) => { setConfig(c); setStats(s); if (c.defaults) setDefaultsDraft({ avatarId: c.defaults.avatarId, voiceId: c.defaults.voiceId, llmId: c.defaults.llmId }); })
       .catch((e) => setError((e as Error).message));
   }, []);
 
@@ -101,6 +102,37 @@ export default function AvatarAdminPage() {
             aria-pressed={config?.byok_enabled}
           >
             <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ${config?.byok_enabled ? 'left-[22px]' : 'left-0.5'}`} />
+          </button>
+        </div>
+        {/* Admin-first Anam defaults (077) — the values every video without its own pick falls
+            back to. Env vars remain the layer beneath; the placeholders say when one exists. */}
+        <div className="mt-4 rounded-lg border border-border bg-card p-4">
+          <p className="text-sm font-semibold text-foreground">Default avatar / voice / brain</p>
+          <p className="mb-3 text-xs text-muted-foreground">Used when a video doesn&apos;t pick its own. Stored here; the server env vars are the fallback beneath.</p>
+          <div className="grid gap-2 sm:grid-cols-3">
+            {(['avatarId', 'voiceId', 'llmId'] as const).map((k) => (
+              <label key={k} className="text-xs text-muted-foreground">
+                <span className="mb-1 block">{k === 'avatarId' ? 'Avatar ID' : k === 'voiceId' ? 'Voice ID' : 'LLM (brain) ID'}</span>
+                <input
+                  className="w-full rounded border border-border bg-background px-2 py-1 text-sm text-foreground"
+                  value={defaultsDraft[k]}
+                  placeholder={config?.defaults?.envFallback?.[k] ? 'env value in effect' : 'not set'}
+                  onChange={(e) => setDefaultsDraft({ ...defaultsDraft, [k]: e.target.value })}
+                />
+              </label>
+            ))}
+          </div>
+          <button
+            className="mt-3 rounded bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground disabled:opacity-50"
+            disabled={savingDefaults}
+            onClick={async () => {
+              setSavingDefaults(true);
+              try { await setAvatarDefaults(defaultsDraft); const fresh = await getAvatarConfig(); setConfig(fresh); }
+              catch (e) { setError((e as Error).message); }
+              finally { setSavingDefaults(false); }
+            }}
+          >
+            {savingDefaults ? 'Saving…' : 'Save defaults'}
           </button>
         </div>
       </section>

@@ -15,6 +15,7 @@ import Groq from 'groq-sdk';
 import { segmentsToVtt, type VttSegment } from './CaptionService.js';
 import { recordSttSpend } from '../usage/recordSttSpend.js';
 import { reportedDurationSec } from '../usage/sttCost.js';
+import { resolveGroqKey } from './groqKey.js';
 
 /** Groq's audio upload limit (~25 MB). 16 kHz mono mp3 ≈ 0.5 MB/min → roughly 50 minutes. */
 export const GROQ_MAX_BYTES = 24 * 1024 * 1024;
@@ -40,8 +41,8 @@ export async function transcribeAudioFileToVtt(
     spend?: { userId: string | null; projectId: string | null; task: string };
   } = {},
 ): Promise<string | null> {
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) throw new Error('GROQ_API_KEY not configured');
+  const apiKey = await resolveGroqKey();
+  if (!apiKey) throw new Error('Groq key not configured (Admin → API Keys, or GROQ_API_KEY)');
 
   const { size } = await stat(audioPath);
   if (size > GROQ_MAX_BYTES) {

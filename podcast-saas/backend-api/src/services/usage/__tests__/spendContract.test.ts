@@ -128,6 +128,12 @@ const METERED_BY_CALLER = [
  * re-opened.
  */
 const NO_BILLABLE_CALL = [
+  // ── ADMIN-FIRST DEFAULTS: A DB READ, NOT A VENDOR CALL ───────────────────────────────────
+  // `anamDefaults.ts` resolves the default avatar/voice/llm ids (admin_settings row → env). It
+  // imports anamService ONLY for the ANAM_ENV fallback object, which puts it on the vendor's
+  // import path — but it never opens a connection to anyone: its whole I/O is one SELECT. The
+  // ids it returns are spent by the MINT, which is metered where the minting happens.
+  'services/avatar/anamDefaults.ts',
   // ── VOICE LIBRARY: A SLOT, NOT A CHARGE ──────────────────────────────────────────────────
   // `GET /shared-voices` browses the library and is free. `POST /voices/add/...` adds a shared
   // voice to the workspace, which consumes a VOICE SLOT rather than credits — no invoice line.

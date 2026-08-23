@@ -17,6 +17,7 @@ import { enqueueJob } from '../../queue/index.js';
 import { enqueueVideoMetadata } from '../generateVideoMetadata.js';
 import { recordSttSpend } from '../usage/recordSttSpend.js';
 import { reportedDurationSec } from '../usage/sttCost.js';
+import { resolveGroqKey } from './groqKey.js';
 
 const execFileAsync = promisify(execFile);
 const inFlight = new Set<string>();
@@ -116,12 +117,15 @@ export function captionUrlForVideo(video: Pick<VideoRow, 'id' | 'captions_status
 
 type CaptionEngine = 'groq' | 'whisper';
 
-function pickEngine(): CaptionEngine {
+async function pickEngine(): Promise<CaptionEngine> {
   const forced = process.env.CAPTIONS_ENGINE?.toLowerCase();
   if (forced === 'groq' || forced === 'whisper') return forced;
-  if (process.env.GROQ_API_KEY) return 'groq';
+  // Admin-first (077): a Groq key set in Admin → API Keys selects the engine exactly like the
+  // env var — otherwise a key pasted in the screen would sit unused while this line said "no
+  // engine configured", the same looks-like-the-source-of-truth trap the Anam outage exposed.
+  if (await resolveGroqKey()) return 'groq';
   if (process.env.WHISPER_CPP_MODEL || process.env.WHISPER_MODEL_PATH) return 'whisper';
-  throw new Error('No caption engine configured: set GROQ_API_KEY (recommended) or WHISPER_CPP_MODEL.');
+  throw new Error('No caption engine configured: set a Groq key (Admin → API Keys, or GROQ_API_KEY) or WHISPER_CPP_MODEL.');
 }
 
 function pad(n: number, w = 2): string { return String(n).padStart(w, '0'); }
@@ -188,8 +192,8 @@ async function transcribeWithGroq(
   audioPath: string,
   spend?: { userId: string | null; projectId: string | null; task: string },
 ): Promise<string> {
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) throw new Error('GROQ_API_KEY not configured');
+  const apiKey = await resolveGroqKey();
+  if (!apiKey) throw new Error('Groq key not configured (Admin → API Keys, or GROQ_API_KEY)');
   const { size } = await stat(audioPath);
   if (size > GROQ_MAX_BYTES) {
     throw new Error(`Extracted audio is ${(size / 1048576).toFixed(1)} MB, over the ${GROQ_MAX_BYTES / 1048576} MB transcription limit (video too long for single-shot captioning).`);
@@ -239,7 +243,7 @@ async function generateVtt(
   // attribution for work with no invoice would put a $0.00 row in the spend surface.
   spend?: { userId: string | null; projectId: string | null; task: string },
 ): Promise<string> {
-  const engine = pickEngine();
+  const engine = await pickEngine();
   const format = engine === 'groq' ? 'mp3' : 'wav';
   const audioPath = await extractAudioWithFallback(candidates, workDir, format);
   return engine === 'groq'

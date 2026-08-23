@@ -5,7 +5,7 @@ import { adminApi } from '../../lib/api';
 import { AdminShell } from '../../components/AdminShell';
 import type { ApiKeyStatus, TestKeyResult } from 'shared/src/generated/admin-v1';
 
-type Provider = 'claude' | 'openai' | 'gemini' | 'elevenlabs' | 'anam';
+type Provider = 'claude' | 'openai' | 'gemini' | 'elevenlabs' | 'anam' | 'groq';
 
 const PROVIDERS: { id: Provider; label: string; placeholder: string; description: string; primary?: boolean }[] = [
   { id: 'claude', label: 'Anthropic (Claude)', placeholder: 'sk-ant-…', description: 'AI bridge function extraction — required for simulations', primary: true },
@@ -15,6 +15,7 @@ const PROVIDERS: { id: Provider; label: string; placeholder: string; description
   // Added during the 2026-08-23 outage: the avatar minted only with the container env key, so
   // rotating here changed nothing. Now this key wins over the env var for every avatar mint.
   { id: 'anam', label: 'Anam (avatar)', placeholder: 'MT…', description: 'Avatar sessions — read before the server env key', primary: true },
+  { id: 'groq', label: 'Groq (speech-to-text)', placeholder: 'gsk_…', description: 'Captions/transcription — read before the server env key' },
 ];
 
 interface KeyEntry {
@@ -33,6 +34,7 @@ export default function ApiKeysPage() {
     openai: { status: null, draft: '', testing: false, testResult: null, saving: false, deleting: false },
     gemini: { status: null, draft: '', testing: false, testResult: null, saving: false, deleting: false },
     anam: { status: null, draft: '', testing: false, testResult: null, saving: false, deleting: false },
+    groq: { status: null, draft: '', testing: false, testResult: null, saving: false, deleting: false },
   });
   const [error, setError] = useState<string | null>(null);
 

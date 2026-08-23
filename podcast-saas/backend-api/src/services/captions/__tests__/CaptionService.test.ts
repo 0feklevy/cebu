@@ -60,13 +60,17 @@ describe('shouldSkip / retry semantics', () => {
 });
 
 describe('pickEngine', () => {
+  // Async since 077: the engine pick consults the admin-stored Groq key FIRST (a key pasted in
+  // Admin → API Keys must select the engine exactly like the env var, or the screen lies), so
+  // these tests await it. In unit runs the admin lookup degrades to env (no DB), which is the
+  // resolver's own tested fallback.
   const saved = { ...process.env };
   beforeEach(() => { delete process.env.CAPTIONS_ENGINE; delete process.env.GROQ_API_KEY; delete process.env.WHISPER_CPP_MODEL; delete process.env.WHISPER_MODEL_PATH; });
   afterEach(() => { process.env = { ...saved }; });
-  it('prefers groq when GROQ_API_KEY is set', () => { process.env.GROQ_API_KEY = 'x'; expect(pickEngine()).toBe('groq'); });
-  it('uses whisper when only WHISPER_CPP_MODEL is set', () => { process.env.WHISPER_CPP_MODEL = '/m.bin'; expect(pickEngine()).toBe('whisper'); });
-  it('honors an explicit override', () => { process.env.GROQ_API_KEY = 'x'; process.env.CAPTIONS_ENGINE = 'whisper'; expect(pickEngine()).toBe('whisper'); });
-  it('throws a clear error when nothing is configured', () => { expect(() => pickEngine()).toThrow(/GROQ_API_KEY/); });
+  it('prefers groq when GROQ_API_KEY is set', async () => { process.env.GROQ_API_KEY = 'x'; expect(await pickEngine()).toBe('groq'); });
+  it('uses whisper when only WHISPER_CPP_MODEL is set', async () => { process.env.WHISPER_CPP_MODEL = '/m.bin'; expect(await pickEngine()).toBe('whisper'); });
+  it('honors an explicit override', async () => { process.env.GROQ_API_KEY = 'x'; process.env.CAPTIONS_ENGINE = 'whisper'; expect(await pickEngine()).toBe('whisper'); });
+  it('throws a clear error when nothing is configured', async () => { await expect(pickEngine()).rejects.toThrow(/Groq key/); });
 });
 
 describe('captionPublicUrl', () => {

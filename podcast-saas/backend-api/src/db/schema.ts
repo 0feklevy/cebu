@@ -66,7 +66,7 @@ export const scriptStatusEnum = pgEnum('script_status', [
   'failed',
 ]);
 // 'anam' added by migration 075 — the avatar vendor's platform key becomes admin-manageable.
-export const providerEnum = pgEnum('provider', ['claude', 'openai', 'gemini', 'elevenlabs', 'anam']);
+export const providerEnum = pgEnum('provider', ['claude', 'openai', 'gemini', 'elevenlabs', 'anam', 'groq']);
 export const jobStatusEnum = pgEnum('job_status', [
   'queued',
   'running',
@@ -293,6 +293,10 @@ export const admin_settings = pgTable('admin_settings', {
   tts_provider: text('tts_provider').default('elevenlabs').notNull(),
   elevenlabs_model: text('elevenlabs_model').default('eleven_v3').notNull(),
   default_voice_id_a: text('default_voice_id_a'),
+  // Anam default look/brain — admin-managed since 077; env vars are the fallback.
+  avatar_default_avatar_id: text('avatar_default_avatar_id'),
+  avatar_default_voice_id: text('avatar_default_voice_id'),
+  avatar_default_llm_id: text('avatar_default_llm_id'),
   default_voice_id_b: text('default_voice_id_b'),
   // When true, a video's avatar uses its owner's own Anam key (BYOK); otherwise
   // the shared server ANAM_API_KEY is used for everyone (migration 029).

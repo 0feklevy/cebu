@@ -6,6 +6,8 @@
 import { CHARACTERS, DEFAULT_CHARACTER_ID } from './characters.js';
 import { logger } from '../../lib/logger.js';
 import { sanitizeAvatarPersonaConfig } from './sanitizeAvatarConfig.js';
+// Call-time-only import (cycle with this module is benign: nothing runs at init).
+import { resolveAnamDefaults, invalidateAnamDefaultsCache } from './anamDefaults.js';
 
 const ANAM_BASE = 'https://api.anam.ai/v1';
 
@@ -383,7 +385,11 @@ export async function resolveDefaultLlmId(apiKey?: string): Promise<string> {
   // (their own Anam account) must resolve an llm from THEIR account, or the baked-in server
   // llm id would 400 as "llm not found" for them.
   const usingServerKey = !apiKey || apiKey === ANAM_ENV.ANAM_API_KEY;
-  if (usingServerKey && ANAM_ENV.ANAM_LLM_ID) return ANAM_ENV.ANAM_LLM_ID;
+  if (usingServerKey) {
+    // Admin-first (077): the pinned brain can now be set from Admin → Avatar; env is fallback.
+    const pinned = (await resolveAnamDefaults()).llmId;
+    if (pinned) return pinned;
+  }
   const key = apiKey || ANAM_ENV.ANAM_API_KEY;
   if (!key) return '';
   const ck = key.slice(-8);
@@ -423,6 +429,7 @@ export function invalidateAnamLlmCache(): void {
   _defaultAvatarCache.clear();
   _resourceListCache.clear();
   _deadPersonaCache.clear();
+  invalidateAnamDefaultsCache();   // the admin-first defaults are per-process state too (077)
 }
 
 // Live account defaults: when neither the video config, the base character persona, nor the
@@ -640,8 +647,11 @@ async function buildPersonaConfig(
     baseVoice  = base?.voiceId  ?? base?.voice?.id  ?? '';
     baseLlm    = base?.llmId    ?? base?.llm?.id    ?? '';
   }
-  let avatarId = (cfg?.avatarId?.trim() || baseAvatar || ANAM_ENV.ANAM_AVATAR_ID).trim();
-  let voiceId  = (cfg?.voiceId?.trim()  || baseVoice  || ANAM_ENV.ANAM_VOICE_ID).trim();
+  // Admin-first defaults (077): the admin_settings row wins, ANAM_ENV stays the env fallback
+  // inside resolveAnamDefaults. One read, briefly cached — this is the start path.
+  const defaults = await resolveAnamDefaults();
+  let avatarId = (cfg?.avatarId?.trim() || baseAvatar || defaults.avatarId).trim();
+  let voiceId  = (cfg?.voiceId?.trim()  || baseVoice  || defaults.voiceId).trim();
   let llmId    = (cfg?.llmId?.trim()    || baseLlm    || '').trim();
   if (!llmId) llmId = (await resolveLlm()).trim();
   if (!llmId && entry?.personaId && !needsBaseLook) {
@@ -935,8 +945,9 @@ export async function upsertVideoPersona(
     baseVoice = base?.voiceId ?? base?.voice?.id ?? '';
     baseLlm = base?.llmId ?? base?.llm?.id ?? '';
   }
-  const avatarId = (cfg.avatarId || baseAvatar || ANAM_ENV.ANAM_AVATAR_ID || '').trim();
-  const voiceId = (cfg.voiceId || baseVoice || ANAM_ENV.ANAM_VOICE_ID || '').trim();
+  const upsertDefaults = await resolveAnamDefaults();
+  const avatarId = (cfg.avatarId || baseAvatar || upsertDefaults.avatarId || '').trim();
+  const voiceId = (cfg.voiceId || baseVoice || upsertDefaults.voiceId || '').trim();
   // v4 requires a brain on every persona ("Either brainType or llmId is required" — brainType
   // is removed, so it MUST be an llmId). Fall back to the base persona's llm, then the account
   // default (env or GET /llms). Without one, Anam 400s the create — fail with a clear message.

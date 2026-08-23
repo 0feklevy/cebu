@@ -73,7 +73,7 @@ export async function registerAdminLlmConfigRoutes(app: FastifyInstance): Promis
     { preHandler: [firebaseAdminRequired] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const body = z
-        .object({ provider: z.enum(['claude', 'openai', 'gemini', 'elevenlabs', 'anam']), api_key: z.string().min(1) })
+        .object({ provider: z.enum(['claude', 'openai', 'gemini', 'elevenlabs', 'anam', 'groq']), api_key: z.string().min(1) })
         .safeParse(request.body);
       if (!body.success) return reply.code(400).send({ message: body.error.message });
 
@@ -91,13 +91,20 @@ export async function registerAdminLlmConfigRoutes(app: FastifyInstance): Promis
     { preHandler: [firebaseAdminRequired] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const body = z
-        .object({ provider: z.enum(['claude', 'openai', 'gemini', 'elevenlabs', 'anam']), api_key: z.string().min(1) })
+        .object({ provider: z.enum(['claude', 'openai', 'gemini', 'elevenlabs', 'anam', 'groq']), api_key: z.string().min(1) })
         .safeParse(request.body);
       if (!body.success) return reply.code(400).send({ message: body.error.message });
 
       try {
         // Test by making a minimal API call per provider
-        if (body.data.provider === 'anam') {
+        if (body.data.provider === 'groq') {
+          // Zero-cost authenticated read (OpenAI-compatible surface).
+          const resp = await fetch('https://api.groq.com/openai/v1/models', {
+            headers: { Authorization: `Bearer ${body.data.api_key}` },
+          });
+          if (!resp.ok) throw new Error(`Groq API returned ${resp.status}`);
+          return reply.send({ valid: true });
+        } else if (body.data.provider === 'anam') {
           // A read that costs nothing and proves the key is live on a real account.
           const resp = await fetch('https://api.anam.ai/v1/avatars?page=1&perPage=1', {
             headers: { Authorization: `Bearer ${body.data.api_key}` },

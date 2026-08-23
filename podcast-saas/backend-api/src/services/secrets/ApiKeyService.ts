@@ -45,7 +45,7 @@ const CACHE_TTL_MS = 5 * 60_000;
  * with whatever the container was started with. An admin screen that LOOKS like the source of
  * truth and silently is not is worse than no screen.
  */
-export type SystemKeyProvider = 'claude' | 'openai' | 'gemini' | 'elevenlabs' | 'anam';
+export type SystemKeyProvider = 'claude' | 'openai' | 'gemini' | 'elevenlabs' | 'anam' | 'groq';
 
 export class ApiKeyService {
   private cache: Map<string, { value: string; expiresAt: number }> = new Map();
@@ -133,7 +133,7 @@ export class ApiKeyService {
     });
 
     const byProvider = new Map(rows.map((r) => [r.provider, r]));
-    const providers: SystemKeyProvider[] = ['claude', 'openai', 'gemini', 'elevenlabs', 'anam'];
+    const providers: SystemKeyProvider[] = ['claude', 'openai', 'gemini', 'elevenlabs', 'anam', 'groq'];
 
     return providers.map((p) => {
       const row = byProvider.get(p);
