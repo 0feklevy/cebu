@@ -66,3 +66,19 @@ apply** below caught it both times.
 
 **Net practice:** treat every verdict in DECISIONS.md — DONE, ride-along-DONE, or NOT-STARTED — as
 a claim to verify against code/tests/CI config, not as ground truth in either direction.
+
+**Fourth confirmed occurrence, 2026-08-23 (v0.1.43 avatar-outage pre-ship audit).** Two more
+variants of the same standing property, both non-blocking once re-verified:
+- The primary worktree's checked-out branch changed from `fix/avatar-config-poison` to an unrelated
+  `chore/client-lint-ratchet` (with live uncommitted edits to `client-web/*`) partway through a
+  read-only audit — a concurrent agent/process working the same checkout on a different task. Every
+  finding in this audit that mattered was taken from `git show <ref>:<path>` / `gh pr` (ref-pinned,
+  branch-independent), so the switch didn't corrupt any verdict — but a check that reads the
+  *working tree* directly (not via a ref) needs a beat of care about which branch is actually
+  checked out right now.
+- A PR's "Release verification gate" check was still `IN_PROGRESS` (~16 min run) when first read.
+  Reporting `mergeStateStatus: UNSTABLE` at that snapshot would have been a misleading "blocked"
+  finding — the same claimed-vs-actual gap this memory already warns about, just live rather than
+  historical. Lesson for a pre-ship SHIP/DO-NOT-SHIP call specifically: poll `gh pr checks <n>` to
+  completion (this gate reliably takes ~15-16 min) before issuing the verdict, don't snapshot a
+  pending check as a blocker.
