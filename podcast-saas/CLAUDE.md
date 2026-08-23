@@ -119,6 +119,22 @@ you when X finishes" and nothing else is the failure this rule exists to prevent
 
 Report progress as you go, but a report is not a handover. Keep the work moving.
 
+## 3d. Check the branch before every push
+
+Three commits went straight to `main` on the night of 2026-08-22 without a PR. The cause was
+mechanical, not careless: the merge watcher ran `gh pr merge --squash --delete-branch`, which
+deletes the branch out from under the local checkout. The next `git push` then landed on `main`.
+
+`--delete-branch` is gone from that script. The habit that makes it safe regardless:
+
+```bash
+git branch --show-current      # before any push that is not deliberately to main
+```
+
+The commits themselves were fine and CI ran on them. What was lost is the review step — and the
+reason to care is that a PR is where the reasoning gets written down for the next reader, which is
+the whole discipline §3b exists to protect.
+
 ## 4. Verification
 
 `pnpm -C podcast-saas release:verify` is the real gate, and it is what CI runs. Nine steps: frozen
