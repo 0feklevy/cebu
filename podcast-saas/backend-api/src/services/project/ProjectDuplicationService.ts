@@ -85,6 +85,7 @@ import {
   type PosterKey, type PosterVariantRecord,
 } from 'shared/sim/posterIdentity';
 import type { SimAspectProfile, SimQualityProfile } from 'shared/sim/simIdentity';
+import { sanitizeAvatarPersonaConfig } from '../avatar/sanitizeAvatarConfig.js';
 
 // ── Tuning ────────────────────────────────────────────────────────────────────────────────────
 
@@ -1166,7 +1167,9 @@ export class ProjectDuplicationService {
         // wrote are part of the project, not of its audience — but the face images it POINTS AT
         // live under the source's `avatar-circles/` prefix and die with it, so the URLs follow the
         // bytes this plan copied.
-        avatar_config: rewriteAvatarConfig(src.avatar_config, copies),
+        // Sanitized so a duplicate never INHERITS stored poison — the copy starts clean even
+        // when the source row predates the write-path guards (incident 2026-08-23).
+        avatar_config: sanitizeAvatarPersonaConfig(rewriteAvatarConfig(src.avatar_config, copies) as Record<string, unknown> | null),
       });
 
       // 2 ─ branch sequences (video_files reference them)

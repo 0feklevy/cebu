@@ -1467,7 +1467,11 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
         personaBaked = undefined;
       }
 
-      const toSave: AvatarPersonaConfig = { ...effective, ...(personaId && personaBaked ? { personaId, personaBaked } : {}) };
+      // Sanitized at the WRITE: `effective` passed through enrichAvatarConfigFromAnam, which
+      // reflects vendor fields (`cfg.avatarName || avatar.displayName || ''` — `||` passes any
+      // truthy object straight through), so this writer could store the exact poison the read
+      // seams exist to survive. Every avatar_config writer funnels through the sanitizer now.
+      const toSave: AvatarPersonaConfig = sanitizeAvatarPersonaConfig({ ...effective, ...(personaId && personaBaked ? { personaId, personaBaked } : {}) });
       await db.update(projects).set({ avatar_config: toSave, updated_at: new Date() }).where(eq(projects.id, project.id));
       return reply.send({ ok: true, config: toSave, personaId, personaError });
     },
@@ -1533,7 +1537,8 @@ export async function registerAvatarRoutes(app: FastifyInstance): Promise<void> 
         const groupId = await ensureKnowledgeGroup(`${project.title ?? 'Video'} knowledge`, apiKey, existing.knowledgeGroupId);
         await uploadKnowledgeDocument(groupId, buf, data.filename ?? 'document', data.mimetype, apiKey);
         const toolId = await ensureKnowledgeTool(groupId, project.title ?? project.id.slice(0, 8), apiKey, existing.knowledgeToolId);
-        const merged: AvatarPersonaConfig = { ...existing, knowledgeGroupId: groupId, knowledgeToolId: toolId };
+        // `existing` is the raw row — sanitizing the merge both blocks new poison and HEALS old.
+        const merged: AvatarPersonaConfig = sanitizeAvatarPersonaConfig({ ...existing, knowledgeGroupId: groupId, knowledgeToolId: toolId });
         await db.update(projects).set({ avatar_config: merged, updated_at: new Date() }).where(eq(projects.id, project.id));
         return reply.send({ ok: true, knowledgeGroupId: groupId, knowledgeToolId: toolId });
       } catch (e) {
