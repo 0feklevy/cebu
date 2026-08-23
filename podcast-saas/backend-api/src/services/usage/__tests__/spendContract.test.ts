@@ -160,11 +160,9 @@ const UNMETERED_TODAY = [
   // They were not "known gaps" that had been triaged and deferred — they were invisible, which is
   // worse, and they are the reason the list grew when it looked ready to reach zero.
   //
-  // Speech-to-text, billed per minute of AUDIO. `AudioIngester` came OFF this list first, because
-  // it runs inside corpus ingest — on a durable queue with a retry, so a failure after
-  // transcription buys a second one. These two remain.
-  'services/captions/CaptionService.ts',
-  'services/captions/transcribeAudioFile.ts',
+  // Speech-to-text is CLOSED — all three paths record on the duration Groq itself reports.
+  // `AudioIngester` came off first, because it runs inside corpus ingest on a durable queue with
+  // a retry, so a failure after transcription buys a second one.
 
   // Image generation, billed per IMAGE. A unit `token_usage` can already express (migration 073),
   // which is what makes these the cheapest of the remaining gaps to close.
@@ -340,15 +338,19 @@ describe('what the gap costs, stated rather than implied', () => {
     }
   });
 
-  it('names the speech-to-text paths, which are billed per minute of AUDIO', () => {
+  it('keeps every speech-to-text path metered', () => {
     // The most expensive of the remaining gaps, and the ones the host-only scan could not see at
     // all. `AudioIngester` runs inside corpus ingest, which is on a durable queue with a retry —
     // so a failure after transcription buys a second transcription and neither is recorded.
-    expect(UNMETERED_TODAY).toContain('services/captions/CaptionService.ts');
-    expect(UNMETERED_TODAY).toContain('services/captions/transcribeAudioFile.ts');
-    // Closed first, and it must stay closed: this is the one path where an ordinary retry buys a
-    // second vendor charge.
-    expect(UNMETERED_TODAY).not.toContain('services/ingestion/AudioIngester.ts');
+    // All three closed. Kept as a regression guard rather than deleted: the corpus path is the
+    // one where an ordinary retry buys a second vendor charge, and it must stay metered.
+    for (const closed of [
+      'services/ingestion/AudioIngester.ts',
+      'services/captions/CaptionService.ts',
+      'services/captions/transcribeAudioFile.ts',
+    ]) {
+      expect(UNMETERED_TODAY, closed).not.toContain(closed);
+    }
   });
 
   it('names the image-generation paths, billed per image', () => {
@@ -361,6 +363,6 @@ describe('what the gap costs, stated rather than implied', () => {
     // modules appeared that had never been triaged, only unseen. A ratchet is allowed to grow when
     // the measurement improves — pretending otherwise is how a gate starts flattering itself.
     expect(UNMETERED_TODAY.length).toBeGreaterThan(1);
-    expect(UNMETERED_TODAY.length).toBeLessThan(8);
+    expect(UNMETERED_TODAY.length).toBeLessThan(6);
   });
 });

@@ -20,6 +20,7 @@ vi.mock('../../../db/index.js', () => ({ db: {} }));
 
 import { recordTtsSpend } from '../recordTtsSpend.js';
 import { estimateTtsCost, DEFAULT_USD_PER_CREDIT } from '../ttsCost.js';
+import { callArg } from '../../../__tests__/helpers/mockCalls.js';
 
 beforeEach(() => { record.mockReset(); record.mockResolvedValue(undefined); });
 
@@ -28,7 +29,7 @@ describe('what it writes', () => {
     await recordTtsSpend({ userId: 'u1', task: 'podcast_preview', characters: 320 });
 
     expect(record).toHaveBeenCalledTimes(1);
-    const row = record.mock.calls[0]![0] as Record<string, unknown>;
+    const row = callArg<Record<string, unknown>>(record, 0, 0);
     expect(row.unit).toBe('characters');
     expect(row.quantity).toBe(320);
     expect(row.task).toBe('podcast_preview');
@@ -40,7 +41,7 @@ describe('what it writes', () => {
     // The point of migration 073. A character in a token column is a number that sums with tokens
     // and means nothing afterwards.
     await recordTtsSpend({ userId: 'u', task: 't', characters: 100 });
-    const row = record.mock.calls[0]![0] as Record<string, number>;
+    const row = callArg<Record<string, number>>(record, 0, 0);
     expect(row.inputTokens).toBe(0);
     expect(row.cachedInputTokens).toBe(0);
     expect(row.outputTokens).toBe(0);
@@ -48,7 +49,7 @@ describe('what it writes', () => {
 
   it('prices through the shared cost model, never with a number of its own', async () => {
     await recordTtsSpend({ userId: 'u', task: 't', characters: 5_000 });
-    const row = record.mock.calls[0]![0] as { costCents: number };
+    const row = callArg<{ costCents: number }>(record, 0, 0);
     expect(row.costCents)
       .toBeCloseTo(estimateTtsCost({ characters: 5_000, usdPerCredit: DEFAULT_USD_PER_CREDIT }).costCents, 8);
   });
@@ -98,7 +99,7 @@ describe('recordSttSpend — when the vendor did not say how long the audio was'
     const { recordSttSpend } = await import('../recordSttSpend.js');
     await recordSttSpend({ userId: null, projectId: 'p1', task: 'corpus_audio_transcribe', durationSec: 600 });
 
-    const row = record.mock.calls[0]![0] as Record<string, unknown>;
+    const row = callArg<Record<string, unknown>>(record, 0, 0);
     expect(row.unit).toBe('seconds');
     expect(row.quantity).toBe(600);
     expect(row.provider).toBe('groq');
