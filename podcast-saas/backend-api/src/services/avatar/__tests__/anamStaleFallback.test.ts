@@ -228,3 +228,67 @@ describe('getSessionToken — legacy (brainless) tokens are never handed to the 
       .rejects.toThrow(/legacy session token/i);
   });
 });
+
+/**
+ * The 2026-08-23 incident class: the vendor answers a DEFINITE 5xx on the stateful mint.
+ *
+ * Before this fallback, that status passed through verbatim, the viewer got a naked 500, and —
+ * because the substitution below only triggered on 400 — a persona the vendor kept 500ing on
+ * stayed dead for every viewer with no way out but a deploy.
+ */
+describe('getSessionToken — vendor 5xx ephemeral retry', () => {
+  const realFetch = globalThis.fetch;
+  const savedEnv = { ...ANAM_ENV };
+
+  beforeEach(() => {
+    ANAM_ENV.ANAM_API_KEY = 'test-key-1234567890';
+    ANAM_ENV.ANAM_AVATAR_ID = 'env-avatar-1';
+    ANAM_ENV.ANAM_VOICE_ID = 'env-voice-1';
+    ANAM_ENV.ANAM_LLM_ID = 'llm-default-1';
+    invalidateAnamLlmCache();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    Object.assign(ANAM_ENV, savedEnv);
+    invalidateAnamLlmCache();
+  });
+
+  const VENDOR_500 = { status: 500, json: { error: 'internal_error' } };
+  const TOKEN_OK = { status: 200, json: { sessionToken: 'tok-after-5xx' } };
+
+  it('retries a stateful mint ONCE ephemerally when the vendor answers 500', async () => {
+    const calls = mockFetchSequence([VENDOR_500, TOKEN_OK]);
+    const info = await getSessionToken('einstein', { personaId: `sick-${Date.now()}` });
+    expect(info.token).toBe('tok-after-5xx');
+    expect(calls).toHaveLength(2);
+    expect((calls[1].body.personaConfig as Record<string, unknown>).personaId).toBeUndefined();
+  });
+
+  it('does NOT retry an EPHEMERAL mint — the same request would just 5xx again', async () => {
+    const calls = mockFetchSequence([VENDOR_500, TOKEN_OK]);
+    await expect(getSessionToken('einstein', { avatarId: 'a-1', voiceId: 'v-1', llmId: 'l-1' }))
+      .rejects.toThrow(/Anam API error \(500\)/);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('surfaces the retry status when the ephemeral mint also fails', async () => {
+    const calls = mockFetchSequence([VENDOR_500, VENDOR_500]);
+    await expect(getSessionToken('einstein', { personaId: `sick-${Date.now()}` }))
+      .rejects.toThrow(/Anam API error \(500\)/);
+    expect(calls).toHaveLength(2);
+  });
+
+  it('never substitutes away a persona that KNOWS this video for one that does not', async () => {
+    // Same capability rule as the stale-400 path: personaBaked.toolIds means the stored persona
+    // carries the video's knowledge tool; an ephemeral rebuild without tools would answer about
+    // the base character instead. A dead popup is bad; a wrong avatar quietly standing in for the
+    // right one is worse, because nobody reports it.
+    const calls = mockFetchSequence([VENDOR_500, TOKEN_OK]);
+    await expect(getSessionToken('einstein', {
+      personaId: `sick-${Date.now()}`,
+      personaBaked: { revision: 1, toolIds: ['tool-knows-video'] } as never,
+    })).rejects.toThrow(/Anam API error \(500\)/);
+    expect(calls).toHaveLength(1);
+  });
+});

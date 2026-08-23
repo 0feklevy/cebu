@@ -834,6 +834,33 @@ export async function getSessionToken(characterId: string, cfg?: AvatarPersonaCo
     }
   }
 
+  // A DEFINITE vendor 5xx on a stateful mint gets one ephemeral retry — the same substitution the
+  // stale-400 path below makes, for the same viewer-facing reason: the alternative is a dead
+  // popup. Guarded three ways:
+  //   • definite only — our own 'timeout'/'network_error' sentinels are AMBIGUOUS failures (the
+  //     vendor may have minted a token we never received), and this mint is not idempotent, so
+  //     retrying those can bill two sessions. A real HTTP 5xx response returned no token.
+  //   • stateful only — an ephemeral mint that 5xx'd would just 5xx again.
+  //   • same capability rule as the knownDeadReason path: never substitute a persona that knows
+  //     this video with one that does not.
+  if (!minted.ok && minted.status >= 500 && minted.detail !== 'timeout' && minted.detail !== 'network_error'
+      && personaConfig.personaId) {
+    const ephemeral = await buildPersonaConfig(id, { ...(cfg ?? {}), personaId: undefined }, key, resolveLlm);
+    const storedHasKnowledge = Boolean(cfg?.personaBaked?.toolIds?.length);
+    const ephemeralToolIds = Array.isArray(ephemeral.toolIds) ? ephemeral.toolIds : [];
+    const keepsKnowledge = !storedHasKnowledge || ephemeralToolIds.length > 0;
+    if (ephemeral.avatarId && ephemeral.voiceId && ephemeral.llmId && keepsKnowledge) {
+      logger.warn(
+        { status: minted.status, code: vendorCode(minted.detail), personaId: personaConfig.personaId },
+        '[Anam] stateful mint got a vendor 5xx — retrying once with an ephemeral persona',
+      );
+      minted = await mintWithToolFallback(key, ephemeral);
+      // Only the display id needs updating: everything else the reply uses was captured before
+      // the first mint, and the final legacy-claim check below reads `minted`, not the config.
+      if (minted.ok && typeof ephemeral.avatarId === 'string') resolvedAvatarId = ephemeral.avatarId;
+    }
+  }
+
   if (!minted.ok) {
     // The raw body is not logged: a persona-validation error quotes the request back, and the
     // request carries the system prompt and the video transcript.
