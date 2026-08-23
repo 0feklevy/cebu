@@ -30,6 +30,7 @@ import {
 import { DEFAULT_CHARACTER_ID } from './avatar/characters.js';
 import { bakedStateFor, hashTranscript } from './avatar/personaFingerprint.js';
 import { withTranscriptKnowledge } from './avatar/personaBake.js';
+import { sanitizeAvatarPersonaConfig } from './avatar/sanitizeAvatarConfig.js';
 
 type VideoRow = typeof video_files.$inferSelect;
 
@@ -161,7 +162,8 @@ function excerpt(transcript: string, max = 155): string {
  *  read-modify-write window against concurrent user saves). Returns the merged config. */
 async function patchAvatarConfig(projectId: string, patch: Partial<AvatarPersonaConfig>): Promise<AvatarPersonaConfig> {
   const row = await db.query.projects.findFirst({ where: eq(projects.id, projectId), columns: { avatar_config: true } });
-  const current = (row?.avatar_config as AvatarPersonaConfig | null) ?? {};
+  // Sanitize-on-read here too: this merge persists, so it heals stored poison (review B1).
+  const current = sanitizeAvatarPersonaConfig((row?.avatar_config as AvatarPersonaConfig | null) ?? {});
   const merged = { ...current, ...patch };
   await db.update(projects).set({ avatar_config: merged, updated_at: new Date() }).where(eq(projects.id, projectId));
   return merged;
