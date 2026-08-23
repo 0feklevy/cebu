@@ -218,6 +218,11 @@ export async function recordImageUsage(opts: {
       outputTokens: 0,
       costCents: perImage * (opts.count ?? 1),
       usedPersonalKey: false,
+      // WHAT was bought, not only what it cost (migration 073). Without these the row shows a
+      // number of cents and cannot answer "how many images" — and a spend surface that can only
+      // total money is unreconcilable against a vendor invoice, which itemises by unit.
+      quantity: opts.count ?? 1,
+      unit: 'images',
     });
   } catch (err) {
     logger.warn({ err, task: opts.task }, '[systemAi] image usage record failed');
