@@ -5,6 +5,7 @@
 // POST /v1/auth/session-token's `personaConfig` (override / ephemeral mode).
 import { CHARACTERS, DEFAULT_CHARACTER_ID } from './characters.js';
 import { logger } from '../../lib/logger.js';
+import { sanitizeAvatarPersonaConfig } from './sanitizeAvatarConfig.js';
 
 const ANAM_BASE = 'https://api.anam.ai/v1';
 
@@ -721,6 +722,10 @@ async function mintWithToolFallback(key: string, personaConfig: Record<string, u
 }
 
 export async function getSessionToken(characterId: string, cfg?: AvatarPersonaConfig, apiKey?: string): Promise<SessionInfo> {
+  // Second, independent seam for the same guard the controller applies: this function is also
+  // reached by jobs and scripts that read avatar_config themselves, and a wrong-typed field here
+  // was a statusless TypeError → a bare 500 (2026-08-23). Each seam is testable via its own entry.
+  cfg = cfg ? sanitizeAvatarPersonaConfig(cfg) : cfg;
   const id = CHARACTERS[characterId] ? characterId : DEFAULT_CHARACTER_ID;
   const voiceSensitivity = cfg?.voiceSensitivity ?? CHARACTERS[id]?.endOfSpeechSensitivity ?? 0.5;
   const key = apiKey || ANAM_ENV.ANAM_API_KEY;

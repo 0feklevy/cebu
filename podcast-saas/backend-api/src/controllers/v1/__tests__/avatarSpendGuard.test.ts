@@ -494,3 +494,36 @@ describe('/avatar/end is not a refund', () => {
     expect(res.statusCode).toBe(400);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+/**
+ * 2026-08-23 production incident, reproduction: a WRONG-TYPED value in `avatar_config`.
+ *
+ * `cfg?.systemPrompt?.trim()` protects against null and undefined — and against NOTHING else.
+ * A number or object in a string field makes `.trim` undefined and the call a TypeError: no
+ * status attached, so the start catch answered `500 Avatar session failed` in ~50ms, without the
+ * vendor ever being called — exactly the shape measured against production (the 500 arrived only
+ * ~55ms after the ghost-project 404, far under one vendor round trip).
+ */
+describe('a poisoned avatar_config is a config problem, never a 500', () => {
+  const POISONS: Array<[string, Record<string, unknown>]> = [
+    ['numeric systemPrompt', { systemPrompt: 123 }],
+    ['object avatarId', { avatarId: { nested: true } }],
+    ['numeric knowledge', { knowledge: 42 }],
+    ['array voiceId', { voiceId: ['v-1'] }],
+    ['numeric personaId', { personaId: 7 }],
+    ['object greeting', { greeting: { text: 'hi' } }],
+  ];
+
+  for (const [label, poison] of POISONS) {
+    it(`${label} still starts a session`, async () => {
+      served = { ...PROJECT_ROWS[PUBLIC_PROJECT], avatar_config: poison };
+
+      const res = await post('/api/v1/avatar/start', startBody());
+      // The load-bearing claim is "not a 500": garbage configuration must degrade to the default
+      // persona (the config's usable fields win where they exist), not take the avatar down.
+      expect(res.statusCode, JSON.stringify(res.json())).toBe(200);
+      expect(res.json().sessionToken).toBe('tok-1');
+    });
+  }
+});
