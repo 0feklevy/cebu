@@ -136,59 +136,52 @@ gate turns CRITICAL into an automatic rollback — so without the early refusal,
 would have rolled back a perfectly healthy deploy over a missing configuration value. `plan` now
 refuses BEFORE anything is deployed and names the variables (PR #81).
 
-## 🔴🔴 OWNER-RANKED TOP PRIORITY — every API token and every dollar, visible in admin
+## ✅ OWNER-RANKED TOP PRIORITY — DELIVERED overnight 2026-08-22→23
 
-Asked for directly on 2026-08-23, and ranked ABOVE routine debugging: *"מעקב צמוד על כל ה-API
-tokens וההוצאות שיש בכל המערכת ב-admin mode"*.
+Asked for directly: *"מעקב צמוד על כל ה-API tokens וההוצאות שיש בכל המערכת ב-admin mode"*, ranked
+above routine debugging.
 
 It came out of a real incident. Four ElevenLabs Auto Top-Up invoices fired on 22 August — $10 at
 14:43, $10 at 14:57, $10 at 16:14, $22 at 18:06, and a fifth $10 left Open at 00:27 on the 23rd.
-The owner first read them as ₪31.81 usage charges; they are $10 top-ups at a 3.181 shekel rate,
-which is why three of them look identical. **The spend itself was invisible in the product**, and
-that is the finding: the money left the account and nothing in FlowVid could say what bought it.
+Read at first as ₪31.81 usage charges; they are **$10 top-ups at a 3.181 shekel rate**, which is
+why three look identical. My first reading — one job billed three times — was wrong, and is
+recorded here so nobody re-runs it. **The spend itself was invisible in the product**, and that was
+the finding.
 
-### The gap, measured rather than assumed
+### What shipped
 
-`token_usage` is written from 14 modules and covers the LLM providers, dubbing, avatar and video
-generation. It does NOT cover the paths below — every one of them calls a vendor that charges, and
-none of them records a row:
-
-| path | what it spends on |
+| | |
 |---|---|
-| `podcast/audio/PodcastRenderer.ts` → `ElevenLabsDialogue` | **the whole episode's speech synthesis** — almost certainly the largest untracked line |
-| `podcast/audio/previewTurn.ts` | one synthesis per preview click, unlimited and unmetered |
-| `podcast/audio/revoiceTurn.ts` | one synthesis per re-voice click |
-| `simulation/GuidanceService.ts` → `GuidanceTTSService` | guidance narration |
-| `controllers/v1/audio.controller.ts` | on-demand TTS straight from a route |
-| `podcast/PodcastVoiceService.ts` callers | voice operations on the render and preview paths |
+| **The contract** (#105) | No module may reach a paid vendor without recording usage. Import-graph based, with today's gaps as a shrinking allow-list. |
+| **Units** (migration 073) | `quantity` + `unit` on `token_usage`. TTS bills per character, dubbing per source-minute, avatars per session-minute, sound effects per second, images per image. Forcing those into `input_tokens` makes a dashboard's arithmetic wrong invisibly. |
+| **Six paths metered** | renderer (#106) · preview + revoice (#107) · guidance (#109) · sound effects + corpus transcription (#110) · captions ×2 (#111) |
+| **The admin surface** (#114) | `GET /api/admin/v1/spend` and `/spend`, reporting quantities PER UNIT so the page can be put beside an invoice rather than merely believed. |
+| **The ceiling** (#115) | Account-wide, per provider, reading the ledger every path now writes to. Ships in SHADOW. |
 
-The preview and re-voice paths matter beyond the accounting: a creator auditioning voices spends
-real money per click, with no counter anywhere and no ceiling. That is the shape of the 22 August
-burn — the owner was testing dubbing voices that afternoon, which is when the top-ups fired.
+### The gap list went 13 → 1 → 7 → 0, and the shape of that matters
 
-### What "close tracking" has to mean here
+Six entries were closed by writing metering. **The rest were never gaps**: three were type-only
+imports the graph miscounted, three were metering through helpers whose names the pattern did not
+spell, the Anam group reaches no billable operation, and the voice library consumes a slot rather
+than credits.
 
-1. **No vendor call without a usage row.** A CONTRACT TEST that enumerates every module reaching a
-   paid vendor host and fails when one of them records nothing — with today's gaps as an explicit,
-   shrinking allow-list. Same shape as the env-var contract (#86/#94) and the typecheck ratchet
-   (#90), and for the same reason: a gate that demands perfection on day one gets skipped.
-2. **Characters and credits, not just tokens.** `token_usage` is shaped for LLM tokens. TTS bills
-   per CHARACTER and dubbing per source-MINUTE, and forcing them into `input_tokens` would make the
-   dashboard arithmetic wrong in a way nobody could see. The unit belongs in the row.
-3. **An admin surface that answers "where did the money go".** By provider, by day, by user, by
-   project — and it must reconcile against the vendor invoice, which is the only external check
-   that the tracking is complete.
-4. **A ceiling that covers every path.** `DUBBING_MONTHLY_BUDGET_CENTS` ($50 default, checked
-   BEFORE the vendor call) protects dubbing alone. TTS has no equivalent, which is why an
-   audition loop can spend without limit.
-5. **The vendor's own view, for reconciliation.** `backend-api/scripts/dubbing-audit.ts` (read-only)
-   lists every dubbing project in the workspace grouped by our `reference`, so duplicates are
-   visible. The equivalent for TTS is the character-usage endpoint, not yet wired.
+It **grew** once, from 1 to 7, when SDK detection went in — a module using `groq-sdk` or `openai`
+never types a hostname, so speech-to-text and image generation had been invisible rather than
+triaged. A ratchet that only ever shrinks is one that has stopped looking.
 
-### Owner action, worth doing tonight
+### What this still cannot do, said plainly
 
-Put a ceiling on ElevenLabs **Auto Top-Up**, or turn it off. Auto Top-Up is the amplifier: any
-runaway path spends without a natural stop, and the product-side ceiling only covers dubbing.
+* **The ceiling stops OUR product, not the vendor.** Auto Top-Up will keep loading money regardless.
+  Capping or disabling it at ElevenLabs remains an **owner action** and is the single most effective
+  thing left.
+* **`enforce` is opt-in.** `SPEND_CEILING_MODE` defaults to `shadow`, which logs and lets work
+  through. Watch the logged figures before turning it on — a ceiling set on a number nobody has
+  checked kills a render at 3am.
+* **Rates are estimates.** ElevenLabs credits, Groq audio-hours and sound-effect seconds all default
+  to deliberately pessimistic figures. The QUANTITIES are measured — Groq reports its own duration —
+  so once the real rates are set via `*_USD_PER_*`, past rows can be re-priced correctly.
+* **Attribution is thinner than the recording.** A mutation blanking the captions path's `projectId`
+  does not fail any test. That a charge is recorded is covered; who it is billed to is not.
 
 ## 🔴 A SECOND rawPreview LOG SITE — the class #91 closed has one more instance
 
