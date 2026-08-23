@@ -92,4 +92,39 @@ describe('the connect can never spin forever', () => {
     expect((globalThis.fetch as unknown as { mock: { calls: unknown[] } }).mock.calls.length)
       .toBeGreaterThan(before);
   });
+
+  it('a start fetch that stalls past the half-window is retried once — and the retry connects', async () => {
+    // 2026-08-23, live: on a presentation-venue network one start fetch stalled past the FULL
+    // 30s watchdog while the server was answering others in under a second, and the viewer got
+    // the timeout screen. The watchdog window now holds two attempts. The retry reuses the same
+    // startKey — the identity of the OPEN — so the server collapses it onto the same lease and
+    // a first-attempt mint nobody received simply expires.
+    const starts: Array<{ resolve: (b: Record<string, unknown>) => void; body: Record<string, unknown> }> = [];
+    globalThis.fetch = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
+      if (!String(url).includes('/api/v1/avatar/start')) return Promise.resolve(new Response('{}'));
+      const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
+      return new Promise<Response>((resolve, reject) => {
+        starts.push({ resolve: (b) => resolve(new Response(JSON.stringify(b), { status: 200, headers: { 'Content-Type': 'application/json' } })), body });
+        init?.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+      });
+    }) as unknown as typeof fetch;
+
+    render(<AvatarPopup open onClose={() => {}} projectId="p1" />);
+    await act(async () => { await Promise.resolve(); });
+    expect(starts.length).toBe(1);
+
+    // Half the watchdog passes with the first fetch still hanging…
+    await act(async () => { vi.advanceTimersByTime(15_000 + 50); await Promise.resolve(); });
+    expect(starts.length, 'no retry was attempted').toBe(2);
+    // …and the retry carries the SAME open identity, so the server dedupes instead of double-minting.
+    expect(starts[1].body.startKey).toBe(starts[0].body.startKey);
+
+    await act(async () => {
+      starts[1].resolve({ provider: 'anam', sessionToken: 'tok-retry', characterId: 'guide', characterSource: 'default' });
+      await Promise.resolve(); await Promise.resolve();
+    });
+    // The retry's token connects: no error screen, no timeout message.
+    expect(screen.queryByText(/taking longer than expected/i)).toBeNull();
+    expect(screen.queryByText(/couldn't start right now/i)).toBeNull();
+  });
 });

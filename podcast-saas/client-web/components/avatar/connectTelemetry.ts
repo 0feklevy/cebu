@@ -36,6 +36,8 @@ import { simTelemetry } from '../../lib/simTelemetry';
 export type ConnectPhase =
   /** The popup opened: t0, the first instant the viewer is waiting. */
   | 'popup-open'
+  /** The first start fetch stalled past its half-window and was retried (same open identity). */
+  | 'connect-retry'
   /** POST /api/v1/avatar/start came back; from here on every event carries its cid. */
   | 'token'
   /** The lazy @anam-ai/js-sdk chunk resolved. */

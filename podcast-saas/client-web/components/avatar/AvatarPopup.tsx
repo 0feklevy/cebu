@@ -97,7 +97,35 @@ export function AvatarPopup({ open, onClose, projectId, videoTitle, characterId 
     const startKey = `open-${trace.id}`;
     // Pass projectId so the server applies the video's saved persona config and
     // lets it choose the character; omit character_id so the config wins.
-    startAvatarSession(undefined, projectId, abort.signal, startKey)
+    // ONE HUNG FETCH MUST NOT SPEND THE WHOLE WATCHDOG. Observed live on 2026-08-23 (a
+    // presentation-venue network, the video streaming in parallel): a single start fetch stalled
+    // past 30s and the viewer got the timeout screen while the server was answering other
+    // requests in under a second. So the watchdog window now holds TWO attempts: if the first
+    // fetch produces nothing in half the window, it is aborted and retried once. The retry is
+    // safe by construction — `startKey` is the identity of the OPEN, so the server reuses the
+    // same concurrency lease, and a first-attempt mint nobody received simply expires unused.
+    const attemptStart = async (): Promise<Awaited<ReturnType<typeof startAvatarSession>>> => {
+      const half = new AbortController();
+      const relay = () => half.abort();
+      abort.signal.addEventListener('abort', relay);
+      const halfTimer = setTimeout(() => half.abort(), CONNECT_WATCHDOG_MS / 2);
+      try {
+        return await startAvatarSession(undefined, projectId, half.signal, startKey);
+      } catch (e) {
+        clearTimeout(halfTimer);
+        abort.signal.removeEventListener('abort', relay);
+        if (abort.signal.aborted || !isAbortError(e)) throw e;
+        // First attempt timed out on its half-window; one fresh try gets the rest.
+        trace.mark('connect-retry', { at: 'token-half-timeout' });
+        console.warn('[AvatarPopup] start stalled — retrying once with the same open identity');
+        return await startAvatarSession(undefined, projectId, abort.signal, startKey);
+      } finally {
+        clearTimeout(halfTimer);
+        abort.signal.removeEventListener('abort', relay);
+      }
+    };
+
+    attemptStart()
       .then((data) => {
         if (abort.signal.aborted) return;
         trace.join(data.correlationId);
