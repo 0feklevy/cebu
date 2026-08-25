@@ -45,6 +45,27 @@ needs the code AND the wiring, and removing either turns it red. An empty `APP_V
 as absent rather than reported as a blank version — `${APP_VERSION:-unknown}` means the variable is
 always present, so `??` would have accepted `''`.
 
+## 🔴 OPEN (owner-reported 2026-08-25) — "Save bridge…" / "Load bridge…" do nothing when clicked
+
+Owner: "are not clickables… like nothing happens". Queued BEHIND the action-recording research
+report by the owner's explicit ordering.
+
+**Leading hypothesis, to check first:** the two preset overlays in `SectionEditor.tsx` are
+rendered INLINE inside the editor modal's own DOM tree with `zIndex: 70`, while `ConfirmDialog` —
+the file's own precedent, used ten lines below — deliberately `createPortal`s to `document.body`.
+A `position: fixed` element inside an ancestor with a transform/filter is positioned relative to
+THAT ancestor, and z-index competes inside the parent stacking context — either can leave the
+dialog rendered invisibly behind/clipped by the modal. That matches the symptom exactly: the
+click WORKS (state flips), and nothing visible changes.
+
+Second check: the Save button is `disabled` until `section.sim_meta` exists — correct behaviour,
+but at `opacity: 0.55` it may simply read as "not clickable" with no explanation. If that is part
+of the report, the fix is feedback, not enablement.
+
+Fix shape: portal both overlays to `document.body` (the ConfirmDialog pattern), then a component
+test that CLICKING the button makes the dialog VISIBLE in the document — not merely that state
+changed, which is exactly the assertion that would have missed this.
+
 ## 🟡 OPEN BY DECISION — video is the one media type NOT deduplicated, and it is the largest
 
 Checked 2026-08-25 while wiring images and audio. Video is not an oversight; it is structurally
