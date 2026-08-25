@@ -18,6 +18,30 @@ Last updated: **2026-08-22**, during the post-sweep fix round.
 
 ---
 
+## 🟢 IN FLIGHT (2026-08-24) — media dedup foundation + the two owner features riding on it
+
+**PR #138** (`feat/media-dedup`, CI running): store bytes once however many projects reference
+them. Content identity = SHA-256 + byte-size taken in the same pass (truncation cannot mint an
+identity), HEAD-verified before any reuse; `UNIQUE(sha256, byte_size)`; **no ref_count, no
+trigger** — a plain FK means Postgres itself refuses to drop a referenced blob (a counter would
+drift on every cascade delete). Project deletion: content-addressed blobs are untouchable by
+design; path-owned objects referenced elsewhere are ADOPTED before the project row goes
+(`readyToDelete` enforces the crash-safe order); unknown reference state = KEEP. Delete chokepoint
+(`deleteWithFallback`) refuses `blobs/` keys so no current or future caller can destroy shared
+bytes. Migration 078 in BOTH registries, expand-only. 200 tests, 11 mutations killed.
+Also carries CLAUDE.md §3e (the avatar-outage post-mortem rule).
+
+**Owner features this is for (2026-08-24):** (a) `+` in Edit Section imports a simulation from
+another project without re-upload/re-store — `importEligibility.ts` (destination-first check
+order so the endpoint is not an existence oracle; unlisted needs a non-empty matching token);
+(b) **save bridge / load bridge** — save a section's bridge configuration (auto script + minimal
+UI + selection) under a label, load it onto a compatible sim elsewhere, skipping regeneration.
+UI map done (SectionEditor.tsx:1827-2330 is the sim column; `reuseBridgeScript` precedent at
+sections.controller.ts:1060). Bridge-model map in flight; design doc next.
+
+**Not built yet:** upload-path wiring to `claimBlob`, the `+` UI + endpoint, the orphan sweeper,
+saved_bridges (greenfield).
+
 ## ✅ RESOLVED (2026-08-22) — EVERY DUBBED LANGUAGE HAD AN AMERICAN ACCENT
 
 **The report, verbatim:** ElevenLabs dubbing "puts an American accent on all the other languages and
