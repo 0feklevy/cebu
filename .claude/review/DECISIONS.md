@@ -199,6 +199,42 @@ Three mutations, all caught (revert to raw concat: 4 failed; weaken uniqueness: 
 count proof: 2). Real-browser e2e green on regenerated v5 fixtures. **Residue: stored packages keep
 v4 bytes until `reinject-sim-gates.ts` runs — an ops step, listed below.**
 
+## 🔴 FIXED, NOT YET MERGED (owner-reported 2026-08-25, PR #146) — "Create podcast" was refused on EVERY project, for a reason that was never true
+
+Owner, from a live console: *"Could not start the podcast build (This project has no media to
+derive audio from.)"* — on a project full of media — plus three `409`s on `/audio-edition`.
+
+**One identifier.** The pre-flight query ran
+
+```ts
+db.query.video_files.findMany({ where: eq(projects.id, project.id) })   // ← projects, not video_files
+```
+
+a predicate naming a column from a table the query does not select from. Postgres refuses that
+outright — and the `.catch(() => [])` beside it turned the refusal into an empty list, which
+`editionRefusalReason([])` reads as "no media" and answers `409` with a sentence about the project.
+
+**So the podcast feature could never start, for anyone.** The refusal is a real product answer,
+working exactly as designed; it simply fired always. `video_files` HAS a `project_id`
+(`schema.ts:434`) — the fix is that one identifier.
+
+**The catch stays.** A transient database fault should not 500 a creator's Create-podcast click.
+What changes is that it can no longer hide a query that was wrong every single time.
+
+**Why the suite could not see it — the third instance of this shape in one day.**
+`audioEditionAccess.test.ts` mocked `video_files.findMany` **ignoring the `where` entirely**, and
+mocked `eq` as `vi.fn(() => ({}))` — **discarding its arguments**, so every predicate looked
+identical. The schema mock made it worse: `projects.id` and `video_files.project_id` were the bare
+strings `'id'` and `'project_id'`, which is exactly what made the wrong table indistinguishable
+from the right one. All three fixed; four new tests assert the PREDICATE, and the genuine "no
+media" refusal is pinned separately so the fix cannot delete a real product answer.
+Mutation-proven.
+
+**The three, together, are one finding.** The rAF gate's source-text assertions, `/sim-public`'s
+storage mock shaped to take the other branch, and this `where`-ignoring mock: each test was
+structurally incapable of observing the thing it named. That is worth a protocol rule, not three
+separate fixes.
+
 ## 🟡 OPEN BY DECISION — video is the one media type NOT deduplicated, and it is the largest
 
 Checked 2026-08-25 while wiring images and audio. Video is not an oversight; it is structurally
