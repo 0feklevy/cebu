@@ -1502,6 +1502,7 @@ export function SectionEditor({
             ? [
                 { selector: '[data-tour="sec-sim-prompt"]', title: 'Describe the moment', content: 'Tell the AI exactly what the simulation should show here. Below, toggle Simple UI and Auto Script to control the demo behavior.' },
                 { selector: '[data-tour="sec-sim-generate"]', title: 'Generate and preview', content: 'Generate the interactive bridge script with AI, then play it in the preview before saving.' },
+                { selector: '[data-tour="sec-sim-presets"]', title: 'Save and reuse a bridge', content: 'Once a setup works, save it under a name — then load it onto the same simulation in another video instead of setting it up again. It applies instantly when it fits, and regenerates from your saved settings when it does not.' },
               ]
             : []),
         ]
@@ -2295,7 +2296,7 @@ export function SectionEditor({
                     )}
 
                     {/* ── SAVED BRIDGES: name this setup; load one saved elsewhere ── */}
-                    <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                    <div data-tour="sec-sim-presets" style={{ display: 'flex', gap: 6, marginTop: 8 }}>
                       <button
                         onClick={() => { setPresetSaveOpen(true); setPresetLabel(''); setPresetError(null); }}
                         // A bridge worth saving exists once the section HAS a generated setup —
