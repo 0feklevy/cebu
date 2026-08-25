@@ -187,7 +187,20 @@ gate turns CRITICAL into an automatic rollback — so without the early refusal,
 would have rolled back a perfectly healthy deploy over a missing configuration value. `plan` now
 refuses BEFORE anything is deployed and names the variables (PR #81).
 
-## 🔴🔴 OWNER-RANKED TOP PRIORITY — every API token and every dollar, visible in admin
+## ✅ CLOSED IN CODE (2026-08-23/24) — every API token and every dollar, visible in admin
+
+**Status correction 2026-08-25, verified against code (a task-tracker audit re-flagged this as
+open — its grep used the wrong symbol names):** all six once-untracked paths now record —
+`recordTtsSpend`/`recordSttSpend` sit in `PodcastRenderer` (4 sites), `previewTurn`, `revoiceTurn`,
+`GuidanceService`, `audio.controller` (2 each); `PodcastVoiceService` is METERED_BY_CALLER. The
+enforcement is not a promise but a TEST: `spendContract.test.ts` walks the import graph from every
+paid vendor client and fails the build on any spend path with no recorder (`UNMETERED_TODAY = []`,
+with a stale-path guard). Admin gets `GET /api/admin/v1/spend` + the Spend page (per-unit
+quantities, never summed across units); the ceiling (`spendCeiling.ts`) ships in SHADOW.
+**Remaining, deliberate:** the enforce-mode switch (owner call, after shadow data) and the
+vendor-side Auto Top-Up cap (owner-only, at ElevenLabs).
+
+*The original write-up follows for the incident record.*
 
 Asked for directly on 2026-08-23, and ranked ABOVE routine debugging: *"מעקב צמוד על כל ה-API
 tokens וההוצאות שיש בכל המערכת ב-admin mode"*.
