@@ -282,14 +282,16 @@ block an `executorVersion` at serve time. The bootstrap itself stays inert regar
 | 3 | Serve-time bootstrap proven on an **old** revision and a **new** one, on both the local and cloud storage paths, with no rebuild and no stored-byte change | ✅ `sim-public.localParity.test.ts`, mutation-proven |
 | 4 | `isRevisionStatusPublic` is an explicit allow-list, so an unrecognised status is refused rather than served | 🔨 approved 2026-08-25, its own PR — see D8 for why the two-release order is not negotiable |
 | 5 | The scheduler is proven against a fake clock: pause, resume, rate, restart-on-seek, adapter seek both directions | ✅ `actionPlanScheduler.test.ts`, four mutations |
-| 6 | The full lifecycle is proven: single reset generation, READY/PAINTED/PLAN barriers, deadlines, fail-closed | ⬜ open |
+| 6 | The full lifecycle is proven: single reset generation, READY/PAINTED/PLAN barriers, deadlines, fail-closed | ✅ `actionPlanLifecycle.test.ts`, five mutations |
 | 7 | Idempotency states, lease recovery and the `sectionVersion` fence designed before the endpoint is written | ✅ `PHASE0-PROOF-STATE-AND-IDEMPOTENCY.md` |
 | 8 | M1–M5 have numbers | 🟡 M2's byte half measured (§3); M1, M3–M5 need a running stack or a browser |
 | 9 | **`generic click` does not appear in the supported matrix** | ✅ D5 |
 
-Criteria 1–3, 5, 7 and 9 are met. **The ADR was approved with 4, 6 and most of 8 still open**, on
-the owner's explicit ruling that none of them can move a §2 decision: 4 is a scheduled fix with its
-order already settled, 6 is a spike, and the remaining measurements are ergonomics.
+Criteria 1–3 and 5–9 are met, with 8 partial. **The ADR was approved while 4, 6 and most of 8 were
+still open**, on the owner's explicit ruling that none of them can move a §2 decision. 6 has since
+been met, and 4 is implemented in its own PR — the two-release order in D8 means it lands before
+any `proof_pending` exists. What remains is M1 and M3–M5, all of which need a running stack or a
+browser, and all of which are ergonomics.
 
 ---
 
