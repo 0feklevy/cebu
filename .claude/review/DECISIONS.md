@@ -18,6 +18,30 @@ Last updated: **2026-08-22**, during the post-sweep fix round.
 
 ---
 
+## ✅ SHIPPED (2026-08-25) — three features, one release
+
+**#139 + #138 merged; v0.2.0 dispatched with deploy.** Full detail in `HANDOFF-2026-08-25.md`,
+which is the next session's entry point — including the LIVE-vs-INERT table that governs how to
+reason about storage (dedup ships inert: `claimBlob` is called from nowhere).
+
+Verification beyond CI, because CI alone could not have caught these:
+- the two PRs were never tested against EACH OTHER by CI (each runs against main). A combined
+  merge tree was built by hand and the full nine-step `release:verify` run on it: **9/9 PASS**.
+- that run found two defects that would otherwise have failed inside the release gate, after the
+  merge: **079's missing `.rollback.sql`** (broke three live-DB migration tests) and an
+  **undocumented env var**. Both fixed; both now have structural guards
+  (`rollbackCoverage.test.ts`, and the env ratchet that caught the second).
+- **a self-audit of the night's own code found five more** — a bypass of the delete chokepoint, an
+  unreachable comparison, a documented flag nothing consulted, two dead exports (one with a false
+  claim in its comment), and a status notice that outlived its operation.
+- the five new routes were exercised on a **live local server**: all 401 (registered, auth
+  working), with a fake control route returning 404 to prove the distinction is real.
+
+**Root cause of why CI missed everything: `cancel-in-progress: true`.** The branch was pushed
+eight times in half an hour and **no CI round ever reached its test step** — every one was
+cancelled by the next push, while `gh pr checks` reported `pass=0 fail=0 pending=0`, which reads
+like "not started". Batch commits, push once, then wait.
+
 ## 🟢 IN FLIGHT (2026-08-24) — media dedup foundation + the two owner features riding on it
 
 **PR #138** (`feat/media-dedup`, CI running): store bytes once however many projects reference
