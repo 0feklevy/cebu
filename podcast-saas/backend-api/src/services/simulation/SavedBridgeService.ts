@@ -18,7 +18,7 @@
  *   the silently-dead section the whole design exists to prevent.
  */
 
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { saved_bridges, timeline_sections, simulations } from '../../db/schema.js';
 import { logger } from '../../lib/logger.js';
@@ -38,6 +38,17 @@ export interface SavedBridgeRow {
   ui_controls: SimUiSelection | null;
   has_artifact: boolean;
   source_simulation_id: string | null;
+  /** The source simulation's name, so a picker can say WHICH package a preset came from. */
+  source_simulation_name: string | null;
+  /**
+   * True when the source simulation still exists and can be imported alongside the preset.
+   *
+   * The point of the whole feature is loading "plucking a boid with one button" onto another
+   * video — and that only works if the boids package is there. When it is not, the preset alone
+   * is a recipe with nothing to cook: the UI must be able to offer to bring the simulation too,
+   * which since migration 080 costs no storage at all.
+   */
+  source_importable: boolean;
   created_at: Date;
   updated_at: Date;
 }
@@ -53,6 +64,8 @@ const toRow = (r: typeof saved_bridges.$inferSelect): SavedBridgeRow => ({
   ui_controls: readStoredUiControls(r.ui_controls) ?? null,
   has_artifact: typeof r.main_body === 'string' && r.main_body.length > 0,
   source_simulation_id: r.source_simulation_id,
+  source_simulation_name: null,
+  source_importable: false,
   created_at: r.created_at,
   updated_at: r.updated_at,
 });
@@ -133,13 +146,28 @@ export class SavedBridgeService {
     return toRow(row);
   }
 
-  /** The user's presets, newest first — the picker's data. */
+  /**
+   * The user's presets, newest first — the picker's data.
+   *
+   * Each row is resolved against its source simulation in ONE left join rather than a query per
+   * preset: the picker shows the whole list at once, and N+1 there is a visible stall on a list
+   * somebody opens to make a quick choice.
+   */
   async listForUser(userId: string): Promise<SavedBridgeRow[]> {
-    const rows = await db.query.saved_bridges.findMany({
-      where: eq(saved_bridges.created_by, userId),
-      orderBy: (t, { desc }) => [desc(t.created_at)],
-    });
-    return rows.map(toRow);
+    const rows = await db
+      .select({ preset: saved_bridges, simName: simulations.name })
+      .from(saved_bridges)
+      .leftJoin(simulations, eq(simulations.id, saved_bridges.source_simulation_id))
+      .where(eq(saved_bridges.created_by, userId))
+      .orderBy(desc(saved_bridges.created_at));
+
+    return rows.map(({ preset, simName }) => ({
+      ...toRow(preset),
+      source_simulation_name: simName ?? null,
+      // The simulation still exists (the FK is SET NULL, so a deleted one leaves a null id —
+      // and the join then finds nothing either way).
+      source_importable: !!preset.source_simulation_id && !!simName,
+    }));
   }
 
   async deleteForUser(userId: string, presetId: string): Promise<boolean> {

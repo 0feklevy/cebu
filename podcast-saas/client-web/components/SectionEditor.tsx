@@ -1031,6 +1031,37 @@ export function SectionEditor({
     }
   }, [projectId, section.id]);
 
+  /**
+   * Bring the preset's source simulation into THIS project, then point the section at it.
+   *
+   * The composition the feature was described as: save a bridge on one video, load it on another.
+   * Since migration 080 the bytes already exist and the import writes only rows — so the sentence
+   * on the button ("nothing is stored twice") is a fact about the system, not a reassurance.
+   */
+  const importPresetSimulation = useCallback(async (p: BridgePreset) => {
+    if (!p.source_simulation_id || presetBusy) return;
+    setPresetBusy(true);
+    setPresetError(null);
+    try {
+      const sim = await api.importSimulation(projectId, p.source_simulation_id);
+      onSimulationUpdate?.(sim);
+      // Point this section at what just arrived, so the load has something to apply to. Done
+      // through the normal section update rather than local state: the preset apply that follows
+      // reads the PERSISTED section.
+      const patched = await api.updateSection(projectId, section.id, { type: 'simulation', simulation_id: sim.id });
+      onUpdate(patched);
+      setSimId(sim.id);
+      setPresetNotice(`Brought in “${sim.name}” — nothing was stored twice.`);
+      // Re-judge against the simulation that now exists; the previous verdict was about a
+      // different one, or about none.
+      await handleSelectPreset(p);
+    } catch (e) {
+      setPresetError((e as Error).message || 'Could not bring in that simulation');
+    } finally {
+      setPresetBusy(false);
+    }
+  }, [presetBusy, projectId, section.id, onUpdate, onSimulationUpdate, handleSelectPreset]);
+
   const handleConfirmLoad = useCallback(async () => {
     const p = selectedPreset;
     if (!p || presetBusy) return;
@@ -3367,11 +3398,46 @@ export function SectionEditor({
                   <div style={{ fontSize: 13, fontWeight: 600 }}>{p.label}</div>
                   <div style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', marginTop: 2 }}>
                     {p.has_artifact ? 'script + settings' : 'settings only'}
+                    {/* WHICH package it was built against. A preset's label describes what it
+                        does ("plucking a boid with one button"); this says what it does it TO,
+                        which is what decides whether it will fit here. */}
+                    {p.source_simulation_name ? ` · from “${p.source_simulation_name}”` : ''}
                     {p.sim_prompt ? ` · ${p.sim_prompt.slice(0, 60)}${p.sim_prompt.length > 60 ? '…' : ''}` : ''}
                   </div>
                 </button>
               ))}
             </div>
+            {/* THE PRESET'S PACKAGE, WHEN THIS PROJECT DOES NOT HAVE IT.
+                A preset is a configuration FOR a simulation. Loading "plucking a boid with one
+                button" onto a video with no boids package leaves the recipe with nothing to cook —
+                so when the source is importable and absent here, offer to bring it. Since
+                migration 080 that costs no storage: the bytes already exist and the import writes
+                only rows. */}
+            {selectedPreset?.source_importable
+              && !simulations.some(sim => sim.id === selectedPreset.source_simulation_id) && (
+              <div style={{ marginTop: 10, padding: 8, borderRadius: 8, border: '1px solid hsl(var(--border))' }}>
+                <div style={{ fontSize: 12, marginBottom: 6 }}>
+                  This preset was built for <strong>{selectedPreset.source_simulation_name}</strong>, which
+                  this project does not have.
+                </div>
+                <button
+                  type="button"
+                  onClick={() => importPresetSimulation(selectedPreset)}
+                  disabled={presetBusy}
+                  style={{
+                    height: 28, padding: '0 10px', borderRadius: 6, border: '1px solid #d97706',
+                    backgroundColor: 'transparent', color: '#b45309', fontSize: 12, fontWeight: 600,
+                    cursor: presetBusy ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  {presetBusy ? 'Bringing it in…' : 'Bring the simulation too'}
+                </button>
+                <span style={{ marginLeft: 8, fontSize: 11, color: 'hsl(var(--muted-foreground))' }}>
+                  nothing is stored twice
+                </span>
+              </div>
+            )}
+
             {selectedPreset && (
               <div role="status" style={{ marginTop: 10, fontSize: 12, color: 'hsl(var(--muted-foreground))', minHeight: 18 }}>
                 {fitLoading

@@ -569,6 +569,14 @@ export interface BridgePreset {
   /** True when the preset carries a generated script that CAN be pasted instantly when it fits. */
   has_artifact: boolean;
   source_simulation_id: string | null;
+  /** The package this preset was built against, so a picker can name it. */
+  source_simulation_name: string | null;
+  /**
+   * The source simulation still exists and can be imported alongside the preset. Loading
+   * "plucking a boid with one button" onto another video only works if the boids package is
+   * there — and since migration 080 bringing it costs no storage.
+   */
+  source_importable: boolean;
   created_at: string;
   updated_at: string;
 }
