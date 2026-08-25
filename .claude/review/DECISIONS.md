@@ -1276,6 +1276,17 @@ specifically the `#id` and `[name]` branches that run before it; and `canary_pas
 OMISSION from `NEVER_PUBLISHED_STATUSES` rather than by an affirmative allow-list entry — a new
 proof flow relying on that status would be relying on a doc comment.
 
+## 📋 PR #141 (opened 2026-08-25) — action-recording Phase 0
+
+`feat/action-recording-phase0`, seven commits, **zero behaviour change** — docs, fixtures and tests
+only. Carries the deep review (§ the entry further down), the owner-approved ADR, the nine-shape
+golden fixture package, three mutation-proven test files, and M2's measured byte half. Phase 0 exit
+criteria 6 of 9. Belongs to the action-recording round opened by the research report.
+
+The two live defects it uncovered — `ui_hide` silently failing, and the publicly-served
+`canary_passed` — are **not** in it. They are 🔴 entries below with their own PRs, deliberately, so
+a research branch does not carry viewer- and serving-behaviour changes.
+
 ## ✅ OWNER-APPROVED (2026-08-25) — the action-recording ADR, and four rulings with it
 
 Approved in one pass, after the evidence below was measured rather than argued. Recording the
