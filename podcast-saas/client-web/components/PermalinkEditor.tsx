@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Check, Copy, ExternalLink, Globe, Loader2, Trash2 } from 'lucide-react';
 import { api } from '../lib/api';
 import type { PermalinkInfo } from 'shared/src/generated/client-v1';
+import { ProjectShareLinks } from './ProjectShareLinks';
 
 /**
  * WordPress-style permalink editor (migration 043). The creator picks the URL
@@ -207,6 +208,16 @@ export function PermalinkEditor({ contentType, contentId, visibility, onMakePubl
         <p className="text-[11px] leading-relaxed text-muted-foreground">
           Publishing makes this video public at the address above.
         </p>
+      )}
+
+      {/* EVERY public address this project has, together — and the podcast's build button on the
+          same row as its link. The three URLs were previously offered from three unrelated places
+          and the audio one from nowhere at all, which is what made them confusing. Shown only
+          once the address actually works: a link that 404s gets shared before it gets opened. */}
+      {/* Projects only: a playlist has no audio edition and no library mini-site, and offering
+          either would be a link to nothing. */}
+      {contentType === 'project' && savedSlug && info.permalinkUrl && !needsPublic && !dirty && (
+        <ProjectShareLinks projectId={contentId} permalinkUrl={info.permalinkUrl} />
       )}
 
       {needsPublic && !dirty && savedSlug && (

@@ -556,6 +556,23 @@ export interface AudioFile {
  * need the narrow union keep going through `getStoredSelection`, which sanitizes untrusted JSON.
  */
 /**
+ * The podcast-style audio edition derived from a project's video (P3-B / A2.1).
+ *
+ * ONE SHAPE FOR EVERY STATUS, deliberately — the same route serves the creator polling a build
+ * and the listener opening `/{slug}/audio`, and a route that changes shape by caller is a route
+ * with two contracts.
+ */
+export interface AudioEditionStatus {
+  status: 'none' | 'queued' | 'building' | 'ready' | 'failed' | string;
+  /** Present when a build failed; the creator's explanation. */
+  error: string | null;
+  /** A short-lived signed URL. Null until `ready`. */
+  audio_url: string | null;
+  duration_ms: number | null;
+  chapters: { startMs: number; endMs: number; title: string }[];
+}
+
+/**
  * A saved bridge preset — "save bridge" (backend migration 079). The public shape only:
  * the script body itself never crosses to the client; the server pastes it server-side.
  */
@@ -1654,6 +1671,29 @@ export class ClientV1Api {
   }
 
   // ── Saved bridge presets ("save bridge", 079) ──────────────────────────────────────────────
+
+  /**
+   * The audio edition's state. Same route the listener's page reads, so a creator polling a build
+   * and a listener opening the link can never see different truths.
+   */
+  getAudioEdition(projectId: string, language?: string): Promise<AudioEditionStatus> {
+    const q = language ? `?language=${encodeURIComponent(language)}` : '';
+    return this.request(`/api/v1/projects/${projectId}/audio-edition${q}`);
+  }
+
+  /**
+   * Start deriving the audio edition. Answers 202 (accepted, not done) — poll `getAudioEdition`.
+   *
+   * A 409 is a REFUSAL WITH A REASON, not a failure: the server checks up front that there is
+   * playable audio to derive from, rather than queueing work that would fail two minutes later
+   * and leave the creator guessing that the feature is broken.
+   */
+  buildAudioEdition(projectId: string, opts: { language?: string | null; force?: boolean } = {}): Promise<{ status: string; language: string | null }> {
+    return this.request(`/api/v1/projects/${projectId}/audio-edition`, {
+      method: 'POST',
+      body: JSON.stringify({ language: opts.language ?? null, force: opts.force === true }),
+    });
+  }
 
   listBridgePresets(): Promise<{ presets: BridgePreset[] }> {
     return this.request(`/api/v1/bridge-presets`);
