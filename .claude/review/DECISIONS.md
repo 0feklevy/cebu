@@ -452,8 +452,15 @@ migration 071, the pure rules, the ffmpeg pass, the service, the durable job and
 is exactly as public as its project — re-derived per request from `requireProjectAccess`, never read
 off the edition row — with the artifact under a PRIVATE `editions/` prefix, because `podcasts/` being
 public is what made a customer's brief world-readable (security-016). 31 mutations, all caught.
-**Remaining:** A2.2 `/{slug}/audio` landing → A2.3 Media Session + PWA (the locked-phone answer) →
-A2.4 Raise Your Hand. **A2.5 "Call It" is deferred by its own design** until A2.4 produces real
+**Corrected 2026-08-25 (task-tracker audit — the ordering below was stale):**
+- **A2.2 `/{slug}/audio` landing — BUILT, verified in code:** `client-web/app/[slug]/audio/page.tsx`
+  (ISR, `getAudioEditionPage`, `AudioEditionPlayer`, reserved-slug guard) + three test files. No
+  ledger line had recorded the closure.
+- **A2.4 Raise Your Hand — HALF-built, the false-green shape:** backend fully live
+  (`audioEdition.controller.ts:243,286`, `ListenerQuestionService`, migration 072) but **no client
+  affordance exists** — `AudioEditionPlayer` has no question UI, so no listener can reach the
+  endpoint. Smallest next step: one client control wired to the live route.
+**Remaining:** A2.3 Media Session + PWA → A2.4's CLIENT half. **A2.5 "Call It" stays deferred** until A2.4 produces real
 listener-question data proving demand — that is a decision already recorded, not an omission.
 
 ### WAVE 4 — CROP  ·  owner: footage  ·  blocked at the first step
@@ -531,22 +538,22 @@ recommendation on each:
    an iframe, which is exactly the case the path-segment token was designed for; a per-request
    project lookup would put a DB query on every asset of every sim. Cost: revoking a share keeps
    already-minted tokens alive until expiry (≤8 days) — same trade already accepted for HLS.
-2. **`podcasts/` holds user SOURCE DOCUMENTS on a public prefix.** *Recommendation: move the
-   documents to a private prefix (`podcast-sources/`), keep the immutable studio clips public.*
-   The prefix was chosen for clips; documents were added later without revisiting it. Moving new
-   writes is one key-builder change; existing objects get a small backfill move.
+2. ~~**`podcasts/` holds user SOURCE DOCUMENTS on a public prefix.**~~ **ALREADY SHIPPED (PR
+   #74, verified in code 2026-08-25):** `podcast.controller.ts:83` writes to
+   `PODCAST_SOURCE_PREFIX = 'podcast-sources'` (private). No ruling needed. (The already-shared
+   URL from before the fix is still the owner-action item — delete + re-upload.)
 3. **`security-001` / STEP 3+4 — when to cut the public bucket over to proxied URLs.**
    *Recommendation: schedule it as its own round, after the C1 gate lands.* It changes URLs people
    already hold (the four ordered landings are documented in
    `supabasePublicMedia.guard.test.ts`); a naive cutover is an outage. The ⚪ "revoked shares keep
    working" acceptance stays accepted until this ships.
-4. **`security-012` — the gate returns TRUE on a DB error (availability over confidentiality).**
-   *Recommendation: ratify it, but bound it* — fail open only for keys whose project was public at
-   last successful check (a tiny TTL cache), fail closed for never-seen keys. Full fail-closed
-   turns every Supabase blip into a sitewide media outage; full fail-open is what stands today.
+4. ~~**`security-012` — the gate returns TRUE on a DB error.**~~ **ALREADY IMPLEMENTED as the
+   bounded version (PR #75, verified in code 2026-08-25):** `mediaAccess.ts:127-146` — TTL cache,
+   fail-open only for keys last confirmed public, fail-closed for never-seen keys; the in-code
+   comment reads "BOUNDED FAIL-OPEN (security-012). Ratified, not removed." This section
+   previously described the OLD unbounded state — it postdated the fix and missed it.
 
-Say "approve C1 as recommended" (or amend any of the four) and the next session implements it as
-one gate.
+**Only #1 (sim-public scoped tokens) and #3 (bucket cutover scheduling) still need your ruling.**
 
 ## 🔵 Blocked on you — materials and approvals (unchanged, restated once)
 
@@ -767,6 +774,7 @@ The two dead Trigger.dev files that made this look done are deleted (#95).
   though `inputs.deploy` was true and the deploy succeeded — v0.1.40–43 all sit as Drafts while
   v0.1.39 published fine. Cosmetic (tag+draft exist), but the `if:` on the publish job deserves a
   look before the next release; publish v0.1.43's draft by hand or fix the condition.
+  **FIXED (#136, verified 2026-08-25): v0.1.45 published as Latest — the first post-fix release.**
 * ✅ **PROD INCIDENT RESOLVED 2026-08-23 ~14:20Z: /avatar/start 500 → 200 in v0.1.43.** Root: PERSONA_MAP never learned the 'guide' default (undefined ?? undefined → entry.personaId TypeError, statusless, pre-vendor). Fixed #127 (+ sanitizer class-defense), verified live: real sessionToken minted on the reported page; both pages 200. Full debrief: `INCIDENT-2026-08-23-avatar.md` — **MECHANISM CRACKED + reproduced: wrong-typed avatar_config field → statusless TypeError → bare 500 pre-vendor; fix = #127 (sanitize at both seams); v0.1.42 (diagnostic+admin key) deploying, v0.1.43 (the fix) right behind**
 
   * v0.1.42 did NOT deploy: candidate smoke failed one step past #103's cd fix —
