@@ -198,7 +198,7 @@ These are Phase-0 **measurements**, not opinions. Each needs a number before the
 |---|---|---|
 | M1 | p95 latency of isolated fresh-document proof | whether Apply is synchronous or returns `202` + status URL |
 | M2 | dormant + active bootstrap cost on a low-end device | whether capture code is inlined or lazily fetched after ARM — **byte half measured, see below** |
-| M3 | draft-recording TTL and deletion policy on section delete | the retention row in the privacy section |
+| M3 | draft-recording TTL and deletion policy on section delete | the retention row in the privacy section — **deletion half settled, see below** |
 | M4 | `reload-document` cost, prewarm viability, re-entry latency | whether D3's restart is acceptable UX or needs pooling |
 | M5 | the source-content hash that excludes the platform bridge | whether a future single rebase is possible instead of a hard 409 |
 
@@ -225,6 +225,21 @@ reply. Anything beyond that loads same-origin *after* ARM, which only an authori
 
 The device half of M2 — handler cost at 60fps on low-end hardware — still needs a browser and is
 not measured here.
+
+### M3, deletion half — settled by the schema, and the TTL is now bounded rather than open
+
+`PHASE0-PROOF-STATE-AND-IDEMPOTENCY.md` settles the deletion policy without needing a measurement:
+`sim_action_recordings` carries `section_id … ON DELETE CASCADE`, so deleting a section takes its
+recordings with it, and `source_revision_id` deliberately carries **no** FK because
+`RevisionService.gc()` deletes those rows and now has a production caller.
+
+What is left is one number — how long an *unapplied* draft survives — and it is no longer
+unbounded. `mustRetainBytes('proof_pending')` is false, so an older image's gc sweep collects an
+in-proof candidate once it passes `GC_MIN_AGE_MS` (1h). The draft TTL therefore has to sit inside
+that window, which also makes it an input to M1: **proof must complete well inside the gc grace, or
+the candidate it is proving is swept out from under it.**
+
+That is a decision for the owner rather than a measurement, and it is deliberately not taken here.
 
 ---
 
