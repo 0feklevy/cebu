@@ -1,0 +1,138 @@
+/*
+ * Import-simulation gallery — the parts the Extended Library stylesheet does not already provide.
+ *
+ * Everything structural (the modal shell, the filter bar, the grid, the card frame and its
+ * preview box) is reused verbatim from `avatar/avatar.css`, deliberately: two surfaces that look
+ * the same should not be two stylesheets that drift. What is here is only what this dialog adds —
+ * selection state, the footer, and the full-screen preview.
+ *
+ * The palette is taken from the gallery it sits beside rather than from the app tokens, because
+ * `.avatar-gallery__panel` paints its own light surface (#f6f7f9) regardless of theme; a token
+ * colour here would be the one element that inverts.
+ */
+
+/* ── Card selection ─────────────────────────────────────────────────────────── */
+
+.import-sim-card {
+  cursor: pointer;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.import-sim-card:hover { border-color: #c4c9d4; }
+
+.import-sim-card--on {
+  border-color: #6366f1;
+  /* Ring rather than a thicker border: a border change would resize the card and reflow the grid
+     every time a selection is toggled. */
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.35);
+}
+
+/* The whole body is the label, so the pointer target is the card, not the 14px box. */
+.import-sim-card__pick {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  cursor: pointer;
+  margin: 0;
+}
+
+.import-sim-card__box {
+  margin-top: 2px;
+  width: 15px;
+  height: 15px;
+  accent-color: #6366f1;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.import-sim-card__text { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1; }
+
+.import-sim-card__name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1a2330;
+  /* Simulation names are author-written and can be long; the grid column must not stretch. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Footer ─────────────────────────────────────────────────────────────────── */
+
+.import-sim__footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 18px;
+  border-top: 1px solid #e2e6ec;
+  background: #fff;
+}
+
+/* Messages take the free space so the two buttons stay pinned right. */
+.import-sim__error,
+.import-sim__progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  flex: 1;
+  min-width: 0;
+}
+.import-sim__error { color: #dc2626; }
+.import-sim__progress { color: #059669; }
+
+/* When neither message is present, this pushes the buttons right on its own. */
+.import-sim__footer > .avatar-g-create { margin-left: auto; }
+.import-sim__error ~ .avatar-g-create,
+.import-sim__progress ~ .avatar-g-create { margin-left: 0; }
+
+.import-sim__go {
+  height: 32px;
+  padding: 0 16px;
+  border-radius: 8px;
+  border: none;
+  background: #6366f1;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.import-sim__go:hover:not(:disabled) { background: #4f46e5; }
+.import-sim__go:disabled { opacity: 0.5; cursor: default; }
+
+/* ── Full-screen preview ────────────────────────────────────────────────────── */
+
+.import-sim-fs {
+  position: fixed;
+  inset: 0;
+  /* Above .avatar-gallery (1000) — it opens from inside that surface. */
+  z-index: 1100;
+  background: rgba(6, 8, 14, 0.9);
+  display: flex;
+  flex-direction: column;
+}
+
+.import-sim-fs__bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: #fff;
+  border-bottom: 1px solid #e2e6ec;
+}
+
+.import-sim-fs__name { font-size: 14px; font-weight: 700; color: #1a2330; }
+.import-sim-fs__project { font-size: 12px; color: #8a94a6; margin-right: auto; }
+
+.import-sim-fs__stage {
+  flex: 1;
+  min-height: 0;
+  background: #fff;
+  overflow: hidden;
+}
+
+@media (max-width: 640px) {
+  .import-sim-fs__bar { padding: 8px 10px; gap: 8px; }
+  .import-sim-fs__project { display: none; }
+  .import-sim__footer { padding: 10px 12px; gap: 8px; }
+}

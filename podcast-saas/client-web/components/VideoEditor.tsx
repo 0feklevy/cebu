@@ -1513,9 +1513,12 @@ export function VideoEditor({ projectId }: Props) {
                 {showSimImport && (
                   <ImportSimulationDialog
                     projectId={projectId}
-                    onImported={(sim) => {
-                      setSimulations(prev => [...prev, sim]);
-                      setShowSimImport(false);
+                    onImported={(sims) => {
+                      // The dialog now imports a SELECTION, and it reports what actually landed —
+                      // on a partial failure it keeps itself open with the survivors still
+                      // selected, so closing here would strand a retry the author can no longer
+                      // reach. Closing is the dialog's own Cancel/✕, or a clean full success.
+                      setSimulations(prev => [...prev, ...sims]);
                     }}
                     onClose={() => setShowSimImport(false)}
                   />
