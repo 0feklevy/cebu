@@ -6,6 +6,8 @@ import { db } from '../../db/index.js';
 import { simulations, timeline_sections } from '../../db/schema.js';
 import { eq, and } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
+import { SimulationImportService } from '../../services/simulation/SimulationImportService.js';
+import { z as zImport } from 'zod';
 import { editableProject, type CollabUser } from '../../services/collabAccess.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { tooLargeMessage, UPLOAD_MAX_BYTES } from '../../services/security/uploadLimits.js';
@@ -149,6 +151,34 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
           ? (r.entry_file.startsWith('http') ? r.entry_file : storage.getSimPublicUrl(r.entry_file))
           : r.entry_file,
       })));
+    },
+  );
+
+  // POST /api/v1/projects/:id/simulations/import — the `+` that pulls a simulation in from
+  // another project WITHOUT re-uploading: a server-side copy of the served content, then a fresh
+  // row. Eligibility (importEligibility.ts): destination-editable first, 404-for-private-source,
+  // share-token honoured for unlisted. The service refuses a still-processing source with 409.
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/projects/:id/simulations/import',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const Body = zImport.object({
+        simulation_id: zImport.string().uuid(),
+        share_token: zImport.string().min(1).max(200).optional(),
+      });
+      const parsed = Body.safeParse(request.body ?? {});
+      if (!parsed.success) return reply.code(400).send({ message: 'simulation_id (uuid) is required' });
+
+      const svc = new SimulationImportService(getStorageAdapter());
+      const result = await svc.importSimulation({
+        destProjectId: request.params.id,
+        sourceSimulationId: parsed.data.simulation_id,
+        who: { uid: user.id, shareToken: parsed.data.share_token ?? null },
+        user,
+      });
+      if (!result.ok) return reply.code(result.status).send({ message: result.message });
+      return reply.code(201).send(result.simulation);
     },
   );
 
