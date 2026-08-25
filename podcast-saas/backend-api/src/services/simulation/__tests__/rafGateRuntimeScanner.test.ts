@@ -88,8 +88,15 @@ let scanned: ScannedControl[];
  */
 let scriptErrors: string[];
 
-/** Drive the scanner exactly as the editor does, and wait for the reply it posts. */
-function runScan(w: Window): Promise<ScannedControl[]> {
+/**
+ * Drive the scanner exactly as the editor does, and wait for the reply it posts.
+ *
+ * `Window & typeof globalThis` rather than `Window`: the constructors (`MessageEvent`, `Event`)
+ * live on the global scope, not on the `Window` interface, and this must construct events INSIDE
+ * the jsdom realm — an event built from the test's own realm would fail the gate's identity checks
+ * for a reason that has nothing to do with the code under test.
+ */
+function runScan(w: Window & typeof globalThis): Promise<ScannedControl[]> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('listSimControls never answered')), 4000);
     w.addEventListener('message', function onMsg(e: MessageEvent) {

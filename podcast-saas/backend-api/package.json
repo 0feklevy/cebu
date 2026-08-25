@@ -58,6 +58,7 @@
     "@electric-sql/pglite": "^0.5.1",
     "@eslint/js": "^10.0.1",
     "@types/adm-zip": "^0.5.5",
+    "@types/jsdom": "^30.0.0",
     "@types/node": "^22.0.0",
     "@vitest/coverage-v8": "^4.1.7",
     "drizzle-kit": "^0.22.8",

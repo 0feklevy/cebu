@@ -32,7 +32,9 @@ export class PDFIngester {
     if (!doclingUrl) throw new Error('DOCLING_URL not configured');
 
     const form = new FormData();
-    form.append('file', new Blob([fileBuffer], { type: 'application/pdf' }), filename);
+    // `new Uint8Array(...)` — Buffer<ArrayBufferLike> does not satisfy DOM's BlobPart, which the
+    // compiler resolves once lib.dom enters the program. Byte-identical at runtime.
+    form.append('file', new Blob([new Uint8Array(fileBuffer)], { type: 'application/pdf' }), filename);
 
     const res = await fetch(`${doclingUrl}/convert`, {
       method: 'POST',
@@ -49,7 +51,7 @@ export class PDFIngester {
 
     // LlamaParse upload + poll pattern
     const form = new FormData();
-    form.append('file', new Blob([fileBuffer], { type: 'application/pdf' }), filename);
+    form.append('file', new Blob([new Uint8Array(fileBuffer)], { type: 'application/pdf' }), filename);
 
     const uploadRes = await fetch('https://api.cloud.llamaindex.ai/api/parsing/upload', {
       method: 'POST',
