@@ -1,0 +1,202 @@
+/**
+ * "Save bridge" / "load bridge" — the HTTP surface (migration 079).
+ *
+ * Four routes, and a deliberate asymmetry in what they do:
+ *
+ *   save / list / delete / fit  — plain CRUD plus a read-only judgement.
+ *   apply                       — the ARTIFACT path only. It re-runs the judgement itself and
+ *                                 answers 409 with the verdict when the paste is not proven safe,
+ *                                 and the CLIENT then falls back to the existing generate endpoint
+ *                                 carrying the preset's recipe. The recipe path deliberately has
+ *                                 no server-side route of its own: generation already exists, is
+ *                                 already streamed, already validated — a second door into it
+ *                                 would be a second place for its rules to drift.
+ *
+ * Ownership model: presets are USER-owned (crossing projects is their purpose), so list/delete
+ * check only identity. Save and apply also require the PROJECT to be editable — they read from or
+ * write into a project's section, and visibility of a preset must never imply writability of a
+ * project (same separation importEligibility.ts enforces for media imports).
+ */
+
+import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import { z } from 'zod';
+import { and, eq } from 'drizzle-orm';
+import { db } from '../../db/index.js';
+import { timeline_sections, simulations } from '../../db/schema.js';
+import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
+import { editableProject } from '../../services/collabAccess.js';
+import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
+import { SavedBridgeService } from '../../services/simulation/SavedBridgeService.js';
+import { SimulationService } from '../../services/simulation/SimulationService.js';
+import { LLMService } from '../../services/llm/LLMService.js';
+import { ApiKeyService } from '../../services/secrets/ApiKeyService.js';
+import { UsageTrackingService } from '../../services/usage/UsageTrackingService.js';
+import { logger } from '../../lib/logger.js';
+
+const SaveBody = z.object({ label: z.string().trim().min(1).max(120) });
+
+let _svc: SavedBridgeService | undefined;
+const svc = () => (_svc ??= new SavedBridgeService(getStorageAdapter()));
+let _sim: SimulationService | undefined;
+// Same wiring as sections.controller: the apply republishes a package, which needs the full
+// service — storage AND the LLM stack (unused on this path, required by the constructor).
+const sim = () => (_sim ??= new SimulationService(getStorageAdapter(), new LLMService(new ApiKeyService(), new UsageTrackingService())));
+
+export async function registerBridgePresetRoutes(app: FastifyInstance): Promise<void> {
+  // ── The user's presets ──────────────────────────────────────────────────────────────────────
+  app.get(
+    '/api/v1/bridge-presets',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const presets = await svc().listForUser(request.dbUser!.id);
+      return reply.send({ presets });
+    },
+  );
+
+  app.delete<{ Params: { presetId: string } }>(
+    '/api/v1/bridge-presets/:presetId',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply) => {
+      const gone = await svc().deleteForUser(request.dbUser!.id, request.params.presetId);
+      // 404 either way when it is not the caller's: a preset id must not be probeable.
+      return gone ? reply.send({ ok: true }) : reply.code(404).send({ message: 'Preset not found' });
+    },
+  );
+
+  // ── Save: snapshot THIS section's bridge setup under a label ───────────────────────────────
+  app.post<{ Params: { id: string; sectionId: string } }>(
+    '/api/v1/projects/:id/sections/:sectionId/bridge-presets',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply) => {
+      const user = request.dbUser!;
+      const project = await editableProject(request.params.id, user);
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+
+      const parsed = SaveBody.safeParse(request.body ?? {});
+      if (!parsed.success) return reply.code(400).send({ message: 'A label between 1 and 120 characters is required' });
+
+      try {
+        const preset = await svc().saveFromSection({
+          userId: user.id,
+          projectId: project.id,
+          sectionId: request.params.sectionId,
+          label: parsed.data.label,
+        });
+        return reply.code(201).send({ preset });
+      } catch (e) {
+        const status = (e as { status?: number }).status ?? 500;
+        if (status >= 500) {
+          logger.error({ evt: 'bridge_preset_save_failed', err: (e as Error).name }, '[BridgePreset] save failed');
+          return reply.code(500).send({ message: 'Could not save this bridge' });
+        }
+        return reply.code(status).send({ message: (e as Error).message });
+      }
+    },
+  );
+
+  // ── Fit: which path WOULD a load take. Read-only — the Load button's tooltip ───────────────
+  app.get<{ Params: { id: string; sectionId: string; presetId: string } }>(
+    '/api/v1/projects/:id/sections/:sectionId/bridge-presets/:presetId/fit',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply) => {
+      const user = request.dbUser!;
+      const project = await editableProject(request.params.id, user);
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+
+      const section = await db.query.timeline_sections.findFirst({
+        where: and(eq(timeline_sections.id, request.params.sectionId), eq(timeline_sections.project_id, project.id)),
+      });
+      if (!section?.simulation_id) return reply.code(400).send({ message: 'This section has no simulation to load onto' });
+
+      const fit = await svc().judgeFit({
+        userId: user.id,
+        presetId: request.params.presetId,
+        simulationId: section.simulation_id,
+      });
+      if (!fit) return reply.code(404).send({ message: 'Preset not found' });
+      return reply.send({ path: fit.verdict.path, description: fit.description, verdict: fit.verdict });
+    },
+  );
+
+  // ── Apply: the ARTIFACT path, and only when re-verification proves it ──────────────────────
+  app.post<{ Params: { id: string; sectionId: string; presetId: string } }>(
+    '/api/v1/projects/:id/sections/:sectionId/bridge-presets/:presetId/apply',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply) => {
+      const user = request.dbUser!;
+      const project = await editableProject(request.params.id, user);
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+
+      const section = await db.query.timeline_sections.findFirst({
+        where: and(eq(timeline_sections.id, request.params.sectionId), eq(timeline_sections.project_id, project.id)),
+      });
+      if (!section?.simulation_id) return reply.code(400).send({ message: 'This section has no simulation to load onto' });
+
+      // Judged HERE, not trusted from the client's earlier /fit call: a replace can activate a new
+      // revision between the two requests, and a stale yes pasted anyway is the silently-dead
+      // section this whole feature is built to prevent.
+      const fit = await svc().judgeFit({
+        userId: user.id,
+        presetId: request.params.presetId,
+        simulationId: section.simulation_id,
+      });
+      if (!fit) return reply.code(404).send({ message: 'Preset not found' });
+      if (fit.verdict.path !== 'artifact') {
+        // Not an error — an instruction. The client falls back to the generate endpoint with the
+        // preset's recipe (returned by /bridge-presets), which still skips the authoring work.
+        return reply.code(409).send({ path: fit.verdict.path, description: fit.description, verdict: fit.verdict });
+      }
+
+      const simRow = await db.query.simulations.findFirst({
+        where: and(eq(simulations.id, section.simulation_id), eq(simulations.project_id, project.id)),
+      });
+      if (!simRow) return reply.code(404).send({ message: 'Simulation not found in this project' });
+
+      // The preset row, re-read for its full fields (judgeFit returned the public shape).
+      const full = await svc().presetForApply(user.id, request.params.presetId);
+      if (!full?.main_body) return reply.code(409).send({ message: 'Preset has no saved script' });
+
+      let updated: Record<string, unknown> | undefined;
+      const { sectionUrl, bridgeHash } = await sim().applySavedBridgeBody({
+        simId: simRow.id,
+        sectionId: section.id,
+        projectId: project.id,
+        body: full.main_body,
+        entryKey: simRow.entry_file && !simRow.entry_file.startsWith('http') ? simRow.entry_file : undefined,
+        persistSection: async (tx, result) => {
+          const [row] = await tx
+            .update(timeline_sections)
+            .set({
+              simple_ui: full.simple_ui,
+              auto_script: full.auto_script,
+              sim_prompt: full.sim_prompt,
+              sim_script: 'main',
+              sim_meta: {
+                planVersion: '7',
+                generatedBy: 'preset',
+                presetId: full.id,
+                presetLabel: full.label,
+                prompt: full.sim_prompt ?? undefined,
+                uiControls: full.ui_controls ?? undefined,
+                sourceHash: full.source_hash ?? undefined,
+                bridgeHash: result.bridgeHash,
+                generatedAt: new Date().toISOString(),
+                supportsRuntimeParams: true,
+                runtimeValidated: false,
+                conversationHistory: full.conversation_history ?? undefined,
+              },
+              simulation_url: result.sectionUrl,
+            })
+            .where(eq(timeline_sections.id, section.id))
+            .returning();
+          if (!row) throw new Error('This section was removed during the load.');
+          updated = row as Record<string, unknown>;
+        },
+      });
+
+      logger.info({ evt: 'bridge_preset_applied', presetId: full.id, sectionId: section.id, bridgeHash },
+        '[BridgePreset] artifact applied');
+      return reply.send({ section: updated, sectionUrl, path: 'artifact' });
+    },
+  );
+}

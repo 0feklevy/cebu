@@ -38,6 +38,7 @@ import { registerProjectRoutes } from './controllers/v1/projects.controller.js';
 import { registerCorpusRoutes } from './controllers/v1/corpus.controller.js';
 import { registerVideoRoutes } from './controllers/v1/video.controller.js';
 import { registerSectionsRoutes } from './controllers/v1/sections.controller.js';
+import { registerBridgePresetRoutes } from './controllers/v1/bridgePresets.controller.js';
 import { registerMarkersRoutes } from './controllers/v1/markers.controller.js';
 import { registerEditorStateRoutes } from './controllers/v1/editor-state.controller.js';
 import { registerAdminSettingsRoutes } from './controllers/admin/v1/settings.controller.js';
@@ -615,6 +616,7 @@ async function build() {
   await registerCorpusRoutes(app);
   await registerVideoRoutes(app);
   await registerSectionsRoutes(app);
+  await registerBridgePresetRoutes(app);
   await registerMarkersRoutes(app);
   await registerEditorStateRoutes(app);
   await registerSimulationsRoutes(app);

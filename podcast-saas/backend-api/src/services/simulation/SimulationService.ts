@@ -3470,6 +3470,41 @@ export class SimulationService {
     });
   }
 
+  /**
+   * Paste a SAVED bridge body onto a section — the artifact path of "load bridge" (079).
+   *
+   * Same shape as applyMinimalUiOnly: one republication through uploadSectionBridge, so the
+   * CAS-activation, entry re-injection and section-row hook behave identically to every other
+   * bridge write. The body arrives from a saved_bridges row; by the time it reaches here the
+   * caller has ALREADY re-verified the contract against this simulation's current sources —
+   * this method trusts its caller exactly as far as applyMinimalUiOnly trusts its constant.
+   */
+  async applySavedBridgeBody(opts: {
+    simId:      string;
+    sectionId:  string;
+    projectId:  string;
+    body:       string;
+    entryKey?:  string;
+    onEvent?:   (event: string, data: object) => void;
+    signal?:    AbortSignal;
+    persistSection?: SectionPersistHook;
+  }): Promise<{ sectionUrl: string; bridgeHash: string }> {
+    const prefix = `simulations/${opts.projectId}/${opts.simId}`;
+    opts.onEvent?.('status', { status: 'Applying saved bridge…', type: 'progress' });
+    const allKeys = await this.listSimKeys(prefix, opts.entryKey);
+    return this.uploadSectionBridge({
+      simId: opts.simId, sectionId: opts.sectionId, projectId: opts.projectId, prefix, allKeys,
+      entryKey: opts.entryKey,
+      // The preset REPLACES whatever this section had — that is what "load" means. (Contrast
+      // applyMinimalUiOnly, which preserves an existing demo; here the existing demo is exactly
+      // the thing being swapped out.)
+      mainBody: () => opts.body,
+      onEvent: opts.onEvent,
+      signal: opts.signal,
+      persistSection: opts.persistSection,
+    });
+  }
+
   private async callLLMForBridge(opts: {
     contextPrompt:        string;
     manifest:             SimManifest;

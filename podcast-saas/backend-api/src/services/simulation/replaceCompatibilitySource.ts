@@ -46,6 +46,14 @@ export interface ReplaceCompatibilitySource {
   entryRelPath: string | null;
   /** The revision the bytes describe, when `origin === 'revision'`. */
   revisionId: string | null;
+  /**
+   * The revision's files — bundle-relative path plus the FULL storage key, straight from the
+   * manifest — so a consumer that needs the package's sources (the saved-bridge fit check) reads
+   * the same tree this module vouches for, without rebuilding key grammar. Null for a legacy
+   * package: it has no manifest, and a consumer that needs the tree treats "cannot enumerate" as
+   * "cannot verify", which every judge downstream already resolves conservatively.
+   */
+  files: { rel: string; key: string; role: string }[] | null;
 }
 
 /**
@@ -97,6 +105,7 @@ export async function readReplaceCompatibilitySource(
       bridgeKey: bridgeJs ? bridgeKey : null,
       entryRelPath: deriveEntryRelPath(sim.entry_file, sim.storage_prefix),
       revisionId: null,
+      files: null,
     };
   }
 
@@ -117,7 +126,7 @@ export async function readReplaceCompatibilitySource(
   // A revision genuinely CAN have no bridge — a package whose sections were never generated. That
   // is a real "nothing to preserve", read from the manifest rather than inferred from a failed GET.
   if (!bridgePath) {
-    return { origin: 'revision', bridgeJs: '', bridgeKey: null, entryRelPath, revisionId };
+    return { origin: 'revision', bridgeJs: '', bridgeKey: null, entryRelPath, revisionId, files: manifestBundleFiles(sim.storage_prefix, revisionId, manifest) };
   }
 
   const bridgeKey = revisionFileKey(sim.storage_prefix, revisionId, bridgePath);
@@ -128,5 +137,22 @@ export async function readReplaceCompatibilitySource(
     throw new ActiveRevisionUnreadable(revisionId, `bridge ${bridgeKey}: ${(err as Error).message}`);
   }
 
-  return { origin: 'revision', bridgeJs, bridgeKey, entryRelPath, revisionId };
+  return { origin: 'revision', bridgeJs, bridgeKey, entryRelPath, revisionId, files: manifestBundleFiles(sim.storage_prefix, revisionId, manifest) };
+}
+
+/** The manifest's package files as (bundle-relative, full-key) pairs. Posters and canary reports
+ * are not sources and are skipped; the fit check must never scan a poster for a selector. */
+function manifestBundleFiles(
+  storagePrefix: string,
+  revisionId: string,
+  manifest: SimPackageManifest,
+): { rel: string; key: string; role: string }[] {
+  const out: { rel: string; key: string; role: string }[] = [];
+  for (const f of manifest.files ?? []) {
+    if (f.role === 'poster' || f.role === 'canary') continue;
+    const rel = bundleRelPathForManifestPath(f.path);
+    if (!rel) continue;
+    out.push({ rel, key: revisionFileKey(storagePrefix, revisionId, f.path), role: f.role });
+  }
+  return out;
 }
