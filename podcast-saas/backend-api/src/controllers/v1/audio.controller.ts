@@ -7,6 +7,7 @@ import { buildMainSegmentTimeline, deriveAnchorForAbsoluteSec } from 'shared';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { editableProject } from '../../services/collabAccess.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
+import { deleteWithFallback } from '../../services/storage/deleteWithFallback.js';
 import { uploadWithFallback } from '../../services/storage/uploadWithFallback.js';
 import { uploadFileFromDisk } from '../../services/storage/uploadFromDisk.js';
 import {
@@ -166,7 +167,11 @@ export async function registerAudioRoutes(app: FastifyInstance): Promise<void> {
         where: and(eq(audio_files.id, request.params.audioId), eq(audio_files.project_id, project.id)),
       });
       if (file) {
-        try { await storage.deleteFile(file.storage_key); } catch { /* ignore */ }
+        // Through the chokepoint, not the adapter: audio_files carries a `blob_id` (078), so this
+        // key can become a SHARED, content-addressed one the moment upload wiring lands — and a
+        // direct adapter call would delete bytes other projects reference. deleteWithFallback
+        // refuses `blobs/` keys and is identical for every other key.
+        try { await deleteWithFallback(file.storage_key); } catch { /* ignore */ }
       }
 
       await db
