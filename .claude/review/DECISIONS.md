@@ -1109,3 +1109,28 @@ Mutation-checked, both directions: reverting to the string-built URL fails three
 (`shows NO library row when the project has no live share`, the coded fallback, and the
 failed-read isolation); dropping the `?? library?.url` fallback fails exactly the coded-fallback
 test and nothing else. 1820 client-web tests green, typecheck clean.
+
+## 🟡 OPEN (found 2026-08-25) — a deep review of the action-recording research was started and lost; its header outlived it
+
+The working tree carried an uncommitted edit to `RESEARCH-ACTION-RECORDING-2026-08-25.md` that
+changed the status line to *"סקירת עומק הושלמה — GO מותנה לבוחר, NO-GO לארכיטקטורת ההקלטה
+המקורית"* and added a reading-rule saying sections 6–11 are the revised architectural ruling and
+12–17 its English parallel.
+
+**Those sections do not exist.** The file has sections 1–5 and ends at line 270. The verdict —
+a conditional GO for the element picker and a NO-GO for the recording architecture as proposed —
+was reached somewhere and only its header survived.
+
+**Reverted, deliberately.** A document whose own reading-rule points at sections it does not
+contain is worse than one with no ruling: the next reader trusts the status line, goes looking for
+the reasoning, and finds nothing. That is the exact failure `CLAUDE.md`'s opening paragraph was
+written about.
+
+**What is actually lost:** the reasoning behind the NO-GO — which contracts and blockers the
+recording architecture has to close first. The research report itself (sections 1–5: the
+recommended architecture, the licence-verified open-source survey for both halves, and the
+four-phase build plan) is intact and committed.
+
+**Next:** re-run the deep review before any build starts, and write its ruling INTO the file in the
+same pass that changes the status line. The report's own §1 still says "טרם הוחלט על בנייה", which
+is now the honest state.
