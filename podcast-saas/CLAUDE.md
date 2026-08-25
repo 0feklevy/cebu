@@ -135,6 +135,41 @@ The commits themselves were fine and CI ran on them. What was lost is the review
 reason to care is that a PR is where the reasoning gets written down for the next reader, which is
 the whole discipline §3b exists to protect.
 
+## 3e. An opaque failure in OUR code: get the stack FIRST
+
+Written after the 2026-08-23 avatar outage, which cost ~2 hours, 29 commits and three of the
+owner's API-key rotations — for a cause that a local reproduction named in minutes. Nothing was
+missing except the choice of first action.
+
+**The rule: for any opaque failure inside our own process, process-level visibility is the FIRST
+action, not the second.**
+
+```bash
+pnpm -C podcast-saas dev          # ~3 minutes
+curl -sS -X POST localhost:8080/…  # reproduce
+# still opaque? add a TEMPORARY stack log at the catch. tsx watch applies it live. Read it. Revert.
+```
+
+Why it does not happen by itself: probing production, rotating a credential and shipping a
+diagnostic PR are all **visible motion**, and they read as urgency being met. Booting the dev
+stack feels like a detour while production is down — so the action with the highest information
+yield is exactly the one that pressure deprioritises.
+
+Three corollaries the same incident earned:
+
+- **Never spend the OWNER'S actions on an untested hypothesis.** Each key rotation cost real time
+  and money and read to them like the fix. Earn it with a measurement you can take yourself.
+- **A diagnostic belongs on the dev stack, never through CI + release.** Shipping an instrument is
+  the slow path to the same information (~40 min vs ~3).
+- **Confirmation is not discrimination.** The poisoned-`avatar_config` theory was independently
+  TRUE — a real bug, with real evidence, that was not this bug. Before adopting a theory ask what
+  observation would DISTINGUISH it from its rivals. If the answer is "the stack trace", go and get
+  the stack trace.
+
+Timing deltas remain the one external measurement worth taking: the failing 500 arriving ~55ms
+after a known-cheap 404 proved no vendor round trip happened, which killed an entire theory class
+in one command.
+
 ## 4. Verification
 
 `pnpm -C podcast-saas release:verify` is the real gate, and it is what CI runs. Nine steps: frozen
