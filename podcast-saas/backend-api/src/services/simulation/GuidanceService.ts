@@ -5,6 +5,7 @@ import type { StorageService } from '../storage/StorageService.js';
 import { LLMService } from '../llm/LLMService.js';
 import { GuidanceTTSService, resolveGuidanceVoice } from '../audio/GuidanceTTSService.js';
 import { recordTtsSpend } from '../usage/recordTtsSpend.js';
+import { evaluateSpendCeiling } from '../usage/spendCeiling.js';
 import {
   selectSources,
   computeSourceHash,
@@ -596,6 +597,21 @@ export class GuidanceService {
     onEvent?: OnEvent; signal?: AbortSignal;
   }): Promise<GuidancePublishResult> {
     const { simId, projectId, onEvent } = opts;
+
+    // ── THE CEILING, BEFORE THE FIRST CUE IS SYNTHESISED ────────────────────────────────────
+    // Guidance narration is ElevenLabs TTS bought by a click ("Approve & generate voice"), and a
+    // publish spends once per cue — so a dozen-cue simulation is a dozen paid calls from one
+    // press, and re-publishing after an edit pays again. Same provider and same shape as the
+    // preview/re-voice paths the 22 August incident ran through.
+    //
+    // Checked HERE rather than per cue: a publish that stops halfway leaves a simulation with
+    // some cues voiced and some silent, which is worse than one that never started. Shadow by
+    // default, exactly like the renderer.
+    const ceiling = await evaluateSpendCeiling({ provider: 'elevenlabs' });
+    if (ceiling.refuse) {
+      throw new Error(ceiling.reason ?? 'Monthly ElevenLabs spend ceiling reached.');
+    }
+
     const language = opts.language || 'en';
     const prefix = `simulations/${projectId}/${simId}`;
     // Characters handed to the vendor across this publish. One row at the end rather than one per

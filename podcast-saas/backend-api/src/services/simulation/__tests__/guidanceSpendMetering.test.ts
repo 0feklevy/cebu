@@ -13,6 +13,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const recordTtsSpend = vi.fn(async () => {});
+type Verdict = import('../../usage/spendCeiling.js').SpendCeilingVerdict;
+const evaluateSpendCeiling = vi.fn(async (): Promise<Verdict> => ({
+  mode: 'shadow', refuse: false, wouldRefuse: false, spentCents: 0, ceilingCents: 0, reason: null,
+}));
+vi.mock('../../usage/spendCeiling.js', () => ({
+  evaluateSpendCeiling: (...a: unknown[]) => evaluateSpendCeiling(...(a as [])),
+}));
+
 vi.mock('../../usage/recordTtsSpend.js', () => ({
   recordTtsSpend: (...a: unknown[]) => recordTtsSpend(...(a as [])),
 }));
@@ -120,5 +128,56 @@ describe('what a guidance publish records', () => {
     const { svc } = service();
     await publish(svc, [entry('a', NARRATION_A), entry('b', NARRATION_B)]);
     expect(recordTtsSpend).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('the ceiling guards a guidance publish', () => {
+  // Guidance narration is ElevenLabs TTS bought by a click, and one press pays once PER CUE — so a
+  // dozen-cue simulation is a dozen paid calls, and re-publishing after an edit pays again. Same
+  // provider and same shape as the preview/re-voice paths the 22 August incident ran through, and
+  // it was the last ElevenLabs surface without a ceiling.
+  beforeEach(() => {
+    evaluateSpendCeiling.mockReset();
+    evaluateSpendCeiling.mockResolvedValue({
+      mode: 'shadow', refuse: false, wouldRefuse: false, spentCents: 0, ceilingCents: 0, reason: null,
+    });
+  });
+
+  const REFUSED: Verdict = {
+    mode: 'enforce', refuse: true, wouldRefuse: true, spentCents: 9_000, ceilingCents: 5_000,
+    reason: 'elevenlabs spend this month would reach $90.00, over the $50.00 ceiling (SPEND_CEILING_ELEVENLABS_CENTS).',
+  };
+
+  const publish = (svc: GuidanceService) => svc.publishGuidance({
+    simId: 'sim-1', projectId: 'proj-1',
+    entries: [{ atMs: 0, text: 'one' }] as never,
+  });
+
+  it('asks the ceiling about ElevenLabs', async () => {
+    await publish(new GuidanceService()).catch(() => { /* the rest of the publish is not the subject */ });
+    expect(evaluateSpendCeiling).toHaveBeenCalledWith(expect.objectContaining({ provider: 'elevenlabs' }));
+  });
+
+  it('REFUSES BEFORE THE FIRST CUE, not part-way through', async () => {
+    // The reason the check is at the top rather than per cue: a publish that stops halfway leaves
+    // a simulation with some cues voiced and some silent, which is worse than one that never ran.
+    evaluateSpendCeiling.mockResolvedValue(REFUSED);
+    await expect(publish(new GuidanceService())).rejects.toThrow(/ceiling/i);
+    expect(recordTtsSpend, 'a refused publish still paid for something').not.toHaveBeenCalled();
+  });
+
+  it('carries the wording that names the variable to change', async () => {
+    evaluateSpendCeiling.mockResolvedValue(REFUSED);
+    await expect(publish(new GuidanceService())).rejects.toThrow(/SPEND_CEILING_ELEVENLABS_CENTS/);
+  });
+
+  it('does NOT block in shadow mode, even when it would have refused', async () => {
+    evaluateSpendCeiling.mockResolvedValue({
+      mode: 'shadow', refuse: false, wouldRefuse: true, spentCents: 9_000, ceilingCents: 5_000,
+      reason: 'would have refused',
+    });
+    await publish(new GuidanceService()).catch((e: Error) => {
+      expect(e.message, 'shadow mode refused a publish').not.toMatch(/ceiling/i);
+    });
   });
 });
