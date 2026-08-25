@@ -1009,3 +1009,85 @@ The two dead Trigger.dev files that made this look done are deleted (#95).
   `simulation-004`).
 - Sweep caveat: code, tests and local probes only; §5 names the seven determinations resting on
   inference and the one cheap observation that settles each.
+
+## 🔴 OPEN (found 2026-08-25, release engineering) — `release-risk` measures from the last TAG, not the last DEPLOYED version, so a gated change can reach production ungated
+
+**The gate did its job once and was then bypassed by its own bookkeeping — OBSERVED, not predicted.**
+
+Confirmed live at 2026-08-25 while this entry was being written: run `32854681109` reported
+`Human approval (risky release only): skipped` and proceeded to deploy, carrying `8c4fa66`'s
+compose change to production. The prediction below was made from the source before that job
+reported, and the run then produced exactly it.
+
+Verified chain, every link from a log or the source — not inference:
+
+1. **v0.2.4 (run `32850636945`) was correctly gated.** The reason, verbatim from the run log:
+   `release-risk: HUMAN APPROVAL REQUIRED — 1 reason(s):`
+   `  - touches production deployment configuration: podcast-saas/deploy/docker-compose.yml`
+   That is `SENSITIVE_PATH_PATTERNS` entry 8 in `ops/release/src/release-risk.ts` firing on commit
+   `8c4fa66 fix(health): report the version that is actually running`. `--backfill-policy report-only`
+   was passed, so reason 2 did not fire; there was exactly one reason.
+2. **The tag was created BEFORE the gate ran.** Job order in that run: `Manifest, tag & draft
+   release :: success`, THEN `Human approval :: failure`, THEN `Deploy to production :: skipped`.
+   `refs/tags/v0.2.4` exists on origin. Production never received it.
+3. **`currentTag` has no idea whether a tag deployed.** `computeNextVersion` (`ops/release/src/semver.ts:56-67`)
+   sorts the semver tag list and takes the highest. Nothing consults deployment state.
+4. **So the next release measures from a version that never shipped.** `release.yml:125` runs
+   `git diff --name-only "$current_tag"..HEAD`. For the release after v0.2.4 that range is
+   `v0.2.4..HEAD` — ten files, none matching any of the nine sensitive patterns. The compose
+   change sits in `v0.2.3..v0.2.4`, outside the window.
+5. **But the deploy ships HEAD's tree, not the window's.** `release.yml:756` pins the VM checkout
+   to `plan.outputs.git_sha` and compose runs from that checkout — which contains `8c4fa66`.
+
+**⇒ A change the gate demanded a human for reaches production with no human, and the release
+report will correctly say no approval was required.** Silent in exactly the way §3b warns about.
+
+**Blast radius is the rule, not this instance.** The change in flight (`APP_VERSION` into the
+container) is one the owner wants, so the outcome this time is benign. The hole is general: any
+auth, secret, media-token, billing or deploy-config change that lands in a tagged-but-undeployed
+release is invisible to the next release's classifier. Every failed or rejected approval creates
+one of these windows, and a rejected approval is precisely when the change was most suspect.
+
+**Why no fix is committed yet.** The classifier is not wrong — `assessReleaseRisk` correctly
+judges what it is handed. The defect is the base ref, and fixing it needs a source of truth for
+"what is actually deployed", which is a mechanism choice with several defensible shapes:
+
+* a moving `deployed-production` ref pushed by the deploy job — most inspectable, but sits badly
+  beside `assertTagAvailable`'s "refuse to reuse or overwrite an existing tag under any circumstances";
+* a GitHub Deployment recorded on success — purpose-built, needs `deployments: write`;
+* derive it from the last run of this workflow whose deploy job succeeded — no new state, most brittle.
+
+A fail-closed addition is available under all three: pass the deployed version alongside
+`currentTag` and have `assessReleaseRisk` add a reason when they differ ("the previous release was
+tagged but never deployed — measuring from it would hide its changes"). That keeps the failure
+mode on the safe side whatever the mechanism.
+
+**Owner decision needed: which mechanism.** Nothing here blocks the release in flight.
+
+## 🔴 OPEN (found 2026-08-25) — the share block's Library row can never render: `hasLibrary` has no caller
+
+`ProjectShareLinks` accepts `hasLibrary?: boolean` and its test proves the Library row appears when
+it is true — but **neither mount site passes it**. `PermalinkEditor.tsx:220` renders
+`<ProjectShareLinks projectId={contentId} permalinkUrl={info.permalinkUrl} />` and that is the only
+mount for projects (`ProjectHeader.tsx:364`; the `PlaylistEditorDialog` mount is correctly excluded
+by the `contentType === 'project'` guard).
+
+So the block the owner asked for — "all the links are terribly confusing, organise everything" —
+lists two of the three addresses. `/{slug}/library` is still reachable only by someone who already
+knows the URL shape, which is the exact complaint.
+
+**Same dead-capability class as `MEDIA_DEDUP_STRICT_COMPARE`** (documented, tested, read by nothing —
+removed earlier the same day). A prop with a passing test and no caller is not a feature.
+
+**Why it is not a one-line wire.** A library is a PUBLIC SHARE, not a project attribute: the
+mini-site reads `GET /api/v1/public/library/{slug}` (`client-web/lib/libraryApi.ts:32`) and 200 comes
+back only when a share is active. So the honest signal is "is there a live library share for this
+slug", which the editor does not currently hold. Two defensible shapes:
+
+* **surface it** — have the project/permalink payload carry whether a library share is active, and
+  pass it through. Correct, costs a field on an existing response;
+* **link unconditionally** — show the Library row always. Cheaper, but re-creates the rule the
+  podcast row exists to honour: never offer a URL that 404s.
+
+Until one is chosen, **either wire it or delete the prop** — leaving it is the state that reads as
+done and is not.
