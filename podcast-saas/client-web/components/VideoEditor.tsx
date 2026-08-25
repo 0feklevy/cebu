@@ -12,6 +12,7 @@ import { TimelinePanel } from './TimelinePanel';
 import { GuidedTour, type TourStep } from './GuidedTour';
 import { VideoUploader } from './VideoUploader';
 import { SimulationUploader } from './SimulationUploader';
+import { ImportSimulationDialog } from './ImportSimulationDialog';
 import { BrollPanel } from './BrollPanel';
 import { ConfirmDialog } from './ConfirmDialog';
 import { VideoDependentsDialog } from './VideoDependentsDialog';
@@ -298,6 +299,7 @@ export function VideoEditor({ projectId }: Props) {
   const [showUploader, setShowUploader] = useState(false);
   const [showBranching, setShowBranching] = useState(false);
   const [showSimUploader, setShowSimUploader] = useState(false);
+  const [showSimImport, setShowSimImport] = useState(false);
   const [pendingCropImage, setPendingCropImage] = useState<ImageFile | null>(null);
   const [extendedLibraryOpen, setExtendedLibraryOpen] = useState(false);
   const [imgUploading, setImgUploading] = useState(false);
@@ -1490,14 +1492,34 @@ export function VideoEditor({ projectId }: Props) {
                     <div className="w-0.5 h-3 rounded-full bg-amber-400/80" />
                     <p className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60">Simulations</p>
                   </div>
-                  <button
-                    onClick={() => setShowSimUploader(v => !v)}
-                    title="Upload simulation"
-                    className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-500 text-white shadow-sm transition-colors hover:bg-amber-400 focus-ring"
-                  >
-                    <Plus size={15} strokeWidth={2} aria-hidden />
-                  </button>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => setShowSimImport(true)}
+                      title="Import from another project — nothing is uploaded or stored twice"
+                      className="flex h-8 items-center justify-center rounded-lg border border-amber-500/60 px-2 text-[10px] font-semibold text-amber-600 transition-colors hover:bg-amber-500/10 focus-ring"
+                    >
+                      Import
+                    </button>
+                    <button
+                      onClick={() => setShowSimUploader(v => !v)}
+                      title="Upload simulation"
+                      className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-500 text-white shadow-sm transition-colors hover:bg-amber-400 focus-ring"
+                    >
+                      <Plus size={15} strokeWidth={2} aria-hidden />
+                    </button>
+                  </div>
                 </div>
+
+                {showSimImport && (
+                  <ImportSimulationDialog
+                    projectId={projectId}
+                    onImported={(sim) => {
+                      setSimulations(prev => [...prev, sim]);
+                      setShowSimImport(false);
+                    }}
+                    onClose={() => setShowSimImport(false)}
+                  />
+                )}
 
                 {showSimUploader && (
                   <SimulationUploader

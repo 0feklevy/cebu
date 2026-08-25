@@ -1633,6 +1633,18 @@ export class ClientV1Api {
     return this.requestMultipart(`/api/v1/projects/${projectId}/simulations/upload`, formData);
   }
 
+  /**
+   * Import a simulation from another project — the `+` without the re-upload. The server copies
+   * the served content bucket-side and answers with the new, destination-owned row. A private
+   * source answers 404 (indistinguishable from absent, by design).
+   */
+  importSimulation(projectId: string, simulationId: string, shareToken?: string): Promise<Simulation> {
+    return this.request(`/api/v1/projects/${projectId}/simulations/import`, {
+      method: 'POST',
+      body: JSON.stringify({ simulation_id: simulationId, ...(shareToken ? { share_token: shareToken } : {}) }),
+    });
+  }
+
   // ── Saved bridge presets ("save bridge", 079) ──────────────────────────────────────────────
 
   listBridgePresets(): Promise<{ presets: BridgePreset[] }> {
