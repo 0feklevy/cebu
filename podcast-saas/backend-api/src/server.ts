@@ -93,6 +93,7 @@ import { registerPodcastRenderRoutes } from './controllers/v1/podcast-render.con
 import { registerPodcastStudioRoutes } from './controllers/v1/podcast-studio.controller.js';
 import { recoverStuckPodcastScripts } from './services/podcast/runPodcastScript.js';
 import { recoverStuckPodcastRenders } from './services/podcast/audio/runPodcastRender.js';
+import { sweepOrphanBlobsOnStartup } from './services/storage/blobSweeper.js';
 import { recoverStuckPodcastMixes } from './services/podcast/audio/runPodcastClips.js';
 import { recoverStuckVideoGenerations } from './jobs/video.generate.js';
 
@@ -718,6 +719,9 @@ async function start() {
       await recoverStuckTranscodes();
       await recoverStuckCrops();
       await recoverStuckSimulations();
+      // Blobs whose last holder is gone (078/080). Marks on this pass; only a LATER pass, a full
+      // grace period on, removes anything — a freshly-claimed blob is momentarily unreferenced.
+      void sweepOrphanBlobsOnStartup();
       await recoverStuckPodcastScripts();
       await recoverStuckPodcastRenders();
       await recoverStuckPodcastMixes();

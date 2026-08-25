@@ -37,6 +37,12 @@ const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const DIRECT_DELETE_ALLOWED: Record<string, string> = {
   // The chokepoint itself — it IS the guard, so it necessarily calls through.
   'services/storage/deleteWithFallback.ts': 'the guard',
+  // The blob sweeper — the ONE caller that must bypass the blobs/ refusal, because removing
+  // orphaned blobs is its entire job. Added deliberately when it was built, which is exactly the
+  // moment this list is designed to force a decision: it deletes only rows the reference union
+  // found unreferenced, only after a full grace period, and the foreign keys refuse the row
+  // delete if a reference reappeared.
+  'services/storage/blobSweeper.ts': 'the collector — bypassing the refusal is its job',
   // Storage self-test: writes and removes its own probe keys under a fixed test prefix.
   'scripts/verify-storage.ts': 'deletes only the probe keys it just wrote',
   // Simulation packages live under simulations/{projectId}/{simId} — a namespace disjoint from
