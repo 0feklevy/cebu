@@ -21,8 +21,10 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  askQuestion,
   chapterIndexAt,
   formatClock,
+  type AskQuestionResponse,
   type AudioChapter,
   type AudioEditionView,
 } from '@/lib/audioEditionApi';
@@ -37,6 +39,8 @@ interface Props {
   view: AudioEditionView;
   /** Cover art for the lock screen, when the project has one. */
   artworkUrl?: string | null;
+  /** The mini-site's slug — the address questions are asked at. Absent ⇒ the hand stays hidden. */
+  slug?: string;
 }
 
 /** How far back a chapter must have been playing before "previous" restarts it. */
@@ -45,13 +49,22 @@ const RESTART_THRESHOLD_MS = 3000;
 // previous one; pressing it in the MIDDLE restarts the current one. Without the threshold, a
 // listener who wants the last thirty seconds again has to press back twice and guess.
 
-export function AudioEditionPlayer({ view, artworkUrl }: Props) {
+export function AudioEditionPlayer({ view, artworkUrl, slug }: Props) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [positionMs, setPositionMs] = useState(0);
   const [durationMs, setDurationMs] = useState(view.duration_ms ?? 0);
   const [playing, setPlaying] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
   const [offline, setOffline] = useState<OfflineState>({ status: 'idle' });
+
+  // ── Raise your hand (A2.4) ──────────────────────────────────────────────────────────────────
+  const [handOpen, setHandOpen] = useState(false);
+  const [question, setQuestion] = useState('');
+  const [asking, setAsking] = useState(false);
+  const [askResult, setAskResult] = useState<AskQuestionResponse | null>(null);
+  // The moment the hand went UP — not the moment typing finished. The question is about what was
+  // playing when the listener reached for the button; a minute of typing must not move it.
+  const handRaisedAtMs = useRef(0);
 
   // The Blob behind a saved recording is pinned until its object URL is revoked — a 29 MB episode
   // held forever by a tab the listener left open.
@@ -148,6 +161,31 @@ export function AudioEditionPlayer({ view, artworkUrl }: Props) {
     }
   }, [positionMs, durationMs]);
 
+  const raiseHand = useCallback(() => {
+    handRaisedAtMs.current = positionMs;
+    setAskResult(null);
+    setHandOpen(true);
+  }, [positionMs]);
+
+  const submitQuestion = useCallback(async () => {
+    const q = question.trim();
+    if (!q || asking || !slug) return;
+    setAsking(true);
+    try {
+      const res = await askQuestion(slug, {
+        question: q,
+        positionMs: handRaisedAtMs.current,
+        language: view.language ?? null,
+      });
+      setAskResult(res);
+      // The question clears only when something was ACCEPTED. A refusal keeps the text — retyping
+      // a question because the network blinked is the failure, not the refusal itself.
+      if (res.status !== 'refused') setQuestion('');
+    } finally {
+      setAsking(false);
+    }
+  }, [question, asking, slug, view.language]);
+
   return (
     <div className="w-full max-w-2xl mx-auto">
       <audio
@@ -213,6 +251,72 @@ export function AudioEditionPlayer({ view, artworkUrl }: Props) {
           <p role="alert" className="text-sm text-destructive">{offline.reason}</p>
         )}
       </div>
+
+      {/* ── RAISE YOUR HAND — the question box, anchored to the moment it went up ── */}
+      {slug && (
+        <div className="mt-6">
+          {!handOpen ? (
+            <button
+              type="button"
+              onClick={raiseHand}
+              // Same 44px floor as the chapter rows — this is the same glanced-at screen.
+              className="w-full min-h-[44px] rounded-lg border border-border px-4 py-3 text-left font-medium"
+            >
+              ✋ Raise your hand
+              <span className="ml-2 text-xs font-normal text-muted-foreground">
+                ask about this moment — {formatClock(positionMs)}
+              </span>
+            </button>
+          ) : (
+            <div className="rounded-lg border border-border p-4">
+              <div className="mb-2 text-sm font-medium">
+                Asking about {formatClock(handRaisedAtMs.current)}
+              </div>
+              <textarea
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                rows={3}
+                autoFocus
+                placeholder="What would you like to ask?"
+                className="w-full rounded-md border border-border bg-background p-2 text-sm"
+              />
+              {askResult && (
+                <div role="status" aria-live="polite" className="mt-2 text-sm">
+                  {askResult.status === 'answered' && askResult.answer ? (
+                    <p className="rounded-md bg-muted p-3 whitespace-pre-wrap">{askResult.answer}</p>
+                  ) : askResult.status === 'saved' ? (
+                    // Saved is a SUCCESS, and the copy says what actually happened: the creator
+                    // sees it, anchored to the moment. A listener told nothing assumes it vanished.
+                    <p className="text-muted-foreground">
+                      Saved — the creator will see your question at {formatClock(handRaisedAtMs.current)}.
+                      {askResult.message ? ` (${askResult.message})` : ''}
+                    </p>
+                  ) : (
+                    <p className="text-destructive">{askResult.message ?? 'Could not send your question.'}</p>
+                  )}
+                </div>
+              )}
+              <div className="mt-3 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => { setHandOpen(false); setAskResult(null); }}
+                  className="min-h-[36px] rounded-md border border-border px-3 text-sm"
+                >
+                  Close
+                </button>
+                <button
+                  type="button"
+                  onClick={submitQuestion}
+                  disabled={asking || !question.trim()}
+                  className="min-h-[36px] rounded-md bg-foreground px-4 text-sm font-medium text-background disabled:opacity-50"
+                >
+                  {asking ? 'Asking…' : 'Ask'}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {chapters.length > 0 && (
         <ol className="mt-6 divide-y divide-border rounded-lg border border-border">
