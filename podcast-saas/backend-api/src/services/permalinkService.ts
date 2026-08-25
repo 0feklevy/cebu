@@ -27,6 +27,10 @@ import { platformBaseUrl } from './course/CanonicalUrlService.js';
 export const RESERVED_SLUGS = new Set([
   // Existing client-web/app top-level routes & metadata files
   'api', 'c', 'v', 'pl', 'new', 'projects', 'playlists', 'podcasts', 'podcast', 'unlock',
+  // P3-A: the editor moved to /edit-podcasts. `podcasts` STAYS reserved after the move —
+  // releasing it would let a creator claim the exact URL every previously-shared editor link
+  // points at, and the redirect shim that serves those links lives there.
+  'edit-podcasts',
   'icon', 'favicon', 'robots', 'llms', 'sitemap', 'sitemap-courses', 'sitemap-videos',
   // Platform / future routes
   'admin', 'login', 'logout', 'signup', 'signin', 'register', 'auth', 'account',

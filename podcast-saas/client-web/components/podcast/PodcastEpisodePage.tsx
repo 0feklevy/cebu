@@ -167,7 +167,7 @@ export function PodcastEpisodePage({ showId, episodeId }: { showId: string; epis
   }
 
   const crumbs = [
-    { label: show?.title?.trim() || 'Show', href: `/podcasts/${showId}` },
+    { label: show?.title?.trim() || 'Show', href: `/edit-podcasts/${showId}` },
     { label: episode?.title?.trim() || `Episode ${episode?.episode_number ?? ''}` },
   ];
 

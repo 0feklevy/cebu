@@ -1,6 +1,9 @@
-import { PodcastShowPage } from '@/components/podcast/PodcastShowPage';
+import { permanentRedirect } from 'next/navigation';
 
-export default async function ShowPage({ params }: { params: Promise<{ showId: string }> }) {
+/** Deep link to one show, from before the move to /edit-podcasts (P3-A). */
+export default async function LegacyPodcastShow(
+  { params }: { params: Promise<{ showId: string }> },
+): Promise<never> {
   const { showId } = await params;
-  return <PodcastShowPage showId={showId} />;
+  permanentRedirect(`/edit-podcasts/${showId}`);
 }

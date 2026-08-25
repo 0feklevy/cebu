@@ -31,7 +31,7 @@ export function PodcastShowsPage() {
     setCreating(true);
     try {
       const show = await api.createPodcastShow({});
-      window.location.href = `/podcasts/${show.id}`;
+      window.location.href = `/edit-podcasts/${show.id}`;
     } catch (err) {
       console.error('Create show failed', err);
       setCreating(false);
@@ -95,7 +95,7 @@ export function PodcastShowsPage() {
         <div className="grid gap-3 sm:grid-cols-2">
           {shows.map((show) => (
             <div key={show.id} className="group relative rounded-xl border border-border bg-card card-interactive transition-colors">
-              <a href={`/podcasts/${show.id}`} className="block rounded-xl p-4 pr-12 focus-ring" style={{ textDecoration: 'none' }}>
+              <a href={`/edit-podcasts/${show.id}`} className="block rounded-xl p-4 pr-12 focus-ring" style={{ textDecoration: 'none' }}>
                 <div className="mb-1 flex items-center gap-2">
                   <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
                     <Mic size={15} strokeWidth={1.9} aria-hidden />

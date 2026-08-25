@@ -496,7 +496,7 @@ export function HomeSidebar() {
         {/* Footer — Podcast Studio entry (app primary accent, matches the product) */}
         <div className="hidden shrink-0 border-t px-3 py-3 lg:block" style={{ borderColor: 'hsl(var(--shell-border))' }}>
           <a
-            href="/podcasts"
+            href="/edit-podcasts"
             className="flex h-10 w-full items-center gap-2 rounded-lg px-3 text-left text-sm font-semibold transition-all hover:brightness-110 focus-ring"
             style={{
               border: '1px solid hsl(var(--primary) / 0.35)',
@@ -512,7 +512,7 @@ export function HomeSidebar() {
 
         <div className="border-t px-3 py-2 lg:hidden" style={{ borderColor: 'hsl(var(--shell-border))' }}>
           <a
-            href="/podcasts"
+            href="/edit-podcasts"
             className="flex h-9 w-full min-w-0 items-center justify-center gap-2 rounded-lg text-sm font-semibold transition-all hover:brightness-110 focus-ring"
             style={{
               border: '1px solid hsl(var(--primary) / 0.35)',

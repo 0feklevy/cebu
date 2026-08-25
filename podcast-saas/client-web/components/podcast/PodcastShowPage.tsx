@@ -48,7 +48,7 @@ export function PodcastShowPage({ showId }: { showId: string }) {
     setCreating(true);
     try {
       const ep = await api.createPodcastEpisode(showId, {});
-      window.location.href = `/podcasts/${showId}/episodes/${ep.id}`;
+      window.location.href = `/edit-podcasts/${showId}/episodes/${ep.id}`;
     } catch (err) {
       console.error('Create episode failed', err);
       setCreating(false);
@@ -136,7 +136,7 @@ export function PodcastShowPage({ showId }: { showId: string }) {
                 const st = EP_STATUS[ep.status] ?? EP_STATUS.draft;
                 return (
                   <div key={ep.id} className="group relative rounded-xl border border-border bg-card card-interactive">
-                    <a href={`/podcasts/${showId}/episodes/${ep.id}`} className="block rounded-xl p-4 pr-12 focus-ring" style={{ textDecoration: 'none' }}>
+                    <a href={`/edit-podcasts/${showId}/episodes/${ep.id}`} className="block rounded-xl p-4 pr-12 focus-ring" style={{ textDecoration: 'none' }}>
                       <div className="flex items-center gap-3">
                         <span className="text-xs font-semibold text-muted-foreground">#{ep.episode_number ?? '—'}</span>
                         <span className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">{ep.title?.trim() || 'Untitled episode'}</span>

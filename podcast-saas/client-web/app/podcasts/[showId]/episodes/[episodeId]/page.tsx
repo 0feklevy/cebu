@@ -1,10 +1,12 @@
-import { PodcastEpisodePage } from '@/components/podcast/PodcastEpisodePage';
+import { permanentRedirect } from 'next/navigation';
 
-export default async function EpisodePage({
-  params,
-}: {
-  params: Promise<{ showId: string; episodeId: string }>;
-}) {
+/**
+ * The deepest of the old links, and the one most likely to have been shared: a specific episode.
+ * Both ids are carried through, so the redirect lands on the exact episode rather than the index.
+ */
+export default async function LegacyPodcastEpisode(
+  { params }: { params: Promise<{ showId: string; episodeId: string }> },
+): Promise<never> {
   const { showId, episodeId } = await params;
-  return <PodcastEpisodePage showId={showId} episodeId={episodeId} />;
+  permanentRedirect(`/edit-podcasts/${showId}/episodes/${episodeId}`);
 }
