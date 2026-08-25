@@ -20,6 +20,7 @@ import {
 import { probeMediaDuration } from '../../services/video/HLSTranscoder.js';
 import { ApiKeyService } from '../../services/secrets/ApiKeyService.js';
 import { UsageTrackingService } from '../../services/usage/UsageTrackingService.js';
+import { claimUploadedMedia, claimUploadedMediaFromDisk } from '../../services/storage/claimUploadedMedia.js';
 import { evaluateSpendCeiling } from '../../services/usage/spendCeiling.js';
 import { estimateSfxCost, usdPerSfxSecondFromEnv } from '../../services/usage/sfxCost.js';
 import { randomUUID } from 'crypto';
@@ -115,14 +116,21 @@ export async function registerAudioRoutes(app: FastifyInstance): Promise<void> {
           { limitBytes: UPLOAD_MAX_BYTES.audio, what: 'Audio file', suffix: ext || '.audio' },
           async ({ path }) => {
             const durationSec = await probeAudioFileDuration(path);
-            const url = await uploadFileFromDisk(key, path, contentType);
+            // Stored once across the product (078). Hashed by STREAMING the temp file — the whole
+            // reason this path writes to disk is that a large upload must never be fully resident,
+            // and reading it back into a Buffer to hash would undo that.
+            const claimed = await claimUploadedMediaFromDisk({
+              proposedKey: key, filePath: path, contentType, ext: ext.replace(/^\./, ''),
+            });
+            const url = claimed.publicUrl;
 
             const [row] = await db
               .insert(audio_files)
               .values({
                 project_id:  project.id,
                 filename:    data.filename || `audio${ext}`,
-                storage_key: key,
+                storage_key: claimed.storageKey,
+                blob_id:     claimed.blobId,
                 url,
                 duration_sec: durationSec,
               })
@@ -276,7 +284,10 @@ export async function registerAudioRoutes(app: FastifyInstance): Promise<void> {
       const key = `audio/${project.id}/${randomUUID()}.mp3`;
       // Falls back to local storage when the primary write is denied (read-only R2),
       // so generated music/SFX still saves instead of failing with "Access Denied".
-      const url = await uploadWithFallback(key, audioBuf, 'audio/mpeg');
+      const claimedGen = await claimUploadedMedia({
+        proposedKey: key, bytes: audioBuf, contentType: 'audio/mpeg', ext: 'mp3',
+      });
+      const url = claimedGen.publicUrl;
 
       const durationSec = await probeUploadedAudioDuration(audioBuf, '.mp3');
       const label = body.data.type === 'music' ? 'music' : 'sfx';
@@ -285,7 +296,8 @@ export async function registerAudioRoutes(app: FastifyInstance): Promise<void> {
       const [row] = await db.insert(audio_files).values({
         project_id:  project.id,
         filename,
-        storage_key: key,
+        storage_key: claimedGen.storageKey,
+        blob_id:     claimedGen.blobId,
         url,
         duration_sec: durationSec,
       }).returning();

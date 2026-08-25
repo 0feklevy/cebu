@@ -6,6 +6,7 @@ import { eq, and } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { editableProject } from '../../services/collabAccess.js';
 import { uploadWithFallback } from '../../services/storage/uploadWithFallback.js';
+import { claimUploadedMedia } from '../../services/storage/claimUploadedMedia.js';
 import { deleteWithFallback } from '../../services/storage/deleteWithFallback.js';
 import { randomUUID } from 'crypto';
 import { extname } from 'path';
@@ -48,7 +49,12 @@ export async function registerImageRoutes(app: FastifyInstance): Promise<void> {
       const key  = `images/${project.id}/${randomUUID()}${ext}`;
       const buf  = await readStreamBounded(data.file, UPLOAD_MAX_BYTES.image, 'This image');
 
-      const publicUrl = await uploadWithFallback(key, buf, mime);
+      // Stored ONCE across the whole product (078): identical bytes uploaded to two projects
+      // share one object. `claimed.storageKey` is authoritative — on a dedup hit it is the
+      // EXISTING blob's key, and writing the proposed one instead would leave this row pointing
+      // at nothing.
+      const claimed = await claimUploadedMedia({ proposedKey: key, bytes: buf, contentType: mime, ext });
+      const publicUrl = claimed.publicUrl;
 
       // Auto-compute 16:9 crop from image dimensions if we can determine them.
       // We store fractions (0–1). Default to full image; frontend refines with crop editor.
@@ -57,7 +63,8 @@ export async function registerImageRoutes(app: FastifyInstance): Promise<void> {
         .values({
           project_id:   project.id,
           filename:     data.filename || `image${ext}`,
-          storage_key:  key,
+          storage_key:  claimed.storageKey,
+          blob_id:      claimed.blobId,
           original_url: publicUrl,
           crop_x: 0,
           crop_y: 0,
@@ -104,16 +111,29 @@ export async function registerImageRoutes(app: FastifyInstance): Promise<void> {
       const ext = extname(data.filename || 'image').replace(/[^a-z0-9.]/gi, '').toLowerCase() || '.jpg';
       const key = `images/${project.id}/${randomUUID()}${ext}`;
       const buf = await readStreamBounded(data.file, UPLOAD_MAX_BYTES.image, 'This image');
-      const publicUrl = await uploadWithFallback(key, buf, mime);
+      // A replace stores once too. It must ALSO move `blob_id`: leaving the old one would point
+      // the row's reference at bytes it no longer serves — the sweeper would then see the old blob
+      // as still held (so never collect it) and the new one as unheld (so collect bytes this row
+      // is serving). Both halves of that are worse than not deduplicating at all.
+      const claimed = await claimUploadedMedia({ proposedKey: key, bytes: buf, contentType: mime, ext });
+      const publicUrl = claimed.publicUrl;
 
       const oldKey = existing.storage_key;
       const [row] = await db
         .update(image_files)
-        .set({ filename: data.filename || existing.filename, storage_key: key, original_url: publicUrl })
+        .set({
+          filename: data.filename || existing.filename,
+          storage_key: claimed.storageKey,
+          blob_id: claimed.blobId,
+          original_url: publicUrl,
+        })
         .where(eq(image_files.id, existing.id))
         .returning();
 
-      if (oldKey && oldKey !== key) deleteWithFallback(oldKey).catch(() => {});
+      // Only when the old key was NOT a shared blob. `deleteWithFallback` refuses `blobs/` keys
+      // anyway (the chokepoint guard), so this is belt and braces — but stating it here keeps the
+      // reader from concluding a replace deletes shared bytes.
+      if (oldKey && oldKey !== claimed.storageKey) deleteWithFallback(oldKey).catch(() => {});
       return reply.code(200).send(row);
     },
   );
