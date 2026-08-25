@@ -39,8 +39,18 @@ UI + selection) under a label, load it onto a compatible sim elsewhere, skipping
 UI map done (SectionEditor.tsx:1827-2330 is the sim column; `reuseBridgeScript` precedent at
 sections.controller.ts:1060). Bridge-model map in flight; design doc next.
 
-**Not built yet:** upload-path wiring to `claimBlob`, the `+` UI + endpoint, the orphan sweeper,
-saved_bridges (greenfield).
+**Save bridge SHIPPED onto the same branch (2026-08-25):** migration 079 (both registries),
+`SavedBridgeService` (save reads the selection from sim_meta and the body from the served
+bridge.js; unreadable revision degrades to recipe-only), `bridgePresetDecision.ts` (pure,
+mutation-proven: artifact only on verified anchors; hashes never shortcut; unverifiable=recipe),
+4 routes (`/bridge-presets` CRUD+fit+apply — apply RE-JUDGES server-side, 409=fall back to
+generate-with-recipe), `applySavedBridgeBody` as the acknowledged THIRD caller of
+uploadSectionBridge (guard test updated 2→3 by name), and the SectionEditor UI (Save bridge…/Load
+bridge…, server-composed fit sentence, applyDone extracted to applyPersistedSection shared by both
+paths). client-v1 extended; request() errors now carry {status, body}. Client 1708/1708.
+
+**Not built yet:** upload-path wiring to `claimBlob`, the `+` import UI + endpoint, the orphan
+sweeper.
 
 ## ✅ RESOLVED (2026-08-22) — EVERY DUBBED LANGUAGE HAD AN AMERICAN ACCENT
 
