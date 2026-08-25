@@ -37,9 +37,11 @@ export interface PresetForLoad {
 }
 
 export interface TargetForLoad {
-  /** The target simulation's current content identity, when known. */
+  /**
+   * The target simulation's bridge hash, when known. Used ONLY to choose between two cosmetic
+   * sentences — never to decide the path, which is always the contract verification.
+   */
   bridgeHash: string | null;
-  sourceHash: string | null;
   /** Result of verifyContract(preset.contract, targetSources); null when it could not run. */
   verification: { missing: ContractAnchor[]; checked: number } | null;
 }
@@ -74,9 +76,13 @@ export function judgeBridgeLoad(preset: PresetForLoad, target: TargetForLoad): L
     return { path: 'recipe', why: 'anchors-missing', missing: target.verification.missing };
   }
 
-  const sameContent =
-    preset.sourceBridgeHash != null && preset.sourceBridgeHash === target.bridgeHash ||
-    preset.sourceHash != null && preset.sourceHash === target.sourceHash;
+  // Bridge hash only. A first draft also compared `preset.sourceHash === target.sourceHash` — and
+  // that clause could never fire: there is no per-SIMULATION source hash anywhere. `sourceHash` is
+  // computed from a package's files at generation time and stored on a SECTION's sim_meta, so the
+  // target side is unobtainable here without re-reading and re-hashing every source file. Since
+  // `sameContent` only chooses between two cosmetic sentences, that would be a lot of I/O to
+  // change a word. The unreachable comparison is gone rather than left looking functional.
+  const sameContent = preset.sourceBridgeHash != null && preset.sourceBridgeHash === target.bridgeHash;
 
   return { path: 'artifact', sameContent };
 }

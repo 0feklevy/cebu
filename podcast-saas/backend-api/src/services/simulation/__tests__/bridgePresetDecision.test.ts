@@ -17,7 +17,7 @@ const preset = (over: Partial<PresetForLoad> = {}): PresetForLoad => ({
   ...over,
 });
 const target = (over: Partial<TargetForLoad> = {}): TargetForLoad => ({
-  bridgeHash: 'hash-b', sourceHash: 'src-b',
+  bridgeHash: 'hash-b',
   verification: { missing: [], checked: 1 },
   ...over,
 });

@@ -199,7 +199,7 @@ export class SavedBridgeService {
         sourceBridgeHash: preset.source_bridge_hash,
         sourceHash: preset.source_hash,
       },
-      { bridgeHash: sim.bridge_hash, sourceHash: null, verification },
+      { bridgeHash: sim.bridge_hash, verification },
     );
     return { verdict, description: describeLoadPath(verdict), preset: toRow(preset) };
   }
