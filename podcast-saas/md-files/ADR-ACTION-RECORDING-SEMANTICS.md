@@ -1,8 +1,10 @@
 # ADR — Action recording: execution, reset and clock semantics
 
-**Status:** proposed — Phase 0 exit gate. Not approved until the golden fixtures pass and the five
-Phase-0 measurements below have numbers.
-**Date:** 2026-08-25
+**Status:** **APPROVED by the owner, 2026-08-25.** The twelve decisions in §2 are settled and the
+build may not reopen them. What remains open is named honestly in §3 and §6 — the ADR was approved
+with M1 and M3–M5 unmeasured, because those need a running stack or a browser and none of them can
+move a §2 decision.
+**Date:** 2026-08-25 · approved 2026-08-25
 **Source:** `.claude/review/RESEARCH-ACTION-RECORDING-2026-08-25.md` §§6–17 (the deep-review ruling;
 §§1–5 of that file are the superseded original proposal and are **not** an implementation plan).
 **Supersedes:** nothing. **Blocks:** every phase of the action-recording build.
@@ -273,22 +275,21 @@ block an `executorVersion` at serve time. The bootstrap itself stays inert regar
 
 ## 6. Exit criteria for Phase 0
 
-1. This ADR approved.
-2. Golden fixtures pass: vanilla controls, React controlled inputs, DOM replacement, special and
-   duplicate ids, radio groups, a hidden Advanced panel, and an unsupported canvas.
-3. Serve-time bootstrap proven on an **old** revision and a **new** one, on both the local and cloud
-   storage paths, with no rebuild and no stored-byte change.
-4. `isRevisionStatusPublic` is an explicit allow-list, so an unrecognised status is refused rather
-   than served. The `proof_pending` / `proof_passed` statuses follow in the *next* release, not this
-   one — see D8 for why the order is not negotiable.
-5. The scheduler is proven against a fake clock: pause, resume, rate, restart-on-seek, adapter seek
-   both directions.
-6. The full lifecycle is proven: single reset generation, READY/PAINTED/PLAN barriers, deadlines,
-   fail-closed.
-7. Idempotency states, lease recovery and the `sectionVersion` fence are designed before the endpoint
-   is written.
-8. M1–M5 have numbers.
-9. **`generic click` does not appear in the supported matrix.**
+| # | Criterion | State |
+|---|---|---|
+| 1 | This ADR approved | ✅ owner-approved 2026-08-25 |
+| 2 | Golden fixtures pass: vanilla controls, React controlled inputs, DOM replacement, special and duplicate ids, radio groups, a hidden Advanced panel, an unsupported canvas | ✅ `rafGateRuntimeScanner.test.ts`, mutation-proven both directions |
+| 3 | Serve-time bootstrap proven on an **old** revision and a **new** one, on both the local and cloud storage paths, with no rebuild and no stored-byte change | ✅ `sim-public.localParity.test.ts`, mutation-proven |
+| 4 | `isRevisionStatusPublic` is an explicit allow-list, so an unrecognised status is refused rather than served | 🔨 approved 2026-08-25, its own PR — see D8 for why the two-release order is not negotiable |
+| 5 | The scheduler is proven against a fake clock: pause, resume, rate, restart-on-seek, adapter seek both directions | ✅ `actionPlanScheduler.test.ts`, four mutations |
+| 6 | The full lifecycle is proven: single reset generation, READY/PAINTED/PLAN barriers, deadlines, fail-closed | ⬜ open |
+| 7 | Idempotency states, lease recovery and the `sectionVersion` fence designed before the endpoint is written | ✅ `PHASE0-PROOF-STATE-AND-IDEMPOTENCY.md` |
+| 8 | M1–M5 have numbers | 🟡 M2's byte half measured (§3); M1, M3–M5 need a running stack or a browser |
+| 9 | **`generic click` does not appear in the supported matrix** | ✅ D5 |
+
+Criteria 1–3, 5, 7 and 9 are met. **The ADR was approved with 4, 6 and most of 8 still open**, on
+the owner's explicit ruling that none of them can move a §2 decision: 4 is a scheduled fix with its
+order already settled, 6 is a spike, and the remaining measurements are ergonomics.
 
 ---
 

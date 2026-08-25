@@ -1276,6 +1276,29 @@ specifically the `#id` and `[name]` branches that run before it; and `canary_pas
 OMISSION from `NEVER_PUBLISHED_STATUSES` rather than by an affirmative allow-list entry — a new
 proof flow relying on that status would be relying on a doc comment.
 
+## ✅ OWNER-APPROVED (2026-08-25) — the action-recording ADR, and four rulings with it
+
+Approved in one pass, after the evidence below was measured rather than argued. Recording the
+approvals separately from the work, because "the owner approved this" and "the code proves this"
+are different claims and a ledger that blurs them is worth less than one that admits the difference.
+
+1. **The ADR is approved** — `md-files/ADR-ACTION-RECORDING-SEMANTICS.md`. Its twelve decisions are
+   settled and the build may not reopen them. Approved with exit criteria 4, 6 and most of 8 still
+   open, on the explicit ruling that none of them can move a §2 decision.
+2. **The public-status fix is ordered, and the order IS the fix.** Release N inverts
+   `isRevisionStatusPublic` to an allow-list; `proof_pending`/`proof_passed` land in a LATER
+   release. Shipping a new status first would have older images serve exactly the unproven bytes it
+   was added to protect, because an unknown status is currently public.
+3. **The `ui_hide` defect waits for Phase 1** rather than getting its own patch. Measured: escaping
+   alone converts "the wrong control was hidden" into "the control is not offered at all", because
+   a correctly escaped selector carries a backslash and four separate copies of `/[{}<\\]/` drop it.
+   The real fix is LocatorV1 — locator ids on the wire instead of selector strings — which is the
+   same fix. Patching ahead of it would ship a second silent failure mode.
+4. **M2's target is 1KB gzip dormant, not the report's 5KB.** Measured: the rAF gate is already
+   5,878 gzip bytes on every entry document, so a 5KB bootstrap would nearly double what every
+   viewer downloads to buy a capability only an author reaches. The serve-time precedent
+   (`SIM_BOOT_SNIPPET`) is 457.
+
 ## 🟢 IN PROGRESS (2026-08-25) — action recording, Phase 0
 
 Per the report's own final recommendation: **not** the original Phases B–D, but a short Phase 0
