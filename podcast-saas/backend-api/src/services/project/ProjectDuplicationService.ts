@@ -561,10 +561,16 @@ export class ProjectDuplicationService {
       if (v.captions_vtt_key) storage.push({ kind: 'object', from: v.captions_vtt_key, to: dest(v.captions_vtt_key), reason: 'captions backup' });
     }
 
+    // A row backed by a shared blob (078) is NOT copied: the duplicate references the same bytes.
+    // Planning a copy would rewrite a `blobs/<digest>` key into a project-scoped one, which both
+    // re-creates the duplication dedup exists to remove AND produces a key whose name no longer
+    // matches its content — the one property the whole content-addressed design rests on.
     for (const i of snap.imageFiles) {
+      if (i.blob_id != null) continue;
       storage.push({ kind: 'object', from: i.storage_key, to: dest(i.storage_key), reason: `image ${i.filename}` });
     }
     for (const a of snap.audioFiles) {
+      if (a.blob_id != null) continue;
       storage.push({ kind: 'object', from: a.storage_key, to: dest(a.storage_key), reason: `audio ${a.filename}` });
     }
 
@@ -1341,10 +1347,19 @@ export class ProjectDuplicationService {
       }
       if (snap.imageFiles.length) {
         await tx.insert(image_files).values(snap.imageFiles.map((i) => {
-          const k = key(i.storage_key)!;
+          // A DEDUPLICATED row keeps its blob: same bytes, same key, no copy, and the reference
+          // carried across so the sweeper still sees the blob as held. Rebasing it to a
+          // project-scoped key would copy the blob's bytes into the new project — re-creating the
+          // exact duplication migration 078 removes — and leave the new row with no blob_id,
+          // which makes the ORIGINAL blob look collectable while this row serves it.
+          const shared = i.blob_id != null;
+          const k = shared ? i.storage_key : key(i.storage_key)!;
           return {
             id: ids.next(i.id), project_id: targetId, filename: i.filename, storage_key: k,
-            original_url: rebaseUrl(i.original_url, i.storage_key, k) ?? this.storage.getPublicUrl(k),
+            blob_id: i.blob_id ?? null,
+            original_url: shared
+              ? i.original_url
+              : (rebaseUrl(i.original_url, i.storage_key, k) ?? this.storage.getPublicUrl(k)),
             width: i.width, height: i.height,
             crop_x: i.crop_x, crop_y: i.crop_y, crop_w: i.crop_w, crop_h: i.crop_h,
           };
@@ -1352,10 +1367,13 @@ export class ProjectDuplicationService {
       }
       if (snap.audioFiles.length) {
         await tx.insert(audio_files).values(snap.audioFiles.map((a) => {
-          const k = key(a.storage_key)!;
+          // Same as images above: a shared blob is carried, not copied.
+          const shared = a.blob_id != null;
+          const k = shared ? a.storage_key : key(a.storage_key)!;
           return {
             id: ids.next(a.id), project_id: targetId, filename: a.filename, storage_key: k,
-            url: rebaseUrl(a.url, a.storage_key, k) ?? this.storage.getPublicUrl(k),
+            blob_id: a.blob_id ?? null,
+            url: shared ? a.url : (rebaseUrl(a.url, a.storage_key, k) ?? this.storage.getPublicUrl(k)),
             duration_sec: a.duration_sec,
           };
         }));

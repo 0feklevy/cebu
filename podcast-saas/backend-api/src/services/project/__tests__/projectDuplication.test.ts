@@ -2110,3 +2110,34 @@ describe('(n) a run that loses its claim commits nothing', () => {
     expect(await count('projects', 'true', [])).toBe(projectsBefore);
   });
 });
+
+describe('a duplicated project SHARES deduplicated bytes instead of copying them', () => {
+  // The interaction bug this pins, found while wiring uploads to the blob store: duplication
+  // rewrites every media key to a project-scoped one. Applied to a row backed by a shared blob
+  // that is wrong twice over — it copies the blob's bytes into the new project, re-creating the
+  // exact duplication migration 078 removes, AND it produces a `blobs/<digest>`-derived key whose
+  // name no longer matches its content, which is the one property the whole design rests on.
+  //
+  // Worse still if `blob_id` is not carried: the new row serves bytes it does not reference, so
+  // the sweeper sees the blob as unheld and collects it out from under a live row.
+
+  it('plans NO copy for a blob-backed image or audio row', async () => {
+    const blob = await one<{ id: string }>(
+      `INSERT INTO media_blobs (sha256, byte_size, storage_key)
+       VALUES (repeat('a',64), 10, 'blobs/aa/aa/' || repeat('a',64)) RETURNING id`, []);
+    await pg.query(
+      `UPDATE image_files SET blob_id=$1, storage_key='blobs/aa/aa/' || repeat('a',64) WHERE project_id=$2`,
+      [blob.id, fx.projectId]);
+
+    const plan = (await svc.dryRun(fx.projectId))!;
+    const imageCopies = plan.storage.filter((c) => /leaf\.png|blobs\//.test(c.from));
+    expect(imageCopies, `planned a copy of shared bytes: ${JSON.stringify(imageCopies)}`).toEqual([]);
+  });
+
+  it('still plans a copy for a row that is NOT blob-backed', async () => {
+    // The other half: a guard that skipped everything would pass the test above and silently stop
+    // duplicating ordinary media.
+    const plan = (await svc.dryRun(fx.projectId))!;
+    expect(plan.storage.some((c) => c.from.includes('vo.mp3')), 'an unshared audio row was not copied').toBe(true);
+  });
+});
