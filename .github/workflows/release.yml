@@ -98,6 +98,36 @@ jobs:
       - name: Compute next version (immutable tags)
         id: plan
         run: pnpm --filter ops-release release-cli plan --bump "${{ inputs.bump }}" --out "$ART/plan.json"
+      - name: Resolve what is ACTUALLY deployed (refs/deployed/production)
+        id: deployed
+        run: |
+          set -euo pipefail
+          # The risk window must be measured from the DEPLOYED version, not the last tag. A tag is
+          # created BEFORE the human-approval gate runs, so a failed approval leaves a tag that
+          # never shipped — and a window measured from it excludes exactly the change the gate
+          # demanded a human for, while the deploy ships HEAD's tree, which contains it. Observed
+          # live: run 32854681109 (ledger, 2026-08-25).
+          #
+          # refs/deployed/production is advanced by the deploy job only after the post-deploy gate
+          # passes. Not a tag (assertTagAvailable's immutability contract stays intact), not a
+          # branch (nothing can check it out by accident or open a PR against it).
+          #
+          # Every failure path lands on kind=unresolved, which release-risk treats as a
+          # mandatory-approval reason — the gate fails toward requiring a person, never away.
+          KIND=unresolved
+          BASE=""
+          DEPLOYED_SHA="$(git ls-remote origin refs/deployed/production | cut -f1 || true)"
+          if [ -n "$DEPLOYED_SHA" ] \
+             && git cat-file -e "${DEPLOYED_SHA}^{commit}" 2>/dev/null \
+             && git merge-base --is-ancestor "$DEPLOYED_SHA" HEAD; then
+            KIND=deployed-ref
+            BASE="$DEPLOYED_SHA"
+            echo "deployed base: $DEPLOYED_SHA"
+          else
+            echo "::warning::refs/deployed/production is missing, unfetchable, or not an ancestor of HEAD — release-risk will require human approval."
+          fi
+          echo "kind=$KIND" >> "$GITHUB_OUTPUT"
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
       - name: Initialize release state machine
         run: |
           pnpm --filter ops-release release-cli state-init --file "$ART/state.json" \
@@ -107,8 +137,12 @@ jobs:
         run: pnpm --filter ops-release release-cli preflight --next-tag "${{ steps.plan.outputs.next_tag }}" --out "$ART/preflight.json"
       - name: Secret scan
         run: pnpm --filter ops-release release-cli secret-scan --out "$ART/secret-scan.json"
-      - name: Migration audit (vs previous release)
-        run: pnpm --filter ops-release release-cli migration-audit --base-ref "${{ steps.plan.outputs.current_tag }}" --out "$ART/migration-audit.json"
+      - name: Migration audit (vs what is DEPLOYED, not vs the last tag)
+        # Same trap as the risk window: a migration that landed in a tagged-but-undeployed release
+        # is not "new since the last tag" — but it WILL run on this deploy. When the deployed base
+        # is unresolved this falls back to the tag (no regression), and release-risk is already
+        # forcing a human onto that release.
+        run: pnpm --filter ops-release release-cli migration-audit --base-ref "${{ steps.deployed.outputs.kind == 'deployed-ref' && steps.deployed.outputs.base || steps.plan.outputs.current_tag }}" --out "$ART/migration-audit.json"
       - name: Pre-build gate
         run: |
           pnpm --filter ops-release release-cli gate --phase pre-deploy \
@@ -119,15 +153,21 @@ jobs:
         id: risk
         run: |
           set -euo pipefail
-          # The set of changed paths, for the security-sensitive-surface check. `|| true` on the
-          # diff only: an unknown base ref yields an EMPTY list, and release-risk treats evidence
-          # it could not read as a reason to require approval rather than as an absence of risk.
-          git diff --name-only "${{ steps.plan.outputs.current_tag }}"..HEAD > "$ART/changed-paths.txt" 2>/dev/null || true
+          # The changed-paths window, measured from the resolved DEPLOYED base. When the base is
+          # unresolved the file is left deliberately absent: cmdReleaseRisk refuses to combine a
+          # 'deployed-ref' claim with a missing file, and an absent file under 'unresolved' adds
+          # nothing — the unresolved base is already a mandatory-approval reason. (The previous
+          # shape wrote an EMPTY file on a failed diff and a comment here claimed release-risk
+          # would fail closed on it; it did not — empty read as "nothing changed".)
+          if [ "${{ steps.deployed.outputs.kind }}" = "deployed-ref" ]; then
+            git diff --name-only "${{ steps.deployed.outputs.base }}"..HEAD > "$ART/changed-paths.txt"
+          fi
           pnpm --filter ops-release release-cli release-risk \
             --findings "$ART/preflight.json,$ART/secret-scan.json,$ART/migration-audit.json" \
             --backfill-policy "${{ inputs.backfill_policy }}" \
             ${{ inputs.approve_high && '--approve-high' || '' }} \
             --changed-paths "$ART/changed-paths.txt" \
+            --diff-base "${{ steps.deployed.outputs.kind }}" \
             --out "$ART/release-risk.json"
       - name: Are the release-blocking flows configured to run at all?
         id: fixtures
@@ -729,7 +769,10 @@ jobs:
       group: production-deploy
       cancel-in-progress: false
     permissions:
-      contents: read
+      # write, for exactly one push: advancing refs/deployed/production after the post-deploy
+      # gate passes. Not a tag and not a branch — assertTagAvailable's immutability contract and
+      # branch protection are both untouched. The tag job already holds the same permission.
+      contents: write
     env:
       SSH_KEY_FILE: ${{ github.workspace }}/.ssh-deploy-key
       KNOWN_HOSTS_FILE: ${{ github.workspace }}/.ssh-known-hosts
@@ -884,6 +927,36 @@ jobs:
       - name: State → BROWSER_VERIFIED
         if: steps.gate.outcome == 'success'
         run: pnpm --filter ops-release release-cli state-transition --file "$ART/state.json" --to BROWSER_VERIFIED
+      - name: Record what is now deployed (advance refs/deployed/production)
+        # Only after BROWSER_VERIFIED: a deploy that was rolled back by the post-deploy gate must
+        # NOT move the ref — production is back on the previous version and the ref still names
+        # it. The next release's risk window is measured from this ref (see the plan job), so
+        # advancing it on anything less than a verified deploy would re-open the exact
+        # tagged-but-undeployed hole this mechanism closes.
+        #
+        # `+` (force) is correct here and only here: this ref MOVES by design. It is not a tag,
+        # so assertTagAvailable's refuse-to-reuse contract does not apply to it.
+        #
+        # MANUAL ROLLBACK RUNBOOK NOTE: a rollback performed outside this workflow must move this
+        # ref back too (git push origin +<old-sha>:refs/deployed/production), or the next release
+        # will measure from a version that is no longer running.
+        #
+        # `gh api`, not `git push`: this job's checkout deliberately sets
+        # persist-credentials: false (it handles production SSH keys, and the GITHUB_TOKEN has no
+        # business sitting in its .git/config). The API path needs no git credentials, and the
+        # POST fallback creates the ref on the very first run, so there is no manual bootstrap.
+        if: steps.remote_deploy.outcome == 'success' && steps.gate.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOYED_SHA: ${{ needs.plan.outputs.git_sha }}
+        run: |
+          set -euo pipefail
+          if ! gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/deployed/production" \
+               -f sha="$DEPLOYED_SHA" -F force=true >/dev/null 2>&1; then
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/deployed/production" -f sha="$DEPLOYED_SHA" >/dev/null
+          fi
+          echo "refs/deployed/production -> $DEPLOYED_SHA"
       - name: Upload Playwright evidence (on failure)
         if: always() && (steps.gate.outcome == 'failure' || steps.remote_deploy.outcome == 'failure')
         uses: actions/upload-artifact@v6

@@ -45,10 +45,17 @@ needs the code AND the wiring, and removing either turns it red. An empty `APP_V
 as absent rather than reported as a blank version — `${APP_VERSION:-unknown}` means the variable is
 always present, so `??` would have accepted `''`.
 
-## 🔴 OPEN (owner-reported 2026-08-25) — "Save bridge…" / "Load bridge…" do nothing when clicked
+## ✅ CLOSED — verified in code (2026-08-25) — "Save bridge…" / "Load bridge…" opened BEHIND the modal
 
-Owner: "are not clickables… like nothing happens". Queued BEHIND the action-recording research
-report by the owner's explicit ordering.
+Owner-reported: "are not clickables… like nothing happens". Queued behind the action-recording
+research by the owner's ordering — and then fixed while that queue note still said open, which is
+why this entry survived as red after the work was done: **fixed in `f50cca8`, shipped in v0.2.5.**
+
+The leading hypothesis below was exactly right: the two preset overlays rendered inline inside the
+editor modal's own stacking context. The fix is the hypothesized one — both dialogs are
+`createPortal`ed to `document.body`, per the file's own `ConfirmDialog` precedent, and
+`presetDialogsVisible.test.tsx` asserts the thing that would have caught it: that clicking makes
+the dialog VISIBLE in the document above the modal, not merely that state flipped.
 
 **Leading hypothesis, to check first:** the two preset overlays in `SectionEditor.tsx` are
 rendered INLINE inside the editor modal's own DOM tree with `zIndex: 70`, while `ConfirmDialog` —
