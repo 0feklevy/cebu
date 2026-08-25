@@ -1292,6 +1292,52 @@ specifically the `#id` and `[name]` branches that run before it; and `canary_pas
 OMISSION from `NEVER_PUBLISHED_STATUSES` rather than by an affirmative allow-list entry — a new
 proof flow relying on that status would be relying on a doc comment.
 
+## 🔴 FIXED, NOT YET MERGED (owner-reported 2026-08-25) — three API bodies were JSON-encoded TWICE
+
+Owner: *"Save bridge — stuck with a bug: A label between 1 and 120 characters is required"*, on a
+perfectly good label. Filed as low priority. It was not low priority.
+
+`ClientV1Api.request` owns serialisation — it sets `Content-Type` and calls
+`JSON.stringify(opts.body)` itself. Three call sites passed `JSON.stringify(...)` **into** it:
+
+```
+JSON.stringify(JSON.stringify({ label: 'x' }))  ->  "\"{\\\"label\\\":\\\"x\\\"}\""
+```
+
+Measured: that is valid JSON, Fastify accepts it and parses it back to a **string**. Every handler
+does `z.object({…}).safeParse(request.body)`, which fails against a string, and each then returns
+its own schema's message — naming the field it wanted rather than the shape it got. The label was
+never the problem.
+
+**The blast radius is three endpoints, and the reported one is the least of them:**
+
+| method | consequence | reported? |
+|---|---|---|
+| `saveBridgePreset` | "Save bridge" could never save | yes |
+| **`importSimulation`** | **the `+` import could never import** | **no** |
+| `buildAudioEdition` | audio editions could never be requested | no |
+
+**`importSimulation` is the one that matters.** This ledger and the 2026-08-25 handoff both record
+the `+` import as **live and shipped** — wired, service working, tests passing. Every real call
+from a browser was rejected at the schema. *A feature can be fully built, fully tested, and never
+once have run.* Nothing in the suite could see it, because the tests exercise the service and the
+route, and the defect lives in the one hand-maintained file between them.
+
+**Why it survived:** `shared/src/generated/` is hand-maintained (CLAUDE.md §5) — nothing generates
+`client-v1.ts`, so a call site disagreeing with `request()` breaks no build. Six call sites pass a
+plain object; three did not, and the difference is one `JSON.stringify` on a line that reads
+perfectly naturally.
+
+**Two guards, each mutation-proven separately.** `request`'s `body` is typed `object`, so a
+pre-serialised string fails to COMPILE (`TS2322: Type 'string' is not assignable to type
+'object'`). And `apiClientBody.test.ts` drives the real client against a recording fetch, parsing
+the wire bytes the way Fastify would. The type stops the known mistake; the test stops any other
+route to the same wire shape.
+
+**Lesson for the ledger, not just the fix:** "shipped" was asserted from merged code and green
+tests. Neither is evidence that a user path executed. The `+` import needed one manual click to
+disprove, and never got one.
+
 ## 📋 PR #141 (opened 2026-08-25) — action-recording Phase 0
 
 `feat/action-recording-phase0`, seven commits, **zero behaviour change** — docs, fixtures and tests
