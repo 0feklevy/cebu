@@ -24,7 +24,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '../../db/index.js';
-import { project_audio_editions, projects } from '../../db/schema.js';
+import { project_audio_editions, projects, video_files } from '../../db/schema.js';
 import { firebaseAuthMiddleware, firebaseAuthOptionalMiddleware } from '../../middleware/firebase-auth.js';
 import { editableProject } from '../../services/collabAccess.js';
 import { requireProjectAccess } from '../../services/projectAccess.js';
@@ -130,8 +130,19 @@ export async function registerAudioEditionRoutes(app: FastifyInstance): Promise<
       // Refuse EARLY, with the reason, rather than queueing work that will refuse itself later.
       // A creator who is told "no playable audio yet" can act; one who watches a job go to
       // `failed` two minutes later has to guess, and is likely to guess "this feature is broken".
+      // `video_files.project_id`, NOT `projects.id`. The predicate used to name a column from a
+      // table this query does not select from, which Postgres refuses outright — and the
+      // `.catch(() => [])` below turned that refusal into an empty list, which
+      // `editionRefusalReason` reads as "no media" and answers 409 with a sentence about the
+      // project. Every podcast build, on every project, was refused for a reason that was never
+      // true. Observed in production 2026-08-25: three 409s and "This project has no media to
+      // derive audio from." on a project full of media.
+      //
+      // The catch stays: a transient database fault should not 500 a creator's Create-podcast
+      // click. What changes is that it can no longer hide a query that is wrong every time — the
+      // failure it now absorbs is the transient one it was written for.
       const segments = await db.query.video_files.findMany({
-        where: eq(projects.id, project.id),
+        where: eq(video_files.project_id, project.id),
         columns: { storage_key: true, duration_sec: true },
       }).catch(() => []);
       const refusal = editionRefusalReason(
