@@ -18,6 +18,47 @@ Last updated: **2026-08-22**, during the post-sweep fix round.
 
 ---
 
+## 🟢 IN FLIGHT (2026-08-24) — media dedup foundation + the two owner features riding on it
+
+**PR #138** (`feat/media-dedup`, CI running): store bytes once however many projects reference
+them. Content identity = SHA-256 + byte-size taken in the same pass (truncation cannot mint an
+identity), HEAD-verified before any reuse; `UNIQUE(sha256, byte_size)`; **no ref_count, no
+trigger** — a plain FK means Postgres itself refuses to drop a referenced blob (a counter would
+drift on every cascade delete). Project deletion: content-addressed blobs are untouchable by
+design; path-owned objects referenced elsewhere are ADOPTED before the project row goes
+(`readyToDelete` enforces the crash-safe order); unknown reference state = KEEP. Delete chokepoint
+(`deleteWithFallback`) refuses `blobs/` keys so no current or future caller can destroy shared
+bytes. Migration 078 in BOTH registries, expand-only. 200 tests, 11 mutations killed.
+Also carries CLAUDE.md §3e (the avatar-outage post-mortem rule).
+
+**Owner features this is for (2026-08-24):** (a) `+` in Edit Section imports a simulation from
+another project without re-upload/re-store — `importEligibility.ts` (destination-first check
+order so the endpoint is not an existence oracle; unlisted needs a non-empty matching token);
+(b) **save bridge / load bridge** — save a section's bridge configuration (auto script + minimal
+UI + selection) under a label, load it onto a compatible sim elsewhere, skipping regeneration.
+UI map done (SectionEditor.tsx:1827-2330 is the sim column; `reuseBridgeScript` precedent at
+sections.controller.ts:1060). Bridge-model map in flight; design doc next.
+
+**Save bridge SHIPPED onto the same branch (2026-08-25):** migration 079 (both registries),
+`SavedBridgeService` (save reads the selection from sim_meta and the body from the served
+bridge.js; unreadable revision degrades to recipe-only), `bridgePresetDecision.ts` (pure,
+mutation-proven: artifact only on verified anchors; hashes never shortcut; unverifiable=recipe),
+4 routes (`/bridge-presets` CRUD+fit+apply — apply RE-JUDGES server-side, 409=fall back to
+generate-with-recipe), `applySavedBridgeBody` as the acknowledged THIRD caller of
+uploadSectionBridge (guard test updated 2→3 by name), and the SectionEditor UI (Save bridge…/Load
+bridge…, server-composed fit sentence, applyDone extracted to applyPersistedSection shared by both
+paths). client-v1 extended; request() errors now carry {status, body}. Client 1708/1708.
+
+**The `+` import SHIPPED too (2026-08-25):** `SimulationImportService` (bucket-side copyObject,
+served-content-to-legacy-layout that migration-on-write upgrades later; bridge.js/guidance/posters
+deliberately excluded, package_class null — nothing claimed the copy did not produce),
+`POST /projects/:id/simulations/import` (sim names its own project; destination-first 404-safe
+eligibility), Import button + two-step picker in the editor. 9 tests.
+
+**Owner directive (2026-08-25):** after this feature → RELEASE → STOP; remaining work hands to
+the next session. **Not built yet (for that session):** upload-path wiring of media files to
+`claimBlob`, the orphan sweeper, share-token import UI, A2.3.
+
 ## ✅ RESOLVED (2026-08-22) — EVERY DUBBED LANGUAGE HAD AN AMERICAN ACCENT
 
 **The report, verbatim:** ElevenLabs dubbing "puts an American accent on all the other languages and
@@ -119,6 +160,17 @@ being ignored and why. Tested in `crop/__tests__/algoV2Guard.test.ts`. What rema
 owner ruling this entry always ended on: delete the flag/type/VERSIONS entry, or implement v2 —
 and the implementing commit must flip `V2_IMPLEMENTED` in the same change.
 
+## 🟡 OWNER ACTION (2026-08-23 incident residue) — two one-time steps
+
+1. **Rotate the Anam key pasted into chat during the incident** — Admin → API Keys → Anam (the
+   screen #125/#134 shipped). One minute; the exposed key works until then.
+2. **Check "Max session length" in the demo project's Avatar settings** — the ~1-minute
+   conversation death is an Anam per-project dashboard value, not a FlowVid code path (the
+   code-level 30s watchdog kill was a separate bug, fixed in #137).
+
+(Recorded here from the root scratch file `INCIDENT-AVATAR-500.md`, which is now deleted — an
+untracked file is not a ledger.)
+
 ## 🟡 OWNER ACTION (⅓ done 2026-08-23) — smoke variables: PUBLIC set, two remain
 
 Found 2026-08-22 while checking whether the production audit shared the hole closed in the release
@@ -153,7 +205,20 @@ gate turns CRITICAL into an automatic rollback — so without the early refusal,
 would have rolled back a perfectly healthy deploy over a missing configuration value. `plan` now
 refuses BEFORE anything is deployed and names the variables (PR #81).
 
-## 🔴🔴 OWNER-RANKED TOP PRIORITY — every API token and every dollar, visible in admin
+## ✅ CLOSED IN CODE (2026-08-23/24) — every API token and every dollar, visible in admin
+
+**Status correction 2026-08-25, verified against code (a task-tracker audit re-flagged this as
+open — its grep used the wrong symbol names):** all six once-untracked paths now record —
+`recordTtsSpend`/`recordSttSpend` sit in `PodcastRenderer` (4 sites), `previewTurn`, `revoiceTurn`,
+`GuidanceService`, `audio.controller` (2 each); `PodcastVoiceService` is METERED_BY_CALLER. The
+enforcement is not a promise but a TEST: `spendContract.test.ts` walks the import graph from every
+paid vendor client and fails the build on any spend path with no recorder (`UNMETERED_TODAY = []`,
+with a stale-path guard). Admin gets `GET /api/admin/v1/spend` + the Spend page (per-unit
+quantities, never summed across units); the ceiling (`spendCeiling.ts`) ships in SHADOW.
+**Remaining, deliberate:** the enforce-mode switch (owner call, after shadow data) and the
+vendor-side Auto Top-Up cap (owner-only, at ElevenLabs).
+
+*The original write-up follows for the incident record.*
 
 Asked for directly on 2026-08-23, and ranked ABOVE routine debugging: *"מעקב צמוד על כל ה-API
 tokens וההוצאות שיש בכל המערכת ב-admin mode"*.
@@ -418,8 +483,15 @@ migration 071, the pure rules, the ffmpeg pass, the service, the durable job and
 is exactly as public as its project — re-derived per request from `requireProjectAccess`, never read
 off the edition row — with the artifact under a PRIVATE `editions/` prefix, because `podcasts/` being
 public is what made a customer's brief world-readable (security-016). 31 mutations, all caught.
-**Remaining:** A2.2 `/{slug}/audio` landing → A2.3 Media Session + PWA (the locked-phone answer) →
-A2.4 Raise Your Hand. **A2.5 "Call It" is deferred by its own design** until A2.4 produces real
+**Corrected 2026-08-25 (task-tracker audit — the ordering below was stale):**
+- **A2.2 `/{slug}/audio` landing — BUILT, verified in code:** `client-web/app/[slug]/audio/page.tsx`
+  (ISR, `getAudioEditionPage`, `AudioEditionPlayer`, reserved-slug guard) + three test files. No
+  ledger line had recorded the closure.
+- **A2.4 Raise Your Hand — HALF-built, the false-green shape:** backend fully live
+  (`audioEdition.controller.ts:243,286`, `ListenerQuestionService`, migration 072) but **no client
+  affordance exists** — `AudioEditionPlayer` has no question UI, so no listener can reach the
+  endpoint. Smallest next step: one client control wired to the live route.
+**Remaining:** A2.3 Media Session + PWA → A2.4's CLIENT half. **A2.5 "Call It" stays deferred** until A2.4 produces real
 listener-question data proving demand — that is a decision already recorded, not an omission.
 
 ### WAVE 4 — CROP  ·  owner: footage  ·  blocked at the first step
@@ -497,22 +569,22 @@ recommendation on each:
    an iframe, which is exactly the case the path-segment token was designed for; a per-request
    project lookup would put a DB query on every asset of every sim. Cost: revoking a share keeps
    already-minted tokens alive until expiry (≤8 days) — same trade already accepted for HLS.
-2. **`podcasts/` holds user SOURCE DOCUMENTS on a public prefix.** *Recommendation: move the
-   documents to a private prefix (`podcast-sources/`), keep the immutable studio clips public.*
-   The prefix was chosen for clips; documents were added later without revisiting it. Moving new
-   writes is one key-builder change; existing objects get a small backfill move.
+2. ~~**`podcasts/` holds user SOURCE DOCUMENTS on a public prefix.**~~ **ALREADY SHIPPED (PR
+   #74, verified in code 2026-08-25):** `podcast.controller.ts:83` writes to
+   `PODCAST_SOURCE_PREFIX = 'podcast-sources'` (private). No ruling needed. (The already-shared
+   URL from before the fix is still the owner-action item — delete + re-upload.)
 3. **`security-001` / STEP 3+4 — when to cut the public bucket over to proxied URLs.**
    *Recommendation: schedule it as its own round, after the C1 gate lands.* It changes URLs people
    already hold (the four ordered landings are documented in
    `supabasePublicMedia.guard.test.ts`); a naive cutover is an outage. The ⚪ "revoked shares keep
    working" acceptance stays accepted until this ships.
-4. **`security-012` — the gate returns TRUE on a DB error (availability over confidentiality).**
-   *Recommendation: ratify it, but bound it* — fail open only for keys whose project was public at
-   last successful check (a tiny TTL cache), fail closed for never-seen keys. Full fail-closed
-   turns every Supabase blip into a sitewide media outage; full fail-open is what stands today.
+4. ~~**`security-012` — the gate returns TRUE on a DB error.**~~ **ALREADY IMPLEMENTED as the
+   bounded version (PR #75, verified in code 2026-08-25):** `mediaAccess.ts:127-146` — TTL cache,
+   fail-open only for keys last confirmed public, fail-closed for never-seen keys; the in-code
+   comment reads "BOUNDED FAIL-OPEN (security-012). Ratified, not removed." This section
+   previously described the OLD unbounded state — it postdated the fix and missed it.
 
-Say "approve C1 as recommended" (or amend any of the four) and the next session implements it as
-one gate.
+**Only #1 (sim-public scoped tokens) and #3 (bucket cutover scheduling) still need your ruling.**
 
 ## 🔵 Blocked on you — materials and approvals (unchanged, restated once)
 
@@ -733,6 +805,7 @@ The two dead Trigger.dev files that made this look done are deleted (#95).
   though `inputs.deploy` was true and the deploy succeeded — v0.1.40–43 all sit as Drafts while
   v0.1.39 published fine. Cosmetic (tag+draft exist), but the `if:` on the publish job deserves a
   look before the next release; publish v0.1.43's draft by hand or fix the condition.
+  **FIXED (#136, verified 2026-08-25): v0.1.45 published as Latest — the first post-fix release.**
 * ✅ **PROD INCIDENT RESOLVED 2026-08-23 ~14:20Z: /avatar/start 500 → 200 in v0.1.43.** Root: PERSONA_MAP never learned the 'guide' default (undefined ?? undefined → entry.personaId TypeError, statusless, pre-vendor). Fixed #127 (+ sanitizer class-defense), verified live: real sessionToken minted on the reported page; both pages 200. Full debrief: `INCIDENT-2026-08-23-avatar.md` — **MECHANISM CRACKED + reproduced: wrong-typed avatar_config field → statusless TypeError → bare 500 pre-vendor; fix = #127 (sanitize at both seams); v0.1.42 (diagnostic+admin key) deploying, v0.1.43 (the fix) right behind**
 
   * v0.1.42 did NOT deploy: candidate smoke failed one step past #103's cd fix —

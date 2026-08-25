@@ -94,6 +94,8 @@ const MIGRATION_FILES = [
   '075_anam_provider.sql',
   '076_marker_anchors.sql',
   '077_admin_vendor_config.sql',
+  '078_media_blobs.sql',
+  '079_saved_bridges.sql',
 ];
 
 type Row = Record<string, unknown>;

@@ -555,6 +555,40 @@ export interface AudioFile {
  * to `string` so a real `SimUiSelection` assigns INTO it, never the other way round. Readers that
  * need the narrow union keep going through `getStoredSelection`, which sanitizes untrusted JSON.
  */
+/**
+ * A saved bridge preset — "save bridge" (backend migration 079). The public shape only:
+ * the script body itself never crosses to the client; the server pastes it server-side.
+ */
+export interface BridgePreset {
+  id: string;
+  label: string;
+  sim_prompt: string | null;
+  simple_ui: boolean;
+  auto_script: boolean;
+  ui_controls: SimMetaUiControls | null;
+  /** True when the preset carries a generated script that CAN be pasted instantly when it fits. */
+  has_artifact: boolean;
+  source_simulation_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** One anchor a preset's script binds to that the target simulation does not provide. */
+export interface BridgePresetMissingAnchor { kind: string; token: string; atom?: string }
+
+/** The load-path verdict for (preset, section): paste instantly, or regenerate from the recipe. */
+export interface BridgePresetFit {
+  path: 'artifact' | 'recipe';
+  /** The sentence to show beside the Load button — server-composed, never assembled client-side. */
+  description: string;
+  verdict: {
+    path: 'artifact' | 'recipe';
+    sameContent?: boolean;
+    why?: 'no-artifact' | 'no-contract' | 'verification-unavailable' | 'anchors-missing';
+    missing?: BridgePresetMissingAnchor[];
+  };
+}
+
 export interface SimMetaUiControls {
   controls: Array<{ selector: string; kind: string; label: string; hidden?: boolean }>;
   show:     string[];
@@ -1039,7 +1073,10 @@ export class ClientV1Api {
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({ message: res.statusText })) as { message?: string };
-      throw new Error(err.message ?? `HTTP ${res.status}`);
+      // The status AND the parsed body ride on the thrown error: some refusals are instructions
+      // (the bridge-preset apply answers 409 with the verdict to fall back on), and a caller that
+      // can only read `message` would have to re-request what it was already sent.
+      throw Object.assign(new Error(err.message ?? `HTTP ${res.status}`), { status: res.status, body: err });
     }
 
     // 204 No Content and genuinely empty bodies must not be fed to JSON.parse.
@@ -1594,6 +1631,47 @@ export class ClientV1Api {
 
   uploadSimulation(projectId: string, formData: FormData): Promise<Simulation> {
     return this.requestMultipart(`/api/v1/projects/${projectId}/simulations/upload`, formData);
+  }
+
+  /**
+   * Import a simulation from another project — the `+` without the re-upload. The server copies
+   * the served content bucket-side and answers with the new, destination-owned row. A private
+   * source answers 404 (indistinguishable from absent, by design).
+   */
+  importSimulation(projectId: string, simulationId: string, shareToken?: string): Promise<Simulation> {
+    return this.request(`/api/v1/projects/${projectId}/simulations/import`, {
+      method: 'POST',
+      body: JSON.stringify({ simulation_id: simulationId, ...(shareToken ? { share_token: shareToken } : {}) }),
+    });
+  }
+
+  // ── Saved bridge presets ("save bridge", 079) ──────────────────────────────────────────────
+
+  listBridgePresets(): Promise<{ presets: BridgePreset[] }> {
+    return this.request(`/api/v1/bridge-presets`);
+  }
+
+  deleteBridgePreset(presetId: string): Promise<{ ok: boolean }> {
+    return this.request(`/api/v1/bridge-presets/${presetId}`, { method: 'DELETE' });
+  }
+
+  saveBridgePreset(projectId: string, sectionId: string, label: string): Promise<{ preset: BridgePreset }> {
+    return this.request(`/api/v1/projects/${projectId}/sections/${sectionId}/bridge-presets`, {
+      method: 'POST',
+      body: JSON.stringify({ label }),
+    });
+  }
+
+  bridgePresetFit(projectId: string, sectionId: string, presetId: string): Promise<BridgePresetFit> {
+    return this.request(`/api/v1/projects/${projectId}/sections/${sectionId}/bridge-presets/${presetId}/fit`);
+  }
+
+  /**
+   * The ARTIFACT apply. A 409 is an instruction, not an error: the paste is not proven safe for
+   * this simulation, and the caller falls back to the generate endpoint with the preset's recipe.
+   */
+  applyBridgePreset(projectId: string, sectionId: string, presetId: string): Promise<{ section: TimelineSection; sectionUrl: string; path: 'artifact' }> {
+    return this.request(`/api/v1/projects/${projectId}/sections/${sectionId}/bridge-presets/${presetId}/apply`, { method: 'POST' });
   }
 
   deleteSimulation(projectId: string, simId: string): Promise<void> {

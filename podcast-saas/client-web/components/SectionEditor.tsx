@@ -4,7 +4,7 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { getAuth } from 'firebase/auth';
 import { Archive, Check, ChevronDown, ChevronUp, Copy, Download, Maximize2, Minimize2, Play, Square } from 'lucide-react';
-import type { TimelineSection, Simulation, VideoFile, VideoGenerationJob, SimFile, SimMeta, ImageFile, GuidanceEntry, GuidanceMeta, GuidanceStatus } from 'shared/src/generated/client-v1';
+import type { TimelineSection, Simulation, VideoFile, VideoGenerationJob, SimFile, SimMeta, ImageFile, GuidanceEntry, GuidanceMeta, GuidanceStatus, BridgePreset, BridgePresetFit } from 'shared/src/generated/client-v1';
 import { api } from '../lib/api';
 import {
   getStoredSelection, kindLabel, mergeScans, normalizeSelection, sanitizeControls,
@@ -215,6 +215,20 @@ export function SectionEditor({
   const [uiDirty, setUiDirty]           = useState(false);
   const [uiScanBusy, setUiScanBusy]     = useState(false);
   const [uiScanSource, setUiScanSource] = useState<'runtime' | 'static' | 'stored' | null>(null);
+
+  // ── Saved bridges ("save bridge" / "load bridge", 079) ──────────────────────────────────────
+  // Transient UI state only — the presets themselves live server-side, user-scoped.
+  const [presetSaveOpen, setPresetSaveOpen] = useState(false);
+  const [presetLabel, setPresetLabel] = useState('');
+  const [presetNotice, setPresetNotice] = useState<string | null>(null);
+  const [presetError, setPresetError] = useState<string | null>(null);
+  const [presetBusy, setPresetBusy] = useState(false);
+  const [loadOpen, setLoadOpen] = useState(false);
+  const [presets, setPresets] = useState<BridgePreset[] | null>(null);
+  const [selectedPreset, setSelectedPreset] = useState<BridgePreset | null>(null);
+  // The server-composed sentence for the selected preset — which path a load would take and why.
+  const [presetFit, setPresetFit] = useState<BridgePresetFit | null>(null);
+  const [fitLoading, setFitLoading] = useState(false);
   const [uiScanEmpty, setUiScanEmpty]   = useState(false);  // last scan ran and found nothing
   const uiScannedRef = useRef(false);                       // auto-scan once per panel open
 
@@ -439,6 +453,10 @@ export function SectionEditor({
     setClipPlaying(false);
     setClipUploadErr(null);
     setTimeout(() => labelRef.current?.focus(), 80);
+    // A notice about the PREVIOUS section is a statement about work the viewer is no longer
+    // looking at.
+    setPresetNotice(null);
+    setPresetError(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [section.id]);
 
@@ -813,10 +831,42 @@ export function SectionEditor({
     }
   }, [projectId, simulations, simId]);
 
-  const handleGenerateScript = useCallback(async () => {
+  // Apply a PERSISTED section to the editor + live preview. Extracted from the generate stream's
+  // `done` handler so the saved-bridge apply path resyncs through the exact same code — two copies
+  // of this logic is how the toggles and the live document start disagreeing.
+  const applyPersistedSection = useCallback((s: TimelineSection) => {
+    onUpdate(s);
+    previewEpochRef.current += 1;
+    setSimpleUi(s.simple_ui ?? false);
+    setAutoScript(s.auto_script ?? true);
+    const doneSelection = getStoredSelection(s.sim_meta);
+    setUiControls(doneSelection?.controls ?? []);
+    setUiUnchecked(new Set(doneSelection?.hide ?? []));
+    setUiDirty(false);
+    setUiScanSource(doneSelection ? 'stored' : null);
+    const mountedDoc = simRuntime.getState().documentKey;
+    const nextDoc = s.simulation_served_url ?? s.simulation_url;
+    const remountCovers = !!nextDoc && nextDoc !== mountedDoc;
+    if (!remountCovers) {
+      const doneHide = doneSelection?.hide ?? null;
+      const doneParams: SimStartScriptParams = {
+        simpleUi:   s.simple_ui ?? false,
+        autoScript: s.auto_script ?? true,
+        ...(doneHide ? { hideSelectors: doneHide } : {}),
+      };
+      simRuntime.activate({ script: s.sim_script ?? 'main', params: doneParams });
+    }
+    setPreviewRunning(true);
+  }, [onUpdate, simRuntime]);
+
+  const handleGenerateScript = useCallback(async (overrides?: {
+    prompt?: string; simpleUi?: boolean; autoScript?: boolean; selection?: SimUiSelection | null;
+  }) => {
     if (!simId) return;
-    const prompt = simPrompt.trim();
-    const sel = genSelection;
+    const prompt = (overrides?.prompt ?? simPrompt).trim();
+    const effSimpleUi = overrides?.simpleUi ?? simpleUi;
+    const effAutoScript = overrides?.autoScript ?? autoScript;
+    const sel = overrides?.selection !== undefined ? overrides.selection : genSelection;
     const sendSel = !!(sel && (sel.show.length || sel.hide.length));
     // Generate needs EITHER a prompt (LLM) OR a UI selection (mechanical minimize-UI, no prompt).
     if (!prompt && !sendSel) return;
@@ -848,50 +898,7 @@ export function SectionEditor({
     // that EventSource could only report as a generic "connection lost".
     let errorHandled = false;
 
-    // Apply a `done` section to the editor + live preview (shared by the stream handler).
-    const applyDone = (s: TimelineSection) => {
-      onUpdate(s);
-      // (P1.1b) The PERSISTED section is the single source of truth for post-generation preview
-      // state. Sync the live toggles and the Minimal-UI panel from `s` FIRST, so the two ways the
-      // new state can reach the document — the same-document push below, or the remount +
-      // handshake auto-run when simulation_url changed — compute IDENTICAL params. (They used to
-      // race: this handler activated unconditionally with persisted params while the remount's
-      // handshake activated with live params, last write winning.) The epoch bump voids any
-      // still-pending debounced picker re-apply scheduled against the pre-generation state.
-      previewEpochRef.current += 1;
-      setSimpleUi(s.simple_ui ?? false);
-      setAutoScript(s.auto_script ?? true);
-      const doneSelection = getStoredSelection(s.sim_meta);
-      setUiControls(doneSelection?.controls ?? []);
-      setUiUnchecked(new Set(doneSelection?.hide ?? []));
-      setUiDirty(false);
-      setUiScanSource(doneSelection ? 'stored' : null);
-      // URL changed ⇒ the keyed iframe remounts, its SIM_READY fires, and the handshake effect
-      // auto-runs with the state just synced — activating the CURRENT runtime here as well is the
-      // second, conflicting activation this comment block used to describe but the code posted
-      // anyway. Only a byte-identical URL (canReuse / mechanical path: no reload, no fresh
-      // SIM_READY) still needs the explicit push. Compared against the runtime's mounted
-      // documentKey rather than the closure's `section`, which is stale whenever this very run
-      // already patched the section (type/simulation_id) before streaming.
-      const mountedDoc = simRuntime.getState().documentKey;
-      // Compared against WHAT THIS SURFACE MOUNTS, which is the served url (see `simPreviewUrl`).
-      // Comparing the stored url against the mounted document key answered "remounting" for every
-      // revisioned package — the two are different strings by construction — so the explicit push
-      // was skipped on the canReuse/mechanical path, where no remount happens and no fresh
-      // SIM_READY arrives, and the new toggles reached the live document from nowhere at all.
-      const nextDoc = s.simulation_served_url ?? s.simulation_url;
-      const remountCovers = !!nextDoc && nextDoc !== mountedDoc;
-      if (!remountCovers) {
-        const doneHide = doneSelection?.hide ?? null;   // [] is meaningful: clear every hide
-        const doneParams: SimStartScriptParams = {
-          simpleUi:   s.simple_ui ?? false,
-          autoScript: s.auto_script ?? true,
-          ...(doneHide ? { hideSelectors: doneHide } : {}),
-        };
-        simRuntime.activate({ script: s.sim_script ?? 'main', params: doneParams });
-      }
-      setPreviewRunning(true);
-    };
+    const applyDone = applyPersistedSection;
 
     const dispatch = (event: string, dataStr: string) => {
       if (event === 'status') {
@@ -923,8 +930,8 @@ export function SectionEditor({
           },
           body: JSON.stringify({
             prompt,
-            simple_ui: simpleUi,
-            auto_script: autoScript,
+            simple_ui: effSimpleUi,
+            auto_script: effAutoScript,
             ...(sendSel ? { ui_controls: sel } : {}),
           }),
           signal: abort.signal,
@@ -973,7 +980,105 @@ export function SectionEditor({
         setGenerationStatus(null);
       }
     }
-  }, [projectId, section, simId, simPrompt, simpleUi, autoScript, genSelection, onUpdate, simRuntime]);
+  }, [projectId, section, simId, simPrompt, simpleUi, autoScript, genSelection, onUpdate, applyPersistedSection]);
+
+  // ── Saved-bridge handlers ───────────────────────────────────────────────────────────────────
+
+  const handleSavePreset = useCallback(async () => {
+    const label = presetLabel.trim();
+    if (!label || presetBusy) return;
+    setPresetBusy(true);
+    setPresetError(null);
+    try {
+      await api.saveBridgePreset(projectId, section.id, label);
+      setPresetSaveOpen(false);
+      setPresetLabel('');
+      setPresetNotice(`Saved as “${label}”`);
+    } catch (e) {
+      setPresetError((e as Error).message || 'Could not save this bridge');
+    } finally {
+      setPresetBusy(false);
+    }
+  }, [presetLabel, presetBusy, projectId, section.id]);
+
+  const openLoadPicker = useCallback(async () => {
+    setLoadOpen(true);
+    setSelectedPreset(null);
+    setPresetFit(null);
+    setPresetError(null);
+    setPresets(null);
+    try {
+      const r = await api.listBridgePresets();
+      setPresets(r.presets);
+    } catch (e) {
+      setPresetError((e as Error).message || 'Could not load your saved bridges');
+      setPresets([]);
+    }
+  }, []);
+
+  const handleSelectPreset = useCallback(async (p: BridgePreset) => {
+    setSelectedPreset(p);
+    setPresetFit(null);
+    setFitLoading(true);
+    try {
+      setPresetFit(await api.bridgePresetFit(projectId, section.id, p.id));
+    } catch {
+      // No fit answer is not a dead end: the confirm falls back to the recipe path, which is
+      // always available. The sentence just cannot promise "instantly".
+      setPresetFit(null);
+    } finally {
+      setFitLoading(false);
+    }
+  }, [projectId, section.id]);
+
+  const handleConfirmLoad = useCallback(async () => {
+    const p = selectedPreset;
+    if (!p || presetBusy) return;
+    setPresetBusy(true);
+    setPresetError(null);
+    try {
+      if (presetFit?.path === 'artifact') {
+        try {
+          const r = await api.applyBridgePreset(projectId, section.id, p.id);
+          applyPersistedSection(r.section);
+          setLoadOpen(false);
+          setPresetNotice(`Loaded “${p.label}”`);
+          return;
+        } catch (e) {
+          // 409 is an INSTRUCTION: the fit changed between /fit and /apply (a replace can
+          // activate a new revision in between) and the server refused the paste. Everything
+          // else — auth, network, 5xx — is a real failure and must not quietly become an LLM
+          // spend the user did not ask for.
+          if ((e as { status?: number }).status !== 409) throw e;
+        }
+      }
+      // The RECIPE path: adopt the preset's settings into the editor state, close the picker,
+      // and run the existing generation with the values passed EXPLICITLY — state set in the
+      // lines above has not committed yet, and reading it back would race React.
+      const sel = p.ui_controls && ((p.ui_controls.show?.length ?? 0) || (p.ui_controls.hide?.length ?? 0))
+        ? { controls: [], show: p.ui_controls.show ?? [], hide: p.ui_controls.hide ?? [] }
+        : null;
+      setSimPrompt(p.sim_prompt ?? '');
+      setSimpleUi(p.simple_ui);
+      setAutoScript(p.auto_script);
+      if (sel) {
+        setUiUnchecked(new Set(sel.hide));
+        setUiScanSource('stored');
+      }
+      setLoadOpen(false);
+      setPresetNotice(`Loading “${p.label}” — regenerating for this simulation…`);
+      await handleGenerateScript({ prompt: p.sim_prompt ?? '', simpleUi: p.simple_ui, autoScript: p.auto_script, selection: sel });
+      // The notice announced work that is now over. Left standing it says "regenerating…" beside a
+      // finished result — or, worse, beside the generation's own error, where it reads as though
+      // something is still coming. Generation reports its own outcome; this hands the screen back.
+      setPresetNotice(null);
+    } catch (e) {
+      setPresetError((e as Error).message || 'Could not load this bridge');
+    } finally {
+      setPresetBusy(false);
+    }
+  }, [selectedPreset, presetBusy, presetFit, projectId, section.id, applyPersistedSection, handleGenerateScript]);
+
 
   const handleCancelGeneration = useCallback(() => {
     genAbortRef.current?.abort();
@@ -1405,6 +1510,7 @@ export function SectionEditor({
             ? [
                 { selector: '[data-tour="sec-sim-prompt"]', title: 'Describe the moment', content: 'Tell the AI exactly what the simulation should show here. Below, toggle Simple UI and Auto Script to control the demo behavior.' },
                 { selector: '[data-tour="sec-sim-generate"]', title: 'Generate and preview', content: 'Generate the interactive bridge script with AI, then play it in the preview before saving.' },
+                { selector: '[data-tour="sec-sim-presets"]', title: 'Save and reuse a bridge', content: 'Once a setup works, save it under a name — then load it onto the same simulation in another video instead of setting it up again. It applies instantly when it fits, and regenerates from your saved settings when it does not.' },
               ]
             : []),
         ]
@@ -2162,7 +2268,7 @@ export function SectionEditor({
 
                     <button
                       data-tour="sec-sim-generate"
-                      onClick={handleGenerateScript}
+                      onClick={() => handleGenerateScript()}
                       disabled={generating || !canGenerate}
                       title={!canGenerate ? 'Enter a prompt, or pick controls in Advanced to just minimize the UI' : undefined}
                       style={{
@@ -2195,6 +2301,43 @@ export function SectionEditor({
                       >
                         Cancel
                       </button>
+                    )}
+
+                    {/* ── SAVED BRIDGES: name this setup; load one saved elsewhere ── */}
+                    <div data-tour="sec-sim-presets" style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                      <button
+                        onClick={() => { setPresetSaveOpen(true); setPresetLabel(''); setPresetError(null); }}
+                        // A bridge worth saving exists once the section HAS a generated setup —
+                        // the sim_meta the save snapshots. Before that there is nothing to name.
+                        disabled={presetBusy || !simId || !section.sim_meta}
+                        title={!section.sim_meta ? 'Generate (or apply minimal UI) first — then the setup can be saved' : 'Save this bridge setup under a name'}
+                        style={{
+                          flex: 1, height: 30, borderRadius: 8, border: '1.5px solid hsl(var(--border))',
+                          backgroundColor: 'transparent', color: 'hsl(var(--foreground))',
+                          fontSize: 12, fontWeight: 600,
+                          cursor: presetBusy || !simId || !section.sim_meta ? 'not-allowed' : 'pointer',
+                          opacity: !simId || !section.sim_meta ? 0.55 : 1,
+                        }}
+                      >
+                        Save bridge…
+                      </button>
+                      <button
+                        onClick={openLoadPicker}
+                        disabled={presetBusy || generating || !simId}
+                        title="Load a bridge setup you saved — instantly when it fits, regenerated when it does not"
+                        style={{
+                          flex: 1, height: 30, borderRadius: 8, border: '1.5px solid hsl(var(--border))',
+                          backgroundColor: 'transparent', color: 'hsl(var(--foreground))',
+                          fontSize: 12, fontWeight: 600,
+                          cursor: presetBusy || generating || !simId ? 'not-allowed' : 'pointer',
+                          opacity: !simId ? 0.55 : 1,
+                        }}
+                      >
+                        Load bridge…
+                      </button>
+                    </div>
+                    {presetNotice && (
+                      <div role="status" style={{ marginTop: 6, fontSize: 12, color: '#15803d' }}>{presetNotice}</div>
                     )}
                   </div>
                 )}
@@ -3148,6 +3291,115 @@ export function SectionEditor({
         @keyframes spin { to { transform: rotate(360deg); } }
         @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
       `}</style>
+
+      {/* ── SAVE BRIDGE: name the current setup ─────────────────────────────────────────── */}
+      {presetSaveOpen && (
+        <div
+          role="dialog" aria-modal="true" aria-label="Save bridge"
+          style={{ position: 'fixed', inset: 0, zIndex: 70, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.5)' }}
+          onClick={() => !presetBusy && setPresetSaveOpen(false)}
+        >
+          <form
+            onClick={e => e.stopPropagation()}
+            onSubmit={e => { e.preventDefault(); handleSavePreset(); }}
+            style={{ width: 380, borderRadius: 12, padding: 18, backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))' }}
+          >
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>Save bridge</div>
+            <p style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', margin: '0 0 10px' }}>
+              Names this section&apos;s script, toggles and minimal-UI selection so you can load them
+              onto another video without setting them up again.
+            </p>
+            <input
+              autoFocus
+              value={presetLabel}
+              onChange={e => setPresetLabel(e.target.value)}
+              maxLength={120}
+              placeholder="e.g. plucking a boid with one button"
+              style={{ width: '100%', height: 34, borderRadius: 8, border: '1px solid hsl(var(--border))', backgroundColor: 'hsl(var(--background))', color: 'hsl(var(--foreground))', padding: '0 10px', fontSize: 13 }}
+            />
+            {presetError && <div role="alert" style={{ marginTop: 8, fontSize: 12, color: '#dc2626' }}>{presetError}</div>}
+            <div style={{ display: 'flex', gap: 8, marginTop: 12, justifyContent: 'flex-end' }}>
+              <button type="button" onClick={() => setPresetSaveOpen(false)} disabled={presetBusy}
+                style={{ height: 32, padding: '0 12px', borderRadius: 8, border: '1px solid hsl(var(--border))', backgroundColor: 'transparent', color: 'hsl(var(--foreground))', fontSize: 12, cursor: 'pointer' }}>
+                Cancel
+              </button>
+              <button type="submit" disabled={presetBusy || !presetLabel.trim()}
+                style={{ height: 32, padding: '0 14px', borderRadius: 8, border: 'none', backgroundColor: '#d97706', color: '#fff', fontSize: 12, fontWeight: 700, cursor: presetBusy || !presetLabel.trim() ? 'not-allowed' : 'pointer' }}>
+                {presetBusy ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* ── LOAD BRIDGE: pick a saved setup; the server says which path the load takes ────── */}
+      {loadOpen && (
+        <div
+          role="dialog" aria-modal="true" aria-label="Load bridge"
+          style={{ position: 'fixed', inset: 0, zIndex: 70, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.5)' }}
+          onClick={() => !presetBusy && setLoadOpen(false)}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{ width: 460, maxHeight: '70vh', display: 'flex', flexDirection: 'column', borderRadius: 12, padding: 18, backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))' }}
+          >
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>Load bridge</div>
+            <div style={{ flex: 1, overflowY: 'auto', minHeight: 80 }}>
+              {presets === null ? (
+                <div style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))' }}>Loading your saved bridges…</div>
+              ) : presets.length === 0 ? (
+                <div style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))' }}>
+                  Nothing saved yet. Set up a bridge on any section and press &ldquo;Save bridge&rdquo;.
+                </div>
+              ) : presets.map(p => (
+                <button
+                  key={p.id}
+                  onClick={() => handleSelectPreset(p)}
+                  aria-pressed={selectedPreset?.id === p.id}
+                  style={{
+                    display: 'block', width: '100%', textAlign: 'left', padding: '8px 10px', marginBottom: 4,
+                    borderRadius: 8, cursor: 'pointer',
+                    border: selectedPreset?.id === p.id ? '1.5px solid #d97706' : '1px solid hsl(var(--border))',
+                    backgroundColor: selectedPreset?.id === p.id ? 'rgba(217,119,6,0.08)' : 'transparent',
+                    color: 'hsl(var(--foreground))',
+                  }}
+                >
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{p.label}</div>
+                  <div style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', marginTop: 2 }}>
+                    {p.has_artifact ? 'script + settings' : 'settings only'}
+                    {p.sim_prompt ? ` · ${p.sim_prompt.slice(0, 60)}${p.sim_prompt.length > 60 ? '…' : ''}` : ''}
+                  </div>
+                </button>
+              ))}
+            </div>
+            {selectedPreset && (
+              <div role="status" style={{ marginTop: 10, fontSize: 12, color: 'hsl(var(--muted-foreground))', minHeight: 18 }}>
+                {fitLoading
+                  ? 'Checking compatibility…'
+                  // The sentence is SERVER-composed (describeLoadPath) so the promise on this
+                  // screen and the decision on the wire cannot drift apart.
+                  : presetFit?.description ?? 'Compatibility unknown — loading will regenerate from the saved settings.'}
+              </div>
+            )}
+            {presetError && <div role="alert" style={{ marginTop: 6, fontSize: 12, color: '#dc2626' }}>{presetError}</div>}
+            <div style={{ display: 'flex', gap: 8, marginTop: 12, justifyContent: 'flex-end' }}>
+              <button onClick={() => setLoadOpen(false)} disabled={presetBusy}
+                style={{ height: 32, padding: '0 12px', borderRadius: 8, border: '1px solid hsl(var(--border))', backgroundColor: 'transparent', color: 'hsl(var(--foreground))', fontSize: 12, cursor: 'pointer' }}>
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmLoad}
+                disabled={presetBusy || !selectedPreset || fitLoading}
+                style={{ height: 32, padding: '0 14px', borderRadius: 8, border: 'none', backgroundColor: '#d97706', color: '#fff', fontSize: 12, fontWeight: 700, cursor: presetBusy || !selectedPreset || fitLoading ? 'not-allowed' : 'pointer' }}
+              >
+                {presetBusy ? 'Loading…'
+                  : presetFit?.path === 'artifact' ? 'Apply instantly'
+                  : 'Load & regenerate'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showDeleteConfirm && (
         <ConfirmDialog

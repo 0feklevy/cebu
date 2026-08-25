@@ -773,9 +773,13 @@ describe('generateBridgeScript publishes through the same private path', () => {
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/^\s*\/\/.*$/gm, '');
 
-  it('both public entry points reach uploadSectionBridge with a persistSection hook', () => {
+  it('all three public entry points reach uploadSectionBridge with a persistSection hook', () => {
+    // Three, acknowledged one by one: generateBridgeScript (LLM), applyMinimalUiOnly (mechanical),
+    // and applySavedBridgeBody (the saved-bridge artifact load, 079). A FOURTH caller appearing
+    // here must be a conscious decision — every entry point inherits the CAS activation and the
+    // in-transaction section write, and a caller that bypasses uploadSectionBridge bypasses both.
     const sites = [...SERVICE.matchAll(/this\.uploadSectionBridge\(\{/g)].map((m) => m.index!);
-    expect(sites.length, 'uploadSectionBridge is no longer the single publication path').toBe(2);
+    expect(sites.length, 'uploadSectionBridge is no longer the single publication path').toBe(3);
     for (const at of sites) {
       expect(SERVICE.slice(at, at + 700),
         'an entry point publishes without an in-transaction section write').toMatch(/persistSection/);

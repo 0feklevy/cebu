@@ -464,6 +464,8 @@ export const video_files = pgTable('video_files', {
   sequence_id: uuid('sequence_id'),                          // FK → branch_sequences (declared below)
   sequence_order: integer('sequence_order'),
   created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  /** Content-addressed bytes shared with other projects (078). Null on rows that predate dedup. */
+  blob_id: uuid('blob_id').references(() => media_blobs.id),
 });
 
 /**
@@ -630,6 +632,49 @@ export const sim_posters = pgTable(
 );
 
 // Image files uploaded by the user for animated still-image overlays (migration 018)
+/**
+ * One row per distinct piece of content, however many projects reference it (migration 078).
+ * Identity is the PAIR (sha256, byte_size) — see contentIdentity.ts for why the hash alone is not
+ * the key, and 078_media_blobs.sql for why there is no ref_count column.
+ */
+/**
+ * "Save bridge" (migration 079): a section's bridge setup, saved under a user-chosen label,
+ * loadable onto another simulation. RECIPE fields (prompt/toggles/selection) apply anywhere;
+ * the ARTIFACT (main_body) applies only after SimBridgeContract verification proves every anchor
+ * it binds to exists in the target — otherwise the load regenerates from the recipe.
+ */
+export const saved_bridges = pgTable('saved_bridges', {
+  id:          uuid('id').primaryKey().defaultRandom(),
+  created_by:  uuid('created_by').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  label:       text('label').notNull(),
+  // The recipe — always applicable.
+  sim_prompt:  text('sim_prompt'),
+  simple_ui:   boolean('simple_ui').notNull().default(false),
+  auto_script: boolean('auto_script').notNull().default(true),
+  ui_controls: jsonb('ui_controls'),
+  // The artifact — gated behind contract verification.
+  main_body:   text('main_body'),
+  contract:    jsonb('contract'),
+  // Provenance and drift detection; never a hard link — a preset must outlive its source.
+  source_simulation_id: uuid('source_simulation_id').references(() => simulations.id, { onDelete: 'set null' }),
+  source_bridge_hash:   text('source_bridge_hash'),
+  source_hash:          text('source_hash'),
+  conversation_history: jsonb('conversation_history'),
+  created_at:  timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updated_at:  timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const media_blobs = pgTable('media_blobs', {
+  id:               uuid('id').primaryKey().defaultRandom(),
+  sha256:           text('sha256').notNull(),
+  byte_size:        bigint('byte_size', { mode: 'number' }).notNull(),
+  storage_key:      text('storage_key').notNull(),
+  content_type:     text('content_type'),
+  created_at:       timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  last_verified_at: timestamp('last_verified_at', { withTimezone: true }),
+  orphaned_at:      timestamp('orphaned_at', { withTimezone: true }),
+});
+
 export const image_files = pgTable('image_files', {
   id:           uuid('id').primaryKey().defaultRandom(),
   project_id:   uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
@@ -644,6 +689,8 @@ export const image_files = pgTable('image_files', {
   crop_w: real('crop_w').notNull().default(1),
   crop_h: real('crop_h').notNull().default(1),
   created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  /** Content-addressed bytes shared with other projects (078). Null on rows that predate dedup. */
+  blob_id: uuid('blob_id').references(() => media_blobs.id),
 });
 
 export const audio_files = pgTable('audio_files', {
@@ -654,6 +701,8 @@ export const audio_files = pgTable('audio_files', {
   url:         text('url').notNull(),
   duration_sec: real('duration_sec'),
   created_at:  timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  /** Content-addressed bytes shared with other projects (078). Null on rows that predate dedup. */
+  blob_id: uuid('blob_id').references(() => media_blobs.id),
 });
 
 export const timeline_sections = pgTable('timeline_sections', {
