@@ -153,6 +153,17 @@ being ignored and why. Tested in `crop/__tests__/algoV2Guard.test.ts`. What rema
 owner ruling this entry always ended on: delete the flag/type/VERSIONS entry, or implement v2 —
 and the implementing commit must flip `V2_IMPLEMENTED` in the same change.
 
+## 🟡 OWNER ACTION (2026-08-23 incident residue) — two one-time steps
+
+1. **Rotate the Anam key pasted into chat during the incident** — Admin → API Keys → Anam (the
+   screen #125/#134 shipped). One minute; the exposed key works until then.
+2. **Check "Max session length" in the demo project's Avatar settings** — the ~1-minute
+   conversation death is an Anam per-project dashboard value, not a FlowVid code path (the
+   code-level 30s watchdog kill was a separate bug, fixed in #137).
+
+(Recorded here from the root scratch file `INCIDENT-AVATAR-500.md`, which is now deleted — an
+untracked file is not a ledger.)
+
 ## 🟡 OWNER ACTION (⅓ done 2026-08-23) — smoke variables: PUBLIC set, two remain
 
 Found 2026-08-22 while checking whether the production audit shared the hole closed in the release
