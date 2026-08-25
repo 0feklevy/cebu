@@ -14,7 +14,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createHash } from 'node:crypto';
 
 const events: string[] = [];
-const state = { candidate: null as Record<string, unknown> | null, head: null as { size: number | null } | null };
+const state = {
+  candidate: null as Record<string, unknown> | null,
+  head: null as { size: number | null } | null,
+  /** The row the mocked insert will make visible — set per-test. */
+  pending: null as Record<string, unknown> | null,
+};
 
 /** Minimal drizzle shape: enough for the two queries and the one insert this module makes. */
 vi.mock('../../../db/index.js', () => ({
@@ -23,7 +28,7 @@ vi.mock('../../../db/index.js', () => ({
       from: () => ({ where: () => ({ limit: async () => (state.candidate ? [state.candidate] : []) }) }),
     }),
     insert: () => ({
-      values: () => ({ onConflictDoNothing: async () => { events.push('insert-row'); state.candidate = state.pending as never; } }),
+      values: () => ({ onConflictDoNothing: async () => { events.push('insert-row'); state.candidate = state.pending; } }),
     }),
     update: () => ({ set: () => ({ where: async () => undefined }) }),
     execute: async () => [{ n: 0 }],
@@ -46,7 +51,7 @@ beforeEach(() => {
   events.length = 0;
   state.candidate = null;
   state.head = null;
-  (state as Record<string, unknown>).pending = { id: 'b1', sha256: SHA, byte_size: 5, storage_key: 'k' };
+  state.pending = { id: 'b1', sha256: SHA, byte_size: 5, storage_key: 'k' };
 });
 
 describe('a dedup hit', () => {
