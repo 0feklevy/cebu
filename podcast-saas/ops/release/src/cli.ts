@@ -41,6 +41,7 @@ import type { BumpKind } from './semver.js';
 import type { Phase } from './severity.js';
 import type { ReleaseState } from './state-machine.js';
 import type { BackfillPolicy } from './database-url-audit.js';
+import type { DiffBaseKind } from './release-risk.js';
 
 function parseArgs(argv: string[]): { flags: Map<string, string>; bools: Set<string>; rest: string[] } {
   const flags = new Map<string, string>();
@@ -77,7 +78,7 @@ const USAGE = `Usage: release-cli <command> [flags]
   playwright-summary  --report playwright.json [--run-id ID] [--git-sha SHA] [--out file]
                       [--require-tests 'title fragment,another']   flows that MUST have run
   endpoint-audit      [--run-id ID] [--git-sha SHA] [--out endpoints.json]
-  release-risk        --findings f1.json,… [--backfill-policy P] [--approve-high] [--changed-paths f] [--out risk.json]
+  release-risk        --findings f1.json,… [--backfill-policy P] [--approve-high] [--changed-paths f] [--diff-base deployed-ref|unresolved] [--out risk.json]
                       decides whether this release still needs a human; unreadable evidence ⇒ yes
   gate                --phase pre-deploy|post-deploy --findings f1.json,f2.json [--approve-high] [--block-on-warning]
                       [--require f1.json,f2.json] [--identity-bearing name.json,…] [--expect-run-id ID] [--expect-git-sha SHA] [--out gate.json]
@@ -159,6 +160,9 @@ async function main(): Promise<number> {
         backfillPolicy: (flags.get('backfill-policy') ?? 'report-only') as BackfillPolicy,
         approveHigh: bools.has('approve-high'),
         changedPathsFile: flags.get('changed-paths'),
+        // Omitted ⇒ 'unresolved' ⇒ human approval. Only the workflow step that anchored the
+        // window to refs/deployed/production may claim 'deployed-ref'.
+        diffBase: flags.get('diff-base') as DiffBaseKind | undefined,
         out: flags.get('out'),
       }).exitCode;
     case 'endpoint-audit':

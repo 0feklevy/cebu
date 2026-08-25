@@ -23,6 +23,25 @@ import type { BackfillPolicy } from './database-url-audit.js';
 
 export const RELEASE_RISK_SCHEMA = 'flowvid.release-risk/v1';
 
+/**
+ * Where `changedPaths` was measured FROM — and it must be the DEPLOYED version, not the last tag.
+ *
+ * The defect this closes was observed live (run 32854681109, ledger 2026-08-25): v0.2.4 was
+ * correctly gated on a compose change, the approval failed, the deploy was skipped — but the TAG
+ * had already been created. The next release measured `git diff v0.2.4..HEAD`, a window that
+ * excludes the very change the gate demanded a human for, and then deployed HEAD's tree, which
+ * contains it. `Human approval: skipped` was reported, truthfully, and the change reached
+ * production ungated. Every failed or rejected approval opens one of these windows, and a
+ * REJECTED approval is precisely when the change was most suspect.
+ *
+ * `deployed-ref` means the window base is `refs/deployed/production` — a ref the deploy job
+ * advances only after the post-deploy gate passes, so it names what is actually running.
+ * `unresolved` means the base could not be established (ref missing, unfetchable, or not an
+ * ancestor of HEAD), and it is a mandatory-approval reason on its own: a window that cannot be
+ * anchored to reality proves nothing about what it excludes.
+ */
+export type DiffBaseKind = 'deployed-ref' | 'unresolved';
+
 export interface ReleaseRiskInput {
   /** Findings from every pre-deploy audit — migrations, secrets, CSP, images. */
   findings: readonly Finding[];
@@ -30,8 +49,10 @@ export interface ReleaseRiskInput {
   backfillPolicy: BackfillPolicy;
   /** The run's `approve_high` input: the operator pre-accepting HIGH findings. */
   approveHigh: boolean;
-  /** Paths changed since the last release, for the security-sensitive-surface check. */
+  /** Paths changed since the DEPLOYED version, for the security-sensitive-surface check. */
   changedPaths: readonly string[];
+  /** How the window was anchored. Anything but `deployed-ref` is itself a reason. */
+  diffBase: DiffBaseKind;
 }
 
 export interface ReleaseRiskVerdict {
@@ -57,6 +78,12 @@ const SENSITIVE_PATH_PATTERNS: ReadonlyArray<{ re: RegExp; why: string }> = [
   { re: /(^|\/)deploy\/(docker-compose[^/]*\.yml|nginx|systemd)/i, why: 'production deployment configuration' },
   { re: /(^|\/)publicOrigins\.ts$/, why: 'public origin configuration (CSP and URL minting)' },
   { re: /(^|\/)stripe|billing|webhook/i, why: 'billing or webhook handling' },
+  // The pipeline that decides what deploys deserves an eye at least as much as the compose file
+  // it deploys: the release:verify tee-exit-code hole shipped a lint failure to production
+  // precisely because a one-line edit to release.yml required no approval while a one-line
+  // APP_VERSION change to compose did (ledger, 2026-08-25). This makes the gate self-protecting —
+  // including against the PR that adds this very line.
+  { re: /(^|\/)\.github\/workflows\//i, why: 'the release/CI pipeline itself' },
 ];
 
 /** Migration findings a human is meant to accept rather than a machine. */
@@ -69,6 +96,18 @@ const RISKY_MIGRATION_IDS = new Set([
 
 export function assessReleaseRisk(input: ReleaseRiskInput): ReleaseRiskVerdict {
   const reasons: string[] = [];
+
+  // 0. The window itself. Every check below reasons over `changedPaths`, so a window that is not
+  //    anchored to the DEPLOYED version poisons all of them at once — a tagged-but-undeployed
+  //    release hides its changes from this classifier while the deploy ships them anyway
+  //    (observed live, run 32854681109). Fail closed before trusting anything downstream.
+  if (input.diffBase !== 'deployed-ref') {
+    reasons.push(
+      'the changed-paths window could not be anchored to the deployed version ' +
+      `(diff base: ${input.diffBase}) — a tagged-but-undeployed release may be hiding changes; ` +
+      'a human must review this deploy.',
+    );
+  }
 
   // 1. Destructive or backward-incompatible schema change. The migration audit already
   //    classifies these; this only decides who is asked to accept them.

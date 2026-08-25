@@ -138,9 +138,19 @@ describe('least-privilege permissions are preserved', () => {
     });
   }
 
-  it('packages: write appears only in the image-build job; contents: write only for tag/publish', () => {
+  it('packages: write appears only in the image-build job; contents: write only for tag/publish/deploy', () => {
     expect((wf['release.yml'].match(/packages: write/g) ?? []).length).toBe(1);
-    expect((wf['release.yml'].match(/contents: write/g) ?? []).length).toBe(2);
+    // THREE, deliberately, as of 2026-08-25 — tag, publish, and now deploy. The deploy job's
+    // write exists for exactly one push: advancing refs/deployed/production after the
+    // post-deploy gate passes, which is what anchors the next release's risk window to what is
+    // actually RUNNING rather than to the last tag (the tagged-but-undeployed hole, run
+    // 32854681109). Widening this number further is a review event, which is the point of
+    // counting rather than merely matching.
+    expect((wf['release.yml'].match(/contents: write/g) ?? []).length).toBe(3);
+    // And the deploy job's write must be paired with the ref-advance step it exists for — a
+    // fourth job acquiring write without a stated single purpose should fail here, not pass
+    // because the total happens to be right.
+    expect(wf['release.yml']).toContain('refs/deployed/production');
     // Assert the PERMISSION, not the substring. The bare `not.toContain('write')` also
     // forbade the word in comments, so documenting why the audit is read-only broke the
     // least-privilege test. This checks what the test actually means: no permission scope

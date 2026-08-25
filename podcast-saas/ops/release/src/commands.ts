@@ -27,7 +27,7 @@ import { auditDatabaseUrls, parseBackfillReport, type BackfillPolicy, type UrlBa
 import { setOutput } from './gha.js';
 import { parseManifest, validateManifest, type ImageManifest } from './image-manifest.js';
 import { auditMigrations, sha256, type MigrationAuditResult } from './migration-audit.js';
-import { assessReleaseRisk, RELEASE_RISK_SCHEMA, type ReleaseRiskVerdict } from './release-risk.js';
+import { assessReleaseRisk, RELEASE_RISK_SCHEMA, type ReleaseRiskVerdict, type DiffBaseKind } from './release-risk.js';
 import { preflight } from './preflight.js';
 import { redactValue } from './redact.js';
 import { buildReport, renderMarkdown, type EndpointStatus, type ReleaseReport, type StageTiming } from './report.js';
@@ -1159,6 +1159,13 @@ export function cmdReleaseRisk(
     backfillPolicy: BackfillPolicy;
     approveHigh: boolean;
     changedPathsFile?: string;
+    /**
+     * Where the changed-paths window was measured from. DEFAULTS TO 'unresolved' — i.e. to
+     * requiring a human — so a caller that never learned about this flag gets the safe verdict,
+     * not the trusting one. Only the workflow step that actually anchored the window to
+     * `refs/deployed/production` may pass 'deployed-ref'.
+     */
+    diffBase?: DiffBaseKind;
     out?: string;
   },
 ): { verdict: ReleaseRiskVerdict; exitCode: number } {
@@ -1178,12 +1185,21 @@ export function cmdReleaseRisk(
     return { verdict, exitCode: 0 };
   }
 
+  let diffBase: DiffBaseKind = opts.diffBase ?? 'unresolved';
   let changedPaths: string[] = [];
   if (opts.changedPathsFile && existsSync(resolveEvidencePath(ctx, opts.changedPathsFile))) {
     changedPaths = readFileSync(resolveEvidencePath(ctx, opts.changedPathsFile), 'utf8')
       .split('\n')
       .map((l) => l.trim())
       .filter(Boolean);
+  } else if (diffBase === 'deployed-ref') {
+    // Contradictory evidence: the caller claims the window was anchored, but the file holding it
+    // does not exist. The previous shape of this bug was quieter — release.yml's `|| true` wrote
+    // an EMPTY file on a failed diff, and its comment claimed release-risk would fail closed on
+    // it, which it did not: the empty file read as "nothing changed". An empty file is still
+    // legitimate when the base genuinely equals HEAD; a MISSING file under a 'deployed-ref'
+    // claim never is, so the claim is downgraded and check 0 fires.
+    diffBase = 'unresolved';
   }
 
   const verdict = assessReleaseRisk({
@@ -1191,6 +1207,7 @@ export function cmdReleaseRisk(
     backfillPolicy: opts.backfillPolicy,
     approveHigh: opts.approveHigh,
     changedPaths,
+    diffBase,
   });
   if (opts.out) writeJsonFile(opts.out, verdict);
   emitRiskOutput(ctx, verdict);

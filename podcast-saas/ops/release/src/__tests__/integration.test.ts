@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   cmdGate,
   cmdImageManifestVerify,
+  cmdReleaseRisk,
   cmdReport,
   cmdStateInit,
   cmdStateTransition,
@@ -230,5 +231,76 @@ describe('report assembly (full artifacts directory)', () => {
     expect(md).toContain('# Release report — v0.1.3');
     expect(md).toContain('Blocked: **YES**');
     expect(md).not.toContain('hunter2');
+  });
+});
+
+describe('release-risk via the CLI handler — the evidence chain cannot be half-trusted', () => {
+  /**
+   * The pure function is covered in release-risk.test.ts. What only the HANDLER can get wrong is
+   * the evidence plumbing, and its previous shape did: release.yml's `|| true` wrote an EMPTY
+   * changed-paths file when the diff failed, the file existed, so `changedPaths` became [] and
+   * the release scored routine — while the step's own comment claimed release-risk would fail
+   * closed on unreadable evidence. The claim was true only for the FINDINGS files.
+   */
+  const FINDINGS = 'findings.json';
+
+  function writeFindings(): void {
+    writeJsonFile(join(dir, FINDINGS), { schema: 'flowvid.audit/v1', findings: [] });
+  }
+
+  it('a deployed-ref claim with a MISSING window file is downgraded, not trusted', () => {
+    writeFindings();
+    const { verdict } = cmdReleaseRisk(ctx(), {
+      findingsFiles: [FINDINGS],
+      backfillPolicy: 'report-only',
+      approveHigh: false,
+      changedPathsFile: 'does-not-exist.txt',
+      diffBase: 'deployed-ref',
+    });
+    expect(verdict.requiresHuman).toBe(true);
+    expect(verdict.reasons.join(' ')).toContain('anchored to the deployed version');
+  });
+
+  it('omitting --diff-base entirely is the SAFE verdict, not the trusting one', () => {
+    // A caller that never learned about the flag — an old script, a hand-run — must land on
+    // "ask a human", or the default re-opens the hole for exactly the invocations nobody reviews.
+    writeFindings();
+    writeFileSync(join(dir, 'paths.txt'), 'podcast-saas/client-web/src/x.tsx\n');
+    const { verdict } = cmdReleaseRisk(ctx(), {
+      findingsFiles: [FINDINGS],
+      backfillPolicy: 'report-only',
+      approveHigh: false,
+      changedPathsFile: 'paths.txt',
+    });
+    expect(verdict.requiresHuman).toBe(true);
+  });
+
+  it('an anchored window with a present file and innocent paths stays routine', () => {
+    writeFindings();
+    writeFileSync(join(dir, 'paths.txt'), 'podcast-saas/client-web/src/x.tsx\n');
+    const { verdict } = cmdReleaseRisk(ctx(), {
+      findingsFiles: [FINDINGS],
+      backfillPolicy: 'report-only',
+      approveHigh: false,
+      changedPathsFile: 'paths.txt',
+      diffBase: 'deployed-ref',
+    });
+    expect(verdict.requiresHuman).toBe(false);
+    expect(verdict.reasons).toEqual([]);
+  });
+
+  it('an EMPTY-but-present window file under a deployed-ref claim is legitimate', () => {
+    // Empty means "base equals HEAD" — strange, but honest. The dishonest case is the MISSING
+    // file, and the two must not be conflated in either direction.
+    writeFindings();
+    writeFileSync(join(dir, 'paths.txt'), '');
+    const { verdict } = cmdReleaseRisk(ctx(), {
+      findingsFiles: [FINDINGS],
+      backfillPolicy: 'report-only',
+      approveHigh: false,
+      changedPathsFile: 'paths.txt',
+      diffBase: 'deployed-ref',
+    });
+    expect(verdict.requiresHuman).toBe(false);
   });
 });

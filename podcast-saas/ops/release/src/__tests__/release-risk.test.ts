@@ -19,6 +19,7 @@ const routine: ReleaseRiskInput = {
   backfillPolicy: 'report-only',
   approveHigh: false,
   changedPaths: ['podcast-saas/client-web/src/components/Button.tsx'],
+  diffBase: 'deployed-ref',
 };
 
 describe('a routine release needs nobody', () => {
@@ -92,6 +93,42 @@ describe('a release a human could actually change the outcome of stops', () => {
   });
 });
 
+describe('the window is only trusted when it is anchored to the DEPLOYED version', () => {
+  // The defect this closes was OBSERVED, not predicted: run 32854681109 deployed a compose change
+  // the previous release's gate had demanded a human for, because the tag was created before the
+  // failed approval and the next release measured its diff from that undeployed tag. The window
+  // excluded the change; the deploy shipped it anyway.
+
+  it('an unresolved diff base is a mandatory-approval reason on its own', () => {
+    const v = assessReleaseRisk({ ...routine, diffBase: 'unresolved' });
+    expect(v.requiresHuman).toBe(true);
+    expect(v.reasons.join(' ')).toContain('anchored to the deployed version');
+  });
+
+  it('an unresolved base is a reason even when the (untrustworthy) window looks clean', () => {
+    // This is the whole point: an empty or innocent-looking path list proves nothing when the
+    // base it was measured from is not what is running. Before this check, exactly that shape —
+    // empty file from a failed diff — was scored routine.
+    const v = assessReleaseRisk({ ...routine, diffBase: 'unresolved', changedPaths: [] });
+    expect(v.requiresHuman).toBe(true);
+  });
+
+  it('a deployed-ref base with a clean window stays automatic', () => {
+    // The fix must not turn the gate back into a formality: routine releases stay routine.
+    const v = assessReleaseRisk(routine);
+    expect(v.requiresHuman).toBe(false);
+  });
+
+  it('the release pipeline itself is a sensitive surface', () => {
+    // release:verify could not fail for months because a one-line run: step in release.yml
+    // needed no approval while a one-line compose change did. The pipeline that decides what
+    // deploys deserves an eye at least as much — including the PR that added this pattern.
+    const v = assessReleaseRisk({ ...routine, changedPaths: ['.github/workflows/release.yml'] });
+    expect(v.requiresHuman).toBe(true);
+    expect(v.reasons.join(' ')).toContain('pipeline');
+  });
+});
+
 describe('reasons and the verdict can never disagree', () => {
   it('requiresHuman is true exactly when there is a reason', () => {
     // A verdict of "risky, and here is why: (nothing)" is unactionable, and "routine, reasons:
@@ -101,6 +138,7 @@ describe('reasons and the verdict can never disagree', () => {
       { ...routine, approveHigh: true },
       { ...routine, findings: [finding('migrations.destructive')] },
       { ...routine, backfillPolicy: 'require-approval' as const },
+      { ...routine, diffBase: 'unresolved' as const },
     ]) {
       const v = assessReleaseRisk(input);
       expect(v.requiresHuman).toBe(v.reasons.length > 0);
