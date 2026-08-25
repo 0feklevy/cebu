@@ -20,6 +20,7 @@ import {
 import { probeMediaDuration } from '../../services/video/HLSTranscoder.js';
 import { ApiKeyService } from '../../services/secrets/ApiKeyService.js';
 import { UsageTrackingService } from '../../services/usage/UsageTrackingService.js';
+import { evaluateSpendCeiling } from '../../services/usage/spendCeiling.js';
 import { estimateSfxCost, usdPerSfxSecondFromEnv } from '../../services/usage/sfxCost.js';
 import { randomUUID } from 'crypto';
 import { mkdtemp, rm, writeFile } from 'fs/promises';
@@ -199,6 +200,16 @@ export async function registerAudioRoutes(app: FastifyInstance): Promise<void> {
 
       const apiKey = (await new ApiKeyService().getSystemKey('elevenlabs')) ?? process.env.ELEVENLABS_API_KEY ?? null;
       if (!apiKey) return reply.code(503).send({ message: 'ElevenLabs API key not configured. Set it in Admin → API Keys.' });
+
+      // ── THE CEILING, BEFORE THE GENERATION IS ORDERED ───────────────────────────────────────
+      // Sound generation is a paid ElevenLabs call bought by a click, and it was metered but
+      // unbounded — found by the ceiling-coverage ratchet, not by hand: this path records through
+      // `UsageTrackingService.record` rather than the `recordTtsSpend` helper, so a grep for the
+      // helper name misses it entirely. Shadow by default, like every other ceiling here.
+      const ceiling = await evaluateSpendCeiling({ provider: 'elevenlabs' });
+      if (ceiling.refuse) {
+        return reply.code(429).send({ message: ceiling.reason ?? 'Monthly ElevenLabs spend ceiling reached.' });
+      }
 
       const elBody: Record<string, unknown> = {
         text: body.data.type === 'music' ? `Background music: ${body.data.prompt}` : body.data.prompt,

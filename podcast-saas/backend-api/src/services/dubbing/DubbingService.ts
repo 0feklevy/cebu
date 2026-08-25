@@ -40,6 +40,7 @@ import { runFfmpegLimited } from '../ffmpegLimit.js';
 import { transcodeToHLS } from '../video/HLSTranscoder.js';
 import { segmentsToVtt, generateVttValidate } from '../captions/CaptionService.js';
 import { UsageTrackingService } from '../usage/UsageTrackingService.js';
+import { evaluateSpendCeiling } from '../usage/spendCeiling.js';
 import { uploadFileFromDisk } from '../storage/uploadFromDisk.js';
 import {
   ElevenLabsDubbingClient,
@@ -539,6 +540,21 @@ export class DubbingService {
     const video = await db.query.video_files.findFirst({ where: eq(video_files.id, dub.video_file_id) });
     if (!video || !video.storage_key) {
       await this.fail(dubId, 'The source video is missing or has no stored file.');
+      return;
+    }
+
+    // ── THE CEILING, BEFORE THE VENDOR IS ASKED FOR ANYTHING ────────────────────────────────
+    // A dub is the single most expensive ElevenLabs call this product makes — priced per MINUTE
+    // of video — and it was metered (`meter()`, after the fact) with nothing bounding it. Found
+    // by the ceiling-coverage ratchet; a hand grep for `recordTtsSpend` misses it because this
+    // service records through `UsageTrackingService` directly.
+    //
+    // Checked HERE rather than at the meter, which runs after the dub already exists: a ceiling
+    // consulted after the spend can only describe what happened. `fail()` rather than a throw, so
+    // the row carries a reason a creator can read instead of retrying into the same wall.
+    const ceiling = await evaluateSpendCeiling({ provider: 'elevenlabs' });
+    if (ceiling.refuse) {
+      await this.fail(dubId, ceiling.reason ?? 'Monthly ElevenLabs spend ceiling reached.');
       return;
     }
 
