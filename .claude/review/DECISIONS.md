@@ -242,6 +242,29 @@ storage mock shaped to take the other branch, and this `where`-ignoring mock: ea
 structurally incapable of observing the thing it named. That is worth a protocol rule, not three
 separate fixes.
 
+## 📋 SHIPPED AND IN FLIGHT — 2026-08-25 evening
+
+**Merged and deployed (v0.2.7):** #142 the revision-status allow-list · #141 action-recording
+Phase 0 · #144 gate v5 (the `ui_hide` selector fix) · #143 the release risk-window fix · #145 the
+double-stringify · #146 the podcast wrong-table query.
+
+**Open:** #147 import gallery (stacked on #145) · #148 migration 081 proof states · #149 this
+protocol rule.
+
+**Branch hygiene, 2026-08-25.** Sixteen local branches deleted — and *only* those whose PR GitHub
+reports as MERGED, which is authoritative. The tempting heuristic was `git diff main..branch`, and
+it is wrong: an old branch shows its own STALE content as "additions" against a main that has since
+been rewritten, so a large diff proves nothing about whether the work landed. Five branches remain
+undeleted for exactly that reason — four tiny ledger-doc branches with no PR, and
+`backup/audio-landing-orig`, whose name says what it is for.
+
+**`reinject-sim-gates` is NOT an approval question — it is the wrong machine.** Stored packages
+still carry v4 gate bytes after #144, and the fix reaches them only via that script. It reads
+`DATABASE_URL` and storage credentials from `.env`; the local one is localhost, so running it here
+touches nothing real, and pointing it at production credentials is what CLAUDE.md §7 forbids
+outright. It belongs on the VM or in a workflow. Until then, #144's fix is live in the CODE and not
+in the already-published packages — a distinction the next reader should not have to rediscover.
+
 ## 🟡 OPEN BY DECISION — video is the one media type NOT deduplicated, and it is the largest
 
 Checked 2026-08-25 while wiring images and audio. Video is not an oversight; it is structurally
