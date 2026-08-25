@@ -45,6 +45,36 @@ needs the code AND the wiring, and removing either turns it red. An empty `APP_V
 as absent rather than reported as a blank version — `${APP_VERSION:-unknown}` means the variable is
 always present, so `??` would have accepted `''`.
 
+## 🟡 OPEN BY DECISION — video is the one media type NOT deduplicated, and it is the largest
+
+Checked 2026-08-25 while wiring images and audio. Video is not an oversight; it is structurally
+different, and forcing it would cost more than it saves.
+
+Both upload paths are built so the SERVER NEVER HOLDS THE BYTES:
+- `video.controller.ts:177` — the client uploads DIRECTLY to storage with a presigned URL, and the
+  server only learns the key. Hashing would mean downloading the whole video back.
+- `video.controller.ts:248` — `uploadStreamWithFallback` pipes the multipart straight through. The
+  code's own comment states why nothing may buffer it: *"A source stream can't be replayed, so we
+  can't try R2 first and fall back."*
+
+So the cheap trick that worked for images (hash the buffer) and for audio (hash the temp file) has
+no equivalent here without paying full egress on the biggest files in the product — which is the
+opposite of the saving.
+
+**The three real options, none of them a one-liner:**
+1. **Hash during the multipart stream** (site 2 only) — tee the stream through a digest while it
+   uploads. Correct and cheap, but covers only one of the two paths, and the presigned path is the
+   one large uploads actually use.
+2. **Hash in the transcode job**, which already reads every byte, and merge retroactively. Best
+   coverage and no extra reads — but it rewrites `storage_key` on a LIVE row that the player may
+   already be serving, so it needs a careful swap-then-verify, not an update.
+3. **Client-supplied digest as a candidate finder**, verified server-side before any merge. Cheapest
+   to add and the only one that cannot be trusted on its own.
+
+Recommendation: (2), as its own round, after the current dedup has run in production long enough to
+show the actual hit rate on images and audio. Deduplicating video badly is worse than not
+deduplicating it: these are the files whose loss is least recoverable.
+
 ## ✅ SHIPPED (2026-08-25, v0.2.1 + v0.2.2) — the storage promise kept, and the incident's own path guarded
 
 **v0.2.1:** `/podcasts` → `/edit-podcasts` (P3-A item 2) with three `permanentRedirect` shims so
