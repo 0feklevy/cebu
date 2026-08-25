@@ -24,9 +24,10 @@
  * Phase 1's Playwright job. `CSS.escape` does not exist in jsdom at all, which is itself worth
  * knowing before anyone writes a fix that depends on it.
  *
- * These tests describe the scanner AS IT IS TODAY, defects included, and each defect assertion
- * names the ADR decision that forbids shipping it. When the fix lands, the expectations flip and
- * the test still executes the same code — which is the property the source-text suite lacks.
+ * HISTORY. This file was first landed DESCRIBING the defects — four tests asserting that the
+ * emitted selectors were broken in exactly the measured ways — and the fix (gate v5) then flipped
+ * those four expectations while every other test held still. That is the property the source-text
+ * suite lacked: the same executable assertions condemned the defect and now defend the fix.
  *
  * ─────────────────────────────────────────────────────────────────────────────────────────────
  * MUTATION PROOF — run 2026-08-25, both directions, then reverted
@@ -149,7 +150,7 @@ describe('harness', () => {
     expect((win as unknown as { __SIM_RAF_GATE__?: { version: number } }).__SIM_RAF_GATE__)
       .toBeTruthy();
     expect((win as unknown as { __SIM_RAF_GATE__: { version: number } }).__SIM_RAF_GATE__.version)
-      .toBe(4);
+      .toBe(5);
   });
 
   it('the fixture document installed its own control state', () => {
@@ -182,44 +183,54 @@ describe('emitted selectors, resolved (ADR D6)', () => {
     }
   };
 
-  it('CURRENT DEFECT: an id containing a CSS-special character produces an unusable selector', () => {
-    // `controlSelector` returns '#' + el.id by raw concatenation. CSSOM defines CSS.escape for
-    // exactly this case and the gate does not call it.
-    const odd = scanned.find((c) => c.selector === '#odd:id.v2');
-    expect(odd, 'the scanner emitted #odd:id.v2 verbatim').toBeTruthy();
-    expect(resolve('#odd:id.v2').threw, 'an unescaped colon parses as a pseudo-class').toBe(true);
-
-    const numeric = scanned.find((c) => c.selector === '#123numeric');
-    expect(numeric).toBeTruthy();
-    expect(resolve('#123numeric').threw, 'a leading digit is not a valid ident').toBe(true);
+  it('FIXED (gate v5): a CSS-special id falls through to a structural path that resolves', () => {
+    // These ids are legal HTML and unparseable raw CSS. The v4 gate emitted them verbatim —
+    // '#odd:id.v2' threw, '#123numeric' threw, '#has space' matched NOTHING silently. Escaping
+    // was measured to be a dead end (the /[{}<\\]/ filters at seven sites drop backslashes), so
+    // the fix is the fall-through: an id that is not provably clean AND unique never becomes a
+    // selector at all, and the control arrives on a child-combinator structural path instead.
+    for (const probe of ['oddId', 'numericId', 'spaceId']) {
+      const c = scanned.find((x) => doc.querySelector(x.selector) ===
+        doc.querySelector('[data-probe="' + probe + '"]') && resolve(x.selector).count === 1);
+      expect(c, probe + ' must be offered via a resolvable selector').toBeTruthy();
+      expect(c!.selector).toContain(':nth-of-type(');
+      expect(c!.selector).not.toContain('\\');
+    }
   });
 
-  it('CURRENT DEFECT, and the dangerous one: a space in an id matches NOTHING, silently', () => {
-    const spaced = scanned.find((c) => c.selector === '#has space');
-    expect(spaced).toBeTruthy();
-    const r = resolve('#has space');
-    // No exception anywhere — it parses as a descendant combinator and simply matches nothing.
-    // This is the failure mode with no signal at all: "hide this control" does nothing and the
-    // author is told nothing.
-    expect(r.threw).toBe(false);
-    expect(r.count).toBe(0);
+  it('FIXED (gate v5): duplicate ids get DISTINCT structural selectors — both controls are offered', () => {
+    // The v4 gate emitted '#dup' for both elements: the selector matched two nodes and the
+    // dedupe-by-string then dropped one control from the list entirely.
+    expect(scanned.some((c) => c.selector === '#dup')).toBe(false);
+    const dups = ['dupFirst', 'dupSecond'].map((probe) =>
+      scanned.find((x) => resolve(x.selector).count === 1 && doc.querySelector(x.selector) ===
+        doc.querySelector('[data-probe="' + probe + '"]')));
+    expect(dups[0], 'first #dup control offered').toBeTruthy();
+    expect(dups[1], 'second #dup control offered').toBeTruthy();
+    expect(dups[0]!.selector).not.toBe(dups[1]!.selector);
   });
 
-  it('CURRENT DEFECT: a duplicate id resolves to TWO elements', () => {
-    const dup = scanned.find((c) => c.selector === '#dup');
-    expect(dup).toBeTruthy();
-    expect(resolve('#dup').count).toBe(2);
-    // And the scanner deduped by selector STRING, so the second control is invisible to the
-    // editor entirely — one row is offered for two controls.
-    expect(scanned.filter((c) => c.selector === '#dup')).toHaveLength(1);
+  it('FIXED (gate v5): a shared name is never a selector — each group member resolves alone', () => {
+    // '[name="mode"]' matches the whole radio group and '[name="flags"]' both checkboxes. The
+    // name branch now demands a proven-unique match, so a group can only arrive as per-element
+    // selectors (here via their ids; for id-less radios, via structural paths).
+    expect(scanned.some((c) => c.selector === '[name="mode"]')).toBe(false);
+    expect(scanned.some((c) => c.selector === '[name="flags"]')).toBe(false);
+    for (const probe of ['modeA', 'modeB', 'modeC', 'chkA', 'chkB']) {
+      const c = scanned.find((x) => resolve(x.selector).count === 1 && doc.querySelector(x.selector) ===
+        doc.querySelector('[data-probe="' + probe + '"]'));
+      expect(c, probe + ' must be individually addressable').toBeTruthy();
+    }
   });
 
-  it('CURRENT DEFECT: a radio group is identified by its shared name, so it matches all three', () => {
-    // No id branch applies only when the element has no id; the fixture's radios DO have ids, so
-    // the group case is reached through the checkboxes that share name="flags" and through any
-    // sim whose radios are id-less. Prove the branch itself on the document.
-    expect(resolve('[name="mode"]').count).toBe(3);
-    expect(resolve('[name="flags"]').count).toBe(2);
+  it('FIXED (gate v5): a structural anchor is never a dirty or duplicate ancestor id', () => {
+    // The anchor used to be '#' + parent.id for ANY ancestor id — the same defect, one level up:
+    // a duplicate or unparseable ancestor id would poison every path anchored on it. The anchor
+    // is now gated by the same clean+unique proof, so no emitted selector may embed one.
+    for (const c of scanned) {
+      expect(c.selector, c.selector + ' embeds an unparseable fragment').not.toMatch(/#[0-9]/);
+      expect(resolve(c.selector).threw, c.selector + ' must parse').toBe(false);
+    }
   });
 
   it('the structural nth-of-type branch IS single-match, as its comment claims', () => {
@@ -232,12 +243,12 @@ describe('emitted selectors, resolved (ADR D6)', () => {
     }
   });
 
-  it('THE GOAL: today, not every emitted selector resolves to exactly one element', () => {
-    // This single assertion is what the whole feature depends on, and it is the one that must
-    // flip when LocatorV1 lands. Stated as a count so the failure message names the offenders.
+  it('THE INVARIANT: every emitted selector resolves to exactly one element', () => {
+    // The assertion the whole action-recording feature depends on, flipped from its defect form
+    // on 2026-08-25 when gate v5 landed. Stated as a count so a failure names the offenders.
     const broken = scanned.filter((c) => resolve(c.selector).count !== 1);
-    expect(broken.length, `unresolvable/ambiguous: ${broken.map((c) => c.selector).join(', ')}`)
-      .toBeGreaterThan(0);
+    expect(broken.map((c) => c.selector), 'unresolvable/ambiguous selectors').toEqual([]);
+    expect(broken.length).toBe(0);
   });
 });
 
