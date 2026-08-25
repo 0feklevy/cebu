@@ -18,7 +18,7 @@ Last updated: **2026-08-22**, during the post-sweep fix round.
 
 ---
 
-## 🔴 OPEN — `/health` cannot tell you which version is running
+## ✅ CLOSED (2026-08-25) — `/health` now reports the version that is running
 
 Found 2026-08-25 while verifying the v0.2.0 deploy.
 
@@ -38,9 +38,12 @@ about it). Pass it into the backend container's environment and report it here, 
 package version as a secondary field. Add a test that the field is NOT the hardcoded fallback when
 APP_VERSION is present.
 
-Deliberately not fixed in the same breath as the release it was found during: the owner's
-instruction was ship-then-stop, and a change made after the images were built would not be in
-v0.2.0 anyway.
+**Fixed the same day.** `APP_VERSION` — the git short SHA the deploy already uses to select the
+image tag — is now passed INTO both long-lived services (`docker-compose.yml`), and the field reads
+`APP_VERSION || npm_package_version || '0.1.0'`. Six tests, mutation-proven on BOTH halves: the fix
+needs the code AND the wiring, and removing either turns it red. An empty `APP_VERSION` is treated
+as absent rather than reported as a blank version — `${APP_VERSION:-unknown}` means the variable is
+always present, so `??` would have accepted `''`.
 
 ## ✅ SHIPPED (2026-08-25, v0.2.1 + v0.2.2) — the storage promise kept, and the incident's own path guarded
 

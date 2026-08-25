@@ -34,6 +34,11 @@ services:
     environment:
       NODE_ENV: production
       PORT: '8080'
+      # The image tag this container was started from — the git short SHA deploy.sh sets. Passed
+      # IN so `/health` can report what is actually running: `npm_package_version` is set only by
+      # npm/pnpm, and production runs `node dist/server.js` directly, so the version field reported
+      # a hardcoded fallback forever, before and after every deploy.
+      APP_VERSION: ${APP_VERSION:-unknown}
       # DATABASE_URL / QUEUE_DATABASE_URL come from the root .env (Supabase) — no override.
       QUEUE_DRIVER: pgboss
       WORKER_INLINE: 'false'         # heavy jobs run in the dedicated worker container
@@ -118,6 +123,8 @@ services:
     env_file:
       - ../.env
     environment:
+      # See the backend service above: passed IN so /health can report what is running.
+      APP_VERSION: ${APP_VERSION:-unknown}
       NODE_ENV: production
       # DATABASE_URL / QUEUE_DATABASE_URL come from the root .env (Supabase) — no override.
       QUEUE_DRIVER: pgboss

@@ -188,7 +188,12 @@ async function collect(probes: HealthProbes): Promise<Report> {
   const body = {
     status: everythingOk ? 'ok' : 'degraded',
     timestamp: new Date().toISOString(),
-    version: process.env.npm_package_version ?? '0.1.0',
+    // APP_VERSION is the image tag the deploy started this container from (docker-compose.yml).
+    // `npm_package_version` is set ONLY when a process is started through npm/pnpm, and production
+    // runs `node dist/server.js` directly — so this field reported the literal fallback forever,
+    // before and after every release, and the only way to confirm a deploy had landed was to probe
+    // a route added by it. First real value wins; the fallback stays for local runs.
+    version: process.env.APP_VERSION || process.env.npm_package_version || '0.1.0',
     checks: {
       database,
       queue: queueFields,
