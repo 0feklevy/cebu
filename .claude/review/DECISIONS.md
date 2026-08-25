@@ -525,7 +525,7 @@ failure RATE over SETTLED renders (queued work in the denominator would make the
 pipeline backs up) and `null` rather than `0` when nothing has settled, preserved all the way to
 the screen. 33 mutations, all caught; five of them only after a test was fixed.
 
-### 🔵 WAVE 3 — IN PROGRESS  ·  A2.1 shipped (PR #78), A2.2–A2.4 next
+### ✅ WAVE 3 — COMPLETE (2026-08-25), except A2.5 which is deferred BY DESIGN
 `PARKED-DESIGNS.md` P3-B, in its stated build order. **A2.1 (audio derivation) is complete**:
 migration 071, the pure rules, the ffmpeg pass, the service, the durable job and the API. An edition
 is exactly as public as its project — re-derived per request from `requireProjectAccess`, never read
@@ -535,12 +535,21 @@ public is what made a customer's brief world-readable (security-016). 31 mutatio
 - **A2.2 `/{slug}/audio` landing — BUILT, verified in code:** `client-web/app/[slug]/audio/page.tsx`
   (ISR, `getAudioEditionPage`, `AudioEditionPlayer`, reserved-slug guard) + three test files. No
   ledger line had recorded the closure.
-- **A2.4 Raise Your Hand — HALF-built, the false-green shape:** backend fully live
-  (`audioEdition.controller.ts:243,286`, `ListenerQuestionService`, migration 072) but **no client
-  affordance exists** — `AudioEditionPlayer` has no question UI, so no listener can reach the
-  endpoint. Smallest next step: one client control wired to the live route.
-**Remaining:** A2.3 Media Session + PWA → A2.4's CLIENT half. **A2.5 "Call It" stays deferred** until A2.4 produces real
-listener-question data proving demand — that is a decision already recorded, not an omission.
+- **A2.4 Raise Your Hand — was HALF-built (the false-green shape), now COMPLETE (PR #139,
+  2026-08-25).** The backend had been live and unreachable for days: no affordance existed in the
+  player, so no listener could ask anything. The client half ships with the rule that makes the
+  feature worth having — the question anchors to the moment the hand went UP, not when typing
+  finished (mutation-proven), and the client always requests the full answer while the SERVER
+  decides what the budget allows.
+- **A2.3 Media Session + offline — COMPLETE, verified in code 2026-08-25.** Six `mediaSession`
+  action handlers (play/pause/prev/next/seek ±) in `AudioEditionPlayer.tsx:130-134`, and option (2)
+  (`saveForOffline`, blob playback) shipped in `lib/offlineAudio.ts`. Option (1) — narrowing the
+  service-worker kill-switch — remains an OWNER RULING and is needed only if offline-by-DEFAULT is
+  ever wanted; the shipped design deliberately does not depend on it.
+
+**Nothing in this wave is open.** A2.5 "Call It" stays deferred until A2.4 produces real
+listener-question data proving demand — a decision already recorded, not an omission. Now that
+A2.4 is actually reachable, that data can finally accumulate.
 
 ### WAVE 4 — CROP  ·  owner: footage  ·  blocked at the first step
 P0.3 is 20–50 real catalogue clips + ~2h labelling in the shipped tool
