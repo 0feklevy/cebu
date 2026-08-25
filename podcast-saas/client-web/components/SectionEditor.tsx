@@ -453,6 +453,10 @@ export function SectionEditor({
     setClipPlaying(false);
     setClipUploadErr(null);
     setTimeout(() => labelRef.current?.focus(), 80);
+    // A notice about the PREVIOUS section is a statement about work the viewer is no longer
+    // looking at.
+    setPresetNotice(null);
+    setPresetError(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [section.id]);
 
@@ -1064,6 +1068,10 @@ export function SectionEditor({
       setLoadOpen(false);
       setPresetNotice(`Loading “${p.label}” — regenerating for this simulation…`);
       await handleGenerateScript({ prompt: p.sim_prompt ?? '', simpleUi: p.simple_ui, autoScript: p.auto_script, selection: sel });
+      // The notice announced work that is now over. Left standing it says "regenerating…" beside a
+      // finished result — or, worse, beside the generation's own error, where it reads as though
+      // something is still coming. Generation reports its own outcome; this hands the screen back.
+      setPresetNotice(null);
     } catch (e) {
       setPresetError((e as Error).message || 'Could not load this bridge');
     } finally {
