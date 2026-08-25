@@ -17,7 +17,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, act } from '@testing-library/react';
 import { ProjectShareLinks } from '../components/ProjectShareLinks';
 
-const state = { status: 'none' as string, built: 0, buildThrows: null as string | null };
+const state = {
+  status: 'none' as string, built: 0, buildThrows: null as string | null,
+  library: null as { cleanUrl: string | null; url: string | null } | null,
+  libraryThrows: false,
+};
 
 vi.mock('@/lib/api', () => ({
   api: {
@@ -26,6 +30,13 @@ vi.mock('@/lib/api', () => ({
       audio_url: state.status === 'ready' ? 'https://cdn/a.m4a' : null,
       duration_ms: null, chapters: [],
     })),
+    getLibraryShare: vi.fn(async () => {
+      if (state.libraryThrows) throw new Error('unreachable');
+      return {
+        slug: null, includeTypes: null, expiresAt: null, createdAt: null, title: null,
+        cleanUrl: state.library?.cleanUrl ?? null, url: state.library?.url ?? null,
+      };
+    }),
     buildAudioEdition: vi.fn(async () => {
       if (state.buildThrows) throw Object.assign(new Error(state.buildThrows), { status: 409 });
       state.built += 1;
@@ -36,7 +47,10 @@ vi.mock('@/lib/api', () => ({
 
 const PERMALINK = 'https://flowvidco.com/my-lesson';
 
-beforeEach(() => { state.status = 'none'; state.built = 0; state.buildThrows = null; });
+beforeEach(() => {
+  state.status = 'none'; state.built = 0; state.buildThrows = null;
+  state.library = null; state.libraryThrows = false;
+});
 afterEach(() => cleanup());
 
 const renderLinks = async (over: Partial<React.ComponentProps<typeof ProjectShareLinks>> = {}) => {
@@ -64,12 +78,34 @@ describe('the links it shows', () => {
     expect(screen.getByText(`${PERMALINK}/audio`)).toBeTruthy();
   });
 
-  it('shows the library link only when the project has one', async () => {
+  it('shows NO library row when the project has no live share', async () => {
+    // `cleanUrl` and `url` are both null exactly when there is nothing to link — a revoked or
+    // expired share included. Building `${permalink}/library` from a string would offer all three.
     await renderLinks();
-    expect(screen.queryByText(`${PERMALINK}/library`)).toBeNull();
-    cleanup();
-    await renderLinks({ hasLibrary: true });
+    expect(screen.queryByText(`${PERMALINK}/library`), 'offered a library nobody shared').toBeNull();
+    expect(screen.queryByText('Library')).toBeNull();
+  });
+
+  it('shows the library link when a live share exists, using the server\'s clean form', async () => {
+    state.library = { cleanUrl: `${PERMALINK}/library`, url: 'https://flowvidco.com/my-lesson-abc123def4567/library' };
+    await renderLinks();
     expect(screen.getByText(`${PERMALINK}/library`)).toBeTruthy();
+  });
+
+  it('falls back to the CODED url when the clean form is not available', async () => {
+    // A live share on a project whose permalink is not public has no clean form. Showing nothing
+    // would hide a working link; the coded one always resolves.
+    const coded = 'https://flowvidco.com/my-lesson-abc123def4567/library';
+    state.library = { cleanUrl: null, url: coded };
+    await renderLinks();
+    expect(screen.getByText(coded)).toBeTruthy();
+  });
+
+  it('a failed library read hides only that row', async () => {
+    state.libraryThrows = true;
+    await renderLinks();
+    expect(screen.queryByText('Library')).toBeNull();
+    expect(screen.getByText(PERMALINK), 'a failed library read broke the video row').toBeTruthy();
   });
 
   it('renders nothing at all without a permalink — there are no addresses yet', async () => {

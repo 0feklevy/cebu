@@ -1064,7 +1064,7 @@ mode on the safe side whatever the mechanism.
 
 **Owner decision needed: which mechanism.** Nothing here blocks the release in flight.
 
-## 🔴 OPEN (found 2026-08-25) — the share block's Library row can never render: `hasLibrary` has no caller
+## ✅ CLOSED — verified in code + mutation-checked (2026-08-25) — the share block's Library row could never render
 
 `ProjectShareLinks` accepts `hasLibrary?: boolean` and its test proves the Library row appears when
 it is true — but **neither mount site passes it**. `PermalinkEditor.tsx:220` renders
@@ -1089,5 +1089,23 @@ slug", which the editor does not currently hold. Two defensible shapes:
 * **link unconditionally** — show the Library row always. Cheaper, but re-creates the rule the
   podcast row exists to honour: never offer a URL that 404s.
 
-Until one is chosen, **either wire it or delete the prop** — leaving it is the state that reads as
-done and is not.
+**FIXED, and neither of the two shapes above was the right one.** The server already computes the
+answer: `LibraryShareInfo.cleanUrl` IS the `/{permalink}/library` form, returned null unless a LIVE
+share (not revoked, not expired — `liveShareForProject`) exists on a project that is public with a
+permalink (`LibraryShareService.ts:82`). So the 404 rule is enforced where the truth lives instead
+of being guessed in the component, and **no backend change was needed at all** — `api.getLibraryShare`
+was already in the typed client.
+
+What shipped:
+* the `hasLibrary` prop is GONE (no caller ever passed it, so no caller changed);
+* the row reads `library?.cleanUrl ?? library?.url ?? null` — the coded `{title}-{code}/library`
+  form is the fallback, so a live share whose project is not public still gets a working link
+  rather than no link;
+* read ONCE, not polled: a library share is created by a person in another dialog, not derived by
+  a job, so there is no build to watch settle;
+* a failed read hides that row only — the same trade the audio row already makes.
+
+Mutation-checked, both directions: reverting to the string-built URL fails three tests
+(`shows NO library row when the project has no live share`, the coded fallback, and the
+failed-read isolation); dropping the `?? library?.url` fallback fails exactly the coded-fallback
+test and nothing else. 1820 client-web tests green, typecheck clean.

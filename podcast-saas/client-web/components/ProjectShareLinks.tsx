@@ -26,15 +26,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Check, Copy, ExternalLink, Loader2, Mic } from 'lucide-react';
 import { api } from '@/lib/api';
-import type { AudioEditionStatus } from 'shared/src/generated/client-v1';
+import type { AudioEditionStatus, LibraryShareInfo } from 'shared/src/generated/client-v1';
 import { failureMessage } from './failureSurface';
 
 interface Props {
   projectId: string;
   /** The live permalink, e.g. https://flowvidco.com/my-lesson. Null when none is published. */
   permalinkUrl: string | null;
-  /** Whether this project has a library worth linking to. */
-  hasLibrary?: boolean;
 }
 
 /** How often to re-ask while a build is running. Slow enough to be polite, fast enough to feel live. */
@@ -87,8 +85,9 @@ function LinkRow({ label, url, hint, trailing }: {
   );
 }
 
-export function ProjectShareLinks({ projectId, permalinkUrl, hasLibrary }: Props) {
+export function ProjectShareLinks({ projectId, permalinkUrl }: Props) {
   const [audio, setAudio] = useState<AudioEditionStatus | null>(null);
+  const [library, setLibrary] = useState<LibraryShareInfo | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -103,6 +102,22 @@ export function ProjectShareLinks({ projectId, permalinkUrl, hasLibrary }: Props
   }, [projectId]);
 
   useEffect(() => { void refresh(); }, [refresh]);
+
+  // Read ONCE, not polled: a library share is created by a person in another dialog, not derived
+  // by a job, so there is no build to watch settle.
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      try {
+        const info = await api.getLibraryShare(projectId);
+        if (alive) setLibrary(info);
+      } catch {
+        // Same trade as the audio read: a failed status read hides one row, it does not
+        // break the two that do not depend on it.
+      }
+    })();
+    return () => { alive = false; };
+  }, [projectId]);
 
   // Poll only WHILE a build is running, and stop the moment it settles — a timer that outlives
   // the work it watches is how a tab quietly keeps a server busy for an afternoon.
@@ -137,7 +152,11 @@ export function ProjectShareLinks({ projectId, permalinkUrl, hasLibrary }: Props
   if (!permalinkUrl) return null;
 
   const audioUrl = `${permalinkUrl.replace(/\/+$/, '')}/audio`;
-  const libraryUrl = `${permalinkUrl.replace(/\/+$/, '')}/library`;
+  // NOT string-built. `cleanUrl` is the server's own `/{permalink}/library` form and is null
+  // unless a LIVE share exists on a public project — so the 404 rule is enforced where the truth
+  // lives rather than guessed here. `url` is the coded `{title}-{code}/library` fallback, which
+  // works whenever a share exists at all.
+  const libraryUrl = library?.cleanUrl ?? library?.url ?? null;
   const ready = audio?.status === 'ready';
   const running = audio?.status === 'queued' || audio?.status === 'building';
 
@@ -171,7 +190,7 @@ export function ProjectShareLinks({ projectId, permalinkUrl, hasLibrary }: Props
         )}
       />
 
-      {hasLibrary && <LinkRow label="Library" url={libraryUrl} />}
+      {libraryUrl && <LinkRow label="Library" url={libraryUrl} />}
 
       {error && <p role="alert" className="text-[11px] text-destructive">{error}</p>}
     </div>
