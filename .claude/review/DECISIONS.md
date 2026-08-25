@@ -66,6 +66,56 @@ Fix shape: portal both overlays to `document.body` (the ConfirmDialog pattern), 
 test that CLICKING the button makes the dialog VISIBLE in the document — not merely that state
 changed, which is exactly the assertion that would have missed this.
 
+## 🔴 OPEN (found 2026-08-25, measured) — "hide this control" silently does nothing, or hides too much
+
+Found during Phase 0 of the action-recording work, while building the golden fixtures. It is a
+**live viewer defect today** and has nothing to do with that feature — the feature is only what
+made someone finally execute the code instead of reading it.
+
+`controlSelector` (`SimulationService.ts:541-563`, inside `RAF_GATE_TEMPLATE`) builds a selector by
+raw string concatenation: `'#' + el.id`, else `'[name="' + name + '"]'`, else a structural path. No
+`CSS.escape` (CSSOM defines it for exactly this), and no uniqueness check on the first two branches.
+
+**The selector is never resolved — it becomes a CSS rule.** `listSimControls` only filters
+`/[{}<\\]/` and length ≤300, then the string travels: gate → `simControlsList` → `SectionEditor` →
+`ui_controls` → `sim_meta.uiControls.hide` → `buildPlayerConfig.uiHide` → `bootHideFor` →
+`#simboot=` → `SIM_BOOT_SNIPPET`'s `<style id="__simBootHide">`, and separately →
+`startScript.params.hideSelectors` → `applyHideUi`'s `<style id="__simHideUi">`. There is no
+`querySelector` anywhere on that path, so there is nothing that can fail loudly. CSS drops an
+invalid rule silently, by design.
+
+**Measured, not reasoned** (jsdom, one rule per selector, exactly as both snippets build them):
+
+| selector | element's effective `display` |
+|---|---|
+| `#odd:id.v2` | `inline-block` — **not hidden** |
+| `#123numeric` | `inline-block` — **not hidden** |
+| `#has space` | `inline-block` — **not hidden** |
+| `#dup` (duplicate id) | `none` on **both** elements |
+| `[name="mode"]` (radio group) | `none` on the **whole group** |
+| `#ok` (control) | `none` — correct |
+
+A real browser drops the first two rules at parse time rather than keeping and not matching them;
+the end state is identical. So: **any control whose id contains a CSS-special character cannot be
+hidden, and the author gets no error.** Duplicate ids and radio groups over-hide.
+
+**Why it survived review.** `rafGate.test.ts` has ~90 assertions covering this scanner and every
+one of them matches the gate's SOURCE TEXT — including
+`expect(out).toContain("if (el.id) return '#' + el.id;")`, which pins the defective line as if it
+were the specification. A correct fix would turn that suite red. This is the
+`tests-that-read-source-are-theatre` pattern again, on a second subsystem.
+
+**Fix shape** (belongs with the action-recording picker, which needs the same thing):
+extract the rule into a pure, executable module — `CSS.escape` on the id branch, `querySelectorAll`
+length === 1 as the uniqueness proof, and a radio option identified by its own id rather than the
+group's shared `name`. Then replace the source-text assertions with behavioural ones and
+mutation-check both directions. The golden fixture package that reproduces all five rows exists:
+`backend-api/src/scripts/fixtures/controlsFixture.ts`, emitted as the `controls` package by
+`gen-sim-fixture.ts`.
+
+**Not fixed in this pass** — it is a viewer-behaviour change that deserves its own PR and its own
+mutation proof, not a drive-by inside a Phase 0 research branch.
+
 ## 🟡 OPEN BY DECISION — video is the one media type NOT deduplicated, and it is the largest
 
 Checked 2026-08-25 while wiring images and audio. Video is not an oversight; it is structurally
@@ -1134,6 +1184,45 @@ four-phase build plan) is intact and committed.
 **Next:** re-run the deep review before any build starts, and write its ruling INTO the file in the
 same pass that changes the status line. The report's own §1 still says "טרם הוחלט על בנייה", which
 is now the honest state.
+
+**Update 2026-08-25 — the deep review was re-run and IS written in, but is UNCOMMITTED.** The
+working tree now carries 2,647 lines against 264 committed: §§6–11 are the revised ruling in
+Hebrew, §§12–17 the full English parallel, and §§1–5 are explicitly marked as the superseded
+original proposal. The ruling is a **conditional GO for the visual picker** and a **NO-GO for the
+recording architecture as proposed**, with the contracts and blockers enumerated.
+
+So the document is no longer a header without its sections — but it is once again 2,384 lines
+living only in a working tree, which is exactly the state that lost the first attempt. **It must be
+committed before anything else happens on this branch.**
+
+All 13 evidence claims in §6.3 were re-verified against source on 2026-08-25: **13/13 CONFIRMED**,
+no line drift beyond ≤3 lines of leading comment. Two precision notes worth carrying: the
+structural `nth-of-type` branch IS single-match by construction, so the uniqueness hole is
+specifically the `#id` and `[name]` branches that run before it; and `canary_passed` is public by
+OMISSION from `NEVER_PUBLISHED_STATUSES` rather than by an affirmative allow-list entry — a new
+proof flow relying on that status would be relying on a doc comment.
+
+## 🟢 IN PROGRESS (2026-08-25) — action recording, Phase 0
+
+Per the report's own final recommendation: **not** the original Phases B–D, but a short Phase 0
+(blocking ADRs and spikes) and a hardened picker first, then one vertical slice.
+
+Delivered so far:
+
+- **`md-files/ADR-ACTION-RECORDING-SEMANTICS.md`** — the twelve decisions the build is not allowed
+  to re-open (data-not-code, reload-document default, entry-relative clock with restart-on-seek,
+  no generic click, blocking locator diagnostics, non-public proof state, ephemeral raw capture,
+  tri-state picker with list fallback, typed LLM patches, zero new dependencies), the five Phase-0
+  measurements that are deliberately left open, the module boundaries, and the exit criteria.
+- **`backend-api/src/scripts/fixtures/controlsFixture.ts`** — the golden fixture package, emitted
+  as `controls` by `gen-sim-fixture.ts` through the same `emit()` as every other package, so it
+  carries the real gate, the real boot snippet and the real combined bridge. Nine DOM shapes, each
+  present because something in the code or a cited standard says it will fail: vanilla controls, a
+  faithful React controlled-input value-tracker, node replacement under a stable id, CSS-special
+  ids, a duplicate id, radio and checkbox groups sharing a `name`, a `display:none` Advanced panel,
+  an interactive canvas, and a button gated on `event.isTrusted`.
+
+That fixture is what produced the 🔴 `ui_hide` entry above.
 
 ## ✅ CLOSED — fixed + mechanism proven (2026-08-25) — `release:verify` was not a gate: its exit code was `tee`'s
 
