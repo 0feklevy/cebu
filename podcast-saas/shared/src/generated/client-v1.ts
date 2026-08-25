@@ -1083,7 +1083,14 @@ export class ClientV1Api {
 
   private async request<T>(
     path: string,
-    opts: { method?: string; body?: unknown } = {},
+    // `body` is the VALUE to send, never pre-serialised text — this method owns the
+    // JSON.stringify below. Three call sites passed `JSON.stringify(...)` here and were
+    // double-encoded: Fastify then parsed the payload back into a STRING, every
+    // `z.object(...).safeParse(request.body)` on the other side failed, and the user saw the
+    // schema's message for a field that had in fact been sent correctly ("A label between 1 and
+    // 120 characters is required" on a perfectly good label). Typing it `object` is what makes
+    // the mistake fail to compile instead of failing in production.
+    opts: { method?: string; body?: object } = {},
   ): Promise<T> {
     const token = await this.config.getToken();
     const hasBody = opts.body !== undefined;
@@ -1666,7 +1673,7 @@ export class ClientV1Api {
   importSimulation(projectId: string, simulationId: string, shareToken?: string): Promise<Simulation> {
     return this.request(`/api/v1/projects/${projectId}/simulations/import`, {
       method: 'POST',
-      body: JSON.stringify({ simulation_id: simulationId, ...(shareToken ? { share_token: shareToken } : {}) }),
+      body: { simulation_id: simulationId, ...(shareToken ? { share_token: shareToken } : {}) },
     });
   }
 
@@ -1691,7 +1698,7 @@ export class ClientV1Api {
   buildAudioEdition(projectId: string, opts: { language?: string | null; force?: boolean } = {}): Promise<{ status: string; language: string | null }> {
     return this.request(`/api/v1/projects/${projectId}/audio-edition`, {
       method: 'POST',
-      body: JSON.stringify({ language: opts.language ?? null, force: opts.force === true }),
+      body: { language: opts.language ?? null, force: opts.force === true },
     });
   }
 
@@ -1706,7 +1713,7 @@ export class ClientV1Api {
   saveBridgePreset(projectId: string, sectionId: string, label: string): Promise<{ preset: BridgePreset }> {
     return this.request(`/api/v1/projects/${projectId}/sections/${sectionId}/bridge-presets`, {
       method: 'POST',
-      body: JSON.stringify({ label }),
+      body: { label },
     });
   }
 
