@@ -18,6 +18,7 @@ import { getStorageAdapter } from '../../storage/getStorageAdapter.js';
 import { PodcastVoiceService } from '../PodcastVoiceService.js';
 import { ElevenLabsDialogue } from './ElevenLabsDialogue.js';
 import { recordTtsSpend } from '../../usage/recordTtsSpend.js';
+import { evaluateSpendCeiling } from '../../usage/spendCeiling.js';
 import { charactersIn } from '../../usage/ttsCost.js';
 import { decodeToWav, extractClip, measureLufs, gainToTarget, applyTempo, extractPeaks, probeDurationMs } from './ffmpegAudio.js';
 import { computeClipBounds } from './clipBounds.js';
@@ -33,6 +34,20 @@ export async function revoicePodcastTurn(params: {
   scriptVersion: number | null;
 }): Promise<PodcastClip> {
   const { show, episode, turns, index, scriptVersion } = params;
+  // ── THE CEILING, BEFORE A SINGLE CHARACTER IS SYNTHESISED ──────────────────────────────────
+  // This path is where the 22 August 2026 spend incident actually happened: not one deliberate
+  // render, but a creator auditioning voices, click after click, each one a paid synthesis. The
+  // full-episode renderer has consulted the ceiling since it was built; these per-click paths did
+  // not — which is backwards, because a render is ONE action with a knowable cost and this is
+  // unbounded by construction.
+  //
+  // SHADOW BY DEFAULT, exactly as in PodcastRenderer: `SPEND_CEILING_MODE=enforce` has to be set
+  // for this to refuse anything. Until then it records what it would have done, which is how the
+  // configured figure gets checked before it starts costing somebody a preview.
+  const ceiling = await evaluateSpendCeiling({ provider: 'elevenlabs' });
+  if (ceiling.refuse) {
+    throw new Error(ceiling.reason ?? 'Monthly ElevenLabs spend ceiling reached.');
+  }
   const storage = getStorageAdapter();
   const target = turns[index];
 
