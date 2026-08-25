@@ -422,4 +422,27 @@ describe('migration runner — the hardcoded list contract', () => {
     const all = [...source.matchAll(/'(\d{3}_[^']+\.sql)'/g)].map((x) => x[1]);
     expect(all).toEqual([...MIGRATION_FILES]);
   });
+
+  it('scripts/check-db.ts holds an IDENTICAL list — the second copy nothing was guarding', () => {
+    // `check-db.ts` declares its own `const MIGRATION_FILES = [...]` literal instead of importing
+    // this one, shadowing the name. The two agree today, and until now nothing structural kept
+    // them agreeing: the only guard was per-migration (each migration test asserting its OWN
+    // filename appears in both files), so a migration whose author writes no such test drifts
+    // silently — and `pnpm db:check` then reports a database as up to date while the runner
+    // would still have work to do.
+    const source = readFileSync(join(HERE, '..', '..', 'scripts', 'check-db.ts'), 'utf-8');
+    const m = source.match(/const\s+MIGRATION_FILES\s*=\s*\[([\s\S]*?)\]/);
+    expect(m, 'check-db.ts no longer declares a MIGRATION_FILES array').not.toBeNull();
+    const theirs = [...m![1].matchAll(/'([^']+\.sql)'/g)].map((x) => x[1]);
+    expect(theirs).toEqual([...MIGRATION_FILES]);
+  });
+
+  it('every forward .sql on disk is registered — an unregistered file never runs, silently', () => {
+    // CLAUDE.md §5 names this as a thing that will mislead you. The failure is invisible: the
+    // file exists, review sees it, and it simply never executes.
+    const onDisk = readdirSync(join(HERE, '..', 'migrations'))
+      .filter((f) => /^\d{3}_[^.]+\.sql$/.test(f))
+      .sort();
+    expect(onDisk).toEqual([...MIGRATION_FILES]);
+  });
 });
